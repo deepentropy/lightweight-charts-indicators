@@ -19,31 +19,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - uses: pnpm/action-setup@v2
-        with:
-          version: 8
-          
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'pnpm'
-          
+          cache: 'npm'
+
       - name: Install dependencies
-        run: pnpm install
-        
-      - name: Build oakscriptjs
-        run: pnpm --filter oakscriptjs build
+        run: npm ci
 
-      - name: Build indicators
-        run: pnpm --filter @oakscript/indicators build
+      - name: Build
+        run: npm run build
 
-      - name: Build example for GitHub Pages
-        run: pnpm --filter oakscriptjs-example build:pages
-        
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: example/dist
+          path: dist
 
   deploy:
     environment:
