@@ -45,12 +45,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/phamvmnhut/lightweight-charts-indicators.git"
+    "url": "git+https://github.com/deepentropy/lightweight-charts-indicators.git"
   },
   "bugs": {
-    "url": "https://github.com/phamvmnhut/lightweight-charts-indicators/issues"
+    "url": "https://github.com/deepentropy/lightweight-charts-indicators/issues"
   },
-  "homepage": "https://github.com/phamvmnhut/lightweight-charts-indicators#readme",
+  "homepage": "https://github.com/deepentropy/lightweight-charts-indicators#readme",
   "peerDependencies": {
     "oakscriptjs": "^0.1.0"
   },
