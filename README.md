@@ -1,10 +1,8 @@
 # lightweight-charts-indicators
 
-Optimized technical indicators built with OakScriptJS for use with lightweight-charts.
+**[Live Demo](https://deepentropy.github.io/lightweight-charts-indicators/)**
 
-## Overview
-
-This package contains hand-optimized indicators that leverage the `oakscriptjs` library for PineScript v6 compatible calculations. Designed to work seamlessly with TradingView's lightweight-charts library.
+70+ technical analysis indicators for TradingView's lightweight-charts library.
 
 ## Installation
 
