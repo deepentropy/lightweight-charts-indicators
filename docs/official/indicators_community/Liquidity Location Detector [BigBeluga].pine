@@ -1,0 +1,127 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator('Liquidity Location Detector [BigBeluga]', overlay = true, max_boxes_count = 500, max_labels_count = 1)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int   box_amount = input.int(100, 'Amount', step = 10, tooltip = "Set the displayed amount of liquidity zones")
+
+color color_high_sup = input.color(color.rgb(34, 139, 171, 30), '↑', inline = 'sup', group = 'Color')
+color color_low_sup = color.new(color_high_sup, 80)
+
+color color_high_res = input.color(color.rgb(236, 64, 121, 30), '↓', inline = 'sup', group = 'Color')
+color color_low_res = color.new(color_high_res, 80)
+bool ema1 = input.bool(false, "Fast", group = "EMA", inline = "1")
+int len_ema1 = input.int(20, "", group = "EMA", inline = "1")
+color ema1_col = input.color(color.aqua, "", group = "EMA", inline = "1")
+bool ema2 = input.bool(false, "Slow", group = "EMA", inline = "2")
+int len_ema2 = input.int(35, "", group = "EMA", inline = "2")
+color ema2_col = input.color(#d40047, "", group = "EMA", inline = "2")
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+ema_f = float(na)
+ema_s = float(na)
+if ema1
+    ema_f := ta.ema(close, len_ema1)
+if ema2
+    ema_s := ta.ema(close, len_ema2)
+
+plot(ema_f, "Ema Fast", color = ema1_col, display = ema1 ? display.all : display.none, editable = ema1, linewidth = 2)
+plot(ema_s, "Ema Slow", color = ema2_col, display = ema2 ? display.all : display.none, editable = ema2, linewidth = 2)
+
+plotshape(ta.crossover(ema_f, ema_s) ? ema_f : na, "Emas Cross Up", shape.circle, location.absolute, color = ema1_col, size = size.tiny, display = ema1 ? display.all : display.none, editable = ema1)
+plotshape(ta.crossunder(ema_f, ema_s) ? ema_f : na, "Emas Cross Dn", shape.circle, location.absolute, color = ema2_col, size = size.tiny, display = ema2 ? display.all : display.none, editable = ema2)
+
+vol = math.avg(volume, 10)/10
+reference_vol = ta.percentile_nearest_rank(vol, 1000, 99)
+norm_vol = vol / reference_vol *5
+norm_vol := norm_vol >= 10 ? 10 : norm_vol
+
+method check_liquidity(array<box> boxes, up_dn) =>
+
+    for box_id in boxes
+        box_id.set_right(bar_index + 20)
+        box_id.set_border_color(na)
+
+        if up_dn ? high > box_id.get_top() : low < box_id.get_bottom()
+            box_id.set_right(bar_index)
+            box_id.set_text('')
+            boxes.remove(boxes.indexof(box_id))
+
+scale() =>
+    if barstate.islast
+        dash = table.new(position.middle_right, 100, 100)
+        for i = 0 to 10 by 1
+            dash.cell(0, 10 - i + 1, str.tostring(i), 3, bgcolor = color.from_gradient(i, 0, 10, color_low_sup, color_high_sup), text_color = chart.fg_color)
+            dash.cell(1, 10 - i + 1, str.tostring(i), 3, bgcolor = color.from_gradient(i, 0, 10, color_low_res, color_high_res), text_color = chart.fg_color)
+        table.merge_cells(dash, 0, 0, 1, 0)
+        dash.cell(0, 0, 'Volume\nStrength', text_color = color.gray)
+
+liquidity_display() =>
+
+    var array<box> boxes1 = array.new<box>()
+    var array<box> boxes2 = array.new<box>()
+    box1 = box(na)
+    box2 = box(na)
+
+    volume_ = norm_vol[1]
+    series float h = ta.highest(15)
+    series float l = ta.lowest(15)
+
+    series float _size = (high - low) / 2
+
+    color color_upper = color.from_gradient(volume_, 1, 10, color_low_sup, color_high_sup)
+    color color_lower = color.from_gradient(volume_, 1, 10, color_low_res, color_high_res)
+    color text_col = color.new(chart.fg_color, 100-volume_*10)
+
+    txt = str.tostring(volume_, '##')
+
+    if h[1] == high[1] and high < h
+        if volume_ >= 7 
+            box1 := box.new(bar_index[1], high[1] + _size[1], bar_index, high[1], bgcolor = color_lower, force_overlay = true)
+        else 
+            box1 := box.new(bar_index[1], high[1] + _size[1], bar_index, high[1], bgcolor = color_lower, force_overlay = false)
+            
+        boxes1.push(box1)
+
+        if volume_ >= 1
+            box1.set_text(txt)
+            box1.set_text_size(volume_ >= 7 ? size.large : volume_ >= 5 ? size.normal : size.small)
+            box1.set_text_halign(text.align_right)
+            box1.set_text_color(text_col)
+
+    if l[1] == low[1] and low > l
+        if volume_ >= 7 
+            box2 := box.new(bar_index[1], low[1], bar_index, low[1] - _size[1], bgcolor = color_upper, force_overlay = true)
+        else 
+            box2 := box.new(bar_index[1], low[1], bar_index, low[1] - _size[1], bgcolor = color_upper, force_overlay = false)
+
+        boxes2.push(box2)
+
+        if volume_ >= 1
+            box2.set_text(txt)
+            box2.set_text_size(volume_ >= 8 ? size.large : volume_ >= 5 ? size.normal : size.small)
+            box2.set_text_halign(text.align_right)
+            box2.set_text_color(text_col)
+
+
+    boxes1.check_liquidity(true)
+    boxes2.check_liquidity(false)
+    scale()
+
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+liquidity_display()
+
+a_allBoxes = box.all
+if a_allBoxes.size() > box_amount
+    box.delete(a_allBoxes.shift())
+// }

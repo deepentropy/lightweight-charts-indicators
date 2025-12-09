@@ -1,0 +1,288 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © pmk07
+//
+// Acknowledgements/Reference:
+//
+// @rumpypumpydumpy - Higher Order Pivots
+// https://www.tradingview.com/v/x2LlRvBe/
+//
+// @MarkMiddleton2020 - Order Blocks
+// https://www.tradingview.com/v/GecN34Qq/
+//
+//@version=5
+
+indicator(title='Order Blocks', overlay=true)
+
+bool        pv2_sv          = input.bool        (true,                          title='Plot 2nd order pivots')
+bool        msb_sv          = input.bool        (true,                          title='Plot MSB lines')
+bool        box_sv          = input.bool        (true,                          title='Plot Orderblocks')
+bool        m_sv            = input.bool        (true,                          title='Plot Breakerblocks')
+bool        range_sv        = input.bool        (true,                          title='Plot Range')
+bool        range_eq_sv     = input.bool        (true,                          title='Plot Range 0.5 Line')
+bool        range_q_sv      = input.bool        (true,                          title='Plot Range 0.25 and 0.75 Lines')
+bool        log_sv          = input.bool        (true,                          title='Use Log Scale')
+bool        msb_a_sv        = input.bool        (true,                          title='Alert MSB')
+bool        ob_a_sv         = input.bool        (true,                          title='Alert Orderblock test')
+bool        bb_a_sv         = input.bool        (true,                          title='Alert Breakerblock test')
+bool        r_a_sv          = input.bool        (true,                          title='Alert New Range')
+bool        rt_a_sv         = input.bool        (true,                          title='Alert Range test')
+color       u_s             = input.color       (color.rgb(192, 192, 192, 80),  title='Untested Supply Color')
+color       t_s             = input.color       (color.rgb(255, 0, 0, 80),      title='Tested Supply Color')
+color       u_d             = input.color       (color.rgb(192, 192, 192, 80),  title='Untested Demand Color')
+color       t_d             = input.color       (color.rgb(0, 255, 0, 80),      title='Tested Demand Color')
+color       u_b             = input.color       (color.rgb(192, 192, 192, 80),  title='Untested Breaker Color')
+color       t_b             = input.color       (color.new(color.blue, 80),     title='Tested Breaker Color')
+
+var float[] pvh1_price      = array.new_float   (30, na)            // high
+var int[]   pvh1_time       = array.new_int     (30, na)
+var float[] pvl1_price      = array.new_float   (30, na)            // low
+var int[]   pvl1_time       = array.new_int     (30, na)
+var float[] pvh2_price      = array.new_float   (10, na)            // higher high
+var int[]   pvh2_time       = array.new_int     (10, na)
+var float[] pvl2_price      = array.new_float   (10, na)            // lower low
+var int[]   pvl2_time       = array.new_int     (10, na)
+var float   htcmrll_price   = na                                    // high that created most recent ll
+var int     htcmrll_time    = na
+var float   ltcmrhh_price   = na                                    // low that created most recent hh
+var int     ltcmrhh_time    = na
+var box[]   long_boxes      = array.new_box()                       // orderblocks
+var box[]   short_boxes     = array.new_box()
+var box[]   m_long_boxes    = array.new_box()                       // breakerblocks
+var box[]   m_short_boxes   = array.new_box()
+var line[]  bull_bos_lines  = array.new_line()                      // MSB lines
+var line[]  bear_bos_lines  = array.new_line()
+var line[]  range_h_lines   = array.new_line()                      // Range lines
+var line[]  range_25_lines  = array.new_line()
+var line[]  range_m_lines   = array.new_line()
+var line[]  range_75_lines  = array.new_line()
+var line[]  range_l_lines   = array.new_line()
+var label[] la_ph2          = array.new_label()                     // 2nd order pivots
+var label[] la_pl2          = array.new_label()
+var float   temp_pv_0       = na
+var float   temp_pv_1       = na
+var float   temp_pv_2       = na
+var int     temp_time       = na
+var float   last_range_h    = na
+var float   last_range_l    = na
+var line    range_m         = na
+var line    range_25        = na
+var line    range_75        = na
+var float   box_top         = na
+var float   box_bottom      = na
+var int     h_a_time        = 0
+var int     l_a_time        = 0
+var int     mh_a_time       = 0
+var int     ml_a_time       = 0
+var int     rh_a_time       = 0
+var int     rl_a_time       = 0
+bool        pvh             = high < high[1] and high[1] > high[2]
+bool        pvl             = low > low[1] and low[1] < low[2]
+int         pv1_time        = bar_index[1]
+float       pv1_high        = high[1]
+float       pv1_low         = low[1]
+bool        new_ph_2nd      = false
+bool        new_pl_2nd      = false
+string      alert           = na
+
+if barstate.isconfirmed
+    if pvh
+        array.pop(pvh1_price)
+        array.pop(pvh1_time)
+        array.unshift(pvh1_price, pv1_high)
+        array.unshift(pvh1_time, pv1_time)
+        if array.size(pvh1_price) > 2
+            temp_pv_0 := array.get(pvh1_price, 0)
+            temp_pv_1 := array.get(pvh1_price, 1)
+            temp_pv_2 := array.get(pvh1_price, 2)
+            if temp_pv_0 < temp_pv_1 and temp_pv_1 > temp_pv_2
+                array.pop(pvh2_price)
+                array.pop(pvh2_time)
+                array.unshift(pvh2_price, temp_pv_1)
+                array.unshift(pvh2_time, array.get(pvh1_time, 1))
+                new_ph_2nd := true
+                if temp_pv_1 > array.get(pvh2_price, 1)
+                    for i = 0 to array.size(pvl2_time) - 1 by 1
+                        temp_ltcmrhh_time = array.get(pvl2_time, i)
+                        if temp_ltcmrhh_time < array.get(pvh2_time, 0)
+                            ltcmrhh_price := array.get(pvl2_price, i)
+                            ltcmrhh_time := temp_ltcmrhh_time
+                            break
+            if temp_pv_0 < ltcmrhh_price
+                if msb_sv
+                    array.push(bear_bos_lines, line.new(x1=ltcmrhh_time, y1=ltcmrhh_price, x2=bar_index, y2=ltcmrhh_price, color=color.green, width=2))
+                box_top := array.get(pvh2_price, 0)
+                box_bottom := math.max(low[bar_index - array.get(pvh2_time, 0)], low[bar_index - array.get(pvh2_time, 0) + 1])
+                array.push(short_boxes, box.new(left=array.get(pvh2_time, 0), top=box_top, right=bar_index, bottom=box_bottom, bgcolor= box_sv ? u_s : na , border_color=na, extend=extend.right))
+                if msb_a_sv
+                    alert := alert + 'Bearish MSB @ ' + str.tostring(ltcmrhh_price) + '\n' + 'New Supply Zone : '+ str.tostring(box_top) + ' - ' + str.tostring(box_bottom) + '\n'
+                ltcmrhh_price := na
+    if pvl
+        array.pop(pvl1_price)
+        array.pop(pvl1_time)
+        array.unshift(pvl1_price, pv1_low)
+        array.unshift(pvl1_time, pv1_time)
+        if array.size(pvl1_price) > 2
+            temp_pv_0 := array.get(pvl1_price, 0)
+            temp_pv_1 := array.get(pvl1_price, 1)
+            temp_pv_2 := array.get(pvl1_price, 2)
+            if temp_pv_0 > temp_pv_1 and temp_pv_1 < temp_pv_2
+                array.pop(pvl2_price)
+                array.pop(pvl2_time)
+                array.unshift(pvl2_price, temp_pv_1)
+                array.unshift(pvl2_time, array.get(pvl1_time, 1))
+                new_pl_2nd := true
+                if temp_pv_1 < array.get(pvl2_price, 1)
+                    for i = 0 to array.size(pvh2_time) - 1 by 1
+                        temp_htcmrll_time = array.get(pvh2_time, i)
+                        if temp_htcmrll_time < array.get(pvl2_time, 0)
+                            htcmrll_price := array.get(pvh2_price, i)
+                            htcmrll_time := temp_htcmrll_time
+                            break
+            if temp_pv_0 > htcmrll_price
+                if msb_sv
+                    array.push(bull_bos_lines, line.new(x1=htcmrll_time, y1=htcmrll_price, x2=bar_index, y2=htcmrll_price, color=color.red, width=2))
+                box_top := math.min(high[bar_index - array.get(pvl2_time, 0)], high[bar_index - array.get(pvl2_time, 0) + 1])
+                box_bottom := array.get(pvl2_price, 0)
+                array.push(long_boxes, box.new(left=array.get(pvl2_time, 0), top=box_top, right=bar_index, bottom=box_bottom, bgcolor= box_sv ? u_d : na, border_color=na, extend=extend.right))
+                if msb_a_sv
+                    alert := alert + 'Bullish MSB @ ' + str.tostring(htcmrll_price) + '\n' + 'New Demand Zone : '+ str.tostring(box_bottom) + ' - ' + str.tostring(box_top) + '\n'
+                htcmrll_price := na
+    if array.size(short_boxes) > 0
+        for i = array.size(short_boxes) - 1 to 0 by 1
+            tbox = array.get(short_boxes, i)
+            top = box.get_top(tbox)
+            bottom = box.get_bottom(tbox)
+            ago = box.get_left(tbox)
+            if array.get(pvh1_price, 0) > bottom 
+                if box_sv
+                    box.set_bgcolor(tbox, t_s)    
+                if ob_a_sv and close < bottom
+                    if array.get(pvh1_time, 0) != h_a_time
+                        h_a_time := array.get(pvh1_time, 0)
+                        alert := alert + 'Supply Zone Test @ ' + str.tostring(array.get(pvh1_price, 0)) + ' (age = ' + str.tostring(bar_index-ago) + ' bars) \n'
+            if array.get(pvl1_price, 0) > top
+                if m_sv
+                    box.set_bgcolor(tbox, u_b)
+                    array.push(m_long_boxes, tbox)
+                else
+                    box.delete(tbox)
+                array.remove(short_boxes, i)
+                if msb_sv    
+                    line.delete(array.get(bear_bos_lines, i))
+                    array.remove(bear_bos_lines, i)
+    if array.size(long_boxes) > 0
+        for i = array.size(long_boxes) - 1 to 0 by 1
+            lbox = array.get(long_boxes, i)
+            top = box.get_top(lbox)
+            bottom = box.get_bottom(lbox)
+            ago = box.get_left(lbox)
+            if array.get(pvl1_price, 0) < top
+                if box_sv
+                    box.set_bgcolor(lbox, t_d)
+                if ob_a_sv and close > top
+                    if array.get(pvl1_time, 0) != l_a_time
+                        l_a_time := array.get(pvl1_time, 0)
+                        alert := alert + 'Demand Zone Test @ ' + str.tostring(array.get(pvl1_price, 0)) + ' (age = ' + str.tostring(bar_index-ago) + ' bars) \n'
+            if array.get(pvh1_price, 0) < bottom
+                if m_sv
+                    box.set_bgcolor(lbox, u_b)
+                    array.push(m_short_boxes, lbox)
+                else
+                    box.delete(lbox)
+                array.remove(long_boxes, i)
+                if msb_sv
+                    line.delete(array.get(bull_bos_lines, i))
+                    array.remove(bull_bos_lines, i)
+    if array.size(m_short_boxes) > 0
+        for i = array.size(m_short_boxes) - 1 to 0 by 1
+            tbox = array.get(m_short_boxes, i)
+            top = box.get_top(tbox)
+            bottom = box.get_bottom(tbox)
+            ago = box.get_left(tbox)
+            if array.get(pvh1_price, 0) > bottom 
+                box.set_bgcolor(tbox, t_b)
+                if bb_a_sv and close < bottom
+                    if array.get(pvh1_time, 0) != mh_a_time
+                        mh_a_time := array.get(pvh1_time, 0)
+                        alert := alert + 'Breakerblock Test Up @ ' + str.tostring(array.get(pvh1_price, 0)) + ' (age = ' + str.tostring(bar_index-ago) + ' bars) \n'
+            if array.get(pvl1_price, 0) > top
+                box.delete(tbox)
+                array.remove(m_short_boxes, i)
+    if array.size(m_long_boxes) > 0
+        for i = array.size(m_long_boxes) - 1 to 0 by 1
+            lbox = array.get(m_long_boxes, i)
+            top = box.get_top(lbox)
+            bottom = box.get_bottom(lbox)
+            ago = box.get_left(lbox)
+            if array.get(pvl1_price, 0) < top
+                box.set_bgcolor(lbox, t_b)
+                if bb_a_sv and close > top
+                    if array.get(pvl1_time, 0) != ml_a_time
+                        ml_a_time := array.get(pvl1_time, 0)
+                        alert := alert + 'Breakerblock Test Down @ ' + str.tostring(array.get(pvl1_price, 0)) + ' (age = ' + str.tostring(bar_index-ago) + ' bars) \n'
+            if array.get(pvh1_price, 0) < bottom
+                box.delete(lbox)
+                array.remove(m_long_boxes, i)
+    if range_sv and (new_ph_2nd or new_pl_2nd) and (array.get(pvh2_price, 0) < array.get(pvh2_price, 1) and array.get(pvl2_price, 0) > array.get(pvl2_price, 1) and array.get(pvh2_price, 0) > array.get(pvl2_price, 1) and array.get(pvl2_price, 0) < array.get(pvh2_price, 1)) and (array.get(pvl2_price, 1) > nz(last_range_h) or na(last_range_l)? true : (array.get(pvh2_price, 1) < last_range_l))
+        temp_time := math.min(array.get(pvh2_time, 1), array.get(pvl2_time, 1))
+        last_range_h    := array.get(pvh2_price, 1)
+        last_range_l    := array.get(pvl2_price, 1)
+        temp_pv_0 := log_sv ? math.exp((math.log(last_range_h) + math.log(last_range_l))/2) : (last_range_h + last_range_l)/2
+        temp_pv_1 := log_sv ? math.exp((math.log(last_range_h) + math.log(temp_pv_0))/2) : (last_range_h + temp_pv_0)/2
+        temp_pv_2 := log_sv ? math.exp((math.log(last_range_l) + math.log(temp_pv_0))/2) : (last_range_l + temp_pv_0)/2
+        array.push(range_h_lines, line.new(x1=temp_time, y1=last_range_h, x2=bar_index, y2=last_range_h, color=color.gray, width=1, extend=extend.right))
+        array.push(range_l_lines, line.new(x1=temp_time, y1=last_range_l, x2=bar_index, y2=last_range_l, color=color.gray, width=1, extend=extend.right))
+        if range_eq_sv
+            array.push(range_m_lines, line.new(x1=temp_time, y1=temp_pv_0, x2=bar_index, y2=temp_pv_0, color=color.gray, width=1, extend=extend.right))
+        if range_q_sv
+            array.push(range_25_lines, line.new(x1=temp_time, y1=temp_pv_1, x2=bar_index, y2=temp_pv_1, style=line.style_dashed, color=color.gray, width=1, extend=extend.right))
+            array.push(range_75_lines, line.new(x1=temp_time, y1=temp_pv_2, x2=bar_index, y2=temp_pv_2, style=line.style_dashed, color=color.gray, width=1, extend=extend.right))
+        if r_a_sv
+            alert := alert + 'New Range : ' + str.tostring(last_range_h) + ' - ' +  str.tostring(last_range_l) + '. Mean = ' +  str.tostring(temp_pv_0) + '\n'
+    if array.size(range_h_lines) > 0
+        for i = array.size(range_h_lines) - 1 to 0 by 1
+            range_h = array.get(range_h_lines, i)
+            top = line.get_y1(range_h)
+            range_l = array.get(range_l_lines, i)
+            bottom = line.get_y1(range_l)
+            temp_time := line.get_x1(range_h)
+            if array.get(pvh1_price, 0) > top
+                if rt_a_sv and close < top
+                    if array.get(pvh1_time, 0) != rh_a_time
+                        rh_a_time := array.get(pvh1_time, 0)
+                        alert := alert + 'Range High Test @ ' + str.tostring(array.get(pvh1_price, 0)) + ' \n'
+            if array.get(pvl1_price, 0) < bottom
+                if rt_a_sv and close > bottom
+                    if array.get(pvl1_time, 0) != rl_a_time
+                        rl_a_time := array.get(pvl1_time, 0)
+                        alert := alert + 'Range Low Test @ ' + str.tostring(array.get(pvl1_price, 0)) + ' \n'
+            if range_eq_sv
+                range_m := array.get(range_m_lines, i)
+            if range_q_sv
+                range_25 := array.get(range_25_lines, i)
+                range_75 := array.get(range_75_lines, i)
+            if array.get(pvh1_price, 0) < bottom or array.get(pvl1_price, 0) > top
+                line.delete(range_h)
+                array.remove(range_h_lines, i)
+                line.delete(range_l)
+                array.remove(range_l_lines, i)
+                if range_eq_sv
+                    line.delete(range_m)                
+                    array.remove(range_m_lines, i)
+                if range_q_sv
+                    line.delete(range_25)                
+                    array.remove(range_25_lines, i)
+                    line.delete(range_75)                
+                    array.remove(range_75_lines, i)
+                last_range_h    := na
+                last_range_l    := na
+    if pv2_sv
+        if new_ph_2nd
+            array.push(la_ph2, label.new(x = array.get(pvh2_time, 0), y = array.get(pvh2_price, 0), xloc = xloc.bar_index, style = label.style_label_down,    color = #770000FF, size = size.tiny))
+        if new_pl_2nd
+            array.push(la_pl2, label.new(x = array.get(pvl2_time, 0), y = array.get(pvl2_price, 0), xloc = xloc.bar_index, style = label.style_label_up,      color = #007700FF, size = size.tiny))
+
+alert := not na(alert) ? (alert + 'Current price = ' + str.tostring(close) + '\n') : na
+exec = not na(alert) ? true : false
+if exec==true 
+    alert(alert, alert.freq_once_per_bar_close)

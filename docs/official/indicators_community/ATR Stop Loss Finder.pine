@@ -1,0 +1,47 @@
+//@version=4
+study(title="Average True Range Stop Loss Finder", shorttitle="ATR", overlay=true)
+length = input(title="Length", defval=14, minval=1)
+smoothing = input(title="Smoothing", defval="RMA", options=["RMA", "SMA", "EMA", "WMA"])
+m = input(1.5, "Multiplier")
+src1 = input(high)
+src2 = input(low)
+pline = input(true, "Show Price Lines")
+col1 = input(color.blue, "ATR Text Color")
+col2 = input(color.teal, "Low Text Color",inline ="1")
+col3 = input(color.red, "High Text Color",inline ="2")
+
+collong = input(color.teal, "Low Line Color",inline ="1")
+colshort = input(color.red, "High Line Color",inline ="2")
+
+ma_function(source, length) =>
+	if smoothing == "RMA"
+		rma(source, length)
+	else
+		if smoothing == "SMA"
+			sma(source, length)
+		else
+			if smoothing == "EMA"
+				ema(source, length)
+			else
+				wma(source, length)
+				
+a = ma_function(tr(true), length) * m
+x = ma_function(tr(true), length) * m + src1
+x2 = src2 - ma_function(tr(true), length) * m
+
+p1 = plot(x, title = "ATR Short Stop Loss", color= colshort, transp=20, trackprice = pline ? true : false)
+p2 = plot(x2, title = "ATR Long Stop Loss", color= collong, transp=20, trackprice = pline ? true : false)
+
+var table Table = table.new(position.bottom_center, 3, 1, border_width = 3)    
+
+f_fillCell(_table, _column, _row, _value, _timeframe) =>
+
+	_cellText = _timeframe+ tostring(_value, "#.#")
+    table.cell(_table, _column, _row, _cellText, text_color = col1)
+    table.cell_set_text_color(Table, 1, 0, color.new(col3, transp = 0))
+    table.cell_set_text_color(Table, 2, 0, color.new(col2, transp = 0))
+    
+if barstate.islast
+    f_fillCell(Table, 0, 0, a, "ATR: " )
+    f_fillCell(Table, 1, 0, x, "H: " )
+    f_fillCell(Table, 2, 0, x2, "L: " )   

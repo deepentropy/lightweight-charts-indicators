@@ -1,0 +1,1102 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Ildar Akhmetgaleev (AkhIL)
+// See https://github.com/akhilman/vol-poorofile
+// vim: shiftwidth=2 tabstop=2
+
+//@version=4
+study("Poor man's volume profile", "PMVolProf", overlay=true, max_bars_back=500)
+
+block_size = input(200, "Bars in profile block", minval=10, maxval=500)
+visual_row_width = input(100, "Visual row width", minval=10)
+show_peaks = input(true, "Show peaks")
+use_custom_volume_source = input(false, "Use custom volume source")
+volume_source_symbol = input("", "Custom volume source symbol", input.symbol)
+
+BOUNDS_COLOR = color.gray
+PROFILE_COLOR = color.new(color.gray, 50)
+PEAK_COLOR = color.new(color.orange, 50)
+
+custom_volume = use_custom_volume_source ? security(volume_source_symbol, timeframe.period, volume, lookahead=barmerge.lookahead_on) : volume
+
+////
+// Calculate profile
+///
+
+block_high = highest(high, block_size)
+block_low = lowest(low, block_size)
+float highest_row_value = 0
+
+float row0_price = na
+int row0_width = 0
+float row0_value = 0.0
+row0_is_peak = false
+float row1_price = na
+int row1_width = 0
+float row1_value = 0.0
+row1_is_peak = false
+float row2_price = na
+int row2_width = 0
+float row2_value = 0.0
+row2_is_peak = false
+float row3_price = na
+int row3_width = 0
+float row3_value = 0.0
+row3_is_peak = false
+float row4_price = na
+int row4_width = 0
+float row4_value = 0.0
+row4_is_peak = false
+float row5_price = na
+int row5_width = 0
+float row5_value = 0.0
+row5_is_peak = false
+float row6_price = na
+int row6_width = 0
+float row6_value = 0.0
+row6_is_peak = false
+float row7_price = na
+int row7_width = 0
+float row7_value = 0.0
+row7_is_peak = false
+float row8_price = na
+int row8_width = 0
+float row8_value = 0.0
+row8_is_peak = false
+float row9_price = na
+int row9_width = 0
+float row9_value = 0.0
+row9_is_peak = false
+float row10_price = na
+int row10_width = 0
+float row10_value = 0.0
+row10_is_peak = false
+float row11_price = na
+int row11_width = 0
+float row11_value = 0.0
+row11_is_peak = false
+float row12_price = na
+int row12_width = 0
+float row12_value = 0.0
+row12_is_peak = false
+float row13_price = na
+int row13_width = 0
+float row13_value = 0.0
+row13_is_peak = false
+float row14_price = na
+int row14_width = 0
+float row14_value = 0.0
+row14_is_peak = false
+float row15_price = na
+int row15_width = 0
+float row15_value = 0.0
+row15_is_peak = false
+float row16_price = na
+int row16_width = 0
+float row16_value = 0.0
+row16_is_peak = false
+float row17_price = na
+int row17_width = 0
+float row17_value = 0.0
+row17_is_peak = false
+float row18_price = na
+int row18_width = 0
+float row18_value = 0.0
+row18_is_peak = false
+float row19_price = na
+int row19_width = 0
+float row19_value = 0.0
+row19_is_peak = false
+float row20_price = na
+int row20_width = 0
+float row20_value = 0.0
+row20_is_peak = false
+float row21_price = na
+int row21_width = 0
+float row21_value = 0.0
+row21_is_peak = false
+float row22_price = na
+int row22_width = 0
+float row22_value = 0.0
+row22_is_peak = false
+float row23_price = na
+int row23_width = 0
+float row23_value = 0.0
+row23_is_peak = false
+float row24_price = na
+int row24_width = 0
+float row24_value = 0.0
+row24_is_peak = false
+float row25_price = na
+int row25_width = 0
+float row25_value = 0.0
+row25_is_peak = false
+float row26_price = na
+int row26_width = 0
+float row26_value = 0.0
+row26_is_peak = false
+float row27_price = na
+int row27_width = 0
+float row27_value = 0.0
+row27_is_peak = false
+float row28_price = na
+int row28_width = 0
+float row28_value = 0.0
+row28_is_peak = false
+float row29_price = na
+int row29_width = 0
+float row29_value = 0.0
+row29_is_peak = false
+float row30_price = na
+int row30_width = 0
+float row30_value = 0.0
+row30_is_peak = false
+float row31_price = na
+int row31_width = 0
+float row31_value = 0.0
+row31_is_peak = false
+float row32_price = na
+int row32_width = 0
+float row32_value = 0.0
+row32_is_peak = false
+float row33_price = na
+int row33_width = 0
+float row33_value = 0.0
+row33_is_peak = false
+float row34_price = na
+int row34_width = 0
+float row34_value = 0.0
+row34_is_peak = false
+float row35_price = na
+int row35_width = 0
+float row35_value = 0.0
+row35_is_peak = false
+float row36_price = na
+int row36_width = 0
+float row36_value = 0.0
+row36_is_peak = false
+float row37_price = na
+int row37_width = 0
+float row37_value = 0.0
+row37_is_peak = false
+float row38_price = na
+int row38_width = 0
+float row38_value = 0.0
+row38_is_peak = false
+float row39_price = na
+int row39_width = 0
+float row39_value = 0.0
+row39_is_peak = false
+
+if barstate.islast
+
+	block_height = block_high - block_low
+	row_height =  block_height / 40
+
+	row0_low = block_low + row_height * 0
+	row0_high = block_low + row_height * 1
+	row1_low = block_low + row_height * 1
+	row1_high = block_low + row_height * 2
+	row2_low = block_low + row_height * 2
+	row2_high = block_low + row_height * 3
+	row3_low = block_low + row_height * 3
+	row3_high = block_low + row_height * 4
+	row4_low = block_low + row_height * 4
+	row4_high = block_low + row_height * 5
+	row5_low = block_low + row_height * 5
+	row5_high = block_low + row_height * 6
+	row6_low = block_low + row_height * 6
+	row6_high = block_low + row_height * 7
+	row7_low = block_low + row_height * 7
+	row7_high = block_low + row_height * 8
+	row8_low = block_low + row_height * 8
+	row8_high = block_low + row_height * 9
+	row9_low = block_low + row_height * 9
+	row9_high = block_low + row_height * 10
+	row10_low = block_low + row_height * 10
+	row10_high = block_low + row_height * 11
+	row11_low = block_low + row_height * 11
+	row11_high = block_low + row_height * 12
+	row12_low = block_low + row_height * 12
+	row12_high = block_low + row_height * 13
+	row13_low = block_low + row_height * 13
+	row13_high = block_low + row_height * 14
+	row14_low = block_low + row_height * 14
+	row14_high = block_low + row_height * 15
+	row15_low = block_low + row_height * 15
+	row15_high = block_low + row_height * 16
+	row16_low = block_low + row_height * 16
+	row16_high = block_low + row_height * 17
+	row17_low = block_low + row_height * 17
+	row17_high = block_low + row_height * 18
+	row18_low = block_low + row_height * 18
+	row18_high = block_low + row_height * 19
+	row19_low = block_low + row_height * 19
+	row19_high = block_low + row_height * 20
+	row20_low = block_low + row_height * 20
+	row20_high = block_low + row_height * 21
+	row21_low = block_low + row_height * 21
+	row21_high = block_low + row_height * 22
+	row22_low = block_low + row_height * 22
+	row22_high = block_low + row_height * 23
+	row23_low = block_low + row_height * 23
+	row23_high = block_low + row_height * 24
+	row24_low = block_low + row_height * 24
+	row24_high = block_low + row_height * 25
+	row25_low = block_low + row_height * 25
+	row25_high = block_low + row_height * 26
+	row26_low = block_low + row_height * 26
+	row26_high = block_low + row_height * 27
+	row27_low = block_low + row_height * 27
+	row27_high = block_low + row_height * 28
+	row28_low = block_low + row_height * 28
+	row28_high = block_low + row_height * 29
+	row29_low = block_low + row_height * 29
+	row29_high = block_low + row_height * 30
+	row30_low = block_low + row_height * 30
+	row30_high = block_low + row_height * 31
+	row31_low = block_low + row_height * 31
+	row31_high = block_low + row_height * 32
+	row32_low = block_low + row_height * 32
+	row32_high = block_low + row_height * 33
+	row33_low = block_low + row_height * 33
+	row33_high = block_low + row_height * 34
+	row34_low = block_low + row_height * 34
+	row34_high = block_low + row_height * 35
+	row35_low = block_low + row_height * 35
+	row35_high = block_low + row_height * 36
+	row36_low = block_low + row_height * 36
+	row36_high = block_low + row_height * 37
+	row37_low = block_low + row_height * 37
+	row37_high = block_low + row_height * 38
+	row38_low = block_low + row_height * 38
+	row38_high = block_low + row_height * 39
+	row39_low = block_low + row_height * 39
+	row39_high = block_low + row_height * 40
+
+	for i = 0 to block_size + 1
+		n_rows_affected = 0
+		bar_row0_value = 0.0
+		if low[i] < row0_high and high[i] > row0_low
+			bar_row0_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row1_value = 0.0
+		if low[i] < row1_high and high[i] > row1_low
+			bar_row1_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row2_value = 0.0
+		if low[i] < row2_high and high[i] > row2_low
+			bar_row2_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row3_value = 0.0
+		if low[i] < row3_high and high[i] > row3_low
+			bar_row3_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row4_value = 0.0
+		if low[i] < row4_high and high[i] > row4_low
+			bar_row4_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row5_value = 0.0
+		if low[i] < row5_high and high[i] > row5_low
+			bar_row5_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row6_value = 0.0
+		if low[i] < row6_high and high[i] > row6_low
+			bar_row6_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row7_value = 0.0
+		if low[i] < row7_high and high[i] > row7_low
+			bar_row7_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row8_value = 0.0
+		if low[i] < row8_high and high[i] > row8_low
+			bar_row8_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row9_value = 0.0
+		if low[i] < row9_high and high[i] > row9_low
+			bar_row9_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row10_value = 0.0
+		if low[i] < row10_high and high[i] > row10_low
+			bar_row10_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row11_value = 0.0
+		if low[i] < row11_high and high[i] > row11_low
+			bar_row11_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row12_value = 0.0
+		if low[i] < row12_high and high[i] > row12_low
+			bar_row12_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row13_value = 0.0
+		if low[i] < row13_high and high[i] > row13_low
+			bar_row13_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row14_value = 0.0
+		if low[i] < row14_high and high[i] > row14_low
+			bar_row14_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row15_value = 0.0
+		if low[i] < row15_high and high[i] > row15_low
+			bar_row15_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row16_value = 0.0
+		if low[i] < row16_high and high[i] > row16_low
+			bar_row16_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row17_value = 0.0
+		if low[i] < row17_high and high[i] > row17_low
+			bar_row17_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row18_value = 0.0
+		if low[i] < row18_high and high[i] > row18_low
+			bar_row18_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row19_value = 0.0
+		if low[i] < row19_high and high[i] > row19_low
+			bar_row19_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row20_value = 0.0
+		if low[i] < row20_high and high[i] > row20_low
+			bar_row20_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row21_value = 0.0
+		if low[i] < row21_high and high[i] > row21_low
+			bar_row21_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row22_value = 0.0
+		if low[i] < row22_high and high[i] > row22_low
+			bar_row22_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row23_value = 0.0
+		if low[i] < row23_high and high[i] > row23_low
+			bar_row23_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row24_value = 0.0
+		if low[i] < row24_high and high[i] > row24_low
+			bar_row24_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row25_value = 0.0
+		if low[i] < row25_high and high[i] > row25_low
+			bar_row25_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row26_value = 0.0
+		if low[i] < row26_high and high[i] > row26_low
+			bar_row26_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row27_value = 0.0
+		if low[i] < row27_high and high[i] > row27_low
+			bar_row27_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row28_value = 0.0
+		if low[i] < row28_high and high[i] > row28_low
+			bar_row28_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row29_value = 0.0
+		if low[i] < row29_high and high[i] > row29_low
+			bar_row29_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row30_value = 0.0
+		if low[i] < row30_high and high[i] > row30_low
+			bar_row30_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row31_value = 0.0
+		if low[i] < row31_high and high[i] > row31_low
+			bar_row31_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row32_value = 0.0
+		if low[i] < row32_high and high[i] > row32_low
+			bar_row32_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row33_value = 0.0
+		if low[i] < row33_high and high[i] > row33_low
+			bar_row33_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row34_value = 0.0
+		if low[i] < row34_high and high[i] > row34_low
+			bar_row34_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row35_value = 0.0
+		if low[i] < row35_high and high[i] > row35_low
+			bar_row35_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row36_value = 0.0
+		if low[i] < row36_high and high[i] > row36_low
+			bar_row36_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row37_value = 0.0
+		if low[i] < row37_high and high[i] > row37_low
+			bar_row37_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row38_value = 0.0
+		if low[i] < row38_high and high[i] > row38_low
+			bar_row38_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+		bar_row39_value = 0.0
+		if low[i] < row39_high and high[i] > row39_low
+			bar_row39_value := nz(custom_volume[i])
+			n_rows_affected := n_rows_affected + 1
+
+		row0_value := row0_value + (n_rows_affected != 0 ? bar_row0_value / n_rows_affected : 0)
+		row1_value := row1_value + (n_rows_affected != 0 ? bar_row1_value / n_rows_affected : 0)
+		row2_value := row2_value + (n_rows_affected != 0 ? bar_row2_value / n_rows_affected : 0)
+		row3_value := row3_value + (n_rows_affected != 0 ? bar_row3_value / n_rows_affected : 0)
+		row4_value := row4_value + (n_rows_affected != 0 ? bar_row4_value / n_rows_affected : 0)
+		row5_value := row5_value + (n_rows_affected != 0 ? bar_row5_value / n_rows_affected : 0)
+		row6_value := row6_value + (n_rows_affected != 0 ? bar_row6_value / n_rows_affected : 0)
+		row7_value := row7_value + (n_rows_affected != 0 ? bar_row7_value / n_rows_affected : 0)
+		row8_value := row8_value + (n_rows_affected != 0 ? bar_row8_value / n_rows_affected : 0)
+		row9_value := row9_value + (n_rows_affected != 0 ? bar_row9_value / n_rows_affected : 0)
+		row10_value := row10_value + (n_rows_affected != 0 ? bar_row10_value / n_rows_affected : 0)
+		row11_value := row11_value + (n_rows_affected != 0 ? bar_row11_value / n_rows_affected : 0)
+		row12_value := row12_value + (n_rows_affected != 0 ? bar_row12_value / n_rows_affected : 0)
+		row13_value := row13_value + (n_rows_affected != 0 ? bar_row13_value / n_rows_affected : 0)
+		row14_value := row14_value + (n_rows_affected != 0 ? bar_row14_value / n_rows_affected : 0)
+		row15_value := row15_value + (n_rows_affected != 0 ? bar_row15_value / n_rows_affected : 0)
+		row16_value := row16_value + (n_rows_affected != 0 ? bar_row16_value / n_rows_affected : 0)
+		row17_value := row17_value + (n_rows_affected != 0 ? bar_row17_value / n_rows_affected : 0)
+		row18_value := row18_value + (n_rows_affected != 0 ? bar_row18_value / n_rows_affected : 0)
+		row19_value := row19_value + (n_rows_affected != 0 ? bar_row19_value / n_rows_affected : 0)
+		row20_value := row20_value + (n_rows_affected != 0 ? bar_row20_value / n_rows_affected : 0)
+		row21_value := row21_value + (n_rows_affected != 0 ? bar_row21_value / n_rows_affected : 0)
+		row22_value := row22_value + (n_rows_affected != 0 ? bar_row22_value / n_rows_affected : 0)
+		row23_value := row23_value + (n_rows_affected != 0 ? bar_row23_value / n_rows_affected : 0)
+		row24_value := row24_value + (n_rows_affected != 0 ? bar_row24_value / n_rows_affected : 0)
+		row25_value := row25_value + (n_rows_affected != 0 ? bar_row25_value / n_rows_affected : 0)
+		row26_value := row26_value + (n_rows_affected != 0 ? bar_row26_value / n_rows_affected : 0)
+		row27_value := row27_value + (n_rows_affected != 0 ? bar_row27_value / n_rows_affected : 0)
+		row28_value := row28_value + (n_rows_affected != 0 ? bar_row28_value / n_rows_affected : 0)
+		row29_value := row29_value + (n_rows_affected != 0 ? bar_row29_value / n_rows_affected : 0)
+		row30_value := row30_value + (n_rows_affected != 0 ? bar_row30_value / n_rows_affected : 0)
+		row31_value := row31_value + (n_rows_affected != 0 ? bar_row31_value / n_rows_affected : 0)
+		row32_value := row32_value + (n_rows_affected != 0 ? bar_row32_value / n_rows_affected : 0)
+		row33_value := row33_value + (n_rows_affected != 0 ? bar_row33_value / n_rows_affected : 0)
+		row34_value := row34_value + (n_rows_affected != 0 ? bar_row34_value / n_rows_affected : 0)
+		row35_value := row35_value + (n_rows_affected != 0 ? bar_row35_value / n_rows_affected : 0)
+		row36_value := row36_value + (n_rows_affected != 0 ? bar_row36_value / n_rows_affected : 0)
+		row37_value := row37_value + (n_rows_affected != 0 ? bar_row37_value / n_rows_affected : 0)
+		row38_value := row38_value + (n_rows_affected != 0 ? bar_row38_value / n_rows_affected : 0)
+		row39_value := row39_value + (n_rows_affected != 0 ? bar_row39_value / n_rows_affected : 0)
+
+	highest_row_value := max(highest_row_value, row0_value)
+	highest_row_value := max(highest_row_value, row1_value)
+	highest_row_value := max(highest_row_value, row2_value)
+	highest_row_value := max(highest_row_value, row3_value)
+	highest_row_value := max(highest_row_value, row4_value)
+	highest_row_value := max(highest_row_value, row5_value)
+	highest_row_value := max(highest_row_value, row6_value)
+	highest_row_value := max(highest_row_value, row7_value)
+	highest_row_value := max(highest_row_value, row8_value)
+	highest_row_value := max(highest_row_value, row9_value)
+	highest_row_value := max(highest_row_value, row10_value)
+	highest_row_value := max(highest_row_value, row11_value)
+	highest_row_value := max(highest_row_value, row12_value)
+	highest_row_value := max(highest_row_value, row13_value)
+	highest_row_value := max(highest_row_value, row14_value)
+	highest_row_value := max(highest_row_value, row15_value)
+	highest_row_value := max(highest_row_value, row16_value)
+	highest_row_value := max(highest_row_value, row17_value)
+	highest_row_value := max(highest_row_value, row18_value)
+	highest_row_value := max(highest_row_value, row19_value)
+	highest_row_value := max(highest_row_value, row20_value)
+	highest_row_value := max(highest_row_value, row21_value)
+	highest_row_value := max(highest_row_value, row22_value)
+	highest_row_value := max(highest_row_value, row23_value)
+	highest_row_value := max(highest_row_value, row24_value)
+	highest_row_value := max(highest_row_value, row25_value)
+	highest_row_value := max(highest_row_value, row26_value)
+	highest_row_value := max(highest_row_value, row27_value)
+	highest_row_value := max(highest_row_value, row28_value)
+	highest_row_value := max(highest_row_value, row29_value)
+	highest_row_value := max(highest_row_value, row30_value)
+	highest_row_value := max(highest_row_value, row31_value)
+	highest_row_value := max(highest_row_value, row32_value)
+	highest_row_value := max(highest_row_value, row33_value)
+	highest_row_value := max(highest_row_value, row34_value)
+	highest_row_value := max(highest_row_value, row35_value)
+	highest_row_value := max(highest_row_value, row36_value)
+	highest_row_value := max(highest_row_value, row37_value)
+	highest_row_value := max(highest_row_value, row38_value)
+	highest_row_value := max(highest_row_value, row39_value)
+
+	row0_price := (row0_low + row0_high ) / 2
+	row0_width := floor(visual_row_width * row0_value / highest_row_value)
+	row1_price := (row1_low + row1_high ) / 2
+	row1_width := floor(visual_row_width * row1_value / highest_row_value)
+	row2_price := (row2_low + row2_high ) / 2
+	row2_width := floor(visual_row_width * row2_value / highest_row_value)
+	row3_price := (row3_low + row3_high ) / 2
+	row3_width := floor(visual_row_width * row3_value / highest_row_value)
+	row4_price := (row4_low + row4_high ) / 2
+	row4_width := floor(visual_row_width * row4_value / highest_row_value)
+	row5_price := (row5_low + row5_high ) / 2
+	row5_width := floor(visual_row_width * row5_value / highest_row_value)
+	row6_price := (row6_low + row6_high ) / 2
+	row6_width := floor(visual_row_width * row6_value / highest_row_value)
+	row7_price := (row7_low + row7_high ) / 2
+	row7_width := floor(visual_row_width * row7_value / highest_row_value)
+	row8_price := (row8_low + row8_high ) / 2
+	row8_width := floor(visual_row_width * row8_value / highest_row_value)
+	row9_price := (row9_low + row9_high ) / 2
+	row9_width := floor(visual_row_width * row9_value / highest_row_value)
+	row10_price := (row10_low + row10_high ) / 2
+	row10_width := floor(visual_row_width * row10_value / highest_row_value)
+	row11_price := (row11_low + row11_high ) / 2
+	row11_width := floor(visual_row_width * row11_value / highest_row_value)
+	row12_price := (row12_low + row12_high ) / 2
+	row12_width := floor(visual_row_width * row12_value / highest_row_value)
+	row13_price := (row13_low + row13_high ) / 2
+	row13_width := floor(visual_row_width * row13_value / highest_row_value)
+	row14_price := (row14_low + row14_high ) / 2
+	row14_width := floor(visual_row_width * row14_value / highest_row_value)
+	row15_price := (row15_low + row15_high ) / 2
+	row15_width := floor(visual_row_width * row15_value / highest_row_value)
+	row16_price := (row16_low + row16_high ) / 2
+	row16_width := floor(visual_row_width * row16_value / highest_row_value)
+	row17_price := (row17_low + row17_high ) / 2
+	row17_width := floor(visual_row_width * row17_value / highest_row_value)
+	row18_price := (row18_low + row18_high ) / 2
+	row18_width := floor(visual_row_width * row18_value / highest_row_value)
+	row19_price := (row19_low + row19_high ) / 2
+	row19_width := floor(visual_row_width * row19_value / highest_row_value)
+	row20_price := (row20_low + row20_high ) / 2
+	row20_width := floor(visual_row_width * row20_value / highest_row_value)
+	row21_price := (row21_low + row21_high ) / 2
+	row21_width := floor(visual_row_width * row21_value / highest_row_value)
+	row22_price := (row22_low + row22_high ) / 2
+	row22_width := floor(visual_row_width * row22_value / highest_row_value)
+	row23_price := (row23_low + row23_high ) / 2
+	row23_width := floor(visual_row_width * row23_value / highest_row_value)
+	row24_price := (row24_low + row24_high ) / 2
+	row24_width := floor(visual_row_width * row24_value / highest_row_value)
+	row25_price := (row25_low + row25_high ) / 2
+	row25_width := floor(visual_row_width * row25_value / highest_row_value)
+	row26_price := (row26_low + row26_high ) / 2
+	row26_width := floor(visual_row_width * row26_value / highest_row_value)
+	row27_price := (row27_low + row27_high ) / 2
+	row27_width := floor(visual_row_width * row27_value / highest_row_value)
+	row28_price := (row28_low + row28_high ) / 2
+	row28_width := floor(visual_row_width * row28_value / highest_row_value)
+	row29_price := (row29_low + row29_high ) / 2
+	row29_width := floor(visual_row_width * row29_value / highest_row_value)
+	row30_price := (row30_low + row30_high ) / 2
+	row30_width := floor(visual_row_width * row30_value / highest_row_value)
+	row31_price := (row31_low + row31_high ) / 2
+	row31_width := floor(visual_row_width * row31_value / highest_row_value)
+	row32_price := (row32_low + row32_high ) / 2
+	row32_width := floor(visual_row_width * row32_value / highest_row_value)
+	row33_price := (row33_low + row33_high ) / 2
+	row33_width := floor(visual_row_width * row33_value / highest_row_value)
+	row34_price := (row34_low + row34_high ) / 2
+	row34_width := floor(visual_row_width * row34_value / highest_row_value)
+	row35_price := (row35_low + row35_high ) / 2
+	row35_width := floor(visual_row_width * row35_value / highest_row_value)
+	row36_price := (row36_low + row36_high ) / 2
+	row36_width := floor(visual_row_width * row36_value / highest_row_value)
+	row37_price := (row37_low + row37_high ) / 2
+	row37_width := floor(visual_row_width * row37_value / highest_row_value)
+	row38_price := (row38_low + row38_high ) / 2
+	row38_width := floor(visual_row_width * row38_value / highest_row_value)
+	row39_price := (row39_low + row39_high ) / 2
+	row39_width := floor(visual_row_width * row39_value / highest_row_value)
+
+	if row0_value >= row1_value and row0_value >= row2_value and row0_value >= row3_value and row0_value >= row4_value and row0_value >= row5_value
+		row0_is_peak := true
+	if row1_value >= row0_value and row1_value >= row2_value and row1_value >= row3_value and row1_value >= row4_value and row1_value >= row5_value and row1_value >= row6_value
+		row1_is_peak := true
+	if row2_value >= row0_value and row2_value >= row1_value and row2_value >= row3_value and row2_value >= row4_value and row2_value >= row5_value and row2_value >= row6_value and row2_value >= row7_value
+		row2_is_peak := true
+	if row3_value >= row0_value and row3_value >= row1_value and row3_value >= row2_value and row3_value >= row4_value and row3_value >= row5_value and row3_value >= row6_value and row3_value >= row7_value and row3_value >= row8_value
+		row3_is_peak := true
+	if row4_value >= row0_value and row4_value >= row1_value and row4_value >= row2_value and row4_value >= row3_value and row4_value >= row5_value and row4_value >= row6_value and row4_value >= row7_value and row4_value >= row8_value and row4_value >= row9_value
+		row4_is_peak := true
+	if row5_value >= row0_value and row5_value >= row1_value and row5_value >= row2_value and row5_value >= row3_value and row5_value >= row4_value and row5_value >= row6_value and row5_value >= row7_value and row5_value >= row8_value and row5_value >= row9_value and row5_value >= row10_value
+		row5_is_peak := true
+	if row6_value >= row1_value and row6_value >= row2_value and row6_value >= row3_value and row6_value >= row4_value and row6_value >= row5_value and row6_value >= row7_value and row6_value >= row8_value and row6_value >= row9_value and row6_value >= row10_value and row6_value >= row11_value
+		row6_is_peak := true
+	if row7_value >= row2_value and row7_value >= row3_value and row7_value >= row4_value and row7_value >= row5_value and row7_value >= row6_value and row7_value >= row8_value and row7_value >= row9_value and row7_value >= row10_value and row7_value >= row11_value and row7_value >= row12_value
+		row7_is_peak := true
+	if row8_value >= row3_value and row8_value >= row4_value and row8_value >= row5_value and row8_value >= row6_value and row8_value >= row7_value and row8_value >= row9_value and row8_value >= row10_value and row8_value >= row11_value and row8_value >= row12_value and row8_value >= row13_value
+		row8_is_peak := true
+	if row9_value >= row4_value and row9_value >= row5_value and row9_value >= row6_value and row9_value >= row7_value and row9_value >= row8_value and row9_value >= row10_value and row9_value >= row11_value and row9_value >= row12_value and row9_value >= row13_value and row9_value >= row14_value
+		row9_is_peak := true
+	if row10_value >= row5_value and row10_value >= row6_value and row10_value >= row7_value and row10_value >= row8_value and row10_value >= row9_value and row10_value >= row11_value and row10_value >= row12_value and row10_value >= row13_value and row10_value >= row14_value and row10_value >= row15_value
+		row10_is_peak := true
+	if row11_value >= row6_value and row11_value >= row7_value and row11_value >= row8_value and row11_value >= row9_value and row11_value >= row10_value and row11_value >= row12_value and row11_value >= row13_value and row11_value >= row14_value and row11_value >= row15_value and row11_value >= row16_value
+		row11_is_peak := true
+	if row12_value >= row7_value and row12_value >= row8_value and row12_value >= row9_value and row12_value >= row10_value and row12_value >= row11_value and row12_value >= row13_value and row12_value >= row14_value and row12_value >= row15_value and row12_value >= row16_value and row12_value >= row17_value
+		row12_is_peak := true
+	if row13_value >= row8_value and row13_value >= row9_value and row13_value >= row10_value and row13_value >= row11_value and row13_value >= row12_value and row13_value >= row14_value and row13_value >= row15_value and row13_value >= row16_value and row13_value >= row17_value and row13_value >= row18_value
+		row13_is_peak := true
+	if row14_value >= row9_value and row14_value >= row10_value and row14_value >= row11_value and row14_value >= row12_value and row14_value >= row13_value and row14_value >= row15_value and row14_value >= row16_value and row14_value >= row17_value and row14_value >= row18_value and row14_value >= row19_value
+		row14_is_peak := true
+	if row15_value >= row10_value and row15_value >= row11_value and row15_value >= row12_value and row15_value >= row13_value and row15_value >= row14_value and row15_value >= row16_value and row15_value >= row17_value and row15_value >= row18_value and row15_value >= row19_value and row15_value >= row20_value
+		row15_is_peak := true
+	if row16_value >= row11_value and row16_value >= row12_value and row16_value >= row13_value and row16_value >= row14_value and row16_value >= row15_value and row16_value >= row17_value and row16_value >= row18_value and row16_value >= row19_value and row16_value >= row20_value and row16_value >= row21_value
+		row16_is_peak := true
+	if row17_value >= row12_value and row17_value >= row13_value and row17_value >= row14_value and row17_value >= row15_value and row17_value >= row16_value and row17_value >= row18_value and row17_value >= row19_value and row17_value >= row20_value and row17_value >= row21_value and row17_value >= row22_value
+		row17_is_peak := true
+	if row18_value >= row13_value and row18_value >= row14_value and row18_value >= row15_value and row18_value >= row16_value and row18_value >= row17_value and row18_value >= row19_value and row18_value >= row20_value and row18_value >= row21_value and row18_value >= row22_value and row18_value >= row23_value
+		row18_is_peak := true
+	if row19_value >= row14_value and row19_value >= row15_value and row19_value >= row16_value and row19_value >= row17_value and row19_value >= row18_value and row19_value >= row20_value and row19_value >= row21_value and row19_value >= row22_value and row19_value >= row23_value and row19_value >= row24_value
+		row19_is_peak := true
+	if row20_value >= row15_value and row20_value >= row16_value and row20_value >= row17_value and row20_value >= row18_value and row20_value >= row19_value and row20_value >= row21_value and row20_value >= row22_value and row20_value >= row23_value and row20_value >= row24_value and row20_value >= row25_value
+		row20_is_peak := true
+	if row21_value >= row16_value and row21_value >= row17_value and row21_value >= row18_value and row21_value >= row19_value and row21_value >= row20_value and row21_value >= row22_value and row21_value >= row23_value and row21_value >= row24_value and row21_value >= row25_value and row21_value >= row26_value
+		row21_is_peak := true
+	if row22_value >= row17_value and row22_value >= row18_value and row22_value >= row19_value and row22_value >= row20_value and row22_value >= row21_value and row22_value >= row23_value and row22_value >= row24_value and row22_value >= row25_value and row22_value >= row26_value and row22_value >= row27_value
+		row22_is_peak := true
+	if row23_value >= row18_value and row23_value >= row19_value and row23_value >= row20_value and row23_value >= row21_value and row23_value >= row22_value and row23_value >= row24_value and row23_value >= row25_value and row23_value >= row26_value and row23_value >= row27_value and row23_value >= row28_value
+		row23_is_peak := true
+	if row24_value >= row19_value and row24_value >= row20_value and row24_value >= row21_value and row24_value >= row22_value and row24_value >= row23_value and row24_value >= row25_value and row24_value >= row26_value and row24_value >= row27_value and row24_value >= row28_value and row24_value >= row29_value
+		row24_is_peak := true
+	if row25_value >= row20_value and row25_value >= row21_value and row25_value >= row22_value and row25_value >= row23_value and row25_value >= row24_value and row25_value >= row26_value and row25_value >= row27_value and row25_value >= row28_value and row25_value >= row29_value and row25_value >= row30_value
+		row25_is_peak := true
+	if row26_value >= row21_value and row26_value >= row22_value and row26_value >= row23_value and row26_value >= row24_value and row26_value >= row25_value and row26_value >= row27_value and row26_value >= row28_value and row26_value >= row29_value and row26_value >= row30_value and row26_value >= row31_value
+		row26_is_peak := true
+	if row27_value >= row22_value and row27_value >= row23_value and row27_value >= row24_value and row27_value >= row25_value and row27_value >= row26_value and row27_value >= row28_value and row27_value >= row29_value and row27_value >= row30_value and row27_value >= row31_value and row27_value >= row32_value
+		row27_is_peak := true
+	if row28_value >= row23_value and row28_value >= row24_value and row28_value >= row25_value and row28_value >= row26_value and row28_value >= row27_value and row28_value >= row29_value and row28_value >= row30_value and row28_value >= row31_value and row28_value >= row32_value and row28_value >= row33_value
+		row28_is_peak := true
+	if row29_value >= row24_value and row29_value >= row25_value and row29_value >= row26_value and row29_value >= row27_value and row29_value >= row28_value and row29_value >= row30_value and row29_value >= row31_value and row29_value >= row32_value and row29_value >= row33_value and row29_value >= row34_value
+		row29_is_peak := true
+	if row30_value >= row25_value and row30_value >= row26_value and row30_value >= row27_value and row30_value >= row28_value and row30_value >= row29_value and row30_value >= row31_value and row30_value >= row32_value and row30_value >= row33_value and row30_value >= row34_value and row30_value >= row35_value
+		row30_is_peak := true
+	if row31_value >= row26_value and row31_value >= row27_value and row31_value >= row28_value and row31_value >= row29_value and row31_value >= row30_value and row31_value >= row32_value and row31_value >= row33_value and row31_value >= row34_value and row31_value >= row35_value and row31_value >= row36_value
+		row31_is_peak := true
+	if row32_value >= row27_value and row32_value >= row28_value and row32_value >= row29_value and row32_value >= row30_value and row32_value >= row31_value and row32_value >= row33_value and row32_value >= row34_value and row32_value >= row35_value and row32_value >= row36_value and row32_value >= row37_value
+		row32_is_peak := true
+	if row33_value >= row28_value and row33_value >= row29_value and row33_value >= row30_value and row33_value >= row31_value and row33_value >= row32_value and row33_value >= row34_value and row33_value >= row35_value and row33_value >= row36_value and row33_value >= row37_value and row33_value >= row38_value
+		row33_is_peak := true
+	if row34_value >= row29_value and row34_value >= row30_value and row34_value >= row31_value and row34_value >= row32_value and row34_value >= row33_value and row34_value >= row35_value and row34_value >= row36_value and row34_value >= row37_value and row34_value >= row38_value and row34_value >= row39_value
+		row34_is_peak := true
+	if row35_value >= row30_value and row35_value >= row31_value and row35_value >= row32_value and row35_value >= row33_value and row35_value >= row34_value and row35_value >= row36_value and row35_value >= row37_value and row35_value >= row38_value and row35_value >= row39_value
+		row35_is_peak := true
+	if row36_value >= row31_value and row36_value >= row32_value and row36_value >= row33_value and row36_value >= row34_value and row36_value >= row35_value and row36_value >= row37_value and row36_value >= row38_value and row36_value >= row39_value
+		row36_is_peak := true
+	if row37_value >= row32_value and row37_value >= row33_value and row37_value >= row34_value and row37_value >= row35_value and row37_value >= row36_value and row37_value >= row38_value and row37_value >= row39_value
+		row37_is_peak := true
+	if row38_value >= row33_value and row38_value >= row34_value and row38_value >= row35_value and row38_value >= row36_value and row38_value >= row37_value and row38_value >= row39_value
+		row38_is_peak := true
+	if row39_value >= row34_value and row39_value >= row35_value and row39_value >= row36_value and row39_value >= row37_value and row39_value >= row38_value
+		row39_is_peak := true
+
+////
+// Draw profile
+///
+
+var int first_bar_time = time
+if barstate.isfirst
+	first_bar_time := time
+
+var line block_high_line = line.new(bar_index, high, bar_index, high, color=BOUNDS_COLOR)
+var line block_low_line = line.new(bar_index, low, bar_index, low, color=BOUNDS_COLOR)
+var label row0_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row1_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row2_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row3_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row4_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row5_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row6_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row7_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row8_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row9_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row10_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row11_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row12_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row13_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row14_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row15_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row16_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row17_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row18_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row19_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row20_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row21_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row22_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row23_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row24_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row25_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row26_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row27_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row28_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row29_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row30_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row31_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row32_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row33_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row34_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row35_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row36_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row37_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row38_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+var label row39_label = label.new(time_close, close, "", xloc=xloc.bar_time, yloc=yloc.price, color=PROFILE_COLOR, style=label.style_label_left, size=size.auto)
+
+if barstate.islast
+	line.set_xloc(block_high_line, max(time[block_size], first_bar_time), time_close, xloc.bar_time)
+	line.set_y1(block_high_line, block_high)
+	line.set_y2(block_high_line, block_high)
+
+	line.set_xloc(block_low_line, max(time[block_size], first_bar_time), time_close, xloc.bar_time)
+	line.set_y1(block_low_line, block_low)
+	line.set_y2(block_low_line, block_low)
+
+	row0_text = ""
+	for i = 0 to row0_width + 1
+		row0_text := row0_text + "#"
+	row0_color = show_peaks and row0_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row0_label, time_close)
+	label.set_y(row0_label, row0_price)
+	label.set_color(row0_label, row0_color)
+	label.set_textcolor(row0_label, row0_color)
+	label.set_text(row0_label, row0_text)
+	row1_text = ""
+	for i = 0 to row1_width + 1
+		row1_text := row1_text + "#"
+	row1_color = show_peaks and row1_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row1_label, time_close)
+	label.set_y(row1_label, row1_price)
+	label.set_color(row1_label, row1_color)
+	label.set_textcolor(row1_label, row1_color)
+	label.set_text(row1_label, row1_text)
+	row2_text = ""
+	for i = 0 to row2_width + 1
+		row2_text := row2_text + "#"
+	row2_color = show_peaks and row2_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row2_label, time_close)
+	label.set_y(row2_label, row2_price)
+	label.set_color(row2_label, row2_color)
+	label.set_textcolor(row2_label, row2_color)
+	label.set_text(row2_label, row2_text)
+	row3_text = ""
+	for i = 0 to row3_width + 1
+		row3_text := row3_text + "#"
+	row3_color = show_peaks and row3_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row3_label, time_close)
+	label.set_y(row3_label, row3_price)
+	label.set_color(row3_label, row3_color)
+	label.set_textcolor(row3_label, row3_color)
+	label.set_text(row3_label, row3_text)
+	row4_text = ""
+	for i = 0 to row4_width + 1
+		row4_text := row4_text + "#"
+	row4_color = show_peaks and row4_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row4_label, time_close)
+	label.set_y(row4_label, row4_price)
+	label.set_color(row4_label, row4_color)
+	label.set_textcolor(row4_label, row4_color)
+	label.set_text(row4_label, row4_text)
+	row5_text = ""
+	for i = 0 to row5_width + 1
+		row5_text := row5_text + "#"
+	row5_color = show_peaks and row5_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row5_label, time_close)
+	label.set_y(row5_label, row5_price)
+	label.set_color(row5_label, row5_color)
+	label.set_textcolor(row5_label, row5_color)
+	label.set_text(row5_label, row5_text)
+	row6_text = ""
+	for i = 0 to row6_width + 1
+		row6_text := row6_text + "#"
+	row6_color = show_peaks and row6_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row6_label, time_close)
+	label.set_y(row6_label, row6_price)
+	label.set_color(row6_label, row6_color)
+	label.set_textcolor(row6_label, row6_color)
+	label.set_text(row6_label, row6_text)
+	row7_text = ""
+	for i = 0 to row7_width + 1
+		row7_text := row7_text + "#"
+	row7_color = show_peaks and row7_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row7_label, time_close)
+	label.set_y(row7_label, row7_price)
+	label.set_color(row7_label, row7_color)
+	label.set_textcolor(row7_label, row7_color)
+	label.set_text(row7_label, row7_text)
+	row8_text = ""
+	for i = 0 to row8_width + 1
+		row8_text := row8_text + "#"
+	row8_color = show_peaks and row8_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row8_label, time_close)
+	label.set_y(row8_label, row8_price)
+	label.set_color(row8_label, row8_color)
+	label.set_textcolor(row8_label, row8_color)
+	label.set_text(row8_label, row8_text)
+	row9_text = ""
+	for i = 0 to row9_width + 1
+		row9_text := row9_text + "#"
+	row9_color = show_peaks and row9_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row9_label, time_close)
+	label.set_y(row9_label, row9_price)
+	label.set_color(row9_label, row9_color)
+	label.set_textcolor(row9_label, row9_color)
+	label.set_text(row9_label, row9_text)
+	row10_text = ""
+	for i = 0 to row10_width + 1
+		row10_text := row10_text + "#"
+	row10_color = show_peaks and row10_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row10_label, time_close)
+	label.set_y(row10_label, row10_price)
+	label.set_color(row10_label, row10_color)
+	label.set_textcolor(row10_label, row10_color)
+	label.set_text(row10_label, row10_text)
+	row11_text = ""
+	for i = 0 to row11_width + 1
+		row11_text := row11_text + "#"
+	row11_color = show_peaks and row11_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row11_label, time_close)
+	label.set_y(row11_label, row11_price)
+	label.set_color(row11_label, row11_color)
+	label.set_textcolor(row11_label, row11_color)
+	label.set_text(row11_label, row11_text)
+	row12_text = ""
+	for i = 0 to row12_width + 1
+		row12_text := row12_text + "#"
+	row12_color = show_peaks and row12_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row12_label, time_close)
+	label.set_y(row12_label, row12_price)
+	label.set_color(row12_label, row12_color)
+	label.set_textcolor(row12_label, row12_color)
+	label.set_text(row12_label, row12_text)
+	row13_text = ""
+	for i = 0 to row13_width + 1
+		row13_text := row13_text + "#"
+	row13_color = show_peaks and row13_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row13_label, time_close)
+	label.set_y(row13_label, row13_price)
+	label.set_color(row13_label, row13_color)
+	label.set_textcolor(row13_label, row13_color)
+	label.set_text(row13_label, row13_text)
+	row14_text = ""
+	for i = 0 to row14_width + 1
+		row14_text := row14_text + "#"
+	row14_color = show_peaks and row14_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row14_label, time_close)
+	label.set_y(row14_label, row14_price)
+	label.set_color(row14_label, row14_color)
+	label.set_textcolor(row14_label, row14_color)
+	label.set_text(row14_label, row14_text)
+	row15_text = ""
+	for i = 0 to row15_width + 1
+		row15_text := row15_text + "#"
+	row15_color = show_peaks and row15_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row15_label, time_close)
+	label.set_y(row15_label, row15_price)
+	label.set_color(row15_label, row15_color)
+	label.set_textcolor(row15_label, row15_color)
+	label.set_text(row15_label, row15_text)
+	row16_text = ""
+	for i = 0 to row16_width + 1
+		row16_text := row16_text + "#"
+	row16_color = show_peaks and row16_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row16_label, time_close)
+	label.set_y(row16_label, row16_price)
+	label.set_color(row16_label, row16_color)
+	label.set_textcolor(row16_label, row16_color)
+	label.set_text(row16_label, row16_text)
+	row17_text = ""
+	for i = 0 to row17_width + 1
+		row17_text := row17_text + "#"
+	row17_color = show_peaks and row17_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row17_label, time_close)
+	label.set_y(row17_label, row17_price)
+	label.set_color(row17_label, row17_color)
+	label.set_textcolor(row17_label, row17_color)
+	label.set_text(row17_label, row17_text)
+	row18_text = ""
+	for i = 0 to row18_width + 1
+		row18_text := row18_text + "#"
+	row18_color = show_peaks and row18_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row18_label, time_close)
+	label.set_y(row18_label, row18_price)
+	label.set_color(row18_label, row18_color)
+	label.set_textcolor(row18_label, row18_color)
+	label.set_text(row18_label, row18_text)
+	row19_text = ""
+	for i = 0 to row19_width + 1
+		row19_text := row19_text + "#"
+	row19_color = show_peaks and row19_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row19_label, time_close)
+	label.set_y(row19_label, row19_price)
+	label.set_color(row19_label, row19_color)
+	label.set_textcolor(row19_label, row19_color)
+	label.set_text(row19_label, row19_text)
+	row20_text = ""
+	for i = 0 to row20_width + 1
+		row20_text := row20_text + "#"
+	row20_color = show_peaks and row20_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row20_label, time_close)
+	label.set_y(row20_label, row20_price)
+	label.set_color(row20_label, row20_color)
+	label.set_textcolor(row20_label, row20_color)
+	label.set_text(row20_label, row20_text)
+	row21_text = ""
+	for i = 0 to row21_width + 1
+		row21_text := row21_text + "#"
+	row21_color = show_peaks and row21_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row21_label, time_close)
+	label.set_y(row21_label, row21_price)
+	label.set_color(row21_label, row21_color)
+	label.set_textcolor(row21_label, row21_color)
+	label.set_text(row21_label, row21_text)
+	row22_text = ""
+	for i = 0 to row22_width + 1
+		row22_text := row22_text + "#"
+	row22_color = show_peaks and row22_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row22_label, time_close)
+	label.set_y(row22_label, row22_price)
+	label.set_color(row22_label, row22_color)
+	label.set_textcolor(row22_label, row22_color)
+	label.set_text(row22_label, row22_text)
+	row23_text = ""
+	for i = 0 to row23_width + 1
+		row23_text := row23_text + "#"
+	row23_color = show_peaks and row23_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row23_label, time_close)
+	label.set_y(row23_label, row23_price)
+	label.set_color(row23_label, row23_color)
+	label.set_textcolor(row23_label, row23_color)
+	label.set_text(row23_label, row23_text)
+	row24_text = ""
+	for i = 0 to row24_width + 1
+		row24_text := row24_text + "#"
+	row24_color = show_peaks and row24_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row24_label, time_close)
+	label.set_y(row24_label, row24_price)
+	label.set_color(row24_label, row24_color)
+	label.set_textcolor(row24_label, row24_color)
+	label.set_text(row24_label, row24_text)
+	row25_text = ""
+	for i = 0 to row25_width + 1
+		row25_text := row25_text + "#"
+	row25_color = show_peaks and row25_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row25_label, time_close)
+	label.set_y(row25_label, row25_price)
+	label.set_color(row25_label, row25_color)
+	label.set_textcolor(row25_label, row25_color)
+	label.set_text(row25_label, row25_text)
+	row26_text = ""
+	for i = 0 to row26_width + 1
+		row26_text := row26_text + "#"
+	row26_color = show_peaks and row26_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row26_label, time_close)
+	label.set_y(row26_label, row26_price)
+	label.set_color(row26_label, row26_color)
+	label.set_textcolor(row26_label, row26_color)
+	label.set_text(row26_label, row26_text)
+	row27_text = ""
+	for i = 0 to row27_width + 1
+		row27_text := row27_text + "#"
+	row27_color = show_peaks and row27_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row27_label, time_close)
+	label.set_y(row27_label, row27_price)
+	label.set_color(row27_label, row27_color)
+	label.set_textcolor(row27_label, row27_color)
+	label.set_text(row27_label, row27_text)
+	row28_text = ""
+	for i = 0 to row28_width + 1
+		row28_text := row28_text + "#"
+	row28_color = show_peaks and row28_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row28_label, time_close)
+	label.set_y(row28_label, row28_price)
+	label.set_color(row28_label, row28_color)
+	label.set_textcolor(row28_label, row28_color)
+	label.set_text(row28_label, row28_text)
+	row29_text = ""
+	for i = 0 to row29_width + 1
+		row29_text := row29_text + "#"
+	row29_color = show_peaks and row29_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row29_label, time_close)
+	label.set_y(row29_label, row29_price)
+	label.set_color(row29_label, row29_color)
+	label.set_textcolor(row29_label, row29_color)
+	label.set_text(row29_label, row29_text)
+	row30_text = ""
+	for i = 0 to row30_width + 1
+		row30_text := row30_text + "#"
+	row30_color = show_peaks and row30_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row30_label, time_close)
+	label.set_y(row30_label, row30_price)
+	label.set_color(row30_label, row30_color)
+	label.set_textcolor(row30_label, row30_color)
+	label.set_text(row30_label, row30_text)
+	row31_text = ""
+	for i = 0 to row31_width + 1
+		row31_text := row31_text + "#"
+	row31_color = show_peaks and row31_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row31_label, time_close)
+	label.set_y(row31_label, row31_price)
+	label.set_color(row31_label, row31_color)
+	label.set_textcolor(row31_label, row31_color)
+	label.set_text(row31_label, row31_text)
+	row32_text = ""
+	for i = 0 to row32_width + 1
+		row32_text := row32_text + "#"
+	row32_color = show_peaks and row32_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row32_label, time_close)
+	label.set_y(row32_label, row32_price)
+	label.set_color(row32_label, row32_color)
+	label.set_textcolor(row32_label, row32_color)
+	label.set_text(row32_label, row32_text)
+	row33_text = ""
+	for i = 0 to row33_width + 1
+		row33_text := row33_text + "#"
+	row33_color = show_peaks and row33_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row33_label, time_close)
+	label.set_y(row33_label, row33_price)
+	label.set_color(row33_label, row33_color)
+	label.set_textcolor(row33_label, row33_color)
+	label.set_text(row33_label, row33_text)
+	row34_text = ""
+	for i = 0 to row34_width + 1
+		row34_text := row34_text + "#"
+	row34_color = show_peaks and row34_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row34_label, time_close)
+	label.set_y(row34_label, row34_price)
+	label.set_color(row34_label, row34_color)
+	label.set_textcolor(row34_label, row34_color)
+	label.set_text(row34_label, row34_text)
+	row35_text = ""
+	for i = 0 to row35_width + 1
+		row35_text := row35_text + "#"
+	row35_color = show_peaks and row35_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row35_label, time_close)
+	label.set_y(row35_label, row35_price)
+	label.set_color(row35_label, row35_color)
+	label.set_textcolor(row35_label, row35_color)
+	label.set_text(row35_label, row35_text)
+	row36_text = ""
+	for i = 0 to row36_width + 1
+		row36_text := row36_text + "#"
+	row36_color = show_peaks and row36_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row36_label, time_close)
+	label.set_y(row36_label, row36_price)
+	label.set_color(row36_label, row36_color)
+	label.set_textcolor(row36_label, row36_color)
+	label.set_text(row36_label, row36_text)
+	row37_text = ""
+	for i = 0 to row37_width + 1
+		row37_text := row37_text + "#"
+	row37_color = show_peaks and row37_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row37_label, time_close)
+	label.set_y(row37_label, row37_price)
+	label.set_color(row37_label, row37_color)
+	label.set_textcolor(row37_label, row37_color)
+	label.set_text(row37_label, row37_text)
+	row38_text = ""
+	for i = 0 to row38_width + 1
+		row38_text := row38_text + "#"
+	row38_color = show_peaks and row38_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row38_label, time_close)
+	label.set_y(row38_label, row38_price)
+	label.set_color(row38_label, row38_color)
+	label.set_textcolor(row38_label, row38_color)
+	label.set_text(row38_label, row38_text)
+	row39_text = ""
+	for i = 0 to row39_width + 1
+		row39_text := row39_text + "#"
+	row39_color = show_peaks and row39_is_peak ? PEAK_COLOR : PROFILE_COLOR
+	label.set_x(row39_label, time_close)
+	label.set_y(row39_label, row39_price)
+	label.set_color(row39_label, row39_color)
+	label.set_textcolor(row39_label, row39_color)
+	label.set_text(row39_label, row39_text)

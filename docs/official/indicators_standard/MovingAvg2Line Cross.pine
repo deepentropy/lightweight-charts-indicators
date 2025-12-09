@@ -1,0 +1,12 @@
+//@version=6
+strategy("MovingAvg2Line Cross", overlay=true)
+fastLength = input(9)
+slowLength = input(18)
+price = close
+mafast = ta.sma(price, fastLength)
+maslow = ta.sma(price, slowLength)
+if (ta.crossover(mafast, maslow))
+	strategy.entry("MA2CrossLE", strategy.long, comment="MA2CrossLE")
+if (ta.crossunder(mafast, maslow))
+	strategy.entry("MA2CrossSE", strategy.short, comment="MA2CrossSE")
+//plot(strategy.equity, title="equity", color=color.red, linewidth=2, style=plot.style_areabr)

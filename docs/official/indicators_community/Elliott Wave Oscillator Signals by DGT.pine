@@ -1,0 +1,345 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Signals from Elliott Wave Oscillator (EWO-S) 
+//# *                - with Backtest Framework Adaptation
+//# *                - and Keltner Channels Add-On 
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Jul 1 , 2020
+//# *  Update     : Sep 6 , 2020  : Alert addition
+//# *  Update     : Nov 26, 2020  : Backtest framework adaptation
+//# *  Update     : Dec 3 , 2020  : Backtest framework bug fix
+//# *  Update     : Mar 15, 2021  : Enchanced backtest framework, enriched Keltner Channels
+//# *  Update     : Mar 17, 2021  : Separated Alerts
+//# *  Update     : Mar 09, 2022  : Improved histogram display, now available on all timeframes on both log and linear scale
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+
+indicator('Elliott Wave Oscillator Signals by DGT', 'EWO-S ʙʏ DGT ☼☾', true, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Elliott Wave Oscillator Signals 
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Jul 1 , 2020
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+// -Inputs ══════════════════════════════════════════════════════════════════════════════════════ //
+g = 'Elliott Wave Oscillator Settings'
+e = input.bool(true, 'Use Exponential MA', group=g)
+d = input.int(5, 'Signal : Delay', minval=2, inline='EWO', group=g)
+t = input.int(13, '  Strength Threshold', minval=1, inline='EWO', group=g)
+h = input.bool(true, 'Display EWO Histogram', inline='VOL', group=g)
+
+p = input.int(233, 'Plotting Length', group='Display Settings')
+
+// -Calculations ════════════════════════════════════════════════════════════════════════════════ //
+
+source = close
+
+ewo = e ? (ta.ema(source, 5) / ta.ema(source, 34) - 1) * 100 : (ta.sma(source, 5) / ta.sma(source, 34) - 1) * 100
+ewoSignal = e ? ta.ema(ewo, d) : ta.sma(ewo, d)
+
+
+// -Plotting ════════════════════════════════════════════════════════════════════════════════════ //
+
+plotshape(ta.crossover (ewo, ewoSignal) and ewo < -t, 'Strong Long' , shape.labelup  , location.belowbar, color.new(#006400, 0)    , size=size.small, show_last=p)  //, text="↑", textcolor=color.white)
+plotshape(ta.crossover (ewo, ewoSignal) and ewo > -t, 'Long'        , shape.labelup  , location.belowbar, color.new(color.green, 0), size=size.tiny , show_last=p)
+plotshape(ta.crossunder(ewo, ewoSignal) and ewo >  t, 'Strong Short', shape.labeldown, location.abovebar, color.new(#910000, 0)    , size=size.small, show_last=p)  //, text="↓", textcolor=color.white)
+plotshape(ta.crossunder(ewo, ewoSignal) and ewo <  t, 'Short'       , shape.labeldown, location.abovebar, color.new(color.red, 0)  , size=size.tiny , show_last=p)
+
+// ---------------------------------------------------------------------------------------------- //
+// EWO Histogram  ------------------------------------------------------------------------------- //
+
+oscPlacement    = input.string('Bottom', '', options = ['Top', 'Bottom'], inline='VOL'   , group = g)
+oscHight        = 21 - input.int(7, ' Hight' , minval = 1, maxval = 10        , inline='VOL'  , group = g) * 2
+lookbackLength  = p //input.int(200, 'Overlay Indicator Display Length', minval = 10, maxval = 495, group = g) // max lines allowed is 500, where 5 of them to be used for zone definitions 
+
+var a_lines     = array.new_line()
+var a_fill      = array.new_linefill()
+
+priceHighest    = ta.highest(high, lookbackLength)
+priceLowest     = ta.lowest (low , lookbackLength)
+ewoHistograme = e ? ta.ema(source, 5) - ta.ema(source, 34) : ta.sma(source, 5) - ta.sma(source, 34)
+ewoHighest      = ta.highest(ewoHistograme, lookbackLength)
+
+ewoColore = ewoHistograme >= 0 ? ewoHistograme[1] < ewoHistograme ? #006400 : color.green : ewoHistograme[1] < ewoHistograme ? color.red : #910000
+
+if barstate.islast and h
+    if array.size(a_lines) > 0
+        for i = 1 to array.size(a_lines)
+            line.delete(array.shift(a_lines))
+
+    if array.size(a_fill) > 0
+        for i = 1 to array.size(a_fill)
+            linefill.delete(array.shift(a_fill))
+
+    priceChangeRate = (priceHighest - priceLowest) / priceHighest / oscHight
+
+    for barIndex = 0 to lookbackLength - 1
+        array.push(a_lines, line.new(bar_index[barIndex],  oscPlacement == 'Top' ? priceHighest : priceLowest, bar_index[barIndex], (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + ewoHistograme[barIndex] / ewoHighest * priceChangeRate), xloc.bar_index, extend.none, ewoColore[barIndex], line.style_solid, 2))
+
+// EWO Histogram  ------------------------------------------------------------------------------- //
+// ---------------------------------------------------------------------------------------------- //
+
+// -Alerts ══════════════════════════════════════════════════════════════════════════════════════ //
+
+longAlertCondition = ta.crossover(ewo, ewoSignal)
+alertcondition(longAlertCondition, 'Long : Early Warning', 'EWO-S - Not Confirmed Probable Long Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+alertcondition(longAlertCondition[1], 'Long : Trading Opportunity', 'EWO-S - Probable Long Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+
+shortAlertCondition = ta.crossunder(ewo, ewoSignal)
+alertcondition(shortAlertCondition, 'Short : Early Warning', 'EWO-S - Not Confirmed Probable Short Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+alertcondition(shortAlertCondition[1], 'Short : Trading Opportunity', 'EWO-S - Probable Short Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Backtest Framework
+//# * Author      : © dgtrd
+//# * Purpose     : Ability to optimize a study and observe trade simulation statistics accordingly  
+//# *
+//# * Revision History
+//# *  Release    : Nov 21, 2020  : Initial Release
+//# *  Update     : Mar 13, 2021  : Enchanced Backtest Framework
+//# *                               - long/short/stoploss conditions enchaced
+//# *                               - early warning ability added (label + alert)
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+// -Inputs ══════════════════════════════════════════════════════════════════════════════════════════ //
+
+isBackTest = input.bool(false, 'Backtest On/Off', group='Backtest Framework')
+dasCapital = input.float(1000., 'Initial Capital', inline='BT1', group='Backtest Framework')
+lenBckTst  = input.float(1, 'Period (Year)', minval=0, step=.1, inline='BT1', group='Backtest Framework')
+isStopLoss = input.bool(false, 'Apply Stop Loss, with Stop Loss Set To %', inline='BT2', group='Backtest Framework')
+stopLoss   = input.float(1., '', step=.1, minval=0, inline='BT2', group='Backtest Framework') / 100
+isBull     = input.bool(false, 'Long : Candle Direction as Confirmation : Short', inline='BT3', group='Backtest Framework')
+isBear     = input.bool(false, '', inline='BT3', group='Backtest Framework')
+isSudden   = input.bool(true, 'Avoid Sudden Price Changes', group='Backtest Framework')
+isTest     = input.bool(false, '❗❗❗ Simulate Trade on Next Bar : Only For Test Purpose (REPAINTS)', group='Backtest Framework')
+lblInOutSL = input.bool(true, 'Trade Entry/Exit Labels  Trade Statistics Label', inline='BT4', group='Backtest Framework')
+lblTrdStat = input.bool(true, '', inline='BT4', group='Backtest Framework')
+
+// -Calculations ════════════════════════════════════════════════════════════════════════════════════ //
+
+startBckTst = time > timenow - lenBckTst * 31556952000
+
+var inTrade = false
+var entryPrice = 0.
+var exitPrice = 0.
+
+if isBackTest
+
+    var capital = dasCapital
+    var trades = 0
+    var win = 0
+    var loss = 0
+
+    bullCandle = close > open
+    bearCandle = close < open
+    stopLossTrigger = ta.crossunder(close, entryPrice * (1 - stopLoss))
+
+    longCondition = isTest ? isBull ? isSudden ? longAlertCondition[1] and not shortAlertCondition and bullCandle : longAlertCondition[1] and bullCandle : isSudden ? longAlertCondition[1] and not shortAlertCondition : longAlertCondition[1] : isBull ? isSudden ? longAlertCondition[2] and not shortAlertCondition[1] and bullCandle[1] : longAlertCondition[2] and bullCandle[1] : isSudden ? longAlertCondition[2] and not shortAlertCondition[1] : longAlertCondition[1]
+
+    shortCondition = isTest ? isBear ? isSudden ? shortAlertCondition[1] and not longAlertCondition and bearCandle : shortAlertCondition[1] and bearCandle : isSudden ? shortAlertCondition[1] and not longAlertCondition : shortAlertCondition[1] : isBear ? isSudden ? shortAlertCondition[2] and not longAlertCondition[1] and bearCandle[1] : shortAlertCondition[2] and bearCandle[1] : isSudden ? shortAlertCondition[2] and not longAlertCondition[1] : shortAlertCondition[1]
+
+    stopLossCondition = isStopLoss ? inTrade and not shortCondition ? stopLossTrigger : 0 : 0
+
+    if startBckTst and longCondition and not inTrade
+        entryPrice := open
+        inTrade := true
+        trades += 1
+
+        if lblInOutSL
+            label longLabel = label.new(bar_index, low, text='L', tooltip='entry price  : ' + str.tostring(entryPrice) + '\nentry value : ' + str.tostring(capital, '#.##'), color=color.green, style=label.style_label_up, textcolor=color.white, textalign=text.align_center, size=size.tiny)
+            longLabel
+
+        alert('long : probable trading opportunity, price ' + str.tostring(close), alert.freq_once_per_bar)
+
+
+    if (shortCondition or stopLossCondition) and inTrade
+        exitPrice := stopLossCondition ? close : open
+        inTrade := false
+        capital *= (exitPrice / entryPrice)
+
+        if exitPrice > entryPrice
+            win += 1
+            win
+        else
+            loss += 1
+            loss
+
+        if lblInOutSL
+            text_1 = stopLossCondition ? 'SL' : 'TP'
+            label shortLabel = label.new(bar_index, high, text=text_1, tooltip='change .......... : ' + str.tostring((exitPrice / entryPrice - 1) * 100, '#.##') + '%\nentry/exit price : ' + str.tostring(entryPrice) + ' / ' + str.tostring(exitPrice) + '\nnew capital ..... : ' + str.tostring(capital, '#.##'), color=color.red, style=label.style_label_down, textcolor=color.white, textalign=text.align_center, size=size.tiny)
+            shortLabel
+
+        alert('short : probable trading opportunity, price ' + str.tostring(close), alert.freq_once_per_bar)
+
+
+    var label wLabel = na
+
+    if not inTrade and longAlertCondition[1] and not shortAlertCondition
+        wLabel := label.new(bar_index, low, text='⚠️', tooltip='probable long trading opportunity \nawaiting confirmation (next candle)\nif confirmed, backtest tool will execute trade with open price of the canlde', color=color.green, style=label.style_none, textcolor=color.white, textalign=text.align_center, size=size.huge)
+        label.delete(wLabel[1])
+
+        alert('long : early warning : probable trading opportunity, awaiting confirmation (next candle), price ' + str.tostring(close), alert.freq_once_per_bar)
+
+    if inTrade and shortAlertCondition[1] and not longAlertCondition
+        wLabel := label.new(bar_index, high, text='⚠️', tooltip='probable short/take profit trading opportunity \nawaiting confirmation (next candle)\nif confirmed, backtest tool will execute trade with open price of the canlde', color=color.green, style=label.style_none, textcolor=color.white, textalign=text.align_center, size=size.huge)
+        label.delete(wLabel[1])
+
+        alert('short : early warning : probable trading opportunity, awaiting confirmation (next candle), price ' + str.tostring(close), alert.freq_once_per_bar)
+
+    if ta.change(time)
+        label.delete(wLabel[1])
+
+    if stopLossCondition
+        alert('stop loss condition, price ' + str.tostring(close), alert.freq_once_per_bar)
+
+
+    if lblTrdStat
+        var years = (timenow - time) / 31556952000
+
+        var yearsTxt = ''
+        var remarks = ''
+
+        if years < lenBckTst
+            lenBckTst := years
+            yearsTxt := str.tostring(lenBckTst, '#.##') + ' Years***'
+            remarks := '\n\n*longs only\n**final value, if trade active displays estimated final value\n***max available data for selected timeframe : # of bars - ' + str.tostring(bar_index)
+            remarks
+        else
+            yearsTxt := str.tostring(lenBckTst, '#.##') + ' Year(s)'
+            remarks := '\n\n*longs only\n**final value - if in trade, displays estimated final value'
+            remarks
+
+        inTradeTxt = inTrade ? 'inTrade' : 'not inTrade'
+        estimated = inTrade ? capital * (close / entryPrice) : capital
+        entryTxt = inTrade ? str.tostring(entryPrice) : 'not inTrade'
+        lastTrdTxt = inTrade ? ', Gain/Loss ' + str.tostring((estimated / capital - 1) * 100, '#.##') + '%, Stop Loss ' + str.tostring(isStopLoss ? entryPrice * (1 - stopLoss) : na) : ''
+        stopLossTxt = isStopLoss ? 'if last value falls by ' + str.tostring(stopLoss * 100) + '% of entry price' : 'not applied'
+
+        tooltipTxt = 'entires/exit caclulations\n' + '-long entry , on next bar when ewo crosses above its signal line (green labels up)\n' + '-take profit, on next bar when ewo crosses below its signal line (red labels down)\n' + '-stop loss ' + stopLossTxt + remarks
+
+        label indiLabel = label.new(time, close, text='☼☾ Trade Statistics*, Trade Period - ' + yearsTxt + '\n═════════════════════════════════════' + '\nSuccess Ratio ...... : ' + str.tostring(win / trades * 100, '#') + '%' + ', # of Trades - ' + str.tostring(trades) + ', Win/Loss - ' + str.tostring(win) + '/' + str.tostring(loss) + '\nGain/Loss % ........ : ' + str.tostring((estimated / dasCapital - 1) * 100, '#') + '%' + ', Initial/Final Value** - ' + str.tostring(dasCapital) + ' / ' + str.tostring(estimated, '#') + '\n\nCurrent TradeStatus - ' + inTradeTxt + lastTrdTxt + '\n═════════════════════════════════════' + '\nEntry Price/Value . : ' + entryTxt + ' / ' + str.tostring(capital, '#.##') + ' ' + inTradeTxt + '\nLast Price/Value ... : ' + str.tostring(close) + ' / ' + str.tostring(estimated, '#.##') + ' ' + inTradeTxt, tooltip=tooltipTxt, color=inTrade ? estimated / dasCapital > 1 ? color.teal : color.maroon : color.gray, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.white, textalign=text.align_left)
+
+        label.set_x(indiLabel, label.get_x(indiLabel) + math.round(ta.change(time) * 5))
+        label.delete(indiLabel[1])
+
+// -Plotting ════════════════════════════════════════════════════════════════════════════════════ //
+
+bgcolor(isBackTest and startBckTst and startBckTst != startBckTst[1] ? color.new(color.blue, 90) : na)
+plot(inTrade ? entryPrice : exitPrice > 0 ? exitPrice : na, title='Entry/Exit Price Line', color=inTrade ? color.green : color.red, style=plot.style_circles)
+
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Keltner Channels
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Jul 1 , 2020
+//# *  Update     : Mar 15, 2021  : Multi Band Customizable Keltner Channels
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+// -Input ═══════════════════════════════════════════════════════════════════════════════════════ //
+
+k = input.bool(false, 'Display Keltner Channel\'s Clouds', group='Keltner Channels Settings')
+kcSource = input.source(close, 'MA : Source', inline='KC1', group='Keltner Channels Settings')
+kcMaType = input.string('EMA', 'Type', options=['DEMA', 'EMA', 'HMA', 'SMA', 'WMA'], inline='KC1', group='Keltner Channels Settings')
+kcLength = input.int(20, 'Length', minval=1, inline='KC1', group='Keltner Channels Settings')
+
+bandsStyle = input.string('Average True Range', 'Bands : Style', options=['Average True Range', 'True Range', 'Range'], inline='BAND0', group='Keltner Channels Settings')
+atrlength = input.int(10, 'ATR Length', inline='BAND0', group='Keltner Channels Settings')
+bandsFill = input.bool(false, 'Background', inline='BAND0', group='Keltner Channels Settings')
+
+isBand1 = input.bool(false, '', inline='BAND1', group='Keltner Channels Settings')
+kcMult1 = input.float(1., '1st : Multiplier', minval=1, step=.1, inline='BAND1', group='Keltner Channels Settings')
+colorK1 = input.color(color.silver, 'Color', inline='BAND1', group='Keltner Channels Settings')
+widthK1 = input.int(1, 'Width', inline='BAND1', group='Keltner Channels Settings')
+
+isBand2 = input.bool(true, '', inline='BAND2', group='Keltner Channels Settings')
+kcMult2 = input.float(2., '2nd : Multiplier', minval=1, step=.1, inline='BAND2', group='Keltner Channels Settings')
+colorK2 = input.color(color.orange, 'Color', inline='BAND2', group='Keltner Channels Settings')
+widthK2 = input.int(2, 'Width', inline='BAND2', group='Keltner Channels Settings')
+
+isBand3 = input.bool(true, '', inline='BAND3', group='Keltner Channels Settings')
+kcMult3 = input.float(3., '3rd : Multiplier', minval=1, step=.1, inline='BAND3', group='Keltner Channels Settings')
+colorK3 = input.color(color.red, 'Color', inline='BAND3', group='Keltner Channels Settings')
+widthK3 = input.int(3, 'Width', inline='BAND3', group='Keltner Channels Settings')
+
+
+// -Calculations ════════════════════════════════════════════════════════════════════════════════ //
+
+f_kc(_src, _len, _mult, _maType, _style, _atrlen) =>
+
+    range_1 = _style == 'True Range' ? ta.rma(ta.tr(true), _len) : _style == 'Average True Range' ? ta.atr(_atrlen) : _style == 'Range' ? ta.rma(high - low, _len) : 0
+
+    basis = if _maType == 'DEMA'
+        ema1 = ta.ema(_src, _len)
+        ema2 = ta.ema(ema1, _len)
+        2 * ema1 - ema2
+
+    else if _maType == 'EMA'
+        ta.ema(_src, _len)
+
+    else if _maType == 'HMA'
+        ta.hma(_src, _len)
+
+    else if _maType == 'SMA'
+        ta.sma(_src, _len)
+
+    else if _maType == 'WMA'
+        ta.wma(_src, _len)
+
+    [basis, basis + _mult * range_1, basis - _mult * range_1]
+
+
+[middle, _, _] = f_kc(kcSource, kcLength, 0, kcMaType, '', 0)
+[_, upper1, lower1] = f_kc(kcSource, kcLength, kcMult1, kcMaType, bandsStyle, atrlength)
+[_, upper2, lower2] = f_kc(kcSource, kcLength, kcMult2, kcMaType, bandsStyle, atrlength)
+[_, upper3, lower3] = f_kc(kcSource, kcLength, kcMult3, kcMaType, bandsStyle, atrlength)
+
+
+// -Plotting ════════════════════════════════════════════════════════════════════════════════════ //
+
+plot(k ? middle : na, 'Keltner Channels Middle Line', show_last=p)
+
+pu3 = plot(k and isBand3 ? upper3 : na, 'Keltner Channels Upper Volatility Factor Mult3', color.new(colorK3, 73), widthK3, show_last=p)
+pu2 = plot(k and isBand2 ? upper2 : na, 'Keltner Channels Upper Volatility Factor Mult2', color.new(colorK2, 73), widthK2, show_last=p)
+pu1 = plot(k and isBand1 ? upper1 : na, 'Keltner Channels Upper Volatility Factor Mult1', color.new(colorK1, 73), widthK1, show_last=p)
+pl1 = plot(k and isBand1 ? lower1 : na, 'Keltner Channels Lower Volatility Factor Mult1', color.new(colorK1, 73), widthK1, show_last=p)
+pl2 = plot(k and isBand2 ? lower2 : na, 'Keltner Channels Lower Volatility Factor Mult2', color.new(colorK2, 73), widthK2, show_last=p)
+pl3 = plot(k and isBand3 ? lower3 : na, 'Keltner Channels Lower Volatility Factor Mult3', color.new(colorK3, 73), widthK3, show_last=p)
+
+fill(pl2, pl3, bandsFill ? color.new(color.green, 89) : na, 'Keltner Channel\'s Clouds Lowest' , show_last=p)
+fill(pl1, pl2, bandsFill ? color.new(#9ef2e8    , 89) : na, 'Keltner Channel\'s Clouds Lower'  , show_last=p)
+fill(pu1, pu2, bandsFill ? color.new(#fa8072    , 89) : na, 'Keltner Channel\'s Clouds Higher' , show_last=p)
+fill(pu2, pu3, bandsFill ? color.new(color.red  , 89) : na, 'Keltner Channel\'s Clouds Highest', show_last=p)
+
+// -Alerts ══════════════════════════════════════════════════════════════════════════════════════ //
+
+alertcondition(ta.crossover (close, upper3), 'Crossover Upper High KC', 'Crossover Upper High KC Band\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+alertcondition(ta.crossover (close, upper2), 'Crossover Upper Mid KC' , 'Crossover Upper Mid KC Band\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+alertcondition(ta.crossunder(close, lower2), 'Crossunder Lower Mid KC', 'Crossunder Lower Mid KC Band\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+alertcondition(ta.crossunder(close, lower3), 'Crossunder Lower Low KC', 'Crossunder Lower Low KC Band\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+
+var table logo = table.new(position.bottom_right, 1, 1)
+if barstate.islast
+    table.cell(logo, 0, 0, '☼☾  ', text_size=size.normal, text_color=color.teal)

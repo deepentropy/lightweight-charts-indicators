@@ -1,0 +1,428 @@
+//@version=3
+//
+
+study(title = "Pullback Trading Tool ALT R2.0 by JustUncleL", shorttitle = "PBTOOLA R2.0", overlay = true)
+
+//
+//
+// Revision:        R2.0
+// Original Author: JustUncleL
+//
+// Description:
+//    This study is an alternative Pullback Tool to my previous versions "Pullback Trading Tool R#.# by JustUncleL".
+//    This version aims to provide a cleaner but powerful trading tool.
+//    It incorporates the majority of the indicators needed to analyse trade Trends for Pullbacks and Reversals. 
+//    The set up utilies, optionally, Heikin Ashi candle or Renko charts. The notes here are mainly in reference
+//    to using standard Candlestick 60min signal chart (or Anchor chart time frame), other higher time frames 
+//    can be used instead as Anchor Time Frames such as 240min(4hr) or 1440min(Daily).
+//
+//    NOTE: A Pullback is synomous to Retracement, generally a Pullback refers to a large Retracement of 100pips
+//    or more. In the context of this Tool and any comments related to it, a Pullback will be the 
+//    same as a Retracement.
+//
+//    Incorporated within this tool are the following indicators:
+//    1. Three Moving Averages (EMA by default) that can optionally be Anchored to a Higher Time Frame:
+//       - DodgerBlue = EMA35 (default)
+//       - Green = EMA65  (default)
+//       - Gray  = EMA200 (default), disabled by default. 
+//    2. One Anchored Signal Moving Average line Yellow EMA50 (default).
+//    3. One Moving Average Ribbon based on two MAs, can be Anchored or Un-Anchored.
+//       - Aqua = EMA05    (default)
+//       - Fuchsia = EMA12 (default)
+//    4. Display Pivots and optional Pivot Levels. By default Pivot is set to : 2 candles RHS of Pivot
+//       and 2 candles LHS of Pivot; this is the setting required to show standard Fractal points.
+//    5. Optional HH, LH, LL, HL finder to help with drawing Trend lines and mini Trend Lines.
+//    6. Coloured coded Bar based on the signal MA: 
+//       the Standard candle colours:
+//       - Blue    = candle open and closed above signal MA.
+//       - Red     = candle open and closed below signal MA.
+//       - Yellow  = Candle stradle across  signal MA.
+//       the Grab candles scheme:
+//       - Lime    = Bull candle open and closed above  signal MA.
+//       - Green   = Bear candle open and closed above  signal MA.
+//       - Red     = Bull candle open and closed below  signal MA.
+//       - DarkRed = Bear candle open and closed below  signal MA.
+//       - Aqua    = Bull candle closed across signal MA.
+//       - Blue    = Bear candle stradle across signal MA.
+//    7. Alert entry arrows generated within a Trend or at the start of a new trend.
+//       - An Uptrend is defined as anchored fast (8ema) above anchored signal (21ema) above
+//         anchored medium (50ema).
+//       - A Downtrend is defined as anchored fast (8ema) below anchored signal (21ema) below
+//         anchored medium (50ema).
+//       - A Pullback generates an red (short entry) or green (long entry) arrow when price
+//         crosses anchored fast or signal MAs which then crosses back to return to trend direction
+//         and breaks the previous Fractal low/high.
+//       - A Trend Break, which is defined as any of the MAs crossing breaking trend, generates a 
+//         blue (short) or aqua (long) arrow and then make new trend (in same or new trend direction).
+//
+// HINTS:
+// ======
+//  I cannot go into a full description, as Pullback trading incorporates a full trading Methodology,
+//  there are many articles and books written on the subject.
+//
+//  - I like to add the "Sweetspot Gold RN" indicator to the chart as well to help with support and resistance
+//    finding and shows where the important round number, "00", lines are.
+//  - First on a weekly basis say Sunday night or Monday morning, analyse the Daily and Weekly charts
+//    to identify overall trends, and major support/resistant levels. Draw significant trend lines,
+//    vertical trend lines (VTL) and S/R levels. Use Pivots option to guide VTL drawing and use Fractals
+//    to help guide TL drawing.
+//  - Once the trend direction and any potential major reversals highlighted, drop down to the 60min chart
+//    and draw appropriate  mini Trend line matching the established momentum direction. Take note of
+//    potential pull backs from and of the EMAs: 8EMA,21EMA and the 50EMA. Can use the
+//    Fractals and HH/LL points to guide your TL drawing.
+//  - Check to see if the TL is broken and is pulling back off one of the EMA lines, then trade
+//    that alert, or drop down to lower time frames (TF) and perform the same analysis there and trade at the lower
+//    TF. Trading at lower TF you will be able to get tighter Stop loss settings.
+//  - Other than the SweetSpot Gold RN indicator, you should not require any other indicator to trade trends
+//    for pull backs and reversals.
+//  - Set the optional Anchor time frame to 60min, then tigher SLs and earlier entries can be made
+//    on the lower time frames 15min or 5min.
+//  - The Alert arrows should only be considered as guide entries, they will not always be correct. They
+//    tend to show better results on Heikin Ashi and Renko charts. 
+//  - I have been using this tool myself for some months and I'm getting good results. You must employ
+//    a good money management plan with any methology.
+//  - Remember this tool is trading Pullbacks whilst you have a good trend present, use other techniques for a
+//    non-trending or ranging market.
+//  - Try some of your own tests and setup varitions.
+//
+//
+// Revisions:
+//
+//  R1.0 - Original Published version by JustUncleL.
+//
+//  13-Jan-2018 
+//       - Fix bug in Anchor calculations when chart Time frame not intraday.
+//
+//  R1.1 23-Feb-2018 
+//       - Added Fractal Chaos Channel option for S/R Levels.
+//       - Changed Fractals to Dots on the High/Low instead of triangles above/below.
+//
+//  R2   06-Apr-2018
+//       - Added option to Anchor the base fast MA Ribbon. 
+//       - Added Gray fill colouring to Main Anchored MAs, making it Ribbon like.
+//       - Change alert definition to be the 1st Fractal Break after trend continue
+//         detection.
+//       - Change Anchor to be based purely on Minutes, so 1month=30240mins (21 trading days),
+//         1 week=7200mins (5 trading days), 1 Day=1440mins. This makes it more 
+//         consistent across intraday and extraday chart Timeframes.
+//
+// References:
+//  - Pullback Trading Tool R#.# by JustUncleL
+//  - SweetSpot Gold RN by JustUncleL
+//  - http://www.swing-trade-stocks.com/pullbacks.html
+//
+//
+// -----------------------------------------------------------------------------
+// Copyright 2017,2018 JustUncleL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+// 
+// The GNU General Public License can be found here
+// <http://www.gnu.org/licenses/>.
+//
+// -----------------------------------------------------------------------------
+//
+
+
+// === INPUTS ===
+
+// Un-Anchored Fast + Slow MA - Type and Length
+ma_src      = input(close,title="Source for All Moving Averages")
+showMAs     = input(true,title="Show MA Ribbon")
+anchorRibbon= input(true,title="Anchor MA Ribbon")
+fastType    = input(defval="EMA", title="Fast Ribbon MA Type: ", options=["SMA", "EMA", "WMA", "VWMA", "SMMA", "DEMA", "TEMA", "HullMA", "ZEMA", "TMA", "SSMA"], type=string)
+fastLen_    = input(defval=5, title="Fast Ribbon MA Length:", minval=1)
+slowType    = input(defval="EMA", title="Slow Ribbon MA Type: ", options=["SMA", "EMA", "WMA", "VWMA", "SMMA", "DEMA", "TEMA", "HullMA", "ZEMA", "TMA", "SSMA"], type=string)
+slowLen_    = input(defval=12, title="Slow Ribbon MA Length:", minval=1)
+//
+// Anchor Higher Time Frame
+anchor           = input(0,minval=0,maxval=1440,title="Anchor TimeFrame in Mins (0=none, 1D=1440, 1W=7200)")
+//
+// Anchored Fast+ Medium + Slow MA + Signal - type, length
+fastAnchorType   = input(defval="EMA", title="Fast Anchored MA Type: ", options=["SMA", "EMA", "WMA", "VWMA", "SMMA", "DEMA", "TEMA", "HullMA", "ZEMA", "TMA", "SSMA"], type=string)
+fastAnchorLen_   = input(defval=35, title="Fast Anchored MA Length:", minval=1)
+mediumAnchorType = input(defval="EMA", title="Medium Anchored MA Type: ", options=["SMA", "EMA", "WMA", "VWMA", "SMMA", "DEMA", "TEMA", "HullMA", "ZEMA", "TMA", "SSMA"], type=string)
+mediumAnchorLen_ = input(defval=65, title="Medium Anchored MA Length:", minval=1)
+useSlowMA        = input(false,title="Show Slow Anchored MA")
+slowAnchorType   = input(defval="EMA", title="Slow Anchored MA Type: ", options=["SMA", "EMA", "WMA", "VWMA", "SMMA", "DEMA", "TEMA", "HullMA", "ZEMA", "TMA", "SSMA"], type=string)
+slowAnchorLen_   = input(defval=200, title="Slow Anchored MA Length:", minval=1)
+// Signal MA
+signalType    = input(defval="EMA", title="Signal Anchored MA Type: ", options=["SMA", "EMA", "WMA", "VWMA", "SMMA", "DEMA", "TEMA", "HullMA", "ZEMA", "TMA", "SSMA"], type=string)
+signalLen_    = input(defval=50, title="Signal Anchored MA Length:", minval=1)
+//
+ShowBreak     = input(false,title="Show Entrys for Trend Breaks")
+ShowPB        = input(false,title="Show Entrys for PB Fractal Breaks")
+closeBr       = input(true, title="Use Close Break instead Touch Fractal Break")
+Lookback      = input(6,minval=1,type=integer,title="Pull Back Lookback Length")
+//
+ShowBarColor  = input(true, title="Show coloured Bars close relative to Signal MA")
+useGrabClr    = input(true, title="Use Grab Candle (6-tone) Colouring, instead of Standard (3-tone)")
+// Pivots
+ShowPivots    = input(true,title="Show Pivot Points")
+pvtLenL       = input(2,minval=1,title="Pivot Length Left Hand Side")
+pvtLenR       = input(2,minval=1,title="Pivot Length Right Hand Side")
+ShowSRLevels  = input(false,title="Show S/R Level Extensions")
+ShowChannel   = input(false,title="Show Levels as a Fractal Chaos Channel")
+maxLvlLen     = input(0,minval=0, title="Maximum S/R Level Extension Length")
+uRenko        = input(false, title="Use Renko Style Pivots (open/close for high/low)")
+//
+ShowHHLL      = input(false)
+
+//
+//
+// --- CONSTANTS ---
+DodgerBlue  = #1E90FF
+Gold    = #FFD700
+// --- /CONTANTS ---
+//
+
+// Constants colours that include fully non-transparent option.
+GREEN   = #008000FF
+LIME    = #00FF00FF
+RED     = #FF0000FF
+BLUE    = #0000FFFF
+AQUA    = #00FFFFFF
+DARKRED = #8B0000FF
+GRAY    = #808080FF
+YELLOW  = #FFFF00FF
+GOLD    = #FFD700FF
+DODGERBLUE = #1E90FFFF
+
+//
+// === /INPUTS ===
+
+// === FUNCTIONS ===
+
+// - variant(type, src, len)
+// Returns MA input selection variant, default to SMA if blank or typo.
+
+// SuperSmoother filter
+// © 2013  John F. Ehlers
+variant_supersmoother(src,len) =>
+    a1 = exp(-1.414*3.14159 / len)
+    b1 = 2*a1*cos(1.414*3.14159 / len)
+    c2 = b1
+    c3 = (-a1)*a1
+    c1 = 1 - c2 - c3
+    v9 = 0.0
+    v9 := c1*(src + nz(src[1])) / 2 + c2*nz(v9[1]) + c3*nz(v9[2])
+    v9
+    
+variant_smoothed(src,len) =>
+    v5 = 0.0
+    v5 := na(v5[1]) ? sma(src, len) : (v5[1] * (len - 1) + src) / len
+    v5
+
+variant_zerolagema(src,len) =>
+    ema1 = ema(src, len)
+    ema2 = ema(ema1, len)
+    v10 = ema1+(ema1-ema2)
+    v10
+    
+variant_doubleema(src,len) =>
+    v2 = ema(src, len)
+    v6 = 2 * v2 - ema(v2, len)
+    v6
+
+variant_tripleema(src,len) =>
+    v2 = ema(src, len)
+    v7 = 3 * (v2 - ema(v2, len)) + ema(ema(v2, len), len)               // Triple Exponential
+    v7
+    
+// return variant, defaults to SMA 
+variant(type, src, len) =>
+    type=="EMA"     ? ema(src,len) : 
+      type=="WMA"   ? wma(src,len): 
+      type=="VWMA"  ? vwma(src,len) : 
+      type=="SMMA"  ? variant_smoothed(src,len) : 
+      type=="DEMA"  ? variant_doubleema(src,len): 
+      type=="TEMA"  ? variant_tripleema(src,len): 
+      type=="HullMA"? wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len))) :
+      type=="SSMA"  ? variant_supersmoother(src,len) : 
+      type=="ZEMA"  ? variant_zerolagema(src,len) : 
+      type=="TMA"   ? sma(sma(src,len),len) : 
+                      sma(src,len)
+
+// - /variant 
+
+// === /FUNCTIONS ===
+
+// === SERIES ===
+
+// If have anchor specified, calculate the base multiplier.
+mult  = isintraday ? anchor==0 or interval<=0 or interval>=anchor? 1 : round(anchor/interval) : 1
+mult := isdwm? isdaily ? (anchor==0 or interval<=0 or interval>=anchor or anchor<=1440 ? 1 : round(anchor/1440)) : 
+               isweekly ? (anchor==0 or interval<=0 or interval>=anchor or anchor<=7200 ? 1 : round(anchor/7200)) :
+               ismonthly ? (anchor==0 or interval<=0 or interval>=anchor or anchor<=30240 ? 1 : round(anchor/30240)) : 1 : mult
+
+//adjust MA lengths with Anchor Multiplier
+fastAnchorLen = mult==1 ? fastAnchorLen_ : (fastAnchorLen_*mult)
+mediumAnchorLen = mult==1 ? mediumAnchorLen_ : (mediumAnchorLen_*mult)
+slowAnchorLen = mult==1 ? slowAnchorLen_ : (slowAnchorLen_*mult)
+signalLen = mult==1 ? signalLen_ : (signalLen_*mult)
+fastLen = anchorRibbon? mult==1 ? fastLen_ : (fastLen_*mult) : fastLen_
+slowLen = anchorRibbon? mult==1 ? slowLen_ : (slowLen_*mult) : slowLen_
+
+// Get the two MAs
+fastMA = variant(fastType,ma_src, fastLen)
+slowMA = variant(slowType,ma_src, slowLen) 
+//
+fastAnchorMA = variant(fastAnchorType,ma_src, fastAnchorLen)
+mediumAnchorMA = variant(mediumAnchorType,ma_src, mediumAnchorLen)
+slowAnchorMA = variant(slowAnchorType,ma_src, slowAnchorLen)
+//
+signalMA = variant(signalType,ma_src, signalLen)
+
+// - PIVOT VARIABLES
+//
+high_  = uRenko? max(close,open) : high
+low_   = uRenko? min(close,open) : low
+
+
+// Get High and Low Pivot Points
+pvthi = pivothigh(high_,pvtLenL,pvtLenR)
+pvtlo = pivotlow(low_,pvtLenL,pvtLenR)
+
+//  ||-----------------------------------------------------------------------------------------------------||
+//  ||---   Higher Highs, Lower Highs, Higher Lows, Lower Lows  -------------------------------------------||
+higherhigh = na(pvthi) ? na : ( valuewhen(pvthi, high_[pvtLenR], 1) < valuewhen(pvthi, high_[pvtLenR], 0) ) ? pvthi : na
+lowerhigh = na(pvthi) ? na : ( valuewhen(pvthi, high_[pvtLenR], 1) > valuewhen(pvthi, high_[pvtLenR], 0) ) ? pvthi : na
+higherlow = na(pvtlo) ? na : ( valuewhen(pvtlo, low_[pvtLenR], 1) < valuewhen(pvtlo, low_[pvtLenR], 0) ) ? pvtlo : na
+lowerlow =  na(pvtlo) ? na : ( valuewhen(pvtlo, low_[pvtLenR], 1) > valuewhen(pvtlo, low_[pvtLenR], 0) ) ? pvtlo : na
+
+// === /SERIES ===
+
+// === PLOTTING ===
+// 
+// Colour bars according to the close position relative to the PAC selected.
+bColour =  open>signalMA and close>signalMA? DODGERBLUE  : 
+          open<signalMA and close<signalMA? RED : 
+          YELLOW
+bColour := not useGrabClr ? bColour : 
+          open>signalMA and close>signalMA? open>close?GREEN:LIME : 
+          open<signalMA and close<signalMA? open>close?DARKRED:RED : 
+          open>close?BLUE:AQUA
+barcolor(ShowBarColor?bColour:na, title = "Signal Bar Colours")
+
+// Draw the EMA ribbon
+p1=plot(showMAs ?fastMA:na, color=rising(fastMA,2)?aqua:fuchsia,join=true,linewidth=1,transp=10,title="Fast MA")
+p2=plot(showMAs ?slowMA:na, color=rising(slowMA,2)?aqua:fuchsia,join=true,linewidth=1,transp=10,title="Slow MA")
+fill(p1,p2,color=fastMA>slowMA?aqua:fuchsia,transp=90,title="Ribbon Fill")
+
+
+//
+plot(signalMA, color=Gold,join=true,style=circles,linewidth=2,transp=20,title="Signal MA")
+//
+p3=plot(fastAnchorMA, color=DodgerBlue,join=true,style=line,linewidth=1,transp=20,title="Fast Anchored MA")
+p4=plot(mediumAnchorMA, color=green,join=true,style=line,linewidth=1,transp=20,title="Medium Anchored MA")
+plot(useSlowMA ? slowAnchorMA:na, color=gray,join=true,style=line,linewidth=2,transp=20,title="Slow Anchored MA")
+fill(p3,p4,color=gray,transp=90,title="Anchored MA Fill")
+
+
+// If selected Display the HH/LL above/below candle.
+plotshape(ShowHHLL ? higherhigh : na, title='HH', style=shape.triangleup, location=location.abovebar, color=lime, text="HH", offset=-pvtLenR,transp=20)
+plotshape(ShowHHLL ? lowerhigh : na, title='LH', style=shape.triangleup, location=location.abovebar, color=red, text="LH", offset=-pvtLenR,transp=20)
+plotshape(ShowHHLL ? higherlow : na, title='HL', style=shape.triangledown, location=location.belowbar, color=lime, text="HL", offset=-pvtLenR,transp=20)
+plotshape(ShowHHLL ? lowerlow : na, title='LL', style=shape.triangledown, location=location.belowbar, color=red, text="LL", offset=-pvtLenR,transp=20)
+
+
+// If Selected Display Pivot points
+//plotshape(ShowPivots ? pvthi :na, title='High Pivot *', location=location.abovebar, style=shape.triangleup,color=green, offset=-pvtLenR,transp=0,size=size.auto)
+//plotshape(ShowPivots ? pvtlo :na,  title='Low Pivot *', location=location.belowbar, style=shape.triangledown,color=maroon, offset=-pvtLenR,transp=0,size=size.auto)
+plot(ShowPivots and not ShowHHLL? pvthi :na, title='High Pivot *', style=circles,join=false,color=white, offset=-pvtLenR,transp=50,linewidth=3)
+plot(ShowPivots and not ShowHHLL? pvtlo :na, title='Low Pivot *', style=circles,join=false,color=white, offset=-pvtLenR,transp=50,linewidth=3)
+plot(ShowPivots and not ShowHHLL? pvthi :na, title='High Pivot *', style=circles,join=false,color=green, offset=-pvtLenR,transp=0,linewidth=2)
+plot(ShowPivots and not ShowHHLL? pvtlo :na, title='Low Pivot *', style=circles,join=false,color=maroon, offset=-pvtLenR,transp=0,linewidth=2)
+
+
+
+//Count How many candles for current Pivot Level, If new reset.
+counthi = 0
+countlo = 0
+counthi := pvthi ? 0 : nz(counthi[1])+1
+countlo := pvtlo ? 0 : nz(countlo[1])+1
+ 
+pvthis = high
+pvtlos = low
+pvthis := pvthi ? high[pvtLenR] : nz(pvthis[1],high)
+pvtlos := pvtlo ? low[pvtLenR] :  nz(pvtlos[1],low)
+ 
+hipc = (pvthis != pvthis[1]) ? na : green
+lopc = (pvtlos != pvtlos[1]) ? na : maroon
+ 
+plot(ShowSRLevels and not ShowChannel and (maxLvlLen==0 or counthi<maxLvlLen)? pvthis : na, color=hipc, transp=0, linewidth=1, offset=-pvtLenR, title="Top Levels")
+plot(ShowSRLevels and not ShowChannel and (maxLvlLen==0 or countlo<maxLvlLen)? pvtlos : na, color=lopc, transp=0, linewidth=1, offset=-pvtLenR, title="Bottom Levels")
+plot(ShowSRLevels and not ShowChannel and (maxLvlLen==0 or counthi<maxLvlLen) ? pvthis : na, color=hipc, transp=0, linewidth=1, offset=0, title="Top Levels 2")
+plot(ShowSRLevels and not ShowChannel and (maxLvlLen==0 or countlo<maxLvlLen) ? pvtlos : na, color=lopc, transp=0, linewidth=1, offset=0, title="Bottom Levels 2")
+ 
+// Show Levels as a Fractal Chaos Channel
+plot(ShowSRLevels and ShowChannel ? pvthis : na, color=green, transp=0, linewidth=1, offset=0, title="Top Chaos Channel",trackprice=false)
+plot(ShowSRLevels and ShowChannel ? pvtlos : na, color=maroon, transp=0, linewidth=1, offset=0, title="Bottom Chaos Channel",trackprice=false)
+
+
+// === /PLOTTING ===
+//
+
+// === ALERTS ===
+
+//Trend Definition
+
+tr_up   = (slowMA>mediumAnchorMA and slowMA>fastAnchorMA and slowMA>signalMA) and (fastMA>mediumAnchorMA and fastMA>fastAnchorMA and fastMA>signalMA)
+
+//fastAnchorMA>mediumAnchorMA and fastAnchorMA>signalMA and ((signalLen<mediumAnchorLen and signalMA>mediumAnchorMA) or (signalLen>mediumAnchorLen and mediumAnchorMA>signalMA))
+tr_down = (slowMA<mediumAnchorMA and slowMA<fastAnchorMA and slowMA<signalMA)  and (fastMA<mediumAnchorMA and fastMA<fastAnchorMA and fastMA<signalMA)
+//fastAnchorMA<mediumAnchorMA and fastAnchorMA<signalMA and ((signalLen<mediumAnchorLen and signalMA<mediumAnchorMA) or (signalLen>mediumAnchorLen and mediumAnchorMA<signalMA))
+
+//PB Entry
+pullbackUpT = 0
+pullbackDnT = 0
+//pullbackUpC = 0
+//pullbackDnC = 0
+//pullbackUpC := tr_up and low<=slowMA? nz(pullbackUpC[1])+1 : 0
+pullbackUpT := tr_up and high[1]<pvthis and high>pvthis and (not closeBr or close>pvthis)? nz(pullbackUpT[1])+1 : 0
+//pullbackUpT := tr_up and close>open and (open<signalMA) and close>signalMA   and barssince(nz(pullbackUpT[1])==1)>Lookback? nz(pullbackUpT[1])+1 : pullbackUpT
+//
+//pullbackDnC := tr_down and high>=slowMA ? nz(pullbackDnC[1])+1 : 0
+pullbackDnT := tr_down and low[1]>pvtlos and low<pvtlos and (not closeBr or close<pvtlos) ? nz(pullbackDnT[1])+1 : 0
+// and barssince(nz(pullbackDnT[1])==1)>Lookback? nz(pullbackDnT[1])+1 : 0
+//pullbackDnT := tr_down and close<open and (open>signalMA) and close<signalMA   and barssince(nz(pullbackDnT[1])==1)>Lookback? nz(pullbackDnT[1])+1 : pullbackDnT
+
+//
+plotarrow(ShowBreak and tr_up and not tr_up[1] ? 1 : na, title="Trend Break Up Entry Arrow", colorup=aqua, maxheight=60, minheight=50, transp=0)
+plotarrow(ShowBreak and tr_down and not tr_down[1]? -1 : na, title="Trend Break Down Entry Arrow", colordown=blue, maxheight=60, minheight=50, transp=0)
+
+//Plot Arrows for Buy Sell Signals
+plotarrow(ShowPB and pullbackUpT==1? pullbackUpT : na, title="PB Up Entry Arrow", colorup=lime, maxheight=60, minheight=50, transp=0)
+plotarrow(ShowPB and pullbackDnT==1? -pullbackDnT : na, title="PB Down Entry Arrow", colordown=red, maxheight=60, minheight=50, transp=0)
+
+// ---debug
+//plotchar(pvthis, location=location.bottom, transp=0)
+//plotchar(pvtlos, location=location.bottom, transp=0)
+//plotchar(pullbackUpT, location=location.bottom, transp=0)
+//plotchar(pullbackDnT, location=location.bottom, transp=0)
+//plotchar(tr_up, location=location.bottom, transp=0)
+//plotchar(tr_down, location=location.bottom, transp=0)
+// ---/debug
+
+// --- Any LONG and SHORT
+alertcondition((tr_up and not tr_up[1]) or pullbackUpT==1, title="Alert LONG", message="LONG")
+alertcondition((tr_down and not tr_down[1]) or pullbackDnT==1, title="Alert SHORT", message="SHORT")
+//
+// --- Individual LONG and Shorts
+alertcondition(tr_up and not tr_up[1] , title="Trend Break Up", message="BREAK LONG")
+alertcondition(tr_down and not tr_down[1], title="Trend Break Down", message="BREAK SHORT")
+alertcondition(pullbackUpT==1 , title="PB Up", message = "PB LONG")
+alertcondition(pullbackDnT==1 , title="PB Down", message= "PB SHORT")
+
+
+// === /ALERTS ===
+
+// === eof

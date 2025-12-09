@@ -1,0 +1,318 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// This script is largely based on "parallel pivot lines" by LuxAlgo and Trading Views in built auto fib retracememnt.
+
+// © veryfid
+//@version=4
+study("Support and Resistance",overlay=true,max_bars_back=5000)
+
+length   = input(30,"Pivot Length",group='Basic Settings'
+      ,tooltip='Pivot length. Use higher values for having lines connected to more significant pivots')
+lookback = input(3,minval=1, title = "Bars to lookback",group='Basic Settings'
+      ,tooltip='Number of lines connecting a pivot high/low to display')
+Slope    = input(1.,minval=-1,maxval=1,step=0.1,group='Basic Settings'
+      ,tooltip='Allows to multiply the linear regression slope by a number within -1 and 1')
+extendL = input(false, "Extend Horizontal lines Left?", group='Basic Settings')
+var extend = extend.right
+if extendL
+    extend := extend.both
+extendL2 = input(false, "Extend Parallel lines Left?", group='Basic Settings')
+var extend2 = extend.right
+if extendL2
+    extend2 := extend.both
+    
+showpar = input(true, "Show Parallel Lines?", group = "Show Lines")
+showhor = input(true, "Show horizontal Lines?", group = "Show Lines")
+showsma = input(false, "Show SMA 200 Line?", group = "Show Lines")
+hidefib = input(false, "Hide Fibonacci Lines?", group = "Show Lines")
+showfib = input(false, "Show Fib Trend Line?", group = "Show Lines")
+showall = input(false, "Show All Fibonacci Lines?", group = "Show Lines")
+//Style
+ph_col = input(color.white,'Parallel | High Lines Color',group='Line Colors',inline="col1")
+pl_col = input(color.white,'Low Lines Color',group='Line Colors',inline="col1")
+ph_col2 = input(color.red,'horizontal | High Lines Color',group='Line Colors',inline="col2")
+pl_col2 = input(color.green,'Low Lines Color',group='Line Colors',inline="col2")
+
+devTooltip = "Deviation is a multiplier that affects how much the price should deviate from the previous pivot in order for the bar to become a new pivot."
+depthTooltip = "The minimum number of bars that will be taken into account when calculating the indicator."
+// pivots threshold
+threshold_multiplier = input(title="Deviation", type=input.float, defval=3, minval=0, tooltip=devTooltip, group='Fibonacci Auto Retracement')
+dev_threshold = atr(10) / close * 100 * threshold_multiplier
+depth = input(title="Depth", type=input.integer, defval=100, minval=1, tooltip=depthTooltip, group='Fibonacci Auto Retracement')
+reverse = input(false, "Reverse", group='Fibonacci Auto Retracement')
+var extendLeft = input(true, "Extend Left    |    Extend Right", inline = "Extend Lines", group='Fibonacci Auto Retracement')
+var extendRight = input(true, "", inline = "Extend Lines", group='Fibonacci Auto Retracement')
+var extending = extend.none
+if extendLeft and extendRight
+    extending := extend.both
+if extendLeft and not extendRight
+    extending := extend.left
+if not extendLeft and extendRight
+    extending := extend.right
+prices = input(false, "Show Prices", group='Fibonacci Auto Retracement')
+levels = input(true, "Show Levels", inline = "Levels", group='Fibonacci Auto Retracement')
+levelsFormat = input("Values", "", options = ["Values", "Percent"], inline = "Levels", group='Fibonacci Auto Retracement')
+labelsPosition = input("Right", "Labels Position", options = ["Left", "Right"], group='Fibonacci Auto Retracement')
+
+//──────────────────────────────────────────────────────────────────────────────
+Sma(src,p) => a = cum(src), (a - a[max(p,0)])/max(p,0)
+Variance(src,p) => p == 1 ? 0 : Sma(src*src,p) - pow(Sma(src,p),2)
+Covariance(x,y,p) => Sma(x*y,p) - Sma(x,p)*Sma(y,p)
+//──────────────────────────────────────────────────────────────────────────────
+n = bar_index
+ph = pivothigh(length,length)
+pl = pivotlow(length,length)
+
+//──────────────────────────────────────────────────────────────────────────────
+varip ph_array = array.new_float(0)
+varip pl_array = array.new_float(0)
+varip ph_n_array = array.new_int(0)
+varip pl_n_array = array.new_int(0)
+if ph
+    array.insert(ph_array,0,ph)
+    array.insert(ph_n_array,0,n)
+if pl
+    array.insert(pl_array,0,pl)
+    array.insert(pl_n_array,0,n)
+//──────────────────────────────────────────────────────────────────────────────
+val_ph = valuewhen(ph,n-length,lookback-1)
+val_pl = valuewhen(pl,n-length,lookback-1)
+val = min(val_ph,val_pl)
+k = n - val > 0 ? n - val : 2
+slope = Covariance(close,n,k)/Variance(n,k)*Slope
+var line ph_l = na,var line pl_l = na, var line ph_l2 = na,var line pl_l2 = na
+
+if barstate.islast and showpar
+    for i = 0 to lookback-1
+        ph_y2 = array.get(ph_array,i),ph_x1 = array.get(ph_n_array,i)-length
+        pl_y2 = array.get(pl_array,i),pl_x1 = array.get(pl_n_array,i)-length
+		ph_l2 := line.new(ph_x1,ph_y2,ph_x1+1,ph_y2+slope,extend=extend2,color=color.new(ph_col2, 70))
+		pl_l2 := line.new(pl_x1,pl_y2,pl_x1+1,pl_y2+slope,extend=extend2,color=color.new(pl_col2, 70))
+
+if barstate.islast and showhor
+    for i = 0 to lookback-1
+        ph_y2 = array.get(ph_array,i),ph_x1 = array.get(ph_n_array,i)-length
+        pl_y2 = array.get(pl_array,i),pl_x1 = array.get(pl_n_array,i)-length
+        ph_l := line.new(ph_x1,ph_y2,ph_x1+1,ph_y2,extend=extend,color=ph_col)
+        pl_l := line.new(pl_x1,pl_y2,pl_x1+1,pl_y2,extend=extend,color=pl_col)
+//Fibonacci
+
+var line lineLast = na
+var int iLast = 0
+var int iPrev = 0
+var float pLast = 0
+var isHighLast = false // otherwise the last pivot is a low pivot
+
+pivots(src, length, isHigh) =>
+    l2 = length * 2
+    c = nz(src[length])
+    ok = true
+    for i = 0 to l2
+        if isHigh and src[i] > c
+            ok := false
+
+        if not isHigh and src[i] < c
+            ok := false
+    if ok
+        [bar_index[length], c]
+    else
+        [int(na), float(na)]
+[iH, pH] = pivots(high, depth / 2, true)
+[iL, pL] = pivots(low, depth / 2, false)
+
+calc_dev(base_price, price) =>
+    100 * (price - base_price) / price
+
+pivotFound(dev, isHigh, index, price) =>
+    if isHighLast == isHigh and not na(lineLast)
+        // same direction
+        if isHighLast ? price > pLast : price < pLast
+            line.set_xy2(lineLast, index, price)
+            [lineLast, isHighLast]
+        else
+            [line(na), bool(na)]
+    else // reverse the direction (or create the very first line)
+        if abs(dev) > dev_threshold
+            // price move is significant
+            id = line.new(iLast, pLast, index, price, color=color.new(color.gray, showfib ? 70 : 100), width=1, style=line.style_dashed)
+            [id, isHigh]
+        else
+            [line(na), bool(na)]
+
+if not na(iH)
+    dev = calc_dev(pLast, pH)
+    [id, isHigh] = pivotFound(dev, true, iH, pH)
+    if not na(id)
+        if id != lineLast
+            line.delete(lineLast)
+        lineLast := id
+        isHighLast := isHigh
+        iPrev := iLast
+        iLast := iH
+        pLast := pH
+else
+    if not na(iL)
+        dev = calc_dev(pLast, pL)
+        [id, isHigh] = pivotFound(dev, false, iL, pL)
+        if not na(id)
+            if id != lineLast
+                line.delete(lineLast)
+            lineLast := id
+            isHighLast := isHigh
+            iPrev := iLast
+            iLast := iL
+            pLast := pL
+
+_draw_line(price, col) =>
+    var id = line.new(iLast, price, bar_index, price, color=col, width=1, extend=extending)
+    if not na(lineLast)
+        line.set_xy1(id, line.get_x1(lineLast), price)
+        line.set_xy2(id, line.get_x2(lineLast), price)
+
+_draw_label(price, txt, txtColor) =>
+    x = labelsPosition == "Left" ? line.get_x1(lineLast) : not extendRight ? line.get_x2(lineLast) : bar_index
+    labelStyle = labelsPosition == "Left" ? label.style_label_right : label.style_label_left
+    align = labelsPosition == "Left" ? text.align_right : text.align_left
+    labelsAlignStrLeft = txt + '\n ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏ \n'
+    labelsAlignStrRight = '       ' + txt + '\n ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏ \n'
+    labelsAlignStr = labelsPosition == "Left" ? labelsAlignStrLeft : labelsAlignStrRight
+    var id = label.new(x=x, y=price, text=labelsAlignStr, textcolor=txtColor, style=labelStyle, textalign=align, color=#00000000)
+    label.set_xy(id, x, price)
+    label.set_text(id, labelsAlignStr)
+    label.set_textcolor(id, txtColor)
+
+_wrap(txt) =>
+    "(" + tostring(txt, "#.##") + ")"
+
+_label_txt(level, price) =>
+    l = levelsFormat == "Values" ? tostring(level) : tostring(level * 100) + "%"
+    (levels ? l : "") + (prices ? _wrap(price) : "")
+
+_crossing_level(sr, r) =>
+    (r > sr and r < sr[1]) or (r < sr and r > sr[1])
+
+startPrice = reverse ? line.get_y1(lineLast) : pLast
+endPrice = reverse ? pLast : line.get_y1(lineLast)
+
+iHL = startPrice > endPrice
+diff = (iHL ? -1 : 1) * abs(startPrice - endPrice)
+
+processLevel(show, value, colorL) =>
+    float m = value
+    r = startPrice + diff * m
+    if show
+        _draw_line(r, colorL)
+        _draw_label(r, _label_txt(m, r), colorL)
+        if _crossing_level(close, r)
+            alert("Autofib: " + syminfo.ticker + " crossing level " + tostring(value))
+
+show_0_236 = input(true, "", inline = "Level0", group = "Show Lines")
+if showall
+    show_0_236 := true
+if hidefib
+    show_0_236 := false
+value_0_236 = input(0.236, "", inline = "Level0", group = "Show Lines")
+color_0_236 = input(color.gray, "", inline = "Level0", group = "Show Lines")
+processLevel(show_0_236, value_0_236, color_0_236)
+
+show_0_382 = input(true, "", inline = "Level1", group = "Show Lines")
+if showall
+    show_0_382 := true
+if hidefib
+    show_0_382 := false
+value_0_382 = input(0.382, "", inline = "Level1", group = "Show Lines")
+color_0_382 = input(color.gray, "", inline = "Level1", group = "Show Lines")
+processLevel(show_0_382, value_0_382, color_0_382)
+
+show_0_618 = input(true, "", inline = "Level2", group = "Show Lines")
+if showall
+    show_0_618 := true
+if hidefib
+    show_0_618 := false
+value_0_618 = input(0.618, "", inline = "Level2", group = "Show Lines")
+color_0_618 = input(color.green, "", inline = "Level2", group = "Show Lines")
+processLevel(show_0_618, value_0_618, color_0_618)
+
+show_0_786 = input(true, "", inline = "Level3", group = "Show Lines")
+if showall
+    show_0_786 := true
+if hidefib
+    show_0_786 := false
+value_0_786 = input(0.786, "", inline = "Level3", group = "Show Lines")
+color_0_786 = input(color.green, "", inline = "Level3", group = "Show Lines")
+processLevel(show_0_786, value_0_786, color_0_786)
+
+show_0 = input(false, "", inline = "Level4", group = "Show Lines")
+if showall
+    show_0 := true
+if hidefib
+    show_0 := false
+value_0 = input(0, "", inline = "Level4", group = "Show Lines")
+color_0 = input(color.gray, "", inline = "Level4", group = "Show Lines")
+processLevel(show_0, value_0, color_0)
+
+show_0_5 = input(true, "", inline = "Level5", group = "Show Lines")
+if showall
+    show_0_5 := true
+if hidefib
+    show_0_5 := false
+value_0_5 = input(0.5, "", inline = "Level5", group = "Show Lines")
+color_0_5 = input(color.gray, "", inline = "Level5", group = "Show Lines")
+processLevel(show_0_5, value_0_5, color_0_5)
+
+show_1 = input(false, "", inline = "Level0", group = "Show Lines")
+if showall
+    show_1 := true
+if hidefib
+    show_1 := false
+value_1 = input(1, "", inline = "Level0", group = "Show Lines")
+color_1 = input(color.gray, "", inline = "Level0", group = "Show Lines")
+processLevel(show_1, value_1, color_1)
+
+show_1_272 = input(false, "", inline = "Level1", group = "Show Lines")
+if showall
+    show_1_272 := true
+if hidefib
+    show_1_272 := false
+value_1_272 = input(1.272, "", inline = "Level1", group = "Show Lines")
+color_1_272 = input(color.gray, "", inline = "Level1", group = "Show Lines")
+processLevel(show_1_272, value_1_272, color_1_272)
+
+show_1_414 = input(false, "", inline = "Level2", group = "Show Lines")
+if showall 
+    show_1_414 := true
+if hidefib
+    show_1_414 := false
+value_1_414 = input(1.414, "", inline = "Level2", group = "Show Lines")
+color_1_414 = input(color.gray, "", inline = "Level2", group = "Show Lines")
+processLevel(show_1_414, value_1_414, color_1_414)
+
+show_1_618 = input(false, "", inline = "Level3", group = "Show Lines")
+if showall 
+    show_1_618 := true
+if hidefib
+    show_1_618 := false
+value_1_618 = input(1.618, "", inline = "Level3", group = "Show Lines")
+color_1_618 = input(color.green, "", inline = "Level3", group = "Show Lines")
+processLevel(show_1_618, value_1_618, color_1_618)
+
+show_1_786 = input(false, "", inline = "Level4", group = "Show Lines")
+if showall 
+    show_1_786 := true
+if hidefib
+    show_1_786 := false
+value_1_786 = input(1.786, "", inline = "Level4", group = "Show Lines")
+color_1_786 = input(color.green, "", inline = "Level4", group = "Show Lines")
+processLevel(show_1_786, value_1_786, color_1_786)
+
+show_2 = input(false, "", inline = "Level5", group = "Show Lines")
+if showall 
+    show_2 := true
+if hidefib
+    show_2 := false
+value_2 = input(2, "", inline = "Level5", group = "Show Lines")
+color_2 = input(color.red, "", inline = "Level5", group = "Show Lines")
+processLevel(show_2, value_2, color_2)
+
+ema200 = ema(close, 200)
+sma200 = sma(close, 200)
+sma200plot = plot(showsma ? sma200 : na, color=ema200 > sma200 ? color.white : color.yellow, linewidth=2, title="SMA(200)", transp= 0)

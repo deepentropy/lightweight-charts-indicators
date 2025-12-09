@@ -1,0 +1,78 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator('Price & Volume Profile (Expo)', overlay=true, max_boxes_count=500)
+//~~}
+
+// ~~ Inputs {
+src    = input.source(close,"Source")
+rows   = input.int(20,"Row Size",minval=5, maxval=500)
+disp   = input.string("Counter","Display",["Counter","Volume"])
+offset = input.int(100,"Offset",step=25)
+poc    = input.bool(true,"Point of Control")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables & Array's {
+b = bar_index
+
+var start = int(na)
+var top   = float(na)
+var bot   = float(na)
+
+levels    = array.new_float(rows+1)
+var boxes = array.new<box>(rows+3)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Coloring Function {
+Gradient(a,i)=>
+    sort = a.copy()
+    sort.sort()
+    val  = a.get(i)
+    idx  = sort.indexof(val)
+    out  = color.from_gradient(idx,0,a.size()-1,color.red,color.lime)
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Code {
+//Check visible chart
+if time == chart.left_visible_bar_time
+    start := b
+    top := high
+    bot := low
+else if time>chart.left_visible_bar_time
+    top := math.max(high,top)
+    bot := math.min(low,bot)
+
+//Set the levels
+step = (top-bot)/rows
+for i=0 to rows by 1
+    levels.set(i, bot + step * i)
+
+//Check levels
+if barstate.islast
+    sum = array.new<int>(rows,0)
+    vol = array.new<float>(rows,0.0)
+    for i=0 to (b-start)-1
+        price = src[i]
+        for x=0 to levels.size()-2 by 1
+            dn = levels.get(x)
+            up = levels.get(x+1)
+            if price>dn and price<up
+                sum.set(x,sum.get(x)+1)
+                vol.set(x,vol.get(x)+volume[x])
+                break
+//Plots the profile
+    for [i,element] in sum
+        boxes.get(i).delete()
+        col = Gradient(sum,i)
+        boxes.set(i,box.new(b+offset-element,levels.get(i+1),b+offset,levels.get(i),
+         col,border_style=line.style_dotted,bgcolor=color.new(col,50),
+         text=disp=="Volume"?str.tostring(vol.get(i),format.volume):str.tostring(element),text_color=chart.fg_color))
+    if poc
+        maxIdx = disp=="Volume"?vol.indexof(vol.max()):sum.indexof(sum.max())
+        boxes.get(boxes.size()-2).delete()
+        boxes.set(boxes.size()-2,box.new(start,levels.get(maxIdx),b+offset-sum.get(maxIdx),levels.get(maxIdx+1),
+         #E0F2E9,border_style=line.style_dashed,bgcolor=color.new(#5B7B7A,75),
+         text="POC",text_color=chart.fg_color))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

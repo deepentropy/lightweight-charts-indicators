@@ -1,0 +1,766 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TFlab
+//@version=5
+
+/////////////////////////////////////////////////////////
+//    {Vectorize Code Version(Without using loop!)}    //
+/////////////////////////////////////////////////////////
+indicator("ICT Concept [TradingFinder] Order Block | FVG | Liquidity Sweeps","ICT Concept TFlab", overlay = true, max_bars_back = 5000 , max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+
+//import FVG  Library
+import TFlab/FVGDetectorLibrary/1 as FVG
+//import Liquidity Library
+import TFlab/LiquidityFinderLibrary/1 as Liq
+//import Alert Sender Library
+import TFlab/AlertSenderLibrary_TradingFinder/1 as Alert
+
+//User Settings
+OBRefine = input.string('On', 'Order Block Refine', ['On' , 'Off'],
+ tooltip = 'If Order Block Refine is Turned on,' +
+ 'an Attempt is made to Detect the Optimal Range' +
+ 'for the Order Block Using an Error Ccorrection Algorithm.' , group = 'Order Block Setting')
+
+RefineType = input.string('Defensive', 'Refine Type', ['Defensive' , 'Aggressive'],
+ tooltip = 'By Using Aggressive Error Correction Algorithm,' +
+ 'a Large Range is Identified as Block Order.' +
+ 'The Defensive Algorithm Detect a Small Range.' ,  group = 'Order Block Setting')
+
+//Show High and Low
+
+Show_High = input.string('No', 'Show High Level', ['No' , 'Yes'],
+ tooltip = 'High Major Levels' , group = 'Major Levels')
+Show_Low = input.string('No', 'Show Low Level', ['No' , 'Yes'],
+ tooltip = 'Low Major Levels' , group = 'Major Levels')
+
+
+//Show Support and Resistance
+Show_Support = input.string('No', 'Show Last Support', ['No' , 'Yes'],
+ tooltip = 'Last Support' , group = 'Support and Resistance')
+Show_Resistance = input.string('No', 'Show Last Resistance', ['No' , 'Yes'],
+ tooltip = 'Last Resistance' , group = 'Support and Resistance')
+
+//BoX Color
+DemBxColor = input.color(color.rgb(105,191,111 , 50) , 'Demand Zone Color', group =  ' Color Setting')
+SupBxColor = input.color(color.rgb(242,34,51,60) , 'Supply Zone Color' , group =  ' Color Setting')
+
+// FVG input
+PFVGFilter = input.string('On', 'FVG Filter', ['On' , 'Off'],group = 'FVG')
+PFVGFilterType = input.string('Defensive', 'FVG Filter Type', ['Very Aggressive' , 'Aggressive' , 'Defensive' , 'Very Defensive'],group = 'FVG')
+PShowDeFVG = input.bool(true, ' Show Demand FVG',group = 'FVG')
+PShowSuFVG = input.bool(true, ' Show Supply FVG',group = 'FVG')
+
+// Liquidity input
+SLLS = input.float(0.30 , 'Statics Liquidity Line Sensitivity', maxval = 0.4 ,minval = 0.0, step = 0.01,group = 'Liquidity') // Statics Liquidity Line Sensitivity
+DLLS = input.float(1.00 , 'Dynamics Liquidity Line Sensitivity', maxval = 1.95 ,minval = 0.4, step = 0.01,group = 'Liquidity') // Dynamics Liquidity Line Sensitivity
+SPP = input.int(8 , 'Statics Period Pivot',group = 'Liquidity') // Statics Period Pivot
+DPP = input.int(3 , 'Dynamics Period Pivot',group = 'Liquidity') // Dynamics Period Pivot
+ShowSHLL = input.bool(true , 'Show Statics High Liquidity Line',group = 'Liquidity')
+ShowSLLL = input.bool(true , 'Show Statics Low Liquidity Line',group = 'Liquidity')
+ShowDHLL = input.bool(true , 'Show Dynamics High Liquidity Line',group = 'Liquidity')
+ShowDLLL = input.bool(true , 'Show Dynamics Low Liquidity Line',group = 'Liquidity')
+
+//Alert input
+Alert = input.string('On' , 'Alert' , ['On', 'Off'], 'If you turn on the Alert, you can receive alerts and notifications after setting the "Alert".' , group = 'Alert')
+AlertName = input.string('Order Blocks Finder [TradingFinder]', 'Alert Name', group = 'Alert')
+Frequncy = input.string('Once Per Bar' , 'Message Frequency' , ['All', 'Once Per Bar' , 'Per Bar Close'], 'The triggering frequency. Possible values are: All'+ 
+ ' (all function calls trigger the alert), Once Per Bar (the first function call during the bar triggers the alert), ' +  
+ ' Per Bar Close (the function call triggers the alert only when it occurs during the last script iteration of the real-time bar,' +  
+ ' when it closes). The default is alert.freq_once_per_bar.)', group = 'Alert')
+UTC = input.string('UTC' , 'Show Alert time by Time Zone', group = 'Alert')
+MoreInfo = input.string('On', 'Display More Info', ['On', 'Off'], group = 'Alert')
+MessageBull = input.text_area('Long Position', 'Long Signal Message' ,group = 'Alert')
+MessageBear = input.text_area('Short Position','Short Signal Message' , group = 'Alert')
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//Candle Range
+Candle_Range = high - low
+//Candle Trend and Candle Body
+Candle_Body = close - open
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Candle Trend Detector
+Candle_Trend = if Candle_Body > 0
+    "Candle Positive"
+else if Candle_Body < 0
+    "Candle Negative"
+else
+    "Candle no Trend"
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Candle Break Detector
+Candle_Break = if close > high[1]
+    "Candle Bull Break"
+else if close < low[1]
+    "Candle Bear Break"
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//High and Low Detector
+
+bar_index_bull = ta.valuewhen(close > high[1] , bar_index,0)
+bar_index_bear = ta.valuewhen(close < low[1] , bar_index,0)
+
+var int start_bar_index_high = 0 
+var int start_bar_index_low = 0
+
+lenHighest = bar_index - bar_index_bear + 5
+lenLowest = bar_index - bar_index_bull + 5
+
+lenHighest1 = bar_index - bar_index_bear + 3
+lenLowest1 = bar_index - bar_index_bull + 3
+///////////////
+HighestLen =if not na(lenHighest)
+    lenHighest
+else
+    1
+LowestLen = if not na (lenLowest)
+    lenLowest
+else
+    1
+
+///////////////
+HighestLen1 =if not na(lenHighest1)
+    lenHighest1
+else
+    1
+LowestLen1 = if not na (lenLowest1)
+    lenLowest1
+else
+    1
+
+
+//All High and Low Detector
+High_first = ta.highest(high, HighestLen)
+Low_first = ta.lowest(low, LowestLen)
+
+High_first1 = ta.highest(high, HighestLen1)
+Low_first1 = ta.lowest(low, LowestLen1)
+
+//All Correct High and Low Detector
+var float High_Correct = 0.0 
+var float Low_Correct = 0.0
+High_sec = if Candle_Break == "Candle Bear Break" and Candle_Break[1] =="Candle Bull Break"
+    start_bar_index_high := bar_index
+    if High_Correct[1] == High_first 
+        High_first1
+    else 
+        High_first
+
+Low_sec = if (Candle_Break == "Candle Bull Break" and Candle_Break[1] =="Candle Bear Break") 
+    start_bar_index_low := bar_index
+    if Low_Correct[1] == Low_first
+        Low_first1
+    else
+        Low_first
+
+
+High_Correct := if not na(High_sec)
+    High_sec
+else
+    High_sec[1]
+
+Low_Correct := if not na(Low_sec)
+    Low_sec
+else 
+    Low_sec[1]
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+var int bar_index_bull_BoS = 0
+var int bar_index_bear_BoS = 0
+var string BoS = "Hi"
+
+var float High_Correct_f = 0.0
+var float Low_Correct_f = 0.0
+
+
+//Major Correct High and Low Detector
+High_Correct_f := if High_Correct_f == 0
+    High_Correct
+else if High_Correct > High_Correct_f[1] and High_Correct_f != 0
+    High_Correct
+else if High_Correct < High_Correct_f[1]
+    if BoS == 'Bear BoS' and (bar_index_bear_BoS >= start_bar_index_high)
+        High_Correct
+    else 
+        High_Correct_f
+else if High_Correct_f == High_Correct_f[1] and High_Correct_f != 0
+    High_Correct_f
+
+else 
+    High_Correct
+
+
+
+Low_Correct_f := if Low_Correct_f == 0 
+    Low_Correct
+else if Low_Correct < Low_Correct_f[1] and Low_Correct_f != 0
+    Low_Correct
+else if Low_Correct > Low_Correct_f[1]
+    if BoS == 'Bull BoS' and  (bar_index_bull_BoS >= start_bar_index_low)
+        Low_Correct
+    else 
+        Low_Correct_f
+else if Low_Correct_f == Low_Correct_f[1] and Low_Correct_f != 0
+    Low_Correct_f
+else 
+    Low_Correct
+   
+
+
+
+//Drawing Last Support ans Resistance Linw
+//Show Support and Resistance
+
+var line Sline = na
+var line Rline = na
+float LV = Low_Correct_f
+int LI = 0
+float HV = High_Correct_f
+int HI = 0
+if LV != LV[1] and Show_Support == 'Yes'
+    line.delete(Sline[1])
+    LI := bar_index
+    Sline := line.new(LI, LV , LI+1 , LV , extend = extend.right , style = line.style_dotted , color = color.rgb(0, 82, 3))
+if HV != HV[1] and  Show_Resistance == 'Yes'
+    line.delete(Rline[1])
+    HI := bar_index
+    Rline := line.new(HI, HV , HI+1 , HV , extend = extend.right , style = line.style_dotted , color = color.rgb(146, 33, 33) )
+    
+
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//High and Low Drawing
+color_High = High_Correct_f == High_Correct_f[1]   ? color.rgb(5, 148, 10) : na 
+color_Low = Low_Correct_f == Low_Correct_f[1]   ? color.rgb(184, 0, 0) : na
+
+plot(High_Correct_f,'Major High Levels' ,color = Show_High == 'Yes' ? color_High  : na )
+plot(Low_Correct_f ,'Major Low Levels' ,color = Show_Low == 'Yes' ? color_Low  :  na)
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//BoS Detector
+
+if close > High_Correct_f and close[1] <= High_Correct_f
+    BoS := "Bull BoS"
+    bar_index_bull_BoS := bar_index
+    //label.set_text(id=Bull_BoS_Label, text="Bull BoS")
+else if close < Low_Correct_f and close[1] >= Low_Correct_f
+    BoS := "Bear BoS"
+    bar_index_bear_BoS := bar_index
+    //label.set_text(id=Bear_BoS_Label, text="Bear BoS")
+else
+    BoS := '0'
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//Trend Detector
+var string Trend = "Hi"
+
+if BoS == "Bull BoS" and bar_index_bull_BoS[1] > bar_index_bear_BoS
+    Trend := "Up Trend"
+else if BoS == "Bear BoS" and bar_index_bear_BoS[1] >  bar_index_bull_BoS 
+    Trend := "Down Trend"
+else if Trend == "Up Trend" and close < Low_Correct_f or Trend == "Down Trend" and close > High_Correct_f
+    Trend := "No Trend"
+else 
+    Trend := Trend
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//Order Block Detector
+bar_index_Supply_OB = ta.valuewhen(High_Correct != High_Correct[1], bar_index[1],0)
+bar_index_Demand_OB=ta.valuewhen(Low_Correct != Low_Correct[1], bar_index[1],0)
+/////////////////////////////////
+var DOB_index = 0
+var SOB_index = 0
+
+var PerDOB_index = 0
+var PerSOB_index = 0
+
+var int DemandCheck =0
+var int SupplyCheck =0
+
+DOB_index := ta.valuewhen((BoS == "Bull BoS" and bar_index_bull_BoS[1] > bar_index_bear_BoS ) or
+ (BoS =="Bull BoS" and bar_index_bull_BoS > bar_index_bear_BoS ), bar_index, 0)
+
+SOB_index := ta.valuewhen((BoS == "Bear BoS" and bar_index_bear_BoS[1] >  bar_index_bull_BoS ) or
+ (BoS == "Bear BoS" and bar_index_bear_BoS >  bar_index_bull_BoS ), bar_index, 0)
+
+PerDOB_index := ta.valuewhen((BoS == "Bull BoS" and bar_index_bull_BoS[1] > bar_index_bear_BoS ) or
+ (BoS =="Bull BoS" and bar_index_bull_BoS > bar_index_bear_BoS ), bar_index, 1)
+
+PerSOB_index := ta.valuewhen((BoS == "Bear BoS" and bar_index_bear_BoS[1] >  bar_index_bull_BoS ) or
+ (BoS == "Bear BoS" and bar_index_bear_BoS >  bar_index_bull_BoS ), bar_index, 1)
+
+Demand_OB_Condition = (((BoS == "Bull BoS" and bar_index_bull_BoS[1] > bar_index_bear_BoS ) or
+     (BoS =="Bull BoS" and bar_index_bull_BoS > bar_index_bear_BoS ))) and
+     DemandCheck != bar_index_Demand_OB
+
+Supply_OB_Condition = (((BoS == "Bear BoS" and bar_index_bear_BoS[1] >  bar_index_bull_BoS ) or
+     (BoS == "Bear BoS" and bar_index_bear_BoS >  bar_index_bull_BoS))) and 
+     SupplyCheck != bar_index_Supply_OB
+//BOX Drawing///////////////////////////////////////////////////////////////
+
+//Zones Data
+    //Demand Zone
+        //Proximal Line 
+var float YDp12 = 0.0
+var int XDp1    = 0
+var int XDp2    = 0
+
+        //Distal Line
+var float YDd12 = 0.0
+var int XDd1    = 0
+var int XDd2    = 0
+
+    //Supply Zone 
+        //Proximal Line 
+var float YSp12 = 0.0
+var int XSp1    = 0
+var int XSp2    = 0
+
+        //Distal Line
+var float YSd12 = 0.0
+var int XSd1    = 0
+var int XSd2    = 0
+
+//Oreder Block Refine//////////////////////////////////////////////////////////////////////
+ATR = ta.atr(55)
+//Demand Candle Range /a : after , b : before , O : Order Block
+var float DCRa1 = 0.0
+var float DCRO  = 0.0
+var float DCRb1 = 0.0
+
+
+if bar_index >= bar_index_Demand_OB + 1
+    DCRa1 := Candle_Range[bar_index - bar_index_Demand_OB + 1] 
+    DCRO  := Candle_Range[bar_index - bar_index_Demand_OB]  
+    DCRb1 := Candle_Range[bar_index - bar_index_Demand_OB - 1] 
+
+//Demand Min ohlc{Var}
+var float DminOpen = 0.0
+var float DminHigh = 0.0
+var float DminLow = 0.0
+var float DminClose = 0.0
+
+//Demand Max ohl{Var}
+var float DmaxOpen = 0.0
+var float DmaxHigh = 0.0
+var float DmaxLow = 0.0
+var float DmaxClose = 0.0
+// Demand Min ohlc{Find}
+if  bar_index > bar_index_Demand_OB + 1
+    DminOpen := math.min(open[bar_index - bar_index_Demand_OB - 2], open[bar_index - bar_index_Demand_OB + 1],
+         open[bar_index - bar_index_Demand_OB    ], open[bar_index - bar_index_Demand_OB - 1])
+    DminHigh := math.min(high[bar_index - bar_index_Demand_OB - 2], high[bar_index - bar_index_Demand_OB + 1],
+         high[bar_index - bar_index_Demand_OB    ], high[bar_index - bar_index_Demand_OB - 1])
+    DminLow := math.min(low[bar_index - bar_index_Demand_OB - 2], low[bar_index - bar_index_Demand_OB + 1],
+         low[bar_index - bar_index_Demand_OB    ], low[bar_index - bar_index_Demand_OB - 1])
+    DminClose := math.min(close[bar_index - bar_index_Demand_OB - 2], close[bar_index - bar_index_Demand_OB + 1],
+         close[bar_index - bar_index_Demand_OB    ], close[bar_index - bar_index_Demand_OB - 1])
+else if   bar_index  >= bar_index_Demand_OB 
+    DminOpen := math.min( open[bar_index - bar_index_Demand_OB + 1],
+         open[bar_index - bar_index_Demand_OB    ], open[bar_index - bar_index_Demand_OB - 1])
+    DminHigh := math.min( high[bar_index - bar_index_Demand_OB + 1],
+         high[bar_index - bar_index_Demand_OB    ], high[bar_index - bar_index_Demand_OB - 1])
+    DminLow := math.min( low[bar_index - bar_index_Demand_OB + 1],
+         low[bar_index - bar_index_Demand_OB    ], low[bar_index - bar_index_Demand_OB - 1])
+    DminClose := math.min( close[bar_index - bar_index_Demand_OB + 1],
+         close[bar_index - bar_index_Demand_OB    ], close[bar_index - bar_index_Demand_OB - 1])
+
+//Demand Max ohlc{Find}
+if  bar_index > bar_index_Demand_OB + 1
+    DmaxOpen := math.max(open[bar_index - bar_index_Demand_OB - 2], open[bar_index - bar_index_Demand_OB + 1],
+         open[bar_index - bar_index_Demand_OB    ], open[bar_index - bar_index_Demand_OB - 1])
+    DmaxHigh := math.max(high[bar_index - bar_index_Demand_OB - 2], high[bar_index - bar_index_Demand_OB + 1],
+         high[bar_index - bar_index_Demand_OB    ], high[bar_index - bar_index_Demand_OB - 1])
+    DmaxLow := math.max(low[bar_index - bar_index_Demand_OB - 2], low[bar_index - bar_index_Demand_OB + 1],
+         low[bar_index - bar_index_Demand_OB    ], low[bar_index - bar_index_Demand_OB - 1])
+    DmaxClose := math.max(close[bar_index - bar_index_Demand_OB - 2], close[bar_index - bar_index_Demand_OB + 1],
+         close[bar_index - bar_index_Demand_OB    ], close[bar_index - bar_index_Demand_OB - 1])
+else if  bar_index >= bar_index_Demand_OB 
+    DmaxOpen := math.max( open[bar_index - bar_index_Demand_OB + 1],
+         open[bar_index - bar_index_Demand_OB    ], open[bar_index - bar_index_Demand_OB - 1])
+    DmaxHigh := math.max( high[bar_index - bar_index_Demand_OB + 1],
+         high[bar_index - bar_index_Demand_OB    ], high[bar_index - bar_index_Demand_OB - 1])
+    DmaxLow := math.max( low[bar_index - bar_index_Demand_OB + 1],
+         low[bar_index - bar_index_Demand_OB    ], low[bar_index - bar_index_Demand_OB - 1])
+    DmaxClose := math.max( close[bar_index - bar_index_Demand_OB + 1],
+         close[bar_index - bar_index_Demand_OB    ], close[bar_index - bar_index_Demand_OB - 1])
+
+
+//Demand Order Block Refiner
+var float DDA = 0.0  //Demand Distal Aggressive
+var float DPA = 0.0  //Demand Proximal Aggressive
+ 
+if DCRO <= (ATR * 0.5)
+    DPA := high[bar_index - bar_index_Demand_OB]
+    DDA := DminLow
+else if DCRO > (ATR * 0.5) and DCRO <= ATR
+    if Candle_Body > 0 or Candle_Body == 0
+        DPA := close[bar_index - bar_index_Demand_OB]
+        DDA := DminLow
+    else if Candle_Body < 0 
+        DPA := open[bar_index - bar_index_Demand_OB]
+        DDA := DminLow
+else if DCRO > ATR
+    if low[bar_index - bar_index_Demand_OB + 1] < high[bar_index - bar_index_Demand_OB    ]
+        if low[bar_index - bar_index_Demand_OB + 1] > low[bar_index - bar_index_Demand_OB]
+            DPA := low[bar_index - bar_index_Demand_OB + 1]
+            DDA := low[bar_index - bar_index_Demand_OB]
+        else if low[bar_index - bar_index_Demand_OB + 1] <= low[bar_index - bar_index_Demand_OB]
+            if Candle_Body[bar_index - bar_index_Demand_OB + 1] > 0 or Candle_Body[bar_index - bar_index_Demand_OB + 1] == 0
+                if DCRa1 > ATR
+                    DPA := DmaxOpen
+                    DDA := DminLow
+                else if DCRa1 < ATR
+                    DPA := DmaxClose
+                    DDA := DminLow
+            else if Candle_Body[bar_index - bar_index_Demand_OB + 1] < 0 
+                if DCRa1 > ATR
+                    DPA := DmaxOpen
+                    DDA := DminLow
+                else if DCRa1 < ATR
+                    DPA := DmaxOpen
+                    DDA := DminLow
+    else if not ((low[bar_index - bar_index_Demand_OB + 1] < high[bar_index - bar_index_Demand_OB    ]))
+        if (DminLow - DminOpen ) > (DminLow - DminClose ) and ((DminLow - DminOpen ) <= ATR and (DminLow - DminOpen ) >= ( ATR*0.5)) 
+            DPA := DminOpen
+            DDA := DminLow
+        else if (DminLow - DminOpen ) < (DminLow - DminClose ) and ((DminLow - DminClose ) <= ATR and (DminLow - DminClose ) >= ( ATR*0.5))
+            DPA := DminClose
+            DDA := DminLow
+else 
+    if Candle_Body > 0
+        DPA := DmaxHigh
+        DDA := DminLow
+    else if Candle_Body < 0
+        DPA := DmaxHigh
+        DDA := DmaxLow
+
+
+//Supply Candle Range /a : after , b : before , O : Order Block
+var float SCRa1 = 0.0
+var float SCRO  = 0.0
+var float SCRb1 = 0.0
+
+SCRa1 := high[bar_index -bar_index_Supply_OB + 1] - low[bar_index -bar_index_Supply_OB + 1]
+SCRO  := high[bar_index -bar_index_Supply_OB    ] - low[bar_index -bar_index_Supply_OB    ]
+SCRb1 := high[bar_index -bar_index_Supply_OB - 1] - low[bar_index -bar_index_Supply_OB - 1]
+
+//Supply Min ohlc
+var float SminOpen = 0.0
+var float SminHigh = 0.0
+var float SminLow = 0.0
+var float SminClose = 0.0
+
+//Supply Max ohlc
+var float SmaxOpen = 0.0
+var float SmaxHigh = 0.0
+var float SmaxLow = 0.0
+var float SmaxClose = 0.0
+
+if  bar_index > bar_index_Supply_OB + 1
+    SminOpen := math.min(open[bar_index - bar_index_Supply_OB - 2], open[bar_index - bar_index_Supply_OB + 1],
+         open[bar_index - bar_index_Supply_OB    ], open[bar_index - bar_index_Supply_OB - 1])
+    SminHigh := math.min(high[bar_index - bar_index_Supply_OB - 2], high[bar_index - bar_index_Supply_OB + 1],
+         high[bar_index - bar_index_Supply_OB    ], high[bar_index - bar_index_Supply_OB - 1])
+    SminLow := math.min(low[bar_index - bar_index_Supply_OB - 2], low[bar_index - bar_index_Supply_OB + 1],
+         low[bar_index - bar_index_Supply_OB    ], low[bar_index - bar_index_Supply_OB - 1])
+    SminClose := math.min(close[bar_index - bar_index_Supply_OB - 2], close[bar_index - bar_index_Supply_OB + 1],
+         close[bar_index - bar_index_Supply_OB    ], close[bar_index - bar_index_Supply_OB - 1])
+else if   bar_index  >= bar_index_Supply_OB 
+    SminOpen := math.min( open[bar_index - bar_index_Supply_OB + 1],
+         open[bar_index - bar_index_Supply_OB    ], open[bar_index - bar_index_Supply_OB - 1])
+    SminHigh := math.min( high[bar_index - bar_index_Supply_OB + 1],
+         high[bar_index - bar_index_Supply_OB    ], high[bar_index - bar_index_Supply_OB - 1])
+    SminLow := math.min( low[bar_index - bar_index_Supply_OB + 1],
+         low[bar_index - bar_index_Supply_OB    ], low[bar_index - bar_index_Supply_OB - 1])
+    SminClose := math.min( close[bar_index - bar_index_Supply_OB + 1],
+         close[bar_index - bar_index_Supply_OB    ], close[bar_index - bar_index_Supply_OB - 1])
+
+//Dmand Max ohlc
+if  bar_index > bar_index_Supply_OB + 1
+    SmaxOpen := math.max(open[bar_index - bar_index_Supply_OB - 2], open[bar_index - bar_index_Supply_OB + 1],
+         open[bar_index - bar_index_Supply_OB    ], open[bar_index - bar_index_Supply_OB - 1])
+    SmaxHigh := math.max(high[bar_index - bar_index_Supply_OB - 2], high[bar_index - bar_index_Supply_OB + 1],
+         high[bar_index - bar_index_Supply_OB    ], high[bar_index - bar_index_Supply_OB - 1])
+    SmaxLow := math.max(low[bar_index - bar_index_Supply_OB - 2], low[bar_index - bar_index_Supply_OB + 1],
+         low[bar_index - bar_index_Supply_OB    ], low[bar_index - bar_index_Supply_OB - 1])
+    SmaxClose := math.max(close[bar_index - bar_index_Supply_OB - 2], close[bar_index - bar_index_Supply_OB + 1],
+         close[bar_index - bar_index_Supply_OB    ], close[bar_index - bar_index_Supply_OB - 1])
+else if  bar_index >= bar_index_Supply_OB 
+    SmaxOpen := math.max( open[bar_index - bar_index_Supply_OB + 1],
+         open[bar_index - bar_index_Supply_OB    ], open[bar_index - bar_index_Supply_OB - 1])
+    SmaxHigh := math.max( high[bar_index - bar_index_Supply_OB + 1],
+         high[bar_index - bar_index_Supply_OB    ], high[bar_index - bar_index_Supply_OB - 1])
+    SmaxLow := math.max( low[bar_index - bar_index_Supply_OB + 1],
+         low[bar_index - bar_index_Supply_OB    ], low[bar_index - bar_index_Supply_OB - 1])
+    SmaxClose := math.max( close[bar_index - bar_index_Supply_OB + 1],
+         close[bar_index - bar_index_Supply_OB    ], close[bar_index - bar_index_Supply_OB - 1])
+
+//Supply Order Block Refiner
+var float SDA = 0.0  //Supply Distal Aggressive
+var float SPA = 0.0  //Supply Proximal Aggressive
+
+if SCRO <= (ATR * 0.5)
+    SPA := low[bar_index - bar_index_Supply_OB]
+    SDA := SmaxHigh
+else if SCRO > (ATR * 0.5) and SCRO <= ATR
+    if Candle_Body > 0 or Candle_Body == 0
+        SPA := close[bar_index - bar_index_Supply_OB]
+        SDA := SmaxHigh
+    else if Candle_Body < 0 
+        SPA := open[bar_index - bar_index_Supply_OB]
+        SDA := SmaxHigh
+else if SCRO > ATR
+    if high[bar_index - bar_index_Supply_OB - 1] > low[bar_index - bar_index_Supply_OB    ]
+        if high[bar_index - bar_index_Supply_OB - 1] > high[bar_index - bar_index_Supply_OB]
+            SPA := high[bar_index - bar_index_Supply_OB - 1]
+            SDA := high[bar_index - bar_index_Supply_OB]
+        else if high[bar_index - bar_index_Supply_OB - 1] <= high[bar_index - bar_index_Supply_OB]
+            if Candle_Body[bar_index - bar_index_Supply_OB - 1] > 0 or Candle_Body[bar_index - bar_index_Supply_OB - 1] == 0
+                if SCRa1 > ATR
+                    SPA := SminClose
+                    SDA := SmaxHigh
+                else if SCRa1 < ATR
+                    SPA := SminOpen
+                    SDA := SmaxHigh
+            else if Candle_Body[bar_index - bar_index_Supply_OB - 1] < 0 
+                if SCRa1 > ATR
+                    SPA := SminOpen
+                    SDA := SmaxHigh
+                else if SCRa1 < ATR
+                    SPA := SmaxHigh
+                    SDA := high[bar_index - bar_index_Supply_OB - 1]
+    else if not ((high[bar_index - bar_index_Supply_OB + 1] > low[bar_index - bar_index_Supply_OB    ]))
+        if (SmaxHigh - SminOpen ) > (SmaxHigh - SminClose ) and ((SmaxHigh - SminOpen ) <= ATR and (SmaxHigh - SminOpen ) >= ( ATR*0.5)) 
+            SPA := SminOpen
+            SDA := SmaxHigh
+        else if (SmaxHigh - DminOpen ) < (SmaxHigh - DminClose ) and ((SmaxHigh - DminClose ) <= ATR and (SmaxHigh - DminClose ) >= ( ATR*0.5))
+            SPA := SminClose
+            SDA := SmaxHigh
+else 
+    if Candle_Body > 0
+        SPA := SminLow
+        SDA := SmaxHigh
+    else if Candle_Body < 0
+        SPA := SminLow
+        SDA := SmaxHigh
+
+
+
+// choose Type Refine {Aggressive Vs Defensive}
+var float DProximal = 0.0
+var float DDistal = 0.0
+var float SProximal = 0.0
+var float SDistal = 0.0
+//Demand Order Block choose Type Refine 
+if RefineType == 'Defensive'
+    if (DPA - DDA) >= ATR * 3
+        DDistal := DDA
+        DProximal := DPA - (DPA - DDA) * 0.7
+    else if (DPA - DDA) < ATR * 3 and (DPA - DDA) >= ATR * 2
+        DDistal := DDA
+        DProximal := DPA - (DPA - DDA) * 0.6   
+    else if (DPA - DDA) < ATR * 2 and (DPA - DDA) >= ATR *1.6
+        DDistal := DDA
+        DProximal := DPA - (DPA - DDA) * 0.5
+    else if (DPA - DDA) < ATR * 1.6 and (DPA - DDA) > ATR
+        DDistal := DDA
+        DProximal := DPA - (DPA - DDA) * 0.25        
+    else if (DPA - DDA) <= ATR
+        DDistal := DDA
+        DProximal := DPA  
+else  if RefineType == 'Aggressive'
+    DDistal := DDA
+    DProximal := DPA    
+
+
+//Supply Order Block choose Type Refine 
+if RefineType == 'Defensive'
+    if (SDA - SPA) >= ATR * 3
+        SDistal := SDA
+        SProximal := SPA + (SDA - SPA) * 0.7
+    else if (SDA - SPA) < ATR * 3 and (SDA - SPA) >= ATR * 2
+        SDistal := SDA
+        SProximal := SPA + (SDA - SPA) * 0.6   
+    else if (SDA - SPA) < ATR * 2 and (SDA - SPA) >= ATR * 1.6
+        SDistal := SDA
+        SProximal := SPA + (SDA - SPA) * 0.5
+    else if (SDA - SPA) < ATR * 1.6 and (SDA - SPA) > ATR 
+        SDistal := SDA
+        SProximal := SPA + (SDA - SPA) * 0.25       
+    else if (SDA - SPA) <= ATR 
+        SDistal := SDA
+        SProximal := SPA  
+else  if RefineType == 'Aggressive'
+    SDistal := SDA
+    SProximal := SPA  
+////////////////////////
+if Demand_OB_Condition 
+    DemandCheck := bar_index_Demand_OB 
+    YDp12   := OBRefine == 'On' ? DProximal : high[bar_index - bar_index_Demand_OB]
+    XDp1    := bar_index_Demand_OB
+    XDp2    := bar_index_Demand_OB + 1
+    YDd12   := OBRefine == 'On' ? DDistal : low[bar_index - bar_index_Demand_OB]
+    XDd1    := bar_index_Demand_OB
+    XDd2    := bar_index_Demand_OB + 1
+ 
+if Supply_OB_Condition
+    SupplyCheck := bar_index_Supply_OB
+    YSp12   := OBRefine == 'On' ? SProximal : low[bar_index - bar_index_Supply_OB]
+    XSp1    := bar_index_Supply_OB
+    XSp2    := bar_index_Supply_OB + 1
+    YSd12   :=  OBRefine == 'On' ? SDistal : high[bar_index - bar_index_Supply_OB]
+    XSd1    := bar_index_Supply_OB
+    XSd2    := bar_index_Supply_OB + 1
+
+//Dynamic Drawing Zone
+LinerFunctionDem(Xd1, Yd1, Xd2, Yd2 ,Xp1, Yp1, Xp2, Yp2 , Xn) =>
+    //y = mx + b
+    //m = (y2 - y1) / (x2 - x1)
+    //b = y - mx
+    xd1 = Xd1
+    xd2 = Xd2
+    yd1 = Yd1
+    yd2 = Yd2
+    xdn = Xn 
+    xdnz = Xn 
+    md =  (yd2 - yd1) / (xd2 - xd1)
+    bd = yd1 - md*xd1 //or b = y2 - m*x2
+    Ydnz = md*(xdnz) + bd
+    Ydn = md*(xdn) + bd
+    xp1 = Xp1
+    xp2 = Xp2
+    yp1 = Yp1
+    yp2 = Yp2
+    xpn = Xn 
+    xpnz = Xn 
+    mp =  (yp2 - yp1) / (xp2 - xp1)
+    bp = yp1 - mp*xp1 //or b = y2 - m*x2
+    Ypnz = mp*(xpnz) + bp
+    Ypn = mp*(xpn) + bp
+    var bool DemCheck = true
+    var int DemCounter = 1
+    var line Distal = na
+    var line Proximal = na
+    var line DLine50per = na
+    var linefill fillline = na
+    if Demand_OB_Condition
+        Distal := line.new(xd1, yd1, xd2  , yd1 , color = color.rgb(0, 0, 0 , 45) , style = line.style_dashed , width = 1)
+        Proximal := line.new(xp1, yp1, xd2 , yp1 , color = color.rgb(0, 0, 0 , 45) , style = line.style_dashed , width = 1)
+        DLine50per := line.new(xp1, (yp1+yd1) / 2 , xd2 , (yp1+yd1) / 2  , color = color.rgb(0, 0, 0) , 
+         style = line.style_dotted , width = 1)
+        fillline := linefill.new(Distal ,Proximal ,color = DemBxColor )
+    if ((low > YDp12) or xd1 == YDp12[1]) and (DemCheck == true)
+        DemCounter := DemCounter + 1
+        line.set_x2(Distal, bar_index + 1 )
+        line.set_x2(Proximal,  bar_index + 1)
+        line.set_x2(DLine50per,  bar_index + 1)
+
+    if (low < YDd12) and (low[1] > YDd12)
+        DemCounter := DemCounter
+        DemCheck := false
+        
+    if Demand_OB_Condition
+        DemCounter := 1
+        DemCheck := true
+    [xd1, xd2, yd1, yd2, xdnz, md, bd, Ydnz, xdn, Ydn,    xp1, xp2, yp1, yp2, xpnz, mp, bp, Ypnz, xpn, Ypn]
+
+
+LinerFunctionSup(Xd1, Yd1, Xd2, Yd2 , Xp1, Yp1, Xp2, Yp2 , Xn) =>
+    //y = mx + b
+    //m = (y2 - y1) / (x2 - x1)
+    //b = y - mx
+    xd1 = Xd1
+    xd2 = Xd2 
+    yd1 = Yd1
+    yd2 = Yd2
+    xdn = Xn 
+    xdnz = Xn 
+    md =  (yd2 - yd1) / (xd2 - xd1)
+    bd = yd1 - md*xd1 //or b = y2 - m*x2
+    Ydnz = md*(xdnz) + bd
+    Ydn = md*(xdn) + bd
+    xp1 = Xp1
+    xp2 = Xp2 
+    yp1 = Yp1
+    yp2 = Yp2
+    xpn = Xn 
+    xpnz = Xn 
+    mp =  (yp2 - yp1) / (xp2 - xp1)
+    bp = yp1 - mp*xp1 //or b = y2 - m*x2
+    Ypnz = mp*(xpnz) + bp
+    Ypn = mp*(xpn) + bp
+    var bool SupCheck = true
+    var int SupCounter = 1
+    var line Distal = na
+    var line Proximal = na
+    var line  SLine50per = na
+    var linefill fillline = na
+    if Supply_OB_Condition
+        Distal := line.new(xd1, yd1, xdnz , yd1 , color = color.rgb(0, 0, 0, 45) , style = line.style_dashed , width = 1)
+        Proximal := line.new(xp1, yp1, xpnz  , yp1 , color = color.rgb(0, 0, 0 , 45) , style = line.style_dashed , width = 1)
+        SLine50per :=line.new(xp1, (yp1+yd1) / 2 , xpnz  , (yp1+yd1) / 2  , color = color.rgb(0, 0, 0) , 
+         style = line.style_dotted , width = 1)
+        fillline := linefill.new(Distal ,Proximal ,color = SupBxColor )
+    if ((high < YSp12) or (xd1 == YSp12[1])) and (SupCheck == true)
+        SupCounter := SupCounter + 1
+        line.set_x2(Distal, bar_index + 1 )
+        line.set_x2(Proximal,  bar_index + 1)
+        line.set_x2(SLine50per,  bar_index + 1)
+
+    if (high > YSd12) and (high[1] < YSd12)
+        SupCounter := SupCounter
+        SupCheck := false
+
+    if Supply_OB_Condition
+        SupCounter := 1
+        SupCheck := true
+    [xd1, xd2, yd1, yd2, xdnz, md, bd, Ydnz, xdn, Ydn ,   xp1, xp2, yp1, yp2, xpnz, mp, bp, Ypnz, xpn, Ypn]
+
+
+[DDx1 , DDx2 , DDy1, DDy2, DDxz, DDm, DDb, DDyz, DDxn, DDyn,    DPx1 , DPx2 , DPy1, DPy2, DPxz, DPm, DPb, DPyz, DPxn, DPyn] = LinerFunctionDem(XDd1, YDd12, XDd2, YDd12,    XDp1, YDp12, XDp2, YDp12 , bar_index) 
+[SDx1 , SDx2 , SDy1, SDy2, SDxz, SDm, SDb, SDyz, SDxn, SDyn,    SPx1 , SPx2 , SPy1, SPy2, SPxz, SPm, SPb, SPyz, SPxn, SPyn] = LinerFunctionSup(XSd1, YSd12, XSd2, YSd12 ,   XSp1, YSp12, XSp2, YSp12, bar_index) 
+
+//Alert Condition 
+
+var bool LongSignal = false
+var bool ShortSignal = false
+
+
+var int LockAlertBull = 0
+if low <= YDp12 and low[1] > YDp12 and LockAlertBull == 0  
+    LockAlertBull := 1
+    LongSignal := true
+else
+    LongSignal := false
+    
+if DPy1 != DPy1[1]
+    LockAlertBull := 0
+
+
+var int LockAlertBear = 0
+if high >=  YSp12 and high[1] <  YSp12 and LockAlertBear == 0 
+    LockAlertBear := 1
+    ShortSignal := true
+else
+    ShortSignal := false
+        
+if SPy1 != SPy1[1]
+    LockAlertBear := 0
+
+//call FVG function
+
+FVG.FVGDetector(PFVGFilter, PFVGFilterType, PShowDeFVG, PShowSuFVG)
+//call Liquidity function
+
+Liq.LLF(SPP,DPP,SLLS,DLLS,ShowSHLL,ShowSLLL,ShowDHLL,ShowDLLL)
+
+
+
+
+
+
+
+
+
+
+
+
+Alert.AlertSender(LongSignal  , Alert, AlertName, 'Bullish', 'Order Block Signal', 'Full' ,Frequncy, UTC, MoreInfo, MessageBull, open, high, low, close,0,0,0, YDd12 , YDp12)
+Alert.AlertSender(ShortSignal , Alert, AlertName, 'Bearish', 'Order Block Signal', 'Full' ,Frequncy, UTC, MoreInfo, MessageBear, open, high, low, close,0,0,0, YSd12 , YSp12)

@@ -1,0 +1,12 @@
+//@version=6
+indicator(title="Arnaud Legoux Moving Average", shorttitle="ALMA", overlay=true, timeframe="", timeframe_gaps=true)
+
+TT_OFFSET = "Controls tradeoff between smoothness (closer to 1) and responsiveness (closer to 0)."
+TT_SIGMA  = "This element is a standard deviation that is applied to the combo line in order for it to appear more sharp."
+
+source = close
+lengthInput =  input.int(9,      "Length", minval  = 1)
+offsetInput =  input.float(0.85, "Offset", step = 0.01, tooltip = TT_OFFSET)
+sigmaInput  =  input.float(6,    "Sigma",               tooltip = TT_SIGMA)
+
+plot(ta.alma(source, lengthInput, offsetInput, sigmaInput), "ALMA")

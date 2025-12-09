@@ -1,0 +1,667 @@
+//@version=6
+indicator(shorttitle="Ultimate", title="Ultimate Buy and Sell Indicator", format=format.inherit, overlay=true, timeframe="", timeframe_gaps=true)
+
+///////////////////////////
+/// User Input Settings ///
+///////////////////////////
+
+// Global source for price data  
+group1 = "Use the Ultimate RSI indicator to visualize RSI settings"
+src = input(close, title="Data Source for Price", group=group1)
+
+// Show/Hide All of the specified category
+group2 = "Show/Hide ALL-----------------------------------------------------------------------------------"
+showAllMA = input(false, title="Moving Averages", group=group2, tooltip = "Moving average options are below")
+showBollingerBands = input(true, title="Bollinger Bands", inline="bands", group=group2, tooltip = "Bollinger bands are set to have two layers with different standard deviations to create a thicker band.")
+showBasisPlot = input(true, title="Bollinger Band Basis", inline="bands", group=group2, tooltip = "Dedicated Bollinger Band basis line. Settings are in the Price Bollinger Band settings section below.")
+bandTransparency = input.int(70, step=10, minval=10, maxval=90, title="Band Transparency", inline="bands", group=group2, tooltip="Adjust this to scale how transparent the bands will be. 10 - 90%. Higher number fades the bands away.")
+showWatchSignals = input(true, title="Watch Signals", group=group2, tooltip = "Watch signals are prerequisite Bollinger band events used for generating buy/sell signals. Beware of watch signals when Bollinger Bands are tighter than usual, periods of low volatility can quickly swing in the opposite direction triggering a false signal, so be cautious.")
+showSignals = input(true, title="Buy/Sell Signals", inline="Signals", group=group2, tooltip = "While I am working to make them better, they are not always right or perfect, but they help give an indication of inflection points.")
+showCircles = input(true, title="Add Circles", inline="Signals", group=group2, tooltip = "Draws circles around the buy and sell signals for easier identification.")
+showSignalBackground = input(true, title="Buy/Sell Signal Vertical Lines", group=group2, tooltip = "Colors the background behind the bar before a buy/sell signal is officially set to act as a warning of a potential trade. This is allowed to 'repaint'.")
+showBSBackground = input(false, title="Bought/Sold Colored Background", group=group2, tooltip="Colors the background to represent a previous bought or sold state (always the first in the series). The state stays in effect until the next opposite signal. This can help keep you in a trade or inform you of the direction of the trade if you come in late.")
+showAtrFill = input(false, title="ATR-adjusted fill color zone", group=group2)
+showAtrLines = input(false, title="ATR-adjusted Moving Average and band lines", group=group2)
+
+// Candle coloring and fading
+showRSICandleColors = input(false, title="RSI Colored Candles", group=group2, tooltip = "Be sure to turn off candle colors in main settings for this to work. This creates candles with colors based on zones of RSI values with red being downward momentum and green being upward momentum. Candles are also colored Orange for BUY and Fuschia for SELL. They follow incremental zones of RSI levels which you can view using my Ultimate RSI indicator. Yellow candles are between 45 and 55 RSI (market is choosing a direction if it hangs in this zone, check if higher timeframes are in this area as price tends to make big moves crossing the 50 RSI level. Red candles are below 45 and start darker and get brighter as RSI drops (acceleration downward). They start a darker green over 55 and turn brighter as RSI increases (acceleration upwards). In the extreme cases that RSI is over 80 or under 20 the candles turn white.")
+showMaCandleColors = input(true, title="MA Colored Candles", group=group2, tooltip = "Be sure to turn off candle colors in main settings for this to work. This will color the candles based on the price being over, between, or under two selected moving averages. This helps you track price vs moving average crosses. For instance, if price is under both the 10 and 20, it will be red, once it crosses the 10, it would turn yellow, once it also crosses the 10, it would turn the candles green. (3 stages: Below both, between both, over both)")
+
+group3 = "Watch Signals------------------------------------------------------------------------------------"
+watchSignalLookback = input.int(35, title="# of bars back to use Watch Signals", group=group3, step=5, tooltip="How many bars back to consider a Watch signal valid. Longer values tend to create more inaccurate B/S signals. The reasoning is that as volatility (range of price fluctuations) stabilizes, the bollinger bands tighten, and when price makes a sudden move, it generates a watch signal and then buy or sell signal, fails and then reverses suddenly. We don't want to count these down the road.")
+useRsiWatchSignals = input(true, title="Use RSI Watch Signals", inline="RSI Watch", group=group3, tooltip = "If the RSI Crosses over the lower Bollinger Band it creates a buy watch signal. If it crosses under the upper band it creates a sell watch signal.")
+usePriceBandWatchSignals = input(false, title="Use Price Watch Signals", inline="Price Watch", group=group3, tooltip= "If price crosses the Bollinger Bands this creates a watch signal")
+useAtrWatchSignals = input(false, title="Use ATR Watch Signals", inline="ATR Watch", group=group3)
+// New inputs for watch signal visualization
+showRsiWatchPlot = input(true, title="Show?", inline="RSI Watch", group=group3)
+showPriceWatchPlot = input(false, title="Show?", inline="Price Watch", group=group3)
+showAtrWatchPlot = input(false, title="Show?", inline="ATR Watch", group=group3)
+
+group4 = "RSI Settings------------------------------------------------------------------------------------"
+rsiLength = input.int(32, title="RSI Length", inline="RSI", minval=1, group=group4, tooltip="RSI is not visible, but is used for trade signals. RSI crossing various lines generates signals.")
+rsiMaCalcType = input.string("RMA", title="Calculate RSI with this moving average", options=["SMA", "EMA", "WMA", "RMA"], group=group4, tooltip="The moving average used to calculate the RSI. Will affect signals.")
+rsiMaType = input.string("SMA", title="RSI Bollinger Band Moving Average", inline="RSI MA", options=["SMA", "EMA", "WMA", "RMA"], group=group4, tooltip="The moving average used to calculate the RSI Bollinger Bands and basis lines. Will affect signals.")
+rsiMaLength = input.int(32, title="", inline="RSI MA", minval=1, group=group4)
+rsiMultiplier = input.float(2, minval=1, maxval=3, step=0.1, title="RSI Bollinger Bands Standard Deviation", group=group4, tooltip="This is the standard deviation, and affects Watch signals, which affect Buy and Sell signals.")
+useRsiSmoothing = input(false, title="RSI Smoothing", inline="smoothType", group=group4, tooltip = "Uses the selected moving average type to smooth the RSI")
+useHaSmoothing = input(false, title = 'Heiken Ashi Smoothing', inline = 'smoothType', group=group4)
+smoothingMaType = input.string("RMA", title="", inline="smooth", options=["SMA", "EMA", "WMA", "RMA"], group=group4)
+smoothingLength = input.int(3, title="", inline="smooth", minval=1, group=group4)
+
+group5 = "Price Bollinger Bands Settings-----------------------------------------------------------------------------------"
+priceBasisLength = input.int(20, title="Price BBand Basis Length", group=group5, tooltip="Sets the length to calculate the Price Bollinger Bands and corresponding basis line.")
+priceMaType = input.string("SMA", title="Moving Average Type", options=["SMA", "EMA", "WMA", "RMA"], group=group5, tooltip="The moving average used to calculate the Price BBands. Changes the shape and affects creation of watch signals (and therefore also B/S signals)")
+priceInnerMultiplier = input.float(2.1, minval=1, maxval=4, step=0.1, title="Price Inner BB Multiplier", group=group5, tooltip="Standard deviation for the inner Price Bollinger Band which does NOT affect signals.")
+priceOuterMultiplier = input.float(2.4, minval=2, maxval=6, step=0.1, title="Price Outer BB Multiplier", group=group5, tooltip="Standard deviation for the outer Price Bollinger Band which DOES affect watch signals, which in turn allow Buy and Sell signals.")
+basisColor = input.color(color.orange, title="Bollinger Band Basis Color", group=group5)
+
+group6 = "Upper Bollinger Band Coloring (Uses Moving Average)------------------------------------------------------------------------------------"
+bullBearMaType =  input.string("SMA", title="Upper Band MA Type", options=["SMA", "EMA", "WMA", "RMA"], group=group6, inline="Band Colors", tooltip = "If price is over this moving average the upper Bollinger band will be colored the up color, if under, the down color.")
+bullBearMaLength = input.int(50, step=5, title="", group=group6, inline="Band Colors")
+upperBbColorUp = input.color(color.green, title="Bull", group=group6, inline="Upper Band Colors")
+upperBbColorDown = input.color(color.red, title="Bear", group=group6, inline="Upper Band Colors")
+
+group7 = "Lower Bollinger Band Coloring (Uses Rate of Change)------------------------------------------------------------------------------------"
+rocLength = input.int(10, title="ROC Length", group =group7)
+useRocFilter = input(false, title="Use ROC as a Filter", group =group7)
+lowerBbColorUp = input.color(color.green, title="Bull", group=group7, inline="Lower Band Colors")
+lowerBbColorDown = input.color(color.red, title="Bear", group=group7, inline="Lower Band Colors")
+
+group8 = "Moving Average Settings-----------------------------------------------------------------------------------"
+showMA1 = input(true, inline="ma1", title="MA1", group=group8)
+showMA2 = input(true, inline="ma2", title="MA2", group=group8)
+showMA3 = input(true, inline="ma3", title="MA3", group=group8)
+showMA4 = input(true, inline="ma4", title="MA4", group=group8)
+showMA5 = input(true, inline="ma5", title="MA5", group=group8)
+showMA6 = input(true, inline="ma6", title="MA6", group=group8)
+showMA7 = input(true, inline="ma7", title="MA7", group=group8)
+showMA8 = input(true, inline="ma8", title="MA8", group=group8)
+
+maType1 = input.string("WMA", inline="ma1", title="", options=["SMA", "EMA", "WMA", "RMA"], group=group8)
+maType2 = input.string("WMA", inline="ma2", title="", options=["SMA", "EMA", "WMA", "RMA"], group=group8)
+maType3 = input.string("WMA", inline="ma3", title="", options=["SMA", "EMA", "WMA", "RMA"], group=group8)
+maType4 = input.string("WMA", inline="ma4", title="", options=["SMA", "EMA", "WMA", "RMA"], group=group8)
+maType5 = input.string("WMA", inline="ma5", title="", options=["SMA", "EMA", "WMA", "RMA"], group=group8)
+maType6 = input.string("WMA", inline="ma6", title="", options=["SMA", "EMA", "WMA", "RMA"], group=group8)
+maType7 = input.string("WMA", inline="ma7", title="", options=["SMA", "EMA", "WMA", "RMA"], group=group8)
+maType8 = input.string("WMA", inline="ma8", title="", options=["SMA", "EMA", "WMA", "RMA"], group=group8)
+
+ma1Length = input.int(10, inline="ma1", title="", group=group8)
+ma2Length = input.int(20, inline="ma2", title="", group=group8)
+ma3Length = input.int(50, inline="ma3", title="", group=group8)
+ma4Length = input.int(100, inline="ma4", title="", group=group8)
+ma5Length = input.int(200, inline="ma5", title="", group=group8)
+ma6Length = input.int(300, inline="ma6", title="", group=group8)
+ma7Length = input.int(400, inline="ma7", title="", group=group8)
+ma8Length = input.int(500, inline="ma8", title="", group=group8)
+
+ma1Color = input.color(color.yellow, inline="ma1", title="", group=group8)
+ma2Color = input.color(color.green, inline="ma2", title="", group=group8)
+ma3Color = input.color(color.red, inline="ma3", title="", group=group8)
+ma4Color = input.color(color.purple, inline="ma4", title="", group=group8)
+ma5Color = input.color(color.blue, inline="ma5", title="", group=group8)
+ma6Color = input.color(color.gray, inline="ma6", title="", group=group8)
+ma7Color = input.color(color.orange, inline="ma7", title="", group=group8)
+ma8Color = input.color(color.white, inline="ma8", title="", group=group8)
+
+group9 = "Buy/Sell Signal Event Options------------------------------------------------------------------------------------"
+useRsiSignals = input(true, title="RSI crossing Moving Average", group=group9, tooltip="Uses RSI crossing RSI basis.")
+usePriceSignals = input(false, title="Price crossing BBand basis", group=group9, tooltip="Signals from price crossing Price Bollinger Band Basis")
+useMacdSignals = input(false, title="MACD Signals", group=group9, tooltip="Signals from MACD crossovers.")
+use75Signals = input(true, title="RSI crossing under 75", group=group9, tooltip="Sell signals from crossing under RSI 75")
+use50Signals = input(false, title="RSI crossing over/under 50", group=group9, tooltip="Buy and sell signals from crossing over and under RSI 50")
+use25Signals = input(true, title="RSI crossing over 25", group=group9, tooltip="Buy signals from crossing over RSI 25")
+useRsiMa = input(false, title="Rsi Crossing a Moving Average", group=group9, tooltip="Signals based on RSI crossing a custom length moving average rather than the Basis of the Bollinger Bands. This allows you to change the Bollinger Band moving average type used in the calculation (which will change the shape of the bands) and cross a different moving average without changing watch signal generation. To see these effects, use the Ultimate RSI indicator.")
+rsiMaType2 = input.string("WMA", title="MA Type", inline="rsiMa", options=["SMA", "EMA", "WMA", "RMA"], group=group9)
+rsiMaLength2 = input.int(16, title="Length", inline="rsiMa", minval=1, group=group9, tooltip="Adds another moving average to the RSI that will not affect the Bollinger Bands. This can be used for signals without compromising the watch signals if using a WMA or other moving averages types for the Bands.")
+
+group10 = "Color candles in stages using these moving averages------------------------------------------------------------------------------------"
+// Fast MA Settings
+fastMaType = input.string("WMA", "Fast MA Type", inline="fastMA", options=["SMA", "EMA", "WMA", "RMA"], group=group10)
+fastMaLength = input.int(10, "Length", inline="fastMA", group=group10, tooltip="First level MA - price crossing above turns candles yellow")
+// Slow MA Settings
+slowMaType = input.string("WMA", "Slow MA Type", inline="slowMA", options=["SMA", "EMA", "WMA", "RMA"], group=group10)
+slowMaLength = input.int(20, "Length", inline="slowMA", group=group10, tooltip="Second level MA - price crossing above turns candles green")
+// Color Settings
+overMaColor = input.color(color.green, title="Above Both MAs", group=group10, inline="colors")
+midMaColor = input.color(color.yellow, title="Between MAs", group=group10, inline="colors")
+underMaColor = input.color(color.red, title="Below Both MAs", group=group10, inline="colors")
+
+group11 = "ATR Adjusted Bands-----------------------------------------------------------------------------------"
+atrPeriod = input.int(20, title="ATR Period", group=group11)
+maPeriod = input.int(20, title="ATR MA Period", group=group11)
+atrMult = input.float(1.5, minval=1, step=0.1, title="ATR Band multiplier", group=group11, tooltip = "Can make the ATR bands wider.")
+atrMaType = input.string("WMA", title="ATR Moving Average Type", options=["SMA", "EMA", "WMA", "RMA"], group=group11, tooltip="The moving average used to calculate the ATR moving average.")
+atrFillColor = input.color(color.rgb(255, 59, 173), title="ATR-adjusted band fill color", group=group11)
+atrLineColor = input.color(color.rgb(255, 59, 173), title="ATR-adjusted band line color", group=group11)
+fillTransp = input.int(80, title="Fill transparency", group=group11)
+atrBollingerBands = input(true, title="ATR Bollinger Bands", group=group11, tooltip = "Switches from ATR bands to ATR with Bollinger Bands for a different way to use the ATR.")
+
+group12 = "Alerts------------------------------------------------------------------------------------"
+enableAdvancedAlerts = input(true, title="Advance alerts one candle", group=group12, 
+     tooltip="This will use the warning background as the signal for buy/sell alerts. 
+     On higher timeframes, this could lead to alerts for signals that end up failing 
+     and price could reverse. On sub-1minute timeframes this should be more reliable.")
+
+
+//////////////////
+// Calculations //
+//////////////////
+
+/////////////////
+// Heikin Ashi //
+/////////////////
+ha_close = (open + high + low + close) / 4
+ha_open = float(na)
+ha_open := na(ha_open[1]) ? (open + close) / 2 : (nz(ha_open[1]) + nz(ha_close[1])) / 2
+ha_high = math.max(high, math.max(ha_open, ha_close))
+ha_low = math.min(low, math.min(ha_open, ha_close))
+
+// Source selection based on HA toggle
+initialSrc = useHaSmoothing ? ha_close : src
+
+
+///////////////////////////////////////
+// Moving Average Selection Function //
+///////////////////////////////////////
+MA(src, Length, type) =>
+    switch type
+        "SMA" => ta.sma(src, Length)
+        "EMA" => ta.ema(src, Length)
+        "WMA" => ta.wma(src, Length)
+        "RMA" => ta.rma(src, Length)
+
+
+////////////////////////
+// ATR-adjusted Bands //
+////////////////////////
+// Calculate the ATR and selected type of Moving Average
+atrValue = ta.atr(atrPeriod)
+atrMaValue = MA(src, maPeriod, atrMaType)
+// Calculate upper, middle, and lower ATR bands
+upperAtrBand = atrMaValue + atrValue * atrMult
+middleAtrBand = atrMaValue
+lowerAtrBand = atrMaValue - atrValue * atrMult
+// Bollinger Bands
+upperAtrBb = atrMaValue + atrValue + atrMult * ta.stdev(src, maPeriod)
+lowerAtrBb = atrMaValue - atrValue - atrMult * ta.stdev(src, maPeriod)
+// Determine line transparency based on conditions
+lineTransparency = showAtrLines ? 0 : 100
+// Adjusted line color
+adjustedLineColor = color.new(atrLineColor, lineTransparency)
+// Conditional plots
+upperAtrPlot = plot(atrBollingerBands ? upperAtrBb : upperAtrBand, color= adjustedLineColor)
+middleAtrPlot = plot(middleAtrBand, color= adjustedLineColor)
+lowerAtrPlot = plot(atrBollingerBands ? lowerAtrBb : lowerAtrBand, color= adjustedLineColor)
+// Plot the upper and lower bands conditionally
+fillColor = showAtrFill ? color.new(atrFillColor, fillTransp) : na
+fill(upperAtrPlot, lowerAtrPlot, color=fillColor, title="ATR-Adjusted Band Fill")
+
+
+////////////////////////////////////////////////////////
+// Rate of Change (ROC) (Colors lower Bollinger Band) //
+////////////////////////////////////////////////////////
+previous = ta.valuewhen(true, src, rocLength)
+roc = ((src - previous) / previous) * 100
+// Determine if ROC is bullish or bearish
+rocBullish = (roc > 0)
+rocBearish = (roc < 0) 
+// Color ROC
+rocColor = rocBullish ? lowerBbColorUp : lowerBbColorDown
+
+
+////////////////////////////////////////////////
+/// MACD Calculations (NOT VISIBLE ON CHART) ///
+////////////////////////////////////////////////
+// Standard MACD constants
+const int MACD_FAST_LENGTH = 12
+const int MACD_SLOW_LENGTH = 26
+const int MACD_SIGNAL_LENGTH = 9
+// MACD Calculations with standard settings
+macd = ta.ema(src, 12) - ta.ema(src, 26)
+signal = ta.ema(macd, 9)
+
+
+///////////////////////////////////////////////////////////////////
+/// Calculate RSI with Bollinger Bands [Not visible on chart] ///
+///////////////////////////////////////////////////////////////////
+// RSI calculations using the selected moving average types
+up = switch rsiMaCalcType
+    'SMA' => ta.sma(math.max(ta.change(initialSrc), 0), rsiLength)
+    'EMA' => ta.ema(math.max(ta.change(initialSrc), 0), rsiLength)
+    'WMA' => ta.wma(math.max(ta.change(initialSrc), 0), rsiLength)
+    'RMA' => ta.rma(math.max(ta.change(initialSrc), 0), rsiLength)
+down = switch rsiMaCalcType
+    'SMA' => ta.sma(-math.min(ta.change(initialSrc), 0), rsiLength)
+    'EMA' => ta.ema(-math.min(ta.change(initialSrc), 0), rsiLength)
+    'WMA' => ta.wma(-math.min(ta.change(initialSrc), 0), rsiLength)
+    'RMA' => ta.rma(-math.min(ta.change(initialSrc), 0), rsiLength)
+rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+
+
+///////////////////
+// RSI Smoothing //
+///////////////////
+// Calculate the selected moving average of RSI and switch to smoothed RSI if smoothing is enabled
+smoothedRsi = useRsiSmoothing ? MA(rsi, smoothingLength, smoothingMaType) : rsi
+
+
+/////////////////////////
+// RSI Moving Averages //
+/////////////////////////
+// RSI Moving Average for RSI Bollinger Band Basis
+rsiMA1 = MA(smoothedRsi, rsiMaLength, rsiMaType)
+// Additional RSI moving average for additional signal option
+rsiMA2 = MA(smoothedRsi, rsiMaLength2, rsiMaType2)
+// RSI Bollinger Band Standard Deviation
+rsiDeviation = ta.stdev(smoothedRsi, rsiMaLength)
+// RSI Bollinger Bands
+upperRsi = rsiMA1 + rsiMultiplier * rsiDeviation
+lowerRsi = rsiMA1 - rsiMultiplier * rsiDeviation
+
+
+/////////////////////////////////////////////////
+/// Calculate 2 Bollinger Bands for the Price ///
+/////////////////////////////////////////////////
+// Function to calculate Bollinger Bands with flexibility to change MA type
+calculateBollingerBands(src, priceBasisLength, priceInnerMultiplier, priceOuterMultiplier, priceMaType) =>
+    priceBasis = MA(src, priceBasisLength, priceMaType)
+    priceInnerDeviation = priceInnerMultiplier * ta.stdev(src, priceBasisLength)
+    priceOuterDeviation = priceOuterMultiplier * ta.stdev(src, priceBasisLength)
+    [priceBasis, priceBasis + priceInnerDeviation, priceBasis - priceInnerDeviation, 
+         priceBasis + priceOuterDeviation, priceBasis - priceOuterDeviation]
+// Using calculateBollingerBands function for the basis lines
+[priceBasis, upperPriceInner, lowerPriceInner, upperPriceOuter, lowerPriceOuter] = 
+     calculateBollingerBands(src, priceBasisLength, priceInnerMultiplier, priceOuterMultiplier, priceMaType)
+
+
+////////////////////////////////////////////////////////////////////////////////////
+/// Trend Analysis and Visualization:                                            ///
+/// This section sets Bollinger Band colors based on the price over or under     ///
+/// a selected moving average (upper band) and ROC over or under 0 (lower band). ///
+/// It also controls the transparency of the bands based on a user input.        ///
+////////////////////////////////////////////////////////////////////////////////////
+bullOrBear = MA(src, bullBearMaLength, bullBearMaType)
+// Bullish/Bearish upper Bollinger Band
+maBullish = src >= bullOrBear
+maBearish = src < bullOrBear
+transparency = (bandTransparency)
+// Initialize and set fill color for the upper set of bands based on price relative to a selected moving average
+var color upperBandColor = na
+upperBandColor := showBollingerBands ? (maBullish ? color.new(upperBbColorUp, transparency) : color.new(upperBbColorDown, transparency)) : na
+// Initialize and set fill color for the lower set of bands based on Rate of Change
+var color lowerBandColor = na
+lowerBandColor := showBollingerBands ? (rocBullish ? color.new(lowerBbColorUp, transparency) : color.new(lowerBbColorDown, transparency)) : na
+// Plot invisible lines for the Upper and Lower Bollinger Bands for use in fill function
+U1 = plot(upperPriceInner, color=na)
+L1 = plot(lowerPriceInner, color=na)
+U2 = plot(upperPriceOuter, color=na)
+L2 = plot(lowerPriceOuter, color=na)
+// Fill the region between the Upper Bollinger Bands and Lower Bollinger Bands based on trend conditions
+fill(U1, U2, title="Upper Bollinger Bands MA Based Fill", color=upperBandColor)
+fill(L1, L2, title="Lower Bollinger Bands ROC Based Fill", color=lowerBandColor)
+// Plot the Basis line, but only if the user has enabled 'showBollingerBands' and 'showBasisPlot'
+plot(showBasisPlot ? priceBasis : na, title="Price Basis", color=basisColor)
+
+
+/////////////////////////////////////
+/// User Selected Moving Averages ///
+/////////////////////////////////////
+// Calculate moving averages based on the selected type
+ma1 = MA(src, ma1Length, maType1)
+ma2 = MA(src, ma2Length, maType2)
+ma3 = MA(src, ma3Length, maType3)
+ma4 = MA(src, ma4Length, maType4)
+ma5 = MA(src, ma5Length, maType5)
+ma6 = MA(src, ma6Length, maType6)
+ma7 = MA(src, ma7Length, maType7)
+ma8 = MA(src, ma8Length, maType8)
+
+// Plot moving averages based on user-selected type
+plot(showAllMA and showMA1 ? ma1 : na, "MA1", color=ma1Color)
+plot(showAllMA and showMA2 ? ma2 : na, "MA2", color=ma2Color)
+plot(showAllMA and showMA3 ? ma3 : na, "MA3", color=ma3Color)
+plot(showAllMA and showMA4 ? ma4 : na, "MA4", color=ma4Color)
+plot(showAllMA and showMA5 ? ma5 : na, "MA5", color=ma5Color)
+plot(showAllMA and showMA6 ? ma6 : na, "MA6", color=ma6Color)
+plot(showAllMA and showMA7 ? ma7 : na, "MA7", color=ma7Color)
+plot(showAllMA and showMA8 ? ma8 : na, "MA8", color=ma8Color)
+
+
+////////////
+// EVENTS //
+////////////
+// Price band crosses
+priceOverUpperOuter = (high > upperPriceOuter [1])
+priceUnderLowerOuter = (low < lowerPriceOuter [1])
+
+// Price crossing Bollinger Band Basis
+priceCrossOverBasis = ta.crossover(src, priceBasis)
+priceCrossUnderBasis = ta.crossunder(src, priceBasis)
+
+//RSI Band crosses
+rsiCrossOverLower = ta.crossover(smoothedRsi, lowerRsi) 
+rsiCrossUnderUpper = ta.crossunder(smoothedRsi, upperRsi) 
+
+// RSI Cross Basis
+rsiCrossOverBasis = ta.crossover(smoothedRsi, rsiMA1)
+rsiCrossUnderBasis = ta.crossunder(smoothedRsi, rsiMA1)
+
+// RSI Cross Additional Moving Average
+rsiCrossOverMa = ta.crossover(smoothedRsi, rsiMA2)
+rsiCrossUnderMa = ta.crossunder(smoothedRsi, rsiMA2)
+
+// RSI Value Crosses
+rsiCrossUnder75 = ta.crossunder(smoothedRsi, 75) 
+rsiCrossOver70 = ta.crossover(smoothedRsi, 70) 
+rsiCrossUnder50 = ta.crossunder(smoothedRsi, 49) 
+rsiCrossOver50 = ta.crossover(smoothedRsi, 51) 
+rsiCrossUnder30 = ta.crossunder(smoothedRsi, 30) 
+rsiCrossOver25 = ta.crossover(smoothedRsi, 25) 
+
+// MACD crosses 
+macdBuy = ta.crossover(macd, signal)
+macdSell = ta.crossunder(macd, signal)
+
+// For ATR Watch signals
+overAtrUpper = atrBollingerBands ? ta.crossover(src, upperAtrBb) : ta.crossunder(src, upperAtrBand)
+underAtrLower = atrBollingerBands ? ta.crossunder(src, lowerAtrBb) : ta.crossunder(src, lowerAtrBand)
+
+
+////////////////////////////////////////////////
+// MA Candle Color Events                     //
+// (Also used as filter for buy/sell signals) //
+////////////////////////////////////////////////
+// Calculate MAs
+fastMa = MA(src, fastMaLength, fastMaType)
+slowMa = MA(src, slowMaLength, slowMaType)
+
+// Determine trend states
+aboveFastMa = src >= fastMa
+aboveSlowMa = src >= slowMa
+belowFastMa = src < fastMa
+belowSlowMa = src < slowMa
+
+// For coloring candles based on moving averages
+// 1) Price is below both fastMa and slowMa
+bool belowBoth   = src < fastMa and src < slowMa
+// 2) Price is between the two MAs (above fast but below slow OR below fast but above slow)
+bool betweenBoth = (src >= fastMa and src < slowMa) or (src < fastMa and src >= slowMa)
+// 3) Price is above both fastMa and slowMa
+bool aboveBoth   = src >= fastMa and src >= slowMa
+
+////////////////
+// ROC Filter //
+////////////////
+rocAllowBuy = useRocFilter ? rocBullish : true
+rocAllowSell = useRocFilter ? rocBearish : true
+
+
+/////////////////
+// Trade Logic //
+/////////////////
+//
+// This sets the default states for various things to false until something later changes it to true.
+var bool bought = false
+var bool sold = false
+var int[] buyWatchArray = array.new_int(na)
+var int[] sellWatchArray = array.new_int(na)
+bool plotBuy = false
+bool plotSell = false
+bool plotBuyBG = false
+bool plotSellBG = false
+//
+///////////////////
+// Watch Signals //
+///////////////////
+//
+// Buy watch signals (Orange squares)
+// Also ensures that the bar has closed before allowing it to be passed on.
+buyWatch1 = (usePriceBandWatchSignals) and (priceUnderLowerOuter) and (barstate.isconfirmed)
+buyWatch2 = (useRsiWatchSignals) and (rsiCrossOverLower) and (barstate.isconfirmed)
+buyWatch3 = (useRsiWatchSignals) and (rsiCrossUnder30) and (barstate.isconfirmed)
+buyWatch4 = (useAtrWatchSignals) and (underAtrLower) and (barstate.isconfirmed)
+//
+// Sell watch signals (Fuschia squares) 
+sellWatch1 = (usePriceBandWatchSignals) and (priceOverUpperOuter) and (barstate.isconfirmed)
+sellWatch2 = (useRsiWatchSignals) and (rsiCrossUnderUpper) and (barstate.isconfirmed)
+sellWatch3 = (useRsiWatchSignals) and (rsiCrossOver70) and (barstate.isconfirmed)
+sellWatch4 = (useAtrWatchSignals) and (overAtrUpper) and (barstate.isconfirmed)
+// 
+// Watch signal consolidation
+bool buyWatched = buyWatch1 or buyWatch2 or buyWatch3 or buyWatch4
+bool sellWatched = sellWatch1 or sellWatch2 or sellWatch3 or sellWatch4
+// 
+//Buy signal events 
+buySignal1 = (useRsiSignals and rsiCrossOverBasis)
+buySignal2 = (usePriceSignals and priceCrossOverBasis)
+buySignal3 = (use50Signals and rsiCrossOver50)
+buySignal4 = (use25Signals and rsiCrossOver25)
+buySignal5 = (useMacdSignals and macdBuy)
+buySignal6 = (useRsiMa and rsiCrossOverMa)
+// 
+//Sell signal events
+sellSignal1 = (useRsiSignals and rsiCrossUnderBasis)
+sellSignal2 = (use50Signals and rsiCrossUnder50)
+sellSignal3 = (usePriceSignals and priceCrossUnderBasis)
+sellSignal4 = (use75Signals and rsiCrossUnder75)
+sellSignal5 = (useMacdSignals and macdSell)
+sellSignal6 = (useRsiMa and rsiCrossUnderMa)
+
+
+////////////////////////////////
+// Watch Signal Linear Arrays //
+////////////////////////////////
+// Every buy or sell watch signal adds a 1 into the array for that candle at close. 
+// If there is no watch signal, it does nothing leaving the space empty. 
+array.push(buyWatchArray, buyWatched ? 1 : na)
+array.push(sellWatchArray, sellWatched ? 1 : na)
+// While loops check if the size of the array is greater than the lookback period.
+while array.size(buyWatchArray) > watchSignalLookback
+// Every bar that passes causes the array to grow longer than the lookback period. 
+// The shift command then essentially deletes the last entry to maintain the array at the size of the lookback period.    
+    array.shift(buyWatchArray)
+while array.size(sellWatchArray) > watchSignalLookback
+    array.shift(sellWatchArray)
+// This checks to see if the sum of the 1's in the array is greater than or equal to 1. 
+// A buy or sell signal only requires a single watch signal in order to be allowed.
+buyWatchSumMet = (array.sum(buyWatchArray) >= 1) 
+sellWatchSumMet = (array.sum(sellWatchArray) >= 1) 
+// If the number is 1 or higher, then it says the buy or sell watch quota has been met.
+buyWatchMet = (buyWatchSumMet)
+sellWatchMet = (sellWatchSumMet)
+// This combines the various buy and sell signals types into one name.
+combinedBuySignals = buySignal1 or buySignal2 or buySignal3 or buySignal4 or buySignal5 or buySignal6
+combinedSellSignals = sellSignal1 or sellSignal2 or sellSignal3 or sellSignal4 or sellSignal5 or sellSignal6
+
+
+////////////////////////
+// Buy and Sell logic //
+////////////////////////
+// Buy and sell signal background (used for advanced alerts at likely buy/sell points)
+// This checks that there has been a buy watch and that there are no filters denying a buy signal background. 
+if (combinedBuySignals) and (buyWatchMet) and (rocAllowBuy)
+    // If the above checks out, it sets this to true and will color the background behind the current bar every time 
+    // it gets triggered, even intrabar, turning itself on and off. This is called repainting.
+    plotBuyBG := true
+// This does the same for sell signals.
+else if (combinedSellSignals) and (sellWatchMet) and (rocAllowSell)
+    plotSellBG := true
+// This means that if neither are true, it resets to false.
+else 
+    plotBuyBG := false
+    plotSellBG := false
+//
+// This requires that the bar has closed (new bar has started) before allowing the state to change to 
+// bought or sold and showing a buy or sell signal and changing the candle color. This will also permanently set 
+// the background color of that bar. 
+if (combinedBuySignals) and (buyWatchMet) and (barstate.isconfirmed) and (rocAllowBuy)
+    bought := true
+    // When it switches to a bought state, then it resets the sell state to false.
+    sold := false
+    plotBuy := true
+    // This resets the watch signal arrays.
+    array.clear(buyWatchArray)
+    array.clear(sellWatchArray)
+else if (combinedSellSignals) and (sellWatchMet) and (barstate.isconfirmed) and (rocAllowSell)
+    sold := true
+    bought := false
+    plotSell := true
+    array.clear(sellWatchArray)
+    array.clear(buyWatchArray)
+else 
+    plotBuy := false
+    plotSell := false
+
+// Allows for alerts for buy and sell signals based on either advanced and confirmed or only confirmed signals, 
+// depending on the user setting selection.)
+alertcondition(enableAdvancedAlerts ? plotBuyBG : plotBuy, title='Buy signal', message='Buy signal detected')
+alertcondition(enableAdvancedAlerts ? plotSellBG : plotSell, title='Sell signal', message='Sell signal detected')
+// Buy and Sell Signal triangles and text
+plotshape(showSignals and plotBuy  ? true : false, 
+     title="BUY/LONG", 
+     location=location.belowbar, 
+     color=color.new(color.orange,0), 
+     style=shape.triangleup,
+     size=size.tiny)
+plotshape(showSignals and plotSell ? true : false, 
+     title="SELL/SHORT", 
+     location=location.abovebar, 
+     color=color.new(color.fuchsia,0), 
+     style=shape.triangledown,
+     size=size.tiny)
+// This is the Buy and Sell Warning/Signal Vertical Colored Background used for additional visual indication of a buy or sell signal
+bgcolor(showSignalBackground and plotBuyBG  ? color.new(color.orange, 80) : na)
+bgcolor(showSignalBackground and plotSellBG ? color.new(color.fuchsia, 80) : na)
+// Buy and sell signal circles used for further visual identification of signals on the chart
+// They have varying transparencies for a cool effect. 
+B1 = color.new(color.orange, 50) 
+B2 = color.new(color.orange, 65)
+B3 = color.new(color.orange, 85)
+S1 = color.new(color.fuchsia, 50) 
+S2 = color.new(color.fuchsia, 65)
+S3 = color.new(color.fuchsia, 85)
+// Checks to see that signals are to be shown, looks to see if circles are desired, 
+// checks to see if there's a valid signal and then creates it at the top or bottom 
+// of the bar depending on which signal type. There are 3 sizes with of circles to make a sort of target look.
+plotshape(showSignals and showCircles and plotBuy  ? low  : na, color= B1, location=location.absolute, style=shape.circle, size=size.tiny)
+plotshape(showSignals and showCircles and plotBuy  ? low  : na, color= B2, location=location.absolute, style=shape.circle, size=size.small)
+plotshape(showSignals and showCircles and plotBuy  ? low  : na, color= B3, location=location.absolute, style=shape.circle, size=size.normal)
+plotshape(showSignals and showCircles and plotSell ? high : na, color= S1, location=location.absolute, style=shape.circle, size=size.tiny)
+plotshape(showSignals and showCircles and plotSell ? high : na, color= S2, location=location.absolute, style=shape.circle, size=size.small)
+plotshape(showSignals and showCircles and plotSell ? high : na, color= S3, location=location.absolute, style=shape.circle, size=size.normal)
+// Colors the background green if in a bought state, red if in a sold state. 
+bgcolor(showBSBackground and bought ? color.new(color.green, 90) : na)
+bgcolor(showBSBackground and sold   ? color.new(color.red, 90) : na)
+
+// Static colors for buy and sell watch signals with 20% transparency
+var color buyWatchColor = color.new(color.orange, 20)
+var color sellWatchColor = color.new(color.fuchsia, 20)
+
+// Static shapes for different watch signal types
+var string rsiWatchShape = "square"    // RSI watch signals use squares
+var string priceWatchShape = "diamond" // Price watch signals use diamonds
+var string atrWatchShape = "circle"    // ATR watch signals use circles
+
+// Get static shape style for each watch signal type
+getWatchShape(watchType) =>
+    switch watchType
+        "rsi" => shape.square
+        "price" => shape.diamond
+        "atr" => shape.circle
+
+// Plot watch signals using ternary operators
+// RSI Watch Signals
+plotshape(showWatchSignals and showRsiWatchPlot and (buyWatch2 or buyWatch3) ? true : false,
+         title="RSI Buy Watch", location=location.belowbar, color=buyWatchColor,
+         style=getWatchShape("rsi"), size=size.tiny)
+plotshape(showWatchSignals and showRsiWatchPlot and (sellWatch2 or sellWatch3) ? true : false,
+         title="RSI Sell Watch", location=location.abovebar, color=sellWatchColor,
+         style=getWatchShape("rsi"), size=size.tiny)
+
+// Price Band Watch Signals
+plotshape(showWatchSignals and showPriceWatchPlot and buyWatch1 ? true : false,
+         title="Price Buy Watch", location=location.belowbar, color=buyWatchColor,
+         style=getWatchShape("price"), size=size.tiny)
+plotshape(showWatchSignals and showPriceWatchPlot and sellWatch1 ? true : false,
+         title="Price Sell Watch", location=location.abovebar, color=sellWatchColor,
+         style=getWatchShape("price"), size=size.tiny)
+
+// ATR Watch Signals
+plotshape(showWatchSignals and showAtrWatchPlot and buyWatch4 ? true : false,
+         title="ATR Buy Watch", location=location.belowbar, color=buyWatchColor,
+         style=getWatchShape("atr"), size=size.tiny)
+plotshape(showWatchSignals and showAtrWatchPlot and sellWatch4 ? true : false,
+         title="ATR Sell Watch", location=location.abovebar, color=sellWatchColor,
+         style=getWatchShape("atr"), size=size.tiny)
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/// This section handles candle coloring based on RSI levels (option 1) & Bull/Bear trend (option 2)     ///
+/// as well as the color of the candles when there is a buy or sell signal (if turned on).               ///
+/// NOTE: If MA Candles are selected, the candles will be brighter when the Bollinger Bands are          ///
+/// wider (higher volatility) and will darken when the Bollinger Bands are narrowing (lower volatility). ///
+/// I added this feature so you can still visualize the volatility without having to clutter the screen  ///
+/// with Bollinger Bands.                                                                                ///
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Ensure Mutual Exclusivity of Candle Coloring using ternary operators
+showRSICandleColors := showRSICandleColors ? true : showMaCandleColors ? false : showRSICandleColors
+showMaCandleColors := showMaCandleColors ? true : showRSICandleColors ? false : showMaCandleColors
+
+// Define color zones
+oneHundredTo85 = showRSICandleColors and smoothedRsi <= 100 and smoothedRsi >= 85
+eightyFiveTo75 = showRSICandleColors and smoothedRsi < 85 and smoothedRsi >= 75
+seventyFiveTo70 = showRSICandleColors and smoothedRsi < 75 and smoothedRsi >= 70
+seventyTo65 = showRSICandleColors and smoothedRsi < 70 and smoothedRsi >= 65
+sixtyFiveTo60 = showRSICandleColors and smoothedRsi < 65 and smoothedRsi >= 60
+sixtyToYellowHigh = showRSICandleColors and smoothedRsi < 60 and smoothedRsi >= 55
+yellowHighToYellowLow = showRSICandleColors and smoothedRsi < 55 and smoothedRsi >= 45
+yellowLowTo40 = showRSICandleColors and smoothedRsi < 45 and smoothedRsi >= 40
+fourtyTo35 = showRSICandleColors and smoothedRsi < 40 and smoothedRsi >= 35
+thirtyFiveTo30 = showRSICandleColors and smoothedRsi < 35 and smoothedRsi >= 30
+thirtyTo25 = showRSICandleColors and smoothedRsi < 30 and smoothedRsi >= 25
+twentyFiveTo15 = showRSICandleColors and smoothedRsi < 25 and smoothedRsi >= 15
+fifteenTo0 = showRSICandleColors and smoothedRsi < 15 and smoothedRsi >= 0
+
+// Assign RSI-based colors
+RsiCandleColor =
+     oneHundredTo85 ? color.new(color.white, 0) :
+     eightyFiveTo75 ? color.new(color.lime, 0) :
+     seventyFiveTo70 ? color.new(color.lime, 0) : 
+     seventyTo65 ? color.new(color.green, 0): 
+     sixtyFiveTo60 ? color.new(color.green, 0) : 
+     sixtyToYellowHigh ? color.new(color.green, 0) : 
+     yellowHighToYellowLow ? color.new(color.yellow, 0) :
+     yellowLowTo40 ? color.new(color.red, 0) :
+     fourtyTo35 ? color.new(color.red, 0) :
+     thirtyFiveTo30 ? color.new(color.red, 0) : 
+     thirtyTo25 ? color.new(color.red, 0 ) : 
+     twentyFiveTo15 ? color.new(color.red, 0) : 
+     fifteenTo0 ? color.new(color.white, 0) : na 
+
+// Now assign final color based on those three conditions
+color finalMaColor =
+     aboveBoth
+         ? color.new(overMaColor, 0)      // green
+     : betweenBoth
+         ? color.new(midMaColor, 0)       // yellow
+     : color.new(underMaColor, 0)       // red
+
+
+// If the user has chosen “MA Colored Candles,” use our finalMaColor, otherwise na
+maCandleColor = showMaCandleColors ? finalMaColor : na
+
+// If show signals is checked it will allow signals to plot
+buySignalCandle = showSignals and plotBuy
+sellSignalCandle = showSignals and plotSell
+
+// Determine the final candle color
+CandleColor = 
+     buySignalCandle ? color.new(color.orange, 0) : 
+     sellSignalCandle ? color.new(color.fuchsia, 0) : 
+     showRSICandleColors ? RsiCandleColor : 
+     showMaCandleColors ? maCandleColor : na
+
+// Plot the candles with custom color for body, wick, and border
+plotcandle(open, high, low, close, color=CandleColor, wickcolor=CandleColor, bordercolor=CandleColor)

@@ -1,0 +1,303 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © makit0
+// 
+// VOLUME PROFILE INDICATOR v0.5.4 beta
+// 
+// Volume Profile is suitable for day and swing trading on stock and futures markets, is a volume based indicator that gives you 6 key values for each session: POC, VAH, VAL, profile HIGH, LOW and MID levels. This project was born on the idea of plotting the RTH sessions Value Areas for /ES in an automated way, but you can select between 3 different sessions: RTH, GLOBEX and FULL sessions.
+// Some basic concepts:
+// - Volume Profile calculates the total volume for the session at each price level and give us market generated information about what price and range of prices are the most traded (where the value is)
+// - Value Area (VA): range of prices where 70% of the session volume is traded
+// - Value Area High (VAH): highest price within VA
+// - Value Area Low (VAL): lowest price within VA
+// - Point of Control (POC): the most traded price of the session (with the most volume)
+// - Session HIGH, LOW and MID levels are also important
+// 
+// There are a huge amount of things to know of Market Profile and Auction Theory like types of days, types of openings, relationships between value areas and openings... for those interested Jim Dalton's work is the way to come
+// I'm in my 2nd trading year and my goal for this year is learning to daytrade the futures markets thru the lens of Market Profile
+// 
+// For info on Volume Profile: TV Volume Profile wiki page at https://www.tradingview.com/wiki/Volume_Profile
+// For info on Market Profile and Market Auction Theory: Jim Dalton's book Mind over markets (this is a MUST)
+// 
+// BE AWARE: this indicator is based on the current chart's time interval and it only plots on 1, 2, 3, 5, 10, 15 and 30 minutes charts.
+// This is the correlation table TV uses in the Volume Profile Session Volume indicator (from the wiki above)
+// (Chart Timeframe) => Indicator Timeframe
+// (1 to 5) => 1
+// (6 to 15) => 5
+// (16 to 30) => 10
+// (31 to 60) => 15
+// (61 to 120) => 30
+// (121 to 1D) => 60
+// This indicator doesn't follow that correlation, it doesn't get the volume data from a lower timeframe, it gets the data from the current chart resolution.
+// 
+// FEATURES
+// - 6 key values for each session: POC (solid yellow), VAH (solid red), VAL (solid green), profile HIGH (dashed silver), LOW (dashed silver) and MID (dotted silver) levels 
+// - 3 sessions to choose for: RTH, GLOBEX and FULL
+// - select the numbers of sessions to plot by adding 12 hours periods back in time
+// - show/hide POC
+// - show/hide VAH & VAL
+// - show/hide session HIGH, LOW & MID levels
+// - highlight the periods of time out of the session (silver)
+// - extend the plotted lines all the way to the right, be careful this can turn the chart unreadable if there are a lot of sessions and lines plotted
+// 
+// SETTINGS
+// - Session: select between RTH (8:30 to 15:15 CT), GLOBEX (17:00 to 8:30 CT) and FULL (17:00 to 15:15 CT) sessions. RTH by default
+// - Last 12 hour periods to show: select the deph of the study by adding periods, for example, 60 periods are 30 natural days and around 22 trading days. 1 period by default
+// - Show POC (Point of Control): show/hide POC line. true by default
+// - Show VA (Value Area High & Low): show/hide VAH & VAL lines. true by default
+// - Show Range (Session High, Low & Mid): show/hide session HIGH, LOW & MID lines. true by default
+// - Highlight out of session: show/hide a silver shadow over the non session periods. true by default
+// - Extension: Extend all the plotted lines to the right. false by default
+// 
+// HOW TO SETUP
+// BE AWARE THIS INDICATOR PLOTS ONLY IN THE FOLLOWING CHART RESOLUTIONS: 1, 2, 3, 5, 10, 15 AND 30 MINUTES CHARTS. YOU MUST SELECT ONE OF THIS RESOLUTIONS TO THE INDICATOR BE ABLE TO PLOT
+// - By default this indicator plots all the levels for the last RTH session within the last 12 hours, if there is no plot try to adjust the 12 hours periods until the seesion and the periods match
+// - For Globex/Full sessions just select what you want from the dropdown menu and adjust the periods to plot the values
+// - Show or hide the levels you want with the 3 groups: POC line, VA lines and Session Range lines
+// - The highlight and extension options are for a better visibility of the levels as POC or VAH/VAL
+// 
+// THANKS TO
+// @watsonexchange for all the help, ideas and insights on this and the last two indicators (Market Delta & Market Internals) I'm working on my way to a 'clean chart' but for me it's not an easy path
+// @PineCoders for all the amazing stuff they do and all the help and tools they provide, in special the Script-Stopwatch at https://www.tradingview.com/script/rRmrkRDr-Script-Stopwatch-PineCoders-FAQ/ that was key in lowering this indicator's execution time 
+// All the TV and Pine community, open source and shared knowledge are indeed the best way to help each other
+// 
+// VERSIONS
+// *v0.5.1beta
+// - fixed the starting of globex and full sessions on sunday
+// 
+// *v0.5.2beta
+// - added Kolkata cash session
+// 
+// *v0.5.3beta
+// - allow calculation only once per bar at barstate.isconfirmed
+// - fixed POC and VA calculations
+// - added version to short title
+// 
+// *v0.5.4beta
+// - fixed VA calculations at range extremes
+// 
+// GOOD LUCK AND HAPPY TRADING
+// 
+//@version=4
+study('Volume_Profile_v0.5.4beta',shorttitle='VP_v054b',overlay=true,precision=2)
+
+// menu inputs
+mode = input('RTH', 'Session', options=['RTH', 'GLOBEX', 'FULL'])
+periods = input(1,'Last 12 hour periods to show',minval=1,maxval=240)
+showPOC = input(true,'Show POC (Point of Control)')
+showVA = input(true,'Show VA (Value Area High & Low)')
+showRange = input(true,'Show Range (Session High, Low & Mid)')
+highlight = input(true,'Highlight out of session')
+extension = input(false,'Extension')
+
+// loops variables
+var int firstBar = 0
+var int totalBars = 0
+var float endOfRange = 0
+// key levels variables
+var float rthHigh = 0
+var float rthLow = 0
+var float rthMid = 0
+var float rthVol = 0
+var float rthTicks = 0
+var float barTicks = 0
+var float barVol = 0
+var float levelVol = 0
+var float POC = na
+var float VAH = na
+var float VAL = na
+var float POCVol = 0
+var float VAHVol = 0
+var float VALVol = 0
+var float VAVol = 0
+// plotting variables
+var line pocLine = na
+var line vahLine = na
+var line valLine = na
+var line rthHighLine = na
+var line rthLowLine = na
+var line rthMidLine = na
+// system to global variables
+var float _high = 0
+var float _low = 0
+var float _volume = 0
+var int _bar_index = 0
+var float _mintick = 0
+// sessions variables
+var rth = '0830-1515'
+var globex = '1700-0830:1234567'
+var full = '1700-1515:1234567'
+var ny = '0930-1600'
+var kolkata = '0915-1530'
+var rthOpen = '0830-0831'
+var globexOpen = '1700-1701:1234567'
+var nyOpen = '0930-0931'
+var kolkataOpen = '0915-0916'
+var sessionTF = syminfo.timezone == "America/New_York" ? ny : syminfo.timezone == "Asia/Kolkata" ? kolkata : mode == 'RTH' ? rth : mode == 'GLOBEX' ? globex : full
+var openingTF = syminfo.timezone == "America/New_York" ? nyOpen : syminfo.timezone == "Asia/Kolkata" ? kolkataOpen : mode == 'RTH' ? rthOpen : globexOpen
+// 12 hours periods variable
+var ms12hours = 43200000
+// chart resolution failsafe variables
+var tf = timeframe.multiplier
+var selectableTF = tf == 30 or tf == 15 or tf == 10 or tf == 5 or tf == 3 or tf == 2 or tf == 1
+
+// function to get the volume at each level
+getLevelVolumeOP(level,totalBars) =>
+    float _barVolLocal = barVol
+    float _lowLocal = _low
+    float _highLocal = _high
+    float _levelVol = 0
+    max_bars_back(_barVolLocal,1340)
+    max_bars_back(_lowLocal,1340)
+    max_bars_back(_highLocal,1340)
+    for bar = totalBars to 0
+        _check = _lowLocal[bar]
+        if level < _check
+            continue
+        _check := _highLocal[bar]
+        if level >= _check
+            continue
+        _vol = _barVolLocal[bar]
+        _levelVol := _levelVol + _vol
+    _levelVol    
+
+// function for a cleaner code
+setLine_y(id,level) =>
+    line.set_y1(id,level)
+    line.set_y2(id,level)
+
+// using global variables to avoid recurrent calls to system variables
+_high := high
+_low := low
+_volume := volume
+_bar_index := bar_index
+_mintick := syminfo.mintick
+
+// getting the session
+session = not na(time(timeframe.period,sessionTF))
+opening = not na(time(timeframe.period,openingTF))
+
+// failsafe for plotting the study
+goodTimeInterval = timeframe.isminutes and selectableTF
+goodTimeFrame = timenow-time < ms12hours*periods
+plottable = goodTimeFrame and goodTimeInterval
+
+// highlight feature
+bgcolor(highlight and not session ? color.silver : na)
+
+// getting the first bar of the session
+if plottable and session and opening
+    firstBar := _bar_index
+
+// executing the logic only once at each bar 
+if plottable and session and firstBar != 0 and barstate.isconfirmed
+    if opening
+        rthHigh := _high
+        rthLow := _low
+        rthVol := _volume
+    else
+        rthHigh := _high > rthHigh ? _high : rthHigh
+        rthLow := _low < rthLow ? _low : rthLow
+        rthVol := rthVol + _volume
+    rthTicks := (rthHigh-rthLow)/_mintick // total range ticks
+    barTicks := (_high-_low)/_mintick     // current bar ticks
+    barVol := barTicks > 0 ? _volume/barTicks : _volume // current volume by tick
+    rthMid := rthHigh - round(rthTicks*0.5)*_mintick
+    if opening
+        POC := _high - round(barTicks*0.5)*_mintick
+        POCVol := barVol
+    endOfRange := rthHigh - _mintick
+    totalBars := _bar_index - firstBar
+    // yep, nested loop... i don't like it either
+    for level = rthLow to endOfRange by _mintick
+        levelVol := getLevelVolumeOP(level,totalBars)
+        // get out at the first occurrence
+        if levelVol > POCVol
+            POCVol := levelVol
+            POC := level
+            break
+    // avoid the execution if it's not necesary 
+    if showVA 
+        VAVol := (rthVol * 0.7)
+        VAVol := POCVol < VAVol ? VAVol - POCVol : VAVol
+        VAH := POC < rthHigh ? POC + _mintick : POC
+        VAL := POC > rthLow ? POC - _mintick : POC
+        // again, nested loop...
+        // flags for first occurrences at range extremes
+        bool rthHighVisited = false
+        bool rthLowVisited = false
+        for i = rthTicks to 0
+            // temporal vars inside loop scope
+            float tmpVol = 0
+            float tmpVAHTick = 0
+            float tmpVALTick = 0
+            // getting the VAH volume when is needed or -1 when not
+            if (VAH < rthHigh) or (VAH == rthHigh and not rthHighVisited)
+                VAHVol := getLevelVolumeOP(VAH,totalBars)
+                if VAH == rthHigh
+                    rthHighVisited := true
+            else
+                VAHVol := -1
+            // getting the VAL volume when is needed or -1 when not
+            if (VAL > rthLow) or (VAL == rthLow and not rthLowVisited)
+                VALVol := getLevelVolumeOP(VAL,totalBars)
+                if VAL == rthLow
+                    rthLowVisited := true
+            else
+                VALVol := -1
+            // compare the volumes
+            if VALVol > VAHVol
+                tmpVol := VALVol
+                tmpVALTick := _mintick
+            else
+                tmpVol := VAHVol
+                tmpVAHTick := _mintick
+            // updating VA volume and VAH/VAL levels
+            VAVol := VAVol - tmpVol
+            if VAVol <= 0
+                break
+            // seems this code is executing after the break when it should not
+            else
+                VAH := VAH + tmpVAHTick
+                VAL := VAL - tmpVALTick
+                continue
+        // workaround for the 'code executes after break' thing
+        VAL := VAL + _mintick
+    // this ugly plotting block harm my eyes but... it is what it is
+    // on the first bar of the new session plot it!
+    if firstBar[1] != firstBar
+        // we wanna be able to see the price, right?
+        if not extension
+            line.set_extend(pocLine,extend.none)
+            line.set_extend(vahLine,extend.none)
+            line.set_extend(valLine,extend.none)
+            line.set_extend(rthHighLine,extend.none)
+            line.set_extend(rthLowLine,extend.none)
+            line.set_extend(rthMidLine,extend.none)
+        pocLine := showPOC ? line.new(firstBar, POC, bar_index,POC, color=color.yellow, style=line.style_solid, width=2, extend=extend.right) : na
+        vahLine := showVA ? line.new(firstBar, VAH, bar_index,VAH, color=color.red, style=line.style_solid, width=2, extend=extend.right) : na
+        valLine := showVA ? line.new(firstBar, VAL, bar_index,VAL, color=color.green, style=line.style_solid, width=2, extend=extend.right) : na
+        rthHighLine := showRange ? line.new(firstBar, rthHigh, bar_index,rthHigh, color=color.silver, style=line.style_dashed, width=2, extend=extend.right) : na
+        rthLowLine := showRange ? line.new(firstBar, rthLow, bar_index,rthLow, color=color.silver, style=line.style_dashed, width=2, extend=extend.right) : na
+        rthMidLine := showRange ? line.new(firstBar, rthMid, bar_index,rthMid, color=color.silver, style=line.style_dotted, width=2, extend=extend.right) : na
+    // updating the right extreme of the lines 
+    line.set_x2(pocLine,_bar_index)
+    line.set_x2(vahLine,_bar_index)
+    line.set_x2(valLine,_bar_index)
+    line.set_x2(rthHighLine,_bar_index)
+    line.set_x2(rthLowLine,_bar_index)
+    line.set_x2(rthMidLine,_bar_index)
+    // some function makeup for the health of my eyes
+    // only update levels if needed
+    if POC[1] != POC
+        setLine_y(pocLine,POC)
+    if VAH[1] != VAH
+        setLine_y(vahLine,VAH)
+    if VAL[1] != VAL
+        setLine_y(valLine,VAL)
+    if rthHigh[1] != rthHigh
+        setLine_y(rthHighLine,rthHigh)
+    if rthLow[1] != rthLow
+        setLine_y(rthLowLine,rthLow)
+    if rthMid[1] != rthMid
+        setLine_y(rthMidLine,rthMid)
+        

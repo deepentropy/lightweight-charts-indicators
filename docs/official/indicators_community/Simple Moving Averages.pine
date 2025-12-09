@@ -1,0 +1,51 @@
+study(title="Simple Moving Averages", shorttitle="SMAs", overlay=true)
+
+len1 = input(20, minval=1, title="SMA #1")
+src1 = input(close, title="SMA Source #1")
+out1 = sma(src1, len1)
+plot(out1, title="SMA #1", color=close >= out1 ? blue : orange)
+
+len2 = input(50, minval=1, title="SMA #2")
+src2 = input(close, title="SMA Source #2")
+out2 = sma(src2, len2)
+plot(out2, title="SMA #2", color=close >= out2 ? blue : orange, linewidth = 2)
+
+len3 = input(100, minval=1, title="SMA #3")
+src3 = input(close, title="SMA Source #3")
+out3 = sma(src3, len3)
+plot(out3, title="SMA #3", color=close >= out3 ? blue : orange)
+
+len4 = input(150, minval=1, title="SMA #4")
+src4 = input(close, title="SMA Source #4")
+out4 = sma(src4, len4)
+plot(out4, title="SMA #4", color=close >= out4 ? blue : orange)
+
+len5 = input(200, minval=1, title="SMA #5")
+src5 = input(close, title="SMA Source #5")
+out5 = sma(src5, len5)
+plot(out5, title="SMA #5", color=close >= out5 ? blue : orange, linewidth = 4)
+
+len6 = input(250, minval=1, title="SMA #6")
+src6 = input(close, title="SMA Source #6")
+out6 = sma(src6, len6)
+plot(out6, title="SMA #6", color=close >= out6 ? green : red)
+
+len7 = input(300, minval=1, title="SMA #7")
+src7 = input(close, title="SMA Source #7")
+out7 = sma(src7, len7)
+plot(out7, title="SMA #7", color=close >= out7 ? green : red, linewidth = 2)
+
+len8 = input(400, minval=1, title="SMA #8")
+src8 = input(close, title="SMA Source #8")
+out8 = sma(src8, len8)
+plot(out8, title="SMA #8", color=close >= out8 ? green : red)
+
+len9 = input(500, minval=1, title="SMA #9")
+src9 = input(close, title="SMA Source #9")
+out9 = sma(src9, len9)
+plot(out9, title="SMA #9", color=close >= out9 ? green : red)
+
+len10 = input(600, minval=1, title="SMA #10")
+src10 = input(close, title="SMA Source #10")
+out10 = sma(src10, len10)
+plot(out10, title="SMA #10", color=close >= out10 ? green : red, linewidth = 4)

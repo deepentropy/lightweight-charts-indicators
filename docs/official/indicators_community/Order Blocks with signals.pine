@@ -1,0 +1,118 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ClayeWeight
+
+//@version=5
+indicator(title='Sonarlab - Order Blocks', shorttitle='Sonarlab - OB', overlay=true, max_boxes_count=20)
+_v = input.string("1.0.2", title="Version", options=["1.0.2"], group="Version")
+sens = input.int(28, minval=1, title='Sensitivity', group='Order Block', tooltip='Lower the sensitivity to show more order blocks. A higher sensitivity will show less order blocks.')
+sens /= 100
+
+// OB
+OBMitigationType = input.string("Close", title="OB Mitigation Type", options=["Close", "Wick"], group="Order Block", tooltip="Choose how Order Blocks are mitigated")
+OBBullMitigation = OBMitigationType=="Close" ? close[1] : low
+OBBearMitigation = OBMitigationType=="Close" ? close[1] : high
+
+//OB Colors
+col_bullish = input.color(#5db49e, title="Bullish OB Border", inline="a", group="Order Block")
+col_bullish_ob = input.color(color.new(#64C4AC, 85), title="Background", inline="a", group="Order Block")
+
+col_bearish = input.color(#4760bb, title="Bearish OB Border", inline="b", group="Order Block")
+col_bearish_ob = input.color(color.new(#506CD3, 85), title="Background", inline="b", group="Order Block")
+
+
+// Alerts
+buy_alert = input.bool(title='Buy Signal', defval=true, group='Alerts', tooltip='An alert will be sent when price goes below the top of a bullish order block.')
+sell_alert = input.bool(title='Sell Signal', defval=true, group='Alerts', tooltip='An alert will be sent when price goes above the bottom of a bearish order block.')
+
+
+// Delacring Variables
+bool ob_created = false
+bool ob_created_bull = false
+var int cross_index = na
+
+// Declaring Box Arrays
+var box drawlongBox = na
+var longBoxes = array.new_box()
+var box drawShortBox = na
+var shortBoxes = array.new_box()
+
+
+// Custom Rate of Change (ROC) calculation. This is to calculate high momentum moves in the market.
+pc = (open - open[4]) / open[4] * 100
+
+// If the ROC crossover our Sensitivty input - Then create an Order Block
+// Sensitivty is negative as this is a Bearish OB
+if ta.crossunder(pc, -sens)
+    ob_created := true
+    cross_index := bar_index
+    cross_index
+
+// If the ROC crossover our Sensitivty input - Then create an Order Block
+if ta.crossover(pc, sens)
+    ob_created_bull := true
+    cross_index := bar_index
+    cross_index
+
+
+// -------------------------------
+// Bearish OB Creation
+// -------------------------------
+// Check if we should create a OB, Also check if we haven't created an OB in the last 5 candles.
+if ob_created and cross_index - cross_index[1] > 5
+    float last_green = 0
+    float highest = 0
+    // Loop through the most recent candles and find the first GREEN (Bullish) candle. We will place our OB here.
+    for i = 4 to 15 by 1
+        if close[i] > open[i]
+            last_green := i
+            break
+    // Draw our OB on that candle - then push the box into our box arrays.
+    drawShortBox := box.new(left=bar_index[last_green], top=high[last_green], bottom=low[last_green], right=bar_index[last_green], bgcolor=col_bearish_ob, border_color=col_bearish, extend=extend.right)
+    array.push(shortBoxes, drawShortBox)
+
+// -------------------------------
+// Bullish OB Creation
+// -------------------------------
+// Check if we should create a OB, Also check if we haven't created an OB in the last 5 candles.
+if ob_created_bull and cross_index - cross_index[1] > 5
+    float last_red = 0
+    float highest = 0
+    // Loop through the most recent candles and find the first RED (Bearish) candle. We will place our OB here.
+    for i = 4 to 15 by 1
+        if close[i] < open[i]
+            last_red := i
+            break
+    // Draw our OB on that candle - then push the box into our box arrays.
+    drawlongBox := box.new(left=bar_index[last_red], top=high[last_red], bottom=low[last_red], right=bar_index[last_red], bgcolor=col_bullish_ob, border_color=col_bullish, extend=extend.right)
+    array.push(longBoxes, drawlongBox)
+
+
+// ----------------- Bearish Order Block -------------------
+// Clean up OB boxes and place alerts
+if array.size(shortBoxes) > 0
+    for i = array.size(shortBoxes) - 1 to 0 by 1
+        sbox = array.get(shortBoxes, i)
+        top = box.get_top(sbox)
+        bot = box.get_bottom(sbox)
+        // If the two last closes are above the high of the bearish OB - Remove the OB
+        if OBBearMitigation > top
+            array.remove(shortBoxes, i)
+            box.delete(sbox)
+        // Alerts
+        if high > bot and sell_alert
+            alert('Price inside Bearish OB', alert.freq_once_per_bar)
+
+// ----------------- Bullish Clean Up -------------------
+// Clean up OB boxes and place alerts
+if array.size(longBoxes) > 0
+    for i = array.size(longBoxes) - 1 to 0 by 1
+        sbox = array.get(longBoxes, i)
+        bot = box.get_bottom(sbox)
+        top = box.get_top(sbox)
+        // If the two last closes are below the low of the bullish OB - Remove the OB
+        if OBBullMitigation < bot
+            array.remove(longBoxes, i)
+            box.delete(sbox)
+        // Alerts
+        if low < top and buy_alert
+            alert('Price inside Bullish OB', alert.freq_once_per_bar)

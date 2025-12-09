@@ -1,0 +1,380 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © only_fibonacci
+
+//@version=5
+indicator("Multicator Table",overlay=true)
+dil = input.string(defval = "EN", title = "Language" , options = ["EN", "TR"])
+yaziRenk = input.color(defval = color.black, title = "Text Color")
+len = input.int(defval = 200, title = "Fine Tunning", maxval = 300, minval = 50, tooltip = "If price movements are very volatile, reduce this value. If price movements are not too volatile, you can increase this value. This mechanism scales from the Current highest to the lowest value.")
+max = ta.lowest(len)
+min = max/2
+en = dil == "EN"
+tr = dil == "TR"
+fibUst = en ? "Top ( " : "Tepe ( "
+fibAlt = en ? "Bottom ( " : "Dip ( "
+
+mobilGoster = input.bool(false,"Is mobile ?")
+tabloGoster = input.bool(true,"Show Desktop Table ?")
+tabloYonu = input.string(defval = "Sağ Üst", title = "Tablo Yönü", options=["Sağ Üst","Sağ Alt","Sağ Orta","Orta Alt","Orta Sol"])
+tabloBuyukluk = input.string(defval = "Küçük", title = "Tablo Boyutu", options = ["Küçük","Büyük","Orta"])
+fibonacciGoster=input.bool(false,"Show Fibonacci Retracement", group = "Fibonacci")
+fibonacciExtendRight = input.bool(defval = true,title = "Fibonacci Extend Right", group = "Fibonacci" , inline = "FG")
+fibShowData = input.bool(defval = true,title = "Fibonacci Show Data", group = "Fibonacci" , inline = "FG")
+
+
+
+uzunluk=input.int(233, minval=8, title="Fibonacci Distance", group = "Fibonacci")
+fibTepe = ta.highest(uzunluk)
+fibDip = ta.lowest(uzunluk)
+fibColor = input.color(defval = color.black, title = "Fibonacci Color", group = "Fibonacci")
+
+tepeyeUzaklik = math.abs(ta.highestbars(uzunluk))
+dipeUzaklik = math.abs(ta.lowestbars(uzunluk))
+
+
+
+yon = switch tabloYonu
+    "Sağ Üst" => position.top_right
+    "Sağ Alt" => position.bottom_right
+    "Sağ Orta" => position.middle_right
+    "Orta Alt" => position.bottom_center
+    "Orta Sol" => position.bottom_left
+
+buyuk = switch tabloBuyukluk
+    "Küçük" => size.small
+    "Büyük" => size.large
+    "Orta" => size.normal
+
+var table mobiletablo = table.new(position.bottom_right,2,6,border_width=4,border_color=color.gray, frame_color=color.gray, frame_width=4)
+var table tablo = table.new(yon,6,6,border_width=4,border_color=color.gray, frame_color=color.gray, frame_width=4)
+
+fib1 = input.int(defval = 618, title = "Fib Level", group = "Fibonacci", maxval = 1618, tooltip = "Max : 1618")
+fib2 = input.int(defval = 382, title = "Fib Level", group = "Fibonacci", maxval = 1618, tooltip = "Max : 1618")
+fib3 = input.int(defval = 786, title = "Fib Level", group = "Fibonacci", maxval = 1618, tooltip = "Max : 1618")
+
+// a_allLabels = label.all
+// if array.size(a_allLabels) > 0
+//     for i = 0 to array.size(a_allLabels) - 1
+//         label.delete(array.get(a_allLabels, i))
+
+
+if barstate.islast and fibonacciGoster
+    fib618=dipeUzaklik>tepeyeUzaklik ? fibTepe-((fibTepe-fibDip)*fib1/1000) : fibDip+((fibTepe-fibDip)*fib1/1000)
+    fib50=dipeUzaklik>tepeyeUzaklik ? fibTepe-((fibTepe-fibDip)*500/1000) : fibDip+((fibTepe-fibDip)*500/1000)
+    fib382=dipeUzaklik>tepeyeUzaklik ? fibTepe-((fibTepe-fibDip)*fib2/1000) : fibDip+((fibTepe-fibDip)*fib2/1000)
+    fib786=dipeUzaklik>tepeyeUzaklik ? fibTepe-((fibTepe-fibDip)*fib3/1000) : fibDip+((fibTepe-fibDip)*fib3/1000)
+    line.new(bar_index - tepeyeUzaklik,fibTepe, bar_index+50,fibTepe, color = fibColor, width = 1, extend = fibonacciExtendRight ? extend.right : extend.none)
+    line.new(bar_index - dipeUzaklik,fibDip, bar_index+50,fibDip, color = fibColor, width = 1, extend = fibonacciExtendRight ? extend.right : extend.none)
+    line.new(bar_index + 10, fib382,bar_index+50, fib382,color = fibColor,style = line.style_dashed, extend = fibonacciExtendRight ? extend.right : extend.none)
+    line.new(bar_index + 10, fib50,bar_index+50, fib50,color = fibColor,style = line.style_dashed, extend = fibonacciExtendRight ? extend.right : extend.none)
+    line.new(bar_index + 10, fib618,bar_index+50, fib618,color = fibColor,style = line.style_dashed, extend = fibonacciExtendRight ? extend.right : extend.none)
+    line.new(bar_index + 10, fib786,bar_index+50, fib786,color = fibColor,style = line.style_dashed, extend = fibonacciExtendRight ? extend.right : extend.none)
+    if fibShowData
+        label.new(bar_index + 55, fibTepe,fibUst+str.tostring(math.round_to_mintick(fibTepe))+" )", color = color.gray, style = label.style_none, textcolor = yaziRenk )
+        label.new(bar_index + 55, fibDip,fibAlt+str.tostring(math.round_to_mintick(fibDip))+" )", color = color.gray, style = label.style_none, textcolor = yaziRenk)
+        label.new(bar_index + 55, fib382,str.tostring(fib2/1000)+" ( "+str.tostring(math.round_to_mintick(fib382))+" )", color = color.gray, style = label.style_none, textcolor = yaziRenk)
+        label.new(bar_index + 55, fib618,str.tostring(fib1/1000)+" ( "+str.tostring(math.round_to_mintick(fib618))+" )", color = color.gray, style = label.style_none, textcolor = yaziRenk)
+        label.new(bar_index + 55, fib50,"% 50 ( "+str.tostring(math.round_to_mintick(fib50))+" )", color = color.gray, style = label.style_none, textcolor = yaziRenk)
+        label.new(bar_index + 55, fib786,str.tostring(fib3/1000)+" ( "+str.tostring(math.round_to_mintick(fib786))+" )", color = color.gray, style = label.style_none, textcolor = yaziRenk)
+
+
+
+/////////////////////////////////////
+
+
+ema1=input.int(defval=50, title="EMA 1", group = "MA", inline = "E1")
+ema1Show = input.bool(defval = false,  group = "MA", inline = "E1", title = "")
+ema1Color = input.color(defval = color.black, title = "EMA1 COLOR",group = "MA")
+
+ema2=input.int(defval=100, title="EMA 2", group = "MA",inline = "E23")
+ema2Show = input.bool(defval = false,  group = "MA", inline = "E2", title = "")
+ema2Color = input.color(defval = color.black, title = "EMA2 COLOR",group = "MA")
+
+ema3=input.int(defval=200, title="EMA 3", group = "MA",inline = "E3")
+ema3Show = input.bool(defval = false,  group = "MA", inline = "E3", title = "")
+ema3Color = input.color(defval = color.black, title = "EMA3 COLOR",group = "MA")
+
+sma1 = input.int(defval=50, title="SMA 1", group = "MA",inline = "S1")
+sma1Show = input.bool(defval = false,  group = "MA", inline = "S1", title = "")
+sma1Color = input.color(defval = color.black, title = "SMA1 COLOR",group = "MA")
+
+sma2= input.int(defval=100, title="SMA 2", group = "MA",inline = "S2")
+sma2Show = input.bool(defval = false,  group = "MA", inline = "S2", title = "")
+sma2Color = input.color(defval = color.black, title = "SMA2 COLOR",group = "MA")
+
+sma3 = input.int(defval=200, title="SMA 3", group = "MA",inline = "S3")
+sma3Show = input.bool(defval = false,  group = "MA", inline = "S3", title = "")
+sma3Color = input.color(defval = color.black, title = "SMA3 COLOR",group = "MA")
+
+
+ema50 = ta.ema(close,ema1)
+ema100 = ta.ema(close,ema2)
+ema200 = ta.ema(close,ema3)
+sma50 = ta.sma(close,sma1)
+sma100 = ta.sma(close,sma2)
+sma200 = ta.sma(close,sma3)
+
+hacim = volume
+acilis = open
+kapanis = close
+fark = (ta.change(close)/close[1])*100
+
+plot(ema1Show ? ema50 : na, color = ema1Color,title = "EMA1")
+plot(ema2Show ? ema100 : na, color = ema2Color,title ="EMA2")
+plot(ema3Show ? ema200 : na, color = ema3Color,title ="EMA3")
+plot(sma1Show ? sma50 : na, color = sma1Color,title ="SMA1")
+plot(sma2Show ? sma100 : na, color = sma2Color,title ="SMA2")
+plot(sma3Show ? sma200 : na, color = sma3Color,title ="SMA3")
+
+
+
+
+
+
+
+textColor = input.color(defval = color.white, title = "TEXT COLOR")
+// min = ta.lowest(len)
+rsiPeriod = input.int(defval = 14, title = "RSI Period", inline = "RSI", group = "RSI")
+rsiShow = input.bool(defval = true, title = "", inline = "RSI", group = "RSI")
+rsiColor = input.color(defval = color.purple, title = "RSI COLOR", group = "RSI")
+rsi = ta.rsi(close,rsiPeriod)
+
+rsiMaPeriod = input.int(defval = 10, title = "RSI MA Period", group = "RSI")
+rsiMa = ta.sma(rsi,rsiMaPeriod)
+
+atrPeriod = input.int(defval = 14, title = "ATR Period", inline = "ATR", group = "ATR")
+atrShow = input.bool(defval = true, title = "", inline = "ATR", group = "ATR")
+
+atrColor = input.color(defval = color.red, title = "ATR COLOR", group = "ATR")
+atr = ta.atr(atrPeriod)
+
+momPeriod = input.int(defval = 14, title = "MOM Period", inline = "MOM", group = "MOM")
+momShow = input.bool(defval = true, title = "", inline = "MOM", group = "MOM")
+momColor = input.color(defval = color.orange, title = "MOM COLOR", group = "MOM")
+mom = ta.mom(close,momPeriod)
+
+
+lensig = input.int(14, title="ADX Smoothing", minval=1, maxval=50, inline = "ADX", group = "ADX")
+adxShow = input.bool(defval = true, title = "", inline = "ADX", group = "ADX")
+
+[diplus, diminus, adx] = ta.dmi(17, lensig)
+adxColor = input.color(defval = color.green, title = "ADX COLOR", group = "ADX")
+
+ml = input.int(defval = 12, title = "Macd Line", inline = "MACD", group = "MACD")
+sl = input.int(defval = 26, title = "signal Line", group = "MACD")
+hl = input.int(defval = 9, title = "Hist Line", group = "MACD")
+macdShow = input.bool(defval = true, title = "", inline = "MACD", group = "MACD")
+
+[macdLine, signalLine, histLine] = ta.macd(close, ml, sl, hl)
+macdLineColor = input.color(defval = color.blue, title = "MACD LINE COLOR", group = "MACD")
+macdSignalColor =input.color(defval = color.orange, title = "MACD SIGNAL COLOR", group = "MACD")
+
+
+start = input(0.02, group = "P.SAR", inline = "SAR")
+sarShow = input.bool(defval = true, title = "", inline = "SAR", group = "P.SAR")
+
+increment = input(0.02, group = "P.SAR")
+maximum = input(0.2, "Max Value", group = "P.SAR")
+out = ta.sar(start, increment, maximum)
+plot(sarShow ? out : na, "ParabolicSAR", style=plot.style_cross, color=#2962FF)
+
+
+length = input.int(20, minval=1,group = "BB", inline = "BB")
+bbShow = input.bool(defval = true, title = "", inline = "BB", group = "BB")
+maType = input.string("SMA", "Basis MA Type", options = ["SMA", "EMA", "SMMA (RMA)", "WMA", "VWMA"],group = "BB")
+src = input(close, title="Source",group = "BB")
+mult = input.float(2.0, minval=0.001, maxval=50, title="StdDev",group = "BB")
+
+ma(source, length, _type) =>
+    switch _type
+        "SMA" => ta.sma(source, length)
+        "EMA" => ta.ema(source, length)
+        "SMMA (RMA)" => ta.rma(source, length)
+        "WMA" => ta.wma(source, length)
+        "VWMA" => ta.vwma(source, length)
+
+basis = ma(src, length, maType)
+dev = mult * ta.stdev(src, length)
+upper = basis + dev
+lower = basis - dev
+offset = input.int(0, "Offset", minval = -500, maxval = 500,group = "BB")
+plot(bbShow ? basis : na, "Basis", color=#FF6D00, offset = offset)
+p1 = plot(bbShow ? upper : na, "Upper", color=#2962FF, offset = offset)
+p2 = plot(bbShow ? lower : na, "Lower", color=#2962FF, offset = offset)
+
+fill( p1 , p2 , title = "Background", color=bbShow ? color.rgb(33, 150, 243, 90) : na)
+
+
+
+
+conversionPeriods = input.int(9, minval=1, title="Conversion Line Length",group = "ICHIMOKU", inline = "ICHIMOKU")
+ichShow = input.bool(defval = true, group = "ICHIMOKU", inline = "ICHIMOKU", title = "")
+basePeriods = input.int(26, minval=1, title="Base Line Length",group = "ICHIMOKU")
+laggingSpan2Periods = input.int(52, minval=1, title="Leading Span B Length",group = "ICHIMOKU")
+displacement = input.int(26, minval=1, title="Lagging Span",group = "ICHIMOKU")
+donchian(len) => math.avg(ta.lowest(len), ta.highest(len))
+conversionLine = donchian(conversionPeriods)
+baseLine = donchian(basePeriods)
+leadLine1 = math.avg(conversionLine, baseLine)
+leadLine2 = donchian(laggingSpan2Periods)
+plot(ichShow ? conversionLine : na, color=#2962FF, title="Conversion Line")
+plot(ichShow ? baseLine : na, color=#B71C1C, title="Base Line")
+plot(ichShow ? close : na, offset = -displacement + 1, color=#43A047, title="Lagging Span")
+p1i = plot(ichShow ? leadLine1 : na, offset = displacement - 1, color=#A5D6A7,
+	 title="Leading Span A")
+p2i = plot(ichShow ? leadLine2 : na, offset = displacement - 1, color=#EF9A9A,
+	 title="Leading Span B")
+plot(ichShow ? (leadLine1 > leadLine2 ? leadLine1 : leadLine2) : na, offset = displacement - 1, title = "Kumo Cloud Upper Line", display = display.none) 
+plot(ichShow ? (leadLine1 < leadLine2 ? leadLine1 : leadLine2) : na, offset = displacement - 1, title = "Kumo Cloud Lower Line", display = display.none) 
+fill(p1i, p2i, color = leadLine1 > leadLine2 ? color.rgb(67, 160, 71, ichShow ? 90 : 0) : color.rgb(244, 67, 54, ichShow ? 90 : 0))
+
+
+
+
+lengthGroupTitle = "LENGTH LEFT / RIGHT"
+colorGroupTitle = "Text Color / Label Color"
+pivotShow = input.bool(defval = true, title = "PIVOT SHOW", group = lengthGroupTitle)
+leftLenH = input.int(title="Pivot High", defval=10, minval=1, inline="Pivot High", group=lengthGroupTitle)
+rightLenH = input.int(title="/", defval=10, minval=1, inline="Pivot High", group=lengthGroupTitle)
+textColorH = input(title="Pivot High", defval=color.black, inline="Pivot High", group=colorGroupTitle)
+labelColorH = input(title="", defval=color.white, inline="Pivot High", group=colorGroupTitle)
+
+leftLenL = input.int(title="Pivot Low", defval=10, minval=1, inline="Pivot Low", group=lengthGroupTitle)
+rightLenL = input.int(title="/", defval=10, minval=1, inline="Pivot Low", group=lengthGroupTitle)
+textColorL = input(title="Pivot Low", defval=color.black, inline="Pivot Low", group=colorGroupTitle)
+labelColorL = input(title="", defval=color.white, inline="Pivot Low", group=colorGroupTitle)
+
+ph = ta.pivothigh(leftLenH, rightLenH)
+pl = ta.pivotlow(leftLenL, rightLenL)
+
+drawLabel(_offset, _pivot, _style, _color, _textColor) =>
+    if not na(_pivot)
+        label.new(bar_index[_offset], _pivot, str.tostring(_pivot, format.mintick), style=_style, color=_color, textcolor=_textColor)
+if pivotShow
+    drawLabel(rightLenH, ph, label.style_label_down, labelColorH, textColorH)
+    drawLabel(rightLenL, pl, label.style_label_up, labelColorL, textColorL)
+
+
+
+
+scale(data)=>
+    dataMax = ta.highest(data,len)
+    dataMin = ta.lowest(data,len)
+    scaleof = (data - dataMin) / (dataMax-dataMin) * (max - min) + min
+
+
+
+last = 50
+if rsiShow
+    rS = label.new(bar_index, scale(rsi), text = "RSI : " + str.tostring(math.round_to_mintick(rsi)), textcolor = textColor, color = rsiColor )
+    label.delete(rS[1])
+plot(rsiShow ? scale(rsi) : na, show_last = last, offset = 0, color = rsiColor)
+plot(rsiShow ?scale(rsiMa) : na, show_last = last, offset = 0, color = color.black)
+
+if atrShow
+    aS = label.new(bar_index - last, scale(atr), text = "ATR : " + str.tostring(math.round_to_mintick(atr)), textcolor = textColor, color = atrColor)
+    label.delete(aS[1])
+plot(atrShow ? scale(atr) : na, show_last = last, offset = -1 * last, color = atrColor)
+
+if momShow
+    mS = label.new(bar_index - last*2, scale(mom), text = "MOM : " + str.tostring(math.round_to_mintick(mom)), textcolor = textColor, color = momColor)
+    label.delete(mS[1])
+plot(momShow ? scale(mom) : na, show_last = last, offset = -2 * last, color = momColor)
+
+if adxShow
+    adS = label.new(bar_index - last*3, scale(adx), text = "ADX : " + str.tostring(math.round_to_mintick(adx)), textcolor = textColor, color = adxColor)
+    label.delete(adS[1])
+plot(adxShow ? scale(adx) : na, show_last = last, offset = -3 * last, color = adxColor)
+
+if macdShow
+    mcS = label.new(bar_index - last*4 - last/2, math.max(scale(macdLine)[last/2],scale(signalLine)[last/2]), text = "MACD" , textcolor = textColor, color = macdLineColor)
+    label.delete(mcS[1])
+plot(macdShow ? scale(macdLine) : na, show_last = last, offset = -4 * last, color = macdLineColor)
+plot(macdShow ? scale(signalLine) : na, show_last = last, offset = -4 * last, color = macdSignalColor)
+
+
+
+
+if barstate.islast and mobilGoster==false and tabloGoster
+    g1="Open Price"
+    g2="Close Price"
+    g3="Change Percent"
+    g4="RSI"
+    g5="ATR"
+    g6="Volume"
+
+    i1="SMA"+str.tostring(sma1)
+    i2="SMA"+str.tostring(sma2)
+    i3="SMA"+str.tostring(sma3)
+    i4="EMA"+str.tostring(ema1)
+    i5="EMA"+str.tostring(ema2)
+    i6="EMA"+str.tostring(ema3)
+    text7=str.tostring(math.round_to_mintick(sma50))
+    text8=str.tostring(math.round_to_mintick(sma100))
+    text9=str.tostring(math.round_to_mintick(sma200))
+    text10=str.tostring(math.round_to_mintick(ema50))
+    text11=str.tostring(math.round_to_mintick(ema100))
+    text12=str.tostring(math.round_to_mintick(ema200))
+    text1 = str.tostring(acilis)
+    text2 = str.tostring(kapanis)
+    text3 = str.tostring(math.round_to_mintick(fark)) +" %"
+    text4 = str.tostring(math.round_to_mintick(rsi))
+    text5=str.tostring(math.round_to_mintick(atr))
+    text6=str.tostring(hacim)
+    table.cell(tablo,0,0,bgcolor=color.black,text_color=color.white, text=g1, text_size = buyuk)
+    table.cell(tablo,1,0,bgcolor=color.black,text_color=color.white, text=g2, text_size = buyuk)
+    table.cell(tablo,2,0,bgcolor=color.black,text_color=color.white, text=g3, text_size = buyuk)
+    table.cell(tablo,3,0,bgcolor=color.black,text_color=color.white, text=g4, text_size = buyuk)
+    table.cell(tablo,4,0,bgcolor=color.black,text_color=color.white, text=g5, text_size = buyuk)
+    table.cell(tablo,5,0,bgcolor=color.black,text_color=color.white, text=g6, text_size = buyuk)
+    table.cell(tablo,0,1,bgcolor=color.black,text_color=color.white, text=text1, text_size = buyuk)
+    table.cell(tablo,1,1,bgcolor=color.black,text_color=color.white, text=text2, text_size = buyuk)
+    table.cell(tablo,2,1,bgcolor=fark>0?color.green:color.red,text_color=color.white, text=text3, text_size = buyuk)
+    table.cell(tablo,3,1,bgcolor=rsi>70?color.green:rsi<30?color.red:color.teal,text_color=color.white, text=text4, text_size = buyuk)
+    table.cell(tablo,4,1,bgcolor=color.black,text_color=color.white, text=text5, text_size = buyuk)
+    table.cell(tablo,5,1,bgcolor=color.black,text_color=color.white, text=text6, text_size = buyuk)
+    table.cell(tablo,0,2,bgcolor=color.gray,text_color=color.white, text=i1, text_size = buyuk)
+    table.cell(tablo,1,2,bgcolor=color.gray,text_color=color.white, text=i2, text_size = buyuk)
+    table.cell(tablo,2,2,bgcolor=color.gray,text_color=color.white, text=i3, text_size = buyuk)
+    table.cell(tablo,3,2,bgcolor=color.gray,text_color=color.white, text=i4, text_size = buyuk)
+    table.cell(tablo,4,2,bgcolor=color.gray,text_color=color.white, text=i5, text_size = buyuk)
+    table.cell(tablo,5,2,bgcolor=color.gray,text_color=color.white, text=i6, text_size = buyuk)
+    table.cell(tablo,0,3,bgcolor=sma50>close?color.red:color.green,text_color=color.white, text=text7, text_size = buyuk)
+    table.cell(tablo,1,3,bgcolor=sma100>close?color.red:color.green,text_color=color.white, text=text8, text_size = buyuk)
+    table.cell(tablo,2,3,bgcolor=sma200>close?color.red:color.green,text_color=color.white, text=text9, text_size = buyuk)
+    table.cell(tablo,3,3,bgcolor=ema50>close?color.red:color.green,text_color=color.white, text=text10, text_size = buyuk)
+    table.cell(tablo,4,3,bgcolor=ema100>close?color.red:color.green,text_color=color.white, text=text11, text_size = buyuk)
+    table.cell(tablo,5,3,bgcolor=ema200>close?color.red:color.green,text_color=color.white, text=text12, text_size = buyuk)
+    
+
+
+
+    
+if barstate.islast and mobilGoster==true and tabloGoster==false
+    g1="Open Price"
+    g2="Close Price"
+    g3="Change Percent"
+    g4="RSI"
+    g5="ATR"
+    g6="Volume"
+    text1 = str.tostring(acilis)
+    text2 = str.tostring(kapanis)
+    text3 = str.tostring(math.round_to_mintick(fark)) +" %"
+    text4 = str.tostring(math.round_to_mintick(rsi))
+    text5=str.tostring(math.round_to_mintick(atr))
+    text6=str.tostring(hacim)    
+    table.cell(mobiletablo,0,0,bgcolor=color.black,text_color=color.white, text=g1, text_size = buyuk)
+    table.cell(mobiletablo,0,1,bgcolor=color.black,text_color=color.white, text=g2, text_size = buyuk)
+    table.cell(mobiletablo,0,2,bgcolor=color.black,text_color=color.white, text=g3, text_size = buyuk)
+    table.cell(mobiletablo,0,3,bgcolor=color.black,text_color=color.white, text=g4, text_size = buyuk)
+    table.cell(mobiletablo,0,4,bgcolor=color.black,text_color=color.white, text=g5, text_size = buyuk)
+    table.cell(mobiletablo,0,5,bgcolor=color.black,text_color=color.white, text=g6, text_size = buyuk)
+    
+    table.cell(mobiletablo,1,0,bgcolor=color.black,text_color=color.white, text=text1, text_size = buyuk)
+    table.cell(mobiletablo,1,1,bgcolor=color.black,text_color=color.white, text=text2, text_size = buyuk)
+    table.cell(mobiletablo,1,2,bgcolor=color.black,text_color=color.white, text=text3, text_size = buyuk)
+    table.cell(mobiletablo,1,3,bgcolor=rsi>70?color.green:rsi<30?color.red:color.teal,text_color=color.white, text=text4, text_size = buyuk)
+    table.cell(mobiletablo,1,4,bgcolor=color.black,text_color=color.white, text=text5, text_size = buyuk)
+    table.cell(mobiletablo,1,5,bgcolor=color.black,text_color=color.white, text=text6, text_size = buyuk)
+
+

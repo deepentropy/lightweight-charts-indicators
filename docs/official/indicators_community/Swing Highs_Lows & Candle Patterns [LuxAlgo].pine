@@ -1,0 +1,103 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Swing Highs/Lows & Candle Patterns [LuxAlgo]", "LuxAlgo - Swing Highs/Lows & Candle Patterns", overlay = true, max_labels_count = 500)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+length = input(21)
+
+//Style
+swinghCss = input(color.red, 'Swing High', group = 'Style')
+swinglCss = input(color.teal, 'Swing Low', group = 'Style')
+
+//-----------------------------------------------------------------------------}
+//Descriptions
+//-----------------------------------------------------------------------------{
+hammer_ = "The hammer candlestick pattern is formed of a short body with a long lower wick, and is found at the bottom of a downward trend."
+  + "\n" + "\n A hammer shows that although there were selling pressures during the day, ultimately a strong buying pressure drove the price back up." 
+ihammer_ = "The inverted hammer is a similar pattern than the hammer pattern. The only difference being that the upper wick is long, while the lower wick is short."
+  + "\n" + "\n It indicates a buying pressure, followed by a selling pressure that was not strong enough to drive the market price down. The inverse hammer suggests that buyers will soon have control of the market."
+bulleng_ = "The bullish engulfing pattern is formed of two candlesticks. The first candle is a short red body that is completely engulfed by a larger green candle"
+  + "\n" + "\n Though the second day opens lower than the first, the bullish market pushes the price up, culminating in an obvious win for buyers"
+hanging_ = "The hanging man is the bearish equivalent of a hammer; it has the same shape but forms at the end of an uptrend."
+  + "\n" + "It indicates that there was a significant sell-off during the day, but that buyers were able to push the price up again. The large sell-off is often seen as an indication that the bulls are losing control of the market."
+shooting_ = "The shooting star is the same shape as the inverted hammer, but is formed in an uptrend: it has a small lower body, and a long upper wick."
+  + "\n" + "Usually, the market will gap slightly higher on opening and rally to an intra-day high before closing at a price just above the open – like a star falling to the ground."
+beareng_ = "A bearish engulfing pattern occurs at the end of an uptrend. The first candle has a small green body that is engulfed by a subsequent long red candle."
+  + "\n" + "It signifies a peak or slowdown of price movement, and is a sign of an impending market downturn. The lower the second candle goes, the more significant the trend is likely to be."
+
+//-----------------------------------------------------------------------------}
+//UDT
+//-----------------------------------------------------------------------------{
+type pattern
+    bool condition
+    string title
+    string description
+  
+//-----------------------------------------------------------------------------}
+//Data
+//-----------------------------------------------------------------------------{
+var float phy = na
+var float ply = na
+
+o = open[length]
+h = high[length]
+l = low[length]
+c = close[length]
+
+d = math.abs(c - o)
+ph = ta.pivothigh(length, length)
+pl = ta.pivotlow(length, length)
+
+//-----------------------------------------------------------------------------{
+//Patterns
+//-----------------------------------------------------------------------------}
+hammer   = pattern.new(pl and math.min(o,c) - l > d and h - math.max(c,o) < d, 'Hammer', hammer_)
+ihammer  = pattern.new(pl and h - math.max(c,o) > d and math.min(c,o) - l < d, 'Inverted Hammer', ihammer_)
+bulleng  = pattern.new(c > o and c[1] < o[1] and c > o[1] and o < c[1], 'Bullish Engulfing', bulleng_)
+hanging  = pattern.new(ph and math.min(c,o) - l > d and h - math.max(o,c) < d, 'Hanging Man', hanging_)
+shooting = pattern.new(ph and h - math.max(o,c) > d and math.min(c,o) - l < d, 'Shooting Star', shooting_)
+beareng  = pattern.new(c > o and c[1] < o[1] and c > o[1] and o < c[1], 'Bearish Engulfing', beareng_)
+
+//-----------------------------------------------------------------------------}
+//Set labels
+//-----------------------------------------------------------------------------{
+n = bar_index
+
+pattern pattern_obj = hammer.condition ? hammer
+  : ihammer.condition ? ihammer
+  : bulleng.condition ? bulleng
+  : hanging.condition ? hanging
+  : shooting.condition ? shooting
+  : beareng.condition ? beareng
+  : na
+
+if ph
+    H = ph > phy ? 'HH' : 'LH'
+
+    //Set label
+    label.new(n[length], ph
+      , H + "\n" + (na(pattern_obj) ? 'None' : pattern_obj.title)
+      , color = color(na)
+      , style = label.style_label_down
+      , textcolor = swinghCss
+      , tooltip = na(pattern_obj) ? '' : pattern_obj.description)
+    
+    phy := ph
+
+else if pl
+    L = pl < ply ? 'LL' : 'HL'
+
+    //Set label
+    label.new(n[length], pl
+      , L + "\n" + (na(pattern_obj) ? 'None' : pattern_obj.title)
+      , color = color(na)
+      , style = label.style_label_up
+      , textcolor = swinglCss
+      , tooltip = na(pattern_obj) ? '' : pattern_obj.description)
+
+    ply := pl
+
+//-----------------------------------------------------------------------------}

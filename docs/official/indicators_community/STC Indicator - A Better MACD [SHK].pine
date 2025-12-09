@@ -1,0 +1,49 @@
+//@version=5
+//[SHK] STC colored indicator
+//https://www.tradingview.com/u/shayankm/
+
+indicator(title='[SHK] Schaff Trend Cycle (STC)', shorttitle='STC', overlay=false)
+EEEEEE = input(12, 'Length')
+BBBB = input(26, 'FastLength')
+BBBBB = input(50, 'SlowLength')
+
+AAAA(BBB, BBBB, BBBBB) =>
+    fastMA = ta.ema(BBB, BBBB)
+    slowMA = ta.ema(BBB, BBBBB)
+    AAAA = fastMA - slowMA
+    AAAA
+
+AAAAA(EEEEEE, BBBB, BBBBB) =>
+    AAA = input(0.5)
+    var CCCCC = 0.0
+    var DDD = 0.0
+    var DDDDDD = 0.0
+    var EEEEE = 0.0
+    BBBBBB = AAAA(close, BBBB, BBBBB)
+    CCC = ta.lowest(BBBBBB, EEEEEE)
+    CCCC = ta.highest(BBBBBB, EEEEEE) - CCC
+    CCCCC := CCCC > 0 ? (BBBBBB - CCC) / CCCC * 100 : nz(CCCCC[1])
+    DDD := na(DDD[1]) ? CCCCC : DDD[1] + AAA * (CCCCC - DDD[1])
+    DDDD = ta.lowest(DDD, EEEEEE)
+    DDDDD = ta.highest(DDD, EEEEEE) - DDDD
+    DDDDDD := DDDDD > 0 ? (DDD - DDDD) / DDDDD * 100 : nz(DDDDDD[1])
+    EEEEE := na(EEEEE[1]) ? DDDDDD : EEEEE[1] + AAA * (DDDDDD - EEEEE[1])
+    EEEEE
+
+mAAAAA = AAAAA(EEEEEE, BBBB, BBBBB)
+mColor = mAAAAA > mAAAAA[1] ? color.new(color.green, 20) : color.new(color.red, 20)
+
+
+
+if mAAAAA[3] <= mAAAAA[2] and mAAAAA[2] > mAAAAA[1] and mAAAAA > 75
+    alert("Red", alert.freq_once_per_bar)
+if mAAAAA[3] >= mAAAAA[2] and mAAAAA[2] < mAAAAA[1] and mAAAAA < 25
+    alert("Green", alert.freq_once_per_bar)
+
+
+plot(mAAAAA, color=mColor, title='STC', linewidth=2)
+
+ul = plot(25, color=color.new(color.gray, 70))
+ll = plot(75, color=color.new(color.gray, 70))
+fill(ul, ll, color=color.new(color.gray, 96))
+

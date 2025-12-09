@@ -1,0 +1,11 @@
+//@version=6
+indicator(title="Klinger Oscillator", format=format.volume, timeframe="", timeframe_gaps=true)
+var cumVol = 0.
+cumVol += nz(volume)
+if barstate.islast and cumVol == 0
+    runtime.error("No volume is provided by the data vendor.")
+sv = ta.change(hlc3) >= 0 ? volume : -volume
+kvo = ta.ema(sv, 34) - ta.ema(sv, 55)
+sig = ta.ema(kvo, 13)
+plot(kvo, color = #2962FF, title="Klinger Oscillator")
+plot(sig, color = #43A047, title="Signal")

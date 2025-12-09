@@ -1,0 +1,224 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("Indicator Panel", overlay = true)
+stattextsize = input(defval = size.small, title = "Panel Size", options = [size.tiny, size.small, size.normal, size.large])
+tableposy = input(defval='bottom', title='Panel Position', options=['bottom', 'middle', 'top'], inline='pos')
+tableposx = input(defval='left', title='', options=['left', 'center', 'right'], inline='pos')
+symbol0 = input(defval = "BINANCE:BTCUSDT", type = input.symbol)
+symbol1 = input(defval = "BINANCE:ETHUSDT", type = input.symbol)
+symbol2 = input(defval = "BINANCE:XRPUSDT", type = input.symbol)
+symbol3 = input(defval = "BINANCE:DOGEUSDT", type = input.symbol)
+symbol4 = input(defval = "BINANCE:LTCUSDT", type = input.symbol)
+source = close//input(defval = close, title = "Source")
+indi0 = input(defval = true, title = "RSI", inline = "rsi")
+indi0l = input(defval = 14, title = "", inline = "rsi")
+indi1 = input(defval = true, title = "MACD", inline = "macd")
+indi1l1 = input(defval = 12, title = "", inline = "macd")
+indi1l2 = input(defval = 26, title = "", inline = "macd")
+indi1l3 = input(defval = 9, title = "", inline = "macd")
+indi2 = input(defval = true, title = "DMI", inline = "dmi")
+indi2l1 = input(defval = 14, title = "", inline = "dmi")
+indi2l2 = input(defval = 14, title = "", inline = "dmi")
+indi3 = input(defval = true, title = "CCI", inline = "cci")
+indi3l = input(defval = 20, title = "", inline = "cci")
+indi4 = input(defval = true, title = "MFI", inline = "mfi")
+indi4l = input(defval = 20, title = "", inline = "mfi")
+indi5 = input(defval = true, title = "Momentum", inline = "momentum")
+indi5l = input(defval = 10, title = "", inline = "momentum")
+indi6 = input(defval = true, title =" MA", inline = "indi6")
+indi6t = input(defval = "SMA", title = "", options = ["SMA","EMA"], inline = "indi6")
+indi6l = input(defval = 50, title = "", minval = 1, inline = "indi6")
+indi7 = input(defval = true, title =" MA", inline = "indi7")
+indi7t = input(defval = "SMA", title = "", options = ["SMA","EMA"], inline = "indi7")
+indi7l = input(defval = 200, title = "", minval = 1, inline = "indi7")
+
+
+var indinames = array.new_string(12)
+var precision = array.new_string(12, '#.##########')
+if barstate.isfirst
+    array.set(indinames, 0, "RSI"), array.set(precision, 0, '#.##')
+    array.set(indinames, 1, "MACD Line")
+    array.set(indinames, 2, "MACD Signal")
+    array.set(indinames, 3, "MACD Histogram")
+    array.set(indinames, 4, "+DI"), array.set(precision, 4, '#.##')
+    array.set(indinames, 5, "-DI"), array.set(precision, 5, '#.##')
+    array.set(indinames, 6, "ADX"), array.set(precision, 6, '#.##')
+    array.set(indinames, 7, "CCI"), array.set(precision, 7, '#.##')
+    array.set(indinames, 8, "MFI"), array.set(precision, 8, '#.##')
+    array.set(indinames, 9, "Momentum")
+    array.set(indinames, 10, indi6t + " " + tostring(indi6l))
+    array.set(indinames, 11, indi7t + " " + tostring(indi7l))
+    
+// get indicator values
+indicators = array.new_float(800, 0)
+RSI0 = security(symbol0, timeframe.period, rsi(source, indi0l))
+[macdLine0, signalLine0, histLine0] = security(symbol0, timeframe.period, macd(close, indi1l1, indi1l2, indi1l3))
+[diplus0, diminus0, adx0]= security(symbol0, timeframe.period, dmi(indi2l1, indi2l2))
+cci0 = security(symbol0, timeframe.period, cci(source, indi3l))
+mfi0 = security(symbol0, timeframe.period, mfi(source, indi4l))
+mom0 = security(symbol0, timeframe.period, mom(source, indi5l))
+ma01 = security(symbol0, timeframe.period, indi6t == "SMA" ? sma(source, indi6l) : ema(source, indi6l))
+ma02 = security(symbol0, timeframe.period, indi7t == "SMA" ? sma(source, indi7l) : ema(source, indi7l))
+
+RSI1 = security(symbol1, timeframe.period, rsi(source, indi0l))
+[macdLine1, signalLine1, histLine1] = security(symbol1, timeframe.period, macd(close, indi1l1, indi1l2, indi1l3))
+[diplus1, diminus1, adx1]= security(symbol1, timeframe.period, dmi(indi2l1, indi2l2))
+cci1 = security(symbol1, timeframe.period, cci(source, indi3l))
+mfi1 = security(symbol1, timeframe.period, mfi(source, indi4l))
+mom1 = security(symbol1, timeframe.period, mom(source, indi5l))
+ma11 = security(symbol1, timeframe.period, indi6t == "SMA" ? sma(source, indi6l) : ema(source, indi6l))
+ma12 = security(symbol1, timeframe.period, indi7t == "SMA" ? sma(source, indi7l) : ema(source, indi7l))
+
+RSI2 = security(symbol2, timeframe.period, rsi(source, indi0l))
+[macdLine2, signalLine2, histLine2] = security(symbol2, timeframe.period, macd(close, indi1l1, indi1l2, indi1l3))
+[diplus2, diminus2, adx2]= security(symbol2, timeframe.period, dmi(indi2l1, indi2l2))
+cci2 = security(symbol2, timeframe.period, cci(source, indi3l))
+mfi2 = security(symbol2, timeframe.period, mfi(source, indi4l))
+mom2 = security(symbol2, timeframe.period, mom(source, indi5l))
+ma21 = security(symbol2, timeframe.period, indi6t == "SMA" ? sma(source, indi6l) : ema(source, indi6l))
+ma22 = security(symbol2, timeframe.period, indi7t == "SMA" ? sma(source, indi7l) : ema(source, indi7l))
+
+RSI3 = security(symbol3, timeframe.period, rsi(source, indi0l))
+[macdLine3, signalLine3, histLine3] = security(symbol3, timeframe.period, macd(close, indi1l1, indi1l2, indi1l3))
+[diplus3, diminus3, adx3]= security(symbol3, timeframe.period, dmi(indi2l1, indi2l2))
+cci3 = security(symbol3, timeframe.period, cci(source, indi3l))
+mfi3 = security(symbol3, timeframe.period, mfi(source, indi4l))
+mom3 = security(symbol3, timeframe.period, mom(source, indi5l))
+ma31 = security(symbol3, timeframe.period, indi6t == "SMA" ? sma(source, indi6l) : ema(source, indi6l))
+ma32 = security(symbol3, timeframe.period, indi7t == "SMA" ? sma(source, indi7l) : ema(source, indi7l))
+
+RSI4 = security(symbol4, timeframe.period, rsi(source, indi0l))
+[macdLine4, signalLine4, histLine4] = security(symbol4, timeframe.period, macd(close, indi1l1, indi1l2, indi1l3))
+[diplus4, diminus4, adx4]= security(symbol4, timeframe.period, dmi(indi2l1, indi2l2))
+cci4 = security(symbol4, timeframe.period, cci(source, indi3l))
+mfi4 = security(symbol4, timeframe.period, mfi(source, indi4l))
+mom4 = security(symbol4, timeframe.period, mom(source, indi5l))
+ma41 = security(symbol4, timeframe.period, indi6t == "SMA" ? sma(source, indi6l) : ema(source, indi6l))
+ma42 = security(symbol4, timeframe.period, indi7t == "SMA" ? sma(source, indi7l) : ema(source, indi7l))
+
+f_add_indi(enabled, index, indi, indi1)=>
+    if enabled
+        array.set(indicators, index, 1)
+        array.set(indicators, index + 1, indi)
+        if not na(indi)
+            array.set(indicators, index + 2, indi1)
+
+// set indicator values
+// symbol 0
+f_add_indi(indi0, 0 * 40 + 0, RSI0, RSI0[1])
+f_add_indi(indi1, 0 * 40 + 3, macdLine0, macdLine0[1])
+f_add_indi(indi1, 0 * 40 + 6, signalLine0, signalLine0[1])
+f_add_indi(indi1, 0 * 40 + 9, histLine0, histLine0[1])
+f_add_indi(indi2, 0 * 40 + 12, diplus0, diplus0[1])
+f_add_indi(indi2, 0 * 40 + 15, diminus0, diminus0[1])
+f_add_indi(indi2, 0 * 40 + 18, adx0, adx0[1])
+f_add_indi(indi3, 0 * 40 + 21, cci0, cci0[1])
+f_add_indi(indi4, 0 * 40 + 24, mfi0, mfi0[1])
+f_add_indi(indi5, 0 * 40 + 27, mom0, mom0[1])
+f_add_indi(indi6, 0 * 40 + 30, ma01, ma01[1])
+f_add_indi(indi7, 0 * 40 + 33, ma02, ma02[1])
+
+// symbol 1
+f_add_indi(indi0, 1 * 40 + 0, RSI1, RSI1[1])
+f_add_indi(indi1, 1 * 40 + 3, macdLine1, macdLine1[1])
+f_add_indi(indi1, 1 * 40 + 6, signalLine1, signalLine1[1])
+f_add_indi(indi1, 1 * 40 + 9, histLine1, histLine1[1])
+f_add_indi(indi2, 1 * 40 + 12, diplus1, diplus1[1])
+f_add_indi(indi2, 1 * 40 + 15, diminus1, diminus1[1])
+f_add_indi(indi2, 1 * 40 + 18, adx1, adx1[1])
+f_add_indi(indi3, 1 * 40 + 21, cci1, cci1[1])
+f_add_indi(indi4, 1 * 40 + 24, mfi1, mfi1[1])
+f_add_indi(indi5, 1 * 40 + 27, mom1, mom1[1])
+f_add_indi(indi6, 1 * 40 + 30, ma11, ma11[1])
+f_add_indi(indi7, 1 * 40 + 33, ma12, ma12[1])
+
+// symbol 2
+f_add_indi(indi0, 2 * 40 + 0, RSI2, RSI2[1])
+f_add_indi(indi1, 2 * 40 + 3, macdLine2, macdLine2[1])
+f_add_indi(indi1, 2 * 40 + 6, signalLine2, signalLine2[1])
+f_add_indi(indi1, 2 * 40 + 9, histLine2, histLine2[1])
+f_add_indi(indi2, 2 * 40 + 12, diplus2, diplus2[1])
+f_add_indi(indi2, 2 * 40 + 15, diminus2, diminus2[1])
+f_add_indi(indi2, 2 * 40 + 18, adx2, adx2[1])
+f_add_indi(indi3, 2 * 40 + 21, cci2, cci2[1])
+f_add_indi(indi4, 2 * 40 + 24, mfi2, mfi2[1])
+f_add_indi(indi5, 2 * 40 + 27, mom2, mom2[1])
+f_add_indi(indi6, 2 * 40 + 30, ma21, ma21[1])
+f_add_indi(indi7, 2 * 40 + 33, ma22, ma22[1])
+
+// symbol 3
+f_add_indi(indi0, 3 * 40 + 0, RSI3, RSI3[1])
+f_add_indi(indi1, 3 * 40 + 3, macdLine3, macdLine3[1])
+f_add_indi(indi1, 3 * 40 + 6, signalLine3, signalLine3[1])
+f_add_indi(indi1, 3 * 40 + 9, histLine3, histLine3[1])
+f_add_indi(indi2, 3 * 40 + 12, diplus3, diplus3[1])
+f_add_indi(indi2, 3 * 40 + 15, diminus3, diminus3[1])
+f_add_indi(indi2, 3 * 40 + 18, adx3, adx3[1])
+f_add_indi(indi3, 3 * 40 + 21, cci3, cci3[1])
+f_add_indi(indi4, 3 * 40 + 24, mfi3, mfi3[1])
+f_add_indi(indi5, 3 * 40 + 27, mom3, mom3[1])
+f_add_indi(indi6, 3 * 40 + 30, ma31, ma31[1])
+f_add_indi(indi7, 3 * 40 + 33, ma32, ma32[1])
+
+// symbol 4
+f_add_indi(indi0, 4 * 40 + 0, RSI4, RSI4[1])
+f_add_indi(indi1, 4 * 40 + 3, macdLine4, macdLine4[1])
+f_add_indi(indi1, 4 * 40 + 6, signalLine4, signalLine4[1])
+f_add_indi(indi1, 4 * 40 + 9, histLine4, histLine4[1])
+f_add_indi(indi2, 4 * 40 + 12, diplus4, diplus4[1])
+f_add_indi(indi2, 4 * 40 + 15, diminus4, diminus4[1])
+f_add_indi(indi2, 4 * 40 + 18, adx4, adx4[1])
+f_add_indi(indi3, 4 * 40 + 21, cci4, cci4[1])
+f_add_indi(indi4, 4 * 40 + 24, mfi4, mfi4[1])
+f_add_indi(indi5, 4 * 40 + 27, mom4, mom4[1])
+f_add_indi(indi6, 4 * 40 + 30, ma41, ma41[1])
+f_add_indi(indi7, 4 * 40 + 33, ma42, ma42[1])
+
+var indicatorTable = table.new(position = tableposy + '_' + tableposx, columns = 20, rows= 15, frame_color = color.maroon, frame_width = 4, border_width = 1, border_color = color.green)
+if barstate.islast
+    // symbols
+    table.cell(table_id = indicatorTable, column = 0, row = 0, text = "Indicator", bgcolor = color.green, text_color = color.white, text_size=stattextsize)
+    table.cell(table_id = indicatorTable, column = 0, row = 1, text = "Panel", bgcolor = color.green, text_color = color.white, text_size=stattextsize)
+    table.cell(table_id = indicatorTable, column = 0, row = 2, text = symbol0, text_halign = text.align_left, bgcolor = color.silver, text_color = color.black, text_size=stattextsize)
+    table.cell(table_id = indicatorTable, column = 0, row = 3, text = symbol1, text_halign = text.align_left, bgcolor = color.aqua, text_color = color.black, text_size=stattextsize)
+    table.cell(table_id = indicatorTable, column = 0, row = 4, text = symbol2, text_halign = text.align_left, bgcolor = color.silver, text_color = color.black, text_size=stattextsize)
+    table.cell(table_id = indicatorTable, column = 0, row = 5, text = symbol3, text_halign = text.align_left, bgcolor = color.aqua, text_color = color.black, text_size=stattextsize)
+    table.cell(table_id = indicatorTable, column = 0, row = 6, text = symbol4, text_halign = text.align_left, bgcolor = color.silver, text_color = color.black, text_size=stattextsize)
+    
+    // indicator values
+    col = color.yellow
+    for j = 0 to 4
+        for i = 0 to 11
+            index = j * 40 + i * 3
+            if array.get(indicators, index) == 1 // enabled
+                table.cell(table_id = indicatorTable, column = i + 1, row = 1, text = array.get(indinames, i), bgcolor = col, text_color = color.black, text_size=stattextsize)
+                if i >= 1 and i <= 6
+                    if i == 1
+                        table.cell(table_id = indicatorTable, column = i + 1, row = 0, text = "", bgcolor = col, text_color = color.black, text_size=stattextsize)
+                        table.cell(table_id = indicatorTable, column = i + 2, row = 0, text = "M A C D", bgcolor = col, text_color = color.black, text_size=stattextsize)
+                        table.cell(table_id = indicatorTable, column = i + 3, row = 0, text = "", bgcolor = col, text_color = color.black, text_size=stattextsize)
+                    
+                    if i == 4
+                        table.cell(table_id = indicatorTable, column = i + 1, row = 0, text = "", bgcolor = col, text_color = color.black, text_size=stattextsize)
+                        table.cell(table_id = indicatorTable, column = i + 2, row = 0, text = "D M I", bgcolor = col, text_color = color.black, text_size=stattextsize)
+                        table.cell(table_id = indicatorTable, column = i + 3, row = 0, text = "", bgcolor = col, text_color = color.black, text_size=stattextsize)
+                    if i == 3 or i == 6
+                        col := col == color.yellow ? color.orange : color.yellow
+                else
+                    table.cell(table_id = indicatorTable, column = i + 1, row = 0, text = "", bgcolor = col, text_color = color.black, text_size=stattextsize)
+                    col := col == color.yellow ? color.orange : color.yellow
+                    
+                bgcol =  array.get(indicators, index + 1) > array.get(indicators, index + 2) ? color.lime : 
+                         array.get(indicators, index + 1) < array.get(indicators, index + 2) ? color.red : 
+                         color.gray
+                         
+                txtcol = array.get(indicators, index + 1) > array.get(indicators, index + 2) ? color.black : 
+                         array.get(indicators, index+ 1) < array.get(indicators, index + 2) ? color.white : 
+                         color.black
+                         
+                txt = tostring(array.get(indicators, index + 1), array.get(precision, i))
+                                           
+                table.cell(table_id = indicatorTable, column = i + 1, row = j + 2, text = txt, bgcolor = bgcol, text_color = txtcol, text_size=stattextsize)
+            

@@ -1,0 +1,64 @@
+{
+  "name": "lightweight-charts-indicators",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Optimized technical indicators built with OakScriptJS for use with lightweight-charts",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prepublishOnly": "npm run build",
+    "build": "npm run clean && npm run build:esm && npm run build:cjs && npm run build:types",
+    "build:esm": "esbuild src/index.ts --bundle --format=esm --outfile=dist/index.mjs --platform=neutral --external:oakscriptjs --external:@types/*",
+    "build:cjs": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.cjs --platform=neutral --external:oakscriptjs --external:@types/*",
+    "build:types": "tsc --emitDeclarationOnly --outDir dist",
+    "clean": "rimraf dist",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:pinesuite": "vitest run tests/regression/pinesuite-regression.test.ts"
+  },
+  "keywords": [
+    "lightweight-charts",
+    "pinescript",
+    "trading",
+    "technical-analysis",
+    "indicators",
+    "oakscript",
+    "ta",
+    "finance"
+  ],
+  "author": "Odyssée",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/phamvmnhut/lightweight-charts-indicators.git"
+  },
+  "bugs": {
+    "url": "https://github.com/phamvmnhut/lightweight-charts-indicators/issues"
+  },
+  "homepage": "https://github.com/phamvmnhut/lightweight-charts-indicators#readme",
+  "peerDependencies": {
+    "oakscriptjs": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.6",
+    "esbuild": "^0.19.11",
+    "rimraf": "^6.1.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.6.0"
+  }
+}

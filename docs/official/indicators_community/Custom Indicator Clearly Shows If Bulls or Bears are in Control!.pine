@@ -1,0 +1,50 @@
+
+study(title="CM_TotalConsecutive_Up_Down_V2", shorttitle="CM_TotalConsec_Up_Down_V2", overlay=false)
+
+dopm = input(true, title="Check = Use Midpoint, UnCheck = Use Prev Close")
+dohbM = input(false, title="Highest Bar Look Back Period - Using Midpoint?")
+dohbC = input(false, title="Highest Bar Look Back Period - Using Close?")
+dostM = input(false, title="Standard Dev - Using Midpoint?")
+dostC = input(false, title="Standard Dev - Using Close?")
+domaM = input(false, title="Moving Average - Using Midpoint?")
+domaC = input(false, title="Moving Average - Using Close?")
+hlength = input(4, minval=1, title="Horizontal Line")
+length2 = input(50, minval=1, title="Highest Bar Look Back Period")
+length4 = input(50, minval=1, title="Standard Dev Length")
+length5 = input(2, minval=1, title="Standard Dev Multiple")
+length3 = input(20, minval=1, title="Moving Average length")
+
+
+down_BarC = close > close[1]
+up_BarC = close < close[1]
+
+down_BarM = close > hl2[1]
+up_BarM = close < hl2[1]
+
+//percentrank = percentrank(barssince(down_Bar), 50)/10
+avg_Down = sma(barssince(down_BarM), length3)
+avg_Up = sma(barssince(up_BarM), length3)
+avg_DownC = sma(barssince(down_BarC), length3)
+avg_UpC = sma(barssince(up_BarC), length3)
+
+stdevdm = stdev(barssince(down_BarM), length4)*length5
+stdevum = stdev(barssince(up_BarM), length4)*length5
+stdevdC = stdev(barssince(down_BarC), length4)*length5
+stdevuC = stdev(barssince(up_BarC), length4)*length5
+
+plot(dopm and barssince(down_BarM) ? barssince(down_BarM) : barssince(down_BarC), title="Price Down Based On Midpoint or Close", color=red, style=histogram, linewidth=3)
+plot(dopm and barssince(up_BarM) ? barssince(up_BarM) : barssince(up_BarC), title="Price Up Based On Midpoint or Close", color=lime, style=histogram, linewidth=3)
+plot(dohbM and highest(barssince(down_BarM), length2) ? highest(barssince(down_BarM), length2) : na, title="Highest Down Bar Lookback - Midpoint", color=red, linewidth=4)
+plot(dohbM and highest(barssince(up_BarM), length2) ? highest(barssince(up_BarM), length2) : na, title="Highest Up Bar Lookback - Midpoint",color=lime, linewidth=4)
+plot(dohbC and highest(barssince(down_BarC), length2) ? highest(barssince(down_BarC), length2) : na, title="Highest Down Bar Lookback - Close",color=red, linewidth=4)
+plot(dohbC and highest(barssince(up_BarC), length2) ? highest(barssince(up_BarC), length2) : na, title="Highest Up Bar Lookback - Close",color=lime, linewidth=4)
+plot(dostM and stdevdm ? stdevdm : na, title="StdDev of Down Bars - Midpoint",color=red, linewidth=4)
+plot(dostM and stdevum ? stdevum : na, title="StdDev of Up Bars - Midpoint",color=lime, linewidth=4)
+plot(dostC and stdevdC ? stdevdC : na, title="StdDev of Down Bars - Close",color=red, linewidth=4)
+plot(dostC and stdevuC ? stdevuC : na, title="StdDev of Up Bars - Close",color=lime, linewidth=4)
+plot(domaM and avg_Down ? avg_Down : na, title="MA of Down Bars - Midpoint",color=red, linewidth=4)
+plot(domaM and avg_Up ? avg_Up :na, title="MA of Up Bars - Midpoint",color=lime, linewidth=4)
+plot(domaC and avg_DownC ? avg_DownC : na, title="MA of Down Bars - Close",color=red, linewidth=4)
+plot(domaC and avg_UpC ? avg_UpC :na, title="MA of Up Bars - Close",color=lime, linewidth=4)
+
+hline(hlength, title="Horizontal Line", linestyle=dashed, linewidth=4, color=yellow)

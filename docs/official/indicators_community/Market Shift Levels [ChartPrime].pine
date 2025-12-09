@@ -1,0 +1,55 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=6
+indicator("Market Shift Levels [ChartPrime]", max_labels_count = 500, overlay = true)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+int    length        = input.int(55, "Length")
+bool   lbl_data      = input.string("Volume", "Label Data: ", ["Volume", "Price"]) == "Volume"
+color  color_shiftUp = input.color(color.rgb(36, 213, 128), "", inline = "col")
+color  color_shiftDn = input.color(color.rgb(225, 43, 43), "", inline = "col")
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+var level       = float(na)
+float hma1      = ta.hma(close,length)
+float hma2      = hma1[5]
+float vol_sum   = (volume[2] + volume[1] + volume[0])
+
+if ta.crossover(hma1, hma2)
+    level := low
+if ta.crossunder(hma1, hma2)
+    level := high
+
+color shift_col = close < level ? color_shiftDn : color_shiftUp
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// --------------------------------------------------------------------------------------------------------------------{
+
+plot(level != level[1] ? na : level, "Market Shift Levels", color = bar_index % 2 == 0 ? color(na) : chart.fg_color, style = plot.style_linebr)
+
+// Possible Reversals
+if high[2] < level and high < level and high[1] > level
+    label.new(bar_index-1, high[1]
+             , str.tostring(lbl_data ? vol_sum : high[1], lbl_data ? format.volume : "#,####.###") + "\n⬙"
+             , color = color(na)
+             , textcolor = color.red
+             , style = label.style_label_down)
+
+if low[2] > level and low[1] < level and low > level 
+    label.new(bar_index-1, low[1]
+             ,  "⬘\n" + str.tostring(lbl_data ? vol_sum : high[1], lbl_data ? format.volume : "#,####.###")
+             , color = color(na)
+             , textcolor = color.lime
+             , style = label.style_label_up)
+
+// Candles Color
+barcolor(shift_col, title = "Bar Color")
+plotcandle(open, high, low, close, title='Candles Color', color = shift_col, wickcolor=shift_col, bordercolor = shift_col, force_overlay = true)
+// --------------------------------------------------------------------------------------------------------------------}

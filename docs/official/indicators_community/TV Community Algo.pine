@@ -1,0 +1,543 @@
+//PLEASE READ BELOW BEFORE USING THIS INDICATOR IN ANY WAY.
+
+// This work is licensed under an Attribution-NonCommercial-ShareAlike 4.0 International License (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// THIS COPYRIGHT MEANS THAT YOU ARE NOT ALLOWED TO TAKE THIS CODE AND SELL IT UNDER ANY CIRCUMSTANCES.
+// YOU ARE ALLOWED TO EDIT THE CODE AS MUCH AS YOU WANT FOR PERSONAL USE, BUT IF YOU DECIDE TO PUBLISH YOUR ALTERED VERSION YOU MUST GIVE ME CREDIT.
+// IF YOU DO PUBLISH AN EDITED VERSION, YOU MUST USE THE SAME COPYRIGHT AS WELL.
+// NO MATTER HOW MUCH YOU ALTER THE CODE, YOU STILL CANNOT SELL IT UNDER THE RULES OF THIS COPYRIGHT.
+
+// INFRINGEMENT OF THIS COPYRIGHT MAY RESULT IN A LAWSUIT SO PLEASE RESPECT THE RULES OF THE COPYRIGHT.
+// I CREATED THIS FOR THE COMMUNITY TO USE AND ENJOY. NOT FOR OTHERS TO MAKE PROFIT OFF IT.
+
+// © HomelessLemon
+// A product of Project Lemon LLC
+
+//@version=4
+study("☁️ TV Community Algo ☁️", overlay=true)
+
+//Gathers User Inputs
+voidLines = input(true, "Void Lines On / Off")
+dashOn = input(true, "Dashboard On / Off")
+colorBar = input(true, "Signal Bars On / Off")
+srLines = input(false, "Support & Resistance Lines On / Off")
+emaLines = input(false, "EMA (8, 200) On / Off")
+bsSignals = input(true, "Buy & Sell Signals On / Off")
+afibOn = input(false, "Fibonacci Retracement On / Off")
+dashDist = input(13, "Dashboard Distance")
+dashColor = input(color.new(#696969, 80), "Dashboard Color", inline="Dash Line")
+dashTextColor = input(color.new(#ffffff, 0), "Text Color", inline="Dash Line")
+
+//Calculates Volatility for Dashboard
+atr = atr(14)
+stdAtr = 2 * stdev(atr, 20)
+smaAtr = sma(atr, 20)
+topAtrDev = smaAtr + stdAtr
+bottomAtrDev = smaAtr - stdAtr
+calcDev = (atr - bottomAtrDev) / (topAtrDev - bottomAtrDev)
+percentVol = (40 * calcDev + 30)
+
+//Calculates Volume for Dashboard
+volumeDash = volume
+
+//RSI for Dashboard
+rsiDash = rsi(close, 14)
+
+//Calculates Sentiment for Dashboard
+ema9 = ema(close, 9)
+totalSentTxt = ema9 > ema9[2] ? "Bullish" : ema9 < ema9[2] ? "Bearish" : "Flat"
+
+//Defines Each Timeframe for Trend Panel
+sma = sma(close, 50)
+oneM = security(syminfo.tickerid, "1", sma, barmerge.gaps_off, barmerge.lookahead_off)
+fiveM = security(syminfo.tickerid, "5", sma, barmerge.gaps_off, barmerge.lookahead_off)
+fifteenM = security(syminfo.tickerid, "15", sma, barmerge.gaps_off, barmerge.lookahead_off)
+thirtyM = security(syminfo.tickerid, "30", sma, barmerge.gaps_off, barmerge.lookahead_off)
+oneH = security(syminfo.tickerid, "60", sma, barmerge.gaps_off, barmerge.lookahead_off)
+twoH = security(syminfo.tickerid, "120", sma, barmerge.gaps_off, barmerge.lookahead_off)
+fourH = security(syminfo.tickerid, "240", sma, barmerge.gaps_off, barmerge.lookahead_off)
+weekly = security(syminfo.tickerid, "W", sma, barmerge.gaps_off, barmerge.lookahead_off)
+monthly = security(syminfo.tickerid, "M", sma, barmerge.gaps_off, barmerge.lookahead_off)
+daily = security(syminfo.tickerid, "D", sma, barmerge.gaps_off, barmerge.lookahead_off)
+
+//Defines An Uptrend for Trend Panel
+oneMUp = oneM > oneM[1]
+fiveMUp = fiveM > fiveM[1]
+fifteenMUp = fifteenM > fifteenM[1]
+thirtyMUp = thirtyM > thirtyM[1]
+oneHUp = oneH > oneH[1]
+twoHUp = twoH > twoH[1]
+fourHUp = fourH > fourH[1]
+weeklyUp = weekly > weekly[1]
+monthlyUp = monthly > monthly[1]
+dailyUp = daily > daily[1]
+
+//Checks if the Current State is an Uptrend or Downtrend for the Trend Panel
+up = "📈"
+down = "📉"
+oneMTrend = oneMUp ? up : down
+fiveMTrend = fiveMUp ? up : down
+fifteenMTrend = fifteenMUp ? up : down
+thirtyMTrend = thirtyMUp ? up : down
+oneHTrend = oneHUp ? up : down
+twoHTrend = twoHUp ? up : down
+fourHTrend = fourHUp ? up : down
+weeklyTrend = weeklyUp ? up : down
+monthlyTrend = monthlyUp ? up : down
+dailyTrend = dailyUp ? up : down
+
+if dashOn
+    label lemonLabel = label.new(time, close,
+     text="☁️ TV Community Algo Dashboard ☁️"
+     + "\n━━━━━━━━━━━━━━━━━"
+     + "\n           🤹 Market Information 🤹"
+     + "\n━━━━━━━━━━━━━━━━━"
+     + "\n🎈   Volatility                     | " + tostring(percentVol, "##.##") + "%"
+     + "\n🎈 Volume                           | " + tostring(volumeDash,"##.##" )
+     + "\n🎈 RSI                                           | " + tostring(rsiDash, "##.##")
+     + "\n🎈 Current Sentiment | " + totalSentTxt
+     + "\n━━━━━━━━━━━━━━━━━"
+     + "\n               🎪 Trend Panel 🎪"
+     + "\n━━━━━━━━━━━━━━━━━"
+     + "\n     1 Minute | " + oneMTrend + "         2 Hour | " + twoHTrend
+     + "\n     5 Minute | " + fiveMTrend + "         4 Hour | " + fourHTrend
+     + "\n        15 Minute | " + fifteenMTrend + "         Weekly | " + weeklyTrend
+     + "\n        30 Minute | " + thirtyMTrend + "       Monthly |     " + monthlyTrend
+     + "\n        1 Hour | " + oneHTrend + "                Daily | " + dailyTrend
+     + "\n━━━━━━━━━━━━━━━━━"
+     + "\n                        with love, -Lemon 🍋",
+     color=dashColor, xloc= xloc.bar_time, style=label.style_label_left, textcolor=dashTextColor, textalign=text.align_left)
+    label.set_x(lemonLabel, label.get_x(lemonLabel) + round(change(time)*dashDist))
+    label.delete(lemonLabel[1])
+
+//Color Gradient Code
+//Shoutout to @LunaOwl for Making This!
+
+//Red                                 //Orange
+Red_1 = color.new(#FF0000,  0),       Orange_1 = color.new(#FF9800,  0)
+Red_2 = color.new(#FF0000, 30),       Orange_2 = color.new(#FF9800, 30)
+Red_3 = color.new(#FF0000, 50),       Orange_3 = color.new(#FF9800, 50)
+Red_4 = color.new(#FF0000, 60),       Orange_4 = color.new(#FF9800, 70)
+Red_5 = color.new(#FF0000, 80),       Orange_5 = color.new(#FF9800, 80)
+
+//Yellow                              //Green
+Yellow_1 = color.new(#FFE500,  0),    Green_1 = color.new(#00FF00,  0)
+Yellow_2 = color.new(#FFE500, 30),    Green_2 = color.new(#00FF00, 30)
+Yellow_3 = color.new(#FFE500, 50),    Green_3 = color.new(#00FF00, 50)
+Yellow_4 = color.new(#FFE500, 60),    Green_4 = color.new(#00FF00, 70)
+Yellow_5 = color.new(#FFE500, 80),    Green_5 = color.new(#00FF00, 80)
+
+//Blue                                //Indigo
+Blue_1 = color.new(#4985E7,  0),      Indigo_1 = color.new(#7A2BCE,  0)
+Blue_2 = color.new(#4985E7, 30),      Indigo_2 = color.new(#7A2BCE, 30)
+Blue_3 = color.new(#4985E7, 50),      Indigo_3 = color.new(#7A2BCE, 50)
+Blue_4 = color.new(#4985E7, 60),      Indigo_4 = color.new(#7A2BCE, 60)
+Blue_5 = color.new(#4985E7, 80),      Indigo_5 = color.new(#7A2BCE, 80)
+
+//Purple
+Purple_1 = color.new(#D12FAD,  0)
+Purple_2 = color.new(#D12FAD, 30)
+Purple_3 = color.new(#D12FAD, 50)
+Purple_4 = color.new(#D12FAD, 60)
+Purple_5 = color.new(#D12FAD, 80)
+
+
+//Creates Color Variable       //Creates Math Variable
+var color c = na,              var int k = na
+
+k := nz(k[1], 1)      //This Equation Allows the Colors to Loop
+
+//This Code Loops Through 63 Shades of 7 Colors//
+
+if k == 1
+    c := Red_5
+if k == 2
+    c := Red_4
+if k == 3
+    c := Red_3
+if k == 4
+    c := Red_2
+if k == 5
+    c := Red_1
+if k == 6
+    c := Red_2
+if k == 7
+    c := Red_3
+if k == 8
+    c := Red_4
+if k == 9
+    c := Red_5
+if k == 10
+    c := Orange_5
+if k == 11
+    c := Orange_4
+if k == 12
+    c := Orange_3
+if k == 13
+    c := Orange_2
+if k == 14
+    c := Orange_1
+if k == 15
+    c := Orange_2
+if k == 16
+    c := Orange_3
+if k == 17
+    c := Orange_4
+if k == 18
+    c := Orange_5
+if k == 19
+    c := Yellow_5
+if k == 20
+    c := Yellow_4
+if k == 21
+    c := Yellow_3
+if k == 22
+    c := Yellow_2
+if k == 23
+    c := Yellow_1
+if k == 24
+    c := Yellow_2
+if k == 25
+    c := Yellow_3
+if k == 26
+    c := Yellow_4
+if k == 27
+    c := Yellow_5
+if k == 28
+    c := Green_5
+if k == 29
+    c := Green_4
+if k == 30
+    c := Green_3
+if k == 31
+    c := Green_2
+if k == 32
+    c := Green_1
+if k == 33
+    c := Green_2
+if k == 34
+    c := Green_3
+if k == 35
+    c := Green_4
+if k == 36
+    c := Green_5
+if k == 37
+    c := Blue_5
+if k == 38
+    c := Blue_4
+if k == 39
+    c := Blue_3
+if k == 40
+    c := Blue_2
+if k == 41
+    c := Blue_1
+if k == 42
+    c := Blue_2
+if k == 43
+    c := Blue_3
+if k == 44
+    c := Blue_4     
+if k == 45
+    c := Blue_5   
+if k == 46
+    c := Indigo_5
+if k == 47
+    c := Indigo_4
+if k == 48
+    c := Indigo_3
+if k == 49
+    c := Indigo_2
+if k == 50
+    c := Indigo_1
+if k == 51
+    c := Indigo_2
+if k == 52
+    c := Indigo_3
+if k == 53
+    c := Indigo_4
+if k == 54
+    c := Indigo_5
+if k == 55
+    c := Purple_5
+if k == 56
+    c := Purple_4
+if k == 57
+    c := Purple_3
+if k == 58
+    c := Purple_2
+if k == 59
+    c := Purple_1
+if k == 60
+    c := Purple_2
+if k == 61
+    c := Purple_3
+if k == 62
+    c := Purple_4
+if k == 63
+    c := Purple_5
+
+k := k + 1
+
+if k > 63
+    k := 1
+
+// Auto Fibonacci Code
+threshold_multiplier = input(3, "Fibonacci Deviation")
+dev_threshold = atr(10) / close * 100 * threshold_multiplier
+depth = 10
+reverse = input(false, "Reverse Fib?")
+var extendLeft = input(false, "Extend Left    |    Extend Right", inline = "Extend Lines")
+var extendRight = input(true, "", inline = "Extend Lines")
+var extending = extend.none
+if extendLeft and extendRight
+    extending := extend.both
+if extendLeft and not extendRight
+    extending := extend.left
+if not extendLeft and extendRight
+    extending := extend.right
+prices = input(true, "Show Prices?")
+levels = input(true, "Show Levels?", inline = "Levels")
+levelsFormat = input("Percent", "", options = ["Values", "Percent"], inline = "Levels")
+labelsPosition = input("Right", "Fib Label Position", options = ["Left", "Right"])
+
+var line lineLast = na
+var int iLast = 0
+var int iPrev = 0
+var float pLast = 0
+var isHighLast = false // otherwise the last pivot is a low pivot
+
+pivots(src, length, isHigh) =>
+    l2 = length * 2
+    c2 = nz(src[length])
+    ok = true
+    for i = 0 to l2
+        if isHigh and src[i] > c2
+            ok := false
+
+        if not isHigh and src[i] < c2
+            ok := false
+    if ok
+        [bar_index[length], c2]
+    else
+        [int(na), float(na)]
+[iH, pH] = pivots(high, depth / 2, true)
+[iL, pL] = pivots(low, depth / 2, false)
+
+calc_dev(base_price, price) =>
+    100 * (price - base_price) / price
+
+pivotFound(dev, isHigh, index, price) =>
+    if isHighLast == isHigh and not na(lineLast)
+        // same direction
+        if isHighLast ? price > pLast : price < pLast
+            line.set_xy2(lineLast, index, price)
+            [lineLast, isHighLast]
+        else
+            [line(na), bool(na)]
+    else // reverse the direction (or create the very first line)
+        if abs(dev) > dev_threshold
+            // price move is significant
+            id = line.new(iLast, pLast, index, price, color=na, width=1, style=line.style_dashed)
+            [id, isHigh]
+        else
+            [line(na), bool(na)]
+
+if not na(iH)
+    dev = calc_dev(pLast, pH)
+    [id, isHigh] = pivotFound(dev, true, iH, pH)
+    if not na(id)
+        if id != lineLast
+            line.delete(lineLast)
+        lineLast := id
+        isHighLast := isHigh
+        iPrev := iLast
+        iLast := iH
+        pLast := pH
+else
+    if not na(iL)
+        dev = calc_dev(pLast, pL)
+        [id, isHigh] = pivotFound(dev, false, iL, pL)
+        if not na(id)
+            if id != lineLast
+                line.delete(lineLast)
+            lineLast := id
+            isHighLast := isHigh
+            iPrev := iLast
+            iLast := iL
+            pLast := pL
+
+_draw_line(price, col) =>
+    var id = line.new(iLast, price, bar_index, price, color=col, width=1, extend=extending)
+    if not na(lineLast)
+        line.set_xy1(id, line.get_x1(lineLast), price)
+        line.set_xy2(id, line.get_x2(lineLast), price)
+
+_draw_label(price, txt, txtColor) =>
+    x = labelsPosition == "Left" ? line.get_x1(lineLast) : not extendRight ? line.get_x2(lineLast) : bar_index
+    labelStyle = labelsPosition == "Left" ? label.style_label_right : label.style_label_left
+    align = labelsPosition == "Left" ? text.align_right : text.align_left
+    labelsAlignStrLeft = txt + '\n ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏ \n'
+    labelsAlignStrRight = '       ' + txt + '\n ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏ \n'
+    labelsAlignStr = labelsPosition == "Left" ? labelsAlignStrLeft : labelsAlignStrRight
+    var id = label.new(x=x, y=price, text=labelsAlignStr, textcolor=txtColor, style=labelStyle, textalign=align, color=#00000000)
+    label.set_xy(id, x, price)
+    label.set_text(id, labelsAlignStr)
+    label.set_textcolor(id, txtColor)
+
+_wrap(txt) =>
+    "(" + tostring(txt, "#.##") + ")"
+
+_label_txt(level, price) =>
+    l = levelsFormat == "Values" ? tostring(level) + " " : tostring(level * 100) + "% "
+    (levels ? l : " ") + (prices ? _wrap(price) : " ")
+
+_crossing_level(sr, r) =>
+    (r > sr and r < sr[1]) or (r < sr and r > sr[1])
+
+startPrice = reverse ? line.get_y1(lineLast) : pLast
+endPrice = reverse ? pLast : line.get_y1(lineLast)
+
+iHL = startPrice > endPrice
+diff = (iHL ? -1 : 1) * abs(startPrice - endPrice)
+
+processLevel(show, value, colorL) => 
+    float m = value
+    r = startPrice + diff * m
+    if show
+        _draw_line(r, colorL)
+        _draw_label(r, _label_txt(m, r), colorL)
+
+show_0 = true
+value_0 = 0
+color_0 = #787b86
+if afibOn
+    processLevel(show_0, value_0, color_0)
+
+show_0_236 = true
+value_0_236 = 0.236
+color_0_236 = #f44336
+if afibOn
+    processLevel(show_0_236, value_0_236, color_0_236)
+
+show_0_382 = true
+value_0_382 = 0.382
+color_0_382 = #81c784
+if afibOn
+    processLevel(show_0_382, value_0_382, color_0_382)
+
+show_0_5 = true
+value_0_5 = 0.5
+color_0_5 = #4caf50
+if afibOn
+    processLevel(show_0_5, value_0_5, color_0_5)
+
+show_0_618 = true
+value_0_618 = 0.618
+color_0_618 = #009688
+if afibOn
+    processLevel(show_0_618, value_0_618, color_0_618)
+
+show_0_786 = true
+value_0_786 = 0.786
+color_0_786 = #64b5f6
+if afibOn
+    processLevel(show_0_786, value_0_786, color_0_786)
+
+show_1 = true
+value_1 = 1
+color_1 = #787b86
+if afibOn
+    processLevel(show_1, value_1, color_1)
+
+//Support / Resistance Lines
+h1000 = highest(1000)
+h750 = highest(750)
+h500 = highest(500)
+h250 = highest(250)
+h100 = highest(100)
+h50 = highest(50)
+h10 = highest(10)
+plot(srLines ? h1000 : na, title='R1', color = close > h1000 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+plot(srLines ? h750 : na, title='R2', color = close > h750 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+plot(srLines ? h500 : na, title='R3', color = close > h500 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+plot(srLines ? h250 : na, title='R4', color = close > h250 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+plot(srLines ? h100 : na, title='R5', color = close > h100 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+plot(srLines ? h50 : na, title='R6', color = close > h50 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+plot(srLines ? h10 : na, title='R6', color = close > h50 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+
+l1000 = lowest(1000)
+l750 = lowest(750)
+l500 = lowest(500)
+l250 = lowest(250)
+l100 = lowest(100)
+l50 = lowest(50)
+l10 = lowest(10)
+plot(srLines ? l1000 : na, title='S1', color = close > l1000 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+plot(srLines ? l750 : na, title='S2', color = close > l750 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+plot(srLines ? l500 : na, title='S3', color = close > l500 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+plot(srLines ? l250 : na, title='S4', color = close > l250 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+plot(srLines ? l100 : na, title='S5', color = close > l100 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+plot(srLines ? l50 : na, title='S6', color = close > l50 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+plot(srLines ? l10 : na, title='S6', color = close > l50 ? color.green : color.red, linewidth=1, offset=-9999, trackprice=true)
+
+//Defines Variables Used in Void Lines
+basis = sma(close, 20)
+twoDev = 2 * stdev(close, 20)
+upper3 = basis + twoDev
+lower3 = basis - twoDev
+threeDev = 3 * stdev(close, 20)
+upper4 = basis + threeDev
+lower4 = basis - threeDev
+
+//Plots Void Lines
+plot(voidLines ? basis : na, "Basis", color.purple, editable=false)
+p5 = plot(voidLines ? upper3 : na, "Upper 200%", c, editable=false)
+p6 = plot(voidLines ? lower3 : na, "Lower 200%", c, editable=false)
+p7 = plot(voidLines ? upper4 : na, "Upper 300%", c, editable=false)
+p8 = plot(voidLines ? lower4 : na, "Lower 300%", c, editable=false)
+fill(p7, p5, color.teal, 75)
+fill(p8, p6, color.purple, 75)
+
+//Defines Rules for Coloring Bars
+colorBars = close > basis ? color.teal : close < basis ? color.purple : na
+
+//Defines EMA Variables
+ema8 = ema(close, 8)
+ema200 = ema(close, 200)
+
+//Colors Bars
+barcolor(colorBar ? colorBars : na)
+
+//Plots EMA Lines
+plot(emaLines ? ema8 : na, "EMA 8", color.white, 2)
+plot(emaLines ? ema200 : na, "EMA 200", color.green, 2)
+
+//WaveTrend for Signals
+n1 = 14, n2 = 21, ap = hlc3, esa = ema(ap, n1), d = ema(abs(ap - esa), n1)
+ci = (ap - esa) / (0.015 * d), tci = ema(ci, n2), wt1 = tci, wt2 = sma(wt1,4)
+
+// Defines Variables for Avoiding Duplicate Signals
+var sell = false
+var buy = false
+
+// Defines Trade Signals
+buySignal = not sell and crossover(wt1, wt2)
+sellSignal = not buy and crossunder(wt1, wt2)
+
+if buySignal
+    sell := true
+    buy := false
+
+if sellSignal
+    sell := false
+    buy := true
+
+// Plots Signals to Chart
+plotshape(bsSignals ? buySignal : na, title = "Buy Signal", location=location.belowbar, color=color.green, transp=0, style=shape.labelup, size=size.small, textcolor=color.white, text = "BUY")
+plotshape(bsSignals ? sellSignal : na, title = "Sell Signal", location=location.abovebar, color=color.red, transp=0, style=shape.labeldown, size=size.small, textcolor=color.white, text = "SELL")
+
+// Alert Conditions
+alertcondition(buySignal, "Buy Signal", "Buy Signal")
+alertcondition(sellSignal, "Sell Signal", "Sell Signal")
+
+//

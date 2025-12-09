@@ -1,0 +1,18 @@
+//@version=6
+indicator(title="Fisher Transform", shorttitle="Fisher", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+len = input.int(9, minval=1, title="Length")
+high_ = ta.highest(hl2, len)
+low_ = ta.lowest(hl2, len)
+round_(val) => val > .99 ? .999 : val < -.99 ? -.999 : val
+value = 0.0
+value := round_(.66 * ((hl2 - low_) / (high_ - low_) - .5) + .67 * nz(value[1]))
+fish1 = 0.0
+fish1 := .5 * math.log((1 + value) / (1 - value)) + .5 * nz(fish1[1])
+fish2 = fish1[1]
+hline(1.5, "1.5", color=#E91E63)
+hline(0.75,"0.75", color=#787B86)
+hline(0, "0", color=#E91E63)
+hline(-0.75, "-0.75", color=#787B86)
+hline(-1.5, "-1.5", color=#E91E63)
+plot(fish1, color=#2962FF, title="Fisher")
+plot(fish2, color=#FF6D00, title="Trigger")

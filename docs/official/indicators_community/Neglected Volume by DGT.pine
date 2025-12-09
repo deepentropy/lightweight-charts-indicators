@@ -1,0 +1,200 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Neglected Volume
+//# *                - Relative Volume
+//# *                - On Balance Volume Momentum, Correlation with Price and Divergence
+//# *
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Sep 14, 2020 : Initial Release
+//# *  Update     : Sep 22, 2020 : Alert for Consecutive Notable Volume Changes
+//# *  Update     : Jul 26, 2022 : Updated to Pine Script v5
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+indicator('Neglected Volume by DGT', shorttitle='VOL+ ʙʏ DGT ☼☾')
+length = input(13, 'Length')
+thresh = input.int(11, 'Relative Volume Strength Threshold', minval=0)
+count  = input.int(3, 'Alert Settings : Number of Consecutive Notable Volume Changes', minval=1)
+
+group_obv = 'On Balance Volume Add On'
+obvMom = input(true, 'On Balance Volume Momentum (OBVM)', group=group_obv)
+aBand  = input(true, 'OBVM : Accelaration Effect', group=group_obv)
+smooth = input.int(5, 'OBVM : Smoothing with Least Squares', minval=2, group=group_obv)
+
+hPVCB = input(true, 'Correlation of Price & On Balance Volume', group='Correlation')
+
+group_other = 'Other Add On\'s'
+compIn = input(false, 'Chaikin Money Flow', group = group_other)
+dVWCB  = input(true, 'Volume Weighted Colored Bars', group = group_other)
+
+group_div = 'Divergence Add On'
+lbR    = input(5, 'Divergence : Pivot Lookback Right', group = group_div)
+lbL    = input(5, 'Divergence : Pivot Lookback Left', group = group_div)
+rUpper = input(60, 'Divergence : Max of Lookback Range', group = group_div)
+rLower = input(5, 'Divergence : Min of Lookback Range', group = group_div)
+pBull  = input(false, 'Divergence : Plot Bullish', group = group_div)
+pHBull = input(false, 'Divergence : Plot Hidden Bullish', group = group_div)
+pBear  = input(false, 'Divergence : Plot Bearish', group = group_div)
+pHBear = input(false, 'Divergence : Plot Hidden Bearish', group = group_div)
+
+//------------------------------------------------------------------------------
+// Calculations 
+nzVolume = nz(volume)
+source   = barstate.isconfirmed ? close : close[1]
+vsource  = nzVolume ? barstate.isconfirmed ? ta.obv : ta.obv[1] : na
+corr     = ta.correlation(source, vsource, length)
+volAvgS  = ta.sma(nzVolume, length)
+volAvgL  = ta.sma(nzVolume, length * 5)
+volDev   = (volAvgL + 1.618034 * ta.stdev(volAvgL, length * 5)) / volAvgL * thresh / 100
+volRel   = nzVolume / volAvgL
+momentum = ta.change(vsource, length) / length
+momOsc   = ta.linreg(momentum / volAvgS * 1.618034, smooth, 0)
+
+accel = if aBand
+    ta.change(momentum, length) / length / volAvgS * 1.618034
+
+// Chaikin Money Flow, build-in 
+cmf = if compIn and nzVolume
+    ad = close == high and close == low or high == low ? 0 : (2 * close - low - high) / (high - low) * nzVolume
+    math.sum(ad, length) / math.sum(nzVolume, length) * 1.618034
+
+// Volume Based Colored Bars by [KıvançÖZBİLGİÇ], slightly modified
+vbcbColor = if close < open
+    if nzVolume > volAvgS * 1.618034
+        #910000
+    else if nzVolume >= volAvgS * .618034 and nzVolume <= volAvgS * 1.618034
+        color.red
+    else
+        color.orange
+else
+    if nzVolume > volAvgS * 1.618034
+        #006400
+    else if nzVolume >= volAvgS * .618034 and nzVolume <= volAvgS * 1.618034
+        color.green
+    else
+        #7FFFD4
+
+bColor = color.new(color.black, 25)
+gColor = color.new(color.gray, 50)
+
+// Alerts
+consecutiveUp = 0
+consecutiveDn = 0
+for i = 0 to count - 1 by 1
+    if close[i] > open[i]
+        consecutiveUp += (volRel[i] * .145898 > volDev[i] ? 1 : 0)
+        consecutiveUp
+    else if close[i] < open[i]
+        consecutiveDn += (volRel[i] * .145898 > volDev[i] ? 1 : 0)
+        consecutiveDn
+
+//------------------------------------------------------------------------------
+// Plotting
+
+hline(hPVCB ?   1 : na)
+hline(hPVCB ?  .5 : na)
+hline(hPVCB ? -.5 : na)
+hline(hPVCB ?  -1 : na)
+
+a1 = plot(hPVCB ?  corr : na, display=display.none, title='Correlation Line', editable=false)
+a2 = plot(hPVCB ? -corr : na, display=display.none, title='Reversed Correlation Line', editable=false)
+fill(a1, a2, color=corr > 0 ? color.new(color.aqua, 89) : color.new(color.orange, 89), title='Correlation Band')
+
+plot(volRel * .145898, color=open > close ? volRel * .145898 > volDev ? #910000 : bColor : volRel * .145898 > volDev ? #006400 : gColor, style=plot.style_columns, title='Relative Volume Histogram')
+plot(ta.sma(volRel, length) * .145898, color=color.new(color.teal, 0), title='Volume Moving Average')
+plot(aBand ? na : obvMom ? momOsc : na, color=color.new(color.orange, 0), title='On Balance Volume Momentum', linewidth=2)
+
+p1 = plot(aBand ? obvMom ? momOsc - accel : na : na, color=momOsc > 0 ? #006400 : #910000, title='Negative Accelaration Effect')
+p2 = plot(aBand ? obvMom ? momOsc + accel : na : na, color=momOsc > 0 ? #006400 : #910000, title='Positive Accelaration Effect')
+fill(p1, p2, color=color.new(color.orange, 25), title='Accelaration Band')
+
+plot(cmf, color=color.new(#459915, 0), title='Chaikin Money Flow')
+barcolor(dVWCB and nzVolume ? vbcbColor : na, title='Volume Based Colored Bars by [KıvançÖZBİLGİÇ]')
+
+alertcondition(consecutiveUp > count - 1 or consecutiveDn > count - 1, title='Trading Opportunity', message='Relative Volume : Probable Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+
+//------------------------------------------------------------------------------
+// Divergence Indicator - source build-in scripts
+
+bearColor  = color.red
+bullColor  = color.green
+hBullColor = color.new(color.green, 80)
+hBearColor = color.new(color.red, 80)
+textColor  = color.white
+noneColor  = color.new(color.white, 100)
+
+//osc = rsi(src, len)
+// default RSI replaced with Momentum of OBV
+osc = momOsc
+
+plFound = na(ta.pivotlow(osc, lbL, lbR)) ? false : true
+phFound = na(ta.pivothigh(osc, lbL, lbR)) ? false : true
+
+_inRange(cond) =>
+    bars = ta.barssince(cond == true)
+    rLower <= bars and bars <= rUpper
+
+//------------------------------------------------------------------------------
+// Regular Bullish
+
+// Osc: Higher Low
+oscHL = osc[lbR] > ta.valuewhen(plFound, osc[lbR], 1) and _inRange(plFound[1])
+
+// Price: Lower Low
+priceLL = low[lbR] < ta.valuewhen(plFound, low[lbR], 1)
+
+bullCond = pBull and priceLL and oscHL and plFound
+
+plot(plFound ? osc[lbR] : na, offset=-lbR, title='Regular Bullish', linewidth=2, color=bullCond ? bullColor : noneColor)
+plotshape(bullCond ? osc[lbR] : na, offset=-lbR, title='Regular Bullish Label', text=' Bull ', style=shape.labelup, location=location.absolute, color=color.new(bullColor, 0), textcolor=color.new(textColor, 0))
+
+//------------------------------------------------------------------------------
+// Hidden Bullish
+
+// Osc: Lower Low
+oscLL = osc[lbR] < ta.valuewhen(plFound, osc[lbR], 1) and _inRange(plFound[1])
+
+// Price: Higher Low
+priceHL = low[lbR] > ta.valuewhen(plFound, low[lbR], 1)
+
+hiddenBullCond = pHBull and priceHL and oscLL and plFound
+
+plot(plFound ? osc[lbR] : na, offset=-lbR, title='Hidden Bullish', linewidth=2, color=hiddenBullCond ? hBullColor : noneColor)
+plotshape(hiddenBullCond ? osc[lbR] : na, offset=-lbR, title='Hidden Bullish Label', text=' H Bull ', style=shape.labelup, location=location.absolute, color=color.new(bullColor, 0), textcolor=color.new(textColor, 0))
+
+//------------------------------------------------------------------------------
+// Regular Bearish
+
+// Osc: Lower High
+oscLH = osc[lbR] < ta.valuewhen(phFound, osc[lbR], 1) and _inRange(phFound[1])
+
+// Price: Higher High
+priceHH = high[lbR] > ta.valuewhen(phFound, high[lbR], 1)
+
+bearCond = pBear and priceHH and oscLH and phFound
+
+plot(phFound ? osc[lbR] : na, offset=-lbR, title='Regular Bearish', linewidth=2, color=bearCond ? bearColor : noneColor)
+plotshape(bearCond ? osc[lbR] : na, offset=-lbR, title='Regular Bearish Label', text=' Bear ', style=shape.labeldown, location=location.absolute, color=color.new(bearColor, 0), textcolor=color.new(textColor, 0))
+
+//------------------------------------------------------------------------------
+// Hidden Bearish
+
+// Osc: Higher High
+oscHH = osc[lbR] > ta.valuewhen(phFound, osc[lbR], 1) and _inRange(phFound[1])
+
+// Price: Lower High
+priceLH = high[lbR] < ta.valuewhen(phFound, high[lbR], 1)
+
+hiddenBearCond = pHBear and priceLH and oscHH and phFound
+
+plot(phFound ? osc[lbR] : na, offset=-lbR, title='Hidden Bearish', linewidth=2, color=hiddenBearCond ? hBearColor : noneColor)
+plotshape(hiddenBearCond ? osc[lbR] : na, offset=-lbR, title='Hidden Bearish Label', text=' H Bear ', style=shape.labeldown, location=location.absolute, color=color.new(bearColor, 0), textcolor=color.new(textColor, 0))
+
+//------------------------------------------------------------------------------
+var table logo = table.new(position.bottom_right, 1, 1)
+table.cell(logo, 0, 0, '☼☾  ', text_size=size.normal, text_color=color.teal)

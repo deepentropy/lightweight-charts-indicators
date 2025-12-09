@@ -1,0 +1,101 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=4
+study("Risk Management Tool [LuxAlgo]",overlay=true)
+pos_type = input('Long','Position Type',options=['Long','Short'])
+acc_size = input(1000.,'Account Size',minval=0)
+
+risk = input(2.,'Risk               ',minval=0,inline='risk')
+risk_type = input('%','',options=['%','USD'],inline='risk')
+
+entry_price = input(40000.,'Entry Price',confirm=true)
+entry_cross = input(false,'Entry From Cross',inline='entry')
+cross_src = input(open,"",inline='entry')
+//----
+tp = input(5.,'Take Profit',minval=0
+  ,group='Take Profit/Stop Loss',inline='tp',confirm=true)
+tp_type = input('%','',options=['ATR','%','Price','Range']
+  ,group='Take Profit/Stop Loss',inline='tp',confirm=true)
+//----
+sl = input(5.,'Stop Loss  ',minval=0
+  ,group='Take Profit/Stop Loss',inline='sl',confirm=true)
+sl_type = input('%','',options=['ATR','%','Price','Range']
+  ,group='Take Profit/Stop Loss',inline='sl',confirm=true)
+//----
+profit_col = input(color.new(#009688,80),'Profit Color'
+  ,group='Style',inline='col')
+loss_col = input(color.new(#f44336,80),'Loss Color'
+  ,group='Style',inline='col')
+//------------------------------------------------------------------------------
+tp_val = 0.
+sl_val = 0.
+entry = 0.
+pos = pos_type == 'Long' ? 1 : -1
+
+if entry_cross
+    entry := valuewhen(cross(close,cross_src)[1],open,0)
+else
+    entry := entry_price
+
+tp_range = highest(max(round(tp),1)) - lowest(max(round(tp),1))
+sl_range = highest(max(round(sl),1)) - lowest(max(round(sl),1))
+
+if tp_type == 'ATR'
+    tp_val := entry + atr(max(round(tp),1))*pos
+else if tp_type == '%'
+    tp_val := entry + tp/100*entry*pos
+else if tp_type == 'Price'
+    tp_val := tp
+else if tp_type == 'Range'
+    tp_val := entry + (tp_range)*pos
+
+if sl_type == 'ATR'
+    sl_val := entry - atr(max(round(sl),1))*pos
+else if sl_type == '%'
+    sl_val := entry - sl/100*entry*pos
+else if sl_type == 'Price'
+    sl_val := sl
+else if sl_type == 'Range'
+    sl_val := entry - (sl_range)*pos
+//------------------------------------------------------------------------------
+open_pl = (close - entry)*pos
+position_size = 0.
+RR = abs((tp_val-entry)/(sl_val-entry))
+if risk_type == '%'
+    position_size := risk/100*acc_size/((entry-sl_val)*pos)
+else
+    position_size := risk/((entry-sl_val)*pos)
+//------------------------------------------------------------------------------
+n = bar_index
+var tbl = table.new(position.bottom_right,2,3)
+if barstate.islast
+    box.delete(box.new(n,tp_val,n+100,entry,bgcolor=profit_col,border_width=0)[1])
+    box.delete(box.new(n,entry,n+100,sl_val,bgcolor=loss_col,border_width=0)[1])
+    
+    label.delete(label.new(n+100,entry
+      ,str.format('P&L : {0} {1} ({2,number,percent})',open_pl,syminfo.currency,open_pl/entry)
+      ,color=open_pl>0?profit_col:loss_col
+      ,style=label.style_label_left,textcolor=color.gray,textalign=text.align_left)[1]) 
+    
+    if tp
+        label.delete(label.new(n+100,tp_val
+          ,str.format('TP : {0} ({1,number,percent})',tp_val,(tp_val-entry)/entry)
+          ,color=profit_col
+          ,style=label.style_label_left,textcolor=color.gray,textalign=text.align_left)[1]) 
+    if sl
+        label.delete(label.new(n+100,sl_val
+          ,str.format('TSL : {0} ({1,number,percent})',sl_val,(entry-sl_val)/entry)
+          ,color=loss_col
+          ,style=label.style_label_left,textcolor=color.gray,textalign=text.align_left)[1])
+      
+    table.cell(tbl,0,0,'Risk/Reward',text_color=color.gray,text_halign=text.align_center)
+    table.cell(tbl,1,0,tostring(RR,'#.####'),text_color=color.gray,text_halign=text.align_center)
+    table.cell(tbl,0,1,'Position Size',text_color=color.gray,text_halign=text.align_center)
+    table.cell(tbl,1,1,tostring(position_size,'#.####')+' '+syminfo.basecurrency
+      ,text_color=color.gray,text_halign=text.align_center)
+//------------------------------------------------------------------------------
+Close = plot(close,editable=false,display=display.none)
+Entry = plot(entry,editable=false,display=display.none)
+fill(Close,Entry,color=open_pl>0?profit_col:loss_col)
+plotchar(open_pl,'Rolling Open PL%','',location.abovebar,open_pl > 0 ? profit_col : loss_col)

@@ -1,0 +1,5 @@
+//@version=6
+indicator(title = "Advance Decline Line", shorttitle="ADL", format=format.price, precision=2)
+adlCalc(difference) => ta.cum(difference > 0 ? math.sqrt(difference) : -math.sqrt(-difference))
+adl = request.security("(USI:ADVN.NY - USI:DECL.NY) / (USI:UNCH.NY + 1)", timeframe.period, adlCalc(close))
+plot(adl, "Advance Decline Line")

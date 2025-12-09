@@ -1,0 +1,55 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=4
+strategy("Moon Phases Strategy [LuxAlgo]", overlay=true,process_orders_on_close=true)
+new    = input(title="New Moon Reference Date", type=input.time, defval=timestamp("2021-01-13:05:00"))
+buy    = input('Full Moon',options=['New Moon','Full Moon','Higher Moon','Lower Moon'],inline='buy')
+sell   = input('New Moon',options=['New Moon','Full Moon','Higher Moon','Lower Moon'],inline='sell')
+longcol  = input(color.new(#2157f3,80),'',inline='buy')
+shortcol = input(color.new(#ff1100,80),'',inline='sell')
+//----
+n = bar_index
+cycle = 2551442876.8992
+day = 8.64e+7
+diff = (new + time + day*2)%cycle/cycle
+//----
+newmoon = crossover(diff,.5)
+fullmoon = diff < diff[1]
+
+plotshape(newmoon ? low : na,"New Moon",shape.labelup,location.top,na,0,text="🌑",size=size.tiny)
+plotshape(fullmoon ? high : na,"Full Moon",shape.labeldown,location.bottom,na,0,text="🌕",size=size.tiny) 
+//----
+src = close
+var bool long = na
+var bool short = na
+if buy == 'New Moon'
+    long := newmoon
+else if buy == 'Full Moon'
+    long := fullmoon
+else if buy == 'Higher Moon'
+    long := valuewhen(newmoon or fullmoon,src,0) > valuewhen(newmoon or fullmoon,src,1)
+else
+    long := valuewhen(newmoon or fullmoon,src,0) < valuewhen(newmoon or fullmoon,src,1)
+//----
+if sell == 'New Moon'
+    short := newmoon
+else if sell == 'Full Moon'
+    short := fullmoon
+else if sell == 'Higher Moon'
+    short := valuewhen(newmoon or fullmoon,src,0) > valuewhen(newmoon or fullmoon,src,1)
+else
+    short := valuewhen(newmoon or fullmoon,src,0) < valuewhen(newmoon or fullmoon,src,1)
+//----
+var pos = 0
+if long
+    pos := 1
+    strategy.close("Short")
+    strategy.entry("Long", strategy.long)
+
+if short
+    pos := -1
+    strategy.close("Long")
+    strategy.entry("Short", strategy.short)
+
+bgcolor(pos == 1 ? longcol : shortcol)

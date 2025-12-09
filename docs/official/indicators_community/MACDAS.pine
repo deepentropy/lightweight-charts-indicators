@@ -1,0 +1,14 @@
+//@version=3
+study("MACDAS")
+fastperiod = input(12,title="fastperiod",type=integer,minval=1,maxval=500)
+slowperiod = input(26,title="slowperiod",type=integer,minval=1,maxval=500)
+signalperiod = input(9,title="signalperiod",type=integer,minval=1,maxval=500)
+fastMA = ema(close, fastperiod)
+slowMA = ema(close, slowperiod)
+macd = fastMA - slowMA
+signal = ema(macd, signalperiod)
+macdAS = macd - signal
+signalAS = ema(macdAS, signalperiod)
+plot(macdAS, color=blue, linewidth=2)
+plot(signalAS, color=red, linewidth=2)
+plot(0, color=black)

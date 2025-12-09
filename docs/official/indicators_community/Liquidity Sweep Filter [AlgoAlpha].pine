@@ -1,0 +1,240 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Liquidity Sweep Filter [AlgoAlpha]", "AlgoAlpha - Liquidity Filter", overlay=true, max_lines_count=500, max_boxes_count = 500, max_labels_count = 500, max_bars_back = 5000)
+
+// Trend Settings
+len = input.int(12, "Length", minval=1, tooltip="The number of periods used for trend calculations. A longer length creates a smoother and longer term signal", group="Trend Settings")
+mult = input.float(2.0, "Multiplier", minval=0.1, step=0.1, tooltip="Multiplier for the standard deviation calculation. Higher values create wider bands and makes the indicator more resistant to noise", group="Trend Settings")
+src = input.source(close, "Source", tooltip="The price data used for calculations. Close is most common, but you can also use open, high, low, hl2 (high+low)/2, hlc3 (high+low+close)/3, or ohlc4 (open+high+low+close)/4", group="Trend Settings")
+major_sweep_thresh = input.float(50, "Major Sweep Threshold", minval=0, tooltip="Threshold value that determines what constitutes a major liquidation sweep. Higher values mean only larger price movements will be considered major sweeps. Can only be 0-100, larger values will make it harder for sweeps to be considered 'major'", group="Trend Settings")
+shw_mjr = input.bool(true, "Show Major Liquidations", tooltip="Toggle the display of major liquidation levels. These represent significant price levels where large position liquidations occurred", group="Trend Settings")
+shw_mnr = input.bool(true, "Show Minor Liquidations", tooltip="Toggle the display of minor liquidation levels. These represent smaller price levels where position liquidations occurred", group="Trend Settings")
+
+// Profile Settings
+show_profile = input.bool(true, "Show Volume Profile", tooltip="Toggle the display of the volume profile visualization. When enabled, shows the distribution of trading volume across price levels", group="Profile Settings")
+show_bounds = input.bool(true, "Show Bounding Box", tooltip="Toggle the display of the bounding box around the volume profile. Helps to clearly define the profile's boundaries", group="Profile Settings")
+res = input.int(40, "Resolution", minval=1, tooltip="Number of bars in the volume profile. Higher values create more detailed profiles but may increase visual noise. Each bar represents a price range where volume occurred", group="Profile Settings")
+scale = input.int(30, "Scale", minval=1, tooltip="Controls the horizontal width of the volume profile display. Higher values make the profile wider and more visible, while lower values make it more compact", group="Profile Settings")
+
+// Appearance Settings
+dismiss = input.bool(false, "Dismiss No Volume Warning", "Dismisses a warning that pops up when there is no volume data for the ticker", group="Appearance Settings")
+bullColor = input.color(#00ffbb, "Bullish Color", tooltip="Color used for bullish trends and indicators. This color appears when price action or indicators suggest upward momentum", group="Appearance Settings")
+bearColor = input.color(#ff1100, "Bearish Color", tooltip="Color used for bearish trends and indicators. This color appears when price action or indicators suggest downward momentum", group="Appearance Settings")
+pc1 = input.color(color.gray, "Profile Color", tooltip="Color of the volume profile visualization. This shows the distribution of trading volume across different price levels", group="Appearance Settings")
+
+profileCalculation(start_index, end_index, res, scale) =>
+    top_boundaries = array.new_float(res)
+    bottom_boundaries = array.new_float(res)
+    binlen = array.new_float(res)
+    highs = array.new_float()
+    lows = array.new_float()
+    volumes = array.new_float()
+
+    for i = bar_index-start_index to bar_index-end_index
+        highs.push(high[i])
+        lows.push(low[i])
+        volumes.push(volume[i])
+
+    maxx = array.max(highs)
+    minn = array.min(lows)
+    size = array.size(highs)
+
+    poc = 0.0
+
+    if size > 0
+        step = (maxx - minn) / res
+        granularity = res
+        for i = 0 to granularity - 1
+            bin_size = 0.0
+            bottom = minn + (i * step)
+            top = minn + ((i + 1) * step)
+            bottom_boundaries.insert(i, bottom)
+            top_boundaries.insert(i, top)
+            for j = 0 to array.size(highs) - 1
+                candle_above_hbar = lows.get(j) > top
+                candle_below_hbar = highs.get(j) < bottom
+                is_candle_in_bucket = not (candle_above_hbar or candle_below_hbar)
+                bin_size += is_candle_in_bucket ? volumes.get(j) : 0
+            array.insert(binlen, i, bin_size)
+        boc = binlen.max()
+        boci = binlen.indexof(boc) > 0 ? binlen.indexof(boc) : 0
+        poc := math.avg(top_boundaries.get(boci), bottom_boundaries.get(boci))
+
+    [top_boundaries, bottom_boundaries, binlen, poc]
+
+var cumVol = 0.
+cumVol += nz(volume)
+if barstate.islast and cumVol == 0 and not dismiss
+    color WHITE = color.new(color.white, 20)
+    color BLUE = color.new(#747474, 50)
+    string ST_1 = "⚠️This ticker does not have volume data, please try another ticker or\n open settings to dismiss this warning"
+    string textInput1 = ST_1
+    string infoBoxSizeInput = "huge"
+    string infoBoxYPosInput = "middle"
+    string infoBoxXPosInput = "center"
+    int heightInput = 12
+    int widthInput = 80
+    color textColorInput = WHITE
+    color bgColorInput = BLUE
+    var table watermark = table.new(infoBoxYPosInput + "_" + infoBoxXPosInput, 1, 1)
+    string txt = textInput1
+    table.cell(watermark, 0, 0, txt, widthInput, heightInput, textColorInput, text_size = infoBoxSizeInput, bgcolor = bgColorInput)
+
+basis = ta.sma(ta.ema(src, len), len)
+deviation = ta.ema(math.abs(close - basis), len * 3) * mult
+upper = basis + deviation
+lower = basis - deviation
+
+length = int(len*mult)
+nvol = (volume - ta.lowest(volume, length)) / (ta.highest(volume, length) - ta.lowest(volume, length)) * 100
+
+
+var float trend = 0.0
+if close > upper
+    trend := 1
+if close < lower
+    trend := -1
+
+peakform   = high[1] > high and high[2] < high[1]
+valleyform = low[1]  < low and low[2]  > low[1]
+
+var aPeakLines   = array.new_line()    // For swing highs (used in downtrend)
+var aValleyLines = array.new_line()    // For swing lows (used in uptrend)
+var aPeakVols    = array.new_float()   // Corresponding volume levels
+var aValleyVols  = array.new_float()   // Corresponding volume levels
+var aPeakNVols    = array.new_float()   // Corresponding normalized volume levels
+var aValleyNVols  = array.new_float()   // Corresponding normalized volume levels
+
+if trend < 0
+    if peakform and high[1] < upper
+        l = line.new(bar_index-1, high[1], bar_index, high[1], color=color.new(bearColor, 100-nvol[1]), width = 2)
+        array.push(aPeakLines, l)
+        array.push(aPeakVols, volume[1])
+        array.push(aPeakNVols, nvol[1])
+else if trend > 0 and low[1] > lower
+    if valleyform
+        l = line.new(bar_index-1, low[1], bar_index, low[1], color=color.new(bullColor, 100-nvol[1]), width = 2)
+        array.push(aValleyLines, l)
+        array.push(aValleyVols, volume[1])
+        array.push(aValleyNVols, nvol[1])
+
+bullliq = 0.0
+bearliq = 0.0
+Nbullliq = 0.0
+Nbearliq = 0.0
+
+if aPeakLines.size() > 0
+    qt = aPeakLines.size()
+    
+    for ln = qt - 1 to 0
+        if ln < aPeakLines.size()
+            currentLine = aPeakLines.get(ln)
+            lineLevel = currentLine.get_y1()
+            
+            if high > lineLevel or upper < lineLevel
+                if high > lineLevel
+                    bearliq += aPeakVols.get(ln)
+                    Nbearliq += aPeakNVols.get(ln)
+                aPeakLines.remove(ln)
+                aPeakVols.remove(ln)
+                aPeakNVols.remove(ln)
+            else
+                currentLine.set_x2(bar_index)
+                
+    if aPeakLines.size() > 500
+        aPeakLines.shift().delete()
+        aPeakVols.shift()
+        aPeakNVols.shift()
+
+if aValleyLines.size() > 0
+    qt = aValleyLines.size()
+    
+    for ln = qt - 1 to 0
+        if ln < aValleyLines.size()
+            currentLine = aValleyLines.get(ln)
+            lineLevel = currentLine.get_y1()
+            
+            if low < lineLevel or lower > lineLevel
+                if low < lineLevel
+                    bullliq += aValleyVols.get(ln)
+                    Nbullliq += aValleyNVols.get(ln)
+
+                aValleyLines.remove(ln)
+                aValleyVols.remove(ln)
+                aValleyNVols.remove(ln)
+            else
+                currentLine.set_x2(bar_index)
+                
+    if aValleyLines.size() > 500
+        aValleyLines.shift().delete()
+        aValleyVols.shift()
+        aValleyNVols.shift()
+
+
+if bullliq > 0
+    if Nbullliq < major_sweep_thresh and shw_mnr
+        label.new(bar_index, lower, str.tostring(bullliq, format.volume), xloc.bar_index, yloc.price, color.new(bullColor, 70), label.style_label_up, size = size.tiny)
+    else if Nbullliq > major_sweep_thresh and shw_mjr
+        label.new(bar_index, lower, str.tostring(bullliq, format.volume), xloc.bar_index, yloc.price, color.new(bullColor, 70), label.style_label_up, size = size.tiny)
+
+if bearliq > 0
+    if Nbearliq < major_sweep_thresh and shw_mnr
+        label.new(bar_index, upper, str.tostring(bearliq, format.volume), xloc.bar_index, yloc.price, color.new(bearColor, 70), label.style_label_down, size = size.tiny)
+    else if Nbearliq > major_sweep_thresh and shw_mjr
+        label.new(bar_index, upper, str.tostring(bearliq, format.volume), xloc.bar_index, yloc.price, color.new(bearColor, 70), label.style_label_down, size = size.tiny)
+
+volatility = ta.atr(14)/2
+
+timer = ta.barssince(ta.cross(trend, 0))
+
+profile_upper = ta.highest(math.max(1, nz(timer)))
+profile_lower = ta.lowest(math.max(1, nz(timer)))
+
+end_index = bar_index
+start_index = (bar_index - timer) + (end_index > (bar_index - timer) ? 1 : 0)
+
+[top_boundaries, bottom_boundaries, binlen, poc] = profileCalculation(start_index, end_index, res, scale)
+
+var boxes = array.new_box()
+var br = array.new_box()
+
+while boxes.size() > 0
+    boxes.shift().delete()
+
+while br.size() > 0
+    br.shift().delete()
+
+for i = 0 to res - 1
+    if show_profile and not (barstate.islast and cumVol == 0)
+        box_right = bar_index + 7 + scale // binlen.max()
+        box_left = box_right - math.round(binlen.get(i)) / math.round(binlen.max()) * scale
+        box_top = array.get(top_boundaries, i)
+        box_bottom = array.get(bottom_boundaries, i)
+        gradient_color = color.from_gradient(math.sin(binlen.get(i) * math.pi / binlen.max()) * binlen.max(), 0, binlen.max(), trend > 0 ? bullColor : bearColor, pc1)
+        array.push(boxes, box.new(box_left, box_top, box_right, box_bottom, border_style = line.style_solid, border_color = gradient_color, border_width = 1, bgcolor = color.new(gradient_color, 10)))
+
+if show_bounds and not (barstate.islast and cumVol == 0)
+    br.push(box.new(start_index, profile_upper, end_index+scale+7, profile_lower, border_style = line.style_solid, border_color = color.new(chart.fg_color, 90), border_width = 1, bgcolor = color.new(chart.fg_color, 95)))
+
+plot(trend < 0 ? upper : na, color=color.new(bearColor, 30), style=plot.style_linebr, title="Downtrend Line", linewidth = 3)
+plot(trend > 0 ? lower : na, color=color.new(bullColor, 30), style=plot.style_linebr, title="Uptrend Line", linewidth = 3)
+
+plotchar(bullliq != 0 and Nbullliq > major_sweep_thresh ? low - volatility : na, "Strong Bullish Sweep", "▲", location.absolute, bullColor, size = size.tiny)
+plotchar(bearliq != 0 and Nbearliq > major_sweep_thresh ? high + volatility : na, "Strong Bearish Sweep", "▼", location.absolute, bearColor, size = size.tiny)
+plotchar(bullliq != 0 and Nbullliq > 0 ? low - volatility : na, "Bullish Sweep", "△", location.absolute, bullColor)
+plotchar(bearliq != 0 and Nbearliq > 0 ? high + volatility : na, "Bearish Sweep", "▽", location.absolute, bearColor)
+
+plotshape(ta.crossover(trend, 0) ? lower : na, "Bullish Trend", shape.labelup, location.absolute, color.new(bullColor, 50), text = "▲", textcolor = chart.fg_color, size = size.small)
+plotshape(ta.crossunder(trend, 0) ? upper : na, "Bearish Trend", shape.labeldown, location.absolute, color.new(bearColor, 50), text = "▼", textcolor = chart.fg_color, size = size.small)
+
+
+///////////ALERTS
+alertcondition(ta.crossover(trend, 0), title="Bullish Trend", message="Bullish Trend")
+alertcondition(ta.crossunder(trend, 0), title="Bearish Trend", message="Bearish Trend")
+alertcondition(bullliq != 0 and Nbullliq > major_sweep_thresh, title="Strong Bullish Sweep", message="Strong Bullish Sweep")
+alertcondition(bearliq != 0 and Nbearliq > major_sweep_thresh, title="Strong Bearish Sweep", message="Strong Bearish Sweep")
+alertcondition(bullliq != 0 and Nbullliq > 0, title="Bullish Sweep", message="Bullish Sweep")
+alertcondition(bearliq != 0 and Nbearliq > 0, title="Bearish Sweep", message="Bearish Sweep")
+

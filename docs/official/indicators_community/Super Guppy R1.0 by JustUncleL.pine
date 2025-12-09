@@ -1,0 +1,283 @@
+//@version=3
+
+study(title="Super Guppy R1.2 by JustUncleL", shorttitle="SuperGuppy", overlay=true)
+
+//
+//  Author:   JustUncleL
+//  Revision: R1.2
+//  Date:     6-Jan-2018
+//
+//  Description:
+//  ============
+//  This indicator is a Super Guppy version of standard Guppy GMMA as used in
+//  "CM_GUPPY_EMA Revised R2 by JustUncleL". Guppy is designed to capture the 
+//  inferred behaviour of traders and investors by using two groups of averages.
+//  In this version of Super Guppy Traders Group of EMAs are: 
+//    EMA3 to EMA23 step 2 (Aqua=Uptrend, Blue=downtrend)
+//  and Investors Group EMAs are: 
+//    EMA25 to EMA70 step 3 (Lime=Uptrend, Red=downtrend)
+//  (Gray=Trend not established or in a Pull Back).
+//
+//  The idea of Guppy EMAs is to use fractal repetitions to identify points of 
+//  agreement and disagreement which precede significant trend changes.
+//  For further info on how Guppy/Super Guppy can be used in trading please refer to
+//  http://www.guppytraders.com/gup329.shtml
+//  and many other articles available on the subject.
+//
+//  This indicator provides the following :
+//  - Swing Arrow Alerts (Red for Sell and Green for Buy) to indicate PullBack entries
+//    after new trend has been established. Also have option to wait for both fast and
+//    slow to completely seperate (Confluence). Another option is to show alerts
+//    when show arrows when Candle colour changes, this is handy when using Heikin Ashi
+//    or Renko Charts.
+//  - Trend Break Arrow Alerts (Blue for Sell and Aqua for Buy) to indicate entries
+//    for agressive trend swing point and is calculated by cross over of the
+//    average Traders EMA with the average Investors EMA. This was suggested option
+//    by Guppy himself.
+//  - Anchor time frame (0=current). This is the time frame that the Guppy MAs are
+//    calculated for. This way 60 Guppy can be viewed on a 15 min chart to establish
+//    tighter Stop Loss conditions. 
+//  - Alert conditions are also created for the TradingView Alarm subsystem. Only
+//    alerts for the selected alert options are generated.
+//
+//  References:
+//  ===========
+//  - Based on Daryl Guppy GMMA and
+//    CM GMMA Original - https://www.tradingview.com/v/3rxOtFe0/
+//  - http://www.guppytraders.com/gup329.shtml 
+//
+//
+//  Revisions:
+//  ==========
+//  R1   - Original Version
+//
+//  R1.1 - Some changes to limit the number of Alerts that occur close together.
+//
+//  13-Jan-2018 
+//       - Fix bug in Anchor calculations when chart Time frame not intraday.
+//       - Fix bug in Break Arrow calculation, stop signal when Investor MAs
+//         not change direction yet.
+//       - Change Traders group to start colouring before Investors Group,
+//         rather than together.
+//
+//  R1.2 14-Feb-2018 
+//       - Fix bug in 1st pullback arrow calculation.
+//       - Added option to display candle colours relative to Guppy Trend
+//         indication.
+//       06-Apr-2018
+//       - Change Anchor to be based purely on Minutes, so 1 month=30240mins 
+//         (21 trading days), 1 week=7200mins (5 trading days), 1 Day=1440mins.
+//         This makes it more consistent across intraday and extraday chart Timeframes.
+//
+//
+// -----------------------------------------------------------------------------
+// Copyright 2014 Chris Moody
+// Copyright 2018 JustUncleL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+// 
+// The GNU General Public License can be found here
+// <http://www.gnu.org/licenses/>.
+//
+// -----------------------------------------------------------------------------
+//
+
+
+//
+// Use Alternate Anchor TF for MAs 
+anchor     = input(0,minval=0,maxval=1440,title="Use Alternate Anchor TimeFrame (0=none, max=1440 (mins,D,W)")
+//
+src =  input(close, title="EMA Source")
+ShowBreak = input(true,title="Show Trend Break Arrow Alerts")
+ShowSwing = input(true,title="Show Swing Arrow Alerts")
+ShowCon   = input(false,title="Give Only Fast+Slow Confluence Alerts")
+uOCCswing = input(false,title="Add Bar Colour Changes to Swing Alerts")
+Lookback  = input(6,title="Alert Lookback Length")
+ShowAvgs  = input(false,title="Show Average Fast and Slow Guppy Curves")
+show200   = input(false,title="Show 200 EMA Curve")
+emaFilter = input(false,title="Filter Alerts with 200ema")
+clrBars   = input(false,title="Colour Candles to Guppy Trend state")
+
+//
+//Fast EMAs
+lenF1 = input(3, minval=1, title="Fast EMA 1")
+lenF2 = input(5, minval=1, title="Fast EMA 2")
+lenF3 = input(7, minval=1, title="Fast EMA 3")
+lenF4 = input(9, minval=1, title="Fast EMA 4")
+lenF5 = input(11, minval=1, title="Fast EMA 5")
+lenF6 = input(13, minval=1, title="Fast EMA 6")
+lenF7 = input(15, minval=1, title="Fast EMA 7")
+lenF8 = input(17, minval=1, title="Fast EMA 8")
+lenF9 = input(19, minval=1, title="Fast EMA 9")
+lenF10 = input(21, minval=1, title="Fast EMA 10")
+lenF11 = input(23, minval=1, title="Fast EMA 11")
+
+//Slow EMAs
+lenS1 = input(25, minval=1, title="Slow EMA 1")
+lenS2 = input(28, minval=1, title="Slow EMA 2")
+lenS3 = input(31, minval=1, title="Slow EMA 3")
+lenS4 = input(34, minval=1, title="Slow EMA 4")
+lenS5 = input(37, minval=1, title="Slow EMA 5")
+lenS6 = input(40, minval=1, title="Slow EMA 6")
+lenS7 = input(43, minval=1, title="Slow EMA 7")
+lenS8 = input(46, minval=1, title="Slow EMA 8")
+lenS9 = input(49, minval=1, title="Slow EMA 9")
+lenS10 = input(52, minval=1, title="Slow EMA 10")
+lenS11 = input(55, minval=1, title="Slow EMA 11")
+lenS12 = input(58, minval=1, title="Slow EMA 12")
+lenS13 = input(61, minval=1, title="Slow EMA 13")
+lenS14 = input(64, minval=1, title="Slow EMA 14")
+lenS15 = input(67, minval=1, title="Slow EMA 15")
+lenS16 = input(70, minval=1, title="Slow EMA 16")
+
+len    = input(200, minval=1, title="EMA 200 Length")
+
+gold = #FFD700
+AQUA = #00FFFFFF
+BLUE = #0000FFFF
+GRAY = #808080FF
+
+// If have anchor specified, calculate the base multiplier.
+mult  = isintraday ? anchor==0 or interval<=0 or interval>=anchor? 1 : round(anchor/interval) : 1
+mult := isdwm? isdaily ? (anchor==0 or interval<=0 or interval>=anchor or anchor<=1440 ? 1 : round(anchor/1440)) : 
+               isweekly ? (anchor==0 or interval<=0 or interval>=anchor or anchor<=7200 ? 1 : round(anchor/7200)) :
+               ismonthly ? (anchor==0 or interval<=0 or interval>=anchor or anchor<=30240 ? 1 : round(anchor/30240)) : 1 : mult
+
+//adjust MA lengths with Anchor Multiplier
+
+//Fast EMA
+emaF1 = ema(src, lenF1*mult)
+emaF2 = ema(src, lenF2*mult)
+emaF3 = ema(src, lenF3*mult)
+emaF4 = ema(src, lenF4*mult)
+emaF5 = ema(src, lenF5*mult)
+emaF6 = ema(src, lenF6*mult)
+emaF7 = ema(src, lenF7*mult)
+emaF8 = ema(src, lenF8*mult)
+emaF9 = ema(src, lenF9*mult)
+emaF10 = ema(src, lenF10*mult)
+emaF11 = ema(src, lenF11*mult)
+//average
+emafast = (emaF1 + emaF2 + emaF3 + emaF4 + emaF5 + emaF6 + emaF7 + emaF8 + emaF9 + emaF10 + emaF11)/11
+//
+//Slow EMA
+emaS1 = ema(src, lenS1*mult)
+emaS2 = ema(src, lenS2*mult)
+emaS3 = ema(src, lenS3*mult)
+emaS4 = ema(src, lenS4*mult)
+emaS5 = ema(src, lenS5*mult)
+emaS6 = ema(src, lenS6*mult)
+emaS7 = ema(src, lenS7*mult)
+emaS8 = ema(src, lenS8*mult)
+emaS9 = ema(src, lenS9*mult)
+emaS10 = ema(src, lenS10*mult)
+emaS11 = ema(src, lenS11*mult)
+emaS12 = ema(src, lenS12*mult)
+emaS13 = ema(src, lenS13*mult)
+emaS14 = ema(src, lenS14*mult)
+emaS15 = ema(src, lenS15*mult)
+emaS16 = ema(src, lenS16*mult)
+// average
+emaslow = (emaS1 + emaS2 + emaS3 + emaS4 + emaS5 + emaS6 + emaS7 + emaS8 + 
+          emaS9 + emaS10 + emaS11 + emaS12 + emaS13 + emaS14 + emaS15 + emaS16)/16
+//
+//EMA 200
+ema200 = ema(src, len*mult)
+
+//Fast EMA Color Rules
+colfastL = (emaF1>emaF2 and emaF2>emaF3 and emaF3>emaF4 and emaF4>emaF5 and emaF5>emaF6 and emaF6>emaF7 and emaF7>emaF8 and emaF8>emaF9 and emaF9>emaF10 and emaF10>emaF11)
+colfastS = (emaF1<emaF2 and emaF2<emaF3 and emaF3<emaF4 and emaF4<emaF5 and emaF5<emaF6 and emaF6<emaF7 and emaF7<emaF8 and emaF8<emaF9 and emaF9<emaF10 and emaF10<emaF11)
+//Slow EMA Color Rules
+colslowL = (emaS1>emaS2 and emaS2>emaS3 and emaS3>emaS4 and emaS4>emaS5 and emaS5>emaS6 and emaS6>emaS7 and emaS7>emaS8) and
+           (emaS8>emaS9 and emaS9>emaS10 and emaS10>emaS11 and emaS11>emaS12 and emaS12>emaS13 and emaS13>emaS14 and emaS14>emaS15 and emaS15>emaS16)
+colslowS = (emaS1<emaS2 and emaS2<emaS3 and emaS3<emaS4 and emaS4<emaS5 and emaS5<emaS6 and emaS6<emaS7 and emaS7<emaS8) and
+           (emaS8<emaS9 and emaS9<emaS10 and emaS10<emaS11 and emaS11<emaS12 and emaS12<emaS13 and emaS13<emaS14 and emaS14<emaS15 and emaS15<emaS16)
+
+//Fast EMA Final Color Rules
+colFinal = colfastL and emaS1>emaS16 ? aqua : colfastS and emaS1<emaS16 ? blue : gray
+//Slow EMA Final Color Rules
+colFinal2 = colslowL  ? lime : colslowS ? red : gray
+
+//Fast EMA Plots
+p1=plot(emaF1, title="Fast EMA 1", style=line, linewidth=2, color=colFinal,transp=10)
+plot(emaF2, title="Fast EMA 2", style=line, linewidth=1, color=colFinal,transp=10)
+plot(emaF3, title="Fast EMA 3", style=line, linewidth=1, color=colFinal,transp=10)
+plot(emaF4, title="Fast EMA 4", style=line, linewidth=1, color=colFinal,transp=10)
+plot(emaF5, title="Fast EMA 5", style=line, linewidth=1, color=colFinal,transp=10)
+plot(emaF6, title="Fast EMA 6", style=line, linewidth=1, color=colFinal,transp=10)
+plot(emaF7, title="Fast EMA 7", style=line, linewidth=1, color=colFinal,transp=10)
+plot(emaF8, title="Fast EMA 8", style=line, linewidth=1, color=colFinal,transp=10)
+plot(emaF9, title="Fast EMA 9", style=line, linewidth=1, color=colFinal,transp=10)
+plot(emaF10, title="Fast EMA 10", style=line, linewidth=1, color=colFinal,transp=10)
+p2=plot(emaF11, title="Fast EMA 11", style=line, linewidth=1, color=colFinal,transp=10)
+plot(ShowAvgs?emafast:na, title="Fast Avg", style=circles,join=true, linewidth=2, color=gold,transp=10)
+
+//
+fill(p1,p2,color=silver, transp=95)
+
+//Slow EMA Plots
+p3=plot(emaS1, title="Slow EMA 1", style=line, linewidth=2, color=colFinal2,transp=10)
+plot(emaS2, title="Slow EMA 2", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS3, title="Slow EMA 3", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS4, title="Slow EMA 4", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS5, title="Slow EMA 5", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS6, title="Slow EMA 6", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS7, title="Slow EMA 7", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS8, title="Slow EMA 8", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS9, title="Slow EMA 9", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS10, title="Slow EMA 10", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS11, title="Slow EMA 11", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS12, title="Slow EMA 12", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS13, title="Slow EMA 13", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS14, title="Slow EMA 14", style=line, linewidth=1, color=colFinal2,transp=10)
+plot(emaS15, title="Slow EMA 15", style=line, linewidth=1, color=colFinal2,transp=10)
+p4=plot(emaS16, title="Slow EMA 16", style=line, linewidth=2, color=colFinal2,transp=10)
+plot(ShowAvgs?emaslow:na, title="Slow Avg", style=circles,join=true, linewidth=2, color=fuchsia,transp=10)
+//
+fill(p3,p4, color=silver, transp=95)
+
+plot(show200?ema200:na, title="EMA 200", style=circles, join=true, linewidth=2, color=black,transp=10)
+
+//Fast EMA Final Color Rules
+c = colfastL and emaS1>emaS16 ? AQUA : colfastS and emaS1<emaS16 ? BLUE : GRAY
+barcolor(clrBars? c : na,title="Guppy Bar Colors")
+
+// Generate Alert Arrows
+buy = 0
+sell=0
+buybreak = 0
+sellbreak =0
+//
+buy := emafast > emaslow and emaS1>emaS16 and not colslowS and colfastL and (not ShowCon or colslowL) and (not emaFilter or emafast>ema200)? nz(buy[1])>0?buy[1]+1:1 : 0
+sell := emafast < emaslow and emaS1<emaS16 and not colslowL and colfastS and (not ShowCon or colslowS) and (not emaFilter or emafast<ema200)? nz(sell[1])>0?sell[1]+1:1 : 0
+buy := buy>1 and colfastL and (uOCCswing and ((close[1]<open[1]) and (close>open))) ? 1 : buy
+sell := sell>1 and colfastS and (uOCCswing and ((close[1]>open[1]) and (close<open))) ? 1 : sell
+//
+buybreak  := emafast > emaslow and not colslowS and (not emaFilter or emafast>ema200) ? nz(buybreak[1])>0?buybreak[1]+1:1 : 0
+sellbreak := emafast < emaslow and not colslowL and (not emaFilter or emafast<ema200) ? nz(sellbreak[1])>0?sellbreak[1]+1 :1 : 0
+//
+plotarrow(ShowSwing and buy==1 and barssince(nz(buy[1],1)==1)>Lookback?1:na, title="BUY Swing Arrow", colorup=lime, maxheight=60, minheight=50, transp=20)
+plotarrow(ShowSwing and sell==1 and barssince(nz(sell[1],1)==1)>Lookback?-1:na, title="SELL Swing Arrow", colordown=red, maxheight=60, minheight=50, transp=20)
+
+plotarrow(ShowBreak and buybreak==1 and barssince(nz(sellbreak[1],1)==1)>Lookback and barssince(nz(buybreak[1],1)==1)>Lookback?1:na, title="BUY Break Arrow", colorup=aqua, maxheight=60, minheight=50, transp=20)
+plotarrow(ShowBreak and sellbreak==1 and barssince(nz(buybreak[1],1)==1)>Lookback and barssince(nz(sellbreak[1],1)==1)>Lookback?-1:na, title="SELL Break Arrow", colordown=blue, maxheight=60, minheight=50, transp=20)
+
+// Generate only Alarms that are selected.
+gAlert = (ShowSwing and ((buy==1  and barssince(nz(buy[1],1)==1)>Lookback) or (sell==1 and barssince(nz(sell[1],1)==1)>Lookback))) or 
+         (ShowBreak and (buybreak==1 or sellbreak==1) and barssince(nz(buybreak[1],1)==1)>Lookback and barssince(nz(sellbreak[1],1)==1)>Lookback)
+alertcondition(gAlert,title="Guppy Alert Arrow",message="Guppy Alert")
+alertcondition((ShowSwing and buy==1 and barssince(nz(buy[1],1)==1)>Lookback) or 
+               (ShowBreak and buybreak==1 and barssince(nz(buybreak[1],1)==1)>Lookback and barssince(nz(sellbreak[1],1)==1)>Lookback),title="Buy Arrow",message="BUY")
+alertcondition((ShowSwing and sell==1 and barssince(nz(sell[1],1)==1)>Lookback) or
+               (ShowBreak and sellbreak==1 and barssince(nz(buybreak[1],1)==1)>Lookback and barssince(nz(sellbreak[1],1)==1)>Lookback),title="Sell Arrow",message="SELL")
+
+//
+//eof

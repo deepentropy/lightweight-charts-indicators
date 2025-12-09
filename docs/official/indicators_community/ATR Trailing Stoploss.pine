@@ -1,0 +1,32 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ceyhun
+
+//@version=5
+indicator('ATR Trailing Stoploss', overlay=true)
+Atr = input.int(defval=5, title='Atr Period', minval=1, maxval=500)
+Hhv = input.int(defval=10, title='HHV Period', minval=1, maxval=500)
+Mult = input.float(defval=2.5, title='Multiplier', minval=0.1)
+Barcolor = input(true, title='Barcolor')
+
+Prev = ta.highest(high - Mult * ta.atr(Atr), Hhv)
+ta.barssince(close > ta.highest(high - Mult * ta.atr(Atr), Hhv) and close > close[1])
+cum_1 = ta.cum(1)
+highest_1 = ta.highest(high - Mult * ta.atr(Atr), Hhv)
+highest_2 = ta.highest(high - Mult * ta.atr(Atr), Hhv)
+iff_1 = close > highest_1 and close > close[1] ? highest_2 : Prev
+TS = cum_1 < 16 ? close : iff_1
+
+iff_2 = close < TS ? color.red : color.black
+Color = close > TS ? color.green : iff_2
+barcolor(Barcolor ? Color : na)
+plot(TS, color=Color, linewidth=3, title='ATR Trailing Stoploss')
+
+Buy = ta.crossover(close, TS)
+Sell = ta.crossunder(close, TS)
+
+plotshape(Buy, 'BUY', shape.labelup, location.belowbar, color.new(color.green, 0), text='BUY', textcolor=color.new(color.black, 0), display=display.none)
+plotshape(Sell, 'SELL', shape.labeldown, location.abovebar, color.new(color.red, 0), text='SELL', textcolor=color.new(color.black, 0), display=display.none)
+
+alertcondition(Buy, 'Buy Signal', 'Buy ATR Trailing Stoploss')
+alertcondition(Sell, 'Sell Signal', 'Sell ATR Trailing Stoploss')
+

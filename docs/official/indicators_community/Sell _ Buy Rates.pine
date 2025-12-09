@@ -1,0 +1,19 @@
+//
+// @author LonesomeTheBlue
+//
+//@version=3
+study("Sell / Buy Rates", overlay = false, precision = 0)
+prd = input(title="Period", defval = 34, minval = 1)
+
+tw = high - max(open, close) 
+bw = min(open, close) - low 
+body = abs(close - open) 
+
+_rate(cond) => 0.5 * (tw + bw + (cond ? 2 * body : 0)) / (tw + bw + body) 
+
+volup =  volume * _rate(open <= close) 
+voldown = volume * _rate(open >= close)
+rate = linreg(volup - voldown, prd, 0)
+
+col = rate > 0 ? (falling(rate, 5) ? green : lime) : rate < 0 ? rising(rate, 5) ? maroon : red : na
+plot(rate, color = col, style = columns)

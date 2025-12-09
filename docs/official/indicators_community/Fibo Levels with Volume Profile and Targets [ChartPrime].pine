@@ -1,0 +1,285 @@
+
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=5
+indicator("Fibo Levels with Volume Profile [ChartPrime]",shorttitle = "FIVP [ChartPrime]",overlay = true,max_bars_back = 5000,max_boxes_count = 500)
+
+
+color Offwhite                                  = color.rgb(255, 255, 255, 71)
+color _offwhite                                 = color.rgb(255, 255, 255, 50)
+color  Red1                                     = color.rgb(255, 82, 82, 85)
+color  Red2                                     = color.rgb(243, 6, 6, 60)
+color green                                     = color.rgb(73, 241, 241, 85)
+color green2                                    = color.rgb(73, 241, 241, 60)
+color Black                                     = color.rgb(7, 7, 7)
+color Yellow                                    = color.rgb(254, 229, 4)
+string visual                                   =  "➞ Visuals Settings🔸" 
+string core                                     =  "➞ Main Core Settings 🔸"
+
+
+string TIME                                     = input.timeframe("D",title = "Fibo Timeframe",
+     group = core,
+     options=["120","240","480","720",'D', 'W', 'M'],
+     tooltip = "Choose a Higher Timeframe than Chart Timeframe")
+
+
+string Voldata                                  = input.string("All",title = "Volume Type",
+     group = core,
+     options=["Bear","Bull","All"],
+     tooltip = "Choose Volume Type to Show in Boxes") 
+
+
+int levs                                        = input.int(12,"Volume Levels",tooltip = "Number of the Volume levels to check", group = core)
+bool ShowVolume                                 = input.bool(true,"Show Volume ❓  ",inline = "01",group = visual)
+color Bull                                      = input.color(color.new(#42f07f, 35),"",inline = "01",group = visual)
+color Bear                                      = input.color(color.new(#f37451, 70),"",inline = "01",group = visual)
+bool Showlevels                                 = input.bool(true,"Show Levels ❓    ",inline = "02",group = visual)
+color Bull1                                     = input.color(green,"",inline = "02",group = visual)
+color Bear1                                     = input.color(Red1,"",inline = "02",group = visual)
+
+bool ShowTarget                                 = input.bool(true,"Show Target ❓    ",inline = "03",group = visual)
+color Bull2                                     = input.color(color.lime,"",inline = "03",group = visual)
+color Bear2                                     = input.color(color.rgb(230, 0, 0),"",inline = "03",group = visual)
+bool ShowPOC                                    = input.bool(true,"Show POC ❓    ",inline = "04",group = visual)
+int sync                                        = bar_index
+float scr                                       = close
+string TF                                       = timeframe.isdwm ? "M" : "W"
+int atrLen                                      = 30
+float mult                                      = 0.3
+float per                                       = 10.0
+float perc                                      = close * (0.3/100)
+float srdatr                                    = ta.atr (atrLen) * mult
+float band                                      = math.min (srdatr, perc) [20] /2
+var float [] Fibo                                   = array.new_float(6,0.0)
+var line [] Lines                               = array.new_line()   
+var label [] Labels                              = array.new_label()  
+var box [] FiboBOX                              = array.new_box(6)
+float FH                                        = request.security(syminfo.tickerid, TIME, high[1]) + band
+float FL                                        = request.security(syminfo.tickerid, TIME, low[1]) - band
+float FC                                        = request.security(syminfo.tickerid, TIME, close[1]) + band
+float [] TotalVolume                            = array.new_float()
+float [] Greenvolume                            = array.new_float()
+float [] redvolume                              = array.new_float()
+var int newWeekBarIndex                         = na
+var int newWeekTIME                             = na
+weekChange                                      = timeframe.change(TF)
+
+if weekChange
+    newWeekBarIndex := bar_index
+    newWeekTIME := time
+
+
+TF2 = timeframe.multiplier < 60 ? "1D" : "3D"
+
+EXTIME = timeframe.in_seconds(TF2) * 1000
+anchorTime = time + EXTIME
+anchorBarIndex = (time - anchorTime) / (1000 * timeframe.in_seconds(timeframe.period))
+anchorBarsBack = bar_index - anchorBarIndex 
+
+// plot(anchorBarsBack)
+// plot(bar_index)
+
+BAR1 = math.floor(sync - newWeekBarIndex)
+Volume(GV,RV,TV,BC)=>
+    GR = GV / TV 
+    RR = RV / TV
+    [GR , RR]
+
+PP = (FH + FL + FC) / 3
+if BAR1 > 5000
+    BAR1:=3500
+
+array.set(Fibo,0,PP + 0.382 * (FH - FL))
+array.set(Fibo,1,PP - 0.382 * (FH - FL))
+array.set(Fibo,2,PP + 0.618 * (FH - FL))
+array.set(Fibo,3,PP - 0.618 * (FH - FL))
+array.set(Fibo,4,PP + (FH - FL))
+array.set(Fibo,5,PP - (FH - FL))
+
+
+// int levs                    = array.size(Fibo) * 2
+float FT                    = array.get(Fibo,4)
+float FB                    = array.get(Fibo,5)
+float [] VPlevels           = array.new_float(levs+1)
+var box [] VPboxes          = array.new_box(levs+3)
+
+
+if array.size(Fibo) > 6
+    for i = 0 to 5
+        array.shift(Fibo) 
+
+
+step = ( FT-FB ) / levs
+for i=0 to levs by 1
+    array.set(VPlevels,i, FB + step * i)
+
+
+if barstate.islast
+    int [] Points       = array.new_int(levs,0)
+    float [] Volumes    = array.new_float(levs,0.0)
+    float [] SCR        = array.new_float()
+    float [] BUllV        = array.new_float(levs,0.0)
+    float [] BEARV        = array.new_float(levs,0.0)
+     
+    for i = 0 to BAR1
+        array.push(SCR,close[i])
+    if Showlevels
+        for i = 0 to array.size(Fibo) - 1
+            C = i == 0 or i == 2 or i == 4  
+            array.push(FiboBOX,box.new(newWeekTIME,
+              array.get(Fibo,i) + (band/2),
+              time + EXTIME,
+              array.get(Fibo,i) - (band/2),
+              bgcolor = C ? Bear1 : Bull1,
+              border_color =C ? color.new(Bear1,60) : color.new(Bull1,60),
+              border_width = 1,
+              xloc = xloc.bar_time))
+
+    for i=0 to array.size(SCR) -1
+        for x=0 to array.size(VPlevels) - 2  by 1
+            if array.get(SCR,i)>array.get(VPlevels,x) 
+                 and
+                 array.get(SCR,i)<array.get(VPlevels,x+1)
+                array.set(Points,x,array.get(Points,x)+1)
+                array.set(Volumes,x,array.get(Volumes,x)+volume[x])
+                if array.get(SCR,i) > open[i]
+                    array.set(BUllV,x,array.get(BUllV,x)+volume[x])
+                if array.get(SCR,i) < open[i]
+                    array.set(BEARV,x,array.get(BEARV,x)+volume[x])     
+                break
+        if array.get(SCR,i) > open[i]
+            array.push(Greenvolume,volume[i])
+        if array.get(SCR,i) < open[i]
+            array.push(redvolume,volume[i])
+        array.push(TotalVolume,volume[i])
+    [GR,RR] = Volume(array.sum(Greenvolume),
+         array.sum(redvolume),
+         array.sum(TotalVolume),
+         array.size(SCR) -1) 
+
+        
+    // label.new(bar_index,high,str.tostring(SCR.size()))
+    if ShowVolume 
+                
+        for i = 0 to array.size(Points) -1
+            str = Voldata == "All" ? str.tostring(array.get(Volumes,i),format.volume)
+                 : Voldata == "Bear" ? str.tostring(array.get(BEARV,i),format.volume):
+                 str.tostring(array.get(BUllV,i),format.volume)
+            box.delete(array.get(VPboxes,i))
+            array.set(VPboxes,i,
+                 box.new(anchorBarsBack - array.get(Points,i),
+                 array.get(VPlevels,i+1) + (band/2),
+                 anchorBarsBack,
+                 array.get(VPlevels,i) + (band/2),
+             border_color = color.from_gradient(array.get(Points,i),0,
+             array.max(Points),
+             Bear,
+             Bull),
+             bgcolor=color.from_gradient(array.get(Points,i),0,
+             array.max(Points),
+             Bear,
+             Bull),
+             text=str,
+             text_color=color.white
+             ))
+
+
+    if ShowPOC
+        //get the max volume 
+        // array.indexof(Volumes)
+        var box POC = na , box.delete(POC)
+        MaxVID = Volumes.indexof(Volumes.max())
+
+        POC:= box.new(newWeekTIME,VPlevels.get(MaxVID)+ (band/2),anchorTime,VPlevels.get(MaxVID+1)+ (band/2),
+              #e0f2e93a,border_style=line.style_solid,bgcolor=color.new(#586161, 75),
+              text="POC",text_color=chart.fg_color,text_halign  = text.align_center, text_valign = text.align_center,xloc=xloc.bar_time)
+
+
+
+    MID = (FB +FT ) / 2 
+    if (scr < FT) and (scr > FB) and ShowTarget
+        max_bars_back(scr,2000)
+        if GR > RR
+            if (scr > MID)
+                array.push(Lines,
+                     line.new(sync + 3,
+                      hl2[1],sync + 10,
+                      array.get(Fibo,2),
+                      color= Bull2,
+                      style = line.style_arrow_right,
+                      width = 1))
+                array.push(Labels,
+                     label.new(sync + 10,
+                     array.get(Fibo,2),
+                     "Possible Target ",
+                     style=label.style_label_lower_left,
+                     color=color.new(Bull2, 70),
+                     textcolor = color.white,
+                     size=size.small))
+
+            else if (scr < MID)
+                array.push(Lines,
+                     line.new(sync + 3,
+                     hl2[1],sync + 10,
+                     array.get(Fibo,0),
+                     color= Bull2,
+                     style = line.style_arrow_right,
+                     width = 1))
+                array.push(Labels,
+                     label.new(sync + 10,
+                     array.get(Fibo,0),
+                     "Possible Target ",
+                     style=label.style_label_lower_left,
+                     color=color.new(Bull2, 70),
+                     textcolor = color.white,
+                     size=size.small))    
+        else 
+            if scr > MID 
+                array.push(Lines,
+                     line.new(sync + 3,
+                     hl2[1],sync + 10,
+                     array.get(Fibo,1),
+                     color= Bear2,
+                     style = line.style_arrow_right,
+                     width = 1))
+                array.push(Labels,
+                     label.new(sync + 10,
+                     array.get(Fibo,1),
+                     "Possible Target ",
+                     style=label.style_label_lower_left,
+                     color=color.new(Bear2, 70),
+                     textcolor = color.white,
+                     size=size.small))
+
+            else if scr < MID
+                array.push(Lines,
+                     line.new(sync + 3,
+                     hl2[1],sync + 10,
+                     array.get(Fibo,3),
+                     color= Bear2,
+                     style = line.style_arrow_right,
+                     width = 1))
+                array.push(Labels,
+                     label.new(sync + 10,
+                     array.get(Fibo,3),
+                     "Possible Target ",
+                     style=label.style_label_lower_left,
+                     color=color.new(Bear2, 70),
+                     textcolor = color.white,
+                     size=size.small))
+
+
+
+    if array.size(Lines) > 1
+        line.delete(array.shift(Lines))
+
+    if array.size(Labels) > 1
+        label.delete(array.shift(Labels))
+
+    if array.size(FiboBOX) > 6
+        for i = 0 to 5
+            box.delete(array.shift(FiboBOX))
+
+
+

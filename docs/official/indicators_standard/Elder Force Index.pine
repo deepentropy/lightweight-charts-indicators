@@ -1,0 +1,10 @@
+//@version=6
+indicator(title="Elder Force Index", shorttitle="EFI", format=format.volume, timeframe="", timeframe_gaps=true)
+var cumVol = 0.
+cumVol += nz(volume)
+if barstate.islast and cumVol == 0
+    runtime.error("No volume is provided by the data vendor.")
+length = input.int(13, minval=1)
+efi = ta.ema(ta.change(close) * volume, length)
+plot(efi, color=#F44336, title="Elder Force Index")
+hline(0, color=#787B86, title="Zero")

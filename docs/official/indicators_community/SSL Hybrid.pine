@@ -1,0 +1,391 @@
+//@version=6
+//By Mihkel00 - Clean & Organized Version
+// This script is designed for the NNFX Method, so it is recommended for Daily charts only. 
+indicator("SSL Hybrid", overlay=true)
+
+// === DISPLAY CONTROLS ===
+display_mode = input.string("Full Display", title="Display Mode", options=["Baseline Only", "Baseline + SSL", "SSL Only", "Entry/Exit Only", "Full Display"], group="Display Controls")
+color_bars = input.bool(true, title="Color Bars", group="Display Controls")
+show_signals = input.bool(true, title="Show Signal Diamonds",tooltip = "Candle > 1 ATR within baseline range - Potential false breakout warning", group="Display Controls")
+show_risk_table = input.bool(true, title="Show Risk Table", group="Display Controls")
+
+// === MASTER COLOR SETTINGS === 
+master_bullish_color = input.color(#00c3ff, title="Bullish Color", group="Colors")
+master_bearish_color = input.color(#ff0062, title="Bearish Color", group="Colors")
+
+// === BASELINE SETTINGS ===
+maType = input.string("HMA", title="Baseline Type", options=["SMA","EMA","DEMA","TEMA","LSMA","WMA","MF","VAMA","TMA","HMA", "JMA", "Kijun v2", "EDSMA","McGinley"], group="Baseline Settings")
+len = input.int(60, title="Baseline Length", group="Baseline Settings")
+src = input(close, title="Source", group="Baseline Settings")
+show_baseline_channel = input.bool(true, title="Show Baseline Channel", group="Baseline Settings")
+multy = input.float(0.2, step=0.05, title="Channel Multiplier", group="Baseline Settings")
+useTrueRange = input.bool(true, title="Use True Range for Channel", group="Baseline Settings")
+
+// === SSL SETTINGS ===
+SSL2Type = input.string("JMA", title="SSL2 Type", options=["SMA","EMA","DEMA","TEMA","WMA","MF","VAMA","TMA","HMA", "JMA","McGinley"], group="SSL Settings")
+len2 = input.int(5, title="SSL2 Length", group="SSL Settings")
+atr_crit = input.float(0.9, step=0.1, title="Continuation ATR Criteria", group="SSL Settings")
+
+// === EXIT SETTINGS ===
+SSL3Type = input.string("HMA", title="Exit Type", options=["DEMA","TEMA","LSMA","VAMA","TMA","HMA","JMA", "Kijun v2", "McGinley", "MF"], group="Exit Settings")
+len3 = input.int(15, title="Exit Length", group="Exit Settings")
+
+// === ATR SETTINGS ===
+atrlen = input.int(14, title="ATR Period", group="ATR Settings")
+mult = input.float(1.0, title="ATR Multiplier", step=0.1, group="ATR Settings")
+smoothing = input.string("WMA", title="ATR Smoothing", options=["RMA", "SMA", "EMA", "WMA"], group="ATR Settings")
+show_atr_bands = input.bool(false, title="Show ATR Bands", group="ATR Settings")
+
+// === RISK ASSESSMENT ===
+risk_lookback = input.int(100, title="Risk Lookback Period", minval=50, maxval=500, group="Risk Assessment")
+risk_sensitivity = input.float(2, title="Risk Sensitivity", minval=0.2, maxval=3.0, step=0.1, group="Risk Assessment")
+enable_risk_gradient = input.bool(true, title="Enable Risk Gradient", group="Risk Assessment")
+
+// === JURIK (JMA) SETTINGS ===
+jurik_phase = input.int(3, title="Phase", group="Jurik (JMA) Settings")
+jurik_power = input.int(1, title="Power", group="Jurik (JMA) Settings")
+
+// === KIJUN SETTINGS ===
+kidiv = input.int(1, maxval=4, title="Kijun MOD Divider", group="Kijun Settings")
+
+// === VAMA SETTINGS ===
+volatility_lookback = input.int(10, title="Volatility Lookback Length", group="VAMA Settings")
+
+// === MODULAR FILTER SETTINGS ===
+beta = input.float(0.8, minval=0, maxval=1, step=0.1, title="Beta", group="Modular Filter Settings")
+feedback = input.bool(false, title="Feedback", group="Modular Filter Settings")
+z = input.float(0.5, title="Feedback Weighting", step=0.1, minval=0, maxval=1, group="Modular Filter Settings")
+
+// === EDSMA SETTINGS ===
+ssfLength = input.int(20, title="Super Smoother Filter Length", minval=1, group="EDSMA Settings")
+ssfPoles = input.int(2, title="Super Smoother Filter Poles", options=[2, 3], group="EDSMA Settings")
+
+
+
+//ATR CALCULATION ===
+ma_function(source, atrlen) => 
+    if smoothing == "RMA"
+        ta.rma(source, atrlen)
+    else if smoothing == "SMA"
+        ta.sma(source, atrlen)
+    else if smoothing == "EMA"
+        ta.ema(source, atrlen)
+    else
+        ta.wma(source, atrlen)
+
+atr_slen = ma_function(ta.tr(true), atrlen)
+upper_band = atr_slen * mult + close
+lower_band = close - atr_slen * mult
+
+// === RISK CALCULATION ===
+atr_percentile = ta.percentrank(atr_slen, risk_lookback)
+
+// Calculate risk-adjusted saturation
+risk_saturation = if not enable_risk_gradient
+    0  // Full saturation when gradient disabled
+else
+    // Apply risk sensitivity to the ENTIRE percentile first
+    adjusted_percentile = math.pow(atr_percentile / 100, risk_sensitivity) * 100
+    
+    // Then create gradient based on adjusted percentile
+    if adjusted_percentile <= 25
+        // Low risk: minimal transparency
+        0
+    else if adjusted_percentile <= 50
+        // Normal risk: slight transparency 
+        10
+    else
+        // High risk: steep increase in transparency
+        base_transparency = 25
+        extra_fade = (adjusted_percentile - 50) / 50 * 25
+        math.round(base_transparency + extra_fade)
+
+
+// === UPDATED COLOR DEFINITIONS === 
+bullish_color = color.new(master_bullish_color, risk_saturation)
+bearish_color = color.new(master_bearish_color, risk_saturation)
+neutral_color = color.new(#666666, 0) 
+transparent_bull = color.new(master_bullish_color, math.max(80, risk_saturation + 20))
+transparent_bear = color.new(master_bearish_color, math.max(80, risk_saturation + 20))
+transparent_neutral = color.new(#666666, 80)
+
+// === MOVING AVERAGE FUNCTIONS ===
+tema(src, len) =>
+    ema1 = ta.ema(src, len)
+    ema2 = ta.ema(ema1, len)
+    ema3 = ta.ema(ema2, len)
+    (3 * ema1) - (3 * ema2) + ema3
+
+get2PoleSSF(src, length) =>
+    PI = 2 * math.asin(1)
+    arg = math.sqrt(2) * PI / length
+    a1 = math.exp(-arg)
+    b1 = 2 * a1 * math.cos(arg)
+    c2 = b1
+    c3 = -math.pow(a1, 2)
+    c1 = 1 - c2 - c3
+    
+    ssf = 0.0
+    ssf := c1 * src + c2 * nz(ssf[1]) + c3 * nz(ssf[2])
+
+get3PoleSSF(src, length) =>
+    PI = 2 * math.asin(1)
+    arg = PI / length
+    a1 = math.exp(-arg)
+    b1 =2 * a1 * math.cos(1.738 * arg)
+    c1 = math.pow(a1, 2)
+
+    coef2 = b1 + c1
+    coef3 = -(c1 + b1 * c1)
+    coef4 = math.pow(c1, 2)
+    coef1 = 1 - coef2 - coef3 - coef4
+
+    ssf = 0.0
+    ssf := coef1 * src + coef2 * nz(ssf[1]) + coef3 * nz(ssf[2]) + coef4 * nz(ssf[3])
+
+ma(type, src, len) =>
+    float result = na
+    if type=="TMA"
+        result := ta.sma(ta.sma(src, math.ceil(len / 2)), math.floor(len / 2) + 1)
+    if type=="MF"
+        ts=0.,b=0.,c=0.,os=0.
+        alpha = 2/(len+1)
+        a = feedback ? z*src + (1-z)*nz(ts[1],src) : src
+        b := a > alpha*a+(1-alpha)*nz(b[1],a) ? a : alpha*a+(1-alpha)*nz(b[1],a)
+        c := a < alpha*a+(1-alpha)*nz(c[1],a) ? a : alpha*a+(1-alpha)*nz(c[1],a)
+        os := a == b ? 1 : a == c ? 0 : os[1]
+        upper = beta*b+(1-beta)*c
+        lower = beta*c+(1-beta)*b 
+        ts := os*upper+(1-os)*lower
+        result := ts
+    if type=="LSMA"
+        result := ta.linreg(src, len, 0)
+    if type=="SMA"
+        result := ta.sma(src, len)
+    if type=="EMA"
+        result := ta.ema(src, len)
+    if type=="DEMA"
+        e = ta.ema(src, len)
+        result := 2 * e - ta.ema(e, len)
+    if type=="TEMA"
+        e = ta.ema(src, len)
+        result := 3 * (e - ta.ema(e, len)) + ta.ema(ta.ema(e, len), len)
+    if type=="WMA"
+        result := ta.wma(src, len)
+    if type=="VAMA"
+        mid=ta.ema(src,len)
+        dev=src-mid
+        vol_up=ta.highest(dev,volatility_lookback)
+        vol_down=ta.lowest(dev,volatility_lookback)
+        result := mid+math.avg(vol_up,vol_down)
+    if type=="HMA"
+        result := ta.wma(2 * ta.wma(src, len / 2) - ta.wma(src, len), math.round(math.sqrt(len)))
+    if type=="JMA"
+        phaseRatio = jurik_phase < -100 ? 0.5 : jurik_phase > 100 ? 2.5 : jurik_phase / 100 + 1.5
+        beta = 0.45 * (len - 1) / (0.45 * (len - 1) + 2)
+        alpha = math.pow(beta, jurik_power)
+        jma = 0.0
+        e0 = 0.0
+        e0 := (1 - alpha) * src + alpha * nz(e0[1])
+        e1 = 0.0
+        e1 := (src - e0) * (1 - beta) + beta * nz(e1[1])
+        e2 = 0.0
+        e2 := (e0 + phaseRatio * e1 - nz(jma[1])) * math.pow(1 - alpha, 2) + math.pow(alpha, 2) * nz(e2[1])
+        jma := e2 + nz(jma[1])
+        result := jma
+    if type=="Kijun v2"
+        kijun = math.avg(ta.lowest(len), ta.highest(len))
+        conversionLine = math.avg(ta.lowest(len/kidiv), ta.highest(len/kidiv))
+        delta = (kijun + conversionLine)/2
+        result :=delta
+    if type=="McGinley"
+        mg = 0.0
+        mg := na(mg[1]) ? ta.ema(src, len) : mg[1] + (src - mg[1]) / (len * math.pow(src/mg[1], 4))
+        result :=mg
+    if type=="EDSMA"
+        zeros = src - nz(src[2])
+        avgZeros = (zeros + zeros[1]) / 2
+        ssf = ssfPoles == 2 ? get2PoleSSF(avgZeros, ssfLength) : get3PoleSSF(avgZeros, ssfLength)
+        stdev = ta.stdev(ssf, len)
+        scaledFilter = stdev != 0 ? ssf / stdev : 0
+        alpha = 5 * math.abs(scaledFilter) / len
+        edsma = 0.0
+        edsma := alpha * src + (1 - alpha) * nz(edsma[1])
+        result := edsma
+    result
+
+// === BASELINE CALCULATIONS ===
+BBMC = ma(maType, close, len)
+Keltma = ma(maType, src, len)
+rangeValue = useTrueRange ? ta.tr : high - low
+rangema = ta.ema(rangeValue, len)
+upperk = Keltma + rangema * multy
+lowerk = Keltma - rangema * multy
+
+// === SSL CALCULATIONS ===
+emaHigh = ma(maType, high, len)
+emaLow = ma(maType, low, len)
+Hlv = int(na)
+Hlv := close > emaHigh ? 1 : close < emaLow ? -1 : Hlv[1]
+sslDown = Hlv < 0 ? emaHigh : emaLow
+
+// SSL2 VALUES
+maHigh = ma(SSL2Type, high, len2)
+maLow = ma(SSL2Type, low, len2)
+Hlv2 = int(na)
+Hlv2 := close > maHigh ? 1 : close < maLow ? -1 : Hlv2[1]
+sslDown2 = Hlv2 < 0 ? maHigh : maLow
+
+// EXIT VALUES
+ExitHigh = ma(SSL3Type, high, len3)
+ExitLow = ma(SSL3Type, low, len3)
+Hlv3 = int(na)
+Hlv3 := close > ExitHigh ? 1 : close < ExitLow ? -1 : Hlv3[1]
+sslExit = Hlv3 < 0 ? ExitHigh : ExitLow
+
+// === ENTRY DISTANCE CALCULATION ===
+distance_from_baseline = math.abs(close - BBMC) / atr_slen
+entry_distance = distance_from_baseline < 1 ? "Near" : distance_from_baseline < 2 ? "Extended" : "Far"
+
+// Risk level from percentile
+risk_level = atr_percentile > 75 ? "High" : atr_percentile < 25 ? "Low" : "Normal"
+
+// === SIGNAL CALCULATIONS ===
+base_cross_Long = ta.crossover(close, sslExit)
+base_cross_Short = ta.crossover(sslExit, close)
+codiff = base_cross_Long ? 1 : base_cross_Short ? -1 : na
+
+// Baseline Violation Candle
+difference = math.abs(close - open)
+atr_violation = difference > atr_slen
+InRange = upper_band > BBMC and lower_band < BBMC
+candlesize_violation = atr_violation and InRange
+
+// SSL2 Continuation
+upper_half = atr_slen * atr_crit + close
+lower_half = close - atr_slen * atr_crit
+buy_inatr = lower_half < sslDown2
+sell_inatr = upper_half > sslDown2
+sell_cont = close < BBMC and close < sslDown2
+buy_cont = close > BBMC and close > sslDown2
+sell_atr = sell_inatr and sell_cont
+buy_atr = buy_inatr and buy_cont
+
+// === COLOR LOGIC ===
+baseline_color = close > upperk ? bullish_color : close < lowerk ? bearish_color : neutral_color
+ssl_color = close > sslDown ? bullish_color : close < sslDown ? bearish_color : neutral_color
+ssl2_color = buy_atr ? bullish_color : sell_atr ? bearish_color : neutral_color
+channel_fill_color = close > upperk ? transparent_bull : close < lowerk ? transparent_bear : transparent_neutral
+
+// === CONDITIONAL PLOTTING BASED ON DISPLAY MODE ===
+show_baseline = display_mode == "Baseline Only" or display_mode == "Baseline + SSL" or display_mode == "Full Display"
+show_ssl1 = display_mode == "SSL Only" or display_mode == "Baseline + SSL" or display_mode == "Full Display"
+show_ssl2 = display_mode == "SSL Only" or display_mode == "Full Display"
+show_exit = display_mode == "Entry/Exit Only" or display_mode == "Full Display"
+
+// BASELINE PLOTS
+baseline_plot = plot(show_baseline ? BBMC : na, color=baseline_color, linewidth=3, title='Baseline')
+upper_channel = plot(show_baseline and show_baseline_channel ? upperk : na, color=baseline_color, title="Upper Channel")
+lower_channel = plot(show_baseline and show_baseline_channel ? lowerk : na, color=baseline_color, title="Lower Channel")
+fill(upper_channel, lower_channel, color=show_baseline and show_baseline_channel ? channel_fill_color : na, title="Baseline Channel")
+
+// SSL PLOTS
+ssl1_plot = plot(show_ssl1 ? sslDown : na, title="SSL1", linewidth=2, color=ssl_color)
+ssl2_plot = plot(show_ssl2 ? sslDown2 : na, title="SSL2", linewidth=2, color=ssl2_color, style=plot.style_circles)
+
+// ATR PLOTS
+atr_upper = plot(show_atr_bands ? upper_band : na, "+ATR", color=neutral_color, linewidth=1)
+atr_lower = plot(show_atr_bands ? lower_band : na, "-ATR", color=neutral_color, linewidth=1)
+
+// SIGNALS
+plotarrow(show_exit ? codiff : na, colorup=bullish_color, colordown=bearish_color, title="Exit Arrows", maxheight=20)
+plotshape(show_signals and candlesize_violation, color=color.white, size=size.tiny, style=shape.diamond, location=location.top, title="Signal Diamonds")
+
+// BAR COLORING
+barcolor(color_bars ? baseline_color : na, title="Bar Colors")
+
+// === RISK TABLE ===
+if barstate.islast and show_risk_table
+    var table riskTable = table.new(position.bottom_right, 2, 4, 
+         bgcolor=color.new(#1a1a1a, 5), 
+         border_width=1)
+    
+    // Risk Level
+    table.cell(riskTable, 0, 0, "Risk Level", text_color=color.white, text_size=size.small)
+    risk_color = risk_level == "High" ? bearish_color : risk_level == "Low" ? bullish_color : neutral_color
+    table.cell(riskTable, 1, 0, risk_level, text_color=risk_color, text_size=size.small)
+    
+    // Entry Distance  
+    table.cell(riskTable, 0, 1, "Entry Distance", text_color=color.white, text_size=size.small)
+    entry_color = entry_distance == "Near" ? bullish_color : entry_distance == "Extended" ? color.yellow : bearish_color
+    table.cell(riskTable, 1, 1, entry_distance, text_color=entry_color, text_size=size.small)
+    
+    // Vol Percentile
+    table.cell(riskTable, 0, 2, "Vol %ile", text_color=color.white, text_size=size.small)
+    table.cell(riskTable, 1, 2, str.tostring(math.round(atr_percentile, 1)) + "%", text_color=color.white, text_size=size.small)
+    
+    // ATR Value
+    table.cell(riskTable, 0, 3, "ATR", text_color=color.white, text_size=size.small)
+    table.cell(riskTable, 1, 3, str.tostring(atr_slen, "#.####"), text_color=color.white, text_size=size.small)
+
+
+
+// === ALERT CONDITIONS ===
+
+// Clear Exit Alerts (based on sslExit line crosses)
+exit_long = ta.crossunder(close, sslExit)  // Price crosses below exit line = exit long
+exit_short = ta.crossover(close, sslExit)  // Price crosses above exit line = exit short
+
+// SSL2 Continuation Alerts
+ssl2_buy_signal = buy_atr and not buy_atr[1]
+ssl2_sell_signal = sell_atr and not sell_atr[1]
+
+// Baseline Alerts
+baseline_bullish = ta.crossover(close, upperk)
+baseline_bearish = ta.crossunder(close, lowerk)
+price_above_baseline = close > BBMC and close[1] <= BBMC
+price_below_baseline = close < BBMC and close[1] >= BBMC
+
+// Risk/Warning Alerts
+high_risk_entry = risk_level == "High" and entry_distance == "Far"
+false_breakout_warning = candlesize_violation
+extreme_volatility = atr_percentile > 90
+
+// === ALERTS ===
+
+// Clear Exit Alerts
+alertcondition(exit_long, title = "EXIT LONG Signal", 
+      message = "EXIT LONG Signal – see chart for price and risk details")
+
+alertcondition(exit_short, title = "EXIT SHORT Signal", 
+      message = "EXIT SHORT Signal – see chart for price and risk details")
+
+// SSL2 Continuation Alerts
+alertcondition(ssl2_buy_signal, title = "SSL2 BUY Continuation", 
+      message = "SSL2 BUY Continuation – see chart for ATR details")
+
+alertcondition(ssl2_sell_signal, title = "SSL2 SELL Continuation", 
+     message = "SSL2 SELL Continuation – see chart for ATR details")
+
+// Baseline Alerts
+alertcondition(baseline_bullish, title = "Price Above Upper Channel", 
+      message = "Price Above Upper Channel – price has broken above upper band")
+
+alertcondition(baseline_bearish, title = "Price Below Lower Channel", 
+     message = "Price Below Lower Channel – price has broken below lower band")
+
+alertcondition(price_above_baseline, title = "Price Crossed Above Baseline", 
+      message = "Price Crossed Above Baseline")
+
+alertcondition(price_below_baseline, title = "Price Crossed Below Baseline", 
+      message = "Price Crossed Below Baseline")
+
+// Risk / Warning Alerts
+alertcondition(high_risk_entry, title = "HIGH RISK Entry Conditions", 
+     message = "HIGH RISK Entry – check chart for context")
+
+alertcondition(false_breakout_warning, title = "FALSE BREAKOUT WARNING", 
+     message = "FALSE BREAKOUT WARNING – possible trap candle")
+
+alertcondition(extreme_volatility, title = "EXTREME VOLATILITY", 
+     message = "EXTREME VOLATILITY – check ATR levels on chart")

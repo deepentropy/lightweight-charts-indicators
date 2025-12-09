@@ -1,0 +1,808 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator('Ichimoku Theories [LuxAlgo]', 'LuxAlgo - Ichimoku Theories', overlay = true, max_lines_count = 500, max_labels_count = 500, max_polylines_count = 100)
+//---------------------------------------------------------------------------------------------------------------------}
+//CONSTANTS & STRINGS & INPUTS
+//---------------------------------------------------------------------------------------------------------------------{
+BULLISH_LEG                 = 1
+BEARISH_LEG                 = 0
+
+KIHON                       = 'KIHON SUCHI'
+TAITO                       = 'TAITO SUCHI'
+
+HIGHS                       = 'HIGHS'
+LOWS                        = 'LOWS'
+SWINGS                      = 'SWINGS'
+TENKAN                      = 'TENKAN CROSS'
+KIJUN                       = 'KIJUN CROSS'
+KUMO                        = 'KUMO CHANGE'
+WAVE                        = 'WAVES'
+
+WAVE_I                      = 'WAVE I'
+WAVE_V                      = 'WAVE V'
+WAVE_N                      = 'WAVE N'
+WAVE_P                      = 'WAVE P'
+WAVE_Y                      = 'WAVE Y'
+WAVE_W                      = 'WAVE W'
+
+BULLISH                     = 'BULLISH'
+BEARISH                     = 'BEARISH'
+
+EN_SPACE                    = ' '
+EM_SPACE                    = ' '
+FOUR_PER_EM_SPACE           = ' '
+SIX_PER_EM_SPACE            = ' '
+HAIR_SPACE                  = ' '
+
+GREEN                       = #089981
+RED                         = #F23645
+
+ICHIMOKU_GROUP              = 'ICHIMOKU KINKŌ HYŌ'
+TIME_GROUP                  = 'TIME THEORY'
+WAVE_GROUP                  = 'WAVE THEORY'
+PRICE_GROUP                 = 'PRICE THEORY'
+
+showPivotMarksTooltip       = 'Enable/Disable points on swing highs and swing lows.'
+pivotLengthTooltip          = 'Number of candles to confirm a swing high or swing low. A higher number detects larger swings.'
+showIchimokuLinesTooltip    = 'Enable/Disable the 5 Ichimoku lines: kijun sen, tenkan sen, senkou span A & B and chikou span.'
+showIchimokuKumoTooltip     = 'Enable/Disable the Kumo (cloud). The Kumo is formed by 2 lines: Senkou Span A and Senkou Span B.'
+tenkanSenLengthTooltip      = 'Number of candles for Tenkan Sen calculation.'
+kinjuSenLengthTooltip       = 'Number of candles for the Kijun Sen calculation.'
+senkouSpanBLengthTooltip    = 'Number of candles for Senkou Span B calculation.'
+ichimokunOffsetTooltip      = 'Number of candles for Chikou and Senkou Span calculation. Chikou Span is plotted in the past, Senkou Span A & B in the future.'
+showTimeForecastTooltip     = 'Enable/Disable time cycle forecast vertical lines. Disable for better performance.'
+timePatternTooltip          = 'Choose between two patterns: Kihon Suchi (basic numbers) or Taito Suchi (equal numbers).'
+timeForecastAnchorTooltip   = 'Number of time cycles in the past to anchor the time cycle forecast. The larger the number, the deeper in the past the anchor will be.'
+timeCycleModeTooltip        = 'Choose from 7 time cycle detection modes: Tenkan Sen cross, Kijun Sen cross, Kumo change between bullish & bearish, swing highs only, swing lows only, both swing highs & lows and wave detection.'
+waveCyleTooltip             = 'Choose which type of wave to detect from 6 different wave types when time cycle mode is set to WAVES.'
+showTimeCyclesTooltip       = 'Enable/Disable time cycle horizontal lines. Disable for better performance.'
+maximumTimeCyclesTooltip    = 'Maximum number of time cycles to display.'
+basicWavesTooltip           = 'Enable/Disable display of basic waves, all at once or one at a time. Disable for better performance.'
+complexWavesTooltip         = 'Enable/Disable complex wave display, all at once or one by one. Disable for better performance.'
+overlappingWavesTooltip     = 'Enable/Disable display of waves ending on the same swing point.'
+maximumWavesTooltip         = 'Maximum number of waves to display.'
+basicTargetsTooltip         = 'Enable/Disable horizontal price target lines. Disable for better performance.'
+extendedTargetsTooltip      = 'Enable/Disable extended price target horizontal lines. Disable for better performance.'
+
+showPivotMarksInput         = input.bool(   true,   'Show Swing Highs & Lows',  group = '',             tooltip = showPivotMarksTooltip)
+pivotLengthInput            = input.int(    10,     'Swing Length',             group = '',             tooltip = pivotLengthTooltip,   minval = 1)
+
+showIchimokuLinesInput      = input.bool(   true,   'Show Lines',               group = ICHIMOKU_GROUP, tooltip = showIchimokuLinesTooltip)
+showIchimokuKumoInput       = input.bool(   true,   'Show Kumo',                group = ICHIMOKU_GROUP, tooltip = showIchimokuKumoTooltip)
+tenkanSenLengthInput        = input.int(    9,      'Tenkan Sen Length',        group = ICHIMOKU_GROUP, tooltip = tenkanSenLengthTooltip)
+kinjuSenLengthInput         = input.int(    26,     'Kinjun Sen Length',        group = ICHIMOKU_GROUP, tooltip = kinjuSenLengthTooltip)
+senkouSpanBLengthInput      = input.int(    52,     'Senkou Span B Length',     group = ICHIMOKU_GROUP, tooltip = senkouSpanBLengthTooltip)
+ichimokuOffsetInput         = input.int(    26,     'Chikou & Senkou Offset',   group = ICHIMOKU_GROUP, tooltip = ichimokunOffsetTooltip)
+
+showTimeForecastInput       = input.bool(   true,   'Show Time Cycle Forecast', group = TIME_GROUP,     tooltip = showTimeForecastTooltip)
+timePatternInput            = input.string( KIHON,  'Forecast Pattern',         group = TIME_GROUP,     tooltip = timePatternTooltip,   options=[KIHON,TAITO])
+timeForecastAnchorInput     = input.int(    1,      'Anchor forecast on last X time cycle', group = TIME_GROUP,    tooltip = timeForecastAnchorTooltip,minval = 1)
+
+timeCycleModeInput          = input.string( SWINGS, 'Time Cycle Mode',          group = TIME_GROUP,     tooltip = timeCycleModeTooltip, options=[TENKAN,KIJUN,KUMO,HIGHS,LOWS,SWINGS,WAVE])
+waveCyleInput               = input.string( WAVE_I, 'Wave Cycle',               group = TIME_GROUP,     tooltip = waveCyleTooltip,      options=[WAVE_I,WAVE_V,WAVE_N,WAVE_P,WAVE_Y,WAVE_W])
+showTimeCyclesInput         = input.bool(   true,   'Show Time Cycles',         group = TIME_GROUP,     tooltip = showTimeCyclesTooltip)
+maximumTimeCyclesInput      = input.int(    10,     'Show last X time cycles',  group = TIME_GROUP,     tooltip = maximumTimeCyclesTooltip, minval = 1)
+
+showBasicWavesInput         = input.bool(   true,   'Basic Waves:'+EN_SPACE+EM_SPACE, group = WAVE_GROUP,   tooltip = '',               inline = 'basic waves')
+showWaveIInput              = input.bool(   false,  'I',                        group = WAVE_GROUP,     tooltip = '',                   inline = 'basic waves')
+waveIColorInput             = input.color(#e91e63,FOUR_PER_EM_SPACE,          group = WAVE_GROUP,     tooltip = '',                   inline = 'basic waves') 
+showWaveVInput              = input.bool(   false,  'V',                        group = WAVE_GROUP,     tooltip = '',                   inline = 'basic waves')
+waveVColorInput             = input.color(color.yellow,'',                    group = WAVE_GROUP,     tooltip = '',                   inline = 'basic waves')
+showWaveNInput              = input.bool(   true,   'N',                        group = WAVE_GROUP,     tooltip = '',                   inline = 'basic waves')
+waveNColorInput             = input.color(#5b9cf6,FOUR_PER_EM_SPACE,          group = WAVE_GROUP,     tooltip = basicWavesTooltip,    inline = 'basic waves')
+
+showComplexWavesInput       = input.bool(   false,  'Complex Waves:',           group = WAVE_GROUP,     tooltip = '',                   inline = 'complex waves')
+showWavePInput              = input.bool(   true,   'P',                        group = WAVE_GROUP,     tooltip = '',                   inline = 'complex waves')
+wavePColorInput             = input.color(color.aqua,'',                      group = WAVE_GROUP,     tooltip = '',                   inline = 'complex waves')
+showWaveYInput              = input.bool(   true,   'Y',                        group = WAVE_GROUP,     tooltip = '',                   inline = 'complex waves')
+waveYColorInput             = input.color(#ff5d00,SIX_PER_EM_SPACE,           group = WAVE_GROUP,     tooltip = '',                   inline = 'complex waves')
+showWaveWInput              = input.bool(   true,   'W',                        group = WAVE_GROUP,     tooltip = '',                   inline = 'complex waves')
+waveWColorInput             = input.color(color.lime,HAIR_SPACE,              group = WAVE_GROUP,     tooltip = complexWavesTooltip,  inline = 'complex waves')
+
+overlappingWavesInput       = input.bool(   false,  'Overlapping Waves',        group = WAVE_GROUP,     tooltip = overlappingWavesTooltip)
+maximumWavesInput           = input.int(    10,     'Show last X waves',        group = WAVE_GROUP,     tooltip = maximumWavesTooltip,    minval = 1)
+
+showBasicTargetsInput       = input.bool(   true,   'Basic Targets:'+EM_SPACE+EM_SPACE, group = PRICE_GROUP,   tooltip = '',            inline = 'basic targets')
+showTargetVInput            = input.bool(   true,   'V'+EM_SPACE+EN_SPACE,      group = PRICE_GROUP,    tooltip = '',                   inline = 'basic targets')
+showTargetEInput            = input.bool(   true,   'E'+EM_SPACE,               group = PRICE_GROUP,    tooltip = '',                   inline = 'basic targets')
+showTargetNInput            = input.bool(   true,   'N'+EM_SPACE,               group = PRICE_GROUP,    tooltip = '',                   inline = 'basic targets')
+showTargetNTInput           = input.bool(   true,   'NT',                       group = PRICE_GROUP,    tooltip = basicTargetsTooltip,  inline = 'basic targets')
+
+showExtendedTargetsInput    = input.bool(   false,  'Extended Targets:',        group = PRICE_GROUP,    tooltip = '',                   inline = 'extended targets')
+showTarget2EInput           = input.bool(   true,   '2E'+EM_SPACE,              group = PRICE_GROUP,    tooltip = '',                   inline = 'extended targets')
+showTarget3EInput           = input.bool(   true,   '3E',                       group = PRICE_GROUP,    tooltip = extendedTargetsTooltip,inline = 'extended targets')
+
+//---------------------------------------------------------------------------------------------------------------------}
+//DATA STRUCTURES & VARIABLES
+//---------------------------------------------------------------------------------------------------------------------{
+// @type                    Storage UDT for pivot points
+// @field barTime           Time index of the privot point     
+// @field barIndex          Bar index of the privot point
+// @field priceLevel        Price level of the pivot point
+// @field leg               Bullish or bearish bias (1 or 0)
+type swingPoint
+    int barTime
+    int barIndex
+    float priceLevel
+    int leg
+
+// @type                    Storage UDT for time cycles
+// @field firstBarTime      Time index of the time cycle first bar 
+// @field firstBarIndex     Bar index  of the time cycle first bar
+// @field lastBarTime       Time index of the time cycle last bar
+// @field lastBarIndex      Bar index  of the time cycle last bar
+// @field cycleLine         Plotted line
+// @field cycleLabel        Plotted label
+type timeCycle
+    int firstBarTime
+    int firstBarIndex
+    int lastBarTime
+    int lastBarIndex
+    line cycleLine
+    label cycleLabel
+
+// @type                    Storage UDT for waves
+// @field points            chart.point array representing wave points
+// @field tag               tag representing the type of wave
+// @field bias              bullish of bearish bias as string
+// @field waveLabel         plotted label
+// @field line1             plotted line for P & Y waves 
+// @field line2             plotted line for P & Y waves 
+type wave    
+    array<chart.point> points
+    string tag
+    string bias
+    label waveLabel
+    line line1
+    line line2
+
+// @type                    Storage UDT for price targets
+// @field targetLine        Plotted line
+// @field targetLabel       Plotted label
+type priceTarget
+    line targetLine
+    label targetLabel
+
+// @variable                        storage array for `swingPoint` UDTs
+var array<swingPoint> swingPoints   = array.new<swingPoint>()
+// @variable                        storage array for `timeCycle` UDTs
+var array<timeCycle> timeCycles     = array.new<timeCycle>()
+// @variable                        storage array for time cycle forecast lines
+var array<line> timeCyclesForecast  = array.new<line>()
+// @variable                        storage array for `wave` UDTs
+var array<wave> waves               = array.new<wave>()
+// @variable                        storage array for `priceTarget` UDTs
+var array<priceTarget> priceTargets = array.new<priceTarget>()
+
+// @variable                        current leg bullish or bearish bias (1 or 0)
+int currentLeg                      = na
+// @variable                        true if there is a new pivot `pivotLengthInput` bars ago
+bool newPivot                       = na
+// @variable                        true if there is a new pivot low `pivotLengthInput` bars ago
+bool pivotLow                       = na
+// @variable                        true if there is a new pivot high `pivotLengthInput` bars ago
+bool pivotHigh                      = na
+// @variable                        tenkan sen values for plotting and rest of calculations
+float tenkanSen                     = na
+// @variable                        kijun sen values for plotting and rest of calculations
+float kinjuSen                      = na
+// @variable                        chikou span is the close price plotted X bars in the past
+float chikouSpan                    = close
+// @variable                        senkou span A for plotting and rest of calculations
+float senkouSpanA                   = na
+// @variable                        senkou span B for plotting and rest of calculations
+float senkouSpanB                   = na
+// @variable                        tracks the change in senkou span A >= senkou span B
+bool kumoChange                     = na
+// @variable                        color changes depending on `kumoChange` variable
+color kumoColor                     = na
+// @variable                        true if close crosses tenkan sen
+bool tenkanSenCross                 = na
+// @variable                        true if close crosses kinjun sen
+bool kinjuSenCross                  = na
+// @variable                        highest high on last X bars + volatility measure
+float extremeHigh                   = na
+// @variable                        lower low on last X bars - volatility measure
+float extremeLow                    = na
+// @variable                        true if current bar is a new extreme high
+bool newExtremeHigh                 = na
+// @variable                        true if current bar is a new extreme low
+bool newExtremeLow                  = na
+// @variable                        lower low since the start of the time cycles - volatility measure
+var float lowest                    = na
+// @variable                        bar index `pivotLengthInput` bars ago
+int legIndex                        = bar_index[pivotLengthInput]
+// @variable                        high `pivotLengthInput` bars ago
+float legHigh                       = high[pivotLengthInput]
+// @variable                        low `pivotLengthInput` bars ago
+float legLow                        = low[pivotLengthInput]
+// @variable                        time `pivotLengthInput` bars ago
+int legTime                         = time[pivotLengthInput]
+// @variable                        volatility measure to apply on `extremeHigh`, `extremeLow` and `lowest` calculations
+float atr200                        = ta.atr(200)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//USER-DEFINED FUNCTIONS
+//---------------------------------------------------------------------------------------------------------------------{
+// @function            Get the value of the current leg, it can be 0 (bearish) or 1 (bullish)
+// @returns             int
+leg() =>
+    var leg     = 0
+    newLegHigh  = legHigh > ta.highest( pivotLengthInput)
+    newLegLow   = legLow  < ta.lowest(  pivotLengthInput)
+    
+    if newLegHigh
+        leg := BEARISH_LEG
+    else if newLegLow
+        leg := BULLISH_LEG
+    leg
+
+// @function            Identify whether the current value is the start of a new leg (swing)
+// @param leg           (int) Current leg value
+// @returns             bool
+startOfNewLeg(int leg)      => ta.change(leg) != 0
+
+// @function            Identify whether the current level is the start of a new bearish leg (swing)
+// @param leg           (int) Current leg value
+// @returns             bool
+startOfBearishLeg(int leg)  => ta.change(leg) == -1
+
+// @function            Identify whether the current level is the start of a new bullish leg (swing)
+// @param leg           (int) Current leg value
+// @returns             bool
+startOfBullishLeg(int leg)  => ta.change(leg) == +1
+
+// @function            Average price on a price range
+// @param length        (int) Number of bar to calculate the price range
+// @returns             float
+average(int length) => math.round_to_mintick( 0.5 * (ta.highest(length) + ta.lowest(length)))
+
+// @function            Calculate highest high and lowest low +/- atr(200) over the `lastXBars` period
+// @param lastXBars     (int) period for the calculations
+// @returns             float tuple
+extremesOnLastXBars(int lastXBars) => [ta.highest(lastXBars) + atr200, ta.lowest(lastXBars) - atr200]
+
+// @function            Parses swingPoint to chart.point
+// @param point         swingPoint to parse
+// @returns             chart.point ID
+chartPoint(swingPoint point) => chart.point.new(point.barTime, point.barIndex, point.priceLevel)
+
+// @function            I wave detector
+// @returns             wave ID
+gatherWaveI() =>    
+    size = array.size(swingPoints)
+
+    if size >= 2
+        A               = array.get(swingPoints, size - 2)
+        B               = array.get(swingPoints, size - 1)
+
+        waveSize        = B.barIndex - A.barIndex
+        minimumWaveSize = waveSize >= 9
+
+        if minimumWaveSize
+            bias = B.leg == BULLISH_LEG ? BEARISH : BULLISH
+            wave.new(array.from(chartPoint(A), chartPoint(B)), WAVE_I, bias)
+
+// @function            V wave detector
+// @returns             wave ID
+gatherWaveV() =>     
+    size = array.size(swingPoints)
+
+    if size >= 3
+        A               = array.get(swingPoints, size - 3)
+        B               = array.get(swingPoints, size - 2)
+        C               = array.get(swingPoints, size - 1)
+
+        waveSize        = C.barIndex - A.barIndex
+        minimumWaveSize = waveSize >= 9
+
+        threshold       = math.abs(A.priceLevel - B.priceLevel) * 0.2
+        isVWave         = C.priceLevel >= A.priceLevel - threshold and C.priceLevel <= A.priceLevel + threshold
+
+        if isVWave and minimumWaveSize
+            bias = C.leg == BULLISH_LEG ? BEARISH : BULLISH
+            wave.new(array.from(chartPoint(A), chartPoint(B), chartPoint(C)), WAVE_V, bias)
+
+// @function            N wave detector
+// @returns             wave ID
+gatherWaveN() =>     
+    size = array.size(swingPoints)
+
+    if size >= 4
+        A               = array.get(swingPoints, size - 4)
+        B               = array.get(swingPoints, size - 3)
+        C               = array.get(swingPoints, size - 2)
+        D               = array.get(swingPoints, size - 1)
+
+        waveSize        = D.barIndex - A.barIndex
+        minimumWaveSize = waveSize >= 9    
+
+        threshold       = math.abs(A.priceLevel - B.priceLevel) * 0.2
+        isBullishWaveN  = A.priceLevel < B.priceLevel and C.priceLevel > A.priceLevel + threshold and C.priceLevel < B.priceLevel - threshold and D.priceLevel > B.priceLevel + threshold
+        isBearishWaveN  = A.priceLevel > B.priceLevel and C.priceLevel < A.priceLevel - threshold and C.priceLevel > B.priceLevel + threshold and D.priceLevel < B.priceLevel - threshold
+        
+        isWaveN         = isBullishWaveN or isBearishWaveN
+
+        if isWaveN and minimumWaveSize
+            bias = D.leg == BULLISH_LEG ? BEARISH : BULLISH
+            wave.new(array.from(chartPoint(A), chartPoint(B), chartPoint(C), chartPoint(D)), WAVE_N, bias)
+
+// @function            P wave detector
+// @returns             wave ID
+gatherWaveP() =>     
+    size = array.size(swingPoints)
+
+    if size >= 4
+        A               = array.get(swingPoints, size - 4)
+        B               = array.get(swingPoints, size - 3)
+        C               = array.get(swingPoints, size - 2)
+        D               = array.get(swingPoints, size - 1)
+
+        minimumDistance = math.min(math.abs(A.barIndex - C.barIndex), math.abs(B.barIndex - D.barIndex))
+        threshold       = 1.25 * minimumDistance
+        goodShape       = math.abs(A.barIndex - B.barIndex) <= threshold and math.abs(C.barIndex - D.barIndex) <= threshold
+
+        waveSize        = D.barIndex - A.barIndex
+        minimumWaveSize = waveSize >= 9
+
+        isBullishWaveP  = math.max(A.priceLevel, B.priceLevel, C.priceLevel, D.priceLevel) == A.priceLevel and math.min(A.priceLevel, B.priceLevel, C.priceLevel, D.priceLevel) == B.priceLevel and C.priceLevel > D.priceLevel
+        isBearishWaveP  = math.min(A.priceLevel, B.priceLevel, C.priceLevel, D.priceLevel) == A.priceLevel and math.max(A.priceLevel, B.priceLevel, C.priceLevel, D.priceLevel) == B.priceLevel and C.priceLevel < D.priceLevel
+
+        isWaveP         = isBullishWaveP or isBearishWaveP
+
+        if isWaveP and minimumWaveSize and goodShape
+            bias = D.leg == BULLISH_LEG ? BEARISH : BULLISH
+            wave.new(array.from(chartPoint(A), chartPoint(B), chartPoint(C), chartPoint(D)), WAVE_P, bias)
+    
+// @function            Y wave detector
+// @returns             wave ID
+gatherWaveY() =>     
+    size                = array.size(swingPoints)
+
+    if size >= 4
+        A               = array.get(swingPoints, size - 4)
+        B               = array.get(swingPoints, size - 3)
+        C               = array.get(swingPoints, size - 2)
+        D               = array.get(swingPoints, size - 1)
+
+        minimumDistance = math.min(math.abs(A.barIndex - C.barIndex), math.abs(B.barIndex - D.barIndex))
+        threshold       = 1.25 * minimumDistance
+        goodShape       = math.abs(A.barIndex - B.barIndex) <= threshold and math.abs(C.barIndex - D.barIndex) <= threshold
+
+        waveSize        = D.barIndex - A.barIndex
+        minimumWaveSize = waveSize >= 9
+
+        isBullishWaveY  = math.max(A.priceLevel,B.priceLevel,C.priceLevel,D.priceLevel) == C.priceLevel and math.min(A.priceLevel,B.priceLevel,C.priceLevel,D.priceLevel) == D.priceLevel and A.priceLevel > B.priceLevel
+        isBearishWaveY  = math.min(A.priceLevel,B.priceLevel,C.priceLevel,D.priceLevel) == C.priceLevel and math.max(A.priceLevel,B.priceLevel,C.priceLevel,D.priceLevel) == D.priceLevel and A.priceLevel < B.priceLevel
+
+        isWaveY         = isBullishWaveY or isBearishWaveY
+
+        if isWaveY and minimumWaveSize and goodShape
+            bias = D.leg == BULLISH_LEG ? BEARISH : BULLISH
+            wave.new(array.from(chartPoint(A), chartPoint(B), chartPoint(C), chartPoint(D)), WAVE_Y, bias)
+       
+// @function            W wave detector
+// @returns             wave ID
+gatherWaveW() => 
+    size = array.size(swingPoints)
+
+    if size >= 5
+        A               = array.get(swingPoints, size - 5)
+        B               = array.get(swingPoints, size - 4)
+        C               = array.get(swingPoints, size - 3)
+        D               = array.get(swingPoints, size - 2)
+        E               = array.get(swingPoints, size - 1)
+
+        waveSize        = E.barIndex - A.barIndex
+        minimumWaveSize = waveSize >= 9
+
+        threshold       = math.abs(A.priceLevel - B.priceLevel) * 0.2
+        isBullishWaveW  = C.priceLevel <= A.priceLevel - threshold and C.priceLevel >= B.priceLevel + threshold and E.priceLevel >= A.priceLevel - threshold and E.priceLevel <= A.priceLevel + threshold and D.priceLevel >= B.priceLevel - threshold and D.priceLevel <= B.priceLevel + threshold
+        isBearishWaveW  = C.priceLevel >= A.priceLevel + threshold and C.priceLevel <= B.priceLevel - threshold and E.priceLevel >= B.priceLevel - threshold and E.priceLevel <= B.priceLevel + threshold and D.priceLevel >= A.priceLevel - threshold and D.priceLevel <= A.priceLevel + threshold
+
+        isWaveW         = isBullishWaveW or isBearishWaveW
+
+        if isWaveW and minimumWaveSize
+            bias = E.leg == BULLISH_LEG ? BEARISH : BULLISH
+            wave.new(array.from(chartPoint(A), chartPoint(B), chartPoint(C), chartPoint(D), chartPoint(E)), WAVE_W, bias)
+
+// @function            Storage a new wave
+// @param newWave       wave to store
+// @returns             void
+addWave(wave newWave) =>
+    if waves.size() >= maximumWavesInput
+        w_ave = waves.shift()
+        label.delete(   w_ave.waveLabel)
+        line.delete(    w_ave.line1)
+        line.delete(    w_ave.line2)    
+    array.push(waves,newWave)
+
+// @function            Detects and stores new waves
+// @returns             void
+gatherWaves() =>
+    wave waveI = na
+    wave waveV = na
+    wave waveN = na
+    wave waveP = na
+    wave waveY = na
+    wave waveW = na
+
+    if showBasicWavesInput and showWaveIInput
+        waveI := gatherWaveI()
+    if showBasicWavesInput and showWaveVInput
+        waveV := gatherWaveV()
+    if showBasicWavesInput and showWaveNInput
+        waveN := gatherWaveN()
+    if showComplexWavesInput and showWavePInput
+        waveP := gatherWaveP()
+    if showComplexWavesInput and showWaveYInput
+        waveY := gatherWaveY()
+    if showComplexWavesInput and showWaveWInput
+        waveW := gatherWaveW()
+
+    if overlappingWavesInput
+        if not na(waveI)
+            addWave(waveI)
+        if not na(waveV)
+            addWave(waveV)
+        if not na(waveN)
+            addWave(waveN)
+        if not na(waveP)
+            addWave(waveP)
+        if not na(waveY)
+            addWave(waveY)
+        if not na(waveW)
+            addWave(waveW)
+    else
+        wave w_ave = na
+        if not na(waveN)
+            w_ave := waveN
+        else if not na(waveW)
+            w_ave := waveW
+        else if not na(waveP)
+            w_ave := waveP
+        else if not na(waveY)
+            w_ave := waveY
+        else if not na(waveV)
+            w_ave := waveV
+        else if not na(waveI)
+            w_ave := waveI
+
+        if not na(w_ave)        
+            addWave(w_ave)      
+
+// @function            Helper function to choose the right wave color
+// @param typeOfWave    (string) type of wave
+// @returns             color
+colorSelection(string typeOfWave) =>
+    switch typeOfWave
+        WAVE_I => waveIColorInput
+        WAVE_V => waveVColorInput
+        WAVE_N => waveNColorInput
+        WAVE_P => wavePColorInput
+        WAVE_Y => waveYColorInput
+        WAVE_W => waveWColorInput
+
+// @function            Draws stored waves
+// @returns             void
+plotWaves() =>
+    for eachPolyline in polyline.all
+        polyline.delete(eachPolyline)
+    
+    for [index,eachWave] in waves        
+        label.delete(eachWave.waveLabel)
+
+        // we draw P & Y waves with 2 lines
+        if eachWave.tag == WAVE_P or eachWave.tag == WAVE_Y
+            eachWave.line1.delete()
+            eachWave.line2.delete()
+            eachWave.line1 := line.new(eachWave.points.get(0), eachWave.points.get(2), xloc.bar_time, color = colorSelection(eachWave.tag), style = line.style_solid, width = 2)
+            eachWave.line2 := line.new(eachWave.points.get(1), eachWave.points.get(3), xloc.bar_time, color = colorSelection(eachWave.tag), style = line.style_solid, width = 2)
+        else
+            // we draw the rest of waves with polyline
+            polyline.new(eachWave.points, false, false, xloc.bar_time, colorSelection(eachWave.tag), line_style = line.style_solid, line_width = 2)            
+
+        overlappingLabel    = index > 0 ? eachWave.points.last().time == waves.get(index - 1).points.last().time : false
+        style               = eachWave.bias == BULLISH ? label.style_label_down : label.style_label_up
+
+        if overlappingLabel
+            eachWave.waveLabel := waves.get(index - 1).waveLabel
+            eachWave.waveLabel.set_text(eachWave.waveLabel.get_text() + '\n' + eachWave.tag)
+            eachWave.waveLabel.set_textcolor(colorSelection(eachWave.tag))
+        else
+            eachWave.waveLabel := label.new(eachWave.points.last(),eachWave.tag,xloc.bar_time,color=color(na),style=style,textcolor= colorSelection(eachWave.tag))
+            label.delete(na)    
+
+// @function            Draws a price target with a line and a label
+// @param barIndex      (int) starting bar index for line
+// @param priceLevel    (float) price level for line and label
+// @param tag           (string) text to display in label
+// @returns             void
+drawPriceTarget(int barIndex, float priceLevel, string tag) =>
+    array.push(priceTargets,priceTarget.new(
+         line.new(barIndex, priceLevel, last_bar_index + ichimokuOffsetInput, priceLevel, color = chart.fg_color, style = line.style_dotted),
+         label.new(last_bar_index + ichimokuOffsetInput, priceLevel,tag + ' (' + str.tostring(priceLevel) + ')', color=color(na), textcolor=chart.fg_color, style= label.style_label_left)))
+
+// @function            Detects developing N waves and draws price targets
+// @returns             void
+priceTheoryTargets() =>
+    size = array.size(swingPoints)
+
+    if size >= 3
+        A                           = array.get(swingPoints, size - 3)
+        B                           = array.get(swingPoints, size - 2)
+        C                           = array.get(swingPoints, size - 1)
+
+        waveSize                    = C.barIndex - A.barIndex
+        minimumWaveSize             = waveSize >= 9    
+
+        threshold                   = math.abs(A.priceLevel - B.priceLevel) * 0.2
+        isDevelopingBullishWaveN    = A.priceLevel < B.priceLevel and C.priceLevel > A.priceLevel + threshold and C.priceLevel < B.priceLevel - threshold
+        isDevelopingBearishWaveN    = A.priceLevel > B.priceLevel and C.priceLevel < A.priceLevel - threshold and C.priceLevel > B.priceLevel + threshold
+        
+        isDevelopingWaveN           = isDevelopingBullishWaveN or isDevelopingBearishWaveN               
+
+        calculationV                = .0
+        calculationE                = .0
+        calculationN                = .0
+        calculationNT               = .0
+        calculation2E               = .0
+        calculation3E               = .0
+
+        if isDevelopingWaveN and minimumWaveSize
+
+            for eachPriceTarget in priceTargets
+                line.delete(eachPriceTarget.targetLine)
+                label.delete(eachPriceTarget.targetLabel) 
+            array.clear(priceTargets)                   
+
+            if isDevelopingBullishWaveN
+                calculationV    := B.priceLevel + (     B.priceLevel - C.priceLevel)
+                calculationE    := B.priceLevel + (     B.priceLevel - A.priceLevel)
+                calculationN    := C.priceLevel + (     B.priceLevel - A.priceLevel)
+                calculationNT   := C.priceLevel + (     C.priceLevel - A.priceLevel)
+                calculation2E   := B.priceLevel + 2*(   B.priceLevel - A.priceLevel)
+                calculation3E   := B.priceLevel + 3*(   B.priceLevel - A.priceLevel)
+
+            if isDevelopingBearishWaveN
+                calculationV    := B.priceLevel - (     C.priceLevel - B.priceLevel)
+                calculationE    := B.priceLevel - (     A.priceLevel - B.priceLevel)
+                calculationN    := C.priceLevel - (     A.priceLevel - B.priceLevel)
+                calculationNT   := C.priceLevel - (     A.priceLevel - C.priceLevel)
+                calculation2E   := B.priceLevel - 2*(   A.priceLevel - B.priceLevel)
+                calculation3E   := B.priceLevel - 3*(   A.priceLevel - B.priceLevel)
+
+            if showBasicTargetsInput and showTargetVInput
+                drawPriceTarget(C.barIndex, calculationV,'V')
+            if showBasicTargetsInput and showTargetEInput                               
+                drawPriceTarget(C.barIndex, calculationE,'E')
+            if showBasicTargetsInput and showTargetNInput
+                drawPriceTarget(C.barIndex, calculationN,'N')
+            if showBasicTargetsInput and showTargetNTInput
+                drawPriceTarget(C.barIndex, calculationNT,'NT')
+            if showExtendedTargetsInput and showTarget2EInput
+                drawPriceTarget(C.barIndex, calculation2E,'2E')
+            if showExtendedTargetsInput and showTarget3EInput
+                drawPriceTarget(C.barIndex, calculation3E,'3E')
+
+// @function            Update each price target line and label to draw always with an `ichimokuOffsetInput` offset
+// @returns             void
+updatePriceTargets() =>
+    for eachPriceTarget in priceTargets
+        line.set_x2(eachPriceTarget.targetLine,     last_bar_index + ichimokuOffsetInput)
+        label.set_x(eachPriceTarget.targetLabel,    last_bar_index + ichimokuOffsetInput)
+
+// @function            Helper function to update last time cycle values before store the new one
+// @param cycle         (timeCycle) new detected cycle
+// @returns             int
+updateLastTimeCycle(timeCycle cycle) =>
+    size = array.size(timeCycles)
+    if size > 0
+        c_ycle              = array.last(timeCycles)
+        c_ycle.lastBarIndex := cycle.firstBarIndex
+        c_ycle.lastBarTime  := cycle.firstBarTime
+
+// @function            Helper function to store a new time cycle
+// @param cycle         (timeCycle) time cycle to store
+// @returns             void
+addTimeCycle(timeCycle cycle) =>
+    updateLastTimeCycle(cycle)
+    size = array.size(timeCycles)
+
+    if size >= (maximumTimeCyclesInput + 1)
+        c_ycle = array.shift(timeCycles)
+        line.delete(    c_ycle.cycleLine)            
+        label.delete(   c_ycle.cycleLabel)
+    array.push(timeCycles, cycle)
+
+// @function            Helper function to parse `wave` to `timeCycle`
+// @returns             void
+parseWavesToTimeCycles() =>    
+    for eachCycle in timeCycles
+        eachCycle.cycleLabel.delete()
+        eachCycle.cycleLine.delete()
+    timeCycles.clear()
+
+    for index = waves.size() - 1 to 0
+        if timeCycles.size() >= maximumTimeCyclesInput
+            break
+        if waves.get(index).tag == waveCyleInput
+            timeCycles.unshift(timeCycle.new(waves.get(index).points.first().time, waves.get(index).points.first().index, waves.get(index).points.last().time, waves.get(index).points.last().index))
+
+// @function            Detect and store time cycles
+// @returns             void
+gatherTimeCycles() => 
+    timeCycle newCycle = switch timeCycleModeInput
+        HIGHS   => pivotHigh        ? timeCycle.new(legTime,legIndex)   : na 
+        LOWS    => pivotLow         ? timeCycle.new(legTime,legIndex)   : na
+        SWINGS  => newPivot         ? timeCycle.new(legTime,legIndex)   : na
+        TENKAN  => tenkanSenCross   ? timeCycle.new(time,bar_index)     : na
+        KIJUN   => kinjuSenCross    ? timeCycle.new(time,bar_index)     : na
+        KUMO    => kumoChange       ? timeCycle.new(time,bar_index)     : na
+        WAVE    => na
+
+    if not na(newCycle)
+        addTimeCycle(newCycle)
+    else if timeCycleModeInput == WAVE and waves.size() > 0
+        parseWavesToTimeCycles()
+
+// @function            Draws each time cycle with a line and a label
+// @returns             last label ID
+plotTimeCycles() =>
+    size = array.size(timeCycles)
+
+    if size > 1
+        priceLevel = lowest
+        
+        for [index,eachCycle] in timeCycles             
+            line.delete(eachCycle.cycleLine)            
+            label.delete(eachCycle.cycleLabel)       
+
+            tagPosition = math.max(1,math.round(0.5*(eachCycle.lastBarTime - eachCycle.firstBarTime)))
+            
+            if index == array.size(timeCycles) - 1 and timeCycleModeInput != WAVE
+                break
+
+            if timeCycleModeInput == WAVE and index > 0
+                if eachCycle.firstBarIndex < timeCycles.get(index-1).lastBarIndex
+                    priceLevel -= atr200
+
+            eachCycle.cycleLine := line.new(eachCycle.firstBarTime,priceLevel,eachCycle.lastBarTime,priceLevel,xloc.bar_time,color=chart.fg_color,style=line.style_arrow_right)
+            eachCycle.cycleLabel := label.new(eachCycle.firstBarTime + tagPosition,priceLevel,str.tostring(eachCycle.lastBarIndex - eachCycle.firstBarIndex),xloc.bar_time,color=color(na),style=label.style_none,textcolor=chart.fg_color)
+            
+// @function            Draws time cycle forecast vertical lines
+// @returns             void
+plotTimeCyclesForecast() =>
+    lastArrayIndex = array.size(timeCycles) - (timeCycleModeInput == WAVE ? 0 : 1)
+
+    if lastArrayIndex >= timeForecastAnchorInput
+        cycle               = array.get(timeCycles,lastArrayIndex - timeForecastAnchorInput)
+        taitoCycle          = cycle.lastBarIndex - cycle.firstBarIndex
+        forecastAnchor      = cycle.lastBarIndex
+        array<int> indexes  = switch timePatternInput
+            KIHON => array.from(9, 17, 26, 33, 42, 51, 65, 76, 129, 172, 200, 257)
+            TAITO => array.from(taitoCycle, 2*taitoCycle, 3*taitoCycle, 4*taitoCycle, 5*taitoCycle, 6*taitoCycle, 7*taitoCycle, 8*taitoCycle, 9*taitoCycle)
+        
+        for eachLine in timeCyclesForecast
+            line.delete(eachLine)
+        array.clear(timeCyclesForecast)
+
+        array.push(timeCyclesForecast, line.new(forecastAnchor, extremeHigh, forecastAnchor, extremeLow, color=chart.fg_color, style=line.style_solid))
+
+        for index in indexes
+
+            if (forecastAnchor + index) > (last_bar_index + 500)
+                break
+            array.push(timeCyclesForecast,line.new(forecastAnchor + index,extremeHigh,forecastAnchor + index,extremeLow,color=chart.fg_color,style=line.style_dotted))
+
+// @function            Update each time cycle forecast line extremes
+// @returns             void
+updateTimeCyclesForecast() =>
+    if newExtremeHigh or newExtremeLow
+        for eachTimeCycle in timeCyclesForecast
+            if newExtremeHigh
+                eachTimeCycle.set_y1(extremeHigh)
+            if newExtremeLow
+                eachTimeCycle.set_y2(extremeLow)
+       
+//---------------------------------------------------------------------------------------------------------------------}
+//MUTABLE VARIABLES & EXECUTION
+//---------------------------------------------------------------------------------------------------------------------{
+currentLeg                  := leg()
+newPivot                    := startOfNewLeg(currentLeg)
+pivotLow                    := startOfBullishLeg(currentLeg)
+pivotHigh                   := startOfBearishLeg(currentLeg)
+
+tenkanSen                   := average(tenkanSenLengthInput)
+kinjuSen                    := average(kinjuSenLengthInput)
+senkouSpanA                 := 0.5*(tenkanSen + kinjuSen)
+senkouSpanB                 := average(senkouSpanBLengthInput)
+kumoChange                  := ta.change(senkouSpanA >= senkouSpanB)
+kumoColor                   := senkouSpanA >= senkouSpanB ? color.new(GREEN,80) : color.new(RED,80)
+
+tenkanSenCross              := ta.cross(close,tenkanSen)
+kinjuSenCross               := ta.cross(close,kinjuSen)
+
+[e_xtremeHigh,e_xtremeLow]  = extremesOnLastXBars(200)
+extremeHigh                 := e_xtremeHigh
+extremeLow                  := e_xtremeLow
+newExtremeHigh              := ta.change(extremeHigh)   != 0
+newExtremeLow               := ta.change(extremeLow)    != 0    
+
+if array.size(timeCycles) > 0 and bar_index > 200
+    lowest := ta.lowest(bar_index - array.first(timeCycles).firstBarIndex) - atr200
+
+// @variable            true if current candle is a new time cycle
+bool newTimeCycle = switch timeCycleModeInput
+    HIGHS   => pivotHigh
+    LOWS    => pivotLow
+    SWINGS  => newPivot
+    TENKAN  => tenkanSenCross
+    KIJUN   => kinjuSenCross
+    KUMO    => kumoChange
+    WAVE    => newPivot
+
+// we execute the logic only once per bar close
+if barstate.isconfirmed    
+    // if there is a new swing point execute the logic
+    if newPivot
+        priceLevel      = legHigh
+        legBias         = BEARISH_LEG
+
+        // if the new swing point is a pivot low change the values
+        if pivotLow
+            priceLevel  := legLow
+            legBias     := BULLISH_LEG
+
+        // we store the new swing point
+        array.push(swingPoints,swingPoint.new(legTime,legIndex,priceLevel,legBias))        
+
+        // we gather new waves
+        gatherWaves()
+
+        if showBasicWavesInput or showComplexWavesInput
+            // we plot all stored waves
+            plotWaves()
+        
+        if showBasicTargetsInput or showExtendedTargetsInput
+            // we detect and plot price targets
+            priceTheoryTargets()
+
+    if priceTargets.size() > 0
+        // if there are price targets, we update them
+        updatePriceTargets()    
+
+    if newTimeCycle
+        // at each new time cycle we detect and store the new cycle
+        gatherTimeCycles()
+
+        if showTimeCyclesInput
+            // we plot all time cycles
+            plotTimeCycles()            
+
+        if showTimeForecastInput      
+            // we plot all time cycles forecast
+            plotTimeCyclesForecast()
+            
+    else
+        if showTimeForecastInput
+            // we update time cycles forecast vertical lines
+            updateTimeCyclesForecast()
+
+// plotting circle marks on swing highs and lows
+plotshape(      showPivotMarksInput     ? pivotLow      : na, 'Swing High', shape.circle, location.belowbar, GREEN, -pivotLengthInput)
+plotshape(      showPivotMarksInput     ? pivotHigh     : na, 'Swing Low',  shape.circle, location.abovebar, RED,   -pivotLengthInput)
+
+// plotting basic Ichimoku lines and kumo
+plot(           showIchimokuLinesInput  ? tenkanSen     : na, 'TenkanSen',  color = RED)
+plot(           showIchimokuLinesInput  ? kinjuSen      : na, 'KinjuSen',   color =color.blue)
+plot(           showIchimokuLinesInput  ? chikouSpan    : na, 'ChikouSpan', offset = -ichimokuOffsetInput, color = color.new(#787b86, 50))
+
+kumoFast = plot(showIchimokuKumoInput   ? senkouSpanA   : na, 'SenkouSpanA', kumoColor, offset = ichimokuOffsetInput)
+kumoSlow = plot(showIchimokuKumoInput   ? senkouSpanB   : na, 'SenkouSpanB', kumoColor, offset = ichimokuOffsetInput)
+
+fill(kumoFast, kumoSlow, color = kumoColor, title='Kumo')
+
+//---------------------------------------------------------------------------------------------------------------------}        

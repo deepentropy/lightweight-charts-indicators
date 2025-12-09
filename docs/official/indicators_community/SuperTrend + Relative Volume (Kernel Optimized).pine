@@ -1,0 +1,245 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fluxchart
+
+//@version=6
+indicator("SuperTrend + Relative Volume (Kernel Optimized) | Flux Charts", max_labels_count = 500, overlay = true )
+import TradingView/ta/9 as ta
+
+//constants
+const bool DEBUG = false
+
+//Supertrend Inputs
+atrLength = input.int(10, title = "ATR Length", group = "SuperTrend")
+atrMultiplier = input.int(3, title = "ATR Multiplier", group = "SuperTrend")
+supertrend_max_opacity = input.int(99, minval = 0, maxval = 100, title = "SuperTrend Max Opacity", group = "SuperTrend", tooltip = "This setting sets the opacity of supertrend based on the KDE%. A higher value will increase the transparency.")
+supertrend_min_opacity = input.int(53, minval = 0, maxval = 100, title = "SuperTrend Min Opacity", group = "SuperTrend", tooltip = "This setting sets the opacity of supertrend based on the KDE%. A lower value will decrease the transparency.")
+
+//KDE inputs
+string KDEKernel = "Gaussian"           //common kernel for normal distribution
+float KDEBandwidth = input.float(0.10, "Bandwidth", minval = 0.01, step = 0.1, group = "KDE", tooltip = "This setting sets the smoothness of the KDE function output.")
+int KDEStep = input.int(100, "Nº Bins", minval = 1, group = "KDE", tooltip = "The number of elements the KDE Probability array will have. Higher settings will result in greater precision.")
+float activationThresholdInput = input.float(70, "KDE Threshold %", minval = 0, maxval = 100, step = 2.50, group = "KDE", tooltip = "This setting sets the KDE% threshold that must be exceeeded to indicate buy or sell signals.")
+int barLength = input.int(25, "Relative Volume Length", minval = 1, group = "KDE", tooltip = "This setting sets the number of candles back to calculate Relative Breakout Volume")
+string probMode = "Sum"    
+activationThreshold = activationThresholdInput/100     
+activationThresholdEnabled = input.bool(false, "Enable Activation Threshold", group = "KDE", tooltip = "Only trigger a supertrend direction change if the relative volume's percentile is above the KDE Threshold %")
+
+//Style Inputs
+bearishColor = input.color(#f23646, "Bullish Break", group = "Style", inline = "col")
+bullishColor = input.color(color.rgb(9, 209, 66), "Bearish Break", group = "Style", inline = "col")
+textColor = input.color(color.white, 'Text', group = 'Style', inline = "col", display = display.none)
+KDELabelsEnabled = input.bool(true, "KDE Labels", group = "Style")
+showSuperTrendLine= input.bool(true, "Display SuperTrend Line" , group = "Style")
+showFillColors = input.bool(true, "Display Volume Gradient" , group = "Style")
+showTrendColor = input.bool(false, "Display Trend Color" , group = "Style")
+ShowErrors = input.bool(true, "Show Errors", group = "Style")
+
+//Gaussian Kernel Function
+gaussian (float distance, float bandwidth = 1.0) => 1.0 / math.sqrt(2.0 * math.pi) * math.pow(math.e, -0.5 * math.pow(distance / bandwidth, 2.0))
+
+//KDE Probability
+var float volumeProb = na      
+float maxVolumeProb = na        
+
+type KDE
+    float mid = na
+    float[] X = na
+    float[] Y = na
+    float[] YSum = na
+
+kde (array<float> arr, string kernel, float bandwidth, int steps) =>
+    arrSize = arr.size()
+    arrMax = 3  //99.7% of values fall between -3 and 3
+    arrMin = -3
+    arrRange = arrMax - arrMin 
+    stepCount = arrRange / steps
+    
+    densityRange = array.new<float>(steps)          //calculate values to apply the kernel estimate
+    for i = 0 to (steps) - 1
+        densityRange.set(i, arrMin + i * stepCount)
+    
+    xArr = array.new<float>()
+    yArr = array.new<float>()
+    for i = 0 to densityRange.size() - 1
+        float temp = 0
+        for j = 0 to arr.size() - 1
+            temp += gaussian(densityRange.get(i) - arr.get(j), bandwidth)
+        xArr.push(densityRange.get(i))
+        yArr.push(temp)
+    totalDensity = array.sum(yArr)
+    for k= 0 to yArr.size() - 1
+        yArr.set(k, yArr.get(k) / totalDensity)  // Normalize each density value
+    [xArr, yArr]
+//#endregion
+
+//Supertrend
+[Pine_Supertrend, pineDirection] = ta.supertrend(atrMultiplier, atrLength)
+
+//Breaks in Trend
+bullishBreak = ta.crossover(close, Pine_Supertrend) and barstate.isconfirmed
+bearishBreak = ta.crossunder(close, Pine_Supertrend) and barstate.isconfirmed
+
+// Buy Sell Volume 
+buyVolumeTotal = volume * (close-low)/(high-low)
+sellVolumeTotal = volume * (high-close)/(high-low)
+buyVolumeTotalAverage = ta.ema(buyVolumeTotal, barLength)
+buyVolumeTotalAverageShort = ta.ema(buyVolumeTotal, 10)
+
+sellVolumeTotalAverage = ta.ema(sellVolumeTotal, barLength)
+sellVolumeTotalAverageShort = ta.ema(sellVolumeTotal, 10)
+
+buyVolume = buyVolumeTotalAverageShort/buyVolumeTotalAverage
+sellVolume = sellVolumeTotalAverageShort/sellVolumeTotalAverage
+
+//Candle Data
+var volumeOnBullishBreak = array.new<float>()
+var volumeOnBearishBreak = array.new<float>()
+
+
+
+//KDE variables
+var bullishKDE = KDE.new(na, array.new<float>(), array.new<float>(), array.new<float>())
+var bearishKDE = KDE.new(na, array.new<float>(), array.new<float>(), array.new<float>())
+
+
+// for [index, value] in volumeOnBearishBreak
+//     if(na(value))
+//         log.info(str.tostring(index))
+
+//Updates KDE Array and density points
+
+
+if(not na(volume))
+    if(bullishBreak and not na(buyVolume))
+        if (volumeOnBullishBreak.size() >= KDEStep)
+            volumeOnBullishBreak.shift()
+        volumeOnBullishBreak.push(buyVolume)
+        normalizedVolumeOnBreak = array.standardize(volumeOnBullishBreak) //normalized array
+        [bullishKDEX1, bullishKDEY1] = kde(normalizedVolumeOnBreak, KDEKernel, KDEBandwidth, KDEStep)
+        
+        bullishKDE.X := bullishKDEX1     
+        bullishKDE.Y := bullishKDEY1
+
+        bullishKDE.YSum.clear()
+
+        temp = 0.0
+        for i = 0 to bullishKDE.Y.size() - 1
+            temp += bullishKDE.Y.get(i)
+            bullishKDE.YSum.push(temp)
+        bullishKDE.mid := array.get(bullishKDE.X, array.indexof(bullishKDE.Y, array.max(bullishKDE.Y)))
+
+    if(bearishBreak and not na(sellVolume))
+        if (volumeOnBearishBreak.size() >= KDEStep)
+            removed = volumeOnBearishBreak.shift()
+        volumeOnBearishBreak.push(sellVolume)
+        normalizedVolumeOnBreak = array.standardize(volumeOnBearishBreak) //normalized array
+        [bearishKDEX1, bearishKDEY1] = kde(normalizedVolumeOnBreak, KDEKernel, KDEBandwidth, KDEStep)
+        bearishKDE.X := bearishKDEX1     
+        bearishKDE.Y := bearishKDEY1
+        bearishKDE.YSum.clear()
+
+        temp = 0.0
+        for i = 0 to bearishKDE.Y.size() - 1
+            temp += bearishKDE.Y.get(i)
+            bearishKDE.YSum.push(temp)
+        bearishKDE.mid := array.get(bearishKDE.X, array.indexof(bearishKDE.Y, array.max(bearishKDE.Y)))
+        
+prefixSum (array<float> arr, int l, int r) =>
+    arr.get(r) - (l == 0 ? 0 : arr.get(l - 1))
+
+//Standardize param: val based on param arr
+standardize(float val, array<float> arr) =>    
+    meanValue = array.avg(arr)        
+    stdDevArr = array.stdev(arr)   
+    stdVal = (val-meanValue)/stdDevArr
+    stdVal                                     
+
+getSupertrendTransparency(KDEProb) =>
+    newValue = (KDEProb*(supertrend_max_opacity - supertrend_min_opacity)) + supertrend_min_opacity
+    newValue := supertrend_max_opacity - newValue + supertrend_min_opacity
+    newValue
+
+overKDEThreshold(KDEprob) =>
+    if((KDEprob >= activationThreshold))
+        true
+    else if((KDEprob < activationThreshold))
+        false
+
+
+bull = pineDirection < 0 and not na(volume) 
+bear = pineDirection > 0 and not na(volume) 
+
+
+//Finds Estimated Density Value
+//if ((bearishBreak or bullishBreak) and not na(volume))
+if(bull)
+    vol = standardize(buyVolume, volumeOnBullishBreak)
+    if volumeOnBullishBreak.size() > 0
+        volXIndexL = array.binary_search_leftmost(bullishKDE.X, vol)
+        volXIndexR = math.min(array.binary_search_rightmost(bullishKDE.X, vol), bullishKDE.X.size() - 1)
+        nearestIndex = (math.abs(vol - bullishKDE.X.get(volXIndexL)) < math.abs(vol - bullishKDE.X.get(volXIndexR))) ? volXIndexL : volXIndexR
+        if probMode == "Sum"
+            volumeProb := prefixSum(bullishKDE.YSum, 0, nearestIndex)
+if(bear)
+    vol = standardize(sellVolume, volumeOnBearishBreak)
+    if volumeOnBearishBreak.size() > 0
+        volXIndexL = array.binary_search_leftmost(bearishKDE.X, vol )
+        volXIndexR = math.min(array.binary_search_rightmost(bearishKDE.X, vol), bearishKDE.X.size() - 1)
+        nearestIndex = (math.abs(vol - bearishKDE.X.get(volXIndexL)) < math.abs(vol - bearishKDE.X.get(volXIndexR))) ? volXIndexL : volXIndexR
+        if probMode == "Sum"
+            volumeProb := prefixSum(bearishKDE.YSum, 0, nearestIndex)
+//#endregion   
+
+threshold_condition = not activationThresholdEnabled or overKDEThreshold(volumeProb)
+
+
+bull_condition = bullishBreak and threshold_condition
+bear_condition = bearishBreak and threshold_condition
+
+var bool direction = false
+direction := bull_condition ? true : bear_condition ? false : direction[1]
+
+var color trend_color = bearishColor
+trend_color := direction ? bullishColor : not direction ? bearishColor : trend_color[1]
+
+var color supertrend_color = bearishColor
+supertrend_color := direction and bull ? bullishColor : not direction and bear ? bearishColor : color.gray
+
+//Table
+var table table = table.new(position=position.top_right, columns=1, rows=1)
+if ((na(volume) or volume == 0) and ShowErrors)
+    table.cell(table, row=0, column=0, text="⚠️ No Volume Data Available for " + syminfo.tickerid, text_color=color.white, bgcolor=color.red)
+else if(bar_index == last_bar_index and (volumeOnBullishBreak.size() != KDEStep or volumeOnBearishBreak.size() != KDEStep) and ShowErrors)
+    log.info(str.tostring(volumeOnBearishBreak.size()))
+    table.cell(table, row=0, column=0, text="⚠️ Not enough data. There were not enough SuperTrend Signals generated on this chart for the model. Lower bin value or change chart settings. " + syminfo.tickerid, text_color=color.white, bgcolor=color.red)
+else
+    //table.cell(table, row=0, column=0, text = "Relative Volume KDE: "+ str.tostring(volumeProb * 100, "#.#") + "%", text_color = color.white, bgcolor = color.new(color.blue, 60))
+    table.clear(table, 0, 0)
+
+ 
+upTrend = plot(bull ? Pine_Supertrend : na, "Up direction", showSuperTrendLine ? supertrend_color : na, style=plot.style_linebr )
+downTrend = plot(bear ? Pine_Supertrend : na, "Down direction", showSuperTrendLine ? supertrend_color : na, style=plot.style_linebr)
+bodyMiddle = plot(barstate.isfirst ? na : (open + close) / 2, "Body Middle",display = display.none)
+
+fill(bodyMiddle, upTrend, color.new(supertrend_color, showFillColors ? getSupertrendTransparency(volumeProb) : 100), fillgaps = false)
+fill(bodyMiddle, downTrend, color.new(supertrend_color, showFillColors ? getSupertrendTransparency(volumeProb): 100), fillgaps = false)
+
+
+
+plotshape((bull_condition) ? Pine_Supertrend*0.999 : na, "Bullish Arrows", style = shape.arrowup, size = size.normal, location = location.absolute, color = bullishColor, force_overlay = true)
+plotshape((bear_condition) ? Pine_Supertrend*1.001 : na, "Bearish Arrows", style = shape.arrowdown, size = size.normal, location = location.absolute, color = bearishColor, force_overlay = true)
+
+
+alertcondition(bull_condition, "Bullish Trend")
+alertcondition(bear_condition, "Bearish Trend")
+
+txt = ""
+txt := "Vol: " + str.tostring(volumeProb * 100, "#.#") + "%"
+if bull_condition and KDELabelsEnabled
+    label.new(bar_index, y = Pine_Supertrend*0.999, text = txt, yloc = yloc.price, color = color.new(color.blue, 100), style = label.style_label_up, textcolor = textColor, force_overlay = true)
+if bear_condition and KDELabelsEnabled
+    label.new(bar_index, y = Pine_Supertrend*1.001, text = txt, yloc = yloc.price, color = color.new(color.blue, 100), style = label.style_label_down, textcolor = textColor, force_overlay = true)
+
+candleColor = bull ? bullishColor : bear ? bearishColor : na
+
+barcolor(showTrendColor ? trend_color : na)

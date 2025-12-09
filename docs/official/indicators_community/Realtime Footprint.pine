@@ -1,0 +1,470 @@
+//@version=5
+//@author=LucF, @sho akutsu
+indicator("Footprint", "Fp 👣", overlay=true, max_labels_count = 500, max_lines_count = 500, precision = 8)
+
+// ———————————————————— Inputs {
+bool    dummy                       = input.bool(false,         " ========  GENERAL SETTINGS  ========", inline = "a")
+string  profileResetOnTfInput       = input.string("Volume",    "Resets on",                  inline = "00", options = ["Volume", "Range Bar"])
+int     volnumber                   = input.int(1000,           "Total Volume size",          inline = "01", minval = 0)        
+float   rangesize                   = input.float(0.0006,       " /  Range bar size",         inline = "01", minval = 0)
+float   tick                        = input.float(2,            "Ticks per row",              inline = "01", minval = 1)
+int     profileLevelsMaxQtyInput    = input.int(25,             "  Maximum row of Bar",       inline = "01", minval = 1, maxval = 100)
+float   filter                      = input.float(0,            "〚Volume Filter〛  Volume to use >=", inline = "02", minval = 0) 
+int     x                           = input.int(1,              "〚For Calculation and Display〛  Volume Divisor", inline = "03", minval = 1)
+int     profileVolumePrecisionInput = 0//input.int(0,              " Precision of Volume",        inline = "03", minval = 0)
+
+string  fpSizeInput                 = input.string(size.normal, "Footprint Font size",        inline = "04", group = "Main Display", options = [size.small, size.normal, size.large])
+bool    fpInput                     = input.bool(true,          "Footprint     ",             inline = "04b", group = "Main Display")
+bool    tvInput                     = input.bool(false,         "Total   ",                   inline = "04b", group = "Main Display")
+bool    RdltInput                   = input.bool(true,          "Row Delta",                  inline = "04b", group = "Main Display")
+bool    DdltInput                   = input.bool(false,         "Diagonal Delta",             inline = "04b", group = "Main Display")
+bool    profileInput                = input.bool(true,          "Profile (Row Total Vol Block, Row IB Color)", inline = "05", group = "Main Display")
+float   blocksize                   = input.float(20.,          "Volume per Profile Block  ▆", inline = "06", group = "Main Display", minval = 0)
+float   Rib1                        = input.float(3.0,          "Row Imbalance Ratio ⇆",      inline = "06", group = "Main Display", minval = 1) 
+float   Rib2                        = input.float(2.0,          "",                           inline = "06", group = "Main Display", minval = 1) 
+float   Rib3                        = input.float(1.0,          "",                           inline = "06", group = "Main Display", minval = 1) 
+color   BullDeltaColorInput1        = input(#bfff80,            "Delta Bull Colors 🠅🠅",     inline = "07", group = "Main Display")
+color   BullDeltaColorInput2        = input(color.green,        "🠅",                         inline = "07", group = "Main Display")
+color   BullDeltaColorInput3        = input(#00796b,            "",                           inline = "07", group = "Main Display")
+color   BearDeltaColorInput1        = input(#ff8080,            "Delta Bear Colors 🠇🠇",     inline = "08", group = "Main Display")
+color   BearDeltaColorInput2        = input(color.red,          "🠇",                         inline = "08", group = "Main Display")
+color   BearDeltaColorInput3        = input(#b71c1c,            "",                           inline = "08", group = "Main Display")
+color   equalDeltaColorInput        = input(color.gray,         "   Neutral Color =",         inline = "08", group = "Main Display")
+
+string  TotalsSizeInput             = input.string(size.huge,   "Total bar values Font size", inline = "09", group = "Sub Display", options = [size.tiny, size.small, size.normal, size.large, size.huge])
+float   Y                           = input.float(1,            "  Y-axis Spacing",           inline = "09", group = "Sub Display")
+bool    DeltaInput                  = input.bool(true,          "Delta  ",                    inline = "10", group = "Sub Display")
+bool    BoxInput                    = input.bool(true,          "Box Ratio  ",                inline = "10", group = "Sub Display")
+bool    TotalInput                  = input.bool(true,          "Total  ",                    inline = "10", group = "Sub Display")
+bool    COTInput                    = input.bool(true,          "Commitment Of Traders",      inline = "10", group = "Sub Display")
+bool    IBcountInput                = input.bool(true,          "Diagonal Imbalance Count  ", inline = "10b", group = "Sub Display")
+bool    IBmarkInput                 = input.bool(true,          "D IB Mark  ",                inline = "10b", group = "Sub Display")
+bool    ibsInput                    = input.bool(true,          "D IB Stripes",               inline = "10b", group = "Sub Display")
+bool    unfinInput                  = input.bool(true,          "Unfinished Auction  ",       inline = "10c", group = "Sub Display")
+bool    ratiobInput                 = input.bool(true,          "Ratio Bounds  ",             inline = "10c", group = "Sub Display")
+bool    ladderfInput                = input.bool(true,          "Ladder fading Mark",         inline = "10c", group = "Sub Display")
+float   div                         = input.float(0.0001,       "Box Ratio Divisor",          inline = "12", group = "Sub Display", minval=0)
+float   hbr                         = input.float(1.5,          " Heavy Box Ratio Ratio ■",   inline = "12", group = "Sub Display", minval=1)
+float   Dib                         = input.float(2.0,          "Diagonal Imbalance Ratio ⇗⇙", inline = "12", group = "Sub Display", minval = 1) 
+color   DeltaBullColor              = input(color.green,        "Delta Bull Color ⇑",         inline = "13", group = "Sub Display")
+color   DeltaBearColor              = input(color.red,          "Delta Bear Color ⇓",         inline = "13", group = "Sub Display")
+color   DeltaNtColor                = input(color.gray,         " Neutral Color =",           inline = "13", group = "Sub Display")
+color   DivDeltaColor               = input(color.yellow,       "Delta Divergence Color ⇓⇑",  inline = "13", group = "Sub Display")
+
+bool    BarInput                    = input.bool(true,          "Candle  ",                   inline = "14", group = "Candle & POC")
+bool    PocInput                    = input.bool(true,          "POC",                        inline = "14", group = "Candle & POC")
+int     barOffsetInput              = input.int(0,              "       ↔ Offset (in bars)",  inline = "14", group = "Candle & POC")
+int     barwidth                    = input.int(3,              "Candle Width",               inline = "15", group = "Candle & POC", minval = 0)
+int     lw                          = input.int(4,              "  POC Line width",           inline = "15", group = "Candle & POC", minval = 0)
+color   BarUpColor                  = input(color.green,        "UP Bar Color ⤊",             inline = "16", group = "Candle & POC")
+color   BarDnColor                  = input(color.red,          "DOWN Bar Color ⤋",           inline = "16", group = "Candle & POC")
+color   BarNtColor                  = input(color.new(color.gray, 50), " Neutral Bar Color =", inline = "16", group = "Candle & POC")
+color   i_c_pocDiv                  = input.color(color.purple, "POC Divergence Color ⇓⇑",    inline = "17", group = "Candle & POC")
+bool    bgchange                    = input.bool(true,          " Change Background Color",   inline = "17", group = "Candle & POC")
+
+
+// ———————————————————— Global data {
+var bool profileResetOnVOL       = profileResetOnTfInput == "Volume"
+var bool profileResetOnRNG       = profileResetOnTfInput == "Range Bar"
+
+varip float[] rtPrices_          = array.new_float()
+varip float[] rtVolumes_         = array.new_float()
+varip bool[]  rtUps_             = array.new_bool()
+varip float[] _weightedCloses    = array.new_float()
+varip float[] _volumes           = array.new_float()
+
+varip float[] squashedVolumesUp_ = array.new_float()
+varip float[] squashedVolumesDn_ = array.new_float()
+varip float[] BoxRatio_          = array.new_float()
+varip int[]   imblanceR_         = array.new_int()
+varip int[]   imblanceL_         = array.new_int()
+
+var string[] levelStringHeight4_ = array.new_string()
+varip float[] profilePrices_     = array.new_float()
+
+varip int profileBarIndex_       = na
+varip float profileHi_           = low
+varip float profileLo_           = high
+varip float profileOp_           = open
+
+varip bool beginNewProfile_      = true
+varip bool rescaleProfile_       = true
+varip int qtyOfRtUpdates_        = 0
+varip float qtyOfRtVolumes_      = 0.0
+
+varip bool cothi_                = true
+varip bool cotlo_                = true
+
+varip int qtyOfLevels_           = array.size(profilePrices_)
+var string volumePrecision_      = "#" + (profileVolumePrecisionInput == 0 ? "" : ".") + array.join(array.new_string(profileVolumePrecisionInput, "#"))
+var bool[] tickUp                = array.new_bool(1, false)
+
+
+// ———————————————————— Functions {
+// ———————————— bar —————————————
+// ————— Function queues a new element in an array and de-queues its first element..// from "Delta Volume Realtime Action [LucF]
+f_qDq(_array, _val) =>
+    array.push(_array, _val)
+    array.shift(_array)
+
+float op  = profileOp_
+color clr = op > close ? BarDnColor : op < close ? BarUpColor : BarNtColor  
+xx        = profileBarIndex_ + barOffsetInput
+
+var line bb = BarInput ? line.new(na, na, na, na, style=line.style_solid, width=barwidth*3) : na//bar body
+line.set_xy1(bb, xx, op)
+line.set_xy2(bb, xx, close)
+line.set_color(bb, clr)
+
+var line hlb = BarInput ? line.new(na, na, na, na, style=line.style_solid, width=barwidth) : na//bar highest-lowest
+line.set_xy1(hlb, xx, profileLo_)
+line.set_xy2(hlb, xx, profileHi_)
+line.set_color(hlb, BarNtColor)
+
+// ———————————— POC —————————————
+float poc            = array.avg(_weightedCloses) / array.avg(_volumes)
+varip float[] pocp_  = array.new_float(1, poc)
+float pocp           = na
+pocp := array.get(pocp_, 0)
+
+bool pocHigher       = poc > pocp
+bool pocLower        = poc < pocp
+bool pocDiv          = pocHigher and close < op or pocLower and close > op
+color c_poc          = pocHigher ? pocDiv ? i_c_pocDiv : BarUpColor : pocLower ? pocDiv ? i_c_pocDiv : BarDnColor :  BarNtColor
+
+var line rtPoc = PocInput ? line.new(na, na, na, na, style=line.style_dotted, width=lw) : na
+line.set_xy1(rtPoc, xx - 1, poc)
+line.set_xy2(rtPoc, xx + 1, poc)
+line.set_color(rtPoc, c_poc)
+
+bgcolor(pocDiv and bgchange ? color.new(DivDeltaColor, 90) : na, offset = 0, editable = false)
+
+
+// ————————————— reset —————————————
+float totalvol = array.sum(squashedVolumesUp_ ) + array.sum(squashedVolumesDn_ )
+bool volchart  = totalvol >= volnumber
+
+float hlrange  = profileHi_ - profileLo_
+bool rangebar  = hlrange >= rangesize
+
+bool reset = 
+  switch
+    profileResetOnVOL => volchart
+    profileResetOnRNG => rangebar
+    => barstate.isnew
+    
+    
+// ———————————— FOOTPRINT ————————————
+profileInitLevelStrings(simple int maxWidth) =>
+    for qtyOfCharsInLine = 0 to maxWidth//max is 20
+        string lineOfChars4 = array.join(array.new_string(qtyOfCharsInLine, "▆"))
+        array.push(levelStringHeight4_, lineOfChars4)
+
+
+profileRecalcLevels(series float hi, series float lo) =>
+    float profileHeight     = math.abs(hi - lo)
+    int   tickLevels        = int(profileHeight / (syminfo.mintick*tick))
+    int   levels            = math.max(1, profileLevelsMaxQtyInput < tickLevels ? profileLevelsMaxQtyInput : tickLevels)
+    float profileIncrements = profileHeight / levels
+
+    array.clear(profilePrices_)
+    array.clear(squashedVolumesUp_)
+    array.clear(squashedVolumesDn_)
+    array.clear(imblanceR_)
+    array.clear(imblanceL_)
+
+    if levels == 1
+        array.push(profilePrices_, math.avg(hi, lo))
+        array.push(squashedVolumesUp_, 0.0)
+        array.push(squashedVolumesDn_, 0.0)
+        array.push(imblanceR_,       0)
+        array.push(imblanceL_,       0)
+    else
+        for levelNo = 0 to levels - 1
+            array.push(profilePrices_, lo + ((0.5 + levelNo) * profileIncrements))
+            array.push(squashedVolumesUp_, 0.0)
+            array.push(squashedVolumesDn_, 0.0)
+            array.push(imblanceR_,       0)
+            array.push(imblanceL_,       0)
+    levels
+
+
+profileRemovePrevious(series int barIndex) =>
+    while array.size(label.all) > 0
+        label lbl  = array.pop(label.all)
+        int labelX = label.get_x(lbl)
+        if labelX == barIndex
+            label.delete(lbl)
+        else
+            break
+            
+
+
+profileDrawTwoSides(series int[] leftWidths) =>
+    var string formatString = volumePrecision_  
+
+    for levelNo = 0 to qtyOfLevels_ - 1
+        // —————————— Footprint Left side value, Right side value, Profile(total volume bar and total volume), row delta and diagonal delta ————————————
+        float valueDn = array.get(squashedVolumesDn_, levelNo)
+        float valueUp = array.get(squashedVolumesUp_, levelNo)
+        float total   = math.abs(valueDn + valueUp)
+        int lineWidthDn = profileInput ? total >= blocksize*20 ? 20 : total >= blocksize*19 ? 19 : total >= blocksize*18 ? 18 : total >= blocksize*17 ? 17 : total >= blocksize*16 ? 16 : total >= blocksize*15 ? 15 : total >= blocksize*14 ? 14 : total >= blocksize*13 ? 13 : total >= blocksize*12 ? 12 : total >= blocksize*11 ? 11 : total >= blocksize*10 ? 10 : total >= blocksize*9 ? 9 : total >= blocksize*8 ? 8 : total >= blocksize*7 ? 7 : total >= blocksize*6 ? 6 : total >= blocksize*5 ? 5 : total >= blocksize*4 ? 4 : total >= blocksize*3 ? 3 : total >= blocksize*2 ? 2 : total >= blocksize ? 1 : 0 : 0
+        array.set(leftWidths,  levelNo, lineWidthDn)
+
+        float  labelY1       = array.get(profilePrices_, levelNo)
+        string valueStringL  = fpInput ? valueDn != 0 ? valueDn < 10 ? "     " + str.tostring(valueDn, formatString) : valueDn < 100 ? "   " + str.tostring(valueDn, formatString) : " " + str.tostring(valueDn, formatString)  : " 　  " : na
+        string valueStringR  = fpInput ? valueUp != 0 ? valueUp < 10 ? "    " + str.tostring(valueUp, formatString) : valueUp < 100 ? "  " + str.tostring(valueUp, formatString) : str.tostring(valueUp, formatString)  : "      " : na
+        string labelTxtbar   = array.get(levelStringHeight4_, array.get(leftWidths, levelNo)) + " " + (tvInput ? total > 0 ? str.tostring(total, formatString) : "" : "") 
+        color labelColorDelta = (valueDn - valueUp) > 0 ?  ( valueDn >= valueUp*Rib1 ? BearDeltaColorInput1 : valueDn >= valueUp*Rib2 ? BearDeltaColorInput2 : valueDn >= valueUp*Rib3 ? BearDeltaColorInput3 : equalDeltaColorInput)
+          : (valueDn - valueUp) < 0 ? ( valueDn*Rib1 <= valueUp ? BullDeltaColorInput1 : valueDn*Rib2 <= valueUp ? BullDeltaColorInput2 : valueDn*Rib3 <= valueUp ? BullDeltaColorInput3 : equalDeltaColorInput) : equalDeltaColorInput //bear-bull-equal 
+        string rdlt          = RdltInput ? valueUp or valueDn != 0 ? str.tostring(valueUp - valueDn, formatString) : "" : ""
+        string ddlt          = DdltInput ? levelNo != 0 ? array.get(squashedVolumesUp_, levelNo) - array.get(squashedVolumesDn_, levelNo - 1) >= 0 ? " " + "🠅" + " " + str.tostring(array.get(squashedVolumesUp_, levelNo) - array.get(squashedVolumesDn_, levelNo - 1), formatString) : " " + "🠇" + " " + str.tostring(array.get(squashedVolumesUp_, levelNo) - array.get(squashedVolumesDn_, levelNo - 1), formatString) : " " + "D" + " " + str.tostring(array.get(squashedVolumesUp_, levelNo), formatString) : na
+        
+        
+        // —————————— diagonal imbalance mark and count ————————————  
+        bool ibL_            = levelNo < qtyOfLevels_ - 1  ? levelNo : na //　qtyOfLevels_ - 1 is highest , I can't fix of absent lowest (not LevelNo = 0 ?) imbalance mark and count..
+        string ibL           = IBmarkInput ? ibL_ ? array.get(squashedVolumesUp_, levelNo + 1) <  valueDn/Dib ? "  ￣" : "      " : "      " : na
+        int ibcountL         = ibL_ ? array.get(squashedVolumesUp_, levelNo + 1) <  valueDn/Dib ? 1 : 0 : 0
+        array.set(imblanceL_, levelNo,  ibcountL) 
+        
+        bool ibR_            =  levelNo //!= 0 ? levelNo : na   // 0 is lowest
+        string ibR           = IBmarkInput ? ibR_ ? array.get(squashedVolumesDn_, levelNo - 1) <  valueUp/Dib ? "  ￣" : na : na : na
+        int ibcountR         = ibR_ ? array.get(squashedVolumesDn_, levelNo - 1) <  valueUp/Dib ? 1 : 0 : 0
+        array.set(imblanceR_, levelNo,  ibcountR) 
+        
+        // only for lowest DIB
+        bool no0_            = levelNo == 1 ? levelNo : na 
+        string ibLno0        = IBmarkInput ? array.size(squashedVolumesUp_) > 2 ? array.get(squashedVolumesUp_, 1) <  array.get(squashedVolumesDn_, 0)/Dib ? "  ——" : na :na : na
+        int ibcountLNo0      = array.size(squashedVolumesUp_) > 2 ? array.get(squashedVolumesUp_, 1) <  array.get(squashedVolumesDn_, 0)/Dib ? 1 : 0 : 0
+        array.set(imblanceL_, 0,  ibcountLNo0) 
+    
+    　　// —————————— Main Labels (Footprint, Profile and diagonal imbalance mark) ——————————
+        label.new(profileBarIndex_, labelY1, valueStringL + "  " + valueStringR + "  " + labelTxtbar + "  " + rdlt + ddlt + "\n" + ibL + "  " + ibR, xloc.bar_index, yloc.price, color(na), label.style_label_left, labelColorDelta, fpSizeInput, text.align_left)
+        
+        //only lowest left imbalance mark 
+        if no0_ 
+            label.new(profileBarIndex_, array.get(profilePrices_, 0), ibLno0, xloc.bar_index, yloc.price, color(na), label.style_label_left, labelColorDelta, fpSizeInput, text.align_left) 
+      
+      
+        // —————————— unfinished auction ——————————
+        if unfinInput
+            if levelNo == 0 and valueUp > 0 and valueDn > 0 and array.size(squashedVolumesDn_) > 2
+                label.new(profileBarIndex_, array.get(profilePrices_, 0) - syminfo.mintick*tick, "XXXXXXXXXX", xloc.bar_index, yloc.price, color(na), label.style_label_left, DivDeltaColor, fpSizeInput, text.align_left) 
+            if levelNo == qtyOfLevels_ - 1 and valueUp > 0 and valueDn > 0 and array.size(squashedVolumesUp_) > 2
+                label.new(profileBarIndex_, array.get(profilePrices_, qtyOfLevels_ - 1) + syminfo.mintick*tick*2, "XXXXXXXXXX", xloc.bar_index, yloc.price, color(na), label.style_label_left, DivDeltaColor, fpSizeInput, text.align_left) 
+        
+          
+        // —————————— diagonal imbalance stripes ——————————
+        if ibsInput 
+            if levelNo - 1 >= 0 and levelNo + 2 <= qtyOfLevels_ - 1
+                if array.get(squashedVolumesDn_, levelNo - 1) <  valueUp/Dib and array.get(squashedVolumesDn_, levelNo) <  array.get(squashedVolumesUp_, levelNo + 1)/Dib and array.get(squashedVolumesDn_, levelNo + 1) < array.get(squashedVolumesUp_, levelNo + 2)/Dib
+                    label.new(profileBarIndex_, array.get(profilePrices_, levelNo + 2),"              🠅" + "\n              🠅" + "\n              🠅", xloc.bar_index, yloc.price, color(na), label.style_label_left, DeltaBullColor, fpSizeInput, text.align_left)
+            if levelNo - 1 >= 0 and levelNo + 2 <= qtyOfLevels_ - 1
+                if array.get(squashedVolumesDn_, levelNo - 1)/Dib >  valueUp and array.get(squashedVolumesDn_, levelNo)/Dib >  array.get(squashedVolumesUp_, levelNo + 1) and array.get(squashedVolumesDn_, levelNo + 1)/Dib > array.get(squashedVolumesUp_, levelNo + 2)
+                    label.new(profileBarIndex_, array.get(profilePrices_, levelNo - 1), "🠇" + "\n🠇" + "\n🠇", xloc.bar_index, yloc.price, color(na), label.style_label_left, DeltaBearColor, fpSizeInput, text.align_left) 
+
+
+    // ——————————— Total bar values —————————————
+    if TotalInput or DeltaInput or BoxInput 
+        // Delta, Total and Box Ratio
+        float totalDn        = array.sum(squashedVolumesDn_)
+        float totalUp        = array.sum(squashedVolumesUp_)
+        float delta          = totalUp - totalDn
+        float BoxRatio       = (totalUp + totalDn) / (profileHi_ - profileLo_)
+        varip float lastDn   = na
+        varip float lastUp   = na
+        float  labelY5       = profileLo_ - syminfo.mintick*tick*4*Y
+        color  DeltaColor    = totalDn == totalUp ? DeltaNtColor: close > profileOp_ ? totalDn < totalUp ? DeltaBullColor : DivDeltaColor : totalDn > totalUp ? DeltaBearColor : DivDeltaColor 
+        string labelTotal    = TotalInput ? "  "  + "Σ" + str.tostring(totalUp + totalDn, formatString) : na
+        string labelDelta    = DeltaInput ? "  "  + "Δ" + str.tostring(delta, formatString) : na
+        string labelBoxRatio = BoxInput ? BoxRatio < array.sum(BoxRatio_)/array.size(BoxRatio_)*hbr ? "  " + "□" + str.tostring(math.round(BoxRatio*div, 0)) : "  " + "■" + str.tostring(math.round(BoxRatio*div, 0)) : na
+        string labelarrow    = DeltaInput ? (totalUp > lastUp ? " 🠅" : totalDn > lastDn ? " 🠇" : "  ") : na
+
+        label.new(profileBarIndex_, labelY5 , labelDelta + labelBoxRatio + labelTotal  + " " +  " " + labelarrow, xloc.bar_index, yloc.price, color(na), label.style_label_left, DeltaColor, TotalsSizeInput, text.align_left)
+
+        lastDn := totalDn
+        lastUp := totalUp
+        
+         
+    // —————————— ladder fading ————————————
+    if ladderfInput and array.size(squashedVolumesUp_) >= 3
+        //bid/ask type
+        if array.get(squashedVolumesDn_, 0) < array.get(squashedVolumesDn_, 1) and array.get(squashedVolumesDn_, 1) < array.get(squashedVolumesDn_, 2)
+            label.new(profileBarIndex_, profileLo_ - syminfo.mintick*tick*4, "", xloc.bar_index, yloc.price,  DeltaBullColor, label.style_triangleup,  DeltaBullColor, fpSizeInput) 
+        if array.get(squashedVolumesUp_, qtyOfLevels_ - 1) < array.get(squashedVolumesUp_, qtyOfLevels_ - 2) and array.get(squashedVolumesUp_, qtyOfLevels_ - 2) < array.get(squashedVolumesUp_, qtyOfLevels_ - 3)
+            label.new(profileBarIndex_, profileHi_ + syminfo.mintick*tick*4, "", xloc.bar_index, yloc.price,  DeltaBearColor, label.style_triangledown,  DeltaBearColor, fpSizeInput) 
+        //row imbalance type
+        if array.get(squashedVolumesUp_, 0) - array.get(squashedVolumesDn_, 0) > array.get(squashedVolumesUp_, 1) - array.get(squashedVolumesDn_, 1) and array.get(squashedVolumesUp_, 1) - array.get(squashedVolumesDn_, 1) > array.get(squashedVolumesUp_, 2) - array.get(squashedVolumesDn_, 2)
+            label.new(profileBarIndex_, profileLo_ - syminfo.mintick*tick*6, "", xloc.bar_index, yloc.price,  DeltaBullColor, label.style_diamond,  DeltaBullColor, fpSizeInput) 
+        if array.get(squashedVolumesUp_, qtyOfLevels_ - 1) - array.get(squashedVolumesDn_, qtyOfLevels_ - 1) < array.get(squashedVolumesUp_, qtyOfLevels_ - 2) - array.get(squashedVolumesDn_, qtyOfLevels_ - 2) and array.get(squashedVolumesUp_, qtyOfLevels_ - 2) - array.get(squashedVolumesDn_, qtyOfLevels_ - 2) < array.get(squashedVolumesUp_, qtyOfLevels_ - 3) - array.get(squashedVolumesDn_, qtyOfLevels_ - 3)
+            label.new(profileBarIndex_, profileHi_ + syminfo.mintick*tick*6, "", xloc.bar_index, yloc.price,  DeltaBearColor, label.style_diamond,  DeltaBearColor, fpSizeInput)
+
+    
+    // —————————— COT hi low and ratio bounds ————————————  
+    if COTInput 
+        float totalDn       = array.sum(squashedVolumesDn_)
+        float totalUp       = array.sum(squashedVolumesUp_)
+        float delta         = totalUp - totalDn
+        varip float keephi  = 0
+        keephi :=  beginNewProfile_ ? 0 : cothi_ ? delta : keephi
+        float COThi         = delta - keephi
+        float  labelY3      = profileHi_ + syminfo.mintick*tick*3*Y
+        string labelCOThi   = str.tostring(COThi, formatString)
+        color COThiColor    = COThi > 0 ?  DeltaBullColor : COThi < delta ? color.silver : DeltaNtColor
+  
+        varip float keeplo  = 0
+        keeplo :=  beginNewProfile_ ? 0 : cotlo_ ? delta : keeplo
+        float COTlo = delta - keeplo
+        float  labelY4      = profileLo_ -  syminfo.mintick*tick*2*Y
+        string labelCOTlo   = str.tostring(COTlo, formatString) 
+        color COTloColor    = COTlo < 0 ? DeltaBearColor : COTlo > delta ? color.silver : DeltaNtColor
+        
+        // ratio bounds
+        if array.size(squashedVolumesUp_) >= 2 and ratiobInput
+            float ratiohi_ = math.round(array.get(squashedVolumesUp_, qtyOfLevels_ - 2)/array.get(squashedVolumesUp_, qtyOfLevels_ - 1), 1)
+            float ratiolo_ = math.round(array.get(squashedVolumesDn_, 1)/array.get(squashedVolumesDn_, 0), 1)
+            ratiohi = str.tostring(math.round(ratiohi_, 1))
+            ratiolo = str.tostring(math.round(ratiolo_, 1))
+            label.new(profileBarIndex_, labelY3, "  ____" + "\n" + "【" + labelCOThi + "】" + "  " + ratiohi + "\n" + "  ￣￣", xloc.bar_index, yloc.price, color(na), label.style_label_left, COThiColor, TotalsSizeInput, text.align_left)
+            label.new(profileBarIndex_, labelY4, "  ____" + "\n" + "【" + labelCOTlo + "】" + "  " + ratiolo + "\n" + "  ￣￣", xloc.bar_index, yloc.price, color(na), label.style_label_left, COTloColor, TotalsSizeInput, text.align_left)
+        else
+            label.new(profileBarIndex_, labelY3, "  ____" + "\n" + "【" + labelCOThi + "】" + "\n" + "  ￣￣", xloc.bar_index, yloc.price, color(na), label.style_label_left, COThiColor, TotalsSizeInput, text.align_left)
+            label.new(profileBarIndex_, labelY4, "  ____" + "\n" + "【" + labelCOTlo + "】" + "\n" + "  ￣￣", xloc.bar_index, yloc.price, color(na), label.style_label_left, COTloColor, TotalsSizeInput, text.align_left)
+        
+               
+        // —————— alert ——————
+        if dummy and pocDiv and (COThi > 0 or COTlo < 0 or (close > profileOp_ and totalDn > totalUp) or (close < profileOp_ and totalDn < totalUp)) and totalvol/hlrange >= array.sum(BoxRatio_)/array.size(BoxRatio_)*hbr
+            alert = label.new(profileBarIndex_ + 1, close, "🔥🔥🔥🔥" + "\n🔥死闘🔥" + "\n🔥🔥🔥🔥", xloc.bar_index, yloc.price, color(na), label.style_label_left, color.purple, TotalsSizeInput, text.align_center)
+            if barstate.isconfirmed
+                label.delete(alert) 
+        
+                
+    // —————————— diagonal imbalance count ————————————   
+    if IBcountInput
+        float IBR           = array.sum(imblanceR_)
+        float IBL           = array.sum(imblanceL_)
+        string sl           = IBR > IBL ? " ＜ " : IBR < IBL ? " ＞ " : "  =  "
+        float  labelY2      = profileHi_ + syminfo.mintick*tick*5*Y
+        string labelTxtR    = str.tostring(IBR)
+        string labelTxtL    = str.tostring(IBL)
+        color ibColor       = close > profileOp_ ? (IBR > IBL ? DeltaBullColor : IBR == IBL ? DeltaNtColor :  DivDeltaColor) : (IBR < IBL ? DeltaBearColor : IBR == IBL ? DeltaNtColor : DivDeltaColor)
+
+        label.new(profileBarIndex_, labelY2, "  " + labelTxtL + sl + labelTxtR , xloc.bar_index, yloc.price, color(na), label.style_label_left, ibColor, TotalsSizeInput, text.align_center)
+
+
+// —————————————————— update ——————————————————
+getRtUpdate() =>
+    varip bool updUp = false
+    varip float prevClose = open
+    bool flat = close == prevClose
+    updUp := flat ? updUp : close > prevClose
+    prevClose := close
+
+    varip float lastVolume  = volume
+    if barstate.isnew
+        lastVolume  := 0.
+        
+    float newVolume = math.round(((nz(volume) - lastVolume) >= filter ? (nz(volume) - lastVolume) : 0. )*x, 0)//volume filter
+    lastVolume := nz(volume)
+    
+    array.push(rtPrices_,  close)
+    array.push(rtVolumes_, newVolume)
+    array.push(rtUps_,     updUp)
+    array.push(_weightedCloses, close * newVolume)
+    array.push(_volumes, newVolume)
+
+    array.set(tickUp, 0, updUp)
+
+    newVolume
+
+
+squashRtUpdates(series bool profileWasRescaled) =>
+    int rtUpdateNo    = profileWasRescaled ? 0 : qtyOfRtUpdates_ - 1
+
+    int levelToUpdate = 0
+    while rtUpdateNo < qtyOfRtUpdates_
+        priceToSlot = array.get(rtPrices_, rtUpdateNo)
+        if qtyOfLevels_ > 1
+            for levelNo = 0 to qtyOfLevels_ - 1
+                if levelNo < qtyOfLevels_ - 1
+                    float levelToMatch = math.avg(array.get(profilePrices_, levelNo), array.get(profilePrices_, levelNo + 1))
+                    if priceToSlot <= levelToMatch
+                        levelToUpdate := levelNo
+                        break
+                    int(na)
+                else
+                    levelToUpdate := levelNo
+
+        tickWasUp = array.get(rtUps_, rtUpdateNo)
+        
+        squashedVolumes = tickWasUp ? squashedVolumesUp_ : squashedVolumesDn_
+        array.set(squashedVolumes, levelToUpdate, array.get(squashedVolumes, levelToUpdate) + array.get(rtVolumes_, rtUpdateNo))
+
+        rtUpdateNo += 1
+// }
+
+// ———————————————————— Calculations and profile drawing {
+
+// ————— Only once, init array of strings of lengths 0 to `profileLeftMaxWidthInput` which are used as profile lines.
+if barstate.isfirst
+    profileInitLevelStrings(20)//max block number
+
+if barstate.isrealtime
+    varip scriptJustLoaded = true
+    beginNewProfile_ := scriptJustLoaded or (reset and barstate.isnew)
+    rescaleProfile_  := high > profileHi_ or low < profileLo_
+    cothi_ := high > profileHi_ 
+    cotlo_ := low < profileLo_ 
+    bool profileWasRescaled = false
+    if beginNewProfile_
+        profileBarIndex_ := bar_index
+        profileHi_ := high
+        profileLo_ := low
+        profileOp_ := open
+        qtyOfLevels_ := profileRecalcLevels(profileHi_, profileLo_)
+        array.clear(rtPrices_)
+        array.clear(rtVolumes_)
+        array.clear(rtUps_)
+        array.clear(_weightedCloses)
+        array.clear(_volumes)
+        qtyOfRtUpdates_ := 0
+        qtyOfRtVolumes_ := 0.0
+        profileWasRescaled := true
+    else if rescaleProfile_
+        profileHi_ := math.max(high, profileHi_)
+        profileLo_ := math.min(low, profileLo_)
+        qtyOfLevels_ := profileRecalcLevels(profileHi_, profileLo_)
+        profileWasRescaled := true
+
+    qtyOfRtVolumes_ += getRtUpdate()
+    qtyOfRtUpdates_ += 1
+
+    squashRtUpdates(profileWasRescaled)
+
+    int[]   leftWidths   = array.new_int(qtyOfLevels_,   0)
+
+    profileRemovePrevious(profileBarIndex_)
+
+    if not scriptJustLoaded
+        profileDrawTwoSides(leftWidths)
+
+    scriptJustLoaded := false
+
+
+// —————— Realtime bar closes; create final POC
+if barstate.isrealtime and reset and barstate.isconfirmed
+    var line[] pocLines = array.new_line(60)//max number of POC
+    var line[] bbLines  = array.new_line(60)//max number of bar body
+    var line[] hlbLines = array.new_line(60)//max number of hl bar
+    array.set(pocp_, 0, poc)
+    if array.size(BoxRatio_) >= 5//heavy box ratio use 5 length SMA 
+        array.shift(BoxRatio_)
+        array.push(BoxRatio_, totalvol/hlrange)
+    else
+        array.push(BoxRatio_, totalvol/hlrange)
+    // Display elapsed POCs
+    if PocInput
+        line.delete(f_qDq(pocLines, line.new(xx - 1, poc, xx + 1, poc, color=c_poc, style=line.style_dotted, width=lw)))
+    if BarInput 
+        line.delete(f_qDq(bbLines, line.new(x1= xx, y1=op, x2= xx, y2=close, xloc=xloc.bar_index, extend=extend.none, color=clr, style=line.style_solid, width=barwidth*3)))
+        line.delete(f_qDq(hlbLines, line.new(x1= xx, y1=profileLo_, x2= xx, y2=profileHi_, xloc=xloc.bar_index, extend=extend.none, color=BarNtColor, style=line.style_solid, width=barwidth)))

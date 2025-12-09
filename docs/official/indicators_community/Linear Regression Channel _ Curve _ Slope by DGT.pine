@@ -1,0 +1,374 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Linear Regression Channel / Curve / Slope
+//# *                - Volume / Volatility AddOns
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Apr 19, 2021
+//# *  Update     : Apr 22, 2021 : Added option to plot second Linear Regression Channel
+//# *  Update     : Apr 24, 2021 : Added option to plot second Linear Regression Channel based on Higher Timeframe
+//# *  Update     : May 04, 2022 : Label customization options, LRC1-Median LRC2 cross alerts, Pine v5 
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+indicator('Linear Regression Channel / Curve / Slope by DGT', 'LinReg ʙʏ DGT ☼☾', true)
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//
+// Linear Regression Channel / Curve / Slope
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+// ---------------------------------------------------------------------------------------------- //
+// -Inputs -------------------------------------------------------------------------------------- //
+
+tooltip_linreg = 'Linear Regression Channel' + 
+                 '\nBase Line : a line that best fits the prices specified over a user-defined time period (Count). It is calculated using the least squares method'
+tooltip_linreg2 = 'Second Linear Regression Channel\'s User Defined Timeframe option' + 
+                  '\n - When applied the Linear Regression Channel plotting will extend by Count * (Selected Higher Timeframe) / (Current Timeframe)' + 
+                  '\n\n - Limitations' + 
+                  '\n   * May exceed maximum allowed iterations (5000) and result with study error \'the study references too many candles in history (5001)\'' + 
+                  '\n   Solution : reducing the value of count or selecting 4H or 1H is suggested' + 
+                  '\n\n   * Lines are not plotted but lables are present' + 
+                  '\n   Solution : scroll the chart to left till the lines are visable or enable "Shorthen Display when Timeframe Extend Enabled" option' + 
+                  '\n\n   * Applicable on Intraday timeframe selected charts'
+
+group_linReg    = 'Linear Regression Channel Settings'
+
+i_linreg        = input.bool(true, 'LinReg1 ⇨ Count'      , inline='LinReg1', group=group_linReg, tooltip=tooltip_linreg)
+i_linregLength  = input.int(200, '', minval=2, maxval=5000, inline='LinReg1', group=group_linReg)
+i_linregSrc     = input.source(close, '       Source'     , inline='LinReg1', group=group_linReg)
+i_linreg2       = input.bool(true, 'LinReg2 ⇨ Count'      , inline='LinReg2', group=group_linReg)
+i_linregLength2 = input.int(50, '', minval=2, maxval=5000 , inline='LinReg2', group=group_linReg)
+i_linregSrc2    = input.source(close, '       Source'     , inline='LinReg2', group=group_linReg)
+i_useTF         = input.bool(true, 'LinReg2 : Extend to User Defined Timeframe (applicable on intraday charts only)', inline='HTF2', group=group_linReg, tooltip=tooltip_linreg2)
+i_htf_user      = input.string('4H', '', options=['1D', '4H', '1H'], inline='HTF2', group=group_linReg)
+i_shorten       = input.bool(true, 'LinReg2 : Shorthen Display when Timeframe Extend Enabled', inline='SHORT', group=group_linReg)
+i_showLast      = input.int(500, '', minval=200, inline='SHORT', group=group_linReg)
+
+i_extendLines   = input.bool(false, 'Extend Lines       ', inline='Lines', group=group_linReg)
+i_trendColor    = input.bool(false, 'Use Trend Colors'   , inline='Lines', group=group_linReg)
+i_channelLevels = input.string('Levels', 'Level Labels', options=['Levels', 'Levels (Prices)', 'None'], inline='Level', group=group_linReg)
+levelTextSize   = input.string('Small', '', options=['Small', 'Normal'], inline='Level', group=group_linReg)
+levelOffset     = input.int(0, 'Offset', minval = 0                    , inline='Level', group=group_linReg)
+
+// ---------------------------------------------------------------------------------------------- //
+// -Calculations -------------------------------------------------------------------------------- //
+
+// ---------------------------------------------------------------------------------------------- //
+// Linear Regression Channel / Curve (Bands) / Slope
+
+f_calcSlope(_source, _length) =>
+    max_bars_back(_source, 5000)
+
+    if not barstate.islast
+        [float(na), float(na)]
+    else
+        sumX = 0.0
+        sumY = 0.0
+        sumXSqr = 0.0
+        sumXY = 0.0
+
+        for i = 0 to _length - 1
+            val = _source[i]
+            per = i + 1.0
+            sumX += per
+            sumY += val
+            sumXSqr += per * per
+            sumXY += val * per
+            sumXY
+
+        slope = (_length * sumXY - sumX * sumY) / (_length * sumXSqr - sumX * sumX)
+        intercept = sumY / _length - slope * sumX / _length + slope
+
+        [slope, intercept]
+
+f_calcDev(_source, _length, _slope, _intercept) =>
+    stdDevAcc = 0.0
+    periods = _length - 1
+    val = _intercept
+
+    for i = 0 to periods
+        price = _source[i]
+        price -= val
+        stdDevAcc += price * price
+        val += _slope
+        val
+
+    stdDev = math.sqrt(stdDevAcc / periods)
+    stdDev
+
+[slope, intercept] = f_calcSlope(i_linregSrc, i_linregLength)
+stdDev = f_calcDev(i_linregSrc, i_linregLength, slope, intercept)
+startPrice = intercept + slope * (i_linregLength - 1)
+endPrice = intercept
+
+htf_multiplier = i_htf_user == '1H' ? 60 : i_htf_user == '4H' ? 240 : i_htf_user == '1D' ? 1440 : na
+linregLength2  = i_useTF and timeframe.isintraday and htf_multiplier > timeframe.multiplier ? i_linregLength2 * htf_multiplier / timeframe.multiplier : i_linregLength2
+
+[slope2, intercept2] = f_calcSlope(i_linregSrc2, linregLength2)
+stdDev2 = f_calcDev(i_linregSrc2, linregLength2, slope2, intercept2)
+startPrice2 = intercept2 + slope2 * (i_shorten and i_useTF and i_showLast < linregLength2 ? i_showLast : linregLength2 - 1)
+endPrice2 = intercept2
+
+// ---------------------------------------------------------------------------------------------- //
+// -Plotting ------------------------------------------------------------------------------------ //
+
+f_crossingLevel(_curret, _level) =>
+    _level > _curret and _level < _curret[1] or _level < _curret and _level > _curret[1]
+
+f_drawLabel(_index, _price, _txt, _txtColor, _style, _align, _lrc, _tooltip, size) =>
+    var id = label.new(_index, _price, _txt, textcolor=_txtColor, style=_style, textalign=_align, color=#00000000, tooltip=_tooltip, size=size)
+    label.set_xy(id, _index, _price)
+    label.set_textcolor(id, _txtColor)
+    label.set_text(id, i_extendLines ? _txt + '\n\n' : _txt)
+    label.set_tooltip(id, _tooltip)
+
+f_drawLine(_iStart, _pStart, _iEnd, _pEnd, _color, _width, _style, _extend) =>
+    style = _style == 'Solid' ? line.style_solid : _style == 'Dotted' ? line.style_dotted : _style == 'Dashed' ? line.style_dashed : line.style_arrow_right
+
+    var linReg = line.new(_iStart, _pStart, _iEnd, _pEnd, xloc.bar_index, _extend ? extend.right : extend.none, _color, style, _width)
+    line.set_xy1(linReg, _iStart, _pStart)
+    line.set_xy2(linReg, _iEnd, _pEnd)
+    line.set_color(linReg, _color)
+
+processLinRegLevel(_show, _level, _colorL, _widthL, _styleL, _linReg, _which) =>
+    if _show and _linReg
+        pStart = _which ? startPrice : startPrice2
+        pEnd = _which ? endPrice : endPrice2
+        dev = _which ? stdDev : stdDev2
+        length = _which ? i_linregLength : i_shorten and i_useTF and i_showLast < linregLength2 ? i_showLast : linregLength2
+        lrColor = i_trendColor ? pStart > pEnd ? color.red : color.green : _colorL
+
+        f_drawLine(bar_index - length + 1, pStart + _level * dev, bar_index, pEnd + _level * dev, lrColor, _widthL, _styleL, i_extendLines)
+        f_drawLine(bar_index - length + 1, pStart - _level * dev, bar_index, pEnd - _level * dev, lrColor, _widthL, _styleL, i_extendLines)
+
+        lbl = _which ? ' 1ST' : ' 2ND'
+
+        if i_channelLevels != 'None'
+            f_drawLabel(bar_index + levelOffset, pEnd + _level * dev, 'SD ' + str.tostring(_level) + ' R' + lbl + (i_channelLevels == 'Levels (Prices)' ? ' (' + str.tostring(pEnd + _level * dev, format.mintick) + ')': ''), lrColor, label.style_label_left, text.align_left, true, str.tostring(pEnd + _level * dev, format.mintick), levelTextSize == 'Small' ? size.small : size.normal)
+            f_drawLabel(bar_index + levelOffset, pEnd - _level * dev, 'SD ' + str.tostring(_level) + ' S' + lbl + (i_channelLevels == 'Levels (Prices)' ? ' (' + str.tostring(pEnd - _level * dev, format.mintick) + ')': ''), lrColor, label.style_label_left, text.align_left, true, str.tostring(pEnd - _level * dev, format.mintick), levelTextSize == 'Small' ? size.small : size.normal)
+
+            if levelOffset > 9
+                f_drawLine(bar_index + 3, pEnd + _level * dev, bar_index + levelOffset, pEnd + _level * dev, lrColor, 1, 'Arrow', false)
+                f_drawLine(bar_index + 3, pEnd - _level * dev, bar_index + levelOffset, pEnd - _level * dev, lrColor, 1, 'Arrow', false)
+
+        if f_crossingLevel(close, pEnd + _level * dev)
+            alert('LinRegChannel: ' + syminfo.ticker + ' crossing' + lbl + ' Linear Regression Standart Deviation Upper Line ' + str.tostring(_level) + ' : ' + str.tostring(pEnd + _level * dev, format.mintick))
+
+        if f_crossingLevel(close, pEnd - _level * dev)
+            alert('LinRegChannel: ' + syminfo.ticker + ' crossing' + lbl + ' Linear Regression Standart Deviation Lower Line ' + str.tostring(_level) + ' : ' + str.tostring(pEnd - _level * dev, format.mintick))
+
+i_lrcolor_m = input.color(#f44336, 'Linear Regression Line 1      '          , inline='lrLine', group=group_linReg)
+i_lrstyle_m = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='lrLine', group=group_linReg)
+i_lrwidth_m = input.int(3, '', minval=1                                      , inline='lrLine', group=group_linReg)
+
+if i_linreg
+    f_drawLine(bar_index - i_linregLength + 1, startPrice, bar_index, endPrice, i_trendColor ? startPrice > endPrice ? color.red : color.green : i_lrcolor_m, i_lrwidth_m, i_lrstyle_m, i_extendLines)
+
+    if i_channelLevels != 'None'
+        f_drawLabel(bar_index + levelOffset, endPrice, 'LRL 1ST' + (i_channelLevels == 'Levels (Prices)' ? ' (' + str.tostring(endPrice, format.mintick) + ')': ''), i_trendColor ? startPrice > endPrice ? color.red : color.green : i_lrcolor_m, label.style_label_left, text.align_left, true, str.tostring(endPrice, format.mintick), levelTextSize == 'Small' ? size.small : size.normal)
+        
+        if levelOffset > 9
+            f_drawLine(bar_index + 3, endPrice, bar_index + levelOffset, endPrice, i_lrcolor_m, 1, 'Arrow', false)
+
+    if f_crossingLevel(close, endPrice)
+        alert('LinRegChannel: ' + syminfo.ticker + ' crossing 1ST Linear Regression Base Line : ' + str.tostring(endPrice, format.mintick))
+
+i_lrshow_1 = input.bool(true, 'StdDev'             , inline='lrLevel_1', group=group_linReg)
+i_lrvalue_1 = input.float(1., '', minval=0, step=.1, inline='lrLevel_1', group=group_linReg)
+i_lrcolor_1 = input.color(#2196f3, ''              , inline='lrLevel_1', group=group_linReg)
+i_lrstyle_1 = input.string('Dashed', '', options=['Dashed', 'Dotted', 'Solid'], inline='lrLevel_1', group=group_linReg)
+i_lrwidth_1 = input.int(1, '', minval=1            , inline='lrLevel_1', group=group_linReg)
+processLinRegLevel(i_lrshow_1, i_lrvalue_1, i_lrcolor_1, i_lrwidth_1, i_lrstyle_1, i_linreg, true)
+
+i_lrshow_2 = input.bool(true, 'StdDev'             , inline='lrLevel_2', group=group_linReg)
+i_lrvalue_2 = input.float(2., '', minval=1, step=.1, inline='lrLevel_2', group=group_linReg)
+i_lrcolor_2 = input.color(#2196f3, ''              , inline='lrLevel_2', group=group_linReg)
+i_lrstyle_2 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='lrLevel_2', group=group_linReg)
+i_lrwidth_2 = input.int(2, '', minval=1            , inline='lrLevel_2', group=group_linReg)
+processLinRegLevel(i_lrshow_2, i_lrvalue_2, i_lrcolor_2, i_lrwidth_2, i_lrstyle_2, i_linreg, true)
+
+i_lrshow_3 = input.bool(true, 'StdDev'             , inline='lrLevel_3', group=group_linReg)
+i_lrvalue_3 = input.float(3., '', minval=2, step=.1, inline='lrLevel_3', group=group_linReg)
+i_lrcolor_3 = input.color(#2196f3, ''              , inline='lrLevel_3', group=group_linReg)
+i_lrstyle_3 = input.string('Dotted', '', options=['Dashed', 'Dotted', 'Solid'], inline='lrLevel_3', group=group_linReg)
+i_lrwidth_3 = input.int(2, '', minval=1            , inline='lrLevel_3', group=group_linReg)
+processLinRegLevel(i_lrshow_3, i_lrvalue_3, i_lrcolor_3, i_lrwidth_3, i_lrstyle_3, i_linreg, true)
+
+i_2lrcolor_m = input.color(#ff9800, 'Linear Regression Line 2      ', inline='2lrLine', group=group_linReg)
+i_2lrstyle_m = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='2lrLine', group=group_linReg)
+i_2lrwidth_m = input.int(3, '', minval=1, inline='2lrLine', group=group_linReg)
+
+if i_linreg2
+    f_drawLine(bar_index - (i_shorten and i_useTF and i_showLast < linregLength2 ? i_showLast : linregLength2) + 1, startPrice2, bar_index, endPrice2, i_trendColor ? startPrice2 > endPrice2 ? color.red : color.green : i_2lrcolor_m, i_2lrwidth_m, i_2lrstyle_m, i_extendLines)
+
+    if i_channelLevels != 'None'
+        f_drawLabel(bar_index + levelOffset, endPrice2, 'LRL 2ND' + (i_channelLevels == 'Levels (Prices)' ? ' (' + str.tostring(endPrice2, format.mintick) + ')': ''), i_trendColor ? startPrice2 > endPrice2 ? color.red : color.green : i_2lrcolor_m, label.style_label_left, text.align_left, true, str.tostring(endPrice2, format.mintick), levelTextSize == 'Small' ? size.small : size.normal)
+        
+        if levelOffset > 9
+            f_drawLine(bar_index + 3, endPrice2, bar_index + levelOffset, endPrice2, i_2lrcolor_m, 1, 'Arrow', false)
+
+    if f_crossingLevel(close, endPrice2)
+        alert('LinRegChannel: ' + syminfo.ticker + ' crossing 2ND Linear Regression Base Line : ' + str.tostring(endPrice2, format.mintick))
+
+
+i_2lrshow_1 = input.bool(true, 'StdDev', inline='2lrLevel_1', group=group_linReg)
+i_2lrvalue_1 = input.float(1., '', minval=0, step=.1, inline='2lrLevel_1', group=group_linReg)
+i_2lrcolor_1 = input.color(#00bcd4, ''              , inline='2lrLevel_1', group=group_linReg)
+i_2lrstyle_1 = input.string('Dashed', '', options=['Dashed', 'Dotted', 'Solid'], inline='2lrLevel_1', group=group_linReg)
+i_2lrwidth_1 = input.int(1, '', minval=1            , inline='2lrLevel_1', group=group_linReg)
+processLinRegLevel(i_2lrshow_1, i_2lrvalue_1, i_2lrcolor_1, i_2lrwidth_1, i_2lrstyle_1, i_linreg2, false)
+
+i_2lrshow_2 = input.bool(true, 'StdDev'             , inline='2lrLevel_2', group=group_linReg)
+i_2lrvalue_2 = input.float(2., '', minval=1, step=.1, inline='2lrLevel_2', group=group_linReg)
+i_2lrcolor_2 = input.color(#00bcd4, ''              , inline='2lrLevel_2', group=group_linReg)
+i_2lrstyle_2 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='2lrLevel_2', group=group_linReg)
+i_2lrwidth_2 = input.int(2, '', minval=1            , inline='2lrLevel_2', group=group_linReg)
+processLinRegLevel(i_2lrshow_2, i_2lrvalue_2, i_2lrcolor_2, i_2lrwidth_2, i_2lrstyle_2, i_linreg2, false)
+
+i_2lrshow_3 = input.bool(true, 'StdDev'             , inline='2lrLevel_3', group=group_linReg)
+i_2lrvalue_3 = input.float(3., '', minval=2, step=.1, inline='2lrLevel_3', group=group_linReg)
+i_2lrcolor_3 = input.color(#00bcd4, ''              , inline='2lrLevel_3', group=group_linReg)
+i_2lrstyle_3 = input.string('Dotted', '', options=['Dashed', 'Dotted', 'Solid'], inline='2lrLevel_3', group=group_linReg)
+i_2lrwidth_3 = input.int(2, '', minval=1            , inline='2lrLevel_3', group=group_linReg)
+processLinRegLevel(i_2lrshow_3, i_2lrvalue_3, i_2lrcolor_3, i_2lrwidth_3, i_2lrstyle_3, i_linreg2, false)
+
+if i_linreg and i_linreg2
+    if f_crossingLevel(endPrice, endPrice2)
+        alert('LinRegChannel: ' + syminfo.ticker + ' 1ST Linear Regression Base Line crossing 2ND Linear Regression Base Line : ' + str.tostring(endPrice, format.mintick))
+
+    if f_crossingLevel(endPrice, endPrice2 + i_2lrvalue_1 * stdDev2)
+        alert('LinRegChannel: ' + syminfo.ticker + ' 1ST Linear Regression Base Line crossing 2ND Linear Regression Standart Deviation Upper Line ' + str.tostring(i_2lrvalue_1) + ', price : ' + str.tostring(endPrice, format.mintick))
+
+    if f_crossingLevel(endPrice, endPrice2 + i_2lrvalue_2 * stdDev2)
+        alert('LinRegChannel: ' + syminfo.ticker + ' 1ST Linear Regression Base Line crossing 2ND Linear Regression Standart Deviation Upper Line ' + str.tostring(i_2lrvalue_2) + ', price : ' + str.tostring(endPrice, format.mintick))
+
+    if f_crossingLevel(endPrice, endPrice2 + i_2lrvalue_3 * stdDev2)
+        alert('LinRegChannel: ' + syminfo.ticker + ' 1ST Linear Regression Base Line crossing 2ND Linear Regression Standart Deviation Upper Line ' + str.tostring(i_2lrvalue_3) + ', price : ' + str.tostring(endPrice, format.mintick))
+
+    if f_crossingLevel(endPrice, endPrice2 - i_2lrvalue_1 * stdDev2)
+        alert('LinRegChannel: ' + syminfo.ticker + ' 1ST Linear Regression Base Line crossing 2ND Linear Regression Standart Deviation Lower Line ' + str.tostring(i_2lrvalue_1) + ', price : ' + str.tostring(endPrice, format.mintick))
+
+    if f_crossingLevel(endPrice, endPrice2 - i_2lrvalue_2 * stdDev2)
+        alert('LinRegChannel: ' + syminfo.ticker + ' 1ST Linear Regression Base Line crossing 2ND Linear Regression Standart Deviation Lower Line ' + str.tostring(i_2lrvalue_2) + ', price : ' + str.tostring(endPrice, format.mintick))
+
+    if f_crossingLevel(endPrice, endPrice2 - i_2lrvalue_3 * stdDev2)
+        alert('LinRegChannel: ' + syminfo.ticker + ' 1ST Linear Regression Base Line crossing 2ND Linear Regression Standart Deviation Lower Line ' + str.tostring(i_2lrvalue_3) + ', price : ' + str.tostring(endPrice, format.mintick))
+
+
+group_linRegC = 'Linear Regression Curve Settings'
+
+i_showCurve = input.bool(true, 'Linear Regression Curve      |     Length', inline='Curve', group=group_linRegC)
+i_linregCurveL = input.int(50, '', inline='Curve', group=group_linRegC)
+i_lrcolorCurve = input.color(#872323, '', inline='Curve', group=group_linRegC)
+
+i_showCurveBand = input.bool(false, 'Linear Regression Curve Bands           ', inline='Bands', group=group_linRegC)
+i_lrcolorBand1 = input.color(#00897b, '1', inline='Bands', group=group_linRegC)
+i_lrcolorBand2 = input.color(#00897b, '2', inline='Bands', group=group_linRegC)
+i_lrcolorBand3 = input.color(#00897b, '3', inline='Bands', group=group_linRegC)
+i_showCurveBTyp = input.string('StdDev', 'Bands', options=['StdDev', 'ATR'], inline='Bands2', group=group_linRegC)
+i_linregCurveBL = input.int(21, '   StdDev', inline='Bands2', group=group_linRegC)
+i_linregCurveAL = input.int(13, 'ATR', inline='Bands2', group=group_linRegC)
+
+group_linRegS = 'Linear Regression Slope Settings'
+
+i_showSlope = input.bool(false, 'Linear Regression Slope  |  Length', inline='Slope', group=group_linRegS)
+i_linregSlopeL = input.int(5, '', inline='Slope', group=group_linRegS)
+i_lrcolorSlopeU = input.color(color.new(#06bad1, 50), '', inline='Slope', group=group_linRegS)
+i_lrcolorSlopeD = input.color(color.new(#f57f17, 50), '', inline='Slope', group=group_linRegS)
+
+dev = i_showCurveBTyp == 'StdDev' ? ta.stdev(i_linregSrc, i_linregCurveBL) : ta.atr(i_linregCurveAL)
+lrc = ta.linreg(i_linregSrc, i_linregCurveL, 0)
+
+plot(i_showCurve ? lrc : na, 'LRC', i_lrcolorCurve, 3, show_last=3 * i_linregLength)
+plot(i_showCurve and i_showCurveBand ? lrc + 1 * dev : na, 'LRC Band StdDev 1', i_lrcolorBand1, 1, show_last=3 * i_linregLength)
+plot(i_showCurve and i_showCurveBand ? lrc - 1 * dev : na, 'LRC Band StdDev 1', i_lrcolorBand1, 1, show_last=3 * i_linregLength)
+plot(i_showCurve and i_showCurveBand ? lrc + 2 * dev : na, 'LRC Band StdDev 2', i_lrcolorBand2, 1, show_last=3 * i_linregLength)
+plot(i_showCurve and i_showCurveBand ? lrc - 2 * dev : na, 'LRC Band StdDev 2', i_lrcolorBand2, 1, show_last=3 * i_linregLength)
+plot(i_showCurve and i_showCurveBand ? lrc + 3 * dev : na, 'LRC Band StdDev 3', i_lrcolorBand3, 1, show_last=3 * i_linregLength)
+plot(i_showCurve and i_showCurveBand ? lrc - 3 * dev : na, 'LRC Band StdDev 3', i_lrcolorBand3, 1, show_last=3 * i_linregLength)
+
+plotarrow(i_showSlope ? ta.correlation(close, bar_index, i_linregSlopeL) * ta.stdev(close, i_linregSlopeL) / ta.stdev(bar_index, i_linregSlopeL) : na, 'Linear Regression Slope', i_lrcolorSlopeU, i_lrcolorSlopeD, show_last=3 * i_linregLength)
+
+// Linear Regression Channel / Curve (Bands) / Slope
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//
+// Volume / Volatility AddOns
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+// ---------------------------------------------------------------------------------------------- //
+// -Inputs -------------------------------------------------------------------------------------- //
+
+group_vol_vol = 'Volume / Volatility AddOns'
+tooltip_volume_spike_sign_of_exhaustion = 'Moments where\n' + 'huge volume detected : current volume is grater than the product of the theshold value and volume moving average'
+
+tooltip_high_volatility = 'Moments where\n' + 'price range of the current bar is grater than the product of the theshold value and average true range value of defined period'
+
+tooltip_volume_weighted_colored_bars = 'Volume Weighted Colored Bars\n' + 'Colors bars based on the bar\'s volume relative to volume moving average'
+
+// ---------------------------------------------------------------------------------------------- //
+// High Volatility ------------------------------------------------------------------------------ //
+
+i_hATRLb = input.bool(false, '⚡', inline='ATR', group=group_vol_vol, tooltip=tooltip_high_volatility)
+i_weightedATR = ta.atr(input.int(13, 'ATR : Length', inline='ATR', group=group_vol_vol)) * input.float(2.718, '    Multiplier', minval=.1, step=.1, inline='ATR', group=group_vol_vol)
+
+// ---------------------------------------------------------------------------------------------- //
+// Volume Moving Average : Base ----------------------------------------------------------------- //
+
+i_vSMA = ta.sma(nz(volume), input.int(89, 'Volume Moving Average Length', group=group_vol_vol))
+
+// ---------------------------------------------------------------------------------------------- //
+// Volume Spike - Sign of Exhaustion ------------------------------------------------------------ //
+
+i_vSpikeLb = input.bool(false, '🚦', inline='SRS1', group=group_vol_vol, tooltip=tooltip_volume_spike_sign_of_exhaustion)
+i_vSpikeThresh = input.float(4.669, 'Volume Spike Theshold                    ', minval=.1, step=.1, inline='SRS1', group=group_vol_vol)
+
+// ---------------------------------------------------------------------------------------------- //
+// Volume Weighted Colored Bars ----------------------------------------------------------------- //
+
+i_vwcb = input.bool(true, '', inline='VWC', group=group_vol_vol, tooltip=tooltip_volume_weighted_colored_bars)
+i_vwcbHighThresh = input.float(1.618, 'VWCB Thesholds :  High ', minval=1., step=.1, inline='VWC', group=group_vol_vol)
+i_vwcbLowThresh = input.float(0.618, '  Low', minval=.1, step=.1, inline='VWC', group=group_vol_vol)
+
+// ---------------------------------------------------------------------------------------------- //
+// -Calculations and Plotting ------------------------------------------------------------------- //
+
+nzVolume = nz(volume)
+bullCandle = close > open
+bearCandle = close < open
+range_1 = math.abs(high - low)
+
+// ---------------------------------------------------------------------------------------------- //
+// Volume Spike - Sign of Exhaustion ------------------------------------------------------------ //
+
+exhaustVol = nzVolume > i_vSpikeThresh * i_vSMA
+plotchar(i_vSpikeLb and nzVolume ? exhaustVol : na, 'Exhaustion Bar', '🚦', location.abovebar, size=size.tiny, show_last=3 * i_linregLength)
+alertcondition(ta.crossover(nzVolume, i_vSMA * i_vSpikeThresh), 'Volume Spikes', 'sign of exhaustion, huge volume increase detected\n{{exchange}}:{{ticker}}->\nOpen = {{open}}, Current = {{close}},\nTime = {{time}}')
+
+// ---------------------------------------------------------------------------------------------- //
+// High Volatility ------------------------------------------------------------------------------ //
+
+highVolatility = range_1 > i_weightedATR
+plotchar(i_hATRLb ? highVolatility : na, 'High Volatile Bar', '⚡', location.belowbar, size=size.tiny, show_last=3 * i_linregLength)
+alertcondition(ta.crossover(range_1, i_weightedATR), 'High Volatility', 'high volatility detected\n{{exchange}}:{{ticker}}->\nOpen = {{open}}, Current = {{close}},\nTime = {{time}}')
+
+// ---------------------------------------------------------------------------------------------- //
+// Volume Weighted Colored Bars by Kıvanç Özbilgiç ---------------------------------------------- //
+
+vwcbCol = nzVolume > i_vSMA * i_vwcbHighThresh ? bullCandle ? #006400 : #910000 : nzVolume < i_vSMA * i_vwcbLowThresh ? bearCandle ? #FF9800 : #7FFFD4 : na
+
+barcolor(i_vwcb and nzVolume ? vwcbCol : na, title='Volume Weighted Colored Bars', show_last=3 * i_linregLength)
+
+// Voloume / Volatility AddOns
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+var table logo = table.new(position.bottom_right, 1, 1)
+
+if barstate.islast
+    table.cell(logo, 0, 0, '☼☾  ', text_size=size.normal, text_color=color.teal)

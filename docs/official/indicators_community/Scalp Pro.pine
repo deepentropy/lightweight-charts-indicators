@@ -1,0 +1,65 @@
+//@Scalp Pro v.2
+// created by Velly
+//@version=2
+
+study("Scalp Pro",shorttitle="Scalp Pro")
+//scalping indicator by orhanveli
+//strategy("Scalp Pro",shorttitle="Scalp Pro")
+
+
+p = close
+uzunluk1 = input(8,minval=1,title="Fast Line")
+f = (1.414*3.141592653589793238462643)/uzunluk1
+a = exp(-f)
+c2 = 2*a*cos(f)
+c3 = -a*a
+c1 = 1-c2-c3
+ssmooth = c1*(p+p[1])*0.5+c2*nz(ssmooth[1])+c3*nz(ssmooth[2])
+
+uzunluk2 = input(10,minval=1,title="Slow Line")
+f2 = (1.414*3.141592653589793238462643)/uzunluk2
+a2 = exp(-f2)
+c22 = 2*a2*cos(f2)
+c32 = -a2*a2
+c12 = 1-c22-c32
+ssmooth2 = c12*(p+p[1])*0.5+c22*nz(ssmooth2[1])+c32*nz(ssmooth2[2])
+
+macd = (ssmooth - ssmooth2)*10000000
+uzunluk3 = input(8,minval=1,title="Smoothness")
+f3 = (1.414*3.141592653589793238462643)/uzunluk3
+a3 = exp(-f3)
+c23 = 2*a3*cos(f3)
+c33 = -a3*a3
+c13 = 1-c23-c33
+ssmooth3 = c13*(macd+macd[1])*0.5+c23*nz(ssmooth3[1])+c33*nz(ssmooth3[2])
+
+
+
+p1 = plot(macd, color=lime, linewidth=2)
+p2 = plot(ssmooth3, color=yellow, linewidth=1)
+
+
+
+
+
+fill(p1, p2, color=black)
+
+
+buy = crossover (macd,ssmooth3)
+sell = crossunder (macd,ssmooth3)
+
+buySignal =  crossover (macd,ssmooth3)
+sellSignal = crossunder (macd,ssmooth3)
+
+
+alertcondition(buy, title="Alış!", message="Alış Zamanı")
+alertcondition(sell, title="Satış", message="Satış Zamanı")
+  
+  
+  
+plotshape(buy, title = "BUY", text = 'Buy', style = shape.labelup, location = location.belowbar, color = green, textcolor = white, transp = 0, size = size.tiny )
+plotshape(sell, title = "SELL", text = 'Sell', style = shape.labeldown, location = location.abovebar, color = red, textcolor = white, transp = 0, size = size.tiny )
+
+
+
+

@@ -1,0 +1,258 @@
+//@version=4
+//
+study(shorttitle="WT_X", title="Oscilador WaveTrend", overlay=false)
+n1 = input(10, "Longitud Del Canal")
+n2 = input(21, "Periodo Movil")
+reaction_wt  = input(defval=1, title="Reaccion En Cambio De Direccion", minval=1)
+
+nsc = input(53, "Nivel Sobre Compra", minval=0.0)
+nsv = input(-53, "Nivel Sobre Venta", maxval=-0.0)
+
+ventas_en_sobre_compra = input(true, title="Solo Ventas en Sobre Compra")
+compras_en_sobre_venta = input(true, title="Solo Compras en Sobre Venta")
+
+histograma = input(true, title="Ver Histograma")
+senal = input(false, title="Ver Media de Señal")
+barras = input(true, title="Pintar Barras")
+div_reg_al= input(false, title="Ver Divergencias Regulares Alcistas")
+div_reg_ba= input(false, title="Ver Divergencias Regulares Bajistas")
+div_ocu_al= input(false, title="Ver Divergencias Ocultas Alcistas")
+div_ocu_ba= input(false, title="Ver Divergencias Ocultas Bajistas")
+etiquetas= input(true, title="Ver Etiquetas De Divergencias")
+amme= input(false, title="Activar media movil Extra para WT")
+
+nsc1 =  nsc
+nsc2 =  nsc+5
+nsc3 =  nsc+10
+nsc4 =  nsc+15
+nsc5 =  nsc+20
+nsc6 =  nsc+25
+nsc7 =  nsc+30
+nsc8 =  nsc+35
+nsv1 =  nsv-5
+nsv2 =  nsv-10
+nsv3 =  nsv-15
+nsv4 =  nsv-20
+nsv5 =  nsv-25
+nsv6 =  nsv-30
+nsv7 =  nsv-35
+nsv8 =  nsv-40
+
+blanco=#FDFEFE
+negro=#000000
+rojo=#FF0000
+verde=#00FF13
+verde_fuerte=#0AAC00
+verde_1=#00FF00
+celeste=#00D4FF
+celeste_1=#009BBA
+naranja=#FF8B00
+amarillo=#FFFB00
+azul=#0066FF
+rosa=#FF33CC
+
+ap = hlc3 
+esa = ema(ap, n1)
+d = ema(abs(ap - esa), n1)
+ci = (ap - esa) / (0.015 * d)
+tci = ema(ci, n2)
+ 
+wt1 = tci
+wt2 = sma(wt1,4)
+
+direction = 0
+direction := rising(wt1,reaction_wt) ? 1 : falling(wt1,reaction_wt) ? -1 : nz(direction[1])
+cambio_direccion= change(direction,1)
+pcol = direction>0 ? verde_fuerte : direction<0 ? rojo : na
+
+plot(wt1, title='Media WT', color=pcol, linewidth=1, style=plot.style_line, transp=0)
+
+plot(senal ? wt2 : na, style=plot.style_line, color=naranja, linewidth=1, title="Media Señal", transp=0)
+
+plot(0, title='Nivel 0', color=negro, linewidth=1, style=plot.style_line, transp=50)
+
+pnsc1=plot(nsc1, title='Nivel 1 Sobre Compra', color=rojo, linewidth=1, style=plot.style_line, transp=100)
+pnsc2=plot(nsc2, title='Nivel 2 Sobre Compra', color=rojo, linewidth=1, style=plot.style_line, transp=100)
+pnsc3=plot(nsc3, title='Nivel 3 Sobre Compra', color=rojo, linewidth=1, style=plot.style_line, transp=100)
+pnsc4=plot(nsc4, title='Nivel 4 Sobre Compra', color=rojo, linewidth=1, style=plot.style_line, transp=100)
+pnsc5=plot(nsc5, title='Nivel 5 Sobre Compra', color=rojo, linewidth=1, style=plot.style_line, transp=100)
+pnsc6=plot(nsc6, title='Nivel 6 Sobre Compra', color=rojo, linewidth=1, style=plot.style_line, transp=100)
+pnsc7=plot(nsc7, title='Nivel 7 Sobre Compra', color=rojo, linewidth=1, style=plot.style_line, transp=100)
+pnsc8=plot(nsc8, title='Nivel 8 Sobre Compra', color=rojo, linewidth=1, style=plot.style_line, transp=100)
+
+fill(pnsc1, pnsc2, color=rojo, transp=75)
+fill(pnsc2, pnsc3, color=rojo, transp=70)
+fill(pnsc3, pnsc4, color=rojo, transp=65)
+fill(pnsc4, pnsc5, color=rojo, transp=60)
+fill(pnsc5, pnsc6, color=rojo, transp=55)
+fill(pnsc6, pnsc7, color=rojo, transp=50)
+fill(pnsc7, pnsc8, color=rojo, transp=45)
+
+pnsv1=plot(nsv1, title='Nivel 1 Sobre Venta', color=verde, linewidth=1, style=plot.style_line, transp=100)
+pnsv2=plot(nsv2, title='Nivel 2 Sobre Venta', color=verde, linewidth=1, style=plot.style_line, transp=100)
+pnsv3=plot(nsv3, title='Nivel 3 Sobre Venta', color=verde, linewidth=1, style=plot.style_line, transp=100)
+pnsv4=plot(nsv4, title='Nivel 4 Sobre Venta', color=verde, linewidth=1, style=plot.style_line, transp=100)
+pnsv5=plot(nsv5, title='Nivel 5 Sobre Venta', color=verde, linewidth=1, style=plot.style_line, transp=100)
+pnsv6=plot(nsv6, title='Nivel 6 Sobre Venta', color=verde, linewidth=1, style=plot.style_line, transp=100)
+pnsv7=plot(nsv7, title='Nivel 7 Sobre Venta', color=verde, linewidth=1, style=plot.style_line, transp=100)
+pnsv8=plot(nsv8, title='Nivel 8 Sobre Venta', color=verde, linewidth=1, style=plot.style_line, transp=100)
+
+fill(pnsv1, pnsv2, color=verde, transp=75)
+fill(pnsv2, pnsv3, color=verde, transp=70)
+fill(pnsv3, pnsv4, color=verde, transp=65)
+fill(pnsv4, pnsv5, color=verde, transp=60)
+fill(pnsv5, pnsv6, color=verde, transp=55)
+fill(pnsv6, pnsv7, color=verde, transp=50)
+fill(pnsv7, pnsv8, color=verde, transp=45)
+
+midpoint = (nsc + nsv) / 2
+ploff = (nsc - midpoint) / 8
+
+venta = crossunder(wt1, wt2) and wt1 >= nsc and ventas_en_sobre_compra == true
+venta_1 = crossunder(wt1, wt2) and ventas_en_sobre_compra == false
+
+compra = crossover(wt1, wt2) and wt1 <= nsv and compras_en_sobre_venta == true
+compra_1 = crossover(wt1, wt2) and compras_en_sobre_venta == false
+
+plot(venta ? wt2[1] + ploff : na, style=plot.style_circles, color=rojo, linewidth=3, title="Ventas En Sobre Compra", transp=0)
+plot(venta_1 ? wt2[1] + ploff : na, style=plot.style_circles, color=rojo, linewidth=3, title="Todas Las Ventas", transp=0)
+
+plot(compra ? wt2[1] - ploff : na, style=plot.style_circles, color=verde_fuerte, linewidth=3, title="Compras En Sobre Venta", transp=0)
+plot(compra_1 ? wt2[1] - ploff : na, style=plot.style_circles, color=verde_fuerte, linewidth=3, title="Todas Las Compras", transp=0)
+
+plot(histograma ? wt1 - wt2 : na, style=plot.style_area, color=celeste_1, linewidth=1, title="Histograma", transp=80)
+
+barcolor((barras == true and compra == true) or (barras == true and compra_1 == true)  ? verde_1 : na)
+barcolor((barras == true and venta == true) or (barras == true and venta_1 == true)  ? rojo : na)
+
+/////// Divergencias ///////
+
+f_top_fractal(_src)=>_src[4] < _src[2] and _src[3] < _src[2] and _src[2] > _src[1] and _src[2] > _src[0]
+f_bot_fractal(_src)=>_src[4] > _src[2] and _src[3] > _src[2] and _src[2] < _src[1] and _src[2] < _src[0]
+f_fractalize(_src)=>f_top_fractal(_src) ? 1 : f_bot_fractal(_src) ? -1 : 0
+
+fractal_top1 = f_fractalize(wt1) > 0 ? wt1[2] : na
+fractal_bot1 = f_fractalize(wt1) < 0 ? wt1[2] : na
+
+high_prev1  = valuewhen(fractal_top1, wt1[2], 0)[2]
+high_price1 = valuewhen(fractal_top1, high[2], 0)[2]
+low_prev1   = valuewhen(fractal_bot1, wt1[2], 0)[2]
+low_price1  = valuewhen(fractal_bot1, low[2], 0)[2]
+
+regular_bearish_div1 = fractal_top1  and high[2] > high_price1 and wt1[2] < high_prev1 and div_reg_ba == true
+hidden_bearish_div1  = fractal_top1  and high[2] < high_price1 and wt1[2] > high_prev1 and div_ocu_ba == true
+regular_bullish_div1 = fractal_bot1  and low[2]  < low_price1  and wt1[2] > low_prev1 and div_reg_al == true
+hidden_bullish_div1  = fractal_bot1  and low[2]  > low_price1  and wt1[2] < low_prev1 and div_ocu_al == true
+
+col1 = regular_bearish_div1 ? rojo : hidden_bearish_div1 ? rojo : na
+col2 = regular_bullish_div1 ? verde_fuerte : hidden_bullish_div1 ? verde_fuerte  : na
+
+plot(title='Divergencias Bajistas', series = fractal_top1 ? wt1[2] : na, color=col1, linewidth=2, offset=-2, transp=0)
+plot(title='Divergencias Alcistas', series = fractal_bot1 ? wt1[2] : na, color=col2, linewidth=2, offset=-2, transp=0)
+
+plotshape(regular_bearish_div1 and div_reg_ba and etiquetas  ? wt1[1] + ploff*1 : na, title="Divergencia Regular Bajista", text="🐻 R", location=location.absolute, style=shape.labeldown, size=size.tiny, color=rojo, textcolor=blanco,offset=-2, transp=0)
+plotshape(hidden_bearish_div1 and div_ocu_ba and etiquetas  ? wt1[1] + ploff*1 : na, title="Divergencia Oculta Bajista", text="🐻 O", location=location.absolute, style=shape.labeldown, size=size.tiny, color=rojo, textcolor=blanco,offset=-2, transp=0)
+
+plotshape(regular_bullish_div1 and div_reg_al and etiquetas  ? wt1[1] - ploff*1 : na, title="Divergencia Regular Alcista", text="🐂 R", location=location.absolute, style=shape.labelup, size=size.tiny, color=verde_fuerte, textcolor=blanco,offset=-2, transp=0)
+plotshape(hidden_bullish_div1 and div_ocu_al and etiquetas  ? wt1[1] - ploff*1 : na, title="Divergencia Oculta Alcista", text="🐂 O", location=location.absolute, style=shape.labelup, size=size.tiny, color=verde_fuerte, textcolor=blanco,offset=-2, transp=0)
+
+
+//// Media extra aplicada a WT ///
+
+ma_type = input(defval="EMA", title="MA Extra Tipo: ", options=["SMA", "EMA", "WMA", "VWMA", "SMMA", "DEMA", "TEMA", "HullMA", "ZEMA", "TMA", "SSMA"])
+ma_len = input(defval=200, title="MA Extra Periodo", minval=1)
+ma_src = wt1
+reaction = input(defval=1, title="MA Extra Reaccion", minval=1)
+
+// SuperSmoother filter
+// © 2013  John F. Ehlers
+variant_supersmoother(src, len) =>
+    a1 = exp(-1.414 * 3.14159 / len)
+    b1 = 2 * a1 * cos(1.414 * 3.14159 / len)
+    c2 = b1
+    c3 = -a1 * a1
+    c1 = 1 - c2 - c3
+    v9 = 0.0
+    v9 := c1 * (src + nz(src[1])) / 2 + c2 * nz(v9[1]) + c3 * nz(v9[2])
+    v9
+
+variant_smoothed(src, len) =>
+    v5 = 0.0
+    sma_1 = sma(src, len)
+    v5 := na(v5[1]) ? sma_1 : (v5[1] * (len - 1) + src) / len
+    v5
+
+variant_zerolagema(src, len) =>
+    ema1 = ema(src, len)
+    ema2 = ema(ema1, len)
+    v10 = ema1 + ema1 - ema2
+    v10
+
+variant_doubleema(src, len) =>
+    v2 = ema(src, len)
+    v6 = 2 * v2 - ema(v2, len)
+    v6
+
+variant_tripleema(src, len) =>
+    v2 = ema(src, len)
+    v7 = 3 * (v2 - ema(v2, len)) + ema(ema(v2, len), len)
+    v7
+
+variant(type, src, len) =>
+    ema_1 = ema(src, len)
+    wma_1 = wma(src, len)
+    vwma_1 = vwma(src, len)
+    variant_smoothed__1 = variant_smoothed(src, len)
+    variant_doubleema__1 = variant_doubleema(src, len)
+    variant_tripleema__1 = variant_tripleema(src, len)
+    wma_2 = wma(src, len / 2)
+    wma_3 = wma(src, len)
+    wma_4 = wma(2 * wma_2 - wma_3, round(sqrt(len)))
+    variant_supersmoother__1 = variant_supersmoother(src, len)
+    variant_zerolagema__1 = variant_zerolagema(src, len)
+    sma_1 = sma(src, len)
+    sma_2 = sma(sma_1, len)
+    sma_3 = sma(src, len)
+    type == "EMA" ? ema_1 : type == "WMA" ? wma_1 : 
+       type == "VWMA" ? vwma_1 : type == "SMMA" ? variant_smoothed__1 : 
+       type == "DEMA" ? variant_doubleema__1 : type == "TEMA" ? variant_tripleema__1 : 
+       type == "HullMA" ? wma_4 : type == "SSMA" ? variant_supersmoother__1 : 
+       type == "ZEMA" ? variant_zerolagema__1 : type == "TMA" ? sma_2 : sma_3
+
+
+// === Moving Average
+ma_series = variant(ma_type, ma_src, ma_len)
+
+direction_a = 0
+falling_1 = falling(ma_series, reaction)
+direction_a := rising(ma_series, reaction) ? 1 : falling_1 ? -1 : nz(direction_a[1])
+change_direction = change(direction_a, 1)
+
+pcol_a = direction_a > 0 ? #2E8B57 : direction_a < 0 ? #FF4500 : na
+plot(amme?ma_series:na, color=pcol_a, style=plot.style_line, join=true, linewidth=3, transp=10, title="MA PLOT")
+
+/////// Alertas en Español//////
+
+alertcondition(venta,title="Ventas en Sobre Compra")
+alertcondition(venta_1,title="Todas las Ventas")
+
+alertcondition(compra,title="Compras en Sobre Venta")
+alertcondition(compra_1,title="Todas las Compras")
+
+alertcondition(venta or compra,title="Compras/Ventas en Sobre Compra/Venta")
+alertcondition(venta_1 or compra_1,title="Todas las Ventas/Compras")
+
+alertcondition(cambio_direccion,title="Cambio Direccion WT")
+
+/////// Alertas en Ingles //////
+
+alertcondition(venta,title="Overbought Sales")
+alertcondition(venta_1,title="All Sales")
+
+alertcondition(compra,title="Oversold Buys")
+alertcondition(compra_1,title="All Buys")
+
+alertcondition(venta or compra,title="Buys/Sales Overbought/Oversold")
+alertcondition(venta_1 or compra_1,title="All Sales/Buys")
+
+alertcondition(cambio_direccion,title="WT Direction Change")

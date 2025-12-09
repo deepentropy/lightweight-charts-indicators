@@ -1,0 +1,221 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=6
+indicator('Reversal Probability Zone & Levels [LuxAlgo]','LuxAlgo - Reversal Probability Zone & Levels', overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+//---------------------------------------------------------------------------------------------------------------------}
+//CONSTANTS & STRINGS & INPUTS
+//---------------------------------------------------------------------------------------------------------------------{
+GREEN                       = #089981
+RED                         = #F23645
+
+HIGH                        = +1
+LOW                         = -1
+
+DOTTED                      = 'Dotted'
+DASHED                      = 'Dashed'
+SOLID                       = 'Solid'
+
+EM_SPACE                    = ' '
+SPACING2                    = EM_SPACE+EM_SPACE
+SPACING5                    = EM_SPACE+EM_SPACE+EM_SPACE+EM_SPACE+EM_SPACE
+PERCENTILE_GROUP            = SPACING5+'PERCENTILE'+SPACING5+'STYLE'+SPACING5+SPACING2+'COLORS/SIZE'
+STYLE_GROUP                 = 'STYLE'
+
+lengthInput                 = input.int(    20,                 'Swing Length')
+maxPivotsInput              = input.int(    1000,               'Maximum Reversals', minval = 5)
+normalizeDataInput          = input.bool(   false,              'Normalize Data')
+
+percentile25Input           = input.bool(   true,               '',             inline = '25', group = PERCENTILE_GROUP)
+percentile25DataInput       = input.int(    25,                 '',             inline = '25', group = PERCENTILE_GROUP, minval = 10, maxval = 90)
+percentile25StyleInput      = input.string( DOTTED,             '',             inline = '25', group = PERCENTILE_GROUP, options = [DOTTED,DASHED,SOLID])
+percentile25ColorBullInput  = input.color(  color.new(GREEN,30),'',             inline = '25', group = PERCENTILE_GROUP)
+percentile25ColorBearInput  = input.color(  color.new(RED,30),  '',             inline = '25', group = PERCENTILE_GROUP)
+percentile25SizeInput       = input.int(    12,                 '',             inline = '25', group = PERCENTILE_GROUP)
+
+percentile50Input           = input.bool(   true,               '',             inline = '50', group = PERCENTILE_GROUP)
+percentile50DataInput       = input.int(    50,                 '',             inline = '50', group = PERCENTILE_GROUP, minval = 10, maxval = 90)
+percentile50StyleInput      = input.string( DASHED,             '',             inline = '50', group = PERCENTILE_GROUP, options = [DOTTED,DASHED,SOLID])
+percentile50ColorBullInput  = input.color(  color.new(GREEN,30),'',             inline = '50', group = PERCENTILE_GROUP)
+percentile50ColorBearInput  = input.color(  color.new(RED,30),  '',             inline = '50', group = PERCENTILE_GROUP)
+percentile50SizeInput       = input.int(    12,                 '',             inline = '50', group = PERCENTILE_GROUP)
+
+percentile75Input           = input.bool(   true,               '',             inline = '75', group = PERCENTILE_GROUP)
+percentile75DataInput       = input.int(    75,                 '',             inline = '75', group = PERCENTILE_GROUP, minval = 10, maxval = 90)
+percentile75StyleInput      = input.string( DASHED,             '',             inline = '75', group = PERCENTILE_GROUP, options = [DOTTED,DASHED,SOLID])
+percentile75ColorBullInput  = input.color(  color.new(GREEN,30),'',             inline = '75', group = PERCENTILE_GROUP)
+percentile75ColorBearInput  = input.color(  color.new(RED,30),  '',             inline = '75', group = PERCENTILE_GROUP)
+percentile75SizeInput       = input.int(    12,                 '',             inline = '75', group = PERCENTILE_GROUP)
+
+percentile90Input           = input.bool(   true,               '',             inline = '90', group = PERCENTILE_GROUP)
+percentile90DataInput       = input.int(    90,                 '',             inline = '90', group = PERCENTILE_GROUP, minval = 10, maxval = 90)
+percentile90StyleInput      = input.string( SOLID,              '',             inline = '90', group = PERCENTILE_GROUP, options = [DOTTED,DASHED,SOLID])
+percentile90ColorBullInput  = input.color(  color.new(GREEN,30),'',             inline = '90', group = PERCENTILE_GROUP)
+percentile90ColorBearInput  = input.color(  color.new(RED,30),  '',             inline = '90', group = PERCENTILE_GROUP)
+percentile90SizeInput       = input.int(    12,                 '',             inline = '90', group = PERCENTILE_GROUP)
+
+noOverlapInput              = input.bool(   true,               'No Overlapping Zones', group = STYLE_GROUP)
+onlyLastInput               = input.bool(   false,              'Show Only Last Zone',  group = STYLE_GROUP)
+marksInput                  = input.bool(   true,               'Show Marks',           group = STYLE_GROUP)
+bullishColorInput           = input.color(  color.new(GREEN,90),'',                     group = STYLE_GROUP, inline = 'colors')
+bearishColorInput           = input.color(  color.new(RED,90),  '',                     group = STYLE_GROUP, inline = 'colors')
+
+//---------------------------------------------------------------------------------------------------------------------}
+//DATA STRUCTURES & VARIABLES
+//---------------------------------------------------------------------------------------------------------------------{
+type pivots
+    array<float>    prices  = na
+    array<int>      bars    = na
+
+type zone
+    box             b_ox    = na
+    array<label>    l_abels = na
+    array<line>     l_ines  = na
+
+var pivots bullishPivots    = pivots.new(array.new<float>(),array.new<int>())
+var pivots bearishPivots    = pivots.new(array.new<float>(),array.new<int>())
+var zone currentZone        = zone.new(box.new(chart.point.now(high),chart.point.now(low)),array.new<label>(),array.new<line>())
+
+//---------------------------------------------------------------------------------------------------------------------}
+//USER-DEFINED FUNCTIONS
+//---------------------------------------------------------------------------------------------------------------------{
+fetchPivot(int length) =>    
+    var float   pivotPrice      = na
+    var int     pivotBar        = na
+    var int     pivotBias       = na    
+    var float   currentPrice    = close
+    var int     currentBar      = bar_index
+    var int     bias            = na
+    bool        newPivot        = false
+
+    max     = math.max(close, open)
+    min     = math.min(close, open)
+    upper   = ta.highest(max, length)
+    lower   = ta.lowest(min, length)
+
+    bias    := max == upper ? HIGH : min == lower ? LOW : bias
+    
+    if bias != bias[1]
+        newPivot        := true
+        pivotPrice      := currentPrice
+        pivotBar        := currentBar
+        pivotBias       := bias == LOW ? HIGH : LOW        
+        currentPrice    := bias == HIGH ? upper : lower
+        currentBar      := bar_index
+    else
+        currentPrice    := bias == HIGH ? math.max(upper, currentPrice) : math.min(lower, currentPrice)
+        currentBar      := currentPrice != currentPrice[1] ? bar_index : currentBar
+
+    [newPivot,pivotPrice,pivotBar,pivotBias]
+
+fetchData(bool newPivot, float currentPrice, int currentBar) =>
+    var float   lastPrice   = close
+    var int     lastBar     = bar_index
+
+    bullish     = currentPrice > lastPrice
+    priceDelta  = math.abs(currentPrice - lastPrice) / (normalizeDataInput ? lastPrice : 1)
+    barsDelta   = currentBar - lastBar
+   
+    pivots p_ivots = bullish ? bullishPivots : bearishPivots
+
+    if newPivot and barsDelta != 0 and not na(priceDelta)
+        p_ivots.prices.push(priceDelta)
+        p_ivots.bars.push(barsDelta)
+        lastPrice   := currentPrice
+        lastBar     := currentBar
+
+        if p_ivots.prices.size() > maxPivotsInput
+            p_ivots.prices.shift()
+            p_ivots.bars.shift()
+
+lineStyle(string style) =>
+    switch style
+        DOTTED  => line.style_dotted
+        DASHED  => line.style_dashed
+        SOLID   => line.style_solid
+
+plotGrid(bool pivotHigh, float currentPrice, int currentBar, float pricePercentile, int barPercentile, float maxPricesPercentile, int maxBarsPercentile, string tag, string style, color customColor, int size, bool hideLines = false) =>    
+
+    if not hideLines
+        currentZone.l_ines.push(line.new(chart.point.new(na,currentBar, currentPrice + (pivotHigh ? -1 : 1) * (normalizeDataInput ? math.round_to_mintick(currentPrice * pricePercentile) : pricePercentile)),chart.point.new(na,currentBar + maxBarsPercentile,currentPrice + (pivotHigh ? -1 : 1) * (normalizeDataInput ? math.round_to_mintick(currentPrice * pricePercentile) : pricePercentile)),style = style,color = customColor))
+        currentZone.l_ines.push(line.new(chart.point.new(na,currentBar + barPercentile,currentPrice),chart.point.new(na,currentBar + barPercentile,currentPrice + (pivotHigh ? -1 : 1) * (normalizeDataInput ? math.round_to_mintick(currentPrice * maxPricesPercentile) : maxPricesPercentile)),style = style,color = customColor))
+
+    currentZone.l_abels.push(label.new(chart.point.new(na,currentBar + maxBarsPercentile,currentPrice + (pivotHigh ? -1 : 1) * (normalizeDataInput ? math.round_to_mintick(currentPrice * pricePercentile) : pricePercentile)),tag,color = color(na),style = label.style_label_left,size = size, textcolor = customColor))
+    currentZone.l_abels.push(label.new(chart.point.new(na,currentBar + barPercentile,currentPrice),tag,color = color(na),style = pivotHigh ? label.style_label_down : label.style_label_up,size = size, textcolor = customColor))
+
+plotForecast(bool newPivot, float currentPrice, int currentBar, int bias) =>    
+    
+    if newPivot
+        pivotHigh = bias == HIGH
+
+        pivots p_ivots = pivotHigh ? bearishPivots : bullishPivots
+        p_ivots.prices.sort()
+        p_ivots.bars.sort()
+
+        maxPercentile       = math.max(percentile25Input ? percentile25DataInput : 0, percentile50Input ? percentile50DataInput : 0, percentile75Input ? percentile75DataInput : 0, percentile90Input ? percentile90DataInput : 0)
+        maxPricesPercentile = p_ivots.prices.percentile_nearest_rank(maxPercentile)
+        maxBarsPercentile   = p_ivots.bars.percentile_nearest_rank(maxPercentile)
+        
+        if noOverlapInput and not onlyLastInput
+
+            if currentZone.b_ox.get_right() > currentBar
+                currentZone.b_ox.set_right(currentBar)
+            
+            for eachLabel in currentZone.l_abels
+                if eachLabel.get_x() > currentBar
+                    eachLabel.delete()
+            
+            for eachLine in currentZone.l_ines
+                if eachLine.get_x2() > currentBar
+                    eachLine.delete()
+
+        if onlyLastInput
+            currentZone.b_ox.delete()
+
+            for eachLabel in currentZone.l_abels            
+                eachLabel.delete()
+            
+            for eachLine in currentZone.l_ines                
+                eachLine.delete()
+
+        currentZone.b_ox := box.new(chart.point.new(na,currentBar,currentPrice),chart.point.new(na,currentBar + maxBarsPercentile,currentPrice + (pivotHigh ? -1 : 1) * (normalizeDataInput ? math.round_to_mintick(currentPrice * maxPricesPercentile) : maxPricesPercentile)),color(na),bgcolor = pivotHigh ? bearishColorInput : bullishColorInput)
+        currentZone.l_abels.clear()
+        currentZone.l_ines.clear()
+        
+        if percentile25Input
+            pricePercentile = p_ivots.prices.percentile_nearest_rank(percentile25DataInput)
+            barPercentile   = p_ivots.bars.percentile_nearest_rank(percentile25DataInput)            
+            plotGrid(pivotHigh,currentPrice,currentBar,pricePercentile,barPercentile,maxPricesPercentile,maxBarsPercentile, str.tostring(percentile25DataInput) + 'th',lineStyle(percentile25StyleInput),pivotHigh ? percentile25ColorBearInput : percentile25ColorBullInput,percentile25SizeInput)            
+            
+        if percentile50Input
+            pricePercentile = p_ivots.prices.percentile_nearest_rank(percentile50DataInput)
+            barPercentile   = p_ivots.bars.percentile_nearest_rank(percentile50DataInput)
+            plotGrid(pivotHigh,currentPrice,currentBar,pricePercentile,barPercentile,maxPricesPercentile,maxBarsPercentile, str.tostring(percentile50DataInput) + 'th',lineStyle(percentile50StyleInput),pivotHigh ? percentile50ColorBearInput : percentile50ColorBullInput,percentile50SizeInput)
+
+        if percentile75Input
+            pricePercentile = p_ivots.prices.percentile_nearest_rank(percentile75DataInput)
+            barPercentile   = p_ivots.bars.percentile_nearest_rank(percentile75DataInput)            
+            plotGrid(pivotHigh,currentPrice,currentBar,pricePercentile,barPercentile,maxPricesPercentile,maxBarsPercentile, str.tostring(percentile75DataInput) + 'th',lineStyle(percentile75StyleInput),pivotHigh ? percentile75ColorBearInput : percentile75ColorBullInput,percentile75SizeInput)
+
+        if percentile90Input
+            pricePercentile = p_ivots.prices.percentile_nearest_rank(percentile90DataInput)
+            barPercentile   = p_ivots.bars.percentile_nearest_rank(percentile90DataInput)            
+            plotGrid(pivotHigh,currentPrice,currentBar,pricePercentile,barPercentile,maxPricesPercentile,maxBarsPercentile, str.tostring(percentile90DataInput) + 'th',lineStyle(percentile90StyleInput),pivotHigh ? percentile90ColorBearInput : percentile90ColorBullInput,percentile90SizeInput)
+
+plotMarks(bool newPivot, float currentPrice, int currentBar, int bias) =>
+    if marksInput and newPivot
+        label.new(chart.point.new(na,currentBar,currentPrice), '•', color = color(na), textcolor = color.new(chart.fg_color,80),style = bias == HIGH ? label.style_label_down : label.style_label_up, size = 18)        
+ 
+//---------------------------------------------------------------------------------------------------------------------}
+//MUTABLE VARIABLES & EXECUTION
+//---------------------------------------------------------------------------------------------------------------------{
+if barstate.isconfirmed
+    [newPivot,pivotPrice,pivotBar,pivotBias] = fetchPivot(lengthInput)
+
+    fetchData(newPivot, pivotPrice, pivotBar)
+    
+    plotForecast(newPivot,  pivotPrice, pivotBar, pivotBias)
+    
+    plotMarks(newPivot,  pivotPrice, pivotBar, pivotBias)
+
+//---------------------------------------------------------------------------------------------------------------------}

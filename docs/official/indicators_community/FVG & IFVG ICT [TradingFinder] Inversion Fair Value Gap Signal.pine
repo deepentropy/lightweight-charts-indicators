@@ -1,0 +1,94 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TFlab
+//@version=5
+indicator("FVG & IFVG ICT [TradingFinder] Inversion Fair Value Gap Signal" ,'Inversion FVG TFlab', overlay = true, max_bars_back = 5000, max_boxes_count = 500,max_labels_count = 500, max_lines_count = 500 )
+
+//import Libraries
+    //import Order Block Drawing  Library
+import TFlab/OrderBlockDrawing_TradingFinder/3 as Drawing
+    //import FVG  Library
+import TFlab/FVGDetectorLibrary/3 as FVG
+    //import Alert Sender Library
+import TFlab/AlertSenderLibrary_TradingFinder/1 as Alert
+    //import Switching Colors Theme
+import TFlab/Dark_Light_Theme_TradingFinder_Switching_Colors_Library/1 as SC
+//Input
+	//Global Setting
+ShowAllFVG = input.bool(true, 'Show All FVG', group = 'Global Setting')
+ShowAllIFVG = input.bool(true, 'Show All Inversion FVG', group = 'Global Setting')
+FVGVaP = input.int(500, 'FVG & IFVG Validity Period (Bar)' , group = 'Logic Parameter' , maxval = 4998 , minval = 10,
+ tooltip = 'You can set the validity period of each FVG & IFVG based on the number of candles that have passed since the origin of the Order Block.', group = 'Global Setting')
+SCMode = input.string('Light', 'Switching Colors Theme Mode', options = ['Off', 'Light', 'Dark'])
+    //FVG
+PShowDeFVG = input.bool(true, ' Show Bullish FVG', group = 'FVG',inline = 'DFVG')
+PShowSuFVG = input.bool(true, ' Show Bearish FVG', group = 'FVG',inline = 'SFVG')
+OCShowDeFVG = input.color(#4caf4f65, '', group = 'FVG',inline = 'DFVG')
+OCShowSuFVG = input.color(#ff525291, '', group = 'FVG',inline = 'SFVG')
+MLFVG = input.string('50 % OB' , 'Mitigation Level FVG', ['Proximal', '50 % OB', 'Distal'], 
+ tooltip= 'Using this entry, you can determine which level the price reacts to in a FVG.', group = 'FVG')
+
+PShowDeIFVG = input.bool(true, ' Show Bearish Inversion FVG', group = 'Inversion FVG',inline = 'IDFVG')
+PShowSuIFVG = input.bool(true, ' Show Bullish Inversion FVG', group = 'Inversion FVG',inline = 'ISFVG')
+OCShowDeIFVG = input.color(#ff52522f, '', group = 'Inversion FVG',inline = 'IDFVG')
+OCShowSuIFVG = input.color(#4caf4f27, '', group = 'Inversion FVG',inline = 'ISFVG')
+MLIFVG = input.string('50 % OB' , 'Mitigation Level IFVG', ['Proximal', '50 % OB', 'Distal'], 
+ tooltip= 'Using this entry, you can determine which level the price reacts to in a Inversion FVG.', group = 'Inversion FVG')
+
+
+
+PFVGFilter = input.bool(true, 'FVG Filter ............',  group = 'FVG' , inline = 'FVG Filter')
+PFVGFilterType = input.string('Very Defensive', '', 
+ ['Very Aggressive' , 'Aggressive' , 'Defensive' , 'Very Defensive'], group = 'FVG', inline = 'FVG Filter' ,
+ tooltip = 'If it is "On", this filter will filter "FVGs" based on the width of the Zone.'  + 
+ 'From "Very Aggressive" to "Very Defensive" the width of the "FVG" decreases.')
+
+
+AlertName = input.string('FVG & IFVG Inversion [TradingFinder]', 'Alerts Name', group = 'Alert')
+
+Alert_FVG = input.string('On' , 'Alert FVG Mitigation' , ['On', 'Off'], 'If you turn on the Alert FVG Mitigation,' + 
+ 'you can receive alerts and notifications after setting the "Alert".' , group = 'Alert')
+
+Alert_IFVG = input.string('On' , 'Alert Inversion FVG Mitigation' , ['On', 'Off'], 'If you turn on the Alert Inversion FVG Mitigation,' +
+ 'you can receive alerts and notifications after setting the "Alert".' , group = 'Alert')
+
+
+Frequncy = input.string('Once Per Bar' , 'Message Frequency' , ['All', 'Once Per Bar' , 'Per Bar Close'], 'The triggering frequency. Possible values are: All'+ 
+ ' (all function calls trigger the alert), Once Per Bar (the first function call during the bar triggers the alert), ' +  
+ ' Per Bar Close (the function call triggers the alert only when it occurs during the last script iteration of the real-time bar,' +  
+ ' when it closes). The default is alert.freq_once_per_bar.)', group = 'Alert')
+UTC = input.string('UTC' , 'Show Alert time by Time Zone', group = 'Alert')
+MoreInfo = input.string('On', 'Display More Info', ['On', 'Off'], group = 'Alert')
+
+/////////////////////////////////
+///////////////SCT///////////////
+/////////////////////////////////
+
+[CShowDeFVG]  = SC.SwitchingColorMode(OCShowDeFVG , SCMode)
+[CShowSuFVG]  = SC.SwitchingColorMode(OCShowSuFVG , SCMode)
+[CShowDeIFVG] = SC.SwitchingColorMode(OCShowDeIFVG , SCMode)
+[CShowSuIFVG] = SC.SwitchingColorMode(OCShowSuIFVG , SCMode)
+/////////////////////////////////
+///////////////FVG///////////////
+/////////////////////////////////
+
+[DConditionFVG, DDFVG, DPFVG, BarDFVG, SConditionFVG, SDFVG, SPFVG, BarSFVG] = FVG.FVGDetector(PFVGFilter ? 'On' : 'Off', PFVGFilterType, false, false)
+
+
+/////////////////////////////////////
+///////////////Drawing///////////////
+/////////////////////////////////////
+
+    //OUTPUT ==> Alert Trigger
+[Alert_DFVG, Alert_DIFVG] = Drawing.OBDrawing('Demand', DConditionFVG,DDFVG, DPFVG, BarDFVG, true, FVGVaP, MLFVG, MLIFVG, ShowAllFVG, ShowAllIFVG, PShowDeFVG, PShowDeIFVG, CShowDeFVG, CShowDeIFVG)
+[Alert_SFVG, Alert_SIFVG] = Drawing.OBDrawing('Supply', SConditionFVG, SDFVG, SPFVG, BarSFVG, true, FVGVaP, MLFVG, MLIFVG, ShowAllFVG, ShowAllIFVG, PShowSuFVG, PShowSuIFVG, CShowSuFVG, CShowSuIFVG)
+
+
+///////////////////////////////////
+///////////////Alert///////////////
+///////////////////////////////////
+
+Alert.AlertSender(Alert_DFVG  , Alert_FVG, AlertName, 'Bullish', 'Order Block Signal', 'Full' ,Frequncy, UTC, MoreInfo, 'Long Position in Bullish FVG', open, high, low, close,0,0,0, DDFVG , DPFVG)
+Alert.AlertSender(Alert_DIFVG  , Alert_IFVG, AlertName, 'Bearish', 'Order Block Signal', 'Full' ,Frequncy, UTC, MoreInfo, 'Short Position in Bearish IFVG', open, high, low, close,0,0,0, DPFVG  , DDFVG)
+
+Alert.AlertSender(Alert_SFVG  , Alert_FVG, AlertName, 'Bearish', 'Order Block Signal', 'Full' ,Frequncy, UTC, MoreInfo, 'Short Position in Bearish FVG', open, high, low, close,0,0,0, SDFVG , SPFVG)
+Alert.AlertSender(Alert_SIFVG  , Alert_IFVG, AlertName, 'Bullish', 'Order Block Signal', 'Full' ,Frequncy, UTC, MoreInfo, 'Long Position in Bullish IFVG', open, high, low, close,0,0,0, SPFVG  , SDFVG)

@@ -1,0 +1,137 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © sbtnc
+// Created: 2020-01-12
+// Last modified: 2022-02-09
+// version 3.0
+
+// @version=5
+indicator("Daily Weekly Monthly Highs & Lows", "DWM HL", true, max_lines_count=500)
+
+//--------------------------------------------------------------------
+//                             Constants
+//--------------------------------------------------------------------
+
+var DAILY_LINE_STYLE    = line.style_dashed
+var DAILY_LINE_WITDH    = 1
+var WEEKLY_LINE_STYLE   = line.style_dashed
+var WEEKLY_LINE_WIDTH   = 1
+var MONTHLY_LINE_STYLE  = line.style_dashed
+var MONTHLY_LINE_WIDTH  = 1
+
+//--------------------------------------------------------------------
+//                               Inputs
+//--------------------------------------------------------------------
+
+g_indicator             = "Highs & Lows"
+g_style                 = "Style"
+t_heads                 = "Extends previous highs and lows in the future."
+t_gradient              = "Show a color gradient that highlights the recency of highs and lows."
+
+var i_isDailyEnabled    = input     (true,          "Daily",                        inline="Daily",     group=g_indicator)
+var i_dailyColor        = input     (color.green,   "",                             inline="Daily",     group=g_indicator)
+var i_dailyLookback     = input.int (2,             "", 1,                          inline="Daily",     group=g_indicator)
+var i_isWeeklyEnabled   = input     (true,          "Weekly",                       inline="Weekly",    group=g_indicator)
+var i_weeklyColor       = input     (color.orange,  "",                             inline="Weekly",    group=g_indicator)
+var i_weeklyLookback    = input.int (1,             "", 1,                          inline="Weekly",    group=g_indicator)
+var i_isMonthlyEnabled  = input     (true,          "Monthly",                      inline="Monthly",   group=g_indicator)
+var i_monthlyColor      = input     (color.red,     "",                             inline="Monthly",   group=g_indicator)
+var i_monthlyLookback   = input.int (1,             "", 1,                          inline="Monthly",   group=g_indicator)
+var i_areHeadsEnabled   = input     (false,         "Show Projections", t_heads,    inline="Head",      group=g_style)
+var i_rightOffset       = input.int (20,            "", 1,                          inline="Head",      group=g_style)
+var i_hasGradient       = input     (true,          "Show Gradient",    t_gradient,                     group=g_style)
+
+//--------------------------------------------------------------------
+//                        Variables declarations
+//--------------------------------------------------------------------
+
+var a_lastHighs                         = array.new_float(3)
+var a_lastLows                          = array.new_float(3)
+var canShowDaily                        = i_isDailyEnabled and timeframe.isintraday
+var canShowWeekly                       = i_isWeeklyEnabled and (timeframe.isintraday or timeframe.isdaily)
+var canShowMonthly                      = i_isMonthlyEnabled and not timeframe.ismonthly
+
+[dailyTime, dailyHigh, dailyLow, isLastDaily]           = request.security(syminfo.tickerid, 'D', [time, high, low, barstate.islast], lookahead=barmerge.lookahead_on)
+[weeklyTime, weeklyHigh, weeklyLow, isLastWeekly]       = request.security(syminfo.tickerid, 'W', [time, high, low, barstate.islast], lookahead=barmerge.lookahead_on)
+[monthlyTime, monthlyHigh, monthlyLow, isLastMonthly]   = request.security(syminfo.tickerid, 'M', [time, high, low, barstate.islast], lookahead=barmerge.lookahead_on)
+
+hasDailyTimeChanged                     = dailyTime != dailyTime[1]
+hasWeekklyTimeChanged                   = weeklyTime != weeklyTime[1]
+hasMonthlyTimeChanged                   = monthlyTime != monthlyTime[1]
+
+//--------------------------------------------------------------------
+//                              Functions 
+//--------------------------------------------------------------------
+
+f_getRightBarIndex() => bar_index + i_rightOffset
+
+f_draw(bool _isNew, float _h, float _l, int _lookback, color _color, string _style, int _width) =>
+    var line _high  = na
+    var line _low   = na
+    var _highs      = array.new_line()
+    var _lows       = array.new_line()
+    _end            = i_areHeadsEnabled ? f_getRightBarIndex() : bar_index
+    
+    if _isNew
+        line.set_x2(_high, _end)
+        line.set_x2(_low, _end)
+
+        if i_hasGradient
+            _size = array.size(_highs)
+            if _size > 1
+                for i = 0 to _size - 1
+                    _c = color.from_gradient(i, 0, _size - 1, color.new(_color, 100), color.new(_color, 0))
+                    line.set_color(array.get(_highs, i), _c)
+                    line.set_color(array.get(_lows, i), _c)
+
+        _high := line.new(bar_index, _h, bar_index, _h, color=_color, style=_style, width=_width)
+        _low := line.new(bar_index, _l, bar_index, _l, color=_color, style=_style, width=_width)
+        array.push(_highs, _high)
+        array.push(_lows, _low)
+
+        if array.size(_highs) > _lookback + 1
+            line.delete(array.shift(_highs))
+            line.delete(array.shift(_lows))
+
+	if i_areHeadsEnabled and barstate.islast and array.size(_highs) > 1
+		// Avoid updating the last/current high and low 
+		for i = 0 to array.size(_highs) - 2
+			line.set_x2(array.get(_highs, i), f_getRightBarIndex())
+			line.set_x2(array.get(_lows, i), f_getRightBarIndex())
+
+//--------------------------------------------------------------------
+//                                Logic
+//--------------------------------------------------------------------
+
+if canShowDaily and hasDailyTimeChanged and not isLastDaily
+	array.set(a_lastHighs, 0, dailyHigh)
+	array.set(a_lastLows, 0, dailyLow)
+
+if canShowWeekly and hasWeekklyTimeChanged and not isLastWeekly
+	array.set(a_lastHighs, 1, weeklyHigh)
+	array.set(a_lastLows, 1, weeklyLow)
+
+if canShowMonthly and hasMonthlyTimeChanged and not isLastMonthly
+	array.set(a_lastHighs, 2, monthlyHigh)
+	array.set(a_lastLows, 2, monthlyLow)
+
+//--------------------------------------------------------------------
+//                          Plotting & styling
+//--------------------------------------------------------------------
+
+if canShowMonthly
+    f_draw(hasMonthlyTimeChanged, monthlyHigh, monthlyLow, i_monthlyLookback, i_monthlyColor, MONTHLY_LINE_STYLE, MONTHLY_LINE_WIDTH)
+
+if canShowWeekly
+    f_draw(hasWeekklyTimeChanged, weeklyHigh, weeklyLow, i_weeklyLookback, i_weeklyColor, WEEKLY_LINE_STYLE, WEEKLY_LINE_WIDTH)
+
+if canShowDaily
+    f_draw(hasDailyTimeChanged, dailyHigh, dailyLow, i_dailyLookback, i_dailyColor, DAILY_LINE_STYLE, DAILY_LINE_WITDH)
+
+// Plot invisible highs and lows for displaying their last values in `status line`, `scale`, `data window` as well for providing defaults alert conditions
+
+plot(array.get(a_lastHighs, 0), "DH",   color.new(i_dailyColor, 100),   editable=false)
+plot(array.get(a_lastLows, 0),  "DL",   color.new(i_dailyColor, 100),   editable=false)
+plot(array.get(a_lastHighs, 1), "WH",   color.new(i_weeklyColor, 100),  editable=false)
+plot(array.get(a_lastLows, 1),  "WL",   color.new(i_weeklyColor, 100),  editable=false)
+plot(array.get(a_lastHighs, 2), "MH",   color.new(i_monthlyColor, 100), editable=false)
+plot(array.get(a_lastLows, 2),  "ML",   color.new(i_monthlyColor, 100), editable=false)

@@ -1,0 +1,478 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © quantifytools
+
+//@version=5
+indicator("Fair value bands / quantifytools", overlay=true, max_labels_count=500, max_lines_count=500)
+
+
+
+//                      Inputs
+
+//Settings
+groupFair1 = "Fair value basis & bands"
+
+i_btCheck = input.bool(false, "Highlight metric calculations", group=groupFair1, tooltip="Enables lot based coloring and time/volume distribution counters, found in Data Window tab.")
+i_boost = input.float(1, "Threshold band width", group=groupFair1, step=0.10, minval = 0)
+i_bandBoost = input.float(1, "Deviation band width", group=groupFair1, step=0.10, minval = 0)
+i_anchorTf = input.timeframe("1D", "VWAP anchor", group=groupFair1, tooltip="Timeframe to which VWAP is anchored to. Choose VWAP from fair value basis menu to activate.")
+
+i_sourceString = input.string("OHLC4", "", options=["OHLC4", "Open", "High", "Low", "Close", "HL2", "HLC3", "HLCC4"], inline="source", group=groupFair1)
+i_smoothingType = input.string("SMA", "", options=["SMA", "EMA", "HMA", "RMA", "WMA", "VWMA", "Median", "VWAP"], inline="source", group=groupFair1)
+i_length = input.int(20, "", inline="source", group=groupFair1, minval=1)
+
+i_trendMode = input.string("Cross", "", options=["Cross", "Direction"], inline="sourcecross", group=groupFair1)
+i_thresholdUpString = input.string("Low", "▲", options=["OHLC4", "Open", "High", "Low", "Close", "HL2", "HLC3", "HLCC4"], inline="sourcecross", group=groupFair1)
+i_thresholdDownString = input.string("High", "▼", options=["OHLC4", "Open", "High", "Low", "Close", "HL2", "HLC3", "HLCC4"], inline="sourcecross", group=groupFair1)
+
+groupCross = "Crosses"
+
+
+i_crossSrc1 = input.source(high, "Cross", group=groupCross, inline="ucross1")
+i_crossMethod1 = input.string("Above", "", options=["Above", "Below"], inline="ucross1", group=groupCross)
+i_crossRef1 = input.string("+2", "", options=["Off", "+1", "+2", "+3", "-1", "-2", "-3"], inline="ucross1", group=groupCross)
+
+i_crossSrc2 = input.source(low, "Cross", group=groupCross, inline="ucross2")
+i_crossMethod2 = input.string("Below", "", options=["Above", "Below"], inline="ucross2", group=groupCross)
+i_crossRef2 = input.string("-2", "", options=["Off", "+1", "+2", "+3", "-1", "-2", "-3"], inline="ucross2", group=groupCross)
+
+i_crossSrc3 = input.source(close, "Cross", group=groupCross, inline="ucross3")
+i_crossMethod3 = input.string("Above", "", options=["Above", "Below"], inline="ucross3", group=groupCross)
+i_crossRef3 = input.string("Off", "", options=["Off", "+1", "+2", "+3", "-1", "-2", "-3"], inline="ucross3", group=groupCross)
+
+i_crossSrc4 = input.source(close, "Cross", group=groupCross, inline="ucross4")
+i_crossMethod4 = input.string("Above", "", options=["Above", "Below"], inline="ucross4", group=groupCross)
+i_crossRef4 = input.string("Off", "", options=["Off", "+1", "+2", "+3", "-1", "-2", "-3"], inline="ucross4", group=groupCross)
+
+i_crossAboveCol = input.color(color.blue, "Above", group=groupCross, inline="crosses")
+i_crossBelowCol = input.color(color.fuchsia, "Below", group=groupCross, inline="crosses")
+
+
+//Visual elements
+groupVisual = "Visuals"
+
+i_upColorLine = input.color(color.new(color.white, 50), "Fair value basis ▲ / ▼", group=groupVisual, inline="line")
+i_downColorLine = input.color(color.new(color.red, 50), "", group=groupVisual, inline="line")
+
+i_upColorFill = input.color(color.new(color.white, 97), "Threshold band ▲ / ▼", group=groupVisual, inline="fill")
+i_downColorFill = input.color(color.new(color.red, 97), "", group=groupVisual, inline="fill")
+
+extremeDeviationUp = input.color(color.new(color.red, 10), "Deviation hue ▲ / ▼", group=groupVisual, inline="deviation")
+extremeDeviationDown = input.color(color.new(#3c699e, 10), "", group=groupVisual, inline="deviation")
+
+extremeUpColor = input.color(color.new(color.red, 90), "Deviation bands extreme ▲ / ▼", group=groupVisual, inline="band")
+extremeDownColor = input.color(color.new(#205497, 90), "", group=groupVisual, inline="band")
+deviationBandColor = input.color(color.new(color.white, 95), "Deviation bands", group=groupVisual, inline="dev")
+
+groupTable = "Table"
+
+tablePos = input.string("Top right", "Table position", options=["Top right", "Bottom right", "Bottom left", "Top left"], group=groupTable)
+tableSize = input.int(3, "Table size", maxval=5, minval=1, group=groupTable)
+
+//                      Fair value basis
+
+//Converting settings table source string to price source
+stringSrc(source) =>
+
+    src = source == "Open" ? open : source == "High" ? high : 
+     source == "Low" ? low : source == "Close" ? close : source == "HL2" ? hl2 : 
+      source == "HLC3" ? hlc3 : source == "HLC44" ? hlcc4 : ohlc4
+
+i_source = stringSrc(i_sourceString)
+i_thresholdUpSrc = stringSrc(i_thresholdUpString)
+i_thresholdDownSrc = stringSrc(i_thresholdDownString)
+
+//VWAP anchor change
+anchor = timeframe.change(i_anchorTf)
+
+//User defined source and smoothing
+smoothedValue(source, length) =>
+    i_smoothingType == "SMA" ? ta.sma(source, length) : i_smoothingType == "EMA" ? ta.ema(source, length) :
+     i_smoothingType == "HMA" ? ta.hma(source, length) : i_smoothingType == "RMA" ? ta.rma(source, length) : 
+      i_smoothingType == "VWMA" ? ta.vwma(source, length) : i_smoothingType == "Median" ? ta.median(source, length) : 
+     i_smoothingType == "VWAP" ? ta.vwap(source, anchor) : ta.wma(source, length)
+
+
+//Fair value basis 
+fairPriceSmooth = smoothedValue(i_source, i_length) 
+
+//                      Threshold band
+
+//Percentage distance between high/low and fair value basis
+lowSpread = low / fairPriceSmooth
+highSpread = high / fairPriceSmooth
+
+//Calculate low/high deviations from fair value basis
+deviationDown = low < fairPriceSmooth and high > fairPriceSmooth ? lowSpread : na
+deviationUp = low < fairPriceSmooth and high > fairPriceSmooth ? highSpread : na
+
+//Arrays for deviation values
+var deviationUpList = array.new_float(0, 0)
+var deviationDownList = array.new_float(0, 0)
+
+//Array size
+deviationUpSize = array.size(deviationUpList)
+deviationDownSize = array.size(deviationDownList)
+
+//Keeping array sizes fixed
+sizeLimitDev = 1000
+
+if deviationUpSize > sizeLimitDev
+    array.remove(deviationUpList, 0)
+
+if deviationDownSize > sizeLimitDev
+    array.remove(deviationDownList, 0)
+
+//Populating arrays
+array.push(deviationUpList, deviationUp)
+array.push(deviationDownList, deviationDown)
+
+//Median deviations
+medianUpDeviation = array.median(deviationUpList)
+medianDownDeviation = array.median(deviationDownList) 
+
+//Defining threshold band based on median deviations
+upperBand = fairPriceSmooth * medianUpDeviation
+lowerBand = fairPriceSmooth * medianDownDeviation
+
+//Calculating band spread from fair value basis
+bandUpSpread = upperBand - fairPriceSmooth
+bandDownSpread = fairPriceSmooth - lowerBand
+
+//Threshold band
+upperBandBoosted = fairPriceSmooth + (bandUpSpread * i_boost)
+lowerBandBoosted = fairPriceSmooth - (bandDownSpread * i_boost)
+
+
+//                      Fair value deviation bands
+
+//Switch for trend logic
+var int dirSwitch = 0
+
+//Trend rules up/down
+trendRuleUp = i_trendMode == "Cross" ? i_thresholdUpSrc > upperBandBoosted : fairPriceSmooth > fairPriceSmooth[1] 
+trendRuleDown = i_trendMode == "Cross" ? i_thresholdDownSrc < lowerBandBoosted  : fairPriceSmooth < fairPriceSmooth[1] 
+
+//Trend up/down switch as per user defined rules
+if trendRuleDown 
+    dirSwitch := -1
+else
+    if trendRuleUp 
+        dirSwitch := 1
+
+//Percentage spread between fair value basis and OHLC4
+ohlcSpread = ohlc4 / fairPriceSmooth
+
+//Arrays for spread pivots
+var pivotUps = array.new_float(0, 0)
+var pivotDowns = array.new_float(0, 0)
+
+//Array size
+pivotUpsSize = array.size(pivotUps)
+pivotDownsSize = array.size(pivotDowns)
+
+//Keeping array sizes fixed
+sizeLimitBand = 2000
+
+if array.size(pivotUps) > sizeLimitBand
+    array.remove(pivotUps, 0)
+
+if array.size(pivotDowns) > sizeLimitBand
+    array.remove(pivotDowns, 0)
+
+//Spread pivots
+pivotUp = ta.pivothigh(ohlcSpread, 5, 5)
+pivotDown = ta.pivotlow(ohlcSpread, 5, 5)
+
+//Populating arrays. To exclude insignficant pivots, arrays are populated only when price is sufficently far away from the mean.
+if low > upperBand 
+    array.push(pivotUps, pivotUp)
+else
+    if high < lowerBand 
+        array.push(pivotDowns, pivotDown)  
+
+//Calculating median pivots from arrays
+medianPivotUp = array.median(pivotUps)
+medianPivotDown = array.median(pivotDowns)
+
+//Pivot bands 1x median
+pivotBandUpBase = fairPriceSmooth * (medianPivotUp)
+pivotBandDownBase = fairPriceSmooth * (medianPivotDown)
+
+//Spread between pivot band and fair value basis
+pBandUpSpread = (pivotBandUpBase - fairPriceSmooth) * i_bandBoost
+pBandDownSpread = (fairPriceSmooth - pivotBandDownBase) * i_bandBoost
+
+//Pivot bands 1x median
+pivotBandUp = fairPriceSmooth + pBandUpSpread
+pivotBandDown = fairPriceSmooth - pBandDownSpread
+
+//Pivot bands 2x median
+pivotBandUp2 = pivotBandUp + pBandUpSpread
+pivotBandDown2 = pivotBandDown - pBandDownSpread
+
+//Pivot bands 3x median
+pivotBandUp3 = pivotBandUp2 + pBandUpSpread
+pivotBandDown3 = pivotBandDown2 - pBandDownSpread
+
+
+//                      Metrics
+
+//Volume relative to volume moving average (SMA 20)
+volSma = ta.sma(volume, 20)
+volMultiplier = na(volSma) ? 0 : volume / volSma
+
+//Defining fair value deviation lots
+abovePos2 = (i_source > pivotBandUp2)
+betweenPos1AndPos2 = (i_source > pivotBandUp) and (i_source <= pivotBandUp2)
+betweenMidAndPos1 = (i_source > fairPriceSmooth) and (i_source <= pivotBandUp)
+betweenMidAndNeg1 = (i_source < fairPriceSmooth) and (i_source >= pivotBandDown)
+betweenNeg1AndNeg2 = (i_source < pivotBandDown)  and (i_source >= pivotBandDown2)
+belowNeg2 = (i_source < pivotBandDown2)
+
+//Counters for fair value deviation lots
+var int abovePos2Count = 0
+var float abovePos2Vol = 0
+
+var int betweenPos1AndPos2Count = 0
+var float betweenPos1AndPos2Vol = 0
+
+var int betweenMidAndPos1Count  = 0
+var float betweenMidAndPos1Vol = 0
+
+var int betweenMidAndNeg1Count  = 0
+var float betweenMidAndNeg1Vol  = 0
+
+var int betweenNeg1AndNeg2Count  = 0
+var float betweenNeg1AndNeg2Vol  = 0
+
+var int belowNeg2Count  = 0
+var float belowNeg2Vol  = 0
+
+//Populating counters 
+if abovePos2
+    abovePos2Count += 1
+    abovePos2Vol += volMultiplier
+
+if betweenPos1AndPos2
+    betweenPos1AndPos2Count += 1
+    betweenPos1AndPos2Vol += volMultiplier
+
+if betweenMidAndPos1
+    betweenMidAndPos1Count += 1
+    betweenMidAndPos1Vol += volMultiplier
+
+if betweenMidAndNeg1
+    betweenMidAndNeg1Count += 1
+    betweenMidAndNeg1Vol += volMultiplier
+
+if betweenNeg1AndNeg2
+    betweenNeg1AndNeg2Count += 1
+    betweenNeg1AndNeg2Vol += volMultiplier
+
+if belowNeg2
+    belowNeg2Count += 1
+    belowNeg2Vol += volMultiplier
+
+//All counts combined
+allCounts = belowNeg2Count + betweenPos1AndPos2Count + betweenMidAndPos1Count + betweenMidAndNeg1Count + betweenNeg1AndNeg2Count + abovePos2Count
+
+//Time and volume distribution percentages 
+above2PosPerc = math.round(abovePos2Count / allCounts, 3) * 100
+above2PosPercVol = math.round(abovePos2Vol / abovePos2Count, 2) 
+
+above1PosPerc = math.round(betweenPos1AndPos2Count / allCounts, 2) * 100
+above1PosPercVol = math.round(betweenPos1AndPos2Vol / betweenPos1AndPos2Count, 2) 
+
+aboveMidPosPerc = math.round(betweenMidAndPos1Count / allCounts, 2) * 100
+aboveMidPosPercVol = math.round(betweenMidAndPos1Vol / betweenMidAndPos1Count, 2)
+
+belowMidNegPerc = math.round(betweenMidAndNeg1Count / allCounts, 2) * 100
+belowMidNegPercVol = math.round(betweenMidAndNeg1Vol / betweenMidAndNeg1Count, 2)
+
+below1NegPerc = math.round(betweenNeg1AndNeg2Count / allCounts, 2) * 100
+below1NegPercVol = math.round(betweenNeg1AndNeg2Vol / betweenNeg1AndNeg2Count, 2)
+
+below2NegPerc = math.round(belowNeg2Count / allCounts, 3) * 100
+below2NegPercVol = math.round(belowNeg2Vol / belowNeg2Count, 2)
+
+
+//                     Table
+
+//Dividers
+n = "\n"
+l = "⎯⎯"
+vl = "｜"
+
+//Length text. If using VWAP, plot VWAP anchor timeframe in hours.
+lengthText = i_smoothingType == "VWAP" ? str.tostring(timeframe.in_seconds(i_anchorTf) / 3600) + "H" : str.tostring(i_length)
+
+//Settings texts
+settingsText = "Settings" + n + "⎯⎯⎯⎯⎯⎯⎯⎯⎯"  + n + i_sourceString + vl + i_smoothingType + vl + lengthText + n +
+ (i_trendMode == "Cross" ? "Cross" + vl + "▲ " + i_thresholdUpString + vl +  "▼ " + i_thresholdDownString : "Direction") + n +
+  "Mid: " + str.tostring(i_boost) + vl + "Out: " + str.tostring(i_bandBoost) 
+
+//Table position and size
+tablePosition = tablePos == "Top right" ? position.top_right : tablePos == "Bottom right" ? position.bottom_right : tablePos == "Bottom left" ? position.bottom_left : position.top_left
+tableTextSize = tableSize == 1 ? size.tiny : tableSize == 2 ? size.small : tableSize == 3 ? size.normal : tableSize == 4 ? size.huge : size.large
+
+//Initializing table
+var metricTable = table.new(position = tablePosition, columns = 50, rows = 50, bgcolor = color.new(color.black, 80), border_width = 3, border_color=color.rgb(23, 23, 23))
+
+//Populating table
+table.cell(table_id = metricTable, column = 1, row = 0, text = "Position" + n + "⎯⎯⎯⎯" + n  + "Time" + n + "⎯⎯⎯⎯" + n + "Volume", text_color=color.white, text_halign = text.align_left, text_size=tableTextSize)
+table.cell(table_id = metricTable, column = 2, row = 0, text = "+3" + n + l + n + str.tostring(above2PosPerc) + "%" + n + l + n + str.tostring(above2PosPercVol) + "x" , text_color=color.white, text_halign = text.align_center, bgcolor=color.new(color.red, 70), text_size=tableTextSize)
+table.cell(table_id = metricTable, column = 3, row = 0, text = "+2"  + n + l + n  + str.tostring(above1PosPerc) + "%" + n + l + n + str.tostring(above1PosPercVol) + "x", text_color=color.white, text_halign = text.align_center, bgcolor=color.new(color.red, 90), text_size=tableTextSize)
+table.cell(table_id = metricTable, column = 4, row = 0, text = "+1" + n + l + n  + str.tostring(aboveMidPosPerc) + "%" + n + l + n + str.tostring(aboveMidPosPercVol) + "x", text_color=color.white, text_halign = text.align_center, bgcolor=color.new(color.gray, 80), text_size=tableTextSize)
+table.cell(table_id = metricTable, column = 6, row = 0, text = "-1 " + n + l + n  + str.tostring(belowMidNegPerc) + "%" + n + l + n + str.tostring(belowMidNegPercVol) + "x", text_color=color.white, text_halign = text.align_center, bgcolor=color.new(color.gray, 80), text_size=tableTextSize)
+table.cell(table_id = metricTable, column = 7, row = 0, text =  "-2" + n + l + n  + str.tostring(below1NegPerc) + "%" + n + l + n + str.tostring(below1NegPercVol) + "x", text_color=color.white, text_halign = text.align_center, bgcolor=color.new(color.blue, 90), text_size=tableTextSize)
+table.cell(table_id = metricTable, column = 8, row = 0, text = "-3" + n + l + n  + str.tostring(below2NegPerc) + "%" + n + l + n + str.tostring(below2NegPercVol) + "x", text_color=color.white, text_halign = text.align_center, bgcolor=color.new(color.blue, 70), text_size=tableTextSize)
+
+table.cell(table_id = metricTable, column = 10, row = 0, text = settingsText, text_color=color.white, text_halign = text.align_left, text_valign = text.align_top, bgcolor=color.new(#100e48, 80), text_size=tableTextSize)
+
+
+//                     Plots
+
+//Colors
+midColorLine = dirSwitch == 1 ? i_upColorLine : i_downColorLine
+midColorBand = dirSwitch == 1 ? i_upColorFill : i_downColorFill
+deviationColor = dirSwitch == 1 ? extremeDeviationUp : extremeDeviationDown
+extremeUpFill = extremeUpColor
+extremeDownFill = extremeDownColor
+
+//Plots
+pOhlc = plot(ohlc4, "OHLC4", color=color.new(color.white, 100), display=display.all - display.status_line)
+pUpper = plot(upperBandBoosted, "Threshold band up", color=color.new(color.white, 100), style=plot.style_linebr, display=display.all - display.status_line)
+pLower = plot(lowerBandBoosted, "Threshold band down", color=color.new(color.white, 100), style=plot.style_linebr, display=display.all - display.status_line)
+pMid = plot(fairPriceSmooth, "Fair value basis", color=midColorLine, linewidth=1, display=display.all - display.status_line)
+
+p1U = plot(pivotBandUp, "Fair value deviation band up 1x", color=deviationBandColor, display=display.all - display.status_line)
+p1D = plot(pivotBandDown, "Fair value deviation band down 1x", color=deviationBandColor, display=display.all - display.status_line)
+
+p2U = plot(pivotBandUp2, "Fair value deviation band up 2x", color=deviationBandColor, display=display.all - display.status_line)
+p2D = plot(pivotBandDown2, "Fair value deviation band down 2x", color=deviationBandColor, display=display.all - display.status_line)
+
+p3U = plot(pivotBandUp3, "Fair value deviation band up 3x", color=deviationBandColor, display=display.all - display.status_line)
+p3D = plot(pivotBandDown3, "Fair value deviation band down 3x", color=deviationBandColor, display=display.all - display.status_line)
+
+
+//Fills
+fill(p3U, p2U, color= extremeUpFill, title="Extreme fair value deviation band up fill")
+fill(p3D, p2D, color= extremeDownFill, title="Extreme fair value deviation band down fill")
+
+fill(pOhlc, pLower, pivotBandDown3, lowerBandBoosted, extremeDeviationDown, color.new(color.gray, 100), title="Extreme fair value deviation up hue fill")
+fill(pOhlc, pUpper, pivotBandUp3, upperBandBoosted, extremeDeviationUp, color.new(color.gray, 100), title="Extreme fair value deviation down hue fill")
+fill(pUpper, pLower, color= midColorBand, title="Threshold band fill")
+
+
+//                     Metric plots
+
+barcolor(i_btCheck and belowNeg2 ? color.blue : i_btCheck and betweenNeg1AndNeg2 ? color.rgb(124, 147, 239) : 
+ i_btCheck and betweenMidAndNeg1 ? color.aqua : i_btCheck and betweenMidAndPos1 ? color.yellow : 
+  i_btCheck and betweenPos1AndPos2 ? color.orange : i_btCheck and abovePos2 ? color.red : na)
+
+plot(i_btCheck ? volMultiplier : na, title="Relative volume", color=color.new(color.fuchsia, 100), display=display.data_window)
+plot(i_btCheck ? allCounts : na, title="All time counts", color=color.new(color.fuchsia, 100), display=display.data_window)
+
+plot(i_btCheck ? abovePos2Count : na, title="+3 time count", color=color.new(color.red, 100), display=display.data_window)
+plot(i_btCheck ? abovePos2Vol : na, title="+3 volume count cumulative", color=color.new(color.red, 100), display=display.data_window)
+plot(i_btCheck ? abovePos2Vol / abovePos2Count : na, title="+3 volume count average", color=color.new(color.red, 100), display=display.data_window)
+
+plot(i_btCheck ? betweenPos1AndPos2Count : na, title="+2 time count", color=color.new(color.orange, 100), display=display.data_window)
+plot(i_btCheck ? betweenPos1AndPos2Vol : na, title="+2 volume count cumulative", color=color.new(color.orange, 100), display=display.data_window)
+plot(i_btCheck ? betweenPos1AndPos2Vol / betweenPos1AndPos2Count : na, title="+2 volume count average", color=color.new(color.orange, 100), display=display.data_window)
+
+plot(i_btCheck ? betweenMidAndPos1Count : na, title="+1 time count", color=color.new(color.yellow, 100), display=display.data_window)
+plot(i_btCheck ? betweenMidAndPos1Vol : na, title="+1 volume count cumulative", color=color.new(color.yellow, 100), display=display.data_window)
+plot(i_btCheck ? betweenMidAndPos1Vol / betweenMidAndPos1Count : na, title="+1 volume count average", color=color.new(color.yellow, 100), display=display.data_window)
+
+plot(i_btCheck ? betweenMidAndNeg1Count : na, title="-1 time count", color=color.new(color.aqua, 100), display=display.data_window)
+plot(i_btCheck ? betweenMidAndNeg1Vol : na, title="-1 volume count cumulative", color=color.new(color.aqua, 100), display=display.data_window)
+plot(i_btCheck ? betweenMidAndNeg1Vol / betweenMidAndNeg1Count : na, title="-1 volume count average", color=color.new(color.aqua, 100), display=display.data_window)
+
+plot(i_btCheck ? betweenNeg1AndNeg2Count : na, title="-2 time count", color=color.new(color.rgb(124, 147, 239) , 100), display=display.data_window)
+plot(i_btCheck ? betweenNeg1AndNeg2Vol : na, title="-2 volume count cumulative", color=color.new(color.rgb(124, 147, 239) , 100), display=display.data_window)
+plot(i_btCheck ? betweenNeg1AndNeg2Vol / betweenNeg1AndNeg2Count : na, title="-2 volume count average", color=color.new(color.rgb(124, 147, 239) , 100), display=display.data_window)
+
+plot(i_btCheck ? belowNeg2Count : na, title="-3 time count", color=color.new(color.blue, 100), display=display.data_window)
+plot(i_btCheck ? belowNeg2Vol : na, title="-3 volume count cumulative", color=color.new(color.blue, 100), display=display.data_window)
+plot(i_btCheck ? belowNeg2Vol / belowNeg2Count : na, title="-3 volume count average", color=color.new(color.blue, 100), display=display.data_window)
+
+
+//                     Alerts
+
+//Band cross scenarios
+deviation1CrossUp = ta.crossover(high, pivotBandUp) 
+deviation2CrossUp = ta.crossover(high, pivotBandUp2)
+deviation3CrossUp = ta.crossover(high, pivotBandUp3)
+
+deviation1CrossDown = ta.crossunder(low, pivotBandDown)
+deviation2CrossDown = ta.crossunder(low, pivotBandDown2)
+deviation3CrossDown = ta.crossunder(low, pivotBandDown3)
+
+//Price at fair value basis during trend scenarios
+fairPriceInUp = dirSwitch == 1 and low <= upperBandBoosted
+fairPriceInDown = dirSwitch == -1 and high >= lowerBandBoosted 
+
+//New trend scenarios
+newTrendUp = dirSwitch[1] == -1 and dirSwitch == 1 and barstate.isconfirmed
+newTrendDown = dirSwitch[1] == 1 and dirSwitch == -1 and barstate.isconfirmed
+
+//Individual
+alertcondition(deviation1CrossUp, "Deviation band +1 cross", "High cross above +1 band detected.")
+alertcondition(deviation2CrossUp, "Deviation band +2 cross", "High cross above +2 band detected.")
+alertcondition(deviation3CrossUp, "Deviation band +3 cross", "High cross above +3 band detected.")
+
+alertcondition(deviation1CrossDown, "Deviation band -1 cross", "Low cross below -1 band detected.")
+alertcondition(deviation2CrossDown, "Deviation band -2 cross", "Low cross below -2 band detected.")
+alertcondition(deviation3CrossDown, "Deviation band -3 cross", "Low cross below -3 band detected.")
+
+alertcondition(fairPriceInUp, "Low at fair value basis in an uptrend", "Low at fair value basis in an uptrend detected.")
+alertcondition(fairPriceInDown, "High at fair value basis in a downtrend", "High at fair value basis  in a downtrend detected.")
+
+alertcondition(newTrendUp, "New trend up", "New trend up detected")
+alertcondition(newTrendDown, "New trend down", "New trend down detected")
+
+//Grouped
+alertcondition(deviation1CrossDown or deviation1CrossUp, "Deviation band -1 cross or +1 cross", "Low cross below -1/high cross above +1 band detected.")
+alertcondition(deviation2CrossDown or deviation2CrossUp, "Deviation band -2 cross or +2 cross", "Low cross below -2/high cross above +2 band detected.")
+alertcondition(deviation3CrossDown or deviation3CrossUp, "Deviation band -3 cross or +3 cross", "Low cross below -3/high cross above +3 band detected.")
+
+alertcondition(newTrendUp or newTrendDown, "New trend up or new trend down", "New trend up/down detected.")
+
+
+
+//                      Crosses (Update)
+
+//Function for user defined crosses
+crossFunc(src, crossType, crossRef) =>
+
+    //Reference price
+    crossRefConv = crossRef == "+1" ? pivotBandUp : crossRef == "+2" ? pivotBandUp2 : crossRef == "+3" ? pivotBandUp3 : 
+     crossRef == "-1" ? pivotBandDown : crossRef == "-2" ? pivotBandDown2 : pivotBandDown3 
+
+    //Cross type
+    cross = crossType == "Above" ? ta.crossover(src, crossRefConv) : ta.crossunder(src, crossRefConv) 
+
+    //Cross label elements
+    crossText = crossType == "Above" ? crossRef + "\n" + "▼" : "▲" + "\n" + crossRef 
+    crossPos = crossType == "Above" ? label.style_label_down : label.style_label_up
+    crossLoc = crossType == "Above" ? high : low
+    crossCol = crossType == "Above" ? i_crossAboveCol : i_crossBelowCol
+
+    //Label
+    if cross
+        label.new(x=bar_index, y=crossLoc, xloc=xloc.bar_index, text=crossText, style=crossPos, textcolor=crossCol, color=color.new(color.aqua, 100), size=size.normal)
+
+
+//Call functions
+if i_crossRef1 != "Off"
+    crossFunc(i_crossSrc1, i_crossMethod1, i_crossRef1)
+
+if i_crossRef2 != "Off"
+    crossFunc(i_crossSrc2, i_crossMethod2, i_crossRef2)
+
+if i_crossRef3 != "Off"
+    crossFunc(i_crossSrc3, i_crossMethod3, i_crossRef3)
+
+if i_crossRef4 != "Off"
+    crossFunc(i_crossSrc4, i_crossMethod4, i_crossRef4)

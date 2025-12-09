@@ -1,0 +1,188 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © toodegrees
+import toodegrees/forex_factory_utility/16 as ffUtil
+import toodegrees/forex_factory_decoding/36 as ffDec
+
+//@version=5
+indicator("Live Economic Calendar by toodegrees"
+         , shorttitle="News° [toodegrees]"
+         , overlay=true
+         , max_lines_count=500
+         , max_labels_count=500)
+
+
+//#region[Timeframe Limitations]
+if timeframe.in_seconds(timeframe.period)>86400
+    runtime.error("Go to the Daily Timeframe or lower!")
+else if timeframe.in_seconds(timeframe.period)<30
+    runtime.error("Go to the 30-Second Timeframe or higher!")
+//#endregion
+
+
+//#region[Global, Functions, Methods]
+var mdnCheck = false
+if hour(time,"America/New_York")==0 and hour(time[1],"America/New_York")!=0 and not mdnCheck
+    mdnCheck := true
+newDay = mdnCheck ? hour(time,"America/New_York")==0 and hour(time[1],"America/New_York")!=0 : timeframe.change("D")
+
+requestData() =>
+    [request.seed("seed_toodegrees_toogit","TOODEGREES_FOREX_FACTORY_SLOT_1",str.tostring(open)+","+str.tostring(high)+","+str.tostring(low)+","+str.tostring(close)+","+str.tostring(volume)),
+     request.seed("seed_toodegrees_toogit","TOODEGREES_FOREX_FACTORY_SLOT_2",str.tostring(open)+","+str.tostring(high)+","+str.tostring(low)+","+str.tostring(close)+","+str.tostring(volume)),
+     request.seed("seed_toodegrees_toogit","TOODEGREES_FOREX_FACTORY_SLOT_3",str.tostring(open)+","+str.tostring(high)+","+str.tostring(low)+","+str.tostring(close)+","+str.tostring(volume)),
+     request.seed("seed_toodegrees_toogit","TOODEGREES_FOREX_FACTORY_SLOT_4",str.tostring(open)+","+str.tostring(high)+","+str.tostring(low)+","+str.tostring(close)+","+str.tostring(volume)),
+     request.seed("seed_toodegrees_toogit","TOODEGREES_FOREX_FACTORY_SLOT_5",str.tostring(open)+","+str.tostring(high)+","+str.tostring(low)+","+str.tostring(close)+","+str.tostring(volume)),
+     request.seed("seed_toodegrees_toogit","TOODEGREES_FOREX_FACTORY_SLOT_6",str.tostring(open)+","+str.tostring(high)+","+str.tostring(low)+","+str.tostring(close)+","+str.tostring(volume)),
+     request.seed("seed_toodegrees_toogit","TOODEGREES_FOREX_FACTORY_SLOT_7",str.tostring(open)+","+str.tostring(high)+","+str.tostring(low)+","+str.tostring(close)+","+str.tostring(volume)),
+     request.seed("seed_toodegrees_toogit","TOODEGREES_FOREX_FACTORY_SLOT_8",str.tostring(open)+","+str.tostring(high)+","+str.tostring(low)+","+str.tostring(close)+","+str.tostring(volume)),
+     request.seed("seed_toodegrees_toogit","TOODEGREES_FOREX_FACTORY_SLOT_9",str.tostring(open)+","+str.tostring(high)+","+str.tostring(low)+","+str.tostring(close)+","+str.tostring(volume))]
+
+method processData(ffUtil.News[] N, string S1, string S2, string S3, string S4, string S5, string S6, string S7, string S8, string S9) =>
+    ffDec.readNews(N,S1), ffDec.readNews(N,S2), ffDec.readNews(N,S3)
+    ffDec.readNews(N,S4), ffDec.readNews(N,S5), ffDec.readNews(N,S6)
+    ffDec.readNews(N,S7), ffDec.readNews(N,S8), ffDec.readNews(N,S9)
+//#endregion
+
+
+//#region[Tooltips]
+var custom_timezoneTT = "The original Time and Date of the News is based on New York EST. Adjust the Timezone "
+                      + "by matching this setting to the bottom-right Timezone setting on your Chart."
+var expectedImpactTT  = "🔴 High Impact\n🟠 Medium Impact\n🟡 Low Impact\n⚪ Holiday"
+var autoTT            = "Automatically chooses the Currencies' News based on the current symbol on Chart."
+var onChartTT         = "'Today'\nAll historical news will be deleted once a new day starts, only the current day's news "
+                      + "will be shown on chart.\n\n'This Week'\nAll historical news will be deleted once a new week "
+                      + "starts, only the current week's news will be shown on chart.\n\n'Manual'\nWill show the current "
+                      + "week's upcoming news as well as the news in the prior custom number of days (includes weekend days)."
+var labelYTT          = "'Auto' will place the label opposite to the candle's direction."
+var sizeTTT           = "Depending on the Size of the News Table you will be able to see a maximum number of Forex Factory "
+                      + "News events on the chart due to size limitations.\n\nThese limits are roughly:\n'Tiny' ± 46 Forex "
+                      + "Factory News Events\n'Small' ± 38 Forex Factory News Events\n'Normal' ± 28 Forex Factory News Events"
+                      + "\n'Large' ± 20 Forex Factory News Events\n'Huge' ± 11 Forex Factory News Events"
+var tableHeadCTT      = "Text Color - Backroung Color"
+var tableRowCTT       = "Past News Text Color - Future News Text Color - Backroung Color"
+//#endregion
+
+
+//#region[User Input]
+// Custom Timezone
+custom_timezone = input.bool(false, title="Custom Timezone?", inline="1")
+timezone_h      =  input.int(1    , title="UTC"             , inline="1", minval=-10, maxval=13)
+timezone_m      =  input.int(0    , title=":"               , inline="1", minval=0  , maxval=59, step=15, tooltip=custom_timezoneTT)
+
+// Expected Impact
+var high_impact = input.bool(true, title="🔴", group="Expected Impact", inline="1")
+var med_impact  = input.bool(true, title="🟠", group="Expected Impact", inline="1")
+var low_impact  = input.bool(true, title="🟡", group="Expected Impact", inline="1")
+var holiday     = input.bool(true, title="⚪", group="Expected Impact", inline="1", tooltip=expectedImpactTT)
+
+// Currencies
+var AUTO = input.bool(true , title="Automatic?", group="Currencies", tooltip=autoTT)
+var AUD  = input.bool(false, title="AUD"       , group="Currencies", inline="1")
+var CAD  = input.bool(false, title="CAD"       , group="Currencies", inline="1")
+var CHF  = input.bool(false, title="CHF"       , group="Currencies", inline="1")
+var CNY  = input.bool(false, title="CNY"       , group="Currencies", inline="2")
+var EUR  = input.bool(false, title="EUR"       , group="Currencies", inline="2")
+var GBP  = input.bool(false, title="GBP"       , group="Currencies", inline="2")
+var JPY  = input.bool(false, title="JPY "      , group="Currencies", inline="3")
+var NZD  = input.bool(false, title="NZD"       , group="Currencies", inline="3")
+var USD  = input.bool(false, title="USD"       , group="Currencies", inline="3")
+
+// On Chart
+var onChartT   =                  input.string("This Week", title="Chart History         ", group="News On Chart", inline="1", options=["Today", "This Week", "Manual"])
+var onChartLB  =                     input.int(30         , title=""                      , group="News On Chart", inline="1", tooltip=onChartTT)
+var showLabels =                    input.bool(true       , title="Show Labels?"          , group="News On Chart", inline="2")
+var labelS     =      ffUtil.size(input.string("Normal"   , title=""                      , group="News On Chart", inline="2", options=["Tiny" , "Small", "Normal", "Large", "Huge"]))
+var labelY     =                  input.string("Auto"     , title=""                      , group="News On Chart", inline="2", options=["Above", "Below", "Auto"] , tooltip=labelYTT)
+var lblOutLn   =                    input.bool(true       , title="Outline?"              , group="News On Chart", inline="2")
+var showLines  =                    input.bool(true       , title="Show Lines?  "         , group="News On Chart", inline="3")
+var lineTime   =                  input.string("Future"   , title=""                      , group="News On Chart", inline="3", options=["Future", "Past+Future"])
+var lineT      = ffUtil.lineTrnsp(input.string("Heavy"    , title=""                      , group="News On Chart", inline="3", options=["Light" , "Medium", "Heavy"]))
+var lineS      = ffUtil.lineStyle(input.string("Solid"    , title=""                      , group="News On Chart", inline="3", options=["Dashed", "Dotted", "Solid"]))
+
+// Table
+var showTable   =   input.bool(true       , title="Show?"        , group="News Table", inline="1")
+var tableType   = input.string("This Week", title=""             , group="News Table", inline="1", options=["Today", "This Week"])
+var todType     = input.string("24H"      , title=""             , group="News Table", inline="1", options=["24H"  , "AM/PM"])
+var headTextC   =  input.color(#dee1e9  , title="Table Header" , group="News Table", inline="2")
+var headBgC     =  input.color(#283c70  , title=""             , group="News Table", inline="2", tooltip=tableHeadCTT)
+var rowTextCP   =  input.color(#787b86  , title="Table News   ", group="News Table", inline="3")
+var rowTextCF   =  input.color(#000000  , title=""             , group="News Table", inline="3")
+var rowBgC      =  input.color(#dee1e9  , title=""             , group="News Table", inline="3", tooltip=tableRowCTT)
+var tableBorder =   input.bool(true       , title="Border?"      , group="News Table", inline="4")
+var borderColor =  input.color(#000000  , title=""             , group="News Table", inline="4")
+var borderAuto  =   input.bool(true       , title="Auto?"        , group="News Table", inline="4")
+var tableX      = input.string("Right"    , title=""             , group="News Table", inline="5", options=["Left", "Center", "Right" ])
+var tableY      = input.string("Bottom"   , title=""             , group="News Table", inline="5", options=["Top" , "Middle", "Bottom"])
+var sizeT       = input.string("Small"    , title=""             , group="News Table", inline="5", options=["Tiny", "Small" , "Normal", "Large", "Huge"], tooltip=sizeTTT)
+
+// Process User Input
+var locT            = ffUtil.boxLoc(tableX,tableY)
+var impact_filter   = ffUtil.impFilter(holiday,low_impact,med_impact,high_impact)
+var currency_filter = ffUtil.curFilter(AUTO,AUD,CAD,CHF,CNY,EUR,GBP,JPY,NZD,USD)
+onChartT           := timeframe.period=="D" and onChartT=="Today"?"This Week":onChartT 
+tableType          := timeframe.period=="D"?"This Week":tableType 
+//#endregion
+
+
+//#region[Import, Decode, Save]
+var currWeek = array.new<ffUtil.News>()
+var nextWeek = array.new<ffUtil.News>()
+var currDay  = array.new<ffUtil.News>()
+
+// Import Forex Factory News for next week
+[slot1,slot2,slot3,slot4,slot5,slot6,slot7,slot8,slot9] = requestData()
+
+// Save Forex Factory News
+if timeframe.change("W")
+    nextWeek := ffUtil.bubbleSort_News(nextWeek)
+    if custom_timezone
+        nextWeek := ffUtil.adjustTimezone(nextWeek, timezone_h, timezone_m)
+    if todType=="AM/PM"
+        nextWeek := ffUtil.NewsAMPM_TOD(nextWeek)
+    currWeek := nextWeek.copy()
+    currWeek := ffUtil.weekNews(currWeek,currency_filter,impact_filter)
+    nextWeek.clear()
+if newDay
+    currDay.clear()
+    currDay := ffUtil.todayNews(currWeek,currDay,mdnCheck)
+
+// Decode Forex Factory News
+nextWeek.processData(slot1,slot2,slot3,slot4,slot5,slot6,slot7,slot8,slot9)
+//#endregion
+
+
+//#region[Table & Drawings]
+// Forex Factory News Table
+var table_BC = tableBorder ? (borderAuto ? chart.fg_color : borderColor) : na
+var  _table = ffUtil.newTable(locT,table_BC)
+if currWeek.size()>0
+    if showTable
+        if tableType=="Today"
+            if newDay
+                _table := ffUtil.FF_Table(currDay,locT,sizeT,headTextC,headBgC,rowTextCF,rowBgC,table_BC)
+            ffUtil.timeline(currDay,_table,rowTextCP, timezone_h, timezone_m, true)
+        else
+            if timeframe.change("W")
+                _table := ffUtil.FF_Table(currWeek,locT,sizeT,headTextC,headBgC,rowTextCF,rowBgC,table_BC)
+            ffUtil.timeline(currWeek,_table,rowTextCP, timezone_h, timezone_m)
+    else
+        _table.delete()
+else
+    _table.delete()
+
+// Forex Factory News Drawings
+if showLines
+    if onChartT!="Today" and timeframe.change("W")
+        ffUtil.FF_OnChartLine(currWeek,lineT,lineS)
+    else if onChartT=="Today" and newDay
+        ffUtil.FF_OnChartLine(currDay,lineT,lineS)
+if showLabels
+    ffUtil.FF_OnChartLabel(currWeek,labelY,labelS,lblOutLn)
+
+ffUtil.historical(onChartLB,onChartT=="Today",onChartT=="This Week",lineTime)
+//#endregion
+
+
+//#region[Daily Chart Buffer]
+if timeframe.period=="D" and timeframe.change("W") 
+    nextWeek.processData(slot1,slot2,slot3,slot4,slot5,slot6,slot7,slot8,slot9)
+//#endregion

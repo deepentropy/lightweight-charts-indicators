@@ -1,0 +1,6 @@
+//@version=6
+indicator(title="Momentum", shorttitle="Mom", timeframe="", timeframe_gaps=true)
+len = input.int(10, minval=1, title="Length")
+src = input(close, title="Source")
+mom = src - src[len]
+plot(mom, color=#2962FF, title="MOM")

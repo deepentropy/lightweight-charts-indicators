@@ -1,0 +1,66 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("Volume-Supported Linear Regression Trend", "VSLRT", overlay = false)
+src = input(defval = close, title = "Source")
+len1 = input(defval = 20, title = "Short Term Length", minval = 5)
+len2 = input(defval = 50, title = "Long Term Length", minval = 5)
+ccol11 = input(defval = #00FF00ff, title = "Column Colors", inline = "gr1")
+ccol12 = input(defval = #00BC00, title = "", inline = "gr1")
+ccol13 = input(defval = #00FF006f, title = "", inline = "gr1")
+ccol21 = input(defval = #FF0000ff, title = "", inline = "gr1")
+ccol22 = input(defval = #BF0000, title = "", inline = "gr1")
+ccol23 = input(defval = #FF00006f, title = "", inline = "gr1")
+col11 = input(defval = #008EFF, title = "Line Colors", inline = "gr2")
+col12 = input(defval = #006ec5, title = "", inline = "gr2")
+col13 = input(defval = #024478, title = "", inline = "gr2")
+col21 = input(defval = #fd9701, title = "", inline = "gr2")
+col22 = input(defval = #CE7A00, title = "", inline = "gr2")
+col23 = input(defval = #663d00, title = "", inline = "gr2")
+
+// get short/long-term regression slope
+slope_price = linreg(src, len1, 0) - linreg(src, len1, 1)
+slope_price_lt = linreg(src, len2, 0) - linreg(src, len2, 1)
+
+// get the size of top/bottom/body of the candle
+tw = high - max(open, close) 
+bw = min(open, close) - low 
+body = abs(close - open) 
+
+//Calculate Buy/Sell Volume
+_rate(cond) =>
+    ret = 0.5 * (tw + bw + (cond ? 2 * body : 0)) / (tw + bw + body) 
+    ret := na(ret) ? 0.5 : ret
+    ret
+
+// Calculate Regression Slope for Buy/Sell Volumes
+_get_trend(len)=>   
+    deltaup =  volume * _rate(open <= close) 
+    deltadown = volume * _rate(open > close)
+    
+    slope_volume_up = linreg(deltaup, len, 0) - linreg(deltaup, len, 1)
+    slope_volume_down = linreg(deltadown, len, 0) - linreg(deltadown, len, 1)
+    [slope_volume_up, slope_volume_down]
+
+// get buy/sell volume regression slopes for short term period
+[slope_volume_up, slope_volume_down] = _get_trend(len1)
+
+// coloring columns
+column_col = slope_price > 0 ? slope_volume_up > 0 ? slope_volume_up > slope_volume_down ? ccol11 : ccol12 : ccol13 :
+      slope_price < 0 ? slope_volume_down > 0 ? slope_volume_up < slope_volume_down ? ccol21 : ccol22 : ccol23 : 
+      color.gray
+
+// short term trend
+plot(slope_price * len1, color = column_col, style = plot.style_columns)
+
+// get buy/sell volume regression slopes for long term period
+[slope_volume_up_lt, slope_volume_down_lt] = _get_trend(len2)
+
+// coloring columns
+column_col := slope_price_lt > 0 ? slope_volume_up_lt > 0 ? slope_volume_up_lt > slope_volume_down_lt ? col11 : col12 : col13 : 
+       slope_price_lt < 0 ? slope_volume_down_lt > 0 ? slope_volume_up_lt < slope_volume_down_lt ? col21 : col22 : col23 :
+       color.gray
+
+// Long term trend
+plot(slope_price_lt * len2, color = column_col, linewidth = 3)

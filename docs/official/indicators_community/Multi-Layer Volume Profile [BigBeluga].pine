@@ -1,0 +1,134 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Multi-Layer Volume Profile [BigBeluga]", overlay = true, max_boxes_count = 500, max_lines_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+len = input.int(300, "Period")
+bins = input.int(100, "Resolution")
+
+prf_col    = input.color(color.rgb(0, 187, 212, 60), "Profile")
+poc_col    = input.color(color.blue, "PoC")
+
+delta_col1 = input.color(color.aqua, "Delta+", inline = "1")
+delta_col2 = input.color(color.red, "Delta-", inline = "1")
+
+profile1 = input.bool(true, "VP1", inline = "vp")
+profile2 = input.bool(true, "VP2", inline = "vp")
+profile3 = input.bool(true, "VP3", inline = "vp")
+profile4 = input.bool(true, "VP4", inline = "vp")
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+profile(length, bins, poc_mult, style = true)=>
+    values = array.new<float>()
+    vol_bins = array.new<float>(bins)
+
+    tot_vol = array.new<float>()
+    delta_vol = array.new<float>()
+
+    max_val = float(na)
+    min_val = float(na)
+    step = float(na)
+
+    var bin_levels = array.new<line>()
+    var bin_labels = array.new<label>()
+
+    poly = array.new<chart.point>()
+
+    if barstate.islast
+        for i = 0 to length - 1
+            values.push(high[i])
+            values.push(low[i])
+
+
+        max_val := values.max()
+        min_val := values.min()
+
+        step := (max_val-min_val)/bins
+
+        
+    if barstate.islast
+        for i = 0 to bins - 1
+            vol_bins.set(i, 0)
+
+        for i = 0 to length - 1
+
+            c_top   = math.max(close[i], open[i])
+            c_low   = math.min(close[i], open[i])
+            c       = close[i]
+            o       = open[i]
+            vol     = volume[i]
+
+            tot_vol.push(vol)
+            delta_vol.push(c > o ? vol : -vol)
+
+            for j = 0 to bins - 1
+
+                lower = min_val + step * j 
+                upper = lower + step 
+                mid = math.avg(lower, upper)
+
+                if c <= upper + step*1.5 and c >= lower - step*1.5
+                    vol_bins.set(j, vol_bins.get(j) + vol)
+
+    
+    if barstate.islast
+        check = false
+        if bin_levels.size() > 0
+            for k = 0 to bin_levels.size() - 1
+                line.delete(bin_levels.get(k))
+                
+        if bin_labels.size() > 0
+            for k = 0 to bin_labels.size() - 1
+                label.delete(bin_labels.get(k))
+
+        for i = 0 to bins - 1
+
+            lower = min_val + step * i
+            upper = lower + step 
+            mid = math.avg(upper, lower)
+
+            vol = int(vol_bins.get(i) / vol_bins.max() * 25)
+
+            start = bar_index - length 
+            end = start +vol
+
+            var midd = float(na)
+
+            poly.push(chart.point.from_index(i == 0 ? start : i == bins - 1 ? start : end+1, mid))
+
+            if vol_bins.get(i) == vol_bins.max() and not check
+                check := true
+                bin_labels.push(label.new(start, mid, str.tostring(vol_bins.get(i), format.volume), style = label.style_label_right, color = color.new(poc_col, 25), force_overlay = true))
+                bin_levels.push(line.new(start, mid, start + int(length/poc_mult), mid, color = poc_col, force_overlay = true, width = 3))
+
+                bin_levels.push(line.new(start, max_val, bar_index, max_val, color = chart.fg_color, style = style ? line.style_solid : line.style_dashed))
+                bin_levels.push(line.new(start, min_val, bar_index, min_val, color = chart.fg_color, style = style ? line.style_solid : line.style_dashed))
+
+                bin_levels.push(line.new(start, max_val, start, min_val, color = chart.fg_color, style = line.style_solid))
+                bin_levels.push(line.new(start, max_val, start, min_val, color = chart.fg_color, style = line.style_solid))
+
+
+                bin_labels.push(label.new(start, max_val, "Total\n" + str.tostring(tot_vol.sum(), format.volume), style = label.style_label_down, text_font_family = font.family_monospace, size = size.small, tooltip = "Total Volume over VolumeProfile period", color = color.blue))
+                bin_labels.push(label.new(start, min_val,  str.tostring(delta_vol.sum(), format.volume) + "\nDelta", style = label.style_label_up, text_font_family = font.family_monospace, size = size.small, tooltip = "Delta Volume over VolumeProfile period", color = delta_vol.sum() < 0 ? delta_col2 : delta_col1))
+
+        polyline.delete( polyline.new(poly, line_color = #00e67700, fill_color = prf_col)[1] )
+
+if profile1
+    profile(len, bins, 2)
+if profile2
+    profile(int(len/2), bins, 2, false)
+if profile3
+    profile(int(len/4), bins, 2, false)
+if profile4
+    profile(int(len/8), bins, 1, false)
+
+// }
+
+

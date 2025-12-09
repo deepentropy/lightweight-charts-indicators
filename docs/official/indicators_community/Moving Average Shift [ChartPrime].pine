@@ -1,0 +1,79 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=6
+indicator("Moving Average Shift [ChartPrime]", "MA Shift [ChartPrime]", overlay = false)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+type_ma = input.string("SMA", "Type", options = ["SMA", "EMA", "SMMA (RMA)", "WMA", "VWMA"], group = "MA")
+length = input.int(40, "Length", inline = "ma", group = "MA")
+source = input.source(hl2, "", inline = "ma", group = "MA")
+grp = "MA Shift Oscillator"
+osc_len = input.int(15, "Length", group = grp, inline = "osc")
+osc_threshold = input.float(0.5, "", step = 0.1, group = grp, inline = "osc")
+osc_cross = input.bool(true, "⯁", group = grp, inline = "osc")
+
+// Colors
+osc_col_up1 = input.color(#1dd1c2, "", inline = "c", group = "color")
+osc_col_up2 = input.color(#17a297, "", inline = "c", group = "color")
+osc_col_dn1 = input.color(color.yellow, "", inline = "c", group = "color")
+osc_col_dn2 = input.color(color.orange, "", inline = "c", group = "color")
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+// Smoothing MA Calculation
+ma(source, length, MAtype) =>
+	switch MAtype
+		"SMA"                   => ta.sma(source, length)
+		"EMA"                   => ta.ema(source, length)
+		"SMMA (RMA)"            => ta.rma(source, length)
+		"WMA"                   => ta.wma(source, length)
+		"VWMA"                  => ta.vwma(source, length)
+
+// MA 
+MA = ma(source, length, type_ma) 
+color = source >= MA ? osc_col_up2 : osc_col_dn2
+
+// Osc 
+diff = source - MA 
+perc_r = ta.percentile_linear_interpolation(diff, 1000, 99)
+
+osc = ta.hma(ta.change(diff / perc_r, osc_len), 10)
+osc_col = osc > 0 ? (osc > osc[1] ? osc_col_up1 : osc_col_up2) : (osc < osc[1] ? osc_col_dn1 : osc_col_dn2)
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// --------------------------------------------------------------------------------------------------------------------{
+
+// MAs Plot
+plot(MA, "SMA-based MA", color=color, force_overlay = true, linewidth = 2)
+plot(MA, "SMA-based MA", color=color.new(color, 80), force_overlay = true, linewidth = 7)
+
+barcolor(color)
+plotcandle(open, high, low, close, title='Title', 
+         color = color, wickcolor=color, bordercolor = color, force_overlay = true)
+
+// Oscillator Plot
+top = osc_threshold
+bot = -top
+plot(osc, style = plot.style_columns, color = osc_col)
+p1 = plot(top, display = display.none, editable = false)
+p0 = plot(0, display = display.none, editable = false)
+p2 = plot(bot, display = display.none, editable = false)
+
+fill(p1, p0, top, 0, color.new(osc_col, 70), color.new(osc_col, 100))
+fill(p2, p0, 0, bot, color.new(osc_col, 100), color.new(osc_col, 80))
+
+
+bool sig_up = osc_cross ? ta.crossover(osc, osc[2]) and osc < -osc_threshold : bool(na)
+bool sig_dn = osc_cross ? ta.crossunder(osc, osc[2]) and osc > osc_threshold : bool(na)
+
+plotshape(sig_up, "Up", shape.diamond, location.belowbar, osc_col_up1, force_overlay = true, size = size.tiny)
+plotshape(sig_dn, "Dn", shape.diamond, location.abovebar, osc_col_dn1, force_overlay = true, size = size.tiny)
+// --------------------------------------------------------------------------------------------------------------------}

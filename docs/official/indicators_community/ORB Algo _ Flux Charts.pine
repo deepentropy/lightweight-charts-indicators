@@ -1,0 +1,469 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fluxchart
+
+//@version=5
+indicator("ORB Algo | Flux Charts", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 5000)
+
+const bool DEBUG = false
+int maxBarsBack = last_bar_index
+int renderMaxBarsBack = 5000
+const float minimumProfitPercent = 0.20
+const float minimumProfitIncrementPercent = 0.075
+const float stopLossPercent = 1.0 // Only when SL Method "Fixed"
+
+const float atrTP1Mult = 0.75
+const float atrTP2Mult = 1.5
+const float atrTP3Mult = 2.25
+const float atrTotalMult = 1.0
+
+orbTimeStr = input.timeframe("30 Minutes", "ORB Timeframe", options = ["15 Minutes", "30 Minutes", "45 Minutes", "1 Hour", "1.5 Hours", "2 Hours", "3 Hours", "4 Hours"], group = "Algorithm", display = display.none)    
+
+sensitivity = input.string("Medium", "Sensitivity", options = ["High", "Medium", "Low", "Lowest"], group = "Algorithm", display = display.none)
+breakoutCondition = input.string("Close", "Breakout Condition", options = ["Close", "EMA"], group = "Algorithm", display = display.none)
+tpMethod = input.string("Dynamic", "TP Method", options = ["Dynamic", "ATR"], group = "Algorithm", display = display.none)
+emaLength = input.int(9, "EMA Length", options = [4, 9, 13, 20, 34], group = "Algorithm", display = display.none)
+slMethod = input.string("Balanced", "Stop-Loss", options = ["Safer", "Balanced", "Risky"], group = "Algorithm", display = display.none)
+adaptiveSL = input.bool(true, "Adaptive SL", group = "Algorithm", display = display.none)
+
+customSessionEnabled = input.bool(false, "Enabled", group = "Custom Session", display = display.none)
+customSessionTime = input.session("1000-1100", "Session", group = "Custom Session", display = display.none)
+
+orbDisplayEnabled = input.bool(true, "Enabled", group = "ORB Dashboard", display = display.none)
+orbLocation = input.string("Top Right", "Position", options = ["Top Right", "Right Center", "Top Center"], group = "ORB Dashboard", display = display.none)
+
+backtestDisplayEnabled = input.bool(true, "Enabled", group = "Backtesting", display = display.none)
+backtestingLocation = input.string("Top Center", "Position", options = ["Top Right", "Right Center", "Top Center"], group = "Backtesting", display = display.none)
+backtestingExitRatios = input.string("90% | 5% | 5%", "Backtesting Exit Ratios", ["75% | 15% | 10%", "50% | 25% | 25%", "34% | 33% | 33%", "90% | 5% | 5%", "100% | 0% | 0%", "0% | 100% | 0%", "0% | 0% | 100%"], tooltip = "TP 1 | TP 2 | TP 3", group = "Backtesting", display = display.none)
+
+showORBZones = input.bool(true, "Draw ORB Zones", group = "Visuals", display = display.none, inline = "group1")
+plotEMA = input.bool(false, "Plot EMA", group = "Visuals", display = display.none, inline = "group1")
+showHistoricZones = DEBUG ? input.bool(true, "Show Historic Zones", group = "Visuals", display = display.none) : true
+
+highColor = input.color(color.green, "High", inline = "colors", group = "Visuals")
+lowColor = input.color(color.red, "Low", inline = "colors", group = "Visuals")
+
+float backtestTP1Exit = 0.0
+float backtestTP2Exit = 0.0
+float backtestTP3Exit = 0.0
+
+backtestTP1Exit := str.tonumber(str.replace(array.get(str.split(backtestingExitRatios, " | "), 0),"%","")) / 100.0
+backtestTP2Exit := str.tonumber(str.replace(array.get(str.split(backtestingExitRatios, " | "), 1),"%","")) / 100.0
+backtestTP3Exit := str.tonumber(str.replace(array.get(str.split(backtestingExitRatios, " | "), 2),"%","")) / 100.0
+
+retestsNeededForEntry = (sensitivity == "High" ? 0 : (sensitivity == "Medium" ? 1 : (sensitivity == "Low" ? 2 : 3)))
+
+if timeframe.in_seconds() > timeframe.in_seconds("15")
+    runtime.error("ORB Algo only works on timeframes lower than 15 min.")
+
+type Breakout
+    bool isBullish
+    int startIndex
+    int endIndex
+    bool failed = false
+    int retests = 0
+
+type ORB
+    float h
+    float l
+    int startTime
+    int startIndex
+    int endIndex
+    bool isLastSession
+
+    string state = "Opening Range"
+    Breakout[] breakouts
+    bool foundEntryTick = false
+    bool entryBullish
+    int entryIndex
+    float entryPrice
+    float entryATR
+
+    int tp1Index
+    float tp1Price
+    bool tp1FoundTick = false
+
+    int tp2Index
+    float tp2Price
+    bool tp2FoundTick = false
+
+    int tp3Index
+    float tp3Price
+    bool tp3FoundTick = false
+
+    int slIndex
+    float slPrice
+    bool slFoundTick = false
+    
+    bool isExitTrade = false
+    bool exitTradeFoundTick = false
+
+    line hLine
+    line lLine
+    label entryLabel
+
+getTimeframe (timeframeStr) =>
+    rtnTimeframe = "30"
+    if timeframeStr == "15 Minutes"
+        rtnTimeframe := "15"
+    if timeframeStr == "30 Minutes"
+        rtnTimeframe := "30"
+    if timeframeStr == "45 Minutes"
+        rtnTimeframe := "45"
+    if timeframeStr == "1 Hour"
+        rtnTimeframe := "60"
+    if timeframeStr == "1.5 Hours"
+        rtnTimeframe := "90"
+    if timeframeStr == "2 Hours"
+        rtnTimeframe := "120"
+    if timeframeStr == "3 Hours"
+        rtnTimeframe := "180"
+    if timeframeStr == "4 Hours"
+        rtnTimeframe := "240"
+    rtnTimeframe
+
+orbTime = getTimeframe(orbTimeStr)
+
+getPosition (positionText) =>
+    if positionText == "Top Right"
+        position.top_right
+    else if positionText == "Top Center"
+        position.top_center
+    else if positionText == "Right Center"
+        position.middle_right
+    else
+        position.middle_left
+
+createORB (float h, float l, int sT, int sI, int eI) =>
+    newORB = ORB.new(h, l, sT, sI, eI)
+    newORB.breakouts := array.new<Breakout>(0)
+    newORB
+
+safeDeleteORB (ORB orb) =>
+    line.delete(orb.hLine)
+    line.delete(orb.lLine)
+    label.delete(orb.entryLabel)
+
+orbColor = #3b3b3b43
+var orbList = array.new<ORB>(0)
+
+ema = ta.ema((high + low) / 2.0, emaLength)
+atr = ta.atr(12)
+plot(plotEMA ? ema : na)
+
+diffPercent (float val1, float val2) =>
+    (math.abs(val1 - val2) / val2) * 100.0
+
+renderORB (ORB orb) =>
+    if orb.startIndex > last_bar_index - renderMaxBarsBack
+        if showORBZones
+            orb.hLine := line.new(orb.startIndex, orb.h, nz(orb.endIndex, last_bar_index), orb.h, color = highColor, width = 2)
+            orb.lLine := line.new(orb.startIndex, orb.l, nz(orb.endIndex, last_bar_index), orb.l, color = lowColor, width = 2)
+        if not na(orb.entryIndex)
+            orb.entryLabel := label.new(orb.entryIndex, orb.entryPrice + orb.entryATR * 3 * (orb.entryBullish ? -1 : 1), orb.entryBullish ? "Buy" : "Sell", color = orb.entryBullish ? color.green : color.red, textcolor = color.white, style = orb.entryBullish ? label.style_label_up : label.style_label_down)
+
+ORB lastORB = na
+ORB previousORB = na
+if orbList.size() > 0
+    lastORB := orbList.get(0)
+
+    lastORB.tp1FoundTick := false
+    lastORB.tp2FoundTick := false
+    lastORB.tp3FoundTick := false
+    lastORB.slFoundTick := false
+    lastORB.foundEntryTick := false
+    lastORB.exitTradeFoundTick := false
+
+    if last_bar_time - time < 60 * 60 * 8 * 1000
+        lastORB.isLastSession := true
+    else
+        lastORB.isLastSession := false
+
+sessionBegins(sess) =>
+    t = time("1440", sess)
+    is_first = na(t[1]) and not na(t) or t[1] < t
+
+lastClose = close[1]
+if barstate.isconfirmed and last_bar_index - bar_index < maxBarsBack
+    // New ORB
+    if (not customSessionEnabled and session.isfirstbar_regular) or (customSessionEnabled and sessionBegins(customSessionTime))
+        // End Last ORB
+        if not na(lastORB)
+            lastORB.endIndex := bar_index - 1
+            // Exit Last ORB if 
+            if not na(lastORB.entryIndex) and na(lastORB.slIndex)
+                lastORB.slPrice := lastClose
+                lastORB.slIndex := bar_index - 1
+                lastORB.exitTradeFoundTick := true
+                previousORB := lastORB
+
+        newORB = createORB(na, na, time, bar_index, na)
+        orbList.unshift(newORB)
+        lastORB := orbList.get(0)
+
+    // ORB High & Low
+    if not na(lastORB)
+        if lastORB.state == "Opening Range" and time < lastORB.startTime + timeframe.in_seconds(orbTime) * 1000
+            lastORB.h := math.max(nz(lastORB.h, 0), high)
+            lastORB.l := math.min(nz(lastORB.l, low), low)
+        
+        if lastORB.state == "Opening Range" and time >= lastORB.startTime + timeframe.in_seconds(orbTime) * 1000
+            lastORB.state := "Waiting For Breakouts"
+    
+    // Wait For Retests
+    if not na(lastORB)
+        if lastORB.state == "Waiting For Breakouts"
+            conditionPrice = (breakoutCondition == "EMA" ? ema : close)
+            if conditionPrice > lastORB.h or conditionPrice < lastORB.l
+                newBreakout = Breakout.new(conditionPrice > lastORB.h, bar_index, na)
+                lastORB.breakouts.unshift(newBreakout)
+                lastORB.state := "In Breakout"
+    
+    // Handle Breakouts
+    if not na(lastORB)
+        if lastORB.state == "In Breakout"
+            curBreakout = lastORB.breakouts.get(0)
+
+            // Failed Breakout
+            if (curBreakout.isBullish and close < lastORB.h) or (not curBreakout.isBullish and close > lastORB.l)
+                curBreakout.failed := true
+                curBreakout.endIndex := bar_index
+                lastORB.state := "Waiting For Breakouts"
+            
+            // Breakout Retest
+            if bar_index > curBreakout.startIndex and ((curBreakout.isBullish and close > lastORB.h and low < lastORB.h) or (not curBreakout.isBullish and close < lastORB.l and high > lastORB.l))
+                curBreakout.retests += 1
+            
+            if curBreakout.retests >= retestsNeededForEntry
+                curBreakout.endIndex := bar_index
+                lastORB.state := "Entry Taken"
+                lastORB.entryATR := atr
+                lastORB.foundEntryTick := true
+                lastORB.entryIndex := bar_index
+                lastORB.entryPrice := close
+                lastORB.entryBullish := curBreakout.isBullish
+
+                if slMethod == "Fixed"
+                    if curBreakout.isBullish
+                        lastORB.slPrice := lastORB.entryPrice * ((100.0 - stopLossPercent) / 100.0)
+                    else
+                        lastORB.slPrice := lastORB.entryPrice * ((100.0 + stopLossPercent) / 100.0)
+                
+                center = (lastORB.h + lastORB.l) / 2.0
+                if slMethod == "Safer"
+                    lastORB.slPrice := lastORB.entryBullish ? ((center + lastORB.h) / 2.0) : ((center + lastORB.l) / 2.0)
+                if slMethod == "Balanced"
+                    lastORB.slPrice := center
+                if slMethod == "Risky"
+                    lastORB.slPrice := lastORB.entryBullish ? ((center + lastORB.l) / 2.0) : ((center + lastORB.h) / 2.0)
+                
+    // Handle Entry
+    if not na(lastORB)
+        if lastORB.state == "Entry Taken"
+            // Take Profits
+            isProfitable = ((lastORB.entryBullish and (ema > lastORB.entryPrice)) or (not lastORB.entryBullish and (ema < lastORB.entryPrice)))
+            if tpMethod == "Dynamic"
+                if isProfitable and diffPercent(ema, lastORB.entryPrice) >= minimumProfitPercent
+                    if na(lastORB.slIndex) and na(lastORB.tp1Index) and ((lastORB.entryBullish and close < ema) or (not lastORB.entryBullish and close > ema))
+                        lastORB.tp1Index := bar_index
+                        lastORB.tp1Price := ema
+                        lastORB.tp1FoundTick := true
+                        if adaptiveSL
+                            lastORB.slPrice := lastORB.entryPrice
+                    else if na(lastORB.slIndex) and not na(lastORB.tp1Index) and na(lastORB.tp2Index) and ((lastORB.entryBullish and close < ema) or (not lastORB.entryBullish and close > ema))
+                        if ((lastORB.entryBullish and ema > lastORB.tp1Price) or (not lastORB.entryBullish and ema < lastORB.tp1Price)) and diffPercent(ema, lastORB.tp1Price) >= minimumProfitIncrementPercent
+                            lastORB.tp2Index := bar_index
+                            lastORB.tp2Price := ema
+                            lastORB.tp2FoundTick := true
+                    else if na(lastORB.slIndex) and not na(lastORB.tp2Index) and na(lastORB.tp3Index) and ((lastORB.entryBullish and close < ema) or (not lastORB.entryBullish and close > ema))
+                        if ((lastORB.entryBullish and ema > lastORB.tp2Price) or (not lastORB.entryBullish and ema < lastORB.tp2Price)) and diffPercent(ema, lastORB.tp2Price) >= minimumProfitIncrementPercent
+                            lastORB.tp3Index := bar_index
+                            lastORB.tp3Price := ema
+                            lastORB.tp3FoundTick := true
+                            lastORB.slIndex := -1
+            if tpMethod == "ATR"
+                float tp1Price = lastORB.entryPrice + ((lastORB.entryATR * atrTP1Mult * atrTotalMult) * (lastORB.entryBullish ? 1 : -1))
+                float tp2Price = lastORB.entryPrice + ((lastORB.entryATR * atrTP2Mult * atrTotalMult) * (lastORB.entryBullish ? 1 : -1))
+                float tp3Price = lastORB.entryPrice + ((lastORB.entryATR * atrTP3Mult * atrTotalMult) * (lastORB.entryBullish ? 1 : -1))
+                if na(lastORB.slIndex) and na(lastORB.tp1Index) and ((lastORB.entryBullish and high >= tp1Price) or (not lastORB.entryBullish and low <= tp1Price))
+                    lastORB.tp1Index := bar_index
+                    lastORB.tp1Price := tp1Price
+                    lastORB.tp1FoundTick := true
+                    if adaptiveSL
+                        lastORB.slPrice := lastORB.entryPrice
+                else if na(lastORB.slIndex) and not na(lastORB.tp1Index) and na(lastORB.tp2Index) and ((lastORB.entryBullish and high >= tp2Price) or (not lastORB.entryBullish and low <= tp2Price))
+                    lastORB.tp2Index := bar_index
+                    lastORB.tp2Price := tp2Price
+                    lastORB.tp2FoundTick := true
+                else if na(lastORB.slIndex) and not na(lastORB.tp2Index) and na(lastORB.tp3Index) and ((lastORB.entryBullish and high >= tp3Price) or (not lastORB.entryBullish and low <= tp3Price))
+                    lastORB.tp3Index := bar_index
+                    lastORB.tp3Price := tp3Price
+                    lastORB.tp3FoundTick := true
+                    lastORB.slIndex := -1
+            
+            // Stop Loss
+            if not na(lastORB.slPrice) and na(lastORB.slIndex) and ((lastORB.entryBullish and low < lastORB.slPrice) or ((not lastORB.entryBullish) and high > lastORB.slPrice))
+                if not ((bar_index == lastORB.tp1Index) or (bar_index == lastORB.tp2Index) or (bar_index == lastORB.tp3Index))
+                    lastORB.slFoundTick := true
+                    lastORB.slIndex := bar_index
+
+//#region Plots
+isClose = bar_index > (last_bar_index - renderMaxBarsBack)
+plotshape(na(lastORB) ? na : ((lastORB.tp1FoundTick and lastORB.entryBullish and isClose and (showHistoricZones or lastORB.isLastSession)) ? close : na), "TP 1", shape.xcross, size = size.tiny, text = "TP 1", textcolor = color.white, location = location.abovebar)
+plotshape(na(lastORB) ? na : ((lastORB.tp1FoundTick and not lastORB.entryBullish and isClose and (showHistoricZones or lastORB.isLastSession)) ? close : na), "TP 1", shape.xcross, size = size.tiny, text = "TP 1", textcolor = color.white, location = location.belowbar)
+
+plotshape(na(lastORB) ? na : ((lastORB.tp2FoundTick and lastORB.entryBullish and isClose and (showHistoricZones or lastORB.isLastSession)) ? close : na), "TP 2", shape.xcross, size = size.tiny, text = "TP 2", textcolor = color.white, location = location.abovebar)
+plotshape(na(lastORB) ? na : ((lastORB.tp2FoundTick and not lastORB.entryBullish and isClose and (showHistoricZones or lastORB.isLastSession)) ? close : na), "TP 2", shape.xcross, size = size.tiny, text = "TP 2", textcolor = color.white, location = location.belowbar)
+
+plotshape(na(lastORB) ? na : ((lastORB.tp3FoundTick and lastORB.entryBullish and isClose and (showHistoricZones or lastORB.isLastSession)) ? close : na), "TP 3", shape.xcross, size = size.tiny, text = "TP 3", textcolor = color.white, location = location.abovebar)
+plotshape(na(lastORB) ? na : ((lastORB.tp3FoundTick and not lastORB.entryBullish and isClose and (showHistoricZones or lastORB.isLastSession)) ? close : na), "TP 3", shape.xcross, size = size.tiny, text = "TP 3", textcolor = color.white, location = location.belowbar)
+
+plotshape(na(lastORB) ? na : ((lastORB.slFoundTick and lastORB.entryBullish and isClose and (showHistoricZones or lastORB.isLastSession)) ? close : na), "SL", shape.xcross, size = size.tiny, text = "SL", color = color.red, textcolor = color.white, location = location.belowbar)
+plotshape(na(lastORB) ? na : ((lastORB.slFoundTick and not lastORB.entryBullish and isClose and (showHistoricZones or lastORB.isLastSession)) ? close : na), "SL", shape.xcross, size = size.tiny, text = "SL", color = color.red, textcolor = color.white, location = location.abovebar)
+
+plotshape(na(previousORB) ? na : ((previousORB.exitTradeFoundTick and previousORB.entryBullish and isClose and (showHistoricZones or previousORB.isLastSession)) ? close : na), "Exit", shape.xcross, size = size.tiny, text = "Exit", color = color.red, textcolor = color.white, location = location.belowbar, offset = -1)
+plotshape(na(previousORB) ? na : ((previousORB.exitTradeFoundTick and not previousORB.entryBullish and isClose and (showHistoricZones or previousORB.isLastSession)) ? close : na), "Exit", shape.xcross, size = size.tiny, text = "Exit", color = color.red, textcolor = color.white, location = location.abovebar, offset = -1)
+//#endregion Plots
+
+foundEntryTick = false
+foundTPTick = false
+foundSLTick = false
+if not na(lastORB)
+    if lastORB.foundEntryTick
+        foundEntryTick := true
+    if lastORB.tp1FoundTick or lastORB.tp2FoundTick or lastORB.tp3FoundTick
+        foundTPTick := true
+    if lastORB.slFoundTick
+        foundSLTick := true
+
+alertcondition(foundEntryTick, "Buy / Sell")
+alertcondition(foundTPTick, "Take Profit")
+alertcondition(foundSLTick, "Stop Loss")
+
+if barstate.islast
+    if orbList.size() > 0
+        for i = 0 to (showHistoricZones ? (orbList.size() - 1) : 0)
+            curORB = orbList.get(i)
+            safeDeleteORB(curORB)
+            renderORB(curORB)
+    
+// Dashboard
+if barstate.islast and orbDisplayEnabled
+    var table ORBDisplay = orbDisplayEnabled ? table.new(getPosition(orbLocation), 4, 5, bgcolor = orbColor, frame_width = 2, frame_color = color.black, border_width = 1, border_color = color.black) : na
+    ORB lastORBD = na
+    float foundEntryPrice = na
+    bool isEntryBullish = false
+    if orbList.size() > 0
+        lastORBD := orbList.get(0)
+        foundEntryPrice := lastORBD.entryPrice
+        isEntryBullish := lastORBD.entryBullish
+    
+    
+    // Header
+    table.merge_cells(ORBDisplay,0,0,3,0)
+    table.cell(ORBDisplay, 0, 0, "ORB Dashboard", text_color = color.white, bgcolor = orbColor)
+
+    // Bullish / Bearish
+    table.merge_cells(ORBDisplay,0,1,0,2)
+    table.cell(ORBDisplay, 0, 1, na(foundEntryPrice) ? "No Signal" : (isEntryBullish ? "Bullish" : "Bearish"), text_color = color.white, bgcolor = na(foundEntryPrice) ? orbColor : (isEntryBullish ? color.green : color.red))
+
+    // Entry Price
+    table.cell(ORBDisplay, 1, 1, isEntryBullish ? "Buy Price" : "Sell Price", text_color = color.white, bgcolor = na(foundEntryPrice) ? orbColor : (isEntryBullish ? #4caf50 : color.red))
+    table.cell(ORBDisplay, 1, 2, na(foundEntryPrice) ? "No Signal" : str.tostring(foundEntryPrice, format.mintick), text_color = color.white, bgcolor = na(foundEntryPrice) ? orbColor : (isEntryBullish ? color.green : color.red))
+
+    // Current Profit %
+    table.merge_cells(ORBDisplay,2,1,3,1)
+    table.merge_cells(ORBDisplay,2,2,3,2)
+    curProfit = close - foundEntryPrice
+    if not isEntryBullish
+        curProfit *= -1
+
+    curProfitPercent = ((curProfit / foundEntryPrice)) * 100.0
+    table.cell(ORBDisplay, 2, 1, "Current Profit %", text_color = color.white, bgcolor = na(foundEntryPrice) ? orbColor : (curProfit > 0 ? color.green : color.red))
+    profitPercentText = ""
+    //profitPercentText += str.tostring(curProfit, format.mintick) + " | "
+
+    profitPercentText += str.tostring(curProfitPercent,"#.##") + "%"
+    if na(curProfitPercent)
+        profitPercentText := "No Signal"
+    table.cell(ORBDisplay, 2, 2, profitPercentText, text_color = color.white, bgcolor = na(foundEntryPrice) ? orbColor : (curProfit > 0 ? color.green : color.red))
+    
+    // TP & SL Levels
+    if not na(foundEntryPrice) and tpMethod == "ATR"
+        table.cell(ORBDisplay, 0, 3, "TP 1", text_color = color.white)
+        table.cell(ORBDisplay, 1, 3, "TP 2", text_color = color.white)
+        table.cell(ORBDisplay, 2, 3, "TP 3", text_color = color.white)
+        table.cell(ORBDisplay, 3, 3, "SL", text_color = color.white)
+
+        float tp1Price = lastORBD.entryPrice + ((lastORBD.entryATR * atrTP1Mult * atrTotalMult) * (lastORBD.entryBullish ? 1 : -1))
+        float tp2Price = lastORBD.entryPrice + ((lastORBD.entryATR * atrTP2Mult * atrTotalMult) * (lastORBD.entryBullish ? 1 : -1))
+        float tp3Price = lastORBD.entryPrice + ((lastORBD.entryATR * atrTP3Mult * atrTotalMult) * (lastORBD.entryBullish ? 1 : -1))
+        table.cell(ORBDisplay, 0, 4, str.tostring(tp1Price, format.mintick), text_color = color.white)
+        table.cell(ORBDisplay, 1, 4, str.tostring(tp2Price, format.mintick), text_color = color.white)
+        table.cell(ORBDisplay, 2, 4, str.tostring(tp3Price, format.mintick), text_color = color.white)
+        table.cell(ORBDisplay, 3, 4, str.tostring(lastORBD.slPrice, format.mintick), text_color = color.white)
+    else if not na(foundEntryPrice)
+        table.merge_cells(ORBDisplay, 0,3,3,3)
+        table.merge_cells(ORBDisplay, 0,4,3,4)
+        table.cell(ORBDisplay, 0, 3, "SL", text_color = color.white)
+        table.cell(ORBDisplay, 0, 4, str.tostring(lastORBD.slPrice, format.mintick), text_color = color.white)
+
+// Backtesting Dashboard
+if barstate.islast and backtestDisplayEnabled
+    var table backtestDisplay = backtestDisplayEnabled ? table.new(getPosition(backtestingLocation), 2, 10, bgcolor = orbColor, frame_width = 2, frame_color = color.black, border_width = 1, border_color = color.black) : na
+    float totalORBProfitPercent = 0
+    int successfulTrades = 0
+    int unsuccessfulTrades = 0
+
+    if orbList.size() > 0
+        for i = 0 to orbList.size() - 1
+            curORB = orbList.get(i)
+            if not na(curORB.entryIndex)
+                isSuccess = false
+                float totalProfitTaken = 0.0
+                if not na(curORB.tp1Price)
+                    isSuccess := true
+                    totalORBProfitPercent += diffPercent(curORB.tp1Price, curORB.entryPrice) * backtestTP1Exit
+                    totalProfitTaken += backtestTP1Exit
+                if not na(curORB.tp2Price)
+                    isSuccess := true
+                    totalORBProfitPercent += diffPercent(curORB.tp2Price, curORB.entryPrice) * backtestTP2Exit
+                    totalProfitTaken += backtestTP2Exit
+                if not na(curORB.tp3Price)
+                    isSuccess := true
+                    totalORBProfitPercent += diffPercent(curORB.tp3Price, curORB.entryPrice) * backtestTP3Exit
+                    totalProfitTaken += backtestTP3Exit
+                if not na(curORB.slIndex)
+                    if curORB.slIndex != -1
+                        totalORBProfitPercent -= diffPercent(curORB.slPrice, curORB.entryPrice) * (1.0 - totalProfitTaken)
+                        if totalProfitTaken == 0.0
+                            unsuccessfulTrades += 1
+                if isSuccess
+                    successfulTrades += 1
+    
+    // Header
+    table.merge_cells(backtestDisplay,0,0,1,0)
+    table.cell(backtestDisplay, 0, 0, "ORB Backtesting", text_color = color.white, bgcolor = orbColor)
+
+    // Total ORBs
+    table.cell(backtestDisplay, 0, 1, "Total Days", text_color = color.white, bgcolor = orbColor)
+    table.cell(backtestDisplay, 1, 1, str.tostring(orbList.size()), text_color = color.white, bgcolor = orbColor)
+
+    // Wins
+    table.cell(backtestDisplay, 0, 2, "Wins", text_color = color.white, bgcolor = orbColor)
+    table.cell(backtestDisplay, 1, 2, str.tostring(successfulTrades), text_color = color.white, bgcolor = orbColor)
+
+    // Losses
+    table.cell(backtestDisplay, 0, 3, "Losses", text_color = color.white, bgcolor = orbColor)
+    table.cell(backtestDisplay, 1, 3, str.tostring(unsuccessfulTrades), text_color = color.white, bgcolor = orbColor)
+
+    // Winrate
+    table.cell(backtestDisplay, 0, 4, "Winrate", text_color = color.white, bgcolor = orbColor)
+    table.cell(backtestDisplay, 1, 4, str.tostring(100.0 * (successfulTrades / (successfulTrades + unsuccessfulTrades)), "#.##") + "%", text_color = color.white, bgcolor = orbColor)
+
+    // Average Profit %
+    table.cell(backtestDisplay, 0, 5, "Average Profit", text_color = color.white, bgcolor = orbColor)
+    table.cell(backtestDisplay, 1, 5, str.tostring(totalORBProfitPercent / (successfulTrades + unsuccessfulTrades), "#.##") + "%", text_color = color.white, bgcolor = orbColor)
+
+    // Total Profit %
+    table.cell(backtestDisplay, 0, 6, "Total Profit", text_color = color.white, bgcolor = orbColor)
+    table.cell(backtestDisplay, 1, 6, str.tostring(totalORBProfitPercent, "#.##") + "%", text_color = color.white, bgcolor = orbColor)

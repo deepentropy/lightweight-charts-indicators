@@ -1,0 +1,45 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ZenAndTheArtOfTrading | PineScriptMastery
+// @version=6
+indicator(title="RSI Swing Signal", shorttitle="RSI+", overlay=false)
+
+// Strategy settings
+int lookback   = input(title="Lookback:", defval=7)
+float rsiOB    = input(title="RSI Overbought Level:", defval=80)
+float rsiOS    = input(title="RSI Oversold Level:", defval=20)
+int rsiLen     = input(title="RSI Length:", defval=7)
+rsiSrc         = input(title="RSI Source:", defval=close)
+
+// Get RSI value
+rsi = ta.rsi(rsiSrc, rsiLen)
+rsisell = rsi > rsiOB
+rsibuy = rsi < rsiOS
+
+// Get swing high/low
+float swingHigh = ta.highest(high, lookback)
+float swingLow = ta.lowest(low, lookback)
+
+// Determine buy/sell signals
+buysignal1 = (rsibuy or rsibuy[1]) and 
+   close[1] < open[1] and close > open[1] and low > low[1] and low[1] < low[2] and 
+   low[1] == swingLow and open <= close[1]
+buysignal2 = (rsibuy or rsibuy[1]) and 
+   close[1] < open[1] and close > open[1] and low < low[1] and 
+   low == swingLow and open <= close[1]
+sellsignal2 = (rsisell or rsisell[1]) and 
+   close[1] > open[1] and close < open[1] and high > high[1] and 
+   high == swingHigh and open >= close[1]
+sellsignal1 = (rsisell or rsisell[1]) and 
+   close[1] > open[1] and close < open[1] and high < high[1] and high[1] > high[2] and 
+   high[1] == swingHigh and open >= close[1]
+
+// Paint signals
+bgcolor(buysignal1 ? color.lime : sellsignal1 ? color.red : na, title="123 Fractal")
+bgcolor(buysignal2 ? color.lime : sellsignal2 ? color.red : na, title="Swing Fractal")
+plot(rsi, "RSI", rsisell ? color.red : rsibuy ? color.lime : #4985e7, linewidth=2)
+hline(rsiOB, "RSI Overbought", color.red, hline.style_solid)
+hline(rsiOS, "RSI Oversold", color.green, hline.style_solid)
+hline(50, "Midpoint", color.gray, hline.style_dashed)
+
+// Send out an alert if this candle meets our conditions
+alertcondition(sellsignal1 or sellsignal2 or buysignal1 or buysignal2, title="RSI SIGNAL", message="RSI Exhaustion signal for {{ticker}}")

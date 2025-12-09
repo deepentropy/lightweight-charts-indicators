@@ -1,0 +1,404 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © hanabil
+
+//@version=5
+indicator("Smarter SnR", overlay=true, max_bars_back=5000, max_labels_count=500, max_lines_count=500)
+
+// General Function
+f_barssince(_cond, _count) =>
+    _barssince = bar_index - ta.valuewhen(_cond, bar_index, _count)
+    _barssince
+
+barssince(_cond, _count) => int(math.max(1, nz(f_barssince(_cond, _count))))
+f_vw(cond, expr, count) => ta.valuewhen(cond, expr, count)
+
+tostring(x, y)=> x + str.tostring(y)
+
+var int dec = str.length(str.tostring(syminfo.mintick))-2
+
+truncate(number) =>
+    factor = math.pow(10, dec)
+    int(number * factor) / factor
+
+EndTime     = timestamp('19 Jan 2022 00:00 +0000')
+inDateRange = time<=EndTime
+
+//-------------------------
+// Input Zigzag
+gr1         = 'General'
+showSnr     = input(true, 'SnR', group=gr1)
+showTL      = input(true, 'TrendLine', group=gr1)
+showZZ      = input(false, 'Show Zigzag', group=gr1, inline='1')
+zzCol       = input.color(color.black, title='', group=gr1, inline='1')
+
+// -----------------
+// Input SnR
+labStyleUp  = label.style_label_up
+labStyleDn  = label.style_label_down
+labLeft     = label.style_label_left
+linDashed   = line.style_dashed
+
+gr3         = 'Support and Ressistance'
+showPriceSnr= input(true, 'Show Price', group=gr3)
+snrType     = input.string('Swing HiLo', 'SnR Type', ['Volume', 'Swing HiLo'], group=gr3)
+Period      = input.int(defval=20, title='Swing Period', minval=1, group=gr3)
+lStyleSRI   = input.string('Solid', 'Line Style', ['Solid', 'Dashed', 'Dotted'], group=gr3)
+lStyleSR    = lStyleSRI=='Solid'? line.style_solid : lStyleSRI=='Dashed'? line.style_dashed : line.style_dotted
+
+linWidth    = input(1, 'Linewidth', group=gr3)
+lineExtendI = input.string('None', 'Line Extend', ['None', 'Left', 'Right', 'Both'], group=gr3)
+lineExtend  = lineExtendI=='None'? extend.none : lineExtendI=='Left'? extend.left : lineExtendI=='Both'? extend.both : extend.right
+supCol      = input.color(color.new(color.black, 100), 'Support Label', group=gr3 , inline='1')
+supTextCol  = input.color(color.red, 'Text', group=gr3 , inline='1')
+supLineCol  = input.color(color.red, 'Line', group=gr3 , inline='1')
+resCol      = input.color(color.new(color.black, 100), 'Ressistance Label', group=gr3 , inline='2')
+resTextCol  = input.color(color.blue, 'Text', group=gr3 , inline='2')
+resLineCol  = input.color(color.blue, 'Line', group=gr3 , inline='2')
+
+
+// Snr Pivot
+ph = ta.pivothigh(Period, Period)
+pl = ta.pivotlow(Period, Period)
+
+ph0 = ta.valuewhen(ph, close[Period], 0)
+ph1 = ta.valuewhen(ph, close[Period], 1)
+ph2 = ta.valuewhen(ph, close[Period], 2)
+
+pl0 = ta.valuewhen(pl, close[Period], 0)
+pl1 = ta.valuewhen(pl, close[Period], 1)
+pl2 = ta.valuewhen(pl, close[Period], 2)
+
+P0 = ta.valuewhen(ph or pl, close[Period], 0)
+P1 = ta.valuewhen(ph or pl, close[Period], 1)
+P2 = ta.valuewhen(ph or pl, close[Period], 2)
+
+bar_pl1       = int(math.max(1, nz(f_barssince(pl, 1))))
+highest_1     = ta.highest(high[Period], bar_pl1)
+highestbars_1 = ta.highestbars(high[Period], bar_pl1)
+
+bar_ph1       = int(math.max(1, nz(f_barssince(ph, 1))))
+lowest_1      = ta.lowest(low[Period], bar_ph1)
+lowestbars_1  = ta.lowestbars(low[Period], bar_ph1)
+
+h  = ph
+hA = pl and P1 == pl1
+hAA= pl and P1 == pl1 and P2 == pl2
+l  = pl 
+lA = ph and P1 == ph1
+lAA= ph and P1 == ph1 and P2 == pl2
+
+h0 = ta.valuewhen(h, high[Period], 0)
+h1 = ta.valuewhen(h, high[Period], 1)
+hA0= ta.valuewhen(hA, highest_1, 0)
+
+l0 = ta.valuewhen(l, low[Period], 0)
+l1 = ta.valuewhen(l, low[Period], 1)
+lA0= ta.valuewhen(lA, lowest_1, 0)
+
+
+//----------------------------------------------
+// Fix Zigzag Pivot
+f_AA(x, xA, x0, xA0) => ta.valuewhen(x or xA, close, 0) == ta.valuewhen(x, close, 0)? x0 : xA0
+f_offset(x, xA, xAbars) => ta.valuewhen(x or xA, close, 0) == ta.valuewhen(x, close, 0)? -Period : xAbars-Period
+
+fixPh    = hA or h
+fixPl    = lA or l
+fixPhVal = f_AA(h, hA, h0, hA0)
+fixPlVal = f_AA(l, lA, l0, lA0)
+fixPhVal1= ta.valuewhen(fixPh, fixPhVal, 1)
+fixPlVal1= ta.valuewhen(fixPl, fixPlVal, 1)
+offsetPh = -f_barssince(fixPh, 0) + f_offset(h, hA, highestbars_1)
+offsetPl = -f_barssince(fixPl, 0) + f_offset(l, lA, lowestbars_1)
+offsetPh1= ta.valuewhen(fixPh, offsetPh, 1) - f_barssince(fixPh, 1)
+offsetPl1= ta.valuewhen(fixPl, offsetPl, 1) - f_barssince(fixPl, 1)
+
+fixOffset   = fixPh? offsetPh : offsetPl
+fixPivotVal = fixPh? fixPhVal : fixPlVal
+
+offsetForHa = -f_barssince(l, 1)- Period
+offsetForLa = -f_barssince(h, 1)- Period
+
+if hA and showZZ
+    line.new(bar_index+offsetPh, hA0, bar_index-Period, fixPlVal, xloc.bar_index, color=zzCol)
+    line.new(bar_index+offsetForHa, l1, bar_index+offsetPh, hA0, color=zzCol)
+if lA and showZZ
+    line.new(bar_index+offsetPl, lA0, bar_index-Period, fixPhVal, xloc.bar_index, color=zzCol)
+    line.new(bar_index+offsetForLa, h1, bar_index+offsetPl, lA0, color=zzCol)
+if h and showZZ
+    line.new(bar_index-Period, fixPhVal, bar_index+offsetPl, fixPlVal, color=zzCol)
+if l and showZZ
+    line.new(bar_index-Period, fixPlVal, bar_index+offsetPh, fixPhVal, color=zzCol)
+
+// ---------
+// SnR Swing HiLo
+
+fVwSeries (x, xVal, xBar)=>
+    x0      = truncate(ta.valuewhen(x, xVal, 0))
+    x1      = truncate(ta.valuewhen(x, xVal, 1))
+    x2      = truncate(ta.valuewhen(x, xVal, 2))
+    x0Bar   = ta.valuewhen(x, xBar, 0) - f_barssince(x, 0)
+    x1Bar   = ta.valuewhen(x, xBar, 1) - f_barssince(x, 1)
+    x2Bar   = ta.valuewhen(x, xBar, 2) - f_barssince(x, 2)
+    
+    [x0, x1, x2, x0Bar, x1Bar, x2Bar]
+
+[s1, s2, s3, s1Bar, s2Bar, s3Bar] = fVwSeries(fixPl, fixPlVal, offsetPl)
+[r1, r2, r3, r1Bar, r2Bar, r3Bar] = fVwSeries(fixPh, fixPhVal, offsetPh)
+
+fLL(show_, showPrice, x1, y1, x2, y2, text_, labelcol, labelstyle, textcol, extend_, linecol, linestyle, linewidth) =>
+    if close and show_
+        line_   = line.new(x1, y1, x2, y2, xloc.bar_index, extend_, linecol, linestyle, linewidth)
+        line.delete (line_ [1])
+        if showPrice
+            label_  = label.new(x2, y2, text_, xloc.bar_index, yloc.price, labelcol, labelstyle, textcol)
+            label.delete(label_[1])
+        
+fTst(x, y)=> x + str.tostring(y)
+
+fLL(showSnr, showPriceSnr, bar_index+s1Bar, s1, bar_index+10, s1, fTst('S1 -> ', s1), supCol, labLeft, supTextCol, lineExtend, supLineCol, lStyleSR, linWidth)  
+fLL(showSnr, showPriceSnr, bar_index+s2Bar, s2, bar_index+10, s2, fTst('S2 -> ', s2), supCol, labLeft, supTextCol, lineExtend, supLineCol, lStyleSR, linWidth)  
+fLL(showSnr, showPriceSnr, bar_index+s3Bar, s3, bar_index+10, s3, fTst('S3 -> ', s3), supCol, labLeft, supTextCol, lineExtend, supLineCol, lStyleSR, linWidth)  
+fLL(showSnr, showPriceSnr, bar_index+r1Bar, r1, bar_index+10, r1, fTst('R1 -> ', r1), resCol, labLeft, resTextCol, lineExtend, resLineCol, lStyleSR, linWidth)  
+fLL(showSnr, showPriceSnr, bar_index+r2Bar, r2, bar_index+10, r2, fTst('R2 -> ', r2), resCol, labLeft, resTextCol, lineExtend, resLineCol, lStyleSR, linWidth)  
+fLL(showSnr, showPriceSnr, bar_index+r3Bar, r3, bar_index+10, r3, fTst('R3 -> ', r3), resCol, labLeft, resTextCol, lineExtend, resLineCol, lStyleSR, linWidth)  
+
+//------------------------------------
+// Trendlines
+gr5         = 'Trendlines'
+showPriceTl = input(true, 'Show Price', group=gr5)
+newestTL    = input(true, 'Show Newest', group=gr5)
+newestBreak = input(true, 'Show Newest Break Only', group=gr5)
+period      = input(20, 'Trendline Period', group=gr5)
+srcI        = input.string('Close Body', 'Source', ['Close Body', 'Shadow'], group=gr5)
+srcL        = srcI=='Shadow'? low  : close
+srcH        = srcI=='Shadow'? high : close
+lStyleI     = input.string('Dashed', 'Line Style', ['Solid', 'Dashed', 'Dotted'], group=gr5, inline='2')
+y2_mult     = input(1, title='Trendline Length', group=gr5, inline='2')
+lStyle      = lStyleI=='Solid'? line.style_solid : lStyleI=='Dashed'? line.style_dashed : line.style_dotted
+lWidth      = input(1, 'Line Width', group=gr5, inline='1')
+lColor      = input.color(color.black, '', group=gr5, inline='1')
+
+phFound     = ta.pivothigh(srcH, period, period)
+plFound     = ta.pivotlow (srcL, period, period)
+
+phVal       = ta.valuewhen(phFound, srcH[period], 0)
+plVal       = ta.valuewhen(plFound, srcL[period], 0)
+phVal1      = ta.valuewhen(phFound, srcH[period], 1)
+plVal1      = ta.valuewhen(plFound, srcL[period], 1)
+
+a_bar_time  = time - time[1]
+noneCol     = color.new(color.red, 100)
+
+fGetPriceTl(slope_, x2_, y2_) =>
+    current_price  = y2_ + (slope_/(x2_ - time))
+    current_price
+
+f_trendline(cond_, y1Val_, x1Bar_, y2Val_, x2Bar_, color_, tlPriceText, textCol) =>
+    
+    x1      = ta.valuewhen(cond_, time[x1Bar_], 0)
+    x2      = ta.valuewhen(cond_, time[x2Bar_], 0)
+    y1      = ta.valuewhen(cond_, y1Val_, 0)
+    y2      = ta.valuewhen(cond_, y2Val_, 0)
+    slope_  = ta.valuewhen(cond_, (y2-y1)/(x2-x1), 0)
+
+    currentPrice    = truncate(y2 + (time-x2)*slope_) 
+    var label tlPrice     = na
+    
+    if close and newestTL
+        a_trendline = line.new (x1, y1, time,  currentPrice, xloc.bar_time, color=lColor, style=lStyle, width=lWidth)
+        line.delete (a_trendline[1])
+        
+        a_trendline
+    
+    newY2   = x2 + (y2_mult * a_bar_time * 25)
+    
+    if cond_ and not newestTL
+        a_trendline = line.new(x1, y1, newY2,  currentPrice, xloc.bar_time, color=lColor, style=lStyle, width=lWidth)
+        a_trendline
+    if showPriceTl
+        tlPrice     := label.new(bar_index+10, currentPrice, fTst(tlPriceText, currentPrice), color=noneCol, style=label.style_label_left, textcolor=textCol)
+        label.delete(tlPrice[1])
+
+    currentPrice
+
+newUp   = phFound and phVal<phVal1 and showTL
+newLo   = plFound and plVal>plVal1 and showTL
+upperTl = f_trendline(newUp, phVal1, f_barssince(phFound,1)+period, phVal, f_barssince(phFound,0)+period, 
+             color.black, 'Upper -> ', resTextCol)
+lowerTl = f_trendline(newLo, plVal1, f_barssince(plFound,1)+period, plVal, f_barssince(plFound,0)+period, 
+             color.black, 'Lower -> ', supTextCol)
+
+highestSince    = ta.highest(srcH, barssince(phFound and phVal<phVal1 and showTL,0))
+lowestSince     = ta.lowest (srcL, barssince(plFound and plVal>plVal1 and showTL,0))
+breakUpper      = srcH[1]<upperTl[1] and srcH>upperTl
+breakLower      = srcL[1]>lowerTl[1] and srcL<lowerTl
+
+var label bu    = na
+var label bl    = na
+
+if breakUpper and barstate.isconfirmed
+    bu  := label.new(bar_index, low , '🔼', color=resTextCol, style=label.style_label_up)
+    if newestBreak
+        label.delete(bu[1])
+if breakLower and barstate.isconfirmed
+    bl  := label.new(bar_index, high, '🔽', color=supTextCol)
+    if newestBreak
+        label.delete(bl[1])
+
+alertcondition(breakUpper and barstate.isconfirmed, 'Upper Trendline Breaked')
+alertcondition(breakLower and barstate.isconfirmed, 'Lower Trendline Breaked')
+
+sCO = ta.crossover (close, s1) or ta.crossover (close, s2) or ta.crossover (close, s3)
+sCU = ta.crossunder(close, s1) or ta.crossunder(close, s2) or ta.crossunder(close, s3)
+rCO = ta.crossover (close, r1) or ta.crossover (close, r2) or ta.crossover (close, r3)
+rCU = ta.crossunder(close, r1) or ta.crossunder(close, r2) or ta.crossunder(close, r3)
+
+alertcondition(rCO, 'Close Price Crossover  The Resistance')
+alertcondition(rCU, 'Close Price Crossunder The Resistance')
+alertcondition(sCO, 'Close Price Crossover  The Support')
+alertcondition(sCU, 'Close Price Crossunder The Support')
+
+// ----------------------
+// Dashboard
+gr6         = 'Dashboard'
+dash        = input(true, 'Dashboard', group=gr6)
+dashTitle   = input('😎 Smarter Dashboard 😎', 'Title', group=gr6)
+dashColor   = input.color(color.new(#512da8, 35) , 'Label', group=gr6, inline='3')
+dashTextCol = input.color(color.white, 'Text', group=gr6, inline='3')
+dashDist    = input(50, 'Dashboard Distance', group=gr6)
+
+trendlineText   = showTL? '\n〰️〰️〰️〰️〰️〰️〰️〰️〰️' 
+                 + '\nTrendline Price'
+                 + '\n🔸 Upper = ' + str.tostring(upperTl)
+                 + '\n🔸 Lower = ' + str.tostring(lowerTl) : na
+snrText         = showSnr? '\n〰️〰️〰️〰️〰️〰️〰️〰️〰️'
+                 + '\nSupport and Resistance'
+                 + '\nS1 = ' + str.tostring(s1) + ', R1 = ' + str.tostring(r1)
+                 + '\nS2 = ' + str.tostring(s2) + ', R2 = ' + str.tostring(r2)
+                 + '\nS3 = ' + str.tostring(s3) + ', R3 = ' + str.tostring(r3) : na
+
+
+smarterDashText = dashTitle
+                 + snrText
+                 + trendlineText
+
+if dash
+    dashSmarter     = label.new(bar_index+dashDist, close, smarterDashText, style=label.style_label_center, color=dashColor, textcolor=dashTextCol)
+    label.delete(dashSmarter[1])
+
+// ------
+// quotes
+gr50        = 'QUOTES'
+showTable   = input(true, 'Show Quotes Table', group=gr50)
+quote       = input('🎓 Smarter Trade Give Better Pain & Gain 🎓', 'Drop Your Quotes Here', group=gr50)
+tabPosI_    = input.string('Top', 'Table Position', ['Top', 'Middle', 'Bot'], group=gr50)
+tabPos_     = tabPosI_=='Top'? position.top_right : tabPosI_=='Bot'? position.bottom_right : position.middle_right
+tabColor    = input.color(color.new(#512da8, 35) , 'Background', group=gr50)
+borderCol   = input.color(color.black , 'Border', group=gr50)
+tabTextCol  = input.color(color.white, 'Text', group=gr50)
+
+var saTable     = table.new(tabPos_, 1, 1, tabColor, borderCol, 1, borderCol, 1)
+if showTable
+    table.cell(saTable, 0, 0, quote, text_color=tabTextCol, text_size=size.small)
+
+// ----------------
+// Smart Table
+// --------
+gr10        = 'Table'
+useTab      = input(true, 'Show Table?', group=gr10)
+
+tf1         = input.timeframe('', 'Timeframe - A', group=gr10)
+tf2         = input.timeframe('45', 'Timeframe - B', group=gr10)
+tf3         = input.timeframe('D', 'Timeframe - C', group=gr10)
+
+tabPosI     = input.string('Bot', 'Table Position', ['Top', 'Middle', 'Bot'], group=gr10)
+bullCol     = input.color(color.new(color.green, 0) , 'Oversold'    , '', '1', gr10)
+bearCol     = input.color(color.new(color.red, 0)   , 'Overbought'  , '', '1', gr10)
+neutralCol  = input.color(color.new(#bbd9fb, 0)     , 'Not Over'    , '', '1', gr10)
+textCol     = input.color(color.white, 'Text', inline='1', group=gr10)
+
+textSizeI   = input.string('Small', 'Text Size', ['Small', 'Tiny', 'Normal'], group=gr10)
+textSize    = textSizeI=='Small'? size.small : textSizeI=='Tiny'? size.tiny : size.normal 
+
+tabPos      = tabPosI=='Top'? position.top_right : tabPosI=='Bot'? position.bottom_right : position.middle_right
+var smartTable  = table.new(tabPos, 50, 50, color.new(color.black,100), color.black, 1, color.black,1)
+
+// ----
+// RSI
+gr11        = 'RSI'
+rsiSource   = input(close, 'RSI -- Source', '1', gr11)
+rsiPeriod   = input(14, 'Period', '', '1', gr11)
+obRsi       = input(80, 'Overbought', '', '2', gr11)
+osRsi       = input(20, 'Oversold  ', '', '2', gr11)
+
+// Stoch
+gr12        = 'Stochastic'
+stochSource = input(close, 'Stochastic -- Source', '2', group=gr12)
+stochPeriod = input(14, 'Period', '', '2', gr12)
+
+periodK = input(14, 'Period -- K', '', '1', gr12)
+periodD = input(3 , 'D', '', '1', gr12)
+smoothK = input(1 , 'Smooth K', '', '0', gr12)
+obStoch = input(80, 'Overbought', '', '2', gr12)
+osStoch = input(20, 'Oversold  ', '', '2', gr12)
+
+fCol(x)=> x=='Overbought'? bearCol : x=='Oversold'? bullCol : neutralCol 
+
+fTable(tf, rowNumber)=>
+    k = request.security(syminfo.ticker, tf, ta.sma(ta.stoch(close, high, low, periodK), smoothK))
+    d = ta.sma(k, periodD)
+    
+    r = request.security(syminfo.ticker, tf, ta.rsi(rsiSource, rsiPeriod))
+    sStatus = k>obStoch? 'Overbought' : k<osStoch? 'Oversold' : 'Not Over'
+    rStatus = r>obRsi  ? 'Overbought' : r<osRsi  ? 'Oversold' : 'Not Over'
+    
+    sCol    = fCol(sStatus)
+    rCol    = fCol(rStatus)
+    
+    if useTab
+        table.cell(smartTable, 0, 0, 'Timeframe'    , text_color=textCol, text_size=textSize, bgcolor=dashColor)
+        table.cell(smartTable, 1, 0, 'Stochastic'   , text_color=textCol, text_size=textSize, bgcolor=dashColor)
+        table.cell(smartTable, 2, 0, 'RSI'          , text_color=textCol, text_size=textSize, bgcolor=dashColor)
+    
+        tfDes   = tf==''? timeframe.period : tf
+        table.cell(smartTable, 0, rowNumber, tfDes  , text_color=textCol, text_size=textSize, bgcolor=dashColor)
+        table.cell(smartTable, 1, rowNumber, sStatus, text_color=textCol, text_size=textSize, bgcolor=sCol)
+        table.cell(smartTable, 2, rowNumber, rStatus, text_color=textCol, text_size=textSize, bgcolor=rCol)
+    
+fTable(tf1, 1)
+fTable(tf2, 2)
+fTable(tf3, 3)
+    
+    
+    
+//
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

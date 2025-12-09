@@ -1,0 +1,187 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=5
+indicator(title='Higher Timeframe High & Low [ChartPrime]', 
+          shorttitle='H/L HTF [ChartPrime]', 
+          overlay=true, 
+          max_lines_count = 2, 
+          max_labels_count = 10
+          )
+
+// ---------------------------------------------------------------------------------------------------------------------}
+// 𝙄𝙉𝙋𝙐𝙏𝙎
+// ---------------------------------------------------------------------------------------------------------------------{
+extension  = input.int(50, "Extension to the right of High and Low", group = "Settings")
+timeframe  = input.timeframe("D", "timeframe", tooltip = "Use Higher Timeframe then Current", group = "Settings")
+
+separator  = input.bool(false, "Period Separator")
+show_trend = input.bool(false, "Show Trend?")
+show_break = input.bool(false, "Show Breakout Labels?")
+
+
+// Variables Declaration
+var color color = na
+color color1    = na
+var bool check  = na
+
+color colorDn   = #d41919
+color colorUp   = #13b818
+
+
+// ---------------------------------------------------------------------------------------------------------------------}
+// 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// ---------------------------------------------------------------------------------------------------------------------{
+// To avoid differences on historical and realtime bars: 
+// returns a value from the higher timeframe on the bar after it completes:
+indexHighTF = barstate.isrealtime ? 1 : 0
+indexCurrTF = barstate.isrealtime ? 0 : 1
+
+pricehigh   = request.security(syminfo.tickerid, timeframe, high[indexHighTF])[indexCurrTF]
+pricelow    = request.security(syminfo.tickerid, timeframe,  low[indexHighTF])[indexCurrTF]
+price_avg   = math.avg(pricelow, pricehigh)
+
+high_break = ta.crossover(close, pricehigh)
+low_break  = ta.crossunder(close, pricelow)
+
+
+// BreakOuts Checker (to avoid multiple labels) and color change
+switch 
+    high_break => check := true,  color1 := colorUp, color := colorUp
+    low_break  => check := false, color1 := colorDn, color := colorDn
+
+
+// ---------------------------------------------------------------------------------------------------------------------}
+// 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// ---------------------------------------------------------------------------------------------------------------------{
+// BreakOut labels
+if high_break and check[1] == false and show_break
+    
+    label.new(x = bar_index, y = low*0.99, 
+             text = timeframe + "\nHigh Break",
+             style = label.style_label_up,
+             textcolor = chart.fg_color, 
+             color = #0e4e11, 
+             size = size.small
+             )
+
+if low_break and check[1] == true and show_break
+
+    label.new(x = bar_index, y = high*1.01, 
+             text      = timeframe + "\nLow Break", 
+             style     = label.style_label_down, 
+             textcolor = chart.fg_color, 
+             color     = #6e1414, 
+             size      = size.small
+             )
+
+// High and Low plots from HTF
+change_hl = not ta.change(pricehigh) or not ta.change(pricelow)
+
+
+ph = plot(series    = change_hl and not show_trend ? pricehigh : show_trend ? pricehigh : na, 
+          title     ='High', 
+          style     = plot.style_linebr, 
+          linewidth = 2, 
+          color     = not show_trend ? colorDn : color.new(colorDn, 80)
+          )
+
+pm = plot(series   = change_hl and not show_trend ? price_avg : show_trend ? price_avg : na, 
+         title     ='L & H Avg', 
+         style     = show_trend ? plot.style_stepline_diamond : plot.style_circles, 
+         linewidth = 1, 
+         color     = show_trend ? color.new(chart.fg_color, 90) : color.new(chart.fg_color, 50)
+         )
+
+pl = plot(series    = change_hl and not show_trend ? pricelow  : show_trend ? pricelow : na,
+          title     = 'Low', 
+          style     = plot.style_linebr,  
+          linewidth = 2, 
+          color     = not show_trend ? colorUp : color.new(colorUp, 80)
+          )
+
+
+// Plot triangles if High or Low weren't broken
+plotchar(series   = ta.crossunder(high, pricehigh), 
+         title    = "Resistance", 
+         char     = "◆", 
+         location = location.abovebar, 
+         offset   = -1, 
+         color    = colorDn, 
+         size     = size.tiny
+         )
+
+plotchar(series   = ta.crossover(low, pricelow), 
+         title    = "Support",
+         char     = "◆", 
+         location = location.belowbar,
+         offset   = -1, 
+         color    = colorUp, 
+         size     = size.tiny
+         )
+
+
+// Extension High and Low to a future
+if barstate.islast
+
+    label.new(point = chart.point.from_index(bar_index + extension, pricehigh), 
+
+              text      = "⮪ " + timeframe + " High", 
+              style     = label.style_label_left, 
+              textcolor = chart.fg_color, 
+              color     = colorDn, 
+              size      = size.normal
+              )
+
+    label.new(point = chart.point.from_index(bar_index + extension, pricelow),
+
+              text      = "⮨ " + timeframe + " Low",  
+              style     = label.style_label_left, 
+              textcolor = chart.fg_color, 
+              color     = #158d19, 
+              size      = size.normal
+              )
+
+if change_hl and barstate.islast
+
+    h_Left         = chart.point.from_index(bar_index,           pricehigh)
+    h_Right        = chart.point.from_index(bar_index+extension, pricehigh)
+
+    line.new(h_Left, h_Right, color = colorDn, style = line.style_solid, width = 2)
+
+    l_Left         = chart.point.from_index(bar_index,           pricelow)
+    l_Right        = chart.point.from_index(bar_index+extension, pricelow)
+
+    line.new(l_Left, l_Right, color = colorUp, width = 2)
+
+    m_Left         = chart.point.from_index(bar_index,           math.avg(pricelow, pricehigh))
+    m_Right        = chart.point.from_index(bar_index+extension, math.avg(pricelow, pricehigh))
+
+    line.new(m_Left, m_Right, 
+                 color = chart.fg_color, 
+                 width = show_trend ? 1 : 2, 
+                 style = show_trend ? line.style_solid : line.style_dotted
+                 )
+
+
+// BreakOut Bar Color of Trend Color
+barcolor(show_trend ? color : color1)
+
+
+bgcolor(separator ? (not change_hl
+                      ? color.new(chart.fg_color, 90): na) 
+                      : na
+                      )
+
+
+// Fill OB and OS Zones
+fill(plot1        = ph,
+     plot2        = pl,
+     top_value    = pricehigh,
+     bottom_value = pricelow, 
+     top_color    = not show_trend ? color.new(colorDn, chart.bg_color == color.white ?  80 : 92) : na,
+     bottom_color = not show_trend ? color.new(colorUp, chart.bg_color == color.white ?  80 : 92) : na
+     )
+
+    
+// ---------------------------------------------------------------------------------------------------------------------}

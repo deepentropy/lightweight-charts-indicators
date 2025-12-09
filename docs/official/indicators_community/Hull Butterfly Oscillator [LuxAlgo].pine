@@ -1,0 +1,124 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Hull Butterfly Oscillator [LuxAlgo]", "Hull Butterfly Oscillator [LuxAlgo]")
+//-----------------------------------------------------------------------------}
+//Settings
+//----------------------------------------------------a-------------------------{
+length = input(14)
+
+mult = input(2., 'Levels Multiplier')
+
+src = input(close)
+
+//Style
+bull_css_0 = input.color(color.new(#0cb51a, 50), 'Bullish Gradient'
+  , inline = 'inline0'
+  , group = 'Style')
+
+bull_css_1 = input.color(#0cb51a, ''
+  , inline = 'inline0'
+  , group = 'Style')
+
+bear_css_0 = input.color(color.new(#ff1100, 50), 'Bearish Gradient'
+  , inline = 'inline1'
+  , group = 'Style')
+
+bear_css_1 = input.color(#ff1100, ''
+  , inline = 'inline1'
+  , group = 'Style')
+
+//-----------------------------------------------------------------------------}
+//Normalization variables
+//-----------------------------------------------------------------------------{
+var short_len = int(length / 2)
+var hull_len = int(math.sqrt(length))
+
+var den1 = short_len * (short_len + 1) / 2
+var den2 = length * (length + 1) / 2
+var den3 = hull_len * (hull_len + 1) / 2
+
+//-----------------------------------------------------------------------------}
+//Hull coefficients
+//-----------------------------------------------------------------------------{
+var lcwa_coeffs = array.new_float(hull_len, 0)
+var hull_coeffs = array.new_float(0)
+
+if barstate.isfirst
+    //Linearly combined WMA coeffs
+    for i = 0 to length-1
+        sum1 = math.max(short_len - i, 0)
+        sum2 = length - i
+    
+        array.unshift(lcwa_coeffs, 2 * (sum1 / den1) - (sum2 / den2))
+    
+    //Zero padding of linearly combined WMA coeffs
+    for i = 0 to hull_len-2
+        array.unshift(lcwa_coeffs, 0)
+    
+    //WMA convolution of linearly combined WMA coeffs
+    for i = hull_len to array.size(lcwa_coeffs)-1
+        sum3 = 0.
+        for j = i-hull_len to i-1
+            sum3 += array.get(lcwa_coeffs, j) * (i - j)
+        
+        array.unshift(hull_coeffs, sum3 / den3)
+
+//-----------------------------------------------------------------------------}
+//Hull squeeze oscillator
+//-----------------------------------------------------------------------------{
+var os  = 0
+var len = array.size(hull_coeffs)-1
+hma     = 0.
+inv_hma = 0.
+
+for i = 0 to len
+    hma += src[i] * array.get(hull_coeffs, i)
+    inv_hma += src[len-i] * array.get(hull_coeffs, i)
+    
+hso = hma - inv_hma
+
+cmean = ta.cum(math.abs(hso)) / bar_index * mult
+
+os := ta.cross(hso, cmean) or ta.cross(hso, -cmean) ? 0
+  : hso < hso[1] and hso > cmean ? -1
+  : hso > hso[1] and hso < -cmean ? 1
+  : os
+
+//-----------------------------------------------------------------------------}
+//Plot
+//-----------------------------------------------------------------------------{
+//Colors
+css0 = color.from_gradient(hso, 0, cmean, bull_css_0, bull_css_1)
+css1 = color.from_gradient(hso, -cmean, 0, bear_css_1, bear_css_0)
+css = hso > 0 ? css0 : css1
+
+//Oscillator line/histogram
+plot(hso, 'Hull Butterfly', css
+  , style = plot.style_histogram)
+
+plot(hso, 'Hull Butterfly', chart.fg_color)
+
+//Dots
+plot(os > os[1] and os == 1 ? hso : na, 'Bullish Dot'
+  , bull_css_1
+  , 2
+  , plot.style_circles)
+  
+plot(os < os[1] and os == -1 ? hso : na, 'Bearish Dot'
+  , bear_css_1
+  , 2
+  , plot.style_circles)
+
+
+//Levels
+plot(cmean, color = color.gray, editable = false)
+
+plot(cmean / 2, color = color.gray, editable = false)
+
+plot(-cmean / 2, color = color.gray, editable = false)
+
+plot(-cmean, color = color.gray, editable = false)
+
+//-----------------------------------------------------------------------------}

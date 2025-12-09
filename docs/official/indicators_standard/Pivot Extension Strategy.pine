@@ -1,0 +1,11 @@
+//@version=6
+strategy("Pivot Extension Strategy", overlay=true)
+leftBars = input(4, "Pivot Lookback Left")
+rightBars = input(2, "Pivot Lookback Right")
+ph = ta.pivothigh(leftBars, rightBars)
+pl = ta.pivotlow(leftBars, rightBars)
+if (not na(pl))
+	strategy.entry("PivExtLE", strategy.long, comment="PivExtLE")
+if (not na(ph))
+	strategy.entry("PivExtSE", strategy.short, comment="PivExtSE")
+//plot(strategy.equity, title="equity", color=color.red, linewidth=2, style=plot.style_areabr)

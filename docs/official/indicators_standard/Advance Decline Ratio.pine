@@ -1,0 +1,4 @@
+//@version=6
+indicator(title = "Advance Decline Ratio", shorttitle="ADR", format=format.price, precision=2)
+ratio(t1, t2, source) => request.security(t1, timeframe.period, source) / request.security(t2, timeframe.period, source)
+plot(ratio("USI:ADVN.NY", "USI:DECL.NY", close))

@@ -1,0 +1,103 @@
+//@version=6
+indicator("Performance")
+
+import TradingView/ValueAtTime/2 as VAT
+
+string TT_SL = "A list of symbols or ticker IDs, separated by commas and optional spaces."
+string TT_LT = "A list of timeframe strings, separated by commas and optional spaces. A valid timeframe string contains
+     a number followed by 'D', 'W', 'M', or 'Y'. Additionally, 'YTD' is supported."
+string TT_PC = "The base color for table cells that show positive values."
+string TT_NC = "The base color for table cells that show negative values."
+string TT_CP = "The change percentage cutoff for maximum color intensity. Absolute percentages at or above this level
+     correspond to the same color intensity."
+string TT_WT = "The table width, expressed as a percentage. If the value is 0, the width automatically adapts to the
+     table's contents. Note that using a large list of timeframe strings can cause the table's width to exceed the
+     width of the chart pane."
+string TT_HG = "The table height, expressed as a percentage. If the value is 0, the height automatically adapts to the
+     table's contents. Note that using a large list of symbols or ticker IDs can cause the table's height to exceed the
+     height of the chart pane."
+
+// Symbol settings
+bool   includeCurrentSymbolInput = input.bool(true, "Include chart symbol")
+string symbolListInput           = input.text_area("AAPL, NASDAQ:AMZN, EURUSD, ES1!, BTCUSD", "Symbol list", TT_SL)
+string tfListInput               = input.text_area("1W, 1M, 3M, 6M, 12M, YTD, 5Y", "Timeframe list",         TT_LT)
+
+// Color settings
+string COLOR_GRP           = "Color settings"
+int    HEAVY_TRANSP        = 70
+int    LOW_TRANSP          = 90
+color  neutralColor        = color.new(color.gray, 80)
+color  posColorInput       = color.new(input.color(#089981, "Positive Color", TT_PC, group = COLOR_GRP), 0)
+color  negColorInput       = color.new(input.color(#F23745, "Negative Color", TT_NC, group = COLOR_GRP), 0)
+int    cutoffPercentInput  = input.int(10, "Color intensity cutoff (%)", tooltip = TT_CP, group = COLOR_GRP, display = display.none)
+
+// Table settings
+string TABLE_GRP           = "Table settings"
+string tableXPositionInput = input.string("center", "Table position", ["left", "center", "right"], inline = "31", group = TABLE_GRP, display = display.none)
+string tableYPositionInput = input.string("middle", "",               ["top", "middle", "bottom"], inline = "31", group = TABLE_GRP, display = display.none)
+float  tableWidthInput     = input.float(100, "Table width (%)",  0, 100, 1, TT_WT, group = TABLE_GRP, display = display.none)
+float  tableHeightInput    = input.float(95,  "Table height (%)", 0, 100, 1, TT_HG, group = TABLE_GRP, display = display.none)
+
+getTickers()=>
+    symbols = VAT.getArrayFromString(str.upper(symbolListInput))
+    for [i, sym] in symbols
+        symbols.set(i, ticker.inherit(syminfo.tickerid, sym))
+    if includeCurrentSymbolInput and not symbols.includes(syminfo.ticker)
+        symbols.insert(0, syminfo.tickerid)
+    symbols
+
+// Construct arrays from inputs.
+var array<string> timeframesArray = VAT.getArrayFromString(str.upper(tfListInput))
+var array<string> symbolsArray = getTickers()
+
+// Create a table on the first bar.
+var table changesTable = table.new(
+     str.format("{0}_{1}", tableYPositionInput, tableXPositionInput), timeframesArray.size() + 1,
+     symbolsArray.size() + 1, border_width = 3
+ )
+
+// Populate the table on the last bar.
+if barstate.islast
+    float cellWidth  = tableWidthInput  / (timeframesArray.size() + 1)
+    float cellHeight = tableHeightInput / (symbolsArray.size()    + 1)
+
+     // Fill the first row with timeframe strings.
+    for [i, timeframe] in timeframesArray
+        changesTable.cell(
+             i + 1, 0, timeframe, bgcolor = neutralColor, text_color = chart.fg_color, width = cellWidth, height = cellHeight, text_size = size.auto
+         )
+
+     // Fill the first column with symbol descriptions, and all remaining cells with performance data.
+    for [i, symbol] in symbolsArray
+        [historicalClosesArray, timestampsArray, currClose, description] = request.security(
+             symbol, "1D",
+             VAT.getDataAtPeriodOffsets(timeframesArray, close, last_bar_time), lookahead = barmerge.lookahead_on
+         )
+
+        changesTable.cell(
+             0, i + 1, description, tooltip = description, bgcolor = neutralColor, text_color = chart.fg_color,
+             width = cellWidth, height = cellHeight, text_size = size.auto
+         )
+
+        // Calculate performance data from each item in `historicalClosesArray`, format each timestamp in
+        // `timestampsArray`, and populate corresponding cells.
+        for [j, value] in historicalClosesArray
+            float changePercent = (currClose - value) / value * 100
+            color cellColorBase = changePercent >= 0 ? posColorInput : negColorInput
+            color cellColor = color.from_gradient(
+                 math.abs(changePercent), 0, cutoffPercentInput, color.new(cellColorBase, LOW_TRANSP),
+                 color.new(cellColorBase, HEAVY_TRANSP)
+             )
+            string cellText = str.tostring(changePercent, format.percent)
+            string cellTooltip = str.format_time(timestampsArray.get(j), "dd MMM yyyy")
+
+            if na(changePercent)
+                cellColorBase := chart.fg_color
+                cellColor     := color.new(neutralColor, LOW_TRANSP)
+                cellText      := "No data"
+                cellTooltip   := na
+
+            changesTable.cell(
+                 j + 1, i + 1, cellText, tooltip = cellTooltip, bgcolor = cellColor,
+                 text_color = cellColorBase, width = cellWidth, height = cellHeight, text_size = size.auto
+             )

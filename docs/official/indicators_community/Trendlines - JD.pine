@@ -1,0 +1,530 @@
+//@version=4
+//
+/////////////////////////////////////////////////////
+/// © Copyright 2019 to present, Joris Duyck (JD) ///
+/////////////////////////////////////////////////////
+//{
+// This script draws trendlines from the pivot points in the price chart.
+// 
+// The input for the function that draws the trendlines is any calculation or function
+//  (here this is pivot points, but the core of the script can be used in other implementations too),
+//  that most of the time and occasionally produces a 'non n/a' value.
+// The trendline function then connects the non n/a values and extends the connections of those points in a trendline.
+//
+// There is an option to draw the lines from the wicks or from the 'real bodies' of the candles.
+// The trendlines can either extend infinitely or only run for an adjustable amount of bars.
+//
+// There's an option to display trendline breaks
+// And the option to display trendlines in color or monochrome
+//
+//
+//      !!! IMPORTANT NOTICE ON THE TRENDLINES !!!
+//
+//      The SOLID trendlines are NOT REALTIME !!! (they are painted as soon as the pivot point is detected,
+//                                                 this delay is due to the lookback period for the pivot points) 
+//      The DOTTED trendlines are REALTIME !!!
+// 
+// 
+// --------------------------------
+//
+//
+// To keep track of the high and low pivot points and the time of occurence, these values are stored in a custom DATAFRAME ARRAY.
+// This dataframe structure basically turns the standard 1 dimensional Pinescript arrays in a structured 3D dataframe!
+
+// !! Feel free to use the df structure in other scripts if you so desire, however a little shoutout would be nice!! ;-)
+
+
+// //////////////////////////////////
+// / BASIC INFO ON THE DATAFRAME: ///
+// //////////////////////////////////
+
+// The df is set up as an EXCELL workbook and is devided in SHEETS, ROWS/RECORDS and COLUMNS.
+
+// With the use of some purpose-built functions, values can be placed or retrieved in a specific column of a certain row on a certain sheet
+//  this can be done by intuitively using sheet_nr, row_nr and column_nr coördinates,
+//  without having to worry on what exact index of the Pine array this value is located (the functions do these conversions for you)
+
+
+// the syntax I propose for the 3D dataframe array has the following structure:
+
+//  - the array starts with 3 VALUES describing the DIMENSION INFORMATION, (nr of sheets, rows, columns)
+//      these are ignored in the actual calculations and serve as a metadata header (similar to the "location, time,... etc." data that is stored in photo files)
+//      so the array always carries it's own info about the nr. of sheets, rows and columns and doesn't need is seperate "info" file!
+
+//      To stay consistent with the standard Pinescript (array and [lookback]) indexing:
+//      - indexes for sheets and columns start from 0 (first) and run up to the (total nr of sheets or columns) - 1
+//      - indexes for rows also start from 0 (most recent, cfr.[lookback]) and run up to the (total nr of rows) - 1
+
+//  - this 3 value metadata header is followed by the actual df data
+//      the actual data array can consist of (100,000 - 3) usable items,
+     
+//      In a practical example, you can have a df with 3 sheets, containing 6,666 rows with each 5 columns of data (eg. open, high, low, close, volume) in it!!!
+//
+///////////////////////////////////
+/// SCHEMATIC OF THE STRUCTURE: ///
+///////////////////////////////////
+//
+////// (header with dimensions info)
+//
+// [nr_of_sheets, nr_of_rows/records, nr_of_columns,
+//
+////// (actual array data)
+// 
+//          SHEET 0
+//  
+//            0           1           2           3                   column_index
+//  0    record0_val0, record0_val1, record0_val2, record0_val3, ...,
+//  1    record1_val0, record1_val1, record1_val2, record1_val3, ...,
+//  2    record2_val0, record2_val1, record2_val2, record2_val3, ...,
+//  3    ...
+//
+// row_index
+//                   SHEET 1
+//           
+//                      0           1           2           3                   column_index
+//           0    record0_val0, record0_val1, record0_val2, record0_val3, ...,
+//           1    record1_val0, record1_val1, record1_val2, record1_val3, ...,
+//           2    record2_val0, record2_val1, record2_val2, record2_val3, ...,
+//           3    ...
+//          
+//          row_index
+//                                SHEET 2
+//                        
+//                                   0           1           2           3                   column_index
+//                        0    record0_val0, record0_val1, record0_val2, record0_val3, ...,
+//                        1    record1_val0, record1_val1, record1_val2, record1_val3, ...,
+//                        2    record2_val0, record2_val1, record2_val2, record2_val3, ...,
+//                        3    ...                                                          ]
+//                       
+//                       row_index
+//
+////////////////////////////////////
+/// DATA MANIPULATION FUNCTIONS: ///
+////////////////////////////////////
+//
+// A set of functions are implemented to write info to and retrieve info from the dataframe.
+//  Of course the possibilities are not limited to the functions here, these were written because they were needed for the script!
+//  A whole list of other functions can be easily written for other manipulation purposes.
+//
+//
+// LIST OF FUNCTIONS contained in this script:
+// 
+// - Dataframe initialisation function, builds 3D matrix with dimensional metadata/size in first 3 values //
+//      a new df array is built (cfr. the conventions I propose above) containing a certain nr of sheets, records and columns
+//
+// - function to get dimensional info from 3D matrix
+//      This function returns the nr of sheets, rows and columns in the df
+// 
+// - function to get a sheet start and end index from 3D matrix
+//      This is mainly used for 1D to 3D index conversions
+//
+// - function to add a record on the top of a sheet, shift the whole list one down and remove the oldest record
+//      (2D version of "unshift" + "pop" but with a whole row at once)
+//
+// - function to retrieve the values from a record from a certain row/lookback period
+//      The values are returned as an array
+//
+// - function to get/retrieve a single value from a certain sheet, row/lookback period and column
+//
+// - function to set a single value in a certain sheet, row/lookback period and column
+//
+// - function to print the matrix
+//      This function is mainly used for debugging purposes and displays the array as a 2D matrix notation
+//
+//
+// Enjoy!
+// JD.
+//
+// #NotTradingAdvice #DYOR
+//
+//  Disclaimer.
+// I AM NOT A FINANCIAL ADVISOR.
+// THESE IDEAS ARE NOT ADVICE AND ARE FOR EDUCATION PURPOSES ONLY.
+// ALWAYS DO YOUR OWN RESEARCH!
+//}
+
+study(title = "Trendlines - JD", shorttitle = "Trendlines", overlay = true)
+
+/////// Input variables ///////
+//{
+len                = input(30,    title = "loockback length pivots")
+wicks              = input(true,  title = "Draw lines from wicks (checked) or real bodies (unchecked)?")
+disp_select        = input(true,  title = "Display only falling 'high' and rising 'low' trendlines?")
+do_mono            = input(false, title = "checked = monochrome lines, unchecked = direction colored lines?")
+limit_extension    = input(2,     title = "Limit extensions of the lines? 0 = infinite, other values x 50 bars", minval = 0)
+do_alerts          = input(true,  title = "show trendline breaks")
+limit_trendline_nr = input(false, title = "limit number of trendlines shown (value in next setting calculates the lookback period)")
+trendline_nr       = input(5,     title = "number of trendlines to show (select true above to limit)", minval = 1, maxval = 50)
+trendline_check_nr = input(1,     title = "number of past trendlines to check for breaks", minval = 1, maxval = 50)
+select_breaks      = input(true,  title = "only display 'long' breaks on trendlines connecting 'highs' and 'short' for 'lows'")
+log_chart          = input(false, title = "USING A LOG CHART? MAKE SURE TO CHECK THIS BOX!!")
+//}
+
+/////// Initialisations ///////
+//{
+// Calculating the 'time value' of one bar
+//{
+bar_time = time - time[1]
+//}
+
+// Initialising color scheme
+//{
+var color color_rising  = do_mono ? color.teal : color.lime
+var color color_falling = do_mono ? color.teal : color.fuchsia
+//}
+//}
+
+/////// Function declarations ///////
+//{
+// Declaration of slope calculation function
+//{
+f_get_slope(_x1, _y1, _x2, _y2) =>
+    // Calculate slope for line (_x1, _y1) - (_x2, _y2)
+    _slope =
+     log_chart ?
+      ((log(_y2) - log(_y1)) / (_x2 - _x1)) :
+      ((    _y2  -     _y1 ) / (_x2 - _x1))
+    _slope
+//}
+
+// Function to get the trendline price for X bars ago ("0" = current value)
+//{
+line_get_price(_start_time, _start_price, _slope, _lookback_period, _log_chart) =>
+    var float current_price = 0.0
+    elapsed_time   = (time - _start_time)
+    current_price := 
+     _log_chart ?
+      (_start_price * exp((elapsed_time - (_lookback_period * bar_time)) * _slope)) :
+      (_start_price +     (elapsed_time - (_lookback_period * bar_time)) * _slope )
+//}
+
+// Function to check for trendline crosses
+//{
+line_cross(_check_value, _start_time, _start_price, _slope, _log_chart) =>
+    var float current_value  = 0.0
+    var float previous_value = 0.0
+    // Get current and previous price for the trendline
+    current_value  := line_get_price(_start_time, _start_price, _slope, 0, _log_chart)
+    previous_value := line_get_price(_start_time, _start_price, _slope, 1, _log_chart)
+    // Return 1 for crossover, -1 for crossunder and 0 for no cross detected
+    // cross = 
+    //  crossover( _check_value, current_value) ?  1 :
+    //  crossunder(_check_value, current_value) ? -1 : 0
+    cross =
+    //  _slope != _slope[1] ? 0:
+     _check_value[1] < previous_value and _check_value > current_value ?  1 :
+     _check_value[1] > previous_value and _check_value < current_value ? -1 : 0
+//}
+
+/// DATAFRAME STRUCTURE FUNCTIONS ///
+//{
+// info
+//{
+
+// Dataframe initialisation function, builds 3D matrix with dimensional metadata/size in first 3 values //
+// syntax = "f_df_array_new(nr of sheets, nr of records, nr of columns)"
+//{
+// f_df_array_new(_m, _nr_of_sheets, _nr_of_rows, _nr_of_columns) =>
+f_df_array_new(_nr_of_sheets, _nr_of_rows, _nr_of_columns, _fill) =>
+    _array_size =  3 + _nr_of_sheets * _nr_of_rows * _nr_of_columns
+    _m = array.new_float(_array_size, _fill)
+    array.set(_m, 0, _nr_of_sheets), array.set(_m, 1, _nr_of_rows), array.set(_m, 2, _nr_of_columns)
+    _m
+//}
+
+// function to get dimensional info from df matrix
+//{
+f_df_array_get_size(_m) =>
+    _nr_of_sheets  = int(array.get(_m, 0))
+    _nr_of_rows    = int(array.get(_m, 1))
+    _nr_of_columns = int(array.get(_m, 2))
+    [_nr_of_sheets, _nr_of_rows, _nr_of_columns]
+//}
+
+// function to get a sheet start and end index from df matrix
+//{
+f_df_array_get_sheet_index_range(_m, _sheet_index) =>
+    [_nr_of_sheets, _nr_of_rows, _nr_of_columns] = f_df_array_get_size(_m)
+    _start_index = 3 + min(_sheet_index, (_nr_of_sheets - 1)) * _nr_of_rows * _nr_of_columns
+    _end_index   = _start_index + _nr_of_rows * _nr_of_columns - 1
+    [_start_index, _end_index]
+//}
+
+// function to add a record on the top of a sheet and remove the oldest record ("sheet_index" goes from 0 (first) to 1, 2, ...)//
+//{
+f_df_array_add_new_record(_m, _sheet_index, _record) =>
+    [_nr_of_sheets, _nr_of_rows, _nr_of_columns] = f_df_array_get_size(_m)
+    if array.size(_record) == 3
+        [_sheet_start_index, _sheet_end_index] = f_df_array_get_sheet_index_range(_m, _sheet_index)
+        _sheet = array.slice(_m, _sheet_start_index, _sheet_end_index + 1)
+        for i = (3 - 1) to 0
+            array.unshift(_sheet, array.get(_record, i))
+            array.pop(_sheet)
+//}
+
+// function to retrieve the values (packed in an array) from a record from a certain row/lookback period ("sheet_index" goes from 0 (first) to 1, 2, ..., "row_index" goes from 0 (latest) to 1, 2, ...(oldest) )//
+//{
+f_df_array_get_record(_m, _sheet_index, _row_index) =>
+    [_nr_of_sheets, _nr_of_rows, _nr_of_columns] = f_df_array_get_size(_m)
+    [_sheet_start_index, _sheet_end_index] = f_df_array_get_sheet_index_range(_m, min(_nr_of_sheets - 1, _sheet_index))
+    _start_index  = _sheet_start_index + min(_nr_of_rows - 1, _row_index) * _nr_of_columns 
+    _record_slice = array.slice(_m, _start_index, _start_index + min(_sheet_end_index + 1, _nr_of_columns))
+    _record       = array.copy(_record_slice)
+    _record
+//}
+
+// function to get/retrieve a single value from a certain sheet, (row/lookback period, column) ("sheet_index" goes from 0 (first) to 1, 2, ..., "row_index" goes from 0 (latest) to 1, 2, ...(oldest), "column_index" goes from 0 (first) to 1, 2, ..., )//
+//{
+f_df_array_get(_m, _sheet_index, _row_index, _column_index) =>
+    _record = f_df_array_get_record(_m, _sheet_index, _row_index)
+    _value = array.get(_record, _column_index)
+    _value
+//}
+
+// function to set a single value in a certain sheet, (row/lookback period, column) ("sheet_index" goes from 0 (first) to 1, 2, ..., "row_index" goes from 0 (latest) to 1, 2, ...(oldest), "column_index" goes from 0 (first) to 1, 2, ..., )//
+//{
+f_df_array_set(_m, _sheet_index, _row_index, _column_index, _value) =>
+    [_nr_of_sheets, _nr_of_rows, _nr_of_columns] = f_df_array_get_size(_m)
+    [_sheet_start_index, _sheet_end_index] = f_df_array_get_sheet_index_range(_m, _sheet_index)
+    _start_index  = _sheet_start_index + min(_nr_of_rows - 1, _row_index) * _nr_of_columns
+    _record_slice = array.slice(_m, _start_index, _start_index + _nr_of_columns)
+    array.set(_record_slice, min(_nr_of_columns - 1, _column_index), _value)
+//}
+
+// function to print matrix (needs some adjustment )
+//{
+f_array_print(_m, _nr_of_dimensions, _header) =>
+    _text = _nr_of_dimensions <= 1 or not _header ? "" : "(" + tostring(array.get(_m, 0)) + "x" + tostring(array.get(_m, 1)) + (_nr_of_dimensions <= 2 ? "" : "x" + tostring(array.get(_m, 2))) + ")" + "\n" + "\n"
+    _text := _text + "[" + (_nr_of_dimensions == 1 or not _header ? tostring(array.get(_m, 0)) + " "  : "")
+    
+    for i = _nr_of_dimensions to array.size(_m) - 1
+        _text := _text + (i == _nr_of_dimensions ? "" : ((i - _nr_of_dimensions) % array.get(_m, 2)) == 0 ? "]" + "\n" + (i >= array.get(_m, 1) * array.get(_m, 2) + 2 ? "            " : "") + "[" : " ") + tostring(array.get(_m, i), "#")
+    _text := _text + "]"
+//}
+//}
+//}
+//}
+
+/////// Start of main script ///////
+//{
+////// Initialise the df array containing the trendline values //////
+//{
+//////////////////////////////
+//// set array dimensions ////
+nr_of_sheets      = 2
+nr_of_rows        = 42
+nr_of_columns     = 3
+//////////////////////////////
+////     sheet names     ////
+high_pivot_data   = 0
+low_pivot_data    = 1
+//////////////////////////////
+////     column names     ////
+pivot_bar_nr      = 0
+pivot_value       = 1
+slope_to_previous = 2
+//////////////////////////////
+
+//// build dataframe array ////
+var float[] trendlines = f_df_array_new(nr_of_sheets, nr_of_rows, nr_of_columns, 0)
+/////////////////////////////////////////////////////////////////////
+//}
+
+/////// Calculate pivot points ///////
+//{
+high_pivot = pivothigh(wicks ? high : max(open, close), len, len / 2)
+low_pivot  = pivotlow( wicks ? low  : min(open, close), len, len / 2)
+//}
+//
+
+/////// Track and store pivot points ///////
+//{
+
+/////////////////////////////////
+// Track and store high pivots //
+/////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// If a new trendline is formed, enter the new trendline info in the df array                   //
+// high trendline values go in sheet 0                                                          //
+// syntax = "f_df_array_add_new_record(array_id, sheet_index, array_of_record_values_to_insert)"//
+//////////////////////////////////////////////////////////////////////////////////////////////////
+float[] high_line    = array.new_float(3, 0)
+if not na(high_pivot)
+    array.set(high_line, 0, time[len / 2])
+    array.set(high_line, 1, high_pivot)
+    f_df_array_add_new_record(trendlines, high_pivot_data, high_line)
+
+phx1         = int(f_df_array_get(trendlines, high_pivot_data, 1, pivot_bar_nr))
+phy1         =     f_df_array_get(trendlines, high_pivot_data, 1, pivot_value)
+phx2         = int(f_df_array_get(trendlines, high_pivot_data, 0, pivot_bar_nr))
+phy2         =     f_df_array_get(trendlines, high_pivot_data, 0, pivot_value)
+slope_high   =     f_get_slope(phx1, phy1, phx2, phy2)
+f_df_array_set(trendlines, high_pivot_data, 0, slope_to_previous, slope_high)
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+////////////////////////////////
+// Track and store low pivots //
+////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// If a new trendline is formed, enter the new trendline info in the df array                   //
+// low trendline values go in sheet 1                                                           //
+// syntax = "f_df_array_add_new_record(array_id, sheet_index, array_of_record_values_to_insert)"//
+//////////////////////////////////////////////////////////////////////////////////////////////////
+float[] low_line    = array.new_float(3, 0)
+if not na(low_pivot)
+    array.set(low_line, 0, time[len / 2])
+    array.set(low_line, 1, low_pivot)
+    f_df_array_add_new_record(trendlines, low_pivot_data, low_line)
+
+plx1         = int(f_df_array_get(trendlines, low_pivot_data, 1, pivot_bar_nr))
+ply1         =     f_df_array_get(trendlines, low_pivot_data, 1, pivot_value)
+plx2         = int(f_df_array_get(trendlines, low_pivot_data, 0, pivot_bar_nr))
+ply2         =     f_df_array_get(trendlines, low_pivot_data, 0, pivot_value)
+slope_low    =     f_get_slope(plx1, ply1, plx2, ply2)
+f_df_array_set(trendlines, low_pivot_data, 0, slope_to_previous, slope_low)
+//////////////////////////////////////////////////////////////////////////////////////////////////
+//}
+
+/////// plot trendlines ///////
+//{
+// Calculate adjusted trendline coördinates to indicate the lookback period //
+//{ length of the time period that lines are extended to the bar where the pivot was detected
+lookback_time  = bar_time * (len / 2)
+
+// high lines lookback line coördinates
+phx2_lb = phx2 + lookback_time
+phy2_lb = 
+ log_chart ?
+  (phy2 * exp(lookback_time * slope_high)) :
+  (phy2 +     lookback_time * slope_high )
+
+// low lines lookback line coördinates
+plx2_lb = plx2 + lookback_time
+ply2_lb =
+ log_chart ?
+  (ply2 * exp(lookback_time * slope_low)) :
+  (ply2 +     lookback_time * slope_low )
+//}
+
+// Calculate adjusted trendline coördinates for limited extension values //
+//{length of the time period that lines are extended forward
+extension_time = limit_extension * bar_time * 100
+
+// high lines extension coördinates
+phx2_adj = limit_extension == 0 ? phx2 : phx2 + extension_time
+phy2_adj = limit_extension == 0 ? phy2 :
+ log_chart ?
+  (phy2 * exp(extension_time * slope_high)) :
+  (phy2 +     extension_time * slope_high )
+
+// low lines extension coördinates
+plx2_adj = limit_extension == 0 ? plx2 : plx2 + extension_time
+ply2_adj = limit_extension == 0 ? ply2 :
+ log_chart ?
+  (ply2 * exp(extension_time * slope_low)) :
+  (ply2 +     extension_time * slope_low )
+//}
+
+// plot lines
+//{
+var line looback_line_high = na, var line trendline_high = na
+var line looback_line_low  = na, var line trendline_low  = na
+var bool xtend             = limit_extension == 0 ? true : false
+
+// plot high lookback lines //
+if not na(high_pivot)
+    line_color_high = slope_high * time < 0 ? (color_rising) : ((disp_select ? na : color_falling))
+    if not na(line_color_high)
+        looback_line_high := line.new(phx1, phy1, phx2_lb, phy2_lb, xloc.bar_time, extend = extend.none, color = line_color_high, style = line.style_solid, width = 1)
+
+// plot high trendlines //
+if not na(high_pivot)
+    line_color_high = slope_high * time < 0 ? (color_rising) : ((disp_select ? na : color_falling))
+    if not na(line_color_high)
+        trendline_high := line.new(phx1, phy1, phx2_adj, phy2_adj, xloc.bar_time, extend = xtend ? extend.right : extend.none, color = line_color_high, style = line.style_dotted, width = 1)
+
+lookback_period_to_delete_tl_high = (time - f_df_array_get(trendlines, high_pivot_data, trendline_nr, pivot_bar_nr)) / bar_time
+if limit_trendline_nr
+    line.delete(trendline_low[lookback_period_to_delete_tl_high])
+
+
+// plot low lookback lines //
+if not na(low_pivot)
+    line_color_low = slope_high * time < 0 ? (disp_select ? na : color_rising) : (color_falling)
+    if not na(line_color_low)
+        looback_line_low := line.new(plx1, ply1, plx2_lb, ply2_lb, xloc.bar_time, extend = extend.none, color = line_color_low, style = line.style_solid, width = 1)
+
+// plot low trendlines //
+if not na(low_pivot)
+    line_color_low = slope_high * time < 0 ? (disp_select ? na : color_rising) : (color_falling)
+    if not na(line_color_low)
+        trendline_low := line.new(plx1, ply1, plx2_adj, ply2_adj, xloc.bar_time, extend = xtend ? extend.right : extend.none, color = line_color_low, style = line.style_dotted, width = 1)
+
+lookback_period_to_delete_tl_low = (time - f_df_array_get(trendlines, low_pivot_data, trendline_nr, pivot_bar_nr)) / bar_time
+if limit_trendline_nr
+    line.delete(trendline_low[lookback_period_to_delete_tl_low])
+//}
+
+/////// Check Trendline crosses for last X nr. of trendlines ///////
+//{
+high_line_values = f_df_array_get_record(trendlines, 0, 0)
+cross_high = 0, high_x = 0.0, high_y = 0.0, high_sl = 0.0
+
+low_line_values  = f_df_array_get_record(trendlines, 1, 0)
+cross_low = 0,  low_x = 0.0,  low_y = 0.0,  low_sl = 0.0
+
+// loop through the high and low trendlines to check for crosses
+int[] cross_high_values = array.new_int()
+int[] cross_low_values  = array.new_int()
+for i = 0 to trendline_check_nr
+
+    high_x  := int(f_df_array_get(trendlines, high_pivot_data, i, pivot_bar_nr)), high_y := f_df_array_get(trendlines, high_pivot_data, i, pivot_value)
+    high_sl := f_df_array_get(trendlines, high_pivot_data, i, slope_to_previous)
+    array.push(cross_high_values,
+     disp_select and high_sl * time > 0 ? 0 :
+     line_cross(close, high_x, high_y, high_sl, log_chart)) 
+     
+    low_x  := int(f_df_array_get(trendlines, low_pivot_data, i, pivot_bar_nr)), low_y := f_df_array_get(trendlines, low_pivot_data, i, pivot_value)
+    low_sl := f_df_array_get(trendlines, low_pivot_data, i, slope_to_previous)
+    array.push(cross_low_values,
+     disp_select and low_sl * time > 0 ? 0 :
+     line_cross(close, low_x, low_y, low_sl, log_chart)) 
+
+long_break  = array.includes(cross_high_values, 1)
+short_break = array.includes(cross_low_values,  1)
+//}
+
+/////// Plot and connect pivot points ///////
+//{
+color_high = slope_high * time < 0 ? color_rising :  (disp_select ? na : color_falling)
+color_low  = slope_low  * time > 0 ? color_falling : (disp_select ? na : color_rising)
+plot(high_pivot, color = color_high, offset = -len / 2)
+plot(low_pivot,  color = color_low,  offset = -len / 2)
+//}
+//
+/////// Signal Trendline breaks ///////
+//{
+plotshape(do_alerts ? (long_break  ? close : na) : na, title = "cross_high",
+          style = shape.triangleup,   size = size.small, location = location.belowbar,
+          color = color.lime,    transp = 0)
+plotshape(do_alerts ? (short_break ? close : na) : na, title = "cross_low",
+          style = shape.triangledown, size = size.small, location = location.abovebar,
+          color = color.fuchsia, transp = 0)
+//}
+
+/////// Color bars on breaks ///////
+//{
+barcolor(do_alerts ? (long_break ? color.lime : short_break ? color.fuchsia : na) : na)
+//}
+//}
+//}
+
+/////// Alerts ///////
+//{
+// for TV free users
+alertcondition(long_break or short_break, title = "trendline break", message = "trendline break: {{close}}")
+// for TV PRO users
+alertcondition(long_break, title  = "trendline break up",  message = "trendline break up: {{close}}")
+alertcondition(short_break,title = "trendline break down", message = "trendline break down: {{close}}")
+//}

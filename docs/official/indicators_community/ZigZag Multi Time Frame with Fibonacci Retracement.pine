@@ -1,0 +1,143 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("ZigZag Multi Time Frame with Fibonacci Retracement", "ZZMTF", overlay = true, max_bars_back = 1000)
+tf = input(defval = 'D', title="ZigZag Resolution", type = input.resolution)
+prd = input(defval = 2, title="ZigZag Period", minval = 2, maxval = 10)
+showzigzag = input(defval = false, title = "Show Zig Zag")
+showfibo = input(defval = true, title = "Show Fibonacci Ratios")
+colorfulfibo = input(defval = false, title = "Colorful Fibonacci Levels")
+labelcol = input(defval = color.blue, title = "Text Color")
+fibolinecol = input(defval = color.lime, title = "Line Color")
+upcol = input(defval = color.lime, title = "Zigzag Line Colors", inline = "zzcol")
+dncol = input(defval = color.red, title = "", inline = "zzcol")
+labelloc = input(defval = "Left", title = "Label Location", options = ["Left", "Right"])
+enable236 = input(defval = true, title = "Enable Level 0.236")
+enable382 = input(defval = true, title = "Enable Level 0.382")
+enable500 = input(defval = true, title = "Enable Level 0.500")
+enable618 = input(defval = true, title = "Enable Level 0.618")
+enable786 = input(defval = true, title = "Enable Level 0.786")
+
+bool newbar = change(time(tf)) != 0
+
+bi = valuewhen(newbar, bar_index, prd - 1)
+len = bar_index - bi + 1
+
+float ph = na 
+float pl = na
+ph := highestbars(high, nz(len, 1)) == 0 ? high : na
+pl := lowestbars(low, nz(len, 1)) == 0 ? low : na
+
+var dir = 0
+dir := iff(ph and na(pl), 1, iff(pl and na(ph), -1, dir))
+var max_array_size = 50
+var zigzag = array.new_float(0)
+oldzigzag = array.copy(zigzag)
+
+add_to_zigzag(value, bindex)=>
+    array.unshift(zigzag, bindex)
+    array.unshift(zigzag, value)
+    if array.size(zigzag) > max_array_size
+        array.pop(zigzag)
+        array.pop(zigzag)
+    
+update_zigzag(value, bindex)=>
+    if array.size(zigzag) == 0
+        add_to_zigzag(value, bindex)
+    else
+        if (dir == 1 and value > array.get(zigzag, 0)) or (dir == -1 and value < array.get(zigzag, 0))
+            array.set(zigzag, 0, value)
+            array.set(zigzag, 1, bindex)
+        0.
+
+bool dirchanged = (dir != dir[1])
+if ph or pl
+    if dirchanged
+        add_to_zigzag(dir == 1 ? ph : pl, bar_index)
+    else
+        update_zigzag(dir == 1 ? ph : pl, bar_index)
+
+if showzigzag and array.size(zigzag) >= 4 and array.size(oldzigzag) >= 4
+    var line zzline = na
+    if array.get(zigzag, 0) != array.get(oldzigzag, 0) or array.get(zigzag, 1) != array.get(oldzigzag, 1)
+        if array.get(zigzag, 2) == array.get(oldzigzag, 2) and array.get(zigzag, 3) == round(array.get(oldzigzag, 3))
+            line.delete(zzline)
+        zzline := line.new(x1 = round(array.get(zigzag, 1)), y1 = array.get(zigzag, 0), x2 = round(array.get(zigzag, 3)), y2 = array.get(zigzag, 2), color = dir == 1 ? upcol : dncol, width = 2)
+
+if not showzigzag and array.size(zigzag) >= 6
+    var line zzline = na
+    line.delete(zzline)
+    zzline := line.new(x1 = round(array.get(zigzag, 3)), y1 = array.get(zigzag, 2), x2 = round(array.get(zigzag, 5)), y2 = array.get(zigzag, 4), color = dir == 1 ? upcol : dncol, width = 2, style = line.style_dotted)
+
+var fibo_ratios = array.new_float(0)
+var fibo_colors = array.new_color(10)
+var shownlevels = 1
+if barstate.isfirst
+    array.push(fibo_ratios, 0.000)
+    if enable236
+        array.push(fibo_ratios, 0.236)
+        shownlevels := shownlevels + 1
+    if enable382
+        array.push(fibo_ratios, 0.382)
+        shownlevels := shownlevels + 1
+    if enable500
+        array.push(fibo_ratios, 0.500)
+        shownlevels := shownlevels + 1
+    if enable618
+        array.push(fibo_ratios, 0.618)
+        shownlevels := shownlevels + 1
+    if enable786
+        array.push(fibo_ratios, 0.786)
+        shownlevels := shownlevels + 1
+    for x = 1 to 5
+        array.push(fibo_ratios, x)
+        array.push(fibo_ratios, x + 0.272)
+        array.push(fibo_ratios, x + 0.414)
+        array.push(fibo_ratios, x + 0.618)
+    
+    // set colors
+    array.set(fibo_colors, 0, color.lime)
+    array.set(fibo_colors, 1, color.silver)
+    array.set(fibo_colors, 2, color.gray)
+    array.set(fibo_colors, 3, color.red)
+    array.set(fibo_colors, 4, color.purple)
+    array.set(fibo_colors, 5, color.fuchsia)
+    array.set(fibo_colors, 6, color.olive)
+    array.set(fibo_colors, 7, color.navy)
+    array.set(fibo_colors, 8, color.teal)
+    array.set(fibo_colors, 9, color.orange)
+
+var fibolines = array.new_line(0)
+var fibolabels = array.new_label(0)
+if showfibo and array.size(zigzag) >= 6 and barstate.islast
+    if array.size(fibolines) > 0
+        for x = 0 to array.size(fibolines) - 1
+            line.delete(array.get(fibolines, x))
+            label.delete(array.get(fibolabels, x))
+            
+    diff = array.get(zigzag, 4) - array.get(zigzag, 2)
+    stopit = false
+    for x = 0 to array.size(fibo_ratios) - 1
+        if stopit and x > shownlevels
+            break
+        fibo_line_col = colorfulfibo ? array.get(fibo_colors, ((timenow / 1000) * x) % 10) : fibolinecol
+        array.unshift(fibolines, 
+                      line.new(x1 = round(array.get(zigzag, 5)), 
+                               y1 = array.get(zigzag, 2) + diff * array.get(fibo_ratios, x), 
+                               x2 = bar_index, 
+                               y2 = array.get(zigzag, 2) + diff * array.get(fibo_ratios, x), 
+                               color = fibo_line_col,
+                               extend = extend.right))
+        label_x_loc = labelloc == "Left" ? round(array.get(zigzag, 5)) - 1 : bar_index
+        txt = labelloc == "Left" ? "" : "                  "
+        array.unshift(fibolabels, 
+                      label.new( x = label_x_loc, 
+                                 y = array.get(zigzag, 2) + diff * array.get(fibo_ratios, x), 
+                                 text = txt + tostring(array.get(fibo_ratios, x), '#.###') + "(" + tostring(round_to_mintick(array.get(zigzag, 2) + diff * array.get(fibo_ratios, x))) + ")", 
+                                 textcolor = labelcol, 
+                                 style = label.style_none))
+        if (dir == 1 and array.get(zigzag, 2) + diff * array.get(fibo_ratios, x) > array.get(zigzag, 0)) or
+           (dir == -1 and array.get(zigzag, 2) + diff * array.get(fibo_ratios, x) < array.get(zigzag, 0))
+            stopit := true
+    

@@ -1,0 +1,153 @@
+//@version=5
+// Shows the Daily, Weekly, Monthly, Quarterly, and Yearly VWAP. Also
+// shows the previous closing VWAP, which is usually very near the
+// HLC3 standard pivot for the previous time frame. i.e. The previous
+// daily VWAP closing price is usually near the current Daily Pivot.
+indicator("Multi-Timeframe VWAP V5", overlay = true)
+
+std1 = input.float(title = "STDEV 1", defval = 1, step = 0.1)
+std2 = input.float(title = "STDEV 2", defval = 2, step = 0.1)
+std3 = input.float(title = "STDEV 3", defval = 3, step = 0.1)
+
+showStd = input(false, title = "Show STDEV Bands")
+showPrev = input(false, title = "Show Previous VWAP")
+showPrevBand = input(false, title = "Show Previous STDEV = 1 Bands")
+bands = input.string(title = "STDEV Bands Timeframe", defval = "Day", options=["Day", "Week", "Month", "Quarter", "Year"])
+
+dLabel = input(true, "Day VWAP Label", group = "Labels", inline = "D")
+dColorLabel = input.color(#008000FF, "", group = "Labels", inline = "D")
+wLabel = input(true, "Week VWAP Label", group = "Labels", inline = "W")
+wColorLabel = input.color(#008080DD, "", group = "Labels", inline = "W")
+mLabel = input(false, "Month VWAP Label", group = "Labels", inline = "M")
+mColorLabel = input.color(#808000FF, "", group = "Labels", inline = "M")
+qLabel = input(false, "Quarter VWAP Label", group = "Labels", inline = "Q")
+qColorLabel = input.color(#801010FF, "", group = "Labels", inline = "Q")
+yLabel = input(false, "Year VWAP Label", group = "Labels", inline = "Y")
+yColorLabel = input.color(#091580FF, "", group = "Labels", inline = "Y")
+
+textColor = input.color(#FFFFFFFF, "Text Color", group = "Miscellaneous")
+size = input.int(2, title = "Label Size (0 = Auto, 1 - 5)", minval = 0, maxval = 5, group = "Miscellaneous")
+offset = input.int(0, title = "Label Offset", minval = 0, maxval = 1000, group = "Miscellaneous")
+
+showPrice = input(true, "Show Price Values?", group = "Miscellaneous")
+showSessType = input(true, "Show Session Type?", group = "Miscellaneous")
+
+rez1 = bands == "Day" ? "D" : bands == "Week" ? "W" : bands == "Month" ? "M" : bands == "Quarter" ? "3M" : "12M"
+
+newSessionD = ta.change(time("D"))
+newSessionW = ta.change(time("W"))
+newSessionM = ta.change(time("M"))
+newSessionQ = ta.change(time("3M"))
+newSessionY = ta.change(time("12M"))
+
+getVWAP(newSession) =>
+    p = hlc3 * volume
+    p := newSession ? hlc3 * volume : nz(p[1]) + hlc3 * volume
+    
+    vol = 0.0
+    vol := newSession ? volume : nz(vol[1]) + volume
+    
+    v = p / vol
+    
+    // Incremental weighted standard deviation (rolling)
+    // http://people.ds.cam.ac.uk/fanf2/hermes/doc/antiforgery/stats.pdf (part 5)
+    // x[i] = hlc3[i], w[i] = volume[i], u[i] - v[i]
+    
+    Sn = 0.0
+    Sn := newSession ? 0 : nz(Sn[1]) + volume * (hlc3 - nz(v[1])) * (hlc3 - v)
+    std = math.sqrt(Sn / vol)
+    
+    [v, std]
+
+[vD, stdevD] = getVWAP(newSessionD)
+[vW, stdevW] = getVWAP(newSessionW)
+[vM, stdevM] = getVWAP(newSessionM)
+[vQ, stdevQ] = getVWAP(newSessionQ)
+[vY, stdevY] = getVWAP(newSessionY)
+
+vDplot = plot(vD, title = "VWAP - Daily", color = #00FF00FF, style = plot.style_circles, transp = 10, linewidth = 1)
+vWplot = plot(vW, title = "VWAP - Weekly", color = #00E2E2FF, style = plot.style_circles, transp = 10, linewidth = 2)
+vMplot = plot(vM, title = "VWAP - Monthly", color = #C0C000FF, style = plot.style_circles, transp = 10, linewidth = 3)
+vQplot = plot(vQ, title = "VWAP - Quarterly", color = #BF1111FF, style = plot.style_circles, transp = 10, linewidth = 4)
+vYplot = plot(vY, title = "VWAP - Yearly", color = #0921FFDD, style = plot.style_circles, transp = 10, linewidth = 4)
+
+v = rez1 == "W" ? vW : rez1 == "M" ? vM : rez1 == "3M" ? vQ : rez1 == "12M" ? vY : vD
+s = rez1 == "W" ? stdevW : rez1 == "M" ? stdevM : rez1 == "3M" ? stdevQ : rez1 == "12M" ? stdevY : stdevD
+
+vPlot = plot(v, title = "VWAP - Selected (transparent, not used)", color = #00000000)
+
+s1up = plot(showStd ? v + std1 * s : na, title = "VWAP - STDEV 1", color = #22FFFFDD, linewidth = 1)
+s1dn = plot(showStd ? v - std1 * s : na, title = "VWAP - STDEV 1", color = #22FFFFDD, linewidth = 1)
+s2up = plot(showStd ? v + std2 * s : na, title = "VWAP - STDEV 2", color = #44FFFFDD, style = plot.style_circles, linewidth = 1)
+s2dn = plot(showStd ? v - std2 * s : na, title = "VWAP - STDEV 2", color = #44FFFFDD, style = plot.style_circles, linewidth = 1)
+s3up = plot(showStd ? v + std3 * s : na, title = "VWAP - STDEV 3", color = #66FFFFDD, style = plot.style_circles, linewidth = 1)
+s3dn = plot(showStd ? v - std3 * s : na, title = "VWAP - STDEV 3", color = #66FFFFDD, style = plot.style_circles, linewidth = 1)
+
+fill(vPlot, s1up, title = "VWAP - S1 Fill (Up)", color = #11111122)
+fill(vPlot, s1dn, title = "VWAP - S1 Fill (Down)", color = #11111122)
+
+fill(s1up, s2up, title = "S1 - S2 Fill (Up)", color = #33333322)
+fill(s1dn, s2dn, title = "S1 - S2 Fill (Down)", color = #33333322)
+
+fill(s2up, s3up, title = "S2 - S3 Fill (Up)", color = #55555522)
+fill(s2dn, s3dn, title = "S2 - S3 Fill (Down)", color = #55555522)
+
+pvD = ta.valuewhen(newSessionD, vD[1], 0)
+pvW = ta.valuewhen(newSessionW, vW[1], 0)
+pvM = ta.valuewhen(newSessionM, vM[1], 0)
+pvQ = ta.valuewhen(newSessionQ, vQ[1], 0)
+pvY = ta.valuewhen(newSessionY, vY[1], 0)
+
+plot(showPrev ? pvD : na, title = "Previous VWAP - Daily", color = #00FF0099, style = plot.style_cross, transp = 10, linewidth = 1)
+plot(showPrev ? pvW : na, title = "Previous VWAP - Weekly", color = #40E20099, style = plot.style_cross, transp = 10, linewidth = 2)
+plot(showPrev ? pvM : na, title = "Previous VWAP - Monthly", color = #80C60099, style = plot.style_cross, transp = 10, linewidth = 3)
+plot(showPrev ? pvQ : na, title = "Previous VWAP - Quarterly", color = #BFA90099, style = plot.style_cross, transp = 10, linewidth = 4)
+plot(showPrev ? pvY : na, title = "Previous VWAP - Yearly", color = #FF8C0099, style = plot.style_cross, transp = 10, linewidth = 4)
+
+pvDS1up = ta.valuewhen(newSessionD, vD[1] + std1 * stdevD[1], 0)
+pvDS1dn = ta.valuewhen(newSessionD, vD[1] - std1 * stdevD[1], 0)
+pvWS1up = ta.valuewhen(newSessionW, vW[1] + std1 * stdevW[1], 0)
+pvWS1dn = ta.valuewhen(newSessionW, vW[1] - std1 * stdevW[1], 0)
+pvMS1up = ta.valuewhen(newSessionM, vM[1] + std1 * stdevM[1], 0)
+pvMS1dn = ta.valuewhen(newSessionM, vM[1] - std1 * stdevM[1], 0)
+pvQS1up = ta.valuewhen(newSessionQ, vQ[1] + std1 * stdevQ[1], 0)
+pvQS1dn = ta.valuewhen(newSessionQ, vQ[1] - std1 * stdevQ[1], 0)
+pvYS1up = ta.valuewhen(newSessionY, vY[1] + std1 * stdevY[1], 0)
+pvYS1dn = ta.valuewhen(newSessionY, vY[1] - std1 * stdevY[1], 0)
+
+plot(showPrevBand ? pvDS1up : na, title = "Previous VWAP S1 - Daily", color = #00FF0099, style = plot.style_cross, transp = 10, linewidth = 1)
+plot(showPrevBand ? pvDS1dn : na, title = "Previous VWAP S1 - Daily", color = #00FF0099, style = plot.style_cross, transp = 10, linewidth = 1)
+plot(showPrevBand ? pvWS1up : na, title = "Previous VWAP S1 - Weekly", color = #40E20099, style = plot.style_cross, transp = 10, linewidth = 2)
+plot(showPrevBand ? pvWS1dn : na, title = "Previous VWAP S1 - Weekly", color = #40E20099, style = plot.style_cross, transp = 10, linewidth = 2)
+plot(showPrevBand ? pvMS1up : na, title = "Previous VWAP S1 - Monthly", color = #80C60099, style = plot.style_cross, transp = 10, linewidth = 3)
+plot(showPrevBand ? pvMS1dn : na, title = "Previous VWAP S1 - Monthly", color = #80C60099, style = plot.style_cross, transp = 10, linewidth = 3)
+plot(showPrevBand ? pvQS1up : na, title = "Previous VWAP S1 - Quarterly", color = #BFA90099, style = plot.style_cross, transp = 10, linewidth = 4)
+plot(showPrevBand ? pvQS1dn : na, title = "Previous VWAP S1 - Quarterly", color = #BFA90099, style = plot.style_cross, transp = 10, linewidth = 4)
+plot(showPrevBand ? pvYS1up : na, title = "Previous VWAP S1 - Yearly", color = #FF8C0099, style = plot.style_cross, transp = 10, linewidth = 4)
+plot(showPrevBand ? pvYS1dn : na, title = "Previous VWAP S1 - Yearly", color = #FF8C0099, style = plot.style_cross, transp = 10, linewidth = 4)
+
+// Labels
+
+labelSize = size == 0 ? size.auto : size == 1 ? size.tiny : size == 2 ? size.small : size == 3 ? size.normal : size == 4 ? size.large : size.huge
+
+getLabel(x, price, prefix, col, textCol, isUp, newSession) =>
+    var label l = na
+        
+    if not na(price)
+        if na(l)
+            l := label.new(x, price, color = col, textcolor = textCol, size = labelSize)
+        
+        p = math.round(price / syminfo.mintick) * syminfo.mintick
+        
+        label.set_x(l, x)
+        label.set_y(l, price)
+        label.set_style(l, isUp ? label.style_label_lower_left : label.style_label_upper_left)
+        label.set_text(l, prefix + "\n" + str.tostring(p, "0.00"))
+        
+getLabel(math.max(0, bar_index - offset), showPrice and dLabel ? vD : na, "VWAP" + (showSessType ? " (Day)" : ""), dColorLabel, textColor, close[1] < vD, newSessionD)
+getLabel(math.max(0, bar_index - offset), showPrice and wLabel ? vW : na, "VWAP" + (showSessType ? " (Week)" : ""), wColorLabel, textColor, close[1] < vW, newSessionD)
+getLabel(math.max(0, bar_index - offset), showPrice and mLabel ? vM : na, "VWAP" + (showSessType ? " (Month)" : ""), mColorLabel, textColor, close[1] < vM, newSessionD)
+getLabel(math.max(0, bar_index - offset), showPrice and qLabel ? vQ : na, "VWAP" + (showSessType ? " (Quarter)" : ""), qColorLabel, textColor, close[1] < vQ, newSessionD)
+getLabel(math.max(0, bar_index - offset), showPrice and yLabel ? vY : na, "VWAP" + (showSessType ? " (Year)" : ""), yColorLabel, textColor, close[1] < vY, newSessionD)
+
+// end

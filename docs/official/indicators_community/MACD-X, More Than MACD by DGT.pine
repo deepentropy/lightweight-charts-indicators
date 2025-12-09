@@ -1,0 +1,417 @@
+//@version=4
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : MACD-X, More Than MACD
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Aug 24, 2020  : Initial Release
+//# *  Update     : Aug 27, 2020  : Squeeze Indicator Add-On
+//# *  Update     : Oct 24, 2020  : Volume Weighted Colored Bars Add-On
+//# *                               Standart Deviation Threshold bands for MACD Histogram
+//# *  Update     : Oct 29, 2020  : TRIX is adapted to MACD-X
+//# *  Update     : Nov 26, 2020  : Backtest Framework added
+//# *  Update     : Apr 09, 2021  : Enchanced Backtest Framework
+//# *                               - long/short/stoploss conditions enchaced
+//# *                               - early warning ability added (label + alert)
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+study("MACD-X, More Than MACD by DGT", "MACD-X ʙʏ DGT ☼☾")
+
+macdType      = input("MACD-SOURCE", "MACD Calculation Method", 
+                         options=["MACD-TRADITIONAL", 
+                                  "MACD-HISTOGRAM",
+                                  "MACD-LEADER", 
+                                  "MACD-SOURCE",
+                                  "MACD-TRIX"])
+
+sourceType    = input("Current Price (close)", "Source", 
+                         options=["Current Price (close)", 
+                                  "Average of High, Low, and Close Price (hlc3)", 
+                                  "On Balance Volume (obv)", 
+                                  "Accumulation Distribution (accdist)", 
+                                  "Price Volume Trend (pvt)"])
+
+fast_length   = input(12,    "Fast Length", type=input.integer)
+slow_length   = input(26,    "Slow Length", type=input.integer)
+signal_length = input(9 ,    "Signal Smoothing", type=input.integer, minval = 1, maxval = 50)
+
+dummy_1       = input(false, "═══════ ═════ ═══   Options   ═══ ═════ ═══════")
+
+exponential   = input(true , "Use Exponential Moving Average")
+macdTrdDisp   = input(false, "Add Traditional MACD (MACD-X will be auto Highlighted)")
+var highlight = input(false, "Highlight MACD-X/Signal-X Area")
+dispLabel     = input(false, "Display Label")
+histLabel     = input(0,     "  Historical Label Readings", minval=0)
+
+dummy_2       = input(false, "═══════ ═════ ═══   Add-Ons   ═══ ═════ ═══════")
+
+dispSqueeze   = input(false, "► Display Squeeze Indicator Add-On ═════")
+bbkcLength    = input(20,    "  SQZ : Bollinger Bands/Keltner's Channel Length", minval = 1)
+bbMult        = input(2,     "  SQZ : Bollinger Bands MultFactor"  , type=input.float, step=0.25)
+kcMult        = input(1.25,  "  SQZ : Keltner's Channel MultFactor", type=input.float, step=0.25)
+
+colorRsi      = input(false, "► Change MACD Color when RSI Over[Bouht/Sold] Add-On ═════")
+rsiLength     = input(14,    "  RSI : Length")
+rsiOverBought = input(70,    "  RSI : Overbought Threshold", minval = 51, maxval = 99)
+rsiOverSold   = input(30,    "  RSI : Oversold Threshold"  , minval = 1 , maxval = 49)
+
+hstThesh      = input(false, "► Display Histogram Threshold Bands Add-On ═════")
+stDevL        = input(1.75,  "  Threshold Bands: Lower Deviation" , type=input.float, minval = 0, step = .25, maxval = 5)
+stDevH        = input(2.25,  "  Threshold Bands: Higher Deviation", type=input.float, minval = 0, step = .25, maxval = 5)
+
+vbcb          = input(true,  "► Volume Based Colored Bars Add-On ═════")
+vwcbLen       = input(21,    "  VWCB : Volume MA Length", minval=1)
+vwcbUpper     = input(1.618, "  VWCB : Upper Theshold", minval = 0.1, step = .1)
+vwcbLower     = input(.618,  "  VWCB : Lower Theshold", minval = 0.1, step = .1)
+
+isBackTest = input(true ,       "Backtest On/Off"                                                  , group = "Backtest Framework")
+
+//isBackTest    = input(true,  "═══════ ═ Backtest On/Off ═ ═══════")
+
+// Functions ════════════════════════════════════════════════════════════════════════════════════ //
+ma(s,l) => exponential ? ema(s,l) : sma(s,l)
+
+// -Calculation ═════════════════════════════════════════════════════════════════════════════════ //
+//------------------------------------------------------------------------------
+// Source Selection
+
+source = sourceType == "Current Price (close)" ? close : 
+     sourceType == "Average of High, Low, and Close Price (hlc3)" ? hlc3 : 
+     nz(volume) and sourceType == "On Balance Volume (obv)" ? obv : 
+     nz(volume) and sourceType == "Accumulation Distribution (accdist)" ? accdist : 
+     nz(volume) and sourceType == "Price Volume Trend (pvt)" ? pvt : na
+
+//------------------------------------------------------------------------------
+// MACD Calculations (macd, signal, histogram)
+
+fast_ma = ma(source, fast_length)
+slow_ma = ma(source, slow_length)
+
+macd  = fast_ma - slow_ma
+
+macdx = if macdType == "MACD-TRADITIONAL"
+    macd
+else if macdType == "MACD-HISTOGRAM"
+    macd - ma(macd, signal_length)
+else if macdType == "MACD-LEADER"
+    macd + ma(source - fast_ma, fast_length) - ma(source - slow_ma, slow_length)
+else if macdType == "MACD-SOURCE"
+    ma(source - avg(fast_ma, slow_ma), signal_length)
+else if macdType == "MACD-TRIX"
+    10000 * change(ema(ema(ema(log(source), signal_length * 2), signal_length * 2), signal_length * 2))
+
+signal  = ma(macd , signal_length)
+signalx = ma(macdx, signal_length)
+histx   = macdx - signalx
+
+//------------------------------------------------------------------------------
+// Highlight
+
+highlight := macdTrdDisp ? true : highlight
+
+//------------------------------------------------------------------------------
+// RSI Calculation
+
+rsiValue = colorRsi ? rsi(source, rsiLength) : na
+
+//------------------------------------------------------------------------------
+// TTM Squeeze Indicator Calculation
+
+var bool inSqz = na, var bool noSqz = na, var bool unSqz = na
+if dispSqueeze
+    [_, bbUpper, bbLower] = bb(close, bbkcLength, bbMult)
+    [_, kcUpper, kcLower] = kc(close, bbkcLength, kcMult, true)
+
+    inSqz  := (bbLower > kcLower) and (bbUpper < kcUpper)
+    noSqz  := (bbLower < kcLower) and (bbUpper > kcUpper)
+    unSqz  := (inSqz == false) and (noSqz == false)
+
+//------------------------------------------------------------------------------
+// Theshold Bands Calculation with BB build-in function 
+
+[_, upperL, lowerL] = if hstThesh
+    bb(histx, 233, stDevL)
+[_, upperH, lowerH] = if hstThesh
+    bb(histx, 233, stDevH)
+
+//------------------------------------------------------------------------------
+// Volume Based Colored Bars by KIVANÇ ÖZBİLGİÇ
+mean = sma(volume, vwcbLen)
+
+[vbcbColor, vbcbTxt] = if close < open
+    if volume > mean * vwcbUpper
+        [#910000, "High Volume"]
+    else if volume >= mean * vwcbLower and volume <= mean * vwcbUpper
+        [color.red, "Average Volume"] 
+    else 
+        [color.orange, "Low Volume"]
+else
+    if volume > mean * vwcbUpper
+        [#006400, "High Volume"]
+    else if volume >= mean * vwcbLower and volume <= mean * vwcbUpper
+        [color.green, "Average Volume"] 
+    else 
+        [#7FFFD4, "Low Volume"]
+
+
+// -Color ═══════════════════════════════════════════════════════════════════════════════════════ //
+
+histColor = histx >=0 ? 
+     (histx[1] < histx ? #006400 : color.green) : 
+     (histx[1] < histx ? color.red : #910000)
+
+// -Label ═══════════════════════════════════════════════════════════════════════════════════════ //
+//------------------------------------------------------------------------------
+// Label Text
+
+status   = histLabel > 0 ? "\n\nHistorical Bar Readings - " + tostring(histLabel) + " bar(s) earlier" : "\n\nCurrent Bar Readings"
+
+msCross  = bar_index - valuewhen(cross(macdx, signalx), bar_index, 0)
+macdMom  = change(histx) <= 0 ? "Falling - Last Signal Cross "  : "Growing - Last Signal Cross "
+
+macdText = "Method : " + macdType + ", Source : " + sourceType + status + "\nMACD : " + macdMom + tostring(msCross) + " bar(s)"
+rsiText  = colorRsi ? rsiValue > rsiOverBought ? "\nRSI : Value " + tostring(round(rsiValue)) + " - in OverBought Zone" : rsiValue < rsiOverSold ? "\nRSI : Value " + tostring(round(rsiValue)) + " - in OverSold Zone" : "\nRSI : Value " + tostring(round(rsiValue)) : na
+sqzText  = dispSqueeze ? inSqz or unSqz ? "\nSQZ : No Trade Recommended" : histx >= 0 ? "\nSQZ : Buy Probability (macd > signal)" : "\nSQZ : Sell Probability (macd < signal)" : na
+vbcbText = nz(volume) and vbcb ? "\nVolume : " + vbcbTxt + " (" + tostring(round(volume)) + ")" : na
+
+// -Plot ════════════════════════════════════════════════════════════════════════════════════════ //
+//------------------------------------------------------------------------------
+// MACD - Signal - Histogram
+
+plot(histx, "Histogram-X", color=histColor, style=plot.style_columns )
+p1 = plot(macdx  , "MACD-X"  , color=rsiValue > rsiOverBought ? #910000 : rsiValue < rsiOverSold ? #006400 : #0094ff)
+p2 = plot(signalx, "Signal-X", color=#ff6a00)
+
+plot(macdTrdDisp ? macd   : na, "MACD"  , color=#0094ff)
+plot(macdTrdDisp ? signal : na, "Signal", color=#ff6a00)
+
+fill(p1, p2, color = highlight ? macdx > signalx ? rsiValue > rsiOverBought ? #910000 : rsiValue < rsiOverSold ? #006400 : #0094ff : rsiValue > rsiOverBought ? #910000 : rsiValue < rsiOverSold ? #006400 : #ff6a00 : na, transp = 55)
+
+//------------------------------------------------------------------------------
+// TTM Squeeze Indicator with MACD-X as Momentum Oscillator 
+
+plotshape(dispSqueeze ? unSqz or inSqz       ? true : na : na, style=shape.diamond     , location=location.top, color=color.gray , title="In Squeeze")
+plotshape(dispSqueeze ? noSqz and histx >= 0 ? true : na : na, style=shape.triangleup  , location=location.top, color=color.green, title="Squeeze Release")
+plotshape(dispSqueeze ? noSqz and histx <  0 ? true : na : na, style=shape.triangledown, location=location.top, color=color.red  , title="Squeeze Release")
+
+//------------------------------------------------------------------------------
+// Label
+
+if dispLabel and not isBackTest
+    label macdLabel = label.new(time, 0, text=macdText[histLabel] + rsiText[histLabel] + sqzText[histLabel] + vbcbText[histLabel]
+     ,tooltip="evaluation given herein does not constitute professional and/or financial advice"
+     ,color=#0094ff, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.white, textalign=text.align_left)
+
+    label.set_x(macdLabel, label.get_x(macdLabel) + round(change(time) * 3))
+
+    label.delete(macdLabel[1])
+
+//------------------------------------------------------------------------------
+// Theshold Bands
+
+bu2 = plot(upperL, "Lower Theshold Line - Overbought", display=display.none)
+bu3 = plot(upperH, "Upper Theshold Line - Overbought", display=display.none)
+fill(bu2, bu3, color=color.red,   transp=85, title="Overbought Background")
+
+bl2 = plot(lowerL, "Upper Theshold Line - Oversold"  , display=display.none)
+bl3 = plot(lowerH, "Lower Theshold Line - Oversold"  , display=display.none)
+fill(bl2, bl3, color=color.green, transp=85, title="Oversold Background")
+
+//------------------------------------------------------------------------------
+// Volume Based Colored Bars by KIVANÇ ÖZBİLGİÇ
+
+barcolor(nz(volume) and vbcb ? vbcbColor : na, title = "Volume Based Colored Bars by [KıvançÖZBİLGİÇ]")
+
+//------------------------------------------------------------------------------
+// Alert : macdx and signalx crosses
+alarm = cross(macdx, signalx)
+alertcondition(barstate.islast ? alarm[1] : alarm, title="Trading Opportunity", message="Probable Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+// -Alerts ══════════════════════════════════════════════════════════════════════════════════════ //
+
+longAlertCondition  = crossover(macdx, signalx)
+alertcondition(longAlertCondition   , "Long : Early Warning"        , "MACD-X - Not Confirmed Probable Long Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+alertcondition(longAlertCondition[1], "Long : Trading Opportunity"  , "MACD-X - Probable Long Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+
+shortAlertCondition = crossunder(macdx, signalx)
+alertcondition(shortAlertCondition   , "Short : Early Warning"      , "MACD-X - Not Confirmed Probable Short Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+alertcondition(shortAlertCondition[1], "Short : Trading Opportunity", "MACD-X - Probable Short Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Backtest Framework
+//# * Author      : © dgtrd
+//# * Purpose     : Ability to optimize a study and observe trade simulation statistics accordingly  
+//# *
+//# * Revision History
+//# *  Release    : Nov 21, 2020  : Initial Release
+//# *  Update     : Mar 13, 2021  : Enchanced Backtest Framework
+//# *                               - long/short/stoploss conditions enchaced
+//# *                               - early warning ability added (label + alert)
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+dasCapital = input(1000.,       "Initial Capital"                                 , inline = "BT1" , group = "Backtest Framework")
+lenBckTst  = input(1,           "Period (Year)", minval=0, step = .1              , inline = "BT1" , group = "Backtest Framework")
+isStopLoss = input(false,       "Apply Stop Loss, with Stop Loss Set To %"        , inline = "BT2" , group = "Backtest Framework")
+stopLoss   = input(1.,          "", step=.1, minval = 0                           , inline = "BT2" , group = "Backtest Framework") / 100
+isBull     = input(false,       "Long : Candle Direction as Confirmation : Short" , inline = "BT3" , group = "Backtest Framework")
+isBear     = input(false,       ""                                                , inline = "BT3" , group = "Backtest Framework")
+isSudden   = input(true,        "Avoid Sudden Price Changes"                                       , group = "Backtest Framework")
+isTest     = input(false,       "❗❗❗ Simulate Trade on Next Bar : Only For Test Purpose (REPAINTS)", group = "Backtest Framework")
+lblInOutSL = input(true,        "Trade Entry/Exit Labels  Trade Statistics Label" , inline = "BT4" , group = "Backtest Framework")
+lblTrdStat = input(true,        ""                                                , inline = "BT4" , group = "Backtest Framework")
+
+startBckTst  = time > timenow - lenBckTst * 31556952000 
+
+var inTrade  = false
+
+if isBackTest
+
+    var capital       = dasCapital
+    var entryPrice    = 0. 
+    var exitPrice     = 0. 
+    var trades        = 0
+    var win           = 0
+    var loss          = 0
+
+    bullCandle        = close > open
+    bearCandle        = close < open
+    stopLossTrigger   = crossunder(close, entryPrice * (1 - stopLoss))
+    
+    longCondition     = isTest ?
+                          isBull ? 
+                             isSudden ? 
+                               longAlertCondition [1] and not shortAlertCondition    and bullCandle    : 
+                               longAlertCondition [1] and bullCandle                                   : 
+                             isSudden ? 
+                               longAlertCondition [1] and not shortAlertCondition                      : 
+                               longAlertCondition [1]                                                  :
+                          isBull ? 
+                             isSudden ? 
+                               longAlertCondition [2] and not shortAlertCondition[1] and bullCandle[1] : 
+                               longAlertCondition [2] and bullCandle[1]                                : 
+                             isSudden ? 
+                               longAlertCondition [2] and not shortAlertCondition[1]                   : 
+                               longAlertCondition [1]
+
+    shortCondition    = isTest ?
+                          isBear ? 
+                             isSudden ? 
+                               shortAlertCondition[1] and not longAlertCondition     and bearCandle    : 
+                               shortAlertCondition[1] and bearCandle                                   : 
+                             isSudden ? 
+                               shortAlertCondition[1] and not longAlertCondition                       : 
+                               shortAlertCondition[1]                                                  :
+                          isBear ? 
+                             isSudden ? 
+                               shortAlertCondition[2] and not longAlertCondition [1] and bearCandle[1] : 
+                               shortAlertCondition[2] and bearCandle[1]                                : 
+                             isSudden ? 
+                               shortAlertCondition[2] and not longAlertCondition [1]                   : 
+                               shortAlertCondition[1]
+    
+    stopLossCondition = isStopLoss ? inTrade and not shortCondition ? stopLossTrigger : 0 : 0
+
+    if startBckTst and longCondition and not inTrade
+        entryPrice   := open
+        inTrade      := true
+        trades       := trades + 1
+    
+        if lblInOutSL
+            label longLabel = label.new(bar_index, signalx, text="L"
+             ,tooltip="entry price  : " + tostring(entryPrice) + "\nentry value : " + tostring(capital, "#.##")
+             ,color=color.green, style=label.style_label_up, textcolor=color.white, textalign=text.align_center, size=size.tiny)
+        
+        alert("long : probable trading opportunity, price " + tostring(close), alert.freq_once_per_bar)
+
+    if (shortCondition or stopLossCondition) and inTrade
+        exitPrice    := stopLossCondition ? close : open
+        inTrade      := false
+        capital      := capital * (exitPrice / entryPrice)
+
+        if exitPrice > entryPrice
+            win      := win  + 1
+        else
+            loss     := loss + 1
+    
+        if lblInOutSL
+            text = stopLossCondition ? "SL" : "TP"
+            label shortLabel = label.new(bar_index, signalx, text = text
+                 ,tooltip="change .......... : " + tostring((exitPrice / entryPrice - 1) * 100, "#.##") + "%\nentry/exit price : " + tostring(entryPrice) + " / " + tostring(exitPrice) + "\nnew capital ..... : " + tostring(capital, "#.##")
+                 ,color=color.red, style=label.style_label_down, textcolor=color.white, textalign=text.align_center, size=size.tiny)
+        
+        alert("short : probable trading opportunity, price " + tostring(close), alert.freq_once_per_bar)
+
+    var label wLabel = na
+    
+    if not inTrade and longAlertCondition[1] and not shortAlertCondition
+        wLabel := label.new(bar_index, signalx, text="⚠️"
+         ,tooltip="probable long trading opportunity \nawaiting confirmation (next candle)\nif confirmed, backtest tool will execute trade with open price of the canlde"
+         ,color=color.green, style=label.style_none, textcolor=color.white, textalign=text.align_center, size=size.huge)
+        label.delete(wLabel[1])
+        
+        alert("long : early warning : probable trading opportunity, awaiting confirmation (next candle), price " + tostring(close), alert.freq_once_per_bar)
+
+    if inTrade and shortAlertCondition[1] and not longAlertCondition
+        wLabel := label.new(bar_index, signalx, text="⚠️"
+         ,tooltip="probable short/take profit trading opportunity \nawaiting confirmation (next candle)\nif confirmed, backtest tool will execute trade with open price of the canlde"
+         ,color=color.green, style=label.style_none, textcolor=color.white, textalign=text.align_center, size=size.huge)
+        label.delete(wLabel[1])
+        
+        alert("short : early warning : probable trading opportunity, awaiting confirmation (next candle), price " + tostring(close), alert.freq_once_per_bar)
+
+    if change(time)
+        label.delete(wLabel[1])
+        
+    if stopLossCondition
+        alert("stop loss condition, price " + tostring(close), alert.freq_once_per_bar)
+    
+    if lblTrdStat
+        var years         = (timenow - time) / 31556952000
+
+        var yearsTxt      = ""
+        var remarks       = ""
+
+        if years < lenBckTst
+            lenBckTst    := years
+            yearsTxt     := tostring(lenBckTst, "#.##") + " Years***"
+            remarks      := "\n\n*longs only\n**final value, if trade active displays estimated final value\n***max available data for selected timeframe : # of bars - " + tostring(bar_index)
+        else
+            yearsTxt     := tostring(lenBckTst, "#.##") + " Year(s)"
+            remarks      := "\n\n*longs only\n**final value - if in trade, displays estimated final value"
+
+        inTradeTxt        = inTrade ? "inTrade" : "not inTrade"
+        estimated         = inTrade ? capital * (close / entryPrice) : capital
+        entryTxt          = inTrade ? tostring(entryPrice) : "not inTrade"
+        lastTrdTxt        = inTrade ? ", Gain/Loss " + tostring((estimated/capital - 1) * 100, "#.##") + "%, Stop Loss " + tostring(isStopLoss ? entryPrice * (1 - stopLoss) : na) : ""
+        stopLossTxt       = isStopLoss ? "if last value falls by " + tostring(stopLoss * 100) + "% of entry price" : "not applied"
+
+        tooltipTxt        = "entires/exits are calculated based on macdx and signalx crosses\n" +
+                             "-long entry , when macdx crosses above signal line\n" +
+                             "-take profit, when macdx crosses below signal line\n" +
+                             "-stop loss " + stopLossTxt + remarks
+
+        label indiLabel   = label.new(time, signalx 
+             ,text="☼☾ Trade Statistics*, Trade Period - " + yearsTxt +
+              "\nMethod/Source : " + macdType + " / " + sourceType +
+              "\n═════════════════════════════════════" +
+              "\nSuccess Ratio ...... : " + tostring((win/trades)*100, "#") + "%" + ", # of Trades - " + tostring(trades) + ", Win/Loss - " + tostring(win) + "/" + tostring(loss) +
+              "\nGain/Loss % ........ : " + tostring((estimated/dasCapital - 1) * 100, "#") + "%" + ", Initial/Final Value** - " + tostring(dasCapital) + " / " + tostring(estimated, "#") +
+              "\n\nCurrent TradeStatus - " + inTradeTxt + lastTrdTxt +
+              "\n═════════════════════════════════════" +
+              "\nEntry Price/Value . : " + entryTxt + " / " + tostring(capital, "#.##") + " " + inTradeTxt +
+              "\nLast Price/Value ... : " + tostring(close) + " / " + tostring(estimated , "#.##") + " " + inTradeTxt
+             ,tooltip=tooltipTxt
+             ,color=inTrade ? estimated/dasCapital > 1 ? color.teal : color.maroon : color.gray, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.white, textalign=text.align_left)
+
+        label.set_x(indiLabel, label.get_x(indiLabel) + round(change(time)*5))
+        label.delete(indiLabel[1])
+
+bgcolor(isBackTest and startBckTst ? startBckTst != startBckTst[1] ? color.blue : inTrade ? color.green : color.red : na, 91)

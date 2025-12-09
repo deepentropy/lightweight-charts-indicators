@@ -1,0 +1,1357 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © banyen
+
+//@version=5
+// v1.0.0 revision=84.0
+// v1.1.0 revision=151.0(137.0)
+// v1.1.1 revision=160.0
+// v1.2.0 revision=198.0
+
+indicator(title = "Super Pivots", shorttitle = "Super Pivots (v1.2.0)", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+//--- input
+// ラベルの位置
+input_position_label = input.string("Left", "ラベルの位置", ["Left", "Right"], group = "Position")
+input_position_leftlabel_float = input.bool(true, "ラベルを常にチャート内に表示(Leftのみ)", group = "Position")
+
+// Number of Pivots Back
+lookback_max = 15
+lookback = input.int(1, "Number of Pivots Back", 1, lookback_max)
+
+// 1分足
+input_1m_hourly = input.bool(false, "(1時間)", inline = "1m", group = "1分足")
+input_1m_4hourly = input.bool(false, "(4時間)", inline = "1m", group = "1分足")
+input_1m_daily = input.bool(true, "日", inline = "1m", group = "1分足")
+input_1m_weekly = input.bool(true, "週", inline = "1m", group = "1分足")
+input_1m_monthly = input.bool(true, "月", inline = "1m", group = "1分足")
+input_1m_yearly = input.bool(true, "年", inline = "1m", group = "1分足")
+input_1m_market = input.bool(false, "(マーケット)", inline = "1m", group = "1分足")
+
+// 5分足
+input_5m_daily = input.bool(true, "日", inline = "5m", group = "5分足")
+input_5m_weekly = input.bool(true, "週", inline = "5m", group = "5分足")
+input_5m_monthly = input.bool(true, "月", inline = "5m", group = "5分足")
+input_5m_yearly = input.bool(true, "年", inline = "5m", group = "5分足")
+input_5m_market = input.bool(false, "(マーケット)", inline = "5m", group = "5分足")
+
+// 15分足
+input_15m_daily = input.bool(true, "日", inline = "15m", group = "15分足")
+input_15m_weekly = input.bool(true, "週", inline = "15m", group = "15分足")
+input_15m_monthly = input.bool(true, "月", inline = "15m", group = "15分足")
+input_15m_yearly = input.bool(true, "年", inline = "15m", group = "15分足")
+input_15m_market = input.bool(false, "(マーケット)", inline = "15m", group = "15分足")
+
+// 1時間足
+input_1h_daily = input.bool(false, "(日)", inline = "1h", group = "1時間足")
+input_1h_weekly = input.bool(true, "週", inline = "1h", group = "1時間足")
+input_1h_monthly = input.bool(true, "月", inline = "1h", group = "1時間足")
+input_1h_yearly = input.bool(true, "年", inline = "1h", group = "1時間足")
+
+// 4時間足
+input_4h_daily = input.bool(false, "(日)", inline = "4h", group = "4時間足")
+input_4h_weekly = input.bool(false, "(週)", inline = "4h", group = "4時間足")
+input_4h_monthly = input.bool(true, "月", inline = "4h", group = "4時間足")
+input_4h_yearly = input.bool(true, "年", inline = "4h", group = "4時間足")
+
+// 日足
+input_1d_daily = input.bool(false, "(日)", inline = "1d", group = "日足")
+input_1d_weekly = input.bool(false, "(週)", inline = "1d", group = "日足")
+input_1d_monthly = input.bool(false, "(月)", inline = "1d", group = "日足")
+input_1d_yearly = input.bool(true, "年", inline = "1d", group = "日足")
+
+// 週足
+input_1w_daily = input.bool(false, "(日)", inline = "1w", group = "週足")
+input_1w_weekly = input.bool(false, "(週)", inline = "1w", group = "週足")
+input_1w_monthly = input.bool(false, "(月)", inline = "1w", group = "週足")
+input_1w_yearly = input.bool(true, "年", inline = "1w", group = "週足")
+
+// 月足
+input_1M_daily = input.bool(false, "(日)", inline = "1M", group = "月足")
+input_1M_weekly = input.bool(false, "(週)", inline = "1M", group = "月足")
+input_1M_monthly = input.bool(false, "(月)", inline = "1M", group = "月足")
+input_1M_yearly = input.bool(true, "年", inline = "1M", group = "月足")
+
+// 色
+input_color_hourly = input.color(color.orange, "1H", inline = "color", group = "Color(Line/Label)")
+input_color_4hourly = input.color(color.orange, "4H", inline = "color", group = "Color(Line/Label)")
+input_color_daily = input.color(color.orange, "1D", inline = "color", group = "Color(Line/Label)")
+input_color_weekly = input.color(color.orange, "1W", inline = "color", group = "Color(Line/Label)")
+input_color_monthly = input.color(color.orange, "1M", inline = "color", group = "Color(Line/Label)")
+input_color_yearly = input.color(color.orange, "1Y", inline = "color", group = "Color(Line/Label)")
+input_color_market = input.color(color.orange, "Market", inline = "color", group = "Color(Line/Label)")
+
+// 可視性
+input_visibility_p = input.bool(true, "P", inline = "visibility", group = "Visibility")
+input_visibility_r1 = input.bool(true, "R1", inline = "visibility", group = "Visibility")
+input_visibility_s1 = input.bool(true, "S1", inline = "visibility", group = "Visibility")
+input_visibility_r2 = input.bool(true, "R2", inline = "visibility", group = "Visibility")
+input_visibility_s2 = input.bool(true, "S2", inline = "visibility", group = "Visibility")
+input_visibility_r3 = input.bool(true, "R3", inline = "visibility2", group = "Visibility")
+input_visibility_s3 = input.bool(true, "S3", inline = "visibility2", group = "Visibility")
+input_visibility_r4 = input.bool(true, "R4", inline = "visibility2", group = "Visibility")
+input_visibility_s4 = input.bool(true, "S4", inline = "visibility2", group = "Visibility")
+input_visibility_r5 = input.bool(true, "R5", inline = "visibility2", group = "Visibility")
+input_visibility_s5 = input.bool(true, "S5", inline = "visibility2", group = "Visibility")
+
+//--- Pivot計算
+pivot_type = "Traditional"
+
+get_pivots(float prev_high, float prev_low, float prev_close) =>
+
+	pp = (prev_high + prev_low + prev_close) / 3
+	r1 = pp * 2 - prev_low
+	s1 = pp * 2 - prev_high
+	r2 = pp + (prev_high - prev_low)
+	s2 = pp - (prev_high - prev_low)
+	r3 = pp * 2 + (prev_high - 2 * prev_low)
+	s3 = pp * 2 - (2 * prev_high - prev_low)
+	r4 = pp * 3 + (prev_high - 3 * prev_low)
+	s4 = pp * 3 - (3 * prev_high - prev_low)
+	r5 = pp * 4 + (prev_high - 4 * prev_low)
+	s5 = pp * 4 - (4 * prev_high - prev_low)
+
+	res_list = array.new_float()
+	array.push(res_list, pp)
+	array.push(res_list, r1)
+	array.push(res_list, s1)
+	array.push(res_list, r2)
+	array.push(res_list, s2)
+	array.push(res_list, r3)
+	array.push(res_list, s3)
+	array.push(res_list, r4)
+	array.push(res_list, s4)
+	array.push(res_list, r5)
+	array.push(res_list, s5)
+
+	res_list
+
+// Hourly Pivot
+is_hour_change = timeframe.change("60")
+array_hourly_pivots = ta.pivot_point_levels(pivot_type, is_hour_change)
+
+// 4Hourly Pivot
+is_4hour_change = timeframe.change("240")
+array_4hourly_pivots = ta.pivot_point_levels(pivot_type, is_4hour_change)
+
+// Daily Pivot
+is_day_change = timeframe.change("1D")
+array_daily_pivots = ta.pivot_point_levels(pivot_type, is_day_change)
+
+// Weekly Pivot
+is_week_change = timeframe.change("1W")
+array_weekly_pivots = ta.pivot_point_levels(pivot_type, is_week_change)
+
+// Monthly Pivot
+is_month_change = timeframe.change("1M")
+array_monthly_pivots = ta.pivot_point_levels(pivot_type, is_month_change)
+
+[prev_high_1M, prev_low_1M, prev_close_1M] = request.security(syminfo.tickerid, "1M", [high[1], low[1], close[1]], barmerge.gaps_off, barmerge.lookahead_on)
+if timeframe.period == "1" or timeframe.period == "5" or timeframe.period == "15"
+    array.clear(array_monthly_pivots)
+    array_monthly_pivots := get_pivots(prev_high_1M, prev_low_1M, prev_close_1M)
+
+// Yearly Pivot
+is_year_change = timeframe.change("12M")
+array_yearly_pivots = ta.pivot_point_levels(pivot_type, is_year_change)
+
+[prev_high_12M, prev_low_12M, prev_close_12M] = request.security(syminfo.tickerid, "12M", [high[1], low[1], close[1]], barmerge.gaps_off, barmerge.lookahead_on)
+if timeframe.period == "1" or timeframe.period == "5" or timeframe.period == "15"
+    array.clear(array_yearly_pivots)
+    array_yearly_pivots := get_pivots(prev_high_12M, prev_low_12M, prev_close_12M)
+
+// Market Pivot
+is_start_tokyo = timeframe.change("1D")
+is_start_london = hour(time, "UTC+9") == 15 and minute(time, "UTC+9") == 0
+is_start_newyork = hour(time, "UTC+9") == 21 and minute(time, "UTC+9") == 0
+array_market_pivots = ta.pivot_point_levels(pivot_type, is_start_tokyo or is_start_london or is_start_newyork)
+
+//--- Line and Label
+var array_1m_hourly_lines = array.new_line(0)
+var array_1m_4hourly_lines = array.new_line(0)
+var array_1m_daily_lines = array.new_line(0)
+var array_1m_weekly_lines = array.new_line(0)
+var array_1m_monthly_lines = array.new_line(0)
+var array_1m_yearly_lines = array.new_line(0)
+var array_1m_market_lines = array.new_line(0)
+
+var array_1m_hourly_labels = array.new_label(0)
+var array_1m_4hourly_labels = array.new_label(0)
+var array_1m_daily_labels = array.new_label(0)
+var array_1m_weekly_labels = array.new_label(0)
+var array_1m_monthly_labels = array.new_label(0)
+var array_1m_yearly_labels = array.new_label(0)
+var array_1m_market_labels = array.new_label(0)
+
+var array_5m_daily_lines = array.new_line(0)
+var array_5m_weekly_lines = array.new_line(0)
+var array_5m_monthly_lines = array.new_line(0)
+var array_5m_yearly_lines = array.new_line(0)
+var array_5m_market_lines = array.new_line(0)
+
+var array_5m_daily_labels = array.new_label(0)
+var array_5m_weekly_labels = array.new_label(0)
+var array_5m_monthly_labels = array.new_label(0)
+var array_5m_yearly_labels = array.new_label(0)
+var array_5m_market_labels = array.new_label(0)
+
+var array_15m_daily_lines = array.new_line(0)
+var array_15m_weekly_lines = array.new_line(0)
+var array_15m_monthly_lines = array.new_line(0)
+var array_15m_yearly_lines = array.new_line(0)
+var array_15m_market_lines = array.new_line(0)
+
+var array_15m_daily_labels = array.new_label(0)
+var array_15m_weekly_labels = array.new_label(0)
+var array_15m_monthly_labels = array.new_label(0)
+var array_15m_yearly_labels = array.new_label(0)
+var array_15m_market_labels = array.new_label(0)
+
+var array_1h_daily_lines = array.new_line(0)
+var array_1h_weekly_lines = array.new_line(0)
+var array_1h_monthly_lines = array.new_line(0)
+var array_1h_yearly_lines = array.new_line(0)
+
+var array_1h_daily_labels = array.new_label(0)
+var array_1h_weekly_labels = array.new_label(0)
+var array_1h_monthly_labels = array.new_label(0)
+var array_1h_yearly_labels = array.new_label(0)
+
+var array_4h_daily_lines = array.new_line(0)
+var array_4h_weekly_lines = array.new_line(0)
+var array_4h_monthly_lines = array.new_line(0)
+var array_4h_yearly_lines = array.new_line(0)
+
+var array_4h_daily_labels = array.new_label(0)
+var array_4h_weekly_labels = array.new_label(0)
+var array_4h_monthly_labels = array.new_label(0)
+var array_4h_yearly_labels = array.new_label(0)
+
+var array_1d_daily_lines = array.new_line(0)
+var array_1d_weekly_lines = array.new_line(0)
+var array_1d_monthly_lines = array.new_line(0)
+var array_1d_yearly_lines = array.new_line(0)
+
+var array_1d_daily_labels = array.new_label(0)
+var array_1d_weekly_labels = array.new_label(0)
+var array_1d_monthly_labels = array.new_label(0)
+var array_1d_yearly_labels = array.new_label(0)
+
+var array_1w_daily_lines = array.new_line(0)
+var array_1w_weekly_lines = array.new_line(0)
+var array_1w_monthly_lines = array.new_line(0)
+var array_1w_yearly_lines = array.new_line(0)
+
+var array_1w_daily_labels = array.new_label(0)
+var array_1w_weekly_labels = array.new_label(0)
+var array_1w_monthly_labels = array.new_label(0)
+var array_1w_yearly_labels = array.new_label(0)
+
+var array_1M_daily_lines = array.new_line(0)
+var array_1M_weekly_lines = array.new_line(0)
+var array_1M_monthly_lines = array.new_line(0)
+var array_1M_yearly_lines = array.new_line(0)
+
+var array_1M_daily_labels = array.new_label(0)
+var array_1M_weekly_labels = array.new_label(0)
+var array_1M_monthly_labels = array.new_label(0)
+var array_1M_yearly_labels = array.new_label(0)
+
+// Delete Lines
+func_delete_lines(array_lines) =>
+    if array.size(array_lines) > 0 and array.size(array_lines) == lookback * 11
+        for i = 0 to 10 by 1
+            line.delete(array.shift(array_lines))
+
+// Delete Labels
+func_delete_labels(array_labels) =>
+    if array.size(array_labels) > 0 and array.size(array_labels) == lookback * 11
+        for i = 0 to 10 by 1
+            label.delete(array.shift(array_labels))
+
+// Array for Label
+var array_label_str = array.new_string(0)
+if array.size(array_label_str) == 0
+    array.push(array_label_str, "(P)")
+    array.push(array_label_str, "(R1)")
+    array.push(array_label_str, "(S1)")
+    array.push(array_label_str, "(R2)")
+    array.push(array_label_str, "(S2)")
+    array.push(array_label_str, "(R3)")
+    array.push(array_label_str, "(S3)")
+    array.push(array_label_str, "(R4)")
+    array.push(array_label_str, "(S4)")
+    array.push(array_label_str, "(R5)")
+    array.push(array_label_str, "(S5)")
+
+func_check_level(index) =>
+    // 表示対象：true
+    res = switch index
+        0 => input_visibility_p
+        1 => input_visibility_r1
+        2 => input_visibility_s1
+        3 => input_visibility_r2
+        4 => input_visibility_s2
+        5 => input_visibility_r3
+        6 => input_visibility_s3
+        7 => input_visibility_r4
+        8 => input_visibility_s4
+        9 => input_visibility_r5
+        10 => input_visibility_s5
+
+// ★計算量暫定対策
+func_is_calc(pivot_timeframe) =>
+    bool res = false
+
+    if pivot_timeframe == "hourly"
+        res := switch timeframe.period
+            "1" => input_1m_hourly
+    else if pivot_timeframe == "4hourly"
+        res := switch timeframe.period
+            "1" => input_1m_4hourly
+    else if pivot_timeframe == "daily"
+        res := switch timeframe.period
+            "1" => input_1m_daily
+            "5" => input_5m_daily
+            "15" => input_15m_daily
+            "60" => input_1h_daily
+            "240" => input_4h_daily
+            "D" => input_1d_daily
+            "W" => input_1w_daily
+            "M" => input_1M_daily
+    else if pivot_timeframe == "weekly"
+        res := switch timeframe.period
+            "1" => input_1m_weekly
+            "5" => input_5m_weekly
+            "15" => input_15m_weekly
+            "60" => input_1h_weekly
+            "240" => input_4h_weekly
+            "D" => input_1d_weekly
+            "W" => input_1w_weekly
+            "M" => input_1M_weekly
+    else if pivot_timeframe == "monthly"
+        res := switch timeframe.period
+            "1" => input_1m_monthly
+            "5" => input_5m_monthly
+            "15" => input_15m_monthly
+            "60" => input_1h_monthly
+            "240" => input_4h_monthly
+            "D" => input_1d_monthly
+            "W" => input_1w_monthly
+            "M" => input_1M_monthly
+    else if pivot_timeframe == "yearly"
+        res := switch timeframe.period
+            "1" => input_1m_yearly
+            "5" => input_5m_yearly
+            "15" => input_15m_yearly
+            "60" => input_1h_yearly
+            "240" => input_4h_yearly
+            "D" => input_1d_yearly
+            "W" => input_1w_yearly
+            "M" => input_1M_yearly
+    else if pivot_timeframe == "market"
+        res := switch timeframe.period
+            "1" => input_1m_market
+            "5" => input_5m_market
+            "15" => input_15m_market
+
+    res
+
+// Hourly Pivot
+if is_hour_change and func_is_calc("hourly")
+
+    func_delete_lines(array_1m_hourly_lines)
+
+    func_delete_labels(array_1m_hourly_labels)
+
+    for [i, p] in array_hourly_pivots
+
+        if not func_check_level(i)
+            array.push(array_1m_hourly_lines, na)
+            array.push(array_1m_hourly_labels, na)
+            continue
+
+        // 1m
+        if input_1m_hourly and timeframe.period == "1"
+
+            l = line.new(time, array.get(array_hourly_pivots, i), time + timeframe.in_seconds("60") * 1000, array.get(array_hourly_pivots, i), xloc = xloc.bar_time, color = input_color_hourly)
+            array.push(array_1m_hourly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("60") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_hourly_pivots, i), "1H" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_hourly)
+            array.push(array_1m_hourly_labels, l2)
+            
+
+// 4Hourly Pivot
+if is_4hour_change and func_is_calc("4hourly")
+
+    func_delete_lines(array_1m_4hourly_lines)
+
+    func_delete_labels(array_1m_4hourly_labels)
+
+    for [i, p] in array_4hourly_pivots
+
+        if not func_check_level(i)
+            array.push(array_1m_4hourly_lines, na)
+            array.push(array_1m_4hourly_labels, na)
+            continue
+
+        // 1m
+        if input_1m_4hourly and timeframe.period == "1"
+            l = line.new(time, array.get(array_4hourly_pivots, i), time + timeframe.in_seconds("240") * 1000, array.get(array_4hourly_pivots, i), xloc = xloc.bar_time, color = input_color_4hourly)
+            array.push(array_1m_4hourly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("240") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_4hourly_pivots, i), "4H" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_4hourly)
+            array.push(array_1m_4hourly_labels, l2)
+
+// Daily Pivot
+if is_day_change and func_is_calc("daily")
+
+    func_delete_lines(array_1m_daily_lines)
+    func_delete_lines(array_5m_daily_lines)
+    func_delete_lines(array_15m_daily_lines)
+    func_delete_lines(array_1h_daily_lines)
+    func_delete_lines(array_4h_daily_lines)
+    func_delete_lines(array_1d_daily_lines)
+    func_delete_lines(array_1w_daily_lines)
+    func_delete_lines(array_1M_daily_lines)
+
+    func_delete_labels(array_1m_daily_labels)
+    func_delete_labels(array_5m_daily_labels)
+    func_delete_labels(array_15m_daily_labels)
+    func_delete_labels(array_1h_daily_labels)
+    func_delete_labels(array_4h_daily_labels)
+    func_delete_labels(array_1d_daily_labels)
+    func_delete_labels(array_1w_daily_labels)
+    func_delete_labels(array_1M_daily_labels)
+
+    for [i, p] in array_daily_pivots
+
+        if not func_check_level(i)
+
+            array.push(array_1m_daily_lines, na)
+            array.push(array_5m_daily_lines, na)
+            array.push(array_15m_daily_lines, na)
+            array.push(array_1h_daily_lines, na)
+            array.push(array_4h_daily_lines, na)
+            array.push(array_1d_daily_lines, na)
+            array.push(array_1w_daily_lines, na)
+            array.push(array_1M_daily_lines, na)
+
+            array.push(array_1m_daily_labels, na)
+            array.push(array_5m_daily_labels, na)
+            array.push(array_15m_daily_labels, na)
+            array.push(array_1h_daily_labels, na)
+            array.push(array_4h_daily_labels, na)
+            array.push(array_1d_daily_labels, na)
+            array.push(array_1w_daily_labels, na)
+            array.push(array_1M_daily_labels, na)
+
+            continue
+
+        // 1m
+        if input_1m_daily and timeframe.period == "1"
+            l = line.new(time, array.get(array_daily_pivots, i), time + timeframe.in_seconds("1D") * 1000, array.get(array_daily_pivots, i), xloc = xloc.bar_time, color = input_color_daily)
+            array.push(array_1m_daily_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1D") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_daily_pivots, i), "D" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_daily)
+            array.push(array_1m_daily_labels, l2)
+
+        // 5m
+        if input_5m_daily and timeframe.period == "5"
+            l = line.new(time, array.get(array_daily_pivots, i), time + timeframe.in_seconds("1D") * 1000, array.get(array_daily_pivots, i), xloc = xloc.bar_time, color = input_color_daily)
+            array.push(array_5m_daily_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1D") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_daily_pivots, i), "D" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_daily)
+            array.push(array_5m_daily_labels, l2)
+
+        // 15m
+        if input_15m_daily and timeframe.period == "15"
+            l = line.new(time, array.get(array_daily_pivots, i), time + timeframe.in_seconds("1D") * 1000, array.get(array_daily_pivots, i), xloc = xloc.bar_time, color = input_color_daily)
+            array.push(array_15m_daily_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1D") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_daily_pivots, i), "D" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_daily)
+            array.push(array_15m_daily_labels, l2)
+
+        // 1h
+        if input_1h_daily and timeframe.period == "60"
+            l = line.new(time, array.get(array_daily_pivots, i), time + timeframe.in_seconds("1D") * 1000, array.get(array_daily_pivots, i), xloc = xloc.bar_time, color = input_color_daily)
+            array.push(array_1h_daily_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1D") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_daily_pivots, i), "D" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_daily)
+            array.push(array_1h_daily_labels, l2)
+
+        // 4h
+        if input_4h_daily and timeframe.period == "240"
+            l = line.new(time, array.get(array_daily_pivots, i), time + timeframe.in_seconds("1D") * 1000, array.get(array_daily_pivots, i), xloc = xloc.bar_time, color = input_color_daily)
+            array.push(array_4h_daily_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1D") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_daily_pivots, i), "D" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_daily)
+            array.push(array_4h_daily_labels, l2)
+
+        // 1d
+        if input_1d_daily and timeframe.period == "D"
+            l = line.new(time, array.get(array_daily_pivots, i), time + timeframe.in_seconds("1D") * 1000, array.get(array_daily_pivots, i), xloc = xloc.bar_time, color = input_color_daily)
+            array.push(array_1h_daily_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1D") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_daily_pivots, i), "D" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_daily)
+            array.push(array_1d_daily_labels, l2)
+
+        // 1w
+        if input_1w_daily and timeframe.period == "W"
+            l = line.new(time, array.get(array_daily_pivots, i), time + timeframe.in_seconds("1D") * 1000, array.get(array_daily_pivots, i), xloc = xloc.bar_time, color = input_color_daily)
+            array.push(array_1w_daily_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1D") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_daily_pivots, i), "D" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_daily)
+            array.push(array_1w_daily_labels, l2)
+
+        // 1M
+        if input_1M_daily and timeframe.period == "M"
+            l = line.new(time, array.get(array_daily_pivots, i), time + timeframe.in_seconds("1D") * 1000, array.get(array_daily_pivots, i), xloc = xloc.bar_time, color = input_color_daily)
+            array.push(array_1M_daily_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1D") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_daily_pivots, i), "D" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_daily)
+            array.push(array_1M_daily_labels, l2)
+
+// Weekly Pivot
+if is_week_change and func_is_calc("weekly")
+
+    func_delete_lines(array_1m_weekly_lines)
+    func_delete_lines(array_5m_weekly_lines)
+    func_delete_lines(array_15m_weekly_lines)
+    func_delete_lines(array_1h_weekly_lines)
+    func_delete_lines(array_4h_weekly_lines)
+    func_delete_lines(array_1d_weekly_lines)
+    func_delete_lines(array_1w_weekly_lines)
+    func_delete_lines(array_1M_weekly_lines)
+
+    func_delete_labels(array_1m_weekly_labels)
+    func_delete_labels(array_5m_weekly_labels)
+    func_delete_labels(array_15m_weekly_labels)
+    func_delete_labels(array_1h_weekly_labels)
+    func_delete_labels(array_4h_weekly_labels)
+    func_delete_labels(array_1d_weekly_labels)
+    func_delete_labels(array_1w_weekly_labels)
+    func_delete_labels(array_1M_weekly_labels)
+
+    for [i, p] in array_weekly_pivots
+
+        if not func_check_level(i)
+
+            array.push(array_1m_weekly_lines, na)
+            array.push(array_5m_weekly_lines, na)
+            array.push(array_15m_weekly_lines, na)
+            array.push(array_1h_weekly_lines, na)
+            array.push(array_4h_weekly_lines, na)
+            array.push(array_1d_weekly_lines, na)
+            array.push(array_1w_weekly_lines, na)
+            array.push(array_1M_weekly_lines, na)
+
+            array.push(array_1m_weekly_labels, na)
+            array.push(array_5m_weekly_labels, na)
+            array.push(array_15m_weekly_labels, na)
+            array.push(array_1h_weekly_labels, na)
+            array.push(array_4h_weekly_labels, na)
+            array.push(array_1d_weekly_labels, na)
+            array.push(array_1w_weekly_labels, na)
+            array.push(array_1M_weekly_labels, na)
+
+            continue
+
+        // 1m
+        if input_1m_weekly and timeframe.period == "1"
+            l = line.new(time, array.get(array_weekly_pivots, i), time + timeframe.in_seconds("1W") * 1000, array.get(array_weekly_pivots, i), xloc = xloc.bar_time, color = input_color_weekly)
+            array.push(array_1m_weekly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1W") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_weekly_pivots, i), "W" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_weekly)
+            array.push(array_1m_weekly_labels, l2)
+
+        // 5m
+        if input_5m_weekly and timeframe.period == "5"
+            l = line.new(time, array.get(array_weekly_pivots, i), time + timeframe.in_seconds("1W") * 1000, array.get(array_weekly_pivots, i), xloc = xloc.bar_time, color = input_color_weekly)
+            array.push(array_5m_weekly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1W") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_weekly_pivots, i), "W" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_weekly)
+            array.push(array_5m_weekly_labels, l2)
+
+        // 15m
+        if input_15m_weekly and timeframe.period == "15"
+            l = line.new(time, array.get(array_weekly_pivots, i), time + timeframe.in_seconds("1W") * 1000, array.get(array_weekly_pivots, i), xloc = xloc.bar_time, color = input_color_weekly)
+            array.push(array_15m_weekly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1W") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_weekly_pivots, i), "W" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_weekly)
+            array.push(array_15m_weekly_labels, l2)
+
+        // 1h
+        if input_1h_weekly and timeframe.period == "60"
+            l = line.new(time, array.get(array_weekly_pivots, i), time + timeframe.in_seconds("1W") * 1000, array.get(array_weekly_pivots, i), xloc = xloc.bar_time, color = input_color_weekly)
+            array.push(array_1h_weekly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1W") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_weekly_pivots, i), "W" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_weekly)
+            array.push(array_1h_weekly_labels, l2)
+
+        // 4h
+        if input_4h_weekly and timeframe.period == "240"
+            l = line.new(time, array.get(array_weekly_pivots, i), time + timeframe.in_seconds("1W") * 1000, array.get(array_weekly_pivots, i), xloc = xloc.bar_time, color = input_color_weekly)
+            array.push(array_4h_weekly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1W") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_weekly_pivots, i), "W" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_weekly)
+            array.push(array_4h_weekly_labels, l2)
+
+        // 1d
+        if input_1d_weekly and timeframe.period == "D"
+            l = line.new(time, array.get(array_weekly_pivots, i), time + timeframe.in_seconds("1W") * 1000, array.get(array_weekly_pivots, i), xloc = xloc.bar_time, color = input_color_weekly)
+            array.push(array_1h_weekly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1W") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_weekly_pivots, i), "W" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_weekly)
+            array.push(array_1d_weekly_labels, l2)
+
+        // 1w
+        if input_1w_weekly and timeframe.period == "W"
+            l = line.new(time, array.get(array_weekly_pivots, i), time + timeframe.in_seconds("1W") * 1000, array.get(array_weekly_pivots, i), xloc = xloc.bar_time, color = input_color_weekly)
+            array.push(array_1w_weekly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1W") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_weekly_pivots, i), "W" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_weekly)
+            array.push(array_1w_weekly_labels, l2)
+
+        // 1M
+        if input_1M_weekly and timeframe.period == "M"
+            l = line.new(time, array.get(array_weekly_pivots, i), time + timeframe.in_seconds("1W") * 1000, array.get(array_weekly_pivots, i), xloc = xloc.bar_time, color = input_color_weekly)
+            array.push(array_1M_weekly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + timeframe.in_seconds("1W") * 1000
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_weekly_pivots, i), "W" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_weekly)
+            array.push(array_1M_weekly_labels, l2)
+
+// Monthly Pivot
+if (is_month_change or bar_index == 0) and func_is_calc("monthly")
+
+    func_delete_lines(array_1m_monthly_lines)
+    func_delete_lines(array_5m_monthly_lines)
+    func_delete_lines(array_15m_monthly_lines)
+    func_delete_lines(array_1h_monthly_lines)
+    func_delete_lines(array_4h_monthly_lines)
+    func_delete_lines(array_1d_monthly_lines)
+    func_delete_lines(array_1w_monthly_lines)
+    func_delete_lines(array_1M_monthly_lines)
+
+    func_delete_labels(array_1m_monthly_labels)
+    func_delete_labels(array_5m_monthly_labels)
+    func_delete_labels(array_15m_monthly_labels)
+    func_delete_labels(array_1h_monthly_labels)
+    func_delete_labels(array_4h_monthly_labels)
+    func_delete_labels(array_1d_monthly_labels)
+    func_delete_labels(array_1w_monthly_labels)
+    func_delete_labels(array_1M_monthly_labels)
+
+    for [i, p] in array_monthly_pivots
+
+        if not func_check_level(i)
+
+            array.push(array_1m_monthly_lines, na)
+            array.push(array_5m_monthly_lines, na)
+            array.push(array_15m_monthly_lines, na)
+            array.push(array_1h_monthly_lines, na)
+            array.push(array_4h_monthly_lines, na)
+            array.push(array_1d_monthly_lines, na)
+            array.push(array_1w_monthly_lines, na)
+            array.push(array_1M_monthly_lines, na)
+
+            array.push(array_1m_monthly_labels, na)
+            array.push(array_5m_monthly_labels, na)
+            array.push(array_15m_monthly_labels, na)
+            array.push(array_1h_monthly_labels, na)
+            array.push(array_4h_monthly_labels, na)
+            array.push(array_1d_monthly_labels, na)
+            array.push(array_1w_monthly_labels, na)
+            array.push(array_1M_monthly_labels, na)
+
+            continue
+
+        // 1m
+        if input_1m_monthly and timeframe.period == "1"
+            l = line.new(time, array.get(array_monthly_pivots, i), time_close("1M"), array.get(array_monthly_pivots, i), xloc = xloc.bar_time, color = input_color_monthly)
+            array.push(array_1m_monthly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("1M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_monthly_pivots, i), "M" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_monthly)
+            array.push(array_1m_monthly_labels, l2)
+
+        // 5m
+        if input_5m_monthly and timeframe.period == "5"
+            l = line.new(time, array.get(array_monthly_pivots, i), time_close("1M"), array.get(array_monthly_pivots, i), xloc = xloc.bar_time, color = input_color_monthly)
+            array.push(array_5m_monthly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("1M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_monthly_pivots, i), "M" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_monthly)
+            array.push(array_5m_monthly_labels, l2)
+
+        // 15m
+        if input_15m_monthly and timeframe.period == "15"
+            l = line.new(time, array.get(array_monthly_pivots, i), time_close("1M"), array.get(array_monthly_pivots, i), xloc = xloc.bar_time, color = input_color_monthly)
+            array.push(array_15m_monthly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("1M")
+                label_style := label.style_label_left
+
+            l2 = label.new(label_x, array.get(array_monthly_pivots, i), "M" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_monthly)
+            array.push(array_15m_monthly_labels, l2)
+
+        // 1h
+        if input_1h_monthly and timeframe.period == "60"
+            l = line.new(time, array.get(array_monthly_pivots, i), time_close("1M"), array.get(array_monthly_pivots, i), xloc = xloc.bar_time, color = input_color_monthly)
+            array.push(array_1h_monthly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("1M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_monthly_pivots, i), "M" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_monthly)
+            array.push(array_1h_monthly_labels, l2)
+
+        // 4h
+        if input_4h_monthly and timeframe.period == "240"
+            l = line.new(time, array.get(array_monthly_pivots, i), time_close("1M"), array.get(array_monthly_pivots, i), xloc = xloc.bar_time, color = input_color_monthly)
+            array.push(array_4h_monthly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("1M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_monthly_pivots, i), "M" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_monthly)
+            array.push(array_4h_monthly_labels, l2)
+
+        // 1d
+        if input_1d_monthly and timeframe.period == "D"
+            l = line.new(time, array.get(array_monthly_pivots, i), time_close("1M"), array.get(array_monthly_pivots, i), xloc = xloc.bar_time, color = input_color_monthly)
+            array.push(array_1h_monthly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time + time_close("1M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_monthly_pivots, i), "M" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_monthly)
+            array.push(array_1d_monthly_labels, l2)
+
+        // 1w
+        if input_1w_monthly and timeframe.period == "W"
+            l = line.new(time, array.get(array_monthly_pivots, i), time_close("1M"), array.get(array_monthly_pivots, i), xloc = xloc.bar_time, color = input_color_monthly)
+            array.push(array_1w_monthly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("1M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_monthly_pivots, i), "M" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_monthly)
+            array.push(array_1w_monthly_labels, l2)
+
+        // 1M
+        if input_1M_monthly and timeframe.period == "M"
+            l = line.new(time, array.get(array_monthly_pivots, i), time_close("1M"), array.get(array_monthly_pivots, i), xloc = xloc.bar_time, color = input_color_monthly)
+            array.push(array_1M_monthly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("1M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_monthly_pivots, i), "M" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_monthly)
+            array.push(array_1M_monthly_labels, l2)
+
+// Yearly Pivot
+if (is_year_change or bar_index == 0) and func_is_calc("yearly")
+
+    func_delete_lines(array_1m_yearly_lines)
+    func_delete_lines(array_5m_yearly_lines)
+    func_delete_lines(array_15m_yearly_lines)
+    func_delete_lines(array_1h_yearly_lines)
+    func_delete_lines(array_4h_yearly_lines)
+    func_delete_lines(array_1d_yearly_lines)
+    func_delete_lines(array_1w_yearly_lines)
+    func_delete_lines(array_1M_yearly_lines)
+
+    func_delete_labels(array_1m_yearly_labels)
+    func_delete_labels(array_5m_yearly_labels)
+    func_delete_labels(array_15m_yearly_labels)
+    func_delete_labels(array_1h_yearly_labels)
+    func_delete_labels(array_4h_yearly_labels)
+    func_delete_labels(array_1d_yearly_labels)
+    func_delete_labels(array_1w_yearly_labels)
+    func_delete_labels(array_1M_yearly_labels)
+
+    for [i, p] in array_yearly_pivots
+
+        if not func_check_level(i)
+
+            array.push(array_1m_yearly_lines, na)
+            array.push(array_5m_yearly_lines, na)
+            array.push(array_15m_yearly_lines, na)
+            array.push(array_1h_yearly_lines, na)
+            array.push(array_4h_yearly_lines, na)
+            array.push(array_1d_yearly_lines, na)
+            array.push(array_1w_yearly_lines, na)
+            array.push(array_1M_yearly_lines, na)
+
+            array.push(array_1m_yearly_labels, na)
+            array.push(array_5m_yearly_labels, na)
+            array.push(array_15m_yearly_labels, na)
+            array.push(array_1h_yearly_labels, na)
+            array.push(array_4h_yearly_labels, na)
+            array.push(array_1d_yearly_labels, na)
+            array.push(array_1w_yearly_labels, na)
+            array.push(array_1M_yearly_labels, na)
+
+            continue
+
+        // 1m
+        if input_1m_yearly and timeframe.period == "1"
+            l = line.new(time, array.get(array_yearly_pivots, i), time_close("12M"), array.get(array_yearly_pivots, i), xloc = xloc.bar_time, color = input_color_yearly)
+            array.push(array_1m_yearly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("12M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_yearly_pivots, i), "Y" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_yearly)
+            array.push(array_1m_yearly_labels, l2)
+
+        // 5m
+        if input_5m_yearly and timeframe.period == "5"
+            l = line.new(time, array.get(array_yearly_pivots, i), time_close("12M"), array.get(array_yearly_pivots, i), xloc = xloc.bar_time, color = input_color_yearly)
+            array.push(array_5m_yearly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("12M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_yearly_pivots, i), "Y" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_yearly)
+            array.push(array_5m_yearly_labels, l2)
+
+        // 15m
+        if input_15m_yearly and timeframe.period == "15"
+            l = line.new(time, array.get(array_yearly_pivots, i), time_close("12M"), array.get(array_yearly_pivots, i), xloc = xloc.bar_time, color = input_color_yearly)
+            array.push(array_15m_yearly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("12M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_yearly_pivots, i), "Y" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_yearly)
+            array.push(array_15m_yearly_labels, l2)
+
+        // 1h
+        if input_1h_yearly and timeframe.period == "60"
+            l = line.new(time, array.get(array_yearly_pivots, i), time_close("12M"), array.get(array_yearly_pivots, i), xloc = xloc.bar_time, color = input_color_yearly)
+            array.push(array_1h_yearly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("12M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_yearly_pivots, i), "Y" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_yearly)
+            array.push(array_1h_yearly_labels, l2)
+
+        // 4h
+        if input_4h_yearly and timeframe.period == "240"
+            l = line.new(time, array.get(array_yearly_pivots, i), time_close("12M"), array.get(array_yearly_pivots, i), xloc = xloc.bar_time, color = input_color_yearly)
+            array.push(array_4h_yearly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("12M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_yearly_pivots, i), "Y" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_yearly)
+            array.push(array_4h_yearly_labels, l2)
+
+        // 1d
+        if input_1d_yearly and timeframe.period == "D"
+            l = line.new(time, array.get(array_yearly_pivots, i), time_close("12M"), array.get(array_yearly_pivots, i), xloc = xloc.bar_time, color = input_color_yearly)
+            array.push(array_1h_yearly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("12M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_yearly_pivots, i), "Y" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_yearly)
+            array.push(array_1d_yearly_labels, l2)
+
+        // 1w
+        if input_1w_yearly and timeframe.period == "W"
+            l = line.new(time, array.get(array_yearly_pivots, i), time_close("12M"), array.get(array_yearly_pivots, i), xloc = xloc.bar_time, color = input_color_yearly)
+            array.push(array_1w_yearly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("12M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_yearly_pivots, i), "Y" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_yearly)
+            array.push(array_1w_yearly_labels, l2)
+
+        // 1M
+        if input_1M_yearly and timeframe.period == "M"
+            l = line.new(time, array.get(array_yearly_pivots, i), time_close("12M"), array.get(array_yearly_pivots, i), xloc = xloc.bar_time, color = input_color_yearly)
+            array.push(array_1M_yearly_lines, l)
+
+            label_x = 0
+            label_style = ""
+            if input_position_label == "Left"
+                if input_position_leftlabel_float
+                    label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+                    label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+                else
+                    label_x := time
+                    label_style := label.style_label_right
+            else
+                label_x := time_close("12M")
+                label_style := label.style_label_left
+                
+            l2 = label.new(label_x, array.get(array_yearly_pivots, i), "Y" + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_yearly)
+            array.push(array_1M_yearly_labels, l2)
+
+// Market Pivot
+if (is_start_tokyo or is_start_london or is_start_newyork) and func_is_calc("market")
+
+    func_delete_lines(array_1m_market_lines)
+    func_delete_lines(array_5m_market_lines)
+    func_delete_lines(array_15m_market_lines)
+
+    func_delete_labels(array_1m_market_labels)
+    func_delete_labels(array_5m_market_labels)
+    func_delete_labels(array_15m_market_labels)
+
+    int x2_len = 0
+    string label_str = ""
+    if is_start_tokyo
+        x2_len := 9 * 60 * 60 * 1000
+        label_str := "MKT:T"
+    else if is_start_london
+        x2_len := 6 * 60 * 60 * 1000
+        label_str := "MKT:L"
+    else if is_start_newyork
+        x2_len := 9 * 60 * 60 * 1000
+        label_str := "MKT:N"
+
+    label_x = 0
+    label_style = ""
+    if input_position_label == "Left"
+        if input_position_leftlabel_float
+            label_x := chart.left_visible_bar_time < time ? time : chart.left_visible_bar_time
+            label_style := chart.left_visible_bar_time < time ? label.style_label_right : label.style_label_left
+        else
+            label_x := time
+            label_style := label.style_label_right
+    else
+        label_x := time + x2_len
+        label_style := label.style_label_left
+        
+    for [i, p] in array_market_pivots
+
+        if not func_check_level(i)
+
+            array.push(array_1m_market_lines, na)
+            array.push(array_5m_market_lines, na)
+            array.push(array_15m_market_lines, na)
+
+            array.push(array_1m_market_labels, na)
+            array.push(array_5m_market_labels, na)
+            array.push(array_15m_market_labels, na)
+
+            continue
+
+        // 1m
+        if input_1m_market and timeframe.period == "1"
+            l = line.new(time, array.get(array_market_pivots, i), time + x2_len, array.get(array_market_pivots, i), xloc = xloc.bar_time, color = input_color_market)
+            array.push(array_1m_market_lines, l)
+
+            l2 = label.new(label_x, array.get(array_market_pivots, i), label_str + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_market)
+            array.push(array_1m_market_labels, l2)
+
+        // 5m
+        if input_5m_market and timeframe.period == "5"
+            l = line.new(time, array.get(array_market_pivots, i), time + x2_len, array.get(array_market_pivots, i), xloc = xloc.bar_time, color = input_color_market)
+            array.push(array_5m_market_lines, l)
+
+            l2 = label.new(label_x, array.get(array_market_pivots, i), label_str + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_market)
+            array.push(array_5m_market_labels, l2)
+
+        // 15m
+        if input_15m_market and timeframe.period == "15"
+            l = line.new(time, array.get(array_market_pivots, i), time + x2_len, array.get(array_market_pivots, i), xloc = xloc.bar_time, color = input_color_market)
+            array.push(array_15m_market_lines, l)
+
+            l2 = label.new(label_x, array.get(array_market_pivots, i), label_str + array.get(array_label_str, i), xloc = xloc.bar_time, color = chart.bg_color, style = label_style, textcolor = input_color_market)
+            array.push(array_15m_market_labels, l2)
+
+

@@ -1,0 +1,314 @@
+// © AlgoAlpha
+// This Source Code is subject to the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+//@version=6
+indicator("Smart Money Breakout Channels [AlgoAlpha]", "AlgoAlpha - Breakout Channels",  overlay=true, max_boxes_count = 500)
+import TradingView/ta/10
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+overlap = input.bool(false, "Nested Channels", group = "Main Settings", tooltip="When enabled, allows multiple channels to overlap. When disabled, only one channel can exist at a time. Overlapping channels can show multiple breakout levels simultaneously.")
+strong = input.bool(true, "Strong Closes Only", "When enabled, breakouts only trigger when more than 50% of the candle body is outside the channel. This reduces false signals from wicks. When disabled, any price movement outside the channel triggers a breakout.", group = "Main Settings")
+length_ = input.int(100, title="Normalization Length", minval=1, group = "Main Settings", tooltip="The number of bars used to calculate the highest high and lowest low for price normalization. Higher values create more stable normalization but may be less responsive to recent price changes.")
+length = input.int(14, "Box Detection Length", minval=1, group = "Main Settings", tooltip="The number of bars used to detect channel formation patterns. Lower values create more frequent channels but may be more sensitive to noise. Higher values create fewer but potentially more significant channels.")
+
+shw_vol = input.bool(true, "Show Volume Analysis", "When enabled, displays volume analysis as candle-like bars within the channel. This helps identify volume patterns that may precede breakouts.", group = "Volume Analysis")
+vol_mode = input.string("Comparison", "Volume Display Mode", options=["Volume", "Comparison", "Delta"], group="Volume Analysis", tooltip="Volume: Shows total volume as symmetrical bars. Comparison: Shows up volume above midline, down volume below. Delta: Shows net volume delta (positive above, negative below midline).")
+tf = input.timeframe("1", "Volume Delta Timeframe Source", group = "Volume Analysis", tooltip="The timeframe used to calculate volume delta data. Lower timeframes provide more granular volume analysis but may be noisier.")
+vol_scale = input.float(0.5, "Volume Scale", minval=0.1, maxval=2.0, step=0.1, group="Volume Analysis", tooltip="Adjusts the height of volume bars relative to channel size. Higher values make volume bars more prominent, lower values make them more subtle.")
+
+text_size    = input.string("Tiny", "Volume Text Size", options=["Tiny","Small","Medium","Large"], group="Appearance", tooltip="Size of the volume text at the corner of the channels.")
+green = input.color(#00ffbb, title = "Bullish Colour", group = "Appearance", tooltip = "Primary colour for bullish visual elements. Adjust for preferred palette – affects bars, fills, and labels when momentum is positive.")
+red   = input.color(#ff1100, title = "Bearish Colour", group = "Appearance", tooltip = "Primary colour for bearish visual elements. Adjust for preferred palette – affects bars, fills, and labels when momentum is negative.")
+
+// ============================================================================
+// VARIABLES
+// ============================================================================
+
+var boxes = array.new_box()
+var boxes_u = array.new_box()
+var boxes_l = array.new_box()
+
+var line[] gaugeLines = array.new<line>()
+var label gaugeLabel = na
+var line[] centerLines = array.new<line>()
+
+// ============================================================================
+// FUNCTIONS
+// ============================================================================
+
+textSize(text_size) =>
+    switch text_size
+        "Tiny"  => size.tiny
+        "Small" => size.small
+        "Medium"=> size.normal
+        "Large" => size.large
+
+f_can_create(float tNew, float bNew) =>
+    ok = true
+    if boxes.size() > 0
+        for j = 0 to boxes.size()-1
+            if (tNew > boxes.get(j).get_bottom()) and (bNew < boxes.get(j).get_top())
+                ok := false
+                break
+    ok
+
+getVolumeTransparency(float vol, float smoothed_vol) =>
+    if vol_mode == "Volume"
+        float vol_ratio = vol / smoothed_vol
+        float transparency = math.max(20, math.min(80, 80 - (vol_ratio - 0.5) * 40))
+        transparency
+    else
+        0
+
+// ============================================================================
+// CALCULATIONS
+// ============================================================================
+
+lowestLow = ta.lowest(low, length_)
+highestHigh = ta.highest(high, length_)
+normalizedPrice = (close - lowestLow) / (highestHigh - lowestLow)
+vol = ta.stdev(normalizedPrice, 14)
+
+upper = (ta.highestbars(vol, length + 1) + length)/length
+lower = (ta.lowestbars(vol, length + 1) + length)/length
+
+upbreak = 0.0
+downbreak = 0.0
+
+duration = math.max(nz(ta.barssince(ta.crossover(lower,upper))), 1)
+h = ta.highest(duration)
+l = ta.lowest(duration)
+
+[uv, dv, vold] = ta.requestUpAndDownVolume(tf)
+
+var hvold = vold
+var lvold = vold
+
+if ta.crossover(lower, upper)
+    hvold := vold
+    lvold := vold
+
+if vold > hvold
+    hvold := vold
+
+if vold < lvold
+    lvold := vold
+
+smoothedvol = ta.sma(volume, 20)
+vola = ta.atr(length)/2
+
+bool newChannelFormed = false
+bool bullishBreakout = false
+bool bearishBreakout = false
+
+if ta.crossover(upper, lower) and duration > 10
+    if overlap or f_can_create(h, l)
+        boxes.unshift(box.new(bar_index-duration, h, bar_index, l, bgcolor = color.new(chart.fg_color, 90), border_color = na))
+        boxes_u.unshift(box.new(bar_index-duration, h, bar_index, h-vola, bgcolor = color.new(red, 70), border_color = na))
+        boxes_l.unshift(box.new(bar_index-duration, l+vola, bar_index, l, bgcolor = color.new(green, 70), border_color = na))
+        
+        float centerY = (h + l) / 2
+        centerLines.unshift(line.new(bar_index-duration, centerY, bar_index, centerY, color = color.new(chart.fg_color, 50), width = 1, style = line.style_dashed))
+        newChannelFormed := true
+
+if boxes.size() > 0
+    for i = 0 to boxes.size()-1
+        if ((strong ? math.avg(close, open) : close) > boxes.get(i).get_top())
+            upbreak := boxes.get(i).get_bottom()
+            boxes.remove(i)
+            boxes_u.remove(i)
+            boxes_l.remove(i)
+            centerLines.remove(i)
+            bullishBreakout := true
+            
+        else if ((strong ? math.avg(close, open) : close) < boxes.get(i).get_bottom())
+            downbreak := boxes.get(i).get_top()
+            boxes.remove(i)
+            boxes_u.remove(i)
+            boxes_l.remove(i)
+            centerLines.remove(i)
+            bearishBreakout := true
+                  
+        else
+            boxes.get(i).set_right(bar_index)
+            boxes_u.get(i).set_right(bar_index)
+            boxes_l.get(i).set_right(bar_index)
+            centerLines.get(i).set_x2(bar_index)
+            
+            // Add volume text to appropriate box based on price position
+            float boxMidline = (boxes.get(i).get_top() + boxes.get(i).get_bottom()) / 2
+            float currentPrice = strong ? math.avg(close, open) : close
+            
+            string volText = ""
+            if vol_mode == "Volume"
+                volText := str.tostring(math.round(volume / 1000, 1)) + "K"
+            else if vol_mode == "Comparison"
+                volText := str.tostring(math.round(uv / 1000, 1)) + "K/" + str.tostring(math.round(dv / 1000, 1)) + "K"
+            else if vol_mode == "Delta"
+                volText := str.tostring(math.round(vold / 1000, 1)) + "K"
+            
+            if currentPrice > boxMidline
+                // Price is above midline, add text to lower (green) box
+                boxes_l.get(i).set_text(volText)
+                boxes_l.get(i).set_text_halign(text.align_right)
+                boxes_l.get(i).set_text_color(color.new(chart.fg_color, 30))
+                boxes_l.get(i).set_text_size(textSize(text_size))
+                boxes_u.get(i).set_text("")
+            else
+                // Price is below midline, add text to upper (red) box
+                boxes_u.get(i).set_text(volText)
+                boxes_u.get(i).set_text_halign(text.align_right)
+                boxes_u.get(i).set_text_color(color.new(chart.fg_color, 30))
+                boxes_u.get(i).set_text_size(textSize(text_size))
+                boxes_l.get(i).set_text("")
+
+float currentMidline = na
+float channelHeight = na
+
+if boxes.size() > 0
+    float topBound = boxes.get(0).get_top()
+    float bottomBound = boxes.get(0).get_bottom()
+    currentMidline := (topBound + bottomBound) / 2
+    channelHeight := (topBound - bottomBound) * vol_scale
+
+float vol_upper_open = na
+float vol_upper_high = na  
+float vol_upper_low = na
+float vol_upper_close = na
+
+float vol_lower_open = na
+float vol_lower_high = na
+float vol_lower_low = na  
+float vol_lower_close = na
+
+if not na(currentMidline) and not na(channelHeight) and shw_vol
+    if vol_mode == "Volume"
+        float vol_height = (volume / smoothedvol) * (channelHeight / 4)
+        vol_upper_open := currentMidline
+        vol_upper_close := currentMidline + vol_height
+        vol_upper_high := currentMidline + vol_height
+        vol_upper_low := currentMidline
+        
+        vol_lower_open := currentMidline
+        vol_lower_close := currentMidline - vol_height
+        vol_lower_high := currentMidline
+        vol_lower_low := currentMidline - vol_height
+        
+    else if vol_mode == "Comparison"
+        float uv_height = na(uv) ? 0 : (uv / smoothedvol) * (channelHeight / 4)
+        float dv_height = na(dv) ? 0 : (dv / smoothedvol) * (channelHeight / 4)
+        
+        vol_upper_open := currentMidline
+        vol_upper_close := currentMidline + uv_height  
+        vol_upper_high := currentMidline + uv_height
+        vol_upper_low := currentMidline
+        
+        vol_lower_open := currentMidline
+        vol_lower_close := currentMidline + dv_height
+        vol_lower_high := currentMidline  
+        vol_lower_low := currentMidline + dv_height
+        
+    else if vol_mode == "Delta" 
+        float delta_height = na(vold) ? 0 : math.abs(vold / smoothedvol) * (channelHeight / 4)
+        
+        if vold >= 0
+            vol_upper_open := currentMidline
+            vol_upper_close := currentMidline + delta_height
+            vol_upper_high := currentMidline + delta_height  
+            vol_upper_low := currentMidline
+            
+            vol_lower_open := currentMidline
+            vol_lower_close := currentMidline
+            vol_lower_high := currentMidline
+            vol_lower_low := currentMidline
+        else
+            vol_upper_open := currentMidline
+            vol_upper_close := currentMidline
+            vol_upper_high := currentMidline
+            vol_upper_low := currentMidline
+            
+            vol_lower_open := currentMidline
+            vol_lower_close := currentMidline - delta_height  
+            vol_lower_high := currentMidline
+            vol_lower_low := currentMidline - delta_height
+
+color upperColor = na
+color lowerColor = na
+
+if vol_mode == "Volume"
+    float transparency = getVolumeTransparency(volume, smoothedvol)
+    upperColor := color.new(chart.fg_color, transparency)
+    lowerColor := color.new(chart.fg_color, transparency)
+else
+    upperColor := green
+    lowerColor := red
+
+// ============================================================================
+// VISUALS
+// ============================================================================
+
+plotshape(upbreak != 0 ? upbreak : na, "Bullish Breakout Signal", shape.labelup, location.absolute, green, text = "▲", textcolor = chart.fg_color)
+plotshape(downbreak != 0 ? downbreak : na, "Bearish Breakout Signal", shape.labeldown, location.absolute, red, text = "▼", textcolor = chart.fg_color)
+
+plotcandle(vol_upper_open, vol_upper_high, vol_upper_low, vol_upper_close, color=upperColor, wickcolor=upperColor, bordercolor=upperColor)
+plotcandle(vol_lower_open, vol_lower_high, vol_lower_low, vol_lower_close, color=lowerColor, wickcolor=lowerColor, bordercolor=lowerColor)
+
+volumeAvailable = not na(volume)
+
+if barstate.islast
+    bool channelActive = boxes.size() > 0 and upbreak == 0 and downbreak == 0
+    
+    if array.size(gaugeLines) > 0
+        for ln in gaugeLines
+            ln.delete()
+        gaugeLines.clear()
+    
+    if not na(gaugeLabel)
+        gaugeLabel.delete()
+        gaugeLabel := na
+    
+    if channelActive
+        float topBound    = boxes.get(0).get_top()
+        float bottomBound = boxes.get(0).get_bottom()
+        
+        if not na(topBound) and not na(bottomBound) and topBound != bottomBound
+            int segments = 21
+            float segLen = (topBound - bottomBound) / segments
+            
+            for i = 0 to segments - 1
+                float y1 = topBound   - i * segLen
+                float y2 = topBound   - (i + 1) * segLen
+                color segCol = color.from_gradient(y1, bottomBound, topBound, red, green)
+                line ln = line.new(x1 = bar_index + 2,
+                                     y1 = y1,
+                                     x2 = bar_index + 2,
+                                     y2 = y2,
+                                     color = segCol,
+                                     width = 4)
+                gaugeLines.unshift(ln)
+            
+            float delvol = -100*2*((vold-lvold)/(hvold-lvold)-0.5)
+            delvol := math.max(math.min(delvol, 100), -100)
+            float pointerPos = topBound - ((delvol + 100) / 200) * (topBound - bottomBound)
+            gaugeLabel := label.new(x = bar_index + 3,
+                                     y = pointerPos,
+                                     text = "◀",
+                                     color = na,
+                                     textcolor = chart.fg_color,
+                                     size = size.small,
+                                     style = label.style_label_left)
+
+if not volumeAvailable
+    var gaugeWarnTable = table.new(position = position.top_right, columns = 1, rows = 1, bgcolor = red, border_width = 1, border_color = chart.fg_color, frame_color = chart.fg_color, frame_width = 1)
+    table.cell(gaugeWarnTable, 0, 0, "Volume not available\nGauge may not work as expected", text_color = chart.fg_color, text_halign = text.align_center, text_size = size.small)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(newChannelFormed, "New Channel Formation", "A new breakout channel has been formed")
+alertcondition(bullishBreakout, "Bullish Breakout", "Price has broken out above the channel (bullish signal)")
+alertcondition(bearishBreakout, "Bearish Breakout", "Price has broken out below the channel (bearish signal)")

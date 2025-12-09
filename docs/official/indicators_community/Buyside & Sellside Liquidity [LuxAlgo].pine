@@ -1,0 +1,347 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+ 
+//@version=5
+indicator("Buyside & Sellside Liquidity [LuxAlgo]", "LuxAlgo - Buyside & Sellside Liquidity", overlay = true,  max_lines_count = 500, max_boxes_count = 500, max_bars_back = 3000)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+liqGrp = 'Liquidity Detection'
+liqLen = input.int   (7, title = 'Detection Length', minval = 3, maxval = 13, inline = 'LIQ', group = liqGrp)
+liqMar = 10 / input.float (6.9, 'Margin', minval = 4, maxval = 9, step = 0.1, inline = 'LIQ', group = liqGrp)
+
+liqBuy = input.bool (true, 'Buyside Liquidity Zones, Margin', inline = 'Buyside', group = liqGrp)
+marBuy    = input.float(2.3, '', minval = 1.5, maxval = 10, step = .1, inline = 'Buyside', group = liqGrp)
+cLIQ_B = input.color (color.new(#4caf50,  0), '', inline = 'Buyside', group = liqGrp)
+
+liqSel = input.bool (true, 'Sellside Liquidity Zones, Margin', inline = 'Sellside', group = liqGrp)
+marSel = input.float(2.3, '', minval = 1.5, maxval = 10, step = .1, inline = 'Sellside', group = liqGrp)
+cLIQ_S = input.color (color.new(#f23645,  0), '', inline = 'Sellside', group = liqGrp)
+
+lqVoid = input.bool (false, 'Liquidity Voids, Bullish', inline = 'void', group = liqGrp)
+cLQV_B = input.color (color.new(#4caf50,  0), '', inline = 'void', group = liqGrp)
+cLQV_S = input.color (color.new(#f23645,  0), 'Bearish', inline = 'void', group = liqGrp)
+lqText = input.bool (false, 'Label', inline = 'void', group = liqGrp)
+
+mode   = input.string('Present', title = 'Mode', options =['Present', 'Historical'], inline = 'MOD', group = liqGrp)
+visLiq = input.int   (3, '    # Visible Levels', minval = 1, maxval = 50, inline = 'MOD', group = liqGrp)
+
+//-----------------------------------------------------------------------------}
+//General Calculations
+//-----------------------------------------------------------------------------{
+maxSize = 50
+atr     = ta.atr(10)
+atr200  = ta.atr(200)
+per     = mode == 'Present' ? last_bar_index - bar_index <=  500 : true
+
+//-----------------------------------------------------------------------------}
+//User Defined Types
+//-----------------------------------------------------------------------------{
+// @type        used to store pivot high/low data 
+//
+// @field d     (array<int>) The array where the trend direction is to be maintained
+// @field x     (array<int>) The array where the bar index value of pivot high/low is to be maintained
+// @field y     (array<float>) The array where the price value of pivot high/low is to be maintained
+
+type ZZ 
+    int   [] d
+    int   [] x 
+    float [] y 
+
+// @type        bar properties with their values 
+//
+// @field o     (float) open price of the bar
+// @field h     (float) high price of the bar
+// @field l     (float) low price of the bar
+// @field c     (float) close price of the bar
+// @field i     (int) index of the bar
+
+type bar
+    float o = open
+    float h = high
+    float l = low
+    float c = close
+    int   i = bar_index
+
+// @type        liquidity object definition 
+//
+// @field bx    (box) box maitaing the liquity level margin extreme levels
+// @field bxz   (box) box maitaing the liquity zone margin extreme levels
+// @field bxt   (box) box maitaing the labels
+// @field brZ   (bool) mainains broken zone status
+// @field brL   (bool) mainains broken level status
+// @field ln    (line) maitaing the liquity level line
+// @field lne   (line) maitaing the liquity extended level line
+
+type liq
+    box   bx
+    box   bxz
+    box   bxt
+    bool  brZ
+    bool  brL
+    line  ln
+    line  lne
+
+//-----------------------------------------------------------------------------}
+//Variables
+//-----------------------------------------------------------------------------{
+var ZZ aZZ = ZZ.new(
+ array.new <int>  (maxSize,  0), 
+ array.new <int>  (maxSize,  0), 
+ array.new <float>(maxSize, na)
+ )
+
+bar b = bar.new()
+
+var liq[] b_liq_B = array.new<liq> (1, liq.new(box(na), box(na), box(na), false, false, line(na), line(na)))
+var liq[] b_liq_S = array.new<liq> (1, liq.new(box(na), box(na), box(na), false, false, line(na), line(na)))
+
+var b_liq_V = array.new_box()
+
+var int dir = na, var int x1 = na, var float y1 = na, var int x2 = na, var float y2 = na
+
+//-----------------------------------------------------------------------------}
+//Functions/methods
+//-----------------------------------------------------------------------------{
+// @function        maintains arrays 
+//                     it prepends a `value` to the arrays and removes their oldest element at last position
+// @param aZZ       (UDT<array<int>, array<int>, array<float>>) The UDT obejct of arrays
+// @param _d        (array<int>) The array where the trend direction is maintained
+// @param _x        (array<int>) The array where the bar index value of pivot high/low is maintained
+// @param _y        (array<float>) The array where the price value of pivot high/low is maintained
+//
+// @returns         none
+
+method in_out(ZZ aZZ, int _d, int _x, float _y) =>
+    aZZ.d.unshift(_d), aZZ.x.unshift(_x), aZZ.y.unshift(_y), aZZ.d.pop(), aZZ.x.pop(), aZZ.y.pop()
+
+
+// @function        (build-in) sets the maximum number of bars that is available for historical reference 
+                    
+max_bars_back(time, 1000)
+
+//-----------------------------------------------------------------------------}
+//Calculations
+//-----------------------------------------------------------------------------{
+x2 := b.i - 1
+ph  = ta.pivothigh(liqLen, 1)
+pl  = ta.pivotlow (liqLen, 1)
+
+if ph   
+    dir := aZZ.d.get(0) 
+    x1  := aZZ.x.get(0) 
+    y1  := aZZ.y.get(0) 
+    y2  := nz(b.h[1])
+
+    if dir < 1
+        aZZ.in_out(1, x2, y2)
+    else
+        if dir == 1 and ph > y1 
+            aZZ.x.set(0, x2), aZZ.y.set(0, y2)
+    
+    if per
+        count = 0
+        st_P  = 0.
+        st_B  = 0
+        minP  = 0.
+        maxP  = 10e6
+
+        for i = 0 to maxSize - 1
+            if aZZ.d.get(i) ==  1 
+                if aZZ.y.get(i) > ph + (atr / liqMar)
+                    break
+                else
+                    if aZZ.y.get(i) > ph - (atr / liqMar) and aZZ.y.get(i) < ph + (atr / liqMar)
+                        count += 1
+                        st_B := aZZ.x.get(i)
+                        st_P := aZZ.y.get(i)
+                        if aZZ.y.get(i) > minP
+                            minP := aZZ.y.get(i)
+                        if aZZ.y.get(i) < maxP 
+                            maxP := aZZ.y.get(i)
+
+        if count > 2
+            getB = b_liq_B.get(0)
+
+            if st_B == getB.bx.get_left()
+                getB.bx.set_top(math.avg(minP, maxP) + (atr / liqMar))
+                getB.bx.set_rightbottom(b.i + 10, math.avg(minP, maxP) - (atr / liqMar))
+            else
+                b_liq_B.unshift(
+                 liq.new(
+                   box.new(st_B, math.avg(minP, maxP) + (atr / liqMar), b.i + 10, math.avg(minP, maxP) - (atr / liqMar), bgcolor=color(na), border_color=color(na)), 
+                   box.new(na, na, na, na, bgcolor = color(na), border_color = color(na)),
+                   box.new(st_B, st_P, b.i + 10, st_P, text = 'Buyside liquidity', text_size = size.tiny, text_halign = text.align_left, text_valign = text.align_bottom, text_color = color.new(cLIQ_B, 25), bgcolor = color(na), border_color = color(na)),
+                   false, 
+                   false,
+                   line.new(st_B   , st_P, b.i - 1, st_P, color = color.new(cLIQ_B, 0)),
+                   line.new(b.i - 1, st_P, na     , st_P, color = color.new(cLIQ_B, 0), style = line.style_dotted))
+                 )
+
+                alert('buyside liquidity level detected/updated for ' + syminfo.ticker)
+
+            if b_liq_B.size() > visLiq
+                getLast = b_liq_B.pop()
+                getLast.bx.delete()
+                getLast.bxz.delete()
+                getLast.bxt.delete()
+                getLast.ln.delete()
+                getLast.lne.delete()               
+
+if pl
+    dir := aZZ.d.get (0) 
+    x1  := aZZ.x.get (0) 
+    y1  := aZZ.y.get (0) 
+    y2  := nz(b.l[1])
+    
+    if dir > -1
+        aZZ.in_out(-1, x2, y2)
+    else
+        if dir == -1 and pl < y1 
+            aZZ.x.set(0, x2), aZZ.y.set(0, y2)
+    
+    if per
+        count = 0
+        st_P  = 0.
+        st_B  = 0
+        minP  = 0.
+        maxP  = 10e6
+
+        for i = 0 to maxSize - 1
+            if aZZ.d.get(i) == -1 
+                if aZZ.y.get(i) < pl - (atr / liqMar)
+                    break
+                else
+                    if aZZ.y.get(i) > pl - (atr / liqMar) and aZZ.y.get(i) < pl + (atr / liqMar)
+                        count += 1
+                        st_B := aZZ.x.get(i)
+                        st_P := aZZ.y.get(i)
+                        if aZZ.y.get(i) > minP
+                            minP := aZZ.y.get(i)
+                        if aZZ.y.get(i) < maxP 
+                            maxP := aZZ.y.get(i)
+
+        if count > 2
+            getB = b_liq_S.get(0)
+
+            if st_B == getB.bx.get_left()
+                getB.bx.set_top(math.avg(minP, maxP) + (atr / liqMar))
+                getB.bx.set_rightbottom(b.i + 10, math.avg(minP, maxP) - (atr / liqMar))
+            else
+                b_liq_S.unshift(
+                 liq.new(
+                   box.new(st_B, math.avg(minP, maxP) + (atr / liqMar), b.i + 10, math.avg(minP, maxP) - (atr / liqMar), bgcolor=color(na), border_color=color(na)),
+                   box.new(na, na, na, na, bgcolor=color(na), border_color=color(na)),
+                   box.new(st_B, st_P, b.i + 10, st_P, text = 'Sellside liquidity', text_size = size.tiny, text_halign = text.align_left, text_valign = text.align_top, text_color = color.new(cLIQ_S, 25), bgcolor=color(na), border_color=color(na)),
+                   false,
+                   false,
+                   line.new(st_B   , st_P, b.i - 1, st_P, color = color.new(cLIQ_S, 0)),
+                   line.new(b.i - 1, st_P, na     , st_P, color = color.new(cLIQ_S, 0), style = line.style_dotted))
+                 )  
+
+                alert('sellside liquidity level detected/updated for ' + syminfo.ticker)
+
+            if b_liq_S.size() > visLiq
+                getLast = b_liq_S.pop()
+                getLast.bx.delete()
+                getLast.bxz.delete()
+                getLast.bxt.delete()
+                getLast.ln.delete()            
+                getLast.lne.delete()               
+
+
+for i = 0 to b_liq_B.size() - 1
+    x = b_liq_B.get(i)
+    
+    if not x.brL
+        x.lne.set_x2(b.i)
+
+        if b.h > x.bx.get_top()
+            x.brL := true
+            x.brZ := true
+            alert('buyside liquidity level breached for ' + syminfo.ticker)
+
+            x.bxz.set_lefttop(b.i - 1, math.min(x.ln.get_y1() + marBuy * (atr), b.h))
+            x.bxz.set_rightbottom(b.i + 1, x.ln.get_y1())
+            x.bxz.set_bgcolor(color.new(cLIQ_B, liqBuy ? 73 : 100))
+
+    else if x.brZ
+        if b.l > x.ln.get_y1() - marBuy * (atr) and b.h < x.ln.get_y1() + marBuy * (atr)
+            x.bxz.set_right(b.i + 1)
+            x.bxz.set_top(math.max(b.h, x.bxz.get_top()))
+            if liqBuy
+                x.lne.set_x2(b.i + 1)
+        else
+            x.brZ := false
+
+for i = 0 to b_liq_S.size() - 1
+    x = b_liq_S.get(i)
+
+    if not x.brL
+        x.lne.set_x2(b.i)
+
+        if b.l < x.bx.get_bottom()
+            x.brL := true
+            x.brZ := true
+            alert('sellside liquidity level breached for ' + syminfo.ticker)
+
+            x.bxz.set_lefttop(b.i - 1, x.ln.get_y1())
+            x.bxz.set_rightbottom(b.i + 1, math.max(x.ln.get_y1() - marSel * (atr), b.l))
+            x.bxz.set_bgcolor(color.new(cLIQ_S, liqSel ? 73 : 100))
+
+    else if x.brZ
+        if b.l > x.ln.get_y1() - marSel * (atr) and b.h < x.ln.get_y1() + marSel * (atr)
+            x.bxz.set_rightbottom(b.i + 1, math.min(b.l, x.bxz.get_bottom()))
+            if liqSel
+                x.lne.set_x2(b.i + 1)
+        else
+            x.brZ := false
+
+if lqVoid and per
+    bull = b.l - b.h[2] > atr200 and b.l > b.h[2] and b.c[1] > b.h[2]
+    bear = b.l[2] - b.h > atr200 and b.h < b.l[2] and b.c[1] < b.l[2]
+
+    if bull 
+        l  = 13
+        if bull[1] 
+            st = math.abs(b.l - b.l[1]) / l
+            for i = 0 to l - 1
+                array.push(b_liq_V, box.new(b.i - 2, b.l[1] + i * st, b.i, b.l[1] + (i + 1) * st, border_color = na, bgcolor = color.new(cLQV_B, 90) ))
+        else   
+            st = math.abs(b.l - b.h[2]) / l
+            for i = 0 to l - 1
+                if lqText and i == 0
+                    array.push(b_liq_V, box.new(b.i - 2, b.h[2] + i * st, b.i, b.h[2] + (i + 1) * st, text = 'Liquidity Void   ', text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_bottom, text_color = na, border_color = na, bgcolor = color.new(cLQV_B, 90) ))
+                else
+                    array.push(b_liq_V, box.new(b.i - 2, b.h[2] + i * st, b.i, b.h[2] + (i + 1) * st, border_color = na, bgcolor = color.new(cLQV_B, 90) ))
+
+    if bear
+        l  = 13
+        if bear[1]
+            st = math.abs(b.h[1] - b.h) / l
+            for i = 0 to l - 1
+                array.push(b_liq_V, box.new(b.i - 2, b.h + i * st, b.i, b.h + (i + 1) * st, border_color = na, bgcolor = color.new(cLQV_S, 90) ))
+        else
+            st = math.abs(b.l[2] - b.h) / l
+            for i = 0 to l - 1
+                if lqText and i == l - 1
+                    array.push(b_liq_V, box.new(b.i - 2, b.h + i * st, b.i, b.h + (i + 1) * st, text = 'Liquidity Void   ', text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_top, text_color = na, border_color = na, bgcolor = color.new(cLQV_S, 90) ))
+                else
+                    array.push(b_liq_V, box.new(b.i - 2, b.h + i * st, b.i, b.h + (i + 1) * st, border_color = na, bgcolor = color.new(cLQV_S, 90) ))
+
+if b_liq_V.size() > 0
+    qt = b_liq_V.size()
+    for bn = qt - 1 to 0
+        if bn < b_liq_V.size()
+            cb = b_liq_V.get(bn)
+            ba = math.avg(cb.get_bottom(), cb.get_top())
+
+            if math.sign(b.c[1] - ba) != math.sign(b.c - ba) or math.sign(b.c[1] - ba) != math.sign(b.l - ba) or math.sign(b.c[1] - ba) != math.sign(b.h - ba)
+                b_liq_V.remove(bn)
+            else
+                cb.set_right(b.i + 1)
+
+                if b.i - cb.get_left() > 21
+                    cb.set_text_color(color.new(color.gray, 25))
+
+//-----------------------------------------------------------------------------}

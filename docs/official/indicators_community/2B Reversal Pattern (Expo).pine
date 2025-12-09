@@ -1,0 +1,91 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator("2B Reversal Pattern (Expo)",overlay=true,max_lines_count=500)
+
+// ~~ ToolTips {
+t1 = "Set the pivot period."
+t2 = "Set the maximum bars until the pattern should be completed. This means establishing a limit on the number of bars allowed for the completion of the pattern. A high value returns more signals."
+t3 = "Set the minimum bars before the breakout. This means establishing a minimum number of bars that must be completed before the breakout. A low value returns more signals."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+prd = input.int(20, title="Period",minval=1, tooltip=t1)
+max = input.int(10, title="Maximum Break Length",minval=1, tooltip=t2)
+min = input.int(3, title="Minimum Break Length",minval=1, tooltip=t3)
+bUp = input.color(#6ce5a0,"", inline="col"), bDn = input.color(#f23645,"", inline="col"), pCol = input.color(color.new(color.aqua,0),"",inline="col")
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+b = bar_index
+var ph = float(na)
+var pl = float(na)
+var phL = int(na)
+var plL = int(na)
+var bo = float(na)
+var boL= int(na)
+breakoutup = false
+breakoutdn = false
+var array<line> lines = array.new<line>(0)
+var active= line(na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pivots {
+pvtHi = ta.pivothigh(high,prd,prd)
+pvtLo = ta.pivotlow(low,prd,prd)
+if pvtHi
+    ph := high[prd]
+    phL:= b[prd]
+if pvtLo
+    pl := low[prd]
+    plL:= b[prd]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pattern Detection {
+if ta.crossover(close,ph)
+    bo := low
+    boL:= b
+    lines.push(line.new(phL,ph,b,ph,color=pCol,style=line.style_dashed))
+    ph := float(na)
+if ta.crossunder(close,pl)
+    bo := high
+    boL:= b
+    lines.push(line.new(plL,pl,b,pl,color=pCol,style=line.style_dashed))
+    pl := float(na)
+if ta.crossunder(close,bo) and b-boL<=max and b-boL>=min
+    line.delete(active)
+    lines.push(line.new(boL,bo,b,bo,color=bDn,style=line.style_solid,width=2))
+    breakoutdn := true
+    bo := float(na)
+if ta.crossover(close,bo) and b-boL<=max and b-boL>=min
+    line.delete(active)
+    lines.push(line.new(boL,bo,b,bo,color=bUp,style=line.style_solid,width=2))
+    breakoutup := true
+    bo := float(na)
+if ta.cross(close,bo)
+    bo := float(na)
+    p2 = lines.pop()
+    line.delete(p2)
+
+if not na(bo)
+    active := line.new(boL,bo,b,bo,color=pCol,style=line.style_solid,width=2)
+    line.delete(active[1])
+    if b-boL>max
+        bo := float(na)
+        p2 = lines.pop()
+        line.delete(p2)
+        line.delete(active)
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+plotshape(breakoutup?low:na, title="Breakout Up", color=bUp, style=shape.triangleup,location=location.belowbar,size=size.small)
+plotshape(breakoutdn?high:na, title="Breakout Down", color=bDn, style=shape.triangledown,location=location.abovebar,size=size.small)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+alertcondition(breakoutup, 'Breakout Up', 'Breakout Up')
+alertcondition(breakoutdn, 'Breakout Down', 'Breakout Down')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

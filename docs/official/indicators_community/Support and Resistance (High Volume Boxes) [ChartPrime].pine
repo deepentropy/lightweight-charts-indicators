@@ -1,0 +1,207 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=5
+indicator("Support and Resistance (High Volume Boxes) [ChartPrime]", shorttitle = "SR Breaks and Retests [ChartPrime]", overlay=true, max_boxes_count = 50)
+
+
+// ---------------------------------------------------------------------------------------------------------------------}
+// 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// ---------------------------------------------------------------------------------------------------------------------{
+int   lookbackPeriod = input.int(20, "Lookback Period", minval=1, group = "Settings")
+int   vol_len        = input.int(2, "Delta Volume Filter Length", tooltip = "Higher input, will filter low volume boxes"
+                                                                                                   , group = "Settings")
+float box_withd      = input.float(1, "Adjust Box Width", maxval = 1000, minval = 0, step = 0.1)
+
+
+// ---------------------------------------------------------------------------------------------------------------------}
+// 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// ---------------------------------------------------------------------------------------------------------------------{
+// Delta Volume Function
+upAndDownVolume() =>
+    posVol = 0.0
+    negVol = 0.0
+    
+    var isBuyVolume = true    
+
+    switch
+        close > open   => isBuyVolume := true
+        close < open   => isBuyVolume := false
+
+    if isBuyVolume
+        posVol += volume
+    else
+        negVol -= volume
+
+    posVol + negVol
+
+
+// Function to identify support and resistance boxes
+calcSupportResistance(src, lookbackPeriod) =>
+    // Volume
+    Vol    = upAndDownVolume()
+    vol_hi = ta.highest(Vol/2.5, vol_len)
+    vol_lo = ta.lowest(Vol/2.5, vol_len)
+
+    var float supportLevel      = na
+    var float supportLevel_1    = na    
+    var float resistanceLevel   = na
+    var float resistanceLevel_1 = na    
+    var box   sup               = na
+    var box   res               = na
+    var color res_color         = na
+    var color sup_color         = na    
+    var float multi             = na
+
+    var bool  brekout_res       = na
+    var bool  brekout_sup       = na
+    var bool  res_holds         = na
+    var bool  sup_holds         = na
+
+    // Find pivot points
+    pivotHigh = ta.pivothigh(src, lookbackPeriod, lookbackPeriod)
+    pivotLow  = ta.pivotlow (src, lookbackPeriod, lookbackPeriod)
+    // Box width
+    atr       = ta.atr(200)
+    withd     = atr * box_withd
+
+    // Find support levels with Positive Volume
+    if (not na(pivotLow)) and Vol > vol_hi 
+
+        supportLevel   := pivotLow
+        supportLevel_1 := supportLevel-withd       
+
+        topLeft         = chart.point.from_index(bar_index-lookbackPeriod, supportLevel)
+        bottomRight     = chart.point.from_index(bar_index, supportLevel_1)
+
+        sup_color      := color.from_gradient(Vol, 0, ta.highest(Vol, 25), color(na), color.new(color.green, 30))
+
+        sup := box.new(
+                       top_left     = topLeft, 
+                       bottom_right = bottomRight, 
+                       border_color = color.green, 
+                       border_width = 1, 
+                       bgcolor      = sup_color, 
+                       text         = "Vol: "+str.tostring(math.round(Vol,2)), 
+                       text_color   = chart.fg_color, 
+                       text_size    = size.small
+                       ) 
+
+
+    // Find resistance levels with Negative Volume
+    if (not na(pivotHigh)) and Vol < vol_lo
+   
+        resistanceLevel   := pivotHigh
+        resistanceLevel_1 := resistanceLevel+withd
+
+        topLeft            = chart.point.from_index(bar_index-lookbackPeriod, resistanceLevel)
+        bottomRight        = chart.point.from_index(bar_index, resistanceLevel_1)
+
+        res_color         := color.from_gradient(Vol, ta.lowest(Vol, 25), 0, color.new(color.red, 30), color(na))
+
+        res := box.new(
+                       top_left     = topLeft, 
+                       bottom_right = bottomRight, 
+                       border_color = color.red, 
+                       border_width = 1, 
+                       bgcolor      = res_color, 
+                       text         = "Vol: "+str.tostring(math.round(Vol,2)), 
+                       text_color   = chart.fg_color, 
+                       text_size    = size.small
+                       ) 
+
+    // Adaptive Box Len
+    sup.set_right(bar_index+1)
+    res.set_right(bar_index+1)
+
+    // Break of support or resistance conditions
+    brekout_res := ta.crossover(low, resistanceLevel_1)
+    res_holds   := ta.crossunder(high, resistanceLevel)
+
+    sup_holds   := ta.crossover(low, supportLevel)
+    brekout_sup := ta.crossunder(high, supportLevel_1)
+
+    // Change Color of Support to red if it was break, change color of resistance to green if it was break
+    if brekout_sup
+        sup.set_bgcolor(color.new(color.red, 80))
+        sup.set_border_color(color.red)
+        sup.set_border_style(line.style_dashed)
+
+    if sup_holds
+        sup.set_bgcolor(sup_color)
+        sup.set_border_color(color.green)
+        sup.set_border_style(line.style_solid)
+
+    if brekout_res
+        res.set_bgcolor(color.new(color.green, 80))
+        res.set_border_color(color.new(color.green, 0))
+        res.set_border_style(line.style_dashed)
+
+    if res_holds
+        res.set_bgcolor(res_color)
+        res.set_border_color(color.new(color.red, 0))
+        res.set_border_style(line.style_solid)
+
+    [supportLevel, resistanceLevel, brekout_res, res_holds, sup_holds, brekout_sup]
+
+
+// Calculate support and resistance levels and their breakouts
+[supportLevel,
+         resistanceLevel, 
+             brekout_res, 
+                 res_holds, 
+                     sup_holds, 
+                         brekout_sup] = calcSupportResistance(close, lookbackPeriod)
+
+
+// Check if Resistance become Support or Support Become Resistance
+var bool res_is_sup = na
+var bool sup_is_res = na
+
+switch
+    brekout_res => res_is_sup := true
+    res_holds   => res_is_sup := false
+
+switch
+    brekout_sup => sup_is_res := true
+    sup_holds   => sup_is_res := false
+
+
+// ---------------------------------------------------------------------------------------------------------------------}
+// 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// ---------------------------------------------------------------------------------------------------------------------{
+// Plot Res and Sup breakouts and holds 
+plotchar(res_holds, "Resistance Holds", "◆", 
+             color = #e92929,   size = size.tiny, location = location.abovebar, offset = -1)
+plotchar(sup_holds, "Support Holds",    "◆", 
+             color = #20ca26, size = size.tiny, location = location.belowbar, offset = -1)
+
+plotchar(brekout_res and res_is_sup[1], "Resistance as Support Holds", "◆", 
+             color = #20ca26, size = size.tiny, location = location.belowbar, offset = -1)
+plotchar(brekout_sup and sup_is_res[1], "Support as Resistance Holds", "◆", 
+             color = #e92929,   size = size.tiny, location = location.abovebar, offset = -1)
+
+// Break Out Labels
+if brekout_sup and not sup_is_res[1]
+    label.new(
+              bar_index[1], supportLevel[1], 
+              text       = "Break Sup", 
+              style      = label.style_label_down, 
+              color      = #7e1e1e, 
+              textcolor  = chart.fg_color, 
+              size       = size.small
+              )
+
+if brekout_res and not res_is_sup[1]
+    label.new(
+              bar_index[1], resistanceLevel[1], 
+              text       = "Break Res", 
+              style      = label.style_label_up, 
+              color      = #2b6d2d, 
+              textcolor  = chart.fg_color, 
+              size       = size.small
+              )
+
+
+// ◆
+// ---------------------------------------------------------------------------------------------------------------------}

@@ -1,0 +1,11 @@
+//@version=6
+indicator(title = "Chande Kroll Stop", overlay=true, timeframe="", timeframe_gaps=true)
+p = input.int(10, minval=1, title="ATR Length (p)")
+x = input.int(1, minval=1, title="ATR Coefficient (x)")
+q = input.int(9, minval=1, title="Stop Length (q)")
+first_high_stop = ta.highest(high, p) - x * ta.atr(p)
+first_low_stop = ta.lowest(low, p) + x * ta.atr(p)
+stop_short = ta.highest(first_high_stop, q)
+stop_long = ta.lowest(first_low_stop, q)
+plot(stop_long, color=#2962FF, title="Stop Long")
+plot(stop_short, color=#FF6D00, title="Stop Short")

@@ -1,0 +1,24 @@
+//@version=6
+indicator(title="Price Oscillator", shorttitle="PPO", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+
+shortlen = input.int(12, "Short Length", minval=1)
+longlen = input.int(26, "Long Length", minval=1)
+signallen = input.int(9, "Signal Length", minval=1)
+src = input.source(close, title="Source")
+exp = input.bool(true, "Use exponential MA")
+
+esma(source, length)=>
+    s = ta.sma(source, length)
+    e = ta.ema(source, length) 
+    exp ? e : s
+
+short = esma(src, shortlen)
+long = esma(src, longlen)
+po = (short - long) / long * 100
+sl = esma(po, signallen)
+hist = po - sl
+
+plot(hist, title = "Histogram", style = plot.style_columns, color = (hist >= 0 ? (hist[1] < hist ? #26A69A : #B2DFDB) : (hist[1] < hist ? #FFCDD2 : #FF5252)))
+plot(po, color=color.teal, title="PPO")
+plot(sl, color=color.orange, title="Signal Line")
+hline(0, "Zero Line", color=#787B86) 

@@ -1,0 +1,82 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// ©ChartPrime
+
+//@version=5
+indicator("Radius Trend [ChartPrime]", overlay = true)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+// @variable Step size for radius adjustment
+float step       = input.float(0.15, "Radius Step", step = 0.001)
+// @variable Multiplier for initial distance calculation
+float multi      = input.float(2, "Start Points Distance", step = 0.1)
+
+// Initialize variables
+bool trend       = na
+var float multi1 = 0.
+var float multi2 = 0.
+int n            = 3
+var float band   = 0.
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+// Calculate distances for band placement
+float distance  = ta.sma(math.abs(high-low), 100) * multi
+float distance1 = ta.sma(math.abs(high-low), 100) * 0.2
+
+// Initialize trend and band on the 101st bar
+if bar_index == 101
+    trend := true
+    band := low * 0.8
+
+// Update trend based on price relation to band
+if close < band
+    trend := false
+
+if close > band
+    trend := true
+
+// Adjust band on trend changes
+if trend[1] == false and ta.change(trend)
+    band := low - distance
+
+if trend[1] == true and ta.change(trend)
+    band := high + distance
+
+// Apply step angle to trend lines
+if bar_index % n == 0 and trend
+    multi1 := 0
+    multi2 += step    
+    band   += distance1 * multi2
+
+if bar_index % n == 0 and not trend
+    multi1 += step
+    multi2 := 0   
+    band   -= distance1 * multi1
+
+// Smooth the band
+Sband = ta.sma(band, n)
+
+// Set color based on trend
+color      = trend ? #54b6d4 : #cf2b2b
+
+// Calculate upper and lower bands
+band_upper = ta.sma(band + distance*0.5, n)
+band_lower = ta.sma(band - distance*0.5, n)
+band1      = trend ? band_upper : band_lower
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// --------------------------------------------------------------------------------------------------------------------{
+
+// Plot the outer band
+plot(band1, color = bar_index % 2 == 0 ? color.new(chart.fg_color, 50) : na)
+
+// Plot the main band and fill area
+p1 = plot(ta.change(trend) ? na : Sband, style = plot.style_linebr, color = color.gray)
+p2 = plot(ta.sma(hl2, 20), display = display.none)
+
+fill(p1, p2, band, ta.sma(hl2, 20), color.new(color, 60), na)
+// --------------------------------------------------------------------------------------------------------------------}

@@ -1,0 +1,195 @@
+//@version=3
+study(title = "Renko+Moving Average+RMI Alert R3 by JustUncleL", shorttitle="RENKO_MA_RMI", overlay=true)
+//
+// Author: JustUncleL
+//
+// Description:
+//    This script idea is designed to be used with 10pip brick (recommened) Renko charts. It combines the Renko
+//    price action with a directional coloured EMA (default length 6) and a RMI (instead of the usual RSI) indicator 
+//    to provide entry and exit signals. RMI is bit like RSI with a built-in momentum factor and works well with Renko.
+//    Signals can optionally be filtered by Daily or Weekly Open, where by only trade long above open and short below
+//    open (this option is enabled by default).
+//    Exit occur when EMA or RMI reverses direction, or optionally (disabled by default) when the Renko prints 
+//    a brick in the reverse direction.
+//    Each Entry and Exit signal creates an Alertcondition that can be picked up by the TradingView Alarm system.
+//
+//    TIP: To get 10pip Bricks set Renko to "Traditional" type bricks and 0.001 for non-JPY currency pairs, and
+//         0.1 for JPY currency pairs. Also set chart Time frame to 5min or 15mins.
+//
+// References:
+//    - TheLark Relative Momentum Index (RMI)
+//
+// Modifications:
+//    13-Sep-2017
+//    - By request, added option to use the more  familiar RSI instead of RMI.
+//
+
+// === INPUTS
+
+// Medium Fast MA - type, source, length
+ma_type   = input(defval="EMA", title="MA Type: ", options=["SMA", "EMA", "WMA", "VWMA", "SMMA", "DEMA", "TEMA", "HullMA", "ZEMA", "TMA", "SSMA"])
+ma_len    = input(defval=6, title="MA - Length", minval=1)
+ma_src    = input(close, title="MA - Source")
+exitfirst = input(false,title="Exit Trade on 1st Opposite Renko Brick")
+// inputs for RMI function
+rmilen = input(4, title="RMI/RSI MA Length")
+mom = input(5, title="Momentum Length",minval=0)
+ob = input(70,title="Overbought")
+os = input(30,title="Oversold")
+uRSI   = input(false,title="Use RSI instead of RMI")
+udopen = input(true,title="Use Daily Open Line Filter")
+dperiod = input("1D", title="Period for Daily Open Line", options=["1D","1W","1M"])
+//
+// === /INPUTS
+
+// Constants colours that include fully non-transparent option.
+green100 = #008000FF
+lime100  = #00FF00FF
+red100   = #FF0000FF
+blue100  = #0000FFFF
+aqua100  = #00FFFFFF
+darkred100 = #8B0000FF
+gray100  = #808080FF
+
+// === FUNCTIONS
+
+// - variant(type, src, len)
+// Returns MA input selection variant, default to SMA if blank or typo.
+
+// SuperSmoother filter
+// © 2013  John F. Ehlers
+variant_supersmoother(src,len) =>
+    a1 = exp(-1.414*3.14159 / len)
+    b1 = 2*a1*cos(1.414*3.14159 / len)
+    c2 = b1
+    c3 = (-a1)*a1
+    c1 = 1 - c2 - c3
+    v9 = 0.0
+    v9 := c1*(src + nz(src[1])) / 2 + c2*nz(v9[1]) + c3*nz(v9[2])
+    v9
+    
+variant_smoothed(src,len) =>
+    v5 = 0.0
+    v5 := na(v5[1]) ? sma(src, len) : (v5[1] * (len - 1) + src) / len
+    v5
+
+variant_zerolagema(src,len) =>
+    ema1 = ema(src, len)
+    ema2 = ema(ema1, len)
+    v10 = ema1+(ema1-ema2)
+    v10
+    
+variant_doubleema(src,len) =>
+    v2 = ema(src, len)
+    v6 = 2 * v2 - ema(v2, len)
+    v6
+
+variant_tripleema(src,len) =>
+    v2 = ema(src, len)
+    v7 = 3 * (v2 - ema(v2, len)) + ema(ema(v2, len), len)               // Triple Exponential
+    v7
+    
+// return variant, defaults to SMA 
+variant(type, src, len) =>
+    type=="EMA"     ? ema(src,len) : 
+      type=="WMA"   ? wma(src,len): 
+      type=="VWMA"  ? vwma(src,len) : 
+      type=="SMMA"  ? variant_smoothed(src,len) : 
+      type=="DEMA"  ? variant_doubleema(src,len): 
+      type=="TEMA"  ? variant_tripleema(src,len): 
+      type=="HullMA"? wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len))) :
+      type=="SSMA"  ? variant_supersmoother(src,len) : 
+      type=="ZEMA"  ? variant_zerolagema(src,len) : 
+      type=="TMA"   ? sma(sma(src,len),len) : sma(src,len)
+
+// - /variant 
+// === /FUNCTIONS
+
+
+dodgerblue = #1E90FF
+
+// === Moving Average
+ma_series = variant(ma_type,ma_src,ma_len)
+
+// Get direction based on MA
+direction = 0
+direction := rising(ma_series,3) ? 1 : falling(ma_series,3) ? -1 : nz(direction[1])
+
+// Plot MA series and color it according too direction
+pcol = direction>0 ? lime : direction<0 ? red : na
+plot(ma_series, title="MA Plot", color=pcol, linewidth=2,style=line,join=true, transp=10)
+
+// === /Moving Average 
+
+
+// === DAILY OPEN LINE
+//
+// Test for new Daily Session or start of new month for Daily.
+start = security(ticker, dperiod, time, barmerge.gaps_off, barmerge.lookahead_on)
+newDay = change(start)
+
+// Calculate Annualised Volatility
+dopen = 0.0
+dopen_ =  valuewhen(start[1]<=time, ma_src, 0)
+dopen :=  newDay ? dopen_ : nz(dopen[1],dopen_)
+// Plot all Days open
+plot(dopen, color = newDay?na:purple, title = "Daily Open",linewidth=2, transp=40)
+
+// === /DAILY OPEN LINE
+
+// === RMI (Relative Momentum Index)
+//
+// "... The Relative Momentum Index was developed by Roger Altman 
+// and was introduced in his article in the February, 1993 issue of 
+// Technical Analysis of Stocks & Commodities magazine. "
+// "... While RSI counts up and down days from close to close, the Relative 
+// Momentum Index counts up and down days from the close relative to a 
+// close x number of days ago. "
+
+//calc
+up = ema(max(ma_src- ma_src[mom],0),rmilen)
+dn = ema(max(ma_src[mom] - ma_src,0),rmilen)
+//rmi = 
+rmi = dn == 0 ? 0 : 100 - 100 / (1 + up / dn)
+
+// Use RSI instead of RMI
+rmi := uRSI ? rsi(ma_src, rmilen) : rmi 
+
+// === /RMI
+
+// === Calculate Alerts
+PA = (close>open) and (not udopen or close>dopen)? 1 : (close<open) and (not udopen or close<dopen)? -1 : 0 
+HAS = direction
+RMI = rmi>=rmi[1] and rmi>=ob ? 1 : rmi<=rmi[1] and rmi<=os ? -1 : 0
+
+long = PA==1 and HAS==1 and RMI==1
+short = PA==-1 and HAS==-1 and RMI==-1
+
+olong = 0
+olong := olong[1]>0 and (HAS<0 or (not uRSI and RMI<=0) or (exitfirst and (close<open and close[1]>open[1])))? 0 : nz(olong[1])==0 and long? 1 : olong[1]>0 and HAS==1? olong[1]+1 : 0
+oshort = 0
+oshort := oshort[1]>0 and (HAS>1 or (not uRSI and RMI>=0) or (exitfirst and (close>open and close[1]<open[1])))? 0 : nz(oshort[1])==0 and short? 1 : oshort[1]>0 and HAS==-1? oshort[1]+1 : 0
+
+// - Plot Alerts
+plotarrow(olong==1?1:na, title="BUY Arrow", colorup=lime, maxheight=60, minheight=50, transp=20,offset=0)
+plotarrow(oshort==1?-1:na, title="SELL Arrow", colordown=red, maxheight=60, minheight=50, transp=20,offset=0)
+//
+plotshape(olong[1]>0 and olong==0, title='BUY Exit', style=shape.xcross, location=location.belowbar, color=gray, text="Exit\nBuy", offset=0,transp=0)
+plotshape(oshort[1]>0 and oshort==0, title='Sell Exit', style=shape.xcross, location=location.abovebar, color=gray, text="Exit\nSell", offset=0,transp=0)
+
+// - Signal Alerts to TV Alarm system
+alertcondition(olong==1,title="Swing BUY Alert",message="BUY")
+alertcondition(oshort==1,title="Swing SELL Alert",message="SELL")
+alertcondition(olong[1]>0 and olong==0,title="Swing BUY Exit Alert",message="BUY Exit")
+alertcondition(oshort[1]>0 and oshort==0,title="Swing SELL Exit Alert",message="SELL Exit")
+
+// debug
+//plotshape(PA,location=location.bottom)
+//plotshape(HAS,location=location.bottom)
+//plotshape(RMI,location=location.bottom)
+//plotshape(olong,location=location.bottom)
+//plotshape(oshort,location=location.bottom)
+//
+// === /Calculate Alerts
+
+//EOF

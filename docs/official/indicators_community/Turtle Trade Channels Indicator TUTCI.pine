@@ -1,0 +1,59 @@
+//@version=4
+//author: @kivancozbilgic
+
+study(title="Turtle Trade Channels Indicator", shorttitle="TuTCI", overlay=true, resolution="")
+length = input(20,"Entry Length", minval=1)
+len2=input(10, "Exit Length", minval=1)
+showsignals = input(title="Show Entry/Exit Signals ?", type=input.bool, defval=true)
+highlighting = input(title="Highlighter On/Off ?", type=input.bool, defval=true)
+
+
+lower = lowest(length)
+upper = highest(length)
+u = plot(upper, "Upper", color=#0094FF)
+l = plot(lower, "Lower", color=#0094FF)
+
+up=highest(high,length)
+down=lowest(low,length)
+sup=highest(high,len2)
+sdown=lowest(low,len2)
+K1=barssince(high>=up[1])<=barssince(low<=down[1]) ? down : up
+K2=iff(barssince(high>=up[1])<=barssince(low<=down[1]),sdown,sup)
+K3=iff(close>K1,down,na)
+K4=iff(close<K1,up,na)
+plot(K1, title="Trend Line", color=color.red, linewidth=2)
+e=plot(K2, title="Exit Line", color=color.blue, linewidth=1, style=6)
+
+
+buySignal=high==upper[1] or crossover(high,upper[1])
+sellSignal = low==lower[1] or crossover(lower[1],low)
+buyExit=low==sdown[1] or crossover(sdown[1],low)
+sellExit = high==sup[1] or crossover(high,sup[1])
+
+O1= barssince(buySignal)
+O2= barssince(sellSignal)
+O3= barssince(buyExit)
+O4= barssince(sellExit)
+
+E1= barssince(buySignal[1])
+E2= barssince(sellSignal[1])
+E3= barssince(buyExit[1])
+E4= barssince(sellExit[1])
+
+plotshape(buySignal and O3<O1[1] ? down : na, title="Long Entry", location=location.absolute, style=shape.circle, size=size.tiny, color=color.green, transp=0)
+plotshape(buySignal and showsignals and O3<O1[1] ? down : na, title="Long", text="Long Entry", location=location.absolute, style=shape.labelup, size=size.tiny, color=color.green, textcolor=color.white, transp=0)
+
+plotshape(sellSignal and O4<O2[1] ? up : na, title="Short Entry", location=location.absolute, style=shape.circle, size=size.tiny, color=color.red, transp=0)
+plotshape(sellSignal and showsignals and O4<O2[1]  ? up : na, title="Short", text="Short Entry", location=location.absolute, style=shape.labeldown, size=size.tiny, color=color.red, textcolor=color.white, transp=0)
+
+plotshape(buyExit and O1<O3[1] ? up : na, title="Long Exit", location=location.absolute, style=shape.circle, size=size.tiny, color=color.blue, transp=0)
+plotshape(buyExit and showsignals and O1<O3[1] ? up : na, title="Long Exit", text="Exit Long", location=location.absolute, style=shape.labeldown, size=size.tiny, color=color.blue, textcolor=color.white, transp=0)
+
+plotshape(sellExit and O2<O4[1] ? down : na, title="Short Exit", location=location.absolute, style=shape.circle, size=size.tiny, color=color.blue, transp=0)
+plotshape(sellExit and showsignals and O2<O4[1] ? down : na, title="Short", text="Exit Short", location=location.absolute, style=shape.labelup, size=size.tiny, color=color.blue, textcolor=color.white, transp=0)
+
+color1= highlighting and min(O1,O2,O3)==O1 ? color.green : na
+color2= highlighting and min(O1,O2,O4)==O2 ? color.red : na
+fill(u, e, color=color1, transp=88, title="Background")
+fill(l, e, color=color2, transp=88, title="Background")
+

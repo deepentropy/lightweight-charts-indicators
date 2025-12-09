@@ -1,0 +1,46 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=5
+indicator(title='Twin Range Filter', overlay=true, timeframe='')
+source = input(defval=close, title='Source')
+showsignals = input(title='Show Buy/Sell Signals ?', defval=true)
+per1 = input.int(defval=27, minval=1, title='Fast period')
+mult1 = input.float(defval=1.6, minval=0.1, title='Fast range')
+per2 = input.int(defval=55, minval=1, title='Slow period')
+mult2 = input.float(defval=2, minval=0.1, title='Slow range')
+smoothrng(x, t, m) =>
+    wper = t * 2 - 1
+    avrng = ta.ema(math.abs(x - x[1]), t)
+    smoothrng = ta.ema(avrng, wper) * m
+    smoothrng
+smrng1 = smoothrng(source, per1, mult1)
+smrng2 = smoothrng(source, per2, mult2)
+smrng = (smrng1 + smrng2) / 2
+rngfilt(x, r) =>
+    rngfilt = x
+    rngfilt := x > nz(rngfilt[1]) ? x - r < nz(rngfilt[1]) ? nz(rngfilt[1]) : x - r : x + r > nz(rngfilt[1]) ? nz(rngfilt[1]) : x + r
+    rngfilt
+filt = rngfilt(source, smrng)
+upward = 0.0
+upward := filt > filt[1] ? nz(upward[1]) + 1 : filt < filt[1] ? 0 : nz(upward[1])
+downward = 0.0
+downward := filt < filt[1] ? nz(downward[1]) + 1 : filt > filt[1] ? 0 : nz(downward[1])
+STR = filt + smrng
+STS = filt - smrng
+FUB = 0.0
+FUB := STR < nz(FUB[1]) or close[1] > nz(FUB[1]) ? STR : nz(FUB[1])
+FLB = 0.0
+FLB := STS > nz(FLB[1]) or close[1] < nz(FLB[1]) ? STS : nz(FLB[1])
+TRF = 0.0
+TRF := nz(TRF[1]) == FUB[1] and close <= FUB ? FUB : nz(TRF[1]) == FUB[1] and close >= FUB ? FLB : nz(TRF[1]) == FLB[1] and close >= FLB ? FLB : nz(TRF[1]) == FLB[1] and close <= FLB ? FUB : FUB
+long = ta.crossover(close, TRF)
+short = ta.crossunder(close, TRF)
+plotshape(showsignals and long, title='Long', text='BUY', style=shape.labelup, textcolor=color.white, size=size.tiny, location=location.belowbar, color=color.rgb(0, 19, 230))
+plotshape(showsignals and short, title='Short', text='SELL', style=shape.labeldown, textcolor=color.white, size=size.tiny, location=location.abovebar, color=color.rgb(0, 19, 230))
+alertcondition(long, title='Long', message='Long')
+alertcondition(short, title='Short', message='Short')
+Trfff = plot(TRF)
+mPlot = plot(ohlc4, title='', style=plot.style_circles, linewidth=0)
+longFillColor = close > TRF ? color.green : na
+shortFillColor = close < TRF ? color.red : na
+fill(mPlot, Trfff, title='UpTrend Highligter', color=longFillColor, transp=90)
+fill(mPlot, Trfff, title='DownTrend Highligter', color=shortFillColor, transp=90)

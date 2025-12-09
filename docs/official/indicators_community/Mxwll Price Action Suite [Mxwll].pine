@@ -1,0 +1,924 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Mxwll Capital
+//@version=5
+indicator("Mxwll Suite", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500, max_bars_back = 500)
+
+bullC       = input.color(defval = #14D990, title = "Bull Color", group = "Smart Money Concepts", inline = "7")
+bearC       = input.color(defval = #F24968, title = "Bear Color", group = "Smart Money Concepts", inline = "7")
+showInt     = input.bool(defval = true, title = "Show Internals", group = "Smart Money Concepts")
+intSens     = input.int(3, "Internals Sensitivity", options =  [3 , 5 , 8 ], group = "Smart Money Concepts", inline = "20")
+intStru     = input.string(defval = "All", title = "Internal Structure", options = ["All", "BoS", "CHoCH"], inline = "30", group = "Smart Money Concepts")
+showExt     = input.bool(defval = true, title = "Show Externals" ,group = "Smart Money Concepts")
+extSens     = input.int(25, "Externals Sensitivity", options = [10, 25, 50],group = "Smart Money Concepts", inline = "21")
+extStru     = input.string(defval = "All", title = "External Structure", options = ["All", "BoS", "CHoCH"], inline = "31", group = "Smart Money Concepts")
+showOB      = input.bool(defval = true, title = "Show Order Blocks" ,group = "Swing Blocks")
+showLast    = input.int(defval = 10, title = "Swing Order Blocks", minval = 0, group = "Swing Blocks")
+showHHLH    = input.bool(defval = true, title = "Show HH/LH", group = "Swing Blocks")
+showHLLL    = input.bool(defval = true, title = "Show LH/LL", group = "Swing Blocks")
+showAOE     = input.bool(defval = true, title = "Show Area of Interest", group = "Swing Blocks")
+show1D      = input.bool(defval = true, title = "Show Previous Day High", group = "High/Low")
+show1DLab   = input.bool(defval = true, title = "Show 1 Day Labels", group = "High/Low")
+show4H      = input.bool(defval = true, title = "Show 4 Hour High", group = "High/Low")
+show4hLab   = input.bool(defval = true, title = "Show 4 Hour Labels", group = "High/Low")
+showFVG     = input.bool(defval = true, title = "Show Fair Value Gaps", group = "FVG")
+contract    = input.bool(defval = false, title = "Contract Violated FVG", group = "FVG")
+closeOnly   = input.bool(defval = false, title = "Show Closest Up/Down FVG Only", group = "FVG")
+fvgcol      = input.color(defval = #F2B807, title = "FVG Color", group = "FVG")
+fvgtra      = input.int(defval = 80, minval = 0, maxval = 100, title = "FVG Transparency", group = "FVG")
+
+showFibs    = input.bool(defval = true, title = "Show Auto Fibs", group = "Auto Fibs")
+// extSensFibs = input.int(25, "Fibs Sensitivity", options = [10, 25, 50], group = "Auto Fibs", inline = "22")
+show236     = input.bool(defval = true,  title = "", inline = "1", group = "Auto Fibs")
+show382     = input.bool(defval = true,  title = "", inline = "2", group = "Auto Fibs")
+show5       = input.bool(defval = true,    title = "", inline = "3", group = "Auto Fibs")
+show618     = input.bool(defval = true,  title = "", inline = "4", group = "Auto Fibs")
+show786     = input.bool(defval = true,  title = "", group = "Auto Fibs", inline = "5")
+fib1        = input.float(defval = .236, title = "", minval = 0, step = 0.01, inline = "1", group = "Auto Fibs")
+fib2        = input.float(defval = .382, title = "", minval = 0, step = 0.01, inline = "2", group = "Auto Fibs")
+fib3        = input.float(defval = .5,   title = "", minval = 0, step = 0.01, inline = "3", group = "Auto Fibs")
+fib4        = input.float(defval = .618, title = "", minval = 0, step = 0.01, inline = "4", group = "Auto Fibs")
+fib5        = input.float(defval = .786, title = "", minval = 0, step = 0.01, group = "Auto Fibs", inline = "5")
+fib1col     = input.color(title = "", defval = color.gray, inline = "1"  , group = "Auto Fibs")
+fib2col     = input.color(title = "", defval = color.lime, inline = "2"  , group = "Auto Fibs")
+fib3col     = input.color(title = "", defval = color.yellow, inline = "3", group = "Auto Fibs")
+fib4col     = input.color(title = "", defval = color.orange, inline = "4", group = "Auto Fibs")
+fib5col     = input.color(title = "", defval = color.red   , group = "Auto Fibs", inline = "5")
+
+var bigData = map.new<string, float>()
+
+if bigData.size() == 0
+
+    bigData.put("moving", 0)
+    bigData.put("upaxis", 0.0) 
+    bigData.put("upaxis2", 0)
+    bigData.put("dnaxis", 0.0) 
+    bigData.put("dnaxis2", 0)
+    bigData.put("upside", 1)
+    bigData.put("downside", 1)
+
+[pdHigh, pdLow, dayHigh, dayLow, pdBar, dayBar] = request.security(syminfo.tickerid, "1D", [high[1], low[1], high, low, time[1], time])
+
+var highArr = array.new_float(), var lowArr  = array.new_float()
+var timeArr = array.new_int  (), var volArr  = array.new_float()
+var closeArr = array.new_float(), var openArr = array.new_float()
+
+highArr.unshift(high), lowArr.unshift(low)
+timeArr.unshift(time), volArr.unshift(volume)
+closeArr.unshift(close), openArr.unshift(open)
+
+type rollingTF 
+
+    float highTF                  = 0
+    float lowTF                   = 1e8
+    int   highTFt                 = 0
+    int   lowTFt                  = 0
+    float volTF                   = 0
+    map   <string, line >         rTFdraw
+    map   <string, label>         rTFlabel
+
+method tfDraw(int tfDiff, bool showRollingLab, string tf, bool showLevels) => 
+
+
+    TFhrdata = rollingTF.new(), var volRolling = array.new<float>()
+
+    if highArr.size() > tfDiff
+
+        for i = 0 to tfDiff
+
+            if showLevels and barstate.islast
+
+                getHigh = highArr.get(i), getLow = lowArr.get(i), 
+                             getTime = timeArr.get(i)
+
+                TFhrdata.highTF := math.max(TFhrdata.highTF, getHigh)
+                TFhrdata.lowTF  := math.min(TFhrdata.lowTF , getLow )
+
+                if TFhrdata.highTF == getHigh 
+
+                    TFhrdata.highTFt := timeArr.get(i)
+
+                if TFhrdata.lowTF == getLow
+
+                    TFhrdata.lowTFt  := timeArr.get(i)
+
+            TFhrdata.volTF += volArr.get(i)
+
+        volRolling.push(TFhrdata.volTF)
+
+        var lineDraw = rollingTF.new(rTFdraw = map.new<string, line>(), rTFlabel = map.new<string, label>())
+
+        if showLevels
+
+            switch lineDraw.rTFdraw.size() == 0
+
+                true =>  lineDraw.rTFdraw.put("High", line.new(TFhrdata.highTFt, TFhrdata.highTF, time, TFhrdata.highTF, 
+                                                 xloc = xloc.bar_time, color = color.aqua)),
+                         lineDraw.rTFdraw.put("Low" , line.new(TFhrdata.lowTFt , TFhrdata.lowTF , time, TFhrdata.lowTF , 
+                                                 xloc = xloc.bar_time, color = color.aqua))  
+
+                =>       lineDraw.rTFdraw.get("High").set_xy1(TFhrdata.highTFt, TFhrdata.highTF),
+                         lineDraw.rTFdraw.get("High").set_xy2(time, TFhrdata.highTF),
+
+                         lineDraw.rTFdraw.get("Low").set_xy1(TFhrdata.lowTFt, TFhrdata.lowTF),
+                         lineDraw.rTFdraw.get("Low").set_xy2(time, TFhrdata.lowTF)
+
+            if showRollingLab 
+
+                switch lineDraw.rTFlabel.size() == 0
+
+                    true =>  lineDraw.rTFlabel.put("High", label.new(time, TFhrdata.highTF, xloc = xloc.bar_time, 
+                                                         textcolor = color.aqua, 
+                                                         text      = tf + "H", 
+                                                         size      = size.tiny, 
+                                                         style     = label.style_label_left, 
+                                                         color     = #00000000
+                                                         )),
+                             lineDraw.rTFlabel.put("Low" , label.new(time, TFhrdata.lowTF , xloc = xloc.bar_time, 
+                                                         textcolor = color.aqua, 
+                                                         text      = tf + "L", 
+                                                         size      = size.tiny, 
+                                                         style     = label.style_label_left, 
+                                                         color     = #00000000
+                                                         ))  
+
+                    =>       lineDraw.rTFlabel.get("High") .set_xy(time, TFhrdata.highTF),
+                             lineDraw.rTFlabel.get("Low")  .set_xy(time, TFhrdata.lowTF)
+
+
+    [TFhrdata.volTF, volRolling]
+
+
+
+tfDrawLower(bool showRollingLab, simple string tf, bool showLevels) => 
+
+    simple int end = switch tf 
+
+        "240" => 240
+        "1D"  => 1440
+
+
+    [o, h, l, c, v, t] = request.security_lower_tf(syminfo.tickerid, "1", [open, high, low, close, volume, time])
+
+
+    var oArr = array.new_float()
+    var hArr = array.new_float()
+    var lArr = array.new_float()
+    var cArr = array.new_float()
+    var vArr = array.new_float()
+    var tArr = array.new_int()
+
+    TFhrdata = rollingTF.new(), var volRolling = array.new<float>()
+
+    if h.size() > 0
+
+        for i = 0 to h.size() - 1
+
+            oArr.push(o.get(i))
+            hArr.push(h.get(i))
+            lArr.push(l.get(i))
+            cArr.push(c.get(i))
+            vArr.push(v.get(i))
+            tArr.push(t.get(i))
+
+            if hArr.size() > end 
+
+                oArr.shift()
+                hArr.shift()
+                lArr.shift()
+                cArr.shift()
+                vArr.shift()
+                tArr.shift()
+
+
+        for i = 0 to hArr.size() - 1
+        
+            if showLevels
+
+            
+                getHigh = hArr.get(i), getLow = lArr.get(i), 
+                             getTime = tArr.get(i)
+
+                TFhrdata.highTF := math.max(TFhrdata.highTF, getHigh)
+                TFhrdata.lowTF  := math.min(TFhrdata.lowTF , getLow)
+
+                if TFhrdata.highTF == getHigh 
+                
+                    TFhrdata.highTFt := tArr.get(i)
+
+                if TFhrdata.lowTF == getLow
+                
+                    TFhrdata.lowTFt  := tArr.get(i)
+
+            TFhrdata.volTF  += vArr.get(i)
+
+        volRolling.push(TFhrdata.volTF)
+
+        var lineDraw = rollingTF.new(rTFdraw = map.new<string, line>(), rTFlabel = map.new<string, label>())
+
+        if showLevels
+        
+            switch lineDraw.rTFdraw.size() == 0
+            
+                true =>  lineDraw.rTFdraw.put("High", line.new(TFhrdata.highTFt, TFhrdata.highTF, time, TFhrdata.highTF, 
+                                                 xloc = xloc.bar_time, color = color.aqua)),
+                         lineDraw.rTFdraw.put("Low" , line.new(TFhrdata.lowTFt , TFhrdata.lowTF , time, TFhrdata.lowTF , 
+                                                 xloc = xloc.bar_time, color = color.aqua))  
+
+                =>       lineDraw.rTFdraw.get("High").set_xy1(TFhrdata.highTFt, TFhrdata.highTF),
+                         lineDraw.rTFdraw.get("High").set_xy2(time, TFhrdata.highTF),
+
+                         lineDraw.rTFdraw.get("Low").set_xy1(TFhrdata.lowTFt, TFhrdata.lowTF),
+                         lineDraw.rTFdraw.get("Low").set_xy2(time, TFhrdata.lowTF)
+
+            if showRollingLab 
+            
+                switch lineDraw.rTFlabel.size() == 0
+                
+                    true =>  lineDraw.rTFlabel.put("High", label.new(time, TFhrdata.highTF, xloc = xloc.bar_time, 
+                                                         textcolor = color.aqua, 
+                                                         text      = tf + "H", 
+                                                         size      = size.tiny, 
+                                                         style     = label.style_label_left, 
+                                                         color     = #00000000
+                                                         )),
+                             lineDraw.rTFlabel.put("Low" , label.new(time, TFhrdata.lowTF , xloc = xloc.bar_time, 
+                                                         textcolor = color.aqua, 
+                                                         text      = tf + "L", 
+                                                         size      = size.tiny, 
+                                                         style     = label.style_label_left, 
+                                                         color     = #00000000
+                                                         ))  
+
+                    =>       lineDraw.rTFlabel.get("High") .set_xy(time, TFhrdata.highTF),
+                             lineDraw.rTFlabel.get("Low")  .set_xy(time, TFhrdata.lowTF)
+
+
+    [TFhrdata.volTF, volRolling]
+
+
+var r4hrbars = math.floor(timeframe.in_seconds("240") / timeframe.in_seconds(timeframe.period))
+var rDbars   = math.floor(timeframe.in_seconds("1D") / timeframe.in_seconds(timeframe.period))
+
+[vol4hr, vol4hrArr] = switch 
+
+    timeframe.in_seconds() <= 60 => r4hrbars.tfDraw(show4hLab, "240", show4H)
+    =>                              tfDrawLower(show4hLab, "240", show4H)
+
+    
+[vol1D, vol1DArr] = switch
+
+    timeframe.in_seconds() <= 60 => rDbars.tfDraw(show1DLab, "1D", show1D) 
+    =>                              tfDrawLower(show1DLab, "1D", show1D)
+
+calculatePivots(length)=>
+
+    var int intraCalc = 0
+
+
+    if bar_index > length + 1
+
+        up  = highArr.slice(0, length).max()
+        dn  = lowArr .slice(0, length).min() 
+        
+        cHi = highArr.get(length)
+        cLo = lowArr .get(length)
+
+        intraCalc := switch 
+
+            cHi > up => 0 
+            cLo < dn => 1 
+            =>          intraCalc[1]
+
+        topSwing = switch 
+
+            intraCalc == 0 and intraCalc[1] != 0 => cHi 
+            =>                                      0 
+
+        botSwing = switch 
+
+            intraCalc == 1 and intraCalc[1] != 1 => cLo
+            =>                                      0 
+
+
+        [topSwing, botSwing]
+
+
+[bigUpper    , bigLower   ]     = calculatePivots(extSens)
+[smallUpper  , smallLower ]     = calculatePivots(intSens)
+
+
+var label [] upLabel = array.new_label(1)
+var label [] dnLabel = array.new_label(1)
+
+
+var box [] highBlock = array.new_box()
+var box [] lowBlock  = array.new_box()
+
+
+
+drawChar(x, y, str, col, down) =>
+
+    style = switch down 
+
+        true => label.style_label_down
+        =>      label.style_label_up
+
+    line.new (int(x), y, bar_index, y, color = col, style = line.style_dashed)
+    label.new(math.round(math.avg(x, bar_index)), y, str, color = #00000000, textcolor = col, style = style, size = size.small)
+
+
+drawStructureExt() => 
+
+    var int counter = 0
+
+    if bigUpper != 0
+        bigData.put("upside", 1)
+        x1 = bar_index - extSens
+
+        txt = switch bigUpper > bigData.get("upaxis")
+            
+            true => 'HH'
+            =>      'LH'
+
+        if showHHLH
+
+            upLabel.set(0, label.new(x1, bigUpper, txt,
+
+                          color     = color.new(color.white, 100), 
+                          textcolor = bearC, 
+                          style     = label.style_label_down, 
+                          size      = size.small
+                          ))
+        if showOB
+            highBlock.push(box.new(x1, bigUpper, last_bar_index + 5, bigUpper * .998, 
+                         border_color = color.new(color.red, 75), 
+                         bgcolor      = color.new(color.red, 95)
+                         ))
+
+        bigData.put("upaxis" , bigUpper)
+        bigData.put("upaxis2", x1)
+
+        counter := 1
+
+    if bigLower != 0
+        bigData.put("downside", 1)
+
+        x1 = bar_index - extSens
+
+        txt = switch bigLower < bigData.get("dnaxis") 
+
+            true => "LL" 
+            =>      "HL"
+
+        if showHLLL == true 
+            dnLabel.set(0, label.new(x1, bigLower, txt, color = #ffffff00, 
+                         textcolor = bullC, 
+                         style     = label.style_label_up, 
+                         size      = size.small
+                         ))
+        if showOB
+            lowBlock.push(box.new(x1, bigLower, last_bar_index + 5, bigLower * 1.002,
+                          border_color = color.new(color.blue, 75), 
+                          bgcolor      = color.new(color.blue, 95)
+                          ))    
+        
+        bigData.put("dnaxis" , bigLower)
+        bigData.put("dnaxis2", x1)
+
+        counter := -1
+
+
+    if showExt
+        if ta.crossover(close, bigData.get("upaxis"))
+            if bigData.get("upside") != 0
+
+                str = switch bigData.get("moving") < 0
+
+                    true => extStru != "BoS"   ? 'CHoCH' : "" 
+                    =>      extStru != 'CHoCH' ? 'BoS'   : ""
+
+                if extStru == "All" or str.contains(extStru, str)
+                    drawChar(bigData.get("upaxis2"), bigData.get("upaxis"), str, bullC, true)
+
+                bigData.put("upside", 0)
+                bigData.put("moving", 1)
+
+        if ta.crossunder(close, bigData.get("dnaxis"))
+
+            if bigData.get("downside") != 0
+
+                str = switch bigData.get("moving") > 0
+
+                    true => extStru != "BoS"   ? 'CHoCH' : "" 
+                    =>      extStru != 'CHoCH' ? 'BoS'   : ""
+
+                if extStru == "All" or str.contains(extStru, str)
+                    drawChar(bigData.get("dnaxis2"), bigData.get("dnaxis"), str, bearC, false)
+
+                bigData.put("downside", 0)
+                bigData.put("moving", -1)
+
+    counter 
+
+counter = drawStructureExt()
+
+method updateBox(array<box> id) =>
+
+    if id.size() > 0 
+        for i = 0 to id.size() - 1
+            id.get(i).set_right(last_bar_index + 5)
+
+method cleanseLevel(array<box> id, bool isHighBlock) => 
+
+    if id.size() > 0   
+
+        for i = id.size() - 1 to 0 
+
+            condition = switch isHighBlock
+            
+                true => close >= id.get(i).get_top()
+                =>      close <= id.get(i).get_bottom()
+
+            if condition
+                id.remove(i).delete()
+
+        if id.size() > showLast and showLast != 0
+            for i = id.size() - showLast to 0 
+                id.remove(i).delete()
+
+highBlock.cleanseLevel(true)
+lowBlock .cleanseLevel(false)
+
+if barstate.islast
+
+    highBlock.updateBox()
+    lowBlock .updateBox()
+
+
+
+method updateMain(line id) => 
+
+    hi = 0.0 
+    lo = 1e8
+
+    if showFibs
+
+        [bigUpperFibs, bigLowerFibs]    = calculatePivots(25)
+
+        var int counterFibs = 0
+
+        if bigUpperFibs != 0 
+            counterFibs := 1
+
+        if bigLowerFibs != 0 
+            counterFibs := -1
+
+        if counterFibs == 1 
+            hi := 0.0
+            
+            id.set_xy1(int(bigData.get("upaxis2")), bigData.get("upaxis"))
+
+            for i = 0 to bar_index - int(bigData.get("dnaxis2"))
+
+                getLow = lowArr.get(i)
+
+                lo := math.min(getLow, lo)
+
+                if lo == getLow
+                    id.set_xy2(bar_index - i, lo)
+
+        else if counterFibs == -1
+
+            lo := 1e8
+            id.set_xy1(int(bigData.get("dnaxis2")), bigData.get("dnaxis"))
+
+            for i = 0 to bar_index - bigData.get("upaxis2")
+
+                getHigh = highArr.get(i)
+                hi     := math.max(highArr.get(i), hi)
+
+                if hi == getHigh 
+
+                    id.set_xy2(bar_index - i, hi)
+
+        if id.get_x2() < id.get_x1()
+
+            x2 = id.get_x2(), x1 = id.get_x1()
+            y2 = id.get_y2(), y1 = id.get_y1(),
+
+                     id.set_xy2(x1, y1),
+                     id.set_xy1(x2, y2)
+
+
+        switch id.get_y2() < id.get_y1()
+
+            true => id.set_color(#F24968)
+            =>      id.set_color(#14D990)
+
+    0
+
+
+var main = line.new(dnLabel.first().get_x(), dnLabel.first().get_y(), upLabel.first().get_x(), upLabel.first().get_y(),
+                                                 style = line.style_dashed, 
+                                                 width = 2
+                                                 )
+
+
+main.updateMain()
+
+quickLine(getX2, y, color) => 
+
+    line.new(getX2, y, bar_index + 5, y, color = color.new(color, 75))
+
+quickLabel(y, txt, color) => 
+
+    label.new(bar_index + 5, y, text = str.tostring(txt), color = #00000000, style = label.style_label_left, textcolor = color)
+
+
+drawFibs() => 
+
+    if barstate.islast
+
+        var fibLine = array.new<line>(5)
+        var fibLab = array.new<label>(5) 
+        
+        if fibLine.size() > 0 
+            for i = 0 to fibLine.size() - 1
+            
+                fibLine .get(i).delete()
+                fibLab  .get(i).delete()
+
+
+        if showFibs
+
+            getY2 = main.get_y2(), sub   = main.get_y1() - getY2, 
+            getX1 = main.get_x1(), getX2 = main.get_x2()
+
+            for i = 0 to fibLine.size() - 1
+
+                mod = i % fibLine.size() - 1   
+
+                [y, col, txt] = switch mod
+
+                    0 => [sub * fib1 + getY2, show236 ? fib1col : color.new(chart.bg_color, 100), fib1]
+                    1 => [sub * fib2 + getY2, show382 ? fib2col : color.new(chart.bg_color, 100), fib2]
+                    2 => [sub * fib3 + getY2, show5   ? fib3col : color.new(chart.bg_color, 100), fib3]
+                    3 => [sub * fib4 + getY2, show618 ? fib4col : color.new(chart.bg_color, 100), fib4]
+                    =>   [sub * fib5 + getY2, show786 ? fib5col : color.new(chart.bg_color, 100), fib5] 
+
+                fibLine.set(i, quickLine  (getX2, y, col))
+                fibLab .set(i, quickLabel (y, txt, col))
+
+
+drawFibs()
+
+
+drawStructureInternals() => 
+
+    if showInt
+        
+        var keyValues = map.new<string, float>()
+
+        if keyValues.size() == 0 
+            keyValues.put("movingSmall", 0)
+
+        if smallUpper != 0 
+
+            keyValues.put("upsideSmall", 1)          
+            keyValues.put("upaxisSmall", smallUpper) 
+            keyValues.put("upaxis2Small", bar_index - intSens)
+
+        if smallLower != 0 
+
+            keyValues.put("downsideSmall", 1)       
+            keyValues.put("dnaxisSmall", smallLower)
+            keyValues.put("dnaxis2Small", bar_index - intSens)
+
+
+        if ta.crossover(close, keyValues.get("upaxisSmall")) 
+            if keyValues.get("upsideSmall") != 0
+
+                str = switch 
+
+                    keyValues.get("movingSmall") < 0 =>     intStru != "BoS"   ? 'I-CHoCH' : "" 
+                    =>                                      intStru != "CHoCH" ? 'I-BoS'   : ""
+
+                if intStru == "All" or str.contains(str, intStru)
+
+                    drawChar(keyValues.get("upaxis2Small"), keyValues.get("upaxisSmall"), str, bullC, true)
+
+                keyValues.put("upsideSmall", 0)
+                keyValues.put("movingSmall", 1)
+
+        if ta.crossunder(close, keyValues.get("dnaxisSmall"))
+            if keyValues.get("downsideSmall") != 0
+
+                str = switch 
+
+                    keyValues.get("movingSmall") > 0 => intStru != "BoS"   ? 'I-CHoCH' : ""
+                    =>                                  intStru != "CHoCH" ? 'I-BoS'   : ""
+
+                if intStru == "All" or str.contains(str, intStru)
+
+                    drawChar(keyValues.get("dnaxis2Small"), keyValues.get("dnaxisSmall"), str, bearC, false)
+
+                keyValues.put("downsideSmall", 0)
+                keyValues.put("movingSmall", -1)
+
+
+drawStructureInternals()
+
+
+drawAOE() => 
+
+    atr = ta.atr(14)
+
+    if showAOE 
+
+        if closeArr.size() > 50
+
+            aoi    = closeArr.slice(0, 50) 
+            aoi2   = openArr .slice(0, 50) 
+
+            maxaoiH = math.max(aoi.max(), aoi2.max())
+            minaoiL = math.min(aoi.min(), aoi2.min())
+
+            var aoeLevels = map.new<string, box>()
+
+            if aoeLevels.size() == 0 
+
+                aoeLevels.put("High", 
+                         
+                             box.new(bar_index[50], maxaoiH * 1.01, bar_index + 5, maxaoiH, 
+                             border_color = #00000000, 
+                             bgcolor      = color.new(#F24968, 90), 
+                             text         = "Area of Interest" , 
+                             text_size    = size.small, 
+                             text_color   = color.new(#F24968, 33) 
+                             ))
+
+                aoeLevels.put("Low", 
+                         
+                             box.new(bar_index[50], minaoiL, bar_index + 5, minaoiL * .99, 
+                             border_color = #00000000, 
+                             bgcolor      = color.new(#14D990, 90), 
+                             text         = "Area of Interest" , 
+                             text_size    = size.small, 
+                             text_color   = color.new(#14D990, 33) 
+                             ))
+
+            getHighBox = aoeLevels.get("High")
+
+            if close <= getHighBox.get_top() * 1.01
+
+                getHighBox.set_lefttop      (bar_index[50], maxaoiH + atr)
+                getHighBox.set_rightbottom  (bar_index + 5,  maxaoiH)
+                getHighBox.set_text         ("Area of Interest")
+
+            else 
+
+                getHighBox.set_lefttop      (bar_index + 5, maxaoiH + atr)
+                getHighBox.set_rightbottom  (bar_index + 5,  maxaoiH + atr)
+                getHighBox.set_text         ("")
+
+            getLowBox = aoeLevels.get("Low")
+
+            if close >= getLowBox.get_bottom() * .99
+
+                getLowBox.set_lefttop     (bar_index[50],  minaoiL)
+                getLowBox.set_rightbottom (bar_index + 5,  minaoiL - atr)
+                getLowBox.set_text        ("Area of Interest")
+            else 
+
+                getLowBox.set_lefttop     (bar_index + 5, minaoiL)
+                getLowBox.set_rightbottom (bar_index + 5, - atr)
+                getLowBox.set_text        ("")
+
+drawAOE()
+
+
+var table tab2 = table.new(position.top_right, 13, 13,  bgcolor = #20222C, border_color = #363843, frame_color = #363843, border_width = 1, frame_width = 1)
+
+nyHour   = hour  (timenow, "America/New_York")
+nyMinute = minute(timenow, "America/New_York")
+
+fvg(direction) => 
+
+    var fvgMat = matrix.new<float>(5), var fvgDrawings = array.new<box>()
+
+    fvgMat.add_col(0, array.from(math.sign(close - open), close, high, low, time))
+
+    if fvgMat.columns() > 3 
+        fvgMat.remove_col(fvgMat.columns() - 1)
+
+    if fvgMat.row(0).sum() == direction
+
+        getDir = math.sign(direction)
+
+        [y, y1] = switch getDir
+
+            -1 => [fvgMat.get(3, 2), fvgMat.get(2, 0)]   
+            =>    [fvgMat.get(3, 0), fvgMat.get(2, 2)]
+
+        col = switch closeOnly
+            true => #00000000
+            =>      color.new(fvgcol, fvgtra)
+
+        fvgDrawings.push(
+             box.new(int(fvgMat.get(4, 1)),y, last_bar_time, y1, xloc = xloc.bar_time, 
+                 border_color = col, bgcolor = col)
+         )
+        
+
+    fvgDrawings
+
+if showFVG
+
+    fvgDn = fvg(-3)
+    fvgUp = fvg(3)
+
+    if fvgDn.size() > 0 
+
+        for i = fvgDn.size() - 1 to 0
+
+            getfvg = fvgDn.get(i)
+
+            if high >= getfvg.get_top()
+                getfvg.delete()
+                fvgDn.remove(i)
+
+            else if contract
+                if high > getfvg.get_bottom()
+                    getfvg.set_bottom(high)
+
+
+    if fvgUp.size() > 0 
+
+        for i = fvgUp.size() - 1 to 0
+
+            getfvg = fvgUp.get(i)
+
+            if low <= getfvg.get_bottom()
+                getfvg.delete()
+                fvgUp.remove(i)
+
+            else if contract
+                if low < getfvg.get_top()
+                    getfvg.set_top(low)
+
+
+    if closeOnly and barstate.islast 
+
+        minDist = matrix.new<float>(1, 2, 20e20)
+
+        if fvgDn.size() > 0 
+            for i = fvgDn.size() - 1 to 0
+
+                getBottom = fvgDn.get(i).get_bottom()
+
+                minDist.set(0, 1, math.min(minDist.get(0, 1), math.abs(close - getBottom)))
+
+                if math.abs(close - getBottom) == minDist.get(0, 1)
+                    minDist.set(0, 0, i)
+
+                fvgDn.get(i).set_right(fvgDn.get(i).get_left())
+
+            fvgDn.get(int(minDist.get(0, 0))).set_bgcolor(color.new(fvgcol, fvgtra))
+            fvgDn.get(int(minDist.get(0, 0))).set_border_color(color.new(fvgcol, fvgtra))
+            fvgDn.get(int(minDist.get(0, 0))).set_right(last_bar_time)
+
+        minDist.set(0, 0, 0)
+        minDist.set(0, 1, 20e20)
+
+
+        if fvgUp.size() > 0 
+            for i = fvgUp.size() - 1 to 0
+
+                getTop = fvgUp.get(i).get_top()
+
+                minDist.set(0, 1, math.min(minDist.get(0, 1), math.abs(close - getTop)))
+
+                if math.abs(close - getTop) == minDist.get(0, 1)
+                    minDist.set(0, 0, i)
+
+                fvgUp.get(i).set_right(fvgUp.get(i).get_left())
+
+
+            fvgUp.get(int(minDist.get(0, 0))).set_bgcolor(color.new(fvgcol, fvgtra))
+            fvgUp.get(int(minDist.get(0, 0))).set_border_color(color.new(fvgcol, fvgtra))
+            fvgUp.get(int(minDist.get(0, 0))).set_right(last_bar_time)
+
+
+
+calculateTimeDifference(timestamp1, timestamp2) =>
+    timeDifference = timestamp2 - timestamp1
+    hours = math.floor(timeDifference / 3600000)
+    minutes = math.floor((timeDifference % 3600000) / 60000)
+    [hours, minutes]
+
+
+dayAdjustment = (hour(timenow, "America/New_York") < 2) ? dayofmonth(timenow) + 1 : dayofmonth(timenow)
+dayAdjustment2 = nyHour >= 20 or nyHour < 2 ? dayofmonth(timenow) + 1 : dayofmonth(timenow)
+
+timeIsInRange(startHour, startMinute, endHour, endMinute) =>
+
+    (nyHour > startHour or (nyHour == startHour and nyMinute >= startMinute)) and (nyHour < endHour or (nyHour == endHour and nyMinute <= endMinute))
+
+
+[chartcol, timetilchange, stringCol, stringCol2] = switch 
+
+    timeIsInRange(9, 30, 16, 0) => [#f24968  , timestamp("America/New_York", year(timenow), month(timenow), dayofmonth(timenow), 16, 0, 0), "New York", "Asia"]
+    timeIsInRange(20, 0, 2 , 0) => [#14D990  , timestamp("America/New_York", year(timenow), month(timenow), dayAdjustment, 2, 0, 0), "Asia", "London"]
+    timeIsInRange(3, 0, 11, 30) => [#F2B807  , timestamp("America/New_York", year(timenow), month(timenow), dayofmonth(timenow), 11, 30, 0), "London", "New York"]
+    => [color.gray, int(na), "Dead Zone", (nyHour > 16 or nyHour < 3) ? "London" : (nyHour >= 11 and nyHour < 20) ? "Asia" : "New York"]                        
+
+[hours, minutes] = calculateTimeDifference(timenow, timetilchange)
+
+timetilchange2 = switch
+
+    timeIsInRange(9, 30, 16, 0)  => timestamp("America/New_York", year(timenow), month(timenow), dayofmonth(timenow), 20, 0, 0) 
+    timeIsInRange(20, 0, 2 , 0)  => timestamp("America/New_York", year(timenow), month(timenow), dayofmonth(timenow), 3, 0, 0)  
+    timeIsInRange(3, 0, 11, 30)  => timestamp("America/New_York", year(timenow), month(timenow), dayofmonth(timenow), 9, 30, 0) 
+    => na 
+
+
+if na(timetilchange2)
+    timetilchange2 := switch
+        nyHour < 9 or (nyHour == 9 and nyMinute < 30) => timestamp("America/New_York", year(timenow), month(timenow), dayofmonth(timenow), 9, 30, 0) 
+        nyHour < 20 or (nyHour >= 16 and nyHour < 20) => timestamp("America/New_York", year(timenow), month(timenow), dayofmonth(timenow), 20, 0, 0) 
+        nyHour < 3 or (nyHour >= 2 and nyHour < 3)    => timestamp("America/New_York", year(timenow), month(timenow), dayofmonth(timenow), 3, 0, 0)     
+        => na  
+
+[hours2, minutes2] = calculateTimeDifference(timenow, timetilchange2)
+
+method getActivity(array<float> id, float id2) => 
+
+    if id.size() > 0
+
+        volPerc1 = id.percentile_nearest_rank(10)
+        volPerc2 = id.percentile_nearest_rank(33)
+        volPerc3 = id.percentile_nearest_rank(50)
+        volPerc4 = id.percentile_nearest_rank(66)
+        volPerc5 = id.percentile_nearest_rank(90)
+
+        log.warning(str.tostring(volPerc1) + "\n" + str.tostring(volPerc2) + "\n" + str.tostring(volPerc3) + "\n" + str.tostring(volPerc4) + "\n" + str.tostring(volPerc5))
+
+        activity = switch 
+
+            id2 <=  volPerc1 => "Very Low"   
+            id2 <=  volPerc2 => "Low"   
+            id2 <=  volPerc3 => "Average"   
+            id2 <=  volPerc4 => "High"   
+            =>                  "Very High"
+
+
+        activity
+    
+
+if barstate.islast 
+
+    hr4Act = vol4hrArr.getActivity(vol4hr)
+    D1Act  = vol1DArr .getActivity(vol1D)
+
+    str = str.tostring(timetilchange)
+    ch  = str.substring(str, str.pos(str, ".") + 1, str.length(str))
+    nu  = str.tonumber(ch) * 6
+    nu2 = str.substring(str.tostring(nu), 0, 2)
+
+
+    table.cell(tab2, 0, 2, text = "Session:"  ,       text_color = color.white, text_halign = text.align_left)
+    table.cell(tab2, 0, 3, text = "Session Close:"  , text_color = color.white, text_halign = text.align_left)
+    table.cell(tab2, 0, 4, text = "Next Session:"  , text_color = color.white, text_halign = text.align_left)
+    table.cell(tab2, 0, 5, text = "Next Session Open:"  , text_color = color.white, text_halign = text.align_left)
+
+    table.cell(tab2, 0, 6, text = "4-Hr Volume:"  ,   text_color = color.white, text_halign = text.align_left)
+    table.cell(tab2, 0, 7, text = "24-Hr Volume:"  ,  text_color = color.white, text_halign = text.align_left)
+
+    table.cell(tab2, 1, 2, text =  stringCol , text_color = color.white)
+    table.cell(tab2, 1, 3, text = stringCol != "Dead Zone" ? str.tostring(hours)+ "h" + str.tostring(minutes) + "m": "Dead Zone", text_color = color.white)
+    table.cell(tab2, 1, 4, text =stringCol2, text_color = color.white)
+    table.cell(tab2, 1, 5, text = str.tostring(hours2) + "h:" + str.tostring(minutes2) + "m", text_color = color.white)
+    table.cell(tab2, 1, 6, text = hr4Act, text_color = color.white)
+    table.cell(tab2, 1, 7, text = D1Act, text_color = color.white)
+
+
+nyHour2   = hour  (time, "America/New_York")
+nyMinute2 = minute(time, "America/New_York")
+
+timeIsInRange2(startHour, startMinute, endHour, endMinute) =>
+    if endHour >= startHour
+        (nyHour2 > startHour or (nyHour2 == startHour and nyMinute2 >= startMinute)) and 
+         (nyHour2 < endHour or (nyHour2 == endHour and nyMinute2 <= endMinute))
+    else
+        (nyHour2 > startHour or (nyHour2 == startHour and nyMinute2 >= startMinute)) or
+         (nyHour2 < endHour or (nyHour2 == endHour and nyMinute2 <= endMinute))
+
+nyCol = input.color(defval = #f24968, title = "NY Color")
+asCol = input.color(defval = #14D990, title = "Asia Color")
+loCol = input.color(defval = #F2B807, title = "London Color")
+tra   = input.int(defval = 98, minval = 0, maxval = 100, title = "Transparency")
+
+bgcolor(timeIsInRange2(9, 30, 16, 0) ? color.new(nyCol, tra) : na)
+bgcolor(timeIsInRange2(20, 0, 2 , 0) ? color.new(asCol, tra) : na)
+bgcolor(timeIsInRange2(3, 0, 11, 30) ? color.new(loCol, tra) : na)
+

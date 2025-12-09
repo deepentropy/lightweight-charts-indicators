@@ -1,0 +1,123 @@
+//@version=5
+indicator('Hash Ribbons (Capriole Investments)', overlay=false)
+
+// NOTES
+
+// The "Spring" is the confirmed Miner capitulation period:
+// - The 1st "gray" circle is the start of Capitulation (1 month Hash Rate crosses UNDER 2 month Hash Rate)
+// - Last "green" circle is the end of Capitulation (1 month Hash Rate crosses OVER 2 month Hash Rate)
+// - The "greener" the spring gets (up until blue) represents Hash Rate recovery (it is increasing)
+// - The "blue" circle is the first instance of positive momentum following recovery of Hash Rate (1m HR > 2m HR). This is historically a rewarding place to buy with limited downside.
+
+// INPUTS
+
+type = input.string('Ribbons', options=['Ribbons', 'Oscillator'], title='Plot Type')
+len_s = input(30, 'Hash Rate Short SMA (days).')
+len_l = input(60, 'Hash Rate Long SMA (days).')
+signals = input(true, 'Plot Signals')
+plot_halvings = input(true, 'Plot Halvings')
+raw = input(false, 'Plot Raw Hash Rate')
+source = input.string('INTOTHEBLOCK:BTC_HASHRATE', options=['QUANDL:BCHAIN/HRATE', 'INTOTHEBLOCK:BTC_HASHRATE'], title='Source Hash Rate')
+
+// HASH RATE MA
+
+// HR on TV only has "yesterday's" value --> use "lookahead_on" when running live (on current bar), to pull forward yesterdays data
+live_HR_raw = request.security(source, 'D', close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+live_HR_short = request.security(source, 'D', ta.sma(close, len_s), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+live_HR_long = request.security(source, 'D', ta.sma(close, len_l), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+
+hist_HR_raw = request.security(source, 'D', close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+hist_HR_short = request.security(source, 'D', ta.sma(close, len_s), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+hist_HR_long = request.security(source, 'D', ta.sma(close, len_l), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+daily_s10 = request.security(syminfo.tickerid, 'D', ta.sma(close, 10), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+daily_s20 = request.security(syminfo.tickerid, 'D', ta.sma(close, 20), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+
+// DAILY TIMEFRAME MGMT
+
+is_newbar(res) =>
+    t = time(res)  // res calculated below \/
+    ta.change(t) != 0 ? true : false
+
+// Check how many bars are in our upper (otf) timeframe
+since_new_bar = ta.barssince(is_newbar('D'))  //1-360 for minutes, D = Daily, W = Weekly, M = Monthly
+D_total_bars = int(na)
+D_total_bars := since_new_bar == 0 ? since_new_bar[1] : D_total_bars[1]  // calculates the total number of current time frame bars in the OTF 
+
+// INDICATORS
+
+HR_short = float(na)
+HR_long = float(na)
+HR_raw = float(na)
+s10 = float(na)
+s20 = float(na)
+
+HR_short := barstate.isrealtime ? live_HR_short : hist_HR_short
+HR_long := barstate.isrealtime ? live_HR_long : hist_HR_long
+HR_raw := barstate.isrealtime ? live_HR_raw : hist_HR_raw
+
+s10 := barstate.isrealtime ? since_new_bar == D_total_bars ? daily_s10 : s10[1] : daily_s10
+s20 := barstate.isrealtime ? since_new_bar == D_total_bars ? daily_s20 : s20[1] : daily_s20
+
+capitulation = ta.crossunder(HR_short, HR_long)
+miner_capitulation = HR_short < HR_long
+recovering = HR_short > HR_short[1] and HR_short > HR_short[2] and HR_short > HR_short[3] and miner_capitulation
+recovered = ta.crossover(HR_short, HR_long)
+
+// HASH BOTTOM + PA SIGNAL
+
+buy = false
+buy := ta.crossover(s10, s20) and ta.barssince(recovered) < ta.barssince(ta.crossunder(s10, s20)) and ta.barssince(recovered) < ta.barssince(capitulation) or s10 > s20 and ta.crossover(HR_short, HR_long)
+
+buy_plot = buy
+
+
+// OSCILLATOR
+
+delta = HR_short - HR_long
+diff = delta / HR_short * 100
+
+// PLOT - DEFAULT
+
+plot(raw ? HR_raw : na, color=color.new(color.green, 0), linewidth=1, style=plot.style_line, title='HR Raw')
+p1 = plot(type == 'Ribbons' ? HR_long : na, color=color.new(color.gray, 0), linewidth=2, style=plot.style_line, title='HR SMA Long')
+p2 = plot(type == 'Ribbons' ? HR_short : na, color=HR_short < HR_long ? color.red : color.lime, linewidth=2, style=plot.style_line, title='HR SMA Short')
+fill(p1, p2, color=HR_short < HR_long ? color.new(color.red,30) : na)
+
+// PLOT - OSCILLATOR
+
+plot(type == 'Oscillator' ? diff : na, style=plot.style_columns, color=diff < 0 ? color.red : color.blue, title='Oscillator')
+
+// PLOT - SIGNALS
+
+plotshape(signals ? capitulation : na, style=shape.circle, location=location.top, color=color.new(color.gray, 50), size=size.normal, text='Capitulation', textcolor=color.new(color.black, 50), title='Capitulation')
+plotshape(signals ? miner_capitulation : na, style=shape.circle, location=location.top, color=color.new(color.green, 90), size=size.normal, title='Miner Capitulation')
+plotshape(signals ? recovering : na, style=shape.circle, location=location.top, color=color.new(color.green, 50), size=size.normal, title='Recovering')
+plotshape(signals ? recovered : na, style=shape.circle, location=location.top, color=color.new(color.lime, 0), size=size.normal, textcolor=color.new(color.white, 0), title='Recovered')
+plotshape(signals ? buy_plot : na, style=shape.circle, location=location.top, color=color.new(color.blue, 0), size=size.normal, text='Buy', textcolor=color.new(color.blue, 0), title='Buy')
+
+// Sourcing
+var table_source = table(na)
+table_source := table.new(position=position.bottom_left, columns=1, rows=1, bgcolor=color.white, border_width=1)
+table.cell(table_source, 0, 0, text='Source: Capriole Investments Limited', bgcolor=color.white, text_color=color.black, width=20, height=7, text_size=size.normal, text_halign=text.align_left)
+
+// HALVINGS
+
+halving_1 = timestamp(2012, 11, 28, 0, 0)
+halving_2 = timestamp(2016, 7, 9, 0, 0)
+halving_3 = timestamp(2020, 5, 12, 0, 0)  // projected! https://www.bitcoinclock.com/
+band = 2
+h1_range = time >= halving_1 - band * 24 * 60 * 60 * 1000 and time <= halving_1 + band * 24 * 60 * 60 * 1000  //adds 3 day either side for chart visibility
+h2_range = time >= halving_2 - band * 24 * 60 * 60 * 1000 and time <= halving_2 + band * 24 * 60 * 60 * 1000  //adds 3 day either side for chart visibility
+h3_range = time >= halving_3 - band * 24 * 60 * 60 * 1000 and time <= halving_3 + band * 24 * 60 * 60 * 1000  //adds 3 day either side for chart visibility
+bgcolor(h1_range and plot_halvings ? color.new(color.red,20) : na)
+bgcolor(h2_range and plot_halvings ? color.new(color.red,20) : na)
+bgcolor(h3_range and plot_halvings ? color.new(color.red,20) : na)
+
+//ALERTS
+
+alertcondition(capitulation, title='Alert - Capitulation')
+alertcondition(recovered, title='Alert - Recovered')
+alertcondition(buy and not buy[1], title='Alert - Buy')
+

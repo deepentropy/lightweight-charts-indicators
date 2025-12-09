@@ -1,0 +1,24 @@
+//@version=3
+
+//author KıvanÇ @fr3762 on twitter
+//creator Nicholas Darvas
+
+
+study("DARVAS BOX",overlay=true, shorttitle="DARVAS")
+//iff(low=lowest(low,5),low,iff(low[1]=lowest(low,5),low[1],iff(low[2]=lowest(low,5),low[2],iff(low[3]=lowest(low,5),low[3],iff(low[4]=lowest(low,5),low[4],0)))))
+//iff(low=lowest(low,5),low,iff(low[1]=lowest(low,5),low[1],iff(low[2]=lowest(low,5),low[2],iff(low[3]=lowest(low,5),low[3],iff(low[4]=lowest(low,5),low[4],0)))))
+boxp=input(5, "BOX LENGTH")
+
+LL = lowest(low,boxp)
+k1=highest(high,boxp)
+k2=highest(high,boxp-1)
+k3=highest(high,boxp-2)
+
+NH =  valuewhen(high>k1[1],high,0)
+box1 =k3<k2
+TopBox = valuewhen(barssince(high>k1[1])==boxp-2 and box1, NH, 0)
+BottomBox = valuewhen(barssince(high>k1[1])==boxp-2 and box1, LL, 0)
+
+
+plot(TopBox, linewidth=3, color=green, title="TBbox")
+plot(BottomBox, linewidth=3, color=red, title="BBbox")

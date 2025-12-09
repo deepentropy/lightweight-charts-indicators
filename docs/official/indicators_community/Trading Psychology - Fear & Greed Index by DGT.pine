@@ -1,0 +1,194 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Trading Psychology - Fear & Greed Index by DGT
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Jul 21, 2020
+//# *  Update     : Apr 09, 2021 : Added ability to display Current Time Frame's Fear and Greed Index
+//# *  Update     : Apr 09, 2022 : Added Price Candle display option with Fear & Greed weighted risk levels 
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+indicator('Trading Psychology - Fear & Greed Index by DGT', 'F&G CYCLE ʙʏ DGT ☼☾', false, max_bars_back=252)
+
+// -Inputs ====================================================================================== //
+
+display = input.string('Fear & Greed Index', 'Display as', options=['Price Candles', 'Fear & Greed Index'])
+smoothLength = input.int(5, 'RMA Smoothing Length', minval=1, maxval=13)
+faster = input(false, 'Fear & Greed Index : Calculation with Faster Legths')
+daily = input(false, 'Display Daily Time Frame Calculated Value')
+lagendDesc = input(true, 'Show Color Legend')
+hLabel = input(false, 'Hide Statistical Label')
+
+
+fastLength = faster ? 13 : 21
+slowLength = faster ? 89 : 144
+
+// -Calculations ================================================================================ //
+
+pmacd = (close / ta.ema(close, slowLength) - 1) * 100
+pmacd_d = request.security(syminfo.tickerid, 'D', pmacd, barmerge.gaps_off, barmerge.lookahead_on)
+
+ror = (close - close[slowLength]) / close[slowLength] * 100
+ror_d = request.security(syminfo.tickerid, 'D', ror, barmerge.gaps_off, barmerge.lookahead_on)
+
+accDist = close == high and close == low or high == low ? 0 : (2 * close - low - high) / (high - low)
+nzVolume = nz(volume)
+moneyFlow = math.sum(accDist * nzVolume, fastLength) / math.sum(nzVolume, fastLength) * 100
+
+accDist_d = request.security(syminfo.tickerid, 'D', accDist, barmerge.gaps_off, barmerge.lookahead_on)
+nzVolume_d = request.security(syminfo.tickerid, 'D', nzVolume)
+moneyFlow_d = math.sum(accDist_d * nzVolume_d, fastLength) / math.sum(nzVolume_d, fastLength) * 100
+
+vix = request.security('VIX', timeframe.period, -(close / ta.ema(close, slowLength) - 1) * 100, barmerge.gaps_off, barmerge.lookahead_on)
+vix_d = request.security('VIX', 'D', -(close / ta.ema(close, slowLength) - 1) * 100, barmerge.gaps_off, barmerge.lookahead_on)
+
+gold = request.security('GOLD', timeframe.period, -(1 - close[fastLength] / close) * 100, barmerge.gaps_off, barmerge.lookahead_on)
+gold_d = request.security('GOLD', 'D', -(1 - close[fastLength] / close) * 100, barmerge.gaps_off, barmerge.lookahead_on)
+
+cycle_raw = nzVolume ? math.avg(pmacd, ror, moneyFlow, vix, gold) : math.avg(pmacd, ror, vix, gold)
+cycle_raw_d = nzVolume_d ? math.avg(pmacd_d, ror_d, moneyFlow_d, vix_d, gold_d) : math.avg(pmacd_d, ror_d, vix_d, gold_d)
+
+cycle = ta.rma(cycle_raw, smoothLength)
+cycle_d = ta.rma(cycle_raw_d, smoothLength)
+
+f_getText(_cycle) =>
+    if _cycle > 73
+        'Extreame Greed'
+    else if _cycle > 33
+        'Greed'
+    else if _cycle < -25
+        'Fear'
+    else if _cycle < -41
+        'Extreame Fear'
+    else
+        'Neutral'
+
+f_getColor(_cycle) =>
+    if _cycle >= 73
+        #006400
+    else if _cycle >= 63 and _cycle < 73
+        #007439
+    else if _cycle >= 52 and _cycle < 63
+        #008368
+    else if _cycle >= 41 and _cycle < 52
+        #009096
+    else if _cycle >= 30 and _cycle < 41
+        #009bbf
+    else if _cycle >= 20 and _cycle < 30
+        #00a4df
+    else if _cycle >= 10 and _cycle < 20
+        #00a4df
+    else if _cycle >= 5 and _cycle < 10
+        #65a095
+    else if _cycle < -5 and _cycle >= -10
+        #b7b763
+    else if _cycle < -10 and _cycle >= -15
+        #fafa6e
+    else if _cycle < -15 and _cycle >= -20
+        #fecb35
+    else if _cycle < -20 and _cycle >= -25
+        #ff9800
+    else if _cycle < -25 and _cycle >= -31
+        #ff7434
+    else if _cycle < -31 and _cycle >= -37
+        #ff5252
+    else if _cycle < -37 and _cycle >= -41
+        #c72e29
+    else if _cycle < -41
+        #910000
+    else
+        #92928f
+
+f_getColor1(_cycle) =>
+    if _cycle >= 73
+        #910000
+    else if _cycle >= 63 and _cycle  <  73
+        #c72e29
+    else if _cycle >= 52 and _cycle  <  63
+        #ff5252
+    else if _cycle >= 41 and _cycle  <  52
+        #ff7434
+    else if _cycle >= 30 and _cycle  <  41
+        #ff9800
+    else if _cycle >= 20 and _cycle  <  30
+        #fecb35
+    else if _cycle >= 10 and _cycle  <  20
+        #fafa6e
+    else if _cycle >= 5  and _cycle  <  10
+        #b7b763
+    else if _cycle < -5  and _cycle >= -10
+        #65a095
+    else if _cycle < -10 and _cycle >= -15
+        #00a4df
+    else if _cycle < -15 and _cycle >= -20
+        #00a4df
+    else if _cycle < -20 and _cycle >= -25
+        #009bbf
+    else if _cycle < -25 and _cycle >= -31
+        #009096
+    else if _cycle < -31 and _cycle >= -37
+        #008368
+    else if _cycle < -37 and _cycle >= -41
+        #007439
+    else if _cycle < -41 
+        #006400
+    else
+        #92928f
+
+// -Plotting ==================================================================================== //
+
+fgColor = daily ? f_getColor(cycle_d) : f_getColor(cycle)
+plot(display == 'Fear & Greed Index' ? daily ? cycle_d : cycle : na, 'Psychology of The Market Cycle - Index Display', fgColor, 2)
+
+var label fgiLabel = na
+if not hLabel
+    fgiLabel := label.new(time + math.round(ta.change(time) * 7), display == 'Price Candles' ? close : daily ? cycle_d : cycle, (daily ? '*Daily' : 'Daily') + ' Time Frame : ' + f_getText(cycle_d) + ' : ' + 
+                             str.tostring(math.round(cycle_d, 2)) + '%\n' + (daily ? 'Current' : '*Current') + ' Time Frame (' + timeframe.period + ') : ' + f_getText(cycle) + ' : ' + 
+                             str.tostring(math.round(cycle, 2)) + '%', xloc.bar_time, tooltip='Psychology of The Market Cycle by DGT\n\n' + 'Fear & Greed Index :\nDaily Time Frame : ' + f_getText(cycle_d) + ' : ' + 
+                             str.tostring(math.round(cycle_d, 2)) + '%\nCurrent Time Frame (' + timeframe.period + ') : ' + f_getText(cycle) + ' : ' + 
+                             str.tostring(math.round(cycle, 2)) + '%' + '%\n\nReference Sources : ' + '\n-------------------------------------------------------------------' + 
+                             '\n 1 - Price Convergence/Divergence to/from its Moving Average (' + str.tostring(slowLength) + ') :\n     Daily TF ' + str.tostring(math.round(pmacd_d, 2)) + '% / Current TF ' + str.tostring(math.round(pmacd, 2)) + '%' + 
+                             '\n 2 - Rate of Return (Momentum/RoC), Length (' + str.tostring(slowLength) + ') :\n     Daily TF ' + str.tostring(math.round(ror_d, 2)) + '% / Current TF ' + str.tostring(math.round(ror, 2)) + '%' + 
+                             '\n 3 - Chaikin Money Flow, Length (' + str.tostring(fastLength) + ') :\n     Daily TF ' + str.tostring(math.round(moneyFlow_d, 2)) + '% / Current TF ' + str.tostring(math.round(moneyFlow, 2)) + '% \n      ps: cmf calculated only if volume data is provided' + 
+                             '\n 4 - VIX - Volatility (Fear) Index, Length (' + str.tostring(slowLength) + ') :\n     Daily TF ' + str.tostring(math.round(vix_d, 2)) + '% / Current TF ' + str.tostring(math.round(vix, 2)) + '%' + 
+                             '\n 5 - Safe Haven Demand - Gold Demand, Length (' + str.tostring(fastLength) + ') :\n     Daily TF ' + str.tostring(math.round(gold_d, 2)) + '% / Current TF ' + str.tostring(math.round(gold, 2)) + '%' + 
+                             '\n\nWarren Buffett’s quote, buy when others are fearful, and sell when others are greedy', color=color.new(color.gray, 85), style=label.style_label_left, textcolor=color.gray, textalign=text.align_left)
+
+label.delete(fgiLabel[1])
+
+var o = 0., var h = 0., var l = 0., var c = 0.
+
+if display == 'Price Candles'
+    o := open, h := high, l := low, c := close
+
+fgColor := daily ? f_getColor1(cycle_d) : f_getColor1(cycle)
+
+if display == 'Fear & Greed Index'
+    fgColor := na
+
+plotcandle(o, h, l, c, 'Psychology of The Market Cycle - Price Display', fgColor, fgColor, bordercolor = fgColor)
+
+var table logo = table.new(position.bottom_right, 1, 1)
+table.cell(logo, 0, 0, "☼☾  ", text_size = size.normal, text_color = color.teal)
+
+
+var table legend = table.new(position.middle_right   , 1, 5)
+
+if lagendDesc
+    if display == 'Price Candles'
+        table.cell(legend, 0, 0, "Max Opportunity █", text_size = size.small, text_color = #006400, text_halign = text.align_right)
+        table.cell(legend, 0, 1, "Opportunity █", text_size = size.small, text_color = #008368, text_halign = text.align_right)
+        table.cell(legend, 0, 2, "Neutral █", text_size = size.small, text_color = #92928f, text_halign = text.align_right)
+        table.cell(legend, 0, 3, "Risk █", text_size = size.small, text_color = #ff7434, text_halign = text.align_right)
+        table.cell(legend, 0, 4, "Max Rsik █", text_size = size.small, text_color = #910000, text_halign = text.align_right)
+    else
+        table.cell(legend, 0, 0, "Extreame Greed █", text_size = size.small, text_color = #006400, text_halign = text.align_right)
+        table.cell(legend, 0, 1, "Greed █", text_size = size.small, text_color = #008368, text_halign = text.align_right)
+        table.cell(legend, 0, 2, "Neutral █", text_size = size.small, text_color = #92928f, text_halign = text.align_right)
+        table.cell(legend, 0, 3, "Fear █", text_size = size.small, text_color = #ff7434, text_halign = text.align_right)
+        table.cell(legend, 0, 4, "Extreame Fear █", text_size = size.small, text_color = #910000, text_halign = text.align_right)

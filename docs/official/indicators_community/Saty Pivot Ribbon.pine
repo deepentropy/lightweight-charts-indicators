@@ -1,0 +1,123 @@
+// Saty Pivot Ribbon
+// Copyright (C) 2022-2025 Saty Mahajan
+//
+// A 3 EMA Ribbon system that simplifies measuring and using emas for trend and support/resistance.
+// Special thanks to Ripster for his education and EMA Clouds which inspired this indicator. 
+
+//@version=5
+indicator('Saty Pivot Ribbon', 'Saty Pivot Ribbon', overlay=true)
+
+// Settings
+time_warp = input.string("off", 'Time Warp', options=["off", "1m", "2m", "3m", "4m", "5m", "10m", "15m", "20m", "30m", "1h", "2h", "4h", "D", "W", "M", "Y"])
+fast_ema = input(title='Fast EMA Length', defval=8)
+pivot_ema = input(title='Pivot EMA Length', defval=21)
+slow_ema = input(title='Slow EMA Length', defval=34)
+bullish_fast_cloud_color = input(color.green, 'Bullish Fast Cloud Color')
+bearish_fast_cloud_color = input(color.red, 'Bearish Fast Cloud Color')
+bullish_slow_cloud_color = input(color.aqua, 'Bullish Slow Cloud Color')
+bearish_slow_cloud_color = input(color.orange, 'Bearish Slow Cloud Color')
+cloud_transparency = input(title='Cloud Transparency (0-100)', defval=60)
+show_fast_ema_highlight = input(false, 'Show Fast EMA Highlight')
+fast_ema_highlight_color = input(color.white, 'Fast EMA Highlight Color')
+show_pivot_ema_highlight = input(false, 'Show Pivot EMA Highlight')
+pivot_ema_highlight_color = input(color.white, 'Pivot EMA Highlight Color')
+show_slow_ema_highlight = input(false, 'Show Slow EMA Highlight')
+slow_ema_highlight_color = input(color.white, 'Slow EMA Highlight Color')
+show_conviction_arrows = input(true, 'Show Conviction Arrows')
+bullish_conviction_color = input(color.aqua, 'Bullish Conviction Arrow Color')
+bearish_conviction_color = input(color.yellow, 'Bearish Conviction Arrow Color')
+show_fast_conviction_ema = input(true, 'Show Fast Conviction EMA')
+fast_conviction_ema = input(13, 'Fast Conviction EMA Length')
+fast_conviction_ema_color = input(color.silver, 'Fast Conviction EMA Color')
+show_slow_conviction_ema = input(true, 'Show Slow Conviction EMA')
+slow_conviction_ema = input(48, 'Slow Conviction EMA Length')
+slow_conviction_ema_color = input(color.purple, 'Slow Conviction EMA Color')
+show_candle_bias = input(false, "Show Candle Bias")
+bias_ema = input(21, 'Bias EMA')
+
+// Time Warp timeframe
+// Set the appropriate timeframe based on trading mode
+timeframe_func() =>
+    timeframe = timeframe.period 
+    if time_warp == 'off'
+        timeframe := timeframe.period
+    else if time_warp == '1m'
+        timeframe := '1'
+    else if time_warp == '2m'
+        timeframe := '2'
+    else if time_warp == '3m'
+        timeframe := '3'
+    else if time_warp == '4m'
+        timeframe := '4'
+    else if time_warp == '5m'
+        timeframe := '5'
+    else if time_warp == '10m'
+        timeframe := '10'
+    else if time_warp == '15m'
+        timeframe := '15'
+    else if time_warp == '20m'
+        timeframe := '20'
+    else if time_warp == '30m'
+        timeframe := '30'
+    else if time_warp == '1h'
+        timeframe := '60'
+    else if time_warp == '2h'
+        timeframe := '120'
+    else if time_warp == '4h'
+        timeframe := '240'
+    else if time_warp == 'D'
+        timeframe := 'D'
+    else if time_warp == 'W'
+        timeframe := 'W'
+    else if time_warp == 'M'
+        timeframe := 'M'
+    else if time_warp == 'Y'
+        timeframe := '12M'
+    else
+        timeframe := timeframe.period
+
+// Calculations
+ticker = ticker.new(syminfo.prefix, syminfo.ticker, session=session.extended)
+price = request.security(ticker, timeframe_func(), close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+fast_ema_value = request.security(syminfo.tickerid, timeframe_func(), ta.ema(price, fast_ema)[barstate.isrealtime ? 1 : 0], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+pivot_ema_value = request.security(syminfo.tickerid, timeframe_func(), ta.ema(price, pivot_ema)[barstate.isrealtime ? 1 : 0], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+slow_ema_value = request.security(syminfo.tickerid, timeframe_func(), ta.ema(price, slow_ema)[barstate.isrealtime ? 1 : 0], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+fast_conviction_ema_value = request.security(syminfo.tickerid, timeframe_func(), ta.ema(price, fast_conviction_ema)[barstate.isrealtime ? 1 : 0], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+slow_conviction_ema_value = request.security(syminfo.tickerid, timeframe_func(), ta.ema(price, slow_conviction_ema)[barstate.isrealtime ? 1 : 0], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// Create plots
+fast_ema_plot = plot(fast_ema_value, color=show_fast_ema_highlight ? fast_ema_highlight_color : na, title='Fast EMA')
+pivot_ema_plot = plot(pivot_ema_value, color=show_pivot_ema_highlight ? pivot_ema_highlight_color : na, title='Pivot EMA')
+slow_ema_plot = plot(slow_ema_value, color=show_slow_ema_highlight ? slow_ema_highlight_color : na, title='Slow EMA')
+
+// Fill in the plots to create clouds
+fast_cloud_color = fast_ema_value >= pivot_ema_value ? color.new(bullish_fast_cloud_color, cloud_transparency) : color.new(bearish_fast_cloud_color, cloud_transparency)
+fill(fast_ema_plot, pivot_ema_plot, color=fast_cloud_color, title='Fast Cloud', transp=90)
+slow_cloud_color = pivot_ema_value >= slow_ema_value ? color.new(bullish_slow_cloud_color, cloud_transparency) : color.new(bearish_slow_cloud_color, cloud_transparency)
+fill(pivot_ema_plot, slow_ema_plot, color=slow_cloud_color, title='Slow Cloud', transp=90)
+
+// Conviction Arrows (default based on 13/48)
+bullish_conviction = fast_conviction_ema_value >= slow_conviction_ema_value
+bearish_conviction = fast_conviction_ema_value < slow_conviction_ema_value
+bullish_conviction_confirmed = bullish_conviction[0] == true and bullish_conviction[1] == false
+bearish_conviction_confirmed = bearish_conviction[0] == true and bearish_conviction[1] == false
+plotshape(bullish_conviction_confirmed and show_conviction_arrows, style=shape.triangleup, color=bullish_conviction_color, location=location.belowbar, size=size.small)
+plotshape(bearish_conviction_confirmed and show_conviction_arrows, style=shape.triangledown, color=bearish_conviction_color, location=location.abovebar, size=size.small)
+fast_conviction_ema_plot = plot(fast_conviction_ema_value, color=show_fast_conviction_ema ? fast_conviction_ema_color : na, title='Fast Conviction EMA')
+slow_conviction_ema_plot = plot(slow_conviction_ema_value, color=show_slow_conviction_ema ? slow_conviction_ema_color : na, title='Slow Conviction EMA')
+
+// Candle Bias
+bias_ema_value = request.security(syminfo.tickerid, timeframe_func(), ta.ema(price, bias_ema)[barstate.isrealtime ? 1 : 0], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+above_pivot = close >= bias_ema_value
+below_pivot = close < bias_ema_value
+up = open < close
+doji = open == close
+down = open > close
+bias_candle_color = above_pivot and up and show_candle_bias ? bullish_fast_cloud_color :
+         below_pivot and up and show_candle_bias ? bearish_slow_cloud_color :
+         above_pivot and down and show_candle_bias ? bullish_slow_cloud_color :
+         below_pivot and down and show_candle_bias ? bearish_fast_cloud_color :
+         doji and show_candle_bias ? color.gray :
+         na
+
+plotcandle(open,high,low,close,color = bias_candle_color, bordercolor = bias_candle_color, wickcolor = bias_candle_color)

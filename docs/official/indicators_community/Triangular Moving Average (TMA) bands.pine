@@ -1,0 +1,17 @@
+//@version=4
+//author=Daveatt
+study("TMA bands", shorttitle="TMA bands", overlay=true)
+TMAPeriodBack = input(defval=35, title="TMA number of bars back")
+ATRPeriodBack = input(defval=75, title="ATR number of bars back")
+ATRMultiplier = input(defval=4.0, title="ATR Multiplier")
+src = input(close, title="Price")
+
+ssi=wma(src,TMAPeriodBack)
+tma = swma(ssi)
+range = atr(ATRPeriodBack)*ATRMultiplier
+tmah = tma+range
+tmal = tma-range 
+
+plot(tmah, color=color.purple, linewidth=2, transp = 40, title = "Upper")
+plot(tma, color=color.maroon, linewidth=2, transp = 40, title = "Middle")
+plot(tmal, color=color.purple, linewidth=2, transp = 40, title = "Lower")

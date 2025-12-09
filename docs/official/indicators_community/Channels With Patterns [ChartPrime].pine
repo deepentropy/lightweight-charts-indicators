@@ -1,0 +1,786 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime 
+
+//@version=5
+indicator("Channels With Patterns [ChartPrime]", overlay = true, max_lines_count = 500, max_labels_count = 500, max_bars_back = 5000)
+
+type properties
+    string style = "Wick"
+    bool break_style = false
+    bool instant = true
+    float offset = 0
+    int atr_length = 10
+    float atr_multiplier = 6
+    float padding = 25
+    int length = 10
+    int look_forward = 10
+    int avg_length = 18
+    bool enable_hammer = true
+    bool enable_ihammer = true
+    bool enable_bullish_engulfing = true
+    bool enable_bearish_engulfing = true
+    bool extend = false
+    bool show_break_label = true
+    int history = 1
+    color top_color = #337c4f
+    color center_color = #787b86
+    color bottom_color = #a52d2d
+    int line_trans = 0
+    int center_trans = 0
+    int fill_trans = 70
+    color break_up_color = #337c4f
+    color break_down_color = #a52d2d
+    color text_color  = #EFEFEF
+    color h_color = #337c4f58
+    color ih_color = #33347c58
+    color bullish_engulfing_color = #337c4f58
+    color bearish_engulfing_color = #a52d2d58
+    color candle_text_color = #EFEFEF
+    bool new_channel_alert = true
+    bool break_alert = true
+    bool hammer_alert = true
+    bool ihammer_alert = true
+    bool bullish_engulfing_alert = true
+    bool bearish_engulfing_alert = true
+
+type candle_data
+    bool polarity
+    float body_top
+    float body_bottom
+    float body_range
+    float top_wick
+    float bottom_wick
+    float average_body
+    float average_top_wick
+    float average_bottom_wick
+    bool has_body
+    bool has_top_wick
+    bool has_bottom_wick
+    bool above_average_body
+    bool above_average_top_wick
+    bool above_average_bottom_wick
+
+type level_data
+    float top
+    float bottom
+
+type range_data
+    float atr
+    float catr
+
+type average_data
+    float h
+    float l
+
+type pivot_data
+    float high_price
+    float low_price
+    int high_index
+    int low_index
+    int length
+    bool high_flag
+    bool low_flag
+    int since_high_flag
+    int since_low_flag
+
+type delta_data
+    float up
+    float down
+
+type calculations
+    level_data levels
+    range_data ranges
+    average_data averages
+    pivot_data pivots
+    delta_data deltas
+    candle_data candle
+
+type channels
+    line top
+    line mid_top
+    line center
+    line mid_bottom
+    line bottom
+    linefill top_fill
+    linefill bottom_fill
+    label[] labels
+    properties settings
+    float delta = 0
+
+type points
+    float top_y1
+    float top_y2
+    float mid_top_y1
+    float mid_top_y2
+    float center_y1
+    float center_y2
+    float mid_bottom_y1
+    float mid_bottom_y2
+    float bottom_y1
+    float bottom_y2
+    int start
+    int end = bar_index
+
+ema(float source = close, float length = 9)=>
+    alpha = 2 / (length + 1)
+    var float smoothed = na
+    smoothed := alpha * source + (1 - alpha) * nz(smoothed[1])
+
+rma(float source = close, float length = 9)=>
+    alpha = 1 / (length + 1)
+    var float smoothed = na
+    smoothed := alpha * source + (1 - alpha) * nz(smoothed[1])
+
+cema(float source)=>
+    var float ema = 0.0
+    var int count = 0
+    count := nz(count[1]) + 1
+    ema := (1.0 - 2.0 / (count + 1.0)) * nz(ema[1]) + 2.0 / (count + 1.0) * source
+    
+    ema
+
+candle()=>
+    polarity = open < close
+
+    body_top = math.max(open, close)
+    body_bottom = math.min(open, close)
+
+    body_range = body_top - body_bottom
+    top_wick = high - body_top
+    bottom_wick = body_bottom - low
+
+    average_body = ta.ema(body_range, 14)
+    average_top_wick = ta.ema(top_wick, 14)
+    average_bottom_wick = ta.ema(bottom_wick, 14)
+
+    has_body = body_range != 0
+    has_top_wick = top_wick != 0
+    has_bottom_wick = bottom_wick != 0
+
+    above_average_body = body_range > average_body
+    above_average_top_wick = top_wick > average_top_wick
+    above_average_bottom_wick = bottom_wick > average_bottom_wick
+
+    candle_data.new(
+       polarity
+     , body_top
+     , body_bottom
+     , body_range
+     , top_wick
+     , bottom_wick
+     , average_body
+     , average_top_wick
+     , average_bottom_wick
+     , has_body
+     , has_top_wick
+     , has_bottom_wick
+     , above_average_body
+     , above_average_top_wick
+     , above_average_bottom_wick
+     )
+
+method bullish_engulfing(candle_data self, properties settings)=>
+    if self.polarity 
+     and not self.polarity[1] 
+     and self.body_top > self.body_top[1] 
+     and self.body_bottom <= self.body_bottom[1] 
+     and self.above_average_body 
+     and not self.above_average_body[1] 
+     and not self.above_average_bottom_wick
+     and settings.enable_bullish_engulfing
+        true
+
+    else
+        false
+
+method bearish_engulfing(candle_data self, properties settings)=>
+    if not self.polarity 
+     and self.polarity[1] 
+     and self.body_top >= self.body_top[1] 
+     and self.body_bottom < self.body_bottom[1] 
+     and self.above_average_body 
+     and not self.above_average_body[1] 
+     and not self.above_average_top_wick
+     and settings.enable_bearish_engulfing
+        true
+
+    else
+        false
+
+method hammer(candle_data self, properties settings)=>
+    if self.body_top >= hl2 
+     and not self.has_top_wick 
+     and (self.bottom_wick / self.body_range) >= 2 
+     and not self.above_average_body 
+     and self.above_average_bottom_wick 
+     and settings.enable_hammer
+     and barstate.isconfirmed
+        true
+
+    else
+        false
+
+method ihammer(candle_data self, properties settings)=>
+    if self.body_top <= hl2 
+     and not self.has_bottom_wick 
+     and (self.top_wick / self.body_range) >= 2 
+     and not self.above_average_body 
+     and self.above_average_top_wick 
+     and settings.enable_ihammer
+     and barstate.isconfirmed
+        true
+    else
+
+        false
+
+atr(float length)=>
+    rma(na(high[1]) ? high-low : math.max(math.max(high - low, math.abs(high - close[1])), math.abs(low - close[1])), length)
+
+levels(properties settings)=>
+    pick_top = settings.style == "Wick" ? high : math.max(open, close)
+    pick_bottom = settings.style == "Wick" ? low : math.min(open, close)
+
+    level_data.new(pick_top, pick_bottom)
+
+ranges(properties settings)=>
+    atr = atr(settings.atr_length)
+    catr = cema(ta.tr) / 8.71875
+
+    range_data.new(atr, catr)
+
+averages(level_data level, properties settings)=>
+    top = level.top
+    bottom = level.bottom
+
+    avg_high = ta.sma(top, settings.avg_length)
+    avg_low = ta.sma(bottom, settings.avg_length)
+
+    average_data.new(avg_high, avg_low)
+
+pivots(level_data level, properties settings)=>
+    top = level.top
+    bottom = level.bottom
+
+    ph = ta.pivothigh(top, settings.length, settings.look_forward)
+    pivot_high_flag = not na(ph)
+    since_high_flag = ta.barssince(pivot_high_flag)
+
+    var float high_price = na
+    var int high_index = na
+    var int previous_high_index = 0
+
+    if pivot_high_flag
+        high_price := top[settings.look_forward]
+        high_index := bar_index - settings.look_forward
+
+    pl = ta.pivotlow(bottom, settings.length, settings.look_forward)
+    pivot_low_flag = not na(pl)
+    since_low_flag = ta.barssince(pivot_low_flag)
+
+    var float low_price = na 
+    var int low_index = na
+    var int previous_low_index = 0
+
+    if pivot_low_flag
+        low_price := bottom[settings.look_forward]
+        low_index := bar_index - settings.look_forward
+
+    pivot_data.new(
+       high_price
+     , low_price
+     , high_index
+     , low_index
+     , settings.look_forward
+     , pivot_high_flag
+     , pivot_low_flag
+     , since_high_flag
+     , since_low_flag
+     )
+
+deltas(range_data ranges, average_data averages, pivot_data pivots)=>
+    up_delta = (averages.l - ranges.catr - pivots.low_price) / (pivots.length + pivots.since_low_flag)
+    down_delta = (averages.h + ranges.catr - pivots.high_price) / (pivots.length + pivots.since_high_flag)
+
+    delta_data.new(up_delta, down_delta)
+
+data(properties settings)=>
+    levels = levels(settings)
+    ranges = ranges(settings)
+    averages = averages(levels, settings)
+    pivots = pivots(levels, settings)
+    deltas = deltas(ranges, averages, pivots)
+    candle = candle()
+
+    calculations.new(levels, ranges, averages, pivots, deltas, candle)
+
+method candle_patterns(channels self, calculations data)=>
+    candle = data.candle
+    settings = self.settings
+
+    hammer = candle.hammer(settings)
+    ihammer = candle.ihammer(settings)
+    bullish_engulfing = candle.bullish_engulfing(settings)
+    bearish_engulfing = candle.bearish_engulfing(settings)
+
+    top = self.top.get_y2()
+    mid_top = self.mid_top.get_y2()
+    center = self.center.get_y2()
+    mid_bottom = self.mid_bottom.get_y2()
+    bottom = self.bottom.get_y2()
+
+    high_condition = high >= mid_top and low >= center and hl2 <= top
+    low_condition = low <= mid_bottom and high <= center and hl2 >= bottom
+
+    if high_condition 
+        if ihammer
+            self.labels.push(label.new(bar_index, high, "iH", xloc.bar_index, yloc.abovebar, settings.ih_color, label.style_label_down, textcolor = settings.candle_text_color, tooltip = "Inverted Hammer"))
+            
+            if settings.ihammer_alert
+                alert("Inverted Hammer")
+
+        if bearish_engulfing
+            self.labels.push(label.new(bar_index, high, "EG", xloc.bar_index, yloc.abovebar, settings.bearish_engulfing_color, label.style_label_down, textcolor = settings.candle_text_color, tooltip = "Bearish Engulfing"))
+            
+            if settings.bearish_engulfing_alert
+                alert("Bearish Engulfing")
+
+    if low_condition
+        if hammer
+            self.labels.push(label.new(bar_index, low, "H", xloc.bar_index, yloc.belowbar, settings.h_color, label.style_label_up, textcolor = settings.candle_text_color, tooltip = "Hammer"))
+            if settings.hammer_alert
+                alert("Hammer")
+
+        if bullish_engulfing
+            self.labels.push(label.new(bar_index, high, "EG", xloc.bar_index, yloc.belowbar, settings.bullish_engulfing_color, label.style_label_up, textcolor = settings.candle_text_color, tooltip = "Bullish Engulfing"))
+            
+            if settings.bullish_engulfing_alert
+                alert("Bullish Engulfing")
+
+get_points(calculations data, bool polarity, properties settings)=>
+    atr = data.ranges.atr * settings.atr_multiplier
+    buffer = atr / 7
+
+    offset = data.ranges.atr * 4 / 7 * settings.offset
+ 
+    padding = settings.padding / 100 * 4
+
+    start = 0
+
+    float top_y1 = na
+    float top_y2 = na
+    float bottom_y1 = na
+    float bottom_y2 = na
+
+    if polarity
+        top_y1 := data.pivots.low_price + atr + buffer - offset
+        top_y2 := data.averages.l - data.ranges.catr + atr + buffer - offset
+        bottom_y1 := data.pivots.low_price - buffer - offset
+        bottom_y2 := data.averages.l - data.ranges.catr - buffer - offset
+
+        start := bar_index - data.pivots.length - data.pivots.since_low_flag
+
+    else
+        top_y1 := data.pivots.high_price + buffer + offset
+        top_y2 := data.averages.h + data.ranges.catr + buffer  + offset
+        bottom_y1 := data.pivots.high_price - atr - buffer + offset
+        bottom_y2 := data.averages.h + data.ranges.catr - atr - buffer + offset
+
+        start := bar_index - data.pivots.length - data.pivots.since_high_flag
+
+    mid_top_y1 = top_y1 - buffer * padding
+    mid_top_y2 = top_y2 - buffer * padding
+    center_y1 = math.avg(top_y1, bottom_y1)
+    center_y2 = math.avg(top_y2, bottom_y2)
+    mid_bottom_y1 = bottom_y1 + buffer * padding
+    mid_bottom_y2 = bottom_y2 + buffer * padding
+
+    points.new(top_y1, top_y2, mid_top_y1, mid_top_y2, center_y1, center_y2, mid_bottom_y1, mid_bottom_y2, bottom_y1, bottom_y2, start, bar_index)
+
+constructor(properties settings)=>
+    top = line.new(na, na, na, na, xloc.bar_index, color = color.new(settings.top_color, settings.line_trans))
+    mid_top = line.new(na, na, na, na, xloc.bar_index, color = color.new(settings.top_color, settings.line_trans))
+    center = line.new(na, na, na, na, xloc.bar_index, color = color.new(settings.center_color, settings.center_trans), style = line.style_dashed)
+    mid_bottom = line.new(na, na, na, na, xloc.bar_index, color = color.new(settings.bottom_color, settings.line_trans))
+    bottom = line.new(na, na, na, na, xloc.bar_index, color = color.new(settings.bottom_color, settings.line_trans))
+    top_fill = linefill.new(top, mid_top, color.new(settings.top_color, settings.fill_trans))
+    bottom_fill = linefill.new(bottom, mid_bottom, color.new(settings.bottom_color, settings.fill_trans))
+
+    var labels = array.new<label>()
+
+    channels.new(top, mid_top, center, mid_bottom, bottom, top_fill, bottom_fill, labels, settings)
+
+method clear_labels(label[] self)=>
+    if self.size() > 0
+        for i = self.size() - 1 to 0
+            self.get(i).delete()
+            self.remove(i)
+            
+method destructor(channels self)=>
+    self.labels.clear_labels()
+    self.top_fill.delete()
+    self.bottom_fill.delete()
+    self.top.delete()
+    self.mid_top.delete()
+    self.center.delete()
+    self.mid_bottom.delete()
+    self.bottom.delete()
+
+method safe_destructor(channels[] self, properties settings)=>
+    if self.size() > settings.history
+        self.first().destructor()
+        self.shift()
+
+method set_xy12(line self, int x1, float y1, int x2, float y2)=>
+    self.set_xy1(x1, y1)
+    self.set_xy2(x2, y2)
+
+method extend(channels self, bool condition)=>
+    extend = condition ? extend.right : extend.none
+
+    self.top.set_extend(extend)
+    self.mid_top.set_extend(extend)
+    self.center.set_extend(extend)
+    self.mid_bottom.set_extend(extend)
+    self.bottom.set_extend(extend)
+
+method extend(channels[] self, bool condition = false)=>
+    if self.size() > 0
+        self.last().extend(condition)
+
+method set_channel(channels self, points point, float delta)=>
+    self.delta := delta
+
+    self.top.set_xy12(point.start, point.top_y1, point.end, point.top_y2)
+    self.mid_top.set_xy12(point.start, point.mid_top_y1, point.end, point.mid_top_y2)
+    self.center.set_xy12(point.start, point.center_y1, point.end, point.center_y2)
+    self.mid_bottom.set_xy12(point.start, point.mid_bottom_y1, point.end, point.mid_bottom_y2)
+    self.bottom.set_xy12(point.start, point.bottom_y1, point.end, point.bottom_y2)
+
+method update_channel(channels self)=>
+    self.top.set_xy2(bar_index, self.top.get_y2() + self.delta)
+    self.mid_top.set_xy2(bar_index, self.mid_top.get_y2() + self.delta)
+    self.center.set_xy2(bar_index, self.center.get_y2() + self.delta)
+    self.mid_bottom.set_xy2(bar_index, self.mid_bottom.get_y2() + self.delta)
+    self.bottom.set_xy2(bar_index, self.bottom.get_y2() + self.delta)
+
+init_channel(calculations data, bool polarity, properties settings)=>
+    delta = switch polarity
+        true => data.deltas.up
+        false => data.deltas.down
+
+    point = get_points(data, polarity, settings)
+
+    channel = constructor(settings)
+    channel.set_channel(point, delta)
+    channel.extend(settings.extend)
+
+    channel
+
+method break_condition(channels self, float top, float bottom, bool delete)=>
+    enable = self.settings.break_alert
+    show_breaks = self.settings.show_break_label
+
+    break_up = top > self.top.get_y2()
+    break_down = bottom < self.bottom.get_y2()
+    condition = break_up or break_down
+
+    if delete
+        if condition
+            self.destructor()
+
+        condition
+
+    else
+        if break_up
+            if show_breaks
+                self.labels.push(label.new(bar_index, low, "Break Up", xloc.bar_index, yloc.belowbar, self.settings.break_up_color, label.style_label_up, self.settings.text_color))
+
+            if enable
+                alert("Channel Break Up")
+
+        if break_down
+            if show_breaks
+                self.labels.push(label.new(bar_index, high, "Break Down", xloc.bar_index, yloc.abovebar, self.settings.break_down_color, label.style_label_down, self.settings.text_color))
+
+            if enable
+                alert("Channel Break Down")
+        condition
+
+predictive_channels(properties settings)=>
+    break_up = settings.break_style ? close : low
+    break_down = settings.break_style ? close : high
+
+    data = data(settings)
+
+    var history = array.new<channels>()
+
+    var active = false
+    var bool last = na
+
+    not_active = not active and barstate.isconfirmed
+
+    going_up = data.pivots.low_price < low
+    going_down = data.pivots.high_price > high
+
+    new_up = data.pivots.low_flag 
+    new_down = data.pivots.high_flag 
+
+    instant_up = data.pivots.low_index > data.pivots.high_index and not last and settings.instant 
+    instant_down = data.pivots.low_index < data.pivots.high_index and last and settings.instant
+
+    if (new_up or instant_up) and not_active and going_up
+        active := true
+
+        channel = init_channel(data, true, settings)
+
+        if channel.break_condition(high, low, true)
+            active := false
+        
+        else
+            alert("New Bullish Channel")
+            last := true
+            history.extend()
+            history.push(channel)
+
+    if (new_down or instant_down) and not_active and going_down
+        active := true
+
+        channel = init_channel(data, false, settings)
+
+        if channel.break_condition(high, low, true)
+            channel.destructor()
+            active := false
+        
+        else
+            alert("New Bearish Channel")
+            last := false
+            history.extend()
+            history.push(channel)
+
+    if active
+        channel = history.last()
+        channel.update_channel()
+        channel.candle_patterns(data)
+
+        if channel.break_condition(break_up, break_down, false) and barstate.isconfirmed
+            active := false
+
+    history.safe_destructor(settings)
+
+preset = input.string("User", "Presets", ["User", "Stocks", "Forex", "Crypto"], group = "Settings", tooltip = "Choose a preset configuration. 'User' allows custom settings, while others are tailored for specific markets.")
+
+style = input.string("Wick", "Style", ["Wick", "Body"], group = "Settings", tooltip = "Select 'Wick' or 'Body' to define pivot points based on candlestick wicks or bodies.")
+break_style = input.string("High/Low", "Break Style", ["Close", "High/Low"], group = "Settings", tooltip = "Choose 'Close' to use closing price or 'High/Low' for high/low price to identify channel breaks.") == "Close"
+instant = input.bool(true, "Instant Mode", group = "Settings", tooltip = "Enable to initiate channels immediately upon potential formation, providing faster channel updates.")
+
+atr_length = input.int(10, "ATR Length", minval = 1, group = "ATR", tooltip = "Set the lookback period for Average True Range (ATR), influencing channel offset and size.")
+offset = input.float(5, "Offset Center", group = "ATR", tooltip = "Adjust the channel's vertical offset to optimize channel formation.") * 0.125
+atr_multiplier = input.float(4, "Size", minval = 0.25, step = 0.25, group = "ATR", tooltip = "Modify the overall size of the channel relative to ATR.")
+padding = input.float(50, "Padding %", minval = 0, maxval = 100, group = "ATR", tooltip = "Adjust the channel's top and bottom quarter. 50% is perfectly in between the top and center, 100% is up to the center, and 0% is at the maximum.")
+
+pivot_length = input.int(10, "Pivot Length", minval = 1, group = "Pivot", tooltip = "Determine the lookback length for pivot points, affecting channel formation.")
+look_forward = input.int(15, "Pivot Look Forward", minval = 1, group = "Pivot", tooltip = "Set the lookforward length for pivots, impacting channel initiation delay.")
+
+avg_length = input.int(18, "Average H/L Length", minval = 1, group = "Smoothing", tooltip = "Control smoothing level for high/low prices, influencing channel slope. Higher values lead to smoother, less reactive channels.")
+
+enable_hammer = input.bool(true, "Enable Hammer", group = "Candle Patterns", tooltip = "Enable this to see high probability Hammer patterns. They will only appear inside of a reversal zone.")
+enable_ihammer = input.bool(true, "Enable Inverted Hammer", group = "Candle Patterns", tooltip = "Enable this to see high probability Inverted Hammer patterns. They will only appear inside of a reversal zone.")
+enable_bullish_engulfing = input.bool(true, "Enable Bullish Englufing", group = "Candle Patterns", tooltip = "Enable this to see high probability Bullish Englufing patterns. They will only appear inside of a reversal zone.")
+enable_bearish_engulfing = input.bool(true, "Enable Bearish Engulfing", group = "Candle Patterns", tooltip = "Enable this to see high probability Bearish Engulfing. They will only appear inside of a reversal zone.")
+
+extend = input.bool(true, "Extend Channel", group = "View", tooltip = "Enable to extend channel while it is active.")
+show_break_label = input.bool(true, "Show Break Label", group = "View", tooltip = "Enable to show channel break label.")
+history_length = input.int(5, "Channel History Length", minval = 1, maxval = 100, group = "View", tooltip = "Specify the number of historical channels to display on the chart.")
+
+top_color = input.color(#337c4f, "Channel Colors", inline = "Color", group = "Channel Collor")
+bottom_color = input.color(#a52d2d, "", inline = "Color", group = "Channel Collor")
+line_trans = 100 - input.int(100, "", minval = 0, maxval = 100, inline = "Color", group = "Channel Collor", tooltip = "Adjust the transparency of channel lines.")
+center_color = input.color(#787b86, "Center Color", inline = "Center Color", group = "Channel Collor")
+center_trans = 100 - input.int(100, "", minval = 0, maxval = 100, inline = "Center Color", group = "Channel Collor", tooltip = "Set the transparency of the center channel line.")
+fill_trans = 100 - input.int(30, "Channel Fill Transparency", minval = 0, maxval = 100, group = "Channel Collor", tooltip = "Modify the transparency of the area between channel lines for better visual clarity.")
+
+break_up_color = input.color(#337c4f88, "Break Colors", inline = "Break", group = "Channel Collor")
+break_down_color = input.color(#a52d2d88, "", inline = "Break", group = "Channel Collor")
+text_color = input.color(#EAEAEA, "Break Lable Text Color", group = "Channel Collor")
+
+h_color = input.color(#337c4f88, "Bullish Hammer Color", group = "Candle Pattern Color")
+ih_color = input.color(#2d3fa588, "Bearish Inverted Hammer Color", group = "Candle Pattern Color")
+bullish_engulfing_color = input.color(#337c4f88, "Bullish Englufing Color", group = "Candle Pattern Color")
+bearish_engulfing_color = input.color(#a53b2d88, "Bearish Engulfing Color", group = "Candle Pattern Color")
+candle_text_color = input.color(#EAEAEA, "Candle Pattern Text Color", group = "Candle Pattern Color")
+
+new_channel_alert = input.bool(true, "New Channel Alert", group = "Alerts")
+break_alert = input.bool(true, "Channel Break Alert", group = "Alerts")
+hammer_alert = input.bool(true, "Hammer Alert", group = "Alerts")
+ihammer_alert = input.bool(true, "Inverted Hammer Alert", group = "Alerts")
+bullish_engulfing_alert = input.bool(true, "Bullish Engulfing Alert", group = "Alerts")
+bearish_engulfing_alert = input.bool(true, "Bearish Engulfing Alert", group = "Alerts")
+
+settings = properties.new(
+   style
+ , break_style
+ , instant
+ , offset
+ , atr_length
+ , atr_multiplier
+ , padding
+ , pivot_length
+ , look_forward
+ , avg_length
+ , enable_hammer
+ , enable_ihammer
+ , enable_bullish_engulfing
+ , enable_bearish_engulfing
+ , extend
+ , show_break_label
+ , history_length
+ , top_color
+ , center_color
+ , bottom_color
+ , line_trans
+ , center_trans
+ , fill_trans
+ , break_up_color
+ , break_down_color
+ , text_color
+ , h_color
+ , ih_color
+ , bullish_engulfing_color
+ , bearish_engulfing_color
+ , candle_text_color
+ , new_channel_alert
+ , break_alert
+ , hammer_alert
+ , ihammer_alert
+ , bullish_engulfing_alert
+ , bearish_engulfing_alert
+ )
+
+stocks = properties.new(
+   "Wick"
+ , false
+ , true
+ , 10 * 0.125
+ , 10
+ , 4
+ , padding
+ , 10
+ , 15
+ , 18
+ , enable_hammer
+ , enable_ihammer
+ , enable_bullish_engulfing
+ , enable_bearish_engulfing
+ , extend
+ , show_break_label
+ , history_length
+ , top_color
+ , center_color
+ , bottom_color
+ , line_trans
+ , center_trans
+ , fill_trans
+ , break_up_color
+ , break_down_color
+ , text_color
+ , h_color
+ , ih_color
+ , bullish_engulfing_color
+ , bearish_engulfing_color
+ , candle_text_color
+ , new_channel_alert
+ , break_alert
+ , hammer_alert
+ , ihammer_alert
+ , bullish_engulfing_alert
+ , bearish_engulfing_alert
+ )
+
+forex = properties.new(
+   "Wick"
+ , false
+ , true
+ , 14 * 0.125
+ , 100
+ , 5
+ , padding
+ , 10
+ , 15
+ , 18
+ , enable_hammer
+ , enable_ihammer
+ , enable_bullish_engulfing
+ , enable_bearish_engulfing
+ , extend
+ , show_break_label
+ , history_length
+ , top_color
+ , center_color
+ , bottom_color
+ , line_trans
+ , center_trans
+ , fill_trans
+ , break_up_color
+ , break_down_color
+ , text_color
+ , h_color
+ , ih_color
+ , bullish_engulfing_color
+ , bearish_engulfing_color
+ , candle_text_color
+ , new_channel_alert
+ , break_alert
+ , hammer_alert
+ , ihammer_alert
+ , bullish_engulfing_alert
+ , bearish_engulfing_alert
+ )
+
+crypto = properties.new(
+   "Wick"
+ , false
+ , true
+ , 8 * 0.125
+ , 10
+ , 4
+ , padding
+ , 10
+ , 15
+ , 18
+ , enable_hammer
+ , enable_ihammer
+ , enable_bullish_engulfing
+ , enable_bearish_engulfing
+ , extend
+ , show_break_label
+ , history_length
+ , top_color
+ , center_color
+ , bottom_color
+ , line_trans
+ , center_trans
+ , fill_trans
+ , break_up_color
+ , break_down_color
+ , text_color
+ , h_color
+ , ih_color
+ , bullish_engulfing_color
+ , bearish_engulfing_color
+ , candle_text_color
+ , new_channel_alert
+ , break_alert
+ , hammer_alert
+ , ihammer_alert
+ , bullish_engulfing_alert
+ , bearish_engulfing_alert
+ )
+
+inputs = switch preset
+    "User" => settings
+    "Stocks" => stocks
+    "Forex" => forex
+    "Crypto" => crypto
+    => settings
+
+predictive_channels(inputs)

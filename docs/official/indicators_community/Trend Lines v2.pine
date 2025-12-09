@@ -1,0 +1,122 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("Trend Lines v2", overlay=true, max_bars_back = 4000)
+startyear = input(defval = 2020, title = "Start Year")
+startmonth = input(defval = 1, title = "Start Month")
+startday = input(defval = 1, title = "Start day")
+prd = input(defval = 20, title="Pivot Period", minval = 10, maxval = 50)
+PPnum = input(defval = 3, title="Number of Pivot Points to check", minval = 2, maxval = 6)
+utcol = input(defval = color.lime, title = "Colors", inline = "tcol")
+dtcol = input(defval = color.red, title = "", inline = "tcol")
+
+float ph = pivothigh(prd, prd)
+float pl = pivotlow(prd, prd)
+
+var tval = array.new_float(PPnum)
+var tpos = array.new_int(PPnum)
+var bval = array.new_float(PPnum)
+var bpos = array.new_int(PPnum)
+
+add_to_array(apointer1, apointer2, val)=>
+    array.unshift(apointer1, val)
+    array.unshift(apointer2, bar_index)
+    array.pop(apointer1)
+    array.pop(apointer2)
+
+if ph
+    add_to_array(tval, tpos, ph)
+
+if pl
+    add_to_array(bval, bpos, pl)
+    
+// line definitions
+maxline = 3
+var bln = array.new_line(maxline, na)
+var tln = array.new_line(maxline, na)
+
+// loop for pivot points to check if there is possible trend line
+countlinelo = 0
+countlinehi = 0
+
+starttime = timestamp(startyear, startmonth, startday, 0, 0, 0)
+
+if time >= starttime
+    for x = 0 to maxline - 1
+        line.delete(array.get(bln, x))
+        line.delete(array.get(tln, x))
+    for p1 = 0 to PPnum - 2 
+        uv1 = 0.0
+        uv2 = 0.0
+        up1 = 0
+        up2 = 0
+        if countlinelo <= maxline
+            for p2 = PPnum - 1 to p1 + 1
+                val1 = array.get(bval, p1)
+                val2 = array.get(bval, p2)
+                pos1 = array.get(bpos, p1)
+                pos2 = array.get(bpos, p2)
+                if val1 > val2
+                    diff = (val1 - val2) / (pos1 - pos2)
+                    hline = val2 + diff
+                    lloc = bar_index
+                    lval = low
+                    valid = true
+                    for x = pos2 + 1 - prd to bar_index
+                        if close[bar_index - x] < hline
+                            valid := false
+                            break
+                        lloc := x
+                        lval := hline
+                        hline := hline + diff
+                    
+                        
+                    if valid
+                        uv1 := hline - diff
+                        uv2 := val2
+                        up1 := lloc
+                        up2 := pos2
+                        break
+
+        dv1 = 0.0
+        dv2 = 0.0
+        dp1 = 0
+        dp2 = 0                
+        if countlinehi <= maxline
+            for p2 = PPnum - 1 to p1 + 1                
+                val1 = array.get(tval, p1)
+                val2 = array.get(tval, p2)
+                pos1 = array.get(tpos, p1)
+                pos2 = array.get(tpos, p2)
+                if val1 < val2
+                    diff = (val2 - val1) / float(pos1 - pos2)
+                    hline = val2 - diff
+                    lloc = bar_index
+                    lval = high
+                    valid = true
+                    for x = pos2 + 1 - prd to bar_index
+                        if close[bar_index - x] > hline
+                            valid := false
+                            break
+                        lloc := x
+                        lval := hline
+                        hline := hline - diff
+                        
+                    if valid
+                        dv1 := hline + diff
+                        dv2 := val2
+                        dp1 := lloc
+                        dp2 := pos2
+                        break
+                         
+        // if there is continues uptrend line then draw it
+        if up1 != 0 and up2 != 0 and countlinelo < maxline
+            countlinelo += 1
+            array.set(bln, countlinelo - 1, line.new(up2 - prd, uv2, up1, uv1, color = utcol))
+        
+        // if there is continues downtrend line then draw it
+        if dp1 != 0 and dp2 != 0 and countlinehi < maxline
+            countlinehi += 1
+            array.set(tln, countlinehi - 1, line.new(dp2 - prd, dv2, dp1, dv1, color = dtcol))
+

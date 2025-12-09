@@ -1,0 +1,83 @@
+//@version=4
+study("CCI Stochastic", shorttitle="CCI_S", overlay=false)
+
+source = input(close)
+cci_period = input(28, "CCI Period")
+stoch_period = input(28, "Stoch Period")
+stoch_smooth_k = input(3, "Stoch Smooth K")
+stoch_smooth_d = input(3, "Stoch Smooth D")
+d_or_k = input(defval="D", options=["D", "K"])
+OB = input(80, "Overbought", type=input.integer)
+OS = input(20, "Oversold", type=input.integer)
+
+showArrows = input(true, "Show Arrows")
+showArrowsEnter = input(true, "Show Arrows on Enter zone")
+showArrowsCenter = input(false, "Show Arrows on Center zone")
+showArrowsExit = input(true, "Show Arrows on Exit zone")
+
+cci = cci(source, cci_period)
+stoch_cci_k = sma(stoch(cci, cci, cci, stoch_period), stoch_smooth_k)
+stoch_cci_d = sma(stoch_cci_k, stoch_smooth_d)
+
+ma = (d_or_k == "D") ? stoch_cci_d : stoch_cci_k
+
+trend_enter = if showArrowsEnter
+    if crossunder(ma, OS)
+        1
+    else
+        if crossover(ma, OB)
+            -1
+    
+//plot(trend_enter, title="trend_enter", transp=100)
+
+trend_exit = if showArrowsExit
+    if crossunder(ma, OB)
+        -1
+    else
+        if crossover(ma, OS)
+            1
+
+trend_center = if showArrowsCenter
+    if crossunder(ma, 50)
+        -1
+    else
+        if crossover(ma, 50)
+            1
+
+// plot the OB and OS level
+overbought = hline(OB, title="Upper Line", linestyle=hline.style_solid, linewidth=1, color=color.red)
+oversold = hline(OS, title="Lower Line", linestyle=hline.style_solid, linewidth=1, color=color.lime)
+band2 = hline(50, title="Mid Line", linestyle=hline.style_solid, linewidth=1, color=color.gray)
+
+// Plot the moving average
+ma_color = ma > OB ? color.red : ma < OS ? color.green : color.gray
+plot(ma, "Moving Average", linewidth=3, color=ma_color, transp=0)
+maxLevelPlot = hline(100, title="Max Level", linestyle=hline.style_dotted, color=color.new(color.white, 100))
+minLevelPlot = hline(0, title="Min Level", linestyle=hline.style_dotted, color=color.new(color.white, 100))
+//overbought = hline(OB, title="Hline Overbought", linestyle=hline.style_solid, color=color.new(color.white, 100))
+//oversold = hline(OS, title="Hline Oversold", linestyle=hline.style_solid, color=color.new(color.white, 100))
+
+color_fill_os = ma > OB ? color.new(color.red,90) : color.new(color.white, 100)
+color_fill_ob = ma < OS ? color.new(color.green,90) : color.new(color.white, 100)
+fill(maxLevelPlot, overbought, color=color_fill_os)
+fill(minLevelPlot, oversold, color=color_fill_ob)
+
+// Show the arrows
+// Trend Enter
+plotshape((showArrows and showArrowsEnter and trend_enter == 1) ? 0 : na, color=color.green, transp=20, style=shape.arrowup, size=size.normal,  location=location.absolute, title="Trend Enter Buy")
+plotshape((showArrows and showArrowsEnter and trend_enter == -1) ? 100 : na, color=color.red, transp=20, style=shape.arrowdown, size=size.normal, location=location.absolute, title="Trend Enter Sell")
+
+// Trend Center
+plotshape((showArrows and showArrowsCenter and trend_center == 1) ? 35 : na, color=color.aqua, transp=20, style=shape.arrowup, size=size.normal, location=location.absolute, title="Trend Center Buy")
+plotshape((showArrows and showArrowsCenter and trend_center == -1) ? 65 : na, color=color.fuchsia, transp=20, style=shape.arrowdown, size=size.normal, location=location.absolute, title="Trend Center Sell")
+
+// Trend Exit
+plotshape((showArrows and showArrowsExit and trend_exit == 1) ? 0 : na, color=color.orange, transp=20, style=shape.arrowup, size=size.normal, location=location.absolute, title="Trend Exit Buy")
+plotshape((showArrows and showArrowsExit and trend_exit == -1) ? 100 : na, color=color.maroon, transp=20, style=shape.arrowdown, size=size.normal, location=location.absolute, title="Trend Exit Sell")
+
+alertcondition((showArrows and showArrowsEnter and trend_enter == 1), message="Trend Enter Buy", title="Trend Enter Buy")
+alertcondition((showArrows and showArrowsEnter and trend_enter == -1), message="Trend Enter Sell", title="Trend Enter Sell")
+alertcondition((showArrows and showArrowsCenter and trend_center == 1), message="Trend Center Buy", title="Trend Center Buy")
+alertcondition((showArrows and showArrowsCenter and trend_center == -1), message="Trend Center Sell", title="Trend Center Sell")
+alertcondition((showArrows and showArrowsExit and trend_exit == 1), message="Trend Exit Buy", title="Trend Exit Buy")
+alertcondition((showArrows and showArrowsExit and trend_exit == -1), message="Trend Exit Sell", title="Trend Exit Sell")

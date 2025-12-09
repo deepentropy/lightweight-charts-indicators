@@ -1,0 +1,23 @@
+//Modified Donchonian Channel with separate adjustments for upper and lower levels
+//Purpose is if you expect big move up, Use lower input example 3 or 4, and longer lower input, 40 - 100 and use lower input line as a stop out
+//Opposite if you expect big move down
+//Mid Line Rule in Long Example.  If lower line is below entry take partial profits at Mid Line and move stop to Break even.
+//If Lower line moves above entry price before price retraces to midline use Lower line as Stop...Opposite if Shorting
+//Created by user ChrisMoody 1-30-2014
+
+study(title="CM_Donchian Channels Modified", shorttitle="CM_DC Modified", overlay=true)
+
+length1 = input(4, minval=1, title="Upper Channel")
+length2 = input(60, minval=1, title="Lower Channel")
+
+upper = highest(length1)
+lower = lowest(length2)
+
+basis = avg(upper, lower)
+
+l = plot(lower, style=line, linewidth=4, color=red)
+u = plot(upper, style=line, linewidth=4, color=lime)
+
+plot(basis, color=yellow, style=line, linewidth=1, title="Mid-Line Average")
+
+fill(u, l, color=white, transp=75, title="Fill")

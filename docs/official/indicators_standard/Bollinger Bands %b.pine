@@ -1,0 +1,27 @@
+//@version=6
+indicator(title = "Bollinger Bands %b", shorttitle = "BB %b", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+
+string TT_LENGTH = "The time period to be used in calculating the SMA which creates the base for the Upper and Lower Bands"
+string TT_SOURCE = "Determines what data from each bar will be used in calculations."
+string TT_MULT   = "The number of Standard Deviations away from the SMA that the Upper and Lower Bands should be."
+
+length = input.int(20,       "Length", minval = 1, tooltip = TT_LENGTH)
+src    = input(close,        "Source",             tooltip = TT_SOURCE)
+mult   = input.float(2.0,    "StdDev", minval = 0.001, maxval = 50, tooltip = TT_MULT)
+
+basis = ta.sma(src, length)
+dev = mult * ta.stdev(src, length)
+upper = basis + dev
+lower = basis - dev
+bbr = (src - lower)/(upper - lower)
+plot(bbr, "Bollinger Bands %b", color=#2962FF)
+
+bandTop = hline(100, display = display.none, editable = false)
+band1 = hline(1, "Overbought", color = color.new(#F23645, 50), linestyle=hline.style_dashed)
+hline(0.5, "Middle Band", color=color.new(#2962FF, 50))
+band0 = hline(0, "Oversold", color.new(#089981, 50), linestyle=hline.style_dashed)
+bandBottom = hline(-100, display = display.none, editable = false)
+
+fill(band1, band0, title="Middle Background", color = color.new(#2962FF, 90))
+fill(bandTop, band1, title = "Overbought background", color = color.new(#F23645, 90))
+fill(band0, bandBottom, title = "Oversold background", color = color.new(#089981, 90))

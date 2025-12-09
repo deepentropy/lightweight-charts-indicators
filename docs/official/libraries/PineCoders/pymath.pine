@@ -1,0 +1,691 @@
+//@version=6
+// @description This library enhances Pine Script's built-in types (`float`, `int`, `array<float>`, `array<int>`)
+// with mathematical methods, mirroring many functions from Python's `math` module.
+// By importing this library, these methods overload or add to the built-in capabilities,
+// allowing calls like `myFloat.sin()` or `myIntArray.gcd()`.
+// It wraps Pine's built-in `math.*` functions and implements others where necessary.
+// > **Note:** For an `int` to use a method as a raw number literal, it must be parenthesized,
+// > e.g., `(1234).factorial()`. A call like `1234.factorial()` would expect `1234.<fractional_part>.factorial()`.
+library("pymath")
+
+// @variable POS_INF_PROXY (const float) A large number used as a proxy for positive infinity in comparisons,
+// as Pine does not have native infinity literals.
+var const float POS_INF_PROXY = 1e300
+// @function isinf: Checks if this float is positive or negative infinity using a proxy value.
+// @param self (float) [STALE?] value to check.
+// @returns (bool)  `true` if the absolute value of `self` is greater than or equal to the infinity proxy, `false` otherwise.
+export method isinf(float self) =>
+    math.abs(self) >= POS_INF_PROXY
+
+// @function isfinite: Checks if this float is finite (not NaN and not infinity).
+// @param self (float) The value to check.
+// @returns (bool) `true` if `self` is not `na` and not infinity (as defined by `isinf()`), `false` otherwise.
+export method isfinite(float self) =>
+    not na(self) and not self.isinf()
+
+// @function fmod: Returns the C-library style floating-point remainder of `self / divisor` (result has the sign of `self`).
+// @param self (float) Dividend `x`.
+// @param divisor (float) Divisor `y`. Cannot be zero or `na`.
+// @returns (float) The remainder `x - n*y` where n is `trunc(x/y)`, or `na` if divisor is 0, `na`, or inputs are infinite in a way that prevents calculation.
+export method fmod(float self, float divisor) =>
+    float result = float(na)
+    float x      = self
+    float y      = divisor
+    if na(x) or na(y) or y == 0.0
+        result := float(na)
+    else if y.isinf() // remainder(x, inf) is x for finite x
+        if x.isfinite()
+            result := x
+        else
+            result := float(na) // remainder(inf, inf) is NaN
+    else if x.isinf() // remainder(inf, y) is NaN
+        result := float(na)
+    else
+        // Standard case for finite x, y != 0
+        result := x - int(x / y) * y
+    result
+
+// #############################################################################
+// # Internal Helper Functions (Not Exported)
+// #############################################################################
+// Internal function for integer factorial. Returns `na` for n < 0 or if overflow occurs.
+// Kept as internal function as it's primarily used by integer methods.
+_factorial(int n) =>
+    float result = 1.0 // Use float for intermediate calculation to potentially handle larger results
+    if n < 0
+        result := float(na) // Factorial undefined for negative numbers
+    else if n == 0
+        result := 1.0
+    else
+        for i = 1 to n
+            result *= i
+            if result.isinf() // Basic overflow check using the proxy
+                result := float(na)
+                break
+    result // Return float or na
+
+// Internal function for Greatest Common Divisor (GCD) of two non-negative integers using the Euclidean algorithm.
+// Assumes a, b are non-negative.
+_gcd(int a, int b) =>
+    int _a = math.abs(a) // Use absolute values as GCD is defined for any integers
+    int _b = math.abs(b)
+    int result = na // Should not return na if inputs are valid integers, but initialize safely.
+    while _b != 0
+        temp = _b
+        _b := _a % _b
+        _a := temp
+    result := _a
+    result
+
+// Internal function to round to the nearest integer, with ties going to the nearest even integer (round half to even).
+// Optimized/Corrected Logic
+_round_half_even(float x) =>
+    float rounded = math.round(x) // Standard round (half away from zero)
+    float diff = rounded - x
+    int result = int(rounded) // Default result is standard rounding
+    // Check if it was *exactly* a half-way case
+    if math.abs(diff) == 0.5
+        // If the standard rounded result is odd, adjust towards zero (which is the even number)
+        // Use math.fmod for robust odd/even check on floats
+        if fmod(rounded, 2.0) != 0.0
+            // Subtract sign(x) effectively moves towards zero (e.g., 3 -> 2, -3 -> -2)
+            result := int(rounded - math.sign(x))
+    result
+
+// Custom cosh(x) = (e^x + e^(-x)) / 2
+method _cosh(float x) =>
+    e_plus_x  = math.exp(x)
+    e_minus_x = math.exp(-x)
+    (e_plus_x + e_minus_x) / 2.0
+
+// Custom sinh(x) = (e^x - e^(-x)) / 2
+method _sinh(float x) =>
+    e_plus_x = math.exp(x)
+    e_minus_x = math.exp(-x)
+    (e_plus_x - e_minus_x) / 2.0
+
+// Custom tanh(x) = sinh(x) / cosh(x)
+// Implemented using the custom sinh and cosh helper functions.
+method _tanh(float x) =>
+    num = _sinh(x)
+    den = _cosh(x)
+    // cosh(x) is always >= 1 for real x, so den will not be zero for finite x.
+    num / den
+
+// Custom acosh(x) = ln(x + sqrt(x^2 - 1)) for x >= 1
+// Returns na if input is less than 1.
+// Optimization: Use x * x instead of pow(x, 2)
+method _acosh(float x) =>
+    // Input domain check: x must be >= 1 for real result.
+    x >= 1.0 ? math.log(x + math.sqrt(x * x - 1.0)) : na
+
+// Custom asinh(x) = ln(x + sqrt(x^2 + 1))
+// Optimization: Use x * x instead of pow(x, 2)
+method _asinh(float x) =>
+    math.log(x + math.sqrt(x * x + 1.0))
+
+// Custom atanh(x) = 0.5 * ln((1 + x) / (1 - x)) for -1 < x < 1
+// Returns na if input is outside the (-1, 1) range.
+method _atanh(float x) =>
+    // Input domain check: x must be between -1 and 1 (exclusive).
+    x > -1.0 and x < 1.0 ? 0.5 * math.log((1.0 + x) / (1.0 - x)) : na
+
+
+// #############################################################################
+// # Methods for `int` Type
+// #############################################################################
+
+// @function factorial: Calculates the factorial of this non-negative integer.
+// @param self (int) The integer `n`. Must be non-negative.
+// @returns (float) `n!` as a float, or `na` if `n` is negative or overflow occurs (based on `isinf`).
+export method factorial(int self) =>
+    _factorial(self)
+
+// @function isqrt: Calculates the integer square root of this non-negative integer (floor of the exact square root).
+// @param self (int) The non-negative integer `n`.
+// @returns (int) The greatest integer `a` such that a² <= n, or `na` if `n` is negative.
+export method isqrt(int self) =>
+    int result = na // Initialize safely
+    if self >= 0
+        result := int(math.floor(math.sqrt(float(self))))
+    result
+
+// @function comb: Calculates the number of ways to choose `k` items from `self` items without repetition and without order (Binomial Coefficient).
+// @param self (int) Total number of items `n`. Must be non-negative.
+// @param k (int) Number of items to choose. Must be non-negative.
+// @returns (float) The binomial coefficient nCk, or `na` if inputs are invalid (n<0 or k<0), `k > n`, or overflow occurs.
+export method comb(int self, int k) =>
+    float result = float(na)
+    int n = self
+    if n >= 0 and k >= 0
+        if k > n
+            result := 0.0
+        else if k == 0 or k == n
+            result := 1.0
+        else
+            // Optimization: C(n, k) == C(n, n-k)
+            int _k = k > n / 2 ? n - k : k
+
+            // Multiplicative formula (more robust against intermediate overflow than factorial division)
+            _res = 1.0
+            for i = 0 to _k - 1
+                _res := _res * (n - i) / float(i + 1) // Ensure float division
+                if _res.isinf() // Check intermediate overflow using proxy
+                    _res := float(na)
+                    break
+            result := na(_res) ? float(na) : _res
+    result // Return float or na
+
+// @function perm: Calculates the number of ways to choose `k` items from `self` items without repetition and with order (Permutations).
+// @param self (int) Total number of items `n`. Must be non-negative.
+// @param k (simple int = na) Number of items to choose. Must be non-negative. Defaults to `n` if `na`.
+// @returns (float) The number of permutations nPk, or `na` if inputs are invalid (n<0 or k<0), `k > n`, or overflow occurs.
+export method perm(int self, simple int k = na) =>
+    int n = self
+    int _k = na(k) ? n : k // Use nz for int default if needed, but na check is fine too.
+    float result = float(na)
+    if n >= 0 and _k >= 0
+        if _k > n
+            result := 0.0
+        else if _k == 0
+            result := 1.0
+        else
+            // Calculate n * (n-1) * ... * (n-k+1)
+            _res = 1.0
+            for i = 0 to _k - 1
+                _res *= (n - i)
+                if _res.isinf() // Check intermediate overflow using proxy
+                    _res := float(na)
+                    break
+            result := na(_res) ? float(na) : _res
+    result // Return float or na
+
+// #############################################################################
+// # Methods for `float` Type
+// #############################################################################
+
+
+// @function log2: Returns the base-2 logarithm of this float. Input must be positive. Wraps `math.log(self) / math.log(2.0)`.
+// @param self (float) The input number. Must be positive.
+// @returns (float) The base-2 logarithm, or `na` if input <= 0.
+export method log2(float self) =>
+    // math.log(self) returns na if self <= 0, which is the desired behavior.
+    // We calculate log2 using the change of base formula: log_b(x) = log_d(x) / log_d(b)
+    // log2(self) = log_e(self) / log_e(2)
+    math.log(self) / math.log(2.0)
+
+// @function trunc: Returns this float with the fractional part removed (truncates towards zero).
+// @param self (float) The input number.
+// @returns (int) The integer part, or `na` if input is `na` or infinite.
+export method trunc(float self) =>
+    // Casting a float to int in Pine Script performs truncation towards zero and handles na/inf
+    int(self)
+
+// @function abs: Returns the absolute value of this float. Wraps `math.abs()`.
+// @param self (float) The input number.
+// @returns (float) The absolute value, or `na` if input is `na`.
+export method abs(float self) => math.abs(self)
+
+// @function acos: Returns the arccosine of this float, in radians. Wraps `math.acos()`. Input must be between -1 and 1.
+// @param self (float) The input number. Must be between -1 and 1.
+// @returns (float) Angle in radians [0, pi], or `na` if input is outside [-1, 1] or `na`.
+export method acos(float self) => math.acos(self)
+
+// @function asin: Returns the arcsine of this float, in radians. Wraps `math.asin()`. Input must be between -1 and 1.
+// @param self (float) The input number. Must be between -1 and 1.
+// @returns (float) Angle in radians [-pi/2, pi/2], or `na` if input is outside [-1, 1] or `na`.
+export method asin(float self) => math.asin(self)
+
+// @function atan: Returns the arctangent of this float, in radians. Wraps `math.atan()`.
+// @param self (float) The input number.
+// @returns (float) Angle in radians [-pi/2, pi/2], or `na` if input is `na`.
+export method atan(float self) => math.atan(self)
+
+// @function ceil: Returns the ceiling of this float (smallest integer >= self). Wraps `math.ceil()`.
+// @param self (float) The input number.
+// @returns (int) The ceiling value, or `na` if input is `na` or infinite.
+export method ceil(float self) => math.ceil(self)
+
+// @function cos: Returns the cosine of this float (angle in radians). Wraps `math.cos()`.
+// @param self (float) The angle in radians.
+// @returns (float) The cosine, or `na` if input is `na`.
+export method cos(float self) => math.cos(self)
+
+// @function degrees: Converts this float from radians to degrees. Wraps `math.todegrees()`.
+// @param self (float) The angle in radians.
+// @returns (float) The angle in degrees, or `na` if input is `na`.
+export method degrees(float self) => math.todegrees(self)
+
+// @function exp: Returns e raised to the power of this float. Wraps `math.exp()`.
+// @param self (float) The exponent.
+// @returns (float) `e**self`, or `na` if input is `na`.
+export method exp(float self) => math.exp(self)
+
+// @function floor: Returns the floor of this float (largest integer <= self). Wraps `math.floor()`.
+// @param self (float) The input number.
+// @returns (int) The floor value, or `na` if input is `na` or infinite.
+export method floor(float self) => math.floor(self)
+
+// @function log: Returns the natural logarithm (base e) of this float. Wraps `math.log()`. Input must be positive.
+// @param self (float) The input number. Must be positive.
+// @returns (float) The natural logarithm, or `na` if input <= 0 or `na`.
+export method log(float self) => math.log(self)
+
+// @function log10: Returns the base-10 logarithm of this float. Wraps `math.log10()`. Input must be positive.
+// @param self (float) The input number. Must be positive.
+// @returns (float) The base-10 logarithm, or `na` if input <= 0 or `na`.
+export method log10(float self) => math.log10(self)
+
+// @function pow: Returns this float raised to the power of `exponent`. Wraps `math.pow()`.
+// @param self (float) The base.
+// @param exponent (float) The exponent.
+// @returns (float) `self**exponent`, or `na` if inputs are `na` or lead to undefined results.
+export method pow(float self, float exponent) => math.pow(self, exponent)
+
+// @function radians: Converts this float from degrees to radians. Wraps `math.toradians()`.
+// @param self (float) The angle in degrees.
+// @returns (float) The angle in radians, or `na` if input is `na`.
+export method radians(float self) => math.toradians(self)
+
+// @function round: Returns the nearest integer to this float. Wraps `math.round()`. Ties are rounded away from zero.
+// @param self (float) The input number.
+// @returns (int) The rounded integer, or `na` if input is `na` or infinite.
+export method round(float self) => math.round(self)
+
+// @function sign: Returns the sign of this float (-1, 0, or 1). Wraps `math.sign()`.
+// @param self (float) The input number.
+// @returns (int) -1 if negative, 0 if zero, 1 if positive, `na` if input is `na`.
+export method sign(float self) => math.sign(self)
+
+// @function sin: Returns the sine of this float (angle in radians). Wraps `math.sin()`.
+// @param self (float) The angle in radians.
+// @returns (float) The sine, or `na` if input is `na`.
+export method sin(float self) => math.sin(self)
+
+// @function sqrt: Returns the square root of this float. Wraps `math.sqrt()`. Input must be non-negative.
+// @param self (float) The input number. Must be non-negative.
+// @returns (float) The square root, or `na` if input < 0 or `na`.
+export method sqrt(float self) => math.sqrt(self)
+
+// @function tan: Returns the tangent of this float (angle in radians). Wraps `math.tan()`.
+// @param self (float) The angle in radians.
+// @returns (float) The tangent, or `na` if input is `na`.
+export method tan(float self) => math.tan(self)
+
+// @function acosh: Returns the inverse hyperbolic cosine of this float. Input must be >= 1.
+// @param self (float) The input number. Must be >= 1.
+// @returns (float) The inverse hyperbolic cosine, or `na` if input < 1 or `na`.
+export method acosh(float self) =>
+    // Uses custom implementation as math.acosh is not a built-in
+    _acosh(self)
+
+// @function asinh: Returns the inverse hyperbolic sine of this float.
+// @param self (float) The input number.
+// @returns (float) The inverse hyperbolic sine, or `na` if input is `na`.
+export method asinh(float self) =>
+    // Uses custom implementation as math.asinh is not a built-in
+    _asinh(self)
+
+// @function atanh: Returns the inverse hyperbolic tangent of this float. Input must be between -1 and 1 (exclusive).
+// @param self (float) The input number. Must be between -1 and 1 (exclusive).
+// @returns (float) The inverse hyperbolic tangent, or `na` if input is outside (-1, 1) or `na`.
+export method atanh(float self) =>
+    // Uses custom implementation as math.atanh is not a built-in
+    _atanh(self)
+
+// @function cosh: Returns the hyperbolic cosine of this float.
+// @param self (float) The input number.
+// @returns (float) The hyperbolic cosine, or `na` if input is `na`.
+export method cosh(float self) =>
+    // Uses custom implementation as math.cosh is not a built-in
+    _cosh(self)
+
+// @function sinh: Returns the hyperbolic sine of this float.
+// @param self (float) The input number.
+// @returns (float) The hyperbolic sine, or `na` if input is `na`.
+export method sinh(float self) =>
+    // Uses custom implementation as math.sinh is not a built-in
+    _sinh(self)
+
+// @function tanh: Returns the hyperbolic tangent of this float.
+// @param self (float) The input number.
+// @returns (float) The hyperbolic tangent, or `na` if input is `na`.
+export method tanh(float self) =>
+    // Uses custom implementation as math.tanh is not a built-in
+    _tanh(self)
+
+// @function atan2: Returns the angle in radians between the positive x-axis and the point (dx, self). Wraps `math.atan2()`.
+// @param self (float) The y-coordinate `y`.
+// @param dx (float) The x-coordinate `x`.
+// @returns (float) The angle in radians [-pi, pi], result of `math.atan2(self, dx)`. Returns `na` if inputs are `na`. Note: `math.atan2(0, 0)` returns 0 in Pine.
+// Optimization: Use built-in math.atan2()
+export method atan2(float self, float dx) =>
+    a = 0.0
+    if math.abs(dx) > math.abs(self)
+        a := math.atan(self / dx)
+    else
+        a := math.atan(dx / self)
+        if a < 0
+            a := -math.pi / 2 - a
+        else
+            a := math.pi / 2 - a
+    if dx < 0 and self < 0
+        a -= math.pi
+    else if dx < 0
+        a += math.pi
+    a
+
+// --- Implemented functions (not direct built-in wraps or different behavior) ---
+
+// @function cbrt: Returns the cube root of this float.
+// @param self (float) The value to find the cube root of.
+// @returns (float) The real cube root. Handles negative inputs correctly, or `na` if input is `na`.
+export method cbrt(float self) =>
+    // Returns na if self is na, which is correct behavior.
+    self.sign() * self.abs().pow(1.0 / 3.0)
+
+// @function exp2: Returns 2 raised to the power of this float. Calculated as `2.0.pow(self)`.
+// @param self (float) The exponent.
+// @returns (float) `2**self`, or `na` if input is `na` or results in non-finite value.
+export method exp2(float self) =>
+    2.0.pow(self) // Using pow method is correct here
+
+// @function expm1: Returns `e**self - 1`. Calculated as `self.exp() - 1.0`. May offer better precision for small `self` in some environments, but Pine provides no guarantee over `self.exp() - 1.0`.
+// @param self (float) The exponent.
+// @returns (float) `e**self - 1`, or `na` if input is `na` or `self.exp()` is `na`.
+export method expm1(float self) =>
+    self.exp() - 1.0
+
+// @function log1p: Returns the natural logarithm of (1 + self). Calculated as `(1.0 + self).log()`. Pine provides no specific precision guarantee for self near zero.
+// @param self (float) Value to add to 1. `1 + self` must be positive.
+// @returns (float) Natural log of `1 + self`, or `na` if input is `na` or `1 + self <= 0`.
+export method log1p(float self) =>
+    (1.0 + self).log()
+
+
+// @function modf: Returns the fractional and integer parts of this float as a tuple `[fractional, integer]`. Both parts have the sign of `self`.
+// @param self (float) The number `x` to split.
+// @returns ([float, float]) A tuple containing `[fractional_part, integer_part]`, or `[na, na]` if `x` is `na` or non-finite.
+export method modf(float self) =>
+    float m = float(na)
+    float i = float(na)
+    if na(self) or self.isinf()
+        m := float(na)
+        i := float(na)
+    else
+        // Get the integer part (truncates towards zero)
+        int int_part = self.trunc() // Use method syntax
+        // Fractional part is the remainder
+        float frac_part = self - float(int_part)
+        m := frac_part
+        i := float(int_part) // Return integer part as float
+    [m, i]
+
+// @function remainder: Returns the IEEE 754 style remainder of `self` with respect to `divisor`. Result `r` satisfies `abs(r) <= 0.5 * abs(divisor)`. Uses round-half-to-even.
+// @param self (float) Dividend `x`.
+// @param divisor (float) Divisor `y`. Cannot be zero or `na`.
+// @returns (float) The IEEE 754 remainder, or `na` if divisor is 0, `na`, or inputs are non-finite in a way that prevents calculation.
+export method remainder(float self, float divisor) =>
+    float result = float(na)
+    float x = self
+    float y = divisor
+    if na(x) or na(y) or y == 0.0
+        result := float(na)
+    else if y.isinf() // `abs(y) == infinity` also works
+        if x.isfinite()
+            result := x // remainder(x, inf) is x for finite x
+        else
+            result := float(na) // remainder(inf, inf) is NaN
+    else if x.isinf()
+        result := float(na) // remainder(inf, y) is NaN
+    else
+        // Standard case for finite x, y != 0
+        float n_float = x / y
+        int n = _round_half_even(n_float) // Use corrected round half to even helper
+        result := x - float(n) * y // Ensure float multiplication
+    result
+
+// @function copysign: Returns a float with the magnitude (absolute value) of `self` but the sign of `signSource`.
+// @param self (float) Value providing the magnitude `x`.
+// @param signSource (float) Value providing the sign `y`.
+// @returns (float) `abs(x)` with the sign of `y`, or `na` if either input is `na`.
+export method copysign(float self, float signSource) =>
+    // Returns na if either input is na, which is correct behavior.
+    self.abs() * signSource.sign() // Use method syntax for abs and sign
+
+// @function frexp: Returns the mantissa (m) and exponent (e) of this float `x` as `[m, e]`, such that `x = m * 2^e` and `0.5 <= abs(m) < 1` (unless `x` is 0).
+// @param self (float) The number `x` to decompose.
+// @returns ([float, int]) A tuple `[mantissa, exponent]`, or `[0.0, 0]` if `x` is 0, or `[na, na]` if `x` is non-finite or `na`.
+export method frexp(float self) =>
+    float m = float(na)
+    int e = na // Initialize exponent as na
+    if na(self) or self.isinf()
+        m := float(na)
+        e := na
+    else if self == 0.0
+        m := 0.0
+        e := 0
+    else
+        // Use logarithms: log2(x) = log2(m * 2^e) = log2(m) + e
+        // e = floor(log2(abs(x))) + 1
+        float log2_abs_x = self.abs().log2() // Use method syntax for abs and log2
+        e := int(log2_abs_x.floor()) + 1 // Use method syntax for floor, convert to int
+        // m = x / (2^e)
+        m := self / 2.0.pow(float(e)) // Use method syntax for pow, ensure float exponent
+    [m, e]
+
+// @function isclose: Checks if this float `a` and `other` float `b` are close within relative and absolute tolerances.
+// @param self (float) First value `a`.
+// @param other (float) Second value `b`.
+// @param rel_tol (simple float = 1e-9) Relative tolerance. Must be non-negative and less than 1.0.
+// @param abs_tol (simple float = 0.0) Absolute tolerance. Must be non-negative.
+// @returns (bool) `true` if `abs(a - b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)`. Handles `na`/`inf` appropriately. Returns `na` if tolerances are invalid.
+export method isclose(float self, float other, simple float rel_tol = 1e-9, simple float abs_tol = 0.0) =>
+    bool result = bool(na) // Initialize as na for error states
+    float a = self
+    float b = other
+    if na(a) or na(b)
+        result := false // NaN compares false to everything
+    else if a == b // Handles infinities being close to themselves (+inf == +inf, -inf == -inf)
+        result := true
+    else if a.isinf() or b.isinf()
+        result := false // Infinity not close to finite numbers or opposite infinity
+    else if rel_tol < 0.0 or rel_tol >= 1.0 or abs_tol < 0.0
+        result :=  bool(na)
+    else
+        float diff = (a - b).abs() // Use method syntax for abs
+        float tolerance = math.max(rel_tol * math.max(a.abs(), b.abs()), abs_tol) // Use method syntax for abs
+        result := diff <= tolerance
+    result
+
+
+// @function ldexp: Returns `self * (2**exponent)`. Inverse of `frexp`.
+// @param self (float) Mantissa part `x`.
+// @param exponent (int) Exponent part `i`.
+// @returns (float) The result of `x * pow(2, i)`, or `na` if inputs are `na` or result is non-finite.
+export method ldexp(float self, int exponent) =>
+    self * 2.0.pow(float(exponent)) // Use method syntax for pow
+
+// #############################################################################
+// # Methods for `array<int>` Type
+// #############################################################################
+
+// @function gcd: Calculates the Greatest Common Divisor (GCD) of all integers in this array.
+// @param self (array<int>) An array of integers.
+// @returns (int) The largest positive integer that divides all non-zero elements, 0 if all elements are 0 or array is empty. Returns `na` if any element is `na`.
+export method gcd(array<int> self) =>
+    int result = 0 // Default for empty or all-zero input
+    int arr_size = self.size()
+    if arr_size > 0
+        // Check for any na values first using efficient iteration
+        bool has_na = false
+        for [_, n] in self
+            if na(n)
+                has_na := true
+                break
+        if has_na
+            result := na
+        else
+            // Find the first non-zero element to initialize GCD calculation
+            int first_non_zero_idx = -1
+            int first_non_zero_val = 0
+            for [i, n] in self
+                if n != 0
+                    first_non_zero_idx := i
+                    first_non_zero_val := math.abs(n) // Start with abs value
+                    break
+
+            if first_non_zero_idx != -1
+                // Calculate cumulative GCD using the remaining elements
+                current_gcd = first_non_zero_val
+                // Iterate starting from the element *after* the first non-zero one
+                for i = first_non_zero_idx + 1 to arr_size - 1
+                    current_val_abs = math.abs(self.get(i))
+                    if current_val_abs != 0
+                        current_gcd := _gcd(current_gcd, current_val_abs)
+                        if current_gcd == 1 // Optimization: if GCD reaches 1, it won't go lower
+                            break
+                result := current_gcd
+            else
+                result := 0 // All elements were zero
+    result
+
+// @function lcm: Calculates the Least Common Multiple (LCM) of all integers in this array.
+// @param self (array<int>) An array of integers.
+// @returns (int) The smallest positive integer that is a multiple of all non-zero elements, 0 if any element is 0, 1 if array is empty. Returns `na` on potential overflow or if any element is `na`.
+export method lcm(array<int> self) =>
+    int result = 1 // Default for empty input
+    int arr_size = self.size()
+
+    if arr_size > 0
+        // Optimization: Use efficient iteration style for checks
+        bool contains_zero = false
+        bool has_na = false
+        for [_, val] in self
+            if na(val)
+                has_na := true
+                break // Exit loop early if NA is found
+            if val == 0
+                contains_zero := true
+                // Continue loop to ensure no NA is present later
+
+        if has_na
+            result := na
+        else if contains_zero
+            result := 0
+        else
+            // Calculate LCM using efficient iteration
+            current_lcm = 1 // Start with 1 for non-zero array
+            for [_, val] in self // val is guaranteed non-zero and not na here
+                abs_val = math.abs(val)
+                if abs_val != 1 // Optimization: LCM with 1 doesn't change LCM
+                    divisor = _gcd(current_lcm, abs_val)
+                    // Calculate LCM: (a * b) / gcd(a, b). Use float intermediate to check for overflow.
+                    // Need to be careful if current_lcm * abs_val overflows INT_MAX before division.
+                    // Max int is 2,147,483,647
+                    float lcm_float = float(current_lcm) * float(abs_val) / float(divisor)
+
+                    // Basic overflow check for 32-bit signed int
+                    if lcm_float > 2147483647.0 or lcm_float < -2147483648.0
+                        current_lcm := na // Indicate potential overflow
+                        break
+                    else
+                        current_lcm := int(lcm_float)
+
+            result := current_lcm // current_lcm will be na if overflow occurred
+    result // int or na
+
+
+// #############################################################################
+// # Methods for `array<float>` Type
+// #############################################################################
+
+// @function dist: Returns the Euclidean distance between this point `p` and another point `q` (given as arrays of coordinates).
+// @param self (array<float>) Coordinates of the first point `p`.
+// @param other (array<float>) Coordinates of the second point `q`. Must have the same size as `p`.
+// @returns (float) The Euclidean distance, or `na` if arrays have different sizes, are empty, or contain `na`/non-finite values.
+export method dist(array<float> self, array<float> other) =>
+    float result = float(na)
+    int p_size = self.size()
+    int q_size = other.size()
+    if p_size > 0 and p_size == q_size
+        float sum_sq_diff = 0.0
+        bool has_na_or_inf = false
+        // Optimization: Use efficient iteration style and x*x for squaring
+        for [i, val1] in self
+            float val2 = other.get(i)
+            if na(val1) or val1.isinf() or na(val2) or val2.isinf() // Use method syntax for isinf
+                has_na_or_inf := true
+                break
+            float diff = val1 - val2
+            sum_sq_diff += diff * diff // Optimization: Use multiplication
+        if has_na_or_inf
+            result := float(na)
+        else
+            result := sum_sq_diff.sqrt() // Use method syntax for sqrt
+    else if p_size == 0 and q_size == 0
+        result := 0.0 // Distance between two empty point sets is 0.0
+    result
+
+// @function fsum: Returns an accurate floating-point sum of values in this array. Uses built-in `array.sum()`. Note: Pine Script does not guarantee the same level of precision tracking as Python's `math.fsum`.
+// @param self (array<float>) The array of floats to sum.
+// @returns (float) The sum of the array elements. Returns 0.0 for an empty array. Returns `na` if any element is `na`.
+export method fsum(array<float> self) =>
+    // array.sum() handles na propagation correctly and is efficient.
+    self.sum()
+
+// @function hypot: Returns the Euclidean norm (distance from origin) for this point given by coordinates in the array. `sqrt(sum(x*x for x in coordinates))`.
+// @param self (array<float>) Array of coordinates defining the point.
+// @returns (float) The Euclidean norm, or 0.0 if the array is empty. Returns `na` if any element is `na` or non-finite.
+export method hypot(array<float> self) =>
+    float sum_sq = 0.0
+    bool has_na_or_inf = false
+    for val in self // Efficient iteration style already used
+        if na(val) or val.isinf() // Use method syntax for isinf
+            has_na_or_inf := true
+            break
+        sum_sq += val * val // Optimization: Use multiplication instead of pow(x, 2)
+
+    float result = has_na_or_inf ? float(na) : sum_sq.sqrt() // Use method syntax for sqrt
+    if self.size() == 0
+        result := 0.0 // Hypotenuse of an empty vector is 0
+    result
+
+// @function prod: Calculates the product of all elements in this array.
+// @param self (array<float>) The array of values to multiply.
+// @param start (simple float = 1.0) The starting value for the product (returned if the array is empty).
+// @returns (float) The product of array elements * start. Returns `na` if any element is `na`.
+export method prod(array<float> self, simple float start = 1.0) =>
+    float result = start
+    for val in self // Efficient iteration style already used
+        if na(val)
+            result := float(na)
+            break
+        result *= val
+    result
+
+// @function sumprod: Returns the sum of products of values from this array `p` and another array `q` (dot product).
+// @param self (array<float>) First array of values `p`.
+// @param other (array<float>) Second array of values `q`. Must have the same size as `p`.
+// @returns (float) The sum of `p[i] * q[i]` for all i, or `na` if arrays have different sizes or contain `na`/non-finite values. Returns 0.0 for empty arrays.
+export method sumprod(array<float> self, array<float> other) =>
+    float result = float(na)
+    int p_size = self.size()
+    int q_size = other.size()
+    if p_size == q_size
+        float current_sum = 0.0
+        bool has_na_or_inf = false
+        if p_size > 0
+            // Optimization: Use efficient iteration style
+            for [i, val1] in self
+                float val2 = other.get(i)
+                if na(val1) or val1.isinf() or na(val2) or val2.isinf() // Use method syntax for isinf
+                    has_na_or_inf := true
+                    break
+                current_sum += val1 * val2
+
+        if has_na_or_inf
+            result := float(na)
+        else
+            result := current_sum // Handles empty case (sum is 0.0)
+    result

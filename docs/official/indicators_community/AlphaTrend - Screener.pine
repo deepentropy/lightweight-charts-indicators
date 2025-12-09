@@ -1,0 +1,195 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Created & Developed by : Kıvanç Özbilgiç (@KivancOzbilgic)
+// Screener Panel & Adjustments: @dg_factor
+
+//@version=5
+indicator('AlphaTrend - Screener', overlay=true, format=format.price, precision=2)
+
+src = input.source(title='Source', defval=close, group='ALPHATREND')
+AP = input.int(title='Length', defval=14, group='ALPHATREND')
+coeff = input.float(title='Multiplier', defval=1.0, step=0.1, group='ALPHATREND')
+novolumedata = input.bool(title='Change Calculation (No Volume Data)', defval=false, group='ALPHATREND')
+showsignalsk  = input(title='Show Signals ', defval=true, group='ALPHATREND')
+ATR = ta.sma(ta.tr, AP)
+upT = low - ATR * coeff
+downT = high + ATR * coeff
+AlphaTrend = 0.0
+AlphaTrend := (novolumedata ? ta.rsi(src, AP) >= 50 : ta.mfi(hlc3, AP) >= 50) ? upT < nz(AlphaTrend[1]) ? nz(AlphaTrend[1]) : upT : downT > nz(AlphaTrend[1]) ? nz(AlphaTrend[1]) : downT
+color1 = AlphaTrend > AlphaTrend[2] ? #00E60F : AlphaTrend < AlphaTrend[2] ? #80000B : AlphaTrend[1] > AlphaTrend[3] ? #00E60F : #80000B
+buySignalk = ta.crossover(AlphaTrend, AlphaTrend[2])
+sellSignalk = ta.crossunder(AlphaTrend, AlphaTrend[2])
+K1 = ta.barssince(buySignalk)
+K2 = ta.barssince(sellSignalk)
+O1 = ta.barssince(buySignalk[1])
+O2 = ta.barssince(sellSignalk[1])
+direction = 0
+direction := buySignalk and O1 > K2 ? 1 : sellSignalk and O2 > K1 ? -1 : direction[1]
+k1 = plot(AlphaTrend, title='AlphaTrend', color=#0022fc, linewidth=3)
+k2 = plot(AlphaTrend[2], title='Trigger', color=#fc0400, linewidth=3)
+fill(k1, k2, title='Fill Color', color=color1)
+plotshape(showsignalsk and buySignalk and O1 > K2 ? AlphaTrend[2] * 0.9999 : na, title='BUY', text='BUY', location=location.absolute, style=shape.labelup, size=size.tiny, color=#0022FC, textcolor=color.white)
+plotshape(showsignalsk and sellSignalk and O2 > K1 ? AlphaTrend[2] * 1.0001 : na, title='SELL', text='SELL', location=location.absolute, style=shape.labeldown, size=size.tiny, color=color.maroon, textcolor=color.white)
+string gr_sc = 'SCREENER'
+string gr_sy = 'SYMBOL'
+string t00 = 'Alpha Trend Screener'
+color c00 = #686868
+lb_sh = input.bool(title='Show Label', defval=true, group=gr_sc)
+lb_xa = input.int(title='Horizontal Axis', defval=20, group=gr_sc, tooltip='Label Position x Axis')
+lb_ya = input.int(title='Vertical Axis', defval=1, group=gr_sc, tooltip='Label Position y Axis')
+lb_sz = input.string(title='Label Size', options=['Auto', 'Tiny', 'Small', 'Normal', 'Large', 'Huge'], defval='Normal', group=gr_sc)
+lb_cl = input.color(title='Colours', defval=#00bb00, group=gr_sc, inline='0')
+lb_cs = input.color(title='', defval=#ff0000, group=gr_sc, inline='0')
+sh01 = input.bool(title='01', defval=true, group=gr_sy, inline="01")
+sh02 = input.bool(title='02', defval=true, group=gr_sy, inline="02")
+sh03 = input.bool(title='03', defval=true, group=gr_sy, inline="03")
+sh04 = input.bool(title='04', defval=true, group=gr_sy, inline="04")
+sh05 = input.bool(title='05', defval=true, group=gr_sy, inline="05")
+sh06 = input.bool(title='06', defval=true, group=gr_sy, inline="06")
+sh07 = input.bool(title='07', defval=true, group=gr_sy, inline="07")
+sh08 = input.bool(title='08', defval=true, group=gr_sy, inline="08")
+sh09 = input.bool(title='09', defval=true, group=gr_sy, inline="09")
+sh10 = input.bool(title='10', defval=true, group=gr_sy, inline="10")
+sh11 = input.bool(title='11', defval=false, group=gr_sy, inline="11")
+sh12 = input.bool(title='12', defval=false, group=gr_sy, inline="12")
+sh13 = input.bool(title='13', defval=false, group=gr_sy, inline="13")
+sh14 = input.bool(title='14', defval=false, group=gr_sy, inline="14")
+sh15 = input.bool(title='15', defval=false, group=gr_sy, inline="15")
+sh16 = input.bool(title='16', defval=false, group=gr_sy, inline="16")
+sh17 = input.bool(title='17', defval=false, group=gr_sy, inline="17")
+sh18 = input.bool(title='18', defval=false, group=gr_sy, inline="18")
+sh19 = input.bool(title='19', defval=false, group=gr_sy, inline="19")
+sh20 = input.bool(title='20', defval=false, group=gr_sy, inline="20")
+tf01 = input.timeframe(title='', defval='', group=gr_sy, inline="01")
+tf02 = input.timeframe(title='', defval='', group=gr_sy, inline="02")
+tf03 = input.timeframe(title='', defval='', group=gr_sy, inline="03")
+tf04 = input.timeframe(title='', defval='', group=gr_sy, inline="04")
+tf05 = input.timeframe(title='', defval='', group=gr_sy, inline="05")
+tf06 = input.timeframe(title='', defval='', group=gr_sy, inline="06")
+tf07 = input.timeframe(title='', defval='', group=gr_sy, inline="07")
+tf08 = input.timeframe(title='', defval='', group=gr_sy, inline="08")
+tf09 = input.timeframe(title='', defval='', group=gr_sy, inline="09")
+tf10 = input.timeframe(title='', defval='', group=gr_sy, inline="10")
+tf11 = input.timeframe(title='', defval='', group=gr_sy, inline="11")
+tf12 = input.timeframe(title='', defval='', group=gr_sy, inline="12")
+tf13 = input.timeframe(title='', defval='', group=gr_sy, inline="13")
+tf14 = input.timeframe(title='', defval='', group=gr_sy, inline="14")
+tf15 = input.timeframe(title='', defval='', group=gr_sy, inline="15")
+tf16 = input.timeframe(title='', defval='', group=gr_sy, inline="16")
+tf17 = input.timeframe(title='', defval='', group=gr_sy, inline="17")
+tf18 = input.timeframe(title='', defval='', group=gr_sy, inline="18")
+tf19 = input.timeframe(title='', defval='', group=gr_sy, inline="19")
+tf20 = input.timeframe(title='', defval='', group=gr_sy, inline="20")
+s01 = input.symbol(title='', group=gr_sy, inline='01', defval='BINANCE:BTCUSDT')
+s02 = input.symbol(title='', group=gr_sy, inline='02', defval='BINANCE:ETHUSDT')
+s03 = input.symbol(title='', group=gr_sy, inline='03', defval='BINANCE:BNBUSDT')
+s04 = input.symbol(title='', group=gr_sy, inline='04', defval='BINANCE:ADAUSDT')
+s05 = input.symbol(title='', group=gr_sy, inline='05', defval='BINANCE:AVAXUSDT')
+s06 = input.symbol(title='', group=gr_sy, inline='06', defval='BINANCE:CHZUSDT')
+s07 = input.symbol(title='', group=gr_sy, inline='07', defval='BINANCE:DOGEUSDT')
+s08 = input.symbol(title='', group=gr_sy, inline='08', defval='BINANCE:SOLUSDT')
+s09 = input.symbol(title='', group=gr_sy, inline='09', defval='BINANCE:TRXUSDT')
+s10 = input.symbol(title='', group=gr_sy, inline='10', defval='BINANCE:XRPUSDT')
+s11 = input.symbol(title='', group=gr_sy, inline='11', defval='NASDAQ:AAPL')
+s12 = input.symbol(title='', group=gr_sy, inline='12', defval='NASDAQ:TSLA')
+s13 = input.symbol(title='', group=gr_sy, inline='13', defval='NASDAQ:AMZN')
+s14 = input.symbol(title='', group=gr_sy, inline='14', defval='NASDAQ:GOOGL')
+s15 = input.symbol(title='', group=gr_sy, inline='15', defval='NASDAQ:NVDA')
+s16 = input.symbol(title='', group=gr_sy, inline='16', defval='NASDAQ:META')
+s17 = input.symbol(title='', group=gr_sy, inline='17', defval='NYSE:C')
+s18 = input.symbol(title='', group=gr_sy, inline='18', defval='NASDAQ:NFLX')
+s19 = input.symbol(title='', group=gr_sy, inline='19', defval='NYSE:BABA')
+s20 = input.symbol(title='', group=gr_sy, inline='20', defval='NASDAQ:ABNB')
+f_screener(s) =>
+    int x = na
+    int y = na
+    z = color(na)
+    if s
+        x := direction
+        y := ta.barssince(x != x[1])
+        z := x == 1 ? lb_cl : x == -1 ? lb_cs : c00
+    [x, y, z]
+//
+f_bars(x) =>
+    r = ' [' + str.tostring(x) + '] '
+//
+f_size(x) =>
+      x == 'Tiny' ? size.tiny : 
+      x == 'Small' ? size.small : 
+      x == 'Normal' ? size.normal : 
+      x == 'Large' ? size.large : 
+      x == 'Huge' ? size.huge : size.auto
+//
+f_label(l, t, c) =>
+    r = string(na)
+    for i = l*2 to 0
+        r += '\n\n'
+    r += t
+    var label lb = na
+    label.delete(lb)
+    fix_allign = ta.highest(200)
+    lb := lb_sh ? label.new(
+      x=bar_index + lb_xa, 
+      y=bar_index > 200 ? fix_allign * (1 + lb_ya / 1000) : hl2 * (1 + lb_ya / 1000), 
+      text=r, textcolor=c, textalign=text.align_right, 
+      style=label.style_label_left, size=f_size(lb_sz), color=#00000000) : na
+[a01, b01, c01] = request.security(s01, tf01, f_screener(sh01))
+[a02, b02, c02] = request.security(s02, tf02, f_screener(sh02))
+[a03, b03, c03] = request.security(s03, tf03, f_screener(sh03))
+[a04, b04, c04] = request.security(s04, tf04, f_screener(sh04))
+[a05, b05, c05] = request.security(s05, tf05, f_screener(sh05))
+[a06, b06, c06] = request.security(s06, tf06, f_screener(sh06))
+[a07, b07, c07] = request.security(s07, tf07, f_screener(sh07))
+[a08, b08, c08] = request.security(s08, tf08, f_screener(sh08))
+[a09, b09, c09] = request.security(s09, tf09, f_screener(sh09))
+[a10, b10, c10] = request.security(s10, tf10, f_screener(sh10))
+[a11, b11, c11] = request.security(s11, tf11, f_screener(sh11))
+[a12, b12, c12] = request.security(s12, tf12, f_screener(sh12))
+[a13, b13, c13] = request.security(s13, tf13, f_screener(sh13))
+[a14, b14, c14] = request.security(s14, tf14, f_screener(sh14))
+[a15, b15, c15] = request.security(s15, tf15, f_screener(sh15))
+[a16, b16, c16] = request.security(s16, tf16, f_screener(sh16))
+[a17, b17, c17] = request.security(s17, tf17, f_screener(sh17))
+[a18, b18, c18] = request.security(s18, tf18, f_screener(sh18))
+[a19, b19, c19] = request.security(s19, tf19, f_screener(sh19))
+[a20, b20, c20] = request.security(s20, tf20, f_screener(sh20))
+t01 = a01 == 1 ? '▲' + f_bars(b01) + s01 : a01 == -1 ? '▼' + f_bars(b01) + s01 : '■' + f_bars(b01) + s01
+t02 = a02 == 1 ? '▲' + f_bars(b02) + s02 : a02 == -1 ? '▼' + f_bars(b02) + s02 : '■' + f_bars(b02) + s02
+t03 = a03 == 1 ? '▲' + f_bars(b03) + s03 : a03 == -1 ? '▼' + f_bars(b03) + s03 : '■' + f_bars(b03) + s03
+t04 = a04 == 1 ? '▲' + f_bars(b04) + s04 : a04 == -1 ? '▼' + f_bars(b04) + s04 : '■' + f_bars(b04) + s04
+t05 = a05 == 1 ? '▲' + f_bars(b05) + s05 : a05 == -1 ? '▼' + f_bars(b05) + s05 : '■' + f_bars(b05) + s05
+t06 = a06 == 1 ? '▲' + f_bars(b06) + s06 : a06 == -1 ? '▼' + f_bars(b06) + s06 : '■' + f_bars(b06) + s06
+t07 = a07 == 1 ? '▲' + f_bars(b07) + s07 : a07 == -1 ? '▼' + f_bars(b07) + s07 : '■' + f_bars(b07) + s07
+t08 = a08 == 1 ? '▲' + f_bars(b08) + s08 : a08 == -1 ? '▼' + f_bars(b08) + s08 : '■' + f_bars(b08) + s08
+t09 = a09 == 1 ? '▲' + f_bars(b09) + s09 : a09 == -1 ? '▼' + f_bars(b09) + s09 : '■' + f_bars(b09) + s09
+t10 = a10 == 1 ? '▲' + f_bars(b10) + s10 : a10 == -1 ? '▼' + f_bars(b10) + s10 : '■' + f_bars(b10) + s10
+t11 = a11 == 1 ? '▲' + f_bars(b11) + s11 : a11 == -1 ? '▼' + f_bars(b11) + s11 : '■' + f_bars(b11) + s11
+t12 = a12 == 1 ? '▲' + f_bars(b12) + s12 : a12 == -1 ? '▼' + f_bars(b12) + s12 : '■' + f_bars(b12) + s12
+t13 = a13 == 1 ? '▲' + f_bars(b13) + s13 : a13 == -1 ? '▼' + f_bars(b13) + s13 : '■' + f_bars(b13) + s13
+t14 = a14 == 1 ? '▲' + f_bars(b14) + s14 : a14 == -1 ? '▼' + f_bars(b14) + s14 : '■' + f_bars(b14) + s14
+t15 = a15 == 1 ? '▲' + f_bars(b15) + s15 : a15 == -1 ? '▼' + f_bars(b15) + s15 : '■' + f_bars(b15) + s15
+t16 = a16 == 1 ? '▲' + f_bars(b16) + s16 : a16 == -1 ? '▼' + f_bars(b16) + s16 : '■' + f_bars(b16) + s16
+t17 = a17 == 1 ? '▲' + f_bars(b17) + s17 : a17 == -1 ? '▼' + f_bars(b17) + s17 : '■' + f_bars(b17) + s17
+t18 = a18 == 1 ? '▲' + f_bars(b18) + s18 : a18 == -1 ? '▼' + f_bars(b18) + s18 : '■' + f_bars(b18) + s18
+t19 = a19 == 1 ? '▲' + f_bars(b19) + s19 : a19 == -1 ? '▼' + f_bars(b19) + s19 : '■' + f_bars(b19) + s19
+t20 = a20 == 1 ? '▲' + f_bars(b20) + s20 : a20 == -1 ? '▼' + f_bars(b20) + s20 : '■' + f_bars(b20) + s20
+f_label(0, t00, c00)
+f_label(1, t01, c01)
+f_label(2, t02, c02)
+f_label(3, t03, c03)
+f_label(4, t04, c04)
+f_label(5, t05, c05)
+f_label(6, t06, c06)
+f_label(7, t07, c07)
+f_label(8, t08, c08)
+f_label(9, t09, c09)
+f_label(10, t10, c10)
+f_label(11, t11, c11)
+f_label(12, t12, c12)
+f_label(13, t13, c13)
+f_label(14, t14, c14)
+f_label(15, t15, c15)
+f_label(16, t16, c16)
+f_label(17, t17, c17)
+f_label(18, t18, c18)
+f_label(19, t19, c19)
+f_label(20, t20, c20)

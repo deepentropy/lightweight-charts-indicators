@@ -1,0 +1,170 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("Market Profile", "MP/TPO", overlay = true, max_lines_count = 500, max_bars_back = 1000)
+TimeframeU = input(defval = 'Auto', title ="Higher Time Frame", options = ['Auto', '1', '5', '10', '15', '30', '60', '120', '180', '240', '360', '480', '720', 'D', 'W', '2W', 'M', '3M', '6M', '12M'])
+percent = input(70.0, title="Percent for Value Area %", type = input.float, minval = 1, maxval = 100) / 100
+showpocline = input(true, title="Show POC Line")
+keepoldmp = input(true, title="Keep Old MPs")
+showwhat = input(defval = "Show All Channels", title="Show", options = ["Don't Show Value Area", "Show Value Area High", "Show All Channels"])
+linewdth = input(defval = 2, title = "Line Width", minval = 1, maxval = 4)
+srate = input(defval = 100., title = "Sizing Rate %", minval = 10, maxval = 500) / 100
+poc_col = input(defval = color.yellow, title = "POC Line Color", type = input.color)
+vah_col = input(defval = color.blue, title = "Value Area Color", type = input.color)
+nonva_col = input(defval = color.gray, title = "Non-Value Area Color", type = input.color)
+
+Timeframe = timeframe.period
+if TimeframeU == 'Auto'
+    Timeframe := timeframe.period == '1' ? '120' : 
+           timeframe.period == '2' ? '180' :
+           timeframe.period == '3' ? '240' : 
+           timeframe.period == '5' ? 'D' : 
+           timeframe.period == '10' ? 'W' : 
+           timeframe.period == '15' ? 'W' : 
+           timeframe.period == '30' ? 'W' : 
+           timeframe.period == '45' ? 'W' : 
+           timeframe.period == '60' ? 'W' : 
+           timeframe.period == '120' ? 'M' : 
+           timeframe.period == '180' ? 'M' : 
+           timeframe.period == '240' ? 'M' : 
+           timeframe.period == 'D' ? '12M' :
+           timeframe.period == 'W' ? '12M' :
+           'D'
+else
+    Timeframe := TimeframeU
+    
+var float highesthtf = na
+var float lowesthtf = na
+var float highest = high
+var float lowest = low
+var int barnum = 0
+var int len = 0
+bool newbar = change(time(Timeframe)) != 0
+
+if newbar // new bar in htf
+    highesthtf := high
+    lowesthtf := low
+    barnum := 0
+else
+    highesthtf := max(highesthtf, high)
+    lowesthtf := min(lowesthtf, low)
+    barnum := barnum + 1
+    
+if newbar // new bar in htf
+    highest := highesthtf[1]
+    lowest := lowesthtf[1]
+    len := barnum[1]
+
+float channel = (highest - lowest) / 20
+
+included(t1, t2, t3, t4)=>
+    _ret = t3 >= t1 and t3 <= t2 or t4 >= t1 and t4 <= t2 or t3 <= t1 and t4 >= t2
+    
+get_tpo(lower, upper)=>
+    float ret = 0.
+    for x = 1 to len
+        if included(lower, upper, low[x], high[x]) 
+            ret := ret + 1
+    ret
+
+ch = array.new_float(22, 0.)
+if newbar
+    for x = 1 to 20
+        array.set(ch, x, get_tpo(lowest +  (x - 1) * channel, lowest +  x * channel))
+
+get_index(up, down)=>
+    float upval = array.get(ch, up)
+    float downval = array.get(ch, down)
+    [iff(upval >= downval, up, down), max(upval, downval)]
+    
+float total = 0.
+int poc_loc = 0
+float poc_val = 0.
+var int gl_poc_loc = 0
+if newbar
+    for x = 1 to 20
+        cval = array.get(ch, x)
+        total := total + cval
+        if cval >= poc_val
+            poc_val := cval
+            poc_loc := x
+    gl_poc_loc := poc_loc
+    
+float va_val = poc_val
+int vahind = poc_loc
+int valind = poc_loc
+if newbar
+    for x = 1 to 20
+        if va_val >= total * percent
+            break
+        [ind, chval] = get_index(vahind + 1, valind - 1)
+        if chval == 0
+            break
+        if ind == vahind + 1
+            vahind := ind
+            va_val := va_val + chval
+        else
+            valind := ind
+            va_val := va_val + chval
+
+get_middle(x)=>
+    float ret = (lowest + (x-1) * channel + lowest + x * channel) / 2
+
+get_base(x)=>
+    float ret = (lowest + (x-1) * channel)
+
+var int bartime = na
+bartime := na(bartime) ? time - time[1] : min(bartime, time - time[1])
+draw_mp(y, chval, is_va)=>
+    rchval = round(srate * chval)
+    linecol = is_va ? vah_col : nonva_col
+    ret = line.new(x1 = bar_index, y1 = y, x2 = bar_index + rchval, y2 = y, color = linecol, width = linewdth)
+
+draw_mpd(y1_, y2_, chval, is_va)=>
+    rchval = round(srate * chval)
+    linecol = is_va ? vah_col : nonva_col
+    ret = line.new(x1 = bar_index + rchval, y1 = y1_, x2 = bar_index + rchval, y2 = y2_, color = linecol, width = linewdth)
+    
+var float midpoc = na
+var all_lines = array.new_line(0)
+if newbar
+    if keepoldmp and array.size(all_lines) > 0
+        line.set_x2(array.get(all_lines, array.size(all_lines) - 1), bar_index - 1)
+        line.set_extend(array.get(all_lines, array.size(all_lines) - 1), extend = extend.none)
+        array.clear(all_lines)
+    if not keepoldmp
+        for x = 0 to (array.size(all_lines) > 0 ? array.size(all_lines)  - 1 : na)
+            line.delete(array.pop(all_lines))
+    
+    if showwhat == "Show Value Area High" or showwhat == "Show All Channels"
+        str = showwhat == "Show All Channels" ? 1 : valind
+        end = showwhat == "Show All Channels" ? 20 : vahind
+        for x = str to end
+            is_va = x >= valind and x <= vahind
+            is_poc = x == poc_loc
+            int lwdhm = int(array.get(ch, x))
+            int lwdh = lwdhm
+            if x > str 
+                int mytmp = int(array.get(ch, x - 1))
+                if mytmp > lwdh
+                    lwdh := mytmp
+                    is_va := x - 1 >= valind and x - 1<= vahind
+            array.push(all_lines, draw_mp(get_base(x), lwdh, is_va))
+            
+            is_va := x >= valind and x <= vahind
+            array.push(all_lines, draw_mpd(get_base(x), get_base(x + 1), lwdhm, is_va))
+            
+        array.push(all_lines, draw_mp(get_base(end + 1), int(array.get(ch, end)), end >= valind and end <= vahind))
+    
+    if showpocline
+        midpoc := get_middle(poc_loc)
+        array.push(all_lines, line.new(x1 = bar_index, y1 = midpoc, x2 = bar_index + 1, y2 = get_middle(poc_loc), color = poc_col, width = linewdth, extend = extend.right))
+
+price_in_poc = close >= get_base(gl_poc_loc + 0) and close <= get_base(gl_poc_loc + 1)
+price_above_poc = close > get_base(gl_poc_loc + 1)
+price_below_poc = close <= get_base(gl_poc_loc + 0)
+
+alertcondition(price_in_poc , title='Price in POC', message='Price in POC')
+alertcondition((price_in_poc[1] or price_below_poc[1]) and price_above_poc, title='Price went above POC', message='Price went above POC')
+alertcondition((price_in_poc[1] or price_above_poc[1]) and price_below_poc, title='Price went below POC', message='Price went below POC')

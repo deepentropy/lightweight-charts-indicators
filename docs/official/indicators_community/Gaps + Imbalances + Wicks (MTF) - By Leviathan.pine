@@ -1,0 +1,324 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LeviathanCapital
+
+//@version=5
+indicator("Gaps + Imbalances + Wicks (MTF) - By Leviathan", overlay=true, max_boxes_count = 500, max_lines_count = 500)
+
+// General Settings
+boxtype         = input.string('Imbalance', 'Zone Type   ', options=['Imbalance', 'Gap', 'Wick'], group = 'General Settings', inline='1')
+tfinput         = input.timeframe('', ' - ', group = 'General Settings', inline='1')
+showmiddleline  = input.bool(true, 'Middle Line  ', inline='ln', group = 'General Settings')
+showbottomline  = input.bool(true, 'Bottom Line  ', inline='ln', group = 'General Settings')
+showtopline     = input.bool(true, 'Top Line  ', inline='ln', group = 'General Settings')
+showup          = input.bool(true, 'UP Zones            ', inline='appup', group = 'General Settings')
+showdown        = input.bool(true, 'DOWN Zones        ', inline='appdown', group = 'General Settings')
+upcol1          = input.color(#90bff965, '  ', inline='appup', group = 'General Settings')
+upbordercol     = input.color(color.rgb(76, 175, 79, 100), '', inline='appup', group = 'General Settings')
+uptextcol       = input.color(color.gray, '', inline='appup', group = 'General Settings')
+downcol1        = input.color(#9575cd65, '  ', inline='appdown', group = 'General Settings')
+downbordercol   = input.color(color.rgb(255, 82, 82, 100), '', inline='appdown', group = 'General Settings')
+downtextcol     = input.color(color.gray, '', inline='appdown', group = 'General Settings')
+extendtilfilled = input.bool(true, '', group = 'General Settings', inline='fill')
+filledtype      = input.string('Touch', 'Fill Condition                ', options=['Touch', 'Full Fill', 'Half Fill'], group = 'General Settings', inline='fill')
+lookback        = input.bool(true, '', inline='lb', group = 'General Settings')
+daysBack        = input.float(150, 'Lookback (D)               ', group = 'General Settings',inline='lb')
+hidefilled      = input.bool(false, 'Hide Filled Levels', inline='hd', group='General Settings')
+showboxes       = input.bool(true, 'Show Boxes', inline='hd', group='General Settings')
+conditiontype   = input.string('ATR', 'Filter Type  ', options=['Percentage', 'ATR', 'None'], group = 'Filter Settings')
+atrlength       = input.int(30, 'ATR Length + Mult.', step=1, group = 'Filter Settings', inline='atr')
+atrmult         = input.float(1, '', step=0.1, group = 'Filter Settings', inline='atr')
+pctcond         = input.float(0.30, 'Percentage + Mult.', step=0.1, group = 'Filter Settings', inline='pct')
+pctmult         = input.float(1, '', step=0.1, group = 'Filter Settings', inline='pct')
+showboxtext     = input.bool(true, '   ', group = 'Zone Labels', inline='txt')
+textType        = input.string('Labels + Timeframe', '', group = 'Zone Labels', options = ['Labels', 'Volume','Labels + Timeframe', 'Labels + Timeframe + Volume'], inline='txt')
+textsize        = input.string('Size: Tiny', '', options = ['Size: Normal','Size: Large', 'Size: Small', 'Size: Tiny', 'Size: Auto' ], inline='txt', group = 'Zone Labels' )
+textvalign      = input.string('Center','Position ', options = ['Center', 'Top', 'Bottom'], inline='pos', group = 'Zone Labels')
+texthalign      = input.string('Middle','', options = ['Middle', 'Right', 'Left'], inline='pos', group = 'Zone Labels')
+imbtext         = input.string("IMB", title='Imbalance Label', group = 'Zone Labels')
+gaptext         = input.string("GAP", title='Gap Label', group = 'Zone Labels')
+wicktext        = input.string('WICK', title='Wick Label', group = 'Zone Labels')
+actionbool      = input.bool(false, '', inline='act', group='Other Settings')
+actiondel       = input.string('Stop Zone','', options = ['Stop Zone', 'Delete Zone'], inline='act', group='Other Settings')
+nmbars          = input.int(3500, 'after', inline='act', group='Other Settings', tooltip = 'Delete/Stop Zone after X number of candles')
+linestyle       = input.string('Dotted', 'Line Style', ['Solid', 'Dashed', 'Dotted'], inline='l', group='Other Settings')
+lineCol         = input.color(color.rgb(178, 181, 190, 31), '', inline='l', group='Other Settings')
+nbars           = input.int(4, 'Zone Length', group='Other Settings', tooltip = 'Length of the zone (in bars) if Fill Condition is turned off')
+maxBoxes        = input.int(499, 'Max Zones', minval=1, maxval=500, group = 'Other Settings')
+
+// Requesting HTF data 
+[o, h, l, c]     = request.security(syminfo.tickerid, tfinput, [open, high, low, close])
+[o1, h1, l1, c1] = request.security(syminfo.tickerid, tfinput, [open[1], high[1], low[1], close[1]])
+[o2, h2, l2, c2] = request.security(syminfo.tickerid, tfinput, [open[2], high[2], low[2], close[2]])
+t                = request.security(syminfo.tickerid, tfinput, time)
+tvol             = request.security(syminfo.tickerid, tfinput, volume)
+atr              = request.security(syminfo.tickerid, tfinput, ta.atr(atrlength))
+bool new         = ta.change(time(tfinput))
+
+// Distances in %
+upimbdist     = (l-h2) / h2 * 100
+downimbdist   = (l2-h) / h * 100
+upgapdist     = (l-h1) / h1 * 100
+downgapdist   = (l1-h) / h * 100
+upwickdist    = (h1-math.max(o1, c1)) / math.max(o1, c1) * 100
+downwickdist  = (math.min(o1, c1)-l1) / l1 * 100
+// Candle body size and the size of lower&upper wicks
+bodysize      = math.abs(o1-c1)
+upperWickSize = h1 - math.max(o1, c1)
+lowerWickSize = math.min(o1, c1) - l1
+// Hide boxes (transparency to 100)
+clear = color.rgb(0,0,0,100)
+color upcol   = showboxes ? upcol1   : clear
+color downcol = showboxes ? downcol1 : clear
+// Volume
+float labeltype = 0
+if boxtype=='Imbalance' or boxtype=='Wick'
+    labeltype := tfinput==timeframe.period ? tvol[1] : tvol[2]
+if boxtype=='Gap'
+    labeltype := tfinput==timeframe.period ? tvol[0] : tvol[1]
+// Calculating inRange, used for lookback in days
+MSPD          = 24 * 60 * 60 * 1000
+lastBarDate   = timestamp(year(timenow), month(timenow), dayofmonth(timenow), hour(timenow), minute(timenow), second(timenow))
+thisBarDate   = timestamp(year, month, dayofmonth, hour, minute, second)
+daysLeft      = math.abs(math.floor((lastBarDate - thisBarDate) / MSPD))
+inRange       = lookback ? (daysLeft < daysBack) : true
+// Timeframe labels
+timeframelabel(tfinput) =>
+    switch tfinput
+        ''    => timeframe.period + (timeframe.isminutes ? 'm' : na)
+        '1'   => '1m'
+        '2'   => '2m'
+        '3'   => '3m'
+        '4'   => '4m'
+        '5'   => '5m'
+        '10'  => '10m'
+        '15'  => '15m'
+        '30'  => '30m'
+        '60'  => '1H'
+        '120' => '2H'
+        '240' => '4H'
+        '480' => '8H'
+        '720' => '12H'
+        => tfinput     
+  
+// Box Text
+var string imbboxtext   = na, var string gapboxtext   = na, var string wickboxtext  = na
+if showboxtext and textType == 'Labels'
+    imbboxtext  := str.tostring(imbtext)
+    gapboxtext  := str.tostring(gaptext)
+    wickboxtext := str.tostring(wicktext)
+if showboxtext and textType == 'Volume'
+    imbboxtext  := str.tostring(labeltype, format.volume)
+    gapboxtext  := str.tostring(labeltype, format.volume)
+    wickboxtext := str.tostring(labeltype, format.volume)
+if showboxtext and textType == 'Labels + Timeframe'
+    imbboxtext  := str.tostring(imbtext)  + ' • ' + str.tostring(timeframelabel(tfinput))
+    gapboxtext  := str.tostring(gaptext)  + ' • ' + str.tostring(timeframelabel(tfinput))
+    wickboxtext := str.tostring(wicktext) + ' • ' + str.tostring(timeframelabel(tfinput))
+if showboxtext and textType == 'Labels + Timeframe + Volume'
+    imbboxtext  := str.tostring(imbtext)  + ' • ' + str.tostring(timeframelabel(tfinput)) + ' • ' + str.tostring(labeltype, format.volume)
+    gapboxtext  := str.tostring(gaptext)  + ' • ' + str.tostring(timeframelabel(tfinput)) + ' • ' + str.tostring(labeltype, format.volume)
+    wickboxtext := str.tostring(wicktext) + ' • ' + str.tostring(timeframelabel(tfinput)) + ' • ' + str.tostring(labeltype, format.volume)
+
+// Line style and text label appearance
+lineStyle(x) =>
+    switch x
+        'Solid'         => line.style_solid
+        'Dashed'        => line.style_dashed
+        'Dotted'        => line.style_dotted
+switchhalign(texthalign) =>
+    switch texthalign
+        'Middle'        => text.align_center
+        'Right'         => text.align_right
+        'Left'          => text.align_left
+switchvalign(textvalign) =>
+    switch textvalign
+        'Center'        => text.align_center
+        'Top'           => text.align_top
+        'Bottom'        => text.align_bottom
+switchtextsize(textsize) =>
+    switch textsize
+        'Size: Normal'  => size.normal
+        'Size: Small'   => size.small
+        'Size: Tiny'    => size.tiny
+        'Size: Auto'    => size.auto
+        'Size: Large'   => size.large
+
+// Conditions for Imbalances, Gaps and Wicks
+var bool condition = na, var bool condition2 = na, var bool condition3 = na, var bool condition4 = na, var bool condition5 = na, var bool condition6 = na
+if conditiontype == 'Percentage'
+    condition := upimbdist>(pctcond*pctmult)
+    condition2 := downimbdist>(pctcond*pctmult)
+    condition3 := upgapdist>(pctcond*pctmult) 
+    condition4 := downgapdist>(pctcond*pctmult) 
+    condition5 := upwickdist>(pctcond*pctmult)
+    condition6 := downwickdist>(pctcond*pctmult)
+if conditiontype == 'ATR'
+    condition := (l-h2)>(atrmult*atr)
+    condition2 := (l2-h)>(atrmult*atr) 
+    condition3 := (l-h1)>(atrmult*atr) 
+    condition4 := (l1-h)>(atrmult*atr)   
+    condition5 := (h1-math.max(o1, c1))>(atrmult*atr) 
+    condition6 := (math.min(o1, c1)-l1)>(atrmult*atr)   
+if conditiontype == 'None'
+    condition  := true
+    condition2 := true
+    condition3 := true
+    condition4 := true
+    condition5 := true
+    condition6 := true
+
+// Drawing Boxes and Lines
+var boxes       = array.new_box(), var topLines    = array.new_line(), var middleLines = array.new_line(), var bottomLines = array.new_line()
+
+if boxtype == 'Imbalance' and (l > h2) and showup and condition and inRange and new
+    imbboxUP = box.new(t[2], l, time, h2, bgcolor = upcol, border_color=upbordercol,border_width = 1, text=imbboxtext, text_size = switchtextsize(textsize), text_halign = switchhalign(texthalign), text_valign = switchvalign(textvalign), text_color = uptextcol,xloc =  xloc.bar_time)
+    topLine = showtopline ? line.new(t[2], l, time, l, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    bottomLine = showbottomline ? line.new(t[2], h2, time, h2, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    middleLine = showmiddleline ? line.new(t[2], (l + h2)/2, time, (l + h2)/2, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    array.push(topLines, topLine)
+    array.push(middleLines, middleLine)
+    array.push(bottomLines, bottomLine)
+    array.push(boxes, imbboxUP)
+if boxtype == 'Imbalance' and (h < l2) and showdown and condition2 and inRange and new
+    imbboxDOWN  = box.new(t[2], h, time, l2, bgcolor = downcol, border_color=downbordercol,border_width = 1, text=imbboxtext, text_size = switchtextsize(textsize), text_halign = switchhalign(texthalign), text_valign = switchvalign(textvalign), text_color = downtextcol, xloc =  xloc.bar_time)
+    topLine     = showtopline    ? line.new(t[2], l2, time, l2, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    bottomLine  = showbottomline ? line.new(t[2], h, time, h, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    middleLine  = showmiddleline ? line.new(t[2], (h+l2)/2, time, (h+l2)/2, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    array.push(topLines, topLine)
+    array.push(middleLines, middleLine)
+    array.push(bottomLines, bottomLine)
+    array.push(boxes, imbboxDOWN)
+if boxtype == 'Gap' and l > h1 and showup and condition3 and inRange and new
+    gapboxUP    = box.new(t[1], l, time, h1, bgcolor = upcol, border_color=upbordercol, border_width = 1, text=gapboxtext, text_size = switchtextsize(textsize), text_halign = switchhalign(texthalign), text_valign = switchvalign(textvalign), text_color = uptextcol, xloc =  xloc.bar_time)
+    topLine     = showtopline    ? line.new(t[1], l, time, l, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    bottomLine  = showbottomline ? line.new(t[1], h1, time, h1, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    middleLine  = showmiddleline ? line.new(t[1], (l+h1)/2, time, (l+h1)/2, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    array.push(topLines, topLine)
+    array.push(middleLines, middleLine)
+    array.push(bottomLines, bottomLine)
+    array.push(boxes, gapboxUP)
+if boxtype == 'Gap' and h < l1 and showdown and condition4 and inRange and new
+    gapboxDOWN  = box.new(t[1], l1, time, h, bgcolor = downcol, border_color=downbordercol,border_width = 1, text=gapboxtext, text_size = switchtextsize(textsize), text_halign = switchhalign(texthalign), text_valign = switchvalign(textvalign), text_color = downtextcol, xloc =  xloc.bar_time)
+    topLine     = showtopline    ? line.new(t[1], l1, time, l1, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    bottomLine  = showbottomline ? line.new(t[1], h, time, h, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    middleLine  = showmiddleline ? line.new(t[1], (h+l1)/2, time, (h+l1)/2, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    array.push(topLines, topLine)
+    array.push(middleLines, middleLine)
+    array.push(bottomLines, bottomLine)
+    array.push(boxes, gapboxDOWN)
+if boxtype == 'Wick' and upperWickSize>(bodysize/6) and showup and condition5 and inRange and new
+    wickboxUP   = box.new(t[1], h1, time, math.max(o1, c1), bgcolor = upcol, border_color=upbordercol,border_width = 1, text=wickboxtext, text_size = switchtextsize(textsize), text_halign = switchhalign(texthalign), text_valign = switchvalign(textvalign), text_color = uptextcol, xloc =  xloc.bar_time)
+    topLine     = showtopline    ? line.new(t[1], math.max(h1, math.max(o1, c1)), time, math.max(h1, math.max(o1, c1)), color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    bottomLine  = showbottomline ? line.new(t[1], math.min(h1, math.max(o1, c1)), time, math.min(h1, math.max(o1, c1)), color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    middleLine  = showmiddleline ? line.new(t[1], (h1+math.max(o1, c1))/2, time, (h1+math.max(o1, c1))/2, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    array.push(topLines, topLine)
+    array.push(middleLines, middleLine)
+    array.push(bottomLines, bottomLine)
+    array.push(boxes, wickboxUP)
+if boxtype == 'Wick' and lowerWickSize>(bodysize/6) and showdown and condition6 and inRange and new
+    wickboxDOWN = box.new(t[1], math.min(o1, c1), time, l1, bgcolor = downcol, border_color=downbordercol,border_width = 1, text=wickboxtext, text_size = switchtextsize(textsize), text_halign = switchhalign(texthalign), text_valign = switchvalign(textvalign), text_color = downtextcol, xloc =  xloc.bar_time)
+    topLine     = showtopline    ? line.new(t[1], math.max(l1, math.min(o1, c1)), time, math.max(l1, math.min(o1, c1)), color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    bottomLine  = showbottomline ? line.new(t[1], math.min(l1, math.min(o1, c1)), time, math.min(l1, math.min(o1, c1)), color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    middleLine  = showmiddleline ? line.new(t[1], (l1+math.min(o1, c1))/2, time, (l1+math.min(o1, c1))/2, color=lineCol, style=lineStyle(linestyle), xloc =  xloc.bar_time) : na
+    array.push(topLines, topLine)
+    array.push(middleLines, middleLine)
+    array.push(bottomLines, bottomLine)
+    array.push(boxes, wickboxDOWN)
+
+// Looping over the arrays and updating objects
+size = array.size(boxes)
+if size > 0
+    for i = 0 to size - 1
+        j = size - 1 - i
+        box = array.get(boxes, j)
+        topLine = array.get(topLines, j)
+        middleLine = array.get(middleLines, j)
+        bottomLine = array.get(bottomLines, j) 
+        level = box.get_bottom(box)
+        level2 = box.get_top(box)
+        level3 = (level2+level)/2
+        // Defining fill conditions for zones and lines
+        var bool filled = na
+        unifill = (high > level and low < level) or (high > level2 and low < level2)
+        if filledtype == 'Touch'
+            filled := (high > level and low < level) or (high > level2 and low < level2)
+        if filledtype == 'Half Fill'
+            filled := (high > level3 and low < level3)
+        if filledtype == 'Full Fill'
+            for imbboxUP in boxes
+                filled  := (high > level2 and low < level2)
+            for imbboxDOWN in boxes
+                filled  := (high > level and low < level)
+            for gapboxUP in boxes
+                filled  := (high > level2 and low < level2)
+            for gapboxDOWN in boxes
+                filled  := (high > level and low < level)
+            for wickboxUP in boxes
+                filled  := (high > level2 and low < level2)
+            for wickboxDOWN in boxes
+                filled  := (high > level and low < level)
+        if hidefilled and filled
+            line.delete(topLine)
+            line.delete(middleLine)
+            line.delete(bottomLine)
+            box.delete(box)
+            array.remove(boxes, j)
+            array.remove(topLines, j)
+            array.remove(middleLines, j)
+            array.remove(bottomLines, j)
+            continue
+        if filled and extendtilfilled
+            array.remove(boxes, j)
+            array.remove(topLines, j)
+            array.remove(middleLines, j)
+            array.remove(bottomLines, j)
+            continue 
+
+        box.set_right(box, time+1)
+        line.set_x2(topLine, time+1)
+        line.set_x2(middleLine, time+1)
+        line.set_x2(bottomLine, time+1)
+
+        if not filled and not extendtilfilled
+            array.remove(boxes, j)
+            array.remove(topLines, j)
+            array.remove(middleLines, j)
+            array.remove(bottomLines, j)
+            continue 
+            box.set_right(box, time+nbars)
+            line.set_x2(topLine, time+nbars)
+            line.set_x2(middleLine, time+nbars)
+            line.set_x2(bottomLine, time+nbars)
+        if not filled and actionbool and actiondel == 'Delete Zone' and ((box.get_right(box)-box.get_left(box)) > nmbars)
+            line.delete(topLine)
+            line.delete(middleLine)
+            line.delete(bottomLine)
+            box.delete(box)
+        if not filled and actionbool and actiondel == 'Stop Zone' and ((box.get_right(box)-box.get_left(box)) > nmbars)
+            array.remove(boxes, j)
+            array.remove(topLines, j)
+            array.remove(middleLines, j)
+            array.remove(bottomLines, j)
+            continue 
+            box.set_right(box, time)
+            line.set_x2(topLine, time)
+            line.set_x2(middleLine, time)
+            line.set_x2(bottomLine, time)
+// Deleting if the array is too big
+if array.size(boxes) >= maxBoxes
+    int i = 0
+    while array.size(boxes) >= maxBoxes
+        box        = array.get(boxes, i)
+        topLine    = array.get(topLines, i)
+        middleLine = array.get(middleLines, i)
+        bottomLine = array.get(bottomLines, i)
+
+        line.delete(topLine)
+        line.delete(middleLine)
+        line.delete(bottomLine)
+        box.delete(box)
+        array.remove(boxes, i)
+        array.remove(topLines, i)
+        array.remove(middleLines, i)
+        array.remove(bottomLines, i)
+        i += 1

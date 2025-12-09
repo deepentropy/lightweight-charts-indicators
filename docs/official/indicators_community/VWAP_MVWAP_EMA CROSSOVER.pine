@@ -1,0 +1,90 @@
+//@version=3
+study("VWAP/MVWAP/EMA CROSSOVER", overlay = true)
+
+//created by @DerrickLaFlame
+
+// Get user input
+vwaplength= input(title="VWAP Length", type=integer, defval=1)
+emaSource1= input(title="EMA 1 Source", type=source, defval=close)
+emaLength1= input(title="EMA 1 Length", type=integer, defval=7)
+emaSource2= input(title="EMA 2 Source", type=source, defval=close)
+emaLength2= input(title="EMA 2 Length", type=integer, defval=25)    
+rsilimit= input(title="RSI Limit (RISKY)", type=integer, defval=65)
+rsiminimum= input(title="RSI Minimum (WAIT FOR DIP)", type=integer, defval=51)
+
+/// MVWAP ///
+avlength = input(title="MVWAP Length", type=integer, defval=21)
+av = ema(vwap,avlength)
+plotav = plot(av,color= fuchsia, transp=0, title = "MVWAP")
+mvwap = av
+
+// Get values
+ema1= ema(emaSource1, emaLength1)
+ema2= ema(emaSource2, emaLength2)
+
+
+/// VWAP ///
+cvwap = ema(vwap,vwaplength)
+plotvwap = plot(cvwap,color= yellow, transp=0, title = "VWAP", linewidth=3)
+
+Check1 = ema1 >= mvwap
+Check2 = ema2 >= mvwap
+Check3 = cvwap >= mvwap
+
+Cross = Check1 and Check2
+Crossup = Cross and Check3
+
+Buy = Crossup and rsi(close,14)
+Risky = Crossup and rsi(close,14) > rsilimit
+BuyDip = Crossup and rsi(close,14) < rsiminimum
+GoodBuy = Buy and rsi(close,14) < rsilimit
+GreatBuy = GoodBuy and rsi(close,14) > rsiminimum
+
+//Test
+Long = Buy == 1 ? 1 : 0
+Short = Buy != 1 ? 1 : 0
+
+Longtrigger = crossover(Long, 0.5)
+Shorttrigger = crossover(Short, 0.5)
+
+plotshape(Longtrigger, title= "Long Entry", location=location.belowbar, color=green, transp=0, style=shape.triangleup, text="Long")
+plotshape(Shorttrigger, title= "Short Entry", location=location.abovebar, color=red, transp=0, style=shape.triangledown, text="Short")
+
+
+// Plot signals to chart
+plotshape(Buy, title= "Buy Alert", location=location.belowbar, color=white, transp=100, style=shape.triangleup, text="")
+plotshape(Risky, title= "Risky", location=location.abovebar, color=red, transp=100, style=shape.triangledown, text="")
+plotshape(BuyDip, title= "WAIT", location=location.abovebar, color=orange, transp=100, style=shape.triangledown, text="")
+plotshape(GreatBuy, title= "Enter Here", location=location.belowbar, color=green, transp=100, style=shape.triangleup, text="")
+plot(ema(emaSource1, emaLength1), color=yellow, linewidth=1, transp=0, title='EMA1')
+plot(ema(emaSource2, emaLength2), color=orange, linewidth=1, transp=0, title='EMA2')
+
+// Alerts
+alertcondition(Longtrigger, title="Long Alert", message="Long Alert")
+alertcondition(Shorttrigger, title="Short Alert", message="Short Alert") 
+
+//Barcolor
+barcolor(Long == 1 ? green : red, title = "Bar Color")
+
+// Cloud
+displacement_A = 26
+displacement_B = 26
+conversion_len = 9
+base_line_len = 26
+senkou_B_len = 51
+
+f(x) =>
+    total_volume = sum(volume, x)
+    volume_weighted_high = sum(high*volume, x)/total_volume
+    volume_weighted_low = sum(low*volume, x)/total_volume
+    (volume_weighted_high + volume_weighted_low)/2
+    
+conversion_line = f(conversion_len)
+base_line = f(base_line_len)
+senkou_A = (conversion_line + base_line)/2
+senkou_B = f(senkou_B_len)
+
+
+p1 = plot(senkou_A, offset = displacement_A, color = green, title = "Senkou A", linewidth = 2, transp = 100)
+p2 = plot(senkou_B, offset = displacement_B, color = red, title = "Senkou B", linewidth = 2, transp = 100)
+fill(p1, p2 , color = senkou_A > senkou_B ? green : red, transp= 73)

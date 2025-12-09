@@ -1,0 +1,239 @@
+//@version=3
+
+study(title="Fractal and Alligator Alerts R2 by JustUncleL", overlay=true, shorttitle="FractalAlligator")
+
+//
+// By: JustUncleL
+// Date: 12-Sep-2017
+// Version: R2
+//
+// Description:
+//   This is based on one well known Bill Williams Fractal and Alligator
+//   strategy. I was unable to find anyone who has coded this yet so here
+//   is my attempt.
+//
+//   The following code is an implementation of the strategy specified
+//   here:
+//      http://forexwot.com/how-to-trade-high-accuracy-bill-williams-fractals-alligator-trading-system.html
+//
+//   This was achieved by combining some of the ideas from three other
+//   indicators:
+//   - True Williams Alligator (SMMA) by the_batman
+//   - Fractals and Levels by JustUncleL
+//   - Awesome Oscillator
+//
+//   There are three types of Fractal / Alligator Strategies included in this indicator:
+//   - Fractal Reversal : In an uptrend defined by Low Fractal that is above the Alligator teeth and
+//                        the Alligator mouth is completed open in an uptrend. The opposite for
+//                        downtrends. (Green and Red Arrows)
+//
+//   - Fractal BreakOut : In an uptrend, at the start of Alligator open we look back for the first Fractal
+//                        High above Alligator Teeth. Alligator teeth must be above mouth.
+//                        (Aqua and Fuchsia arrows)
+//
+//   - Awesome BreakOut : In an uptrend, at the start of Alligator open we look back for the first Bar close
+//                        above Alligator, Alligator Lips above Teeth and Jaw, Awesome Oscillator just started
+//                        changing to lime. The opposite for downtrends. (Teal and Orange arrows)
+//
+// Modifications:
+//
+//   R1 : Original
+//
+//   19-Oct-2017:
+//      - Added code to show the Alligator offset extensions.
+//
+//   R2 : New signal Type.
+//      - Added new signal Type Awesome Oscillator Break Out.
+//      
+// References:
+//   - [RS]fractals V# - RicardoSantos
+//   - http://www.tradingstrategyguides.com/fractal-trading-strategy/
+//
+// -----------------------------------------------------------------------------
+// Copyright 2017 JustUncleL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+// 
+// The GNU General Public License can be found here
+// <http://www.gnu.org/licenses/>.
+//
+// -----------------------------------------------------------------------------
+//
+
+//
+// === INPUTS ===
+//
+jawLength     = input(13, "Jaw Length")
+teethLength   = input(8, "Teeth Length")
+lipsLength    = input(5, "Lips Length")
+//
+jawOffset     = input(8, "Jaw Offset")
+teethOffset   = input(5, "Teeth Offset")
+lipsOffset    = input(3, "Lips Offset")
+asrc          = input(hl2, "Alligator Source")
+//
+hideAlligator = input(false)
+showAlligatorState = input(false)
+//
+hidefractals  = input(false)
+hidelevels    = input(false)
+maxLvlLen     = input(0)
+uFractalRev   = input(false, "Use Fractal Reversal Strategy")
+uFractalBO    = input(false, "Use Fractal Break Out Strategy")
+//
+uAwesomeBO    = input(false, "Use Awesome Break Out Strategy")
+nLengthSlow   = input(34, minval=1, title="Awesome Slow Length")
+nLengthFast   = input(5,  minval=1, title="Awesome Fast Length")
+//
+// === /INPUTS ===
+
+
+// === FUNCTIONS ===
+
+//  ||---   Completed Fractals Recognition Functions:  -----------------------------------------------------||
+isIdealFractal(mode) =>
+    ret = mode == 1 ? high[4] < high[3] and high[3] < high[2] and high[2] > high[1] and high[1] > high[0] : 
+          mode == -1 ? low[4] > low[3] and low[3] > low[2] and low[2] < low[1] and low[1] < low[0] : false
+    
+
+isRegularFractal(mode) =>
+    ret = mode == 1 ? high[4] < high[2] and high[3] <= high[2] and high[2] > high[1] and high[2] > high[0] : 
+          mode == -1 ? low[4] > low[2] and low[3] >= low[2] and low[2] < low[1] and low[2] < low[0] : false
+          
+//  ||-----------------------------------------------------------------------------------------------------||
+
+//
+// SMMA function to Calculate Alligaor Trend Lines
+//
+smma(src, length) =>
+    s = 0.0
+    s := na(s[1]) ? sma(src, length) : ( (s[1] * (length - 1)) + src) / length
+    s
+    
+// === /FUNCIONS ===
+
+// === SERIES ===
+
+// Calculate Offsetted Alligator curves
+jaw_   = smma(asrc, jawLength)
+teeth_ = smma(asrc, teethLength)
+lips_  = smma(asrc, lipsLength)
+
+// Re-allign Alligator to current price action.
+jaw   = jaw_[jawOffset]
+teeth = teeth_[teethOffset]
+lips  = lips_[lipsOffset]
+
+// Fractals.
+topfractal = isRegularFractal(1)
+botfractal = isRegularFractal(-1)
+
+//Count How many candles for current Pivot Level, If new reset.
+topcnt = 0
+botcnt = 0
+topcnt := topfractal ? 0 : nz(topcnt[1])+1
+botcnt := botfractal ? 0 : nz(botcnt[1])+1
+
+topfractals = 0.0
+botfractals = 0.0
+topfractals := topfractal ? high[2] : topfractals[1]
+botfractals := botfractal ? low[2] : botfractals[1]
+
+topfc = (topfractals != topfractals[1]) ? na : green
+botfc = (botfractals != botfractals[1]) ? na : red
+
+// Alligator trend States down(<0), up(>0), considation(0) conditions.
+// 1 = lips above teeth above jaw in order, 2 = lips above teeth and jaw, 3 = lips above teeth.
+//
+AlligatorState = lips < teeth and teeth < jaw? -1 : lips > teeth and teeth > jaw ? 1 : 
+                 lips<teeth and lips<jaw? -2 : lips>teeth and lips>jaw? 2 :
+                 lips<teeth? -3 : lips>teeth? 3 : 0
+
+// Awesome Oscillator 
+xSMA1_hl2 = sma(hl2, nLengthFast)
+xSMA2_hl2 = sma(hl2, nLengthSlow)
+xSMA1_SMA2 = xSMA1_hl2 - xSMA2_hl2
+// AO State
+// 1 = start above zero and ascending, 2 = above zero but descending.
+AOstate = xSMA1_SMA2>=0? xSMA1_SMA2 > xSMA1_SMA2[1] ? 1 : 2 : xSMA1_SMA2 > xSMA1_SMA2[1] ? -2 : -1
+
+// === /SERIES ===
+
+// === PLOTTING ===
+//
+// Plot Alligator
+plot(hideAlligator ? na : jaw_, "Jaw", blue, offset=jawOffset,transp=10,linewidth=2)
+plot(hideAlligator ? na : teeth_, "Teeth", red, offset=teethOffset,transp=10,linewidth=2)
+plot(hideAlligator ? na : lips_, "Lips", green, offset=lipsOffset,transp=10,linewidth=2)
+
+// Plot Fractals
+plotshape(hidefractals ? na : topfractal, color=green, transp=0, style=shape.triangleup, location=location.abovebar, offset=-2, size=size.auto)
+plotshape(hidefractals ? na : botfractal, color=red, transp=0, style=shape.triangledown, location=location.belowbar, offset=-2, size=size.auto)
+
+// Build The Fractal Level lines, fill in the gaps.
+plot(not hidelevels and (topcnt<=2)? topfractals : na, color=topfc, transp=20, linewidth=1, offset=-2, title="Top Levels -2")
+plot(not hidelevels and (botcnt<=2)? botfractals : na, color=botfc, transp=20, linewidth=1, offset=-2, title="Bottom Levels -2")
+plot(not hidelevels and (topcnt<=3)? topfractals : na, color=topfc, transp=20, linewidth=1, offset=-1, title="Top Levels -1")
+plot(not hidelevels and (botcnt<=3)? botfractals : na, color=botfc, transp=20, linewidth=1, offset=-1, title="Bottom Levels -1")
+plot(not hidelevels and (maxLvlLen==0 or topcnt<maxLvlLen)? topfractals : na, color=topfc, transp=20, linewidth=1, offset=0, title="Top Levels 0")
+plot(not hidelevels and (maxLvlLen==0 or botcnt<maxLvlLen)? botfractals : na, color=botfc, transp=20, linewidth=1, offset=0, title="Bottom Levels 0")
+
+// === /PLOTTING ===
+
+//
+// === ALERTS ===
+//
+
+//
+// Type 1 - Fractal Reversal Signal
+//
+highRev = 0
+lowRev  = 0
+highRev := AlligatorState<=0 ? 0 : AlligatorState==1? AlligatorState[2]>0 and botfractal and low[2]>teeth[2] ? nz(highRev[1])+1 :   highRev[1]>0? highRev[1]+1 : 0 : 0
+lowRev  := AlligatorState>=0 ? 0 : AlligatorState==-1? AlligatorState[2]<0 and topfractal and high[2]<teeth[2] ? nz(lowRev[1])+1 : lowRev[1]>0? lowRev[1]+1 : 0 : 0
+
+// Show Fractal Reversal alert Arrows
+plotarrow(uFractalRev ? highRev==1?1:lowRev==1?-1:na : na, title='Fractal Reversal Arrow', colorup=lime, colordown=red, transp=20, offset=0, minheight=40, maxheight=60 )
+
+//
+// Type 2 - Fractal Break Out Signal
+//
+highBO = 0
+lowBO = 0
+highBO := AlligatorState<=0 or low<teeth? 0 : AlligatorState>0? (valuewhen(topfractal,high[2],0) > valuewhen(topfractal,teeth[2],0)) ? nz(highBO[1])+1 : highBO[1]>0? highBO[1]+1 : 0 : 0
+lowBO  := AlligatorState>=0 or high>teeth? 0 : AlligatorState<0? (valuewhen(botfractal,low[2],0) < valuewhen(botfractal,teeth[2],0)) ? nz(lowBO[1])+1 : lowBO[1]>0? lowBO[1]+1 : 0 : 0
+ 
+// Show Break out alert arrows
+plotarrow(uFractalBO ? highBO==1?1:lowBO==1?-1:na : na, title='Fractal BreakOut Arrow', colorup=aqua, colordown=fuchsia, transp=20, offset=0, minheight=40, maxheight=60 )
+
+//
+// Type 3 - Awesome Break Out Signal
+//
+highABO = 0
+lowABO = 0
+highABO := AlligatorState<=0 or low<teeth? 0 : AlligatorState<=2? AOstate==1 and close>lips ? nz(highABO[1])+1 : 0 : 0
+lowABO  := AlligatorState>=0 or high>teeth? 0 : AlligatorState>=-2? AOstate==-1 and close<lips ? nz(lowABO[1])+1 : 0 : 0
+
+// Show Break out alert arrows
+plotarrow(uAwesomeBO ? highABO==1?1:lowABO==1?-1:na : na, title='Fractal BreakOut Arrow', colorup=teal, colordown=orange, transp=20, offset=0, minheight=40, maxheight=60 )
+
+
+// show Alligator Trend Direction State.
+plotshape(showAlligatorState?true:na, title="Alligator Trend Direction", location=location.bottom,style=shape.square, color=AlligatorState==1?green:AlligatorState==-1?red:yellow,transp=10)
+
+// send alerts to alarm subsystem
+alertcondition(highRev==1,title="Fractal Reversal Long",message="REV LONG")
+alertcondition(lowRev==1,title="Fractal Reversal Short",message="REV SHORT")
+alertcondition(highBO==1,title="Fractal BreakOut Long",message="BO LONG")
+alertcondition(lowBO==1,title="Fractal BreakOut Short",message="BO SHORT")
+
+// === /ALERTS ===
+//EOF

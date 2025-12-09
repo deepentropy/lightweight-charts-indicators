@@ -1,0 +1,20 @@
+//@version=6
+indicator("Relative Volume at Time", "RelVol")
+
+import TradingView/ta/7
+
+anchorTimeframeInput = input.timeframe("1D", "Anchor Timeframe", tooltip = "When Chart Timeframe >= `Anchor Timeframe`, the indicator will use last `Length` bars in its calculations.")
+lengthInput          = input.int(10, "Length", minval = 1)
+calculationModeInput = input.string("Cumulative", "Calculation Mode", options = ["Cumulative", "Regular"])
+const string TT_AR = "If checked, the volume on bars that have not yet closed will be adjusted based on the previous volume data for the current session, extrapolating the volume at the end of the period."
+adjustRealtimeInput  = input.bool(true, "Adjust Unconfirmed", tooltip = TT_AR)
+
+[currentVolume, pastVolume, _] = ta.relativeVolume(lengthInput, anchorTimeframeInput, calculationModeInput == "Cumulative", adjustRealtimeInput)
+
+plot(currentVolume / pastVolume, "Relative Volume Ratio", color.new(currentVolume / pastVolume > 1 ? color.green: color.red, 70), 1, plot.style_columns, histbase = 1)
+hline(1, color = color.new(color.gray, 50))
+
+var cumVol = 0.
+cumVol += nz(volume)
+if barstate.islast and cumVol == 0
+    runtime.error("The data vendor doesn't provide volume data for this symbol.")

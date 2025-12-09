@@ -1,0 +1,230 @@
+//@version=3
+//
+
+study(title='Price Divergence Detector V3.2 revised by JustUncleL', shorttitle='PDDR',overlay=true)
+
+//
+// Revisions: V3 by JustUncleL
+// Original Author:  RicardoSantos
+// Date:    4-Dec-2016
+//
+// Description:
+//  Price Divergence detection for various methods : RSI, MACD, STOCH, VOLUME
+//  ACC-DIST, FISHER, CCI, BB %B, Ehlers IdealRSI and Elders Force Index.
+//
+//
+// Mofidifications:
+//
+//  3.1 20-Aug-2017
+//      - Added Trend Volume Accumulation, this option really works only well
+//        with Renko and HA candles. You have the option to use EMA for trend
+//        direction change instead of candle bull/bear direction.
+//      4-Aug-2017
+//      - Added Elders Force Index
+//      3-Aug-2017
+//      - Updated to version 3 of Pinescript.
+//      - Updated with some RichardoSantos revisions.
+//
+//  3.0 - Added option to disable/enable Hidden and Regular Divergence
+//      - Added new divergence method BB %B (close only)
+//      - Added new divergence mothod Ehlers IdealRSI (close only)
+//
+//  2.0 - original by RicardoSantos
+//
+// References:
+//  Information on Divergence Trading:
+//  - http://www.babypips.com/school/high-school/trading-divergences
+//  - http://www.incrediblecharts.com/indicators/bollinger_percentage_b_band_width.php (BB %B)
+//
+
+// === INPUTS
+
+//  ||  General Input:
+method = input(defval='BB %B', options=['RSI', 'MACD', 'Stochastic', 'Volume', 'Accumulation/Distribution', 'Fisher Transform', 'CCI', 'BB %B', 'Ideal RSI','Elders Force Index','Trend Acc Volume'])
+SHOW_LABEL = input(title='Show Labels', type=bool, defval=true)
+SHOW_CHANNEL = input(title='Show Channel', type=bool, defval=false)
+uHid = input(true,title="Show Hidden Divergence")
+uReg = input(true,title="Show Regular Divergence")
+uTVAma  = input(false,title="Use EMA Trend direction for Trend Acc Volume")
+//  ||  RSI / STOCH / VOLUME / ACC/DIST/ FISHER/ CCI/ BB %B Input/Elders Force Index:
+rsi_smooth = input(title="Length for Method (except MACD):", type=integer, defval=20)
+//  ||  MACD Input:
+macd_src = input(title='MACD Source:', type=source, defval=close)
+macd_fast = input(title='MACD Fast:', type=integer, defval=12)
+macd_slow = input(title='MACD Slow:', type=integer, defval=26)
+macd_smooth = input(title='MACD Smooth Signal:', type=integer, defval=9)
+//
+high_src = high // input(high,title="High Source")
+low_src  = low // input(low,title="Low Source")
+
+// === /INPUTS
+
+
+//  ||  Functions:
+f_top_fractal(_src)=>_src[4] < _src[2] and _src[3] < _src[2] and _src[2] > _src[1] and _src[2] > _src[0]
+f_bot_fractal(_src)=>_src[4] > _src[2] and _src[3] > _src[2] and _src[2] < _src[1] and _src[2] < _src[0]
+f_fractalize(_src)=>f_top_fractal(_src) ? 1 : f_bot_fractal(_src) ? -1 : 0
+
+//  ||••>   START MACD FUNCTION
+f_macd(_src, _fast, _slow, _smooth)=>
+    _fast_ma = sma(_src, _fast)
+    _slow_ma = sma(_src, _slow)
+    _macd = _fast_ma-_slow_ma
+    _signal = ema(_macd, _smooth)
+    _hist = _macd - _signal
+//  ||<••   END MACD FUNCTION
+
+//  ||••>   START ACC/DIST FUNCTION
+f_accdist(_smooth)=>_return=sma(cum(close==high and close==low or high==low ? 0 : ((2*close-low-high)/(high-low))*volume), _smooth)
+//  ||<••   END ACC/DIST FUNCTION
+
+//  ||••>   START FISHER FUNCTION
+f_fisher(_src, _window)=>
+    _h = highest(_src, _window)
+    _l = lowest(_src, _window)
+    _value0 = 0.0
+    _value0 := .66 * ((_src - _l) / max(_h - _l, .001) - .5) + .67 * nz(_value0[1])
+    _value1 = _value0 > .99 ? .999 : _value0 < -.99 ? -.999 : _value0
+    _fisher = 0.0
+    _fisher := .5 * log((1 + _value1) / max(1 - _value1, .001)) + .5 * nz(_fisher[1])
+//  ||<••   END FISHER FUNCTION
+
+// Rolling Moving Average (or Wells Wilders MA)
+irma(p,l) =>
+    irma = 0.0
+    irma := (nz(irma[1]) * (l - 1) + p) / l
+
+
+// RSI function.
+irsi(p, l) => 
+    up   = irma(max(change(p), 0), l)
+    down = irma(-min(change(p), 0), l)
+    irsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+//
+
+//
+// --- Start the Homodyne Discriminator Caculations
+//
+idealRSI(p) =>
+    C1     = 0.0962
+    C2     = 0.5769
+    Df     = 0.5
+    Period = 0.0
+    I2 = 0.0
+    Q2 = 0.0
+    Re = 0.0
+    Im = 0.0
+    SmoothPeriod = 0.0
+    C3      = (nz(Period[1])*0.075+0.54)
+    smooth    = ((hl2*4.0) + (hl2[1]*3.0) + (hl2[2]*2.0) + (hl2[3]))/10.0
+    dDeTrend  = (smooth*C1 + nz(smooth[2])*C2 - nz(smooth[4])*C2 - nz(smooth[6])*C1)*C3
+    Q1      = (dDeTrend*C1 + nz(dDeTrend[2])*C2 - nz(dDeTrend[4])*C2 - nz(dDeTrend[6])*C1)*C3
+    I1      = nz(dDeTrend[3])
+    jI      = (I1*C1 + nz(I1[2])*C2 - nz(I1[4])*C2 - nz(I1[6])*C1)*C3
+    jQ      = (Q1*C1 + nz(Q1[2])*C2 - nz(Q1[4])*C2 - nz(Q1[6])*C1)*C3
+    I2_  = I1 - jQ
+    Q2_  = Q1 + jI
+    I2  := 0.2*I2_ + 0.8*nz(I2[1])
+    Q2  := 0.2*Q2_ + 0.8*nz(Q2[1])
+    Re_ = I2*nz(I2[1]) + Q2*nz(Q2[1])
+    Im_ = I2*nz(Q2[1]) - Q2*nz(I2[1])
+    Re  := 0.2*Re_ + 0.8*nz(Re[1])
+    Im  := 0.2*Im_ + 0.8*nz(Im[1]) 
+    dp_ = iff(Re!=0 and Im!=0 , 6.28318/atan(Im/Re) , 0)
+    II  = nz(Period[1])
+    dp  = max(max(min(min(dp_,1.5*II),50),0.6667*II),6)
+    Period := dp*0.2 + nz(Period[1])*0.8
+    SmoothPeriod := 0.33*Period + nz(SmoothPeriod[1])*0.67
+    rsiLen  = round((SmoothPeriod*Df)-1)  // Get variable RSI length from discriminator
+    idealRSI  = irsi(p,rsiLen)         // Generate RSI.
+
+// --- Bollinger Band Vdub BB %B
+pcBB(p,l) =>
+    basis = sma(p, l)
+    dev = 0.1*stdev(p, l)
+    upper = basis + dev
+    lower = basis - dev
+    pcBB = (p - lower)/(upper - lower)
+
+forceIndex(p,l) =>
+    f = (p-p[1])*volume
+    f
+
+//Trend Volume Accumulation
+TVA(p,l) =>
+    ma1 = ema(p,l) // Get the MA series
+    direction = 0
+    direction := uTVAma ? ( rising(ma1,3) ? 1 : falling(ma1,3)?-1 : nz(direction[1])) : ( (open<close)? 1 : open>close? -1 : nz(direction[1]) )
+    tva = 0.0
+    tva := direction>0? (nz(tva[1])>=0? nz(tva[1])+volume : volume) : direction<0 ? (nz(tva[1])<=0? nz(tva[1])-volume : -volume) : nz(tva[1])
+    tva
+
+//
+// === End of Functions.
+
+
+//  ||  Method selection
+oscilator_high = na
+oscilator_low = na
+if method == 'RSI'
+    oscilator_high := rsi(high_src, rsi_smooth)
+    oscilator_low := rsi(low_src, rsi_smooth)
+if method == 'MACD'
+    oscilator_high := f_macd(macd_src, macd_fast, macd_slow, macd_smooth)
+    oscilator_low := f_macd(macd_src, macd_fast, macd_slow, macd_smooth)
+if method == 'Stochastic'
+    oscilator_high := stoch(close, high, low, rsi_smooth)
+    oscilator_low := stoch(close, high, low, rsi_smooth)
+if method == 'Volume'
+    oscilator_high := sma(volume, rsi_smooth)
+    oscilator_low := sma(volume, rsi_smooth)
+if method == 'Accumulation/Distribution'
+    oscilator_high := f_accdist(rsi_smooth)
+    oscilator_low := f_accdist(rsi_smooth)
+if method == 'Fisher Transform'
+    oscilator_high := f_fisher(high_src, rsi_smooth)
+    oscilator_low := f_fisher(low_src, rsi_smooth)
+if method == 'CCI'
+    oscilator_high := cci(high_src, rsi_smooth)
+    oscilator_low := cci(low_src, rsi_smooth)
+if method == 'BB %B'
+    oscilator_high := pcBB(high_src, rsi_smooth)
+    oscilator_low := pcBB(low_src, rsi_smooth)
+if method == 'Ideal RSI'
+    oscilator_high := idealRSI(high_src)
+    oscilator_low := idealRSI(low_src)
+if method == 'Elders Force Index'
+    oscilator_high := forceIndex(high_src,rsi_smooth)
+    oscilator_low := forceIndex(low_src,rsi_smooth)
+if method == 'Trend Acc Volume'
+    oscilator_high := TVA(high_src,rsi_smooth)
+    oscilator_low := TVA(low_src,rsi_smooth)
+
+//
+fractal_top = f_fractalize(oscilator_high) > 0 ? oscilator_high[2] : na
+fractal_bot = f_fractalize(oscilator_low) < 0 ? oscilator_low[2] : na
+
+high_prev = valuewhen(fractal_top, oscilator_high[2], 0)[2]
+high_price = valuewhen(fractal_top, high[2], 0)[2]
+low_prev = valuewhen(fractal_bot, oscilator_low[2], 0)[2] 
+low_price = valuewhen(fractal_bot, low[2], 0)[2]
+
+regular_bearish_div = fractal_top and high[2] > high_price and oscilator_high[2] < high_prev
+hidden_bearish_div = fractal_top and high[2] < high_price and oscilator_high[2] > high_prev
+regular_bullish_div = fractal_bot and low[2] < low_price and oscilator_low[2] > low_prev
+hidden_bullish_div = fractal_bot and low[2] > low_price and oscilator_low[2] < low_prev
+
+
+// Plotting
+plot(title='H F', series=fractal_top ? high[2] : na, color=(regular_bearish_div and uReg) or (hidden_bearish_div and uHid)? maroon : not SHOW_CHANNEL ? na : silver, offset=-2)
+plot(title='L F', series=fractal_bot ? low[2] : na, color=(regular_bullish_div and uReg) or (hidden_bullish_div and uHid) ? green : not SHOW_CHANNEL ? na : silver, offset=-2)
+plot(title='H D', series=fractal_top ? high[2] : na, style=circles, color=(regular_bearish_div and uReg) or (hidden_bearish_div and uHid)? maroon : not SHOW_CHANNEL ? na : silver, linewidth=3, offset=-2)
+plot(title='L D', series=fractal_bot ? low[2] : na, style=circles, color=(regular_bullish_div and uReg) or (hidden_bullish_div and uHid) ? green : not SHOW_CHANNEL ? na : silver, linewidth=3, offset=-2)
+
+plotshape(title='+RBD', series=not SHOW_LABEL or not uReg? na : regular_bearish_div ? high[2] : na, text='R', style=shape.labeldown, location=location.absolute, color=maroon, textcolor=white, offset=-2)
+plotshape(title='+HBD', series=not SHOW_LABEL or not uHid? na : hidden_bearish_div ? high[2] : na, text='H', style=shape.labeldown, location=location.absolute, color=maroon, textcolor=white, offset=-2)
+plotshape(title='-RBD', series=not SHOW_LABEL or not uReg? na : regular_bullish_div ? low[2] : na, text='R', style=shape.labelup, location=location.absolute, color=green, textcolor=white, offset=-2)
+plotshape(title='-HBD', series=not SHOW_LABEL or not uHid? na : hidden_bullish_div ? low[2] : na, text='H', style=shape.labelup, location=location.absolute, color=green, textcolor=white, offset=-2)
+
+
+//EOF

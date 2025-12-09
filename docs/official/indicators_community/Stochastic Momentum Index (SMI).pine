@@ -1,0 +1,58 @@
+//@version=5
+
+// Stochastic Momentum Index
+// Author: Surjith S M (India)
+// Copyright: CC 3.0 
+// Thanks UCSgears, lonestar108
+
+// Release: v2.1
+
+indicator("Stochastics Momentum Index", shorttitle = "Stoch_MTM")
+
+// Input parameters
+a = input.int(10, "Percent K Length", minval=1)
+b = input.int(3, "Percent D Length", minval=1)
+c = input.int(10, "EMA Signal Length", minval=1)
+smooth_period = input.int(5, "Smoothing Period", minval=1)
+ob = input.float(40, "Overbought", minval=-100, maxval=100)
+os = input.float(-40, "Oversold", minval=-100, maxval=100)
+
+// Range Calculation
+ll = ta.lowest(low, a)
+hh = ta.highest(high, a)
+diff = hh - ll
+rdiff = close - (hh+ll)/2
+
+avgrel = ta.ema(rdiff, b)
+avgdiff = ta.ema(diff, b)
+
+// SMI calculations
+SMI = avgdiff != 0 ? (avgrel/(avgdiff/2)*100) : 0.0
+
+// Apply smoothing to SMI
+SMI_smoothed = ta.sma(SMI, smooth_period)
+
+SMIsignal = ta.ema(SMI_smoothed, b)
+emasignal = ta.ema(SMI_smoothed, c)
+
+// Plotting
+plot(SMI_smoothed, "Stochastic", color=color.black)
+plot(emasignal, "EMA", color=color.red)
+
+h0 = hline(ob, "Overbought", color=color.gray)
+h1 = hline(os, "Oversold", color=color.gray)
+
+level_ob = ob
+level_obsmi = SMI_smoothed > level_ob ? SMI_smoothed : level_ob
+
+level_os = os
+level_ossmi = SMI_smoothed < level_os ? SMI_smoothed : level_os
+
+p1 = plot(level_ob, display=display.none)
+p2 = plot(level_obsmi, display=display.none)
+
+p3 = plot(level_os, display=display.none)
+p4 = plot(level_ossmi, display=display.none)
+
+fill(p1, p2, color=color.new(color.red, 60), title='OverBought')
+fill(p3, p4, color=color.new(color.green, 60), title='OverSold')

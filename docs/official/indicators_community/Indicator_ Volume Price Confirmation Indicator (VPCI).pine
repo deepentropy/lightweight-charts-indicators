@@ -1,0 +1,46 @@
+//
+// @author LazyBear
+//
+// If you use this code in its orignal/modified form, do drop me a note. 
+// 
+study("Volume Price Confirmation Indicator [LazyBear]", shorttitle="VPCI_LB")
+shortTerm=input(5)
+longTerm=input(20)
+
+src=close
+vpc = vwma(src, longTerm) - sma(src, longTerm)
+vpr = vwma(src, shortTerm)/sma(src, shortTerm)
+vm  = sma(volume, shortTerm)/sma(volume, longTerm)
+
+vpci = vpc*vpr*vm
+hline(0)
+plot(vpci, color=orange, linewidth=2)
+
+DrawMA = input(true, type=bool, title="Draw MA on VPCI?")
+lengthMA=input(8, "VPCI MA Length")
+s=sma(vpci, lengthMA)
+plot(DrawMA?s:na, color=teal)
+
+// Uncomment this line to enable histogram
+// plot(DrawMA?(vpci-s):na, color=blue, style=histogram)
+
+DrawBands = input(false, type=bool)
+HighlightBreaches = input(true, type=bool)
+length=input(20, title="BB Length")
+mult=input(2.5)
+bb_s = vpci
+basis = sma(bb_s, length)
+dev = (mult * stdev(bb_s, length))
+upper = (basis + dev)
+lower = (basis - dev)
+
+plot(DrawBands?basis:na, color=gray, style=line)
+p1 = plot(DrawBands?upper:na, color=gray)
+p2 = plot(DrawBands?lower:na , color=gray)
+fill(p1, p2, blue)
+
+b_color = (bb_s > upper) ? red : (bb_s < lower) ? green : na
+offs_v = 0.3
+breach_pos = (bb_s >= upper) ? (bb_s+offs_v) : (bb_s <= lower ? (bb_s - offs_v) : 0)
+Breached=(bb_s >= upper) or (bb_s <= lower)
+plot(HighlightBreaches and Breached ? breach_pos : na, style=cross, color=b_color,linewidth=3)

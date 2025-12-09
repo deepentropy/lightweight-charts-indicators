@@ -1,0 +1,181 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © HoanGhetti
+
+//@version=5
+indicator("Breaks and Retests [HG]", overlay = true, max_boxes_count = 500, max_labels_count = 500)
+
+g_sr = 'Support and Resistance'
+g_c  = 'Conditions'
+g_st = 'Styling'
+t_r  = 'Bar Confirmation: Generates alerts when candle closes. (1 Candle Later) \n\nHigh & Low: By default, the Break & Retest system uses the current close value to determine a condition, selecting High & Low will make the script utilize these two values instead of the close value. In return, the script won\'t repaint and will yield different results.'
+t_rv = 'Whenever a potential retest is detected, the indicator knows that a retest is about to happen. In that given situation, this input grants the ability to raise the limit on how many bars are allowed to be actively checked while a potential retest event is active.\n\nExample, if you see the potential retest label, how many bars do you want that potential retest label to be active for to eventually confirm a retest? This system was implemented to prevent retest alerts from going off 10+ bars later from the potential retest point leading to inaccurate results.'
+
+input_lookback  = input.int(defval = 20, title = 'Lookback Range', minval = 1, tooltip = 'How many bars for a pivot event to occur.', group = g_sr)
+input_retSince  = input.int(defval = 2, title = 'Bars Since Breakout', minval = 1, tooltip = 'How many bars since breakout in order to detect a retest.', group = g_sr)
+input_retValid  = input.int(defval = 2, title = 'Retest Detection Limiter', minval = 1, tooltip = t_rv, group = g_sr)
+input_breakout  = input.bool(defval = true, title = 'Breakouts', group = g_c)
+input_retest    = input.bool(defval = true, title = 'Retests', group = g_c)
+input_repType   = input.string(defval = 'On', title = 'Repainting', options = ['On', 'Off: Candle Confirmation', 'Off: High & Low'], tooltip = t_r, group = g_c)
+input_outL      = input.string(defval = line.style_dotted, title = 'Outline', group = g_st, options = [line.style_dotted, line.style_dashed, line.style_solid])
+input_extend    = input.string(defval = extend.none, title = 'Extend', group = g_st, options = [extend.none, extend.right, extend.left, extend.both])
+input_labelType = input.string(defval = 'Full', title = 'Label Type', options = ['Full', 'Simple'], group = g_st)
+input_labelSize = input.string(defval = size.small, title = 'Label Size', options = [size.tiny, size.small, size.normal, size.large, size.huge], group = g_st)
+input_plColor   = input.color(defval = color.red, title = 'Support', inline = 'Color', group = g_st)
+input_phColor   = input.color(defval = #089981, title = 'Resistance', inline = 'Color', group = g_st)
+input_override  = input.bool(defval = false, title = 'Override Text Color ', inline = 'Override', group = g_st)
+input_textColor = input.color(defval = color.white, title = '', inline = 'Override', group = g_st)
+bb              = input_lookback
+
+rTon            = input_repType == 'On'
+rTcc            = input_repType == 'Off: Candle Confirmation'
+rThv            = input_repType == 'Off: High & Low'
+breakText       = input_labelType == 'Simple' ? 'Br' : 'Break'
+
+// Pivot Instance
+pl = fixnan(ta.pivotlow(low, bb, bb))
+ph = fixnan(ta.pivothigh(high, bb, bb))
+
+// Box Height
+s_yLoc = low[bb + 1] > low[bb - 1] ? low[bb - 1] : low[bb + 1]
+r_yLoc = high[bb + 1] > high[bb - 1] ? high[bb + 1] : high[bb - 1]
+
+//-----------------------------------------------------------------------------
+// Functions
+//-----------------------------------------------------------------------------
+drawBox(condition, y1, y2, color) =>
+    var box drawBox = na
+    if condition
+        box.set_right(drawBox, bar_index - bb)
+        drawBox.set_extend(extend.none)
+        drawBox := box.new(bar_index - bb, y1, bar_index, y2, color, bgcolor = color.new(color, 90), border_style = input_outL, extend = input_extend)
+    [drawBox]
+
+updateBox(box) =>
+    if barstate.isconfirmed
+        box.set_right(box, bar_index + 5)
+
+breakLabel(y, color, style, textform) => label.new(bar_index, y, textform, textcolor = input_override ? input_textColor : color, style = style, color = color.new(color, 50), size = input_labelSize)
+retestCondition(breakout, condition) => ta.barssince(na(breakout)) > input_retSince and condition
+repaint(c1, c2, c3) => rTon ? c1 : rThv ? c2 : rTcc ? c3 : na
+
+//-----------------------------------------------------------------------------
+// Draw and Update Boxes
+//-----------------------------------------------------------------------------
+[sBox] = drawBox(ta.change(pl), s_yLoc, pl, input_plColor)
+[rBox] = drawBox(ta.change(ph), ph, r_yLoc, input_phColor)
+sTop = box.get_top(sBox), rTop = box.get_top(rBox)
+sBot = box.get_bottom(sBox), rBot = box.get_bottom(rBox)
+
+updateBox(sBox), updateBox(rBox)
+
+//-----------------------------------------------------------------------------
+// Breakout Event
+//-----------------------------------------------------------------------------
+var bool sBreak = na
+var bool rBreak = na
+cu = repaint(ta.crossunder(close, box.get_bottom(sBox)), ta.crossunder(low, box.get_bottom(sBox)), ta.crossunder(close, box.get_bottom(sBox)) and barstate.isconfirmed)
+co = repaint(ta.crossover(close, box.get_top(rBox)), ta.crossover(high, box.get_top(rBox)), ta.crossover(close, box.get_top(rBox)) and barstate.isconfirmed)
+
+switch
+    cu and na(sBreak) =>
+        sBreak := true
+        if input_breakout
+            breakLabel(sBot, input_plColor, label.style_label_upper_right, breakText)
+    co and na(rBreak) =>
+        rBreak := true
+        if input_breakout
+            breakLabel(rTop, input_phColor, label.style_label_lower_right, breakText)
+
+if ta.change(pl)
+    if na(sBreak)
+        box.delete(sBox[1])
+    sBreak := na
+if ta.change(ph)
+    if na(rBreak)
+        box.delete(rBox[1])
+    rBreak := na
+
+//-----------------------------------------------------------------------------
+// Retest Event
+//-----------------------------------------------------------------------------
+s1 = retestCondition(sBreak, high >= sTop and close <= sBot)                                            // High is GOET top sBox value and the close price is LOET the bottom sBox value.
+s2 = retestCondition(sBreak, high >= sTop and close >= sBot and close <= sTop)                          // High is GOET top sBox value and close is GOET the bottom sBox value and closing price is LOET the top sBox value.
+s3 = retestCondition(sBreak, high >= sBot and high <= sTop)                                             // High is in between the sBox.
+s4 = retestCondition(sBreak, high >= sBot and high <= sTop and close < sBot)                            // High is in between the sBox, and the closing price is below.
+
+r1 = retestCondition(rBreak, low <= rBot and close >= rTop)                                             // Low is LOET bottom rBox value and close is GOET the top sBox value
+r2 = retestCondition(rBreak, low <= rBot and close <= rTop and close >= rBot)                           // Low is LOET bottom rBox value and close is LOET the top sBox value and closing price is GOET the bottom rBox value.
+r3 = retestCondition(rBreak, low <= rTop and low >= rBot)                                               // Low is in between the rBox.
+r4 = retestCondition(rBreak, low <= rTop and low >= rBot and close > rTop)                              // Low is in between the rBox, and the closing price is above.
+
+retestEvent(c1, c2, c3, c4, y1, y2, col, style, pType) =>
+    if input_retest
+        var bool retOccurred = na
+        retActive   = c1 or c2 or c3 or c4
+        retEvent    = retActive and not retActive[1]
+        retValue    = ta.valuewhen(retEvent, y1, 0) 
+
+        if pType == 'ph' ? y2 < ta.valuewhen(retEvent, y2, 0) : y2 > ta.valuewhen(retEvent, y2, 0)
+            retEvent := retActive
+
+        // Must be reassigned here just in case the above if statement triggers.
+        retValue := ta.valuewhen(retEvent, y1, 0) 
+
+        retSince = ta.barssince(retEvent)
+        var retLabel = array.new<label>()
+
+        if retEvent
+            retOccurred := na
+            array.push(retLabel, label.new(bar_index - retSince, y2[retSince], text = input_labelType == 'Simple' ? 'P. Re' : 'Potential Retest', color = color.new(col, 50), style = style, textcolor = input_override ? input_textColor : col, size = input_labelSize))
+
+        if array.size(retLabel) == 2
+            label.delete(array.first(retLabel))
+            array.shift(retLabel)
+
+        retConditions = pType == 'ph' ? repaint(close >= retValue, high >= retValue, close >= retValue and barstate.isconfirmed) : repaint(close <= retValue, low <= retValue, close <= retValue and barstate.isconfirmed)
+        retValid = ta.barssince(retEvent) > 0 and ta.barssince(retEvent) <= input_retValid and retConditions and not retOccurred
+
+        if retValid
+            label.new(bar_index - retSince, y2[retSince], text = input_labelType == 'Simple' ? 'Re' : 'Retest', color = color.new(col, 50), style = style, textcolor = input_override ? input_textColor : col, size = input_labelSize)
+            retOccurred := true
+
+        if retValid or ta.barssince(retEvent) > input_retValid
+            label.delete(array.first(retLabel))
+
+        if pType == 'ph' and ta.change(ph) and retOccurred
+            box.set_right(rBox[1], bar_index - retSince)
+            retOccurred := na
+
+        if pType == 'pl' and ta.change(pl) and retOccurred
+            box.set_right(sBox[1], bar_index - retSince)
+            retOccurred := na
+        [retValid, retEvent, retValue]
+
+[rRetValid, rRetEvent] = retestEvent(r1, r2, r3, r4, high, low, input_phColor, label.style_label_upper_left, 'ph')
+[sRetValid, sRetEvent] = retestEvent(s1, s2, s3, s4, low, high, input_plColor, label.style_label_lower_left, 'pl')
+
+
+//-----------------------------------------------------------------------------
+// Alerts
+//-----------------------------------------------------------------------------
+alertcondition(ta.change(pl), 'New Support Level')
+alertcondition(ta.change(ph), 'New Resistance Level')
+alertcondition(ta.barssince(na(sBreak)) == 1, 'Support Breakout')
+alertcondition(ta.barssince(na(rBreak)) == 1, 'Resistance Breakout')
+alertcondition(sRetValid, 'Support Retest')
+alertcondition(sRetEvent, 'Potential Support Retest')
+alertcondition(rRetValid, 'Resistance Retest')
+alertcondition(rRetEvent, 'Potential Resistance Retest')
+
+AllAlerts(condition, message) =>
+    if condition
+        alert(message)
+
+AllAlerts(ta.change(pl), 'New Support Level')
+AllAlerts(ta.change(ph), 'New Resistance Level')
+AllAlerts(ta.barssince(na(sBreak)) == 1, 'Support Breakout')
+AllAlerts(ta.barssince(na(rBreak)) == 1, 'Resistance Breakout')
+AllAlerts(sRetValid, 'Support Retest')
+AllAlerts(sRetEvent, 'Potential Support Retest')
+AllAlerts(rRetValid, 'Resistance Retest')
+AllAlerts(rRetEvent, 'Potential Resistance Retest')

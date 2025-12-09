@@ -1,0 +1,16 @@
+//@version=6
+indicator('Open Interest', 'OI', format = format.volume, dynamic_requests = true)
+var tickerOI = str.format('{0}_OI', ticker.standard(syminfo.tickerid))
+[oiOpen, oiHigh, oiLow, oiClose, oiColorCond] = if timeframe.isintraday
+    request.security(tickerOI, timeframe.period, [open, high, low, close, close > close[1]], ignore_invalid_symbol = true)
+else
+    [na, na, na, na, false]
+[oiCloseD, oiColorCondD] = request.security(tickerOI, "1D", [close, close > close[1]], ignore_invalid_symbol = true)
+if barstate.islastconfirmedhistory and na(oiClose) and na(oiCloseD)
+    runtime.error(str.format('No Open Interest data found for the `{0}` symbol.', syminfo.prefix + ':' + syminfo.ticker))
+var hasIntraday = false
+if not na(oiClose)
+    hasIntraday := true
+plot(hasIntraday ? na : oiCloseD, 'Open Interest', oiColorCondD ? color.teal : color.red, style = plot.style_stepline, linewidth = 4)
+openInterestColor = oiColorCond ? color.teal : color.red
+plotcandle(oiOpen, oiHigh, oiLow, oiClose, 'Open Interest', color = openInterestColor, wickcolor = openInterestColor, bordercolor = openInterestColor)

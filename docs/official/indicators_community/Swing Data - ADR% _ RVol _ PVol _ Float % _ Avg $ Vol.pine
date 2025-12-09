@@ -1,0 +1,502 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+
+// Credit to  MikeC for the first version. Fred6724 for his contribution to this updated version
+// TheScrutiniser and GlinckEastwoot for ADR% formula
+// latest update with clean chart
+
+
+//@version=6
+indicator(title = 'Swing Data - ADR% / RVol / PVol / Float % / Avg $ Vol', shorttitle='ADR% / RVol / PVol / Float % / Avg $ Vol', overlay=true, max_bars_back = 253)
+
+show_empty_row    = input(true, title='Add an empty row above the displayed values', tooltip='Serves the purpose of not having the pane icons overlap with the ' +'text in the table if multiple panes are shown and the chart pane is hovered')
+add_empty_row_dn  = input.int(0, title='Add empty rows under the displayed values', tooltip='Serves the purpose of not having an overlaped table if at the bottom right', minval=0, maxval=5, step=1)
+txt_col           = input(color.orange, title='Text Color', group = 'Table')
+posTable          = input.string(defval='Top Right', title='Table Position', options=['Top Left', 'Top Right', 'Bottom Left', 'Bottom Right'], group = 'Table')
+tbl_size          = input.string('Normal', title='Table Size', options=['Tiny', 'Small', 'Normal', 'Large'], group = 'Table')
+txt_align_left    = input.string('Center', title='Left Column Text Align', options=['Left', 'Center', 'Right'], group = 'Table')
+txt_align_right   = input.string('Center', title='Right Column Text Align', options=['Left', 'Center', 'Right'], group = 'Table')
+bg_col            = input(#00000000, title='Background Color', group = 'Table')
+show_mktCap       = input(true, title='Show Market Cap', group = 'Display')
+show_float        = input(true, title='Show Shares Float', group = 'Display')
+show_floatpercent = input(true, title='Show Float%', group = 'Display')
+show_adrp         = input(true, title='Show ADR%', group = 'Display')
+show_atrPer       = input(false, title='Show ATR%', group = 'Display')
+show_atr          = input(false, title='Show ATR', group = 'Display')
+show_ipo_date     = input(false, title='Show IPO Timer', group = 'Display')
+show_lod_dist     = input(true, title='Show LoD dist.', group = 'Display')
+show_lod_price    = input(true, title='Show LoD Price', group = 'Display')
+show_dist_high    = input(true, title='Show %dist of 52 We High', group = 'Display')
+show_dist_low     = input(true, title='Show %dist of 52 We Low', group = 'Display')
+show_ADVS         = input(true, title='Show Avg $ Volume', group = 'Display')
+show_ADV          = input(true, title='Show Avg Volume', group = 'Display')
+show_projectedVol = input(true, title='Show Projected Volumes', group = 'Display')
+show_relVol       = input(true, title='Show Relative Volume', group = 'Display')
+show_volBuzz      = input(true, title='Show Vol. Buzz', group = 'Display')
+show_UDratio      = input(true, title='Show U/D Ratio', group = 'Display')
+show_rs_rating    = input(true, title='Show RS Rating', group = 'Display')
+show_liqCap       = input(true, title='Show Liquidity Cap', group = 'Display')
+show_selectSector = input(false, title='Show Selector Sector', group='Display', inline="1")
+show_sector_rs    = input(false, title='Sector RS', group='Display', inline="1")
+sector_chg_Up     = input(color.rgb(165, 214, 167, 0), title='Positive Chg', group = 'Display')
+sector_chg_Dn     = input(color.rgb(250, 161, 164, 0), title='Negative Chg', group = 'Display')
+show_sector       = input(true, title='Show Sector', group = 'Display')
+show_ind          = input(true, title='Show Ind. Grp', group = 'Display')
+adrp_len          = input(20, title='ADR% Length', group = 'Parameters', tooltip='The number of bars used in the calculation of the ADR%')
+atr_len           = input(14, title='ATR Length', group = 'Parameters', tooltip='The number of bars used in the calculation of the ATR')
+len               = input(50, 'Volume MA Length', group = 'Parameters', tooltip='The number of bars back for the MA calculation of the volume')
+
+
+
+// Switch Table Position
+tablePos = switch posTable
+    'Top Left'     => position.top_left
+    'Top Right'    => position.top_right
+    'Bottom Left'  => position.bottom_left
+    'Bottom Right' => position.bottom_right
+
+// Switch Label Size
+size_tbl = switch tbl_size
+    'Normal'  => size.normal
+    'Tiny'    => size.tiny
+    'Small'   => size.small
+    'Large'   => size.large
+
+// Switch Text Align
+align_txt_left = switch txt_align_left
+    'Left'   => text.align_left
+    'Center' => text.align_center
+    'Right'  => text.align_right
+
+align_txt_right = switch txt_align_right
+    'Left'   => text.align_left
+    'Center' => text.align_center
+    'Right'  => text.align_right
+
+// Calculation
+// ADR/ATR
+tf    = timeframe.period
+s     = syminfo.tickerid
+arp       = 100 * (ta.sma(high / low, adrp_len) - 1)
+atr       = ta.atr(atr_len)
+atrp      = 100 * (atr/close)
+lod_dist  = 100 * (close - low) / atr
+lod_price = low
+// IPO Date
+ipoSince = request.security(s, 'D', (bar_index+1)/252) // Compte le nbr de bars totale du graph
+// Volume
+vol   = request.security(s, tf, volume)
+ma    = ta.sma(vol, len)
+// 1) Relative Volume
+relVol = vol/ma*100
+// 2) Average Daily Vol
+avgDaVol = request.security(s, tf, ma)
+avgDaVolCalc = avgDaVol
+uV = ''
+if(avgDaVol >= 1000 and avgDaVol < 1000000)
+    avgDaVol := avgDaVol/1000
+    uV := 'K'
+if(avgDaVol >= 1000000 and avgDaVol < 1000000000)
+    avgDaVol := avgDaVol/1000000
+    uV := 'M'
+if(avgDaVol >= 1000000000)
+    avgDaVol := avgDaVol/1000000000
+    uV := 'B'
+// 3) Average Daily $ Vol
+closeDa = request.security(s, tf, close)
+advdolDa = closeDa*avgDaVolCalc
+uVDoll = ''
+if(advdolDa >= 1000 and advdolDa < 1000000)
+    advdolDa := advdolDa/1000
+    uVDoll := 'K'
+if(advdolDa >= 1000000 and advdolDa < 1000000000)
+    advdolDa := advdolDa/1000000
+    uVDoll := 'M'
+if(advdolDa >= 1000000000)
+    advdolDa := advdolDa/1000000000
+    uVDoll := 'B'
+// Other parameters
+// 4)  Market Cap
+MCap = request.financial(s, 'MARKET_CAP_BASIC', 'D', ignore_invalid_symbol = true)
+
+if na(MCap)
+    totalShares = syminfo.shares_outstanding_total
+    MCap := totalShares * close
+    
+MCapCalc = MCap
+uM = ''
+if(MCap >= 1000 and MCap < 1000000)
+    MCap := MCap/1000
+    uM := 'K'
+if(MCap >= 1000000 and MCap < 1000000000)
+    MCap := MCap/1000000
+    uM := 'M'
+if(MCap >= 1000000000)
+    MCap := MCap/1000000000
+    uM := 'B'
+// 5) Float%
+FSO      = syminfo.shares_outstanding_float
+FFMCap   = FSO * closeDa
+floatPer = FFMCap/MCapCalc*100
+// 6) Projected Volume
+// Code implented from    https://www.tradingview.com/script/tFe9aLsd-Projected-Volume/  credits to Bob-Lablaw
+// Calculation of projected volume
+time_period = ((time_close  - time)     / 1000)
+time_passed = ((timenow     - time)     / 1000)
+time_left   = ((time_close  - timenow)  / 1000)
+volume_per_second = 0.0
+volume_projected  = float(volume)
+uP = ''
+if time_left > 0
+    volume_per_second := (volume / time_passed)
+    volume_projected  := (volume + (volume_per_second * time_left))
+if(volume_projected >= 1000 and volume_projected < 1000000)
+    volume_projected := volume_projected/1000
+    uP := 'K'
+if(volume_projected >= 1000000 and volume_projected < 1000000000)
+    volume_projected := volume_projected/1000000
+    uP := 'M'
+if(volume_projected >= 1000000000)
+    volume_projected := volume_projected/1000000000
+    uP := 'B'
+// 7) Volume Buzz by monkaOMEGA ->  https://www.tradingview.com/script/vAxiK8VI-Volume-Buzz-2-0/
+volBuzz = 100 * (volume / ta.sma(volume, len) - 1)
+// 8) Sector
+string sector = syminfo.sector
+if(na(sector))
+    sector := 'N/A'
+
+// 8.a) Sector RS Calculation
+// Function to get the corresponding ETF Select Sector Fund
+get_sector_etf(sector) =>
+    string etf = switch sector
+        "Technology Services" 		=> "XLK"
+        "Electronic Technology"		=> "XLK"
+        "Finance" 					=> "XLF"
+        "Health Technology" 		=> "XLV"
+        "Health Services"		 	=> "XLV"
+        "Retail Trade" 				=> "XLP"  // Can also be XLY
+        "Consumer Non-Durables"	 	=> "XLP"
+        "Energy Minerals"			=> "XLE"
+        "Producer Manufacturing"	=> "XLI"
+        "Consumer Services" 		=> "XLY"
+        "Consumer Durables" 		=> "XLY"
+        "Commercial Services"		=> "XLI"
+        "Industrial Services" 		=> "XLI"
+        "Utilities" 				=> "XLU"
+        "Transportation" 			=> "XLI"
+        "Non-Energy Minerals" 		=> "XLB"
+        "Process Industries"		=> "XLB"
+        "Communications" 			=> "XLC"
+        "Distribution Services" 	=> "XLI"
+        "Miscellaneous" 			=> "SPY"
+        => "SPY"  // Default value
+    etf
+
+// Call function to get Sector ticker
+sector_etf = get_sector_etf(sector)
+
+// Function to attribute the percentile with a simple linear approximation
+f_attributePercentile(totalRsScore, tallerPerf, smallerPerf, rangeUp, rangeDn, weight) =>
+    sum = totalRsScore + (totalRsScore-smallerPerf)*weight // weight is used for manual calibration
+    if(sum > tallerPerf - 1)
+        sum := tallerPerf - 1
+    k1 = smallerPerf/rangeDn
+    k2 = (tallerPerf-1)/rangeUp
+    k3 = (k1-k2)/(tallerPerf-1-smallerPerf)
+    RsRating = sum/(k1-k3*(totalRsScore-smallerPerf))
+    if (RsRating > rangeUp)
+        RsRating := rangeUp
+    if (RsRating < rangeDn)
+        RsRating := rangeDn
+    RsRating
+
+// Function for the calculation of the RS Rating
+f_get_rs_rating(sector_etf) =>
+    // Handle IPO < 63 days
+    n63      = bar_index < 63  ? bar_index:63 
+    n126     = bar_index < 126 ? bar_index:126
+    n189     = bar_index < 189 ? bar_index:189
+    n252     = bar_index < 252 ? bar_index:252
+
+    // Calculation of the RS Rating
+    // Getting ticker and reference ticker daily data
+    closeDaRs     = request.security(sector_etf      , 'D', close)
+    spxcloseDaRs  = request.security('SP:SPX'        , 'D', close)
+
+    // Calculation of the performance from 1 to 4 last quarters
+    // Ticker
+    perfTicker63   = closeDaRs/closeDaRs[n63]
+    perfTicker126  = closeDaRs/closeDaRs[n126]
+    perfTicker189  = closeDaRs/closeDaRs[n189]
+    perfTicker252  = closeDaRs/closeDaRs[n252]
+
+    // SP500 of reference ticker
+    perfComp63     = spxcloseDaRs/spxcloseDaRs[n63]
+    perfComp126    = spxcloseDaRs/spxcloseDaRs[n126]
+    perfComp189    = spxcloseDaRs/spxcloseDaRs[n189]
+    perfComp252    = spxcloseDaRs/spxcloseDaRs[n252]
+
+    // Using Formula to calculate a relative score of the ticker and the SP500 with the last quarter weighted double
+    float rs_stock = 0.4*perfTicker63 + 0.2*perfTicker126 + 0.2*perfTicker189 + 0.2*perfTicker252
+    float rs_ref   = 0.4*perfComp63   + 0.2*perfComp126   + 0.2*perfComp189   + 0.2*perfComp252
+
+    // Calculation of the total relative score or rs performance
+    float totalRsScore  = (rs_stock) / (rs_ref) * 100
+    float totalRsRating = -1
+
+    // Use the request.seed() function to access the RS Score environment of all the market
+    curveRsPerf  = request.seed('seed_fred6725_rs_rating', 'RSRATING', close)
+
+    // In case the graph is not updated, we count the number of bars since we have the first data.
+    // Calculation of the number of bar since we have the first data
+    delta  = ta.barssince(na(curveRsPerf) != true)
+
+    // Table to store the different values
+    var float[] different_values = array.new_float(7)
+
+    // Counter for stored values
+    var int counter = 0
+
+    // Variable for storage of the environment
+    float first = 0
+    float scnd  = 0
+    float thrd  = 0
+    float frth  = 0
+    float ffth  = 0
+    float sxth  = 0
+    float svth  = 0
+
+    // Browse seed's values and store the first 7 different values
+    if (true)
+        for i = delta to 34+delta
+            close_value = nz(curveRsPerf[i])
+            if (not array.includes(different_values, close_value) and counter < 7 and close_value!=0)
+                array.set(different_values, counter, close_value)
+                counter := counter + 1
+
+        // Assign stored values to variables
+        first := array.get(different_values, 0)
+        scnd  := array.get(different_values, 1)
+        thrd  := array.get(different_values, 2)
+        frth  := array.get(different_values, 3)
+        ffth  := array.get(different_values, 4)
+        sxth  := array.get(different_values, 5)
+        svth  := array.get(different_values, 6)
+
+    // Now that we've recovered the environment, we can assign a percentile using a simple linear approximation of the curve (+ adjustment).
+    if(totalRsScore >= first)
+        totalRsRating := 99
+    if(totalRsScore <= svth)
+        totalRsRating := 1
+
+    // Between 199 & 120 the score where approx 98 to 90.
+    if (totalRsScore < first and totalRsScore >= scnd)
+        totalRsRating := f_attributePercentile(totalRsScore, first, scnd, 98, 90, 0.33)
+    // Between 119 and 100 we have scores between 89 and 70.
+    if (totalRsScore < scnd and totalRsScore >= thrd)
+        totalRsRating := f_attributePercentile(totalRsScore, scnd, thrd, 89, 70, 2.1)
+    // Between 100 and 91 we have scores between 69 and 50.
+    if (totalRsScore < thrd and totalRsScore >= frth)
+        totalRsRating := f_attributePercentile(totalRsScore, thrd, frth, 69, 50, 0)
+    // Between 90 and 82 we have scores between 49 and 30.
+    if (totalRsScore < frth and totalRsScore >= ffth)
+        totalRsRating := f_attributePercentile(totalRsScore, frth, ffth, 49, 30, 0)
+    // Between 81 and 56 we have scores between 29 and 10.
+    if (totalRsScore < ffth and totalRsScore >= sxth)
+        totalRsRating := f_attributePercentile(totalRsScore, ffth, sxth, 29, 10, 0)
+    // Between 55 and 28 we have scores between 9 and 2.
+    if (totalRsScore < sxth and totalRsScore >= svth)
+        totalRsRating := f_attributePercentile(totalRsScore, sxth, svth, 9, 2, 0)
+
+    totalRsRating
+
+// Call the function to get Sector RS
+sectorRs = f_get_rs_rating(sector_etf)
+
+// Get Sector Change
+closeSector = request.security(sector_etf, 'D', close)
+openSector  = request.security(sector_etf, 'D', open)
+//sector_chg  = (closeSector - closeSector[1]) / closeSector[1] *100 // Previous Close to Current Close Data
+sector_chg  = (closeSector - openSector) / openSector *100 // Open to Close Data
+
+
+// plot(vol, title = "Volume" , color = color.red, style = plot.style_columns, linewidth = 3)
+// plot(ma, title = "MA", color = color.red)
+//=====================================================
+// 9) Inudstry group
+string industryGrp = syminfo.industry
+if(na(industryGrp))
+    industryGrp := 'N/A'
+// 10) IBD RS Rating
+
+// Using previously declared function
+totalRsRating = f_get_rs_rating(syminfo.tickerid)
+
+
+// 11) Liquidity Cap (Based on 1% of MA Volume Length)
+volDa        = request.security(s, 'D', volume)
+maDa         = request.security(s, 'D', ta.sma(volDa, len))
+liquidityCap = request.security(s, 'D', maDa) * 0.01
+
+// 12) Up/Down Volume Ratio
+upVol =         close > close[1] ? volume : 0
+dnVol =         close < close[1] ? volume : 0
+sumUp =         math.sum(upVol, 50)
+sumDn =         math.sum(dnVol, 50)
+upDnVolRatio =  sumUp / sumDn
+
+// 13) Distance% From 52 We High/Low
+fiftyTwoWeekHigh = request.security(syminfo.tickerid, 'W', ta.highest(high,52)) // 52-week high
+fiftyTwoWeekLow  = request.security(syminfo.tickerid, 'W', ta.lowest(low,52))   // 52-week low
+distFromHigh = 100 * (closeDa/fiftyTwoWeekHigh-1)
+distFromLow  = 100 * (closeDa/fiftyTwoWeekLow-1)
+
+// 14) Shares Float
+sharesFloat = syminfo.shares_outstanding_float
+// sharesFloat = request.financial(s, "FLOAT_SHARES_OUTSTANDING", 'FY', ignore_invalid_symbol = true) // Previous formula
+uF = ''
+if(sharesFloat >= 1000 and sharesFloat < 1000000)
+    sharesFloat := sharesFloat/1000
+    uF := 'K'
+if(sharesFloat >= 1000000 and sharesFloat < 1000000000)
+    sharesFloat := sharesFloat/1000000
+    uF := 'M'
+if(sharesFloat >= 1000000000)
+    sharesFloat := sharesFloat/1000000000
+    uF := 'B'
+
+// Display Table
+tfDaily = timeframe.isdaily
+table t = table.new(tablePos, 2, 30, bgcolor=bg_col)
+if barstate.islast
+    if show_empty_row
+        table.cell(t, 0, 0, '')
+        table.cell(t, 1, 0, '')
+    if show_mktCap
+        table.cell(t, 0, 1, 'Market Cap', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 1, str.tostring(MCap, '0.00') + uM, text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 1, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 1, text_halign = align_txt_right) 
+    if show_float
+        table.cell(t, 0, 2, 'Shares Float', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 2, str.tostring(sharesFloat, '0.00') + uF, text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 2, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 2, text_halign = align_txt_right) 
+    if show_floatpercent
+        table.cell(t, 0, 3, 'Float %', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 3, str.tostring(floatPer, '0.0') + '%', text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 3, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 3, text_halign = align_txt_right)  
+    if show_adrp
+        table.cell(t, 0, 4, 'ADR%', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 4, str.tostring(arp, '0.00') + '%', text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 4, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 4, text_halign = align_txt_right)  
+    if show_atrPer
+        table.cell(t, 0, 5, 'ATR%', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 5, str.tostring(atrp, '0.00') + '%', text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 5, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 5, text_halign = align_txt_right)  
+    if show_atr
+        table.cell(t, 0, 6, 'ATR', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 6, str.tostring(atr, '0.00'), text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 6, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 6, text_halign = align_txt_right)
+    if show_ipo_date
+        table.cell(t, 0, 7, 'IPO Timer', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 7, str.tostring(ipoSince, '0.00') + 'Y', text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 7, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 7, text_halign = align_txt_right)
+    if show_lod_dist
+        table.cell(t, 0, 8, 'LoD dist.', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 8, str.tostring(lod_dist, '0') + '%', text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 8, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 8, text_halign = align_txt_right)
+    if show_lod_price
+        table.cell(t, 0, 9, 'LoD Price', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 9, str.tostring(lod_price, '0.00'), text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 9, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 9, text_halign = align_txt_right)
+    if show_dist_high
+        table.cell(t, 0, 10, 'Off 52W High', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 10, str.tostring(distFromHigh, '0.0') + '%', text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 10, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 10, text_halign = align_txt_right) 
+    if show_dist_low
+        table.cell(t, 0, 11, 'Above 52W Low', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 11, '+' + str.tostring(distFromLow, '0.0') + '%', text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 11, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 11, text_halign = align_txt_right) 
+    if show_ADVS
+        table.cell(t, 0, 12, tfDaily ? 'Avg $ Vol':'Avg $ Vol', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 12, '$' + str.tostring(advdolDa, '0.00') + uVDoll, text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 12, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 12, text_halign = align_txt_right)  
+    if show_ADV
+        table.cell(t, 0, 13, tfDaily ? 'Avg Vol':'Avg Vol', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 13, str.tostring(avgDaVol, '0.00') + uV, text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 13, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 13, text_halign = align_txt_right)  
+    if show_projectedVol
+        table.cell(t, 0, 14, 'Proj. Vol', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 14, str.tostring(volume_projected, '0.00') + uP, text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 14, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 14, text_halign = align_txt_right)  
+    if show_relVol
+        table.cell(t, 0, 15, 'Rel. Vol', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 15, str.tostring(relVol, '0') + '%', text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 15, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 15, text_halign = align_txt_right)  
+    if show_volBuzz
+        table.cell(t, 0, 17, 'Vol. Buzz', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 17, str.tostring(volBuzz, '0') + '%', text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 17, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 17, text_halign = align_txt_right)  
+    if show_UDratio
+        table.cell(t, 0, 18, 'U/D Ratio', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 18, str.tostring(upDnVolRatio, '0.0'), text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 18, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 18, text_halign = align_txt_right)  
+    if show_rs_rating
+        table.cell(t, 0, 19, 'RS Rating', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 19, tfDaily ? str.tostring(totalRsRating, '0.0'):'-', text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 19, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 19, text_halign = align_txt_right)   
+    if show_liqCap
+        table.cell(t, 0, 20, 'Liquidity Cap (Shares)', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 20, str.tostring(liquidityCap, '0'), text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 20, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 20, text_halign = align_txt_right)
+    if show_sector
+        //table.cell(t, 0, 21, '', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 0, 21, sector, text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 21, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 21, text_halign = align_txt_right)
+    if show_selectSector
+        string sectorData = sector_etf
+        string sectorChg  = sector_chg > 0 ? '+' + str.tostring(sector_chg, '0.00') + '%':str.tostring(sector_chg, '0.00') + '%'
+        if (show_sector_rs)
+            sectorData := sector_etf+' (RS '+str.tostring(sectorRs, '0')+')'
+        if (show_sector_rs)
+            sectorData := sector_etf+' (RS '+str.tostring(sectorRs, '0')+')'
+        table.cell(t, 0, 22, sectorData, text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 1, 22, sectorChg, text_color=sector_chg > 0? sector_chg_Up:sector_chg_Dn, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 22, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 22, text_halign = align_txt_right)
+    if show_ind
+        //table.cell(t, 0, 23, '', text_color=txt_col, text_size = size_tbl)
+        table.cell(t, 0, 23, industryGrp, text_color=txt_col, text_size = size_tbl)
+        table.cell_set_text_halign(t, 0, 23, text_halign = align_txt_left)
+        table.cell_set_text_halign(t, 1, 23, text_halign = align_txt_right) 
+    table.merge_cells(t, 0, 21, 1, 21)
+    table.merge_cells(t, 0, 23, 1, 23)
+    if add_empty_row_dn > 0
+        table.cell(t, 0, 24, '', text_color=txt_col, text_size = size_tbl)
+    if add_empty_row_dn > 1
+        table.cell(t, 0, 26, '', text_color=txt_col, text_size = size_tbl)
+    if add_empty_row_dn > 2
+        table.cell(t, 0, 27, '', text_color=txt_col, text_size = size_tbl)
+    if add_empty_row_dn > 3
+        table.cell(t, 0, 28, '', text_color=txt_col, text_size = size_tbl)
+    if add_empty_row_dn > 4
+        table.cell(t, 0, 29, '', text_color=txt_col, text_size = size_tbl)

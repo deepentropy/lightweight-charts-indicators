@@ -1,0 +1,123 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=5
+indicator("Renko Candles Overlay", overlay = true, max_bars_back = 2001, max_boxes_count = 500)
+mode =input.string(title = "Method", defval = 'ATR/2', options=['Traditional', 'ATR', 'ATR/2', 'ATR/4', 'Percentage'], group = 'SETUP')
+modevalue = input.int(title =" Atr Period", defval = 14, minval = 1, group = 'SETUP')
+tboxsize = input.float(title =" Brick Size", defval = 10.0, minval = 0.000000000000001, group = 'SETUP')
+percentagebs = input.float(title =" Percentage %", defval = 0.1, minval = 0.00001, step = 0.1, group = 'SETUP')
+period = input.int(defval = 140, title = " Number of Bricks",  minval = 10, maxval = 280, group = 'SETUP')
+putlabels = input.bool(defval = true, title = "Levels & Lines for new Bricks", inline = "labels")
+linestyle = input.string(defval = 'dashed', title = "", options = ['dashed', 'dotted', 'solid'], inline = "labels")
+
+colup = input.color(defval = #5b9cf6, title = " Color Up", group = 'BRICKS')
+coldn = input.color(defval = #0c3299, title = " Color Down", group = 'BRICKS')
+coluc = input.color(defval = color.gray, title = " Unconfirmed", group = 'BRICKS')
+bwidth = input.int(defval = 2, title = " Width", minval = 1, maxval = 10, group = 'BRICKS')
+bcolup = input.color(defval = color.lime, title = " Color Up",  group = 'BORDERS')
+bcoldn = input.color(defval = color.red, title = " Color Down", group = 'BORDERS')
+borderwidth = input.int(defval = 1, title = " Width", minval = 0, maxval = 2, group = 'BORDERS')
+changebrol = input.bool(defval = false, title = "Change Bar Color", group = "CANDLES")
+barcolup = input.color(defval = color.lime, title = " Color Up", group = "CANDLES")
+barcoldn = input.color(defval = color.red, title = " Color Down", group = "CANDLES")
+
+get_b_size(value)=>
+    var num = math.pow(10, str.length(str.tostring(syminfo.mintick)) - 2)
+    float ret = value
+    if na(ret)
+        ret := ta.tr(true)
+
+    if ret < 1
+        ret := math.round(ret * num) / num
+    else
+        pw = ret >= 10 ? math.pow(10, math.max(str.length(array.get(str.split(str.tostring(ret), '.'), 0)) - 2, 1)) : 1
+        ret := math.round(ret / pw) * pw
+    math.max(ret, syminfo.mintick)
+    
+// calculate brick size
+float boxsize =  mode == 'ATR' ? get_b_size(ta.atr(modevalue)) : 
+         mode == 'ATR/2' ? math.max(get_b_size(ta.atr(modevalue)) / 2, syminfo.mintick) : 
+         mode == 'ATR/4' ? math.max(get_b_size(ta.atr(modevalue)) / 4, syminfo.mintick) : 
+         mode == 'Percentage' ? get_b_size(percentagebs * close / 100) : 
+         tboxsize
+
+addbricks(rclose, numbrick, start, bsize)=>
+    for x = 1 to numbrick
+        array.unshift(rclose, start + x * bsize)
+
+var float boxs = boxsize
+var int trend = 0
+var rclose = array.new_float(1, math.floor(open / boxs) * boxs)
+
+float currentprice = close
+float lastclose = array.get(rclose, 0)
+int numcell = math.floor(math.abs(lastclose - currentprice) / boxs)
+int unconfirmed = -1
+
+if numcell > 0
+    if trend == 0
+        if numcell >= 2
+            trend := (lastclose < currentprice ? 1 : -1)
+            addbricks(rclose, numcell, lastclose, trend * boxs)
+    else
+        if lastclose * trend < currentprice * trend
+            addbricks(rclose, numcell, lastclose, trend * boxs)
+        else if numcell >= 2
+            trend *= -1
+            addbricks(rclose, numcell - 1, lastclose + trend * boxs, trend * boxs) // trend changed
+    
+    // change boxsize when trend changed
+    if lastclose != array.get(rclose, 0)
+        boxs := boxsize
+        if not barstate.ishistory and barstate.isrealtime
+            unconfirmed := numcell - (trend != trend[1] ? 1 : 0)
+            
+// delete old elements
+while array.size(rclose) > period + 3
+    array.pop(rclose)
+
+if putlabels and trend != 0
+    var hlstyle = linestyle == 'dashed' ? line.style_dashed : linestyle == 'dotted' ? line.style_dotted : line.style_solid
+    up = trend == 1 ? array.get(rclose, 0) + boxs : array.get(rclose, 0) + boxs * 2
+    dn = trend == 1 ? array.get(rclose, 0) - boxs * 2 : array.get(rclose, 0) - boxs
+    var line upline = na, line.delete(upline), var label uplabel = na, label.delete(uplabel)
+    var line dnline = na, line.delete(dnline), var label dnlabel = na, label.delete(dnlabel)
+    upline := line.new(x1 = bar_index, y1 = up, x2 = bar_index - 1, y2 = up, color = color.gray, style = hlstyle, extend = extend.both)
+    dnline := line.new(x1 = bar_index, y1 = dn, x2 = bar_index - 1, y2 = dn, color = color.gray, style = hlstyle, extend = extend.both)
+    uplabel := label.new(x = bar_index + 10, y = up, text = str.tostring(up), color = colup, textcolor = color.black, style = label.style_label_down)
+    dnlabel := label.new(x = bar_index + 10, y = dn, text = str.tostring(dn), color = coldn, textcolor = color.white, style = label.style_label_up)
+    
+if barstate.islast
+    if array.size(rclose) >= 2
+        var bricks = array.new_box(0)
+        for x = 0 to (array.size(bricks) > 0 ? array.size(bricks) - 1 : na)
+            box.delete(array.pop(bricks))
+        
+        int start = array.size(rclose) - 3 
+        for x = array.size(rclose) - 3 to 0
+            if array.get(rclose, x) > array.get(rclose, x + 1) and array.get(rclose, x + 1) > array.get(rclose, x + 2) or
+               array.get(rclose, x) < array.get(rclose, x + 1) and array.get(rclose, x + 1) < array.get(rclose, x + 2)
+                start := x
+                break
+        int colnum = (start + 1) * bwidth
+        int trnd = array.get(rclose, start) > array.get(rclose, start + 1) ? 1 : -1
+        float lasttb = array.get(rclose, start) 
+        for x = start + 1 to 0
+            oldtrnd = trnd
+            trnd := array.get(rclose, x) > array.get(rclose, x + 1) ? 1 : -1
+            col = x < unconfirmed ? coluc : trnd == 1 ? colup : coldn
+            bcol = trnd == 1 ? bcolup : bcoldn
+            topbottom = oldtrnd == trnd ? array.get(rclose, x + 1) : lasttb
+            if bar_index - colnum - bwidth > 1 and colnum < 285
+                array.push(bricks, box.new(left = bar_index - colnum, top = array.get(rclose, x), right = bar_index - colnum - bwidth, bottom = topbottom, 
+                                           border_width = borderwidth, 
+                                           border_color = bcol, 
+                                           bgcolor = col))
+            colnum -= bwidth
+            lasttb := topbottom
+
+barcolor(changebrol ? trend == 1 ? barcolup : barcoldn : na)
+
+alertcondition(trend[1] == -1 and trend ==  1, title = "Trend is UP", message = "Trend is UP")
+alertcondition(trend[1] ==  1 and trend == -1, title = "Trend is DOWN", message = "Trend is DOWN")

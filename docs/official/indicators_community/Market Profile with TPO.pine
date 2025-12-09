@@ -1,0 +1,645 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © drother
+
+//@version=5
+indicator("Market Profile with TPO", overlay=true, max_labels_count = 500, max_boxes_count = 500, max_lines_count = 500, max_bars_back = 1000)
+auto_tick_size_b = input.bool(true, title="Auto Tick Size?", group="Tick Size")
+int tick_bars_back = input.int(48 , minval=1, title="Avg Tick Size - Bars Back", group="Tick Size")
+target_session_ht = input.float(5, minval=1, title="Average Target Session Height for Tick Size", group="Tick Size")
+man_tick_size = input.int(100 , minval=1, title="Manual Tick Size", group="Tick Size")
+value_area_pct = input.float(68.26 , minval=0.01, maxval=100, title="Value Area Percent", group="Market Profile Options", tooltip = "Values are typically 68.26 to 70")/100
+open_color = input.color(title="Open TPO Text Color", defval=color.orange, group="Market Profile Options")
+POC_tpo_color = input.color(title="POC TPO Text Color", defval=color.red, group="Market Profile Options")
+POC_box_color = input.color(title="POC Box Color", defval=color.red, group="Market Profile Options")
+POC_line_color = input.color(title="POC Line Color", defval=color.red, group="Market Profile Options")
+in_value_tpo_color = input.color(title="In Value TPO Text Color", defval=color.blue, group="Market Profile Options")
+in_value_box_color = input.color(title="In Value Box Color", defval=color.blue, group="Market Profile Options")
+in_value_line_color = input.color(title="In Value Line Color", defval=color.blue, group="Market Profile Options")
+in_value_box_transparency = input.int(title="In Value Box Transparency", defval=70,minval=0,maxval=100, group="Market Profile Options")
+out_of_value_tpo_color = input.color(title="Out Of Value TPO Text Color", defval=color.green, group="Market Profile Options")
+//poc_box_color = input.color(title="POC Box Color", defval=color.red, group="Market Profile Options")
+//POC_box_transparency = input.int(title="POC Box Transparency", defval=30,minval=0,maxval=100, group="Market Profile Options")
+out_of_value_box_color = input.color(title="Out Of Value Box Color", defval=color.green, group="Market Profile Options")
+out_of_value_box_transparency = input.int(title="Out of Value Box Transparency", defval=70,minval=0,maxval=100, group="Market Profile Options")
+TPO_txt_size = input.string(title="TPO Letter Size", defval=size.small, options=[size.auto, size.tiny, size.small, size.normal, size.large, size.huge], group="Market Profile Options")
+curr_price_text = input.string("  🔴", title="Current Price Text", group="Market Profile Options")
+tpo_letter_space = input.string("   ", "TPO Spacer to center over Candle", group="Market Profile Options")
+show_tpo_info = input.bool(title="Show TPO Info Text?", defval=true, group="Market Profile Options")
+info_table_txt_size = input.string(title="TPO Info Text Size", defval=size.small, options=[size.auto, size.tiny, size.small, size.normal, size.large, size.huge], group="Market Profile Options")
+info_table_text_color = input.color(title="Info Box Letter Color", defval=color.white, group="Market Profile Options")
+info_table_color = input.color(title="Info Box Background Color", defval=color.gray, group="Market Profile Options")
+plot_TPO_letters = input.bool(group="Market Profile Options",defval=true, title="Plot TPO Letters?")
+session_option_24hr = input.bool(group="Market Session", defval=true, title="Use 24hr Session? Overwrites all below settings", tooltip = "Forced to True for CFDs/Stocks")
+sessDays = input.string(group="Market Session", defval="1234567", title="Session Days of Week", tooltip = "1 = Sunday, 7 = Saturday")
+show_sess1 = input.bool(group="Market Session",defval=true, title="Show Session 1?")
+sess1Name = input.string(group="Market Session", defval="Asian", title="Session 1 Name")
+sess1Time = input.session(group="Market Session", defval="0000-0759", title="Session 1", tooltip = "Times are GMT")
+show_sess2 = input.bool(group="Market Session",defval=true, title="Show Session 2?")
+sess2Name = input.string(group="Market Session", defval="London", title="Session 1 Name")
+sess2Time = input.session(group="Market Session", defval="0800-1329", title="Session 2", tooltip = "Times are GMT")
+show_sess3 = input.bool(group="Market Session",defval=true, title="Show Session 3?")
+sess3Name = input.string(group="Market Session", defval="US", title="Session 1 Name")
+sess3Time = input.session(group="Market Session", defval="1330-1959", title="Session 3", tooltip = "Times are GMT")
+show_sess4 = input.bool(group="Market Session",defval=true, title="Show Session 4?")
+sess4Name = input.string(group="Market Session", defval="Pre Market", title="Session 1 Name")
+sess4Time = input.session(group="Market Session", defval="2000-0000", title="Session 4", tooltip = "Times are GMT")
+show_warning = input.bool(true, title="Show Tick Warning?", group="Debug")
+//show_warning = false
+//debug_option = input.bool(false, title="Debug?", group="Debug")
+//deb_txt_size = input.string(title="Debug Letter Size", defval=size.small, options=[size.auto, size.tiny, size.small, size.normal, size.large, size.huge], group="Debug")
+debug_option = false
+deb_txt_size = size.small
+
+bool is_in_session = false
+int sess_start = bar_index
+int which_sess = 0
+if tick_bars_back > (bar_index + 1)
+    tick_bars_back := bar_index + 1
+
+tz = if syminfo.type == "stock"
+    session_option_24hr := true
+    "Etc/UTC"
+else if syminfo.type == "futures"
+    "Etc/UTC"
+else if syminfo.type == "index"
+    "Etc/UTC"
+else if syminfo.type == "forex"
+    "Etc/UTC"
+else if syminfo.type == "crypto"
+    "Etc/UTC"
+else if syminfo.type == "fund"
+    "Etc/UTC"
+else if syminfo.type == "dr"
+    "Etc/UTC"
+else if syminfo.type == "economic"
+    session_option_24hr := true
+    "Etc/UTC"   
+else if syminfo.type == "cfd"
+    session_option_24hr := true
+    "Etc/UTC"
+else
+    syminfo.timezone
+
+//functions
+fn_is_session_start(res, sess) =>
+    t = time(res, sess, tz)
+    na(t[1]) and not na(t) or t[1] < t
+
+fn_is_in_session(session_rollover, session) =>   
+    not na(time(session_rollover, session, tz))
+
+
+fn_num_of_tpos_per_tick(price_min, price_max, bars_back) =>
+    int num_of_tpos = 0
+    for i=0 to bars_back
+        if (high[i] >= price_min and low[i] <= price_max)
+            num_of_tpos := num_of_tpos + 1
+    num_of_tpos
+
+fn_num_of_tpos_per_tick_arr(price_min, price_max, bars_back, array) =>
+    array.clear(array)
+    for i=0 to bars_back
+        if (high[i] >= price_min and low[i] < price_max)
+            array.push(array, bars_back - i)
+    array
+
+
+fn_build_tpo_letters_row(price_min, price_max, bars_back, array) =>
+    array.clear(array)
+    for i=0 to bars_back
+        if (high[i] >= price_min and low[i] <= price_max)
+            array.push(array, i)
+    array
+
+//TPOS_remaining = array.new_int(10, na)
+//TPO_per_loop = array.new_int(0)
+//array.set(TPOS_remaining, 9, 0)
+fn_build_VA(POC_index, TPO_array, VA_pct) =>
+    int TPOs_Left = math.round((array.sum(TPO_array)* VA_pct) - array.get(TPO_array, POC_index))
+    //int TPOs_used = array.get(TPOS_remaining, 9)
+    TPO_mid_index = math.round((array.size(TPO_array)-1)/2)
+    int VAL_index = POC_index
+    int VAH_index = POC_index
+    max_index = array.size(TPO_array) - 1
+    //array.push(TPO_per_loop, TPOs_Left)
+    //array.push(TPO_per_loop, -1)
+    for i=0 to max_index
+        if TPOs_Left > 0
+            int VAH_2up = 0
+            int VAH_1up = 0
+            int VAL_1dn = 0
+            int VAL_2dn = 0
+            if VAH_index == max_index
+                VAH_2up := 0
+                VAH_1up := 0
+            else if (VAH_index + 1) == max_index
+                VAH_2up := 0
+                VAH_1up := array.get(TPO_array, VAH_index + 1)
+            else
+                VAH_2up := array.get(TPO_array, VAH_index + 2)
+                VAH_1up := array.get(TPO_array, VAH_index + 1)
+            if VAL_index == 0
+                VAL_2dn := 0
+                VAL_1dn := 0
+            else if (VAL_index -1) == 0
+                VAL_2dn := 0
+                VAL_1dn := array.get(TPO_array, VAL_index -1)
+            else
+                VAL_2dn := array.get(TPO_array, VAL_index -2)
+                VAL_1dn := array.get(TPO_array, VAL_index -1)
+                
+            if (VAH_index + 2) <= max_index and (VAL_index - 2) >= 0
+                ///array.push(TPO_per_loop, 0)
+                if (VAH_1up + VAH_2up) > (VAL_1dn + VAL_2dn) and (TPOs_Left - (VAH_1up + VAH_2up)) >= 0
+                    TPOs_Left := TPOs_Left - VAH_1up - VAH_2up
+                    //TPOs_used := TPOs_used + VAH_1up + VAH_2up
+                    VAH_index := VAH_index + 2
+                else if (VAL_1dn + VAL_2dn) > (VAH_1up + VAH_2up) and (TPOs_Left - (VAL_1dn + VAL_2dn)) >= 0
+                    TPOs_Left := TPOs_Left - VAL_1dn - VAL_2dn
+                    //TPOs_used := TPOs_used + VAL_1dn + VAL_2dn
+                    VAL_index := VAL_index - 2
+                else if (VAH_1up + VAH_2up) > (VAL_1dn + VAL_2dn) and TPOs_Left - VAH_1up >= 0
+                    TPOs_Left := TPOs_Left - VAH_1up - VAH_2up
+                    //TPOs_used := TPOs_used + VAH_1up + VAH_2up
+                    VAH_index := VAH_index + 2
+                else if (VAL_1dn + VAL_2dn) > (VAH_1up + VAH_2up) and TPOs_Left - VAL_1dn >= 0
+                    TPOs_Left := TPOs_Left - VAH_1up - VAH_2up
+                    //TPOs_used := TPOs_used + VAH_1up + VAH_2up
+                    VAH_index := VAH_index + 2
+                else if (VAH_1up + VAH_2up) == (VAL_1dn + VAL_2dn)
+                    if math.abs(VAH_index - TPO_mid_index) < math.abs(VAL_index - TPO_mid_index) and (TPOs_Left - (VAH_1up + VAH_2up)) >= 0
+                        TPOs_Left := TPOs_Left - VAH_1up - VAH_2up
+                        //TPOs_used := TPOs_used + VAH_1up + VAH_2up
+                        VAH_index := VAH_index + 2
+                    else if math.abs(VAH_index - TPO_mid_index) > math.abs(VAL_index - TPO_mid_index) and (TPOs_Left - (VAL_1dn + VAL_2dn)) >= 0
+                        TPOs_Left := TPOs_Left - VAL_1dn - VAL_2dn
+                        //TPOs_used := TPOs_used + VAL_1dn + VAL_2dn
+                        VAL_index := VAL_index - 2
+                    else if math.abs(VAH_index - TPO_mid_index) == math.abs(VAL_index - TPO_mid_index) and (TPOs_Left - (VAL_1dn + VAL_2dn)) >= 0
+                        TPOs_Left := TPOs_Left - VAL_1dn - VAL_2dn
+                        //TPOs_used := TPOs_used + VAL_1dn + VAL_2dn
+                        VAL_index := VAL_index - 2
+                    else if math.abs(VAH_index - TPO_mid_index) < math.abs(VAL_index - TPO_mid_index)
+                        TPOs_Left := TPOs_Left - VAH_1up
+                        //TPOs_used := TPOs_used + VAH_1up
+                        VAH_index := VAH_index + 1
+                    else if math.abs(VAH_index - TPO_mid_index) > math.abs(VAL_index - TPO_mid_index)
+                        TPOs_Left := TPOs_Left - VAL_1dn
+                        //TPOs_used := TPOs_used + VAL_1dn
+                        VAL_index := VAL_index - 1
+                    else if math.abs(VAH_index - TPO_mid_index) == math.abs(VAL_index - TPO_mid_index)
+                        TPOs_Left := TPOs_Left - VAL_1dn
+                        //TPOs_used := TPOs_used + VAL_1dn
+                        VAL_index := VAL_index - 1
+                else if VAH_1up > VAL_1dn
+                    TPOs_Left := TPOs_Left - VAH_1up
+                    //TPOs_used := TPOs_used + VAH_1up
+                    VAH_index := VAH_index + 1   
+                else if VAH_1up < VAL_1dn
+                    TPOs_Left := TPOs_Left - VAL_1dn
+                    //TPOs_used := TPOs_used + VAL_1dn
+                    VAL_index := VAL_index - 1
+                else if VAH_1up == VAL_1dn
+                    if math.abs(VAH_index - TPO_mid_index) < math.abs(VAL_index - TPO_mid_index)
+                        TPOs_Left := TPOs_Left - VAH_1up
+                        //TPOs_used := TPOs_used + VAH_1up
+                        VAH_index := VAH_index + 1
+                    else if math.abs(VAH_index - TPO_mid_index) > math.abs(VAL_index - TPO_mid_index)
+                        TPOs_Left := TPOs_Left - VAL_1dn
+                        //TPOs_used := TPOs_used + VAL_1dn
+                        VAL_index := VAL_index - 1
+                    else if math.abs(VAH_index - TPO_mid_index) == math.abs(VAL_index - TPO_mid_index)
+                        TPOs_Left := TPOs_Left - VAL_1dn
+                        //TPOs_used := TPOs_used + VAL_1dn
+                        VAL_index := VAL_index - 1    
+                
+                    
+            else if (VAH_index + 1) == max_index or (VAL_index - 1) == 0   
+                //array.push(TPO_per_loop, 1)
+                if VAH_1up > VAL_1dn
+                    TPOs_Left := TPOs_Left - VAH_1up
+                    //TPOs_used := TPOs_used + VAH_1up
+                    VAH_index := VAH_index + 1
+                else if VAH_1up < VAL_1dn
+                    TPOs_Left := TPOs_Left - VAL_1dn
+                    //TPOs_used := TPOs_used + VAL_1dn
+                    VAL_index := VAL_index - 1
+                else if VAH_1up == VAL_1dn
+                    if math.abs(VAH_index - TPO_mid_index) < math.abs(VAL_index - TPO_mid_index)
+                        TPOs_Left := TPOs_Left - VAH_1up
+                        //TPOs_used := TPOs_used + VAH_1up
+                        VAH_index := VAH_index + 1
+                    else if math.abs(VAH_index - TPO_mid_index) > math.abs(VAL_index - TPO_mid_index)
+                        TPOs_Left := TPOs_Left - VAL_1dn
+                        //TPOs_used := TPOs_used + VAL_1dn
+                        VAL_index := VAL_index - 1
+                    else if math.abs(VAH_index - TPO_mid_index) == math.abs(VAL_index - TPO_mid_index)
+                        TPOs_Left := TPOs_Left - VAL_1dn
+                        //TPOs_used := TPOs_used + VAL_1dn
+                        VAL_index := VAL_index - 1
+                        
+                        
+            //array.set(TPOS_remaining, 3, VAH_2up)
+            //array.set(TPOS_remaining, 4, VAH_1up)
+            //array.set(TPOS_remaining, 5, VAL_1dn)
+            //array.set(TPOS_remaining, 6, VAL_2dn)
+            //array.set(TPOS_remaining, 7, (VAH_1up + VAH_2up) == (VAL_1dn + VAL_2dn) ? 1: 0)
+            //array.set(TPOS_remaining, 8, (VAH_index + 1) == max_index or (VAL_index - 1) == 0  ? 1: 0)
+             
+            //else
+            //    if (VAH_index + 1) <= max_index and (VAH_1up + VAH_2up) > (VAL_1dn + VAL_2dn
+            //    TPOs_Left := TPOs_Left - VAH_1up - VAH_2up
+            //    VAH_index := VAH_index + 1
+            //else if (VAL_index - 1) >= 0 and (VAL_1dn + VAL_2dn) > (VAH_1up + VAH_2up)
+            //    TPOs_Left := TPOs_Left - VAL_1dn - VAL_2dn
+            //    VAL_index := VAL_index - 1
+            //array.push(TPO_per_loop, TPOs_Left)
+    //array.set(TPOS_remaining, 0, TPOs_Left)
+    //array.set(TPOS_remaining, 9, TPOs_used)
+    //array.set(TPOS_remaining, 1, VAH_index)   
+    //array.set(TPOS_remaining, 2, VAL_index)
+    
+    [VAL_index, VAH_index]
+
+
+//labelIDs = array.new_label(0)
+var labelIds = array.new_label(0)
+var boxIDs = array.new_box(0)
+var last_boxIDs = array.new_box(0)
+var lineIDs = array.new_line(3)
+var lastLineIDs = array.new_line(0)
+TPO_price = array.new_float(0)
+TPO_length = array.new_int(0)
+
+
+
+
+sess1 = sess1Time + ":" + sessDays
+sess2 = sess2Time + ":" + sessDays
+sess3 = sess3Time + ":" + sessDays
+sess4 = sess4Time + ":" + sessDays
+sess24hr = "0000-0000:" + sessDays
+
+
+is_24hr_sess_open = fn_is_in_session("1440", sess24hr) 
+is_sess1_open = fn_is_in_session("1440", sess1) 
+is_sess2_open = fn_is_in_session("1440", sess2) 
+is_sess3_open = fn_is_in_session("1440", sess3) 
+is_sess4_open = fn_is_in_session("1440", sess4) 
+sess_clear = false
+
+if timeframe.ismonthly
+    is_in_session := true
+    sess_start := nz(ta.barssince(ta.change(year)))
+    which_sess := -4
+else if timeframe.isweekly
+    is_in_session := true
+    sess_start := nz(ta.barssince(ta.change(year)))
+    which_sess := -3
+else if timeframe.isdaily
+    is_in_session := true
+    sess_start := nz(ta.barssince(ta.change(month)))   
+    which_sess := -2
+else
+    if session_option_24hr and timeframe.multiplier > 5 and timeframe.isminutes
+        is_in_session := fn_is_in_session("1440", sess24hr)
+        sess_start := nz(ta.barssince(ta.change(dayofweek)))
+        which_sess := -1
+    else if timeframe.multiplier <= 5 and timeframe.isminutes
+        is_in_session := fn_is_in_session("1440", sess24hr)
+        sess_start := nz(ta.barssince(ta.change(hour)))
+        which_sess := 5
+    else if timeframe.isseconds
+        is_in_session := fn_is_in_session("1440", sess24hr)
+        sess_start := nz(ta.barssince(ta.change(minute)))
+        which_sess := 6
+    else
+        if fn_is_in_session("1440", sess1) and show_sess1
+            is_in_session := fn_is_in_session("1440", sess1)
+            sess_start := nz(ta.barssince(fn_is_session_start("1440", sess1)))
+            which_sess := 1
+        else if fn_is_in_session("1440", sess2) and show_sess2
+            is_in_session := fn_is_in_session("1440", sess2)
+            sess_start := nz(ta.barssince(fn_is_session_start("1440", sess2)))
+            which_sess := 2
+        else if fn_is_in_session("1440", sess3) and show_sess3
+            is_in_session := fn_is_in_session("1440", sess3)
+            sess_start := nz(ta.barssince(fn_is_session_start("1440", sess3)))
+            which_sess := 3
+        else if fn_is_in_session("1440", sess4) and show_sess4
+            is_in_session := fn_is_in_session("1440", sess4)
+            sess_start := nz(ta.barssince(fn_is_session_start("1440", sess4)))
+            which_sess := 4
+        else
+            is_in_session := false
+            sess_start := 0
+            which_sess := 5
+if syminfo.type == "economic"
+    //sess_start := 0
+    is_in_session := false
+sess_start_bar = int(bar_index-sess_start)
+
+
+float tick_size = syminfo.mintick
+
+tick_size := if auto_tick_size_b and sess_start == 0
+    avg_bar_ht = ta.sma(high, tick_bars_back) - ta.sma(low, tick_bars_back)
+    float auto_tick_size = math.round_to_mintick(avg_bar_ht / target_session_ht)
+    if auto_tick_size == 0
+        auto_tick_size := syminfo.mintick
+    auto_tick_size
+else if sess_start == 0 and not auto_tick_size_b
+    man_tick_size * syminfo.mintick
+else
+    tick_size := tick_size[sess_start]
+tick_size_ticks = tick_size / syminfo.mintick
+half_tick = math.round_to_mintick(tick_size*.5)
+
+
+
+
+var TPO_Name_list = array.from("A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z","a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z","!","@","#","$","%","&","*")
+var TPO_Names = array.new_string(0)
+int required_names = (sess_start) - (array.size(TPO_Names))
+name_mult = int(array.size(TPO_Names) / array.size(TPO_Name_list))
+if required_names >= 0
+    for i = 0 to required_names
+        int tpos_to_add = nz((array.size(TPO_Names))) - array.size(TPO_Name_list)*name_mult
+        array.push(TPO_Names, array.get(TPO_Name_list, tpos_to_add))
+
+
+
+
+
+float highest_high = high
+float lowest_low = low
+for i = 0 to sess_start
+    if high[i] > highest_high
+        highest_high := high[i]
+    if low[i] < lowest_low    
+        lowest_low := low[i]
+TPO_max = float(int(highest_high/tick_size)*tick_size)
+TPO_min  = float(int(lowest_low/tick_size)*tick_size)
+TPO_rows = (TPO_max - TPO_min)/tick_size
+open_tick = int((open/tick_size)) * tick_size
+int total_tpo_count = 0
+TPO_mid = math.round_to_mintick((TPO_min + TPO_max)/2)
+TPO_POC = float(0)
+TPO_VAL = float(0)
+int VAL_index = na
+int VAH_index = na
+TPO_VAH = float(0)
+var label red_pill = na
+label.delete(red_pill)
+
+
+TPO_low_curr_bar = int((low/tick_size)) * tick_size
+TPO_high_curr_bar = int((high/tick_size)) * tick_size
+TPO_rows_curr_bar = (TPO_high_curr_bar - TPO_low_curr_bar)/tick_size
+
+
+test_array_1 = array.new_float(0)
+test_array_2 = array.new_float(0)
+test_array_3 = array.new_string(0)
+test_array_4 = array.new_float(0)
+
+if is_in_session
+    
+    if sess_start == 0
+        array.concat(last_boxIDs, boxIDs)
+        if array.size(lastLineIDs) > 497
+            line.delete(array.shift(lastLineIDs))
+            line.delete(array.shift(lastLineIDs))
+            line.delete(array.shift(lastLineIDs))
+        array.concat(lastLineIDs, lineIDs)
+        array.set(lineIDs, 0, na)
+        array.set(lineIDs, 1, na)
+        array.set(lineIDs, 2, na)
+        array.clear(boxIDs)
+        array.clear(test_array_1)
+        array.clear(test_array_2)
+        array.clear(test_array_3)
+        array.clear(test_array_4)
+    
+    if array.size(boxIDs) > 0
+        for i=0 to array.size(boxIDs)-1
+            box.delete(array.shift(boxIDs))
+        array.clear(boxIDs)
+    if array.size(labelIds) > 0
+        for i=0 to array.size(labelIds)-1
+            label.delete(array.shift(labelIds))
+        array.clear(labelIds)    
+    
+    for i = 0 to TPO_rows
+        // build tpo size array
+        price_tick_min = TPO_min + i * tick_size
+        price_tick_max = price_tick_min + tick_size - syminfo.mintick
+        num_of_tpos = fn_num_of_tpos_per_tick(price_tick_min, price_tick_max, sess_start)
+        array.push(TPO_length, num_of_tpos)
+        array.push(TPO_price, price_tick_min)
+    
+    //calculate POC and Value Area
+    total_tpo_count := array.sum(TPO_length)
+    max_TPOs = array.max(TPO_length)
+    TPO_POC := if array.indexof(TPO_length, max_TPOs) == array.lastindexof(TPO_length, max_TPOs) 
+        float poc_price = array.get(TPO_price, array.indexof(TPO_length, max_TPOs))
+        poc_price
+    else
+        float poc_price = na
+        int poc_index = na
+        max_TPOs = array.max(TPO_length)
+        poc_possible_price = array.new_float(0)
+        poc_possible_dist_to_mid = array.new_float(0)
+        for i = 0 to array.size(TPO_length)-1
+            if array.get(TPO_length, i) == max_TPOs
+                array.push(poc_possible_price, array.get(TPO_price, i))
+                array.push(poc_possible_dist_to_mid, math.abs(array.get(TPO_price, i) - TPO_mid))
+
+        int counter = 0
+        for i = 0 to array.size(poc_possible_price)-1
+            if array.size(poc_possible_price) > counter
+
+                if array.min(poc_possible_dist_to_mid) != array.get(poc_possible_dist_to_mid, counter)
+                    array.remove(poc_possible_dist_to_mid, counter)
+                    array.remove(poc_possible_price, counter)
+                else
+                    counter := counter + 1
+        if array.indexof(poc_possible_dist_to_mid, array.min(poc_possible_dist_to_mid)) == array.lastindexof(poc_possible_dist_to_mid, array.min(poc_possible_dist_to_mid))
+            poc_index := array.indexof(poc_possible_dist_to_mid, array.min(poc_possible_dist_to_mid))
+        else
+            poc_index := 0
+        poc_price := array.get(poc_possible_price, poc_index)
+        poc_price
+    POC_index = array.indexof(TPO_price, TPO_POC)
+    [_VAL_index, _VAH_index] = fn_build_VA(POC_index, TPO_length, value_area_pct)
+    TPO_VAL := array.get(TPO_price, _VAL_index)
+    TPO_VAH := array.get(TPO_price, _VAH_index)
+    last_box_color = out_of_value_tpo_color
+    for i = 0 to TPO_rows
+        // build tpo and box arrays
+        price_tick_min = array.get(TPO_price, i)
+        price_tick_max = price_tick_min + tick_size
+        tpo_row_index_data = array.new_int()
+        fn_num_of_tpos_per_tick_arr(price_tick_min, price_tick_max, sess_start, tpo_row_index_data)
+        array.reverse(tpo_row_index_data)
+        num_of_tpos = array.size(tpo_row_index_data)
+        //array.push(TPO_length, num_of_tpos)
+        // build current TPO boxes and Letters
+        left_side = sess_start_bar
+        is_poc = price_tick_min == TPO_POC ? true : false
+        if is_poc
+            line.delete(array.get(lineIDs, 0))
+            POC_line = line.new(left_side, price_tick_min + half_tick, bar_index + 1, price_tick_min + half_tick, color=POC_line_color)
+            array.set(lineIDs, 0, POC_line)
+            
+        //right_side = is_poc? bar_index + 1 : sess_start_bar + num_of_tpos
+        right_side = sess_start_bar + num_of_tpos
+        is_in_value = price_tick_min >= TPO_VAL and price_tick_min <= TPO_VAH
+        if price_tick_min == TPO_VAH
+            VAH_line_id = array.get(lineIDs, 1)
+            line.delete(array.get(lineIDs, 1))
+            VAH_line = line.new(left_side, price_tick_max, bar_index + 1, price_tick_max, color=in_value_line_color)
+            array.set(lineIDs, 1, VAH_line)
+        if price_tick_min == TPO_VAL
+            VAL_line_id = array.get(lineIDs, 2)
+            line.delete(array.get(lineIDs, 2))
+            VAL_line = line.new(left_side, price_tick_min, bar_index + 1, price_tick_min, color=in_value_line_color)
+            array.set(lineIDs, 2, VAL_line)
+        
+        //POC_tpo_color
+        box_color = is_poc? POC_box_color : is_in_value? in_value_box_color : out_of_value_box_color
+        //tpo_color = is_poc? POC_tpo_color : is_in_value? in_value_tpo_color : out_of_value_tpo_color
+        //box_color = out_of_value_box_color
+        transparency = is_in_value ? in_value_box_transparency : out_of_value_box_transparency
+        //transparency = out_of_value_box_transparency
+        int total_boxes = array.size(boxIDs) + array.size(last_boxIDs)
+        
+        if array.size(boxIDs) > 0
+            last_box_ID = array.get(boxIDs, array.size(boxIDs)-1)
+            last_box_right = box.get_right(last_box_ID)
+            last_box_bot = box.get_bottom(last_box_ID)
+            if right_side == last_box_right and not is_poc and last_box_bot != TPO_POC and last_box_color == box_color
+                box.set_top(last_box_ID, price_tick_max)
+                array.push(test_array_3, str.tostring(price_tick_min))
+            else
+                if total_boxes > 499 and array.size(last_boxIDs) > 0
+                    box.delete(array.shift(last_boxIDs))
+                total_boxes := array.size(boxIDs) + array.size(last_boxIDs)
+                if total_boxes > 499 and array.size(boxIDs) > 0
+                    box.delete(array.shift(boxIDs))
+                tpo_box = box.new(left=left_side, top=price_tick_max, right=right_side, bottom=price_tick_min, bgcolor=color.new(box_color, transparency), border_color = na)    
+                array.push(boxIDs, tpo_box)       
+        else
+            if total_boxes > 499 and array.size(last_boxIDs) > 0
+                box.delete(array.shift(last_boxIDs))
+            total_boxes := array.size(boxIDs) + array.size(last_boxIDs)
+            if total_boxes > 499 and array.size(boxIDs) > 0
+                box.delete(array.shift(boxIDs))
+            tpo_box = box.new(left=left_side, top=price_tick_max, right=right_side, bottom=price_tick_min, bgcolor=color.new(box_color, transparency), border_color = na)    
+            array.push(boxIDs, tpo_box) 
+        curr_box_ID = array.get(boxIDs, array.size(boxIDs)-1)
+        
+
+        
+        if plot_TPO_letters and barstate.islast
+        //if plot_TPO_letters
+            //string tpo_row_text = na
+            if array.size(tpo_row_index_data) > 0
+                for i=0 to array.size(tpo_row_index_data) - 1
+                    if array.size(labelIds) > 499
+                        label.delete(array.shift(labelIds))
+                    letter_index = int(array.get(tpo_row_index_data, i))
+                    tpo_color = is_poc ? POC_tpo_color : price_tick_min == open_tick[sess_start - letter_index]? open_color : is_in_value?  in_value_tpo_color : out_of_value_tpo_color
+                    tpo_letter = tpo_letter_space + array.get(TPO_Names, letter_index)
+                    //tpo_row_text := tpo_row_text + tpo_letter
+                    tpo_label = label.new(x=left_side + i, y=price_tick_min, textcolor=tpo_color, text=tpo_letter, style=label.style_none, textalign=text.align_left, size=TPO_txt_size)  
+                    array.push(labelIds, tpo_label)
+        last_box_color := box_color
+    
+    
+    curr_price_y = int((close/tick_size)) * tick_size
+    curr_price_y_index = if array.includes(TPO_price, curr_price_y)
+        array.indexof(TPO_price, curr_price_y)
+    else
+        sess_start_bar
+    curr_price_x = array.get(TPO_length, curr_price_y_index) + sess_start_bar
+    red_pill := label.new (x=curr_price_x, y=curr_price_y, text=curr_price_text, style=label.style_none, textalign=text.align_left, size=TPO_txt_size)
+
+if not is_in_session or barstate.islastconfirmedhistory
+    label.delete(red_pill)
+
+
+
+
+current_sess = if which_sess == -4
+    "Monthly"
+else if  which_sess == -3
+    "Weekly"
+else if  which_sess == -2
+    "Daily"
+else if  which_sess == -1
+    "24Hr"
+else if  which_sess == 1
+    sess1Name
+else if  which_sess == 2
+    sess2Name
+else if  which_sess == 3
+    sess3Name
+else if  which_sess == 4
+    sess4Name
+else if  which_sess == 5
+    "1 Hour"
+else if  which_sess == 6
+    "1 Minute"
+else
+    "n/a"
+
+
+
+current_bar = is_in_session ? str.tostring(array.get(TPO_Names, sess_start)) : "n/a"
+info_text_1 = "Ticks: " + str.tostring(tick_size / syminfo.mintick) 
+info_text_2 = "Tick Size: $" + str.tostring(tick_size)
+info_text_3 = "Total TPOs: " + str.tostring(total_tpo_count)
+info_text_4 = "Current Bar: " + current_bar
+info_text_5 = "Current Session: " + current_sess
+
+warning_display_tick_b = total_tpo_count > 495
+warning_display_tick_s = "Please Increase Tick Size\nuntil under 500 Total TPOs"
+open_price = int((open/tick_size)) * tick_size
+cell_info = str.tostring(array.sum(TPO_length))
+
+var table ticktestarray = table.new(position.bottom_right, 1, 20, bgcolor = info_table_color, frame_width = 2, frame_color = color.black)
+var table ticksizetable = table.new(position.top_right, 1, 5, bgcolor = info_table_color, frame_width = 2, frame_color = color.black)
+if show_tpo_info
+    tpo_count_color = total_tpo_count > 495 ? color.red : info_table_text_color
+        
+    table.cell(ticksizetable, 0, 0, text=info_text_1, text_color = info_table_text_color, text_size = info_table_txt_size)
+    table.cell(ticksizetable, 0, 1, text=info_text_2, text_color = info_table_text_color, text_size = info_table_txt_size)    
+    table.cell(ticksizetable, 0, 2, text=info_text_3, text_color = tpo_count_color, text_size = info_table_txt_size)
+    table.cell(ticksizetable, 0, 3, text=info_text_4, text_color = info_table_text_color, text_size = info_table_txt_size)
+    table.cell(ticksizetable, 0, 4, text=info_text_5, text_color = info_table_text_color, text_size = info_table_txt_size)
+else
+    table.clear(ticksizetable,0,0,0,2)
+
+var table tick_warning = table.new(position.middle_right, 1, 1, bgcolor = color.red, frame_width = 2, frame_color = color.black)
+if warning_display_tick_b and show_warning
+    table.cell(tick_warning, 0, 0, text=warning_display_tick_s, text_color = color.white, text_size = size.large)
+else
+    table.clear(tick_warning,0,0,0,0 )
+
+if debug_option
+    table.cell(ticktestarray, 0, 0, text="sess_start " + str.tostring(sess_start), text_color = color.white, text_size = deb_txt_size)
+    //table.cell(ticktestarray, 0, 1, text="syminfo.mintick " + str.tostring(syminfo.mintick), text_color = color.white, text_size = deb_txt_size)
+    table.cell(ticktestarray, 0, 2, text="tick_size " + str.tostring(tick_size), text_color = color.white, text_size = deb_txt_size)
+    table.cell(ticktestarray, 0, 3, text="timeframe.multiplier " + str.tostring(timeframe.multiplier), text_color = color.white, text_size = deb_txt_size)
+    //table.cell(ticktestarray, 0, 4, text="_auto_tick_size " + str.tostring(_auto_tick_size), text_color = color.white, text_size = deb_txt_size)
+    //table.cell(ticktestarray, 0, 5, text="_man_tick_size " + str.tostring(_man_tick_size), text_color = color.white, text_size = deb_txt_size)
+    
+else
+    table.clear(ticktestarray,0,0,0,19)
+
+
+
+    
+    
+    

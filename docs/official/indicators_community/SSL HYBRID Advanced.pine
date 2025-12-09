@@ -1,0 +1,852 @@
+//@version=6
+// Advanced By Trader Hari Krishna
+// SSL HYBRID By Mihkel00
+// This script is designed for the NNFX Method, so it is recommended for Daily charts only. 
+// Tried to implement a few VP NNFX Rules
+// This script has a SSL / Baseline (you can choose between the SSL or MA), a secondary SSL for continiuation trades and a third SSL for exit trades.
+// Alerts added for Baseline entries, SSL2 continuations, Exits.
+// Baseline has a Keltner Channel setting for "in zone" Gray Candles
+// Added "Candle Size > 1 ATR" Diamonds from my old script with the criteria of being within Baseline ATR range.
+// Credits
+// Strategy causecelebre https://www.tradingview.com/u/causecelebre/
+// SSL Channel ErwinBeckers https://www.tradingview.com/u/ErwinBeckers/
+// Moving Averages jiehonglim https://www.tradingview.com/u/jiehonglim/
+// Moving Averages  everget https://www.tradingview.com/u/everget/
+// "Many Moving Averages" script  Fractured https://www.tradingview.com/u/Fractured/
+// Thanks to Sideways Filter Suggestion by @vicfoug63 and @diLiviu
+indicator('SSL HYBRID ADVANCED', overlay = true)
+sslsignals = input.string(title = 'Buy Sell Signals', defval = 'SSL-HYBRID', options = ['SSL-HYBRID', 'SSL+QQE+WAE', 'SSL-HYBRID+SuperTrend'], group = 'Settings: Signals', inline = 'Filter')
+strend = input.string(title = 'Filter Buy Sell Signals', defval = 'NO-FILTER', options = ['NO-FILTER', 'SUPERTREND', 'HULL'], group = 'Settings: Signals', inline = 'Filter')
+squeezesignalfilter = input(false, title = 'Remove Alerts & Signals at BB-Squeeze', group = 'Settings: Signals', inline = 'Filter')
+//stbs=input.bool(true,'Add Supertrend Buy/Sell',group='Settings: Signals',inline='filter')
+adxsignalfilter = input(false, title = 'Remove Alerts & Signals at LOW ADX/SIDEWAYS', group = 'Settings: Signals', inline = 'Filter')
+strengthtreshold = input(8, 'Table Alert Strength', group = 'Strategy: Table Strength', inline = 'table')
+showtable = input.bool(true, 'Show SSL Table', group = 'Strategy: Table Strength', inline = 'table')
+merget= input.bool(true, 'Merge SSL Table', group = 'Strategy: Table Strength', inline = 'table')
+showtable2 = input.bool(true, 'Show Strength Table', group = 'Strategy: Table Strength', inline = 'table')
+
+//applystrength=input.bool(false,'Apply Strength to HMA', group='Strategy: Table Strength',inline='table')
+show_ema200 = input.bool(false, title = 'show Ema200 with ADX', group = 'Settings: Indicators')
+showbbsqueeze = input(true, title = 'Show Bollinger Squeeze', group = 'Settings: Indicators')
+showadxbg = input.bool(true, title = 'show Low ADX as Background', group = 'Candles')
+showadxcandles = input.bool(true, title = 'show Low ADX Candles', group = 'Candles')
+showbb = input.string('BB', title = 'Show Bollinger/Keltner Band', options = ['--', 'BB', 'Keltner'], group = 'Settings: Indicators')
+showmtfma = input.bool(false, title = 'Show MTF EMA', group = 'Settings: Indicators')
+showqqedot = input.bool(true, title = 'Show QQE MOD Support', group = 'Settings: Indicators')
+showbg = input.bool(true, title = 'QQE Signal Background', group = 'Settings: Indicators')
+qqeline = input(title = 'QQE Line', defval = false, group = 'Settings: Indicators')
+showpp = input(false, title = 'Show Pivot Points', group = 'Settings: Indicators')
+showsr = input(false, title = 'Show Support Resistance', group = 'Settings: Indicators')
+show_Baseline = input(title = 'Show SSL Baseline', defval = true, group = 'SSL')
+show_SSL1 = input(title = 'Show SSL1 Support', defval = false, group = 'SSL')
+showssl2 = input(title = 'Show SSL2 Support', defval = false, group = 'SSL')
+show_atr = input(title = 'Show ATR bands', defval = false, group = 'Settings: ATR')
+
+//ATR
+atrlen = input(14, 'ATR Period', group = 'Settings: ATR')
+mult = input.float(1.5, 'ATR Multi', step = 0.1, group = 'Settings: ATR')
+smoothing = input.string(title = 'ATR Smoothing', defval = 'WMA', options = ['RMA', 'SMA', 'EMA', 'WMA'], group = 'Settings: ATR')
+
+ma_function(source, atrlen) =>
+    if smoothing == 'RMA'
+        ta.rma(source, atrlen)
+    else
+        if smoothing == 'SMA'
+            ta.sma(source, atrlen)
+        else
+            if smoothing == 'EMA'
+                ta.ema(source, atrlen)
+            else
+                ta.wma(source, atrlen)
+atr_slen = ma_function(ta.tr(true), atrlen)
+////ATR Up/Low Bands
+upper_band = atr_slen * mult + close
+lower_band = close - atr_slen * mult
+
+////BASELINE / SSL1 / SSL2 / EXIT MOVING AVERAGE VALUES
+maType = input.string(title = 'SSL1 / Baseline Type', defval = 'HMA', options = ['ZLSMA', 'SMA', 'EMA', 'DEMA', 'TEMA', 'LSMA', 'WMA', 'MF', 'VAMA', 'TMA', 'HMA', 'JMA', 'Kijun v2', 'EDSMA', 'McGinley'], group = 'Settings: SSL')
+len = input(title = 'SSL1 / Baseline Length', defval = 55, group = 'Settings: SSL')
+
+SSL2Type = input.string(title = 'SSL2 / Continuation Type', defval = 'JMA', options = ['SMA', 'EMA', 'DEMA', 'TEMA', 'WMA', 'MF', 'VAMA', 'TMA', 'HMA', 'JMA', 'McGinley'], group = 'Settings: SSL')
+len2 = input(title = 'SSL 2 Length', defval = 5, group = 'Settings: SSL')
+//
+SSL3Type = input.string(title = 'EXIT Type', defval = 'HMA', options = ['DEMA', 'TEMA', 'LSMA', 'VAMA', 'TMA', 'HMA', 'JMA', 'Kijun v2', 'McGinley', 'MF'], group = 'Settings: SSL')
+len3 = input(title = 'EXIT Length', defval = 15)
+src = input(title = 'Source', defval = close)
+
+//
+tema(src, len) =>
+    ema1 = ta.ema(src, len)
+    ema2 = ta.ema(ema1, len)
+    ema3 = ta.ema(ema2, len)
+    3 * ema1 - 3 * ema2 + ema3
+kidiv = input.int(defval = 1, maxval = 4, title = 'Kijun MOD Divider', group = 'Settings: SSL')
+
+jurik_phase = input(title = '* Jurik (JMA) Only - Phase', defval = 3, group = 'Settings: SSL')
+jurik_power = input(title = '* Jurik (JMA) Only - Power', defval = 1, group = 'Settings: SSL')
+volatility_lookback = input(10, title = '* Volatility Adjusted (VAMA) Only - Volatility lookback length', group = 'Settings: SSL')
+//MF
+beta = input.float(0.8, minval = 0, maxval = 1, step = 0.1, title = 'Modular Filter, General Filter Only - Beta', group = 'Settings: SSL')
+feedback = input(false, title = 'Modular Filter Only - Feedback', group = 'Settings: SSL')
+z = input.float(0.5, title = 'Modular Filter Only - Feedback Weighting', step = 0.1, minval = 0, maxval = 1, group = 'Settings: SSL')
+//EDSMA
+ssfLength = input.int(title = 'EDSMA - Super Smoother Filter Length', minval = 1, defval = 20, group = 'Settings: SSL')
+ssfPoles = input.int(title = 'EDSMA - Super Smoother Filter Poles', defval = 2, options = [2, 3], group = 'Settings: SSL')
+
+//----
+
+//EDSMA
+get2PoleSSF(src, length) =>
+    PI = 2 * math.asin(1)
+    arg = math.sqrt(2) * PI / length
+    a1 = math.exp(-arg)
+    b1 = 2 * a1 * math.cos(arg)
+    c2 = b1
+    c3 = -math.pow(a1, 2)
+    c1 = 1 - c2 - c3
+
+    ssf = 0.0
+    ssf := c1 * src + c2 * nz(ssf[1]) + c3 * nz(ssf[2])
+    ssf
+
+get3PoleSSF(src, length) =>
+    PI = 2 * math.asin(1)
+
+    arg = PI / length
+    a1 = math.exp(-arg)
+    b1 = 2 * a1 * math.cos(1.738 * arg)
+    c1 = math.pow(a1, 2)
+
+    coef2 = b1 + c1
+    coef3 = -(c1 + b1 * c1)
+    coef4 = math.pow(c1, 2)
+    coef1 = 1 - coef2 - coef3 - coef4
+
+    ssf = 0.0
+    ssf := coef1 * src + coef2 * nz(ssf[1]) + coef3 * nz(ssf[2]) + coef4 * nz(ssf[3])
+    ssf
+
+ma(type, src, len) =>
+    float result = 0
+    if type == 'TMA'
+        result := ta.sma(ta.sma(src, math.ceil(len / 2)), math.floor(len / 2) + 1)
+        result
+    if type == 'MF'
+        ts = 0.
+        b = 0.
+        c = 0.
+        os = 0.
+        //----
+        alpha = 2 / (len + 1)
+        a = feedback ? z * src + (1 - z) * nz(ts[1], src) : src
+        //----
+        b := a > alpha * a + (1 - alpha) * nz(b[1], a) ? a : alpha * a + (1 - alpha) * nz(b[1], a)
+        c := a < alpha * a + (1 - alpha) * nz(c[1], a) ? a : alpha * a + (1 - alpha) * nz(c[1], a)
+        os := a == b ? 1 : a == c ? 0 : os[1]
+        //----
+        upper = beta * b + (1 - beta) * c
+        lower = beta * c + (1 - beta) * b
+        ts := os * upper + (1 - os) * lower
+        result := ts
+        result
+    if type == 'LSMA'
+        result := ta.linreg(src, len, 0)
+        result
+    if type == 'SMA' // Simple
+        result := ta.sma(src, len)
+        result
+    if type == 'EMA' // Exponential
+        result := ta.ema(src, len)
+        result
+    if type == 'DEMA' // Double Exponential
+        e = ta.ema(src, len)
+        result := 2 * e - ta.ema(e, len)
+        result
+    if type == 'TEMA' // Triple Exponential
+        e = ta.ema(src, len)
+        result := 3 * (e - ta.ema(e, len)) + ta.ema(ta.ema(e, len), len)
+        result
+    if type == 'WMA' // Weighted
+        result := ta.wma(src, len)
+        result
+    if type == 'VAMA' // Volatility Adjusted
+        /// Copyright © 2019 to present, Joris Duyck (JD)
+        mid = ta.ema(src, len)
+        dev = src - mid
+        vol_up = ta.highest(dev, volatility_lookback)
+        vol_down = ta.lowest(dev, volatility_lookback)
+        result := mid + math.avg(vol_up, vol_down)
+        result
+    if type == 'HMA' // Hull
+        result := ta.wma(2 * ta.wma(src, len / 2) - ta.wma(src, len), math.round(math.sqrt(len)))
+        result
+    if type == 'JMA' // Jurik
+        /// Copyright © 2018 Alex Orekhov (everget)
+        /// Copyright © 2017 Jurik Research and Consulting.
+        phaseRatio = jurik_phase < -100 ? 0.5 : jurik_phase > 100 ? 2.5 : jurik_phase / 100 + 1.5
+        beta = 0.45 * (len - 1) / (0.45 * (len - 1) + 2)
+        alpha = math.pow(beta, jurik_power)
+        jma = 0.0
+        e0 = 0.0
+        e0 := (1 - alpha) * src + alpha * nz(e0[1])
+        e1 = 0.0
+        e1 := (src - e0) * (1 - beta) + beta * nz(e1[1])
+        e2 = 0.0
+        e2 := (e0 + phaseRatio * e1 - nz(jma[1])) * math.pow(1 - alpha, 2) + math.pow(alpha, 2) * nz(e2[1])
+        jma := e2 + nz(jma[1])
+        result := jma
+        result
+    if type == 'Kijun v2'
+        kijun = math.avg(ta.lowest(len), ta.highest(len)) //, (open + close)/2)
+        conversionLine = math.avg(ta.lowest(len / kidiv), ta.highest(len / kidiv))
+        delta = (kijun + conversionLine) / 2
+        result := delta
+        result
+    if type == 'McGinley'
+        mg = 0.0
+        mg := na(mg[1]) ? ta.ema(src, len) : mg[1] + (src - mg[1]) / (len * math.pow(src / mg[1], 4))
+        result := mg
+        result
+    if type == 'EDSMA'
+
+        zeros = src - nz(src[2])
+        avgZeros = (zeros + zeros[1]) / 2
+
+        // Ehlers Super Smoother Filter 
+        ssf = ssfPoles == 2 ? get2PoleSSF(avgZeros, ssfLength) : get3PoleSSF(avgZeros, ssfLength)
+
+        // Rescale filter in terms of Standard Deviations
+        stdev = ta.stdev(ssf, len)
+        scaledFilter = stdev != 0 ? ssf / stdev : 0
+
+        alpha = 5 * math.abs(scaledFilter) / len
+
+        edsma = 0.0
+        edsma := alpha * src + (1 - alpha) * nz(edsma[1])
+        result := edsma
+        result
+    if type == 'ZLSMA'
+        lsma = ta.linreg(src, len, 0)
+        lsma2 = ta.linreg(lsma, len, 0)
+        eq = lsma - lsma2
+        result := lsma + eq
+        result
+    result
+
+///SSL 1 and SSL2
+emaHigh = ma(maType, high, len)
+emaLow = ma(maType, low, len)
+
+maHigh = ma(SSL2Type, high, len2)
+maLow = ma(SSL2Type, low, len2)
+
+///EXIT
+ExitHigh = ma(SSL3Type, high, len3)
+ExitLow = ma(SSL3Type, low, len3)
+
+///Keltner Baseline Channel
+BBMC = ma(maType, close, len)
+useTrueRange = input(true)
+multy = input.float(0.2, step = 0.05, title = 'Base Channel Multiplier', group = 'Settings: SSL')
+Keltma = ma(maType, src, len)
+range_1 = useTrueRange ? ta.tr : high - low
+rangema = ta.ema(range_1, len)
+upperk = Keltma + rangema * multy
+lowerk = Keltma - rangema * multy
+
+//Baseline Violation Candle
+open_pos = open * 1
+close_pos = close * 1
+difference = math.abs(close_pos - open_pos)
+atr_violation = difference > atr_slen
+InRange = upper_band > BBMC and lower_band < BBMC
+candlesize_violation = atr_violation and InRange
+//plotshape(candlesize_violation, color=color.new(color.white, 0), size=size.tiny, style=shape.diamond, location=location.top, title='Candle Size > 1xATR')
+
+//SSL1 VALUES
+Hlv = int(na)
+Hlv := close > emaHigh ? 1 : close < emaLow ? -1 : Hlv[1]
+sslDown = Hlv < 0 ? emaHigh : emaLow
+
+//SSL2 VALUES
+Hlv2 = int(na)
+Hlv2 := close > maHigh ? 1 : close < maLow ? -1 : Hlv2[1]
+sslDown2 = Hlv2 < 0 ? maHigh : maLow
+
+//EXIT VALUES
+Hlv3 = int(na)
+Hlv3 := close > ExitHigh ? 1 : close < ExitLow ? -1 : Hlv3[1]
+sslExit = Hlv3 < 0 ? ExitHigh : ExitLow
+base_cross_Long = ta.crossover(close, sslExit)
+base_cross_Short = ta.crossover(sslExit, close)
+codiff = base_cross_Long ? 1 : base_cross_Short ? -1 : na
+
+//COLORS
+show_color_bar = input(title = 'Color Bars', defval = true, group = 'Candles')
+color_bar = close > upperk ? color.new(#00c3ff, 0) : close < lowerk ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+color_ssl1 = close > sslDown ? color.new(#00c3ff, 0) : close < sslDown ? color.new(#ff0062, 0) : na
+color_bar2 = close > upperk ? color.new(#0000ff, 0) : close < lowerk ? color.new(#ff0000, 0) : color.new(color.gray, 0)
+//PLOTS
+plotarrow(codiff, colorup = color.new(#00c3ff, 20), colordown = color.new(#ff0062, 20), title = 'Exit Arrows', maxheight = 20, offset = 0)
+
+DownPlot = plot(show_SSL1 ? sslDown : na, title = 'SSL1', linewidth = 3, color = color_ssl1)
+//up_channel = plot(show_Baseline ? upperk : na, color=color_bar, title='Baseline Upper Channel')
+//low_channel = plot(show_Baseline ? lowerk : na, color=color_bar, title='Baseline Lower Channel')
+//fill(up_channel, low_channel, color=color_bar, transp=90)
+//plotshape(sslsignals and ta.crossover(close,sslExit), title='SSL Buy', text='Buy', location=location.belowbar, style=shape.labelup, size=size.tiny, color=color.new(#00c3ff, 50), textcolor=color.new(color.white, 0))
+//plotshape(sslsignals and ta.crossover(sslExit,close), title='SSL Sell', text='Sell', location=location.abovebar, style=shape.labeldown, size=size.tiny, color=color.new(#ff0062, 50), textcolor=color.new(color.white, 0))
+
+////SSL2 Continiuation from ATR
+atr_crit = input.float(0.9, step = 0.1, title = 'Continuation ATR Criteria', group = 'Settings: SSL')
+upper_half = atr_slen * atr_crit + close
+lower_half = close - atr_slen * atr_crit
+buy_inatr = lower_half < sslDown2
+sell_inatr = upper_half > sslDown2
+sell_cont = close < BBMC and close < sslDown2
+buy_cont = close > BBMC and close > sslDown2
+sell_atr = sell_inatr and sell_cont
+buy_atr = buy_inatr and buy_cont
+atr_fill = buy_atr ? color.new(color.green, 0) : sell_atr ? color.new(color.purple, 0) : color.new(color.white, 0)
+LongPlot = plot(showssl2 ? sslDown2 : na, title = 'SSL2', linewidth = 2, color = atr_fill, style = plot.style_circles)
+u = plot(show_atr ? upper_band : na, '+ATR', color = color.new(color.rgb(0, 255, 0, 50), 80), linewidth = 2)
+l = plot(show_atr ? lower_band : na, '-ATR', color = color.new(color.rgb(255, 0, 0, 50), 80), linewidth = 2)
+//plot(BBMC,color=color.yellow,linewidth=4,title='BBMC')
+
+
+///QQE MOD
+RSI_Period = input(6, title = 'RSI Length', group = 'Settings:QQE-MOD')
+SF = input(5, title = 'RSI Smoothing', group = 'Settings:QQE-MOD')
+QQE = input.float(3, title = 'Fast QQE Factor', group = 'Settings:QQE-MOD', step = 0.1)
+ThreshHold = input(3, title = 'Thresh-hold', group = 'Settings:QQE-MOD')
+qqsrc = input(close, title = 'RSI Source', group = 'Settings:QQE-MOD')
+Wilders_Period = RSI_Period * 2 - 1
+Rsi = ta.rsi(qqsrc, RSI_Period)
+RsiMa = ta.ema(Rsi, SF)
+AtrRsi = math.abs(RsiMa[1] - RsiMa)
+MaAtrRsi = ta.ema(AtrRsi, Wilders_Period)
+dar = ta.ema(MaAtrRsi, Wilders_Period) * QQE
+longband = 0.0
+shortband = 0.0
+trend = 0
+DeltaFastAtrRsi = dar
+RSIndex = RsiMa
+newshortband = RSIndex + DeltaFastAtrRsi
+newlongband = RSIndex - DeltaFastAtrRsi
+longband := RSIndex[1] > longband[1] and RSIndex > longband[1] ? math.max(longband[1], newlongband) : newlongband
+shortband := RSIndex[1] < shortband[1] and RSIndex < shortband[1] ? math.min(shortband[1], newshortband) : newshortband
+cross_1 = ta.cross(longband[1], RSIndex)
+trend := ta.cross(RSIndex, shortband[1]) ? 1 : cross_1 ? -1 : nz(trend[1], 1)
+FastAtrRsiTL = trend == 1 ? longband : shortband
+////////////////////
+length = input.int(50, minval = 1, title = 'Bollinger Length', group = 'Settings:QQE-MOD')
+qqmult = input.float(0.35, minval = 0.001, maxval = 5, step = 0.1, title = 'BB Multiplier', group = 'Settings:QQE-MOD')
+basis = ta.sma(FastAtrRsiTL - 50, length)
+dev = qqmult * ta.stdev(FastAtrRsiTL - 50, length)
+upper = basis + dev
+lower = basis - dev
+qqcolor_bar = RsiMa - 50 > upper ? color.new(#00c3ff, 0) : RsiMa - 50 < lower ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+// Zero cross
+QQEzlong = 0
+QQEzlong := nz(QQEzlong[1])
+QQEzshort = 0
+QQEzshort := nz(QQEzshort[1])
+QQEzlong := RSIndex >= 50 ? QQEzlong + 1 : 0
+QQEzshort := RSIndex < 50 ? QQEzshort + 1 : 0
+//Zero = hline(0, color=color.white, linestyle=hline.style_dotted, linewidth=1)
+////////////////////////////////////////////////////////////////
+RSI_Period2 = input(6, title = 'RSI Length', group = 'Settings:QQE-MOD')
+SF2 = input(5, title = 'RSI Smoothing', group = 'Settings:QQE-MOD')
+QQE2 = input.float(1.61, title = 'Fast QQE2 Factor', group = 'Settings:QQE-MOD', step = 0.1)
+ThreshHold2 = input(3, title = 'Threshold', group = 'Settings:QQE-MOD')
+src2 = input(close, title = 'RSI Source', group = 'Settings:QQE-MOD')
+Wilders_Period2 = RSI_Period2 * 2 - 1
+Rsi2 = ta.rsi(src2, RSI_Period2)
+RsiMa2 = ta.ema(Rsi2, SF2)
+AtrRsi2 = math.abs(RsiMa2[1] - RsiMa2)
+MaAtrRsi2 = ta.ema(AtrRsi2, Wilders_Period2)
+dar2 = ta.ema(MaAtrRsi2, Wilders_Period2) * QQE2
+longband2 = 0.0
+shortband2 = 0.0
+trend2 = 0
+DeltaFastAtrRsi2 = dar2
+RSIndex2 = RsiMa2
+newshortband2 = RSIndex2 + DeltaFastAtrRsi2
+newlongband2 = RSIndex2 - DeltaFastAtrRsi2
+longband2 := RSIndex2[1] > longband2[1] and RSIndex2 > longband2[1] ? math.max(longband2[1], newlongband2) : newlongband2
+shortband2 := RSIndex2[1] < shortband2[1] and RSIndex2 < shortband2[1] ? math.min(shortband2[1], newshortband2) : newshortband2
+cross_2 = ta.cross(longband2[1], RSIndex2)
+trend2 := ta.cross(RSIndex2, shortband2[1]) ? 1 : cross_2 ? -1 : nz(trend2[1], 1)
+FastAtrRsi2TL = trend2 == 1 ? longband2 : shortband2
+// Zero cross
+QQE2zlong = 0
+QQE2zlong := nz(QQE2zlong[1])
+QQE2zshort = 0
+QQE2zshort := nz(QQE2zshort[1])
+QQE2zlong := RSIndex2 >= 50 ? QQE2zlong + 1 : 0
+QQE2zshort := RSIndex2 < 50 ? QQE2zshort + 1 : 0
+hcolor2 = RsiMa2 - 50 > ThreshHold2 ? color.new(#161b25, 0) : RsiMa2 - 50 < 0 - ThreshHold2 ? color.new(#161b25, 0) : color.new(#161b25, 0)
+//plot(ta.ema( close+(FastAtrRsi2TL-50)/10000,5), title='QQE Line', color=color.new(color.gray, 0), linewidth=2)
+//plot(RsiMa2 - 50, color=hcolor2, title='Histo2', style=plot.style_columns, transp=50)
+Greenbar1 = RsiMa2 - 50 > ThreshHold2
+Greenbar2 = RsiMa - 50 > upper
+Redbar1 = RsiMa2 - 50 < 0 - ThreshHold2
+Redbar2 = RsiMa - 50 < lower
+//plot(Greenbar1 and Greenbar2 == 1 ? RsiMa2 - 50 : na, title='QQE Up', style=plot.style_columns, color=color.new(#00c3ff, 0))
+//plot(Redbar1 and Redbar2 == 1 ? RsiMa2 - 50 : na, title='QQE Down', style=plot.style_columns, color=color.new(#ff0062, 0))
+//bgcolor(showbg and RsiMa2 - 50?hcolor2:na,title='QQE Bg GREY')
+qqcolr = FastAtrRsiTL - 50 < RsiMa - 50 ? color.new(#002734, 0) : FastAtrRsiTL - 50 > RsiMa - 50 ? color.new(#3a0016, 0) : na
+bgcolor(showbg ? qqcolr : na, title = 'QQE Bg')
+
+//--->plotshape(showqqedot?Greenbar1 and Greenbar2:na,color=color.new(#00c3ff, 20),title='QQE Up',style=shape.triangleup,size=size.auto,location=location.belowbar)
+//--->plotshape(showqqedot?Redbar1 and Redbar2:na,color=color.new(#ff0062, 20),title='QQE Dn',style=shape.triangledown,size=size.auto,location=location.abovebar)
+
+
+//plotarrow(codiff, colorup=color.new(#00c3ff, 20), colordown=color.new(#ff0062, 20), title='Exit Arrows', maxheight=20, offset=0)
+//hcolor2 = RsiMa2 - 50 > ThreshHold2 ? color.silver : RsiMa2 - 50 < 0 - ThreshHold2 ? color.silver : na
+qqecolor = Greenbar1 and Greenbar2 == bool(1) and RsiMa2 - 50  > ThreshHold2 ? color.new(#00c3ff, 0) : Redbar1 and Redbar2 == bool(1) and RsiMa2 - 50< 0 - ThreshHold2 ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+plot(qqeline ? ta.ema(close + (FastAtrRsi2TL - 50) / 10000, 5) : na, title = 'QQE Line', color = qqecolor, linewidth = 2)
+
+qqxcolor = FastAtrRsiTL - 50 < RsiMa - 50 ? color.new(color.green, 0) : FastAtrRsiTL - 50 > RsiMa - 50 ? color.new(color.red, 0) : na
+//p2=plot(FastAtrRsiTL-50,color=color.red,transp=0,linewidth=2)
+//p1=plot(RsiMa-50,color=color.green,transp=0,linewidth=2)
+
+sensitivity = input.int(150, title = 'Sensitivity', group = 'Indicators: Waddah Attar Explosion')
+fastLength = input.int(20, title = 'FastEMA Length', group = 'Indicators: Waddah Attar Explosion')
+slowLength = input.int(40, title = 'SlowEMA Length', group = 'Indicators: Waddah Attar Explosion')
+channelLength = input.int(20, title = 'BB Channel Length', group = 'Indicators: Waddah Attar Explosion')
+waeMult = input.float(2.0, title = 'BB Stdev Multiplier', group = 'Indicators: Waddah Attar Explosion')
+
+calc_macd(source, fastLength, slowLength) =>
+    fastMA = ta.ema(source, fastLength)
+    slowMA = ta.ema(source, slowLength)
+    fastMA - slowMA
+
+calc_BBUpper(source, length, mult) =>
+    basis = ta.sma(source, length)
+    dev = mult * ta.stdev(source, length)
+    basis + dev
+
+calc_BBLower(source, length, mult) =>
+    basis = ta.sma(source, length)
+    dev = mult * ta.stdev(source, length)
+    basis - dev
+
+t1 = (calc_macd(close, fastLength, slowLength) - calc_macd(close[1], fastLength, slowLength)) * sensitivity
+
+e1 = calc_BBUpper(close, channelLength, waeMult) - calc_BBLower(close, channelLength, waeMult)
+
+trendUp = t1 >= 0 ? t1 : 0
+trendDown = t1 < 0 ? -1 * t1 : 0
+// Waddah Attar Explosion
+waeBuy = trendUp > 0 and trendUp > e1
+waeSell = trendDown > 0 and trendDown > e1
+waecol = waeBuy ? color.new(#00c3ff, 0) : waeSell ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+//plot(trendUp, style=plot.style_columns, linewidth=1, color=(trendUp<trendUp[1]) ? color.lime : color.green, transp=45, title="UpTrend", display=display.none)
+//plot(trendDown, style=plot.style_columns, linewidth=1, color=(trendDown<trendDown[1]) ? color.orange : color.red, transp=45, title="DownTrend", display=display.none)
+//plot(e1, style=plot.style_line, linewidth=2, color=color.yellow, title="ExplosionLine", display=display.none)
+
+///////////ADX
+adxl = input(14, title = 'ADX/DMI length', group = 'Settings: ADX')
+adxs = input(14, title = 'ADX/DMI smooth length', group = 'Settings: ADX')
+[plus, minus, adx] = request.security(syminfo.tickerid, '', ta.dmi(adxl, adxs))
+adxtreshold = input.int(20, 'ADX Treshold', group = 'Settings: ADX')
+em200 = ta.ema(open, 200)
+adxem200color = adx > adxtreshold and plus > minus ? color.new(color.lime, 0) : adx > adxtreshold and plus < minus ? color.new(color.maroon, 0) : color.new(color.yellow, 0)
+plot(show_ema200 ? em200 : na, 'EMA200', color = adxem200color, linewidth = math.max(1, 3))
+adxcross = ta.crossover(plus, minus) ? color.new(color.blue, 0) : ta.crossunder(plus, minus) ? color.new(color.red, 0) : na
+plotshape(ta.cross(plus, minus) ? em200 : na, color = adxcross, size = size.tiny, location = location.absolute, style = shape.diamond, title = 'ADX Cross')
+///////////////////HULL+SUPRTREND
+showhulltrend = input.bool(false, 'Show HULL MTF', group = 'Settings: Filters', inline = 'HULL')
+showtrend = input.bool(false, 'Show Supertrend', group = 'Settings: Filters', inline = 'Supertrend')
+showstc = input.bool(true, title = 'SuperTrend Color/Hull Color', group = 'Settings: Filters', inline = 'Supertrend')
+mtf4 = input.timeframe(title = 'HULL TIME FRAME', defval = '', group = 'Settings: Filters', inline = 'HULL')
+stf4 = input.timeframe(title = 'SUPER TREND TIME FRAME', defval = '', group = 'Settings: Filters', inline = 'Supertrend')
+ma_length4 = input(110, title = 'Hull TREND Length\n[Scalping:55,Floating S/R:100-300,]', group = 'Settings: Filters', inline = 'HULL')
+
+ma4 = request.security(syminfo.tickerid, mtf4, ta.hma(close, ma_length4), barmerge.gaps_on)
+color4 = open > ma4 ? color.new(#00ff00, 0) : open < ma4 ? color.new(#ff0000, 0) : color.new(color.gray, 0)
+pl4 = plot(showhulltrend ? ma4 : na, title = 'MTF HULL TREND', color = color4, linewidth = 4, offset = 0)
+
+[supertrend, direction] = request.security(syminfo.tickerid, stf4, ta.supertrend(input.float(3, title = 'Supertrend ATR Multiplier', step = 0.1, group = 'Settings: Filters', inline = 'Supertrend'), input.int(10, title = 'Supertrend Length', group = 'Settings: Filters', inline = 'Supertrend')), barmerge.gaps_off)
+supertrendup = direction < 0 ? supertrend : na
+supertrenddn = direction > 0 ? supertrend : na
+stc = bool(supertrendup) ? color.new(#00c3ff, 50) : color.new(#ff0062, 50)
+trendcolor = showstc ? stc : qqxcolor
+plot(showtrend ? supertrendup : na, title = 'Supertrend Up', color = trendcolor, linewidth = 4, style = plot.style_linebr)
+plot(showtrend ? supertrenddn : na, title = 'Supertrend Down', color = trendcolor, linewidth = 4, style = plot.style_linebr)
+
+///////////////MACD///////////
+[macd, signal, hist] = ta.macd(close, input.int(5, title = 'FAST MACD', group = 'Settings: MACD'), input.int(50, title = 'SLOW MACD', group = 'Settings: MACD'), input.int(30, title = 'Signal', group = 'Settings: MACD'))
+plotshape(ta.crossover(macd, signal) ? close : na, title = 'MACD Crossover Buy', text = '', location = location.belowbar, style = shape.xcross, size = size.tiny, color = color.new(#00FF00, 20), textcolor = color.new(color.white, 0))
+plotshape(ta.crossunder(macd, signal) ? close : na, title = 'MACD Crossover Sell', text = '', location = location.abovebar, style = shape.xcross, size = size.tiny, color = color.new(#ff0000, 0), textcolor = color.new(color.white, 0))
+color_bars = showadxbg and adx < adxtreshold ? color.new(color.purple, 90) : na
+bgcolor(adx < adxtreshold ? color_bars : na)
+/////////////
+/////////////////////////Bollinger Bands
+matype = input.string('SMA', title = 'Bollinger MA type', options = ['EMA', 'HMA', 'SMA'])
+kLength = input(20, title = 'Keltner Length')
+kN = input(2, title = 'Keltner Deviation')
+bbLength = input(20, title = 'Bollinger Length')
+bbN = input(2, title = 'Bollinger Deviation')
+//--- Keltner
+kma = matype == 'EMA' ? ta.ema(close, kLength) : matype == 'HMA' ? ta.hma(close, kLength) : ta.sma(close, kLength)
+kUpper = kma + kN * ta.atr(kLength)
+kLower = kma - kN * ta.atr(kLength)
+//--- Bollinger
+bma = matype == 'EMA' ? ta.ema(close, bbLength) : matype == 'HMA' ? ta.hma(close, bbLength) : ta.sma(close, bbLength)
+bbUpper = bma + bbN * ta.stdev(close, bbLength)
+bbLower = bma - bbN * ta.stdev(close, bbLength)
+bbMiddle = matype == 'EMA' ? ta.ema(close, bbLength) : matype == 'HMA' ? ta.hma(close, bbLength) : ta.sma(close, bbLength)
+//--- Bollinger Band Squeeze
+squeeze = bbUpper <= kUpper and bbLower >= kLower
+//--- Plots
+//plot(bbUpper, title='Upper Band')
+//plot(bbLower, title='Lower Band')
+//--- Fill
+
+plot(showbb == 'BB' ? bbUpper : showbb == 'Keltner' ? kUpper : na, style = plot.style_linebr, color = color.new(color.purple, 0), title = ' Upper Band')
+plot(showbb == 'BB' ? bbLower : showbb == 'Keltner' ? kLower : na, style = plot.style_linebr, color = color.new(color.purple, 0), title = ' Lower Band')
+//plot(showbb=='BB'?ta.sma(close,20):showbb=='Keltner'?ta.sma(close,20):na, style=plot.style_linebr, color=color.new(color.purple, 0), title=' Middle Band')
+a = plot(squeeze and showbbsqueeze ? bbUpper : na, style = plot.style_linebr, color = bool(bar_index) ? na : color.new(color.white, 0), title = 'Squeezed Upper Band')
+b = plot(squeeze and showbbsqueeze ? bbLower : na, style = plot.style_linebr, color = bool(bar_index) ? na : color.new(color.white, 0), title = 'Squeezed Lower Band')
+fill(a, b, color = color.new(color.purple, 90), title = 'Bollinger Squeezed Area')
+//////////
+///////////////Multi Time Frame EMA
+mtf1 = input.timeframe(title = 'EMA MTF1', defval = '', group = 'Settings: EMA')
+mtf2 = input.timeframe(title = 'EMA MTF2', defval = '', group = 'Settings: EMA')
+ma_length1 = input(20, title = 'EMA Period-1', group = 'Settings: EMA')
+ma_length2 = input(50, title = 'EMA Period-2', group = 'Settings: EMA')
+ma1 = request.security(syminfo.tickerid, mtf1, ta.ema(close, ma_length1), barmerge.gaps_on)
+color1 = open > ma1 ? color.new(#00FF00, 60) : open < ma1 ? color.new(#00FF00, 60) : color.new(color.gray, 0)
+
+pl1 = plot(showmtfma ? ma1 : showbb == 'BB' ? bbMiddle : showbb == 'Keltner' ? bbMiddle : na, title = 'MTF EMA-1', color = showmtfma and bool(ma1) ? color1 : color.purple, linewidth = 1, offset = 0)
+
+ma2 = request.security(syminfo.tickerid, mtf2, ta.ema(close, ma_length2), barmerge.gaps_on)
+color2 = open > ma2 ? color.new(#ff0000, 60) : open < ma2 ? color.new(#ff0000, 60) : color.new(color.gray, 0)
+
+pl2 = plot(showmtfma ? ma2 : na, title = 'MTF EMA-2', color = color2, linewidth = 1, offset = 0)
+
+plotshape(ta.crossover(ma1, ma2) ? close : na, title = 'EMA Crossover Buy', text = '', location = location.belowbar, style = shape.xcross, size = size.tiny, color = color.new(#00FF00, 20), textcolor = color.new(color.white, 0))
+plotshape(ta.crossunder(ma1, ma2) ? close : na, title = 'EMA Crossover Sell', text = '', location = location.abovebar, style = shape.xcross, size = size.tiny, color = color.new(#ff0000, 50), textcolor = color.new(color.white, 0))
+//////////////////
+rsi() =>
+    srce = close
+    len = input.int(7, minval = 1, title = 'RSI Length', group = 'RSI')
+    srs = input.int(18, minval = 1, title = 'RSI SMA Length', group = 'RSI')
+    up = ta.rma(math.max(ta.change(srce), 0), len)
+    down = ta.rma(-math.min(ta.change(srce), 0), len)
+    rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - 100 / (1 + up / down)
+    //mr = ta.ema(ta.ema(rsi, srs), srs)
+    mr = ta.ema(ta.ema(ta.ema(rsi, srs), srs), srs)
+    rsiupdn = rsi > mr ? 1 : rsi < mr ? -1 : 0
+    [rsiupdn]
+
+cci() =>
+    ccilength = input.int(40, minval = 1, title = 'CCI Length', group = 'CCI')
+    ccisrc = input(hlc3, title = 'CCI Source', group = 'CCI')
+    ccima = ta.sma(ccisrc, ccilength)
+    cci = (ccisrc - ccima) / (0.015 * ta.dev(ccisrc, ccilength))
+    ccibg = cci > 100 ? 1 : cci < -100 ? -1 : 0
+    [ccibg]
+sto() =>
+    OverBought = input(80, title = 'Stochastic OverBought Level', group = 'stochastic')
+    OverSold = input(20, title = 'Stochastic OverBought Level', group = 'stochastic')
+    k = ta.sma(ta.stoch(close, high, low, input.int(14, minval = 1, title = 'Stochastic Length', group = 'stochastic')), input.int(3, minval = 1, title = 'Stochastic Smooth Length K', group = 'stochastic'))
+    d = ta.sma(k, input.int(3, minval = 1, title = 'Stochastic Deviation Length D', group = 'stochastic'))
+    co = ta.crossover(k, d)
+    cu = ta.crossunder(k, d)
+    sup = k > OverBought or cu and k > OverBought
+    sdn = k < OverSold or co and k < OverSold
+    stobg = sup ? 1 : sdn ? -1 : co ? 2 : cu ? -2 : 0
+    [stobg]
+start = input.float(title = 'PSAR Start', step = 0.001, defval = 0.02, group = 'PSAR')
+increment = input.float(title = 'PSAR Increment', step = 0.001, defval = 0.02, group = 'PSAR')
+maximum = input.float(title = 'PSAR Maximum', step = 0.01, defval = 0.2, group = 'PSAR')
+psar = ta.sar(start, increment, maximum)
+psarDir = psar < close ? 1 : -1
+colorPSAR = psarDir == 1 ? color.new(#00c3ff, 0) : color.new(#ff0062, 0) //color_bar
+
+exitsig = close > upperk and close > BBMC ? color.new(#00c3ff, 0) : close < lowerk and close < BBMC ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+qqedot = Greenbar1 and Greenbar2 and waeBuy ? color.new(#00c3ff, 0) : Redbar1 and Redbar2 and waeSell ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+
+adxcol = adx > 20 and plus > minus ? color.new(#00c3ff, 0) : adx > 20 and minus > plus ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+emacol = ta.crossover(ma1, ma2) or close > ma2 ? color.new(#00c3ff, 0) : ta.crossunder(ma1, ma2) or close < ma2 ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+
+psarn = psarDir == 1 ? 1 : -1 //PSAR VALUE
+exitsign = close > upperk and close > 1 ? 1 : close < lowerk and close < BBMC ? -1 : 0
+qqedotn = Greenbar1 and Greenbar2 and waeBuy ? 1 : Redbar1 and Redbar2 and waeSell ? -1 : 0
+adxcoln = adx > 20 and plus > minus ? 1 : adx > 20 and minus > plus ? -1 : 0
+emacoln = ta.crossover(ma1, ma2) or close > ma2 ? 1 : ta.crossunder(ma1, ma2) or close < ma2 ? -1 : 0
+waen = waeBuy ? 1 : waeSell ? -1 : 0
+stval = direction < 0 ? 1 : direction > 0 ? -1 : 0
+//SSL TABLE
+[sto] = sto()
+[rs] = rsi()
+[cc] = cci()
+stocol = sto > 0 ? color.new(#00c3ff, 0) : sto < 0 ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+rsicol = rs > 0 ? color.new(#00c3ff, 0) : rs < 0 ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+ccicol = cc > 0 ? color.new(#00c3ff, 0) : cc < 0 ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+sttrend = direction < 0 ? color.new(#00c3ff, 0) : direction > 0 ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+///////////Strategy Signals
+qqeGreenBar = Greenbar1 and Greenbar2
+qqeRedBar = Redbar1 and Redbar2
+qqeBuy = qqeGreenBar and not qqeGreenBar[1]
+qqeSell = qqeRedBar and not qqeRedBar[1]
+p1 = plot(show_Baseline ? BBMC : na, color = color_bar, linewidth = 4, title = 'MA Baseline')
+barcolor(show_color_bar ? color_bar : show_color_bar and adx < adxtreshold and showadxcandles ? color.new(color.yellow, 90) : na)
+plotshape(showqqedot ? qqeGreenBar : false, color = color.new(#00ff00, 20), title = 'QQE Up', style = shape.triangleup, size = size.auto, location = location.belowbar)
+plotshape(showqqedot ? qqeRedBar : false, color = color.new(#ff0000, 20), title = 'QQE Dn', style = shape.triangledown, size = size.auto, location = location.abovebar)
+// SSL Hybrid
+sslBuy = close > upperk and close > BBMC
+sslSell = close < lowerk and close < BBMC
+//STRATEGY
+stratsslupsig = waeBuy and qqeBuy and sslBuy
+stratssldnsig = waeSell and qqeSell and sslSell
+//SSL HYBRID
+sslup = ta.crossover(close, sslExit)
+ssldn = ta.crossover(sslExit, close)
+//SUPERTREND
+strendup = direction < 0 and bool(ta.change(direction))
+strenddn = direction > 0 and bool(ta.change(direction))
+//SSL+SUPERTREND
+sslupst = ta.crossover(close, sslExit) or strendup
+ssldnst = ta.crossover(sslExit, close) or strenddn
+//HMA DIRECTION
+hmadirection = close > ma4 ? 1 : close < ma4 ? -1 : 0
+signalup = strend == 'NO-FILTER' and sslsignals == 'SSL-HYBRID' ? sslup : strend == 'NO-FILTER' and sslsignals == 'SSL+QQE+WAE' ? stratsslupsig : strend == 'NO-FILTER' and sslsignals == 'SSL-HYBRID+SuperTrend' ? sslupst : strend == 'SUPERTREND' and direction < 0 and sslsignals == 'SSL-HYBRID' ? sslup : strend == 'SUPERTREND' and direction < 0 and sslsignals == 'SSL+QQE+WAE' ? stratsslupsig : strend == 'SUPERTREND' and direction < 0 and sslsignals == 'SSL-HYBRID+SuperTrend' ? sslupst : strend == 'HULL' and hmadirection > 0 and sslsignals == 'SSL-HYBRID' ? sslup : strend == 'HULL' and hmadirection > 0 and sslsignals == 'SSL+QQE+WAE' ? stratsslupsig : strend == 'HULL' and hmadirection > 0 and sslsignals == 'SSL-HYBRID+SuperTrend' ? sslupst : sslup
+signalup := squeezesignalfilter and squeeze ? sslup : signalup
+signalup := adxsignalfilter and adx < adxtreshold ? sslup : signalup
+
+signaldn = strend == 'NO-FILTER' and sslsignals == 'SSL-HYBRID' ? ssldn : strend == 'NO-FILTER' and sslsignals == 'SSL+QQE+WAE' ? stratssldnsig : strend == 'NO-FILTER' and sslsignals == 'SSL-HYBRID+SuperTrend' ? ssldnst : strend == 'SUPERTREND' and direction > 0 and sslsignals == 'SSL-HYBRID' ? ssldn : strend == 'SUPERTREND' and direction > 0 and sslsignals == 'SSL+QQE+WAE' ? stratssldnsig : strend == 'SUPERTREND' and direction > 0 and sslsignals == 'SSL-HYBRID+SuperTrend' ? ssldnst : strend == 'HULL' and hmadirection < 0 and sslsignals == 'SSL-HYBRID' ? sslup : strend == 'HULL' and hmadirection < 0 and sslsignals == 'SSL+QQE+WAE' ? stratsslupsig : strend == 'HULL' and hmadirection < 0 and sslsignals == 'SSL-HYBRID+SuperTrend' ? sslupst : ssldn
+signaldn := squeezesignalfilter and squeeze ? ssldn : signaldn
+signaldn := adxsignalfilter and adx < adxtreshold ? ssldn : signaldn
+
+plotshape(signalup, title = 'SSL Buy', text = 'Buy', location = location.belowbar, style = shape.labelup, size = size.tiny, color = color.new(#00c3ff, 50), textcolor = color.new(color.white, 0))
+plotshape(signaldn, title = 'SSL Sell', text = 'Sell', location = location.abovebar, style = shape.labeldown, size = size.tiny, color = color.new(#ff0062, 50), textcolor = color.new(color.white, 0))
+//TABLE START
+//psarn + exitsign + qqedotn +waen+ adxcoln + emacoln + sto + rs+ cc+stval
+var ssltable = table.new(position.top_right, 2, 15, border_width = 3, bgcolor = color.new(color.black, 0), border_color = color.new(#333333, 0))
+if barstate.islast
+    if showtable
+        table.cell(ssltable, 0, 0, text = 'Checklist', text_color = color.new(color.white, 0), text_size = size.normal)
+        
+        table.cell(ssltable, 0, 1, text = 'SSL/EMA Signal', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = merget?exitsig:color.new(color.gray, 0))
+        table.cell(ssltable, 0, 2, text = 'HMA open', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = merget?color_bar:color.new(color.gray, 0))
+        table.cell(ssltable, 0, 3, text = 'Candle Color', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = merget?colorPSAR:color.new(color.gray, 0))
+        table.cell(ssltable, 0, 4, text = 'QQE Color', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = merget?qqecolor:color.new(color.gray, 0))
+        table.cell(ssltable, 0, 5, text = 'QQE WAE Dot', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = merget?qqedot:color.new(color.gray, 0))
+        table.cell(ssltable, 0, 6, text = 'Supertrend', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = merget?sttrend:color.new(color.gray, 0))
+        table.cell(ssltable, 0, 7, text = 'ADX Color', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = merget?adxcol:color.new(color.gray, 0))
+        table.cell(ssltable, 0, 8, text = 'WAE Color', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = merget?waecol:color.new(color.gray, 0))
+        table.cell(ssltable, 0, 8, text = 'EMA Color', text_color = color.new(color.white, 0), text_size = size.small, bgcolor =merget?emacol: color.new(color.gray, 0))
+        table.cell(ssltable, 0, 9, text = 'STO Color', text_color = color.new(color.white, 0), text_size = size.small, bgcolor =merget?stocol: color.new(color.gray, 0))
+        table.cell(ssltable, 0, 10, text = 'RSI Color', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = merget?rsicol:color.new(color.gray, 0))
+        table.cell(ssltable, 0, 11, text = 'CCI Color', text_color = color.new(color.white, 0), text_size = size.small, bgcolor= merget?ccicol:color.new(color.gray, 0))
+        
+        if not merget
+            table.cell(ssltable, 1, 0, text = 'Up/Down', text_color = color.new(color.white, 0), text_size = size.normal)
+            table.cell(ssltable, 1, 1, text =  'Up/Down', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = exitsig)
+            table.cell(ssltable, 1, 2, text = 'Above/Below', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = color_bar)
+            table.cell(ssltable, 1, 3, text = 'Blue/Pink', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = colorPSAR)
+            table.cell(ssltable, 1, 4, text = 'Blue/Pink', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = qqecolor)
+            table.cell(ssltable, 1, 5, text = 'Below/Above', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = qqedot)
+            table.cell(ssltable, 1, 6, text = 'Above/Below', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = sttrend)
+            table.cell(ssltable, 1, 7, text = 'Blue/Pink', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = adxcol)
+            table.cell(ssltable, 1, 8, text = 'Blue/Pink', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = waecol)
+            table.cell(ssltable, 1, 9, text = 'Blue/Pink', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = stocol)
+            table.cell(ssltable, 1, 10, text = 'Green/Red', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = rsicol)
+            table.cell(ssltable, 1, 11, text = 'Blue/Pink', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = ccicol)
+
+///TABLE STRENGTH
+sslstrength = psarn + exitsign + qqedotn + waen + adxcoln + emacoln + sto + rs + cc + stval
+strengthcol = sslstrength > strengthtreshold ? color.new(#00c3ff, 0) : sslstrength < -1 * strengthtreshold ? color.new(#ff0062, 0) : color.new(color.gray, 0)
+var strengthtable = table.new(position.top_center, 2, 15, border_width = 3, bgcolor = color.new(color.black, 0), border_color = color.new(#333333, 0))
+
+if barstate.islast
+    if showtable2
+        table.cell(strengthtable, 0, 0, text = 'Strength', text_color = color.new(color.white, 0), text_size = size.normal)
+        table.cell(strengthtable, 1, 0, text = 'Up/Down', text_color = color.new(color.white, 0), text_size = size.normal)
+
+        table.cell(strengthtable, 0, 1, text = '10', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = color.new(color.gray, 0))
+        table.cell(strengthtable, 1, 1, text = str.tostring(sslstrength), text_color = color.new(color.white, 0), text_size = size.small, bgcolor = strengthcol)
+
+        table.cell(strengthtable, 0, 2, text = 'Signals', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = color.new(color.gray, 0))
+        table.cell(strengthtable, 1, 2, text = str.tostring(sslsignals), text_color = color.new(color.white, 0), text_size = size.small, bgcolor = color.new(color.gray, 0))
+
+        table.cell(strengthtable, 0, 3, text = 'Filter', text_color = color.new(color.white, 0), text_size = size.small, bgcolor = color.new(color.gray, 0))
+        table.cell(strengthtable, 1, 3, text = str.tostring(strend), text_color = color.new(color.white, 0), text_size = size.small, bgcolor = color.new(color.gray, 0))
+
+
+
+sideways = squeezesignalfilter and squeeze or adxsignalfilter and adx < adxtreshold
+alertcondition(sslstrength > strengthtreshold or sslstrength < -1 * strengthtreshold, title = 'TABLE:Strength Alert', message = 'Table UP/DN Signal Strength')
+//ALERTS
+alertcondition(not sideways and ta.crossover(close, sslDown), title = 'SSL Hybrid:SSL Cross Alert', message = 'SSL1 has crossed.')
+alertcondition(not sideways and ta.crossover(close, sslDown2), title = 'SSL Hybrid:SSL2 Cross Alert', message = 'SSL2 has crossed.')
+
+alertcondition(not sideways and sell_atr, title = 'SSL Hybrid:Sell Continuation', message = 'Sell Continuation.')
+alertcondition(not sideways and buy_atr, title = 'SSL Hybrid:Buy Continuation', message = 'Buy Continuation.')
+
+alertcondition(not sideways and ta.crossover(close, sslExit), title = 'SSL Hybrid:Exit Sell', message = 'Exit Sell Alert.')
+alertcondition(not sideways and ta.crossover(sslExit, close), title = 'SSL Hybrid:Exit Buy', message = 'Exit Buy Alert.')
+
+alertcondition(not sideways and ta.crossover(close, upperk), title = 'SSL Hybrid:Baseline Buy Entry', message = 'Base Buy Alert.')
+alertcondition(not sideways and ta.crossover(lowerk, close), title = 'SSL Hybrid:Baseline Sell Entry', message = 'Base Sell Alert.')
+
+alertcondition(not sideways and ta.cross(ma1, ma2), title = 'Advanced:EMA20/50 Signal', message = 'Advanced:EMA20/50  Up/Dn  Signal')
+alertcondition(not sideways and qqeBuy or not sideways and qqeSell, title = 'Advanced:QQE Crossover ', message = 'Advanced: QQE Crossing Zero')
+
+alertcondition(signalup or signaldn, title = 'FILTER:Buy/Sell Alert', message = 'FILTER:TREND FILTER Buy/Sell  Alert')
+alertcondition(signalup, title = 'FILTER:Buy Alert', message = 'FILTER:TREND FILTER- Buy Alert')
+alertcondition(signaldn, title = 'FILTER:Sell Alert', message = 'FILTER:TREND FILTER- Sell Alert')
+
+alertcondition(not sideways and ta.cross(close, sslExit), title = 'Advanced:SSL Buy Sell Alert', message = 'Advanced:SSL BUY / SELL / Alert.')
+alertcondition(squeeze or adx < adxtreshold, title = 'Advanced ADX:Volatile Sideways /Exit trade', message = 'Advanced:Low ADX / Dont Trade /Exit Trade')
+alertcondition(not sideways and ta.cross(open, ma4), title = 'Advanced: MTF/HMA Crossover', message = 'Advanced:MTF/HMA  Crossover Alert')
+
+alertcondition(not sideways and ta.cross(ma1, ma2) or not sideways and ta.cross(open, ma4) or not sideways and ta.cross(close, sslExit) or not sideways and bool(ta.change(direction)), title = 'MIXED:SSL/Channel or EMA Cross or HMA Buy/sell or SuperTrend', message = 'MIXED Signal:\nSSL/Channel\n EMA Crossover\n HMA Entry/Exit \n SuperTrend Direction Changed')
+
+///////////////////SUPPORT RESISTANCE//////////////////////////
+prd = input.int(defval = 10, title = 'Pivot Period', minval = 4, maxval = 30, group = 'S/R Settings')
+ppsrc = input.string(defval = 'High/Low', title = 'Source', options = ['High/Low', 'Close/Open'], group = 'S/R Settings')
+maxnumpp = input.int(defval = 20, title = ' Maximum Number of Pivot', minval = 5, maxval = 100, group = 'S/R Settings')
+ChannelW = input.int(defval = 10, title = 'Maximum Channel Width %', minval = 1, group = 'S/R Settings')
+maxnumsr = input.int(defval = 5, title = ' Maximum Number of S/R', minval = 1, maxval = 10, group = 'S/R Settings')
+min_strength = input.int(defval = 2, title = ' Minimum Strength', minval = 1, maxval = 10, group = 'S/R Settings')
+labelloc = input.int(defval = 20, title = 'Label Location', group = 'S/R Settings', tooltip = 'Positive numbers reference future bars, negative numbers reference histical bars')
+linestyle = input.string(defval = 'Solid', title = 'Line Style', options = ['Solid', 'Dotted', 'Dashed'], group = 'S/R Settings')
+linewidth = input.int(defval = 1, title = 'Line Width', minval = 1, maxval = 4, group = 'S/R Settings')
+resistancecolor = input.color(defval = color.new(color.red, 0), title = 'Resistance Color', group = 'S/R Settings')
+supportcolor = input.color(defval = color.new(color.lime, 0), title = 'Support Color', group = 'S/R Settings')
+
+float src1 = ppsrc == 'High/Low' ? high : math.max(close, open)
+float src12 = ppsrc == 'High/Low' ? low : math.min(close, open)
+float ph = ta.pivothigh(src1, prd, prd)
+float pl = ta.pivotlow(src12, prd, prd)
+
+plotshape(bool(ph) and showpp, text = 'H', style = shape.triangledown, color = color.new(color.red, 0), textcolor = color.new(color.white, 0), location = location.abovebar, offset = -prd, size = size.auto)
+plotshape(bool(pl) and showpp, text = 'L', style = shape.triangleup, color = color.new(color.lime, 0), textcolor = color.new(color.white, 0), location = location.belowbar, offset = -prd, size = size.auto)
+
+Lstyle = linestyle == 'Dashed' ? line.style_dashed : linestyle == 'Solid' ? line.style_solid : line.style_dotted
+
+//calculate maximum S/R channel zone width
+prdhighest = ta.highest(300)
+prdlowest = ta.lowest(300)
+cwidth = (prdhighest - prdlowest) * ChannelW / 100
+
+var pivotvals = array.new_float(0)
+
+if bool(ph) or bool(pl)
+    array.unshift(pivotvals, bool(ph) ? ph : pl)
+    if array.size(pivotvals) > maxnumpp // limit the array size
+        array.pop(pivotvals)
+
+get_sr_vals(ind) =>
+    if showsr == true
+        float lo = array.get(pivotvals, ind)
+        float hi = lo
+        int numpp = 0
+        for y = 0 to array.size(pivotvals) - 1 by 1
+            float cpp = array.get(pivotvals, y)
+            float wdth = cpp <= lo ? hi - cpp : cpp - lo
+            if wdth <= cwidth // fits the max channel width?
+                lo := cpp <= lo ? cpp : lo
+                hi := cpp > lo ? cpp : hi
+                numpp := numpp + 1
+                numpp
+        [hi, lo, numpp]
+
+var sr_up_level = array.new_float(0)
+var sr_dn_level = array.new_float(0)
+sr_strength = array.new_float(0)
+
+find_loc(strength) =>
+    ret = array.size(sr_strength)
+    for i = ret > 0 ? array.size(sr_strength) - 1 : na to 0 by 1
+        if strength <= array.get(sr_strength, i)
+            break
+        ret := i
+        ret
+    ret
+
+check_sr(hi, lo, strength) =>
+    ret = true
+    for i = 0 to array.size(sr_up_level) > 0 ? array.size(sr_up_level) - 1 : na by 1
+        //included?
+        if array.get(sr_up_level, i) >= lo and array.get(sr_up_level, i) <= hi or array.get(sr_dn_level, i) >= lo and array.get(sr_dn_level, i) <= hi
+            if strength >= array.get(sr_strength, i)
+                array.remove(sr_strength, i)
+                array.remove(sr_up_level, i)
+                array.remove(sr_dn_level, i)
+                ret
+            else
+                ret := false
+                ret
+            break
+    ret
+
+var sr_lines = array.new_line(11, na)
+var sr_labels = array.new_label(11, na)
+
+for x = 1 to 10 by 1
+    rate = 100 * (label.get_y(array.get(sr_labels, x)) - close) / close
+    label.set_text(array.get(sr_labels, x), text = str.tostring(label.get_y(array.get(sr_labels, x))) + '(' + str.tostring(rate, '#.##') + '%)')
+    label.set_x(array.get(sr_labels, x), x = bar_index + labelloc)
+    label.set_color(array.get(sr_labels, x), color = label.get_y(array.get(sr_labels, x)) >= close ? color.new(color.red, 0) : color.new(color.lime, 0))
+    label.set_textcolor(array.get(sr_labels, x), textcolor = label.get_y(array.get(sr_labels, x)) >= close ? color.new(color.white, 0) : color.new(color.black, 0))
+    label.set_style(array.get(sr_labels, x), style = label.get_y(array.get(sr_labels, x)) >= close ? label.style_label_down : label.style_label_up)
+    line.set_color(array.get(sr_lines, x), color = line.get_y1(array.get(sr_lines, x)) >= close ? resistancecolor : supportcolor)
+
+if bool(ph) or bool(pl)
+    //because of new calculation, remove old S/R levels
+    array.clear(sr_up_level)
+    array.clear(sr_dn_level)
+    array.clear(sr_strength)
+    //find S/R zones
+    for x = 0 to array.size(pivotvals) - 1 by 1
+        [hi, lo, strength] = get_sr_vals(x)
+        if check_sr(hi, lo, strength)
+            loc = find_loc(strength)
+            // if strength is in first maxnumsr sr then insert it to the arrays 
+            if loc < maxnumsr and strength >= min_strength
+                array.insert(sr_strength, loc, strength)
+                array.insert(sr_up_level, loc, hi)
+                array.insert(sr_dn_level, loc, lo)
+                // keep size of the arrays = 5
+                if array.size(sr_strength) > maxnumsr
+                    array.pop(sr_strength)
+                    array.pop(sr_up_level)
+                    array.pop(sr_dn_level)
+
+    for x = 1 to 10 by 1
+        line.delete(array.get(sr_lines, x))
+        label.delete(array.get(sr_labels, x))
+
+    for x = 0 to array.size(sr_up_level) > 0 ? array.size(sr_up_level) - 1 : na by 1
+        float mid = math.round_to_mintick((array.get(sr_up_level, x) + array.get(sr_dn_level, x)) / 2)
+        rate = 100 * (mid - close) / close
+        array.set(sr_labels, x + 1, label.new(x = bar_index + labelloc, y = mid, text = str.tostring(mid) + '(' + str.tostring(rate, '#.##') + '%)', color = mid >= close ? color.new(color.red, 0) : color.new(color.lime, 0), textcolor = mid >= close ? color.new(color.white, 0) : color.new(color.black, 0), style = mid >= close ? label.style_label_down : label.style_label_up))
+
+        array.set(sr_lines, x + 1, line.new(x1 = bar_index, y1 = mid, x2 = bar_index - 1, y2 = mid, extend = extend.both, color = mid >= close ? resistancecolor : supportcolor, style = Lstyle, width = linewidth))
+
+f_crossed_over() =>
+    ret = false
+    for x = 0 to array.size(sr_up_level) > 0 ? array.size(sr_up_level) - 1 : na by 1
+        float mid = math.round_to_mintick((array.get(sr_up_level, x) + array.get(sr_dn_level, x)) / 2)
+        if close[1] <= mid and close > mid
+            ret := true
+            ret
+    ret
+
+f_crossed_under() =>
+    ret = false
+    for x = 0 to array.size(sr_up_level) > 0 ? array.size(sr_up_level) - 1 : na by 1
+        float mid = math.round_to_mintick((array.get(sr_up_level, x) + array.get(sr_dn_level, x)) / 2)
+        if close[1] >= mid and close < mid
+            ret := true
+            ret
+    ret
+alertcondition(f_crossed_over(), title = 'S/R:Resistance Broken', message = 'Resistance Broken')
+alertcondition(f_crossed_under(), title = 'S/R:Support Broken', message = 'Support Broken')
+
+//////////END S/R LVELS

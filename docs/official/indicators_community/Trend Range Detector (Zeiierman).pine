@@ -1,0 +1,74 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Trend Range Detector (Zeiierman)", overlay=true, max_boxes_count = 500, max_lines_count = 500)
+//~~}
+
+// ~~ Tooltips {
+var string t1 = "The minimum number of bars required to qualify a range box. A higher value ensures the range is well-established, but may reduce responsiveness."
+var string t2 = "Multiplier that adjusts the vertical size of the range box based on ATR. Larger values create wider boxes and accommodate higher volatility."
+var string t3 = "Enable this to highlight boxes that are actively being broken. Green means a breakout above the box; red indicates a breakdown below."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+length   = input.int(50, minval=1, step=1, title="Minimum Range Length", tooltip = t1)
+mult     = input.float(2.0, minval=0.1, step = 0.1, title="Range Width Multiplier", tooltip = t2)
+highlightBreak = input.bool(true, "Highlight Box Breaks", tooltip = t3)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Calculations {
+atr = ta.atr(2000) * mult
+
+sumWeightedClose = 0.0
+sumWeights       = 0.0
+for i = 0 to length - 1
+    delta = math.abs(close[i] - close[i+1])
+    w     = delta / close[i+1]
+    sumWeightedClose := sumWeightedClose + close[i] * w
+    sumWeights  := sumWeights + w
+ma = sumWeights != 0 ? sumWeightedClose / sumWeights : na
+
+distances = array.new_float()
+for i = 0 to length - 1
+    distances.push(math.abs(close[i] - ma))
+maxDist = distances.max()
+inRange = maxDist <= atr
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Box {
+b = bar_index
+var line boxMidLine = na
+var line boxTopLine = na
+var line boxBotLine = na
+var box rectBox = na
+var color boxColor = color.rgb(33, 87, 243, 90)
+
+newBox    = inRange and not inRange[1]
+extendBox = inRange and not newBox
+
+if newBox
+    if rectBox.get_right()<(b-length) or na(rectBox)
+        rectBox := box.new(b - length, ma + atr, b, ma - atr, border_color=color.new(boxColor, 0), bgcolor=color.new(boxColor, 85))
+
+        boxMidLine := line.new(b - length, math.avg(ma+atr,ma-atr), b, math.avg(ma+atr,ma-atr), color=color.new(boxColor, 50), style=line.style_dotted)
+        boxTopLine := line.new(b - length, ma+atr, b, ma+atr, color=color.new(boxColor, 50))
+        boxBotLine := line.new(b - length, ma-atr, b, ma-atr, color=color.new(boxColor, 50))
+
+if extendBox
+    boxMidLine.set_x2(b)
+    boxTopLine.set_x2(b)
+    boxBotLine.set_x2(b)
+
+if highlightBreak
+    breakUp = close > rectBox.get_top() 
+    breakDn = close < rectBox.get_bottom() 
+    boxColor := breakUp ? color.rgb(8,153,119, 90) : breakDn ? color.rgb(242,54,69,90) : color.rgb(33, 87, 243, 90)
+
+    if not na(rectBox)
+        rectBox.set_bgcolor(boxColor)
+        rectBox.set_border_color(color.new(boxColor, 0))
+
+        boxMidLine.set_color(color.new(boxColor, 0))
+        boxTopLine.set_color(color.new(boxColor, 0))
+        boxBotLine.set_color(color.new(boxColor, 0))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

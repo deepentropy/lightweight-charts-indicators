@@ -1,0 +1,28 @@
+//@version=6
+indicator(title = "Chop Zone", format=format.price, precision=0, timeframe="", timeframe_gaps=true)
+colorTurquoise = #26C6DA
+colorDarkGreen = #43A047
+colorPaleGreen = #A5D6A7
+colorLime = #009688
+colorDarkRed = #D50000
+colorRed = #E91E63
+colorOrange = #FF6D00
+colorLightOrange = #FFB74D
+colorYellow = #FDD835
+source = close
+avg = hlc3
+pi = math.atan(1) * 4
+periods = 30
+highestHigh = ta.highest(periods)
+lowestLow = ta.lowest(periods)
+span = 25 / (highestHigh - lowestLow) * lowestLow
+ema34 = ta.ema(source, 34)
+x1_ema34 = 0
+x2_ema34 = 1
+y1_ema34 = 0
+y2_ema34 = (ema34[1] - ema34) / avg * span
+c_ema34 = math.sqrt((x2_ema34 - x1_ema34)*(x2_ema34 - x1_ema34) + (y2_ema34 - y1_ema34)*(y2_ema34 - y1_ema34))
+emaAngle_1 = math.round(180 * math.acos((x2_ema34 - x1_ema34)/c_ema34) / pi)
+emaAngle = y2_ema34 > 0? - emaAngle_1: emaAngle_1
+chopZoneColor = emaAngle >= 5 ? colorTurquoise : emaAngle < 5 and emaAngle >= 3.57 ? colorDarkGreen : emaAngle < 3.57 and emaAngle >= 2.14 ? colorPaleGreen : emaAngle < 2.14 and emaAngle >= .71 ? colorLime : emaAngle <= -1 * 5 ? colorDarkRed : emaAngle > -1 * 5 and emaAngle <= -1 * 3.57 ? colorRed : emaAngle > -1 * 3.57 and emaAngle <= -1 * 2.14 ? colorOrange : emaAngle > -1 * 2.14 and emaAngle <= -1 * .71 ? colorLightOrange : colorYellow
+plot(1, "Chop Zone", color = chopZoneColor, style = plot.style_columns)

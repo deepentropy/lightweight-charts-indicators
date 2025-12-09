@@ -1,0 +1,29 @@
+//
+// @author LazyBear
+// If you use this code in its orignal/modified form, do drop me a note. 
+// 
+study("Traders Dynamic Index [LazyBear]", shorttitle="TDI_LB")
+lengthrsi=input(13)
+src=close
+lengthband=input(34)
+lengthrsipl=input(2)
+lengthtradesl=input(7)
+
+r=rsi(src, lengthrsi)
+ma=sma(r,lengthband)
+offs=(1.6185 * stdev(r, lengthband))
+up=ma+offs
+dn=ma-offs
+mid=(up+dn)/2
+mab=sma(r, lengthrsipl)
+mbb=sma(r, lengthtradesl)
+
+hline(32)
+hline(68)
+upl=plot(up, color=blue)
+dnl=plot(dn, color=blue)
+midl=plot(mid, color=orange, linewidth=2)
+fill(upl,midl, red, transp=90)
+fill(midl, dnl, green, transp=90)
+plot(mab, color=green, linewidth=2)
+plot(mbb, color=red, linewidth=2)

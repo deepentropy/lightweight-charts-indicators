@@ -1,0 +1,256 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=5
+indicator("Momentum Ghost Machine [ChartPrime]", overlay = false, explicit_plot_zorder = true)
+
+method is_even(simple int n)=> n % 2 == 0
+sinc(float x)=> x == 0 ? 1 : math.sin(math.pi * x) / (math.pi * x)
+blackman(float n, int length)=> 0.42 - 0.5 * math.cos((2 * math.pi * n) / (length - 1)) + 0.08 * math.cos((4 * math.pi * n) / (length - 1))
+mid_point(int x)=> (x - 1) / 2
+offset(simple int length)=> (length - 1) / 2
+
+get_data(float source, simple int length)=>
+    var float[] data = array.new<float>()
+    if data.size() < length
+        data.unshift(source)
+        data
+
+    else
+        data.unshift(source)
+        data.pop()
+        data
+
+sinc_coefficients(simple int length, float fc)=>
+    float[] coefficients = array.new<float>()
+    int mid = mid_point(length)
+    float cutoff = 1 / fc
+    for i = 0 to length - 1
+        int n = i - mid
+        int k = i
+        int M = length
+        if length.is_even()
+            float coefficient = sinc(2 * cutoff * n) * blackman(k + 0.5, M)
+            coefficients.push(coefficient)
+        else
+            float coefficient = sinc(2 * cutoff * n) * blackman(k, M)
+            coefficients.push(coefficient)
+    coefficients
+
+toeplitz_matrix_valid(float[] coefficients, int M)=>
+    int N = coefficients.size()
+    int rows = M - N + 1
+    matrix<float> toeplitz = matrix.new<float>(rows, M, 0)
+
+    for r = 0 to rows - 1
+        for c = 0 to N - 1
+            if (c + r) < M
+                toeplitz.set(r, c + r, coefficients.get(c))
+            else
+                break
+
+    toeplitz
+
+convolution(float[] data, float[] coefficients)=>
+    var float normalize = coefficients.sum()
+    var matrix<float> toeplitz_matrix = toeplitz_matrix_valid(coefficients, data.size())
+    float convolved = matrix.mult(toeplitz_matrix, data).first()
+    convolved / normalize
+
+lti_sinc(series float source, simple int length, simple float fc = 100)=>
+    float[] data = get_data(source, length)
+    var float[] coefficients = sinc_coefficients(length, fc)
+
+    if bar_index > length
+        convolved = convolution(data, coefficients)
+    else
+        float(na)
+
+ema(series float source, simple float length)=>
+    float alpha = 2.0 / (length + 1)
+    var float smoothed = na
+    smoothed := alpha * source + (1.0 - alpha) * nz(smoothed[1], source)
+
+dema(series float source, simple float length)=>
+    float ema1 = ema(source, length)
+    float ema2 = ema(ema1, length)
+    2.0 * ema1 - ema2
+
+tema(series float source, simple float length)=>
+    float ema1 = ema(source, length)
+    float ema2 = ema(ema1, length)
+    float ema3 = ema(ema2, length)
+    (ema1 - ema2) * 3.0 + ema3
+
+wma(series float source, simple int length)=>
+    var float weight_sum = length * 0.5 * (length + 1)
+    float sum = 0.0
+    for int i=0 to length - 1
+        sum += source[i] * (length - i)
+    sum / weight_sum
+
+sma(series float source, simple int length)=>
+    float sum = ta.cum(source)
+    if bar_index < length - 1
+        sum / (bar_index + 1)
+    else
+        (sum - sum[length]) / length
+
+filter(series float source, simple int length, simple string style)=>
+    if length > 1
+        switch style
+            "EMA"  =>  ema(source, length)
+            "DEMA" => dema(source, length)
+            "TEMA" => tema(source, length)
+            "WMA"  =>  wma(source, length)
+            =>         sma(source, length)
+    else
+        source
+
+color_changer(color source, bool direction)=>
+    float r = color.r(source)
+    float g = color.g(source)
+    float b = color.b(source)
+    if direction
+        color.rgb((255 - r) / 3 + r, (255 - g) / 3 + g, (255 - b) / 3 + b)
+    else
+        color.rgb(r / 1.5, g / 1.5, b / 1.5)
+
+const string settings = "Settings"
+float source = input.source(close, "Source", group = settings)
+int momentum_length = input.int(50, "Momentum Length", minval = 1, group = settings)
+float momentum_smoothing = input.float(50, "Momentum Smoothing", tooltip = "Adjust the level of smoothing for the momentum length. The longer the momentum length the more you can smooth it.", minval = 1, group = settings)
+int post_smoothing = input.int(4, "Post Smoothing", minval = 1, tooltip = "Adjust the level of smoothing for the indicator.", group = settings)
+string post_smoothing_style = input.string("WMA", "Post Smoothing Style", ["EMA", "DEMA", "TEMA", "WMA", "SMA"], group = settings)
+int ma_length = input.int(24, "MA Length", minval = 2, group = settings)
+string ma_style = input.string("EMA", "MA Style", ["EMA", "DEMA", "TEMA", "WMA", "SMA"], group = settings)
+const string style = "Style"
+bool enable_projection = input.bool(true, "Ghost Mode", group = style)
+int cd_alpha = input.int(25, "MA Difference Alpha", minval = 0, maxval = 100, group = style)
+string candle_color_style = input.string("Both", "Candle Color Style", ["MA", "Direct", "Both", "None"]
+ , tooltip = "MA: Use the moving average convergance divergance to color the candles."
+ + "\n\n" + "Direct: Use the momentum as a source of color. When the momentum is positive it will be the bullish color and when its negative it will be the bearish color."
+ + "\n\n" + "Both: Color the candles bassed on the ma and the polarity of the momentum. The bullish color will be darker if the momentum is negative and the bearish color will be lighter if the momentum is positive."
+ + "\n\n" + "None: Dont color the candles.", group = style)
+
+color momentum_color = input.color(#ffffff, "Momentum Color", group = style)
+color ma_color = input.color(#f7a000, "MA Color", group = style)
+color cd_up_over = input.color(#2ac075, "Bullish Up", group = style)
+color cd_up_under = input.color(#d5fce9, "Bullish Down", group = style)
+color cd_down_under = input.color(#f82934, "Bearish Down", group = style)
+color cd_down_over = input.color(#ffc8cb, "Bearish Up", group = style)
+bool glow = input.bool(true, "Glow", group = style)
+
+
+int length_correction = momentum_length * 2
+float sinc = lti_sinc(source, length_correction, momentum_smoothing)
+int offset = offset(length_correction)
+float delta = filter((source - sinc) / offset, post_smoothing, post_smoothing_style)
+float projection = math.avg(delta - delta[1], (delta - delta[2]) / 2)
+float ma = filter(filter(delta, 2, ma_style), ma_length, ma_style)
+float ma_project = math.avg(ma - ma[1], (ma - ma[2]) / 2)
+
+float momo = delta - ma
+var color momo_color = na
+if momo > 0
+    if momo > momo[1]
+        momo_color := cd_up_over
+    else
+        momo_color := cd_up_under
+else
+    if momo < momo[1]
+        momo_color := cd_down_under
+    else
+        momo_color := cd_down_over
+
+var color direct_color = na
+
+if candle_color_style == "Both"
+    if delta > 0
+        if momo < 0
+            direct_color := color_changer(momo_color, true)
+        else
+            direct_color := momo_color
+    else
+        if momo > 0
+            direct_color := color_changer(momo_color, false)
+        else
+            direct_color := momo_color
+else
+    if delta > 0
+        if delta > delta[1]
+            direct_color := cd_up_over
+        else
+            direct_color := cd_up_under
+
+    else
+        if delta < delta[1]
+            direct_color := cd_down_under
+        else
+            direct_color := cd_down_over
+
+hline(0)
+plot(momo, "Convergance Divergence", color.new(momo_color, cd_alpha), 5, glow ? plot.style_histogram : plot.style_columns)
+plot(glow ? momo : na, "Convergance Divergence Glow", color.new(momo_color, cd_alpha + (100 - cd_alpha) / 2), 1, plot.style_columns, display = display.pane)
+plot(ma, "MA", ma_color)
+a = plot(glow ? ma : na, "MA Glow", color.new(ma_color, 80), 4, display = display.pane)
+plot(delta, "Momentum", momentum_color)
+b = plot(glow ? delta : na, "Momentum Glow", color.new(momentum_color, 80), 4, display = display.pane)
+fill(a, b, color.new(delta > ma ? momentum_color : ma_color, 90), "Momentum Fill", editable = true)
+
+var float p_ma1 = na
+var float p_ma2 = na
+var float p_m1 = na
+var float p_m2 = na
+
+if enable_projection
+    p_ma1 := ma + ma_project
+    p_m1 := delta + projection
+    p_ma2 := ma + ma_project * 2
+    p_m2 := delta + projection * 2
+    var line project_delta = line.new(na, na, na, na, color = momentum_color, style = line.style_dotted)
+    var line project_ma = line.new(na, na, na, na, color = ma_color, style = line.style_dotted)
+    project_ma.set_xy1(bar_index, ma)
+    project_ma.set_xy2(bar_index + 2, p_ma2)
+    project_delta.set_xy1(bar_index, delta)
+    project_delta.set_xy2(bar_index + 2, p_m2)
+    linefill.new(project_delta, project_ma, color.new(p_ma2 > p_m2 ? ma_color : momentum_color, 90))
+
+float d1 = p_m1 - p_ma1
+float d2 = p_m2 - p_ma2
+
+color dc1 = na
+color dc2 = na
+
+if d1 > 0
+    if d1 > momo
+        dc1 := cd_up_over
+    else
+        dc1 := cd_up_under
+else
+    if d1 < momo
+        dc1 := cd_down_under
+    else
+        dc1 := cd_down_over
+
+if d2 > 0
+    if d2 > d1
+        dc2 := cd_up_over
+    else
+        dc2 := cd_up_under
+else
+    if d2 < d1
+        dc2 := cd_down_under
+    else
+        dc2 := cd_down_over
+
+plot(d1, "Projected Delta", color.new(dc1, 60), 1, plot.style_columns, offset = 1, show_last = 1)
+plot(d2, "Projected Delta", color.new(dc2, 60), 1, plot.style_columns, offset = 2, show_last = 1)
+
+bar_color = switch candle_color_style
+    "MA" => momo_color
+    "Both" => direct_color
+    "Direct" => direct_color
+    "None" => na
+
+barcolor(bar_color)

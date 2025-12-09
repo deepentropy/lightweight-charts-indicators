@@ -1,0 +1,116 @@
+//@version=4
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © KivancOzbilgic
+//created by: @Anil_Ozeksi
+//developer: ANIL ÖZEKŞİ
+//author: @kivancozbilgic
+
+study("Optimized Trend Tracker Bands","OTT Bands", overlay=true,format=format.price, precision=2, resolution="")
+src = input(close, title="Source")
+length=input(2, "OTT Moving Average Length", minval=1)
+percent=input(15, "OTT Optimization Coeff", type=input.float, step=0.1, minval=0)
+X3=input(0.1, "OTT UPPER BAND Optimization Coeff", type=input.float, step=0.001, minval=0)
+X5=input(0.077, "OTT LOWER BAND Optimization Coeff", type=input.float, step=0.001, minval=0)
+showfibolines = input(title="Show OTT Bands Fibonacci Levels?", type=input.bool, defval=false)
+showsupport = input(title="Show Support Line?", type=input.bool, defval=false)
+highlight = input(title="Show OTT Support Line Color Changes?", type=input.bool, defval=false)
+mav = input(title="Moving Average Type", defval="VAR", options=["SMA", "EMA", "WMA", "TMA", "VAR", "WWMA", "ZLEMA", "TSF"])
+Var_Func(src,length)=>
+    valpha=2/(length+1)
+    vud1=src>src[1] ? src-src[1] : 0
+    vdd1=src<src[1] ? src[1]-src : 0
+    vUD=sum(vud1,9)
+    vDD=sum(vdd1,9)
+    vCMO=nz((vUD-vDD)/(vUD+vDD))
+    VAR=0.0
+    VAR:=nz(valpha*abs(vCMO)*src)+(1-valpha*abs(vCMO))*nz(VAR[1])
+VAR=Var_Func(src,length)
+Wwma_Func(src,length)=>
+    wwalpha = 1/ length
+    WWMA = 0.0
+    WWMA := wwalpha*src + (1-wwalpha)*nz(WWMA[1])
+WWMA=Wwma_Func(src,length)
+Zlema_Func(src,length)=>
+    zxLag = length/2==round(length/2) ? length/2 : (length - 1) / 2
+    zxEMAData = (src + (src - src[zxLag]))
+    ZLEMA = ema(zxEMAData, length)
+ZLEMA=Zlema_Func(src,length)
+Tsf_Func(src,length)=>
+    lrc = linreg(src, length, 0)
+    lrc1 = linreg(src,length,1)
+    lrs = (lrc-lrc1)
+    TSF = linreg(src, length, 0)+lrs
+TSF=Tsf_Func(src,length)
+getMA(src, length) =>
+    ma = 0.0
+    if mav == "SMA"
+        ma := sma(src, length)
+        ma
+
+    if mav == "EMA"
+        ma := ema(src, length)
+        ma
+
+    if mav == "WMA"
+        ma := wma(src, length)
+        ma
+
+    if mav == "TMA"
+        ma := sma(sma(src, ceil(length / 2)), floor(length / 2) + 1)
+        ma
+
+    if mav == "VAR"
+        ma := VAR
+        ma
+
+    if mav == "WWMA"
+        ma := WWMA
+        ma
+
+    if mav == "ZLEMA"
+        ma := ZLEMA
+        ma
+
+    if mav == "TSF"
+        ma := TSF
+        ma
+    ma
+    
+MAvg=getMA(src, length)
+fark=MAvg*percent*0.01
+longStop = MAvg - fark
+longStopPrev = nz(longStop[1], longStop)
+longStop := MAvg > longStopPrev ? max(longStop, longStopPrev) : longStop
+shortStop =  MAvg + fark
+shortStopPrev = nz(shortStop[1], shortStop)
+shortStop := MAvg < shortStopPrev ? min(shortStop, shortStopPrev) : shortStop
+dir = 1
+dir := nz(dir[1], dir)
+dir := dir == -1 and MAvg > shortStopPrev ? 1 : dir == 1 and MAvg < longStopPrev ? -1 : dir
+MT = dir==1 ? longStop: shortStop
+OTT=MAvg>MT ? MT*(200+percent)/200 : MT*(200-percent)/200 
+OTTC = highlight ? MAvg > MAvg[1] ? color.green : color.red : #0585E1
+OTTMAIN=plot(nz(OTT[2]), color= #B800D9, linewidth=2, title="OTT", transp=0)
+plot(showsupport ? MAvg : na, color=OTTC, linewidth=2, title="Support Line")
+OTTUST=plot(nz(OTT[2])*(1+X3), color=#4500C4, linewidth=2, title="OTT UPPER", transp=0)
+OTTUSTYARI=plot(showfibolines ? nz(OTT[2])*(1+X3*0.618) : nz(OTT[2])*(1+X3/2), color=#8400FF, linewidth=1, title="OTT UPPER HALF ", transp=0)
+OTTFIBOUST2=plot(showfibolines ? nz(OTT[2])*(1+X3*0.382) : na, color=#C830FF, linewidth=1, title="OTT UPPER HALF ", transp=0)
+OTTALT=plot(nz(OTT[2])*(1-X5), color=#00A6FF, linewidth=2, title="OTT LOWER", transp=0)
+OTTALTYARI=plot(showfibolines ? nz(OTT[2])*(1-X5*0.618) : nz(OTT[2])*(1-X5/2), color=#007BBD, linewidth=1, title="OTT LOWER HALF", transp=0)
+OTTALTFIBO2=plot(showfibolines ? nz(OTT[2])*(1-X5*0.382) : na, color=#024DE3, linewidth=1, title="OTT LOWER HALF", transp=0)
+fill(OTTUST, OTTUSTYARI, color=#4500C4, transp=88)
+fill(OTTFIBOUST2, OTTUSTYARI , color=#8400FF, transp=88)
+fill(OTTUSTYARI, OTTMAIN, color=#C810FF, transp=88)
+fill(OTTFIBOUST2, OTTMAIN, color=#C810FF, transp=88)
+fill(OTTALT, OTTALTYARI, color=#00A6FF, transp=88)
+fill(OTTALTFIBO2, OTTALTYARI , color=#007BBD, transp=88)
+fill(OTTALTYARI, OTTMAIN, color=#024DE3, transp=88)
+fill(OTTALTFIBO2, OTTMAIN, color=#024DE3, transp=88)
+alertcondition(cross(MAvg, OTT[2]), title="Cross Alert", message="OTT - Support Line Crossing!")
+alertcondition(crossover(MAvg, OTT[2]), title="Crossover Alarm", message="Support Line BUY SIGNAL!")
+alertcondition(crossunder(MAvg, OTT[2]), title="Crossunder Alarm", message="Support Line SELL SIGNAL!")
+alertcondition(cross(src, OTT[2]), title="Price Cross Alert", message="OTT - Price Crossing!")
+alertcondition(crossover(src, OTT[2]), title="Price Crossover Alarm", message="PRICE OVER OTT - BUY SIGNAL!")
+alertcondition(crossunder(src, OTT[2]), title="Price Crossunder Alarm", message="PRICE UNDER OTT - SELL SIGNAL!")
+
+

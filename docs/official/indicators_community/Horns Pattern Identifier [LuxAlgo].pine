@@ -1,0 +1,134 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Horns Pattern Identifier [LuxAlgo]"
+  , overlay         = true
+  , max_lines_count = 500)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+threshold = input.float(0.05
+  , step   = .01
+  , minval = 0)
+  
+//Style
+bull_css = input.color(#0cb51a, 'Bullish Horn Levels'
+  , group = 'Style')
+
+bear_css = input.color(#ff1100, 'Bearish Horn Levels'
+  , group = 'Style')
+
+//-----------------------------------------------------------------------------}
+//Variables declaration
+//-----------------------------------------------------------------------------{
+var line conf = na
+var line tp   = na
+
+var target = 0.
+var lvl    = 0.
+var os     = 0
+var cross  = 0
+
+//-----------------------------------------------------------------------------}
+//Rolling max/min & normalized distance
+//-----------------------------------------------------------------------------{
+max = math.max(high,high[1],high[2])
+min = math.min(low,low[1],low[2])
+
+top = math.abs(high - high[2])/(max-min)
+btm = math.abs(low - low[2])/(max-min)
+
+//-----------------------------------------------------------------------------}
+//Detect and display horns alongside confirmation level/take profit
+//-----------------------------------------------------------------------------{
+n = bar_index
+
+line.set_x2(conf, n)
+line.set_x2(tp, n)
+
+//Inverted Horn
+if ta.crossunder(top, threshold) and high[1] < math.min(high, high[2])
+    os := 0
+    
+    line.set_x2(conf, n - 2)
+    line.set_x2(tp, n - 2)
+    
+    line.new(n
+      , high
+      , n - 2
+      , high[2]
+      , color = bear_css)
+    
+    lvl := min
+    target := min - (max - min)
+    
+    conf := line.new(n
+      , lvl
+      , n + 1
+      , lvl
+      , style = line.style_dotted
+      , color = bear_css)
+      
+    tp := line.new(n
+      , target
+      , n + 1
+      , target
+      , style = line.style_dashed
+      , color = bear_css)
+
+//Horn
+if ta.crossunder(btm, threshold) and low[1] > math.max(low, low[2])
+    os := 1
+    
+    line.set_x2(conf, n - 2)
+    line.set_x2(tp, n - 2)
+    
+    line.new(n
+      , low
+      , n - 2
+      , low[2]
+      , color = bull_css)
+
+    lvl := max
+    target := max + (max - min)
+    
+    conf := line.new(n
+      , lvl
+      , n + 1
+      , lvl
+      , style = line.style_dotted
+      , color = bull_css)
+    
+    tp := line.new(n
+      , target
+      , n + 1
+      , target
+      , style = line.style_dashed
+      , color = bull_css)
+    
+//-----------------------------------------------------------------------------}
+//Display breakout signals
+//-----------------------------------------------------------------------------{
+buy = ta.crossover(close, lvl) and os == 1 and cross == 1
+sell = ta.crossunder(close, lvl) and os == 0 and cross == 1
+cross := lvl != lvl[1] ? 1 : buy or sell ? 0 : cross[1]
+
+//Plots
+plotshape(buy ? low : na, "Buy Label"
+  , style     = shape.labelup
+  , location  = location.absolute
+  , color     = #0cb51a
+  , text      = "B"
+  , textcolor = color.white
+  , size      = size.tiny)
+
+plotshape(sell ? high : na, "Sell Label"
+  , style     = shape.labeldown
+  , location  = location.absolute
+  , color     = #ff1100
+  , text      = "S"
+  , textcolor = color.white
+  , size      = size.tiny)
+
+//-----------------------------------------------------------------------------}

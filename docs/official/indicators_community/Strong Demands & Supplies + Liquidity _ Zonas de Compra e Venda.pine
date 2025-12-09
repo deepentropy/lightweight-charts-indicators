@@ -1,0 +1,1282 @@
+//@version=5
+
+// This indicator is inspired by the indicator the Smart Money Concepts [LuxAlgo] - Credits to @LuxAlgo 
+// and it was optimized to show only the most relevant demand and supply zones (premium zones) + the minimum and maximum previous days prices
+// I've added a new feature to show the Liquidity zones, where most liquidity is and for the reason the price is more likely to visit those Areas
+indicator("Strong Demands & Supplies + Liquidity | Zonas de Compra e Venda","Strong Demands & Supplies + Liquidity", max_lines_count=500, max_lines_count = 500, max_boxes_count = 500, max_bars_back = 500, overlay = true)
+
+//Option to show Liquidity lines on the chart
+show_previous_day_high_low= input(true,"Show Previous day High and Low",inline='Show prev day levels', group = 'Configuration')
+
+
+var gStartOffset = 0
+var gEndOffset  = 25
+
+color_text_prev_high_low = input.color(color.rgb(19, 133, 133, 13), 'Color of previous day high and low'
+  , group = 'Configuration')
+
+english_language_selected = input(true, 'Show Labels in English'
+  , group = 'Configuration')
+
+show_internal_struc = input(false, 'Show Internal Structure'
+  , group = 'Configuration')
+
+show_demand_supply_zones = input(false, 'Show Demand and Supply Zones'
+  , group = 'Configuration')
+
+color_imbalance = input.color(color.new(#f7bae9, 44), 'Color of imbalances'
+  , group = 'Configuration')
+
+color_liquidity_lines = input.color(color.new(#f16767, 18), 'Color of liquidity lines'
+  , group = 'Configuration')
+
+color_demand_zone = input.color(color.new(#84ea9a, 44), 'Color of demand_zone and choch lines'
+  , group = 'Configuration')
+
+color_supply_zone = input.color(color.new(#e85252, 57), 'Color of supply_zone and choch lines'
+  , group = 'Configuration')
+
+
+
+//BEGIN ENGULFING candles
+showEngulfing   = input(true, 'Mark Engulfing candles with arrows')
+
+openBarPrevious = open[1]
+closeBarPrevious = close[1]
+openBarCurrent = open
+closeBarCurrent = close
+
+
+//If current bar open is less than equal to the previous bar close AND current bar open is less than previous bar open AND current bar close is greater than previous bar open THEN True
+bullishEngulfing = (openBarCurrent <= closeBarPrevious) and (openBarCurrent < openBarPrevious) and (closeBarCurrent > openBarPrevious)
+//If current bar open is greater than equal to previous bar close AND current bar open is greater than previous bar open AND current bar close is less than previous bar open THEN True
+bearishEngulfing = (openBarCurrent >= closeBarPrevious) and (openBarCurrent > openBarPrevious) and (closeBarCurrent < openBarPrevious)
+bullishEngColor = color.new(#4caf50, 0)
+bearishEngcolor = color.new(#f23645, 0)
+
+//bullishEngulfing/bearishEngulfing return a value of 1 or 0; if 1 then plot on chart, if 0 then don't plot
+plotshape(bullishEngulfing and showEngulfing, style = shape.triangleup, location = location.belowbar, color = bullishEngColor, size = size.tiny)
+plotshape(bearishEngulfing and showEngulfing, style = shape.triangledown , location = location.abovebar, color = bearishEngcolor , size = size.tiny)
+
+
+alertcondition(bullishEngulfing, title = "Bullish Engulfing", message = "[CurrencyPair] [TimeFrame], Bullish candle engulfing previous candle")
+alertcondition(bearishEngulfing, title = "Bearish Engulfing", message = "[CurrencyPair] [TimeFrame], Bearish candle engulfing previous candle")
+
+//END ENGULFING candles
+
+//BEGIN EHPDA
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+show      = 'NDOG'  // Fixed value set to 'NDOG' (Daily timeframe) 
+
+showEh    = input(false, 'Show EHPDA: averages between New Week and New Day opening gaps')
+showLast  = input.int(10, 'Amount', minval = 1)
+ehpdaCss  = input(#25bcc7, 'Color of EHPDA')
+ogCssBull = #5b9cf600
+ogCssBear = #ba68c800
+//ogCssBull = input.color(#5b9cf600, 'Bullish Gap Color', inline = 'ogcolor', group = 'Style')
+//ogCssBear = input.color(#ba68c800, 'Bearish Gap Color', inline = 'ogcolor', group = 'Style')
+//ehpdaCss  = input(#25bcc7, 'Color of EHPDA', inline = 'ehpda', group = 'Style')
+ehpdaLbl  = true
+
+//-----------------------------------------------------------------------------}
+//User Defined Types (UDTs)
+//-----------------------------------------------------------------------------{
+type ogaps
+    float[] top
+    float[] btm
+    float[] avg
+    int[]   loc
+    int[]   sorted
+    line[]  avglines
+
+type ehpda_display
+    line  lvl
+    label lbl
+
+//-----------------------------------------------------------------------------}
+//Functions
+//-----------------------------------------------------------------------------{
+t = time
+
+method set_avg_line(ogaps id, avg, css)=>
+    id.avglines.unshift(
+      line.new(t, avg, t + 1, avg, color = css, extend = extend.right, style = line.style_dotted, xloc = xloc.bar_time))
+
+method pop(ogaps id)=>
+    if id.avglines.size() > showLast
+        id.top.pop(), id.btm.pop(), id.loc.pop(), id.avg.pop()
+        id.avglines.pop().delete()
+
+method set_ehpda(ogaps id, arrayeh)=>
+    for i = 0 to id.avglines.size() - 2
+        getbtm = id.top.get(id.sorted.get(i))
+        gettop = id.btm.get(id.sorted.get(i + 1))
+        avg = math.avg(getbtm, gettop)
+
+        get_eh = arrayeh.get(i)
+        get_eh.lvl.set_xy1(id.loc.get(id.sorted.get(i)), avg)
+        get_eh.lvl.set_xy2(t, avg)
+        
+        if ehpdaLbl
+            get_eh.lbl.set_xy(t, avg)
+
+method tolast(array<ehpda_display> id)=>
+    for element in id
+        element.lvl.set_x2(t)
+        element.lbl.set_x(t)
+
+//-----------------------------------------------------------------------------}
+//Global Elements
+//-----------------------------------------------------------------------------{
+var ogaps_ = ogaps.new(array.new_float(0)
+  , array.new_float(0)
+  , array.new_float(0)
+  , array.new_int(0)
+  , array.new_int(0)
+  , array.new_line(0))
+
+var ehpda = array.new<ehpda_display>(0)
+
+var tf = show == 'NWOG' ? 'W' : 'D'
+dtf = timeframe.change(tf)
+
+if barstate.isfirst
+    for i = 0 to showLast - 1
+        ehpda.push(ehpda_display.new(
+          line.new(na, na, na, na, color = ehpdaCss, style = line.style_dashed, xloc = xloc.bar_time),
+          label.new(na, na, str.format('EHPDA', tf), color = color(na), style = label.style_label_left, textcolor = ehpdaCss, size = size.small, xloc = xloc.bar_time)
+          ))
+
+//-----------------------------------------------------------------------------}
+//Detects opening gaps and set lines
+//-----------------------------------------------------------------------------{
+if dtf
+    max = math.max(close[1], open)
+    min = math.min(close[1], open)
+    avg = math.avg(max, min)
+
+    ogaps_.top.unshift(max)
+    ogaps_.btm.unshift(min)
+    ogaps_.avg.unshift(avg)
+    ogaps_.loc.unshift(t)
+    
+    // Only keep the logic for dashed average line without boxes or colored lines
+    css = open > close[1] ? ogCssBull : ogCssBear
+    ogaps_.set_avg_line(avg, css)
+
+    ogaps_.pop()
+
+    ogaps_.sorted := ogaps_.avg.sort_indices()
+
+//-----------------------------------------------------------------------------}
+//Set event horizons
+//-----------------------------------------------------------------------------{
+if showEh
+    if dtf and ogaps_.avglines.size() > 2
+        ogaps_.set_ehpda(ehpda)
+    else
+        ehpda.tolast()
+
+//END EHPDA
+
+
+//LIQUIDITY FUNCTIONALITY
+
+detectionGroup = 'Liquidity Detection'
+detectionLength = 7
+margin = 10 / 6.9
+
+enableBuySide = false
+buySideMargin = 2.3
+buySideColor = color_liquidity_lines
+
+enableSellSide = false
+sellSideMargin = 2.3
+sellSideColor = color_liquidity_lines
+
+enableLiquidityVoids = false
+bullishVoidColor = color_liquidity_lines
+bearishVoidColor = color_liquidity_lines
+enableLabel = false
+
+mode_liquidity = 'Present'
+visibleLevels = 3
+enableLines = true
+enableBoxes = false
+
+//-----------------------------------------------------------------------------}
+//General Calculations
+//-----------------------------------------------------------------------------{
+maxSize = 50
+averageTrueRange = ta.atr(10)
+atr200 = ta.atr(200)
+isPresent = mode_liquidity == 'Present' ? last_bar_index - bar_index <= 500 : true
+
+//-----------------------------------------------------------------------------}
+//User Defined Types
+//-----------------------------------------------------------------------------{
+type CustomZZ 
+    int[] directions
+    int[] indices 
+    float[] prices 
+
+type CustomBar
+    float open = open
+    float high = high
+    float low = low
+    float close = close
+    int index = bar_index
+
+type LiquidityObject
+    box levelBox
+    box zoneBox
+    box labelBox
+    bool isZoneBroken
+    bool isLevelBroken
+    line levelLine
+    line extendedLine
+
+//-----------------------------------------------------------------------------}
+//Variables
+//-----------------------------------------------------------------------------{
+var CustomZZ zigZag = CustomZZ.new(
+ array.new<int>(maxSize, 0), 
+ array.new<int>(maxSize, 0), 
+ array.new<float>(maxSize, na)
+ )
+
+CustomBar barData = CustomBar.new()
+
+var LiquidityObject[] buySideLiquidity = array.new<LiquidityObject>(1, LiquidityObject.new(box(na), box(na), box(na), false, false, line(na), line(na)))
+var LiquidityObject[] sellSideLiquidity = array.new<LiquidityObject>(1, LiquidityObject.new(box(na), box(na), box(na), false, false, line(na), line(na)))
+
+var voidBoxes = array.new_box()
+
+var int direction = na, var int pivotIndex1 = na, var float pivotPrice1 = na, var int pivotIndex2 = na, var float pivotPrice2 = na
+
+//-----------------------------------------------------------------------------}
+//Functions/methods
+//-----------------------------------------------------------------------------{
+method updateZigZag(CustomZZ zigZag, int direction, int index, float price) =>
+    zigZag.directions.unshift(direction), zigZag.indices.unshift(index), zigZag.prices.unshift(price), zigZag.directions.pop(), zigZag.indices.pop(), zigZag.prices.pop()
+
+max_bars_back(time, 1000)
+
+//-----------------------------------------------------------------------------}
+//Calculations
+//-----------------------------------------------------------------------------{
+pivotIndex2 := barData.index - 1
+pivotHigh = ta.pivothigh(detectionLength, 1)
+pivotLow = ta.pivotlow(detectionLength, 1)
+
+if not na(pivotHigh)   
+    direction := zigZag.directions.get(0) 
+    pivotIndex1 := zigZag.indices.get(0) 
+    pivotPrice1 := zigZag.prices.get(0) 
+    pivotPrice2 := nz(barData.high[1])
+
+    if direction < 1
+        updateZigZag(zigZag, 1, pivotIndex2, pivotPrice2)
+    else if direction == 1 and pivotHigh > pivotPrice1 
+        zigZag.indices.set(0, pivotIndex2), zigZag.prices.set(0, pivotPrice2)
+    
+    if isPresent
+        count = 0
+        startPrice = 0.
+        startIndex = 0
+        minPrice = 0.
+        maxPrice = 10e6
+
+        for i = 0 to maxSize - 1
+            if zigZag.directions.get(i) == 1 
+                if zigZag.prices.get(i) > pivotHigh + (averageTrueRange / margin)
+                    break
+                else if zigZag.prices.get(i) > pivotHigh - (averageTrueRange / margin) and zigZag.prices.get(i) < pivotHigh + (averageTrueRange / margin)
+                    count += 1
+                    startIndex := zigZag.indices.get(i)
+                    startPrice := zigZag.prices.get(i)
+                    if zigZag.prices.get(i) > minPrice
+                        minPrice := zigZag.prices.get(i)
+                    if zigZag.prices.get(i) < maxPrice 
+                        maxPrice := zigZag.prices.get(i)
+
+        if count > 2
+            getBuySide = buySideLiquidity.get(0)
+
+            if startIndex == getBuySide.levelBox.get_left()
+                getBuySide.levelBox.set_top(math.avg(minPrice, maxPrice) + (averageTrueRange / margin))
+                getBuySide.levelBox.set_rightbottom(barData.index + 10, math.avg(minPrice, maxPrice) - (averageTrueRange / margin))
+            else
+                buySideLiquidity.unshift(LiquidityObject.new(box.new(startIndex, math.avg(minPrice, maxPrice) + (averageTrueRange / margin), barData.index + 10, math.avg(minPrice, maxPrice) - (averageTrueRange / margin), bgcolor=color(na), border_color=color(na)), box.new(na, na, na, na, bgcolor=color(na), border_color=color(na)),box.new(startIndex, startPrice, barData.index + 10, startPrice, text='Liquidity zone', text_size=size.tiny, text_halign=text.align_left, text_valign=text.align_bottom, text_color=color.new(buySideColor, 25), bgcolor=color(na), border_color=color(na)),false, false,line.new(startIndex, startPrice, barData.index - 1, startPrice, color=color.new(buySideColor, 0)),line.new(barData.index - 1, startPrice, na, startPrice, color=color.new(buySideColor, 0), style=line.style_dotted)))
+
+                //alert('buyside liquidity level detected/updated for ' + syminfo.ticker)
+
+            if buySideLiquidity.size() > visibleLevels
+                getLast = buySideLiquidity.pop()
+                getLast.levelBox.delete()
+                getLast.zoneBox.delete()
+                getLast.labelBox.delete()
+                getLast.levelLine.delete()
+                getLast.extendedLine.delete()               
+
+if not na(pivotLow)
+    direction := zigZag.directions.get(0) 
+    pivotIndex1 := zigZag.indices.get(0) 
+    pivotPrice1 := zigZag.prices.get(0) 
+    pivotPrice2 := nz(barData.low[1])
+    
+    if direction > -1
+        updateZigZag(zigZag, -1, pivotIndex2, pivotPrice2)
+    else if direction == -1 and pivotLow < pivotPrice1 
+        zigZag.indices.set(0, pivotIndex2), zigZag.prices.set(0, pivotPrice2)
+    
+    if isPresent
+        count = 0
+        startPrice = 0.
+        startIndex = 0
+        minPrice = 0.
+        maxPrice = 10e6
+
+        for i = 0 to maxSize - 1
+            if zigZag.directions.get(i) == -1 
+                if zigZag.prices.get(i) < pivotLow - (averageTrueRange / margin)
+                    break
+                else if zigZag.prices.get(i) > pivotLow - (averageTrueRange / margin) and zigZag.prices.get(i) < pivotLow + (averageTrueRange / margin)
+                    count += 1
+                    startIndex := zigZag.indices.get(i)
+                    startPrice := zigZag.prices.get(i)
+                    if zigZag.prices.get(i) > minPrice
+                        minPrice := zigZag.prices.get(i)
+                    if zigZag.prices.get(i) < maxPrice 
+                        maxPrice := zigZag.prices.get(i)
+
+        if count > 2
+            getSellSide = sellSideLiquidity.get(0)
+
+            if startIndex == getSellSide.levelBox.get_left()
+                getSellSide.levelBox.set_top(math.avg(minPrice, maxPrice) + (averageTrueRange / margin))
+                getSellSide.levelBox.set_rightbottom(barData.index + 10, math.avg(minPrice, maxPrice) - (averageTrueRange / margin))
+            else
+                sellSideLiquidity.unshift(LiquidityObject.new(box.new(startIndex, math.avg(minPrice, maxPrice) + (averageTrueRange / margin), barData.index + 10, math.avg(minPrice, maxPrice) - (averageTrueRange / margin), bgcolor=color(na), border_color=color(na)),box.new(na, na, na, na, bgcolor=color(na), border_color=color(na)),box.new(startIndex, startPrice, barData.index + 10, startPrice, text='Liquidity zone', text_size=size.tiny, text_halign=text.align_left, text_valign=text.align_top, text_color=color.new(sellSideColor, 25), bgcolor=color(na), border_color=color(na)),false,false,line.new(startIndex, startPrice, barData.index - 1, startPrice, color=color.new(sellSideColor, 0)),line.new(barData.index - 1, startPrice, na, startPrice, color=color.new(sellSideColor, 0), style=line.style_dotted)))  
+
+                alert('sellside liquidity level detected/updated for ' + syminfo.ticker)
+
+            if sellSideLiquidity.size() > visibleLevels
+                getLast = sellSideLiquidity.pop()
+                getLast.levelBox.delete()
+                getLast.zoneBox.delete()
+                getLast.labelBox.delete()
+                getLast.levelLine.delete()            
+                getLast.extendedLine.delete()               
+
+for i = 0 to buySideLiquidity.size() - 1
+    liqItem = buySideLiquidity.get(i)
+    
+    if not liqItem.isLevelBroken
+        liqItem.extendedLine.set_x2(barData.index)
+
+        if barData.high > line.get_y1(liqItem.levelLine)
+            liqItem.isLevelBroken := true
+            liqItem.isZoneBroken := true
+            //alert('buyside liquidity level breached for ' + syminfo.ticker)
+            //alert('Price crossed buyside liquidity level')
+
+    else if liqItem.isZoneBroken
+        if barData.low > line.get_y1(liqItem.levelLine) - buySideMargin * averageTrueRange and barData.high < line.get_y1(liqItem.levelLine) + buySideMargin * averageTrueRange
+            liqItem.extendedLine.set_x2(barData.index + 1)
+        else
+            liqItem.isZoneBroken := false
+
+for i = 0 to sellSideLiquidity.size() - 1
+    liqItem = sellSideLiquidity.get(i)
+
+    if not liqItem.isLevelBroken
+        liqItem.extendedLine.set_x2(barData.index)
+
+        if barData.low < line.get_y1(liqItem.levelLine)
+            liqItem.isLevelBroken := true
+            liqItem.isZoneBroken := true
+            //alert('sellside liquidity level breached for ' + syminfo.ticker)
+            alert('Price crossed sellside liquidity level')
+
+    else if liqItem.isZoneBroken
+        if barData.low > line.get_y1(liqItem.levelLine) - sellSideMargin * averageTrueRange and barData.high < line.get_y1(liqItem.levelLine) + sellSideMargin * averageTrueRange
+            liqItem.extendedLine.set_x2(barData.index + 1)
+        else
+            liqItem.isZoneBroken := false
+
+if enableLiquidityVoids and isPresent
+    isBullish = barData.low - barData.high[2] > atr200 and barData.low > barData.high[2] and barData.close[1] > barData.high[2]
+    isBearish = barData.low[2] - barData.high > atr200 and barData.high < barData.low[2] and barData.close[1] < barData.low[2]
+
+    if isBullish 
+        levels = 13
+        if isBullish[1] 
+            step = math.abs(barData.low - barData.low[1]) / levels
+            for i = 0 to levels - 1
+                array.push(voidBoxes, box.new(barData.index - 2, barData.low[1] + i * step, barData.index, barData.low[1] + (i + 1) * step, border_color=na, bgcolor=color.new(bullishVoidColor, 90)))
+        else   
+            step = math.abs(barData.low - barData.high[2]) / levels
+            for i = 0 to levels - 1
+                if enableLabel and i == 0
+                    array.push(voidBoxes, box.new(barData.index - 2, barData.high[2] + i * step, barData.index, barData.high[2] + (i + 1) * step, text='Liquidity Void   ', text_size=size.tiny, text_halign=text.align_right, text_valign=text.align_bottom, text_color=na, border_color=na, bgcolor=color.new(bullishVoidColor, 90)))
+                else
+                    array.push(voidBoxes, box.new(barData.index - 2, barData.high[2] + i * step, barData.index, barData.high[2] + (i + 1) * step, border_color=na, bgcolor=color.new(bullishVoidColor, 90)))
+
+    if isBearish
+        levels = 13
+        if isBearish[1]
+            step = math.abs(barData.high[1] - barData.high) / levels
+            for i = 0 to levels - 1
+                array.push(voidBoxes, box.new(barData.index - 2, barData.high + i * step, barData.index, barData.high + (i + 1) * step, border_color=na, bgcolor=color.new(bearishVoidColor, 90)))
+        else
+            step = math.abs(barData.low[2] - barData.high) / levels
+            for i = 0 to levels - 1
+                if enableLabel and i == levels - 1
+                    array.push(voidBoxes, box.new(barData.index - 2, barData.high + i * step, barData.index, barData.high + (i + 1) * step, text='Liquidity Void   ', text_size=size.tiny, text_halign=text.align_right, text_valign=text.align_top, text_color=na, border_color=na, bgcolor=color.new(bearishVoidColor, 90)))
+                else
+                    array.push(voidBoxes, box.new(barData.index - 2, barData.high + i * step, barData.index, barData.high + (i + 1) * step, border_color=na, bgcolor=color.new(bearishVoidColor, 90)))
+
+if voidBoxes.size() > 0
+    qt = voidBoxes.size()
+    for bn = qt - 1 to 0
+        if bn < voidBoxes.size()
+            currentBox = voidBoxes.get(bn)
+            averagePrice = math.avg(currentBox.get_bottom(), currentBox.get_top())
+
+            if math.sign(barData.close[1] - averagePrice) != math.sign(barData.close - averagePrice) or math.sign(barData.close[1] - averagePrice) != math.sign(barData.low - averagePrice) or math.sign(barData.close[1] - averagePrice) != math.sign(barData.high - averagePrice)
+                voidBoxes.remove(bn)
+            else
+                currentBox.set_right(barData.index + 1)
+
+                if barData.index - currentBox.get_left() > 21
+                    currentBox.set_text_color(color.new(color.gray, 25))
+
+
+
+//END LIQUIDITY FUNCTIONALITY
+
+
+
+//Set Labels text according language selected (English or Portuguese)
+demand_lbl_txt = ""
+if (english_language_selected == false)
+    demand_lbl_txt := "Zona de Compra"
+else
+    demand_lbl_txt := "Demand/Buy Zone"    
+
+supply_lbl_txt = ""
+if (english_language_selected == false)
+    supply_lbl_txt := "Zona de Venda"
+else
+    supply_lbl_txt := "Supply/Sell Zone"
+
+strong_high_lbl = ""
+if (english_language_selected == false)
+    strong_high_lbl := "Alto Forte"
+else
+    strong_high_lbl := "Strong High"
+
+strong_low_lbl = ""
+if (english_language_selected == false)
+    strong_low_lbl := "Baixo Forte"
+else
+    strong_low_lbl := "Strong Low"
+
+
+weak_low_lbl = ""
+if (english_language_selected == false)
+    weak_low_lbl := "Baixo Fraco"
+else
+    weak_low_lbl := "Weak Low"
+
+weak_high_lbl = ""
+if (english_language_selected == false)
+    weak_high_lbl := "Alto Fraco"
+else
+    weak_high_lbl := "Weak High"
+
+previous_day_high_lbl = ""
+if (english_language_selected == false)
+    previous_day_high_lbl := "Preço Máximo do dia Anterior"
+else
+    previous_day_high_lbl := "Previous Day Highest Price"
+
+previous_day_low_lbl = ""
+if (english_language_selected == false)
+    previous_day_low_lbl := "Preço Minimo do dia Anterior"
+else
+    previous_day_low_lbl := "Previous Day Lowest Price"
+
+//       Functions 
+f_drawLine(_y, _c, _w=1) => line.new(bar_index, _y, bar_index, _y, color=_c, width=_w)
+
+
+
+f_updateStickyLevels(_levels) =>
+    for _line in _levels
+        line.set_x1(_line, bar_index + gStartOffset)
+        line.set_x2(_line, bar_index + gEndOffset)
+
+f_moveLevel(_from, _to, _level, _index) =>
+    array.push(_to, _level)
+    array.remove(_from, _index)
+
+
+
+
+f_clearLevels(_levels) =>
+    while array.size(_levels) > 0
+        for [_index, _line] in _levels
+            line.delete(array.remove(_levels, _index))
+
+f_isHigherTimeframe(_timeframe) => timeframe.in_seconds() <= timeframe.in_seconds(_timeframe)
+
+
+
+color TRANSP_COLOR = #ffffff00
+
+//Tooltips
+string TOOLTIP          = 'Allows to display historical Structure'
+string STYLE        = 'color theme'
+string COLOR_CANDLES = 'Display additional candles'
+
+
+mode = 'Historical'
+style = 'Colored'
+show_trend = false
+
+
+//Internal Structure
+show_internals = show_internal_struc
+show_ibull =  'All'
+swing_ibull_css = color_demand_zone
+
+
+//Bear Structure
+show_ibear = 'All'
+swing_ibear_css = color_supply_zone
+ifilter_confluence = false
+
+
+//Swing Structure
+show_Structure = true
+
+//Bull Structure
+show_bull = 'All'
+swing_bull_css = color_demand_zone
+
+//Bear Structure
+show_bear = 'All'
+swing_bear_css =  color_supply_zone
+
+//Swings
+show_swings = true
+length = 50
+show_hl_swings = true
+
+
+//Order Blocks Variables
+
+show_iob = false
+iob_showlast = 5
+show_ob = true
+ob_showlast = 5
+ob_filter = 'Atr'
+ibull_ob_css = color_demand_zone
+ibear_ob_css = color_supply_zone
+bull_ob_css = color_demand_zone
+bear_ob_css = color_supply_zone
+
+
+//Imbalances / Gaps
+
+show_fvg = true
+fvg_auto = true
+fvg_tf = ''
+bull_fvg_css = color_imbalance
+bear_fvg_css = color_imbalance
+fvg_extend = 5
+
+
+//Previous day/week high/low
+
+//Daily
+show_pdhl = show_previous_day_high_low
+pdhl_style = '····'
+pdhl_css = #ffffff
+
+//Premium and Discount zones
+
+show_sd = show_demand_supply_zones
+premium_css = color_supply_zone
+discount_css = color_demand_zone
+
+//Functions
+n = bar_index
+
+atr = ta.atr(200)
+cmean_range = ta.cum(high - low) / n
+
+//HL Output function
+hl() => [high, low]
+
+//Get ohlc values function
+get_ohlc()=> [close[1], open[1], high, low, high[2], low[2]]
+
+//Display Structure function
+display_Structure(x, y, txt, css, dashed, down, lbl_size)=>
+    structure_line = line.new(x, y, n, y
+      , color = css
+      , style = dashed ? line.style_dashed : line.style_solid)
+
+    structure_lbl = label.new(int(math.avg(x, n)), y, txt
+      , color = TRANSP_COLOR
+      , textcolor = css
+      , style = down ? label.style_label_down : label.style_label_up
+      , size = lbl_size)
+
+    if mode == 'Present'
+        line.delete(structure_line[1])
+        label.delete(structure_lbl[1])
+
+//Swings detection/measurements
+swings_calc(len)=>
+    var os = 0
+    
+    upper = ta.highest(len)
+    lower = ta.lowest(len)
+
+    os := high[len] > upper ? 0 : low[len] < lower ? 1 : os[1]
+
+    top = os == 0 and os[1] != 0 ? high[len] : 0
+    btm = os == 1 and os[1] != 1 ? low[len] : 0
+
+    [top, btm]
+
+//Order block coordinates function
+ob_coord(use_max, loc, target_top, target_btm, target_left, target_type)=>
+    min = 99999999.
+    max = 0.
+    idx = 1
+
+    ob_threshold = ob_filter == 'Atr' ? atr : cmean_range 
+
+    //Search for highest/lowest high within the structure interval and get range
+    if use_max
+        for i = 1 to (n - loc)-1
+            if (high[i] - low[i]) < ob_threshold[i] * 2
+                max := math.max(high[i], max)
+                min := max == high[i] ? low[i] : min
+                idx := max == high[i] ? i : idx
+    else
+        for i = 1 to (n - loc)-1
+            if (high[i] - low[i]) < ob_threshold[i] * 2
+                min := math.min(low[i], min)
+                max := min == low[i] ? high[i] : max
+                idx := min == low[i] ? i : idx
+
+    array.unshift(target_top, max)
+    array.unshift(target_btm, min)
+    array.unshift(target_left, time[idx])
+    array.unshift(target_type, use_max ? -1 : 1)
+
+//Set order blocks
+display_ob(boxes, target_top, target_btm, target_left, target_type, show_last, swing, size)=>
+    for i = 0 to math.min(show_last-1, size-1)
+        get_box = array.get(boxes, i)
+
+        box.set_lefttop(get_box, array.get(target_left, i), array.get(target_top, i))
+        box.set_rightbottom(get_box, array.get(target_left, i), array.get(target_btm, i))
+        box.set_extend(get_box, extend.right)
+
+        color css = na
+        
+        if swing 
+            if style == 'Monochrome'
+                css := array.get(target_type, i) == 1 ? color.new(#b2b5be, 80) : color.new(#5d606b, 80)
+                border_css = array.get(target_type, i) == 1 ? #b2b5be : #5d606b
+            else
+                css := array.get(target_type, i) == 1 ? bull_ob_css : bear_ob_css
+                
+
+            box.set_border_color(get_box, css)
+            box.set_bgcolor(get_box, css)
+        else
+            if style == 'Monochrome'
+                css := array.get(target_type, i) == 1 ? color.new(#b2b5be, 80) : color.new(#5d606b, 80)
+            else
+                css := array.get(target_type, i) == 1 ? ibull_ob_css : ibear_ob_css
+            
+            box.set_border_color(get_box, css)
+            box.set_bgcolor(get_box, css)
+        
+//Line Style function
+get_line_style(style) =>
+    out = switch style
+        '⎯⎯⎯'  => line.style_solid
+        '----' => line.style_dashed
+        '····' => line.style_dotted
+
+//Set line and labels for previous high and lows
+define_previous_days_prices(h, l, tf, css)=>
+    var line high_line = line.new(na,na,na,na
+      , xloc = xloc.bar_time
+      , color = css
+      , style = get_line_style(pdhl_style))
+
+    var label high_lbl = label.new(na,na
+      , xloc = xloc.bar_time
+      , text = str.format(previous_day_high_lbl, tf)
+      , color = TRANSP_COLOR
+      , textcolor = color_text_prev_high_low
+      , size = size.small
+      , style = label.style_label_left)
+
+    var line low_line = line.new(na,na,na,na
+      , xloc = xloc.bar_time
+      , color = css
+      , style = get_line_style(pdhl_style))
+
+    var label low_lbl = label.new(na,na
+      , xloc = xloc.bar_time
+      , text = str.format(previous_day_low_lbl, tf)
+      , color = TRANSP_COLOR
+      , textcolor = color_text_prev_high_low
+      , size = size.small
+      , style = label.style_label_left)
+
+    hy = ta.valuewhen(h != h[1], h, 1)
+    hx = ta.valuewhen(h == high, time, 1)
+
+    ly = ta.valuewhen(l != l[1], l, 1)
+    lx = ta.valuewhen(l == low, time, 1)
+
+    if barstate.islast
+        ext = time + (time - time[1])*20
+
+        //High
+        line.set_xy1(high_line, hx, hy)
+        line.set_xy2(high_line, ext, hy)
+
+        label.set_xy(high_lbl, ext, hy)
+
+        //Low
+        line.set_xy1(low_line, lx, ly)
+        line.set_xy2(low_line, ext, ly)
+
+        label.set_xy(low_lbl, ext, ly)
+
+//-----------------------------------------------------------------------------}
+//Global variables
+//-----------------------------------------------------------------------------{
+var trend = 0, var itrend = 0
+
+var top_y = 0., var top_x = 0
+var btm_y = 0., var btm_x = 0
+
+var itop_y = 0., var itop_x = 0
+var ibtm_y = 0., var ibtm_x = 0
+
+var trail_up = high, var trail_dn = low
+var trail_up_x = 0,  var trail_dn_x = 0
+
+var top_cross = true,  var btm_cross = true
+var itop_cross = true, var ibtm_cross = true
+
+var txt_top = '',  var txt_btm = ''
+
+//Alerts
+bull_choch_alert = false 
+bull_bos_alert   = false 
+
+bear_choch_alert = false 
+bear_bos_alert   = false 
+
+bull_ichoch_alert = false 
+bull_ibos_alert   = false 
+
+bear_ichoch_alert = false 
+bear_ibos_alert   = false 
+
+bull_iob_break = false 
+bear_iob_break = false
+
+bull_ob_break = false 
+bear_ob_break = false
+
+eqh_alert = false 
+eql_alert = false 
+
+//Structure colors
+var bull_css = style == 'Monochrome' ? #b2b5be 
+  : swing_bull_css
+
+var bear_css = style == 'Monochrome' ? #b2b5be 
+  : swing_bear_css
+
+var ibull_css = style == 'Monochrome' ? #b2b5be 
+  : swing_ibull_css
+
+var ibear_css = style == 'Monochrome' ? #b2b5be 
+  : swing_ibear_css
+
+//Swings
+[top, btm] = swings_calc(length)
+
+[itop, ibtm] = swings_calc(5)
+
+//-----------------------------------------------------------------------------}
+//Pivot High
+//-----------------------------------------------------------------------------{
+var line extend_top = na
+
+var label extend_top_lbl = label.new(na, na
+  , color = TRANSP_COLOR
+  , textcolor = bear_css
+  , style = label.style_label_down
+  , size = size.small)
+
+if top
+    top_cross := true
+    txt_top := top > top_y ? 'HH' : 'LH'
+
+    if show_swings
+        top_lbl = label.new(n-length, top, txt_top
+          , color = TRANSP_COLOR
+          , textcolor = bear_css
+          , style = label.style_label_down
+          , size = size.small)
+
+        if mode == 'Present'
+            label.delete(top_lbl[1])
+
+    //Extend recent top to last bar
+    line.delete(extend_top[1])
+    extend_top := line.new(n-length, top, n, top
+      , color = bear_css)
+
+    top_y := top
+    top_x := n - length
+
+    trail_up := top
+    trail_up_x := n - length
+
+if itop
+    itop_cross := true
+
+    itop_y := itop
+    itop_x := n - 5
+
+//Trailing maximum
+trail_up := math.max(high, trail_up)
+trail_up_x := trail_up == high ? n : trail_up_x
+
+//Set top extension label/line
+if barstate.islast and show_hl_swings
+    line.set_xy1(extend_top, trail_up_x, trail_up)
+    line.set_xy2(extend_top, n + 20, trail_up)
+
+    label.set_x(extend_top_lbl, n + 20)
+    label.set_y(extend_top_lbl, trail_up)
+    label.set_text(extend_top_lbl, trend < 0 ? strong_high_lbl : weak_high_lbl)
+
+//-----------------------------------------------------------------------------}
+//Pivot Low
+//-----------------------------------------------------------------------------{
+var line extend_btm = na 
+
+var label extend_btm_lbl = label.new(na, na
+  , color = TRANSP_COLOR
+  , textcolor = bull_css
+  , style = label.style_label_up
+  , size = size.small)
+
+if btm
+    btm_cross := true
+    txt_btm := btm < btm_y ? 'LL' : 'HL'
+    
+    if show_swings
+        btm_lbl = label.new(n - length, btm, txt_btm
+          , color = TRANSP_COLOR
+          , textcolor = bull_css
+          , style = label.style_label_up
+          , size = size.small)
+
+        if mode == 'Present'
+            label.delete(btm_lbl[1])
+    
+    //Extend recent btm to last bar
+    line.delete(extend_btm[1])
+    extend_btm := line.new(n - length, btm, n, btm
+      , color = bull_css)
+
+    btm_y := btm
+    btm_x := n-length
+
+    trail_dn := btm
+    trail_dn_x := n-length
+
+if ibtm
+    ibtm_cross := true
+
+    ibtm_y := ibtm
+    ibtm_x := n - 5
+
+//Trailing minimum
+trail_dn := math.min(low, trail_dn)
+trail_dn_x := trail_dn == low ? n : trail_dn_x
+
+//Set btm extension label/line
+if barstate.islast and show_hl_swings
+    line.set_xy1(extend_btm, trail_dn_x, trail_dn)
+    line.set_xy2(extend_btm, n + 20, trail_dn)
+
+    label.set_x(extend_btm_lbl, n + 20)
+    label.set_y(extend_btm_lbl, trail_dn)
+    label.set_text(extend_btm_lbl, trend > 0 ? strong_low_lbl : weak_low_lbl)
+
+//-----------------------------------------------------------------------------}
+//Order Blocks Arrays
+//-----------------------------------------------------------------------------{
+var iob_top = array.new_float(0)
+var iob_btm = array.new_float(0)
+var iob_left = array.new_int(0)
+var iob_type = array.new_int(0)
+
+var ob_top = array.new_float(0)
+var ob_btm = array.new_float(0)
+var ob_left = array.new_int(0)
+var ob_type = array.new_int(0)
+
+//-----------------------------------------------------------------------------}
+//Pivot High BOS and Choch
+//-----------------------------------------------------------------------------{
+//Filtering
+var bull_concordant = true
+
+if ifilter_confluence
+    bull_concordant := high - math.max(close, open) > math.min(close, open - low)
+
+//Detect internal bullish Structure
+if ta.crossover(close, itop_y) and itop_cross and top_y != itop_y and bull_concordant
+    bool choch = na
+    
+    if itrend < 0
+        choch := true
+        bull_ichoch_alert := false
+    else 
+        bull_ibos_alert := false
+    
+    txt = ""
+    if(english_language_selected == false)
+        txt := choch ? 'Alteração de Caráter' : 'Quebra Estrutura'
+    else
+        txt := choch ? 'CHoCH' : 'BOS'    
+
+    if show_internals
+        if show_ibull == 'All' or (show_ibull == 'BOS' and not choch) or (show_ibull == 'CHoCH' and choch)
+            display_Structure(itop_x, itop_y, txt, ibull_css, true, true, size.tiny)
+    
+    itop_cross := false
+    itrend := 1
+    
+    //Internal Order Block
+    if show_iob
+        ob_coord(false, itop_x, iob_top, iob_btm, iob_left, iob_type)
+
+//Detect bullish Structure
+if ta.crossover(close, top_y) and top_cross
+    bool choch = na
+    
+    if trend < 0
+        choch := true
+        bull_choch_alert := true
+    else 
+        bull_bos_alert := true
+
+    txt = ""
+    if(english_language_selected == false)
+        txt := choch ? 'Alteração Caráter' : 'Quebra Estrutura'
+    else
+        txt := choch ? 'CHoCH' : 'Break of Structure'    
+    //txt = choch ? 'Alteração de Caráter' : 'Quebra Estrutura'
+   
+
+    if show_Structure
+        if show_bull == 'All' or (show_bull == 'BOS' and not choch) or (show_bull == 'CHoCH' and choch)
+            display_Structure(top_x, top_y, txt, color_demand_zone, false, true, size.small)
+    
+    //Order Block
+    if show_ob and show_demand_supply_zones
+        ob_coord(false, top_x, ob_top, ob_btm, ob_left, ob_type)
+
+    top_cross := false
+    trend := 1
+
+//-----------------------------------------------------------------------------}
+//Pivot Low BOS and CHoCH
+//-----------------------------------------------------------------------------{
+var bear_concordant = true
+
+if ifilter_confluence
+    bear_concordant := high - math.max(close, open) < math.min(close, open - low)
+
+//Detect internal bearish Structure
+if ta.crossunder(close, ibtm_y) and ibtm_cross and btm_y != ibtm_y and bear_concordant
+    bool choch = false
+    
+    if itrend > 0
+        choch := true
+        bear_ichoch_alert := true
+    else 
+        bear_ibos_alert := true
+    
+    txt = ""
+    if(english_language_selected == false)
+        txt := choch ? 'Alteração Caráter' : 'Quebra Estrutura'
+    else
+        txt := choch ? 'CHoCH' : 'Break of Structure'    
+    //txt = choch ? 'Alteração de Caráter' : 'QUEBRA DE ESTRUTURA'
+
+    if show_internals
+        if show_ibear == 'All' or (show_ibear == 'BOS' and not choch) or (show_ibear == 'CHoCH' and choch)
+            display_Structure(ibtm_x, ibtm_y, txt, ibear_css, true, false, size.small)
+    
+    ibtm_cross := false
+    itrend := -1
+    
+    //Internal Order Block
+    if show_iob
+        ob_coord(true, ibtm_x, iob_top, iob_btm, iob_left, iob_type)
+
+//Detect bearish Structure
+if ta.crossunder(close, btm_y) and btm_cross
+    bool choch = na
+    
+    if trend > 0
+        choch := true
+        bear_choch_alert := true
+    else 
+        bear_bos_alert := true
+
+    txt = ""
+    if(english_language_selected == false)
+        txt := choch ? 'Alteração Caráter' : 'Quebra Estrutura'
+    else
+        txt := choch ? 'CHoch' : 'Break of Structure'    
+    
+    //txt = choch ? 'Alteração de Caráter' : 'QUEBRA DE ESTRUTURA'
+    
+    if show_Structure
+        if show_bear == 'All' or (show_bear == 'BOS' and not choch) or (show_bear == 'CHoCH' and choch)
+            display_Structure(btm_x, btm_y, txt, color_supply_zone, true, false, size.small)
+    
+    //Order Block
+    if show_ob and show_demand_supply_zones
+        ob_coord(true, btm_x, ob_top, ob_btm, ob_left, ob_type)
+
+    btm_cross := false
+    trend := -1
+
+//-----------------------------------------------------------------------------}
+//Order Blocks
+//-----------------------------------------------------------------------------{
+//Set order blocks
+var iob_boxes = array.new_box(0)
+var ob_boxes = array.new_box(0)
+
+//Delete internal order blocks box coordinates if top/bottom is broken
+for element in iob_type
+    index = array.indexof(iob_type, element)
+
+    if close < array.get(iob_btm, index) and element == 1
+        array.remove(iob_top, index) 
+        array.remove(iob_btm, index) 
+        array.remove(iob_left, index) 
+        array.remove(iob_type, index)
+        bull_iob_break := true
+
+    else if close > array.get(iob_top, index) and element == -1
+        array.remove(iob_top, index) 
+        array.remove(iob_btm, index)
+        array.remove(iob_left, index) 
+        array.remove(iob_type, index)
+        bear_iob_break := true
+
+//Delete internal order blocks box coordinates if top/bottom is broken
+for element in ob_type
+    index = array.indexof(ob_type, element)
+
+    if close < array.get(ob_btm, index) and element == 1
+        array.remove(ob_top, index) 
+        array.remove(ob_btm, index) 
+        array.remove(ob_left, index) 
+        array.remove(ob_type, index)
+        bull_ob_break := true
+
+    else if close > array.get(ob_top, index) and element == -1
+        array.remove(ob_top, index) 
+        array.remove(ob_btm, index)
+        array.remove(ob_left, index) 
+        array.remove(ob_type, index)
+        bear_ob_break := true
+
+iob_size = array.size(iob_type)
+ob_size = array.size(ob_type)
+
+if barstate.isfirst
+    if show_iob
+        for i = 0 to iob_showlast-1
+            array.push(iob_boxes, box.new(na,na,na,na, xloc = xloc.bar_time))
+    if show_ob
+        for i = 0 to ob_showlast-1
+            array.push(ob_boxes, box.new(na,na,na,na, xloc = xloc.bar_time))
+
+if iob_size > 0
+    if barstate.islast
+        display_ob(iob_boxes, iob_top, iob_btm, iob_left, iob_type, iob_showlast, false, iob_size)
+
+if ob_size > 0
+    if barstate.islast
+        display_ob(ob_boxes, ob_top, ob_btm, ob_left, ob_type, ob_showlast, true, ob_size)
+
+
+//-----------------------------------------------------------------------------}
+//Imbalances
+//-----------------------------------------------------------------------------{
+var bullish_fvg_max = array.new_box(0)
+var bullish_fvg_min = array.new_box(0)
+
+var bearish_fvg_max = array.new_box(0)
+var bearish_fvg_min = array.new_box(0)
+
+float bullish_fvg_avg = na
+float bearish_fvg_avg = na
+
+bullish_fvg_cnd = false
+bearish_fvg_cnd = false
+
+[src_c1, src_o1, src_h, src_l, src_h2, src_l2] =
+  request.security(syminfo.tickerid, fvg_tf, get_ohlc())
+
+if show_fvg
+    delta_per = (src_c1 - src_o1) / src_o1 * 100
+
+    change_tf = timeframe.change(fvg_tf)
+
+    threshold = fvg_auto ? ta.cum(math.abs(change_tf ? delta_per : 0)) / n * 2 
+      : 0
+
+    //FVG conditions
+    bullish_fvg_cnd := src_l > src_h2
+      and src_c1 > src_h2 
+      and delta_per > threshold
+      and change_tf
+
+    bearish_fvg_cnd := src_h < src_l2 
+      and src_c1 < src_l2 
+      and -delta_per > threshold
+      and change_tf
+
+    //FVG Areas
+    if bullish_fvg_cnd
+        array.unshift(bullish_fvg_max, box.new(n-1, src_l, n + fvg_extend, math.avg(src_l, src_h2)
+          , border_color = bull_fvg_css
+          , bgcolor = bull_fvg_css))
+        
+        array.unshift(bullish_fvg_min, box.new(n-1, math.avg(src_l, src_h2), n + fvg_extend, src_h2
+          , border_color = bull_fvg_css
+          , bgcolor = bull_fvg_css))
+    
+    if bearish_fvg_cnd
+        array.unshift(bearish_fvg_max, box.new(n-1, src_h, n + fvg_extend, math.avg(src_h, src_l2)
+          , border_color = bear_fvg_css
+          , bgcolor = bear_fvg_css))
+        
+        array.unshift(bearish_fvg_min, box.new(n-1, math.avg(src_h, src_l2), n + fvg_extend, src_l2
+          , border_color = bear_fvg_css
+          , bgcolor = bear_fvg_css))
+
+    for bx in bullish_fvg_min
+        if low < box.get_bottom(bx)
+            box.delete(bx)
+            box.delete(array.get(bullish_fvg_max, array.indexof(bullish_fvg_min, bx)))
+    
+    for bx in bearish_fvg_max
+        if high > box.get_top(bx)
+            box.delete(bx)
+            box.delete(array.get(bearish_fvg_min, array.indexof(bearish_fvg_max, bx)))
+
+//-----------------------------------------------------------------------------}
+//Previous day/week high/lows
+//-----------------------------------------------------------------------------{
+//Daily high/low
+[pdh, pdl] = request.security(syminfo.tickerid, 'D', hl()
+  , lookahead = barmerge.lookahead_on)
+
+
+//Display Daily
+if show_pdhl
+    define_previous_days_prices(pdh, pdl, 'D', pdhl_css)
+
+
+
+//Premium and Discount Zones
+
+var premium = box.new(na, na, na, na
+  , bgcolor = color.new(premium_css, 80)
+  , border_color = na)
+
+var premium_lbl = label.new(na, na
+  , text = supply_lbl_txt
+  , color = TRANSP_COLOR
+  , textcolor = color_supply_zone
+  , style = label.style_label_down
+  , size = size.normal)
+
+var discount = box.new(na, na, na, na
+  , bgcolor = color.new(discount_css, 80)
+  , border_color = na)
+
+var discount_lbl = label.new(na, na
+  , text = demand_lbl_txt
+  , color = TRANSP_COLOR
+  , textcolor = color_demand_zone
+  , style = label.style_label_up
+  , size = size.normal)
+
+//Show Premium and Discount Areas
+if barstate.islast and show_demand_supply_zones
+    avg = math.avg(trail_up, trail_dn)
+
+    box.set_lefttop(premium, math.max(top_x, btm_x), trail_up)
+    box.set_rightbottom(premium, n, .95 * trail_up + .05 * trail_dn)
+
+    label.set_xy(premium_lbl, int(math.avg(math.max(top_x, btm_x), n)), trail_up)
+    
+    box.set_lefttop(discount, math.max(top_x, btm_x), .95 * trail_dn + .05 * trail_up)
+    box.set_rightbottom(discount, n, trail_dn)
+    label.set_xy(discount_lbl, int(math.avg(math.max(top_x, btm_x), n)), trail_dn)
+
+//-----------------------------------------------------------------------------}
+//Trend Definition
+//-----------------------------------------------------------------------------{
+var color trend_css = na
+
+
+
+if style == 'Colored'
+    trend_css := itrend == 1 ? bull_css : bear_css
+else if style == 'Monochrome'
+    trend_css := itrend == 1 ? #b2b5be : #5d606b
+
+
+
+//-----------------------------------------------------------------------------}
+// Definition of Possible Alerts
+//-----------------------------------------------------------------------------{
+
+//alertcondition(bull_bos_alert, 'Bullish BOS', 'Quebra de Estrutura Bullish')

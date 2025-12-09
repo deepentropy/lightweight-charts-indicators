@@ -1,0 +1,16 @@
+//@version=6
+indicator('Heiken Ashi Candles', 'Heiken Ashi', overlay = true)
+
+//Heiken Ashi
+isHA = input(true, 'HA Candles')
+
+heikenashi_1 = ticker.heikinashi(syminfo.tickerid)
+data = isHA ? heikenashi_1 : syminfo.tickerid
+
+o = request.security(data, timeframe.period, open)
+h = request.security(data, timeframe.period, high)
+l = request.security(data, timeframe.period, low)
+c = request.security(data, timeframe.period, close)
+col = c > o ? color.green : color.red
+
+plotcandle(o, h, l, c, 'Heiken Ashi', col, color.black)

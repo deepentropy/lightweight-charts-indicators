@@ -1,0 +1,16 @@
+//@version=6
+indicator("RCI Ribbon", "RCI Ribbon", precision = 2, timeframe = "", timeframe_gaps = true)
+
+source 		 = input.source(close, title = "Source")
+shortLength  = input.int(10, title = "Short RCI Length", minval = 1)
+middleLength = input.int(30, title = "Middle RCI Length", minval = 1)
+longLength 	 = input.int(50, title = "Long RCI Length", minval = 1)
+
+plot(ta.rci(source, shortLength), title = "Short RCI", color = color.blue)
+plot(ta.rci(source, middleLength), title = "Middle RCI", color = color.red)
+plot(ta.rci(source, longLength), title = "Long RCI", color = color.green)
+
+hline(0, "Middle band")
+upper = hline(80, "Upper band")
+lower = hline(-80, "Lower band")
+fill(upper, lower, color.new(color.blue, 90))

@@ -1,0 +1,128 @@
+//@version=5
+//Auto Fibonacci Retracement Levels on various Indicators
+//author @KivancOzbilgic
+indicator('Auto Fibo on Indicators', overlay=false, timeframe = '')
+import TradingView/ta/5
+
+len = input(144, 'Auto Fibo Length')
+length = input(14, 'Indicator Length')
+src = input.source(close, title= "SOURCE")
+ind = input.string(title="Target Indicator", defval="RSI", options=["RSI", "CCI", "MFI", "STOCHASTIC", "CMF", "CMO"])
+
+show = input(true, title='Do not Show Indicator Overbougth / Oversold Levels?')
+ovrb = input(70, 'Overbought Level')
+ovrs = input(30, 'Oversold Level')
+midl = input(50, 'Middle Line')
+
+var cumVol = 0.
+cumVol += nz(volume)
+if barstate.islast and cumVol == 0
+    runtime.error("No volume is provided by the data vendor.")
+ad = close==high and close==low or high==low ? 0 : ((2*close-low-high)/(high-low))*volume
+mf = math.sum(ad, length) / math.sum(volume, length)
+
+getIND(src, length) =>
+    indc = 0.0
+    if ind == 'RSI'
+        indc := ta.rsi(src,length)
+        indc
+
+    if ind == 'CCI'
+        indc := ta.cci(src,length)
+        indc
+
+    if ind== 'MFI'
+        indc := ta.mfi(src, length)
+        indc
+
+    if ind == 'STOCHASTIC'
+        indc := ta.stoch(src, high, low, length)
+        indc
+
+    if ind == 'CMF'
+        indc := mf
+        indc
+
+    if ind == 'CMO'
+        indc := ta.cmo(src,length)
+        indc
+    indc
+
+
+
+INDICATOR = getIND(src, length)
+
+
+
+
+
+
+
+
+hl1272a = input(1.272, 'Adjustable Fibo Level')
+
+AFL = input(false, title='Show Adjustable Fibo Level?')
+AFL1 = input(false, title='Show 1.618 Fibo Level?')
+AFL2 = input(false, title='Show 2.618 Fibo Level?')
+AFL3 = input(false, title='Show 3.618 Fibo Level?')
+
+h1 = ta.highest(INDICATOR , len)
+l1 = ta.lowest(INDICATOR , len)
+fark = h1 - l1
+
+hl236 = l1 + fark * 0.236
+hl382 = l1 + fark * 0.382
+hl500 = l1 + fark * 0.5
+hl618 = l1 + fark * 0.618
+hl786 = l1 + fark * 0.786
+hl1272 = l1 + fark * hl1272a
+hl1618 = l1 + fark * 1.618
+hl2618 = l1 + fark * 2.618
+hl3618 = l1 + fark * 3.618
+
+
+lh236 = h1 - fark * 0.236
+lh382 = h1 - fark * 0.382
+lh500 = h1 - fark * 0.5
+lh618 = h1 - fark * 0.618
+lh786 = h1 - fark * 0.786
+lh1272 = h1 - fark * hl1272a
+lh1618 = h1 - fark * 1.618
+lh2618 = h1 - fark * 2.618
+lh3618 = h1 - fark * 3.618
+
+hbars = -ta.highestbars(high, len)
+lbars = -ta.lowestbars(low, len)
+
+f236 = hbars > lbars ? hl236 : lh236
+f382 = hbars > lbars ? hl382 : lh382
+f500 = hbars > lbars ? hl500 : lh500
+f618 = hbars > lbars ? hl618 : lh618
+f786 = hbars > lbars ? hl786 : lh786
+f1272 = hbars > lbars ? hl1272 : lh1272
+f1618 = hbars > lbars ? hl1618 : lh1618
+f2618 = hbars > lbars ? hl2618 : lh2618
+f3618 = hbars > lbars ? hl3618 : lh3618
+
+plot(l1, title='LOW', trackprice=true, offset=-9999, color=color.new(#4B0082, 0), linewidth=3)
+plot(h1, title='HIGH', trackprice=true, offset=-9999, color=color.new(#4B0082, 0), linewidth=3)
+
+plot(f236, title='0.236', trackprice=true, offset=-9999, color=color.new(color.black, 0), linewidth=1)
+plot(f382, title='0.382', trackprice=true, offset=-9999, color=color.new(color.blue, 0), linewidth=1)
+plot(f500, title='0.5', trackprice=true, offset=-9999, color=color.new(#060cba, 0), linewidth=2)
+plot(f618, title='0.618', trackprice=true, offset=-9999, color=color.new(#0f8000, 0), linewidth=3)
+plot(f786, title='0.786', trackprice=true, offset=-9999, color=color.new(color.black,0), linewidth=1)
+plot(AFL and f1272 ? f1272 : na, trackprice=true, offset=-9999, color=color.new(#e252ff, 0), linewidth=2, title='1.272')
+plot(AFL1 and f1618 ? f1618 : na, trackprice=true, offset=-9999, color=color.new(#e252ff, 0), linewidth=2, title='1.618')
+plot(AFL2 and f2618 ? f2618 : na, trackprice=true, offset=-9999, color=color.new(#e252ff, 0), linewidth=2, title='2.618')
+plot(AFL3 and f3618 ? f3618 : na, trackprice=true, offset=-9999, color=color.new(#e252ff, 0), linewidth=2, title='3.618')
+
+indPlot = plot(INDICATOR, "IND", color=#c25757,linewidth=3)
+
+UpperBand = hline(show ? na : ovrb, "Overbought Level", color=#787B86)
+midline = hline(show ? na : midl, "Middle Line", color=color.new(#787B86, 50))
+LowerBand = hline(show ? na : ovrs, "Oversold Level", color=#787B86)
+fill(UpperBand, LowerBand, color=color.rgb(126, 87, 194, 90), title="Background Fill")
+midLinePlot = plot(show ? na : 50, color = na, editable = false, display = display.none)
+fill(indPlot, midLinePlot, 100, 70, top_color = color.new(color.green, 0), bottom_color = color.new(color.green, 100),  title = "Overbought Gradient Fill")
+fill(indPlot, midLinePlot, 30,  0,  top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0),      title = "Oversold Gradient Fill")

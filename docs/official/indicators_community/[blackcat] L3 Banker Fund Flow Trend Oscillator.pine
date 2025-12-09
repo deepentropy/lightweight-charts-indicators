@@ -1,0 +1,82 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © blackcat1402
+//@version=5
+
+indicator('[blackcat] L3 Banker Fund Flow Trend Oscillator', overlay=false)
+
+// Function to find the most recent non-NaN value within a given length
+find_recent_value(values, length) =>
+    recent_value = float(na)
+    if length >= 1
+        for i = 0 to length by 1
+            if na(recent_value) or not na(values[i])
+                recent_value := values[i]
+                recent_value
+    recent_value
+
+// Function to calculate a weighted simple average
+calculate_weighted_simple_average(src, length, weight) =>
+    sum_float = 0.0
+    moving_average = 0.0
+    output = 0.0
+    sum_float := nz(sum_float[1]) - nz(src[length]) + src
+    moving_average := na(src[length]) ? na : sum_float / length
+    output := na(output[1]) ? moving_average : (src * weight + output[1] * (length - weight)) / length
+    output
+
+// Function to calculate banker fund flow trend, bull bear line, and entry signal
+calculate_banker_fund_flow(close, low, high, open) =>
+    // Define typical price for banker fund
+    typical_price = (2 * close + high + low + open) / 5
+
+    // Lowest low with mid-term Fibonacci level 34
+    lowest_low = ta.lowest(low, 34)
+
+    // Highest high with mid-term Fibonacci level 34
+    highest_high = ta.highest(high, 34)
+
+    // Set up a simple model of banker fund flow trend
+    fund_flow_trend = (3 * calculate_weighted_simple_average((close - ta.lowest(low, 27)) / (ta.highest(high, 27) - ta.lowest(low, 27)) * 100, 5, 1) - 2 * calculate_weighted_simple_average(calculate_weighted_simple_average((close - ta.lowest(low, 27)) / (ta.highest(high, 27) - ta.lowest(low, 27)) * 100, 5, 1), 3, 1) - 50) * 1.032 + 50
+
+    // Define banker fund flow bull bear line
+    bull_bear_line = ta.ema((typical_price - lowest_low) / (highest_high - lowest_low) * 100, 13)
+
+    // Define banker entry signal
+    banker_entry_signal = ta.crossover(fund_flow_trend, bull_bear_line) and bull_bear_line < 25
+
+    // Return the calculated values
+    [fund_flow_trend, bull_bear_line, banker_entry_signal]
+
+// Calculate banker fund flow values
+[fund_flow_trend, bull_bear_line, banker_entry_signal] = calculate_banker_fund_flow(close, low, high, open)
+
+// Banker fund entry with yellow candle
+plotcandle(0, 50, 0, 50, color=banker_entry_signal ? color.new(color.yellow, 0) : na, bordercolor=na)
+
+// Banker increase position with green candle
+plotcandle(fund_flow_trend, bull_bear_line, fund_flow_trend, bull_bear_line, color=fund_flow_trend > bull_bear_line ? color.new(color.green, 0) : na, bordercolor=na)
+
+// Banker decrease position with white candle
+plotcandle(fund_flow_trend, bull_bear_line, fund_flow_trend, bull_bear_line, color=fund_flow_trend < find_recent_value(fund_flow_trend * 0.95, 1) ? color.new(color.white, 0) : na, bordercolor=na)
+
+// Banker fund exit/quit with red candle
+plotcandle(fund_flow_trend, bull_bear_line, fund_flow_trend, bull_bear_line, color=fund_flow_trend < bull_bear_line ? color.new(color.red, 0) : na, bordercolor=na)
+
+// Banker fund Weak rebound with blue candle
+plotcandle(fund_flow_trend, bull_bear_line, fund_flow_trend, bull_bear_line, color=fund_flow_trend < bull_bear_line and fund_flow_trend > find_recent_value(fund_flow_trend * 0.95, 1) ? color.new(color.blue, 0) : na, bordercolor=na)
+
+// Overbought and oversold threshold lines
+overbought_threshold = hline(80, color=color.red, linestyle=hline.style_dotted)
+oversold_threshold = hline(20, color=color.yellow, linestyle=hline.style_dotted)
+weak_threshold = hline(10, color=color.lime, linestyle=hline.style_dotted)
+strong_threshold = hline(90, color=color.fuchsia, linestyle=hline.style_dotted)
+fill(oversold_threshold, weak_threshold, color=color.new(color.yellow, 70))
+fill(overbought_threshold, strong_threshold, color=color.new(color.fuchsia, 70))
+
+// Alerts
+alertcondition(banker_entry_signal, title='Alert on Yellow Candle', message='Yellow Candle!')
+alertcondition(fund_flow_trend > bull_bear_line, title='Alert on Green Candle', message='Green Candle!')
+alertcondition(fund_flow_trend < find_recent_value(fund_flow_trend * 0.95, 1), title='Alert on White Candle', message='White Candle!')
+alertcondition(fund_flow_trend < bull_bear_line, title='Alert on Red Candle', message='Red Candle!')
+alertcondition(fund_flow_trend < bull_bear_line and fund_flow_trend > find_recent_value(fund_flow_trend * 0.95, 1), title='Alert on Blue Candle', message='Blue Candle!')
+

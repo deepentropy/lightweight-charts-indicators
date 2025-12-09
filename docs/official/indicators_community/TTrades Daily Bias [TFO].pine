@@ -1,0 +1,294 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © tradeforopp
+
+//@version=5
+indicator("TTrades Daily Bias [TFO]", "TTrades Daily Bias [TFO]", true, max_lines_count = 500, max_labels_count = 500)
+
+var g_VIS = "Bias"
+d_stats = input.bool(true, "Daily Bias", tooltip = "Apply TTrades bias concepts to the 1 Day timeframe", group = g_VIS)
+w_stats = input.bool(false, "Weekly Bias", tooltip = "Apply TTrades bias concepts to the 1 Week timeframe", group = g_VIS)
+bias_reason = input.bool(true, "Show Bias Reasoning", tooltip = "Show the reason why a given bias is being established", group = g_VIS)
+
+var g_PLT = "Plotting"
+bull_color = input.color(color.teal, "Bull / Bear Bias Colors", inline = "COLOR", group = g_PLT)
+bear_color = input.color(color.red, "", inline = "COLOR", group = g_PLT)
+d_bias_plot = input.bool(true, "Plot Daily Bias", inline = "DBIAS", group = g_PLT)
+w_bias_plot = input.bool(true, "Plot Weekly Bias", inline = "WBIAS", group = g_PLT)
+d_bias_loc = input.string('Top', "", inline = "DBIAS", options = ['Top','Bottom'], group = g_PLT)
+w_bias_loc = input.string('Bottom', "", inline = "WBIAS", options = ['Top','Bottom'], group = g_PLT)
+
+var g_STY = "Style"
+before_raid_color = input.color(color.blue, "Before / After Hit Colors", inline = "HIT", tooltip = "All previous high and low lines will start out as this color", group = g_STY)
+after_raid_color = input.color(color.red, "", inline = "HIT", tooltip = "Once a previous high or low line is reached, it will become this color", group = g_STY)
+stop_ext = input.bool(false, "Stop Extending Lines After Hit", tooltip = "Once a previous high or low line is reached, its line will stop extending", group = g_STY)
+use_d_sep = input.bool(true, "Day Separator", inline = "DSEP", group = g_STY)
+use_w_sep = input.bool(true, "Week Separator", inline = "WSEP", group = g_STY)
+d_sep = input.color(color.new(color.black, 80), "", inline = "DSEP", group = g_STY)
+w_sep = input.color(color.new(color.black, 30), "", inline = "WSEP", group = g_STY)
+line_width = input.int(1, "Line Width", group = g_STY)
+
+var g_TBL = "Table"
+tbl_show_stats = input.bool(true, "Show Statistics", tooltip = "Show statistics on bias accuracy\n\nSuccess Rate: how often has price successfully reached the assigned draw on liquidity?\n\nClose Thru Rate: from the number of times that price reached the assigned draw on liquidity, how often did it close through that level?\n\nSample Size: the total number of times that a given bias was assigned", group = g_TBL)
+tbl_loc = input.string('Top Right', "Position", options = ['Bottom Center', 'Bottom Left', 'Bottom Right', 'Middle Center', 'Middle Left', 'Middle Right', 'Top Center', 'Top Left', 'Top Right'], group = g_TBL)
+tbl_size = input.string('Normal', "Size", options = ['Auto', 'Tiny', 'Small', 'Normal', 'Large', 'Huge'], group = g_TBL)
+
+new_day = timeframe.change("D")
+new_week = timeframe.change("W")
+
+can_plot_d = timeframe.in_seconds() < timeframe.in_seconds("D")
+can_plot_w = timeframe.in_seconds() < timeframe.in_seconds("W")
+
+if use_d_sep and new_day and can_plot_d
+    line.new(bar_index, high*1.000001, bar_index, low, color = d_sep, extend = extend.both, width = line_width)
+if use_w_sep and new_week and can_plot_w
+    line.new(bar_index, high*1.000001, bar_index, low, color = w_sep, extend = extend.both, width = line_width)
+
+type lines
+    line ph_line = na
+    line pl_line = na
+    bool hit_ph_line = false
+    bool hit_pl_line = false
+
+type info
+    float ph
+    float pl
+    float ch
+    float cl
+    float co
+
+    bool p_up
+
+    int bias = 0
+    int bias_ph = 0
+    int bias_pl = 0
+    int hit_ph = 0
+    int hit_pl = 0
+    int close_ph = 0
+    int close_pl = 0
+    
+get_table_pos(pos) =>
+    switch pos
+        "Bottom Center" => position.bottom_center
+        "Bottom Left" => position.bottom_left
+        "Bottom Right" => position.bottom_right
+        "Middle Center" => position.middle_center
+        "Middle Left" => position.middle_left
+        "Middle Right" => position.middle_right
+        "Top Center" => position.top_center
+        "Top Left" => position.top_left
+        "Top Right" => position.top_right
+
+get_table_size(size) =>
+    switch size
+        'Tiny' => size.tiny
+        'Small' => size.small
+        'Normal' => size.normal
+        'Large' => size.large
+        'Huge' => size.huge
+        'Auto' => size.auto
+
+handle_bias(info n, string tf) =>
+    _yloc   = yloc.price
+    _style  = tf == "D" ? label.style_label_up : label.style_label_down
+    _y      = tf == "D" ? n.cl : n.ch
+    can_plot = tf == "D" ? can_plot_d : can_plot_w
+    if close[1] > n.ph
+        if n.bias == 1
+            n.close_ph += 1
+        n.bias := 1
+        if bias_reason and can_plot
+            txt = "Close Above P"+tf+"H\nBias P"+tf+"H"
+            label.new(bar_index, _y, txt, textcolor = chart.fg_color, color = chart.bg_color, yloc = _yloc, style = _style)
+    else if close[1] < n.pl
+        if n.bias == -1
+            n.close_pl += 1
+        n.bias := -1
+        if bias_reason and can_plot
+            txt = "Close Below P"+tf+"L\nBias P"+tf+"L"
+            label.new(bar_index, _y, txt, textcolor = chart.fg_color, color = chart.bg_color, yloc = _yloc, style = _style)
+    else if close[1] < n.ph and close[1] > n.pl and n.ch > n.ph and n.cl > n.pl
+        n.bias := -1
+        if bias_reason and can_plot
+            txt = "Failed to Close Above P"+tf+"H\nBias P"+tf+"L"
+            label.new(bar_index, _y, txt, textcolor = chart.fg_color, color = chart.bg_color, yloc = _yloc, style = _style)
+    else if close[1] > n.pl and close[1] < n.ph and n.ch < n.ph and n.cl < n.pl
+        n.bias := 1
+        if bias_reason and can_plot
+            txt = "Failed to Close Below P"+tf+"L\nBias P"+tf+"H"
+            label.new(bar_index, _y, txt, textcolor = chart.fg_color, color = chart.bg_color, yloc = _yloc, style = _style)
+    else if n.ch <= n.ph and n.cl >= n.pl
+        if n.p_up 
+            n.bias := 1
+        else
+            n.bias := -1
+        if bias_reason and can_plot
+            txt = "Close Inside\nBias P"+tf + (n.p_up ? "H" : "L")
+            label.new(bar_index, _y, txt, textcolor = chart.fg_color, color = chart.bg_color, yloc = _yloc, style = _style)
+    else
+        n.bias := 0
+        if bias_reason and can_plot
+            txt = "Outside Bar but Closed Inside\nNo Bias"
+            label.new(bar_index, _y, txt, textcolor = chart.fg_color, color = chart.bg_color, yloc = _yloc, style = _style)
+
+    if n.bias == 1
+        n.bias_ph += 1
+        alert("Bias P"+tf+"H", alert.freq_once_per_bar)
+    else if n.bias == -1
+        n.bias_pl += 1
+        alert("Bias P"+tf+"L", alert.freq_once_per_bar)
+
+
+method update_info(info n, string tf) =>
+    if (tf == "D" ? new_day : new_week)
+        if not na(n.ch)
+            handle_bias(n, tf)
+            
+            if close[1] >= n.co
+                n.p_up := true
+            else
+                n.p_up := false
+
+            n.ph := n.ch
+            n.pl := n.cl
+            n.ch := high
+            n.cl := low
+            n.co := open
+            
+    if na(n.ch)
+        n.ch := high
+        n.ch := low
+    else
+        n.ch := math.max(high, n.ch)
+        n.cl := math.min(low,  n.cl)
+            
+
+method update_lines(lines[] L, info n, string tf) =>
+    hit_high = false, hit_low = false
+    can_plot = tf == "D" ? can_plot_d : can_plot_w
+    if (tf == "D" ? new_day : new_week)
+        L.pop()
+        _right = time + timeframe.in_seconds(tf)*1000
+        _style = tf == "D" ? line.style_solid : line.style_dashed
+        L.unshift(lines.new(line.new(time, n.ph, _right, n.ph, xloc = xloc.bar_time, color = can_plot ? before_raid_color : na, style = _style, width = line_width), line.new(time, n.pl, _right, n.pl, xloc = xloc.bar_time, color = can_plot ? before_raid_color : na, style = _style, width = line_width), false, false))
+    for i = 0 to L.size() - 1
+        x = L.get(i)
+        if not na(x.ph_line)
+            if high >= x.ph_line.get_y1() and not x.hit_ph_line
+                if stop_ext
+                    x.ph_line.set_x2(time)
+                if n.bias == 1
+                    n.hit_ph += 1 
+                x.hit_ph_line := true
+                if can_plot
+                    x.ph_line.set_color(after_raid_color)
+                hit_high := true
+                alert("Hit P"+tf+"H", alert.freq_once_per_bar)
+            if low <= x.pl_line.get_y1() and not x.hit_pl_line
+                if stop_ext
+                    x.pl_line.set_x2(time)
+                if n.bias == -1 
+                    n.hit_pl += 1
+                x.hit_pl_line := true
+                if can_plot
+                    x.pl_line.set_color(after_raid_color)
+                hit_low := true
+                alert("Hit P"+tf+"L", alert.freq_once_per_bar)
+    [hit_high, hit_low]
+
+var d_info = info.new()
+var w_info = info.new()
+
+var d_lines = array.new<lines>(1, lines.new())
+var w_lines = array.new<lines>(1, lines.new())
+
+d_hit_high = false
+d_hit_low  = false
+
+w_hit_high = false
+w_hit_low  = false
+
+if d_stats and timeframe.in_seconds() <= timeframe.in_seconds("D")
+    d_info.update_info("D")
+    [hr, lr] = d_lines.update_lines(d_info, "D")
+    d_hit_high := hr
+    d_hit_low  := lr
+
+if w_stats and timeframe.in_seconds() <= timeframe.in_seconds("W")
+    w_info.update_info("W")
+    [hr, lr] = w_lines.update_lines(w_info, "W")
+    w_hit_high := hr
+    w_hit_low  := lr
+
+plotshape(can_plot_d and d_hit_high, "PDH Raid", style = shape.triangleup,   location = location.abovebar, color = after_raid_color, size = size.tiny)
+plotshape(can_plot_d and d_hit_low,  "PDL Raid", style = shape.triangledown, location = location.belowbar, color = after_raid_color, size = size.tiny)
+plotshape(can_plot_w and w_hit_high, "PWH Raid", style = shape.triangleup,   location = location.abovebar, color = after_raid_color, size = size.tiny)
+plotshape(can_plot_w and w_hit_low,  "PWL Raid", style = shape.triangledown, location = location.belowbar, color = after_raid_color, size = size.tiny)
+
+plotshape(d_bias_plot, "Daily Bias", style = shape.square, size = size.tiny, location = d_bias_loc == 'Top' ? location.top : location.bottom, color = d_info.bias == 1 ? bull_color : d_info.bias == -1 ? bear_color : na)
+plotshape(w_bias_plot, "Weekly Bias", style = shape.square, size = size.tiny, location = w_bias_loc == 'Top' ? location.top : location.bottom, color = w_info.bias == 1 ? bull_color : w_info.bias == -1 ? bear_color : na)
+
+alertcondition(new_day and d_info.bias ==  1, "Bias PDH", "Bias PDH")
+alertcondition(new_day and d_info.bias == -1, "Bias PDL", "Bias PDL")
+alertcondition(new_day and d_info.bias ==  0, "No Daily Bias", "No Daily Bias")
+
+alertcondition(new_week and w_info.bias ==  1, "Bias PWH", "Bias PWH")
+alertcondition(new_week and w_info.bias == -1, "Bias PWL", "Bias PWL")
+alertcondition(new_week and w_info.bias ==  0, "No Weekly Bias", "No Weekly Bias")
+
+alertcondition(d_hit_high, "Hit PDH", "Hit PDH")
+alertcondition(d_hit_low,  "Hit PDL", "Hit PDL")
+
+alertcondition(w_hit_high, "Hit PWH", "Hit PWH")
+alertcondition(w_hit_low,  "Hit PWL", "Hit PWL")
+
+format_result(int hit, int bias) =>
+    result = ""
+    if bias > 0
+        result := str.tostring(math.floor(hit / bias * 1000) / 10)
+    else
+        result := "0"
+    result += "%"
+
+format_color(bool bull, info n, lines[] L) =>
+    color result = na
+    if bull ? (n.bias == 1) : (n.bias == -1)
+        if bull ? (L.get(0).hit_ph_line) : (L.get(0).hit_pl_line)
+            result := color.new(after_raid_color, 50)
+        else
+            result := color.new(before_raid_color, 50)
+
+var stats = table.new(get_table_pos(tbl_loc), 20, 20, chart.bg_color, chart.fg_color, 2, chart.fg_color, 1)
+var text_size = get_table_size(tbl_size)
+if barstate.islast
+    table.cell(stats, 0, 0, "Bias", text_color = chart.fg_color, text_size = text_size)
+    if tbl_show_stats
+        table.cell(stats, 1, 0, "Success\nRate", text_color = chart.fg_color, text_size = text_size)
+        table.cell(stats, 2, 0, "Close Thru\nRate", text_color = chart.fg_color, text_size = text_size)
+        table.cell(stats, 3, 0, "Sample\nSize", text_color = chart.fg_color, text_size = text_size)
+
+    if d_stats
+        table.cell(stats, 0, 1, "PDH", text_color = chart.fg_color, bgcolor = format_color(true,  d_info, d_lines), text_size = text_size)
+        table.cell(stats, 0, 2, "PDL", text_color = chart.fg_color, bgcolor = format_color(false, d_info, d_lines), text_size = text_size)
+
+        if tbl_show_stats
+            table.cell(stats, 1, 1, format_result(d_info.hit_ph, d_info.bias_ph), text_color = chart.fg_color, text_size = text_size)
+            table.cell(stats, 1, 2, format_result(d_info.hit_pl, d_info.bias_pl), text_color = chart.fg_color, text_size = text_size)
+            table.cell(stats, 2, 1, format_result(d_info.close_ph, d_info.hit_ph), text_color = chart.fg_color, text_size = text_size)
+            table.cell(stats, 2, 2, format_result(d_info.close_pl, d_info.hit_pl), text_color = chart.fg_color, text_size = text_size)
+            table.cell(stats, 3, 1, str.tostring(d_info.bias_ph), text_color = chart.fg_color, text_size = text_size)
+            table.cell(stats, 3, 2, str.tostring(d_info.bias_pl), text_color = chart.fg_color, text_size = text_size)
+    
+    if w_stats
+        table.cell(stats, 0, 3, "PWH", text_color = chart.fg_color, bgcolor = format_color(true,  w_info, w_lines), text_size = text_size)
+        table.cell(stats, 0, 4, "PWL", text_color = chart.fg_color, bgcolor = format_color(false, w_info, w_lines), text_size = text_size)
+    
+        if tbl_show_stats
+            table.cell(stats, 1, 3, format_result(w_info.hit_ph, w_info.bias_ph), text_color = chart.fg_color, text_size = text_size)
+            table.cell(stats, 1, 4, format_result(w_info.hit_pl, w_info.bias_pl), text_color = chart.fg_color, text_size = text_size)
+            table.cell(stats, 2, 3, format_result(w_info.close_ph, w_info.hit_ph), text_color = chart.fg_color, text_size = text_size)
+            table.cell(stats, 2, 4, format_result(w_info.close_pl, w_info.hit_pl), text_color = chart.fg_color, text_size = text_size)
+            table.cell(stats, 3, 3, str.tostring(w_info.bias_ph), text_color = chart.fg_color, text_size = text_size)
+            table.cell(stats, 3, 4, str.tostring(w_info.bias_pl), text_color = chart.fg_color, text_size = text_size)
+
+plot(d_info.bias, "Daily Bias",  color = na, display = display.none)
+plot(w_info.bias, "Weekly Bias", color = na, display = display.none)

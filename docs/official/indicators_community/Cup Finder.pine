@@ -1,0 +1,113 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("Cup Finder", "CF", overlay = true, max_lines_count = 500)
+loopback = input(defval = 150, title = "Number of Bars to search", minval = 30, maxval = 250)
+widthr = input(defval = 5., title = "Channel Width of the Cup", minval = 1)
+check_hc = input(defval = "Close", title = "Source for Breakout", options = ["Close", "High/Low"])
+include_rate = input(75., title = "Contained Bar Rate %", minval = 10, maxval = 100) / 100
+show_channel = input(false, title = "Show Channels of Cups")
+no_label = input(false, title = "Don't Show Labels")
+remove_old_lines = input(false, title = "Remove Old Lines")
+remove_old_labels = input(false, title = "Remove Old Labels")
+bullcolor = input(defval = color.lime, title = "Colors", inline = "colors")
+bearcolor = input(defval = color.red, title = "", inline = "colors")
+ 
+// used for calculation&drawing of circles
+float width = (highest(292) - lowest(292)) / 100
+float uwidth = width * widthr
+bool highestbar = highestbars(30) == 0
+bool lowestbar = lowestbars(30) == 0
+float bullsrc = check_hc == "Close" ? close : high
+float bearsrc = check_hc == "Close" ? close : low
+ 
+float hh = 0.
+float lasthh = 0.
+int ind = 0
+bool bull = false
+for x = 1 to loopback
+    lasthh := max(lasthh, high[x])
+    if bullsrc <= lasthh
+        break
+    
+    if x >= 20 and bullsrc > high[x] and close[1] < high[x] and high[x] >= lasthh and highestbar[x]
+        hh := high[x]
+        ind := x
+        bull := true
+
+float ll = 0.
+lastll = highest(292)
+if ind == 0
+    for x = 1 to loopback
+        lastll := min(lastll, low[x])
+        if bearsrc >= lastll
+            break
+        
+        if x >= 20 and bearsrc < low[x] and close[1] > low[x] and low[x] <= lastll and lowestbar[x]
+            ll := low[x]
+            ind := x
+
+Round(val)=> round(val / syminfo.mintick) * syminfo.mintick
+
+var cup_lines = array.new_line(0)
+var label cup_label = na
+levs = array.new_float(0)
+bullish_cup = false
+bearish_cup = false
+int included = na
+if ind != 0
+    float pow_radius = pow(ind / 2, 2)
+    end = round((ind - (ind % 2)) / 2)
+    if ind % 2 == 0
+        array.push(levs, bull ? hh - sqrt(pow_radius) * width : ll + sqrt(pow_radius) * width)
+
+    for x = 1 to end 
+        ycoord = sqrt(pow_radius - pow(x, 2)) * width
+        array.push(levs, bull ? hh - ycoord : ll + ycoord)
+        array.unshift(levs, bull ? hh - ycoord : ll + ycoord)
+    if ind % 2 == 1
+        array.push(levs, bull ? hh : ll)
+        array.unshift(levs, bull ? hh : ll)
+        
+    in_cnt = 0
+    for x = 0 to array.size(levs) - 1
+        if (min(array.get(levs, x) + uwidth, high[x]) - max(array.get(levs, x) - uwidth, low[x]) > 0)
+            in_cnt := in_cnt + 1
+    
+    if in_cnt / (ind + 1) >= include_rate
+        if not no_label
+            if remove_old_labels
+                label.delete(cup_label)
+            cup_label := label.new(bar_index, array.get(levs, 0), 
+                      text = "Cup\nRadius = " + tostring(Round(width * ind / 2)) + "\nIncluded = " + tostring(100 * in_cnt / (ind + 1), '#.#') +"%",
+                      color = bull ? bullcolor : bearcolor, 
+                      textcolor = bull ? color.black : color.white,
+                      textalign = text.align_left, 
+                      style = bull ? label.style_label_lower_right : label.style_label_upper_right)
+                
+        if remove_old_lines and array.size(cup_lines) > 0
+            for x = 0 to array.size(cup_lines) - 1
+                line.delete(array.get(cup_lines, x))
+        
+        array.push(cup_lines, line.new(x1 = bar_index, y1 = array.get(levs, 0), x2 = bar_index - ind + 1, y2 = array.get(levs, 0), color = bull ? bullcolor : bearcolor, style = line.style_dashed))
+        xloc = ind
+        for x = 0 to array.size(levs) - 2
+            array.push(cup_lines, line.new(x1 = bar_index - xloc, y1 = array.get(levs, x), x2 = bar_index - xloc + 1, y2 = array.get(levs, x + 1), color = bull ? bullcolor : bearcolor, width = 3))
+            if show_channel and x % 2 == 0 and x > 0 and x < array.size(levs) - 2
+                array.push(cup_lines, line.new(x1 = bar_index - xloc, y1 = array.get(levs, x) + uwidth, x2 = bar_index - xloc + 1, y2 = array.get(levs, x + 1) + uwidth, color = bull ? bullcolor : bearcolor))
+                array.push(cup_lines, line.new(x1 = bar_index - xloc, y1 = array.get(levs, x) - uwidth, x2 = bar_index - xloc + 1, y2 = array.get(levs, x + 1) - uwidth, color = bull ? bullcolor : bearcolor))
+            
+            xloc := xloc - 1
+        
+        included := round(100 * in_cnt / (ind + 1))
+        if bull 
+            bullish_cup := true
+        else
+            bearish_cup := true
+
+plot(included, title = "included", display = display.none)
+alertcondition(bullish_cup, title = "Bullish Cup Found", message = 'Bullish Cup Found, Included:{{plot("included")}}')
+alertcondition(bearish_cup, title = "Bearish Cup Found", message = 'Bearish Cup Found, Included:{{plot("included")}}')
+alertcondition(bullish_cup or bearish_cup, title = "Cup Found", message = 'Cup Found, Included:{{plot("included")}}')
+ 

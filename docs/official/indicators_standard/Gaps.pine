@@ -1,0 +1,127 @@
+//@version=6
+indicator("Gaps", overlay = true, max_boxes_count = 500)
+
+closeGapsPartially = input.bool(false, "Close Gaps Partially", display = display.data_window)
+boxLimitInput = input.int(15, "Max Number of Gaps", minval = 1, maxval = 500, display = display.data_window)
+minimalDeviationTooltip = "Specifies the minimal size of detected gaps, as a percentage of the average high-low range for the last 14 bars."
+minimalDeviationInput = nz(input.float(30.0, "Minimal Deviation (%)", tooltip = minimalDeviationTooltip, minval=1, maxval=100, display = display.data_window) / 100 * ta.sma(high-low, 14))
+limitBoxLengthBoolInput = input.bool(false, "Limit Max Gap Trail Length (bars)", inline = "Length Limit", display = display.data_window)
+limitBoxLengthIntInput = input.int(300, "", inline = "Length Limit", minval = 1, display = display.data_window, active = limitBoxLengthBoolInput)
+
+groupName = "Border and fill colors"
+colorUpBorderInput = input.color(color.green, "Up Gaps", inline = "Gap Up", group = groupName, display = display.data_window)
+colorUpBackgroundInput = input.color(color.new(color.green, 85), "", inline = "Gap Up", group = groupName, display = display.data_window)
+colorDownBorderInput = input.color(color.red, "Down Gaps", inline = "Gap Down", group = groupName, display = display.data_window)
+colorDownBackgroundInput = input.color(color.new(color.red, 85), "", inline = "Gap Down", group = groupName, display = display.data_window)
+
+type AlertInfo
+    int countOpenGap
+    int countClosedGap
+
+method hasOpenedGap(AlertInfo this) =>
+    this.countOpenGap > 0
+
+method hasClosedGap(AlertInfo this) =>
+    this.countClosedGap > 0
+
+AlertInfo alertInfo = AlertInfo.new(0, 0)
+
+//@type A representation of a chart gap and all box drawings that it consists of.
+//@field isActive If 'true', the gap has not yet been closed and is still being extended on the chart.
+//@field isBull The direction of the gap: 'true' for upward gaps and 'false' for downward ones.
+//@field inactiveBoxes An array of all boxes that have been drawn for this gap. The last element of the array is the box on the chart that is currently extended further.
+type Gap
+    bool isActive
+    bool isBull
+    array<box> boxes
+
+//@function Deletes all of the boxes that were drawn to represent the gap.
+method delete(Gap this) =>
+    for _box in this.boxes
+        _box.delete()
+
+//@function Closes the gap partially, stopping the previous box and creating a new, smaller box to continue the gap instead.
+method partialClose(Gap this) =>
+    activeBox = this.boxes.last()
+    activeBox.set_extend(extend.none)
+
+    top = this.isBull ? activeBox.get_top() : low
+    bottom = this.isBull ? high : activeBox.get_bottom()
+
+    this.boxes.push(box.new(
+      bar_index,
+      top,
+      bar_index,
+      bottom, 
+      this.isBull ? colorDownBorderInput : colorUpBorderInput, 
+      bgcolor = this.isBull ? colorDownBackgroundInput : colorUpBackgroundInput))
+    
+
+//@function Closes the gap fully, stopping the box from being extended.
+method fullClose(Gap this) =>
+    alertInfo.countClosedGap += 1
+    activeBox = this.boxes.last()
+    activeBox.set_extend(extend.none)
+    this.isActive := false
+    if closeGapsPartially
+        activeBox.delete()    
+
+method checkForClose(Gap this) =>
+    if this.isActive
+        activeBox = this.boxes.last()
+        top = activeBox.get_top() 
+        bot = activeBox.get_bottom()
+        isBull = this.isBull
+        activeBox.set_right(bar_index)
+
+        if (high > bot and isBull) or (low < top and not isBull)
+            if closeGapsPartially
+                this.partialClose()                
+            else
+                this.fullClose()
+
+        bool forceCloseBoxExceededLengthLimit = (limitBoxLengthBoolInput and bar_index - activeBox.get_left() >= limitBoxLengthIntInput)
+        if ((high > top and isBull) or (low < bot and not isBull)) or forceCloseBoxExceededLengthLimit
+            this.fullClose()
+
+var allGaps = array.new<Gap>()
+
+// Detect gaps.
+isGapDown = high < low[1] and low[1] - high >= minimalDeviationInput
+isGapUp = low > high[1] and low - high[1] >= minimalDeviationInput
+isGap = isGapDown or isGapUp
+boxBorderColor = isGapDown ? colorDownBorderInput : colorUpBorderInput
+boxBgcolor = isGapDown ? colorDownBackgroundInput : colorUpBackgroundInput
+
+registerNewGap(bool isGapDown) => 
+    alertInfo.countOpenGap += 1
+    
+    newBox = box.new(
+      bar_index - 1,
+      (isGapDown ? low[1] : low),
+      bar_index,
+      (isGapDown ? high : high[1]),
+      border_color = boxBorderColor,
+      bgcolor = boxBgcolor,
+      extend = extend.right)
+
+    allGaps.push(Gap.new(true, isGapDown, array.from(newBox)))
+
+    if allGaps.size() > boxLimitInput
+        allGaps.shift().delete()
+
+// Detect covering of gaps.
+for gap in allGaps
+    gap.checkForClose()
+
+// Add a box for each new gap, removing the oldest one if needed.
+if isGap    
+    registerNewGap(isGapDown)
+        
+if barstate.islastconfirmedhistory and allGaps.size() == 0
+    noGapText = "No gaps found on the current chart. \n The cause could be that some exchanges align the open of new bars on the close of the previous one, resulting in charts with no gaps. Alternatively, your Minimal Deviation might be too high."
+    var infoTable = table.new(position.bottom_right, 1, 1)
+    table.cell(infoTable, 0, 0, text = noGapText, text_color = chart.bg_color, bgcolor = chart.fg_color)
+
+alertcondition(alertInfo.hasOpenedGap(), "New Gap Appeared", "A new gap has appeared.")
+alertcondition(alertInfo.hasClosedGap(), "Gap Closed", "A gap was closed.")

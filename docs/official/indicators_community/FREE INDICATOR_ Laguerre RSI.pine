@@ -1,0 +1,52 @@
+//@version=4
+
+//•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•//   
+//                                             //
+//          LAGUERRE RSI V4 BY THELARK         //
+//                 ~ 12-11-20 ~                //
+//                                             //
+//                     •/•                     //
+//                                             //
+//    https://www.tradingview.com/u/TheLark    //
+//                                             //
+//•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•/•//
+
+// This is the Laguerre RSI built for Pine Script 4. A simple update from my original from 2014.
+// You'll notice the Laguerre RSI acts a little different when compared to your normal RSI,
+// and it can be traded in different ways. You can use it as a switch / filter, or to indicate bursts
+// of momentum, the direction of momentum, and more. 
+// Combine this with your own strategies and you may find it useful. It might just
+// be what you were looking for! Follow me on TradingView, I almost never post anything new. ;-)
+
+study("laguerre RSI v4 | LK", overlay=false)
+//setups
+h = high
+l = low
+o = open
+c = close
+
+//inputs
+g = input(0.75, title="Gamma")
+ob = input(0.80, title="Over Bought")
+os = input(0.20, title="Over Sold")
+smooth = input(1, minval=1, title="Smoothing (1 = off)")
+coloring = input(true,title="3 colors?")
+//calc
+p = c
+L0 = 0.0
+L1 = 0.0
+L2 = 0.0
+L3 = 0.0
+L0 := (1 - g) * p + g * nz(L0[1])
+L1 := -g * L0 + nz(L0[1]) + g * nz(L1[1])
+L2 := -g * L1 + nz(L1[1]) + g * nz(L2[1])
+L3 := -g * L2 + nz(L2[1]) + g * nz(L3[1])
+cu = (L0 > L1 ? L0 - L1 : 0) + (L1 > L2 ? L1 - L2 : 0) + (L2 > L3 ? L2 - L3 : 0)
+cd = (L0 < L1 ? L1 - L0 : 0) + (L1 < L2 ? L2 - L1 : 0) + (L2 < L3 ? L3 - L2 : 0)
+//plots
+lrsi = ema((cu + cd == 0 ? -1 : cu + cd) == -1 ? 0 : cu / (cu + cd == 0 ? -1 : cu + cd), smooth)
+col1 =  lrsi > lrsi[1] and lrsi > os ? #00FF7B : lrsi < lrsi[1] and lrsi < ob ? #FF3571 : lrsi == lrsi ? #ECA700 : #ECA700
+col2 =  lrsi > lrsi[1] and lrsi > os ? #00FF7B : lrsi < lrsi[1] and lrsi < ob ? #FF3571 : lrsi < os ? #FF3571 : lrsi > ob ? #00FF7B : lrsi == lrsi ? #ECA700 : #ECA700
+col = coloring ? col1 : col2
+plot(lrsi, color=col, linewidth=2)
+

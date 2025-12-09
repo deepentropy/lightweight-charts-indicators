@@ -1,0 +1,176 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © finallynitin & © EquityCraze
+
+//The script builds upon the Volume Price and Fundamentals script by Mohit_Kakkar08:
+//https://www.tradingview.com/script/WQCSvzGz-Volume-Price-and-Fundamentals/
+
+
+//@version=5
+
+indicator('Quarterly Earnings', overlay=true)
+
+//Table Options
+
+string GRP1             = "════════ Modes ═════════"
+toggleDarkColors = input(title="Dark Mode", defval=false, group = GRP1, tooltip = 'Select this if you use a dark color theme')
+toggleMiniMode = input(title="Mini Mode", defval=false, group = GRP1, tooltip = 'Select this to get the Mini mode where the values are replaced by traffic lights for a quick visual')
+datasize = input.int(4, 'Long Mode ?', minval = 4, inline='line 3', group=GRP1, tooltip = 'Input the number of previous quarters to be displayed in the table') +5
+
+string GRP2             = "════════ Table Options ═════════"
+string tablesize = input.string("small",  "Size",      inline = "21", group = GRP2, options = ["tiny", "small", "normal", "large", "huge", "auto"])
+string tableposY = input.string("bottom", "↕",         inline = "21", group = GRP2, options = ["top", "middle", "bottom"])
+string tableposX = input.string("right",   "↔",         inline = "21", group = GRP2, options = ["left", "center", "right"])
+
+string GRP3             = "════════ Inputs ═════════"
+per = input.string('FQ', 'Period', options=['FQ', 'FY'], inline='line 3', group=GRP3, tooltip = 'Option to change the data from Quarterly (FQ) to Yearly (FY)')
+topleft = input.string('FF','Top-left cell displays', group = GRP3, options = ['FF', 'Mcap'], tooltip = 'Option to display either the Free Float (FF) or the Marketcap (Mcap) of the stock')
+
+FrameCol = toggleDarkColors ? color.new(#999999, 50) : color.rgb(241, 241, 241)
+BorderCol = toggleDarkColors ? color.new(#999999, 50) : color.rgb(241, 241, 241)
+
+TextColor = toggleDarkColors ? color.new(color.white, 0): color.new(color.black, 0)
+BGColor = toggleDarkColors ? color.new(color.white, 100): color.new(color.black, 100)
+HeadColor = toggleDarkColors ? color.new(color.white, 100): color.new(color.black, 100)
+BodyColor = toggleDarkColors ? color.new(color.white, 100): color.new(color.black, 100)
+UpColor = toggleDarkColors ? color.new(color.lime, 0) : color.new(color.rgb(31, 12, 239, 16), 0)
+DownColor = toggleDarkColors ? color.new(color.red, 0) : color.new(color.rgb(213, 27, 182), 10)
+UnchangedColor = toggleDarkColors ? color.new(color.yellow, 0) : color.new(color.orange, 30)
+
+    
+// Creating ID for Financials
+
+financial01 = 'EPS'
+financial02 = 'Sales'
+
+financial01id = 'EARNINGS_PER_SHARE_DILUTED'
+financial02id = 'TOTAL_REVENUE', 
+
+
+// Creating functions to fetch financial data from Tradingview
+
+getFinFQ(_id, _per) => 
+    _financials = request.financial(syminfo.tickerid, _id, _per, barmerge.gaps_on, ignore_invalid_symbol = true)
+    if _id == financial02id 
+        _financials := math.round(_financials / 10.0, 2)
+    _financials
+
+
+f_array(arrayId, val)    => 
+    array.unshift(arrayId, val)
+    array.pop(arrayId)
+
+
+finID1   = financial01 
+finID2  = financial02
+get_finx(finID) =>
+    finx = switch finID
+        financial02  => financial02id
+        financial01  => financial01id
+    finx
+
+
+// Reference if data is true
+rev = request.financial(syminfo.tickerid,'TOTAL_REVENUE',per,barmerge.gaps_on, ignore_invalid_symbol=true)
+
+
+// Calculating
+
+finx1 = get_finx(finID1)
+finx2 = get_finx(finID2)
+finData1 = getFinFQ(finx1, per)
+finData2 = getFinFQ(finx2, per)
+
+var date = array.new_int(datasize)  // Date
+var arrayFinData1 = array.new_float(datasize)  // EPS
+var arrayFinData2 = array.new_float(datasize)  // Sales
+
+
+if rev
+    f_array(date,  time)
+    f_array(arrayFinData1, finData1)
+    f_array(arrayFinData2, finData2)
+
+ft(_table, _column, _row, _value) => 
+    table.cell(table_id = _table, column = _column, row = _row, text = _value, bgcolor = HeadColor, text_color = TextColor, text_size = tablesize)
+
+ftdate(_table, _column, _row, _value) => 
+    _new_value = str.contains(_value, "70") ? "" : _value
+    table.cell(table_id = _table, column = _column, row = _row, text = _new_value, bgcolor = BodyColor, text_color = TextColor, text_size = tablesize, text_halign = text.align_left )
+
+fcell(finID, _table, _column, _row, _value, _i) =>  
+    divider = 0
+    divider     := 
+         finID == 'EPS' ? 1 : 1000000
+    suffix      =  
+         finID == 'EPS' or finID == financial02 ? '' :  ' M'
+    strFormat   =  
+         finID == 'EPS' ? '#.#' : finID == financial02 ? '#,###.#' : '#,##0' 
+    val = array.get(_value, _i)/ divider
+    table.cell(table_id = _table,  column = _column, row = _row, text = na(val) ? "" : str.tostring(val, strFormat) +suffix,  text_color = TextColor,  text_size = tablesize)
+
+    
+
+fyoy(_table, _column, _row, _value, _i, _cmpr) =>  
+    sym = ""  
+    dif = 0.0 
+    if na(_value)
+        na
+    else
+        val1 = array.get(_value, _i)
+        val2 = array.get(_value, _i+_cmpr)
+        val1 := val1 == 0 ? 1 : val1
+        val2 := math.round(val2, 1) == 0 or math.round(val2, 1) == -0 ? 0.1 : val2
+        dif := math.round(((val1-val2) / math.abs(val2)) * 100) // Change to absolute value
+        sym := na(dif) ? "" : dif > 0 ? '+'+str.tostring(dif)+'%' : str.tostring(dif)+'%'
+
+    
+    table.cell( table_id = _table,  column = _column, row = _row, text = na(dif) ? "●" : toggleMiniMode ? "●" : sym,text_halign = text.align_right, text_color = na(dif) ? FrameCol : dif >0 ? UpColor : dif <0 ? DownColor : dif ==0 ? UnchangedColor : FrameCol,text_size = tablesize)
+    
+
+// Free Float
+free_float = nz(request.financial(syminfo.tickerid, 'FLOAT_SHARES_OUTSTANDING', 'FY'))
+ff = na(ta.vwap) ? free_float / 10000000 : free_float * ta.vwap / 10000000
+validated_ff = na(ff) or nz(ff) == 0 ? '' : str.tostring(math.round(ff)) + ' Cr'
+
+//Marketcap
+outstanding = request.financial(syminfo.tickerid, "TOTAL_SHARES_OUTSTANDING", "FQ")
+mc = outstanding*close / 10000000
+validated_mc = na(mc) or nz(mc) == 0 ? '' : str.tostring(math.round(mc,0)) + ' Cr'
+
+// Creating the table with final outputs
+
+var table t = table.new(tableposY + "_" + tableposX, columns = 7, rows = datasize, bgcolor = BGColor, frame_color=FrameCol, frame_width=1,border_color=BorderCol, border_width=1)
+
+if barstate.islast and not toggleMiniMode
+
+    ft(t,0,0, topleft == 'FF' ? validated_ff : topleft == 'Mcap' ? validated_mc : '')
+    ft(t,1,0,finID1)
+    ft(t,2,0, per == 'FY' ? 'YoY' : '%Chg')
+    ft(t,3,0,finID2)
+    ft(t,4,0, per == 'FY' ? 'YoY' : '%Chg')
+
+
+if barstate.islast
+
+    if not toggleMiniMode
+
+        for i = 0 to datasize-5
+            // Column #1 Date
+            ftdate(t, 0, i+1, str.format('{0, date, MMM-yy}', array.get(date, i)))
+            // Column #2 EPS Data
+            fcell(finID=finID1, _table=t, _column=1, _row=i+1, _value=arrayFinData1, _i=i)
+            // Column #3 EPS YoY
+            fyoy(t, 2, i+1, arrayFinData1, i, per == 'FY' ? 1 : 4)
+            // Column #4 Sales Data
+            fcell(finID=finID2, _table=t, _column=3, _row=i+1, _value=arrayFinData2, _i=i)
+            // Column #5 Sales YoY
+            fyoy(t, 4, i+1, arrayFinData2, i, per == 'FY' ? 1 : 4)
+    else if toggleMiniMode
+
+        for i = 0 to datasize-5
+            // Column #1 Date
+            ftdate(t, 0, i+1, str.format('{0, date, MMM-yy}', array.get(date, i)))
+            // Column #2 EPS YoY
+            fyoy(t, 2, i+1, arrayFinData1, i, per == 'FY' ? 1 : 4)
+            // Column #3 Sales YoY
+            fyoy(t, 4, i+1, arrayFinData2, i, per == 'FY' ? 1 : 4)

@@ -1,0 +1,191 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+ 
+timetostring(timetoclose)=>
+    d_ = floor(timetoclose / 86400)
+    h_ = floor((timetoclose - d_ * 86400) / 3600)
+    m_ = floor((timetoclose - d_ * 86400 - h_ * 3600) / 60)
+    s_ = floor(timetoclose - d_ * 86400 - h_ * 3600 - m_ * 60)
+    ret = (d_ > 0 ? tostring(d_) + "D " : "")
+    ret := ret + (h_ > 0 ? tostring(h_) + "H " : "") 
+    ret := ret + (m_ > 0 ? tostring(m_) + "m " : "") 
+    if d_ == 0
+        ret := ret + (s_ > 0 ? tostring(s_) + "s " : "") 
+    ret
+
+get_vol(vol)=>
+    rvol = 0.
+    rmul = ""
+    if vol >= 1000000000
+        rvol := vol / 1000000000
+        rmul := "B"
+    else if vol >= 1000000
+        rvol := vol / 1000000
+        rmul := "M"
+    else if vol >= 1000
+        rvol := vol / 1000
+        rmul := "K"
+    else
+        rvol := vol
+        rmul := ""
+    [rvol, rmul]
+    
+//@version=4
+study("Multi Time Frame Candles with Volume", max_lines_count = 100)
+Timeframe = input(defval = 'D', title = "Time Frame", type = input.resolution)
+numofcandles = input(defval = 8, title = "Number of Candles", minval = 1, maxval = 10)
+colorup = input(defval = color.lime, title = "Color Up", type = input.color)
+colordown = input(defval = color.red, title = "Color Down", type = input.color)
+colorwick = input(defval = color.gray, title = "Wick Color", type = input.color)
+colorvolup = input(defval = #b2b5be, title = "Volume Color Up", type = input.color)
+colorvoldown = input(defval = #787b86, title = "Volume Color Down", type = input.color)
+colortimeclose = input(defval = color.blue, title = "Time Text Color", type = input.color)
+colorshadow = input(defval = color.black, title = "Shadow Color", type = input.color)
+backcolor = input(defval = #5d606b, title = "Background Color", type = input.color)
+candlewidth = input(defval = 30, title = "Candle Width", minval = 1, maxval = 40)
+startbar = input(defval = 15, title = "Start Bar", minval = 15)
+effect3d = input(defval = true, title = "3D Effect")
+
+// get HTF OHLC values and volume
+bool newbar = change(time(Timeframe)) != 0
+var candles = array.new_float(numofcandles * 5, na) // last 3 candles, ohlc
+if newbar
+    if numofcandles > 1
+        for x = numofcandles * 5 - 1 to 5
+            array.set(candles, x, array.get(candles, x - 5))
+    array.set(candles, 0, open)
+    array.set(candles, 1, high)
+    array.set(candles, 2, low)
+    array.set(candles, 3, close)
+    array.set(candles, 4, volume)
+else
+    array.set(candles, 1, max(array.get(candles, 1), high))
+    array.set(candles, 2, min(array.get(candles, 2), low))
+    array.set(candles, 3, close)
+    array.set(candles, 4, array.get(candles, 4) + volume)
+
+// line/label definitions
+var candlelines = array.new_line(numofcandles * 3, na)
+var volumelines = array.new_line(numofcandles, na)
+var volumelabels = array.new_label(numofcandles, na)
+var shadows = array.new_line(numofcandles * 4, na)
+
+//draw lines/label at the beginning
+if barstate.isfirst
+    for x = 0 to numofcandles - 1
+        //shadows
+        if effect3d
+            array.set(shadows, x * 4 + 0, line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, color = colorshadow, width = candlewidth))
+            array.set(shadows, x * 4 + 1, line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, color = colorshadow, width = 3))
+            array.set(shadows, x * 4 + 2, line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, color = colorshadow, width = 3))
+            array.set(shadows, x * 4 + 3, line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, color = colorshadow, width = candlewidth))
+        // body and wicks
+        array.set(candlelines, x * 3 + 0, line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, width = candlewidth))
+        array.set(candlelines, x * 3 + 1, line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, color = effect3d ? color.white : colorwick, width = 3))
+        array.set(candlelines, x * 3 + 2, line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, color = effect3d ? color.white : colorwick, width = 3))
+        
+        //volume
+        array.set(volumelines, x, line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, width = candlewidth))
+        array.set(volumelabels, x, label.new(x = bar_index, y = close, text = "", style = label.style_none))
+
+// max/min levels of the candles 
+maxlevel = array.min(candles)
+minlevel = array.max(candles)
+volarray = array.new_float(numofcandles)
+for x = 0 to numofcandles - 1
+    maxlevel := max(maxlevel,  array.get(candles, x * 5 + 1))
+    minlevel := min(minlevel,  array.get(candles, x * 5 + 2))
+    array.set(volarray, x, array.get(candles, x * 5 + 4))
+
+//background
+bgcolor(effect3d ? color.new(backcolor, 0) : na)
+cw = (maxlevel - minlevel) / 20
+
+// normalization
+volzerolevel = minlevel - 0.5 * (maxlevel - minlevel)
+norm = 0.45 * (maxlevel - minlevel)
+maxvol = array.max(volarray)
+for x = 0 to numofcandles - 1
+    array.set(volarray, x, norm * array.get(volarray, x) / maxvol)
+
+// draw zero line
+if not effect3d
+    var volzeroline = line.new(x1 = bar_index, y1 = volzerolevel, x2 = bar_index - 1, y2 = volzerolevel, color = color.gray, style = line.style_dotted, extend = extend.both)
+    line.set_xy1(volzeroline, bar_index, volzerolevel)
+    line.set_xy2(volzeroline, bar_index - 1, volzerolevel)
+
+// location and shadows
+var distance = 8
+var sdistanceX = 1
+sdistanceY = -cw
+startloc = bar_index - startbar
+
+// time to close of htf
+var label clock = label.new(x = startloc, y = close, text =  "", textcolor = colortimeclose, style = label.style_none)
+label.set_xy(clock, startloc + 9, array.get(candles, 0))
+timeclose = (security(syminfo.tickerid, Timeframe, time_close) - timenow) / 1000
+label.set_text(clock,  timetostring(timeclose))
+
+newhigh = high == maxlevel
+newlow = low == minlevel
+var line highline = na
+var line lowline = na
+line.delete(highline)
+line.delete(lowline)
+if newhigh and numofcandles > 1
+    h_ = array.get(candles, 7) // low of the last htf candle
+    for x = 1 to numofcandles - 1
+        h_ := max(h_, array.get(candles, x * 5 + 1))
+    highline := line.new(x1 = startloc - 8 * (numofcandles -1 ) - 2, y1 = h_, x2 = startloc - 3, y2 = h_, color = color.blue, width = 3)
+
+if newlow and numofcandles > 1
+    l_ = array.get(candles, 6) // high of the last htf candle
+    for x = 1 to numofcandles - 1
+        l_ := min(l_, array.get(candles, x * 5 + 2))
+    lowline := line.new(x1 = startloc - 8 * (numofcandles -1 ) - 2, y1 = l_, x2 = startloc - 3, y2 = l_, color = color.blue, width = 3)
+
+// draw shadows if enabled
+if effect3d
+    for x = 0 to numofcandles - 1
+        line.set_xy1(array.get(shadows, x * 4), startloc - x * distance + sdistanceX, array.get(candles, x * 5 + 0) + sdistanceY)
+        line.set_xy2(array.get(shadows, x * 4), startloc - x * distance + sdistanceX, array.get(candles, x * 5 + 3) + sdistanceY)
+        line.set_color(array.get(shadows, x * 4),  newhigh or newlow ? color.new(color.white, 95) : colorshadow)
+        
+        line.set_xy1(array.get(shadows, x * 4 + 1), startloc - x * distance + sdistanceX, max(array.get(candles, x * 5 + 0), array.get(candles, x * 5 + 3)) + sdistanceY)
+        line.set_xy2(array.get(shadows, x * 4 + 1), startloc - x * distance + sdistanceX, array.get(candles, x * 5 + 1) + sdistanceY)
+        line.set_color(array.get(shadows, x * 4 + 1), newhigh or newlow ? color.new(color.white, 100) : colorshadow)
+        
+        line.set_xy1(array.get(shadows, x * 4 + 2), startloc - x * distance + sdistanceX, min(array.get(candles, x * 5 + 0), array.get(candles, x * 5 + 3)) + sdistanceY)
+        line.set_xy2(array.get(shadows, x * 4 + 2), startloc - x * distance + sdistanceX, array.get(candles, x * 5 + 2) + sdistanceY)
+        line.set_color(array.get(shadows, x * 4 + 2), newhigh or newlow  ? color.new(color.white, 100) : colorshadow)
+        
+        line.set_xy1(array.get(shadows, x * 4 + 3), startloc - x * distance + sdistanceX, volzerolevel+ sdistanceY)
+        line.set_xy2(array.get(shadows, x * 4 + 3), startloc - x * distance + sdistanceX, array.get(volarray, x) + volzerolevel + sdistanceY)
+
+// draw candles and volume lines/labels
+for x = 0 to numofcandles - 1                       
+    // volume
+    line.set_xy1(array.get(volumelines, x), startloc - x * distance, volzerolevel)
+    line.set_xy2(array.get(volumelines, x), startloc - x * distance, array.get(volarray, x) + volzerolevel)
+    line.set_color(array.get(volumelines, x), array.get(candles, x * 5 + 3) >= array.get(candles, x * 5 + 0) ? colorvolup : colorvoldown)
+    
+    [rvol, rmul] = get_vol(array.get(candles, x * 5 + 4))
+    label.set_xy(array.get(volumelabels, x), startloc - x * distance, volzerolevel - 0.2 * (maxlevel - minlevel))
+    label.set_text(array.get(volumelabels, x), text = tostring(rvol, '#.##') + rmul)
+    label.set_textcolor(array.get(volumelabels, x), array.get(candles, x * 5 + 3) >=  array.get(candles, x * 5 + 0) ? colorup : colordown)
+   
+    //open == close?
+    candleh = array.get(candles, x * 5 + 3) ==  array.get(candles, x * 5 + 0) ? syminfo.mintick : 0.
+    line.set_xy1(array.get(candlelines, x * 3), startloc - x * distance, array.get(candles, x * 5 + 0))
+    line.set_xy2(array.get(candlelines, x * 3), startloc - x * distance, array.get(candles, x * 5 + 3) + candleh)
+    line.set_color(array.get(candlelines, x * 3), array.get(candles, x * 5 + 3) >=  array.get(candles, x * 5 + 0) ? colorup : colordown)
+    
+    line.set_xy1(array.get(candlelines, x * 3 + 1), startloc - x * distance, max(array.get(candles, x * 5 + 0), array.get(candles, x * 5 + 3)))
+    line.set_xy2(array.get(candlelines, x * 3 + 1), startloc - x * distance, array.get(candles, x * 5 + 1))
+    
+    line.set_xy1(array.get(candlelines, x * 3 + 2), startloc - x * distance, min(array.get(candles, x * 5 + 0), array.get(candles, x * 5 + 3)))
+    line.set_xy2(array.get(candlelines, x * 3 + 2), startloc - x * distance, array.get(candles, x * 5 + 2))
+        
+
+alertcondition(newhigh, title='New High', message='New High')
+alertcondition(newlow, title='New Low', message='New Low')

@@ -1,0 +1,339 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// @ RickSimpson
+
+//@version=5
+indicator('Institutional OrderBlock Pressure', 'IOBP', overlay = true, max_bars_back = 2000, max_lines_count = 500, max_labels_count = 500)
+
+// Define UDT to store OB state
+type OrderBlockState
+    bool  isBullishOrderBlock
+    bool  isBearishOrderBlock
+    float lastState
+
+// Define UDT to store Volume Pivot state
+type VolumePivotState
+    bool isVolumePivotHigh
+    bool isVolumePivotLow
+
+// Define UDT to store zone data
+type ZoneInformation
+    line [] upperHighLines
+    line [] upperLowLines
+    line [] upperMidLines
+    bool [] zoneEvaluated
+    label[] upperHighLabels
+    label[] upperMidLabels
+
+// Define UDT to store cross state
+type CrossoverStatus
+    bool crossedUp
+    bool crossedDown
+
+// Initialize OrderBlockState
+initializeOrderBlockState() =>
+    OrderBlockState.new(false, false, na)
+
+// Initialize VolumePivotState
+initializeVolumePivotState() =>
+    VolumePivotState.new(false, false)
+
+// Function to check if a candle is a Doji
+isDoji(float openPrice, float closePrice, float highPrice, float lowPrice) =>
+    bodySize      = math.abs(closePrice  - openPrice)
+    candleRange   =          highPrice   - lowPrice
+    dojiThreshold =          candleRange * 0.1 // 10% of the candle's range
+    bodySize     <=          dojiThreshold
+
+// Function to check if a candle is a significant volume pivot
+method isVolumePivot(VolumePivotState state, bool useVolume, int length) =>
+    state.isVolumePivotHigh := useVolume ? not na(ta.pivothigh(volume, length, length)) : false
+    state.isVolumePivotLow  := useVolume ? not na(ta.pivotlow (volume, length, length)) : false
+    state
+
+// Update OrderBlockState
+method updateOrderBlockState(OrderBlockState state, float closePrice, float openPrice, float highPrice, float lowPrice, int length) =>
+    highest_high               = ta.highest(high, length)
+    lowest_low                 = ta.lowest (low,  length)
+    state.isBullishOrderBlock := high >= highest_high[1] and high <= highest_high and closePrice > closePrice[1]
+    state.isBearishOrderBlock := low  <= lowest_low  [1] and low  >= lowest_low   and closePrice < closePrice[1]
+    state
+
+method updateOrderBlockStateVolume(OrderBlockState state, VolumePivotState volumeState, float closePrice, float openPrice, float highPrice, float lowPrice, int length) =>
+    highest_high               = ta.highest(high, length)
+    lowest_low                 = ta.lowest (low,  length)
+    state.isBullishOrderBlock := high >= highest_high[1] and high <= highest_high and closePrice > closePrice[1] and volumeState.isVolumePivotLow
+    state.isBearishOrderBlock := low  <= lowest_low  [1] and low  >= lowest_low   and closePrice < closePrice[1] and volumeState.isVolumePivotHigh
+    state
+
+// Inputs for user configurations
+displayLabels            = input.bool  (true,                    'Display Order Block Labels',                                       group = 'Order Block Settings',                         tooltip = 'Display labels for detected Order Blocks on the chart.')
+length                   = input.int   (5,                       'Pivot Length',        minval = 1,                                  group = 'Order Block Settings',                         tooltip = 'The number of bars to the left and right of a pivot point for it to be considered a high/low.')
+useVolume                = input.bool  (false,                   'Use Volume Pivot',                                                 group = 'Order Block Settings',                         tooltip = 'Use volume pivots to determine Order Blocks. Requires volume data.')
+bullishOrderBlockColor   = input.color (color.new(#07A896, 0), 'Bullish Order Block',                                              group = 'Order Block Settings', inline  = 'css',        tooltip = 'Color for Bullish Order Blocks.')
+bearishOrderBlockColor   = input.color (color.new(#E81E1E, 0), 'Bearish Order Block',                                              group = 'Order Block Settings', inline  = 'css',        tooltip = 'Color for Bearish Order Blocks.')
+displaySupportResistance = input.bool  (true,                    'Show Support & Resistance Lines',                                  group = 'Order Block Settings',                         tooltip = 'Toggle to display or hide the Bullish/Bearish Order Block Lines.')
+displayPriceLevels       = input.bool  (true,                    'Show Line Price Levels',                                           group = 'Order Block Settings',                         tooltip = 'Toggle to display or hide the price level next to the Bullish/Bearish Order Block Lines.')
+lineDisplayStyle         = input.string('Wick',                  'Line Display Style',  options = ['Wick', 'Average', 'Full Range'], group = 'Order Block Settings',                         tooltip = 'Select the style of the Bullish/Bearish Order Block Lines.')
+maxDisplayedLines        = input.int   (20,                      'Max Lines Displayed', minval = 1, maxval = 500,                    group = 'Order Block Settings',                         tooltip = 'Maximum number of lines to display on the chart.')
+enableTrendColoring      = input.bool  (false,                   'Enable Trend-Based Line Coloring',                                 group = 'Order Block Settings',                         tooltip = 'Color lines based on the trend (support/resistance).')
+useCandleBody            = input.bool  (false,                   'Use Candle Body',                                                  group = 'Order Block Settings',                         tooltip = 'Use the candle body (open and close) instead of the wick (high and low) for calculations.')
+lineThickness            = input.int   (1,                       'Line Thickness',      minval = 1, maxval = 3,                      group = 'Order Block Settings', inline  = 'line style', tooltip = 'Thickness of the Bullish/Bearish Order Block Lines.')
+lineStyleOption          = input.string('⎯⎯⎯',                 'Line Style',          options = ['⎯⎯⎯', '----', '····'],         group = 'Order Block Settings', inline  = 'line style', tooltip = 'Style of the Bullish/Bearish Order Block Lines.')
+extendSupportResistance  = input.bool  (true,                    'Extend Lines',                                                     group = 'Order Block Settings',                         tooltip = 'Extend the support/resistance lines to the right of the chart.')
+
+// Determine price range based on user preference: candle body or full wick
+float highPrice = useCandleBody ? math.max(open, close) : high
+float lowPrice  = useCandleBody ? math.min(open, close) : low
+
+// Initialize the OrderBlockState, VolumePivotState and ZoneInformation
+var OrderBlockState  obState       = initializeOrderBlockState ()
+var VolumePivotState volumeState   = initializeVolumePivotState()
+var ZoneInformation  upperZoneInfo = ZoneInformation.new(array.new_line(0), array.new_line(0), array.new_line(0), array.new_bool(0, false), array.new_label(0), array.new_label(0))
+var ZoneInformation  lowerZoneInfo = ZoneInformation.new(array.new_line(0), array.new_line(0), array.new_line(0), array.new_bool(0, false), array.new_label(0), array.new_label(0))
+
+// Update the VolumePivotState
+volumeState := volumeState.isVolumePivot(useVolume, length)
+
+// Update the OrderBlockState
+obState := useVolume ? updateOrderBlockStateVolume(obState, volumeState, close, open, high, low, length) : updateOrderBlockState(obState, close, open, high, low, length)
+
+// Determine whether we should display a label
+bool isBullishOrderBlock = obState.isBullishOrderBlock and (na(obState.lastState) or obState.lastState !=  1)
+bool isBearishOrderBlock = obState.isBearishOrderBlock and (na(obState.lastState) or obState.lastState != -1)
+
+// Update the last state
+if isBullishOrderBlock
+    obState.lastState :=  1
+else if isBearishOrderBlock
+    obState.lastState := -1
+
+// Plot shapes for bullish and bearish Order Blocks
+plotshape(series = displayLabels and isBullishOrderBlock, title = 'Bullish Order Block', location = location.belowbar, color = bullishOrderBlockColor, style = shape.circle, size = size.tiny)
+plotshape(series = displayLabels and isBearishOrderBlock, title = 'Bearish Order Block', location = location.abovebar, color = bearishOrderBlockColor, style = shape.circle, size = size.tiny)
+
+// Alert conditions for Order Block detection
+alertcondition(isBullishOrderBlock, title = 'Bullish Order Block Alert', message = 'Bullish Order Block Detected!')
+alertcondition(isBearishOrderBlock, title = 'Bearish Order Block Alert', message = 'Bearish Order Block Detected!')
+
+// Utility Functions for Support and Resistance
+
+// Function to map string descriptors to line styles
+mapLineStyle(style) =>
+    out = switch style
+        '⎯⎯⎯' => line.style_solid
+        '----'  => line.style_dashed
+        '····'  => line.style_dotted
+
+// Function to create lines based on layout preference
+createZoneLine(value, isWick, isAverage, displaySignal) =>
+    if displaySupportResistance and displaySignal
+        if (lineDisplayStyle == 'Wick' and isWick) or (lineDisplayStyle == 'Average' and isAverage) or (lineDisplayStyle == 'Full Range')
+            line.new(bar_index, value, bar_index, value)
+        else
+            na
+    else
+        na
+
+// Function to create labels
+createPriceLabel(value, isAverage, color, labelPrefix) =>
+    if displaySupportResistance and displayPriceLevels
+        label.new(bar_index, value, text = labelPrefix + ' - ' + str.tostring(math.round_to_mintick(value)), textcolor = color, style = label.style_none)
+    else
+        na
+
+// Function to get line color based on trend
+method getTrendLineColor(float lineValue, color supportColor, color resistanceColor) =>
+    close < lineValue ? resistanceColor : supportColor
+
+// Initialize CrossoverStatus
+initializeCrossoverStatus() =>
+    CrossoverStatus.new(false, false)
+
+// Initialize the CrossoverStatus
+var CrossoverStatus crossoverStatus = initializeCrossoverStatus()
+
+// Resistance line calculations and styling
+if isBearishOrderBlock
+
+    // Define the high and low of the resistance zone and calculate the midpoint
+    float upperHighZone     = highPrice
+    float upperLowZone      = lowPrice
+    float upperMidZone      = math.avg(upperHighZone, upperLowZone)
+
+    // Creating lines and labels for resistance zones
+    line  upperHighZoneLine = createZoneLine(upperHighZone, true,  false, isBearishOrderBlock)
+    line  upperLowZoneLine  = createZoneLine(upperLowZone,  false, false, isBearishOrderBlock)
+    line  upperMidZoneLine  = createZoneLine(upperMidZone,  false, true,  isBearishOrderBlock)
+    label highZoneLabel     = na
+    label midZoneLabel      = na
+
+    // Create a label for the price level at the resistance zone high or midpoint based on user preference
+    if      lineDisplayStyle == 'Wick' or lineDisplayStyle == 'Full Range'
+        highZoneLabel := createPriceLabel(upperHighZone, upperHighZone, bearishOrderBlockColor, 'Bearish OB')
+    else if lineDisplayStyle == 'Average'
+        midZoneLabel  := createPriceLabel(upperMidZone,  upperMidZone,  bearishOrderBlockColor, 'Bearish OB')
+
+    // Store the newly created lines and labels in their respective arrays
+    if array.size(upperZoneInfo.upperHighLines) > maxDisplayedLines / 2
+        line.delete (array.shift(upperZoneInfo.upperHighLines ))
+        line.delete (array.shift(upperZoneInfo.upperLowLines  ))
+        line.delete (array.shift(upperZoneInfo.upperMidLines  ))
+        array.shift             (upperZoneInfo.zoneEvaluated  )
+        label.delete(array.shift(upperZoneInfo.upperHighLabels))
+        label.delete(array.shift(upperZoneInfo.upperMidLabels ))
+
+    array.push(upperZoneInfo.upperHighLines,  upperHighZoneLine                     )
+    array.push(upperZoneInfo.upperLowLines,   upperLowZoneLine                      )
+    array.push(upperZoneInfo.upperMidLines,   upperMidZoneLine                      )
+    array.push(upperZoneInfo.zoneEvaluated,   extendSupportResistance ? true : false)
+    array.push(upperZoneInfo.upperHighLabels, highZoneLabel                         )
+    array.push(upperZoneInfo.upperMidLabels,  midZoneLabel                          )
+
+// If there are any resistance zone lines, update their style and check for crossings
+if array.size(upperZoneInfo.upperLowLines) > 0 or array.size(upperZoneInfo.upperMidLines) > 0
+    for i = 0 to array.size(upperZoneInfo.upperLowLines) - 1 by 1
+        line  tempUpperLine  = array.get(upperZoneInfo.upperHighLines,  i)
+        line  tempLowerLine  = array.get(upperZoneInfo.upperLowLines,   i)
+        line  tempMiddleLine = array.get(upperZoneInfo.upperMidLines,   i)
+        label priceLabelHigh = array.get(upperZoneInfo.upperHighLabels, i)
+        label priceLabelMid  = array.get(upperZoneInfo.upperMidLabels,  i)
+        bool  zoneEvaluated  = array.get(upperZoneInfo.zoneEvaluated,   i)
+
+        line.set_style(tempUpperLine,  mapLineStyle(lineStyleOption))
+        line.set_style(tempLowerLine,  mapLineStyle(lineStyleOption))
+        line.set_style(tempMiddleLine, mapLineStyle(lineStyleOption))
+        line.set_width(tempUpperLine,               lineThickness  )
+        line.set_width(tempLowerLine,               lineThickness  )
+        line.set_width(tempMiddleLine,              lineThickness  )
+
+        color upperLineColor  = enableTrendColoring ? getTrendLineColor(line.get_y1(tempUpperLine ), bullishOrderBlockColor, bearishOrderBlockColor) : bearishOrderBlockColor
+        color lowerLineColor  = enableTrendColoring ? getTrendLineColor(line.get_y1(tempLowerLine ), bullishOrderBlockColor, bearishOrderBlockColor) : bearishOrderBlockColor
+        color middleLineColor = enableTrendColoring ? getTrendLineColor(line.get_y1(tempMiddleLine), bullishOrderBlockColor, bearishOrderBlockColor) : bearishOrderBlockColor
+
+        line.set_color     (tempUpperLine,  upperLineColor )
+        line.set_color     (tempLowerLine,  lowerLineColor )
+        line.set_color     (tempMiddleLine, middleLineColor)
+        label.set_textcolor(priceLabelHigh, upperLineColor )
+        label.set_textcolor(priceLabelMid,  middleLineColor)
+
+        if      lineDisplayStyle == 'Wick' or lineDisplayStyle == 'Full Range'
+            label.set_text(priceLabelHigh, '                                           Bearish OB - ' + str.tostring(math.round_to_mintick(line.get_y1(tempUpperLine ))))
+            label.set_size(priceLabelHigh, size.small                                                                                                                )
+            label.set_x   (priceLabelHigh, bar_index                                                                                                                 )
+        else if lineDisplayStyle == 'Average'
+            label.set_text(priceLabelMid,  '                                           Bearish OB - ' + str.tostring(math.round_to_mintick(line.get_y1(tempMiddleLine))))
+            label.set_size(priceLabelMid,  size.small                                                                                                                )
+            label.set_x   (priceLabelMid,  bar_index                                                                                                                 )
+
+        // Update crossoverStatus
+        crossoverStatus.crossedUp   := high > line.get_y1(tempUpperLine)
+        crossoverStatus.crossedDown := low  < line.get_y1(tempUpperLine)
+
+        if      crossoverStatus.crossedDown and not zoneEvaluated
+            array.set   (upperZoneInfo.zoneEvaluated,  i, true          )
+            label.delete(priceLabelHigh                                 )
+            label.delete(priceLabelMid                                  )
+        else if extendSupportResistance           ? zoneEvaluated : not zoneEvaluated
+            line.set_x2 (tempUpperLine,                   bar_index     )
+            array.set   (upperZoneInfo.upperHighLines, i, tempUpperLine )
+            line.set_x2 (tempLowerLine,                   bar_index     )
+            array.set   (upperZoneInfo.upperLowLines,  i, tempLowerLine )
+            line.set_x2 (tempMiddleLine,                  bar_index     )
+            array.set   (upperZoneInfo.upperMidLines,  i, tempMiddleLine)
+
+// Set alert conditions for when the resistance lines are crossed up or down
+alertcondition(crossoverStatus.crossedUp,   title = 'Bearish OB Line Crossed Up',    message = 'Bearish OB line has been crossed up!'  )
+alertcondition(crossoverStatus.crossedDown, title = 'Bearish OB Line Crossed Down',  message = 'Bearish OB line has been crossed down!')
+
+// Support line calculations and styling
+if isBullishOrderBlock
+
+    // Define the high and low of the support zone and calculate the midpoint
+    float lowerHighZone     = highPrice
+    float lowerLowZone      = lowPrice
+    float lowerMidZone      = math.avg(lowerHighZone, lowerLowZone)
+
+    // Creating lines and labels for support zones
+    line  lowerHighZoneLine = createZoneLine(lowerHighZone, false, false, isBullishOrderBlock)
+    line  lowerLowZoneLine  = createZoneLine(lowerLowZone,  true,  false, isBullishOrderBlock)
+    line  lowerMidZoneLine  = createZoneLine(lowerMidZone,  false, true,  isBullishOrderBlock)
+    label lowZoneLabel      = na
+    label midZoneLabel      = na
+
+    // Create a label for the price level at the support zone high or midpoint based on user preference
+    if      lineDisplayStyle == 'Wick' or lineDisplayStyle == 'Full Range'
+        lowZoneLabel   := createPriceLabel(lowerLowZone, lowerLowZone, bullishOrderBlockColor, 'Bullish OB')
+    else if lineDisplayStyle == 'Average'
+        midZoneLabel := createPriceLabel  (lowerMidZone, lowerMidZone, bullishOrderBlockColor, 'Bullish OB')
+
+    // Store the newly created lines and labels in their respective arrays
+    if array.size(lowerZoneInfo.upperHighLines) > maxDisplayedLines / 2
+        line.delete (array.shift(lowerZoneInfo.upperHighLines ))
+        line.delete (array.shift(lowerZoneInfo.upperLowLines  ))
+        line.delete (array.shift(lowerZoneInfo.upperMidLines  ))
+        array.shift             (lowerZoneInfo.zoneEvaluated  )
+        label.delete(array.shift(lowerZoneInfo.upperHighLabels))
+        label.delete(array.shift(lowerZoneInfo.upperMidLabels ))
+
+    array.push(lowerZoneInfo.upperHighLines,  lowerHighZoneLine                     )
+    array.push(lowerZoneInfo.upperLowLines,   lowerLowZoneLine                      )
+    array.push(lowerZoneInfo.upperMidLines,   lowerMidZoneLine                      )
+    array.push(lowerZoneInfo.zoneEvaluated,   extendSupportResistance ? true : false)
+    array.push(lowerZoneInfo.upperHighLabels, lowZoneLabel                          )
+    array.push(lowerZoneInfo.upperMidLabels,  midZoneLabel                          )
+
+// If there are any support zone lines, update their style and check for crossings
+if array.size(lowerZoneInfo.upperLowLines) > 0 or array.size(lowerZoneInfo.upperMidLines) > 0
+    for i = 0 to array.size(lowerZoneInfo.upperLowLines) - 1 by 1
+        line  tempUpperLine  = array.get(lowerZoneInfo.upperHighLines,  i)
+        line  tempLowerLine  = array.get(lowerZoneInfo.upperLowLines,   i)
+        line  tempMiddleLine = array.get(lowerZoneInfo.upperMidLines,   i)
+        label priceLabelLow  = array.get(lowerZoneInfo.upperHighLabels, i)
+        label priceLabelMid  = array.get(lowerZoneInfo.upperMidLabels,  i)
+        bool  zoneEvaluated  = array.get(lowerZoneInfo.zoneEvaluated,   i)
+
+        line.set_style(tempUpperLine,  mapLineStyle(lineStyleOption))
+        line.set_style(tempLowerLine,  mapLineStyle(lineStyleOption))
+        line.set_style(tempMiddleLine, mapLineStyle(lineStyleOption))
+        line.set_width(tempUpperLine,               lineThickness  )
+        line.set_width(tempLowerLine,               lineThickness  )
+        line.set_width(tempMiddleLine,              lineThickness  )
+
+        color upperLineColor  = enableTrendColoring ? getTrendLineColor(line.get_y1(tempUpperLine ), bullishOrderBlockColor, bearishOrderBlockColor) : bullishOrderBlockColor
+        color lowerLineColor  = enableTrendColoring ? getTrendLineColor(line.get_y1(tempLowerLine ), bullishOrderBlockColor, bearishOrderBlockColor) : bullishOrderBlockColor
+        color middleLineColor = enableTrendColoring ? getTrendLineColor(line.get_y1(tempMiddleLine), bullishOrderBlockColor, bearishOrderBlockColor) : bullishOrderBlockColor
+
+        line.set_color     (tempUpperLine,  upperLineColor )
+        line.set_color     (tempLowerLine,  lowerLineColor )
+        line.set_color     (tempMiddleLine, middleLineColor)
+        label.set_textcolor(priceLabelLow,  lowerLineColor )
+        label.set_textcolor(priceLabelMid,  middleLineColor)
+
+        if      lineDisplayStyle == 'Wick' or lineDisplayStyle == 'Full Range'
+            label.set_text(priceLabelLow, '                                          Bullish OB - ' + str.tostring(math.round_to_mintick(line.get_y1(tempLowerLine ))))
+            label.set_size(priceLabelLow, size.small                                                                                                               )
+            label.set_x   (priceLabelLow, bar_index                                                                                                                )
+        else if lineDisplayStyle == 'Average'
+            label.set_text(priceLabelMid, '                                          Bullish OB - ' + str.tostring(math.round_to_mintick(line.get_y1(tempMiddleLine))))
+            label.set_size(priceLabelMid, size.small                                                                                                               )
+            label.set_x   (priceLabelMid, bar_index                                                                                                                )
+
+        // Update crossoverStatus
+        crossoverStatus.crossedUp   := high > line.get_y1(tempLowerLine)
+        crossoverStatus.crossedDown := low  < line.get_y1(tempLowerLine)
+
+        if      crossoverStatus.crossedDown and not zoneEvaluated
+            array.set   (lowerZoneInfo.zoneEvaluated,  i, true          )
+            label.delete(priceLabelLow                                  )
+            label.delete(priceLabelMid                                  )
+        else if extendSupportResistance           ? zoneEvaluated : not zoneEvaluated
+            line.set_x2 (tempUpperLine,                   bar_index     )
+            array.set   (lowerZoneInfo.upperHighLines, i, tempUpperLine )
+            line.set_x2 (tempLowerLine,                   bar_index     )
+            array.set   (lowerZoneInfo.upperLowLines,  i, tempLowerLine )
+            line.set_x2 (tempMiddleLine,                  bar_index     )
+            array.set   (lowerZoneInfo.upperMidLines,  i, tempMiddleLine)
+
+// Set alert conditions for when the support lines are crossed up or down
+alertcondition(crossoverStatus.crossedUp,   title = 'Bullish OB Line Crossed Up',   message = 'Bullish OB line has been crossed up!'  )
+alertcondition(crossoverStatus.crossedDown, title = 'Bullish OB Line Crossed Down', message = 'Bullish OB line has been crossed down!')

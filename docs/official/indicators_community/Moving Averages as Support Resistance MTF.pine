@@ -1,0 +1,91 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("Moving Averages as Support Resistance MTF", "MtfMaSR", overlay = true)
+matype = input(defval = "SMA", title = "Moving Average Type", options = ["SMA", "EMA"])
+malen1 = input(defval = 50, title = "Moving Average 1 length")
+malen2 = input(defval = 100, title = "Moving Average 2 length")
+malen3 = input(defval = 150, title = "Moving Average 3 length")
+malen4 = input(defval = 200, title = "Moving Average 4 length")
+tf1 = input(defval = "240", title = "Higher Time Frame 1", type = input.resolution)
+tf2 = input(defval = "D", title = "Higher Time Frame 2", type = input.resolution)
+usecurrenttf = input(defval = true, title = "Use Also Current Time Frame")
+labelloc = input(defval = "Right", title = "Label Location", options = ["Left", "Right"])
+linstyleu = input(defval = "Dashed", title = "S/R Line Style", options = ["Solid", "Dashed", "Dotted"])
+resistancecolor = input(defval = color.red, title = "Resistance Color", type = input.color)
+supportcolor = input(defval = color.lime, title = "Support Color", type = input.color)
+showma = input(defval = false, title = "Show MA", inline = "sma")
+showmatf = input(defval = "D", title = "", type = input.resolution, inline = "sma")
+showmalen = input(defval = 200, title = "", minval = 2, inline = "sma")
+
+
+linestyle = linstyleu == "Solid" ? line.style_solid : linstyleu ==  "Dashed" ? line.style_dashed : line.style_dotted
+
+get_ma_htf(tf, len)=> matype == "SMA" ? security(syminfo.tickerid, tf, sma(close, len)[1], lookahead = true) : security(syminfo.tickerid, tf, ema(close, len)[1], lookahead = true)
+get_ma_ctf(len) => matype == "SMA" ? sma(close,   len) : ema(close,   len)
+
+cus_ma = get_ma_htf(showmatf, showmalen)
+plot(showma ? cus_ma : na, color = showma ? color.blue : na, linewidth = 2)
+
+var ma_array = array.new_float(12, 0.)
+array.set(ma_array, 0,  get_ma_ctf(malen1)), array.set(ma_array, 1,  get_ma_ctf(malen2)), array.set(ma_array, 2,  get_ma_ctf(malen3)), array.set(ma_array, 3,  get_ma_ctf(malen4))
+array.set(ma_array, 4,  get_ma_htf(tf1,  malen1)), array.set(ma_array, 5,  get_ma_htf(tf1, malen2)), array.set(ma_array, 6,  get_ma_htf(tf1, malen3)), array.set(ma_array, 7,  get_ma_htf(tf1, malen4))
+array.set(ma_array, 8,  get_ma_htf(tf2,  malen1)), array.set(ma_array, 9,  get_ma_htf(tf2, malen2)), array.set(ma_array, 10, get_ma_htf(tf2, malen3)), array.set(ma_array, 11, get_ma_htf(tf2, malen4))
+
+get_text(level, x)=>
+    male = (x % 4) == 0 ? tostring(malen1) :
+           (x % 4) == 1 ? tostring(malen2) :
+           (x % 4) == 2 ? tostring(malen3) : 
+           tostring(malen4) 
+    ret = matype + " : " + male + "\nTimeframe: " + (iff(x < 4, timeframe.period, iff(x >= 4 and x <= 7, tf1, tf2))) + "\nLevel: " + tostring(round_to_mintick(level))
+
+float min_higher = na
+int min_higher_index = na
+float max_lower = na
+int max_lower_index = na
+
+for x = usecurrenttf ? 0 : 4 to 11
+    if array.get(ma_array, x) >= max(open, close)
+        if na(min_higher)
+            min_higher := array.get(ma_array, x)
+            min_higher_index := x
+        else
+            if min_higher > array.get(ma_array, x)
+                min_higher := array.get(ma_array, x)
+                min_higher_index := x
+    if array.get(ma_array, x) <= min(open, close)
+        if na(max_lower)
+            max_lower := array.get(ma_array, x)
+            max_lower_index := x
+        else
+            if max_lower < array.get(ma_array, x)
+                max_lower := array.get(ma_array, x)
+                max_lower_index := x
+
+var line resistanceline = na, var line supportline = na
+line.delete(resistanceline), line.delete(supportline)
+var label resistancelabel = na, var label supportlabel = na
+label.delete(resistancelabel), label.delete(supportlabel)
+label_x_loc = labelloc == "Left" ? bar_index - 50 : bar_index + 20
+
+if not na(min_higher)
+    resistanceline := line.new(x1 = bar_index, y1 = min_higher, x2 = bar_index - 1, y2 = min_higher, extend = extend.both, color = resistancecolor, width = 2, style = linestyle)
+    resistancelabel := label.new(x = label_x_loc, y = min_higher, text = get_text(min_higher, min_higher_index), color = color.red, textcolor = color.white, style = label.style_label_down)
+
+if not na(max_lower)
+    supportline := line.new(x1 = bar_index, y1 = max_lower, x2 = bar_index - 1, y2 = max_lower, extend = extend.both, color = supportcolor, width = 2, style = linestyle)
+    supportlabel := label.new(x = label_x_loc, y = max_lower, text = get_text(max_lower, max_lower_index), color = color.lime, textcolor = color.black, style = label.style_label_up)
+
+resistancebroken = not na(min_higher[1]) and close > min_higher[1] and nz(min_higher_index, -1) != min_higher_index[1]
+supportbroken = not na(max_lower[1]) and close < max_lower[1] and nz(max_lower_index, -1) != max_lower_index[1]
+
+var line brokenline = na
+line.delete(brokenline)
+if resistancebroken or supportbroken
+    lev = resistancebroken ? min_higher[1] : max_lower[1]
+    brokenline := line.new(x1 = bar_index, y1 = lev, x2 = bar_index - 1, y2 = lev, extend = extend.both, color = color.gray, width = 1, style = linestyle)
+
+alertcondition(resistancebroken, title = "Resistance Broken", message = "Resistance Broken")
+alertcondition(supportbroken, title = "Support Broken", message = "Support Broken")
+alertcondition(resistancebroken or supportbroken, title = "Resistance or Support Broken", message = "Resistance or Support Broken")

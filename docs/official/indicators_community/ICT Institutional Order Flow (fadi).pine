@@ -1,0 +1,1159 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fadizeidan
+//
+//
+// Displacement logic Credit: Visualizing Displacement [TFO]
+// https://www.tradingview.com/script/n6djFgQH-Visualizing-Displacement-TFO/
+// FTO creates other great indicators that I personally use.
+
+//@version=6
+indicator('ICT Institutional Order Flow (fadi)', overlay = true, max_bars_back = 5000, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+//2036 is stable
+
+//+------------------------------------------------------------------------------------------------------------+//
+//+--- Types                                                                                                ---+//
+//+------------------------------------------------------------------------------------------------------------+//
+type Settings
+	string liquidity_open_style
+	string liquidity_claimed_style
+
+	string ST_label
+	string IT_label
+	string LT_label
+
+	bool ST_show
+	string ST_text_size
+	color ST_color_bull
+	color ST_color_bear
+	color ST_label_color
+	bool ST_liquidity_show
+	color ST_liquidity_open_color
+	int ST_liquidity_size
+	color ST_liquidity_claimed_color
+
+	bool IT_show
+	string IT_text_size
+	color IT_color_bull
+	color IT_color_bear
+	color IT_label_color
+	bool IT_liquidity_show
+	color IT_liquidity_open_color
+	int IT_liquidity_size
+	color IT_liquidity_claimed_color
+
+	bool LT_show
+	string LT_text_size
+	color LT_color_bull
+	color LT_color_bear
+	color LT_label_color
+	bool LT_liquidity_show
+	color LT_liquidity_open_color
+	int LT_liquidity_size
+	color LT_liquidity_claimed_color
+
+	int max_labels
+
+	bool liquidity_open_show
+	int max_lines
+	int max_claimed_lines
+	int extend
+
+	bool EQ_show
+	int EQ_max
+	int EQ_max_claimed
+	bool EQ_link_show
+	color EQ_link_color
+	string EQ_link_style
+	int EQ_link_size
+	bool EQ_line_extend
+	color EQ_color_bull
+	color EQ_color_bear
+	string EQ_style
+	string EQ_claimed_style
+
+	int EQ_size
+	bool EQ_shade
+	color EQ_shade_bull
+	color EQ_shade_bear
+
+	int EQ_Tolerance
+
+	bool displacement_show
+	bool displacement_fvg
+	int displacement_length
+	int displacement_factor
+	color displacement_bull
+	color displacement_bear
+
+type Imbalance_Settings
+	bool show
+	color color_bull
+	color color_bear
+	string fvg_type
+	bool mitigated_show
+	string mitigated_type
+	color mitigated_color_bull
+	color mitigated_color_bear
+	bool mergeVI
+	string style
+	bool open_show
+	string open_style
+	int open_size
+	bool close_show
+	string close_style
+	int close_size
+	bool fill
+	int fill_percent
+	bool CE_show
+	string CE_style
+	int CE_size
+	color CE_bull_color
+	color CE_bear_color
+	bool link_show
+	string link_style
+	int link_size
+	int max_count
+    int max_mitigated_count
+
+type Pivot
+	int index = 0
+	int time = 0
+	float price = 0
+	int time_last = 0
+	bool claimed = false
+	bool isHigh = false
+	bool isLow = false
+	bool isSHigherHigh = false
+	bool isSLowerLow = false
+	bool isIHigherHigh = false
+	bool isILowerLow = false
+	bool isLHigherHigh = false
+	bool isLLowerLow = false
+	bool isST = true
+	bool isIT = false
+	bool isLT = false
+	label lbl = na
+	line ln = na
+
+type MarketStructure
+	string name
+	array<Pivot> ST
+	array<Pivot> STH
+	array<Pivot> ITH
+	array<Pivot> LTH
+	array<Pivot> STL
+	array<Pivot> ITL
+	array<Pivot> LTL
+	Settings settings
+
+type Box
+	line open
+	line close
+	line ce
+	line link
+	linefill fill
+	label label_open
+	label label_close
+	label label_ce
+
+type Imbalance
+	int open_time
+	int close_time
+	float open
+	float middle
+	float close
+	bool mitigated
+	int mitigated_time
+	bool invertable
+	bool inverted
+	bool inverted_mitigated
+	int inverted_mitigated_time
+	bool isbullish
+	Box box
+
+type ImbalanceStructure
+    string type
+	array<Imbalance> imbalance
+	Imbalance_Settings settings
+
+type EqualLevels
+	float price
+	float start
+	float end
+	int start_time
+	int end_time
+	int start_index
+	int end_index
+	bool isHigh
+	bool isLow
+	bool isClaimed
+	int claimed_time
+	line line_eq
+	line line_link
+	box box_link
+
+type Helper
+	string name = 'Helper'
+
+//+------------------------------------------------------------------------------------------------------------+//
+//+--- Settings                                                                                             ---+//
+//+------------------------------------------------------------------------------------------------------------+//
+int MAX_BUFFER = 1000 // internal maximum node count limit for performance
+
+ICT_Group = 'ICT Market Structure ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+ICT_Labelas = 'Label Format ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+
+settings_liquidity = 'Liquidity Levels ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+settings_liquidity_style = 'Liquidity Style ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+settings_eq = 'Relative Equal Highs and Lows ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+settings_displacement = 'Displacement ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+FVG_Group = 'Fair Value Gap ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+FVG_HP_Group = 'For High Probability Fair Value Gap ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+Imb_Group = 'Volume Imbalance ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+Gap_Group = 'Open Gaps ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+
+inline_st = 'ST'
+inline_st_liquidity = 'ST liquidity'
+
+inline_it = 'IT'
+inline_it_liquidity = 'IT liquidity'
+inline_lt = 'LT'
+inline_lt_liquidity = 'LT liquidity'
+
+inline_liquidity_open = 'open liquidity'
+inline_liquidity_claimed = 'claimed liquidity'
+
+inline_eq = 'EQ'
+inline_eq_link = 'EQ Link'
+inline_eq_shade = 'EQ Shade'
+inline_displacement = 'displacement'
+
+Settings Trend_Settings = Settings.new()
+Imbalance_Settings FVG_Settings = Imbalance_Settings.new()
+Imbalance_Settings iFVG_Settings = Imbalance_Settings.new()
+Imbalance_Settings VI_Settings = Imbalance_Settings.new()
+Imbalance_Settings Gap_Settings = Imbalance_Settings.new()
+
+Trend_Settings.ST_show := input.bool(false, 'Short             ', group = ICT_Group, inline = inline_st)
+Trend_Settings.ST_color_bull := input.color(color.black, '', group = ICT_Group, inline = inline_st)
+Trend_Settings.ST_color_bear := input.color(color.black, '', group = ICT_Group, inline = inline_st)
+Trend_Settings.ST_label_color := input.color(#ffffff00, '', group = ICT_Group, inline = inline_st)
+
+Trend_Settings.IT_show := input.bool(true, 'Intermediate       ', group = ICT_Group, inline = inline_it)
+Trend_Settings.IT_color_bull := input.color(color.new(color.purple, 0), '', group = ICT_Group, inline = inline_it)
+Trend_Settings.IT_color_bear := input.color(color.new(color.purple, 0), '', group = ICT_Group, inline = inline_it)
+Trend_Settings.IT_label_color := input.color(#ffffff00, '', group = ICT_Group, inline = inline_it)
+
+Trend_Settings.LT_show := input.bool(true, 'Long             ', group = ICT_Group, inline = inline_lt)
+Trend_Settings.LT_color_bull := input.color(color.new(color.blue, 0), '', group = ICT_Group, inline = inline_lt)
+Trend_Settings.LT_color_bear := input.color(color.new(color.blue, 0), '', group = ICT_Group, inline = inline_lt)
+Trend_Settings.LT_label_color := input.color(#ffffff00, '', group = ICT_Group, inline = inline_lt)
+
+Trend_Settings.ST_label := input.string('High/Low', 'Short            ', options = ['■', '□', '▣', '◆', '◇', '◈', '●', '○', '◉', '▲▼', '△▽', '↑↓', 'S/I/L Term', 'High/Low'], group = ICT_Labelas, inline = '1')
+Trend_Settings.ST_text_size := input.string(size.tiny, '', [size.tiny, size.small, size.normal, size.large, size.huge], group = ICT_Labelas, inline = '1')
+
+Trend_Settings.IT_label := input.string('High/Low', 'Intermediate      ', options = ['■', '□', '▣', '◆', '◇', '◈', '●', '○', '◉', '▲▼', '△▽', '↑↓', 'S/I/L Term', 'High/Low'], group = ICT_Labelas, inline = '2')
+Trend_Settings.IT_text_size := input.string(size.small, '', [size.tiny, size.small, size.normal, size.large, size.huge], group = ICT_Labelas, inline = '2')
+Trend_Settings.LT_label := input.string('High/Low', 'Long             ', options = ['■', '□', '▣', '◆', '◇', '◈', '●', '○', '◉', '▲▼', '△▽', '↑↓', 'S/I/L Term', 'High/Low'], group = ICT_Labelas, inline = '3')
+Trend_Settings.LT_text_size := input.string(size.normal, '', [size.tiny, size.small, size.normal, size.large, size.huge], group = ICT_Labelas, inline = '3')
+
+Trend_Settings.max_labels := input.int(50, 'Maximum number of labels    ', group = ICT_Labelas)
+
+Trend_Settings.ST_liquidity_show := input.bool(false, 'Short             ', group = settings_liquidity, inline = inline_st_liquidity)
+Trend_Settings.ST_liquidity_open_color := input.color(color.new(color.black, 50), '', group = settings_liquidity, inline = inline_st_liquidity)
+Trend_Settings.ST_liquidity_claimed_color := input.color(color.new(color.black, 50), '', group = settings_liquidity, inline = inline_st_liquidity)
+Trend_Settings.ST_liquidity_size := input.int(1, '', options = [1, 2, 3, 4], group = settings_liquidity, inline = inline_st_liquidity)
+
+Trend_Settings.IT_liquidity_show := input.bool(true, 'Intermediate       ', group = settings_liquidity, inline = inline_it_liquidity)
+Trend_Settings.IT_liquidity_open_color := input.color(color.new(color.purple, 50), '', group = settings_liquidity, inline = inline_it_liquidity)
+Trend_Settings.IT_liquidity_claimed_color := input.color(color.new(color.purple, 50), '', group = settings_liquidity, inline = inline_it_liquidity)
+Trend_Settings.IT_liquidity_size := input.int(1, '', options = [1, 2, 3, 4], group = settings_liquidity, inline = inline_it_liquidity)
+
+Trend_Settings.LT_liquidity_show := input.bool(true, 'Long             ', group = settings_liquidity, inline = inline_lt_liquidity)
+Trend_Settings.LT_liquidity_open_color := input.color(color.new(color.blue, 50), '', group = settings_liquidity, inline = inline_lt_liquidity)
+Trend_Settings.LT_liquidity_claimed_color := input.color(color.new(color.blue, 50), '', group = settings_liquidity, inline = inline_lt_liquidity)
+Trend_Settings.LT_liquidity_size := input.int(1, '', options = [1, 2, 3, 4], group = settings_liquidity, inline = inline_lt_liquidity)
+
+Trend_Settings.liquidity_open_style := input.string('⎯⎯⎯', 'Open          ', options = ['⎯⎯⎯', '----', '····'], group = settings_liquidity_style)
+Trend_Settings.liquidity_claimed_style := input.string('····', 'Claimed        ', options = ['⎯⎯⎯', '----', '····'], group = settings_liquidity_style)
+Trend_Settings.extend := input.int(5, title = 'Extend', minval = 1, group = settings_liquidity_style)
+Trend_Settings.max_lines := input.int(50, 'Maximum number of lines', minval = 1, maxval = 250, group = settings_liquidity_style)
+Trend_Settings.max_claimed_lines := input.int(5, 'Maximum number of claimed lines', minval = 0, maxval = 250, group = settings_liquidity_style)
+
+Trend_Settings.EQ_show := input.bool(true, 'Equal Levels', group = settings_eq, inline = inline_eq)
+Trend_Settings.EQ_color_bull := input.color(#434651, '', group = settings_eq, inline = inline_eq)
+Trend_Settings.EQ_color_bear := input.color(#434651, '', group = settings_eq, inline = inline_eq)
+Trend_Settings.EQ_size := input.int(1, '', options = [1, 2, 3, 4], group = settings_eq, inline = inline_eq)
+
+Trend_Settings.EQ_style := input.string('⎯⎯⎯', '', options = ['⎯⎯⎯', '----', '····'], group = settings_eq, inline = inline_eq)
+
+Trend_Settings.EQ_link_show := input.bool(true, 'link Levels  ', group = settings_eq, inline = inline_eq_link)
+Trend_Settings.EQ_link_color := input.color(color.gray, '', group = settings_eq, inline = inline_eq_link)
+Trend_Settings.EQ_link_size := input.int(1, '      ', options = [1, 2, 3, 4], group = settings_eq, inline = inline_eq_link)
+Trend_Settings.EQ_link_style := input.string('····', '', options = ['⎯⎯⎯', '----', '····'], group = settings_eq, inline = inline_eq_link)
+
+Trend_Settings.EQ_shade := input.bool(true, 'Highlight   ', group = settings_eq, inline = inline_eq_shade)
+Trend_Settings.EQ_shade_bull := input.color(color.new(color.blue, 90), '', group = settings_eq, inline = inline_eq_shade)
+Trend_Settings.EQ_shade_bear := input.color(color.new(color.orange, 90), '', group = settings_eq, inline = inline_eq_shade)
+Trend_Settings.EQ_claimed_style := input.string('····', 'Claimed Style', options = ['⎯⎯⎯', '----', '····'], group = settings_eq)
+Trend_Settings.EQ_Tolerance := input.int(2, 'Distance Tolerance', options = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], group = settings_eq) / 10
+
+Trend_Settings.EQ_max := input.int(20, 'Maximum number of Equal Levels', minval = 1, group = settings_eq)
+Trend_Settings.EQ_max_claimed := input.int(5, 'Maximum number of Claimed Levels', minval = 1, group = settings_eq)
+
+Trend_Settings.displacement_show := input.bool(false, 'Highlight    ', group = settings_displacement, inline = inline_displacement)
+Trend_Settings.displacement_bull := input.color(#bae3c5, '', group = settings_displacement, inline = inline_displacement)
+Trend_Settings.displacement_bear := input.color(#ffc2c2, '', group = settings_displacement, inline = inline_displacement)
+
+
+Trend_Settings.displacement_fvg := input.bool(true, 'Require FVG', group = settings_displacement)
+Trend_Settings.displacement_length := input.int(100, minval = 1, title = 'Use last X bars to calculate', group = settings_displacement)
+Trend_Settings.displacement_factor := input.int(2, options = [1, 2, 3, 4], title = 'Displacement Strength', group = settings_displacement)
+
+FVG_Settings.show := input.bool(true, 'FVG    ', group = FVG_Group, inline = '1')
+FVG_Settings.color_bull := input.color(color.new(#388e3c, 0), '', group = FVG_Group, inline = '1')
+FVG_Settings.color_bear := input.color(color.new(#1848cc, 0), '', group = FVG_Group, inline = '1')
+iFVG_Settings.show := input.bool(true, 'iFVG    ', group = FVG_Group, inline = 'i1')
+iFVG_Settings.color_bull := input.color(color.new(color.purple, 0), '', group = FVG_Group, inline = 'i1')
+iFVG_Settings.color_bear := input.color(color.new(color.orange, 0), '', group = FVG_Group, inline = 'i1')
+
+FVG_Settings.fvg_type := input.string('Always Display', '', options = ['Always Display', 'Same As Displacement', 'Level 1', 'Level 2', 'Level 3', 'Level 4'], group = FVG_Group, inline = '1')
+FVG_Settings.mitigated_show := input.bool(true, 'Mitigation', group = FVG_Group, inline = '2')
+FVG_Settings.mitigated_color_bull := input.color(color.new(color.gray, 95), '', group = FVG_Group, inline = '2')
+FVG_Settings.mitigated_color_bear := input.color(color.new(color.gray, 95), '', group = FVG_Group, inline = '2')
+FVG_Settings.mitigated_type := input.string('Wick filled', '', options = ['None', 'Wick Touched', 'Wick filled', 'Body filled', 'Wick filled half', 'Body filled half'], group = FVG_Group, inline = '2')
+
+iFVG_Settings.mitigated_show := FVG_Settings.mitigated_show
+iFVG_Settings.mitigated_color_bull := FVG_Settings.mitigated_color_bull
+iFVG_Settings.mitigated_color_bear := FVG_Settings.mitigated_color_bear
+iFVG_Settings.mitigated_type := FVG_Settings.mitigated_type
+
+FVG_Settings.open_show := input.bool(true, 'Open                ', group = FVG_Group, inline = 'open')
+FVG_Settings.open_style := input.string('····', '', options = ['⎯⎯⎯', '----', '····'], group = FVG_Group, inline = 'open')
+FVG_Settings.open_size := input.int(1, '', options = [1, 2, 3, 4], group = FVG_Group, inline = 'open')
+
+iFVG_Settings.open_show := FVG_Settings.open_show
+iFVG_Settings.open_style := FVG_Settings.open_style
+iFVG_Settings.open_size := FVG_Settings.open_size
+
+FVG_Settings.close_show := input.bool(true, 'Close                ', group = FVG_Group, inline = 'close')
+FVG_Settings.close_style := input.string('····', '', options = ['⎯⎯⎯', '----', '····'], group = FVG_Group, inline = 'close')
+FVG_Settings.close_size := input.int(1, '', options = [1, 2, 3, 4], group = FVG_Group, inline = 'close')
+
+iFVG_Settings.close_show := FVG_Settings.close_show
+iFVG_Settings.close_style := FVG_Settings.close_style
+iFVG_Settings.close_size := FVG_Settings.close_size
+
+FVG_Settings.CE_show := input.bool(true, 'C.E.    ', group = FVG_Group, inline = '3')
+FVG_Settings.CE_bull_color := input.color(color.new(color.black, 60), '', group = FVG_Group, inline = '3')
+FVG_Settings.CE_bear_color := input.color(color.new(color.black, 60), '', group = FVG_Group, inline = '3')
+FVG_Settings.CE_style := input.string('····', '', options = ['⎯⎯⎯', '----', '····'], group = FVG_Group, inline = '3')
+FVG_Settings.CE_size := input.int(1, '', options = [1, 2, 3, 4], group = FVG_Group, inline = '3')
+FVG_Settings.link_show := input.bool(true, 'Link                ', group = FVG_Group, inline = '4')
+FVG_Settings.link_style := input.string('⎯⎯⎯', ' ', options = ['⎯⎯⎯', '----', '····'], group = FVG_Group, inline = '4')
+FVG_Settings.link_size := input.int(2, '', options = [1, 2, 3, 4], group = FVG_Group, inline = '4')
+FVG_Settings.fill := input.bool(true, 'Background Transparency', group = FVG_Group, inline = 'fill')
+FVG_Settings.fill_percent := input.int(95, '', options = [98, 95, 90, 85, 80, 75, 70, 65, 60, 55, 50], group = FVG_Group, inline = 'fill')
+FVG_Settings.mergeVI := input.bool(false, 'Extend FVGs when overlapping with V.I.', group = FVG_Group)
+FVG_Settings.max_count := input.int(20, 'Max number of FVGs', group = FVG_Group)
+//FVG_Settings.max_mitigated_count := input.int(5, 'Max number of mitigated FVGs', group = FVG_Group)
+
+iFVG_Settings.max_count := input.int(20, 'Max number of iFVGs', group = FVG_Group)
+//iFVG_Settings.max_mitigated_count := input.int(5, 'Max number of mitigated iFVGs', group = FVG_Group)
+
+iFVG_Settings.CE_show := FVG_Settings.CE_show
+iFVG_Settings.CE_bull_color := FVG_Settings.CE_bull_color
+iFVG_Settings.CE_bear_color := FVG_Settings.CE_bear_color
+iFVG_Settings.CE_style := FVG_Settings.CE_style
+iFVG_Settings.link_show := FVG_Settings.link_show
+iFVG_Settings.link_style := FVG_Settings.link_style
+iFVG_Settings.link_size := FVG_Settings.link_size
+iFVG_Settings.fill := FVG_Settings.fill
+iFVG_Settings.fill_percent := FVG_Settings.fill_percent
+iFVG_Settings.mergeVI := FVG_Settings.mergeVI
+
+VI_Settings.show := input.bool(true, 'Volume Imbalance', group = Imb_Group, inline = '1')
+VI_Settings.color_bull := color.new(input.color(color.red, '', group = Imb_Group, inline = '1'), 100)
+VI_Settings.color_bear := color.new(input.color(color.red, '', group = Imb_Group, inline = '1'), 100)
+VI_Settings.mitigated_show := input.bool(true, 'Mitigated       ', group = Imb_Group, inline = '2')
+VI_Settings.mitigated_type := 'Body filled'
+VI_Settings.mitigated_color_bull := input.color(color.new(color.red, 95), '', group = Imb_Group, inline = '2')
+VI_Settings.mitigated_color_bear := input.color(color.new(color.red, 95), '', group = Imb_Group, inline = '2')
+VI_Settings.CE_show := false
+VI_Settings.open_show := false
+VI_Settings.close_show := false
+VI_Settings.fill := input.bool(true, 'Background Transparency', group = Imb_Group, inline = 'fill')
+VI_Settings.fill_percent := input.int(70, '', options = [98, 95, 90, 85, 80, 75, 70, 65, 60, 55, 50], group = Imb_Group, inline = 'fill')
+VI_Settings.mergeVI := false
+VI_Settings.max_count := input.int(20, 'Max number of Imbalances', minval = 1, maxval = 100, group = Imb_Group)
+
+Gap_Settings.show := input.bool(true, 'Open Gaps', group = Gap_Group, inline = '1')
+Gap_Settings.color_bull := color.new(input.color(#ffcc80, '', group = Gap_Group, inline = '1'), 100)
+Gap_Settings.color_bear := color.new(input.color(#ffcc80, '', group = Gap_Group, inline = '1'), 100)
+Gap_Settings.mitigated_show := false
+Gap_Settings.mitigated_type := 'Body filled'
+Gap_Settings.mitigated_color_bull := VI_Settings.color_bull
+Gap_Settings.mitigated_color_bear := VI_Settings.color_bear
+Gap_Settings.CE_show := false
+Gap_Settings.open_show := true
+Gap_Settings.close_show := true
+Gap_Settings.fill := input.bool(true, 'Background Transparency', group = Gap_Group, inline = 'fill')
+Gap_Settings.fill_percent := input.int(70, '', options = [98, 95, 90, 85, 80, 75, 70, 65, 60, 55, 50], group = Gap_Group, inline = 'fill')
+Gap_Settings.mergeVI := false
+Gap_Settings.max_count := input.int(5, 'Max number of Gaps', group = Gap_Group)
+
+//+------------------------------------------------------------------------------------------------------------+//
+//+--- Variables                                                                                            ---+//
+//+------------------------------------------------------------------------------------------------------------+//
+color color_transparent = #ffffff00
+
+Helper helper = Helper.new()
+
+var MarketStructure Term = MarketStructure.new('Term')
+var array<Pivot> ST_array = array.new<Pivot>()
+var array<Pivot> IT_array = array.new<Pivot>()
+var array<Pivot> LT_array = array.new<Pivot>()
+var array<Pivot> STH_array = array.new<Pivot>()
+var array<Pivot> ITH_array = array.new<Pivot>()
+var array<Pivot> LTH_array = array.new<Pivot>()
+var array<Pivot> STL_array = array.new<Pivot>()
+var array<Pivot> ITL_array = array.new<Pivot>()
+var array<Pivot> LTL_array = array.new<Pivot>()
+Term.ST := ST_array
+Term.STH := STH_array
+Term.ITH := ITH_array
+Term.LTH := LTH_array
+Term.STL := STL_array
+Term.ITL := ITL_array
+Term.LTL := LTL_array
+Term.settings := Trend_Settings
+
+var ImbalanceStructure FVGs = ImbalanceStructure.new()
+var array<Imbalance> imbalance_array = array.new<Imbalance>()
+FVGs.type := "FVG"
+FVGs.imbalance := imbalance_array
+FVGs.settings := FVG_Settings
+
+var ImbalanceStructure iFVGs = ImbalanceStructure.new()
+var array<Imbalance> iimbalance_array = array.new<Imbalance>()
+iFVGs.type := "iFVG"
+iFVGs.imbalance := iimbalance_array
+iFVGs.settings := iFVG_Settings
+
+
+var ImbalanceStructure VI = ImbalanceStructure.new()
+var array<Imbalance> VI_array = array.new<Imbalance>()
+VI.type := "VI"
+VI.imbalance := VI_array
+VI.settings := VI_Settings
+
+var ImbalanceStructure Gaps = ImbalanceStructure.new()
+var array<Imbalance> Gap_array = array.new<Imbalance>()
+Gaps.type := "GAP"
+Gaps.imbalance := Gap_array
+Gaps.settings := Gap_Settings
+
+var array<EqualLevels> EQs = array.new<EqualLevels>()
+
+var array<label> labels = array.new_label()
+var array<EqualLevels> EQ_claimed = array.new<EqualLevels>()
+var line tester = line.new(na, na, na, na, color = color_transparent)
+
+body = math.abs(open - close)
+std = ta.stdev(math.abs(open - close), Trend_Settings.displacement_length)
+
+var array<float> median = array.new_float()
+length = 14
+median.unshift(ta.atr(length))
+if median.size() > length
+    median.pop()
+float spacing = median.median() * Trend_Settings.EQ_Tolerance
+
+//+------------------------------------------------------------------------------------------------------------+//
+//+--- Functions                                                                                            ---+//
+//+------------------------------------------------------------------------------------------------------------+//
+// The formatting is ugly, but Tradingview doesn't allow using barcolor inside of a function
+f_highlightDisplacement() =>
+    if barstate.isconfirmed
+        if Trend_Settings.displacement_show
+            candle_range = math.abs(open - close)
+            fvg = close[1] > open[1] ? high[2] < low : low[2] > high
+            Trend_Settings.displacement_fvg ? candle_range[1] > std[1] * Trend_Settings.displacement_factor and fvg : candle_range > std
+        else
+            false
+
+displaced = f_highlightDisplacement()
+
+//+------------------------------------------------------------------------------------------------------------+//
+//+--- Methods                                                                                              ---+//
+//+------------------------------------------------------------------------------------------------------------+//
+
+method GetFVGDisplacementLevel(Helper helper) =>
+    helper.name := 'FVG Displacement Level'
+    out = switch FVG_Settings.fvg_type
+        'Same As Displacement' => Trend_Settings.displacement_factor
+        'Level 1' => 1
+        'Level 2' => 2
+        'Level 3' => 3
+        'Level 4' => 4
+    out
+
+method LineStyle(Helper helper, string style) =>
+    helper.name := style
+
+    out = switch style
+        '----' => line.style_dashed
+        '····' => line.style_dotted
+        => line.style_solid
+
+    out
+
+// SkipEQHigh returns the first bar_index of before the equal highs
+// This is used to compare pivot points, if two at equal levels
+// then we need to compare it to previous high, otherwise it will
+// not identify the right STH/STL
+method SkipEQHigh(Helper helper, int idx) =>
+    helper.name := 'Skip EQ Highs'
+    i = idx
+    while high[i] == high[i - 1]
+        i := i + 1
+        i
+    i
+    // SkipEQLows returns the first bar_index of before the equal lows
+method SkipEQLow(Helper helper, int idx) =>
+    helper.name := 'Skip EQ Lows'
+    i = idx
+    while low[i] == low[i - 1]
+        i := i + 1
+        i
+    i
+
+// Same as above, but works on pivot points. it also doesn't care for
+// high or low since Pivot is a single price point
+method SkipEQPivot(array<Pivot> p, int idx) =>
+    i = idx
+    if p.size() >= i
+        while p.get(i).price == p.get(i - 1).price and p.size() <= i - 1
+            i := i + 1
+            i
+    i
+
+//+------------------------------------------------------------------------------------------------------------+//
+//+--- ICT Market Structure Methods                                                                         ---+//
+//+------------------------------------------------------------------------------------------------------------+//
+method AddEQ(array<EqualLevels> this, Pivot p1, Pivot p2) =>
+    EqualLevels eq = EqualLevels.new()
+    eq.start := p1.price
+    eq.start_time := p1.time
+    eq.start_index := p1.index
+    eq.end := p2.price
+    eq.end_time := p2.time
+    eq.end_index := p2.index
+    eq.isHigh := p1.isHigh
+    eq.isLow := p1.isLow
+
+    if Trend_Settings.EQ_show
+        int start_time = 0
+        if eq.isHigh
+            eq.price := eq.start > eq.end ? eq.start : eq.end
+            start_time := eq.start > eq.end ? eq.start_time : eq.end_time
+            start_time
+        else
+            eq.price := eq.start < eq.end ? eq.start : eq.end
+            start_time := eq.start < eq.end ? eq.start_time : eq.end_time
+            start_time
+        eq.line_eq := line.new(eq.start_time, eq.price, time, eq.price, xloc = xloc.bar_time, style = helper.LineStyle(Trend_Settings.EQ_style), color = eq.isHigh ? Trend_Settings.EQ_color_bull : Trend_Settings.EQ_color_bear, width = Trend_Settings.EQ_size)
+        if Trend_Settings.EQ_link_show
+            eq.line_link := line.new(eq.start_time, eq.start, eq.end_time, eq.end, xloc = xloc.bar_time, style = helper.LineStyle(Trend_Settings.EQ_link_style), color = Trend_Settings.EQ_link_color, width = Trend_Settings.EQ_link_size)
+            eq.line_link
+        if Trend_Settings.EQ_shade
+            eq.box_link := box.new(eq.start_time, eq.start, eq.end_time, eq.end, xloc = xloc.bar_time, border_color = color_transparent, bgcolor = eq.isHigh ? Trend_Settings.EQ_shade_bull : Trend_Settings.EQ_shade_bear)
+            eq.box_link
+        this.unshift(eq)
+
+        if this.size() > Trend_Settings.EQ_max + Trend_Settings.EQ_max_claimed
+            EqualLevels t = this.pop()
+            t.line_eq.delete()
+            t.line_link.delete()
+            t.box_link.delete()
+    this
+
+testEQ(Pivot p1, Pivot p2) =>
+    bool valid = true
+    tester.set_xy1(p1.index, p1.price)
+    tester.set_xy2(p2.index, p2.price)
+    for i = p1.index + 1 to p2.index - 1 by 1
+        bool isHigh = p1.isHigh
+        float p = tester.get_price(i)
+        int j = bar_index - i
+        if isHigh and high[j] > p or not isHigh and low[j] < p
+            valid := false
+            valid
+    valid
+
+method ProcessEQ(array<EqualLevels> this, Pivot p1, Pivot p2) =>
+    bool matched = false
+    for p in this
+        if p.start_index == p1.index and not p.isClaimed
+
+            if p.end <= p2.price and p.isHigh or p.end >= p2.price and p.isLow
+
+                if testEQ(p1, p2)
+                    p.end := p2.price
+                    p.end_time := p2.time
+                    p.end_index := p2.index
+                    p.line_link.set_xy2(p.end_time, p.end)
+                    p.box_link.set_rightbottom(p.end_time, p.end)
+            matched := true
+            break
+        if (p.end_index == p2.index or p.end_index == p1.index) and (p.isLow == p1.isLow or p.isLow == p2.isLow)
+            matched := true
+            break
+
+    if not matched
+        if testEQ(p1, p2)
+            this.AddEQ(p1, p2)
+    this
+
+method findEQ(MarketStructure MS, Pivot pivot) =>
+    if MS.settings.EQ_show or MS.settings.EQ_link_show
+
+        if MS.ST.size() > 2
+            for p in MS.ST
+                if (p.isHigh and pivot.isHigh or p.isLow and pivot.isLow) and p.index != pivot.index
+
+                    if math.abs(p.price - pivot.price) < spacing
+                        EQs.ProcessEQ(p, pivot)
+    MS
+
+method getLabel(Pivot pivot) =>
+    string lbl = ''
+    if Trend_Settings.ST_show and pivot.isST and (not pivot.isIT or not Trend_Settings.IT_show) and (not pivot.isLT or not Trend_Settings.LT_show)
+        switch Trend_Settings.ST_label
+            'S/I/L Term' => 
+        	    lbl := lbl + 'ST'
+        	    lbl := lbl + (pivot.isHigh ? 'H' : 'L')
+        	    lbl
+            'High/Low' => 
+        	    lbl := lbl + 'ST'
+        	    lbl := lbl + (pivot.isHigh ? pivot.isSHigherHigh ? '-HH' : '-LH' : pivot.isSLowerLow ? '-LL' : '-HL')
+        	    lbl
+            => 
+        	    if str.length(Trend_Settings.ST_label) == 1
+        	        lbl := Trend_Settings.ST_label
+        	        lbl
+        	    else
+        	        array<string> symb = str.split(Trend_Settings.ST_label, '')
+        	        lbl := lbl + (pivot.isHigh ? symb.get(1) : symb.get(0))
+        	        lbl
+
+    if Trend_Settings.IT_show and pivot.isIT and (not pivot.isLT or not Trend_Settings.LT_show)
+        switch Trend_Settings.IT_label
+            'S/I/L Term' => 
+        	    lbl := lbl + 'IT'
+        	    lbl := lbl + (pivot.isHigh ? 'H' : 'L')
+        	    lbl
+            'High/Low' => 
+        	    lbl := lbl + 'IT'
+        	    lbl := lbl + (pivot.isHigh ? pivot.isIHigherHigh ? '-HH' : '-LH' : pivot.isILowerLow ? '-LL' : '-HL')
+        	    lbl
+            => 
+        	    if str.length(Trend_Settings.IT_label) == 1
+        	        lbl := Trend_Settings.IT_label
+        	        lbl
+        	    else
+        	        array<string> symb = str.split(Trend_Settings.IT_label, '')
+        	        lbl := lbl + (pivot.isHigh ? symb.get(1) : symb.get(0))
+        	        lbl
+    if Trend_Settings.LT_show and pivot.isLT
+        switch Trend_Settings.LT_label
+            'S/I/L Term' => 
+        	    lbl := lbl + 'LT'
+        	    lbl := lbl + (pivot.isHigh ? 'H' : 'L')
+        	    lbl
+            'High/Low' => 
+        	    lbl := lbl + 'LT'
+        	    lbl := lbl + (pivot.isHigh ? pivot.isLHigherHigh ? '-HH' : '-LH' : pivot.isLLowerLow ? '-LL' : '-HL')
+        	    lbl
+            => 
+        	    if str.length(Trend_Settings.LT_label) == 1
+        	        lbl := Trend_Settings.LT_label
+        	        lbl
+        	    else
+        	        array<string> symb = str.split(Trend_Settings.LT_label, '')
+        	        lbl := lbl + (pivot.isHigh ? symb.get(1) : symb.get(0))
+        	        lbl
+    lbl
+
+// getLabelSettings calculates and returns the Pivot Point settings
+// based on what is configured in the properties window
+method getLabelSettings(MarketStructure MS, Pivot pivot) =>
+    color lbl_color = na
+    string lbl_text_size = na
+    color txt_color = na
+    string lbl_style = na
+
+    if MS.settings.ST_show
+        lbl_color := MS.settings.ST_label_color
+        lbl_text_size := MS.settings.ST_text_size
+        txt_color := pivot.isHigh ? MS.settings.ST_color_bull : MS.settings.ST_color_bear
+        txt_color
+
+    if MS.settings.IT_show
+        if pivot.isIT
+            lbl_color := MS.settings.IT_label_color
+            lbl_text_size := MS.settings.IT_text_size
+            txt_color := pivot.isHigh ? MS.settings.IT_color_bull : MS.settings.IT_color_bear
+            txt_color
+
+    if MS.settings.LT_show
+        if pivot.isLT
+            lbl_color := MS.settings.LT_label_color
+            lbl_text_size := MS.settings.LT_text_size
+            txt_color := pivot.isHigh ? MS.settings.LT_color_bull : MS.settings.LT_color_bear
+            txt_color
+
+    if MS.settings.ST_show or MS.settings.IT_show or MS.settings.LT_show
+        lbl_style := pivot.isHigh ? label.style_label_down : label.style_label_up
+        lbl_style
+
+    [lbl_color, lbl_text_size, txt_color, lbl_style, pivot.getLabel()]
+
+// DrawLabel displays the Pivot label with the proper settings. it is used for both adding the initial
+// Pivot and renaming/adjusting it if it is converted from STH to ITH for example
+method DrawLabel(MarketStructure MS, Pivot pivot) =>
+    [lbl_color, lbl_text_size, txt_color, lbl_style, lbl] = MS.getLabelSettings(pivot)
+    if na(pivot.lbl)
+        pivot.lbl := label.new(pivot.time, pivot.price, xloc = xloc.bar_time, color = lbl_color, size = lbl_text_size, textcolor = txt_color, style = lbl_style, text = lbl)
+    else
+        label.set_style(pivot.lbl, lbl_style)
+        label.set_color(pivot.lbl, lbl_color)
+        label.set_size(pivot.lbl, lbl_text_size)
+        label.set_textcolor(pivot.lbl, txt_color)
+        label.set_text(pivot.lbl, lbl)
+    MS
+
+// DrawLiquidity adds the liquidity lines
+method DrawLiquidity(MarketStructure MS, Pivot pivot) =>
+    color liquidity_open_color = pivot.isLT and MS.settings.LT_liquidity_show ? MS.settings.LT_liquidity_open_color : pivot.isIT and MS.settings.IT_liquidity_show ? MS.settings.IT_liquidity_open_color : MS.settings.ST_liquidity_open_color
+    color liquidity_claimed_color = pivot.isLT and MS.settings.LT_liquidity_show ? MS.settings.LT_liquidity_claimed_color : pivot.isIT and MS.settings.IT_liquidity_show ? MS.settings.IT_liquidity_claimed_color : MS.settings.ST_liquidity_claimed_color
+    int liquidity_size = pivot.isLT and MS.settings.LT_liquidity_show ? MS.settings.LT_liquidity_size : pivot.isIT and MS.settings.IT_liquidity_show ? MS.settings.IT_liquidity_size : MS.settings.ST_liquidity_size
+
+    if MS.settings.ST_liquidity_show or MS.settings.IT_liquidity_show and pivot.isIT or MS.settings.LT_liquidity_show and pivot.isLT
+        if na(pivot.ln)
+            pivot.ln := line.new(pivot.time, pivot.price, pivot.claimed ? pivot.time_last : time + (time - time[1]) * MS.settings.extend, pivot.price, xloc = xloc.bar_time, style = helper.LineStyle(pivot.claimed ? MS.settings.liquidity_claimed_style : MS.settings.liquidity_open_style), color = pivot.claimed ? liquidity_claimed_color : liquidity_open_color, width = liquidity_size)
+            pivot.ln
+        else
+            line.set_color(pivot.ln, pivot.claimed ? liquidity_claimed_color : liquidity_open_color)
+            line.set_width(pivot.ln, liquidity_size)
+            line.set_x2(pivot.ln, pivot.claimed ? pivot.time_last : time + (time - time[1]) * MS.settings.extend)
+            line.set_style(pivot.ln, helper.LineStyle(pivot.claimed ? MS.settings.liquidity_claimed_style : MS.settings.liquidity_open_style))
+    MS
+
+// Add method handles the addition of newly discovered ST[H/L] Pivot Point
+method Add(MarketStructure MS, float p_price, int p_time, int p_index, bool isHigh) =>
+    Pivot pivot = Pivot.new()
+    pivot.price := p_price
+    pivot.time := p_time
+    pivot.isST := true
+    pivot.index := p_index
+
+    MS.ST.unshift(pivot)
+
+    if isHigh
+        pivot.isHigh := true
+        if MS.STH.size() > 0
+            Pivot p = MS.STH.first()
+            if p.price <= p_price
+                pivot.isSHigherHigh := true
+                pivot.isSHigherHigh
+        MS.STH.unshift(pivot)
+    else
+        pivot.isLow := true
+        if MS.STL.size() > 0
+            Pivot p = MS.STL.first()
+            if p.price >= p_price
+                pivot.isSLowerLow := true
+                pivot.isSLowerLow
+        MS.STL.unshift(pivot)
+    MS.findEQ(pivot)
+
+    if MS.ST.size() > MAX_BUFFER
+        Pivot temp = MS.ST.pop()
+        line.delete(temp.ln)
+        label.delete(temp.lbl)
+
+    MS
+
+// FindIT rechecks the Pivot points and renames the Pivot point from ST to IT
+method FindIT(MarketStructure MS) =>
+    if MS.STH.size() > 3
+        h1 = MS.STH.first()
+        h2 = MS.STH.get(1)
+        h3 = MS.STH.get(MS.STH.SkipEQPivot(2))
+        if h2.price > h3.price and h2.price > h1.price and not h2.isIT
+            h2.isIT := true
+            if MS.ITH.size() > 0
+                Pivot p = MS.ITH.first()
+                if p.price <= h2.price
+                    h2.isIHigherHigh := true
+                    h2.isIHigherHigh
+            MS.ITH.unshift(h2)
+
+    if MS.STL.size() > 2
+        l1 = MS.STL.first()
+        l2 = MS.STL.get(1)
+        l3 = MS.STL.get(MS.STL.SkipEQPivot(2))
+        if l2.price < l3.price and l2.price < l1.price and not l2.isIT
+            l2.isIT := true
+            if MS.ITL.size() > 0
+                Pivot p = MS.ITL.first()
+                if p.price >= l2.price
+                    l2.isILowerLow := true
+                    l2.isILowerLow
+            MS.ITL.unshift(l2)
+    MS
+
+// FindLT rechecks the IT Pivot points and renames the Pivot point from IT to LT
+method FindLT(MarketStructure MS) =>
+    if MS.ITH.size() > 2
+        h1 = MS.ITH.first()
+        h2 = MS.ITH.get(1)
+        h3 = MS.ITH.get(2)
+        if h2.price > h3.price and h2.price > h1.price and not h2.isLT
+            h2.isLT := true
+
+            if MS.LTH.size() > 0
+                Pivot p = MS.LTH.first()
+                if p.price <= h2.price
+                    h2.isLHigherHigh := true
+                    h2.isLHigherHigh
+
+            MS.LTH.unshift(h2)
+
+    if MS.ITL.size() > 2
+        l1 = MS.ITL.first()
+        l2 = MS.ITL.get(1)
+        l3 = MS.ITL.get(MS.ITL.SkipEQPivot(2))
+
+        if l2.price < l3.price and l2.price < l1.price and not l2.isLT
+            l2.isLT := true
+
+            if MS.LTL.size() > 0
+                Pivot p = MS.LTL.first()
+                if p.price >= l2.price
+                    l2.isLLowerLow := true
+                    l2.isLLowerLow
+
+            MS.LTL.unshift(l2)
+    MS
+
+// FindST checks for ST[H/L] and calls the Add method
+method FindST(MarketStructure MS) =>
+    h = high[1] > high[helper.SkipEQHigh(2)] and high[1] > high
+    l = low[1] < low[helper.SkipEQLow(2)] and low[1] < low
+
+    if h
+        MS.Add(high[1], time[1], bar_index[1], true)
+    if l
+        MS.Add(low[1], time[1], bar_index[1], false)
+    MS
+
+// CheckClaimed checks if liquidity has been swept
+method CheckClaimed(MarketStructure MS) =>
+    Pivot claimed = na
+    if MS.ST.size() > 0
+        for i = MS.ST.size() - 1 to 0 by 1
+            pivot = MS.ST.get(i)
+            if not pivot.claimed
+                if pivot.isHigh and high > pivot.price or pivot.isLow and low < pivot.price
+                    pivot.claimed := true
+                    pivot.time_last := time
+                    pivot.time_last
+    for eq in EQs
+        if not eq.isClaimed
+            if eq.isHigh
+                eq.isClaimed := high > eq.price
+                eq.isClaimed
+            if eq.isLow
+                eq.isClaimed := low < eq.price
+                eq.isClaimed
+            if eq.isClaimed
+                eq.claimed_time := time
+                EQ_claimed.unshift(eq)
+
+                if EQ_claimed.size() > Trend_Settings.EQ_max_claimed
+                    EqualLevels t = EQ_claimed.pop()
+                    t.line_eq.delete()
+                    t.line_link.delete()
+                    t.box_link.delete()
+
+            if not na(eq.line_eq)
+                if not eq.isClaimed
+                    eq.line_eq.set_x2(time + (time - time[1]) * MS.settings.extend)
+                else 
+                    eq.line_eq.set_x2(time)
+                    eq.line_eq.set_style(helper.LineStyle(Trend_Settings.EQ_claimed_style))
+    claimed
+
+method renderMS(MarketStructure MS) =>
+    int add = 0
+    int claim = 0
+    for pivot in MS.ST
+        if pivot.claimed and claim < MS.settings.max_claimed_lines or not pivot.claimed and add < MS.settings.max_lines
+            MS.DrawLiquidity(pivot)
+            if pivot.claimed
+                claim := claim + 1
+                claim
+            else
+                add := add + 1
+                add
+        if claim == MS.settings.max_claimed_lines and add == MS.settings.max_lines
+            break
+    add := 0
+
+    for pivot in MS.ST
+        if MS.settings.ST_show or MS.settings.IT_show and pivot.isIT or MS.settings.LT_show and pivot.isLT and add < MS.settings.max_labels
+            MS.DrawLabel(pivot)
+            add := add + 1
+        if add == MS.settings.max_labels
+            break
+
+//+------------------------------------------------------------------------------------------------------------+//
+//+--- Imbalances Methods                                                                                   ---+//
+//+------------------------------------------------------------------------------------------------------------+//
+method clear(Imbalance imb) =>
+    if not na(imb.box)
+        line.delete(imb.box.open)
+        line.delete(imb.box.close)
+        line.delete(imb.box.ce)
+        line.delete(imb.box.link)
+        linefill.delete(imb.box.fill)
+        label.delete(imb.box.label_open)
+        label.delete(imb.box.label_close)
+        label.delete(imb.box.label_ce)
+        imb.box := na
+        imb.box
+
+// Render is used to display and manage imbalance related content
+method render(ImbalanceStructure IS) =>
+    if IS.settings.show
+        for imb in IS.imbalance
+            color c = na
+            color cce = na
+            int buffer = 0
+
+            if imb.mitigated
+                buffer := imb.mitigated ? imb.mitigated_time : time + (time - time[1]) * Trend_Settings.extend
+                c := imb.isbullish ? IS.settings.mitigated_color_bull : IS.settings.mitigated_color_bear
+                cce := imb.isbullish ? IS.settings.CE_bull_color : IS.settings.CE_bear_color
+                cce
+            else
+                buffer := time + (time - time[1]) * Trend_Settings.extend
+                c := imb.isbullish ? IS.settings.color_bull : IS.settings.color_bear
+                cce := imb.isbullish ? IS.settings.CE_bull_color : IS.settings.CE_bear_color
+                cce
+
+            if na(imb.box)
+                imb.box := Box.new()
+                imb.box.open := line.new(imb.open_time, imb.open, buffer, imb.open, xloc = xloc.bar_time, style = helper.LineStyle(IS.settings.open_style), color = IS.settings.open_show ? c : color_transparent, width = IS.settings.open_size)
+                imb.box.close := line.new(imb.open_time, imb.close, buffer, imb.close, xloc = xloc.bar_time, style = helper.LineStyle(IS.settings.close_style), color = IS.settings.close_show ? c : color_transparent, width = IS.settings.close_size)
+
+                if IS.settings.link_show
+                    imb.box.link := line.new(buffer, imb.open, buffer, imb.close, xloc = xloc.bar_time, style = helper.LineStyle(IS.settings.link_style), color = c, width = IS.settings.link_size)
+                    imb.box.link
+                if IS.settings.fill
+                    imb.box.fill := linefill.new(imb.box.open, imb.box.close, color.new(c, IS.settings.fill_percent))
+                    imb.box.fill
+
+                if IS.settings.CE_show
+                    imb.box.ce := line.new(imb.open_time, imb.middle, buffer, imb.middle, xloc = xloc.bar_time, style = helper.LineStyle(IS.settings.CE_style), color = cce, width = IS.settings.CE_size)
+                    imb.box.ce
+            else
+                line.set_color(imb.box.open, c)
+                line.set_color(imb.box.close, c)
+                line.set_color(imb.box.link, c)
+                linefill.set_color(imb.box.fill, color.new(c, IS.settings.fill_percent))
+                line.set_x2(imb.box.open, buffer)
+                line.set_y1(imb.box.close, imb.close)
+                line.set_xy2(imb.box.close, buffer, imb.close)
+                line.set_xy1(imb.box.link, buffer, imb.open)
+                line.set_xy2(imb.box.link, buffer, imb.close)
+                //line.set_x2(imb.box.ce,            buffer)
+                line.set_y1(imb.box.ce, imb.middle)
+                line.set_xy2(imb.box.ce, buffer, imb.middle)
+
+            if imb.mitigated and not IS.settings.mitigated_show
+                imb.clear()
+    IS
+
+// AddImbalance adds a newly discovered imbalance. this applies for both FVG and Volume Imbalance
+method AddImbalance(ImbalanceStructure IS, float o, float c, int o_time, int c_time) =>
+    Imbalance imb = Imbalance.new()
+    imb.open_time := o_time
+    imb.close_time := c_time
+    imb.open := o
+    imb.middle := (o + c) / 2
+    imb.close := c
+    imb.isbullish := o < c
+
+    if IS.imbalance.size() > 0
+        imb.invertable := imb.isbullish != IS.imbalance.first().isbullish
+        imb.invertable
+    IS.imbalance.unshift(imb)
+
+    if IS.imbalance.size() > IS.settings.max_count
+        temp = IS.imbalance.pop()
+        temp.clear()
+
+    IS
+
+method UpdateImbalance(ImbalanceStructure IS, float c, int c_time) =>
+    if IS.imbalance.size() > 0
+        Imbalance imb = IS.imbalance.first()
+        imb.close := c
+        imb.close_time := c_time
+        imb.middle := (imb.open + c) / 2
+        imb.middle
+
+// CheckMitigated checks if the imbalance has been mitigated based on the settings
+method CheckMitigated(ImbalanceStructure IS) =>
+    for imb in IS.imbalance
+        if IS.type == "FVG"
+            if imb.isbullish and imb.invertable and not imb.inverted
+                imb.inverted := close < imb.open
+                if imb.inverted
+                    iFVGs.AddImbalance(imb.close, imb.open, imb.open_time, imb.close_time)
+                imb.inverted
+            if not imb.isbullish and imb.invertable and not imb.inverted
+                imb.inverted := close > imb.open
+                if imb.inverted
+                    iFVGs.AddImbalance(imb.close, imb.open, imb.open_time, imb.close_time)
+                imb.inverted
+
+        if not imb.mitigated
+            switch IS.settings.mitigated_type
+                'None' => 
+            	    imb.mitigated := false
+            	    imb.mitigated
+                'Wick Touched' => 
+            	    imb.mitigated := imb.isbullish ? low < imb.close : high > imb.close
+            	    imb.mitigated
+                'Wick filled' => 
+            	    imb.mitigated := imb.isbullish ? low <= imb.open : high >= imb.open
+            	    imb.mitigated
+                'Body filled' => 
+            	    imb.mitigated := imb.isbullish ? math.min(open, close) <= imb.open : math.max(open, close) >= imb.open
+            	    imb.mitigated
+                'Wick filled half' => 
+            	    imb.mitigated := imb.isbullish ? low <= imb.middle : high >= imb.middle
+            	    imb.mitigated
+                'Body filled half' => 
+            	    imb.mitigated := imb.isbullish ? math.min(open, close) <= imb.middle : math.max(open, close) >= imb.middle
+            	    imb.mitigated
+            if imb.mitigated
+                imb.mitigated_time := time
+                imb.mitigated_time
+    //break // testing to see if we can break on first FVG mitigation for performance enhncement
+    IS
+
+// FindImbalance looks for imbalances and, if found, adds it to the list
+method FindImbalance(ImbalanceStructure IS) =>
+    if barstate.isconfirmed
+        Gap = low > high[1] or high < low[1]
+        FVG = high < low[2] or low > high[2]
+        if IS.type == 'GAP' and Gap
+            o = high < low[1] ? low[1] : high[1]
+            c = high < low[1] ? high : low
+            IS.AddImbalance(o, c, time[1], time)
+        if IS.type == 'FVG' and (IS.settings.show or iFVG_Settings.show) and FVG and not Gap and not Gap[1]
+            float o = 0
+            float c = 0
+            if low > high[2]
+                if math.min(open, close) > math.max(open[1], close[1]) and FVG_Settings.mergeVI
+                    c := math.min(open, close)
+                    c
+                else
+                    c := low
+                    c
+                if math.min(open[1], close[1]) > math.max(open[2], close[2]) and FVG_Settings.mergeVI
+                    o := math.max(open[2], close[2])
+                    o
+                else
+                    o := high[2]
+                    o
+
+            if high < low[2]
+                if math.max(open, close) < math.min(open[1], close[1]) and FVG_Settings.mergeVI
+                    c := math.max(open, close)
+                    c
+                else
+                    c := high
+                    c
+                if math.min(open[2], close[2]) > math.max(open[1], close[1]) and FVG_Settings.mergeVI
+                    o := math.min(open[2], close[2])
+                    o
+                else
+                    o := low[2]
+                    o
+            bool valid = false
+            if FVG_Settings.fvg_type == 'Always Display' or FVG_Settings.fvg_type != 'High Probability' and body[1] > std[1] * helper.GetFVGDisplacementLevel()
+                if FVG_Settings.mergeVI
+                    if (math.min(open[1], close[1]) > math.max(open[2], close[2]) or math.min(open[2], close[2]) > math.max(open[1], close[1])) and FVG[1]
+                        IS.UpdateImbalance(c, time)
+                    else
+                        IS.AddImbalance(o, c, time[1], time)
+
+                    if VI.settings.show and (math.min(open[1], close[1]) > math.max(open[2], close[2]) or math.min(open[2], close[2]) > math.max(open[1], close[1]))
+
+                        if VI.imbalance.size() > 0
+                            Imbalance temp = VI.imbalance.shift()
+                            temp.clear()
+                else
+                    IS.AddImbalance(o, c, time[1], time)
+        if IS.type == 'VI' and IS.settings.show and (math.min(open, close) > math.max(open[1], close[1]) or math.max(open, close) < math.min(open[1], close[1])) and not Gap and (not FVG and FVG_Settings.mergeVI or not FVG_Settings.mergeVI)
+            c = math.max(open, close) > math.min(open[1], close[1]) ? math.min(open, close) : math.max(open, close)
+            o = math.min(open, close) > math.max(open[1], close[1]) ? math.max(open[1], close[1]) : math.min(open[1], close[1])
+            IS.AddImbalance(o, c, time[1], time)
+    IS
+
+//+------------------------------------------------------------------------------------------------------------+//
+//+--- Displacement                                                                                         ---+//
+//+------------------------------------------------------------------------------------------------------------+//
+// Credit: FTO - original content found at
+// https://www.tradingview.com/script/n6djFgQH-Visualizing-Displacement-TFO/
+color candle = open < close ? Trend_Settings.displacement_bull : Trend_Settings.displacement_bear
+
+if Trend_Settings.displacement_fvg
+    candle := open[1] < close[1] ? Trend_Settings.displacement_bull : Trend_Settings.displacement_bear
+    candle
+
+barcolor(f_highlightDisplacement() and Trend_Settings.displacement_fvg ? candle : na, offset = -1)
+barcolor(f_highlightDisplacement() and not Trend_Settings.displacement_fvg ? candle : na, offset = na)
+
+//+------------------------------------------------------------------------------------------------------------+//
+//+--- Main call to start the process                                                                       ---+//
+//+------------------------------------------------------------------------------------------------------------+//
+if last_bar_index - bar_index < 1000
+    if barstate.isconfirmed or barstate.islastconfirmedhistory
+        FVGs.FindImbalance()
+        VI.FindImbalance()
+        Gaps.FindImbalance()
+
+    FVGs.CheckMitigated()
+    iFVGs.CheckMitigated()
+    VI.CheckMitigated()
+    Gaps.CheckMitigated()
+
+    if barstate.islast
+        FVGs.render()
+        iFVGs.render()
+        VI.render()
+        Gaps.render()
+
+    if barstate.isconfirmed
+        Term.FindST().FindIT().FindLT()
+        Term.CheckClaimed()
+
+    if barstate.islast
+        Term.renderMS()

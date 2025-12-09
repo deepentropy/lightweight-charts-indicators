@@ -1,0 +1,7 @@
+//@version=6
+indicator(title="Moving Average Weighted", shorttitle="WMA", overlay=true, timeframe="", timeframe_gaps=true)
+len = input.int(9, minval=1, title="Length")
+src = input(close, title="Source")
+offset = input.int(title="Offset", defval=0, minval=-500, maxval=500, display = display.data_window)
+out = ta.wma(src, len)
+plot(out, title="WMA", color=color.blue, offset=offset)

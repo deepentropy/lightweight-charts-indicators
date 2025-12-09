@@ -1,0 +1,78 @@
+//@version=5
+//
+//╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+//║ Author  | DZIV (dzi_v_)
+//║ Licence | CC BY-NC-SA 4.0 : https://creativecommons.org/licenses/by-nc-sa/4.0/
+//╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+//║ Changelog :
+//║ 2021.04.15 > A-V1.0 -First publish
+//║ 2021.05.05 > A-V2.0 -Added high and low calculation and display
+//║ 					-Minor script optimisation
+//║ 2021.05.06 > A-V2.1 -Added resolution customisation in the study
+//║ 2021.10.18 > A-V2.2 -Added "MA Type" customisation possibility
+//║ 					-Replaced the "colour schemes" feature by a "base color inputs" feature (user friendly)
+//║ 					-Switched the title names to English for a better understanding
+//║ 					-Minor script optimisation
+//║ 2024.04.21 > A-V2.3 -Switched to PineScript version 5
+//║ 					-Major script rethinking and optimisation
+//║ 					-Removed double smoothing for less lag
+//║ 					-Added ALMA, HMA and ZLEMA to the "MA Type" input string
+//╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+//
+//╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+//║ Settings :
+indicator('Trend Indicator A (v2.3)', 'Trend Indicator A (v2.3)', true)
+
+ma_type = input.string('EMA', 'MA Type', ['ALMA','HMA','SMA','SWMA','VWMA','WMA','ZLEMA','EMA'], group = 'Setup')
+ma_period = input.int(9, 'MA Period (Length)', 1, group='Setup')
+
+alma_offset = input.float(0.85, 'ALMA Shift', 0, 1, 0.05, group = 'Setup (ALMA)')
+alma_sigma = input.int(6, 'ALMA Deviation', 1, step = 1, group = 'Setup (ALMA)')
+
+show_line_1(x) =>
+    input.bool(true, 'Show Close line', group = 'On/Off') ? x : na
+show_line_2(x) =>
+    input.bool(false, 'Show High/Low lines', group = 'On/Off') ? x : na
+show_fill(x) =>
+    input.bool(true, 'Show fill', group = 'On/Off') ? x : na
+//╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+//║ Calculations :
+f(x) =>
+    switch ma_type
+        'ALMA' => ta.alma(x, ma_period, alma_offset, alma_sigma)
+        'HMA' => ta.hma(x, ma_period)
+        'SMA' => ta.sma(x, ma_period)
+        'SWMA' => ta.swma(x)
+        'VWMA' => ta.vwma(x, ma_period)
+        'WMA' => ta.vwma(x, ma_period)
+        'ZLEMA' => ta.ema(x + x - x[math.floor((ma_period - 1) / 2)], ma_period)
+        => ta.ema(x, ma_period)
+
+ma_heikinashi_open = f(request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, open))
+ma_heikinashi_close = f(request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close))
+ma_heikinashi_high = f(request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, high))
+ma_heikinashi_low = f(request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, low))
+
+trend = 100 * (ma_heikinashi_close - ma_heikinashi_open) / (ma_heikinashi_high - ma_heikinashi_low)
+//╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+//║ Colors :
+color_positive = input.color(color.new(#26A69A, 0), 'Positive color (Bullish)', group = 'Colors')
+color_negative = input.color(color.new(#EF5350, 0), 'Negative color (Bearish)', group = 'Colors')
+color_neutral = input.color(color.new(#808080, 0), 'Neutral color', group = 'Colors')
+
+color_trend = trend > 0 ? color_positive : color_negative
+//╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+//║ Plot :
+plot_open = plot(ma_heikinashi_open, 'Open line', na)
+plot_close = plot(ma_heikinashi_close, 'Close line', show_line_1(color_trend), 2)
+plot_high = plot(ma_heikinashi_high, 'High line', show_line_2(color_neutral))
+plot_low = plot(ma_heikinashi_low, 'Low line', show_line_2(color_neutral))
+
+plot_highest = plot(math.max(ma_heikinashi_open, ma_heikinashi_close),'Highest Body line', na)
+plot_lowest = plot(math.min(ma_heikinashi_open, ma_heikinashi_close),'Lowest Body line', na)
+//╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+//║ Fill :
+fill(plot_open, plot_close, color.new(color_trend,50), 'Open/Close Cloud')
+fill(plot_high, plot_highest, show_fill(color.new(color_neutral,87.5)), title = 'High Cloud')
+fill(plot_lowest, plot_low, show_fill(color.new(color_neutral,87.5)), title = 'Low Cloud')
+//╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

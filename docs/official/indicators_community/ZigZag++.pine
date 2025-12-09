@@ -1,0 +1,87 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Dev Lucem
+
+//@version=5
+//@author=devlucem
+
+//
+//       THIS CODE IS BASED FROM THE MT4 ZIGZAG INDICATOR
+//       THE ZIGZAG SETTINGS FOR THE MAIN ONE ON TRADINGVIEW DO NOT WORK THE SAME AS MT4
+//       I HOPE U LOVE IT
+//
+
+
+////////
+// Seek Menu
+import DevLucem/ZigLib/1 as ZigZag
+indicator('ZigZag++', 'ZigZag++ [LD]', true, format.price, max_labels_count=200, max_lines_count=50)
+
+////////
+// Fetch Ingredients 
+// [
+Depth = input.int(12, 'Depth', minval=1, step=1, group="ZigZag Config")
+Deviation = input.int(5, 'Deviation', minval=1, step=1, group="ZigZag Config")
+Backstep = input.int(2, 'Backstep', minval=2, step=1, group="ZigZag Config")
+line_thick = input.int(2, 'Line Thickness', minval=1, maxval=4, group="Lines")
+labels = input(0, "Labels Transparency", group="Labels")
+upcolor = input(color.lime, 'Bull Color', group="Colors")
+dncolor = input(color.red, 'Bear Color', group="Colors")
+lines = input(0, "Lines Transparency", group="Lines")
+background = input(80, "Background Transparency", group="Colors")
+label_size = switch input.int(3, "Label SIze", minval=1, maxval=5, group="Labels")
+    1 => size.tiny
+    2 => size.small
+    3 => size.normal
+    4 => size.large
+    5 => size.huge
+repaint = input(true, 'Repaint Levels')
+extend = input(false, "Extend ZigZag", group="Lines")
+// ]
+
+
+// ////////
+// // Bake it with a simple oven this time
+[direction, z1, z2] = ZigZag.zigzag(low, high, Depth, Deviation, Backstep)
+string nowPoint = ""
+var float lastPoint = z1.price[1]
+if bool(ta.change(direction))
+    lastPoint := z1.price[1]
+
+
+// ////////
+// // Let it Cool And Serve
+line zz = na
+label point = na
+
+if repaint
+    zz := line.new(z1, z2, xloc.bar_time, extend? extend.right: extend.none, color.new(direction>0? upcolor: dncolor, lines), width=line_thick)
+    nowPoint := direction<0? (z2.price<lastPoint? "LL": "HL"): (z2.price>lastPoint? "HH": "LH")
+    point := label.new(z2, nowPoint, xloc.bar_time, yloc.price, 
+     color.new(direction<0? upcolor: dncolor, labels), direction>0? label.style_label_down: label.style_label_up, color.new(direction>0? upcolor: dncolor, labels), label_size)
+    if direction == direction[1]
+        line.delete(zz[1])
+        label.delete(point[1])
+    else
+        line.set_extend(zz[1], extend.none)
+else
+    if direction != direction[1]
+        zz := line.new(z1[1], z2[1], xloc.bar_time, extend.none, color.new(direction>0? upcolor: dncolor, lines), width=line_thick)
+        nowPoint := direction[1]<0? (z2.price[1]<lastPoint[1]? "LL": "HL"): (z2.price[1]>lastPoint[1]? "HH": "LH")
+        point := label.new(z2[1], nowPoint, xloc.bar_time, yloc.price, 
+         color.new(direction[1]<0? upcolor: dncolor, labels), direction[1]>0? label.style_label_down: label.style_label_up, color.new(direction[1]>0? upcolor: dncolor, labels), label_size)
+bgcolor(direction<0? color.new(dncolor, background): color.new(upcolor, background), title='Direction Background')
+plotarrow(direction, "direction", display=display.status_line)
+
+
+// ////////
+// // Declare Meal Was Sweet By Force
+alertcondition(nowPoint == "HH" and z2.price != z2.price[1], "New Higher High", 'Zigzag on {{ticker}} higher higher high detected at {{time}}')
+alertcondition(nowPoint == "LH" and z2.price != z2.price[1], "New Lower High", 'Zigzag on {{ticker}} higher lower high detected at {{time}}')
+alertcondition(nowPoint == "HL" and z2.price != z2.price[1], "New Higher Low", 'Zigzag on {{ticker}} higher lower low detected at {{time}}')
+alertcondition(nowPoint == "LL" and z2.price != z2.price[1], "New Lower Low", 'Zigzag on {{ticker}} lower low detected at {{time}}')
+alertcondition(direction != direction[1], 'Direction Changed', 'Zigzag on {{ticker}} direction changed at {{time}}')
+alertcondition(direction != direction[1] and direction>0, 'Bullish Direction', 'Zigzag on {{ticker}} bullish direction at {{time}}')
+alertcondition(direction != direction[1] and direction<0, 'Bearish Direction', 'Zigzag on {{ticker}} bearish direction at {{time}}')
+
+if direction != direction[1]
+    alert((direction<0? "Bearish": "Bullish") + " Direction Final ", alert.freq_once_per_bar_close)

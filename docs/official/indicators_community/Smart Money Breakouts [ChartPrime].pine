@@ -1,0 +1,309 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+
+//@version=5
+indicator("Smart Money Breakouts [ChartPrime]", overlay=true, max_labels_count=500, max_lines_count=500)
+color GREEN           = color.rgb(2, 133, 69)
+color TAIL            = color.rgb(20, 141, 154)
+color RED             = color.rgb(246, 7, 7)
+color _Green          = color.rgb(2, 106, 89)
+color OFF             = color.new(color.red,100)
+string DYNAMICSLG     =  "➞ Risk To Reward Settings 🔸" 
+string CORE           =  "➞ Core Settings 🔸"
+var array<int> score  = array.new_int(2,0)
+//
+var float UpdatedHigh = na
+var float UpdatedLow  = na
+var bool ShortTrade   = false
+var bool TradeisON    = false
+var bool LongTrade    = false
+var int HighIndex     = na
+var bool phActive     = false
+var bool plActive     = false
+var int LowIndex      = na
+var bool HBreak       = false
+var line tpLine       = na
+var line SLLine       = na
+var label LAB         = na
+var float TP          = 0.0
+var float SL          = 0.0
+int Sync              = bar_index
+bool BUY              = false
+bool SELL             = false
+
+
+
+type Vol
+    array<float> Total
+    array<float> Green
+    array<float> Red
+    array<float> SCR
+
+Volume = Vol.new(
+     array.new_float(),
+     array.new_float(),
+     array.new_float(),
+     array.new_float()
+
+     )
+
+int period            = input.int(20, 'Length',group = CORE,tooltip = "Swing Length")
+bool CandleType      = input.string(title = "Type ➞",
+      defval='Wicks',
+      options=['Wicks', 'Body'],
+      group = CORE,
+      tooltip = "Calculation Price : Wicks or Body of the candle")
+       == 'Wicks'
+float RR1             = input.float(1.1,"RR Ratio",step = 0.1 , tooltip = "Risk to reward Ratio",group = CORE)
+bool SLType      = input.string('Close',
+     'SL Type', ['Close', 'High/Low'], group=CORE,tooltip = "Activate SL on candle close or high/low") == 'Close'
+bool ShowSL = input.bool(false,"Show SL",group = CORE)
+string Linestyle      = input.string('Dashed',
+     'Line Style', ['Solid', 'Dashed', 'Dotted'], group=CORE,inline= "Line")
+
+color Bull = input.color(GREEN,"",group=CORE,inline= "Line")
+color Bear = input.color(RED,"",group=CORE,inline= "Line")    
+
+
+//----- { SL Calculation
+// -- ATR 
+x2 = low - ta.rma(ta.tr(true), 14) * 1.5
+xz = ta.rma(ta.tr(true), 14) * 1.5 + high
+longDiffSL2 = math.abs(close - xz)
+longDiffSL = math.abs(close - x2)
+// }
+
+StyleSwitch = switch Linestyle
+    'Dashed' => line.style_dashed ,
+    'Dotted' => line.style_dotted ,
+    => line.style_solid 
+
+
+
+method volAdj(int len)=>
+    math.min(ta.atr(len) * 0.3, close * (0.3/100)) [20] /2
+
+Adj = volAdj(30)
+
+VolCal(Index,Sync) =>
+    Bars = math.abs(Index - Sync)
+    for i = 0 to Bars -1
+        Volume.SCR.push(close[i])
+
+    for i = 0 to Volume.SCR.size() -1
+
+        if Volume.SCR.get(i) > open[i]
+            Volume.Green.push(volume[i])
+
+        if Volume.SCR.get(i) < open[i]
+            Volume.Red.push(volume[i])
+
+        Volume.Total.push(volume[i])
+
+    GreenRatio = math.round(Volume.Green.sum() / Volume.Total.sum()* 100,2)
+    RedRatio = math.round(Volume.Red.sum() / Volume.Total.sum()* 100,2)
+    Out = GreenRatio > 55 ? "🟢" : RedRatio > 55 ? "🔴" : "🟡" 
+    Out
+
+
+
+PH = ta.pivothigh(high, period, period)
+PL = ta.pivotlow(low, period, period)
+ScrHigh = CandleType ? high : close 
+ScrLow = CandleType ? low : close
+
+if ta.change(fixnan(PH)) != 0
+    UpdatedHigh := PH
+    phActive    := true
+    HighIndex   := Sync - period
+
+if ta.change(fixnan(PL)) != 0
+    UpdatedLow  := PL
+    plActive    := true
+    LowIndex    := Sync - period
+
+// LONG
+if ScrHigh > UpdatedHigh and phActive
+    BUY := true
+    phActive := false
+
+//Sell
+if ScrLow < UpdatedLow and plActive
+    SELL := true
+    plActive := false
+
+// lets Draw
+
+if BUY and not TradeisON
+    sign = VolCal(HighIndex,Sync)
+    line.new(HighIndex,
+         UpdatedHigh,
+         Sync,
+         UpdatedHigh,
+         color=Bull,
+         style=StyleSwitch,
+         width=2)
+    label.new(math.floor(Sync - (Sync - HighIndex) / 2),
+         UpdatedHigh,
+         not HBreak ? 'CHoCH\n' + sign  : 'BOS\n' + sign,
+         color=OFF,
+         textcolor=color.white,
+         size=size.tiny)
+    label.new(Sync,
+         low,
+         "",
+         yloc = yloc.belowbar,
+         color = color.lime,
+         size = size.small,
+         style = label.style_label_up)
+    HBreak := true
+
+
+if SELL and not TradeisON
+    sign = VolCal(LowIndex,Sync)
+    line.new(LowIndex,
+         UpdatedLow,
+         Sync,
+         UpdatedLow,
+         color=Bear,
+         style=StyleSwitch,
+         width=2)
+    label.new(math.floor(Sync - (Sync - LowIndex) / 2),
+         UpdatedLow,
+         HBreak ? 'CHoCH\n' + sign  : 'BOS\n' + sign,
+         color=OFF,
+         textcolor=color.white,
+         style=label.style_label_up,
+         size=size.tiny)
+    label.new(Sync,
+         low,
+         "",
+         yloc = yloc.abovebar,
+         color =RED,
+         size = size.small,
+         style = label.style_label_down)
+    HBreak := false
+
+
+Long = BUY and not TradeisON     
+Short = SELL and not TradeisON
+
+
+
+
+TradeFire = Long or Short
+
+if Long and not TradeisON
+    LongTrade:= true
+    ShortTrade:= false
+
+if Short and not TradeisON
+    LongTrade:= false
+    ShortTrade:= true
+
+
+if true 
+    if TradeFire and not TradeisON
+        TP := switch
+            Long  => close + (RR1 * longDiffSL)
+            Short => close - (RR1 * longDiffSL2)
+
+        SL := switch
+            Long  => close  - longDiffSL
+            Short => close  + longDiffSL2
+
+        TradeisON:= true
+        if true
+            line.new(bar_index,
+                 Long ? high : low,
+                 bar_index,
+                 TP,
+                 width=2,
+                 color = TAIL,
+                 style= line.style_dashed)
+
+            tpLine:= line.new(bar_index,
+                 TP,
+                 bar_index+2,
+                 TP,
+                 style= line.style_dashed,
+                 color = TAIL
+                 )
+            if ShowSL     
+                SLLine:= line.new(bar_index,
+                     SL,
+                     bar_index+2,
+                     SL,
+                     style= line.style_dashed,
+                     color = RED
+                     )     
+            LAB:=label.new(bar_index,
+                 TP,
+                 "Target",
+                 color = TAIL,
+                 style= label.style_label_left,
+                 size=size.small,
+                 textcolor = color.white
+                 )
+    if TradeisON
+        line.set_x2(tpLine,bar_index)
+        label.set_x(LAB,bar_index+1)
+        if ShowSL
+            line.set_x2(SLLine,bar_index)
+        
+
+    if LongTrade and TradeisON
+        if high >= TP
+            label.set_color(LAB,GREEN)
+            score.set(0,score.get(0)+1)
+            TradeisON:=false
+        if  (SLType ? close : low)  <= SL
+            score.set(1,score.get(1)+1)
+            label.set_color(LAB,color.new(RED,70))
+            label.set_tooltip(LAB,"Stoploss Hit : "+ str.tostring(math.round_to_mintick(SL)))
+            TradeisON:=false
+
+    else if ShortTrade and TradeisON
+        if low <= TP 
+            label.set_color(LAB,GREEN)
+            score.set(0,score.get(0)+1)
+            TradeisON:=false
+            
+        if (SLType ? close : high) >= SL 
+            score.set(1,score.get(1)+1)
+            label.set_color(LAB,color.new(RED,70))
+            label.set_tooltip(LAB,"Stoploss Hit : "+ str.tostring(math.round_to_mintick(SL)))
+            TradeisON:=false
+
+BearCon = TradeisON and ShortTrade
+BullCon = TradeisON and LongTrade
+
+barcolor(BearCon ? RED : BullCon ? _Green : color.rgb(52, 52, 54) )
+
+plotcandle(open, high, low, close, color = BearCon ? RED : BullCon ? _Green : color.rgb(52, 52, 54),
+     wickcolor = color.rgb(103, 99, 99),bordercolor = BearCon ? RED : BullCon ? _Green : color.rgb(52, 52, 54))
+
+bgcolor(BearCon ? color.rgb(136, 4, 15, 90) : BullCon ? color.rgb(8, 191, 158,90) : na )
+
+// where is my table ?!
+var tb = table.new(position.top_right, 3, 3,
+  bgcolor= color.new(color.gray,80))
+
+
+
+
+if barstate.islast
+
+    table.cell(tb, 0, 0, "Winning Trades"
+      , text_color = #a3a3b1)
+    table.cell(tb, 1, 0, str.tostring(score.get(0))
+      , text_color = #08c09b)
+    table.cell(tb, 0, 1, "Losing Trades"
+      , text_color = #a3a3b1)
+    table.cell(tb, 1, 1, str.tostring(score.get(1))
+      , text_color = #cd0202)
+
+
+alertcondition(Long,"BUY")
+alertcondition(Short,"Sell")

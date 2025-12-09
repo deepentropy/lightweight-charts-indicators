@@ -1,0 +1,104 @@
+//Massive thank you to LEGION, LazyBear, xSilas, Ni6HTH4wK, sco77m4r7and, SNOW_CITY, oh92,
+//... alexgrover, cI8DH, DonovanWall and shtcoinr for doing the initial builds, building 
+//... indicators that I incorporated into this script or just generally giving me a hand 
+//... when needed.
+
+//@version=3
+tag0 = "Godmode"
+
+study(tag0 + " 4.0.2", tag0 + " Supply/Demand", true)
+
+//Interior
+ben0 = input("CRYPTOCAP:BTC", "Benchmark", string)
+src0 = input(hlc3, "Source")
+len0 = input(9, "Channel Length")
+len1 = input(26, "Average Length")
+len2 = input(13, "Short length")
+cou0 = input(5, "Count")
+smo0 = input(false, "Smoothing")
+
+//Engine
+src1 = ben0 != tickerid ? security(ben0, period, src0) : security(tickerid, period, src0)
+
+ttsi(_src, _len0, _len1) =>
+    pc = change(_src) / avg(_src, _src[1])
+    ma0 = ema(pc, _len0)
+    ma1 = ema(ma0, _len1)
+    apc = abs(_src - _src[1])
+    ma2 = ema(apc, _len0)
+    ma3 = ema(ma2, _len1)
+    ttsi = 100 * (ma1 / ma3)
+
+tci(_src) => 
+    ema((_src - ema(_src, len0)) / (0.025 * ema(abs(_src - ema(_src, len0)), len0)), len1) + 50
+
+mf(_src) => 
+    rsi(sum(volume * (change(_src) <= 0 ? 0 : _src), len2), sum(volume * (change(_src) >= 0 ? 0 : _src), len2))
+
+willy(_src) => 
+    60 * (_src - highest(_src, len1)) / (highest(_src, len1) - lowest(_src, len1)) + 80
+
+csi(_src) => 
+    avg(rsi(_src, len2), ttsi(_src, len0, len1) * 50 + 50)
+
+godmode(_src) => 
+    avg(tci(_src), csi(_src), mf(_src), willy(_src))
+
+tradition(_src) => 
+    avg(tci(_src), mf(_src), rsi(_src, len2))
+
+wt0 = ben0 != tickerid ? godmode(src1) : tradition(src1)
+swt0 = sma(wt0, len0)
+
+gm = smo0 ? swt0 : wt0
+
+gr = 0
+incrementer_up = gm > 70 ? 1 : 0
+if incrementer_up
+    gr := nz(gr[1], 0) + incrementer_up
+else
+    gr = 0
+grH = if (gr >= cou0)
+    x = high
+grL = if (gr >= cou0)
+    y = low
+grh = fixnan(grH)
+grl = fixnan(grL)
+
+gs = 0
+incrementer_down = gm < 30 ? 1 : 0
+if incrementer_down
+    gs := nz(gs[1], 0) + incrementer_down
+else
+    gs = 0
+gsH = if (gs >= cou0)
+    x = high
+gsL = if (gs >= cou0)
+    y = low
+gsh = fixnan(gsH)
+gsl = fixnan(gsL)
+
+gsdx = 0
+incrementer_both = gm > 70 or gm < 30 ? 1 : 0
+if incrementer_both
+    gsdx := nz(gsdx[1], 0) + incrementer_both
+else
+    gsdx = 0
+gsdH = if (gsdx >= cou0)
+    x = high
+gsdL = if (gsdx >= cou0)
+    y = low
+gsdh = fixnan(gsdH)
+gsdl = fixnan(gsdL)
+
+//Chassis
+p1 = plot(gsh, "High Support", lime, 1, circles)
+p2 = plot(gsl, "Low Support", green, 1, circles)
+p3 = plot(grh, "High Resistance", red, 1, circles)
+p4 = plot(grl, "Low Resistance", fuchsia, 1, circles)
+p5 = plot(gsdh, "High Supply Above/Demand Below", orange, 1, circles)
+p6 = plot(gsdl, "Low Supply Above/Demand Below", yellow, 1, circles)
+
+fill(p1, p2, olive)
+fill(p3, p4, maroon)
+fill(p5, p6, blue)

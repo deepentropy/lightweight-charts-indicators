@@ -1,0 +1,60 @@
+//@version=4
+//©InSilico
+//Extension/Mod for - https://www.tradingview.com/script/2rZDPyaC-Leledc-Exhaustion-Bar/ 
+study(title='Exhaustion levels (InSilico)',shorttitle="LeveLeledc (InSilico)",overlay=true)
+
+//Input
+exhaustionSwitch= input(true,title="Show exhaustion Bar point (Arrows)")
+levelSwitch= input(true,title="Show exhaustion levels (Lines)")
+length= input(40,"Exhaustions swing length")
+bars= input(10,"Exhaustion bar count")
+thicknesSwitch = input(2, title="Line Thickness(Level thickness)")
+
+//Fun Lele
+Lelec(bars, len) =>
+    bindex = int(na)
+    bindex := nz(bindex[1], 0)
+    sindex = int(na)
+    sindex := nz(sindex[1], 0)
+    return = 0
+    bindex := close > close[4] ? bindex + 1 : bindex
+    sindex := close < close[4] ? sindex + 1 : sindex
+    if bindex > bars and close < open and high >= highest(high, len)
+        bindex := 0
+        return := -1
+        return
+    else
+        if sindex > bars and close > open and low <= lowest(low, len)
+            sindex := 0
+            return := 1
+            return
+
+//Out C
+Lelex = Lelec(bars, length)
+
+//Out Bar 
+highlel = Lelex == -1 ? high : na 
+lowlel =  Lelex == 1 ? low : na
+
+//Out level
+resistance = float(na)
+support = float(na)
+resistance := close < open and Lelex  ? high : resistance[1]
+support := close > open and Lelex  ? low : support[1]
+
+//Color 
+rescol=color.new(#ff0000, 1)
+highcol = change(resistance) == 0 ? rescol: na
+supcol=color.new(#138484, 1)
+lowcol = change(support) == 0 ? supcol : na
+
+//Plot Bar
+plotshape(exhaustionSwitch ? lowlel : na,title="Up", color=color.new(#00ff00,1), location=location.belowbar, style=shape.triangleup, size=size.normal)
+plotshape(exhaustionSwitch ? highlel: na,title="Down", color=color.new(#ff0000, 1), location=location.abovebar, style=shape.triangledown, size=size.normal)
+
+//Plot level
+plot(levelSwitch ? resistance :na, title="Reistance Level", style=plot.style_line, color=highcol, linewidth=thicknesSwitch)
+plot(levelSwitch ? support :na, title="Support Level", style=plot.style_line, color=lowcol, linewidth=thicknesSwitch)
+
+alertcondition(lowlel, "Up")
+alertcondition(highlel, "Down")

@@ -1,0 +1,17 @@
+//@version=6
+indicator("Trend Strength Index", shorttitle="TSI", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+
+period = input.int(14, "Length", minval = 2)
+tsi    = ta.correlation(close, bar_index, period)
+
+bullishColorInput = input.color(color.new(#089981, 90), "Bullish Color")
+bearishColorInput = input.color(color.new(#F23645, 90), "Bearish Color")
+
+tsiPlot = plot(tsi, "Trend Strength Index",  color = #7E57C2)
+hline( 0,           "TSI Middle Band",       color = color.new(#787B86, 50))
+hline( 1,           "TSI Bullish Band",      color = color.new(bullishColorInput, 0))
+hline(-1,           "TSI Bearish Band",      color = color.new(bearishColorInput, 0))
+
+midLinePlot = plot(0, color = na, editable = false, display = display.none)
+fill(tsiPlot, midLinePlot, 1,  0, top_color = bullishColorInput,  bottom_color = color.new(bullishColorInput, 100), title = "Bullish Gradient Fill")
+fill(tsiPlot, midLinePlot, 0, -1, top_color = color.new(bearishColorInput, 100), bottom_color = bearishColorInput,  title = "Bearish Gradient Fill")

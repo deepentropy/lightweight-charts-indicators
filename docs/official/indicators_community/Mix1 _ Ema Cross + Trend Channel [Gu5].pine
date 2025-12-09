@@ -1,0 +1,315 @@
+// This source code is subject to these terms:
+// Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)
+// https://creativecommons.org/licenses/by-nc/4.0/
+// You are free to:
+// Share, copy and redistribute this script
+// Adapt, transform and build on this script
+// Under the following terms:
+// Non-commercial: You cannot sell my indicator. You can't sell my work.
+// Attribution: If you post part of my code, you must give me proper credit
+// © gu5tavo71 (Gustavo Cardelle)
+
+//@version=5
+indicator(title = 'Mix1 : Ema Cross + Trend Channel [Gu5]', shorttitle = 'Mix1', overlay = true)
+
+// Indicator to combines:
+//           Trend Channel[Gu5] (by @gu5tavo71) +
+//           EMA's cross  (26, 50 ) +
+//           Golden Cross (50, 200)
+// Actual Study Version: @gu5tavo71
+// v2.4.19, 2022.09.18
+// Project #101
+// This script was written using open source code from another authors:
+// @PineCoders, Built-in Library, and Community Scripts
+// And using the recommendations from the Pine Script™ User Manual's Style Guide
+// Disclaimer: I am not a financial advisor.
+//             For purpose educate only. Use at your own risk.
+
+// ——————————— <constant_declarations> {
+O_MALEN1     =                              'EMA'
+O_MALEN2     =                              'SMA'
+O_POSSEL1    =                              'Only Long'
+O_POSSEL2    =                              'Only Short'
+O_POSSEL3    =                              'Both'
+O_TYPES1     =                              'Strategy 1'
+O_TYPES2     =                              'Strategy 2'
+O_START      = timestamp        (           '2020-01-01 00:00 GMT-3'        )
+O_END        = timestamp        (           '2099-12-31 00:00 GMT-3'        )
+C_GREEN      =                   #006400    //Green
+C_GREENLIGHT =                   #388e3c    //Green Light
+C_RED        =                   #8B0000    //Red
+C_REDLIGHT   =                   #b71c1c    //Red Light
+
+//}
+// ——————————— <inputs> {
+//           |                  |           |                               |         |
+i_maSrc      = input.source     (close,     'MA Source'                     , group   = 'EMAs')
+i_maFast1    = input.int        (26,        'EMA Fast'                      , group   = 'EMAs')
+i_maFast2    = input.int        (50,        'EMA Medium'                    , group   = 'EMAs')
+i_maLen      = input.int        (200,       'MA Trend'                      , group   = 'Trend Channel')
+i_maLenSel   = input.string     (O_MALEN2,  'MA Type'                       , group   = 'Trend Channel',
+     options =                              [O_MALEN1, O_MALEN2],
+     tooltip =                              'EMA or SMA')
+i_htf        = input.timeframe  ('',        'Select Higher Timeframe'       , group    = 'Trend Channel',
+     tooltip =                              'Only for MA Trend'  )
+i_rangeLen   = input.float      (0.618,     'Channel Range Length'          , group    = 'Trend Channel',
+     tooltip =                              'ATR of the MA Trend')
+//<stop loss>
+i_slOn       = input.bool       (false,     '■ Stop Loss On/Off'            , group   = 'Stop Loss')
+i_sl         = input.float      (2.618,     'SL %'                          , group   = 'Stop Loss', step    = 0.1)
+i_periodSw   = input.bool       (false,     '■ Period On/Off'               , group   = 'Period')
+//<period>
+i_periodStar = input.time       (O_START,   'Start Time'                    , group   = 'Period')
+i_periodEnd  = input.time       (O_END,     'End Time'                      , group   = 'Period')
+i_posSel     = input.string     (O_POSSEL3, 'Position Type'                 , group   = 'Strategy',
+     options =                              [O_POSSEL1, O_POSSEL2, O_POSSEL3],
+     tooltip =                              "Only Long, Only shortE or Both")
+i_typeS      = input.string     (O_TYPES2,  'Strategy Type'                 , group   = 'Strategy',
+     options =                              [O_TYPES1, O_TYPES2],
+     tooltip =                              "Strategy 1:\n
+                                             Long, when the price (close) crosses the ema.\n
+                                             Strategy 2:\n
+                                             Long, only when ema goes up")
+i_barColOn   = input.bool       (true,      '■ Bar Color On/Off'            , group   = 'Display')
+i_alertOn    = input.bool       (true,      '■ Alert On/Off'                , group   = 'Display')
+i_channelOn  = input.bool       (false,     '■ Channel Range On/Off'        , group   = 'Display',
+     tooltip =                              'If the price (close) is over than the channel, the trend is bullish. If the price is under, bearish. And if the price is in the channel, it is in range')
+i_goldenOn   = input.bool       (false,     '■ Golden Cross On/Off'         )
+//}
+// ——————————— <calculations> {
+//<set initial values>
+condition    = 0.0
+
+maFast1      = ta.ema(i_maSrc, i_maFast1)
+maFast2      = ta.ema(i_maSrc, i_maFast2)
+maDir        = maFast1 > maFast2 ? 1 : -1
+maTrend      = request.security(syminfo.tickerid, i_htf,
+               i_maLenSel == "SMA" ? ta.sma(close, i_maLen)[1] : ta.ema(close, i_maLen)[1],
+               lookahead = barmerge.lookahead_on)  //No repaint
+maTrendDir   = i_maSrc >= maTrend ? 1 : -1
+rangeAtr     = ta.atr(i_maLen) * i_rangeLen
+rangeTop     = maTrend + rangeAtr
+rangeBot     = maTrend - rangeAtr
+rangeCh      = (open <= rangeTop or close <= rangeTop) and
+               (open >= rangeBot or close >= rangeBot)
+trendDir     = i_typeS  ==  'Strategy 1'                              ?
+               rangeCh                                                ?  0 :
+               maTrendDir ==  1 and maDir ==  1 and maTrend > maFast2 ?  0 :
+               maTrendDir == -1 and maDir == -1 and maTrend < maFast2 ?  0 :
+               maTrendDir ==  1 and maDir ==  1                       ?  1 :
+               maTrendDir == -1 and maDir == -1                       ? -1 : 0 :
+               rangeCh                                                ?  0 :
+               maTrendDir ==  1 and maDir ==  1                       ?  1 :
+               maTrendDir == -1 and maDir == -1                       ? -1 : 0
+GCross       = i_goldenOn ? ta.crossover (maFast2, maTrend) : na
+DCross       = i_goldenOn ? ta.crossunder(maFast2, maTrend) : na
+period       = i_periodSw ? 
+               time >= i_periodStar and time <= i_periodEnd : true
+//<rules>
+entryLong    = i_posSel != 'Only Short' and
+               trendDir ==  1           and
+               period 
+entryShort   = i_posSel != 'Only Long'  and
+               trendDir == -1           and
+               period 
+exitLong     = i_posSel != 'Only Short' and (
+               trendDir !=  1           or
+               maDir    == -1)          and
+               condition[1] ==  1       and
+               period
+exitShort    = i_posSel != 'Only Long'  and (
+               trendDir != -1           or
+               maDir    ==  1)          and
+               condition[1] == -1       and
+               period
+//<stop loss>
+slEntry      = i_slOn ?
+               close * i_sl / 100 : na
+slTop        = close + slEntry
+slBot        = close - slEntry
+slTopBuff    = ta.valuewhen(condition[1] !=  1 and entryLong,  slBot, 0)
+slBotBuff    = ta.valuewhen(condition[1] != -1 and entryShort, slTop, 0)
+slLine       = condition[1] == -1 and entryLong  ? slTopBuff :
+               condition[1] ==  1 and entryShort ? slBotBuff :
+               condition[1] ==  1  or entryLong  ? slTopBuff :
+               condition[1] == -1  or entryShort ? slBotBuff : na
+slLong       = condition[1] ==  1 and ta.crossunder(close, slLine) or high > slLine and low < slLine
+slShort      = condition[1] == -1 and ta.crossover (close, slLine) or high > slLine and low < slLine
+//<conditions>
+condition   := condition[1] !=  1 and entryLong  ?  1 :
+               condition[1] != -1 and entryShort ? -1 :
+               condition[1] ==  1 and slLong     ?  0 :
+               condition[1] == -1 and slShort    ?  0 :
+               condition[1] !=  0 and exitLong   ?  0 :
+               condition[1] !=  0 and exitShort  ?  0 : nz(condition[1])
+longE        = condition[1] !=  1 and condition ==  1
+shortE       = condition[1] != -1 and condition == -1
+longX        = condition[1] ==  1 and exitLong  and not slLong
+shortX       = condition[1] == -1 and exitShort and not slShort
+longSL       = condition[1] ==  1 and slLong
+shortSL      = condition[1] == -1 and slShort
+//<color>
+c_emas       = longX                          ? color.new(color.orange, 99) :
+               shortX                         ? color.new(color.orange, 99) :
+               trendDir ==  1 and maDir ==  1 ? color.new(C_GREEN,      99) :
+               trendDir == -1 and maDir == -1 ? color.new(C_RED,        99) :
+               color.new(color.orange, 99)
+c_maFill     = longX                          ? color.new(color.orange, 70) :
+               shortX                         ? color.new(color.orange, 70) :
+               trendDir ==  1 and maDir ==  1 ? color.new(C_GREEN,      70) :
+               trendDir == -1 and maDir == -1 ? color.new(C_RED,        70) :
+               color.new(color.orange, 70)
+c_maTrend    = trendDir ==  0                           ? color.new(color.orange,  0) :
+               trendDir ==  1 and maTrend[1]  < maTrend ? color.new(C_GREEN,       0) :
+               trendDir ==  1 and maTrend[1] >= maTrend ? color.new(C_GREENLIGHT,  0) :
+               trendDir == -1 and maTrend[1]  < maTrend ? color.new(C_REDLIGHT,    0) :
+               trendDir == -1 and maTrend[1] >= maTrend ? color.new(C_RED,         0) : na
+c_ch         = trendDir ==  0                           ? color.new(color.orange, 75) :
+               trendDir ==  1                           ? color.new(C_GREEN,      75) :
+               trendDir == -1                           ? color.new(C_RED,        75) : na
+c_slLineUp   = ta.rising (slLine, 1)
+c_slLineDn   = ta.falling(slLine, 1)
+c_slLine     = c_slLineUp ? na :
+               c_slLineDn ? na :
+               color.new(C_RED,         0)
+c_barCol     = trendDir ==  0                   ? color.new(color.orange,  0) :
+               trendDir ==  1 and open <= close ? color.new(C_GREEN,       0) :
+               trendDir ==  1 and open >  close ? color.new(C_GREENLIGHT,  0) :
+               trendDir == -1 and open >= close ? color.new(C_RED,         0) :
+               trendDir == -1 and open <  close ? color.new(C_REDLIGHT,    0) :
+               color.new(color.orange,  0)
+//}
+// ——————————— <plots> {
+p_maFast1    = plot(
+  maFast1,
+  title      = 'EMA Fast 1',
+  color      = c_emas,
+  linewidth  = 1)
+p_maFast2    = plot(
+  maFast2,
+  title      = 'EMA Fast 2',
+  color      = c_emas,
+  linewidth  = 2)
+fill(
+  p_maFast1, p_maFast2,
+  title      = 'EMAs Fill',
+  color      = c_maFill)
+plot(
+  maTrend,
+  title      = 'SMA Trend',
+  color      = c_maTrend,
+  linewidth  = 3)
+p_chTop      = plot(
+  i_channelOn   ? rangeTop : na,
+  title      = 'Top Channel',
+  color      = c_maTrend,
+  linewidth  = 1)
+p_chBot      = plot(
+  i_channelOn   ? rangeBot : na,
+  title      = 'Bottom Channel',
+  color      = c_maTrend,
+  linewidth  = 1)
+fill(
+  p_chTop, p_chBot,
+  title      = 'Channel',
+  color      = c_ch)
+plot(
+  i_slOn and condition != 0 ? slLine : na,
+  title      = 'Stop Loss Line',
+  color      = c_slLine,
+  linewidth  = 1,
+  style      = plot.style_linebr)
+//}
+// ——————————— <alerts> {
+plotshape(
+  i_alertOn and longE ? high : na,
+  title      = 'Long',
+  text       = 'Long',
+  textcolor  = color.white,
+  color      = color.new(C_GREEN, 0),
+  style      = shape.labelup,
+  size       = size.normal,
+  location   = location.belowbar)
+plotshape(
+  i_alertOn and shortE ? low : na,
+  title      = 'Short',
+  text       = 'Short',
+  textcolor  = color.white,
+  color      = color.new(C_RED, 0),
+  style      = shape.labeldown,
+  size       = size.normal,
+  location   = location.abovebar)
+plotshape(
+  i_alertOn and (longX or shortX) ? close : na,
+  title      = 'Close',
+  text       = 'Close',
+  textcolor  = color.new(color.yellow, 0),
+  color      = color.new(color.yellow, 0),
+  style      = shape.xcross,
+  size       = size.small,
+  location   = location.absolute)
+//<stop loss>
+plotshape(
+  i_alertOn and (longSL or shortSL) ? slLine : na,
+  title      = 'Stop Loss',
+  text       = 'SL',
+  textcolor  = color.new(color.yellow, 0),
+  color      = color.new(color.yellow, 0),
+  style      = shape.xcross,
+  size       = size.small,
+  location   = location.absolute)
+
+plotshape(
+  i_alertOn and i_goldenOn and GCross ? maTrend : na,
+  title      = 'Golden Cross',
+  text       = 'Golden\nCross',
+  textcolor  = color.white,
+  color      = color.new(color.orange, 0),
+  style      = shape.labelup,
+  size       = size.normal,
+  location   = location.absolute)
+plotshape(
+  i_alertOn and i_goldenOn and DCross ? maTrend : na,
+  title      = 'Death Cross',
+  text       = 'Death\nCross',
+  textcolor  = color.white,
+  color      = color.new(color.orange, 0),
+  style      = shape.labeldown,
+  size       = size.normal,
+  location   = location.absolute)
+
+barcolor(i_barColOn ? c_barCol : na)
+bgcolor(
+  i_periodSw and not period ? color.new(color.gray, 90) : na,
+  title      = 'Session')
+
+alertcondition(
+  longE or shortE or longX or shortX or longSL or shortSL,
+  title      = "Any Alert",
+  message    = "Any Alert")
+alertcondition(
+  longE,
+  title      = "Buy",
+  message    = "Buy")
+alertcondition(
+  shortE,
+  title      = "Sell",
+  message    = "Sell")
+alertcondition(
+  longX,
+  title      = "Buy Close",
+  message    = "Buy Close")
+alertcondition(
+  shortX,
+  title      = "Sell Close",
+  message    = "Sell Close")
+
+alertcondition(
+  longSL,
+  title      = "Stop Loss Long",
+  message    = "Stop Loss Long")
+alertcondition(
+  shortSL,
+  title      = "Stop Loss Short",
+  message    = "Stop Loss Short")
+//}

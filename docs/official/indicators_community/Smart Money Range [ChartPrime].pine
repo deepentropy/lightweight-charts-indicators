@@ -1,0 +1,198 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=5
+indicator("Smart Money Range [ChartPrime]",shorttitle = "SMR [ChartPrime]" ,overlay = true,max_boxes_count  = 500,max_bars_back = 2000)
+
+
+string visual                                               =  "➞ Visuals Settings🔸" 
+string core                                                 =  "➞ Main Core Settings 🔸"
+int atrLen                                                  = 30
+float mult                                                  = 0.3
+float per                                                   = 10.0
+float perc                                                  = close * (per/100)
+float srdatr                                                = ta.atr (atrLen) * mult
+float band                                                  = math.min (srdatr, perc) [20] /2
+int sync                                                    = bar_index
+var BINDEX                                                  = 0
+var line [] Lines                                           = array.new_line()   
+var label [] Labels                                         = array.new_label()  
+float [] TotalVolume                                        = array.new_float()
+float [] Greenvolume                                        = array.new_float()
+float [] redvolume                                          = array.new_float()
+var ph                                                      = float(na)
+var phL                                                     = int(na)
+var pl                                                      = float(na)
+float lowestValue                                           = low
+float HighValue                                             = high
+float Midhigh                                               = high
+float Midindex                                              = bar_index
+int lowestIndex                                             = bar_index
+int HighIndex                                               = bar_index
+float HH                                                    = low
+int prd                                                     = input.int(30,"period",group = core)
+int levs                                                    = input.int(24,"Volume Levels",tooltip = "Number of the Volume levels to check", group = core)
+bool ShowVolume                                             = input.bool(true,"Show Volume ❓  ",inline = "01",group = visual)
+bool randomcolor                                            = input.bool(false,"Random Coloring ❓  ",inline = "01",group = visual)
+color Bull                                                  = input.color(color.new(#42f07f, 35),"1st",inline = "01",group = visual)
+color Bear                                                  = input.color(color.new(#f37451, 70),"2nd",inline = "01",group = visual)
+bool Showlines                                              = input.bool(true,"Show Zigzag ❓    ",inline = "02",group = visual)
+bool randomcolor1                                           = input.bool(false,"Random Coloring ❓  ",inline = "02",group = visual)
+color LineZ                                                 = input.color(color.yellow,"",inline = "02",group = visual)
+
+
+//~~~~~~~~~}
+
+// ~~ Pivots {
+pvtHi = ta.pivothigh(high,prd,prd)
+pvtLo = ta.pivotlow(low,prd,prd)
+if pvtHi
+    ph := high[prd]
+    phL:= sync[prd]
+
+if pvtLo
+    pl:=low[prd]
+
+Points = array.new_float(2,0)
+Counter(lev,sup = true)=>
+    
+    if sup
+        for i = 0 to 2000
+            max_bars_back(low,2000)
+            if low[ i + 1 ] < lev and  lev  < close[i]
+                array.set(Points,0,array.get(Points,0)+1)
+        Points.get(0)        
+
+    else
+        for i = 0 to 2000
+            max_bars_back(high,2000)
+            if high[ i + 1 ] > lev and  lev  > close[i]
+                array.set(Points,1,array.get(Points,1)+1)
+        Points.get(1) 
+
+if barstate.islast
+
+    Count = (bar_index - phL)
+    // levs= math.floor(Count/3)
+    // levs= math.floor(24)
+    float [] VPlevels           = array.new_float(levs+1)
+    var box [] VPboxes          = array.new_box(levs+3)
+    var box [] VPboxes2          = array.new_box(levs+3)
+    int [] ticks       = array.new_int(levs,0)
+    float [] Volumes    = array.new_float(levs,0.0)
+    float [] SCR        = array.new_float()
+    
+    for i = 0 to Count
+        SCR.push(close[i])
+
+    for i = 1 to Count
+        if low[i] <= lowestValue
+            lowestValue := low[i]
+            lowestIndex := bar_index[i]
+
+        if high[i] >= HighValue
+            HighValue := high[i]
+            HighIndex := bar_index[i]
+//
+    // M = bar_index + 135
+    // CC = int( (M - lowestIndex) / 2)  s
+    Value = Counter(pl)
+    Value2 = Counter(HighValue,false)
+    max_bars_back(Value,2000)
+    max_bars_back(Value2,2000)
+    for  i = 1 to 20
+        if high[i] >= Midhigh
+            Midhigh := high[i]
+            Midindex := bar_index[i]
+
+    step = ( HighValue-lowestValue ) / levs
+    for i=0 to levs by 1
+        array.set(VPlevels,i, lowestValue + step * i)
+
+    
+    Col=color.rgb(math.random(10,200),math.random(10,160),math.random(10,180))
+    Gcolo = color.rgb(math.random(25,32),math.random(40,200),math.random(15,100))
+    
+//color.rgb(9, 155, 99, 90)
+    var box BOX1 = na , box.delete(BOX1)
+    var box BOX2 = na , box.delete(BOX2)
+    LA = sync - HighIndex
+    labelplace = (170  + LA ) / 2
+    BOX1:=box.new(lowestIndex,lowestValue+ (band* 2),bar_index+170,lowestValue,bgcolor = color.rgb(9, 155, 99, 90),border_color = color.rgb(9, 155, 99, 50))
+    BOX2:=box.new(HighIndex,HighValue + (band* 2),bar_index+170,HighValue,bgcolor = color.rgb(255, 4, 4, 90) ,border_color = color.rgb(255, 4, 4, 50))
+    Labels.push(label.new(lowestIndex ,lowestValue - (band * 13),str.tostring(Value),style = label.style_none,textcolor= color.white,color = color.new(color.black, 100),xloc=xloc.bar_index,size= size.large))
+    Labels.push(label.new(bar_index+135 ,lowestValue - (band * 13),str.tostring(Value + 1),style = label.style_none,textcolor= color.white,color = color.new(color.black, 100),xloc=xloc.bar_index,size= size.large))
+    Labels.push(label.new(HighIndex + labelplace ,HighValue + (band * 10),str.tostring(Value2),style = label.style_none,textcolor= color.white,color = color.new(color.black, 100),xloc=xloc.bar_index,size= size.large))
+
+    if Showlines
+
+        // 2
+        Lines.push(line.new(HighIndex,HighValue,lowestIndex + 50,lowestValue+ (band* 2),color = randomcolor1 ? Col : LineZ,width = 1,style = line.style_dashed,xloc=xloc.bar_index))
+        Lines.push(line.new(HighIndex + 2 ,HighValue,lowestIndex + 52,lowestValue+ (band* 2),color = randomcolor1 ? Col : LineZ,width = 1,style = line.style_dashed,xloc=xloc.bar_index))
+
+        // 3
+        Lines.push(line.new(lowestIndex + 50,lowestValue+ (band* 2),HighIndex + (labelplace-2) ,HighValue,color = randomcolor1 ? Col : LineZ,width = 1,style = line.style_dashed,xloc=xloc.bar_index))
+        Lines.push(line.new(lowestIndex + 52,lowestValue+ (band* 2),HighIndex + labelplace,HighValue,color = randomcolor1 ? Col : LineZ,width = 1,style = line.style_dashed,xloc=xloc.bar_index))
+        // 4
+        Lines.push(line.new(HighIndex + (labelplace-2),HighValue,bar_index+133,lowestValue+ (band* 2),color = randomcolor1 ? Col : LineZ,width = 1,style = line.style_dashed,xloc=xloc.bar_index))
+        Lines.push(line.new(HighIndex + labelplace,HighValue,bar_index+135,lowestValue+ (band* 2),color = randomcolor1 ? Col : LineZ,width = 1,style = line.style_dashed,xloc=xloc.bar_index))
+
+        Lines.push(line.new(bar_index+135,lowestValue+ (band* 2),bar_index+170,HighValue,color = randomcolor1 ? Col : LineZ,width = 1,style = line.style_dashed,xloc=xloc.bar_index))
+        Lines.push(line.new(bar_index+133,lowestValue+ (band* 2),bar_index+168,HighValue,color = randomcolor1 ? Col : LineZ,width = 1,style = line.style_dashed,xloc=xloc.bar_index))
+
+
+        if array.size(Lines) > 8
+            for i = 0 to 7
+                line.delete(Lines.shift())
+
+
+
+    if array.size(Labels) > 3
+        for i = 0 to 2
+            label.delete(Labels.shift())
+    
+    for i=0 to array.size(SCR) -1
+        for x=0 to array.size(VPlevels) - 2  by 1
+            if low[ i + 1 ] < array.get(VPlevels,x+1)  and  array.get(VPlevels,x)  < close[i]
+                array.set(ticks,x,array.get(ticks,x)+1)
+                array.set(Volumes,x,array.get(Volumes,x)+Counter(close[x]))
+                break
+
+    // label.new(bar_index+20 , low , str.tostring(ticks.size()))
+    if ShowVolume
+        for i = 0 to array.size(ticks) -2
+            box.delete(array.get(VPboxes,i))
+            array.set(VPboxes,i,
+                 box.new(sync + 170+array.get(ticks,i),
+                 array.get(VPlevels,i+1)+(band* 2),
+                 sync + 170,
+                 array.get(VPlevels,i)+(band* 2),
+             border_color = color.from_gradient(array.get(ticks,i),0,
+             array.max(ticks),
+             color.new(randomcolor ? Col : Bull , 70),
+             color.new(randomcolor ? Col : Bull , 35)),
+             bgcolor=color.from_gradient(array.get(ticks,i),0,
+             array.max(ticks),
+             color.new(randomcolor ? Col : Bull , 70),
+             color.new(randomcolor ? Col : Bull , 35)),
+             text=array.get(Volumes,i) > 0 ? str.tostring(array.get(Volumes,i),format.volume): "",
+             text_color=color.white))
+
+        for i = 0 to array.size(ticks) -2
+            box.delete(array.get(VPboxes2,i))
+            array.set(VPboxes2,i,
+                 box.new(sync + 170-array.get(ticks,i),
+                 array.get(VPlevels,i+1)+(band* 2),
+                 sync + 170,
+                 array.get(VPlevels,i)+(band* 2),
+             border_color = color.from_gradient(array.get(ticks,i),0,
+             array.max(ticks),
+             color.new(randomcolor ? Gcolo : Bear , 70),
+             color.new(randomcolor ? Gcolo : Bear , 35)),
+             bgcolor=color.from_gradient(array.get(ticks,i),0,
+             array.max(ticks),
+             color.new(randomcolor ? Gcolo : Bear , 70),
+             color.new(randomcolor ? Gcolo : Bear , 35)),
+             text=str.tostring(array.get(ticks,i)),
+             text_color=color.white))
+            //   )

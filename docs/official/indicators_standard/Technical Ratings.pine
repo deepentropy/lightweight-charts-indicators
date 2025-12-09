@@ -1,0 +1,178 @@
+//@version=6
+indicator("Technical Ratings", "Technicals", precision = 2)
+
+import TradingView/TechnicalRating/3 as TVtr
+
+// Constants
+float LEVEL_STRONG = 0.5
+float LEVEL_WEAK   = 0.1
+
+string PC_TT = "If enabled and the indicator's timeframe is higher than the chart's, the plotted rating and alert
+     conditions update only after a bar on that timeframe is confirmed. Otherwise, they also update during open bars on
+     the timeframe. Does not affect the table display."
+
+// Inputs
+string timeframe     = input.timeframe("", "Indicator Timeframe")
+string ratingSignal  = input.string("All", "Rating is based on", options = ["MAs", "Oscillators", "All"])
+bool   plotConfirmed = input.bool(false, "Plot confirmed ratings only", tooltip = PC_TT)
+
+string GRP1    = "Show MTF"
+bool   useMtf1 = input(false,           "", inline = "mtf1", group = GRP1)
+string mtf1    = input.timeframe("60",  "", inline = "mtf1", group = GRP1, active = useMtf1)
+bool   useMtf2 = input(false,           "", inline = "mtf2", group = GRP1)
+string mtf2    = input.timeframe("240", "", inline = "mtf2", group = GRP1, active = useMtf2)
+bool   useMtf3 = input(true,            "", inline = "mtf3", group = GRP1)
+string mtf3    = input.timeframe("1D",  "", inline = "mtf3", group = GRP1, active = useMtf3)
+bool   useMtf4 = input(true,            "", inline = "mtf4", group = GRP1)
+string mtf4    = input.timeframe("1W",  "", inline = "mtf4", group = GRP1, active = useMtf4)
+bool   useMtf5 = input(true,            "", inline = "mtf5", group = GRP1)
+string mtf5    = input.timeframe("1M",  "", inline = "mtf5", group = GRP1, active = useMtf5)
+
+string GRP2            = "Table Settings"
+string tableSizeInput  = input.string("small", "Size      ", inline = "Table Size",  group = GRP2, options = ["tiny", "small", "normal", "large", "huge", "auto"])
+string tableYPosInput  = input.string("middle", "Position ", inline = "Table Pos",   group = GRP2, options = ["top", "middle", "bottom"])
+string tableXPosInput  = input.string("right", "",           inline = "Table Pos",   group = GRP2, options = ["left", "center", "right"])
+color  colText         = input(#ffffff, "Text     ",       inline = "Text Color",  group = GRP2)
+color  colBuy          = input(#5b9cf6, "Buy  ",           inline = "Buy Colors",  group = GRP2)
+color  colStrongBuy    = input(#2962ff, "",                inline = "Buy Colors",  group = GRP2)
+color  colNeutral      = input(#a8adbc, "Neutral  ",       inline = "Neutral",     group = GRP2)
+color  colSell         = input(#ef9a9a, "Sell  ",          inline = "Sell Colors", group = GRP2)
+color  colStrongSell   = input(#f44336, "",                inline = "Sell Colors", group = GRP2)
+color  tableTitleColor = input(#295b79, "Headers",         inline = "Headers",     group = GRP2)
+
+//@function Retrieves a tuple of strings representing the status of `ratingTotal`, `ratingOsc`, and `ratingMA` on the 
+//          requested timeframe (`tf`), but only if `enable` is `true`. If `false`, returns a tuple of `na` values.
+reqRatingStatus(string tf, bool enable, float ratingTotal, float ratingOsc, float ratingMA) =>
+    if enable
+        request.security(
+             "", tf, 
+             [TVtr.ratingStatus(ratingTotal), TVtr.ratingStatus(ratingOsc), TVtr.ratingStatus(ratingMA)]
+         ) 
+
+//@function Retrieves an input color for cell background coloring based on the `status` string.
+cellBgColor(string status) =>
+    color cellColor = switch status
+        "Sell"         => colSell
+        "Strong\nSell" => colStrongSell
+        "Buy"          => colBuy
+        "Strong\nBuy " => colStrongBuy
+        "Neutral"      => colNeutral
+        "-"            => colNeutral
+        =>                tableTitleColor
+
+//@function Returns a value for cell text alignment based on whether `cellText` represents a title. 
+cellAlign(string cellText) =>
+    switch 
+        cellText == "MAs" or cellText == "Osc" or cellText == "All" or cellText == "-" => text.align_center 
+        => text.align_left
+
+//@function Initializes a cell in the `t` table at the specified `column` and `row`, colored based on `cellText`.
+method addCell(table t, int column, int row, string cellText, color textColor, string textSize) =>
+    t.cell(
+         column, row, cellText, text_color = textColor, text_halign = cellAlign(cellText), 
+         bgcolor = cellBgColor(cellText), text_size = textSize
+     )
+
+//@variable A non-empty string representing the selected indicator timeframe.
+string currentTf = timeframe == "" ? timeframe.period : timeframe
+
+// Initialize arrays to store timeframes and their enabled status.
+var array<string> timeframes = array.from("TF", currentTf, mtf1, mtf2, mtf3, mtf4, mtf5)
+var array<bool>   enabled    = array.from(true, true, useMtf1, useMtf2, useMtf3, useMtf4, useMtf5)
+
+// On the first bar, check for and deactivate duplicate timeframes.
+if barstate.isfirst
+    for [i, enable] in enabled
+        if not enable or i == 0
+            continue
+        for j = 0 to i - 1
+            if not enabled.get(j)
+                continue
+            if timeframes.get(j) == timeframes.get(i)
+                enabled.set(i, false)
+                break
+
+// Calculate ratings.
+[rt, ro, rma]  = TVtr.calcRatingAll()
+
+// Request rating statuses for each enabled timeframe, and populate arrays for the table display.
+[sTotal0, sOsc0, sMA0] = reqRatingStatus(timeframes.get(1), enabled.get(1), rt, ro, rma)
+[sTotal1, sOsc1, sMA1] = reqRatingStatus(timeframes.get(2), enabled.get(2), rt, ro, rma)
+[sTotal2, sOsc2, sMA2] = reqRatingStatus(timeframes.get(3), enabled.get(3), rt, ro, rma)
+[sTotal3, sOsc3, sMA3] = reqRatingStatus(timeframes.get(4), enabled.get(4), rt, ro, rma)
+[sTotal4, sOsc4, sMA4] = reqRatingStatus(timeframes.get(5), enabled.get(5), rt, ro, rma)
+[sTotal5, sOsc5, sMA5] = reqRatingStatus(timeframes.get(6), enabled.get(6), rt, ro, rma)
+
+array<string> allRatings = array.from("All", sTotal0, sTotal1, sTotal2, sTotal3, sTotal4, sTotal5)
+array<string> oscRatings = array.from("Osc", sOsc0,   sOsc1,   sOsc2,   sOsc3,   sOsc4,   sOsc5)
+array<string> maRatings  = array.from("MAs", sMA0,    sMA1,    sMA2,    sMA3,    sMA4,    sMA5)
+
+//@variable References a table that displays rating statuses for each enabled timeframe.
+var table display = table.new(
+     tableYPosInput + "_" + tableXPosInput, 4, 7, frame_color = color.white, frame_width = 2, border_width = 1, 
+     border_color = color.white
+ )
+
+// On last bar, populate the table with rating status information.
+if barstate.islast
+    int row = 0
+    for [i, enable] in enabled
+        if not enable
+            continue
+        display.addCell(0, row, timeframes.get(i), colText, tableSizeInput)
+        switch ratingSignal
+            "All" =>
+                display.addCell(1, row, maRatings.get(i),  colText, tableSizeInput)
+                display.addCell(2, row, oscRatings.get(i), colText, tableSizeInput)
+                display.addCell(3, row, allRatings.get(i), colText, tableSizeInput)
+            "Oscillators" =>
+                display.addCell(1, row, oscRatings.get(i), colText, tableSizeInput)
+            "MAs" =>
+                display.addCell(1, row, maRatings.get(i), colText, tableSizeInput)
+        row += 1
+
+// Request ratings for the plot display.
+[plotTotal, plotOsc, plotMA] = switch
+    plotConfirmed and timeframe.in_seconds(currentTf) > timeframe.in_seconds() =>
+        request.security("", currentTf, [rt[1], ro[1], rma[1]], lookahead = barmerge.lookahead_on)
+    =>  request.security("", currentTf, [rt, ro, rma])
+
+//@variable The selected rating on the indicator timeframe, for plotting and alerts.
+float userRating = switch ratingSignal 
+    "MAs"         => plotMA
+    "Oscillators" => plotOsc
+    =>               plotTotal
+
+// Calculate conditions and gradient data based on `userRating`.
+bool  condBuy      = userRating >  LEVEL_WEAK
+bool  condSell     = userRating < -LEVEL_WEAK
+float valsBuy      = condBuy  ? userRating : 0
+float valsSell     = condSell ? userRating : 0
+int   risingBuys   = TVtr.countRising(valsBuy) 
+int   fallingSells = TVtr.countRising(valsSell)
+int   gradientLvl  = condBuy ? risingBuys : condSell ? fallingSells : 0
+color buyColor     = color.from_gradient(userRating,  0.0, 0.2, colNeutral, colStrongBuy)
+color sellColor    = color.from_gradient(userRating, -0.2, 0.0, colStrongSell, colNeutral)
+color gradColor    = color.from_gradient(userRating, -0.2, 0.2, sellColor, buyColor)
+
+// Plot `userRating`, display threshold lines, and create alert conditions.
+plot(userRating, "Rating (indicator timeframe)", color.new(gradColor, 50 - gradientLvl * 10), 1, plot.style_columns)
+
+hline(1,    color = color.new(colBuy,  50), linestyle = hline.style_solid)
+hline(0.5,  color = color.new(colBuy,  50), linestyle = hline.style_dashed)
+hline(-1,   color = color.new(colSell, 50), linestyle = hline.style_solid)
+hline(-0.5, color = color.new(colSell, 50), linestyle = hline.style_dashed)
+
+alertcondition(ta.crossunder(userRating, -LEVEL_WEAK),   "Sell",        "Ratings changed to \"Sell\"")
+alertcondition(ta.crossover(userRating,   LEVEL_WEAK),   "Buy",         "Ratings changed to \"Buy\"")
+alertcondition(ta.crossunder(userRating, -LEVEL_STRONG), "Strong Sell", "Ratings changed to \"Strong Sell\"")
+alertcondition(ta.crossover(userRating,   LEVEL_STRONG), "Strong Buy",  "Ratings changed to \"Strong Buy\"")
+
+// Raise error if `currentTf` is lower than the chart's timeframe.
+if timeframe.in_seconds(currentTf) < timeframe.in_seconds()
+    runtime.error(
+         str.format(
+             "Cannot plot ratings for all bars from the ''{0}'' timeframe on the current chart.
+             Select a higher timeframe.", currentTf
+         )
+     )

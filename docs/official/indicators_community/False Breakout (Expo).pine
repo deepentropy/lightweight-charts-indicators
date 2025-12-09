@@ -1,0 +1,85 @@
+// © Zeiierman
+
+//@version=5
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+indicator("False Breakout (Expo)",overlay=true,max_bars_back = 2000)
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// ~~ inputs {
+prd        = input.int(20, title="False Breakout Period",minval=2, maxval=100, group="Main Settings", tooltip="Set the new high/low period.")
+minperiod  = input.int(5,title="New Breakout within minimum X bars",minval=0,  group="Main Settings", maxval=100, tooltip="A New Breakout within minimum X bars, in other words, a low value returns more fakeouts and a high value returns less.")
+maxperiod  = input.int(5,title="Signal valid for X bars",minval=1, maxval=100, group="Main Settings", tooltip="Set how many periods the fakeout signals can be valid. A high value returns more false breakouts and a low value returns fewer false breakouts.")
+maType     = input.string("💎", title="Select Smoothing",options=["💎","WMA","HMA"],inline="Select Smoothing", group="Advanced Smoothing")
+length     = input.int(10, title="", minval=1, maxval=100,inline = "Select Smoothing", group="Advanced Smoothing", tooltip="Set a smoothing filter, it helps to filter out some signals and can be used to catch continuation fakeouts. If you use a smoothing filter please consider increasing the 'Signal valid for X bars' to above 10-50.")
+a          = input.bool(false, title="Aggressive", group="Advanced Smoothing", tooltip="This filter enables a more aggressive false breakout detection.")
+//~~~}
+
+// ~~ var {
+var val   = float(na)
+var index = array.new<int>(2,0)
+var count = 0
+n         = bar_index
+h         = high
+l         = low  
+c         = close    
+//~~~}
+
+// ~~ smoothing {
+smoothing(src,len)=>
+    ma = switch maType
+        "WMA"    => ta.wma(src,len)  
+        "HMA"    => ta.hma(src,len)       
+        "💎"     => src
+//~~~}
+
+// ~~ new high/low {
+hi     = smoothing(ta.highest(a?l:h,prd),length)
+lo     = smoothing(ta.lowest(a?h:l,prd),length)
+condHi = hi>hi[1] and hi[1]<=hi[2]
+condLo = lo<lo[1] and lo[1]>=lo[2] 
+//~~~}
+
+// ~~ count {
+if condHi
+    if count>0
+        count := 0
+    count     := count - 1
+    val       := l
+    array.unshift(index,n)
+    array.pop(index)
+if condLo
+    if count<0
+        count := 0
+    count     := count + 1
+    val       := h
+    array.unshift(index,n)
+    array.pop(index)
+//~~~}
+
+// ~~ cond {
+indx0             = array.get(index,0)
+indx1             = array.get(index,1)
+minbars           = indx1+minperiod<indx0
+maxvalid          = n-maxperiod<=indx0  
+breakdown         = ta.crossunder(c,val)
+breakup           = ta.crossover(c,val) 
+falsebreakoutup   = count<-1 and breakdown and maxvalid and minbars
+falsebreakoutdown = count>1  and breakup   and maxvalid and minbars
+//~~~}
+
+// ~~ plot {
+if falsebreakoutup
+    count := 0
+    line.new(indx0,val,n,val,color=#f23645, width = 2)
+if falsebreakoutdown
+    count := 0
+    line.new(indx0,val,n,val,color=#6ce5a0, width = 2)
+
+plotshape(falsebreakoutup?h:na, title="False Breakout Up", color=#f23645, style=shape.triangledown,location=location.abovebar,size=size.small)
+plotshape(falsebreakoutdown?l:na, title="False Breakout Down", color=#6ce5a0, style=shape.triangleup,location=location.belowbar,size=size.small)
+//~~~}
+
+// ~~ alerts {
+alertcondition(falsebreakoutup, 'False Breakout Up', 'False Breakout Up')
+alertcondition(falsebreakoutdown, 'False Breakout Down', 'False Breakout Down')
+//~~~}

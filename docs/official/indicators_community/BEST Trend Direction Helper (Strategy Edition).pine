@@ -1,0 +1,591 @@
+//@version=4
+//@author=Daveatt
+
+// zigzag part entirely take from Ricardo Santos : https://www.tradingview.com/script/6v2cG94T-RS-ZigZag-Percent-Reversal-LVL2/
+// horizontal pivtos coming from Backtest Rookies website : https://backtest-rookies.com/2018/10/05/tradingview-support-and-resistance-indicator/
+
+strategy(title="Trend Direction Helper", shorttitle="Trend Direction Helper", overlay=true, 
+ pyramiding=0, default_qty_value=10, precision=7, currency=currency.USD,
+ commission_value=0.2,commission_type=strategy.commission.percent, initial_capital=100000)
+
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+/////////////////////////// Strategy Component /////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+orderType = input("Longs+Shorts",title="What type of Orders", options=["Longs+Shorts","LongsOnly","ShortsOnly"])
+isLong   = (orderType != "ShortsOnly")
+isShort  = (orderType != "LongsOnly")
+
+// SMA
+fastLength = input(7, title="Fast Length SMA")
+slowLength = input(20, title="Slow Length SMA")
+
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////// TREND DIRECTION /////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+TD= input(title="== TREND DIRECTION ==", defval=true)
+RISK= input(title="Risk", type=input.integer, defval=10)
+SIZE = input(title="Size", type=input.string, defval=size.large, options=[size.tiny,size.normal,size.large, size.huge])
+text_up = input(title="TEXT Buy", defval="B", type=input.string)
+text_dn = input(title="TEXT Sell", defval="S", type=input.string)
+
+
+range(length) =>
+	sum = 0.0
+	for i = 1 to length-5
+		sum := sum + abs(close[i]-open[i])
+	sum / length
+
+MRO1(length, range) =>
+	true_count = 0
+	counter = 0
+	for i = 1 to length-5
+		if abs(open[i]-close[i+1]) >= range*2.0
+			true_count := true_count + 1
+			counter = i
+	mro = if true_count >= 1
+		counter
+	else
+		-1	
+	mro
+
+MRO2(length, range) =>
+	true_count = 0.0
+	counter = 0
+	for i = 1 to length-1
+		if abs(close[i+3]-close[i]) >= range*8.2
+			true_count := true_count + 1
+			counter = i
+	mro = if true_count >= 1
+		counter
+	else
+		-1	
+	mro
+
+wpr(length) =>
+	upper = highest(length)
+	lower = lowest(length)
+	out = 100 * (close - upper) / (upper - lower)
+	out
+
+
+TS(RISK) =>
+    value10=abs(RISK/180)+1
+    value11=value10
+    x1=60+RISK
+    x2=20-RISK
+    
+    
+    rng = range(2)
+    mro1=MRO1(1,rng)
+    mro2=MRO2(1,rng)
+    
+    rez = if mro1>-1
+    	2
+    else
+    	value10
+    	
+    value11:=rez
+    rez1 = if mro2>-1
+    	2
+    else
+    	value10
+    value11:=rez1
+    
+    value2 = 100-abs(wpr(value10))
+    
+    Table_value2=value2
+    
+    notset=false
+    ii1 = 1
+    for i1 = 1 to 50
+        if ((Table_value2[i1] < x2 or Table_value2[i1] > x1) and notset==false)
+            notset:=true
+            ii1 := i1
+    
+    z=Table_value2[ii1]
+    
+    dn = if value2 < x2
+        if Table_value2[ii1] > x1
+            ii1
+    	else
+    	    0
+    else
+        0
+    
+    up = if value2 > x1
+        if Table_value2[ii1] < x2
+            ii1
+    	else
+    	    0
+    else
+        0
+    
+    [up, dn]
+
+[up, dn] = TS(RISK)
+
+text_label = up ? text_up : text_dn
+color_label = up ? color.new(color.green, 20) : color.new(color.red, 20)
+textcolor_label = up ? color.new(color.maroon, 20) : color.new(color.black, 20)
+style_label = up ? label.style_labelup : label.style_labeldown
+y_label = up ? yloc.belowbar : yloc.abovebar
+x_pos = up ? up : dn
+
+_up = 0, _dn = 0
+_up := barssince(up)
+_dn := barssince(dn)
+
+// Trend calculation
+curr = 0 - barssince(_dn) + barssince(_up)
+TD_Buy = curr < 0 ? 1 : 0
+TD_Sell = curr > 0 ? 1 : 0
+
+//plot(_up, title='Debug _up', transp=100)
+
+var label TS_UP_Label = na
+var label TS_DN_Label = na
+
+//label.delete(TS_Label)
+
+var AVG_RANGE = range(RISK)
+var pos_y_up = low - (AVG_RANGE * low)
+var pos_y_dn = high + (AVG_RANGE * high)
+
+var oblique_up = line(na)
+var oblique_dn = line(na)
+
+if up
+
+    TS_UP_Label := label.new(x=bar_index - _up, y=pos_y_up, text=text_label, color=color_label,
+     textcolor=textcolor_label, style=style_label, xloc=xloc.bar_index, 
+     yloc=yloc.belowbar ,size=SIZE)
+
+if dn
+
+    //pos_y_dn := close[bar_index - _dn] + AVG_RANGE * SHIFT
+
+    TS_DN_Label := label.new(x=bar_index - _dn, y=pos_y_dn, text=text_label, color=color_label,
+     textcolor=textcolor_label, style=style_label, xloc=xloc.bar_index, 
+     yloc=yloc.abovebar ,size=SIZE)
+
+
+//SHIFT = input(title="SHIFT", type=input.integer, defval=50)/100
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+//////////////////////// Support & Resistances ////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+
+showSR = input(title="Show Supports & Resistances", defval=true)
+left=input(50,title="Left Pivot", type=input.integer)
+right=input(25,title="Right Pivot", type=input.integer)
+quick_right=input(5,title="Quick Right Pivot", type=input.integer) // Used to try and detect a more recent significant swing.
+
+pivot_high = pivothigh(high,left,right)
+pivot_lows = pivotlow(low, left,right)
+
+quick_pivot_high = pivothigh(high,left,quick_right)
+quick_pivot_lows = pivotlow(low, left,quick_right)
+
+level1 = valuewhen(quick_pivot_high, high[quick_right], 0)
+level2 = valuewhen(quick_pivot_lows, low[quick_right], 0)
+level3 = valuewhen(pivot_high, high[right], 0)
+level4 = valuewhen(pivot_lows, low[right], 0)
+level5 = valuewhen(pivot_high, high[right], 1)
+level6 = valuewhen(pivot_lows, low[right], 1)
+level7 = valuewhen(pivot_high, high[right], 2)
+level8 = valuewhen(pivot_lows, low[right], 2)
+
+level1_col = close >= level1 ? color.green : color.red
+level2_col = close >= level2 ? color.green : color.red
+level3_col = close >= level3 ? color.green : color.red
+level4_col = close >= level4 ? color.green : color.red
+level5_col = close >= level5 ? color.green : color.red
+level6_col = close >= level6 ? color.green : color.red
+level7_col = close >= level7 ? color.green : color.red
+level8_col = close >= level8 ? color.green : color.red
+
+event = close >= level6
+since_event = barssince(event)
+first_event = since_event==1
+
+second_event = close < level6
+since_second_event = barssince(second_event)
+sec_event = since_second_event==1
+
+plot((showSR) ? level1 : na, style=plot.style_circles, color=level1_col, show_last=1, linewidth=2, trackprice=true)
+plot((showSR) ? level2 : na, style=plot.style_circles, color=level2_col, show_last=1, linewidth=2, trackprice=true)
+plot((showSR) ? level3 : na, style=plot.style_circles, color=level3_col, show_last=1, linewidth=2, trackprice=true)
+plot((showSR) ? level4 : na, style=plot.style_circles, color=level4_col, show_last=1, linewidth=2, trackprice=true)
+plot((showSR) ? level5 : na, style=plot.style_circles, color=level5_col, show_last=1, linewidth=2, trackprice=true)
+plot((showSR) ? level6 : na, style=plot.style_circles, color=level6_col, show_last=1, linewidth=2, trackprice=true)
+plot((showSR) ? level7 : na, style=plot.style_circles, color=level7_col, show_last=1, linewidth=2, trackprice=true)
+plot((showSR) ? level8 : na, style=plot.style_circles, color=level8_col, show_last=1, linewidth=2, trackprice=true)
+
+
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+//////////////////////////////// HH / LL //////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+
+showHHLL = input(title="Show Higher/Highs and Lower Lows labels", defval=false)
+//filterBW    = input(false, title="Filter Bill Williams Fractals")
+
+// isRegularFractal(mode) =>
+//     ret = mode == 1 ? high[4] < high[3] and high[3] < high[2] and high[2] > high[1] and high[1] > high[0] : mode == 2 ? low[4] > low[3] and low[3] > low[2] and low[2] < low[1] and low[1] < low[0] : false
+
+isBWFractal(mode) =>
+    ret = mode == 1 ? high[4] < high[2] and high[3] <= high[2] and high[2] >= high[1] and high[2] > high[0] : mode == 2 ? low[4] > low[2] and low[3] >= low[2] and low[2] <= low[1] and low[2] < low[0] : false
+
+filteredtopf = isBWFractal(1)
+filteredbotf = isBWFractal(2)
+
+higherhigh = filteredtopf == false ? false : ( valuewhen(filteredtopf == true, high[2], 1) < valuewhen(filteredtopf == true, high[2], 0) and valuewhen(filteredtopf == true, high[2], 2) < valuewhen(filteredtopf == true, high[2], 0))
+lowerhigh = filteredtopf == false ? false : ( valuewhen(filteredtopf == true, high[2], 1) > valuewhen(filteredtopf == true, high[2], 0) and valuewhen(filteredtopf == true, high[2], 2) > valuewhen(filteredtopf == true, high[2], 0))
+higherlow = filteredbotf == false ? false : ( valuewhen(filteredbotf == true, low[2], 1) < valuewhen(filteredbotf == true, low[2], 0) and valuewhen(filteredbotf == true, low[2], 2) < valuewhen(filteredbotf == true, low[2], 0))
+lowerlow = filteredbotf == false ? false : ( valuewhen(filteredbotf == true, low[2], 1) > valuewhen(filteredbotf == true, low[2], 0) and valuewhen(filteredbotf == true, low[2], 2) > valuewhen(filteredbotf == true, low[2], 0))
+
+plotshape((showHHLL) ? higherhigh : na, title='Higher High', style=shape.square, location=location.abovebar, color=color.maroon, text="[HH]", offset=-2)
+plotshape((showHHLL) ? lowerhigh : na, title='Lower High', style=shape.square, location=location.abovebar, color=color.maroon, text="[LH]", offset=-2)
+plotshape((showHHLL) ? higherlow : na, title='High Low', style=shape.square, location=location.belowbar, color=color.green, text="[HL]", offset=-2)
+plotshape((showHHLL) ? lowerlow : na, title='Lower Low', style=shape.square, location=location.belowbar, color=color.green, text="[LL]", offset=-2)
+
+
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+//////////////////////////////// ZIGZAG ///////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+
+showZZ = input(title="Show ZIG ZAG Lines", defval=true)
+
+//  |--------------------------------------------------------------------------||
+//  |   ZigZag:                                                                ||
+//  |--------------------------------------------------------------------------||
+//  |{
+string percent_description = "Percent of last pivot price for zigzag reversal:"
+string zzrealpivot_description = "Show real zigzag pivots:"
+
+
+percent = input(defval=0.75, title=percent_description, minval=0.0, maxval=99.0, step=0.25) / 100
+bool show_real_pivots_zz = false
+//  ||-------------------------------------------------------------------------||
+//  ||  zigzag function:
+//  ||-------------------------------------------------------------------------||
+//  |{
+f_zz(_percent)=>
+
+    //  direction after last pivot
+    var bool _is_direction_up = (na)
+    //  track highest price since last lower pivot
+    var float _htrack = (na)
+    //  track lowest price since last higher pivot
+    var float _ltrack = (na)
+    //  zigzag variable for ploting
+    var float _pivot = (na)
+    //  range needed for reaching reversal threshold
+    var float _reverse_range = 0.0
+    //  real pivot time
+    var int _real_pivot_time = na
+    //  reverse line
+    var float _reverse_line = 0.0
+    if bar_index >= 1
+        _reverse_range := nz(_pivot[1]) * _percent
+        _is_direction_up := nz(_is_direction_up[1], true)
+        
+        if _is_direction_up
+            _htrack := max(max(high, high[1]), nz(_htrack[1], high))
+            if change(_htrack) > 0 //or na(_htrack[1])
+                _real_pivot_time := time
+            _ltrack := (na)
+            _reverse_line := (_htrack[1] - _reverse_range)
+            if close < _reverse_line
+                _pivot := _htrack
+                _is_direction_up := false
+
+        if not _is_direction_up
+            _ltrack := min(min(low, low[1]), nz(_ltrack[1], low))
+            if change(_ltrack) < 0 //or na(_ltrack[1])
+                _real_pivot_time := time
+            _htrack := (na)
+            _reverse_line := (_ltrack[1] + _reverse_range)
+            if close > _reverse_line
+                _pivot := _ltrack
+                _is_direction_up := true
+
+    [_pivot, _is_direction_up, _reverse_line, _real_pivot_time]
+
+// ||   |}---------------------------------------------------------------------<•
+
+//  ||-------------------------------------------------------------------------||
+//  ||  zigzag data:
+//  ||-------------------------------------------------------------------------||
+//  |{
+[pivot, is_up, reverse, _rl_time] = f_zz(percent)
+zz_color = is_up ? color.orange : color.teal
+zz = change(pivot) != 0 ? pivot : na
+tt = show_real_pivots_zz ? _rl_time : time
+//  
+//plot(zz, title="Z", color=zz_color, linewidth=1, transp=80)
+//plot(reverse, title="R", color=color.white, style=plot.style_circles, linewidth=4, transp=40, offset=1, show_last=1)
+
+//  ||-------------------------------------------------------------------------||
+//  ||  Pseudo Array Generic code: ID: (__x_)
+//  |{-------------------------------------------------------------------------<•
+//  ||  variable initialization:
+var int __x_A00 = na
+var int __x_A01 = na
+var int __x_A02 = na
+var int __x_A03 = na
+var int __x_A04 = na
+var int __x_A05 = na
+var int __x_A06 = na
+var int __x_A07 = na
+var int __x_A08 = na
+var int __x_A09 = na
+var int __x_A10 = na
+
+var int __x_ALEN = 10
+string __x_AMODE = na
+int __x_ASET = na
+//  |{-------------------------------------------------------------------------<•
+//  ||  Utility Functions: (ID:__x_)
+f__x_AGET(_i)=>_i==0?__x_A00:_i==1?__x_A01:_i==2?__x_A02:_i==3?__x_A03:_i==4?__x_A04:_i==5?__x_A05:_i==6?__x_A06:_i==7?__x_A07:_i==8?__x_A08:_i==9?__x_A09:_i==10?__x_A10:na
+f__x_ASET(_value, _index, _length, _mode)=>
+    int _return = na
+    if _index > _length
+        _return := na
+    else
+        if _index == 0
+            _return := _value
+        else
+			if _mode == "push" or _mode == "PUSH" or _mode == "p" or _mode == "P"
+				_return := f__x_AGET(_index-1)
+			if _mode == "replace" or _mode == "REPLACE" or _mode == "r" or _mode == "R"
+				_return := f__x_AGET(_index)
+    _return
+//  ||  |}---------------------------------------------------------------------<•
+
+//  ||  |}---------------------------------------------------------------------<•
+//  ||-------------------------------------------------------------------------||
+//  ||  Pseudo Array Generic code: ID: (__y_)
+//  |{-------------------------------------------------------------------------<•
+//  ||  variable initialization:
+var float __y_A00 = na
+var float __y_A01 = na
+var float __y_A02 = na
+var float __y_A03 = na
+var float __y_A04 = na
+var float __y_A05 = na
+var float __y_A06 = na
+var float __y_A07 = na
+var float __y_A08 = na
+var float __y_A09 = na
+var float __y_A10 = na
+
+var int __y_ALEN = 10 
+string __y_AMODE = na
+float __y_ASET = na
+//  |{-------------------------------------------------------------------------<•
+//  ||  Utility Functions: (ID:__y_)
+f__y_AGET(_i)=>_i==0?__y_A00:_i==1?__y_A01:_i==2?__y_A02:_i==3?__y_A03:_i==4?__y_A04:_i==5?__y_A05:_i==6?__y_A06:_i==7?__y_A07:_i==8?__y_A08:_i==9?__y_A09:_i==10?__y_A10:na
+f__y_ASET(_value, _index, _length, _mode)=>
+    float _return = na
+    if _index > _length
+        _return := na
+    else
+        if _index == 0
+            _return := _value
+        else
+			if _mode == "push" or _mode == "PUSH" or _mode == "p" or _mode == "P"
+				_return := f__y_AGET(_index-1)
+			if _mode == "replace" or _mode == "REPLACE" or _mode == "r" or _mode == "R"
+				_return := f__y_AGET(_index)
+    _return
+//  ||  |}---------------------------------------------------------------------<•
+
+//  ||  |}---------------------------------------------------------------------<•
+
+//  |   Get Extremes:
+// float a_y = valuewhen(zz, zz, show_previous + 0)
+// int a_x = round(valuewhen(zz, tt, show_previous + 0))
+// float b_y = valuewhen(zz, zz, show_previous + 1)
+// int b_x = round(valuewhen(zz, tt, show_previous + 1))
+
+f_y(_i)=>valuewhen(zz, zz, _i)
+f_x(_i)=>valuewhen(zz, tt, _i)
+
+if zz
+    if na(f__y_AGET(1))
+        __x_AMODE := "push"
+        __y_AMODE := "push"
+        __x_ASET := tt
+        __y_ASET := zz
+    else
+        //higher high
+        if f_y(0) > f_y(1) and f_y(0) > f_y(2)
+            if f__y_AGET(0) < f__y_AGET(1)
+                __x_AMODE := "push"
+                __y_AMODE := "push"
+                __x_ASET := tt
+                __y_ASET := zz
+            else
+                __x_AMODE := "replace"
+                __y_AMODE := "replace"
+                __x_ASET := tt
+                __y_ASET := zz
+            //higher low
+        if f_y(0) < f_y(1) and f_y(0) < f_y(2)
+            if f__y_AGET(0) > f__y_AGET(1)
+                __x_AMODE := "push"
+                __y_AMODE := "push"
+                __x_ASET := tt
+                __y_ASET := zz
+            else
+                __x_AMODE := "replace"
+                __y_AMODE := "replace"
+                __x_ASET := tt
+                __y_ASET := zz
+
+//  |{-------------------------------------------------------------------------<•
+//  ||  update array: (ID´: _x)
+//  ||      • this must/should be right after event.
+//  ||      • if theres more than one event per bar the code bellow must be 
+//  ||          repeated to update the array. its possible to change f___x_ASET()
+//  ||          so that you can update multiple positions if they dont interact
+if not na(__x_ASET)
+	__x_A10 := f__x_ASET(__x_ASET, 10, __x_ALEN, __x_AMODE), __x_A09 := f__x_ASET(__x_ASET, 09, __x_ALEN, __x_AMODE), __x_A08 := f__x_ASET(__x_ASET, 08, __x_ALEN, __x_AMODE), __x_A07 := f__x_ASET(__x_ASET, 07, __x_ALEN, __x_AMODE), __x_A06 := f__x_ASET(__x_ASET, 06, __x_ALEN, __x_AMODE)
+	__x_A05 := f__x_ASET(__x_ASET, 05, __x_ALEN, __x_AMODE), __x_A04 := f__x_ASET(__x_ASET, 04, __x_ALEN, __x_AMODE), __x_A03 := f__x_ASET(__x_ASET, 03, __x_ALEN, __x_AMODE), __x_A02 := f__x_ASET(__x_ASET, 02, __x_ALEN, __x_AMODE), __x_A01 := f__x_ASET(__x_ASET, 01, __x_ALEN, __x_AMODE)
+	__x_A00 := f__x_ASET(__x_ASET, 00, __x_ALEN, __x_AMODE)
+//  ||  |}---------------------------------------------------------------------<•
+//  |{-------------------------------------------------------------------------<•
+//  ||  update array: (ID´: _x)
+//  ||      • this must/should be right after event.
+//  ||      • if theres more than one event per bar the code bellow must be 
+//  ||          repeated to update the array. its possible to change f___y_ASET()
+//  ||          so that you can update multiple positions if they dont interact
+if not na(__y_ASET)
+	__y_A10 := f__y_ASET(__y_ASET, 10, __y_ALEN, __y_AMODE), __y_A09 := f__y_ASET(__y_ASET, 09, __y_ALEN, __y_AMODE), __y_A08 := f__y_ASET(__y_ASET, 08, __y_ALEN, __y_AMODE), __y_A07 := f__y_ASET(__y_ASET, 07, __y_ALEN, __y_AMODE), __y_A06 := f__y_ASET(__y_ASET, 06, __y_ALEN, __y_AMODE)
+	__y_A05 := f__y_ASET(__y_ASET, 05, __y_ALEN, __y_AMODE), __y_A04 := f__y_ASET(__y_ASET, 04, __y_ALEN, __y_AMODE), __y_A03 := f__y_ASET(__y_ASET, 03, __y_ALEN, __y_AMODE), __y_A02 := f__y_ASET(__y_ASET, 02, __y_ALEN, __y_AMODE), __y_A01 := f__y_ASET(__y_ASET, 01, __y_ALEN, __y_AMODE)
+	__y_A00 := f__y_ASET(__y_ASET, 00, __y_ALEN, __y_AMODE)
+//  ||  |}---------------------------------------------------------------------<•
+
+//  ||  |}---------------------------------------------------------------------<•
+
+//  ||-------------------------------------------------------------------------||
+//  ||  Draw the zigzag (abcdefg) lines:
+//  ||-------------------------------------------------------------------------||
+//  |{ 
+color col1 = #6d8b0d90//color.teal
+color col2 = #bb704590//color.orange
+line_width = 5
+var line _li = na
+_li_color = f__y_AGET(0) > f__y_AGET(1) ? col1 : col2
+
+if showZZ
+
+    line.delete(_li)
+    _li := line.new(
+     x1=f__x_AGET(0), y1=f__y_AGET(0), 
+     x2=f__x_AGET(1), y2=f__y_AGET(1), 
+     xloc=xloc.bar_time, extend=extend.none, color=_li_color, 
+     style=line.style_solid, width=line_width)
+
+    var line _li1 = na
+    _li_color1 = f__y_AGET(1) > f__y_AGET(2) ? col1 : col2
+    line.delete(_li1)
+    _li1 := line.new(
+     x1=f__x_AGET(1), y1=f__y_AGET(1), 
+     x2=f__x_AGET(2), y2=f__y_AGET(2), 
+     xloc=xloc.bar_time, extend=extend.none, color=_li_color1, 
+     style=line.style_solid, width=line_width)
+
+    var line _li2 = na
+    _li_color2 = f__y_AGET(2) > f__y_AGET(3) ? col1 : col2
+    line.delete(_li2)
+    _li2 := line.new(
+     x1=f__x_AGET(2), y1=f__y_AGET(2), 
+     x2=f__x_AGET(3), y2=f__y_AGET(3), 
+     xloc=xloc.bar_time, extend=extend.none, color=_li_color2, 
+     style=line.style_solid, width=line_width)
+
+    var line _li3 = na
+    _li_color3 = f__y_AGET(3) > f__y_AGET(4) ? col1 : col2
+    line.delete(_li3)
+    _li3 := line.new(
+     x1=f__x_AGET(3), y1=f__y_AGET(3), 
+     x2=f__x_AGET(4), y2=f__y_AGET(4), 
+     xloc=xloc.bar_time, extend=extend.none, color=_li_color3, 
+     style=line.style_solid, width=line_width )
+
+    var line _li4 = na
+    _li_color4 = f__y_AGET(4) > f__y_AGET(5) ? col1 : col2
+    line.delete(_li4)
+    _li4 := line.new(
+     x1=f__x_AGET(4), y1=f__y_AGET(4), 
+     x2=f__x_AGET(5), y2=f__y_AGET(5), 
+     xloc=xloc.bar_time, extend=extend.none, color=_li_color4, 
+     style=line.style_solid, width=line_width)
+
+    var line _li5 = na
+    _li_color5 = f__y_AGET(5) > f__y_AGET(6) ? col1 : col2
+    line.delete(_li5)
+    _li5 := line.new(
+     x1=f__x_AGET(5), y1=f__y_AGET(5), 
+     x2=f__x_AGET(6), y2=f__y_AGET(6), 
+     xloc=xloc.bar_time, extend=extend.none, color=_li_color5, 
+     style=line.style_solid, width=line_width)
+
+    var line _li6 = na
+    _li_color6 = f__y_AGET(6) > f__y_AGET(7) ? col1 : col2
+    line.delete(_li6)
+    _li6 := line.new(
+     x1=f__x_AGET(6), y1=f__y_AGET(6), 
+     x2=f__x_AGET(7), y2=f__y_AGET(7), 
+     xloc=xloc.bar_time, extend=extend.none, color=_li_color6, 
+     style=line.style_solid, width=line_width)
+
+    var line _li7 = na
+    _li_color7 = f__y_AGET(7) > f__y_AGET(8) ? col1 : col2
+    line.delete(_li7)
+    _li7 := line.new(
+     x1=f__x_AGET(7), y1=f__y_AGET(7), 
+     x2=f__x_AGET(8), y2=f__y_AGET(8), 
+     xloc=xloc.bar_time, extend=extend.none, color=_li_color7, 
+     style=line.style_solid, width=line_width)
+     
+// Alerts TS
+// alertcondition(dn, title='TS DOWN Trend', message='TS DOWN Trend')
+// alertcondition(up, title='TS UP Trend', message='TS UP Trend')
+
+entry_price = valuewhen(up or dn, close, 0)
+sma_fast = sma(close, fastLength)
+sma_slow = sma(close, slowLength)
+long_exit     = crossunder(sma_fast,sma_slow)
+short_exit    = crossover(sma_fast,sma_slow)
+
+plot(sma_fast, "SMA fastLength", color=color.orange, linewidth=2)
+plot(sma_slow, "SMA slowLength", color=color.blue, linewidth=2)
+plotshape(crossover(sma_fast,sma_slow), color=color.green, style=shape.circle, size=size.small)
+plotshape(crossunder(sma_fast,sma_slow), color=color.red, style=shape.circle, size=size.small)
+
+if isLong
+    strategy.entry("Long", 1, when=up[1])
+    strategy.close("Long", when=long_exit)
+
+if isShort
+    strategy.entry("Short", 0,  when=dn[1])
+    strategy.close("Short", when=short_exit )

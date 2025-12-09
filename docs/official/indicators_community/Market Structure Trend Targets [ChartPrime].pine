@@ -1,0 +1,148 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=5
+indicator("Market Structure Trend Targets [ChartPrime]", "Market Structure TT [ChartPrime]",
+          overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+int   length       = input.int(10, "Length", maxval = 30, minval = 2)
+bool  display_per  = input.bool(false, "Display %")
+bool  display_stop = input.bool(true, "Display Trailing Stop")
+color col_up       = input.color(#54b6d4, "+", inline = "col")
+color col_dn       = input.color(#cf3737, "-", inline = "col")
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+series float ph = ta.pivothigh(length, length)
+series float pl = ta.pivotlow(length, length)
+
+
+market_structure()=>
+    var upper       = float(na)
+    var lower       = float(na)
+    var upper_count = 0
+    var lower_count = 0
+    var upper_index = 0
+    var lower_index = 0
+    var trend       = bool(na)
+
+    float source     = ta.sma(high - low, 50)*2
+    float source1    = ta.sma(ta.median(close, 40), 10)
+    float volatility = math.avg(ta.highest(source, 200), ta.lowest(source, 200))
+    float trend_line = float(na)
+
+    var line_h = line(na)
+    var line_l = line(na)
+
+    if not na(ph) 
+        upper_index := bar_index[length]
+        upper  := high[length]
+        line_h := line.new(upper_index, upper, upper_index, upper, color = col_up)
+
+    if not na(pl) 
+        lower_index := bar_index[length]        
+        lower  := low[length]
+        line_l := line.new(lower_index, lower, lower_index, lower, color = col_dn)
+
+    if ta.crossover(high, upper)
+        upper_count += 1
+
+        var price_enter = 0.
+        int index       = bar_index - (bar_index - upper_index)/2
+        
+        if upper_count == 1
+            price_enter := line_h.get_y1()
+
+        float  percent = (line_h.get_y1() - price_enter) / price_enter * 100
+        string txt     = upper_count == 1 
+                          ? str.tostring(price_enter, "#.# △") 
+                          : (display_per ? str.tostring(percent, format.percent) : str.tostring(upper_count-1))
+
+        label.new(index, line_h.get_y1(), txt, textcolor = chart.fg_color, color = color(na))
+
+        line_h.set_x2(bar_index)
+
+        line_h      := na
+        upper       := na
+        lower_count := 0
+        trend       := true
+
+    if ta.crossunder(low, lower)
+        lower_count += 1
+
+        var price_enter = 0.
+        int index       = bar_index - (bar_index - lower_index)/2
+
+        if lower_count == 1
+            price_enter := line_l.get_y1()
+
+        float  percent = (line_l.get_y1() - price_enter) / price_enter * 100
+        string txt     = lower_count == 1 
+                          ? str.tostring(price_enter, "#.# ▽") 
+                          : (display_per ? str.tostring(percent, format.percent) : str.tostring(lower_count-1))
+
+        label.new(index, line_l.get_y1(), txt, textcolor = chart.fg_color, color = color(na), style = label.style_label_up)
+
+        line_l.set_x2(bar_index)
+
+        line_l      := na
+        lower       := na
+        upper_count := 0
+        trend       := false
+
+    if trend
+        trend_line := source1 - volatility
+    else 
+        trend_line := source1 + volatility
+
+    color color = trend ? col_up : col_dn
+
+    if trend and ta.crossover(low, trend_line) and display_stop and not (trend and not trend[1])
+        label.new(bar_index[1], low[1], text = "◈", style = label.style_label_up, textcolor = color, color = color(na))
+
+    if not trend and ta.crossunder(high, trend_line) and display_stop and not (trend[1] and not trend)
+        label.new(bar_index[1], high[1], text = "◈", style = label.style_label_down, textcolor = color, color = color(na))
+
+    if trend and not trend[1]
+        label.new(bar_index, trend_line, text = "△", textcolor = color, style = label.style_label_center, color = color(na), size = size.large)
+
+    if not trend and trend[1]
+        label.new(bar_index, trend_line, text = "▽", textcolor = color, style = label.style_label_center, color = color(na), size = size.large)
+
+    [color, trend_line, trend]
+
+[color, trend_line, trend] = market_structure()
+
+
+float stop_loss = trend_line,
+      stop_loss := ta.change(trend) 
+             ? na 
+             :
+             high > stop_loss and not trend 
+             ? na 
+             : low < stop_loss and trend 
+             ? na
+             : stop_loss
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// --------------------------------------------------------------------------------------------------------------------{
+display = display_stop ? display.all : display.none
+color1  = display_stop ? 90 : 100
+
+sl = plot(stop_loss, style = plot.style_linebr, color = color, display = display),
+     plot(stop_loss, style = plot.style_linebr, color = color.new(color, 80), linewidth = 5, display = display)
+pp = plot(hl2, color = color(na))
+
+fill(sl, pp, stop_loss, hl2, color.new(color, color1), na)
+
+candle_col = color.new(color, 50)
+plotcandle(open, high, low, close, title='Candles Trend', color = candle_col, wickcolor=candle_col, bordercolor = candle_col)
+
+// --------------------------------------------------------------------------------------------------------------------}

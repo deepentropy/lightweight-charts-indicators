@@ -1,0 +1,172 @@
+//@version=6
+indicator("Multi-Time Period Charts", shorttitle = "MTPC", overlay = true, max_boxes_count = 500)
+
+// Tooltips
+string TT_AT = "If selected, the indicator automatically chooses the timeframe of the displayed bars. The chosen higher
+     timeframe is:\n\n
+      • '2 hours' if the chart timeframe is a seconds-based timeframe.\n
+      • '1 day' if the chart timeframe is lower than one day and not a seconds-based timeframe.\n
+      • '1 week' if the chart timeframe is higher than one day and lower than one week.\n
+      • '1 month' if the chart timeframe is higher than one week and lower than one month.\n
+      • '3 months' if the chart timeframe is higher than one month and lower than three months.\n
+      • '12 months' if the chart timeframe is higher than three months.
+     \n\nIf not selected, it uses the timeframe specified in the 'Timeframe' input."
+    
+string TT_UC = "When this option is unchecked, MTPC will use intraday data while calculating on intraday charts.
+  If Extended Hours are displayed on the chart, they will be taken into account during the calculation.
+  If intraday OHLC values are different from daily-based values (normal for stocks), the MTPC will also differ."
+
+// Color constants
+color UP_COLOR   = #009688
+color DN_COLOR   = #F44336
+color UPBD_COLOR = color.new(UP_COLOR, 70)
+color DNBD_COLOR = color.new(DN_COLOR, 70)
+
+//@enum An enumeration of named values representing display modes.
+enum CalcType
+    hl   = "High/Low Range"
+    oc   = "Open/Close Range"
+    ohlc = "OHLC"
+    tr   = "True Range"
+
+// Inputs
+bool     autoTFInput        = input(true,             "Auto-timeframe", tooltip = TT_AT)
+string   tfInput            = input.timeframe("1M",   "Timeframe", active = not autoTFInput)
+CalcType calcTypeInput      = input.enum(CalcType.hl, "Calculation")
+bool     useHaInput         = input.bool(false,       "Display Heikin Ashi values")
+bool     useDailyInput      = input.bool(false,       "Use daily-based values", tooltip = TT_UC)
+
+string   GRP01              = "Border and fill colors"
+color    upBorderColorInput = input(UP_COLOR,       "Up bars  ", inline = "10", group = GRP01)
+color    upBodyColorInput   = input(UPBD_COLOR,         "",      inline = "10", group = GRP01)
+color    dnBorderColorInput = input(DN_COLOR,       "Down bars", inline = "11", group = GRP01)
+color    dnBodyColorInput   = input(DNBD_COLOR,         "",      inline = "11", group = GRP01)
+
+// @type A custom type for storing HTF bar information.
+type OHLC
+    float o
+    float h
+    float l
+    float c
+    float prevC
+
+// @function Sets the position and colors of a box based on direction, or hides the box if `cond` is `true`. 
+method setBox(box bx, cond, left, right, top, bottom, diff, upBodyColor, dnBodyColor, upBorderColor, dnBorderColor) =>
+    color bodyColor   = diff < 0 ? dnBodyColor   : upBodyColor
+    color borderColor = diff < 0 ? dnBorderColor : upBorderColor
+    switch 
+        cond => bx.set_bgcolor(na), bx.set_border_color(na)
+        => 
+            bx.set_left(left), bx.set_right(right)
+            bx.set_top(top),   bx.set_bottom(bottom)
+            bx.set_bgcolor(bodyColor), bx.set_border_color(borderColor)
+
+// @function Returns a default higher-timeframe string based on the current chart's timeframe. 
+selectAutoTimeframe() =>
+    int secondsInTF = timeframe.in_seconds()
+    string result = switch
+        timeframe.isseconds   => "120"
+        secondsInTF < 86400   => "1440"
+        secondsInTF < 604800  => "1W"
+        secondsInTF < 2628003 => "1M"
+        secondsInTF < 7884009 => "3M"
+        => "12M"
+
+// @function Returns an adjusted timeframe, converting "1D" to "1440" during extended sessions.
+selectTimeframeFromInput(tf) =>
+    syminfo.session == session.extended and tf == "1D" ? "1440" : tf 
+
+// @function Creates an `OHLC` object containing past bar prices.
+makeOHLC(offset = 0) =>
+    OHLC.new(open[offset], high[offset], low[offset], close[offset], close[offset + 1])
+
+// @function Calculate Heikin Ashi values from standard OHLC values and previous HA open and close values. 
+haFrom(o, h, l, c, prevHO, prevHC) =>
+    float haC = (o + h + l + c) / 4
+    float haO = na(prevHO) or na(prevHC) ? (o + c) / 2 : (prevHO + prevHC) / 2
+    float haH = math.max(h, haO, haC)
+    float haL = math.min(l, haO, haC)
+    [haO, haH, haL, haC]
+
+// @function Creates an `OHLC` object containing HTF values based on chart prices, with optional Heikin Ashi conversion. 
+chartOHLC(tf, useHA) =>
+    var float htfOpen   = na 
+    var float htfHigh   = na 
+    var float htfLow    = na 
+    var float prevClose = na
+    var float haClose   = na
+    var float haOpen    = na
+    var float prevHaC   = na
+    var float prevHaO   = na
+    if timeframe.change(tf)
+        htfOpen   := open
+        htfHigh   := high
+        htfLow    := low
+        prevClose := close[1]
+        prevHaO   := haOpen
+        prevHaC   := haClose
+    htfHigh := math.max(high, htfHigh)
+    htfLow  := math.min(low,  htfLow)
+    switch 
+        useHA => 
+            [haO, haH, haL, haC] = haFrom(htfOpen, htfHigh, htfLow , close, prevHaO, prevHaC)
+            haOpen  := haO
+            haClose := haC
+            OHLC.new(haO, haH, haL, haC, prevHaC)
+        => OHLC.new(htfOpen, htfHigh, htfLow, close, prevClose)
+
+//@variable The leftmost bar index for the box.
+var int prevBarIndex = bar_index
+
+// Determine the higher timeframe to use, and select the ticker (Heikin Ashi or regular).
+var string timeframe = autoTFInput ? selectAutoTimeframe() : selectTimeframeFromInput(tfInput)
+var string ticker    = useHaInput  ? ticker.heikinashi(syminfo.tickerid) : syminfo.tickerid
+
+// Get HTF bar data using either chart-based aggregation or context requests. 
+[bar0, bar1] = switch 
+    not useDailyInput => [chartOHLC(timeframe, useHaInput), chartOHLC(timeframe, useHaInput)[1]]
+    => request.security(ticker, timeframe, [makeOHLC(0), makeOHLC(1)], lookahead = barmerge.lookahead_on)
+
+// Determine HTF bar coordinates based on the selected calculation mode.
+bool isNewPeriod = timeframe.change(timeframe)
+bool drawCurrent = barstate.islast and not isNewPeriod
+OHLC bar = drawCurrent ? bar0 : bar1
+bar := na(bar) ? OHLC.new() : bar
+float diff  = bar.c - bar.o
+int   left  = prevBarIndex
+int   right = drawCurrent ? bar_index : bar_index - 1
+[top, bottom] = switch calcTypeInput
+    CalcType.oc => [bar.c, bar.o]
+    CalcType.tr => [math.max(bar.h, bar.prevC), math.min(bar.l, bar.prevC)]
+    =>             [bar.h, bar.l]
+
+// On each new HTF bar, update the index and draw the finalized boxes.
+if isNewPeriod
+    prevBarIndex := bar_index
+    box htBar = box.new(na, na, na, na)
+    htBar.setBox(
+         false, left, right, top, bottom, diff, upBodyColorInput, dnBodyColorInput, upBorderColorInput, 
+         dnBorderColorInput
+     )
+    // Draw body open-close range if OHLC mode is enabled. 
+    if calcTypeInput == CalcType.ohlc
+        box htBody = box.new(na, na, na, na)
+        htBody.setBox(
+             false, left, right, bar.o, bar.c, diff, upBodyColorInput, dnBodyColorInput, upBorderColorInput, 
+             dnBorderColorInput
+         )
+
+// For the current realtime HTF bar, draw the developing box. 
+if barstate.islast
+    var box rtBox = box.new(na, na, na, na)
+    rtBox.setBox(
+         isNewPeriod, left, right, top, bottom, diff, upBodyColorInput, dnBodyColorInput, upBorderColorInput,
+         dnBorderColorInput
+     )
+    // Draw body open-close if OHLC mode is enabled. 
+    if calcTypeInput == CalcType.ohlc
+        var box rtBody = box.new(na, na, na, na)
+        rtBody.setBox(
+             isNewPeriod, left, right, bar.o, bar.c, diff, upBodyColorInput, dnBodyColorInput, upBorderColorInput,
+             dnBorderColorInput
+         )

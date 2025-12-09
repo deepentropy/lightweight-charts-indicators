@@ -1,0 +1,25 @@
+//@version=6
+indicator("Volatility Stop", "VStop", overlay=true, timeframe="", timeframe_gaps=true)
+length = input.int(20, "Length", minval = 2)
+src = input.source(close, "Source")
+factor = input.float(2.0, "Multiplier", minval = 0.25, step = 0.25)
+volStop(src, atrlen, atrfactor) =>
+    if not na(src)
+        var max     = src
+        var min     = src
+        var uptrend = true
+        var float stop    = na
+        atrM        = nz(ta.atr(atrlen) * atrfactor, ta.tr)
+        max         := math.max(max, src)
+        min         := math.min(min, src)
+        stop        := nz(uptrend ? math.max(stop, max - atrM) : math.min(stop, min + atrM), src)
+        uptrend     := src - stop >= 0.0
+        if uptrend != uptrend[1] and not barstate.isfirst
+            max    := src
+            min    := src
+            stop   := uptrend ? max - atrM : min + atrM
+        [stop, uptrend]
+
+[vStop, uptrend] = volStop(src, length, factor)
+
+plot(vStop, "Volatility Stop", style=plot.style_cross, color= uptrend ? #009688 : #F44336)

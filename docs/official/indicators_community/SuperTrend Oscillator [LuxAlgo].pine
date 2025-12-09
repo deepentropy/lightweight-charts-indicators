@@ -1,0 +1,75 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=4
+study("[LUX] SuperTrend Oscillator","SuperOsc [LuxAlgo]")
+length     = input(10,minval=1)
+mult       = input(2.,minval=1)
+smooth     = input(72,minval=1)
+
+//Misc
+fixed      = input(false,'Fixed Transparency',group='Misc')
+show_ln    = input(true,'Show Lines',group='Misc')
+show_lb    = input(true,'Show Labels',group='Misc')
+show_per   = input(false,'Show % False Signals',group='Misc')
+//----
+src = close
+lower = 0.,upper = 0.,trend = 0
+var up_col = array.new_color(0)
+var dn_col = array.new_color(0)
+if barstate.isfirst
+    array.push(up_col,color.new(#0cb51a,100)),array.push(up_col,color.new(#0cb51a,99)),array.push(up_col,color.new(#0cb51a,98)),array.push(up_col,color.new(#0cb51a,97)),array.push(up_col,color.new(#0cb51a,96)),array.push(up_col,color.new(#0cb51a,95)),array.push(up_col,color.new(#0cb51a,94)),array.push(up_col,color.new(#0cb51a,93)),array.push(up_col,color.new(#0cb51a,92)),array.push(up_col,color.new(#0cb51a,91)),array.push(up_col,color.new(#0cb51a,90)),array.push(up_col,color.new(#0cb51a,89)),array.push(up_col,color.new(#0cb51a,88)),array.push(up_col,color.new(#0cb51a,87)),array.push(up_col,color.new(#0cb51a,86)),array.push(up_col,color.new(#0cb51a,85)),array.push(up_col,color.new(#0cb51a,84)),array.push(up_col,color.new(#0cb51a,83)),array.push(up_col,color.new(#0cb51a,82)),array.push(up_col,color.new(#0cb51a,81)),array.push(up_col,color.new(#0cb51a,80)),array.push(up_col,color.new(#0cb51a,79)),array.push(up_col,color.new(#0cb51a,78)),array.push(up_col,color.new(#0cb51a,77)),array.push(up_col,color.new(#0cb51a,76)),array.push(up_col,color.new(#0cb51a,75)),array.push(up_col,color.new(#0cb51a,74)),array.push(up_col,color.new(#0cb51a,73)),array.push(up_col,color.new(#0cb51a,72)),array.push(up_col,color.new(#0cb51a,71)),array.push(up_col,color.new(#0cb51a,70)),array.push(up_col,color.new(#0cb51a,69)),array.push(up_col,color.new(#0cb51a,68)),array.push(up_col,color.new(#0cb51a,67)),array.push(up_col,color.new(#0cb51a,66)),array.push(up_col,color.new(#0cb51a,65)),array.push(up_col,color.new(#0cb51a,64)),array.push(up_col,color.new(#0cb51a,63)),array.push(up_col,color.new(#0cb51a,62)),array.push(up_col,color.new(#0cb51a,61)),array.push(up_col,color.new(#0cb51a,60)),array.push(up_col,color.new(#0cb51a,59)),array.push(up_col,color.new(#0cb51a,58)),array.push(up_col,color.new(#0cb51a,57)),array.push(up_col,color.new(#0cb51a,56)),array.push(up_col,color.new(#0cb51a,55)),array.push(up_col,color.new(#0cb51a,54)),array.push(up_col,color.new(#0cb51a,53)),array.push(up_col,color.new(#0cb51a,52)),array.push(up_col,color.new(#0cb51a,51)),array.push(up_col,color.new(#0cb51a,50)),array.push(up_col,color.new(#0cb51a,49)),array.push(up_col,color.new(#0cb51a,48)),array.push(up_col,color.new(#0cb51a,47)),array.push(up_col,color.new(#0cb51a,46)),array.push(up_col,color.new(#0cb51a,45)),array.push(up_col,color.new(#0cb51a,44)),array.push(up_col,color.new(#0cb51a,43)),array.push(up_col,color.new(#0cb51a,42)),array.push(up_col,color.new(#0cb51a,41)),array.push(up_col,color.new(#0cb51a,40)),array.push(up_col,color.new(#0cb51a,39)),array.push(up_col,color.new(#0cb51a,38)),array.push(up_col,color.new(#0cb51a,37)),array.push(up_col,color.new(#0cb51a,36)),array.push(up_col,color.new(#0cb51a,35)),array.push(up_col,color.new(#0cb51a,34)),array.push(up_col,color.new(#0cb51a,33)),array.push(up_col,color.new(#0cb51a,32)),array.push(up_col,color.new(#0cb51a,31)),array.push(up_col,color.new(#0cb51a,30)),array.push(up_col,color.new(#0cb51a,29)),array.push(up_col,color.new(#0cb51a,28)),array.push(up_col,color.new(#0cb51a,27)),array.push(up_col,color.new(#0cb51a,26)),array.push(up_col,color.new(#0cb51a,25)),array.push(up_col,color.new(#0cb51a,24)),array.push(up_col,color.new(#0cb51a,23)),array.push(up_col,color.new(#0cb51a,22)),array.push(up_col,color.new(#0cb51a,21)),array.push(up_col,color.new(#0cb51a,20)),array.push(up_col,color.new(#0cb51a,19)),array.push(up_col,color.new(#0cb51a,18)),array.push(up_col,color.new(#0cb51a,17)),array.push(up_col,color.new(#0cb51a,16)),array.push(up_col,color.new(#0cb51a,15)),array.push(up_col,color.new(#0cb51a,14)),array.push(up_col,color.new(#0cb51a,13)),array.push(up_col,color.new(#0cb51a,12)),array.push(up_col,color.new(#0cb51a,11)),array.push(up_col,color.new(#0cb51a,10)),array.push(up_col,color.new(#0cb51a,9)),array.push(up_col,color.new(#0cb51a,8)),array.push(up_col,color.new(#0cb51a,7)),array.push(up_col,color.new(#0cb51a,6)),array.push(up_col,color.new(#0cb51a,5)),array.push(up_col,color.new(#0cb51a,4)),array.push(up_col,color.new(#0cb51a,3)),array.push(up_col,color.new(#0cb51a,2)),array.push(up_col,color.new(#0cb51a,1)),
+    array.push(dn_col,color.new(#ff1100,100)),array.push(dn_col,color.new(#ff1100,99)),array.push(dn_col,color.new(#ff1100,98)),array.push(dn_col,color.new(#ff1100,97)),array.push(dn_col,color.new(#ff1100,96)),array.push(dn_col,color.new(#ff1100,95)),array.push(dn_col,color.new(#ff1100,94)),array.push(dn_col,color.new(#ff1100,93)),array.push(dn_col,color.new(#ff1100,92)),array.push(dn_col,color.new(#ff1100,91)),array.push(dn_col,color.new(#ff1100,90)),array.push(dn_col,color.new(#ff1100,89)),array.push(dn_col,color.new(#ff1100,88)),array.push(dn_col,color.new(#ff1100,87)),array.push(dn_col,color.new(#ff1100,86)),array.push(dn_col,color.new(#ff1100,85)),array.push(dn_col,color.new(#ff1100,84)),array.push(dn_col,color.new(#ff1100,83)),array.push(dn_col,color.new(#ff1100,82)),array.push(dn_col,color.new(#ff1100,81)),array.push(dn_col,color.new(#ff1100,80)),array.push(dn_col,color.new(#ff1100,79)),array.push(dn_col,color.new(#ff1100,78)),array.push(dn_col,color.new(#ff1100,77)),array.push(dn_col,color.new(#ff1100,76)),array.push(dn_col,color.new(#ff1100,75)),array.push(dn_col,color.new(#ff1100,74)),array.push(dn_col,color.new(#ff1100,73)),array.push(dn_col,color.new(#ff1100,72)),array.push(dn_col,color.new(#ff1100,71)),array.push(dn_col,color.new(#ff1100,70)),array.push(dn_col,color.new(#ff1100,69)),array.push(dn_col,color.new(#ff1100,68)),array.push(dn_col,color.new(#ff1100,67)),array.push(dn_col,color.new(#ff1100,66)),array.push(dn_col,color.new(#ff1100,65)),array.push(dn_col,color.new(#ff1100,64)),array.push(dn_col,color.new(#ff1100,63)),array.push(dn_col,color.new(#ff1100,62)),array.push(dn_col,color.new(#ff1100,61)),array.push(dn_col,color.new(#ff1100,60)),array.push(dn_col,color.new(#ff1100,59)),array.push(dn_col,color.new(#ff1100,58)),array.push(dn_col,color.new(#ff1100,57)),array.push(dn_col,color.new(#ff1100,56)),array.push(dn_col,color.new(#ff1100,55)),array.push(dn_col,color.new(#ff1100,54)),array.push(dn_col,color.new(#ff1100,53)),array.push(dn_col,color.new(#ff1100,52)),array.push(dn_col,color.new(#ff1100,51)),array.push(dn_col,color.new(#ff1100,50)),array.push(dn_col,color.new(#ff1100,49)),array.push(dn_col,color.new(#ff1100,48)),array.push(dn_col,color.new(#ff1100,47)),array.push(dn_col,color.new(#ff1100,46)),array.push(dn_col,color.new(#ff1100,45)),array.push(dn_col,color.new(#ff1100,44)),array.push(dn_col,color.new(#ff1100,43)),array.push(dn_col,color.new(#ff1100,42)),array.push(dn_col,color.new(#ff1100,41)),array.push(dn_col,color.new(#ff1100,40)),array.push(dn_col,color.new(#ff1100,39)),array.push(dn_col,color.new(#ff1100,38)),array.push(dn_col,color.new(#ff1100,37)),array.push(dn_col,color.new(#ff1100,36)),array.push(dn_col,color.new(#ff1100,35)),array.push(dn_col,color.new(#ff1100,34)),array.push(dn_col,color.new(#ff1100,33)),array.push(dn_col,color.new(#ff1100,32)),array.push(dn_col,color.new(#ff1100,31)),array.push(dn_col,color.new(#ff1100,30)),array.push(dn_col,color.new(#ff1100,29)),array.push(dn_col,color.new(#ff1100,28)),array.push(dn_col,color.new(#ff1100,27)),array.push(dn_col,color.new(#ff1100,26)),array.push(dn_col,color.new(#ff1100,25)),array.push(dn_col,color.new(#ff1100,24)),array.push(dn_col,color.new(#ff1100,23)),array.push(dn_col,color.new(#ff1100,22)),array.push(dn_col,color.new(#ff1100,21)),array.push(dn_col,color.new(#ff1100,20)),array.push(dn_col,color.new(#ff1100,19)),array.push(dn_col,color.new(#ff1100,18)),array.push(dn_col,color.new(#ff1100,17)),array.push(dn_col,color.new(#ff1100,16)),array.push(dn_col,color.new(#ff1100,15)),array.push(dn_col,color.new(#ff1100,14)),array.push(dn_col,color.new(#ff1100,13)),array.push(dn_col,color.new(#ff1100,12)),array.push(dn_col,color.new(#ff1100,11)),array.push(dn_col,color.new(#ff1100,10)),array.push(dn_col,color.new(#ff1100,9)),array.push(dn_col,color.new(#ff1100,8)),array.push(dn_col,color.new(#ff1100,7)),array.push(dn_col,color.new(#ff1100,6)),array.push(dn_col,color.new(#ff1100,5)),array.push(dn_col,color.new(#ff1100,4)),array.push(dn_col,color.new(#ff1100,3)),array.push(dn_col,color.new(#ff1100,2)),array.push(dn_col,color.new(#ff1100,1)),
+//----
+atr = atr(length)*mult
+up = hl2 + atr
+dn = hl2 - atr
+upper := src[1] < upper[1] ? min(up,upper[1]) : up
+lower   := src[1] > lower[1] ? max(dn,lower[1]) : dn
+trend := src > upper[1] ? 1 : src < lower[1] ? 0 : trend[1]
+Spt = trend*lower+(1-trend)*upper
+//----
+ama = 0.
+osc = max(min((src - Spt)/(upper-lower),1),-1)
+alpha = pow(osc,2)/length
+ama := nz(ama[1]+alpha*(osc-ama[1]),osc)
+hist = ema(osc - ama,smooth)
+//----
+fix_css = osc > 0 ? #0cb51a : #ff1100
+var_css = osc > 0 ? array.get(up_col,round(osc*99)) : array.get(dn_col,round(osc*-1*99))
+sig_css = ama > 0 ? #2157f3 : #673ab7
+plot(fixed ? osc*100 : na,'Main Fixed',fix_css,1,plot.style_area)
+plot(fixed ? na : osc*100,'Main Transp',var_css,1,plot.style_columns,editable=false)
+plot(hist*100,'Histogram',#808080,1,plot.style_area,transp=40)
+plot(ama*100,'Signal',sig_css)
+//----
+a = hline(80)
+b = hline(-80)
+fill(a,b,#2157f3,90)
+//----
+css = osc > 0 ? #ff1100 : #0cb51a
+sig = change(sign(osc)) ? osc*-100 : na
+plot(show_ln ? sig : na,color=css)
+//----
+n = bar_index
+cross = cross(src,Spt)
+x2 = valuewhen(cross,n,0)
+//----
+false_buy = valuewhen(crossunder(src,Spt),src,0) < valuewhen(crossover(src,Spt),src,0)
+false_sell = valuewhen(crossover(src,Spt),src,0) > valuewhen(crossunder(src,Spt),src,0)
+num = cum(cross and (false_buy or false_sell) ? 1 : 0)
+den = cum(cross ? 1 : 0)
+per = num/den*100
+//----
+if barstate.islast and show_ln
+    line.delete(line.new(x2,sign(osc)*-100,n,osc*100,color=osc < 0 ? #ff1100 : #0cb51a)[1])
+if show_lb    
+    if crossover(src,Spt) 
+        txt = false_sell ? '❌' :'✔️'
+        label.new(x2,-80,txt,color=#00000000,style=label.style_label_up,textcolor=color.gray,textalign=text.align_center)
+    if crossunder(src,Spt)
+        txt = false_buy ? '❌' :'✔️'
+        label.new(x2,80,txt,color=#00000000,style=label.style_label_down,textcolor=color.gray,textalign=text.align_center)
+    if barstate.islast and show_per
+        txt = '❌' + tostring(per,'#.##') + '%'
+        label.delete(label.new(n,osc,txt,color=#00000000,style=label.style_label_left,textcolor=color.gray,textalign=text.align_left)[1])

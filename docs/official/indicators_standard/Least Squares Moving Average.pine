@@ -1,0 +1,7 @@
+//@version=6
+indicator(title = "Least Squares Moving Average", shorttitle="LSMA", overlay=true, timeframe="", timeframe_gaps=true)
+length = input(title="Length", defval=25)
+offset = input(title="Offset", defval=0)
+src = input(close, title="Source")
+lsma = ta.linreg(src, length, offset)
+plot(lsma, "LSMA")

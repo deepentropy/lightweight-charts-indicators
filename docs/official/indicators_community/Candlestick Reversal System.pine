@@ -1,0 +1,78 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("Candlestick Reversal System", overlay = true)
+pivotlbar = input(defval = 5, title ="Length to Highest/Lowest")
+highleftempty = pivothigh(pivotlbar, 0)
+lowleftempty = pivotlow(pivotlbar, 0)
+showma = input(defval = false, title = "SMA", inline = "ma")
+malen = input(defval = 10, title = "", inline = "ma")
+macol = input(defval = color.blue, title = "", inline = "ma")
+
+plot(showma ? sma(close, malen) : na, color = showma ? macol : na, linewidth = 2)
+
+// Wick Reversal System
+l01 = input(true, title = "Enable Wick Reversal System")
+wick_multiplier = input(title = "Wick Multiplier", defval = 2.5, step = 0.5, maxval = 20)
+body_percentage = input(title = "Body Percentage", defval = 0.25, step = 0.1, maxval = 1)
+
+O = open
+C = close
+H = high
+L = low
+
+Wlongsignal = (C > O) and (O - L) >= ((C - O) * wick_multiplier) and (H - C) <= ((H - L) * body_percentage) or
+   (C < O) and (C - L) >= ((O - C) * wick_multiplier) and (H - C) <= ((H - L) * body_percentage) or
+   (C == O and C != H) and (H - L) >= ((H - C) * wick_multiplier) and (H - C) <= ((H - L) * body_percentage) or
+   (O == H and C == H) and (H - L) >= sma((H - L), 50)
+
+Wshortsignal = (C < O) and (H - O) >= ((O - C) * wick_multiplier) and (C - L) <= ((H - L) * body_percentage) or
+   (C > O) and (H - C) >= ((C - O) * wick_multiplier) and (C - L) <= ((H -L) * body_percentage) or
+   (C == O and C != L) and (H - L) >= ((C - L) * wick_multiplier) and (C - L) <= ((H - L) * body_percentage) or
+   (O == L and C == L) and (H - L) >= sma((H - L), 50)
+
+// Exteme Reversal System
+l02 = input(true, title = "Enable Exteme Reversal System")
+bodysize = input(title = "Body Size", defval = 0.525, step = 0.05, maxval = 1)
+barsback = input(title = "Bars Back", defval = 50, maxval = 50)
+bodymultiplier = input(title = "Body Multiplier", defval = 2, step = 0.25, maxval = 5)
+
+mybodysize = abs(C - O)
+AverageBody = sma(mybodysize, barsback)
+mycandlesize = (H - L)
+AverageCandle = sma(mycandlesize, barsback)
+
+Elongsignal = ((O[1] - C[1]) >= (bodysize * (H[1] - L[1]))) and ((H[1] - L[1]) > (AverageCandle * bodymultiplier)) and ((O[1] - C[1]) >  AverageBody) and (C > O)
+Eshortsignal = ((C[1] - O[1]) >= (bodysize * (H[1] - L[1]))) and ((H[1] - L[1]) > (AverageCandle * bodymultiplier)) and ((C[1] - O[1]) >  AverageBody) and (O > C)
+
+// outside Reversal System
+l03  = input(true, title = "Enable Outside Reversal System")
+
+BarMultiplier = input(title = "Body Multiplier", defval = 1.25, step = 0.05, maxval = 3.5)
+BarsBack = input(title = "Bars Back", defval = 50, maxval = 250)
+AverageCandle1 = sma(mycandlesize, BarsBack)
+
+Olongsignal = L < L[1] and C > H[1] and (H - L) >= AverageCandle1 * BarMultiplier
+Oshortsignal = H > H[1] and C < L[1] and (H - L) >= AverageCandle1 * BarMultiplier
+
+// Doji Reversal System
+l04 = input(true, title = "Enable Doji Reversal System")
+
+percentage = input(title = "Body Percentage", defval = 0.10, step = 0.1, minval = 0.1)
+
+frangehl = H[1] - L[1]
+frangeco = abs(C[1] - O[1])
+sma10 = sma(close, 10)
+
+Dshortsignal = (frangeco <= frangehl * percentage and C < L[1] and L[1] > sma10 and C < O)  or (C < L[2] and C[1] >= L[2] and frangeco <= frangeco * percentage and C < O and L[2] > sma10)
+Dlongsignal = (frangeco <= frangehl * percentage and C > H[1] and H[1] < sma10 and C > O)  or (C > H[2] and C[1] <= H[2] and frangeco <= frangeco * percentage and C > O and H[2] < sma10)
+
+longsignal = lowleftempty and ((l01 and Wlongsignal) or (l02 and Elongsignal) or (l03 and Olongsignal) or (l04 and Dlongsignal))
+shortsignal = highleftempty and ((l01 and Wlongsignal) or (l02 and Eshortsignal) or (l03 and Oshortsignal) or (l04 and Dshortsignal))
+
+plotshape(longsignal, color = color.blue, location = location.belowbar, style = shape.triangleup, size = size.small)
+plotshape(shortsignal, color = color.red, location = location.abovebar, style = shape.triangledown, size = size.small)
+
+alertcondition(longsignal, title='Long Signal', message='Long Signal')
+alertcondition(shortsignal, title='Short Signal', message='Short Signal')

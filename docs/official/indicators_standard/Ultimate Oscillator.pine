@@ -1,0 +1,13 @@
+//@version=6
+indicator(title="Ultimate Oscillator", shorttitle="UO", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+length1 = input.int(7, minval=1, title = "Fast Length"), length2 = input.int(14, minval=1, title = "Middle Length"), length3 = input.int(28, minval=1, title = "Slow Length")
+average(bp, tr_, length) => math.sum(bp, length) / math.sum(tr_, length)
+high_ = math.max(high, close[1])
+low_ = math.min(low, close[1])
+bp = close - low_
+tr_ = high_ - low_
+avg7 = average(bp, tr_, length1)
+avg14 = average(bp, tr_, length2)
+avg28 = average(bp, tr_, length3)
+out = 100 * (4*avg7 + 2*avg14 + avg28)/7
+plot(out, color=#F44336, title="Oscillator")

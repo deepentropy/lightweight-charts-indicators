@@ -1,0 +1,337 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TFlab
+
+//@version=5
+indicator("One Shot One Kill ICT [TradingFinder] Liquidity MMXM + CISD OTE", "TFlab One Shot One Kill", overlay = true, max_bars_back = 5000, max_labels_count = 500, max_lines_count = 500)
+
+
+//CISD Logical Setting
+BarBackCheck        = input.int(5, 'Bar Back Check' , minval = 1,group = 'CISD Logical Setting')
+CISDVal             = input.int(25, 'CISD Level Validity' , minval = 1,group = 'CISD Logical Setting')
+
+//Liquidity Logical Setting
+SwingPeriod         = input.int(50, 'Swing Period' , minval = 1, group = 'Liquidity Logical Setting')
+MaxSwingBack_Method = input.string('All', 'Max Swing Back Method' , ['All', 'Custom'], group = 'Liquidity Logical Setting')
+MaxSwingBack        = input.int(100, 'Swing Swing Back' , minval = 1, group = 'Liquidity Logical Setting')
+
+//CISD Display Setting
+CISD_AShow          = input.bool(true, 'Show All CISD'  ,group = 'CISD Display Setting')
+CISD_HShow          = input.bool(true, 'Show High CISD' ,group = 'CISD Display Setting', inline = 'CH')
+CISD_LShow          = input.bool(true, 'Show Low CISD'  ,group = 'CISD Display Setting', inline = 'CL')
+CISD_HNColor        = input.color(#870505   , 'Name'  ,group = 'CISD Display Setting', inline = 'CH')
+CISD_LNColor        = input.color(#014f07   , 'Name'  ,group = 'CISD Display Setting', inline = 'CL')
+CISD_HLColor        = input.color(#b90000b8 , 'Line'  ,group = 'CISD Display Setting', inline = 'CH')
+CISD_LLColor        = input.color(#069206a7 , 'Line'  ,group = 'CISD Display Setting', inline = 'CL')
+
+//Liquidity Display Setting
+Liquidity_AShow           = input.bool(true, 'Show All Liquidity'  ,group = 'Liquidity Display Setting')
+Liquidity_HShow           = input.bool(true, 'Show High Liquidity' ,group = 'Liquidity Display Setting', inline = 'SH')
+Liquidity_LShow           = input.bool(true, 'Show Low Liquidity'  ,group = 'Liquidity Display Setting', inline = 'SL')
+Liquidity_HNColor         = input.color(#870505 , 'Name'   ,group = 'Liquidity Display Setting', inline = 'SH')
+Liquidity_LNColor         = input.color(#014f07 , 'Name'   ,group = 'Liquidity Display Setting', inline = 'SL')
+Liquidity_HLColor         = input.color(#b90000b8 , 'Line' ,group = 'Liquidity Display Setting', inline = 'SH')
+Liquidity_LLColor         = input.color(#069206a7 , 'Line' ,group = 'Liquidity Display Setting', inline = 'SL')
+
+var line PDH_Line = na
+var line PDL_Line = na
+var label PDH_Label = na
+var label PDL_Label = na
+var bool Permit_HReset_LQ = na
+var bool Permit_LReset_LQ = na
+
+//PD Function
+HTF_Info(x) =>
+    var float H = 0.0
+    var float L = 0.0
+    var int   T = 0
+    if barstate.isconfirmed
+        H := high[x]
+        L := low[x]
+        T := time[x]
+    [H, L, T]
+[PDH , PDL, PDT] = request.security(syminfo.tickerid, '1D', HTF_Info(0))
+
+//PD Drawing
+if PDT  != PDT[1]   
+    PDH_Line := line.new(time, PDH, time, PDH,xloc = xloc.bar_time, style = line.style_solid, color = color.black, width = 3)
+    PDL_Line := line.new(time, PDL, time, PDL,xloc = xloc.bar_time, style = line.style_solid, color = color.black, width = 3)
+    PDH_Label := label.new(time, PDH, 'PDH', xloc = xloc.bar_time, style =  label.style_label_left, color = #ffffff00)
+    PDL_Label := label.new(time, PDL, 'PDL', xloc = xloc.bar_time, style =  label.style_label_left, color = #ffffff00)
+    line.delete(PDH_Line[1])
+    line.delete(PDL_Line[1])
+    label.delete(PDH_Label[1])
+    label.delete(PDL_Label[1])   
+else
+    PDH_Line.set_x2(time)
+    PDL_Line.set_x2(time)
+    PDH_Label.set_x(time)
+    PDL_Label.set_x(time)
+
+//Fibo Function
+Fibo(X0, X1) =>
+    Y_236 = X0 + ((X1 - X0) * 0.236)
+    Y_382 = X0 + ((X1 - X0) * 0.382)
+    Y_500 = X0 + ((X1 - X0) * 0.500)
+    Y_618 = X0 + ((X1 - X0) * 0.618)
+    Y_786 = X0 + ((X1 - X0) * 0.786)
+    [Y_236,Y_382,Y_500,Y_618,Y_786]
+
+
+//Liquidity Detector Function
+Liquidity_Detector(SwingPeriod, MaxSwingBack_Method, MaxSwingBack, LiquidityType, BackToBreakPeriod, Name, AShow, HShow, LShow, HNColor, LNColor , HLColor, LLColor, Permit_HReset, Permit_LReset) => //Swing Failure 
+    ATR = ta.atr(55)
+    const int Z = 100000000000000000
+
+    var MSH_P = array.new_float()
+    var MSH_I = array.new_int()
+    var MSL_P = array.new_float()
+    var MSL_I = array.new_int()
+
+    var line MSH_Line   = na
+    var MSH_Permit = array.new_bool()
+    var AOI_MSH = array.new_int()//Another Opportunity Index
+
+    var line MSL_Line   = na 
+    var MSL_Permit = array.new_bool()
+    var AOI_MSL = array.new_int()//Another Opportunity Index
+
+
+    var label MSH_Label = na
+    var label MSL_Label = na
+
+    var label MSH_Shap = na
+    var label MSL_Shap = na
+
+    var float Last_MSH_P = 0.0
+    var int Last_MSH_I   = 0
+    var float Last_MSL_P = 0.0
+    var int Last_MSL_I   = 0
+
+    int HSwingBack = 0
+    int LSwingBack = 0
+    
+    var bool RealLiquidity         = na
+    var bool ConsiderableLiquidity = na
+
+    bool HAlert = na
+    bool LAlert = na  
+
+
+    MSH = ta.pivothigh(SwingPeriod , SwingPeriod)   // Major Swing High
+    MSL = ta.pivotlow(SwingPeriod , SwingPeriod)   // Major Swing Low
+
+    if not (not MSH)
+        MSH_P.push(high[SwingPeriod])
+        MSH_I.push(time[SwingPeriod])
+        MSH_Permit.push(true)
+        AOI_MSH.push(Z)
+
+    if not (not MSL)
+        MSL_P.push(low[SwingPeriod])
+        MSL_I.push(time[SwingPeriod])
+        MSL_Permit.push(true)
+        AOI_MSL.push(Z)
+
+    if  MSH_P.size() > 0 
+        Last_MSH_P := MSH_P.get(MSH_P.size() - 1)
+        Last_MSH_I := MSH_I.get(MSH_I.size() - 1)
+
+    if  MSL_P.size() > 0 
+        Last_MSL_P := MSL_P.get(MSL_P.size() - 1)
+        Last_MSL_I := MSL_I.get(MSL_I.size() - 1)
+
+    switch MaxSwingBack_Method
+        'All'    => HSwingBack := MSH_P.size() , LSwingBack := MSL_P.size()
+        'Custom' => HSwingBack := MaxSwingBack , LSwingBack := MaxSwingBack 
+
+    switch LiquidityType
+        'All'              => RealLiquidity := true  , ConsiderableLiquidity := true
+        'Real Liquidity'         => RealLiquidity := true  , ConsiderableLiquidity := false
+        'Considerable Liquidity' => RealLiquidity := false , ConsiderableLiquidity := true
+
+
+    if MSH_P.size() > (MaxSwingBack_Method == 'All' ? 1 : HSwingBack)
+        if bar_index > bar_index[1] 
+            for i = 1 to HSwingBack   by 1
+                if  MSH_Permit.get(MSH_P.size()  - i)
+                    if    (bar_index <= AOI_MSH.get(AOI_MSH.size() - i) + BackToBreakPeriod) 
+                        if   (MSH_P.get(MSH_P.size() - i)  < high and MSH_P.get(MSH_P.size() - i)  > close and (AOI_MSH.get(AOI_MSH.size() - i) == Z) and RealLiquidity ) 
+                             or   ( (MSH_P.get(MSH_P.size() - i) > close and (MSH_P.get(MSH_P.size() - i) < close[1]))
+                             and  close < open[1] and low < low[1] and ConsiderableLiquidity)
+                            MSH_Permit.set(MSH_P.size() - i  , false)
+                            if AShow and HShow
+                                MSH_Line  := line.new(MSH_I.get(MSH_P.size() - i), MSH_P.get(MSH_P.size() - i), time, MSH_P.get(MSH_P.size() - i), color = na , style = line.style_dashed , xloc = xloc.bar_time)
+                                MSH_Label := label.new(bar_index, (high + 1.15 * ATR), Name, color = #ffffff00, textcolor = na, style = label.style_label_down, size = size.small)
+                                
+                            HAlert := true
+                    if ((MSH_P.get(MSH_P.size() - i)  < close) and (AOI_MSH.get(AOI_MSH.size() - i) == Z))
+                        AOI_MSH.set(AOI_MSH.size() - i, bar_index)
+
+    if Permit_HReset[1] and Permit_HReset == false
+        MSH_Line.set_color(HLColor)
+        MSH_Label.set_textcolor(HNColor)
+
+        
+    if MSL_P.size() > (MaxSwingBack_Method == 'All' ? 1 : LSwingBack)
+        if bar_index > bar_index[1] 
+            for i = 1 to  LSwingBack  by 1
+                if  MSL_Permit.get(MSL_P.size()  - i)
+                    if    (bar_index <= AOI_MSL.get(AOI_MSL.size() - i) + BackToBreakPeriod) 
+                        if    (MSL_P.get(MSL_P.size() - i)  > low and MSL_P.get(MSL_P.size() - i)  < close and (AOI_MSL.get(AOI_MSL.size() - i) == Z) and RealLiquidity )
+                             or   ( (MSL_P.get(MSL_P.size() - i) < close and MSL_P.get(MSL_P.size() - i) > close[1])
+                             and  close > open[1] and high > high[1] and ConsiderableLiquidity)
+                            MSL_Permit.set(MSL_P.size() - i  , false)
+                            if AShow and LShow
+                                MSL_Line  := line.new(MSL_I.get(MSL_P.size() - i), MSL_P.get(MSL_P.size() - i), time, MSL_P.get(MSL_P.size() - i), color = na , style = line.style_dashed , xloc = xloc.bar_time)
+                                MSL_Label := label.new(bar_index, (low - 1.15 * ATR), Name, color = #ffffff00, textcolor = na, style = label.style_label_up, size = size.small)
+                          
+                            LAlert := true
+                    if ((MSL_P.get(MSL_P.size() - i)  > close) and (AOI_MSL.get(AOI_MSL.size() - i) == Z))
+                        AOI_MSL.set(AOI_MSL.size() - i, bar_index)
+    if Permit_LReset[1] and Permit_LReset == false
+        MSL_Line.set_color(LLColor)
+        MSL_Label.set_textcolor(LNColor)
+    [nz(HAlert), nz(LAlert)]
+
+
+//CISD Detector Function
+CISDLevelDetector(CondHigh, CondLow, BarBackCheck, Label, AShow, HShow, LShow, HNColor, LNColor , HLColor, LLColor) =>
+    ATR = ta.atr(55)
+    var line Bu_0 = na, var line Bu_236 = na, var line Bu_382 = na ,var line Bu_500 = na ,var line Bu_618 = na ,var line Bu_786 = na, var line Bu_1 = na
+    var line Be_0 = na, var line Be_236 = na, var line Be_382 = na ,var line Be_500 = na ,var line Be_618 = na ,var line Be_786 = na, var line Be_1 = na
+    var label Bu_L0 = na, var label Bu_L236 = na, var label Bu_L382 = na ,var label Bu_L500 = na ,var label Bu_L618 = na ,var label Bu_L786 = na, var label Bu_L1 = na
+    var label Be_L0 = na, var label Be_L236 = na, var label Be_L382 = na ,var label Be_L500 = na ,var label Be_L618 = na ,var label Be_L786 = na, var label Be_L1 = na
+    var float Bull_High   = 0.0
+    var float Bull_Low    = 0.0
+    var float Bear_High   = 0.0
+    var float Bear_Low    = 0.0
+    var float CISDLvLP_L  = 0.0
+    var float CISDLvLP_H  = 0.0
+    var int   Bull_Bar    = 0
+    var int   Bear_Bar    = 0
+    var int CISDLvLI_L  = 0
+    var int CISDLvLI_H  = 0  
+    var bool Permit_HSet = true
+    var bool Permit_LSet = true
+    var bool Permit_HReset = true
+    var bool Permit_LReset = true  
+    var bool Permit_HRSet = true
+    var bool Permit_LRSet = true 
+    var line  CISD_LineL  = na
+    var line  CISD_LineH  = na
+    var label CISD_NameH = na
+    var label CISD_NameL = na
+    var label CISD_ShapH = na
+    var label CISD_ShapL = na
+    Body = close - open
+
+    if CondHigh
+        Bear_High := math.max(high, high[1], high[2])
+        Bear_Low  := low
+        Bear_Bar  := time
+        Permit_HSet := true
+        Permit_HRSet:= true
+        for i = 1 to BarBackCheck by 1
+            if Body[i] < 0 and Permit_HSet
+                Permit_HReset := true
+                CISDLvLP_H := (BarBackCheck > 1 and i > 1) ? math.min(open[i - 1], open[i - 2]) : open[i - 1]
+                CISDLvLI_H := (BarBackCheck > 1 and i > 1) ? (math.min(open[i - 1], open[i - 2]) == open[i - 2]) ? bar_index[i - 2] : bar_index[i - 1] : bar_index[i - 1]
+                if AShow and HShow
+                    CISD_LineH := line.new(CISDLvLI_H, CISDLvLP_H, bar_index , CISDLvLP_H , color = na, style = line.style_dotted)
+                    CISD_NameH := label.new(CISDLvLI_H + 1 , low[bar_index - CISDLvLI_H] - (ATR * 0.3) , Label, color = na, style = label.style_label_upper_left , textcolor = na, size = size.small)
+                Permit_HSet := false
+
+    if Permit_HReset 
+        if  close >= CISDLvLP_H and (bar_index - line.get_x1(CISD_LineH)) <= CISDVal
+            CISD_LineH.set_x2(bar_index + 1)
+        if  close <= CISDLvLP_H and (bar_index - line.get_x1(CISD_LineH)) <= CISDVal
+            Permit_HReset := false
+            CISD_LineH.set_color(#890505)
+            CISD_NameH.set_textcolor(#890505)
+            
+    
+    //Fibo Levels
+    if  (bar_index - line.get_x1(CISD_LineH)) <= CISDVal
+        Bear_High := high > Bear_High ? high : Bear_High
+        Bear_Bar  := high >= Bear_High ? time : Bear_Bar
+        Bear_Low  := low  < Bear_Low  ? low  : Bear_Low
+    [Bear_236,Bear_382,Bear_500,Bear_618,Bear_786] = Fibo(Bear_Low , Bear_High)
+
+    if Permit_HReset[1] and Permit_HReset == false
+        Be_0   := line.new(Bear_Bar, Bear_High,time + 20*(time - time[1]) , Bear_High, xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+        Be_236 := line.new(Bear_Bar, Bear_236 ,time + 20*(time - time[1]) , Bear_236 , xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+        Be_382 := line.new(Bear_Bar, Bear_382 ,time + 20*(time - time[1]) , Bear_382 , xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+        Be_500 := line.new(Bear_Bar, Bear_500 ,time + 20*(time - time[1]) , Bear_500 , xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+        Be_618 := line.new(Bear_Bar, Bear_618 ,time + 20*(time - time[1]) , Bear_618 , xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+        Be_786 := line.new(Bear_Bar, Bear_786 ,time + 20*(time - time[1]) , Bear_786 , xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+        Be_1   := line.new(Bear_Bar, Bear_Low ,time + 20*(time - time[1]) , Bear_Low , xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+
+        Be_L0   := label.new(time + 20*(time - time[1]) , Bear_High, '1'    , xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+        Be_L236 := label.new(time + 20*(time - time[1]) , Bear_236 , '0.236', xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+        Be_L382 := label.new(time + 20*(time - time[1]) , Bear_382 , '0.382', xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+        Be_L500 := label.new(time + 20*(time - time[1]) , Bear_500 , '0.5'  , xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+        Be_L618 := label.new(time + 20*(time - time[1]) , Bear_618 , '0.618', xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+        Be_L786 := label.new(time + 20*(time - time[1]) , Bear_786 , '0.786', xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+        Be_L1   := label.new(time + 20*(time - time[1]) , Bear_Low , '0'    , xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+
+
+    if CondLow
+        Bull_High := high
+        Bull_Low  := math.min(low , low[1] , low[2] )
+        Bull_Bar  := time
+        Permit_LSet := true
+        Permit_LRSet := true
+        for i = 1 to BarBackCheck by 1
+            if Body[i] > 0 and Permit_LSet
+                Permit_LReset := true
+                CISDLvLP_L := (BarBackCheck > 1  and i > 1) ? math.max(open[i - 1], open[i - 2]) : open[i - 1]
+                CISDLvLI_L := (BarBackCheck > 1  and i > 1) ? (math.max(open[i - 1], open[i - 2]) == open[i - 2]) ? bar_index[i - 2] : bar_index[i - 1] : bar_index[i - 1]
+                if AShow and LShow
+                    CISD_LineL := line.new(CISDLvLI_L, CISDLvLP_L, bar_index , CISDLvLP_L, color = na, style = line.style_dotted)
+                    CISD_NameL := label.new(CISDLvLI_L + 1 , high[bar_index - CISDLvLI_L] + (ATR * 0.6) , Label, color = na, style = label.style_label_lower_right , textcolor = na , size = size.small)
+                Permit_LSet := false
+
+    if Permit_LReset 
+        if  close <= CISDLvLP_L and (bar_index - line.get_x1(CISD_LineL)) <= CISDVal
+            CISD_LineL.set_x2(bar_index + 1) 
+        if  close >= CISDLvLP_L and (bar_index - line.get_x1(CISD_LineL)) <= CISDVal
+            Permit_LReset := false
+            CISD_LineL.set_color(#016004)
+            CISD_NameL.set_textcolor(#016004)         
+    //Fibo Levels
+    if  (bar_index - line.get_x1(CISD_LineL)) <= CISDVal
+        Bull_High := high > Bull_High ? high : Bull_High
+        Bull_Low  := low  < Bull_Low  ? low  : Bull_Low
+        Bull_Bar  := low  <= Bull_Low  ? time : Bull_Bar
+
+    [Bull_236,Bull_382,Bull_500,Bull_618,Bull_786] = Fibo(Bull_High, Bull_Low)   
+    if Permit_LReset[1] and Permit_LReset == false
+        Bu_0   := line.new(Bull_Bar, Bull_High,time+ 20*(time - time[1])  , Bull_High, xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+        Bu_236 := line.new(Bull_Bar, Bull_236 ,time+ 20*(time - time[1])  , Bull_236 , xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+        Bu_382 := line.new(Bull_Bar, Bull_382 ,time+ 20*(time - time[1])  , Bull_382 , xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+        Bu_500 := line.new(Bull_Bar, Bull_500 ,time+ 20*(time - time[1])  , Bull_500 , xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+        Bu_618 := line.new(Bull_Bar, Bull_618 ,time+ 20*(time - time[1])  , Bull_618 , xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+        Bu_786 := line.new(Bull_Bar, Bull_786 ,time+ 20*(time - time[1])  , Bull_786 , xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+        Bu_1   := line.new(Bull_Bar, Bull_Low ,time+ 20*(time - time[1])  , Bull_Low , xloc = xloc.bar_time, style = line.style_dashed, color = color.black)
+
+        Bu_L0   := label.new(time+ 20*(time - time[1])  , Bull_High, '0'    , xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+        Bu_L236 := label.new(time+ 20*(time - time[1])  , Bull_236 , '0.236', xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+        Bu_L382 := label.new(time+ 20*(time - time[1])  , Bull_382 , '0.382', xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+        Bu_L500 := label.new(time+ 20*(time - time[1])  , Bull_500 , '0.5'  , xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+        Bu_L618 := label.new(time+ 20*(time - time[1])  , Bull_618 , '0.618', xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+        Bu_L786 := label.new(time+ 20*(time - time[1])  , Bull_786 , '0.786', xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+        Bu_L1   := label.new(time+ 20*(time - time[1])  , Bull_Low , '1'    , xloc = xloc.bar_time,style = label.style_label_left, color = #ffffff00)
+
+    [Permit_HReset, Permit_LReset]
+ 
+//Call Liquidity Detector Function
+
+[H , L] = Liquidity_Detector(SwingPeriod, MaxSwingBack_Method, MaxSwingBack, 'Real Liquidity', 2, 'Liquidity', Liquidity_AShow, Liquidity_HShow, Liquidity_LShow, Liquidity_HNColor, Liquidity_LNColor , Liquidity_HLColor, Liquidity_LLColor, Permit_HReset_LQ, Permit_LReset_LQ)
+
+//Call CISD Detector Function
+[Permit_HReset, Permit_LReset] = CISDLevelDetector(H, L, BarBackCheck, 'CISD level', CISD_AShow, CISD_HShow, CISD_LShow, CISD_HNColor, CISD_LNColor , CISD_HLColor, CISD_LLColor)
+
+if Permit_HReset != Permit_HReset[1] 
+    Permit_HReset_LQ := Permit_HReset
+if Permit_LReset != Permit_LReset[1] 
+    Permit_LReset_LQ := Permit_LReset

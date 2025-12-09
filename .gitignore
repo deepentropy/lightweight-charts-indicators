@@ -1,0 +1,5 @@
+.idea/
+dist
+node_modules
+.claude
+example/node_modules

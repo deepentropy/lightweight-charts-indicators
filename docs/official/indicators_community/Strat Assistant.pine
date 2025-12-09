@@ -1,0 +1,454 @@
+// © rickyzcarroll
+
+//@version=4
+// Script to provide indicators for all things STRAT
+// Twitter follow if you have any questions @RickyZane85
+
+///////////////////////////////////////////////
+// START: static variables / constants 
+///////////////////////////////////////////////
+_bullColor = color.green
+_bearColor = color.red
+_outsideColor = color.fuchsia
+_insideColor = color.new(#F6BE00, 0) // darker yellow so it shows up on white background
+_bullShape = shape.arrowup
+_bearShape = shape.arrowdown
+
+_oneBarColor = _insideColor
+_oneBarChar = "1"
+
+_twoUpBarColor = _bullColor
+_twoUpBarChar = "2"
+_twoUpBarStyle = _bullShape
+
+_twoDownBarColor = _bearColor
+_twoDownBarChar = "2"
+_twoDownBarStyle = _bearShape
+
+_threeBarColor = _outsideColor
+_threeBarChar = "3"
+
+_barCharLocation = location.belowbar
+_barShapeLocation = location.abovebar
+
+_stratComboLocation = location.top
+_stratComboStyle = shape.flag
+_stratComboOffset = 3
+
+_actionableOffset = 2
+_actionalSignalShape = shape.flag
+_actionalSignalLocation = location.bottom
+
+// 0 index works right to left
+_firstBarIndex=0
+_secondBarIndex=1
+_thirdBarIndex=2
+_fourthBarIndex=3
+_barIndexOffset=1
+
+// for labels and text
+_is222BearishContinuation="222 Bearish \nContinuation"
+_is222BullishContinuation="222 Bullish \nContinuation"
+_is212BearishContinuationMeasuredMove="212 Bearish Continuation \nMeasured Move"
+_is212BullishContinuationMeasuredMove="212 Bullish Continuation \nMeasured Move" 
+_is22BearishReversal="22 Bearish \nReversal" 
+_is22BullishReversal="22 Bullish \nReversal" 
+_is212BearishReversal="212 Bearish \nReversal" 
+_is212BullishReversal="212 Bullish \nReversal" 
+_is322BearishReversal="322 Bearish \nReversal" 
+_is322BullishReversal="322 Bullish \nReversal" 
+_is32BearishReversal="32 Bearish \nReversal" 
+_is32BullishReversal="32 Bullish \nReversal" 
+_is312BearishReversal="312 Bearish \nReversal" 
+_is312BullishReversal="312 Bullish \nReversal"
+_is122BearishRevStratReversal="122 Bearish RevStrat \nReversal" 
+_is122BullishRevStratReversal="122 Bullish RevStrat \nReversal" 
+_is2222BearishRandyJackson="2222 Bearish \nRandyJackson" 
+_is2222BullishRandyJackson="2222 Bullish \nRandyJackson" 
+_is3BearishRevStratReversal="3 Bearish \nRevStrat Reversal" 
+_is3BullishRevStratReversal="3 Bullish \nRevStrat Reversal" 
+
+// Ftc variables
+_ftcLocation=location.absolute
+
+_oneMinuteTimeFrame = "1"
+_threeMinuteTimeFrame = "3"
+_fiveMinuteTimeFrame = "5"
+_tenMinuteTimeFrame = "10"
+_fifteenMinuteTimeFrame = "15"
+_thirtyMinuteTimeFrame = "30"
+_fourtyFiveMinuteTimeFrame = "45"
+_hourTimeFrame = "60"
+_twoHourTimeFrame = "120"
+_threeHourTimeFrame = "180"
+_fourHourTimeFrame = "240"
+_dayTimeFrame = "D"
+_weekTimeFrame = "W"
+_monthTimeFrame = "M"
+_quarterTimeFrame = "3M"
+
+_ftcBaseOffset = 1
+_ftc15Offset = _ftcBaseOffset + 1
+_ftc30Offset = _ftcBaseOffset + 2
+_ftcHourOffset = _ftcBaseOffset + 3
+_ftcFourHourOffset = _ftcBaseOffset + 4
+_ftcDayOffset = _ftcBaseOffset + 5
+_ftcWeekOffset = _ftcBaseOffset + 6
+_ftcMonthOffset = _ftcBaseOffset + 7
+_ftcQuarterOffset = _ftcBaseOffset + 8
+
+_ftc15Text = "15"
+_ftc30Text = "30"
+_ftcHourText = "H"
+_ftcFourHourText = "4H"
+_ftcDayText = "D"
+_ftcWeekText = "W"
+_ftcMonthText = "M"
+_ftcQuarterText = "Q"
+_ftcInsideText = "IN\n" // wanted this as input, but pine script doesn't like it
+_ftcOutsideText = "O\n" // wanted this as input, but pine script doesn't like it
+
+///////////////////////////////////////////////
+// END: static variables / constants 
+///////////////////////////////////////////////
+
+
+///////////////////////////////////////////////
+// START: user input
+///////////////////////////////////////////////
+// change the percentage of the wick for actionable indicators
+_actionWickPercentage = input(title="Action Wick Percentage", type=input.float, defval=.75)
+
+// previous day lines switches and colors
+_isPrevDayHighLineActive=input(title="Prev Day High Line Active?", type=input.bool, defval=true)
+_prevDayHighColor=input(title="Prev Day High Line Color", type=input.color, defval=color.lime)
+_isPrevDayLowLineActive=input(title="Prev Day Low Line Active?", type=input.bool, defval=true)
+_prevDayLowColor=input(title="Prev Day High Line Color", type=input.color, defval=color.maroon)
+
+_isPrevWeekHighLineActive=input(title="Prev Week High Lines Active?", type=input.bool, defval=false)
+_prevWeekHighColor=input(title="Prev Week High Line Color", type=input.color, defval=color.orange)
+_isPrevWeekLowLineActive=input(title="Prev Week Low Lines Active?", type=input.bool, defval = false)
+_prevWeekLowColor=input(title="Prev Week Low Line Color", type=input.color, defval=color.purple)
+
+// turn on and off ftc
+_isFtcActive=input(title="Full Time Frame Continuity Active?", type=input.bool, defval=true)
+
+// turn on and off debug label
+_isDebugLabelActive=input(title="Debug Label (Beta)", type=input.bool, defval=false)
+
+///////////////////////////////////////////////
+// END: user input
+///////////////////////////////////////////////
+
+
+///////////////////////////////////////////////
+// START: Functions & Logic
+///////////////////////////////////////////////
+
+// reusable bar identifier functions for current time fraem
+getOneBar(rightBar,leftBar) =>
+    high[rightBar] <= high[leftBar] and low[rightBar] >= low[leftBar]
+
+getTwoUpBar(rightBar, leftBar) =>
+    high[rightBar] > high[leftBar] and not (low[rightBar] < low[leftBar])
+
+getTwoDownBar(rightBar, leftBar) => 
+    low[rightBar] < low[leftBar] and not (high[rightBar] > high[leftBar])
+
+getThreeBar(rightBar, leftBar) => 
+    high[rightBar] > high[leftBar] and low[rightBar] < low[leftBar]
+
+
+// bar color function
+getBarColor()  => 
+    iff(getOneBar(0, 1), _oneBarColor, iff(getThreeBar(0,1), _threeBarColor, iff(getTwoUpBar(0,1), _twoUpBarColor, iff(getTwoDownBar(0,1), _twoDownBarColor, na))))
+    
+// reusable functions for each bar index
+getIndexOneBar(barIndex) => getOneBar(barIndex, (barIndex+_barIndexOffset))
+getIndexTwoUpBar(barIndex) => getTwoUpBar(barIndex, (barIndex+_barIndexOffset))
+getIndexTwoDownBar(barIndex) => getTwoDownBar(barIndex, (barIndex+_barIndexOffset))
+getIndexThreeBar(barIndex) => getThreeBar(barIndex, (barIndex+_barIndexOffset))
+
+// STRATEGY CODE: displays at the top, strategies/combos... these generally work left to right - the far right bar is index 0, add one to go back each time
+is222BearishContinuation = getIndexTwoDownBar(_thirdBarIndex) and getIndexTwoDownBar(_secondBarIndex) and getIndexTwoDownBar(_firstBarIndex)
+is222BullishContinuation = getIndexTwoUpBar(_thirdBarIndex) and getIndexTwoUpBar(_secondBarIndex) and getIndexTwoUpBar(_firstBarIndex)
+is212BearishContinuationMeasuredMove = getIndexTwoDownBar(_thirdBarIndex) and getIndexOneBar(_secondBarIndex) and getIndexTwoDownBar(_firstBarIndex)
+is212BullishContinuationMeasuredMove = getIndexTwoUpBar(_thirdBarIndex) and getIndexOneBar(_secondBarIndex) and getIndexTwoUpBar(_firstBarIndex)
+is22BearishReversal = getIndexTwoUpBar(_secondBarIndex) and getIndexTwoDownBar(_firstBarIndex) and not getIndexOneBar(_thirdBarIndex) and not getIndexTwoDownBar(_thirdBarIndex) and not getIndexTwoDownBar(3) and not getIndexThreeBar(_thirdBarIndex)
+is22BullishReversal = getIndexTwoDownBar(_secondBarIndex) and getIndexTwoUpBar(_firstBarIndex) and not getIndexOneBar(_thirdBarIndex) and not getIndexTwoUpBar(_thirdBarIndex) and not getIndexTwoUpBar(3) and not getIndexThreeBar(_thirdBarIndex)
+is212BearishReversal = getIndexTwoUpBar(_thirdBarIndex) and getIndexOneBar(_secondBarIndex) and getIndexTwoDownBar(_firstBarIndex)
+is212BullishReversal = getIndexTwoDownBar(_thirdBarIndex) and getIndexOneBar(_secondBarIndex) and getIndexTwoUpBar(_firstBarIndex)
+is322BearishReversal = getIndexThreeBar(_thirdBarIndex) and getIndexTwoUpBar(_secondBarIndex) and getIndexTwoDownBar(_firstBarIndex)
+is322BullishReversal = getIndexThreeBar(_thirdBarIndex) and getIndexTwoDownBar(_secondBarIndex) and getIndexTwoUpBar(_firstBarIndex)
+is32BearishReversal = getIndexThreeBar(_secondBarIndex) and getIndexTwoDownBar(_firstBarIndex)
+is32BullishReversal = getIndexThreeBar(_secondBarIndex) and getIndexTwoUpBar(_firstBarIndex)
+is312BearishReversal = getIndexThreeBar(_thirdBarIndex) and getIndexOneBar(_secondBarIndex) and getIndexTwoDownBar(_firstBarIndex)
+is312BullishReversal = getIndexThreeBar(_thirdBarIndex) and getIndexOneBar(_secondBarIndex) and getIndexTwoUpBar(_firstBarIndex)
+is122BearishRevStratReversal = getIndexOneBar(_thirdBarIndex) and getIndexTwoUpBar(_secondBarIndex) and getIndexTwoDownBar(_firstBarIndex)
+is122BullishRevStratReversal = getIndexOneBar(_thirdBarIndex) and getIndexTwoDownBar(_secondBarIndex) and getIndexTwoUpBar(_firstBarIndex)
+is2222BearishRandyJackson = getIndexTwoDownBar(_fourthBarIndex) and getIndexTwoDownBar(_thirdBarIndex) and getIndexTwoUpBar(_secondBarIndex) and getIndexTwoDownBar(_firstBarIndex) 
+is2222BullishRandyJackson = getIndexTwoUpBar(_fourthBarIndex) and getIndexTwoUpBar(_thirdBarIndex) and getIndexTwoDownBar(_secondBarIndex) and getIndexTwoUpBar(_firstBarIndex) 
+is3BearishRevStratReversal = getIndexThreeBar(_firstBarIndex) and close[0] < low[1]
+is3BullishRevStratReversal = getIndexThreeBar(_firstBarIndex) and close[0] > low[1]
+
+// ACTIONABLE SIGNAL CODE: displays at the bottom
+getActionalbeWickHeight(wickPercentage) => (high[0] - low[0])*wickPercentage
+getShooterTop = high[0] - getActionalbeWickHeight(_actionWickPercentage)
+getHammerBottom = low[0] + getActionalbeWickHeight(_actionWickPercentage)
+isInsideBar = getIndexOneBar(_firstBarIndex)
+isShooter = open[0] < getShooterTop and close[0] < getShooterTop and not getIndexOneBar(_firstBarIndex) //inside bar trumps hammer or shooter
+isHammer = open[0] > getHammerBottom and close[0] > getHammerBottom and not getIndexOneBar(_firstBarIndex) //inside bar trumps hammer or shooter
+
+// FULL TIME FRAME CONTINUITY CODE: 
+//reusable function for getting detail on the security
+getSecurityByTimeFrame(timeFrame) => [openValue, closeValue, highValue, lowValue, timeValue] = security(syminfo.tickerid, timeFrame, [open, close, high, low, time])
+
+// reusable bar identifier functions for series
+getOneBarBySeries(highSeries, lowSeries) =>
+    highSeries[0] <= highSeries[1] and lowSeries[0] >= lowSeries[1]
+
+getThreeBarBySeries(highSeries,lowSeries) => 
+    highSeries[0] > highSeries[1] and lowSeries[0] < lowSeries[1]
+
+
+// get open, close, high, and low series for various time frames
+[open15Value, close15Value, high15Value, low15Value, time15Value] = getSecurityByTimeFrame(_fifteenMinuteTimeFrame)
+[open30Value, close30Value, high30Value, low30Value, time30Value] = getSecurityByTimeFrame(_thirtyMinuteTimeFrame)
+[open60Value, close60Value, highHourValue, lowHourValue, timeHourValue] = getSecurityByTimeFrame(_hourTimeFrame)
+[openFourHourValue, closeFourHourValue, highFourHourValue, lowFourHourValue, timeFourHourValue] = getSecurityByTimeFrame(_fourHourTimeFrame)
+[openDayValue, closeDayValue, highDayValue, lowDayValue, timeDayValue] = getSecurityByTimeFrame(_dayTimeFrame)
+[openWeekValue, closeWeekValue, highWeekValue, lowWeekValue, timeWeekValue] = getSecurityByTimeFrame(_weekTimeFrame)
+[openMonthValue, closeMonthValue, highMonthValue, lowMonthValue, timeMonthValue ] = getSecurityByTimeFrame(_monthTimeFrame)
+[openQuarterValue, closeQuarterValue, highQuarterValue, lowQuarterValue, timeQuarterValue] = getSecurityByTimeFrame(_quarterTimeFrame)
+
+// determine if the time frame is green (or red if not green)
+is15FtcGreen = open15Value[0] <= close15Value[0]
+is30FtcGreen = open30Value[0] <= close30Value[0]
+isHourFtcGreen = open60Value[0] <= close60Value[0]
+isFourHourFtcGreen = openFourHourValue[0] <= closeFourHourValue[0]
+isDayFtcGreen = openDayValue[0] <= closeDayValue[0]
+isWeekFtcGreen = openWeekValue[0] <= closeWeekValue[0]
+isMonthFtcGreen = openMonthValue[0] <= closeMonthValue[0]
+isQuarterFtcGreen = openQuarterValue[0] <= closeQuarterValue[0]
+
+// determine if the time frame is inside
+is15FtcInside = getOneBarBySeries(high15Value, low15Value)
+is30FtcInside = getOneBarBySeries(high30Value, low30Value)
+isHourFtcInside = getOneBarBySeries(highHourValue, lowHourValue)
+isFourHourFtcInside = getOneBarBySeries(highFourHourValue, lowFourHourValue)
+isDayFtcInside = getOneBarBySeries(highDayValue, lowDayValue)
+isWeekFtcInside = getOneBarBySeries(highWeekValue, lowWeekValue)
+isMonthFtcInside = getOneBarBySeries(highMonthValue, lowMonthValue)
+isQuarterFtcInside = getOneBarBySeries(highQuarterValue, lowQuarterValue)
+
+// determine if the time frame is outside
+is15FtcOutside = getThreeBarBySeries(high15Value, low15Value)
+is30FtcOutside = getThreeBarBySeries(high30Value, low30Value)
+isHourFtcOutside = getThreeBarBySeries(highHourValue, lowHourValue)
+isFourHourFtcOutside = getThreeBarBySeries(highFourHourValue, lowFourHourValue)
+isDayFtcOutside = getThreeBarBySeries(highDayValue, lowDayValue)
+isWeekFtcOutside = getThreeBarBySeries(highWeekValue, lowWeekValue)
+isMonthFtcOutside = getThreeBarBySeries(highMonthValue, lowMonthValue)
+isQuarterFtcOutside = getThreeBarBySeries(highQuarterValue, lowQuarterValue)
+
+// do not show timeframes that are less than the time frame selected (it will be inaccurate)
+is15ValidTimeFrame = timeframe.period==_oneMinuteTimeFrame or timeframe.period==_threeMinuteTimeFrame or timeframe.period==_fiveMinuteTimeFrame or timeframe.period==_tenMinuteTimeFrame or timeframe.period==_fifteenMinuteTimeFrame
+is30ValidTimeFrame = is15ValidTimeFrame or timeframe.period==_thirtyMinuteTimeFrame
+isHourValidTimeFrame = is30ValidTimeFrame or timeframe.period==_hourTimeFrame or timeframe.period==_fourtyFiveMinuteTimeFrame
+isFourHourValidTimeFrame = isHourValidTimeFrame or timeframe.isintraday
+isDayValidTimeFrame = isFourHourValidTimeFrame or timeframe.isdaily
+isWeekValidTimeFrame = isDayValidTimeFrame or timeframe.period==_weekTimeFrame or timeframe.isintraday
+isMonthValidTimeFrame = isWeekValidTimeFrame or timeframe.ismonthly
+isQuarterValidTimeFrame = isWeekValidTimeFrame or timeframe.isdwm
+
+// offset for time frame so it doesn't go too far right
+int ftcTimeFrameOffset= 0
+if(not isQuarterValidTimeFrame)
+    ftcTimeFrameOffset := 8
+else if(not isMonthValidTimeFrame)
+    ftcTimeFrameOffset := 7
+else if(not isWeekValidTimeFrame)
+    ftcTimeFrameOffset := 6
+else if(not isDayValidTimeFrame)
+    ftcTimeFrameOffset := 5
+else if(not isFourHourValidTimeFrame)
+    ftcTimeFrameOffset := 4
+else if(not isHourValidTimeFrame)
+    ftcTimeFrameOffset := 3
+else if(not is30ValidTimeFrame)
+    ftcTimeFrameOffset := 2
+else if(not is15ValidTimeFrame)
+    ftcTimeFrameOffset := 1
+
+// ensure the timeframe as well as the history are both valid (if a stock is IPO, won't have a months of history)
+// getting rid of all history checks... current state will exist
+is15Valid = is15ValidTimeFrame
+is30Valid = is30ValidTimeFrame
+isHourValid = isHourValidTimeFrame
+isFourHourValid = isFourHourValidTimeFrame
+isDayValid = isDayValidTimeFrame
+isWeekValid = isWeekValidTimeFrame
+isMonthValid = isMonthValidTimeFrame
+isQuarterValid = isQuarterValidTimeFrame
+
+// bulk logic for Ftc to display the various shapes, colors, and indicators
+is15FtcGreenPlot = _isFtcActive and is15Valid and is15FtcGreen
+is15FtcRedPlot = _isFtcActive and is15Valid and not is15FtcGreen
+is15FtcInsidePlot = _isFtcActive and is15Valid and is15FtcInside
+is15FtcOutsidePlot = _isFtcActive and is15Valid and is15FtcOutside
+
+is30FtcGreenPlot = is30Valid and is30FtcGreen
+is30FtcRedPlot = is30Valid and not is30FtcGreen
+is30FtcInsidePlot = _isFtcActive and is30Valid and is30FtcInside
+is30FtcOutsidePlot = _isFtcActive and is30Valid and is30FtcOutside
+
+isHourFtcGreenPlot = isHourValid and isHourFtcGreen
+isHourFtcRedPlot = isHourValid and not isHourFtcGreen
+isHourFtcInsidePlot = _isFtcActive and isHourValid and isHourFtcInside
+isHourFtcOutsidePlot = _isFtcActive and isHourValid and isHourFtcOutside
+
+isFourHourFtcGreenPlot = isFourHourValid and isFourHourFtcGreen
+isFourHourFtcRedPlot = isFourHourValid and not isFourHourFtcGreen
+isFourHourFtcInsidePlot = _isFtcActive and isFourHourValid and isFourHourFtcInside
+isFourHourFtcOutsidePlot = _isFtcActive and isFourHourValid and isFourHourFtcOutside
+
+isDayFtcGreenPlot = isDayValid and isDayFtcGreen
+isDayFtcRedPlot = isDayValid and not isDayFtcGreen
+isDayFtcInsidePlot = _isFtcActive and isDayValid and isDayFtcInside
+isDayFtcOutsidePlot = _isFtcActive and isDayValid and isDayFtcOutside
+
+isWeekFtcGreenPlot = isWeekValid and isWeekFtcGreen
+isWeekFtcRedPlot = isWeekValid and not isWeekFtcGreen
+isWeekFtcInsidePlot = _isFtcActive and isWeekValid and isWeekFtcInside
+isWeekFtcOutsidePlot = _isFtcActive and isWeekValid and isWeekFtcOutside
+
+isMonthFtcGreenPlot = isMonthValid and isMonthFtcGreen
+isMonthFtcRedPlot = isMonthValid and not isMonthFtcGreen
+isMonthFtcInsidePlot = _isFtcActive and isMonthValid and isMonthFtcInside
+isMonthFtcOutsidePlot = _isFtcActive and isMonthValid and isMonthFtcOutside
+
+isQuarterFtcGreenPlot = isQuarterValid and isQuarterFtcGreen
+isQuarterFtcRedPlot = isQuarterValid and not isQuarterFtcGreen
+isQuarterFtcInsidePlot = _isFtcActive and isQuarterValid and isQuarterFtcInside
+isQuarterFtcOutsidePlot = _isFtcActive and isQuarterValid and isQuarterFtcOutside
+
+///////////////////////////////////////////////
+// END: Functions & Logic
+///////////////////////////////////////////////
+
+   
+///////////////////////////////////////////////
+// study
+///////////////////////////////////////////////
+study("Strat Assistant", overlay=true, precision=0)
+    
+
+// identify 1 candles with identifier below
+plotchar(getOneBar(0,1), title="One Bar", char=_oneBarChar, location=_barCharLocation, color=_oneBarColor)
+
+// identify 2 up candle with identifier below and indicator above
+plotshape(getTwoUpBar(0,1), style=_twoUpBarStyle, title="Two Up Bar Shape", location=_barShapeLocation, color=_twoUpBarColor)
+plotchar(getTwoUpBar(0,1), title="Two Up Bar", char=_twoUpBarChar, location=_barCharLocation, color=_twoUpBarColor)
+
+// identify 2 down candle with identifier below and indicator above
+plotshape(getTwoDownBar(0,1), style=_twoDownBarStyle, title="Two Bar Shape", location=_barShapeLocation, color=_twoDownBarColor)
+plotchar(getTwoDownBar(0,1), title="Two Down Bar", char=_twoDownBarChar, location=_barCharLocation, color=_twoDownBarColor)
+
+// identify 3 candle with indentifier below
+plotchar(getThreeBar(0,1), title="Three Bar", char=_threeBarChar, location=_barCharLocation, color=_threeBarColor)
+
+// change bar color    
+barcolor(getBarColor())
+
+// plot shape for actionableSignals
+plotshape(isShooter, title="isShooter Label", style=_actionalSignalShape, color=_bearColor, location=_actionalSignalLocation, text="Shooter", textcolor=_bearColor, offset=_actionableOffset, show_last=1)
+plotshape(isHammer, title="isHammer Label", style=_actionalSignalShape, color=_bullColor, location=_actionalSignalLocation, text="Hammer", textcolor=_bullColor, offset=_actionableOffset,show_last=1)
+plotshape(isInsideBar, title="isInsideBar Label", style=_actionalSignalShape, color=_insideColor, location=_actionalSignalLocation, text="Inside Bar", textcolor=_insideColor, offset=_actionableOffset,show_last=1)
+
+// plot shape for full time frame continuity, as well as outside vs inside text above the time frame if applicable
+plotchar(is15FtcInsidePlot ? close: na, title="isFtc15Inside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftc15Offset-ftcTimeFrameOffset, color=_insideColor, show_last=1)
+plotchar(is15FtcOutsidePlot ? close: na, title="isFtc15Outside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftc15Offset-ftcTimeFrameOffset, color=_outsideColor, show_last=1)
+plotshape(is15FtcGreenPlot ? close : na, title="isFtc15Green", style=_bullShape, text= _ftc15Text, location=_ftcLocation, offset=_ftc15Offset-ftcTimeFrameOffset, color=_bullColor, show_last=1)
+plotshape(is15FtcRedPlot ? close : na, title="isFtc15Red", style=_bearShape, text=_ftc15Text, location=_ftcLocation, offset=_ftc15Offset-ftcTimeFrameOffset, color=_bearColor, show_last=1)
+
+plotchar(is30FtcInsidePlot ? close: na, title="isFtc30Inside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftc30Offset-ftcTimeFrameOffset, color=_insideColor, show_last=1)
+plotchar(is30FtcOutsidePlot ? close: na, title="isFtc30Outside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftc30Offset-ftcTimeFrameOffset, color=_outsideColor, show_last=1)
+plotshape(is30FtcGreenPlot ? close : na, title="isFtc30Green", style=_bullShape, text= _ftc30Text, location=_ftcLocation, offset=_ftc30Offset-ftcTimeFrameOffset, color=_bullColor, show_last=1)
+plotshape(is30FtcRedPlot ? close : na, title="isFtc30Red", style=_bearShape, text=_ftc30Text, location=_ftcLocation , offset=_ftc30Offset-ftcTimeFrameOffset, color=_bearColor, show_last=1)
+
+plotchar(isHourFtcInsidePlot ? close: na, title="isFtcHourInside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftcHourOffset-ftcTimeFrameOffset, color=_insideColor, show_last=1)
+plotchar(isHourFtcOutsidePlot ? close: na, title="isFtcHourOutside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftcHourOffset-ftcTimeFrameOffset, color=_outsideColor, show_last=1)
+plotshape(isHourFtcGreenPlot ? close : na, title="isFtcHourGreen", style=_bullShape, text= _ftcHourText, location=_ftcLocation, offset=_ftcHourOffset-ftcTimeFrameOffset, color=_bullColor, show_last=1)
+plotshape(isHourFtcRedPlot ? close : na, title="isFtcHourRed", style=_bearShape, text=_ftcHourText, location=_ftcLocation, offset=_ftcHourOffset-ftcTimeFrameOffset, color=_bearColor, show_last=1)
+
+plotchar(isFourHourFtcInsidePlot ? close: na, title="isFtcFourHourInside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftcFourHourOffset-ftcTimeFrameOffset, color=_insideColor, show_last=1)
+plotchar(isFourHourFtcOutsidePlot ? close: na, title="isFtcFourHourOutside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftcFourHourOffset-ftcTimeFrameOffset, color=_outsideColor, show_last=1)
+plotshape(isFourHourFtcGreenPlot ? close : na, title="isFtcFourHourGreen", style=_bullShape, text= _ftcFourHourText, location=_ftcLocation, offset=_ftcFourHourOffset-ftcTimeFrameOffset, color=_bullColor, show_last=1)
+plotshape(isFourHourFtcRedPlot ? close : na, title="isFtcFourHourRed", style=_bearShape, text=_ftcFourHourText, location=_ftcLocation , offset=_ftcFourHourOffset-ftcTimeFrameOffset, color=_bearColor, show_last=1)
+
+plotchar(isDayFtcInsidePlot ? close: na, title="isFtcDayInside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftcDayOffset-ftcTimeFrameOffset, color=_insideColor, show_last=1)
+plotchar(isDayFtcOutsidePlot ? close: na, title="isFtcDayOutside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftcDayOffset-ftcTimeFrameOffset, color=_outsideColor, show_last=1)
+plotshape(isDayFtcGreenPlot ? close : na, title="isFtcDayGreen", style=_bullShape, text= _ftcDayText, location=_ftcLocation, offset=_ftcDayOffset-ftcTimeFrameOffset, color=_bullColor, show_last=1)
+plotshape(isDayFtcRedPlot ? close : na, title="isFtcDayRed", style=_bearShape, text=_ftcDayText, location=_ftcLocation , offset=_ftcDayOffset-ftcTimeFrameOffset, color=_bearColor, show_last=1)
+
+plotchar(isWeekFtcInsidePlot ? close: na, title="isFtcWeekInside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftcWeekOffset-ftcTimeFrameOffset, color=_insideColor, show_last=1)
+plotchar(isWeekFtcOutsidePlot ? close: na, title="isFtcWeekOutside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftcWeekOffset-ftcTimeFrameOffset, color=_outsideColor, show_last=1)
+plotshape(isWeekFtcGreenPlot ? close : na, title="isFtcWeekGreen", style=_bullShape, text= _ftcWeekText, location=_ftcLocation, offset=_ftcWeekOffset-ftcTimeFrameOffset, color=_bullColor, show_last=1)
+plotshape(isWeekFtcRedPlot ? close : na, title="isFtcWeekRed", style=_bearShape, text=_ftcWeekText, location=_ftcLocation , offset=_ftcWeekOffset-ftcTimeFrameOffset, color=_bearColor,show_last=1)
+
+plotchar(isMonthFtcInsidePlot ? close: na, title="isFtcMonthInside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftcMonthOffset-ftcTimeFrameOffset, color=_insideColor, show_last=1)
+plotchar(isMonthFtcOutsidePlot ? close: na, title="isFtcMonthOutside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftcMonthOffset-ftcTimeFrameOffset, color=_outsideColor, show_last=1)
+plotshape(isMonthFtcGreenPlot ? close : na, title="isFtcMonthGreen", style=_bullShape, text= _ftcMonthText, location=_ftcLocation, offset=_ftcMonthOffset-ftcTimeFrameOffset, color=_bullColor, show_last=1)
+plotshape(isMonthFtcRedPlot ? close : na, title="isFtcMonthRed", style=_bearShape, text=_ftcMonthText, location=_ftcLocation , offset=_ftcMonthOffset-ftcTimeFrameOffset, color=_bearColor, show_last=1)
+
+plotchar(isQuarterFtcInsidePlot ? close: na, title="isFtcQuarterInside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftcQuarterOffset-ftcTimeFrameOffset, color=_insideColor, show_last=1)
+plotchar(isQuarterFtcOutsidePlot ? close: na, title="isFtcQuarterOutside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftcQuarterOffset-ftcTimeFrameOffset, color=_outsideColor, show_last=1)
+plotshape(isQuarterFtcGreenPlot ? close : na, title="isFtcQuarterGreen", style=_bullShape, text= _ftcQuarterText, location=_ftcLocation, offset=_ftcQuarterOffset-ftcTimeFrameOffset, color=_bullColor, show_last=1)
+plotshape(isQuarterFtcRedPlot ? close : na, title="isFtcQuarterRed", style=_bearShape, text=_ftcQuarterText, location=_ftcLocation , offset=_ftcQuarterOffset-ftcTimeFrameOffset, color=_bearColor, show_last=1)
+
+//plot shapes for strat combos
+plotshape(is222BearishContinuation, title=_is222BearishContinuation, style=_stratComboStyle, color=_bearColor, location=_stratComboLocation, text=_is222BearishContinuation, textcolor=_bearColor, offset=_stratComboOffset,show_last=1)
+plotshape(is222BullishContinuation, title=_is222BullishContinuation, style=_stratComboStyle, color=_bullColor, location=_stratComboLocation, text=_is222BullishContinuation, textcolor=_bullColor, offset=_stratComboOffset,show_last=1)
+plotshape(is212BearishContinuationMeasuredMove, title=_is212BearishContinuationMeasuredMove, style=_stratComboStyle, color=_bearColor, location=_stratComboLocation, text=_is212BearishContinuationMeasuredMove, textcolor=_bearColor, offset=_stratComboOffset,show_last=1)
+plotshape(is212BullishContinuationMeasuredMove, title=_is212BullishContinuationMeasuredMove, style=_stratComboStyle, color=_bullColor, location=_stratComboLocation, text=_is212BullishContinuationMeasuredMove, textcolor=_bullColor, offset=_stratComboOffset, show_last=1)
+plotshape(is22BearishReversal, title=_is22BearishReversal, style=_stratComboStyle, color=_bearColor, location=_stratComboLocation, text=_is22BearishReversal, textcolor=_bearColor, offset=_stratComboOffset,show_last=1)
+plotshape(is22BullishReversal, title=_is22BullishReversal, style=_stratComboStyle, color=_bullColor, location=_stratComboLocation, text=_is22BullishReversal, textcolor=_bullColor, offset=_stratComboOffset,show_last=1)
+plotshape(is212BearishReversal, title=_is212BearishReversal, style=_stratComboStyle, color=_bearColor, location=_stratComboLocation, text=_is212BearishReversal, textcolor=_bearColor, offset=_stratComboOffset,show_last=1)
+plotshape(is212BullishReversal, title=_is212BullishReversal, style=_stratComboStyle, color=_bullColor, location=_stratComboLocation, text=_is212BullishReversal, textcolor=_bullColor, offset=_stratComboOffset,show_last=1)
+plotshape(is322BearishReversal, title=_is322BearishReversal, style=_stratComboStyle, color=_bearColor, location=_stratComboLocation, text=_is322BearishReversal, textcolor=_bearColor, offset=_stratComboOffset,show_last=1)
+plotshape(is322BullishReversal, title=_is322BullishReversal, style=_stratComboStyle, color=_bullColor, location=_stratComboLocation, text=_is322BullishReversal, textcolor=_bullColor, offset=_stratComboOffset,show_last=1)
+plotshape(is32BearishReversal, title=_is32BearishReversal, style=_stratComboStyle, color=_bearColor, location=_stratComboLocation, text=_is32BearishReversal, textcolor=_bearColor, offset=_stratComboOffset,show_last=1)
+plotshape(is32BullishReversal, title=_is32BullishReversal, style=_stratComboStyle, color=_bullColor, location=_stratComboLocation, text=_is32BullishReversal, textcolor=_bullColor, offset=_stratComboOffset,show_last=1)
+plotshape(is312BearishReversal, title=_is312BearishReversal, style=_stratComboStyle, color=_bearColor, location=_stratComboLocation, text=_is312BearishReversal, textcolor=_bearColor, offset=_stratComboOffset,show_last=1)
+plotshape(is312BullishReversal, title=_is312BullishReversal, style=_stratComboStyle, color=_bullColor, location=_stratComboLocation, text=_is312BullishReversal, textcolor=_bullColor, offset=_stratComboOffset,show_last=1)
+plotshape(is122BearishRevStratReversal, title=_is122BearishRevStratReversal, style=_stratComboStyle, color=_bearColor, location=_stratComboLocation, text=_is122BearishRevStratReversal, textcolor=_bearColor, offset=_stratComboOffset,show_last=1)
+plotshape(is122BullishRevStratReversal, title=_is122BullishRevStratReversal, style=_stratComboStyle, color=_bullColor, location=_stratComboLocation, text=_is122BullishRevStratReversal, textcolor=_bullColor, offset=_stratComboOffset,show_last=1)
+plotshape(is2222BearishRandyJackson, title=_is2222BearishRandyJackson, style=_stratComboStyle, color=_bearColor, location=_stratComboLocation, text=_is2222BearishRandyJackson, textcolor=_bearColor, offset=_stratComboOffset,show_last=1)
+plotshape(is2222BullishRandyJackson, title=_is2222BullishRandyJackson, style=_stratComboStyle, color=_bullColor, location=_stratComboLocation, text=_is2222BullishRandyJackson, textcolor=_bullColor, offset=_stratComboOffset,show_last=1)
+plotshape(is3BearishRevStratReversal, title=_is3BearishRevStratReversal, style=_stratComboStyle, color=_bearColor, location=_stratComboLocation, text=_is3BearishRevStratReversal, textcolor=_bearColor, offset=_stratComboOffset,show_last=1)
+plotshape(is3BullishRevStratReversal, title=_is3BullishRevStratReversal, style=_stratComboStyle, color=_bullColor, location=_stratComboLocation, text=_is3BullishRevStratReversal, textcolor=_bullColor, offset=_stratComboOffset,show_last=1)
+
+// previous high low lines
+if (_isPrevDayHighLineActive and (timeframe.isintraday or timeframe.isdaily))
+    highDayLine = line.new(x1=timeDayValue[1], y1=highDayValue[1], x2=time, xloc = xloc.bar_time, y2=highDayValue[1], extend=extend.right, color=_prevDayHighColor, style=line.style_dashed, width=1)
+    line.delete(highDayLine[1])
+
+if (_isPrevDayLowLineActive and (timeframe.isintraday or timeframe.isdaily))
+    lowDayLine = line.new(x1=timeDayValue[1], y1=lowDayValue[1], x2=time, xloc = xloc.bar_time, y2=lowDayValue[1], extend=extend.right, color=_prevDayLowColor, style=line.style_dashed, width=1)
+    line.delete(lowDayLine[1])
+    
+if (_isPrevWeekHighLineActive and (timeframe.isintraday or timeframe.isdaily or timeframe.isweekly))
+    highWeekLine = line.new(x1=timeDayValue[1], y1=highWeekValue[1], x2=time, xloc = xloc.bar_time, y2=highWeekValue[1], extend=extend.right, color=_prevWeekHighColor, style=line.style_dashed, width=1)
+    line.delete(highWeekLine[1])
+
+if (_isPrevWeekLowLineActive and (timeframe.isintraday or timeframe.isdaily or timeframe.isweekly))
+    lowWeekLine = line.new(x1=timeDayValue[1], y1=lowWeekValue[1], x2=time, xloc = xloc.bar_time, y2=lowWeekValue[1], extend=extend.right, color=_prevWeekLowColor, style=line.style_dashed, width=1)
+    line.delete(lowWeekLine[1])
+
+
+// debug label for pricing for now
+debugText = "PrevDay H|L: " + tostring(highDayValue[1], "#.##") + "|" + tostring(lowDayValue[1], "#.##") + "\n PrevWeek H|L: " + tostring(highWeekValue[1], "#.##") + "|" + tostring(lowWeekValue[1], "#.##")
+if _isDebugLabelActive
+    debugLabel = label.new( x=bar_index, y=close-(close *.003), textalign=text.align_left, text = debugText, yloc = yloc.price, color = color.black, textcolor = color.white, size=size.normal, style=label.style_label_upper_left)
+    label.delete(debugLabel[1])
+    

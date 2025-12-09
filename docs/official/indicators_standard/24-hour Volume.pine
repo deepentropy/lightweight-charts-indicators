@@ -1,0 +1,32 @@
+//@version=6
+indicator("24-hour Volume", "24H Vol", format=format.volume)
+
+import PineCoders/getSeries/1 as gs
+
+priceTooltip = "If the symbol's volume is expressed in base units, it is multiplied by this value to convert it into a price."
+price = input.source(close, "Price Source", tooltip = priceTooltip)
+currencyInput = input.string(title = "Target Currency", defval="Default", options=["Default", "USD", "EUR", "CAD", "JPY", "GBP", "HKD", "CNY", "NZD", "RUB"], display = display.data_window)
+currency = currencyInput == "Default" ? "" : currencyInput
+    
+sumVolTF = switch
+    timeframe.isminutes or timeframe.isseconds => "1"
+    timeframe.isdaily => "5"
+    => "60"
+
+sum24hVol(src) =>
+    msIn24h = 24 * 60 * 60 * 1000
+    sourceValues = gs.rollOnTimeWhen(src, msIn24h)
+    sourceValues.sum()
+        
+noVolumeError = "The data vendor doesn't provide volume data for this symbol."
+if syminfo.volumetype == "tick" and syminfo.type == "crypto"
+    runtime.error(noVolumeError)
+
+var cumVol = 0.
+cumVol += nz(volume)
+if barstate.islast and cumVol == 0
+    runtime.error(noVolumeError)
+    
+expr = syminfo.volumetype == "quote" ? volume : price * volume
+vol24h = request.security(syminfo.tickerid, sumVolTF, sum24hVol(expr * request.currency_rate(syminfo.currency, currency)))
+plot(vol24h, title = "24H Volume", style = plot.style_columns)

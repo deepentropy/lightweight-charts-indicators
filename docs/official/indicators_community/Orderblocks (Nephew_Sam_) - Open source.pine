@@ -1,0 +1,215 @@
+bars_back = 500
+//@version=5
+indicator('Orderblocks (Nephew_Sam_)', overlay=true, max_bars_back=500, max_labels_count=100, max_lines_count=100)
+
+// -----------------------------------------------------------------------------------------------
+// ----------------------------------   FRACTAL RANGE   ------------------------------------------
+// -----------------------------------------------------------------------------------------------  
+
+temp0 = input(title='••••••••••••••••••• Fractals ••••••••••••••••••••••', defval=false)
+showFractals = input(title='Show Fractal Points ?', defval=false)
+filterFractal = input.string(title='Filter 3/5 bar fractal', defval='3', options=['3', '5'])
+
+temp1 = input(title='••••••••••••••••••• Orderblocks •••••••••••••••••••', defval=false)
+findObType = input.string(title='Find OB after fractal break of close/HL', defval='Close', options=['Close', 'HL'])
+filterFvgs = input(title='Filter only OB that follow with FVG ?', defval=true)
+fvgDistance = input.int(3, title='Max bars between the OB and FVG', minval=1, maxval=6)
+lineHeight = input.string(title='Line Height', defval='Body', options=['Body', 'Wick'])
+delLines = input(title='Delete lines after fill ?', defval=true)
+
+temp3 = input(title='•••••••••••••••••••• Styles ••••••••••••••••••••••••', defval=false)
+lines_style = input.string(title='Lines style', defval='Solid', options=['Solid', 'Dashed', 'Dotted'])
+line_length = input.int(5, 'Length of lines', minval=1, maxval=100)
+lineStyle = lines_style == 'Solid' ? line.style_solid : lines_style == 'Dashed' ? line.style_dashed : line.style_dotted
+linesWidth = input.int(2, 'Lines Width ?', minval=1, maxval=4)
+bear_line_color = input(color.red, 'Bear OB Line color')
+bull_line_color = input(color.blue, 'Bull OB Line color')
+
+
+
+// -------------------- FUNCTIONS --------------------
+bullishImb(i=0) => close[i+1] > high[i+2] and low[i] > high[i+2]
+bearishImb(i=0) => close[i+1] < low[i+2] and high[i] < low[i+2]
+
+//  Fractals
+isRegularFractal(mode) =>
+    ret = mode == 'Buy' ? high[0] < high[1] and (high[2] < high[1] or high[2] == high[1] and high[3] < high[2]) : mode == 'Sell' ? low[0] > low[1] and (low[2] > low[1] or low[2] == low[1] and low[3] > low[2]) : false
+    ret
+
+isBWFractal(mode) =>
+    ret = mode == 'Buy' ? high[0] < high[2] and high[1] < high[2] and high[3] < high[2] and high[4] < high[2] : mode == 'Sell' ? low[0] > low[2] and low[1] > low[2] and low[3] > low[2] and low[4] > low[2] : false
+    ret
+
+isFractalHigh() =>
+    filterFractal == '3' ? isRegularFractal('Buy') : isBWFractal('Buy')
+
+isFractalLow() =>
+    filterFractal == '3' ? isRegularFractal('Sell') : isBWFractal('Sell')
+
+resolutionInMinutes() =>
+    resInMinutes = timeframe.multiplier * (timeframe.isseconds ? 1. / 60 : timeframe.isminutes ? 1. : timeframe.isdaily ? 60. * 24 : timeframe.isweekly ? 60. * 24 * 7 : timeframe.ismonthly ? 60. * 24 * 30.4375 : na)
+    resInMinutes
+
+f_timeFrom(_from, length, _units, i) =>
+    int _timeFrom = na
+    _unit = str.replace_all(_units, 's', '')
+    _timeFrom := int(time[i] + resolutionInMinutes() * 60 * 1000 * length)
+    _timeFrom
+// -------------------- FUNCTIONS --------------------
+
+
+
+// -------------------- Fractals --------------------
+fractal_high_val = 0.0
+fractal_low_val = 0.0
+
+var fractal_highs = array.new_float(0)  // array of high fractal values
+var fractal_high_times = array.new_int(0)  // array of high fractal times
+var fractal_lows = array.new_float(0)  // array of low fractal values
+var fractal_low_times = array.new_int(0)  // array or low fractal times
+
+// Check if fractal and add it to array
+if isFractalHigh()
+    if filterFractal == '3'
+        array.push(fractal_highs, high[1])
+        array.push(fractal_high_times, time[1])
+        fractal_high_val := high[1]
+        fractal_high_val
+    else
+        array.push(fractal_highs, high[2])
+        array.push(fractal_high_times, time[2])
+        fractal_high_val := high[2]
+        fractal_high_val
+
+if isFractalLow()
+    if filterFractal == '3'
+        array.push(fractal_lows, low[1])
+        array.push(fractal_low_times, time[1])
+        fractal_low_val := low[1]
+        fractal_low_val
+    else
+        array.push(fractal_lows, low[2])
+        array.push(fractal_low_times, time[2])
+        fractal_low_val := low[2]
+        fractal_low_val
+// -------------------- Fractals --------------------
+
+
+
+// -------------------- Orderblocks --------------------
+var line1 = array.new_line()
+var line2 = array.new_line()
+var line3 = array.new_line()
+var line4 = array.new_line()
+
+var label1 = array.new_label()
+var label2 = array.new_label()
+
+// Bearish loop
+if array.size(fractal_lows) > 0
+    for i = array.size(fractal_lows) - 1 to 0 by 1
+        if (findObType == 'Close' ? close : low) < array.get(fractal_lows, i)
+            idx = 0
+            max = low  //current low
+            gapIndex = 0
+
+            for k = 0 to bars_back by 1
+                bearishGap = (close[k+1] < low[k+2]) and (high[k] < low[k+2])
+
+                //stop loop if reached time limit
+                if time[k] < array.get(fractal_low_times, i)
+                    break
+
+                //Get all bullish candles in range
+                if close[k] > open[k] and high[k] > max
+                    idx := k
+                    max := high[k]
+                    
+                if bearishGap and high[k] > max
+                    gapIndex := k+2
+
+            _filterFvg = filterFvgs ? gapIndex > 0 and idx - gapIndex >= 0 and idx - gapIndex <= fvgDistance  : true
+            // Line on OB
+            if idx != 0 and _filterFvg
+                // label.new(bar_index, high, str.tostring(idx) + "\n" + str.tostring(gapIndex))
+                TimeTo = f_timeFrom('bar', line_length, 'chart', idx)
+                loc = lineHeight == 'Body' ? open[idx] : low[idx]
+
+                array.push(line1, line.new(x1=time[idx], y1=high[idx], x2=TimeTo, y2=high[idx], xloc=xloc.bar_time, style=lineStyle, color=bear_line_color, width=linesWidth))
+                array.push(line2, line.new(x1=time[idx], y1=loc, x2=TimeTo, y2=loc, xloc=xloc.bar_time, style=lineStyle, color=bear_line_color, width=linesWidth))
+
+            array.remove(fractal_lows, i)
+            array.remove(fractal_low_times, i)
+
+// Bullish loop
+if array.size(fractal_highs) > 0
+    for i = array.size(fractal_highs) - 1 to 0 by 1
+        if (findObType == 'Close' ? close : high) > array.get(fractal_highs, i)
+            idx = 0
+            min = low
+            gapIndex = 0
+
+            for k = 0 to bars_back by 1
+                bullishGap = (close[k+1] > high[k+2]) and (low[k] > high[k+2])
+
+                // Stop the loop once its reached the last fractal high
+                if time[k] < array.get(fractal_high_times, i)
+                    break
+
+                //  if bearish candle
+                if close[k] < open[k] and low[k] < min
+                    idx := k
+                    min := low[k]
+
+                if bullishGap
+                    gapIndex := k+2
+
+
+            _filterFvg = filterFvgs ? gapIndex > 0 and idx - gapIndex >= 0 and idx - gapIndex <= fvgDistance  : true
+            // Line on OB
+            if idx != 0 and _filterFvg
+                // label.new(bar_index, high, str.tostring(idx) + "\n" + str.tostring(gapIndex))
+                TimeTo = f_timeFrom('bar', line_length, 'chart', idx)
+                loc = lineHeight == 'Body' ? open[idx] : high[idx]
+                
+                array.push(line3, line.new(x1=time[idx], y1=low[idx], x2=TimeTo, y2=low[idx], xloc=xloc.bar_time, style=lineStyle, color=bull_line_color, width=linesWidth))
+                array.push(line4, line.new(x1=time[idx], y1=loc, x2=TimeTo, y2=loc, xloc=xloc.bar_time, style=lineStyle, color=bull_line_color, width=linesWidth))
+
+            array.remove(fractal_highs, i)
+            array.remove(fractal_high_times, i)
+
+// -------------------- Orderblocks --------------------
+
+//Delete Lines/Labels
+if array.size(line1) > 0
+    for i = array.size(line1) - 1 to 0 by 1
+        if high >= line.get_y1(array.get(line1, i)) and high >= line.get_y1(array.get(line2, i))
+            if delLines
+                line.delete(array.get(line1, i))
+                line.delete(array.get(line2, i))
+                //label.delete(array.get(label1, i))
+            array.remove(line1, i)
+            array.remove(line2, i)
+            //array.remove(label1,i)
+
+if array.size(line3) > 0
+    for i = array.size(line3) - 1 to 0 by 1
+        if low <= line.get_y1(array.get(line3, i)) and low <= line.get_y1(array.get(line4, i))
+            if delLines
+                line.delete(array.get(line3, i))
+                line.delete(array.get(line4, i))
+                //label.delete(array.get(label2, i))
+            array.remove(line3, i)
+            array.remove(line4, i)
+            //array.remove(label2,i)
+
+//Plot fractal points            
+plotshape(showFractals and isFractalHigh(), title='Fractal High', style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), offset=filterFractal == '3' ? -1 : -2, size=size.auto)
+plotshape(showFractals and isFractalLow(), title='Fractal Low', style=shape.triangleup, location=location.belowbar, color=color.new(color.blue, 0), offset=filterFractal == '3' ? -1 : -2, size=size.auto)
+
+
+// WATERMARK
+if barstate.islast    
+    _table = table.new("bottom_left", 1, 2)
+    table.cell(_table, 0, 0, text="@Nephew_Sam_", text_size=size.small, text_color=color.new(color.gray, 50))
+

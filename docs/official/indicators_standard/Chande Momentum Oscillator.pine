@@ -1,0 +1,15 @@
+//@version=6
+indicator(title="Chande Momentum Oscillator", shorttitle="ChandeMO", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+length = input.int(9, minval=1)
+src = input(close, "Source")
+momm = ta.change(src)
+f1(m) => m >= 0.0 ? m : 0.0
+f2(m) => m >= 0.0 ? 0.0 : -m
+m1 = f1(momm)
+m2 = f2(momm)
+sm1 = math.sum(m1, length)
+sm2 = math.sum(m2, length)
+percent(nom, div) => 100 * nom / div
+chandeMO = percent(sm1-sm2, sm1+sm2)
+plot(chandeMO, "Chande MO", color=#2962FF)
+hline(0, color=#787B86, linestyle=hline.style_dashed, title="Zero Line")

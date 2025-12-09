@@ -1,0 +1,197 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+
+//@version=6
+indicator("Fibonacci Trend [ChartPrime]", overlay = true, max_lines_count = 500)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+bool  trend_on = input.bool(true, "", inline = "trend", group = "Trend")
+float trend_   = input.float(4, "Trend", step = 0.01, inline = "trend", group = "Trend")
+color col1     = input.color(#26905d, "", inline = "trend", group = "Trend")
+color col2     = input.color(#74286d, "",inline = "trend", group = "Trend")
+
+int   extend   = input.int(15, "Extend", group = "Fibonacci", inline = "1"), fill_col = input.color(#2689901c, "", group = "Fibonacci", inline = "1")
+
+float v_236 = input.float(0.236, "1")*100
+float v_382 = input.float(0.382, "2")*100
+float v_618 = input.float(0.618, "3")*100
+float v_786 = input.float(0.786, "4")*100
+
+// UDT
+type data 
+    line fib05  = na    
+    line fib0   = na
+    line fib236 = na
+    line fib382 = na
+    line fib618 = na
+    line fib786 = na
+    line fib_   = na
+    line fib_di   = na
+
+    label H = na
+    label L = na
+
+    label L0   = na
+    label L236 = na
+    label L382 = na
+    label L618 = na
+    label L786 = na
+    label L_   = na
+
+
+var fib_d =  data.new()
+
+
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+[supertrend, direction] = ta.supertrend(trend_, 25)
+
+draw_fibb(trend)=>
+
+    var h = float(na)
+    var l = float(na)
+    var hi = int(na)
+    var li = int(na)
+
+    var val_0 = float(na)
+    var val_ = float(na)
+
+    atr = ta.atr(200)
+    // delete previous fibb 
+    if trend != trend[1]
+        line.delete(fib_d.fib_)
+        line.delete(fib_d.fib0)
+        line.delete(fib_d.fib05)
+        line.delete(fib_d.fib_di)
+        line.delete(fib_d.fib236)
+        line.delete(fib_d.fib382)
+        line.delete(fib_d.fib618)
+        line.delete(fib_d.fib786)
+        label.delete(fib_d.H)
+        label.delete(fib_d.L)
+        label.delete(fib_d.L0)
+        label.delete(fib_d.L_)        
+        label.delete(fib_d.L236)
+        label.delete(fib_d.L382)
+        label.delete(fib_d.L618)
+        label.delete(fib_d.L786)
+
+
+    // Creat Fib Lines at the bottom and the top
+    if trend != trend[1] and trend == -1
+    
+        fib_d.fib_ := line.new(bar_index, low, bar_index, low, color = chart.fg_color, width = 2)
+        fib_d.fib0 := line.new(bar_index, high+atr*3, bar_index, high+atr*3, color = chart.fg_color, width = 2)
+
+
+    if trend != trend[1] and trend == 1
+    
+        fib_d.fib_ := line.new(bar_index, high, bar_index, high, color = chart.fg_color, width = 2)
+        fib_d.fib0 := line.new(bar_index, low-atr*3, bar_index, low-atr*3, color = chart.fg_color, width = 2)
+
+        fib_d.fib_di := line.new(li, l, hi, h, style = line.style_dashed, color = chart.fg_color)
+        
+
+    // Extend fibb lines during a trend
+    if trend == trend[1]
+        // Update High and low of Fibb
+        
+        if low < fib_d.fib_.get_y1()
+            fib_d.fib_.set_y1(low)
+            fib_d.fib_.set_y2(low)
+
+
+        if high > fib_d.fib0.get_y1()
+            fib_d.fib0.set_y1(high)
+            fib_d.fib0.set_y2(high)
+
+
+        // High and low labels
+        if high == fib_d.fib0.get_y1()
+            h := high
+            hi := bar_index
+            label.delete((fib_d[1]).H)
+            fib_d.H := label.new(hi, h, str.tostring(h, "#,###.####"), color = #15373b)
+   
+        if low == fib_d.fib_.get_y1()
+            l := low
+            li := bar_index
+            label.delete((fib_d[1]).L)
+            fib_d.L := label.new(li, l, str.tostring(l, "#,###.####"), style = label.style_label_up, color = #15373b)
+   
+
+
+        fib_d.fib_.set_x2(bar_index+extend)
+        fib_d.fib0.set_x2(bar_index+extend)
+
+        line.delete((fib_d[1]).fib_di)
+        fib_d.fib_di := line.new(li, l, hi, h, style = line.style_dashed, color = chart.fg_color)
+
+        if fib_d.fib_di.get_x1() < fib_d.fib0.get_x1() or fib_d.fib_di.get_x2() < fib_d.fib0.get_x1()
+            line.delete(fib_d.fib_di)
+
+        size_step = (fib_d.fib0.get_y1() - fib_d.fib_.get_y1()) / 100
+
+        line.delete((fib_d[1]).fib05)
+        line.delete((fib_d[1]).fib382)
+        line.delete((fib_d[1]).fib236)
+        line.delete((fib_d[1]).fib618)
+        line.delete((fib_d[1]).fib786)
+
+        if trend == -1
+
+            val_0   := fib_d.fib0.get_y1()
+            val_    := fib_d.fib_.get_y1()
+
+        if trend == 1 
+
+            val_0   := fib_d.fib_.get_y1()
+            val_    := fib_d.fib0.get_y1()
+
+        fib_d.fib236 := line.new(fib_d.fib0.get_x1(), val_0 - size_step * v_236 * trend*-1, fib_d.fib0.get_x2(), val_0 - size_step * v_236 * trend*-1, color = chart.fg_color)
+        fib_d.fib382 := line.new(fib_d.fib0.get_x1(), val_0 - size_step * v_382 * trend*-1, fib_d.fib0.get_x2(), val_0 - size_step * v_382 * trend*-1, color = chart.fg_color)
+
+        fib_d.fib05  := line.new(fib_d.fib0.get_x1(), val_0 - size_step * 50 * trend*-1, fib_d.fib0.get_x2(), val_0 - size_step * 50 * trend*-1, color = color.new(chart.fg_color, 50), style = line.style_dotted)
+
+        fib_d.fib618 := line.new(fib_d.fib0.get_x1(), val_0 - size_step * v_618 * trend*-1, fib_d.fib0.get_x2(), val_0 - size_step * v_618 * trend*-1, color = chart.fg_color)
+        fib_d.fib786 := line.new(fib_d.fib0.get_x1(), val_0 - size_step * v_786 * trend*-1, fib_d.fib0.get_x2(), val_0 - size_step * v_786 * trend*-1, color = chart.fg_color)
+
+        label.delete((fib_d[1]).L0)
+        label.delete((fib_d[1]).L_)                
+        label.delete((fib_d[1]).L236)
+        label.delete((fib_d[1]).L382)
+        label.delete((fib_d[1]).L618)
+        label.delete((fib_d[1]).L786)
+
+        fib_d.L0 := label.new(bar_index+extend, val_0,  text = "0 " + str.tostring(val_0, "(#,###.####)"), textcolor = chart.fg_color, color = chart.bg_color, style = label.style_label_left)
+        fib_d.L_ := label.new(bar_index+extend, val_,   text = "1 " + str.tostring(val_, "(#,###.####)"), textcolor = chart.fg_color, color = chart.bg_color, style = label.style_label_left)      
+
+        fib_d.L236 := label.new(bar_index+extend, fib_d.fib236.get_y1(), text = str.tostring(v_236/100) + str.tostring(fib_d.fib236.get_y1(), " (#,###.####)"), textcolor = chart.fg_color, color = chart.bg_color, style = label.style_label_left)
+        fib_d.L382 := label.new(bar_index+extend, fib_d.fib382.get_y1(), text = str.tostring(v_382/100) + str.tostring(fib_d.fib382.get_y1(), " (#,###.####)"), textcolor = chart.fg_color, color = chart.bg_color, style = label.style_label_left)
+        fib_d.L618 := label.new(bar_index+extend, fib_d.fib618.get_y1(), text = str.tostring(v_618/100) + str.tostring(fib_d.fib618.get_y1(), " (#,###.####)"), textcolor = chart.fg_color, color = chart.bg_color, style = label.style_label_left)
+        fib_d.L786 := label.new(bar_index+extend, fib_d.fib786.get_y1(), text = str.tostring(v_786/100) + str.tostring(fib_d.fib786.get_y1(), " (#,###.####)"), textcolor = chart.fg_color, color = chart.bg_color, style = label.style_label_left)
+
+        linefill.new(fib_d.fib618, fib_d.fib786, fill_col)
+        linefill.new(fib_d.fib05, fib_d.fib786, fill_col)
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// --------------------------------------------------------------------------------------------------------------------{
+
+draw_fibb(direction)
+
+color = trend_on ? (direction == 1 ? col2 : col1) : na
+p1 = plot(supertrend, "Trend", color = direction != direction[1] ? na : color, style = plot.style_linebr)
+p2 = plot(hl2, display = display.none)
+
+fill(p1, p2, hl2, supertrend, na, direction != direction[1] ? na : color.new(color, 90))
+// --------------------------------------------------------------------------------------------------------------------}

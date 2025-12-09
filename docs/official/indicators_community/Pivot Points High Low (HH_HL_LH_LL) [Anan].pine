@@ -1,0 +1,162 @@
+// This Pine Script™ code is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
+// © Mohamed3nan (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// https://TradingView.com/u/Mohamed3nan
+// https://Github.com/Mohamed3nan/TradingView
+//////////////////////////////////////////////
+//        /\                                //
+//       /  \     _ __     __ _   _ __      //
+//      / /\ \   | '_ \   / _` | | '_ \     //
+//     / ____ \  | | | | | (_| | | | | |    //
+//    /_/    \_\ |_| |_|  \__,_| |_| |_|    //
+//////////////////////////////////////////////
+
+//@version=6
+indicator(title = 'Pivot Points High Low (HH/HL/LH/LL) [Anan] ', shorttitle = 'Pivots HL [Anan]', overlay = true, max_labels_count=500)
+
+//INPUTS
+srcParams = 'Pivot Source | Left Length | Right Length'
+srcH = input.source(high, title = 'High', inline = 'Pivot High', group = srcParams)
+leftLenH = input.int(title = '', defval = 4, minval = 0, inline = 'Pivot High', group = srcParams)
+rightLenH = input.int(title = '', defval = 2, minval = 0, inline = 'Pivot High', group = srcParams)
+colorH = input.color(title = '', defval = color.new(color.teal, 50), inline = 'Pivot High', group = srcParams)
+
+srcL = input.source(low, title = 'Low', inline = 'Pivot Low', group = srcParams)
+leftLenL = input.int(title = '', defval = 4, minval = 0, inline = 'Pivot Low', group = srcParams)
+rightLenL = input.int(title = '', defval = 2, minval = 0, inline = 'Pivot Low', group = srcParams)
+colorL = input.color(title = '', defval = color.new(color.red, 50), inline = 'Pivot Low', group = srcParams)
+
+lvlDisplay = 'Pivots Levels'
+showlevelhh = input.bool(true, 'Higher High', inline = '1', group = lvlDisplay)
+showlevellh = input.bool(true, 'Lower High', inline = '1', group = lvlDisplay)
+showlevelhl = input.bool(true, 'Higher Low', inline = '1', group = lvlDisplay)
+showlevelll = input.bool(true, 'Lower Low', inline = '1', group = lvlDisplay)
+
+markDisplay = 'Pivots Markers'
+showhh = input.bool(true, 'Higher High', inline = '1', group = markDisplay)
+showlh = input.bool(true, 'Lower High', inline = '1', group = markDisplay)
+showhl = input.bool(true, 'Higher Low', inline = '1', group = markDisplay)
+showll = input.bool(true, 'Lower Low', inline = '1', group = markDisplay)
+
+valDisplay = 'Pivots Values'
+showpricehh = input.bool(true, 'Higher High', inline = '1', group = valDisplay)
+showpricelh = input.bool(true, 'Lower High', inline = '1', group = valDisplay)
+showpricehl = input.bool(true, 'Higher Low', inline = '1', group = valDisplay)
+showpricell = input.bool(true, 'Lower Low', inline = '1', group = valDisplay)
+
+settings = 'Others'
+maxBarsBack = input.int(0, 'Maximum Bars to Display (0 = All)', minval = 0, group = settings)
+maxLvlLen = input.int(0, minval = 0, title = 'Maximum S/R Level Extension Length (0 = Max)', group = settings)
+ShowChannel = input.bool(false, title = 'Show Levels as a Fractal Chaos Channel', group = settings)
+showCL = input.bool(defval = false, title = 'Show Avg Pivot High Low ', group = settings)
+ShowFB = input.bool(true, title = 'Show fractal Break out/down symbols', group = settings)
+
+// Get High and Low Pivot Points
+ph = ta.pivothigh(srcH, leftLenH, rightLenH)
+pl = ta.pivotlow(srcL, leftLenL, rightLenL)
+
+// Higher Highs, Lower Highs, Higher Lows, Lower Lows 
+ph_value = srcH[rightLenH]
+pl_value = srcL[rightLenL]
+
+valuewhen_1 = ta.valuewhen(not na(ph), ph_value, 1)
+valuewhen_2 = ta.valuewhen(not na(ph), ph_value, 0)
+higherhigh = na(ph) ? na : valuewhen_1 < valuewhen_2 ? ph : na
+lowerhigh = na(ph) ? na : valuewhen_1 > valuewhen_2 ? ph : na
+
+valuewhen_3 = ta.valuewhen(not na(pl), pl_value, 1)
+valuewhen_4 = ta.valuewhen(not na(pl), pl_value, 0)
+higherlow = na(pl) ? na : valuewhen_3 < valuewhen_4 ? pl : na
+lowerlow = na(pl) ? na : valuewhen_3 > valuewhen_4 ? pl : na
+
+// Add helper function to check if we should display for current bar
+isInDisplayRange() =>
+    maxBarsBack == 0 or (bar_index > (last_bar_index - maxBarsBack))
+
+drawLabel(_offset, _pivot, _style, _yloc, _color) =>
+    if not na(_pivot) and isInDisplayRange()
+        label.new(bar_index[_offset], _pivot, text = '[' + str.tostring(_pivot, format.mintick) + ']', style = _style, yloc = _yloc, color = _color, textcolor = _color)
+
+drawLabel(rightLenH, showpricehh ? higherhigh : na, label.style_none, yloc.abovebar, colorH)
+drawLabel(rightLenH, showpricehl ? higherlow : na, label.style_none, yloc.belowbar, colorL)
+drawLabel(rightLenH, showpricelh ? lowerhigh : na, label.style_none, yloc.abovebar, colorH)
+drawLabel(rightLenH, showpricell ? lowerlow : na, label.style_none, yloc.belowbar, colorL)
+
+plotshape(showhh and isInDisplayRange() ? higherhigh : na, title = 'HH', style = shape.triangledown, location = location.abovebar, color = colorH, text = 'HH', textcolor = colorH, offset = -rightLenH)
+plotshape(showhl and isInDisplayRange() ? higherlow : na, title = 'HL', style = shape.triangleup, location = location.belowbar, color = colorL, text = 'HL', textcolor = colorL, offset = -rightLenH)
+plotshape(showlh and isInDisplayRange() ? lowerhigh : na, title = 'LH', style = shape.triangledown, location = location.abovebar, color = colorH, text = 'LH', textcolor = colorH, offset = -rightLenL)
+plotshape(showll and isInDisplayRange() ? lowerlow : na, title = 'LL', style = shape.triangleup, location = location.belowbar, color = colorL, text = 'LL', textcolor = colorL, offset = -rightLenL)
+
+pivot_avg = (fixnan(ph) + fixnan(pl)) / 2
+plot(showCL and isInDisplayRange() ? pivot_avg : na, title = 'H+L /2', style = plot.style_stepline, color = close > pivot_avg ? colorH : colorL)
+
+//Count How many candles for current Pivot Level, If new reset.
+countH = 0
+countL = 0
+countH := na(ph) ? nz(countH[1]) + 1 : 0
+countL := na(pl) ? nz(countL[1]) + 1 : 0
+
+pvtH = 0.0
+pvtL = 0.0
+pvtH := na(ph) ? pvtH[1] : ph_value
+pvtL := na(pl) ? pvtL[1] : pl_value
+
+HpC = pvtH != pvtH[1] ? na : colorH
+LpC = pvtL != pvtL[1] ? na : colorL
+
+// Before drawing SR levels and channels, we need to apply our pivot selection logic to them
+// Determine which pivot high/low values to display based on selection
+pvtHighToShow = 0.0
+pvtLowToShow = 0.0
+
+// For High pivots based on selected levels
+if showlevelhh and showlevellh
+    pvtHighToShow := pvtH
+    pvtHighToShow
+else if showlevelhh and not showlevellh
+    pvtHighToShow := na(higherhigh) ? pvtHighToShow[1] : ph_value
+    pvtHighToShow
+else if not showlevelhh and showlevellh
+    pvtHighToShow := na(lowerhigh) ? pvtHighToShow[1] : ph_value
+    pvtHighToShow
+else
+    pvtHighToShow := na // Don't show any high pivots
+    pvtHighToShow
+
+// For Low pivots based on selected levels
+if showlevelhl and showlevelll
+    pvtLowToShow := pvtL
+    pvtLowToShow
+else if showlevelhl and not showlevelll
+    pvtLowToShow := na(higherlow) ? pvtLowToShow[1] : pl_value
+    pvtLowToShow
+else if not showlevelhl and showlevelll
+    pvtLowToShow := na(lowerlow) ? pvtLowToShow[1] : pl_value
+    pvtLowToShow
+else
+    pvtLowToShow := na // Don't show any low pivots
+    pvtLowToShow
+
+HpC_filtered = pvtHighToShow != pvtHighToShow[1] ? na : colorH
+LpC_filtered = pvtLowToShow != pvtLowToShow[1] ? na : colorL
+
+// Show Levels if pivot types are selected
+plot(not ShowChannel and (maxLvlLen == 0 or countH < maxLvlLen) and (showlevelhh or showlevellh) and isInDisplayRange() ? pvtHighToShow : na, color = HpC_filtered, offset = -rightLenH, title = 'Top Levels HH,LH', style = plot.style_circles)
+plot(not ShowChannel and (maxLvlLen == 0 or countL < maxLvlLen) and (showlevelhl or showlevelll) and isInDisplayRange() ? pvtLowToShow : na, color = LpC_filtered, offset = -rightLenL, title = 'Bottom Levels LL,HL', style = plot.style_circles)
+
+// Show Levels as a Fractal Chaos Channel
+plot(ShowChannel and (showlevelhh or showlevellh) and isInDisplayRange() ? pvtHighToShow : na, color = colorH, style = plot.style_stepline, title = 'Top Chaos Channel', offset = -rightLenH)
+plot(ShowChannel and (showlevelhl or showlevelll) and isInDisplayRange() ? pvtLowToShow : na, color = colorL, style = plot.style_stepline, title = 'Bottom Chaos Channel', offset = -rightLenL)
+
+// // Add Optional Fractal Break Alerts
+buy = false
+sell = false
+buy := close > pvtH and open <= pvtH
+sell := close < pvtL and open >= pvtL
+
+plotshape(ShowFB and buy and isInDisplayRange() ? 1 : na, title = 'Breakout Bar', text = '↑↑', style = shape.triangleup, location = location.belowbar, color = colorH, textcolor = colorH, size = size.auto, editable = true)
+plotshape(ShowFB and sell and isInDisplayRange() ? -1 : na, title = 'Breakdown Bar', text = '↓↓', style = shape.triangledown, location = location.abovebar, color = colorL, textcolor = colorL, size = size.auto, editable = true)
+
+// Alerts
+alertcondition(buy or sell, title = 'Fractal Break Arrow', message = 'Alert')
+alertcondition(buy, title = 'Fractal Break Long', message = 'Long')
+alertcondition(sell, title = 'Fractal Break Short', message = 'Short')

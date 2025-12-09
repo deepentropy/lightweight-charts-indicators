@@ -1,0 +1,125 @@
+//@version=4
+//
+study(shorttitle="MACD_X", title="DOBLE MACD X", overlay=false)
+
+vset= input(true, title="Ver Señal de Entrada de Tendencia")
+vsct= input(false, title="Ver Señal de Contra Tendencia")
+afa= input(true, title="Ver Zona Atlas")
+afc= input(true, title="Ver Zona Choppiness")
+chopi = input(50.0, title="Nivel Choppiness")
+div_reg_al= input(true, title="Ver Divergencias Regulares Alcistas")
+div_reg_ba= input(true, title="Ver Divergencias Regulares Bajistas")
+div_ocu_al= input(false, title="Ver Divergencias Ocultas Alcistas")
+div_ocu_ba= input(false, title="Ver Divergencias Ocultas Bajistas")
+etiquetas= input(true, title="Ver Etiquetas De Divergencias")
+
+negro=#000000
+amarillo=#FFFF00
+gris=#C0C0C0
+rojo=#FF0000
+blanco=#FFFFFF
+verde_fuerte=#0AAC00
+
+// LINEA 0
+hline(0, color=negro, linestyle=hline.style_solid, editable=false)
+
+// MACD 1
+L1=12
+L2=26
+tp=close
+m0 = ema(tp,L1)
+m1 = ema(tp,L2)
+macd_1 = (m0-m1) 
+plot(macd_1, title='Macd 1226', color=gris, linewidth=2, style=plot.style_line, transp=0)
+plot(macd_1, title='Macd 1226', color=gris, linewidth=2, style=plot.style_histogram, transp=0)
+
+// MACD 2
+L1A=5
+L2A=15
+tpa=close
+m0a = ema(tpa,L1A)
+m1a = ema(tpa,L2A)
+macd_2 = (m0a-m1a) 
+plot(macd_2, title='MacD 515', color=amarillo, linewidth=2, style=plot.style_line, transp=0)
+plot(macd_2, title='MacD 515', color=amarillo, linewidth=2, style=plot.style_histogram, transp=0)
+
+//Atlas Mini
+length = 20
+src = close
+mult = 2.0
+basis = sma(src, length)
+dev = mult * stdev(src, length)
+upper = basis + dev
+lower = basis - dev
+dbb = sqrt((upper-lower)/upper)*20
+dbbmed = ema(dbb,120)
+factor = dbbmed*4/5
+atl = dbb-factor
+all = atl>0?0:1
+bgcolor(afa and all ? rojo : na,title='Zona Atlas', transp=90)
+
+//Choppiness Index
+length1 = 14
+str = sum(tr,length1)
+ltl = lowest(low <= close[1] ? low : close[1],length1)
+hth = highest(high >= close[1] ? high : close[1],length1)
+height = hth - ltl
+chop = 100 * (log10(str / height) / log10(length1))
+all1 = chop<chopi?0:1
+bgcolor(afc and all1 ? rojo : na,title='Zona Choppiness', transp=90)
+
+//Divergencias
+max=highest(macd_2, 100)*1.5
+nsc = max
+nsv = max*-1
+
+midpoint = (nsc + nsv) / 2
+ploff = (nsc - midpoint) / 8
+
+f_top_fractal(_src)=>_src[4] < _src[2] and _src[3] < _src[2] and _src[2] > _src[1] and _src[2] > _src[0]
+f_bot_fractal(_src)=>_src[4] > _src[2] and _src[3] > _src[2] and _src[2] < _src[1] and _src[2] < _src[0]
+f_fractalize(_src)=>f_top_fractal(_src) ? 1 : f_bot_fractal(_src) ? -1 : 0
+
+fractal_top1 = f_fractalize(macd_2) > 0 ? macd_2[2] : na
+fractal_bot1 = f_fractalize(macd_2) < 0 ? macd_2[2] : na
+
+high_prev1  = valuewhen(fractal_top1, macd_2[2], 0)[2]
+high_price1 = valuewhen(fractal_top1, high[2], 0)[2]
+low_prev1   = valuewhen(fractal_bot1, macd_2[2], 0)[2]
+low_price1  = valuewhen(fractal_bot1, low[2], 0)[2]
+
+regular_bearish_div1 = fractal_top1  and high[2] > high_price1 and macd_2[2] < high_prev1 and div_reg_ba == true
+hidden_bearish_div1  = fractal_top1  and high[2] < high_price1 and macd_2[2] > high_prev1 and div_ocu_ba == true
+regular_bullish_div1 = fractal_bot1  and low[2]  < low_price1  and macd_2[2] > low_prev1 and div_reg_al == true
+hidden_bullish_div1  = fractal_bot1  and low[2]  > low_price1  and macd_2[2] < low_prev1 and div_ocu_al == true
+
+col1 = regular_bearish_div1 ? rojo : hidden_bearish_div1 ? rojo : na
+col2 = regular_bullish_div1 ? verde_fuerte : hidden_bullish_div1 ? verde_fuerte  : na
+
+plot(title='Divergencias Bajistas', series = fractal_top1 ? macd_2[2] : na, color=col1, linewidth=1, offset=-2, transp=0)
+plot(title='Divergencias Alcistas', series = fractal_bot1 ? macd_2[2] : na, color=col2, linewidth=1, offset=-2, transp=0)
+
+plotshape(regular_bearish_div1 and div_reg_ba and etiquetas  ? macd_2[1] + ploff*0.5 : na, title="Divergencia Regular Bajista", text="🐻 R", location=location.absolute, style=shape.labeldown, size=size.tiny, color=rojo, textcolor=blanco,offset=-2, transp=0)
+plotshape(hidden_bearish_div1 and div_ocu_ba and etiquetas  ? macd_2[1] + ploff*0.5 : na, title="Divergencia Oculta Bajista", text="🐻 O", location=location.absolute, style=shape.labeldown, size=size.tiny, color=rojo, textcolor=blanco,offset=-2, transp=0)
+
+plotshape(regular_bullish_div1 and div_reg_al and etiquetas  ? macd_2[1] - ploff*0.5 : na, title="Divergencia Regular Alcista", text="🐂 R", location=location.absolute, style=shape.labelup, size=size.tiny, color=verde_fuerte, textcolor=blanco,offset=-2, transp=0)
+plotshape(hidden_bullish_div1 and div_ocu_al and etiquetas  ? macd_2[1] - ploff*0.5 : na, title="Divergencia Oculta Alcista", text="🐂 O", location=location.absolute, style=shape.labelup, size=size.tiny, color=verde_fuerte, textcolor=blanco,offset=-2, transp=0)
+
+
+//Estrategia
+
+largo = crossover(macd_2,0) and macd_1 < macd_2 and macd_1[1] < macd_1[0] and macd_1 < 0 and vset
+largo1 = crossover(macd_2,macd_1) and macd_2 < 0 and vsct
+plotshape(largo  ? macd_2 - ploff*0.75 : na, title="Largo Entrada de Tendencia", location=location.absolute, style=shape.triangleup, size=size.tiny, color=verde_fuerte, transp=0)
+plotshape(largo1  ? macd_2 - ploff*0.75 : na, title="Largo Entrada Contra Tendencia", location=location.absolute, style=shape.triangleup, size=size.tiny, color=verde_fuerte, transp=0)
+
+
+corto = crossunder(macd_2,0) and macd_1 > macd_2 and macd_1[1] > macd_1[0] and macd_1 > 0 and vset
+corto1 = crossunder(macd_2,macd_1) and macd_2 > 0 and vsct
+plotshape(corto  ? macd_2 + ploff*0.75 : na, title="Corto Entrada de Tendencia", location=location.absolute, style=shape.triangledown, size=size.tiny, color=rojo, transp=0)
+plotshape(corto1  ? macd_2 + ploff*0.75 : na, title="Corto Entrada Contra Tendencia", location=location.absolute, style=shape.triangledown, size=size.tiny, color=rojo, transp=0)
+
+//Alertas
+alertcondition(largo or largo1,title="Compras")
+alertcondition(corto or corto1,title="Ventas")
+alertcondition(largo or largo1 or corto or corto1,title="Compras/Ventas")

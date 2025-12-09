@@ -1,0 +1,17 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © KivancOzbilgic
+
+//@version=4
+study("Forecast Oscillator", overlay=false)
+src = input(close)
+len = input(defval=14, minval=1, title="Length")
+lrc = linreg(src, len, 0)
+lrc1 = linreg(src,len,1)
+lrs = (lrc-lrc1)
+TSF = linreg(src, len, 0)+lrs
+fosc=100*(src-TSF[1])/src
+col12 = fosc > fosc[1]
+col32 = fosc < fosc[1]
+color2 = col12 ? #21C400 : col32 ? #960012 : color.blue
+plot(fosc, color = color2,linewidth=2, title = "TSF")
+hline(0, linestyle=2, color=color.blue)

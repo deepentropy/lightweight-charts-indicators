@@ -1,0 +1,219 @@
+// This source code is subject to these terms:
+// Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// You are free to:
+// Share, copy and redistribute this script
+// Adapt, transform and build on this script.
+// Under the following terms:
+// NonCommercial: You may not use the material for commercial purposes.
+// Attribution: You must give appropriate credit
+// https://www.safecreative.org/work/2302153511401-adx-di-di-gu5-
+// © gu5tavo71 (Gustavo Cardelle)
+
+//@version=5
+indicator(title = 'ADX Di+ Di- [Gu5]', shorttitle = 'ADX', overlay = false,
+  format = format.price, precision = 2, timeframe = '')
+
+// Indicator to helps determine the strength of a trend
+// Average Directional movement indeX (ADX) Developed by J. Welles
+// v1.6.23, 2023.02.15
+// Project #694
+// This script reuses open source code from another authors:
+// @PineCoders, Built-in Library, and Community Scripts
+// Disclaimer: I am not a financial advisor.
+//             For purpose educate only. Use at your own risk.
+
+// ——————————— <constant_declarations> {
+//<my colors>
+C_GREEN      = #006400  //Green
+C_GREENLIGHT = #388e3c  //Green Light
+C_RED        = #8B0000  //Red
+C_REDLIGHT   = #b71c1c  //Red Light
+//}
+// ——————————— <inputs> {
+//           |                  |           |                               |         |
+i_sigLen     = input.int        (14,        'ADX Smoothing'                 )
+i_diLen      = input.int        (14,        'DI Length'                     )
+i_hlRange    = input.int        (20,        'Level Range'                   )
+i_hlTrend    = input.int        (35,        'Level Trend'                   )
+i_alertOn    = input.bool       (true,      "■ Alert On/Off"                )
+i_barColOn   = input.bool       (true,      "■ Bar Color On/Off"            )
+//}
+// ——————————— <function_declarations> {
+f_dirMov(_len) =>
+    _up        =  ta.change(high)
+    _down      = -ta.change(low)
+    _plusDM    = na(_up)   ? na : _up   > _down and _up   > 0 ? _up   : 0
+    _minusDM   = na(_down) ? na : _down > _up   and _down > 0 ? _down : 0
+    _trueRange = ta.rma(ta.tr, _len)
+    _plus      = fixnan(100 * ta.rma(_plusDM,  _len) / _trueRange)
+    _minus     = fixnan(100 * ta.rma(_minusDM, _len) / _trueRange)
+    [_plus, _minus]
+f_sig(_diLen, _sigLen) =>
+    [_plus, _minus] = f_dirMov(_diLen)
+    _sum       = _plus + _minus
+    _sig       = 100 * ta.rma(math.abs(_plus - _minus) / (_sum == 0 ? 1 : _sum), _sigLen)
+    [_sig]
+//}
+// ——————————— <calculations> {
+//<set initial values>
+condition    = 0.0
+
+[sig]        = f_sig   (i_diLen, i_sigLen)
+[diPlus, _]  = f_dirMov(i_diLen)
+[_, diMinus] = f_dirMov(i_diLen)
+
+hlRange     = sig     <= i_hlRange
+diUp        = diPlus  >= diMinus
+diUpUp      = diPlus  >= i_hlTrend
+diDn        = diMinus >  diPlus
+diDnDn      = diMinus >  i_hlTrend
+crossDi     = ta.cross(diPlus, diMinus)
+sigUp       = sig > sig[1]
+sigDir      = sig > sig[1] and diUp and not hlRange ?  1 :
+              sig > sig[1] and diDn and not hlRange ? -1 : 0
+//Rules
+entryLong    = not hlRange and diUp and sigUp and not diUp[1] or
+               not hlRange and diUp and sigUp and sig > i_hlRange and hlRange[1]
+entryShort   = not hlRange and diDn and sigUp and not diDn[1] or
+               not hlRange and diDn and sigUp and sig > i_hlRange and hlRange[1]
+entryLongStr = not hlRange and diUp and sigUp and diUpUp
+entryShortSt = not hlRange and diDn and sigUp and diDnDn
+exitLong     = crossDi and diUp[1] or hlRange and not hlRange[1]
+exitShort    = crossDi and diDn[1] or hlRange and not hlRange[1]
+condition   := condition[1] !=  1   and entryLongStr ?  1   :
+               condition[1] != -1   and entryShortSt ? -1   :
+               condition[1] !=  0.5 and entryLong    ?  0.5 :
+               condition[1] != -0.5 and entryShort   ? -0.5 :
+               condition[1] !=  0   and exitLong     ?  0   :
+               condition[1] !=  0   and exitShort    ?  0   : nz(condition[1])
+longE        = barstate.isconfirmed and
+               condition[1] !=  0.5 and condition ==    0.5
+shortE       = barstate.isconfirmed and
+               condition[1] != -0.5 and condition ==   -0.5
+longEStr     = barstate.isconfirmed and
+               condition[1] !=  1   and condition ==    1
+shortEStr    = barstate.isconfirmed and
+               condition[1] != -1   and condition ==   -1
+longX        = barstate.isconfirmed and
+             ((condition[1] ==  0.5 and condition ==    0) or
+              (condition[1] ==  1   and condition ==    0))
+shortX       = barstate.isconfirmed and
+             ((condition[1] == -0.5 and condition ==    0) or
+              (condition[1] == -1   and condition ==    0))
+//<color>
+c_sig        = hlRange                             ?           color.orange      :
+                   sigUp   and diUp                ? color.new(C_GREEN,       0) :
+               not sigUp   and diUp                ? color.new(C_GREENLIGHT,  0) :
+                   sigUp   and diDn                ? color.new(C_RED,         0) :
+               not sigUp   and diDn                ? color.new(C_REDLIGHT,    0) : na
+c_fillAdx    =     hlRange                         ? color.new(color.orange, 90) :
+               not hlRange and diUp and diUpUp     ? color.new(C_GREEN     , 90) :
+               not hlRange and diUp and not diUpUp ? color.new(C_GREENLIGHT, 90) :
+               not hlRange and diDn and diDnDn     ? color.new(C_RED       , 90) :
+               not hlRange and diDn and not diDnDn ? color.new(C_REDLIGHT  , 90) : na
+//}
+// ——————————— <plots> {
+plot(
+  sig,
+  title      = 'ADX',
+  color      = c_sig,
+  linewidth  = 3)
+p_diPlus     = plot(
+  diPlus,
+  title      = '+DI',
+  color      = C_GREEN)
+p_diMinus    = plot(
+  diMinus,
+  title      = '-DI',
+  color      = C_RED)
+fill(
+  p_diPlus, p_diMinus,
+  title      = 'Fill ADX ',
+  color      = c_fillAdx)
+plot(
+  crossDi ? diPlus : na,
+  title      = 'Cross Di',
+  color      = #00000000,
+  style      = plot.style_circles,
+  linewidth  = 2)
+hline(
+  i_hlRange,
+  title      = 'Level Range',
+  color      = color.gray,
+  linestyle  = hline.style_dotted,
+  linewidth  = 1)
+hline(
+  i_hlTrend,
+  title      = 'Level Trend',
+  color      = color.gray,
+  linestyle  = hline.style_dotted,
+  linewidth  = 1)
+barcolor(i_barColOn ? c_sig : na)
+//}
+// ——————————— <alerts> {
+plotshape(
+  i_alertOn and longE ? i_hlTrend + 10 : na,
+  title      = 'Bullish\nTrend',
+  color      = C_GREEN,
+  style      = shape.triangleup,
+  size       = size.tiny,
+  location   = location.absolute)
+plotshape(
+  i_alertOn and shortE ? i_hlTrend + 10 : na,
+  title      = 'Bearish\nTrend',
+  color      = C_RED,
+  style      = shape.triangledown,
+  size       = size.tiny,
+  location   = location.absolute)
+plotshape(
+  i_alertOn and longEStr ? i_hlTrend + 10 : na,
+  title      = 'Strong\nBullish\nTrend',
+  color      = C_GREEN,
+  style      = shape.triangleup,
+  size       = size.small,
+  location   = location.absolute)
+plotshape(
+  i_alertOn and shortEStr ? i_hlTrend + 10 : na,
+  title      = 'Strong\nBearish\nTrend',
+  color      = C_RED,
+  style      = shape.triangledown,
+  size       = size.small,
+  location   = location.absolute)
+plotshape(
+  i_alertOn and (longX or shortX) ? i_hlTrend + 10 : na,
+  title      = 'End\nTrend',
+  color      = color.new(color.orange, 0),
+  style      = shape.xcross,
+  size       = size.small,
+  location   = location.absolute)
+
+alertcondition(
+  longE or shortE or longEStr or shortEStr or longX or shortX,
+  title      = 'Any Alert',
+  message    = 'Any Alert')
+alertcondition(
+  longE,
+  title      = 'Buy Weak Alert',
+  message    = 'Buy Weak Alert')
+alertcondition(
+  shortE,
+  title      = 'Sell Weak Alert',
+  message    = 'Sell Weak Alert')
+alertcondition(
+  longEStr,
+  title      = 'Buy Strong Alert',
+  message    = 'Buy Strong Alert')
+alertcondition(
+  shortEStr,
+  title      = 'Sell Strong Alert',
+  message    = 'Sell Strong Alert')
+alertcondition(
+  longX,
+  title      = 'Buy Close Alert',
+  message    = 'Buy Close Alert')
+alertcondition(
+  shortX,
+  title      = 'Sell Close Alert',
+  message    = 'Sell Close Alert')
+//}

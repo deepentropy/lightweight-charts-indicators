@@ -1,0 +1,38 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © alexgrover
+//@version=4
+study("Extrapolated Pivot Connector",overlay=true,max_bars_back=5000)
+//----
+length = input(100)
+astart = input(1,"A-High Position"),aend = input(0,"B-High Position")
+bstart = input(1,"A-Low Position"),bend = input(0,"B-Low Position")
+csrc = input(false,"Use Custom Source ?"),src = input(close,"Custom Source")
+//----
+up = pivothigh(iff(csrc,src,high),length,length)
+dn = pivotlow(iff(csrc,src,low),length,length)
+//----
+n = bar_index
+a1 = valuewhen(not na(up),n,astart)
+b1 = valuewhen(not na(dn),n,bstart)
+a2 = valuewhen(not na(up),n,aend)
+b2 = valuewhen(not na(dn),n,bend)
+//----
+line upper = line.new(n[n - a1 + length],up[n - a1],n[n - a2 + length],up[n - a2],
+  extend=extend.right,color=color.blue,width=2)
+line lower = line.new(n[n - b1 + length],dn[n - b1],n[n - b2 + length],dn[n - b2],
+  extend=extend.right,color=color.orange,width=2)
+line.delete(upper[1])
+line.delete(lower[1])
+//----
+label ahigh = label.new(n[n - a1 + length],up[n - a1],"A-High",
+  color=color.blue,style=label.style_labeldown,textcolor=color.white,size=size.small)
+label bhigh = label.new(n[n - a2 + length],up[n - a2],"B-High",
+  color=color.blue,style=label.style_labeldown,textcolor=color.white,size=size.small)
+label alow = label.new(n[n - b1 + length],dn[n - b1],"A-Low",
+  color=color.orange,style=label.style_labelup,textcolor=color.white,size=size.small)
+label blow = label.new(n[n - b2 + length],dn[n - b2],"B-Low",
+  color=color.orange,style=label.style_labelup,textcolor=color.white,size=size.small)
+label.delete(ahigh[1]),label.delete(bhigh[1]),label.delete(alow[1]),label.delete(blow[1])
+//----
+plot(up,"Pivot High's",color.blue,4,style=plot.style_circles,transp=0,offset=-length,join=true)
+plot(dn,"Pivot Low's",color.orange,4,style=plot.style_circles,transp=0,offset=-length,join=true)

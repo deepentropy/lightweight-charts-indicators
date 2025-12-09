@@ -1,0 +1,77 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("RSI Multi Length [LuxAlgo]")
+max = input(20,'Maximum Length')
+min = input(10,'Minimum Length')
+
+overbought = input.float(70,step=10)
+oversold   = input.float(30,step=10)
+
+src = input(close)
+//----
+rsi_avg_dn_css = input(#ff5d00,'Average RSI Gradient',group='Style',inline='inline1')
+rsi_avg_up_css = input(#2157f3,'',group='Style',inline='inline1')
+
+upper_css = input(#0cb51a,'Upper Level',group='Style')
+lower_css = input(#ff1100,'Lower Level',group='Style')
+
+ob_area = input(color.new(#0cb51a,70),'Overbought Area',group='Style')
+os_area = input(color.new(#ff1100,70),'Oversold Area',group='Style')
+//----
+N = max-min+1
+diff = nz(src - src[1])
+
+var num = array.new_float(N,0)
+var den = array.new_float(N,0)
+//----
+k = 0
+overbuy = 0
+oversell = 0
+avg = 0.
+for i = min to max
+    alpha = 1/i
+    
+    num_rma = alpha*diff + (1-alpha)*array.get(num,k)
+    den_rma = alpha*math.abs(diff) + (1-alpha)*array.get(den,k)
+    rsi = 50*num_rma/den_rma + 50
+    avg += rsi
+    
+    overbuy := rsi > overbought ? overbuy + 1 : overbuy
+    oversell := rsi < oversold ? oversell + 1 : oversell
+    
+    array.set(num,k,num_rma)
+    array.set(den,k,den_rma)
+    k += 1
+//----
+avg_rsi = avg/N
+buy_rsi_ma = 0.
+sell_rsi_ma = 0.
+
+buy_rsi_ma := nz(buy_rsi_ma[1] + overbuy/N*(avg_rsi - buy_rsi_ma[1]),avg_rsi) 
+sell_rsi_ma := nz(sell_rsi_ma[1] + oversell/N*(avg_rsi - sell_rsi_ma[1]),avg_rsi) 
+//----
+var tb = table.new(position.top_right,2,2)
+if barstate.islast
+    table.cell(tb,0,0,'Overbought',text_color=color.gray,bgcolor=na)
+    table.cell(tb,1,0,'Oversold',text_color=color.gray,bgcolor=na)
+    
+    table.cell(tb,0,1,str.tostring(overbuy/N*100,'#.##')+' %',text_color=#26a69a,bgcolor=color.new(#26a69a,80))
+    table.cell(tb,1,1,str.tostring(oversell/N*100,'#.##')+' %',text_color=#ef5350,bgcolor=color.new(#ef5350,80))
+//----
+css = color.from_gradient(avg_rsi,sell_rsi_ma,buy_rsi_ma,rsi_avg_dn_css,rsi_avg_up_css)
+plot(avg_rsi,'Average Multi Length RSI',color=css)
+up = plot(buy_rsi_ma,'Upper Channel',color=upper_css)
+dn = plot(sell_rsi_ma,'Lower Channel',color=lower_css)
+
+per_over = plot(overbuy/N*100,'Overbought Area',color=color.new(ob_area,100),editable=false)
+per_under = plot(100 - oversell/N*100,'Oversold Area',color=color.new(os_area,100),editable=false)
+upper = plot(100,color=na,editable=false,display=display.none)
+lower = plot(0,color=na,editable=false,display=display.none)
+
+fill(per_over,lower,ob_area)
+fill(upper,per_under,os_area)
+fill(up,dn,color.new(css,90))
+
+hline(50,color=color.new(color.gray,50))

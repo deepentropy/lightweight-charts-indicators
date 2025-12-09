@@ -1,0 +1,21 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © KivancOzbilgic
+
+//@version=4
+study("Scalping Line", overlay=false)
+src = input(close, title="Source")
+percent = input(1.0,"Percent", type=input.float, step=0.1, minval=0)
+mainperiod = input(100,"Main Period")
+signalperiod = input(7,"Signal Period")
+MA = sma(sma(src, ceil(mainperiod / 2)), floor(mainperiod / 2) + 1)
+ssMA = MA>close+MA*percent/100 ? MA : MA<close-MA*percent/100 ? MA : close
+signalline = sma(close,signalperiod)
+ScalpLine = signalline-ssMA
+
+k1=plot(ScalpLine,"SLI",color.maroon,2)
+k2=plot(0,"")
+
+color1= ScalpLine>=0 ? color.green : color.red
+fill(k1,k2,color=color1,transp=80)
+alertcondition(crossover(ScalpLine,0), title="BUY ALARM!", message="SLI BUY Signal!")
+alertcondition(crossunder(ScalpLine,0), title="SELL ALARM!", message="SLI SELL Signal!")

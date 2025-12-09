@@ -1,0 +1,7 @@
+//@version=6
+indicator(title="Historical Volatility", shorttitle="HV", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+length = input.int(10, minval=1)
+annual = 365
+per = timeframe.isintraday or timeframe.isdaily and timeframe.multiplier == 1 ? 1 : 7
+hv = 100 * ta.stdev(math.log(close / close[1]), length) * math.sqrt(annual / per)
+plot(hv, "HV", color=#2962FF)

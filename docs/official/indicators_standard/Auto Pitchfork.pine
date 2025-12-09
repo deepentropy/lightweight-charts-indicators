@@ -1,0 +1,197 @@
+
+
+//@version=6
+indicator("Auto Pitchfork", overlay = true)
+
+depthTooltip = "The minimum number of bars that will be taken into account when calculating the indicator."
+depth = input.int(10, "Depth", minval = 2, tooltip = depthTooltip)
+typeP = input.string("Original", "Type", options = ["Original", "Schiff", "Modified Schiff", "Inside"])
+backgroundTransparency = input.int(85, "Background Transparency", minval = 0, maxval = 100, display = display.data_window)
+
+isExtended = input.bool(false, "Extend left")
+extendLine = isExtended ? extend.both : extend.right 
+
+medianColor = input(#f44336, "Median line                 ", inline = "ML", display = display.data_window)
+medianWidth = input.int(1, "", minval = 1, inline = "ML", display = display.data_window)
+medianStyle = input.string("Solid", "", options = ["Dashed", "Dotted", "Solid"], inline = "ML", display = display.data_window)
+
+import TradingView/ZigZag/7 as zigzag
+
+var chart.point lastP = na
+var chart.point prevP = na
+var chart.point prev2P = na
+
+var zigzag.ZigZag zigZag = zigzag.newInstance(zigzag.Settings.new(0, depth, color(na), false, false, false, false, "Absolute", false))
+if zigZag.update()
+    pivots = zigZag.pivots
+    pivotsCount = array.size(pivots)
+    if pivotsCount > 1
+        p = pivots.get(pivotsCount - 2)
+        lastP := p.end
+        prevP := p.start
+        if pivotsCount > 2
+            p2 = pivots.get(pivotsCount - 3)
+            prev2P := p2.start
+
+ready = not(na(lastP) or na(prevP) or na(prev2P))
+
+_calcOffsetPrice(chart.point start, chart.point end)=>
+    (start.price - end.price) * 0.5 / math.abs(start.index - end.index - 0.5)
+
+_calcSlope(chart.point start, chart.point end)=>
+    (end.price - start.price) / (end.index - start.index)
+    
+_calcAvgRoundBarIndex(chart.point start, chart.point end)=>
+    chart.point.from_index(math.round(math.avg(start.index, end.index)), math.avg(start.price, end.price))
+
+_calcAvgFloorBarIndex(chart.point start, chart.point end)=>
+    chart.point.from_index(math.floor(math.avg(start.index, end.index)), math.avg(start.price, end.price))
+
+getMedianData(type) =>
+    if ready
+        chart.point startMedian = na
+        chart.point endMedian = _calcAvgFloorBarIndex(prevP, lastP)
+        
+        needOffsetEndMedianPrice = (lastP.index - prevP.index) % 2 != 0
+
+        if type == "Original"
+            startMedian := chart.point.copy(prev2P)
+            endMedian.price += needOffsetEndMedianPrice ? _calcOffsetPrice(startMedian, endMedian) : 0 // add offset if iEndMedian was rounded (floor) to whole bar_index
+
+        else if type == "Schiff"
+            startMedian := chart.point.copy(prev2P)
+            startMedian.price := math.avg(prevP.price, prev2P.price)
+            endMedian.price += needOffsetEndMedianPrice ? _calcOffsetPrice(startMedian, endMedian) : 0
+
+        else if type == "Modified Schiff"
+            startMedian := chart.point.from_index(math.floor(math.avg(prevP.index, prev2P.index)), math.avg(prevP.price, prev2P.price))
+            offsetPrice = _calcOffsetPrice(startMedian, endMedian)
+            startMedian.price += (prev2P.index - prevP.index) % 2 != 0 ? offsetPrice : 0
+            endMedian.price += needOffsetEndMedianPrice ? offsetPrice : 0
+
+        else if type == "Inside"
+            startMedian := chart.point.copy(lastP)
+            slopeInside = (math.avg(prevP.price, prev2P.price) - lastP.price) / (math.avg(prevP.index, prev2P.index) - lastP.index)
+            startMedian.price := slopeInside *(startMedian.index - math.avg(prevP.index, lastP.index)) + endMedian.price
+            endMedian.price -= needOffsetEndMedianPrice ? _calcOffsetPrice(startMedian, endMedian) : 0
+            
+        [startMedian, endMedian]
+
+
+drawPitchforkLine(chart.point start, chart.point end, color, width, style, extend) =>
+    _style = style == "Solid" ? line.style_solid : style == "Dotted" ? line.style_dotted : line.style_dashed
+    var id = line.new(start, end, xloc.bar_index, extend, color, _style, width)
+    line.set_first_point(id, start)
+    line.set_second_point(id, end)
+    id
+
+
+[startMedian, endMedian] = getMedianData(typeP)
+
+drawLevel(iDiff, pDiff, level, slopeMedian, color, width, style)=>
+    iEndMedian = (prevP.index + lastP.index) / 2
+    pEndMedian = (prevP.price + lastP.price) / 2
+    isSlopeUp = prevP.price > lastP.price
+    temp = iEndMedian + (isSlopeUp ? iDiff : -iDiff) * level
+    
+    start = chart.point.from_index(math.ceil(temp), pEndMedian - pDiff * level)
+    end = chart.point.from_index(start.index + 1, slopeMedian * (start.index + 1 - temp) + start.price)
+
+    isIntBarIndex = temp - math.ceil(temp)
+    offset = isIntBarIndex == 0 ? 0 : (start.price - end.price) * (isIntBarIndex) / (temp - end.index)
+    start.price -= offset
+    lineId = drawPitchforkLine(start, end, color, width, style, extendLine)
+
+processLevel(show, level, color, width, style, lineIdOther1, lineIdOther2) =>
+    if show and ready and not( na(startMedian) or na(endMedian) )
+        iDiff = math.abs(prevP.index - lastP.index) / 2
+        pDiff = math.abs(prevP.price - lastP.price) / 2
+        slopeMedian = _calcSlope(startMedian, endMedian)        
+        lineId1 = drawLevel(-iDiff, -pDiff, level, slopeMedian, color, width, style)
+        lineId2 = drawLevel(iDiff, pDiff, level, slopeMedian, color, width, style)        
+        if not na(lineIdOther1)
+            linefill.new(lineId1, lineIdOther1, color = color.new(color, backgroundTransparency))
+            linefill.new(lineId2, lineIdOther2, color = color.new(color, backgroundTransparency))
+        else
+            linefill.new(lineId1, lineId2, color = color.new(color, backgroundTransparency))
+        [lineId1, lineId2]
+    else
+        [lineIdOther1, lineIdOther2]
+
+show_0_25  = input(false, "", inline = "level0", display = display.data_window)
+value_0_25 = input.float(0.25, "", minval = .0, step = .1, inline = "level0", display = display.data_window, active = show_0_25)
+color_0_25 = input(#ffb74d, "", inline = "level0", display = display.data_window, active = show_0_25)
+width_0_25 = input.int(1, "", minval = 1, inline = "level0", display = display.data_window, active = show_0_25)
+style_0_25 = input.string("Solid", "", options = ["Dashed", "Dotted", "Solid"], inline = "level0", display = display.data_window, active = show_0_25)
+
+show_0_382  = input(false, "", inline = "level1", display = display.data_window)
+value_0_382 = input.float(0.382, "", minval = .0, step = .1, inline = "level1", display = display.data_window, active = show_0_382)
+color_0_382 = input(#81c784, "", inline = "level1", display = display.data_window, active = show_0_382)
+width_0_382 = input.int(1, "", minval = 1, inline = "level1", display = display.data_window, active = show_0_382)
+style_0_382 = input.string("Solid", "", options = ["Dashed", "Dotted", "Solid"], inline = "level1", display = display.data_window, active = show_0_382)
+
+show_0_5  = input(true, "", inline = "level2", display = display.data_window)
+value_0_5 = input.float(0.5, "", minval = .0, step = .1, inline = "level2", display = display.data_window, active = show_0_5)
+color_0_5 = input(#4caf50, "", inline = "level2", display = display.data_window, active = show_0_5)
+width_0_5 = input.int(1, "", minval = 1, inline = "level2", display = display.data_window, active = show_0_5)
+style_0_5 = input.string("Solid", "", options = ["Dashed", "Dotted", "Solid"], inline = "level2", display = display.data_window, active = show_0_5)
+
+show_0_618  = input(false, "", inline = "level3", display = display.data_window)
+value_0_618 = input.float(0.618, "", minval = .0, step = .1, inline = "level3", display = display.data_window, active = show_0_618)
+color_0_618 = input(#009688, "", inline = "level3", display = display.data_window, active = show_0_618)
+width_0_618 = input.int(1, "", minval = 1, inline = "level3", display = display.data_window, active = show_0_618)
+style_0_618 = input.string("Solid", "", options = ["Dashed", "Dotted", "Solid"], inline = "level3", display = display.data_window, active = show_0_618)
+
+show_0_75  = input(false, "", inline = "level4", display = display.data_window)
+value_0_75 = input.float(0.75, "", minval = .0, step = .1, inline = "level4", display = display.data_window, active = show_0_75)
+color_0_75 = input(#64b5f6, "", inline = "level4", display = display.data_window, active = show_0_75)
+width_0_75 = input.int(1, "", minval = 1, inline = "level4", display = display.data_window, active = show_0_75)
+style_0_75 = input.string("Solid", "", options = ["Dashed", "Dotted", "Solid"], inline = "level4", display = display.data_window, active = show_0_75)
+
+show_1  = input(true, "", inline = "level5", display = display.data_window)
+value_1 = input.float(1, "", minval = .0, step = .1, inline = "level5", display = display.data_window, active = show_1)
+color_1 = input(#2962ff, "", inline = "level5", display = display.data_window, active = show_1)
+width_1 = input.int(1, "", minval = 1, inline = "level5", display = display.data_window, active = show_1)
+style_1 = input.string("Solid", "", options = ["Dashed", "Dotted", "Solid"], inline = "level5", display = display.data_window, active = show_1)
+
+show_1_5  = input(false, "", inline = "level6", display = display.data_window)
+value_1_5 = input.float(1.5, "", minval = .0, step = .1, inline = "level6", display = display.data_window, active = show_1_5)
+color_1_5 = input(#9c27b0, "", inline = "level6", display = display.data_window, active = show_1_5)
+width_1_5 = input.int(1, "", minval = 1, inline = "level6", display = display.data_window, active = show_1_5)
+style_1_5 = input.string("Solid", "", options = ["Dashed", "Dotted", "Solid"], inline = "level6", display = display.data_window, active = show_1_5)
+
+show_1_75  = input(false, "", inline = "level7", display = display.data_window)
+value_1_75 = input.float(1.75, "", minval = .0, step = .1, inline = "level7", display = display.data_window, active = show_1_75)
+color_1_75 = input(#e91e63, "", inline = "level7", display = display.data_window, active = show_1_75)
+width_1_75 = input.int(1, "", minval = 1, inline = "level7", display = display.data_window, active = show_1_75)
+style_1_75 = input.string("Solid", "", options = ["Dashed", "Dotted", "Solid"], inline = "level7", display = display.data_window, active = show_1_75)
+
+show_2  = input(false, "", inline = "level8", display = display.data_window)
+value_2 = input.float(2, "", minval = .0, step = .1, inline = "level8", display = display.data_window, active = show_2)
+color_2 = input(#e91e63, "", inline = "level8", display = display.data_window, active = show_2)
+width_2 = input.int(1, "", minval = 1, inline = "level8", display = display.data_window, active = show_2)
+style_2 = input.string("Solid", "", options = ["Dashed", "Dotted", "Solid"], inline = "level8", display = display.data_window, active = show_2)
+    
+if ready
+    if typeP == "Inside"
+        drawPitchforkLine(endMedian, startMedian, medianColor, medianWidth, medianStyle, extendLine)
+    else
+        drawPitchforkLine(startMedian, endMedian, medianColor, medianWidth, medianStyle, extendLine)
+        
+    drawPitchforkLine(prevP, lastP, medianColor, medianWidth, medianStyle, extend.none)
+
+    if typeP != "Original"
+        drawPitchforkLine(prev2P, prevP, medianColor, medianWidth, medianStyle, extend.none)
+
+    if typeP == "Inside"
+        drawPitchforkLine(_calcAvgRoundBarIndex(prevP, prev2P), lastP, medianColor, medianWidth, medianStyle, extend.none)
+
+[lineId0_1, lineId0_2] = processLevel(show_0_25, value_0_25, color_0_25, width_0_25, style_0_25, line(na), line(na))
+[lineId1_1, lineId1_2] = processLevel(show_0_382, value_0_382, color_0_382, width_0_382, style_0_382, lineId0_1, lineId0_2)
+[lineId2_1, lineId2_2] = processLevel(show_0_5, value_0_5, color_0_5, width_0_5, style_0_5, lineId1_1, lineId1_2)
+[lineId3_1, lineId3_2] = processLevel(show_0_618, value_0_618, color_0_618, width_0_618, style_0_618, lineId2_1, lineId2_2)
+[lineId4_1, lineId4_2] = processLevel(show_0_75, value_0_75, color_0_75, width_0_75, style_0_75, lineId3_1, lineId3_2)
+[lineId5_1, lineId5_2] = processLevel(show_1, value_1, color_1, width_1, style_1, lineId4_1, lineId4_2)
+[lineId6_1, lineId6_2] = processLevel(show_1_5, value_1_5, color_1_5, width_1_5, style_1_5, lineId5_1, lineId5_2)
+[lineId7_1, lineId7_2] = processLevel(show_1_75, value_1_75, color_1_75, width_1_75, style_1_75, lineId6_1, lineId6_2)
+[lineId8_1, lineId8_2] = processLevel(show_2, value_2, color_2, width_2, style_2, lineId7_1, lineId7_2)

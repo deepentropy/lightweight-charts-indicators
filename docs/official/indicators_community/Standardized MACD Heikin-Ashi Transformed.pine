@@ -1,0 +1,193 @@
+// This Pine Script™ code is subject to the terms of the Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © EliCobra
+
+//@version=5
+indicator("Standardized MACD Heikin-Ashi Transformed", "[Ʌ] - 𝗦𝘁. 𝗠𝗔𝗖𝗗 𝗛-𝗔", false)
+
+type bar
+    float o = na
+    float h = na
+    float l = na
+    float c = na
+
+type osc
+    bar   b = na
+    float s = na
+    float h = na
+
+type alerts
+    bool  s = na
+    bool  b = na
+    bool  u = na
+    bool  d = na
+    bool  p = na
+    bool  n = na
+    bool  x = na
+    bool  y = na
+
+type prompt
+    string s = ''
+    bool   c = false
+
+method notify(prompt p) =>
+    if p.c
+        alert(p.s, alert.freq_once_per_bar_close)
+        
+method any(alerts a) =>
+    string s = switch
+        a.s => 'OB Signal'              
+        a.b => 'OS Signal'              
+        a.u => 'Bullish Trend'          
+        a.d => 'Bearish Trend'          
+        a.p => 'Heikin-Ashi Uptrend  '  
+        a.n => 'Heikin-Ashi Downtrend' 
+        a.x => 'MACD Bullish Cross'   
+        a.y => 'MACD Bearish Cross'    
+        =>      na
+
+    prompt.new(s, not na(s))
+
+method src(bar b, simple string src) =>
+    float x = switch src
+        'open'  =>          b.o
+        'high'  =>          b.h
+        'low'   =>          b.l
+        'close' =>          b.c
+        'oc2'   => math.avg(b.o, b.c          )
+        'hl2'   => math.avg(b.h, b.l          )
+        'hlc3'  => math.avg(b.h, b.l, b.c     )
+        'ohlc4' => math.avg(b.o, b.h, b.l, b.c)
+        'hlcc4' => math.avg(b.h, b.l, b.c, b.c)
+
+    x
+
+method ha(bar b, simple bool p = true) =>
+    var bar x = bar.new(       )
+    x.c      := b  .src('ohlc4')
+    x        := bar.new(
+         na(x.o[1]) ? 
+             b.src('oc2') : nz(x.src('oc2')[1]),
+         math.max(b.h, math.max(x.o, x.c))     ,
+         math.min(b.l, math.min(x.o, x.c))     ,
+         x.c                                   )
+
+    p ? x : b
+
+method stmc(bar b, simple string src, simple int flen, simple int slen, simple string sig, simple int clen) =>
+    float x = (ta.ema(b.src(src), flen)  - 
+               ta.ema(b.src(src), slen)) / 
+              (ta.ema(b.h - b.l , slen)) * 100
+
+    bar   z = bar.new(
+             x[1]             ,
+             math.max(x, x[1]),
+             math.min(x, x[1]),
+             x                ).ha()
+
+    float s = ta.ema(z.src(sig), clen)
+
+    osc.new(z, s, z.c - s)
+
+
+const string gm = "MACD Settings", const string gu = "UI Options"
+src  = input.string('close' , "Source"             , ['open',  'high',  'low',  'close',  'hl2',  'hlc3',  'ohlc4',  'hlcc4'],               group = gm)
+fast = input.int   (12      , "Fast Length"        ,                                                                                         group = gm)
+slow = input.int   (26      , "Slow Length"        ,                                                                                         group = gm)
+sigb = input.bool  (true    , "Signal"             ,                                                                           inline = '1', group = gm)
+sigs = input.string('close' , "Source"             , ['open',  'high',  'low',  'close',  'hl2',  'hlc3',  'ohlc4',  'hlcc4'], inline = '1', group = gm)
+sigl = input.int   (9       , "Length"             ,                                                                           inline = '1', group = gm)
+mode = input.string('Hybrid', "Display Mode"       , ['Hybrid',                       'MACD',                    'Histogram'],               group = gu)
+revs = input.bool  (true    , ""                   ,                                                                           inline = '0', group = gu)
+revt = input.int   (100     , "Reversion Threshold", [100,                                                               150], inline = '0', group = gu)
+colb = input.string('None'  , "Bar Coloring"       , ['None', 'MidLine', 'Candles', 'Sig Cross', 'Extremities', 'Reversions'],               group = gu)
+hol  = input.bool  (true    , "Hollow Candles"     ,                                                                                         group = gu)
+
+
+bar   b = bar.new (open, high, low , close      )
+osc   o = b  .stmc(src , fast, slow, sigs , sigl)
+
+
+const color colup = #00bcd4
+const color coldn = #fc1f1f
+const color colhu = #8ac3f5
+const color colhd = #ffa7b6
+var   color colnt = chart.fg_color
+color       colh  = 
+                      o.h > 0                              ?
+                     (o.h > o.h[1]                         ? 
+                                     color.new(colhu, 20)  : 
+                                     color.new(colhu, 30)) :
+                     (o.h > o.h[1]                         ? 
+                                     color.new(colhd, 20)  : 
+                                     color.new(colhd, 30))
+
+color haColor = switch
+    o.b.c > o.b.o => colup
+    o.b.c < o.b.o => coldn
+
+m   = hline(0                                      , "Mid Line", chart.fg_color,    hline.style_solid )
+min = hline(mode != 'Histogram' ? -200 : -100      ,                   display =    display.none      )
+ll  = hline(mode != 'Histogram' ? -150 : -75       ,                   display =    display.none      )
+hl  = hline(mode != 'Histogram' ? -100 : -50       ,                   display =    display.none      )
+max = hline(mode != 'Histogram' ? +200 : +100      ,                   display =    display.none      )
+hh  = hline(mode != 'Histogram' ? +150 : +75       ,                   display =    display.none      )
+lh  = hline(mode != 'Histogram' ? +100 : +50       ,                   display =    display.none      )
+h   = plot (mode != 'Histogram' and sigb ? o.s : na, "Signal"  , colnt                                )
+mc  = plot (mode != 'MACD'               ? o.h : na, "H"       , colh          , 1, plot.style_columns)
+
+fill(lh, hh , color.new(coldn, 90))
+fill(hh, max, color.new(coldn, 80))
+fill(ll, hl , color.new(colup, 80))
+fill(ll, min, color.new(colup, 80))
+
+plotcandle(mode != 'Histogram' ? o.b.o  : na                                                    ,
+           mode != 'Histogram' ? o.b.h  : na                                                    ,
+           mode != 'Histogram' ? o.b.l  : na                                                    ,
+           mode != 'Histogram' ? o.b.c  : na                                                    ,
+           "𝗠𝗔𝗖𝗗", hol ? o.b.c > o.b.o ? na : haColor : haColor, haColor, bordercolor = haColor)
+
+
+alerts a = alerts.new(
+                      ta.crossunder(o.b.c, o.b.o) and     (o.b.h >  revt),
+                      ta.crossover (o.b.c, o.b.o) and     (o.b.l < -revt),
+                      ta.crossover (o.b.c,     0)                        ,
+                      ta.crossunder(o.b.c,     0)                        ,
+                      ta.crossunder(o.b.c, o.b.o) and not (o.b.h >  revt),
+                      ta.crossover (o.b.c, o.b.o) and not (o.b.l < -revt),
+                      ta.crossover (o.b.c, o.s  )                        ,
+                      ta.crossunder(o.b.c, o.s  )                        )
+
+plotshape(mode != 'Histogram' ? revs ? a.s ? o.b.h + 40 : na : na : na, "OB", shape.triangledown, location.absolute, coldn, size = size.tiny)
+plotshape(mode != 'Histogram' ? revs ? a.b ? o.b.l - 40 : na : na : na, "OS", shape.triangleup  , location.absolute, colup, size = size.tiny)
+
+
+alertcondition(a.s, "Overbought"          , 'OB Signal'            )
+alertcondition(a.b, "Oversold  "          , 'OS Signal'            )
+alertcondition(a.u, "Midline Crossover "  , 'Bullish Trend'        )
+alertcondition(a.d, "Midline Crossunder"  , 'Bearish Trend'        )
+alertcondition(a.p, "Positive Heikin-Ashi", 'Heikin-Ashi Uptrend  ')
+alertcondition(a.n, "Negative Heikin-Ashi", 'Heikin-Ashi Downtrend')
+alertcondition(a.x, "MACD Bull Cross"     , 'MACD Bullish Cross'   )
+alertcondition(a.y, "MACD Bear Cross"     , 'MACD Bearish Cross'   )
+
+a.any().notify()
+
+color col = switch colb
+    'MidLine'     => o.b.c > 0     ? colup                         : coldn
+    'Candles'     => o.b.c > o.b.o ? colup                         : coldn
+    'Sig Cross'   => o.s   > o.b.c ? coldn                         : colup
+    'Extremities' => o.b.c > revt  ? coldn : o.b.c < -revt ? colup : color.new(colnt, 25)
+    'Reversions'  => a.b           ? coldn : a.s           ? colup : color.new(colnt, 25)
+    'None'        => na
+
+barcolor(col)
+
+//Source Construction For Indicator\Strategy Exports
+plot(o.b.o           , "open" , editable = false, display = display.none)
+plot(o.b.h           , "high" , editable = false, display = display.none)
+plot(o.b.l           , "low"  , editable = false, display = display.none)
+plot(o.b.c           , "close", editable = false, display = display.none)
+plot(o.b.src('hl2'  ), "hl2"  , editable = false, display = display.none)
+plot(o.b.src('hlc3' ), "hlc3" , editable = false, display = display.none)
+plot(o.b.src('ohlc4'), "ohlc4", editable = false, display = display.none)
+plot(o.b.src('hlcc4'), "hlcc4", editable = false, display = display.none)

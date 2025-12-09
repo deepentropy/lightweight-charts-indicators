@@ -1,0 +1,255 @@
+//@version=4
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Momentum adjusted Moving Average
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Jul 15, 2020  : Initial Release
+//# *  Update     : Aug 10, 2020  : Feedback Bands
+//# *                               - Introduces an experimental application of feedback concept common in Electronic Engineering
+//# *  Update     : Nov 24, 2020  : Backtest Framework Adaptation
+//# *  Update     : Apr 08, 2021  : Enchanced Backtest Framework
+//# *                               - long/short/stoploss conditions enchaced
+//# *                               - early warning ability added (label + alert)
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+study("Momentum adjusted Moving Average by DGT", "MaMA ʙʏ DGT ☼☾", true)
+
+// -Input ======================================================================================= //
+
+source      = input(close, "Source", type=input.source)
+length      = input(55,    "Moving Average Length", minval = 1)
+exponential = input(true)
+mLength     = input(34,    "Momentum Length"      , minval = 0)
+accelFactor = input(true,  "Acceleration Factor") 
+pLength     = input(13,    "Probability Length"   , minval = 1)
+offset      = input(1,     "Offset"               , minval =-5, maxval = 5)
+
+displayFB   = input(false, "Display Feedback Bands (Daily TimeFrame)")
+fbFactor    = input(.1,    "Feedback Factor"      , minval = 0, maxval =.2, step = .01)
+displayMA   = input(false, "Add Regular Moving Average")
+
+// -Calculation ================================================================================= //
+
+momentum       = change(source  , mLength)
+acceleration   = change(momentum, mLength)
+probability    = sum(change(source) > 0 ? 1 : 0, pLength) / pLength
+
+adjustedSource = accelFactor ? 
+     source + (momentum + .5 * acceleration) * probability : 
+     source +  momentum * probability
+
+MaMA = exponential ? ema(adjustedSource,length) : sma(adjustedSource,length)
+MA   = displayMA   ? exponential ? ema(source,length) : sma(source,length) : na
+
+negative = displayFB and timeframe.isdaily ? ema(MaMA / abs(1 + fbFactor * adjustedSource / MaMA), 5) : na
+positive = displayFB and timeframe.isdaily ? ema(MaMA / abs(1 - fbFactor * adjustedSource / MaMA), 5) : na
+
+// -Plot ======================================================================================== //
+
+p0 = plot(MaMA,      "Momentum adjusted Moving Average", color = (source > MaMA ? #006400 : #910000), linewidth = 2, offset=offset)
+p1 = plot(negative,  "MaMA - Negative Feedback Effect" , color = #910000, offset=offset)
+p2 = plot(positive,  "MaMA - Positive Feedback Effect" , color = #006400, offset=offset)
+fill(p0, p1, title = "Lower MaMA Band", transp = 95    , color = #910000)
+fill(p0, p2, title = "Upper MaMA Band", transp = 95    , color = #006400)
+
+plot(MA,             "Regular Moving Average")
+
+// -Alerts ══════════════════════════════════════════════════════════════════════════════════════ //
+
+longAlertCondition  = crossover(source, MaMA)
+alertcondition(longAlertCondition   , "Long : Early Warning"        , "MaMA - Not Confirmed Probable Long Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+alertcondition(longAlertCondition[1], "Long : Trading Opportunity"  , "MaMA - Probable Long Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+
+shortAlertCondition = crossunder(source, MaMA)
+alertcondition(shortAlertCondition   , "Short : Early Warning"      , "MaMA - Not Confirmed Probable Short Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+alertcondition(shortAlertCondition[1], "Short : Trading Opportunity", "MaMA - Probable Short Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Backtest Framework
+//# * Author      : © dgtrd
+//# * Purpose     : Ability to optimize a study and observe trade simulation statistics accordingly  
+//# *
+//# * Revision History
+//# *  Release    : Nov 21, 2020  : Initial Release
+//# *  Update     : Mar 13, 2021  : Enchanced Backtest Framework
+//# *                               - long/short/stoploss conditions enchaced
+//# *                               - early warning ability added (label + alert)
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+// -Inputs ══════════════════════════════════════════════════════════════════════════════════════════ //
+
+isBackTest = input(false,       "Backtest On/Off"                                                  , group = "Backtest Framework")
+dasCapital = input(1000.,       "Initial Capital"                                 , inline = "BT1" , group = "Backtest Framework")
+lenBckTst  = input(1,           "Period (Year)", minval=0, step = .1              , inline = "BT1" , group = "Backtest Framework")
+isStopLoss = input(false,       "Apply Stop Loss, with Stop Loss Set To %"        , inline = "BT2" , group = "Backtest Framework")
+stopLoss   = input(1.,          "", step=.1, minval = 0                           , inline = "BT2" , group = "Backtest Framework") / 100
+isBull     = input(false,       "Long : Candle Direction as Confirmation : Short" , inline = "BT3" , group = "Backtest Framework")
+isBear     = input(false,       ""                                                , inline = "BT3" , group = "Backtest Framework")
+isSudden   = input(true,        "Avoid Sudden Price Changes"                                       , group = "Backtest Framework")
+isTest     = input(false,       "❗❗❗ Simulate Trade on Next Bar : Only For Test Purpose (REPAINTS)", group = "Backtest Framework")
+lblInOutSL = input(true,        "Trade Entry/Exit Labels  Trade Statistics Label" , inline = "BT4" , group = "Backtest Framework")
+lblTrdStat = input(true,        ""                                                , inline = "BT4" , group = "Backtest Framework")
+
+// -Calculations ════════════════════════════════════════════════════════════════════════════════════ //
+
+startBckTst  = time > timenow - lenBckTst * 31556952000 
+
+var inTrade    = false
+var entryPrice = 0. 
+var exitPrice  = 0. 
+
+if isBackTest
+
+    var capital       = dasCapital
+    var trades        = 0
+    var win           = 0
+    var loss          = 0
+    
+    bullCandle        = close > open
+    bearCandle        = close < open
+    stopLossTrigger   = crossunder(close, entryPrice * (1 - stopLoss))
+    
+    longCondition     = isTest ?
+                          isBull ? 
+                             isSudden ? 
+                               longAlertCondition [1] and not shortAlertCondition    and bullCandle    : 
+                               longAlertCondition [1] and bullCandle                                   : 
+                             isSudden ? 
+                               longAlertCondition [1] and not shortAlertCondition                      : 
+                               longAlertCondition [1]                                                  :
+                          isBull ? 
+                             isSudden ? 
+                               longAlertCondition [2] and not shortAlertCondition[1] and bullCandle[1] : 
+                               longAlertCondition [2] and bullCandle[1]                                : 
+                             isSudden ? 
+                               longAlertCondition [2] and not shortAlertCondition[1]                   : 
+                               longAlertCondition [1]
+
+    shortCondition    = isTest ?
+                          isBear ? 
+                             isSudden ? 
+                               shortAlertCondition[1] and not longAlertCondition     and bearCandle    : 
+                               shortAlertCondition[1] and bearCandle                                   : 
+                             isSudden ? 
+                               shortAlertCondition[1] and not longAlertCondition                       : 
+                               shortAlertCondition[1]                                                  :
+                          isBear ? 
+                             isSudden ? 
+                               shortAlertCondition[2] and not longAlertCondition [1] and bearCandle[1] : 
+                               shortAlertCondition[2] and bearCandle[1]                                : 
+                             isSudden ? 
+                               shortAlertCondition[2] and not longAlertCondition [1]                   : 
+                               shortAlertCondition[1]
+
+    stopLossCondition = isStopLoss ? inTrade and not shortCondition ? stopLossTrigger : 0 : 0
+
+    if startBckTst and longCondition and not inTrade
+        entryPrice   := open
+        inTrade      := true
+        trades       := trades + 1
+    
+        if lblInOutSL
+            label longLabel = label.new(bar_index, low, text="L"
+             ,tooltip="entry price  : " + tostring(entryPrice) + "\nentry value : " + tostring(capital, "#.##")
+             ,color=color.green, style=label.style_label_up, textcolor=color.white, textalign=text.align_center, size=size.tiny)
+    
+        alert("long : probable trading opportunity, price " + tostring(close), alert.freq_once_per_bar)
+
+
+    if (shortCondition or stopLossCondition) and inTrade
+        exitPrice    := stopLossCondition ? close : open
+        inTrade      := false
+        capital      := capital * (exitPrice / entryPrice)
+
+        if exitPrice > entryPrice
+            win      := win  + 1
+        else
+            loss     := loss + 1
+    
+        if lblInOutSL
+            text = stopLossCondition ? "SL" : "TP"
+            label shortLabel = label.new(bar_index, high, text = text
+                 ,tooltip="change .......... : " + tostring((exitPrice / entryPrice - 1) * 100, "#.##") + "%\nentry/exit price : " + tostring(entryPrice) + " / " + tostring(exitPrice) + "\nnew capital ..... : " + tostring(capital, "#.##")
+                 ,color=color.red, style=label.style_label_down, textcolor=color.white, textalign=text.align_center, size=size.tiny)
+
+        alert("short : probable trading opportunity, price " + tostring(close), alert.freq_once_per_bar)
+
+    
+    var label wLabel = na
+    
+    if not inTrade and longAlertCondition[1] and not shortAlertCondition
+        wLabel := label.new(bar_index, low, text="⚠️"
+         ,tooltip="probable long trading opportunity \nawaiting confirmation (next candle)\nif confirmed, backtest tool will execute trade with open price of the canlde"
+         ,color=color.green, style=label.style_none, textcolor=color.white, textalign=text.align_center, size=size.huge)
+        label.delete(wLabel[1])
+        
+        alert("long : early warning : probable trading opportunity, awaiting confirmation (next candle), price " + tostring(close), alert.freq_once_per_bar)
+
+    if inTrade and shortAlertCondition[1] and not longAlertCondition
+        wLabel := label.new(bar_index, high, text="⚠️"
+         ,tooltip="probable short/take profit trading opportunity \nawaiting confirmation (next candle)\nif confirmed, backtest tool will execute trade with open price of the canlde"
+         ,color=color.green, style=label.style_none, textcolor=color.white, textalign=text.align_center, size=size.huge)
+        label.delete(wLabel[1])
+        
+        alert("short : early warning : probable trading opportunity, awaiting confirmation (next candle), price " + tostring(close), alert.freq_once_per_bar)
+
+    if change(time)
+        label.delete(wLabel[1])
+        
+    if stopLossCondition
+        alert("stop loss condition, price " + tostring(close), alert.freq_once_per_bar)
+    
+    
+    if lblTrdStat
+        var years         = (timenow - time) / 31556952000
+
+        var yearsTxt      = ""
+        var remarks       = ""
+
+        if years < lenBckTst
+            lenBckTst    := years
+            yearsTxt     := tostring(lenBckTst, "#.##") + " Years***"
+            remarks      := "\n\n*longs only\n**final value, if trade active displays estimated final value\n***max available data for selected timeframe : # of bars - " + tostring(bar_index)
+        else
+            yearsTxt     := tostring(lenBckTst, "#.##") + " Year(s)"
+            remarks      := "\n\n*longs only\n**final value - if in trade, displays estimated final value"
+
+        inTradeTxt        = inTrade ? "inTrade" : "not inTrade"
+        estimated         = inTrade ? capital * (close / entryPrice) : capital
+        entryTxt          = inTrade ? tostring(entryPrice) : "not inTrade"
+        lastTrdTxt        = inTrade ? ", Gain/Loss " + tostring((estimated/capital - 1) * 100, "#.##") + "%, Stop Loss " + tostring(isStopLoss ? entryPrice * (1 - stopLoss) : na) : ""
+        stopLossTxt       = isStopLoss ? "if last value falls by " + tostring(stopLoss * 100) + "% of entry price" : "not applied"
+    
+        tooltipTxt        = "entires/exit caclulations\n" + 
+                             "-long entry , on next bar when ewo crosses above its signal line (green labels up)\n" +
+                             "-take profit, on next bar when ewo crosses below its signal line (red labels down)\n" +
+                             "-stop loss " + stopLossTxt + remarks
+
+        label indiLabel   = label.new(time, close 
+             ,text="☼☾ Trade Statistics*, Trade Period - " + yearsTxt +
+              "\n═════════════════════════════════════" +
+              "\nSuccess Ratio ...... : " + tostring((win/trades)*100, "#") + "%" + ", # of Trades - " + tostring(trades) + ", Win/Loss - " + tostring(win) + "/" + tostring(loss) +
+              "\nGain/Loss % ........ : " + tostring((estimated/dasCapital - 1) * 100, "#") + "%" + ", Initial/Final Value** - " + tostring(dasCapital) + " / " + tostring(estimated, "#") +
+              "\n\nCurrent TradeStatus - " + inTradeTxt + lastTrdTxt +
+              "\n═════════════════════════════════════" +
+              "\nEntry Price/Value . : " + entryTxt + " / " + tostring(capital, "#.##") + " " + inTradeTxt +
+              "\nLast Price/Value ... : " + tostring(close) + " / " + tostring(estimated , "#.##") + " " + inTradeTxt
+             ,tooltip=tooltipTxt
+             ,color=inTrade ? estimated/dasCapital > 1 ? color.teal : color.maroon : color.gray, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.white, textalign=text.align_left)
+
+        label.set_x(indiLabel, label.get_x(indiLabel) + round(change(time) * 5))
+        label.delete(indiLabel[1])
+
+// -Plotting ════════════════════════════════════════════════════════════════════════════════════ //
+
+bgcolor(isBackTest and startBckTst and startBckTst != startBckTst[1] ? color.blue : na)
+plot(inTrade ? entryPrice : exitPrice > 0 ? exitPrice : na, title="Entry/Exit Price Line", color=inTrade ? color.green : color.red, style = plot.style_circles)

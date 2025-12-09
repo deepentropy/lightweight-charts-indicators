@@ -1,0 +1,144 @@
+//@version=3
+//
+study(title = "Heiken Ashi zero lag EMA v1.2 by JustUncleL", shorttitle="HAZEMA v1.2 by JustUncleL", overlay=true)
+//
+
+// Title: Heiken Ashi with non lag dot by JustUncleL
+// Author: JustUncleL
+// Version: 1.2
+// Date: 5-feb-2016
+//
+// Description:
+//  This Alert indicator utilizes the Heiken Ashi with non lag EMA was a scalping and intraday trading system
+//  that has been adapted also for trading with binary options high/low. There is also included
+//  filtering on MACD direction and trend direction as indicated by two MA: smoothed MA(11) and EMA(89).
+//  The the Heiken Ashi candles are great as price action trending indicator, they shows smooth strong 
+//  and clear price fluctuations.
+//  
+//  Financial Markets: any.
+//  Optimsed settings for 1 min, 5 min and 15 min Time Frame;
+//  Expiry time for Binary options High/Low 3-6 candles.
+//
+//  Indicators used in calculations:
+//  - Exponential moving average, period 89
+//  - Smoothed moving average, period 11
+//  - Non lag EMA, period 20
+//  - MACD 2 colour (13,26,9)
+//
+//
+//  Generate Alerts use the following Trading Rules
+//    Heiken Ashi with non lag dot
+//    Trade only in direction of the trend.
+//    UP trend moving average 11 period is above Exponential moving average 89 period,
+//    Doun trend moving average 11 period is below Exponential moving average 89 period,
+//
+//  CALL Arrow appears when:
+//    Trend UP SMA11>EMA89 (optionally disabled),
+//    Non lag MA blue dot and blue background.
+//    Heike ashi green color.
+//    MACD 2 Colour histogram green bars (optional disabled).
+//
+//  PUT Arrow appears when:
+//    Trend UP SMA11<EMA89 (optionally disabled),
+//    Heike ashi red color.
+//    Non lag MA red dot and red background
+//    MACD 2 colour histogram red bars (optionally disabled).
+// 
+// Modifications:
+//  1.2 - Added extra Alerts.
+//      - Added optional Arrows for ZEMA direction change alerts.
+//      - Updated to version3 Pinescript.
+//      - Replace ZEMA calculation with more accurate formula.
+//
+//  0.2 - Added MACD and directional filtering.
+//        Added background highlighting of Zero Lag EMA dots.
+//        Replaced Bollinger Band squeeze indicator with MACD 2 colour
+//  0.1 - Original version.
+//
+// References:
+// - Almost Zero Lag EMA [LazyBear]
+// - MACD 2 colour v0.2 by JustUncleL
+// - http://www.forexstrategiesresources.com/binary-options-strategies-ii/163-heiken-ashi-with-non-lag-dot/
+//
+
+FastLen = input(11,minval=2,title="Fast Smoothed MA Length")
+SlowLen = input(89,minval=10,title="Slow EMA Length")
+length=input(20, minval=2,title="Zero Lag EMA (DOTS) Length")
+umaf = input(true,title="Use Trend Directional Filter")
+sarrows = input(false,title="Show ZEMA Directional Change Arrows")
+
+//Function to Calculate Zero lag EMA
+zema(src,len) =>
+    lag = len>1 ? (len - 1)/2 : 0
+    ema_data = (src + (src - nz(src[lag])))
+    return = ema(ema_data, len)
+    return
+
+
+//Collect source input and Moving Average Lengths
+//
+// Use only Heikinashi Candles for all calculations
+srcClose = security(heikinashi(tickerid), period, close)
+srcOpen =  security(heikinashi(tickerid), period, open)
+srcHigh =  security(heikinashi(tickerid), period, high)
+srcLow =   security(heikinashi(tickerid), period, low)
+//
+//
+fastMA = input(title="MACD Fast MA Length", type = integer, defval = 13, minval = 2)
+slowMA = input(title="MACD Slow MA Length", type = integer, defval = 26, minval = 7)
+signal = input(title="MACD Signal Length",  type = integer, defval = 9, minval=1)
+umacd  = input(true,title="Use MACD Filtering")
+//
+[currMacd,currSig,_] = macd(srcClose[0], fastMA, slowMA, signal)
+macdH = currMacd > 0 ? rising(currMacd,3) ? green : red : falling(currMacd,3) ? red : green
+//
+//Calculate No lag EMA
+//ema1=ema(srcClose, length)
+//ema2=ema(ema1, length)
+//d=ema1-ema2
+//zlema=ema1+d
+zlema = zema(srcClose, length)
+//
+col =  zlema > zlema[1] ? blue : red
+up = zlema > zlema[1] ? true : false
+down = zlema < zlema[1] ? true : false
+// Draw the DOT no lag MA and colour background to make it easier to see.
+plot(zlema,color=col, style=circles, linewidth=4, transp=30, title="HAZEMA ZEMA line")
+bgcolor(col, transp=85)
+
+//
+// Calculate Smoothed MA and EMA
+FastMA = 0.0
+FastMA := na(FastMA[1]) ? sma(srcClose, FastLen) : (FastMA[1] * (FastLen - 1) + srcClose) / FastLen
+SlowMA = ema(srcClose,SlowLen)
+
+// Draw the directional MA's
+plot(FastMA,color=olive,transp=0,style=line,linewidth=2)
+plot(SlowMA,color=red,transp=0,style=line,linewidth=2)
+
+//
+//Calculate potential Entry point
+trendup = 0
+trenddn = 0
+trendup := up and srcOpen<srcClose and (not umaf or FastMA>SlowMA) and (not umacd or macdH==green)? na(trendup[1]) ? 1 : trendup[1]+1 : 0
+trenddn := down and srcOpen>srcClose and (not umaf or FastMA<SlowMA) and (not umacd or macdH==red)? na(trenddn[1]) ? 1 : trenddn[1]+1 : 0
+//Plot PUT/CALL pointer for entry
+plotshape(trenddn==1, title="HAZEMA Up Arrow", style=shape.triangledown,location=location.abovebar, color=red, transp=0, size=size.small,text="PUT")
+plotshape(trendup==1,  title="HAZEMA Down Arrow", style=shape.triangleup,location=location.belowbar, color=green, transp=0, size=size.small,text="CALL")
+
+// Create alert to signal entry and plot circle along bottom to indicate alarm set
+zDirection =  zlema > zlema[1] ? 1 : 2
+trendalert = trendup==1 or trenddn==1
+isZEMAup = change(zDirection) and zDirection==1
+isZEMAdn = change(zDirection) and zDirection==2
+//
+alertcondition(trendalert,title="HAZEMA Alert",message="HAZEMA Alert")
+alertcondition(trendup==1,title="HAZEMA Call",message="HAZEMA CALL")
+alertcondition(trenddn==1,title="HAZEMA Put",message="HAZEMA PUT")
+alertcondition(isZEMAup, title="HAZEMA ZEMA UP",message="HAZEMA ZEMA UP")
+alertcondition(isZEMAdn, title="HAZEMA ZEMA DOWN",message="HAZEMA ZEMA DOWN")
+//
+plotshape(trendalert[1],  title="HAZEMA Alert Dot", style=shape.circle,location=location.bottom, color=trendup[1]?green:trenddn[1]?red:na, transp=0,offset=-1)
+plotarrow(sarrows? (isZEMAup? 1 : isZEMAdn ? -1 : na) : na,  title="HAZEMA ZEMA Direction", colorup=blue, colordown=red, transp=10, minheight = 40, maxheight=50, offset=0)
+
+//EOF

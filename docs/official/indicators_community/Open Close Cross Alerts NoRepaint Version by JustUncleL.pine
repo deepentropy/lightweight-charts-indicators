@@ -1,0 +1,266 @@
+//@version=4
+
+study(title="Open Close Cross Alerts NoRepaint Version by JustUncleL", shorttitle="OCC Alerts NRP", overlay=false)
+
+// Revision:        NRP
+// Author:          JustIncleL
+//
+//
+// Description:
+// ============
+//  Strategy based around Open-Close Crossovers. NRP is the Non repaint version.
+//  *** USE AT YOUR OWN RISK ***
+//
+// Modifications:
+// ==============
+// NRP No Repaint Version changes by JustUncleL 2-Oct-2019
+//  - No longer use security calls, so no repainting expected.
+//  - Removed Delay option, not required in no repaint version.
+//  - Added date range to becktest against.
+//  - Removed "LSMA", "ALMA" MA options to simplify selections.
+//
+//
+// R6.2 By JustUncleL:
+//  - Minor updates for Pinescript Version 3 Compliance.
+//  - Modified Divergence to display only when in correct High/Low zone.
+//  9-Aug-2017
+//  - Correction SuperSmooth MA calculation.
+//
+// R6 By JustUncleL:
+//  - Added optional Divergence detection.
+//  - Corrected Alternate resolution calculation to allow for Daily, Weekly and Monthly charts.
+//  - Changed Graphic presentation.
+// R5 By JustUncleL:
+//  - Change the way the Alternate resolution in selected, use a Multiplier of the base Time Frame instead,
+//    this makes it easy to switch between base time frames.
+//  - Added TMA and SSMA moving average options. But DEMA is still giving the best results.
+//  - Updated Default settings.
+//
+// R4 Changes (by JustUncleL):
+//  - Change Alert indication to coloured circle at bottom.
+//  - Added Histogram of difference between close and open MAs as a factor of average asset MA value. 
+//
+// R3 Changes (by JustUncleL):
+//  -- Study indicator alert created for TradingView sub-system (the alertcondition() function does not work in a
+//     "Strategy" script -- Bug).  
+// R2 Changes:
+//  - Simplified and cleaned up plotting, now just shows a Moving Average derived from the average of open/close.
+//  - Tried very hard to alleviate painting issues caused by referencing alternate resolution..
+//
+// Description:
+//  - Strategy based around Open-Close Crossovers.
+// Setup:
+//  - I have generally found that setting the strategy resolution to 3-4x that of the chart you are viewing
+//    tends to yield the best results, regardless of which MA option you may choose (if any) BUT can cause
+//    a lot of false positives - be aware of this
+//  - Don't aim for perfection. Just aim to get a reasonably snug fit with the O-C band, with good runs of
+//    green and red.
+//  - Option to either use basic open and close series data, or pick your poison with a wide array of MA types.
+//  - Optional trailing stop for damage mitigation if desired (can be toggled on/off)
+//  - Positions get taken automagically following a crossover - which is why it's better to set the resolution
+//    of the script greater than that of your chart, so that the trades get taken sooner rather than later.
+//  - If you make use of the stops/trailing stops, be sure to take your time tweaking the values. Cutting it too fine
+//    will cost you profits but keep you safer, while letting them loose could lead to more drawdown than you
+//    can handle.
+//
+// -----------------------------------------------------------------------------
+// Copyright 2017, 2019 JustUncleL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+// 
+// The GNU General Public License can be found here
+// <http://www.gnu.org/licenses/>.
+//
+// -----------------------------------------------------------------------------
+//
+
+// === INPUTS ===
+useRes = input(defval=true, title="Use Alternate Resolution?")
+intRs_ = input(defval=6, title="Multiplier for Alernate Resolution", minval=1)
+intRes = useRes ? intRs_ : 1
+//
+basisType = input(defval="ZEMA", title="MA Type: ", options=["SMA", "EMA", "DEMA", "TEMA", "WMA", "VWMA", "SMMA", "HullMA", "ZEMA", "SSMA", "TMA"])
+basisLen = input(defval=8, title="MA Period", minval=1)
+//
+uDiv = input(false, "Show Divergence Channel")
+multi = input(0.5, minval=0.0, maxval=3.0, title="Divergence Channel Width Factor (Stddev)")
+uHid = input(false, title="Show Hidden Divergence")
+uReg = input(false, title="Show Regular Divergence")
+uDiv := uReg or uHid ? uDiv : false
+
+// === /INPUTS ===
+
+// Constants colours that include fully non-transparent option.
+green100 = #008000FF
+lime100 = #00FF00FF
+red100 = #FF0000FF
+blue100 = #0000FFFF
+aqua100 = #00FFFFFF
+darkred100 = #8B0000FF
+gray100 = #808080FF
+
+// - variant(type, src, len)
+// Returns MA input selection variant, default to SMA if blank or typo.
+
+// SuperSmoother filter
+// © 2013  John F. Ehlers
+variant_supersmoother(src, len) =>
+    a1 = exp(-1.414 * 3.14159 / len)
+    b1 = 2 * a1 * cos(1.414 * 3.14159 / len)
+    c2 = b1
+    c3 = -a1 * a1
+    c1 = 1 - c2 - c3
+    v9 = 0.0
+    v9 := c1 * (src + nz(src[1])) / 2 + c2 * nz(v9[1]) + c3 * nz(v9[2])
+    v9
+
+variant_smoothed(src, len) =>
+    v5 = 0.0
+    sma_1 = sma(src, len)
+    v5 := na(v5[1]) ? sma_1 : (v5[1] * (len - 1) + src) / len
+    v5
+
+variant_zerolagema(src, len) =>
+    lag = (len - 1) / 2
+    emaSrc = src + src - src[lag]
+    v10 = ema(emaSrc, len)
+    v10
+
+variant_doubleema(src, len) =>
+    v2 = ema(src, len)
+    v6 = 2 * v2 - ema(v2, len)
+    v6
+
+variant_tripleema(src, len) =>
+    v2 = ema(src, len)
+    v7 = 3 * (v2 - ema(v2, len)) + ema(ema(v2, len), len)  // Triple Exponential
+    v7
+
+//calc Laguerre
+variant_lag(p, g) =>
+    L0 = 0.0
+    L1 = 0.0
+    L2 = 0.0
+    L3 = 0.0
+    L0 := (1 - g) * p + g * nz(L0[1])
+    L1 := -g * L0 + nz(L0[1]) + g * nz(L1[1])
+    L2 := -g * L1 + nz(L1[1]) + g * nz(L2[1])
+    L3 := -g * L2 + nz(L2[1]) + g * nz(L3[1])
+    f = (L0 + 2 * L1 + 2 * L2 + L3) / 6
+    f
+
+// return variant, defaults to SMA 
+variant(type, src, len) =>
+    ema_1 = ema(src, len)
+    wma_1 = wma(src, len)
+    vwma_1 = vwma(src, len)
+    variant_smoothed__1 = variant_smoothed(src, len)
+    variant_doubleema__1 = variant_doubleema(src, len)
+    variant_tripleema__1 = variant_tripleema(src, len)
+    wma_2 = wma(src, len / 2)
+    wma_3 = wma(src, len)
+    wma_4 = wma(2 * wma_2 - wma_3, round(sqrt(len)))
+    variant_supersmoother__1 = variant_supersmoother(src, len)
+    variant_zerolagema__1 = variant_zerolagema(src, len)
+    sma_1 = sma(src, len)
+    sma_2 = sma(sma_1, len)
+    sma_3 = sma(src, len)
+    type == "EMA" ? ema_1 : type == "WMA" ? wma_1 : 
+       type == "VWMA" ? vwma_1 : type == "SMMA" ? variant_smoothed__1 : 
+       type == "DEMA" ? variant_doubleema__1 : type == "TEMA" ? variant_tripleema__1 : 
+       type == "HullMA" ? wma_4 : type == "SSMA" ? variant_supersmoother__1 : 
+       type == "ZEMA" ? variant_zerolagema__1 : type == "TMA" ? sma_2 : sma_3
+
+// - /variant 
+
+// - /FUNCTIONS
+
+// === SERIES SETUP ===
+
+closeSeries = variant(basisType, close, basisLen)
+openSeries = variant(basisType, open, basisLen)
+closeOpenAvg = (closeSeries + openSeries) / 2
+// Simulate Alternate resolution Series by increasing MA period.
+closeSeriesAlt = variant(basisType, close, basisLen * intRes)
+openSeriesAlt = variant(basisType, open, basisLen * intRes)
+
+// === /SERIES ===
+
+// === ALERT ===
+//
+xlong = crossover(closeSeriesAlt, openSeriesAlt)
+xshort = crossunder(closeSeriesAlt, openSeriesAlt)
+longCond = xlong  // alternative: longCond[1]? false : (xlong or xlong[1]) and close>closeSeriesAlt and close>=open
+shortCond = xshort  // alternative: shortCond[1]? false : (xshort or xshort[1]) and close<closeSeriesAlt and close<=open
+// === /ALERT conditions
+
+// === PLOTTING ===
+diff = closeSeriesAlt - openSeriesAlt
+pcd = 50000.0 * diff / closeOpenAvg
+alert = longCond or shortCond
+trendColour = closeSeriesAlt > openSeriesAlt ? color.green : color.red
+hline(0, color=color.gray, linestyle=hline.style_dashed)
+plot(pcd, title="OCC Difference Factor", color=trendColour, linewidth=1, style=plot.style_area, transp=80)
+plot(pcd, title="OCC Difference Factor", color=trendColour, linewidth=2, style=plot.style_line, transp=20)
+plotshape(alert, title="OCC Alert Plot", color=trendColour, style=shape.circle, location=location.bottom, transp=0, size=size.auto)
+
+//  ||  Functions:
+
+f_top_fractal(_src) =>
+    _src[4] < _src[2] and _src[3] < _src[2] and _src[2] > _src[1] and 
+       _src[2] > _src[0]
+f_bot_fractal(_src) =>
+    _src[4] > _src[2] and _src[3] > _src[2] and _src[2] < _src[1] and 
+       _src[2] < _src[0]
+f_fractalize(_src) =>
+    f_bot_fractal__1 = f_bot_fractal(_src)
+    f_top_fractal(_src) ? 1 : f_bot_fractal__1 ? -1 : 0
+
+// === /BASE FUNCTIONS ===
+
+rsi_high = pcd
+rsi_low = pcd
+offset_ = multi * stdev(pcd, 20)
+fractal_top_rsi = f_fractalize(rsi_high) > 0 ? rsi_high[2] : na
+fractal_bot_rsi = f_fractalize(rsi_low) < 0 ? rsi_low[2] : na
+
+rsi_high_prev = valuewhen(fractal_top_rsi, rsi_high[2], 1)
+rsi_high_price = valuewhen(fractal_top_rsi, high[2], 1)
+rsi_low_prev = valuewhen(fractal_bot_rsi, rsi_low[2], 1)
+rsi_low_price = valuewhen(fractal_bot_rsi, low[2], 1)
+
+regular_bearish_div = fractal_top_rsi and high[2] > rsi_high_price and rsi_high[2] < rsi_high_prev and 
+   rsi_high > 0
+hidden_bearish_div = fractal_top_rsi and high[2] < rsi_high_price and rsi_high[2] > rsi_high_prev and 
+   rsi_high > 0
+regular_bullish_div = fractal_bot_rsi and low[2] < rsi_low_price and rsi_low[2] > rsi_low_prev and 
+   rsi_low < 0
+hidden_bullish_div = fractal_bot_rsi and low[2] > rsi_low_price and rsi_low[2] < rsi_low_prev and 
+   rsi_low < 0
+
+plot(title='RSI High', series=uDiv ? rsi_high : na, color=color.gray)
+plot(title='RSI Low', series=uDiv ? rsi_low : na, color=color.gray)
+plot(title='RSI H F', series=uDiv ? fractal_top_rsi + offset_ : na, color=color.red, offset=-2)
+plot(title='RSI L F', series=uDiv ? fractal_bot_rsi - offset_ : na, color=color.green, offset=-2)
+plot(title='RSI H D', series=uDiv ? fractal_top_rsi + offset_ : na, style=plot.style_circles, color=regular_bearish_div and uReg or hidden_bearish_div and uHid ? color.maroon : color.gray, linewidth=3, offset=-2)
+plot(title='RSI L D', series=uDiv ? fractal_bot_rsi - offset_ : na, style=plot.style_circles, color=regular_bullish_div and uReg or hidden_bullish_div and uHid ? color.green : color.gray, linewidth=3, offset=-2)
+
+plotshape(title='+RBD', series=regular_bearish_div and uReg ? rsi_high[2] + offset_ : na, text='Regular', style=shape.labeldown, location=location.absolute, color=color.maroon, textcolor=color.white, offset=-2)
+plotshape(title='+HBD', series=hidden_bearish_div and uHid ? rsi_high[2] + offset_ : na, text='hidden', style=shape.labeldown, location=location.absolute, color=color.maroon, textcolor=color.white, offset=-2)
+plotshape(title='-RBD', series=regular_bullish_div and uReg ? rsi_low[2] - offset_ : na, text='Regular', style=shape.labelup, location=location.absolute, color=color.green, textcolor=color.white, offset=-2)
+plotshape(title='-HBD', series=hidden_bullish_div and uHid ? rsi_low[2] - offset_ : na, text='hidden', style=shape.labelup, location=location.absolute, color=color.green, textcolor=color.white, offset=-2)
+
+// === ALARM ALERTS for TradingView ALARM sub-system (server based) ===
+alertcondition(alert, message="OCC BothCond", title="OCC BothCond")
+alertcondition(longCond, message="OCC LongCond", title="OCC LongCond")
+alertcondition(shortCond, message="OCC ShortCond", title="OCC ShortCond")
+// === /ALARM ALERTS
+//eof

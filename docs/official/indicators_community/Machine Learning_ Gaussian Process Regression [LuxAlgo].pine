@@ -1,0 +1,122 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Machine Learning: Gaussian Process Regression [LuxAlgo]", "LuxAlgo - Machine Learning: Gaussian Process Regression", overlay = true, max_lines_count = 500)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+window = input.int(100, 'Training Window    ', minval = 0, inline = 'window')
+fitCss = input(#2962ff, '', inline = 'window')
+
+forecast = input.int(20, 'Forecasting Length', minval = 0, maxval = 500, inline = 'forecast')
+fcastCss = input(#f23645, '', inline = 'forecast')
+
+length = input.float(20., 'Smooth', minval = 1)
+sigma = input.float(0.01, step = 0.1, minval = 0)
+
+update = input.string('Lock Forecast', 'Update Mechanism'
+  , options = ['Lock Forecast', 'Update Once Reached', 'Continuously Update'])
+
+//-----------------------------------------------------------------------------}
+//Functions
+//-----------------------------------------------------------------------------{
+rbf(x1, x2, l)=> math.exp(-math.pow(x1 - x2, 2) / (2.0 * math.pow(l, 2)))
+
+kernel_matrix(X1, X2, l)=>
+    km = matrix.new<float>(X1.size(), X2.size())
+
+    i = 0
+    for x1 in X1
+        j = 0
+        for x2 in X2
+            rbf = rbf(x1, x2, l)
+            km.set(i, j, rbf)
+            j += 1
+        i += 1
+    
+    km
+
+//-----------------------------------------------------------------------------}
+//Kernel matrix
+//-----------------------------------------------------------------------------{
+var identity = matrix.new<int>(window, window, 0)
+var matrix<float> K_source = na
+
+if barstate.isfirst
+    xtrain = array.new<int>(0)
+    xtest = array.new<int>(0)
+
+    //Build identity matrix
+    for i = 0 to window-1
+        for j = 0 to window-1
+            identity.set(i, j, i == j ? 1 : 0)
+    
+        xtrain.push(i)
+    
+    for i = 0 to window+forecast-1
+        xtest.push(i)
+    
+    //Compute kernel matrices
+    s = identity.mult(sigma * sigma)
+    Ktrain = kernel_matrix(xtrain, xtrain, length).sum(s)
+    K_inv = Ktrain.pinv()
+    K_star = kernel_matrix(xtrain, xtest, length)
+    K_source := K_star.transpose().mult(K_inv)
+
+//-----------------------------------------------------------------------------}
+//Set forecast
+//-----------------------------------------------------------------------------{
+n = bar_index
+mean = ta.sma(close, window)
+
+//Model set condition
+var step = 0
+set_model = switch update
+    'Lock Forecast' => barstate.islastconfirmedhistory
+    'Update Once Reached' => barstate.islast and step == 0
+    'Continuously Update' => barstate.islast
+
+if set_model
+    //Remove previous lines
+    if update != 'Lock'
+        for l in line.all
+            l.delete()
+
+    //Dataset
+    ytrain = array.new<float>(0)
+    
+    for i = 0 to window-1
+        ytrain.unshift(close[i] - mean)
+
+    //Estimate
+    mu = K_source.mult(ytrain)
+
+    //Set forecast
+    float y1 = na
+    k = -window+2
+
+    points = array.new<chart.point>(0)
+    fcast = array.new<chart.point>(0)
+
+    for element in mu
+        if k == 1
+            fcast.push(chart.point.from_index(n+k, element + mean))
+            points.push(chart.point.from_index(n+k, element + mean))
+        else if k > 1
+            fcast.push(chart.point.from_index(n+k, element + mean))
+        else
+            points.push(chart.point.from_index(n+k, element + mean))
+        
+        k += 1
+
+    polyline.delete(polyline.new(points, line_color = fitCss, line_width = 2)[1])
+    polyline.delete(polyline.new(fcast, line_color = fcastCss, line_width = 2)[1])
+
+//Update forecast
+if update == 'Update Once Reached'
+    if barstate.islast
+        step += 1
+        step := step == forecast ? 0 : step
+
+//-----------------------------------------------------------------------------}

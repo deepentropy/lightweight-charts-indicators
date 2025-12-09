@@ -1,0 +1,499 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Price Action - Support & Resistance
+//# *                - Support & Resistance levels, based on price and volume combination, additinally based on volume & volatility spikes 
+//# *                - Sign of Exhaustion Indication - volume & volatility spikes
+//# *                - Volume Profile - Common Interest & Bull/Bear Dominance 
+//# *                - Supply & Demand Zones, based on traded volume over given period of time
+//# *                - Volume Weighted Colored Bars
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Jan 25, 2021
+//# *  Update     : Jan 26, 2021  : User Request : Add price option for intruments with no volume data
+//# *  Update     : Mar 18, 2021  : Ability to draw lines and cofigure alerts when volume spikes detected 
+//# *  Update     : Mar 21, 2021  : Ability to draw lines and cofigure alerts when high volatility detected
+//# *                                - line customization abaility 
+//# *  Update     : Sep 03, 2021  : Ability to control number of lines drawn
+//# *  Update     : Feb 21, 2022  : Added Volume Profile, inspired by Ildar Akhmetgaleev's 'Poor man's volume profile'
+//# *  Update     : Mar 22, 2022  : Added Bull/Bear Dominance to Volume Profile
+//# *  Update     : Apr 08, 2022  : Added Supply/Demand Zones, PoC for Volume Profile
+//# *  Update     : Apr 26, 2022  : Value Area (VAL, VAH) addition
+//# *  Update     : Jul 23, 2022  : visible range option added for S&R, VP and SD components 
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+indicator('Price Action - Support & Resistance by DGT', 'S&R ʙʏ DGT ☼☾', true, max_bars_back = 5000, max_lines_count = 500, max_boxes_count = 500)
+
+// -Inputs ══════════════════════════════════════════════════════════════════════════════════════ //
+
+// ---------------------------------------------------------------------------------------------- //
+// Definitions ---------------------------------------------------------------------------------- //
+
+group_support_and_resistance            = 'Consecutively Increasing Volume / Price'
+tooltip_support_and_resistance          = 'Moments where\n' + 
+                                          '- price is bullish or bearish consecutively for minimum 3 bars and on increasing volume with at least one bar\'s volume is above volume moving average\n' + 
+                                          'or\n' + 
+                                          '- price is bullish or bearish consecutively on increasing/decreasing price for minimum 3 bars'
+
+group_volume_spike_sign_of_exhaustion   = 'Volume Spike - Sign of Exhaustion'
+tooltip_volume_spike_sign_of_exhaustion = 'Moments where\n' + 
+                                          'huge volume detected : current volume is grater than the product of the theshold value and volume moving average\n' + 
+                                          'presents idea : huge volume may be a sign of exhaustion and may lead to sharp reversals'
+
+group_high_volatility                   = 'High Volatility'
+tooltip_high_volatility                 = 'Moments where\n' + 
+                                           'price range of the current bar is grater than the product of the theshold value and average true range value of defined period'
+
+group_volume_weighted_colored_bars      = 'Volume Weighted Colored Bars'
+tooltip_volume_weighted_colored_bars    = 'Colors bars based on the bar\'s volume relative to volume moving average\n' + 
+                                          'trading tip : a potential breakout trading opportunity may occur when price moves above a resistance level or moves below a support level on increasing volume'
+
+tooltip_volume_moving_average           = 'Volume simple moving average, serves as reference to\n' + 
+                                          '- Support and Resistance,\n' + 
+                                          '- Volume Weighted Colored Bars,\n' + 
+                                          '- Volume Spike - Sign of Exhaustion\ncalculations'
+
+// User Input Declarations ---------------------------------------------------------------------- //
+
+// ---------------------------------------------------------------------------------------------- //
+// Consecutively Increasing Volume / Price  ----------------------------------------------------- //
+
+srLookbackRange = input.string('Visible Range', 'Lookback Range', options = ['Fixed Range', 'Visible Range'])
+i_lenLookback = input.int(360, 'Fixed Range : Lookback Interval (Bars)', minval=0, step=10)
+
+i_sourceSnR = input.string('Volume', 'S & R Calculation Source', options=['Price', 'Volume'], group=group_support_and_resistance, tooltip=tooltip_support_and_resistance)
+i_isSnR = input.bool(true, 'S & R Lines', inline='SR', group=group_support_and_resistance)
+i_srLnColor = input.color(#4dd0e141, '' , inline='SR', group=group_support_and_resistance)
+i_srLnWidth = input.int(3, ''           , inline='SR', group=group_support_and_resistance)
+i_srLnStyle = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='SR', group=group_support_and_resistance)
+
+// ---------------------------------------------------------------------------------------------- //
+// Volume Spike - Sign of Exhaustion ------------------------------------------------------------ //
+
+i_vSpikeLb = input.bool(true, '🚦', inline='SRS1', group=group_volume_spike_sign_of_exhaustion, tooltip=tooltip_volume_spike_sign_of_exhaustion)
+i_vSpikeThresh = input.float(4.669, 'Volume Spike Theshold', minval=.1, step=.1, inline='SRS1', group=group_volume_spike_sign_of_exhaustion)
+i_isSnRSpike = input.bool(true, 'S & R Lines', inline='SRS2', group=group_volume_spike_sign_of_exhaustion)
+i_spLnColor = input.color(#ffb74d69, ''      , inline='SRS2', group=group_volume_spike_sign_of_exhaustion)
+i_spLnWidth = input.int(3, ''                , inline='SRS2', group=group_volume_spike_sign_of_exhaustion)
+i_spLnStyle = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid']               , inline='SRS2', group=group_volume_spike_sign_of_exhaustion)
+i_spLnBullLevel = input.string('Both', 'Levels : Bullish', options=['High', 'Close', 'Both'], inline='SRS3', group=group_volume_spike_sign_of_exhaustion)
+i_spLnBearLevel = input.string('Both', ' Bearish', options=['Low', 'Close', 'Both']         , inline='SRS3', group=group_volume_spike_sign_of_exhaustion)
+
+// ---------------------------------------------------------------------------------------------- //
+// High Volatility ------------------------------------------------------------------------------ //
+
+i_hATRLb = input.bool(true, '⚡', inline='ATR', group=group_high_volatility, tooltip=tooltip_high_volatility)
+i_atrLength = input.int(11, 'ATR : Length', inline='ATR', group=group_high_volatility)
+i_atrMult = input.float(2.718, 'Mult', minval=.1, step=.1, inline='ATR', group=group_high_volatility)
+i_hATRLn = input.bool(true, 'S & R Lines'                , inline='AT1', group=group_high_volatility)
+i_hATRLnColor = input.color(#81c78455, ''                , inline='AT1', group=group_high_volatility)
+i_hATRLnWidth = input.int(3, ''                          , inline='AT1', group=group_high_volatility)
+i_hATRLnStyle = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid']             , inline='AT1', group=group_high_volatility)
+i_haLnBullLevel = input.string('Both', 'Levels : Bullish', options=['High', 'Close', 'Both'], inline='AT2', group=group_high_volatility)
+i_haLnBearLevel = input.string('Both', ' Bearish', options=['Low', 'Close', 'Both']         , inline='AT2', group=group_high_volatility)
+
+// Volume Moving Average : Base ----------------------------------------------------------------- //
+nzVolume  = nz(volume)
+
+i_vSMA = ta.sma(nzVolume, input.int(89, 'Volume Moving Average Length', group='General Settings', tooltip=tooltip_volume_moving_average))
+
+
+// -Calculations ════════════════════════════════════════════════════════════════════════════════ //
+
+// ---------------------------------------------------------------------------------------------- //
+// Definitions ---------------------------------------------------------------------------------- //
+
+risingVol = nzVolume >= nzVolume[1]
+
+bullCandle = close > open
+bearCandle = close < open
+
+risingPrice  = close > close[1]
+fallingPrice = close < close[1]
+
+lwstPrice = ta.lowest (low , 3)
+hstPrice  = ta.highest(high, 3)
+
+weightedATR = i_atrMult * ta.atr(i_atrLength)
+range_1     = math.abs(high - low)
+
+x2 = timenow + 7 * math.round(ta.change(time))
+
+var sProcessing = false
+if srLookbackRange == 'Visible Range'
+    sProcessing := time >= chart.left_visible_bar_time
+else
+    sProcessing := time > timenow - i_lenLookback * (timeframe.isintraday ? timeframe.multiplier * 86400000 / 1440 : timeframe.multiplier * 86400000)
+
+// ---------------------------------------------------------------------------------------------- //
+// Consecutively Increasing Volume / Price  ----------------------------------------------------- //
+
+falling = if i_sourceSnR == 'Volume'
+    bearCandle and bearCandle[1] and bearCandle[2] and nzVolume > i_vSMA and risingVol and risingVol[1]
+else
+    bearCandle and bearCandle[1] and bearCandle[2] and fallingPrice and fallingPrice[1] and fallingPrice[2]
+
+rising = if i_sourceSnR == 'Volume'
+    bullCandle and bullCandle[1] and bullCandle[2] and nzVolume > i_vSMA and risingVol and risingVol[1]
+else
+    bullCandle and bullCandle[1] and bullCandle[2] and risingPrice and risingPrice[1] and risingPrice[2]
+
+y  = ta.valuewhen(falling or rising, falling ? lwstPrice : hstPrice, 0)
+x1 = ta.valuewhen(falling or rising, time, 0)
+
+// ---------------------------------------------------------------------------------------------- //
+// Volume Spike - Sign of Exhaustion ------------------------------------------------------------ //
+
+exhaustVol = nzVolume > i_vSpikeThresh * i_vSMA
+
+x1V = ta.valuewhen(exhaustVol, time, 0)
+
+// ---------------------------------------------------------------------------------------------- //
+// High Volatility ------------------------------------------------------------------------------ //
+
+highVolatility = range_1 > weightedATR
+
+x1hV = ta.valuewhen(highVolatility, time, 0)
+
+// ---------------------------------------------------------------------------------------------- //
+// Volume Weighted Colored Bars ----------------------------------------------------------------- //
+
+
+// -Plotting ════════════════════════════════════════════════════════════════════════════════════ //
+
+f_getStyle(_s) =>
+    _s == 'Solid' ? line.style_solid : _s == 'Dotted' ? line.style_dotted : line.style_dashed
+
+// ---------------------------------------------------------------------------------------------- //
+// Consecutively Increasing Volume / Price  ----------------------------------------------------- //
+
+var line srLine = na
+
+if i_isSnR and falling and sProcessing
+    if falling == falling[1]
+        line.delete(srLine[1])
+        
+    srLine := line.new(x1, y, x2, y, xloc.bar_time, extend.none, i_srLnColor, f_getStyle(i_srLnStyle), i_srLnWidth)
+    srLine
+
+if i_isSnR and rising and sProcessing
+    if rising == rising[1]
+        line.delete(srLine[1])
+        
+    srLine := line.new(x1, y, x2, y, xloc.bar_time, extend.none, i_srLnColor, f_getStyle(i_srLnStyle), i_srLnWidth)
+    srLine
+
+// ---------------------------------------------------------------------------------------------- //
+// Volume Spike - Sign of Exhaustion ------------------------------------------------------------ //
+
+var line spikeLine  = na
+var line spikeLine1 = na
+var line spikeLine2 = na
+var line spikeLine3 = na
+
+if i_isSnRSpike and exhaustVol and sProcessing
+
+    if bullCandle
+        if i_spLnBullLevel == 'High'
+            if exhaustVol == exhaustVol[1] and not bearCandle[1]
+                line.delete(spikeLine[1])
+                
+            spikeLine := line.new(x1V, high, x2, high, xloc.bar_time, extend.none, i_spLnColor, f_getStyle(i_spLnStyle), i_spLnWidth)
+            spikeLine
+
+        else if i_spLnBullLevel == 'Close'
+            if exhaustVol == exhaustVol[1] and not bearCandle[1]
+                line.delete(spikeLine[1])
+                
+            spikeLine := line.new(x1V, close, x2, close, xloc.bar_time, extend.none, i_spLnColor, f_getStyle(i_spLnStyle), i_spLnWidth)
+            spikeLine
+        else
+
+            if exhaustVol == exhaustVol[1] and not bearCandle[1]
+                line.delete(spikeLine1[1]), line.delete(spikeLine2[1]), line.delete(spikeLine3[1])
+            
+            spikeLine1 := line.new(x1V, close, x2, close, xloc.bar_time, extend.none, i_spLnColor, f_getStyle(i_spLnStyle), i_spLnWidth)
+            spikeLine2 := line.new(x1V, math.avg(high, close), x2, math.avg(high, close), xloc.bar_time, extend.none, i_spLnColor, f_getStyle('Dotted'), i_spLnWidth - 1)
+            spikeLine3 := line.new(x1V, high, x2, high, xloc.bar_time, extend.none, i_spLnColor, f_getStyle(i_spLnStyle), i_spLnWidth)
+            spikeLine3
+
+    if bearCandle
+        if i_spLnBearLevel == 'Low'
+            if exhaustVol == exhaustVol[1] and not bullCandle[1]
+                line.delete(spikeLine[1])
+                
+            spikeLine := line.new(x1V, low, x2, low, xloc.bar_time, extend.none, i_spLnColor, f_getStyle(i_spLnStyle), i_spLnWidth)
+            spikeLine
+
+        else if i_spLnBearLevel == 'Close'
+            if exhaustVol == exhaustVol[1] and not bullCandle[1]
+                line.delete(spikeLine[1])
+                
+            spikeLine := line.new(x1V, close, x2, close, xloc.bar_time, extend.none, i_spLnColor, f_getStyle(i_spLnStyle), i_spLnWidth)
+            spikeLine
+        else
+
+            if exhaustVol == exhaustVol[1] and not bullCandle[1]
+                line.delete(spikeLine1[1]), line.delete(spikeLine2[1]), line.delete(spikeLine3[1])
+                
+            spikeLine1 := line.new(x1V, low, x2, low, xloc.bar_time, extend.none, i_spLnColor, f_getStyle(i_spLnStyle), i_spLnWidth)
+            spikeLine2 := line.new(x1V, math.avg(low, close), x2, math.avg(low, close), xloc.bar_time, extend.none, i_spLnColor, f_getStyle('Dotted'), i_spLnWidth - 1)
+            spikeLine3 := line.new(x1V, close, x2, close, xloc.bar_time, extend.none, i_spLnColor, f_getStyle(i_spLnStyle), i_spLnWidth)
+            spikeLine3
+
+plotchar(i_vSpikeLb and not na(nzVolume) and sProcessing ? exhaustVol : na, 'Exhaustion Bar', '🚦', location.abovebar, size=size.tiny)
+
+// ---------------------------------------------------------------------------------------------- //
+// High Volatility ------------------------------------------------------------------------------ //
+
+var line volatileLine  = na
+var line volatileLine1 = na
+var line volatileLine2 = na
+var line volatileLine3 = na
+
+if i_hATRLn and highVolatility and sProcessing
+
+    if bullCandle
+        if i_haLnBullLevel == 'High'
+            if highVolatility == highVolatility[1] and not bearCandle[1]
+                line.delete(volatileLine[1])
+                
+            volatileLine := line.new(x1hV, high, x2, high, xloc.bar_time, extend.none, i_hATRLnColor, f_getStyle(i_hATRLnStyle), i_hATRLnWidth)
+            volatileLine
+
+        else if i_haLnBullLevel == 'Close'
+            if highVolatility == highVolatility[1] and not bearCandle[1]
+                line.delete(volatileLine[1])
+                
+            volatileLine := line.new(x1hV, close, x2, close, xloc.bar_time, extend.none, i_hATRLnColor, f_getStyle(i_hATRLnStyle), i_hATRLnWidth)
+            volatileLine
+        else
+
+            if highVolatility == highVolatility[1] and not bearCandle[1]
+                line.delete(volatileLine1[1]), line.delete(volatileLine2[1]), line.delete(volatileLine3[1])
+                
+            volatileLine1 := line.new(x1hV, close, x2, close, xloc.bar_time, extend.none, i_hATRLnColor, f_getStyle(i_hATRLnStyle), i_hATRLnWidth)
+            volatileLine2 := line.new(x1hV, math.avg(high, close), x2, math.avg(high, close), xloc.bar_time, extend.none, i_hATRLnColor, f_getStyle('Dotted'), i_hATRLnWidth - 1)
+            volatileLine3 := line.new(x1hV, high, x2, high, xloc.bar_time, extend.none, i_hATRLnColor, f_getStyle(i_hATRLnStyle), i_hATRLnWidth)
+            volatileLine3
+
+    if bearCandle
+        if i_haLnBearLevel == 'Low'
+            if highVolatility == highVolatility[1] and not bullCandle[1]
+                line.delete(volatileLine[1])
+                
+            volatileLine := line.new(x1hV, low, x2, low, xloc.bar_time, extend.none, i_hATRLnColor, f_getStyle(i_hATRLnStyle), i_hATRLnWidth)
+            volatileLine
+
+        else if i_haLnBearLevel == 'Close'
+            if highVolatility == highVolatility[1] and not bullCandle[1]
+                line.delete(volatileLine[1])
+                
+            volatileLine := line.new(x1hV, close, x2, close, xloc.bar_time, extend.none, i_hATRLnColor, f_getStyle(i_hATRLnStyle), i_hATRLnWidth)
+            volatileLine
+        else
+
+            if highVolatility == highVolatility[1] and not bullCandle[1]
+                line.delete(volatileLine1[1]), line.delete(volatileLine2[1]), line.delete(volatileLine3[1])
+                
+            volatileLine1 := line.new(x1hV, low, x2, low, xloc.bar_time, extend.none, i_hATRLnColor, f_getStyle(i_hATRLnStyle), i_hATRLnWidth)
+            volatileLine2 := line.new(x1hV, math.avg(low, close), x2, math.avg(low, close), xloc.bar_time, extend.none, i_hATRLnColor, f_getStyle('Dotted'), i_hATRLnWidth - 1)
+            volatileLine3 := line.new(x1hV, close, x2, close, xloc.bar_time, extend.none, i_hATRLnColor, f_getStyle(i_hATRLnStyle), i_hATRLnWidth)
+            volatileLine3
+
+plotchar(i_hATRLb and sProcessing ? highVolatility : na, 'High Volatile Bar', '⚡', location.belowbar, size=size.tiny)
+
+// ---------------------------------------------------------------------------------------------- //
+// Volume Profile (Price by Volume)  ------------------------------------------------------------ //
+
+f_drawLabelX(_x, _y, _text, _xloc, _yloc, _color, _style, _textcolor, _size, _textalign, _tooltip) =>
+    var id = label.new(_x, _y, _text, _xloc, _yloc, _color, _style, _textcolor, _size, _textalign, _tooltip)
+    label.set_xy(id, _x, _y)
+    label.set_text(id, _text)
+    label.set_tooltip(id, _tooltip)
+    label.set_textcolor(id, _textcolor)
+
+f_drawLineX(_x1, _y1, _x2, _y2, _xloc, _extend, _color, _style, _width) =>
+    var id = line.new(_x1, _y1, _x2, _y2, _xloc, _extend, _color, _style, _width)
+    line.set_xy1(id, _x1, _y1)
+    line.set_xy2(id, _x2, _y2)
+    line.set_color(id, _color)
+
+group_volume_profile    = 'Volume Profile / Price by Volume'
+tooltip_volume_profile  = 'Volume Profile (also known as Price by Volume) is an charting study that displays trading activity over a specified time period at specific price levels'
+
+volumeProfile     = input.bool(true, 'Volume Profile', group = group_volume_profile, tooltip = tooltip_volume_profile)
+vpLookbackRange   = input.string('Visible Range', 'VP and SD Lookback Range', options = ['Fixed Range', 'Visible Range'], group = group_volume_profile)
+lookbackLength    = input.int(360, 'VP and SD Fixed Range : Lookback Length', minval = 10, maxval = 5000, step = 10  , group = group_volume_profile)
+avgVolNodeCol     = input.color(color.new(#787b86, 25), 'Volume Nodes : AVN'        , inline='col', group = group_volume_profile)
+highVolNodeCol    = input.color(color.new(#f57c00, 50), 'HVN'                       , inline='col', group = group_volume_profile)
+lowVolNodeCol     = input.color(color.new(#787b86, 75), 'LVN'                       , inline='col', group = group_volume_profile)
+isValueArea       = input.float(68, "Value Area Volume %", minval = 0, maxval = 100               , group = group_volume_profile) / 100
+valueAreaHigh     = input.bool(true, 'VAH'                                          , inline='VA' , group = group_volume_profile)
+vahColor          = input.color(color.new(#ffeb3b, 0), ''                           , inline='VA' , group = group_volume_profile)
+pointOfControl    = input.bool(true, 'POC'                                          , inline='VA' , group = group_volume_profile)
+pocColor          = input.color(color.new(#ff0000, 0), ''                           , inline='VA' , group = group_volume_profile)
+valueAreaLow      = input.bool(true, 'VAL'                                          , inline='VA' , group = group_volume_profile)
+valColor          = input.color(color.new(#ffeb3b, 0), ''                           , inline='VA' , group = group_volume_profile)
+priceLevels       = input.bool(true, 'Show Profile Price Levels     '               , inline='BBe', group = group_volume_profile)
+labelColor        = input.color(color.new(#8c92a4, 0), ''                           , inline='BBe', group = group_volume_profile)
+profileLevels     = input.int(100, 'Number of Rows' , minval = 10, maxval = 170 , step = 10       , group = group_volume_profile)
+horizontalOffset  = input.int(13, 'Horizontal Offset', minval = 0 , maxval = 100                  , group = group_volume_profile)
+
+tooltip_sd        = 'Defines the relationship between the price of a given asset and the willingness of traders to either buy or sell it'
+group_supply_demand = 'Supply and Demand Settings'
+supplyDemand      = input.bool(true, 'Supply and Demand Zones'                      , inline='low2', group = group_supply_demand, tooltip = tooltip_sd)
+lowVolNodesVal    = input.int(15, '' , minval = 0, maxval = 50, step = 1            , inline='low2', group = group_supply_demand) / 100
+supplyDemandCol   = input.color(color.new(#512da8, 80), ''                          , inline='low2', group = group_supply_demand)
+
+priceHighestFR    = ta.highest(high, lookbackLength)
+priceLowestFR     = ta.lowest (low , lookbackLength)
+
+var startBarIndexX = 0
+if time == chart.left_visible_bar_time
+    startBarIndexX := bar_index
+
+if vpLookbackRange == 'Visible Range'
+    lookbackLength    := last_bar_index -  startBarIndexX
+
+f_getHighLow() =>
+    var htf_h  = 0., var htf_l  = 0.
+    
+    if vpLookbackRange == 'Visible Range'
+        if time == chart.left_visible_bar_time
+            htf_l := low 
+            htf_h := high
+        else if time > chart.left_visible_bar_time
+            htf_l := math.min(low , htf_l)
+            htf_h := math.max(high, htf_h)
+    else
+        htf_h := priceHighestFR
+        htf_l := priceLowestFR
+
+    [htf_h, htf_l]
+
+[priceHighest, priceLowest] = f_getHighLow()
+priceStep         = (priceHighest - priceLowest) / profileLevels
+barPriceLow       = low
+barPriceHigh      = high
+var levelAbovePoc = 0
+var levelBelowPoc = 0
+var pocLevel      = 0
+
+volumeStorage     = array.new_float(profileLevels + 1, 0.)
+volumeStorageB    = array.new_float(profileLevels + 1, 0.)
+var a_profile     = array.new_box()
+
+if barstate.islast and not na(nzVolume)
+    if array.size(a_profile) > 0
+        for i = 1 to array.size(a_profile)
+            box.delete(array.shift(a_profile))
+
+    for barIndex = 0 to lookbackLength - 1
+        level = 0
+        for priceLevel = priceLowest to priceHighest by priceStep
+            if barPriceHigh[barIndex] >= priceLevel and barPriceLow[barIndex] < priceLevel + priceStep
+                array.set(volumeStorage, level, array.get(volumeStorage, level) + nzVolume[barIndex] * ((barPriceHigh[barIndex] - barPriceLow[barIndex]) == 0 ? 1 : priceStep / (barPriceHigh[barIndex] - barPriceLow[barIndex])) )
+
+                if bullCandle[barIndex]
+                    array.set(volumeStorageB, level, array.get(volumeStorageB, level) + nzVolume[barIndex] * ((barPriceHigh[barIndex] - barPriceLow[barIndex]) == 0 ? 1 : priceStep / (barPriceHigh[barIndex] - barPriceLow[barIndex])) )
+            level += 1
+
+    pocLevel  := array.indexof(volumeStorage, array.max(volumeStorage))
+    totalVolumeTraded = array.sum(volumeStorage) * isValueArea
+    valueArea  = array.get(volumeStorage, pocLevel)
+
+    levelAbovePoc := pocLevel
+    levelBelowPoc := pocLevel
+    
+    while valueArea < totalVolumeTraded
+        if levelBelowPoc == 0 and levelAbovePoc == profileLevels - 1
+            break
+
+        volumeAbovePoc = 0.
+        if levelAbovePoc < profileLevels - 1 
+            volumeAbovePoc := array.get(volumeStorage, levelAbovePoc + 1)
+
+        volumeBelowPoc = 0.
+        if levelBelowPoc > 0
+            volumeBelowPoc := array.get(volumeStorage, levelBelowPoc - 1)
+        
+        if volumeAbovePoc >= volumeBelowPoc
+            valueArea     += volumeAbovePoc
+            levelAbovePoc += 1
+        else
+            valueArea     += volumeBelowPoc
+            levelBelowPoc -= 1
+
+    f_drawLineX(bar_index - lookbackLength + 1, priceLowest + (levelAbovePoc + 1.00) * priceStep, volumeProfile ? bar_index + horizontalOffset + 50 : bar_index + 7, priceLowest + (levelAbovePoc + 1.00) * priceStep, xloc.bar_index, extend.none, valueAreaHigh  ? vahColor : #00000000, line.style_solid, 2)
+    f_drawLineX(bar_index - lookbackLength + 1, priceLowest + (pocLevel      + 0.50) * priceStep, volumeProfile ? bar_index + horizontalOffset + 50 : bar_index + 7, priceLowest + (pocLevel      + 0.50) * priceStep, xloc.bar_index, extend.none, pointOfControl ? pocColor : #00000000, line.style_solid, 2)
+    f_drawLineX(bar_index - lookbackLength + 1, priceLowest + (levelBelowPoc + 0.00) * priceStep, volumeProfile ? bar_index + horizontalOffset + 50 : bar_index + 7, priceLowest + (levelBelowPoc + 0.00) * priceStep, xloc.bar_index, extend.none, valueAreaLow   ? valColor : #00000000, line.style_solid, 2)
+
+    if priceLevels
+        f_drawLabelX(volumeProfile ? bar_index + horizontalOffset + 50 : bar_index + 7, priceHighest, str.tostring(priceHighest, format.mintick), xloc.bar_index, yloc.price, color.new(labelColor, 89), label.style_label_down, labelColor, size.normal, text.align_left, 'Profile High - during last ' + str.tostring(lookbackLength) + ' bars\n %' + str.tostring((priceHighest - priceLowest) / priceLowest  * 100, '#.##') + ' higher than the Profile Low')
+        f_drawLabelX(volumeProfile ? bar_index + horizontalOffset + 50 : bar_index + 7, priceLowest , str.tostring(priceLowest , format.mintick), xloc.bar_index, yloc.price, color.new(labelColor, 89), label.style_label_up  , labelColor, size.normal, text.align_left, 'Profile Low - during last '  + str.tostring(lookbackLength) + ' bars\n %' + str.tostring((priceHighest - priceLowest) / priceHighest * 100, '#.##') + ' lower than the Profile High')
+        f_drawLabelX(volumeProfile ? bar_index + horizontalOffset + 57 : bar_index + 13, priceLowest + (levelAbovePoc + 1.00) * priceStep, str.tostring(priceLowest + (levelAbovePoc + 1.00) * priceStep, format.mintick), xloc.bar_index, yloc.price, valueAreaHigh  ? color.new(labelColor, 89) : #00000000, label.style_label_left, valueAreaHigh  ? labelColor : #00000000, size.normal, text.align_left, 'Value Area High Price')
+        f_drawLabelX(volumeProfile ? bar_index + horizontalOffset + 57 : bar_index + 13, priceLowest + (pocLevel      + 0.50) * priceStep, str.tostring(priceLowest + (pocLevel      + 0.50) * priceStep, format.mintick), xloc.bar_index, yloc.price, pointOfControl ? color.new(labelColor, 89) : #00000000, label.style_label_left, pointOfControl ? labelColor : #00000000, size.normal, text.align_left, 'Point Of Control Price')
+        f_drawLabelX(volumeProfile ? bar_index + horizontalOffset + 57 : bar_index + 13, priceLowest + (levelBelowPoc + 0.00) * priceStep, str.tostring(priceLowest + (levelBelowPoc + 0.00) * priceStep, format.mintick), xloc.bar_index, yloc.price, valueAreaLow   ? color.new(labelColor, 89) : #00000000, label.style_label_left, valueAreaLow   ? labelColor : #00000000, size.normal, text.align_left, 'Value Area Low Price')
+
+    for level = 0 to profileLevels - 1
+        if volumeProfile
+            levelColor = array.get(volumeStorage, level) / array.max(volumeStorage) > .8 ? highVolNodeCol : array.get(volumeStorage, level) / array.max(volumeStorage) < .2 ? lowVolNodeCol : avgVolNodeCol
+            array.push(a_profile, box.new( bar_index + horizontalOffset + 49 - int( array.get(volumeStorage, level) / array.max(volumeStorage) * 41), priceLowest + (level + 0.25) * priceStep, 
+                                       bar_index + horizontalOffset + 50, priceLowest + (level + 0.75) * priceStep, levelColor, bgcolor = levelColor ))
+            bullBearPower  = 2 * array.get(volumeStorageB, level) - array.get(volumeStorage, level)
+            array.push(a_profile, box.new(bar_index + horizontalOffset + 51 , priceLowest + (level + 0.25) * priceStep, 
+                                      bar_index + horizontalOffset + 51 + (bullBearPower > 0 ? 1 : -1) * int( bullBearPower / array.max(volumeStorage) * 73), priceLowest + (level + 0.75) * priceStep, bullBearPower > 0 ? color.new(#26a69a, 50) : color.new(#ef5350, 50), bgcolor = bullBearPower > 0 ? color.new(#26a69a, 50) : color.new(#ef5350, 50) ))
+
+        if supplyDemand
+            if array.get(volumeStorage, level) / array.max(volumeStorage) < lowVolNodesVal
+                array.push(a_profile, box.new(bar_index - lookbackLength + 1, priceLowest + (level + 0.00) * priceStep, bar_index + 7, priceLowest + (level + 1.00) * priceStep, #00000000, bgcolor = supplyDemandCol ))
+
+    if volumeProfile
+        array.push(a_profile, box.new(bar_index - lookbackLength + 1, priceLowest, bar_index + horizontalOffset + 50, priceHighest, color.new(color.gray, 37), 1, line.style_dotted, bgcolor=#00000000 ))
+
+// Volume Profile (Price by Volume)  ------------------------------------------------------------ //
+// ---------------------------------------------------------------------------------------------- //
+// Volume Weighted Colored Bars ----------------------------------------------------------------- //
+
+i_vwcb           = input.bool (true , ''                                     , inline='VWC', group=group_volume_weighted_colored_bars, tooltip=tooltip_volume_weighted_colored_bars)
+i_vwcbHighThresh = input.float(1.618, 'Thesholds : High ', minval=1., step=.1, inline='VWC', group=group_volume_weighted_colored_bars)
+i_vwcbLowThresh  = input.float(0.618, 'Low', minval=.1, step=.1              , inline='VWC', group=group_volume_weighted_colored_bars)
+vwcbCol = nzVolume > i_vSMA * i_vwcbHighThresh ? bearCandle ? #910000 : #006400 : nzVolume < i_vSMA * i_vwcbLowThresh ? bearCandle ? #FF9800 : #7FFFD4 : na
+barcolor(i_vwcb and not na(nzVolume) ? vwcbCol : na, title='Volume Weighted Colored Bars')
+
+// Volume Weighted Colored Bars ----------------------------------------------------------------- //
+// ---------------------------------------------------------------------------------------------- //
+// Alerts --------------------------------------------------------------------------------------- //
+
+priceTxt  = str.tostring(close, format.mintick)
+tickerTxt = syminfo.ticker
+
+if ta.cross(close, priceLowest + (pocLevel + .50) * priceStep) and pointOfControl
+    alert(tickerTxt + ' Volume Profile : Price touches/crosses Point Of Control Line, price ' + priceTxt)
+
+if ta.cross(close, priceLowest + (levelAbovePoc + 1.00) * priceStep) and valueAreaHigh
+    alert(tickerTxt + ' Volume Profile : Price touches/crosses Value Area High Line, price '  + priceTxt)
+
+if ta.cross(close, priceLowest + (levelBelowPoc + 0.00) * priceStep) and valueAreaLow
+    alert(tickerTxt + ' Volume Profile : Price touches/crosses Value Area Low Line, price '   + priceTxt)
+ 
+if nzVolume > i_vSMA * i_vwcbHighThresh and i_vwcb
+    alert(tickerTxt + ' High Volume, price ' + priceTxt)
+
+if nzVolume > i_vSMA * i_vSpikeThresh and i_vSpikeLb
+    alert(tickerTxt + ' Volume Spike : sign of exhaustion, huge volume increase detected, price ' + priceTxt)
+
+if ta.crossover(range_1, weightedATR) and i_hATRLb
+    alert(tickerTxt + ' High Volatility detected, price ' + priceTxt)
+
+// Alerts --------------------------------------------------------------------------------------- //
+// ---------------------------------------------------------------------------------------------- //
+
+var table logo = table.new(position.bottom_right, 1, 1)
+if barstate.islast
+    table.cell(logo, 0, 0, '☼☾  ', text_size=size.normal, text_color=color.teal)

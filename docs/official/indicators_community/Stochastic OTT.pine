@@ -1,0 +1,71 @@
+//@version=4
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © KivancOzbilgic
+//created by: @Anil_Ozeksi
+//developer: ANIL ÖZEKŞİ
+//author: @kivancozbilgic
+
+
+study(title="Stochastic Optimized Trend Tracker", shorttitle="SOTT", format=format.price, precision=2, resolution="")
+periodK = input(500, title="%K Length", minval=1)
+smoothK = input(200, title="%K Smoothing", minval=1)
+src1 = input(close, title="Source")
+length=input(2, "OTT Period", minval=1)
+percent=input(0.5, "OTT Percent", type=input.float, step=0.1, minval=0)
+showsupport = input(title="Show Support Line?", type=input.bool, defval=false)
+showsignalsc = input(title="Show Stochastic/OTT Crossing Signals?", type=input.bool, defval=false)
+Var_Func1(src1,length)=>
+    valpha1=2/(length+1)
+    vud11=src1>src1[1] ? src1-src1[1] : 0
+    vdd11=src1<src1[1] ? src1[1]-src1 : 0
+    vUD1=sum(vud11,9)
+    vDD1=sum(vdd11,9)
+    vCMO1=nz((vUD1-vDD1)/(vUD1+vDD1))
+    VAR1=0.0
+    VAR1:=nz(valpha1*abs(vCMO1)*src1)+(1-valpha1*abs(vCMO1))*nz(VAR1[1])
+VAR1=Var_Func1(src1,length)
+k = Var_Func1(stoch(close, high, low, periodK), smoothK)
+src=k+1000
+Var_Func(src,length)=>
+    valpha=2/(length+1)
+    vud1=src>src[1] ? src-src[1] : 0
+    vdd1=src<src[1] ? src[1]-src : 0
+    vUD=sum(vud1,9)
+    vDD=sum(vdd1,9)
+    vCMO=nz((vUD-vDD)/(vUD+vDD))
+    VAR=0.0
+    VAR:=nz(valpha*abs(vCMO)*src)+(1-valpha*abs(vCMO))*nz(VAR[1])
+VAR=Var_Func(src,length)
+h0 = hline(1080, "Upper Band", color=#606060)
+h1 = hline(1020, "Lower Band", color=#606060)
+fill(h0, h1, color=#9915FF, transp=80, title="Background")
+plot(k+1000, title="%K", color=#0094FF)
+MAvg=Var_Func(src, length)
+fark=MAvg*percent*0.01
+longStop = MAvg - fark
+longStopPrev = nz(longStop[1], longStop)
+longStop := MAvg > longStopPrev ? max(longStop, longStopPrev) : longStop
+shortStop =  MAvg + fark
+shortStopPrev = nz(shortStop[1], shortStop)
+shortStop := MAvg < shortStopPrev ? min(shortStop, shortStopPrev) : shortStop
+dir = 1
+dir := nz(dir[1], dir)
+dir := dir == -1 and MAvg > shortStopPrev ? 1 : dir == 1 and MAvg < longStopPrev ? -1 : dir
+MT = dir==1 ? longStop: shortStop
+OTT=MAvg>MT ? MT*(200+percent)/200 : MT*(200-percent)/200 
+plot(showsupport ? MAvg : na, color=#0585E1, linewidth=2, title="Support Line")
+OTTC = #B800D9 
+pALL=plot(nz(OTT[2]), color=OTTC, linewidth=2, title="OTT", transp=0)
+alertcondition(cross(src, OTT[2]), title="Price Cross Alert", message="OTT - Price Crossing!")
+alertcondition(crossover(src, OTT[2]), title="Price Crossover Alarm", message="PRICE OVER OTT - BUY SIGNAL!")
+alertcondition(crossunder(src, OTT[2]), title="Price Crossunder Alarm", message="PRICE UNDER OTT - SELL SIGNAL!")
+buySignalc = crossover(src, OTT[2])
+plotshape(buySignalc and showsignalsc ? OTT*0.995 : na, title="Buy", text="Buy", location=location.absolute, style=shape.labelup, size=size.tiny, color=color.green, textcolor=color.white, transp=0)
+sellSignallc = crossunder(src, OTT[2])
+plotshape(sellSignallc and showsignalsc ? OTT*1.005 : na, title="Sell", text="Sell", location=location.absolute, style=shape.labeldown, size=size.tiny, color=color.red, textcolor=color.white, transp=0)
+
+
+
+  
+  
+

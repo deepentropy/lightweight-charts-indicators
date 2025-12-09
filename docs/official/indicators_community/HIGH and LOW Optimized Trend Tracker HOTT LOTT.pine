@@ -1,0 +1,206 @@
+//@version=5
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © KivancOzbilgic
+
+//created by: @Anil_Ozeksi
+//developer: ANIL ÖZEKŞİ
+//author: @kivancozbilgic
+
+indicator('HIGH AND LOW Optimized Trend Tracker', 'HL OTT', overlay=true)
+length = input.int(2, 'OTT Period', minval=1)
+percent = input.float(0.6, 'OTT Optimization Coeff', step=0.1, minval=0)
+hllength = input.int(10, 'Highest and Lowest Length', minval=1)
+src = ta.highest(high, hllength)
+srcl = ta.lowest(low, hllength)
+highlighting = input(title='Highlighter On/Off ?', defval=true)
+mav = input.string(title='Moving Average Type', defval='VAR', options=['SMA', 'EMA', 'WMA', 'DEMA', 'TMA', 'VAR', 'WWMA', 'ZLEMA', 'TSF', 'HULL'])
+Var_Func(src, length) =>
+    valpha = 2 / (length + 1)
+    vud1 = src > src[1] ? src - src[1] : 0
+    vdd1 = src < src[1] ? src[1] - src : 0
+    vUD = math.sum(vud1, 9)
+    vDD = math.sum(vdd1, 9)
+    vCMO = nz((vUD - vDD) / (vUD + vDD))
+    VAR = 0.0
+    VAR := nz(valpha * math.abs(vCMO) * src) + (1 - valpha * math.abs(vCMO)) * nz(VAR[1])
+    VAR
+VAR = Var_Func(src, length)
+DEMA = 2 * ta.ema(src, length) - ta.ema(ta.ema(src, length), length)
+Wwma_Func(src, length) =>
+    wwalpha = 1 / length
+    WWMA = 0.0
+    WWMA := wwalpha * src + (1 - wwalpha) * nz(WWMA[1])
+    WWMA
+WWMA = Wwma_Func(src, length)
+Zlema_Func(src, length) =>
+    zxLag = length / 2 == math.round(length / 2) ? length / 2 : (length - 1) / 2
+    zxEMAData = src + src - src[zxLag]
+    ZLEMA = ta.ema(zxEMAData, length)
+    ZLEMA
+ZLEMA = Zlema_Func(src, length)
+Tsf_Func(src, length) =>
+    lrc = ta.linreg(src, length, 0)
+    lrc1 = ta.linreg(src, length, 1)
+    lrs = lrc - lrc1
+    TSF = ta.linreg(src, length, 0) + lrs
+    TSF
+TSF = Tsf_Func(src, length)
+HMA = ta.wma(2 * ta.wma(src, length / 2) - ta.wma(src, length), math.round(math.sqrt(length)))
+Var_Funcl(srcl, length) =>
+    valphal = 2 / (length + 1)
+    vud1l = srcl > srcl[1] ? srcl - srcl[1] : 0
+    vdd1l = srcl < srcl[1] ? srcl[1] - srcl : 0
+    vUDl = math.sum(vud1l, 9)
+    vDDl = math.sum(vdd1l, 9)
+    vCMOl = nz((vUDl - vDDl) / (vUDl + vDDl))
+    VARl = 0.0
+    VARl := nz(valphal * math.abs(vCMOl) * srcl) + (1 - valphal * math.abs(vCMOl)) * nz(VARl[1])
+    VARl
+VARl = Var_Funcl(srcl, length)
+DEMAl = 2 * ta.ema(srcl, length) - ta.ema(ta.ema(srcl, length), length)
+Wwma_Funcl(srcl, length) =>
+    wwalphal = 1 / length
+    WWMAl = 0.0
+    WWMAl := wwalphal * srcl + (1 - wwalphal) * nz(WWMAl[1])
+    WWMAl
+WWMAl = Wwma_Funcl(srcl, length)
+Zlema_Funcl(srcl, length) =>
+    zxLagl = length / 2 == math.round(length / 2) ? length / 2 : (length - 1) / 2
+    zxEMADatal = srcl + srcl - srcl[zxLagl]
+    ZLEMAl = ta.ema(zxEMADatal, length)
+    ZLEMAl
+ZLEMAl = Zlema_Funcl(srcl, length)
+Tsf_Funcl(srcl, length) =>
+    lrcl = ta.linreg(srcl, length, 0)
+    lrc1l = ta.linreg(srcl, length, 1)
+    lrsl = lrcl - lrc1l
+    TSFl = ta.linreg(srcl, length, 0) + lrsl
+    TSFl
+TSFl = Tsf_Funcl(srcl, length)
+HMAl = ta.wma(2 * ta.wma(srcl, length / 2) - ta.wma(srcl, length), math.round(math.sqrt(length)))
+
+getMA(src, length) =>
+    ma = 0.0
+    if mav == 'SMA'
+        ma := ta.sma(src, length)
+        ma
+
+    if mav == 'EMA'
+        ma := ta.ema(src, length)
+        ma
+
+    if mav == 'WMA'
+        ma := ta.wma(src, length)
+        ma
+
+    if mav == 'DEMA'
+        ma := DEMA
+        ma
+
+    if mav == 'TMA'
+        ma := ta.sma(ta.sma(src, math.ceil(length / 2)), math.floor(length / 2) + 1)
+        ma
+
+    if mav == 'VAR'
+        ma := VAR
+        ma
+
+    if mav == 'WWMA'
+        ma := WWMA
+        ma
+
+    if mav == 'ZLEMA'
+        ma := ZLEMA
+        ma
+
+    if mav == 'TSF'
+        ma := TSF
+        ma
+
+    if mav == 'HULL'
+        ma := HMA
+        ma
+    ma
+
+
+getMAl(srcl, length) =>
+    mal = 0.0
+    if mav == 'SMA'
+        mal := ta.sma(srcl, length)
+        mal
+
+    if mav == 'EMA'
+        mal := ta.ema(srcl, length)
+        mal
+
+    if mav == 'WMA'
+        mal := ta.wma(srcl, length)
+        mal
+
+    if mav == 'DEMA'
+        mal := DEMAl
+        mal
+
+    if mav == 'TMA'
+        mal := ta.sma(ta.sma(srcl, math.ceil(length / 2)), math.floor(length / 2) + 1)
+        mal
+
+    if mav == 'VAR'
+        mal := VARl
+        mal
+
+    if mav == 'WWMA'
+        mal := WWMAl
+        mal
+
+    if mav == 'ZLEMA'
+        mal := ZLEMAl
+        mal
+
+    if mav == 'TSF'
+        mal := TSFl
+        mal
+
+    if mav == 'HULL'
+        mal := HMAl
+        mal
+    mal
+
+MAvg = getMA(src, length)
+fark = MAvg * percent * 0.01
+longStop = MAvg - fark
+longStopPrev = nz(longStop[1], longStop)
+longStop := MAvg > longStopPrev ? math.max(longStop, longStopPrev) : longStop
+shortStop = MAvg + fark
+shortStopPrev = nz(shortStop[1], shortStop)
+shortStop := MAvg < shortStopPrev ? math.min(shortStop, shortStopPrev) : shortStop
+dir = 1
+dir := nz(dir[1], dir)
+dir := dir == -1 and MAvg > shortStopPrev ? 1 : dir == 1 and MAvg < longStopPrev ? -1 : dir
+MT = dir == 1 ? longStop : shortStop
+HOTT = MAvg > MT ? MT * (200 + percent) / 200 : MT * (200 - percent) / 200
+HOTTC = color.blue
+MAvgl = getMAl(srcl, length)
+farkl = MAvgl * percent * 0.01
+longStopl = MAvgl - farkl
+longStopPrevl = nz(longStopl[1], longStopl)
+longStopl := MAvgl > longStopPrevl ? math.max(longStopl, longStopPrevl) : longStopl
+shortStopl = MAvgl + farkl
+shortStopPrevl = nz(shortStopl[1], shortStopl)
+shortStopl := MAvgl < shortStopPrevl ? math.min(shortStopl, shortStopPrevl) : shortStopl
+dirl = 1
+dirl := nz(dirl[1], dirl)
+dirl := dirl == -1 and MAvgl > shortStopPrevl ? 1 : dirl == 1 and MAvgl < longStopPrevl ? -1 : dirl
+MTl = dirl == 1 ? longStopl : shortStopl
+LOTT = MAvgl > MTl ? MTl * (200 + percent) / 200 : MTl * (200 - percent) / 200
+LOTTC = color.red
+HOTTLine = plot(nz(HOTT[2]), title='HOTT', color=color.new(HOTTC, 0), linewidth=2, style=plot.style_line)
+LOTTLine = plot(nz(LOTT[2]), title='LOTT', color=color.new(LOTTC, 0), linewidth=2, style=plot.style_line)
+FillColor = highlighting ? color.new(#9915FF, 80) : na
+fill(HOTTLine, LOTTLine, title='Highligter', color=FillColor)
+color1 = close > HOTT[2] ? #00FFFF : close < LOTT[2] ? #FF00FF : na
+barcolor(color1)
+alertcondition(ta.crossover(close, HOTT[2]), title='Price Crossover Alarm', message='PRICE OVER HOTT - BUY SIGNAL!')
+alertcondition(ta.crossunder(close, LOTT[2]), title='Price Crossunder Alarm', message='PRICE UNDER LOTT - SELL SIGNAL!')
+
+

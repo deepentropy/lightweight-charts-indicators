@@ -1,0 +1,13 @@
+//@version=6
+indicator("Correlation Coefficient", shorttitle = "CC", format = format.price, precision = 2)
+symbolInput = input.symbol("GOOG", "Symbol", confirm = true)
+sourceInput = input.source(close, "Source")
+lengthInput = input.int(20, "Length")
+// This takes into account additional settings enabled on chart, e.g. divident adjustment or extended session 
+adjustedSeries = ticker.modify(symbolInput)
+requestedData = request.security(adjustedSeries, timeframe.period, sourceInput)
+correlation = ta.correlation(sourceInput, requestedData, lengthInput)
+plot(correlation, "Correlation", color = color.blue)
+hline(1)
+hline(0, color = color.new(color.gray, 50))
+hline(-1)

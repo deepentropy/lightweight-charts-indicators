@@ -1,0 +1,77 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © HoanGhetti
+
+//@version=5
+indicator("Pivot Trendlines with Breaks [HG]", overlay = true, max_lines_count = 500)
+
+import HoanGhetti/SimpleTrendlines/4 as tl
+
+input_len       = input.int(defval = 20, title = 'Pivot Length', minval = 1)
+input_pivotType = input.string(defval = 'Normal', title = 'Pivot Type', options = ['Normal', 'Fast'], tooltip = 'Normal: Uses Pine\'s built-in pivot system.\n\nFast: Uses a custom pivot system that tracks every reversal.')
+input_repaint   = input.bool(defval = true, title = 'Repainting', tooltip = 'If disabled, it will wait for bar confirmation to avoid printing false alerts.')
+input_targets   = input.bool(defval = false, title = 'Target Levels')
+input_bearC     = input.color(defval = color.red, title = 'Bear Breakout', group = 'Styling')
+input_bullC     = input.color(defval = color.green, title = 'Bull Breakout', group = 'Styling')
+input_extend    = input.string(defval = extend.none, title = 'Extend', options = [extend.none, extend.right, extend.left, extend.both], group = 'Styling')
+input_style     = input.string(defval = line.style_dotted, title = 'Trendline Style', options = [line.style_dotted, line.style_dashed, line.style_solid], group = 'Styling')
+input_tstyle    = input.string(defval = line.style_dashed, title = 'Target Style', options = [line.style_dotted, line.style_dashed, line.style_solid], group = 'Styling')
+input_override  = input.bool(defval = false, title = 'Override Source', group = 'Override', tooltip = 'Overriding the source will allow the script to create trendlines on any specified source.')
+input_useSrc    = input.bool(defval = true, title = 'Use Source for Cross Detection', group = 'Override', tooltip = 'Instead of checking if the close value crossed trendline, check for the specified source.')
+input_source    = input.source(defval = low, title = 'Source', group = 'Override')
+
+pl = fixnan(ta.pivotlow(input_override ? input_source : low, input_pivotType == 'Normal' ? input_len : 1, input_len))
+ph = fixnan(ta.pivothigh(input_override ? input_source : high, input_pivotType == 'Normal' ? input_len : 1, input_len))
+
+pivot(float pType) =>
+    pivot = pType == pl ? pl : ph
+    xAxis = ta.valuewhen(ta.change(pivot), bar_index, 0) - ta.valuewhen(ta.change(pivot), bar_index, 1)
+    prevPivot = ta.valuewhen(ta.change(pivot), pivot, 1)
+    pivotCond = ta.change(pivot) and (pType == pl ? pivot > prevPivot : pivot < prevPivot)
+    pData = tl.new(x_axis = xAxis, offset = input_len, strictMode = true, strictType = pType == pl ? 0 : 1)
+    pData.drawLine(pivotCond, prevPivot, pivot, input_override ? input_source : na)
+    pData
+
+breakout(tl.Trendline this, float pType) =>
+    var bool hasCrossed = false
+    if ta.change(this.lines.startline.get_y1())
+        hasCrossed := false
+    this.drawTrendline(not hasCrossed)
+    confirmation = not hasCrossed and (input_repaint ? not hasCrossed : barstate.isconfirmed)
+    if (pType == pl ? (input_override and input_useSrc ? input_source : close) < this.lines.trendline.get_y2() : (input_override and input_useSrc ? input_source : close) > this.lines.trendline.get_y2()) and confirmation
+        hasCrossed := true
+        this.lines.startline.set_xy2(this.lines.trendline.get_x2(), this.lines.trendline.get_y2())
+        this.lines.trendline.set_xy2(na, na)
+        this.lines.startline.copy()
+    hasCrossed
+
+plData = pivot(pl)
+phData = pivot(ph)
+
+style(tl.Trendline this, color col) =>
+    this.lines.startline.set_color(col), this.lines.trendline.set_color(col)
+    this.lines.startline.set_width(2), this.lines.trendline.set_width(2)
+    this.lines.trendline.set_style(input_style), this.lines.trendline.set_extend(input_extend)
+style(plData, input_bearC), style(phData, input_bullC)
+
+cu = breakout(plData, pl)
+co = breakout(phData, ph)
+plotshape(ta.change(cu) and cu ? plData.lines.startline.get_y2() : na, title = 'Bearish Breakout', style = shape.labeldown, color = input_bearC, textcolor = color.white, location = location.absolute, text = 'Br')
+plotshape(ta.change(co) and co ? phData.lines.startline.get_y2() : na, title = 'Bullish Breakout', style = shape.labelup, color = input_bullC, textcolor = color.white, location = location.absolute, text = 'Br')
+alertcondition(ta.change(cu) and cu, 'Bearish Breakout')
+alertcondition(ta.change(co) and co, 'Bullish Breakout')
+
+// Target Levels [v4 Update]
+phData_target = tl.new(phData.values.changeInX)
+plData_target = tl.new(plData.values.changeInX)
+phData_target.drawLine(ta.change(phData.values.y1) and input_targets, phData.values.y2, phData.values.y2)
+plData_target.drawLine(ta.change(plData.values.y1) and input_targets, plData.values.y2, plData.values.y2)
+
+target_style(tl.Trendline this, color col) =>
+    this.lines.startline.set_style(input_tstyle)
+    this.lines.trendline.set_style(input_tstyle)
+    this.lines.startline.set_color(col)
+    this.lines.trendline.set_color(col)
+target_style(plData_target, input_bearC)
+target_style(phData_target, input_bullC)
+breakout(phData_target, ph)
+breakout(plData_target, pl)

@@ -1,0 +1,512 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator(title='Support Resistance Classification (VR) [LuxAlgo]', shorttitle='LuxAlgo - Support Resistance Classification (VR)', max_lines_count=500, overlay=true, max_bars_back=3000)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+set          = 'SET (N° – Type – Length – Mult – HTF)'
+fade         = input.int      (    5 , 'fade'                                                       , tooltip='After x breaks\nthe line is invisible') 
+opt          = input.string   ('line', 'value'                                                      , options=          ['value', 'line']            )
+
+colU         = input.color    (color.lime, '              '                                                                            , inline='c')
+colD         = input.color    (color.red , ''                                                                                          , inline='c')
+
+left         = input.int      (   10, 'left' ,           minval=1,               maxval=20                          , group='Swings settings'        )
+right        = input.int      (    1, 'right',           minval=1,               maxval=10                          , group='Swings settings'        )
+showPP       = input.bool     (false, 'show'                                                                        , group='Swings settings'        )
+
+chc1         = input.string   ( 'SMA'                                                                                                    ,        '1'
+  ,  options =                ['NONE','SMA','Upper','Lower','Previous High','Previous Low','Swings','Fibonacci']    , group=set          , inline='1')
+len1         = input.int      (   50 ,  ''                                                                          , group=set          , inline='1')
+mlt1         = input.float    (    2 ,  ''                                                                          , group=set          , inline='1')
+res1         = input.timeframe(  'D' ,  ''                                                                          , group=set          , inline='1')
+chc2         = input.string   ( 'SMA'                                                                                                    ,        '2'
+  ,  options =                ['NONE','SMA','Upper','Lower','Previous High','Previous Low','Swings','Fibonacci']    , group=set          , inline='2')
+len2         = input.int      (  100 ,  ''                                                                          , group=set          , inline='2')
+mlt2         = input.float    (    2 ,  ''                                                                          , group=set          , inline='2')
+res2         = input.timeframe(  'D' ,  ''                                                                          , group=set          , inline='2')
+chc3         = input.string   ( 'SMA'                                                                                                    ,        '3'
+  ,  options =                ['NONE','SMA','Upper','Lower','Previous High','Previous Low','Swings','Fibonacci']    , group=set          , inline='3')
+len3         = input.int      (   20 ,  ''                                                                          , group=set          , inline='3')
+mlt3         = input.float    (    2 ,  ''                                                                          , group=set          , inline='3')
+res3         = input.timeframe(   'W',  ''                                                                          , group=set          , inline='3')
+
+chc4         = input.string   ('Previous High'                                                                                           ,        '4'
+  ,  options =                ['NONE','SMA','Upper','Lower','Previous High','Previous Low','Swings','Fibonacci']    , group=set          , inline='4')
+len4         = input.int      (   20 ,  ''                                                                          , group=set          , inline='4')
+mlt4         = input.float    (    2 ,  ''                                                                          , group=set          , inline='4')
+res4         = input.timeframe(  'W' ,  ''                                                                          , group=set          , inline='4')
+chc5         = input.string   ( 'Previous Low'                                                                                           ,        '5'
+  ,  options =                ['NONE','SMA','Upper','Lower','Previous High','Previous Low','Swings','Fibonacci']    , group=set          , inline='5')
+len5         = input.int      (   20 ,  ''                                                                          , group=set          , inline='5')
+mlt5         = input.float    (    2 ,  ''                                                                          , group=set          , inline='5')
+res5         = input.timeframe(  'W' ,  ''                                                                          , group=set          , inline='5')
+chc6         = input.string   ('Upper'                                                                                                   ,        '6'
+  ,  options =                ['NONE','SMA','Upper','Lower','Previous High','Previous Low','Swings','Fibonacci']    , group=set          , inline='6')
+len6         = input.int      (   20 ,  ''                                                                          , group=set          , inline='6')
+mlt6         = input.float    (    2 ,  ''                                                                          , group=set          , inline='6')
+res6         = input.timeframe(  'D' ,  ''                                                                          , group=set          , inline='6')
+chc7         = input.string   ('Lower'                                                                                                   ,        '7'
+  ,  options =                ['NONE','SMA','Upper','Lower','Previous High','Previous Low','Swings','Fibonacci']    , group=set          , inline='7')
+len7         = input.int      (   20 ,  ''                                                                          , group=set          , inline='7')
+mlt7         = input.float    (    2 ,  ''                                                                          , group=set          , inline='7')
+res7         = input.timeframe(  'D' ,  ''                                                                          , group=set          , inline='7')
+chc8         = input.string   ('Swings'                                                                                                  ,        '8'
+  ,  options =                ['NONE','SMA','Upper','Lower','Previous High','Previous Low','Swings','Fibonacci']    , group=set          , inline='8')
+len8         = input.int      (   20 ,  ''                                                                          , group=set          , inline='8')
+mlt8         = input.float    (    2 ,  ''                                                                          , group=set          , inline='8')
+res8         = input.timeframe(  'D' ,  ''                                                                          , group=set          , inline='8')
+chc9         = input.string   ('Fibonacci'                                                                                               ,        '9'
+  ,  options =                ['NONE','SMA','Upper','Lower','Previous High','Previous Low','Swings','Fibonacci']    , group=set          , inline='9')
+len9         = input.int      (   20 ,  ''                                                                          , group=set          , inline='9')
+mlt9         = input.float    (    2 ,  ''                                                                          , group=set          , inline='9')
+res9         = input.timeframe(  'W' ,  ''                                                                          , group=set          , inline='9')
+
+pick1        = input.bool     (false , 'A' ,                                                                          group='show values', inline='1')
+choice1      = input.int      (  1   ,  '' ,             minval=1,               maxval=9,                            group='show values', inline='1')
+pick2        = input.bool     (false , 'B' ,                                                                          group='show values', inline='2')
+choice2      = input.int      (  3   ,  '' ,             minval=1,               maxval=9,                            group='show values', inline='2')
+pick3        = input.bool     (false , 'C' ,                                                                          group='show values', inline='3')
+choice3      = input.int      (  5   ,  '' ,             minval=1,               maxval=9,                            group='show values', inline='3')
+pick4        = input.bool     (false , 'D' ,                                                                          group='show values', inline='4')
+choice4      = input.int      (  7   ,  '' ,             minval=1,               maxval=9,                            group='show values', inline='4')
+pick5        = input.bool     (false , 'E' ,                                                                          group='show values', inline='5')
+choice5      = input.int      (  9   ,  '' ,             minval=1,               maxval=9,                            group='show values', inline='5')
+
+//-----------------------------------------------------------------------------}
+//User Defined Types
+//-----------------------------------------------------------------------------{
+type piv 
+    int   b
+    float p
+
+type lab 
+    label lb 
+    float gr
+
+//-----------------------------------------------------------------------------}
+//Variables
+//-----------------------------------------------------------------------------{
+n                 = bar_index
+max               = array.from(0.)
+lab[]      lab    = array.new<lab>()
+float[]   aGrade  = array.new<float>()
+arrChoices        = array.from(chc1, chc2, chc3, chc4, chc5, chc6, chc7, chc8, chc9)
+var box    top    = box.new(na, na, na, na, bgcolor=color.new(color.red , 90), border_color=color(na), extend=extend.left)
+var box    btm    = box.new(na, na, na, na, bgcolor=color.new(color.lime, 90), border_color=color(na), extend=extend.left)
+var piv[]  pivH   = array.new<piv>()
+var piv[]  pivL   = array.new<piv>()
+var float highest = na 
+var float lowest  = na 
+var int    sBix   = na
+var float  mxPiv  = na
+var float  mnPiv  = na
+
+//-----------------------------------------------------------------------------}
+//General Calculations
+//-----------------------------------------------------------------------------{
+fromR             = opt == 'value'
+ph                = ta.pivothigh(left, right) 
+pl                = ta.pivotlow (left, right) 
+
+if time == chart.left_visible_bar_time
+    highest := high 
+    lowest  := high 
+    sBix    := n
+    pivH.unshift(piv.new(n, high))
+    pivL.unshift(piv.new(n, high))
+    mxPiv := high
+    mnPiv := high
+
+if time > chart.left_visible_bar_time
+    if high > highest 
+        highest := high 
+    if low  < lowest 
+        lowest  := low  
+    if time <= chart.right_visible_bar_time
+        if ph
+            if ph > mxPiv
+                mxPiv := ph
+            for i      = pivH.size() -1 to 0
+                get    = pivH.get(i)
+                if ph >= get.p
+                    pivH.remove(i)
+            pivH.unshift(piv.new(n -right, ph))
+        if pl
+            if pl < mnPiv
+                mnPiv := pl
+            for i      = pivL.size() -1 to 0
+                get    = pivL.get(i)
+                if pl <= get.p
+                    pivL.remove(i)
+            pivL.unshift(piv.new(n -right, pl))
+
+//-----------------------------------------------------------------------------}
+//Functions
+//-----------------------------------------------------------------------------{
+isPP(get)     => pp = get == 'Traditional' or get == 'Fibonacci' or get == 'Classic' 
+
+choiceIsPP(i) => get = arrChoices.get(i), isPP(get)   
+
+f(choice)     => 
+    c     = choice == 1 ? chc1 : choice == 2 ? chc2 : choice == 3 ? chc3 : choice == 4 ? chc4 
+          : choice == 5 ? chc5 : choice == 6 ? chc6 : choice == 7 ? chc7 : choice == 8 ? chc8 : chc9    
+    notPP =     c  != 'Fibonacci' 
+
+setLine(e, sBs, chc, len, res) =>
+    var float    val    = na
+    val                := sBs
+    hl        =  chc   == 'Previous High' 
+              or chc   == 'Previous Low'  
+    htf       = timeframe.in_seconds(res) 
+             >= timeframe.in_seconds(timeframe.period)
+    tfChange  = timeframe.change    (res)
+    bsChange  = ta.barssince   (tfChange)
+    bars      = hl and fromR ? math.min(last_bar_index - sBix, bsChange) 
+              :                         last_bar_index - sBix
+    if time == chart.right_visible_bar_time and val <= highest and val >= lowest and htf
+        firstPos = sBs > close ? 'r' : 's' // 's/r' support or resistance at chart.right_visible_bar_time
+        pos      = 1                       //  1/0 -> 1 = same position as firstPos , 0 = diff pos    
+        breaks   = 0
+        switch firstPos
+            'r' =>
+                for i = 0 to bars // last_bar_index - sBix  
+                    v = hl ? val : fromR ? val[i] : val
+                    if pos == 1 and close[i] > v
+                        breaks += 1                        
+                        pos    := 0
+                    if pos == 0 and close[i] < v
+                        pos    := 1
+            's' =>
+                for i = 0 to bars // last_bar_index - sBix  
+                    v = hl ? val : fromR ? val[i] : val
+                    if pos == 1 and close[i] < v
+                        breaks += 1                                            
+                        pos    := 0
+                    if pos == 0 and close[i] > v
+                        pos    := 1
+    
+        isAbove = close > val
+        grade   = math.min(100, math.round((100 / fade) * breaks))
+        max.set(0, math.max(max.get(0), grade))
+        col     = color.new(
+         isAbove ?
+           colU
+         : colD
+         , grade)
+        chart = res == ''
+        s     = chart ? 'chart' : res
+        line.new (n -1, val, n +8, val, color=col, extend=extend.left)
+        lab.unshift(lab.new(
+         label.new(n +8 + (e * 5), val, style=label.style_label_left, color=color(na)
+          , textcolor=col
+          , tooltip=str.format("N°{0} – HTF: {1} \n{2}", e, s, chc) + (hl ? '' : ', len ' + str.tostring(len))
+          , size=size.small
+          , text= (chart ? '' : '(') + res + (chart ? '' : ')')
+          )
+          , grade
+          )
+         )    
+        aGrade.unshift(grade)      
+
+calc(e, chc, len, mlt, res) =>
+    var arrPP = array.from( 0.,  0. ,  0. ,  0. ,  0. ,  0. ,  0. ,  0. ,  0. ,  0. ,  0. )
+    act = chc != 'NONE'
+    htf = timeframe.in_seconds(res) >= timeframe.in_seconds(timeframe.period)
+    var float bs = na, var float up = na, var float lo = na
+    ema1 = ta.ema(close, len)
+    ema2 = ta.ema(ema1 , len)
+    ema3 = ta.ema(ema2 , len)
+    if htf
+        bs := switch chc 
+            'SMA'           => ta.sma(close, len)
+            "Swings"        => na
+            "Previous High" => high
+            "Previous Low"  => low 
+            =>
+                [b, u, l] = ta.bb(close, len, mlt)
+                switch chc
+                    'Upper' => u
+                    'Lower' => l 
+                    => na   
+
+    sBs =  htf ? request.security(syminfo.tickerid, res, act ? bs[1] : na, lookahead=barmerge.lookahead_on) : na
+
+    if act 
+        pp = isPP(chc) 
+        st = chc == 'Fibonacci' ? 'Fib.' : chc 
+
+        switch
+
+            pp and htf =>
+                var arStr = array.from('P', 'R1', 'S1', 'R2', 'S2', 'R3', 'S3', 'R4', 'S4', 'R5', 'S5')
+                tfChange  = timeframe.change(res)
+                bsChange  = ta.barssince(tfChange)
+                pivotPointsArray = ta.pivot_point_levels(chc, timeframe.change(res))
+                if tfChange
+                    for i = 0 to pivotPointsArray.size() -1
+                        arrPP.set(i, pivotPointsArray.get(i))
+                if time == chart.right_visible_bar_time
+                    for i = 0 to arrPP.size() -1
+                        p = arrPP.get(i)                    
+                        if p <= highest and p >= lowest
+                            firstPos = p > close ? 'r' : 's' // 's/r' support or resistance at chart.left_visible_bar_time
+                            pos      = 1                     // 1/0 -> 1 = same position as firstPos , 0 = diff pos    
+                            breaks   = 0
+                            bars     = fromR ? math.min(last_bar_index - sBix, bsChange) 
+                                     :                  last_bar_index - sBix
+                            switch firstPos
+                                'r' =>
+                                    for d = 0 to bars 
+                                        if pos == 1 and close[d] > p
+                                            breaks += 1
+                                            pos    := 0
+                                        if pos == 0 and close[d] < p
+                                            pos    := 1
+                                's' =>
+                                    for d = 0 to bars   
+                                        if pos == 1 and close[d] < p
+                                            breaks += 1                        
+                                            pos    := 0
+                                        if pos == 0 and close[d] > p
+                                            pos    := 1
+                            isAbove = close > p
+                            chart   = res == ''
+                            s       = chart ? 'chart' : res
+                            grade   = math.min(100, math.round((100 / fade) * breaks))
+                            max.set(0, math.max(max.get(0), grade))
+                            col     = 
+                             color.new(
+                               isAbove ? 
+                               colU
+                             : colD
+                             , grade)
+
+                            line.new(n -1, p, n +8, p 
+                             , color=col, extend=extend.left) 
+                            lab.unshift(lab.new(
+                             label.new(n +8 + (e * 5), p, color=color(na)
+                              , tooltip=str.format("N°{0} – HTF: {1} \n{2} ({3})"
+                               ,  e ,  s ,  arStr.get(i) ,  st )
+                              , style=label.style_label_left
+                              , size=size.small
+                              , textcolor=col
+                              , text= (chart ? '' : '(') + res + (chart ? '' : ')')
+                              )
+                              , grade
+                              )
+                             )
+                            aGrade.unshift(grade)   
+
+            chc != 'Swings' and htf => setLine(e, sBs, chc, len, res)     
+
+            chc == 'Swings' => // Swings       
+                if time == chart.right_visible_bar_time
+
+                    for i = 0 to pivH.size() -1
+                        p = pivH.get(i)                    
+                        if p.p <= highest and p.p >= lowest
+                            pos      = 1               
+                            breaks   = 0
+                            //only 'line', otherwise 0 breaks (if breaks, Swings would not be included)
+                            for d = 0 to last_bar_index - sBix 
+                                if pos == 1 and close[d] > p.p
+                                    breaks += 1                        
+                                    pos    := 0
+                                if pos == 0 and close[d] < p.p
+                                    pos    := 1
+                            grade   = math.min(100, math.round((100 / fade) * breaks))
+                            max.set(0, math.max(max.get(0) , grade))
+                            line.new(n -1, p.p, n +8, p.p 
+                             , color=color.new(colD, grade), extend=extend.left) 
+                            lab.unshift(lab.new(
+                             label.new(n +8 + (e * 5), p.p, color=color(na)
+                              , tooltip= 'N°' + str.tostring(e) + ' Swings'
+                              , style=label.style_label_left
+                              , size=size.small
+                              , textcolor=color.new(colD, grade)
+                              , text= ''
+                              )
+                              , grade
+                              )
+                             )
+                            aGrade.unshift(grade)  
+
+                    for i = 0 to pivL.size() -1
+                        p = pivL.get(i)                    
+                        if p.p <= highest and p.p >= lowest
+                            pos      = 1               
+                            breaks   = 0
+                            //only 'line', otherwise 0 breaks (if breaks, Swings would not be included)
+                            for d = 0 to last_bar_index - sBix 
+                                if pos == 1 and close[d] < p.p
+                                    breaks += 1
+                                    pos    := 0
+                                if pos == 0 and close[d] > p.p
+                                    pos    := 1
+                            grade   = math.min(100, math.round((100 / fade) * breaks))
+                            max.set(0, math.max(max.get(0) , grade))
+                            line.new(n -1, p.p, n +8, p.p 
+                             , color=color.new(colU, grade), extend=extend.left) 
+                            lab.unshift(lab.new(
+                             label.new(n +8 + (e * 5), p.p, color=color(na)
+                              , tooltip= 'N°' + str.tostring(e) + ' Swings'
+                              , style=label.style_label_left
+                              , size=size.small
+                              , textcolor=color.new(colU, grade)
+                              , text= ''
+                              )
+                              , grade
+                              )
+                             )
+                            aGrade.unshift(grade)                          
+    [sBs, arrPP]
+
+//-----------------------------------------------------------------------------}
+//Calculations
+//-----------------------------------------------------------------------------{
+e = 1
+[sBs1, arrPP1]  = calc(e, chc1 , len1 , mlt1 , res1 ), e +=1
+[sBs2, arrPP2]  = calc(e, chc2 , len2 , mlt2 , res2 ), e +=1
+[sBs3, arrPP3]  = calc(e, chc3 , len3 , mlt3 , res3 ), e +=1
+[sBs4, arrPP4]  = calc(e, chc4 , len4 , mlt4 , res4 ), e +=1
+[sBs5, arrPP5]  = calc(e, chc5 , len5 , mlt5 , res5 ), e +=1
+[sBs6, arrPP6]  = calc(e, chc6 , len6 , mlt6 , res6 ), e +=1
+[sBs7, arrPP7]  = calc(e, chc7 , len7 , mlt7 , res7 ), e +=1
+[sBs8, arrPP8]  = calc(e, chc8 , len8 , mlt8 , res8 ), e +=1
+[sBs9, arrPP9]  = calc(e, chc9 , len9 , mlt9 , res9 ), e +=1
+
+arrVal          = array.from(
+  sBs1, sBs2, sBs3, sBs4, sBs5, sBs6, sBs7, sBs8, sBs9
+  )
+
+if time == chart.right_visible_bar_time
+    top.set_lefttop    (n -1, highest)
+    top.set_rightbottom(n +8, highest - ((highest - lowest) / 20))
+    btm.set_lefttop    (n -1, lowest  + ((highest - lowest) / 20))
+    btm.set_rightbottom(n +8, lowest )
+    sz = lab.size(), arr = aGrade.copy(), arr.sort(), aSz = arr.size() 
+    // sort + rank ~ grade
+    if aSz > 1
+        lastValue = arr.get(aSz -1)
+        for j = arr.size() -2 to 0
+            if arr.get(j) == lastValue
+                arr.remove(j)
+            lastValue := arr.get(j)
+    // set label (grade)        
+    if  sz > 1
+        for i = 0 to sz -1
+            get = lab.get(i)
+            get.lb.set_text(str.tostring(arr.indexof(get.gr) + 1) + ' ' + get.lb.get_text())
+
+    // Make Swings visible
+    if showPP
+        for i = 0 to pivH.size() -1
+            label.new(pivH.get(i).b, pivH.get(i).p, style=label.style_label_right, size=size.tiny)
+            l = line.new(pivH.get(i).b, pivH.get(i).p, n +8, pivH.get(i).p)
+
+        for i = 0 to pivL.size() -1
+            label.new(pivL.get(i).b, pivL.get(i).p, style=label.style_label_right, size=size.tiny)
+            l = line.new(pivL.get(i).b, pivL.get(i).p, n +8, pivL.get(i).p)
+
+//-----------------------------------------------------------------------------}
+//Plot Functions
+//-----------------------------------------------------------------------------{
+pickArrPP(i, f) => 
+    out =
+     i == 1 ? arrPP1.get(f) :
+     i == 2 ? arrPP2.get(f) :
+     i == 3 ? arrPP3.get(f) :
+     i == 4 ? arrPP4.get(f) :
+     i == 5 ? arrPP5.get(f) :
+     i == 6 ? arrPP6.get(f) :
+     i == 7 ? arrPP7.get(f) :
+     i == 8 ? arrPP8.get(f) :
+              arrPP9.get(f)
+
+plots(pick, choice) =>
+    p1   = pick ? not choiceIsPP(choice -1) ? arrVal.get(choice -1) : pickArrPP(choice, 0 ) : na
+    p2   = pick ? not choiceIsPP(choice -1) ?           na          : pickArrPP(choice, 1 ) : na
+    p3   = pick ? not choiceIsPP(choice -1) ?           na          : pickArrPP(choice, 2 ) : na
+    p4   = pick ? not choiceIsPP(choice -1) ?           na          : pickArrPP(choice, 3 ) : na
+    p5   = pick ? not choiceIsPP(choice -1) ?           na          : pickArrPP(choice, 4 ) : na
+    p6   = pick ? not choiceIsPP(choice -1) ?           na          : pickArrPP(choice, 5 ) : na
+    p7   = pick ? not choiceIsPP(choice -1) ?           na          : pickArrPP(choice, 6 ) : na
+    p8   = pick ? not choiceIsPP(choice -1) ?           na          : pickArrPP(choice, 7 ) : na
+    p9   = pick ? not choiceIsPP(choice -1) ?           na          : pickArrPP(choice, 8 ) : na
+    p10  = pick ? not choiceIsPP(choice -1) ?           na          : pickArrPP(choice, 9 ) : na
+    p11  = pick ? not choiceIsPP(choice -1) ?           na          : pickArrPP(choice, 10) : na
+    [p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11]
+
+//-----------------------------------------------------------------------------}
+//Plots
+//-----------------------------------------------------------------------------{
+[plotA1, plotA2, plotA3, plotA4, plotA5, plotA6, plotA7, plotA8, plotA9, plotA10, plotA11] = plots(pick1, choice1)
+[plotB1, plotB2, plotB3, plotB4, plotB5, plotB6, plotB7, plotB8, plotB9, plotB10, plotB11] = plots(pick2, choice2)
+[plotC1, plotC2, plotC3, plotC4, plotC5, plotC6, plotC7, plotC8, plotC9, plotC10, plotC11] = plots(pick3, choice3)
+[plotD1, plotD2, plotD3, plotD4, plotD5, plotD6, plotD7, plotD8, plotD9, plotD10, plotD11] = plots(pick4, choice4)
+[plotE1, plotE2, plotE3, plotE4, plotE5, plotE6, plotE7, plotE8, plotE9, plotE10, plotE11] = plots(pick5, choice5)
+
+
+plot(plotA1 , 'A', style= f(choice1) ? plot.style_line : plot.style_circles, color=color.blue  ,                 display=display.pane)
+plot(plotA2 , 'A', style= f(choice1) ? plot.style_line : plot.style_circles, color=color.blue  , editable=false, display=display.pane)
+plot(plotA3 , 'A', style= f(choice1) ? plot.style_line : plot.style_circles, color=color.blue  , editable=false, display=display.pane)
+plot(plotA4 , 'A', style= f(choice1) ? plot.style_line : plot.style_circles, color=color.blue  , editable=false, display=display.pane)
+plot(plotA5 , 'A', style= f(choice1) ? plot.style_line : plot.style_circles, color=color.blue  , editable=false, display=display.pane)
+plot(plotA6 , 'A', style= f(choice1) ? plot.style_line : plot.style_circles, color=color.blue  , editable=false, display=display.pane)
+plot(plotA7 , 'A', style= f(choice1) ? plot.style_line : plot.style_circles, color=color.blue  , editable=false, display=display.pane)
+plot(plotA8 , 'A', style= f(choice1) ? plot.style_line : plot.style_circles, color=color.blue  , editable=false, display=display.pane)
+plot(plotA9 , 'A', style= f(choice1) ? plot.style_line : plot.style_circles, color=color.blue  , editable=false, display=display.pane)
+plot(plotA10, 'A', style= f(choice1) ? plot.style_line : plot.style_circles, color=color.blue  , editable=false, display=display.pane)
+plot(plotA11, 'A', style= f(choice1) ? plot.style_line : plot.style_circles, color=color.blue  , editable=false, display=display.pane)
+
+plot(plotB1 , 'B', style= f(choice2) ? plot.style_line : plot.style_circles, color=color.yellow,                 display=display.pane)
+plot(plotB2 , 'B', style= f(choice2) ? plot.style_line : plot.style_circles, color=color.yellow, editable=false, display=display.pane)
+plot(plotB3 , 'B', style= f(choice2) ? plot.style_line : plot.style_circles, color=color.yellow, editable=false, display=display.pane)
+plot(plotB4 , 'B', style= f(choice2) ? plot.style_line : plot.style_circles, color=color.yellow, editable=false, display=display.pane)
+plot(plotB5 , 'B', style= f(choice2) ? plot.style_line : plot.style_circles, color=color.yellow, editable=false, display=display.pane)
+plot(plotB6 , 'B', style= f(choice2) ? plot.style_line : plot.style_circles, color=color.yellow, editable=false, display=display.pane)
+plot(plotB7 , 'B', style= f(choice2) ? plot.style_line : plot.style_circles, color=color.yellow, editable=false, display=display.pane)
+plot(plotB8 , 'B', style= f(choice2) ? plot.style_line : plot.style_circles, color=color.yellow, editable=false, display=display.pane)
+plot(plotB9 , 'B', style= f(choice2) ? plot.style_line : plot.style_circles, color=color.yellow, editable=false, display=display.pane)
+plot(plotB10, 'B', style= f(choice2) ? plot.style_line : plot.style_circles, color=color.yellow, editable=false, display=display.pane)
+plot(plotB11, 'B', style= f(choice2) ? plot.style_line : plot.style_circles, color=color.yellow, editable=false, display=display.pane)
+
+plot(plotC1 , 'C', style= f(choice3) ? plot.style_line : plot.style_circles, color=color.purple,                 display=display.pane)
+plot(plotC2 , 'C', style= f(choice3) ? plot.style_line : plot.style_circles, color=color.purple, editable=false, display=display.pane)
+plot(plotC3 , 'C', style= f(choice3) ? plot.style_line : plot.style_circles, color=color.purple, editable=false, display=display.pane)
+plot(plotC4 , 'C', style= f(choice3) ? plot.style_line : plot.style_circles, color=color.purple, editable=false, display=display.pane)
+plot(plotC5 , 'C', style= f(choice3) ? plot.style_line : plot.style_circles, color=color.purple, editable=false, display=display.pane)
+plot(plotC6 , 'C', style= f(choice3) ? plot.style_line : plot.style_circles, color=color.purple, editable=false, display=display.pane)
+plot(plotC7 , 'C', style= f(choice3) ? plot.style_line : plot.style_circles, color=color.purple, editable=false, display=display.pane)
+plot(plotC8 , 'C', style= f(choice3) ? plot.style_line : plot.style_circles, color=color.purple, editable=false, display=display.pane)
+plot(plotC9 , 'C', style= f(choice3) ? plot.style_line : plot.style_circles, color=color.purple, editable=false, display=display.pane)
+plot(plotC10, 'C', style= f(choice3) ? plot.style_line : plot.style_circles, color=color.purple, editable=false, display=display.pane)
+plot(plotC11, 'C', style= f(choice3) ? plot.style_line : plot.style_circles, color=color.purple, editable=false, display=display.pane)
+
+plot(plotD1 , 'D', style= f(choice4) ? plot.style_line : plot.style_circles, color=color.orange,                 display=display.pane)
+plot(plotD2 , 'D', style= f(choice4) ? plot.style_line : plot.style_circles, color=color.orange, editable=false, display=display.pane)
+plot(plotD3 , 'D', style= f(choice4) ? plot.style_line : plot.style_circles, color=color.orange, editable=false, display=display.pane)
+plot(plotD4 , 'D', style= f(choice4) ? plot.style_line : plot.style_circles, color=color.orange, editable=false, display=display.pane)
+plot(plotD5 , 'D', style= f(choice4) ? plot.style_line : plot.style_circles, color=color.orange, editable=false, display=display.pane)
+plot(plotD6 , 'D', style= f(choice4) ? plot.style_line : plot.style_circles, color=color.orange, editable=false, display=display.pane)
+plot(plotD7 , 'D', style= f(choice4) ? plot.style_line : plot.style_circles, color=color.orange, editable=false, display=display.pane)
+plot(plotD8 , 'D', style= f(choice4) ? plot.style_line : plot.style_circles, color=color.orange, editable=false, display=display.pane)
+plot(plotD9 , 'D', style= f(choice4) ? plot.style_line : plot.style_circles, color=color.orange, editable=false, display=display.pane)
+plot(plotD10, 'D', style= f(choice4) ? plot.style_line : plot.style_circles, color=color.orange, editable=false, display=display.pane)
+plot(plotD11, 'D', style= f(choice4) ? plot.style_line : plot.style_circles, color=color.orange, editable=false, display=display.pane)
+
+plot(plotE1 , 'E', style= f(choice5) ? plot.style_line : plot.style_circles, color=color.white ,                 display=display.pane)
+plot(plotE2 , 'E', style= f(choice5) ? plot.style_line : plot.style_circles, color=color.white , editable=false, display=display.pane)
+plot(plotE3 , 'E', style= f(choice5) ? plot.style_line : plot.style_circles, color=color.white , editable=false, display=display.pane)
+plot(plotE4 , 'E', style= f(choice5) ? plot.style_line : plot.style_circles, color=color.white , editable=false, display=display.pane)
+plot(plotE5 , 'E', style= f(choice5) ? plot.style_line : plot.style_circles, color=color.white , editable=false, display=display.pane)
+plot(plotE6 , 'E', style= f(choice5) ? plot.style_line : plot.style_circles, color=color.white , editable=false, display=display.pane)
+plot(plotE7 , 'E', style= f(choice5) ? plot.style_line : plot.style_circles, color=color.white , editable=false, display=display.pane)
+plot(plotE8 , 'E', style= f(choice5) ? plot.style_line : plot.style_circles, color=color.white , editable=false, display=display.pane)
+plot(plotE9 , 'E', style= f(choice5) ? plot.style_line : plot.style_circles, color=color.white , editable=false, display=display.pane)
+plot(plotE10, 'E', style= f(choice5) ? plot.style_line : plot.style_circles, color=color.white , editable=false, display=display.pane)
+plot(plotE11, 'E', style= f(choice5) ? plot.style_line : plot.style_circles, color=color.white , editable=false, display=display.pane)
+//-----------------------------------------------------------------------------}

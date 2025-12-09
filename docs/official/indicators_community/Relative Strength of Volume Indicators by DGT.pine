@@ -1,0 +1,101 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Relative Strength of Volume Indicators
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Aug 18, 2020 : initial release
+//# *  Update     : Aug 26, 2020 : volume histogram size made adjustable
+//# *  Update     : Sep 22, 2020 : 4 color coded relative volume histogram
+//# *  Update     : Aug 10, 2022 : buying/selling relative volume histogram option added, performance optimization, Pine Script v5 update
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+
+indicator('Relative Strength of Volume Indicators by DGT', 'RSI(VOLx) ʙʏ DGT ☼☾', format=format.price, max_bars_back=252)
+
+// -Input ======================================================================================= //
+
+length = input.int(13, minval=1, title='Length')
+
+// Relative Strength application on Volume Indicators
+addRsiX = input.string('On Balance Volume', '► Relative Strength of', options=['Accumulation/Distribution', 'Elders Force Index', 'Money Flow Index', 'On Balance Volume', 'Price Volume Trend'])
+smooth  = input.int(2, 'Smooth RSI, with Least Squares Method', minval=2)
+
+// Volume Histogram
+group_hist='Relative Volume Histogram'
+tp_rvol  = 'Relative Volume (RVOL) compares current volume levels to average volume levels over a specified look-back period. \nRVOL = CurrentVolume / AverageVolume'
+volHist = input.string('Relative Volume [4 Color]', '► Relative Volume Histogram', options=['Relative Volume', 'Relative Volume [4 Color]', 'Buying/Selling Volume [1]', 'Buying/Selling Volume [2]', 'None'], group = group_hist, tooltip = tp_rvol)
+volComp = input.string('Volume Oscillator', '► Histogram Companion', options=['Moving Average', 'Volume Oscillator', 'None'], group = group_hist)
+size    = input(10, 'Histogram Size', group = group_hist)
+
+// Volume Based Colored Bars
+vbcb = input(true, title='► Volume Weighted Colored Bars', group='Volume Weighted Colored Bars', tooltip='Colors bars based on the bar\'s volume relative to volume moving average')
+
+
+// -Calculation ================================================================================= //
+
+nzVolume = nz(volume)
+O = open, H = high, L = low, C = close
+
+// RSI
+rsi  = ta.rsi(C, length)
+srsi = ta.linreg(rsi, smooth, 0)
+
+float rsix = switch addRsiX
+	'Accumulation/Distribution' => ta.rsi(ta.cum(C == H and C == L or H == L ? 0 : (2 * C - L - H) / (H - L) * nzVolume), length)
+	'Elders Force Index' => ta.rsi(ta.ema(ta.change(C) * nzVolume, length), length)
+	'Money Flow Index' => 100.0 - 100.0 / (1.0 + math.sum(nzVolume * (ta.change(hlc3) <= 0 ? 0 : hlc3), length) / math.sum(nzVolume * (ta.change(hlc3) >= 0 ? 0 : hlc3), length))
+	'On Balance Volume' => ta.rsi(ta.cum(math.sign(ta.change(C)) * nzVolume), length)
+	'Price Volume Trend' => ta.rsi(ta.cum(ta.change(C) / C[1] * nzVolume), length)
+
+srsix = ta.linreg(rsix, smooth, 0)
+
+// Volume Histogram
+vAvg  = ta.sma(nzVolume, length)
+rvAvg = ta.sma(nzVolume / vAvg * size, length)
+B = nzVolume * (C - L) / (H - L) / vAvg * size
+S = nzVolume * (H - C) / (H - L) / vAvg * size
+
+// Histogram Companion
+volx = switch volComp
+	'Moving Average' => rvAvg//ta.sma(nzVolume / vAvg * size, length)
+	'Volume Oscillator' => (ta.ema(nzVolume, 5) - ta.ema(nzVolume, 10)) / ta.ema(nzVolume, 10) * 100
+
+// -Plot ======================================================================================== //
+// Volume Histogram
+plot(nzVolume and volHist == 'Relative Volume' ? nzVolume / vAvg * size : na, 'Volume, normalized to fit the Scale', 
+     O > C ? color.new(#ef5350, 0) : color.new(#26a69a, 0), style=plot.style_columns, editable=false)
+plot(nzVolume and volHist == 'Relative Volume [4 Color]' ? nzVolume / vAvg * size : na, 'Volume, normalized to fit the Scale', 
+     O > C ? nzVolume / vAvg * math.abs(size) > math.abs(rvAvg) ? color.new(#ef5350, 0) : color.new(color.gray, 25) : 
+             nzVolume / vAvg * math.abs(size) > math.abs(rvAvg) ? color.new(#26a69a, 0) : color.new(color.gray, 55), style=plot.style_columns, editable=false)
+plot(nzVolume and (volHist == 'Buying/Selling Volume [1]' or volHist == 'Buying/Selling Volume [2]') ? volHist == 'Buying/Selling Volume [1]' ? S + B  : B : na, 'Total/Buying Volume' , color.new(#26a69a, 0) , style=plot.style_columns, editable=false)
+plot(nzVolume and (volHist == 'Buying/Selling Volume [1]' or volHist == 'Buying/Selling Volume [2]') ? volHist == 'Buying/Selling Volume [1]' ? S : -S     : na, 'Selling Volume'      , color.new(#ef5350, 0) , style=plot.style_columns, editable=false)
+
+// Histogram Companion
+plot(nzVolume and volHist != 'None' ? volx : na, 'Volume MA/OCS', color.orange, 2)
+
+// Threshold Lines
+p1 = hline(75, color=color.red, title='Overbought Higher Theshold Level', linestyle=hline.style_dotted)
+p2 = hline(65, color=color.red, title='Overbought Lower Theshold Level' , linestyle=hline.style_dotted)
+fill(p1, p2, color=color.new(color.red, 89), title='Overbought Background')
+
+hline(50, color=color.gray, title='Middle Line (Bull/Bear Border Line)', linestyle=hline.style_dotted, linewidth=2)
+
+p3 = hline(35, color=color.green, title='Oversold Higher Theshold Level', linestyle=hline.style_dotted)
+p4 = hline(25, color=color.green, title='Oversold Lower Theshold Level' , linestyle=hline.style_dotted)
+fill(p3, p4, color=color.new(color.green, 89), title='Oversold Background')
+
+// RSI
+plot(srsi, 'Relative Strength of Price', #8E1599, 2)
+plot(nzVolume ? srsix : na, 'Relative Strength of Volume X', color.aqua, 2)
+
+// Volume Based Colored Bars by KIVANÇ ÖZBİLGİÇ
+barcolor(vbcb and nzVolume ? nzVolume > vAvg * 1.618 ? C > O ? #006400 : #910000 : nzVolume < vAvg * 0.618 ? C > O ? #7FFFD4 : #FF9800 : C > O ? color.green : color.red : na, title='Volume Weighted Colored Bars', editable=false)
+
+var table logo = table.new(position.bottom_right, 1, 1)
+if barstate.islast
+    table.cell(logo, 0, 0, '☼☾  ', text_size=size.normal, text_color=color.teal)

@@ -1,0 +1,589 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © sbtnc
+// Created: 2020-01-11
+// Last modified: 2024-12-11
+// version 7.0
+
+// @version=6
+indicator("Daily Weekly Monthly Yearly Opens", "Opens", overlay = true, max_lines_count = 500, dynamic_requests = true)
+
+
+//--------------------------------------------------------------------
+//#region                      Constants
+//--------------------------------------------------------------------
+
+color   COLOR_1         = color.green
+color   COLOR_2         = color.orange
+color   COLOR_3         = color.red
+color   COLOR_4         = color.purple
+color   COLOR_5         = color.blue
+int     HEAD_PADDING    = -2
+int     HEAD_TRANSP     = 60
+string  LABEL_SIZE      = size.small
+string  LABEL_STYLE     = label.style_none
+string  LINE_STYLE      = line.style_solid
+int     LINE_WIDTH      = 1
+int     OFFSET_PADDING  = 4
+string  TAIL_STYLE      = line.style_dotted
+
+//#endregion
+
+
+//--------------------------------------------------------------------
+//#region                         Types 
+//--------------------------------------------------------------------
+
+// @type Contains the open's data.
+type Open 
+    int     barIndex
+    float   price 
+    string  name
+    bool    display
+
+
+// @enum Contains fields with configurable timeframe options as titles.
+enum Timeframes
+    s5  = "5 seconds"
+    s10 = "10 seconds"
+    s15 = "15 seconds"
+    s30 = "30 seconds"
+    m1  = "1 minute"
+    m2  = "2 minutes"
+    m3  = "3 minutes"
+    m5  = "5 minutes"
+    m10 = "10 minutes"
+    m15 = "15 minutes"
+    m30 = "30 minutes"
+    m45 = "45 minutes"
+    h1  = "1 hour"
+    h2  = "2 hours"
+    h3  = "3 hours"
+    h4  = "4 hours"
+    h6  = "6 hours"
+    h8  = "8 hours"
+    h12 = "12 hours"
+    D1  = "1 day"
+    W1  = "1 week"
+    M1  = "1 month"
+    M3  = "3 months"
+    M6  = "6 months"
+    M12 = "12 months"
+
+//#endregion
+
+
+//--------------------------------------------------------------------
+//#region                        Inputs
+//--------------------------------------------------------------------
+
+string      group1                      = "Opens"
+string      group2                      = "Style"
+string      group3                      = "Preferences"
+
+string      rightOffsetTooltip          = "Extend the current opens to the right of the last bar."
+string      tailsTooltip                = "Extend the current opens to the left of the chart."
+string      headsTooltip                = "Extend the previous opens to the right."
+string      discoverPricesTooltip       = "On the intraday chart, discover the opens on the chart instead of requesting higher-timeframe data." +
+                                          "\n\nYou can use this setting when price discrepancies exist between the intraday and end-of-day data feeds."
+string      extendedHoursTooltip        = "If the extended trading hours are visible on the intraday chart, display the opens on the pre/post market session."
+
+bool        enableOpenInput1            = input.bool  (true,           title = "",                 group = group1, inline = "#1")
+Timeframes  openTimeframeInput1         = input.enum  (Timeframes.D1,  title = "",                 group = group1, inline = "#1", display = display.none)
+color       openColorInput1             = input.color (COLOR_1,        title = "",                 group = group1, inline = "#1")
+int         openLookbackInput1          = input.int   (1,              title = "",                 group = group1, inline = "#1", minval = 1, maxval = 500, display = display.none)
+bool        enableOpenInput2            = input.bool  (true,           title = "",                 group = group1, inline = "#2")
+Timeframes  openTimeframeInput2         = input.enum  (Timeframes.W1,  title = "",                 group = group1, inline = "#2", display = display.none)
+color       openColorInput2             = input.color (COLOR_2,        title = "",                 group = group1, inline = "#2")
+int         openLookbackInput2          = input.int   (1,              title = "",                 group = group1, inline = "#2", minval = 1, maxval = 500, display = display.none)
+bool        enableOpenInput3            = input.bool  (true,           title = "",                 group = group1, inline = "#3")
+Timeframes  openTimeframeInput3         = input.enum  (Timeframes.M1,  title = "",                 group = group1, inline = "#3", display = display.none)
+color       openColorInput3             = input.color (COLOR_3,        title = "",                 group = group1, inline = "#3")
+int         openLookbackInput3          = input.int   (1,              title = "",                 group = group1, inline = "#3", minval = 1, maxval = 500, display = display.none)
+bool        enableOpenInput4            = input.bool  (false,          title = "",                 group = group1, inline = "#4")
+Timeframes  openTimeframeInput4         = input.enum  (Timeframes.M3,  title = "",                 group = group1, inline = "#4", display = display.none)
+color       openColorInput4             = input.color (COLOR_4,        title = "",                 group = group1, inline = "#4")
+int         openLookbackInput4          = input.int   (1,              title = "",                 group = group1, inline = "#4", minval = 1, maxval = 500, display = display.none)
+bool        enableOpenInput5            = input.bool  (true,           title = "",                 group = group1, inline = "#5")
+Timeframes  openTimeframeInput5         = input.enum  (Timeframes.M12, title = "",                 group = group1, inline = "#5", display = display.none)
+color       openColorInput5             = input.color (COLOR_5,        title = "",                 group = group1, inline = "#5")
+int         openLookbackInput5          = input.int   (1,              title = "",                 group = group1, inline = "#5", minval = 1, maxval = 500, display = display.none)
+int         rightOffsetInput            = input.int   (20,             title = "Offset",           group = group2, inline = "Offset", tooltip = rightOffsetTooltip, minval = 1, display = display.none)
+bool        enableTailsInput            = input.bool  (false,          title = "Show Tails",       group = group2, tooltip = tailsTooltip)
+bool        enableHeadsInput            = input.bool  (false,          title = "Show Projections", group = group2, tooltip = headsTooltip)
+bool        discoverPricesInput         = input.bool  (false,          title = "Discover Prices",  group = group3, tooltip = discoverPricesTooltip)
+bool        enableExtendedSessionInput  = input.bool  (false,          title = "Extended Hours",   group = group3, tooltip = extendedHoursTooltip)
+
+//#endregion
+
+
+//--------------------------------------------------------------------
+//#region                   Functions & methods
+//--------------------------------------------------------------------
+
+// @function Check if the open for the specified `timeframe` can be displayed on the chart context.
+// @returns  simple bool
+method isVisible(simple string timeframe) =>
+    timeframe.in_seconds(timeframe) > timeframe.in_seconds()
+
+
+// @function Detect changes of opens.
+// @returns  series bool
+method change(
+     simple string timeframe,
+     series int    timeframeTime,
+     simple bool   discoverPrice,
+     simple bool   discoverExtendedPrice
+     ) =>
+
+    switch 
+        discoverExtendedPrice => timeframe.change(timeframe)
+        discoverPrice         => ta.change(timeframeTime) > 0 or (barstate.isfirst and time == timeframeTime)
+        =>                       ta.change(timeframeTime) > 0 or barstate.isfirst
+
+
+// @function Request the data in the specified `timeframe` context.
+// @returns  ([int, float]) The open's time and price.
+method request(string timeframe, bool extendedSession) =>
+    string tickerId = ticker.new(syminfo.prefix, syminfo.ticker, extendedSession ? session.extended : session.regular)
+    request.security(tickerId, timeframe, [time, open], lookahead = barmerge.lookahead_on)
+
+
+// @function Check if the specified `timeframe` returns end-of-day data.
+// @returns  bool
+method higherTimeframeFeed(simple string timeframe) =>
+    timeframe.in_seconds(timeframe) >= timeframe.in_seconds("D") 
+
+
+// @function Check if the open can be sourced from the chart data.
+// @returns  bool
+discoverPrice(simple string timeframe, simple bool discovery) =>
+    discovery and higherTimeframeFeed(timeframe) and timeframe.isintraday
+
+
+// @function Check if the extended session open can be sourced from the chart.
+// @returns  bool
+discoverExtendedPrice(simple string timeframe, simple bool extendedSession) => 
+    extendedSession and higherTimeframeFeed(timeframe) and syminfo.session == session.extended
+
+
+// @function Check if the open time belongs to the previous bar.
+// @returns  bool
+adjustStartBarIndex(int t) =>
+    time_close[1] > t
+
+
+// @function Calculate the right position of the open level.
+// @returns  (int) The bar index. 
+getRightBarIndex(int padding = 0) =>
+    bar_index + rightOffsetInput + padding * OFFSET_PADDING
+
+
+// @function Produce the `timeframe` parameter from the given user input.
+// @returns  string
+method param(simple Timeframes input) =>
+    switch input
+        Timeframes.s5  => "5S"
+        Timeframes.s10 => "10S"
+        Timeframes.s15 => "15S"
+        Timeframes.s30 => "30S"
+        Timeframes.m1  => "1"
+        Timeframes.m2  => "2"
+        Timeframes.m3  => "3"
+        Timeframes.m5  => "5"
+        Timeframes.m10 => "10"
+        Timeframes.m15 => "15"
+        Timeframes.m30 => "30"
+        Timeframes.m45 => "45"
+        Timeframes.h1  => "60"
+        Timeframes.h2  => "120"
+        Timeframes.h3  => "180"
+        Timeframes.h4  => "240"
+        Timeframes.h6  => "360"
+        Timeframes.h8  => "480"
+        Timeframes.h12 => "720"
+        Timeframes.D1  => "1D"
+        Timeframes.W1  => "1W"
+        Timeframes.M1  => "1M" 
+        Timeframes.M3  => "3M"
+        Timeframes.M6  => "6M"
+        Timeframes.M12 => "12M"
+
+
+// @function Return the short display string for the specified `timeframe` string.
+// @returns  string
+method displayString(string this) =>
+    // Get the readable format.
+    string _str = switch this
+        "1"     => "m"
+        "2"     => "2m"
+        "3"     => "3m"
+        "5"     => "5m"
+        "10"    => "10m"
+        "15"    => "15m"
+        "30"    => "30m"
+        "45"    => "45m"
+        "60"    => "H"
+        "120"   => "2H"
+        "180"   => "3H"
+        "240"   => "4H"
+        "360"   => "6H"
+        "480"   => "8H"
+        "720"   => "12H"
+        "1440"  => "24H"
+        "1D"    => "D"
+        "1W"    => "W"
+        "1M"    => "M"
+        "12M"   => "Y"
+        => this
+
+    // Add spacing.
+    switch str.length(_str)
+        1 => _str + "   "
+        2 => _str + "     "
+        3 => _str + "       "
+
+
+// @function Create and update the open level. An open is composed of a label, a "body" line, and optional "tail" and "head" line extensions.
+// @returns  void
+draw(bool change, Open openData, int lookback, color color, int padding) =>
+    // @variable The reference of the last open line.
+    var line _bodyLine = na
+
+    // @variable The reference of the last open label.
+    var label _label = label.new(
+         x         = na,
+         y         = na,
+         text      = openData.name,
+         style     = LABEL_STYLE,
+         textcolor = color,
+         size      = LABEL_SIZE
+         )
+
+    // @variable The reference of the last open left extending line.
+    var line _tailLine = line.new(
+         x1     = na,
+         y1     = na,
+         x2     = na,
+         y2     = na,
+         color  = color,
+         style  = TAIL_STYLE,
+         width  = LINE_WIDTH,
+         extend = extend.left
+         )
+
+    // @variable The collection of historical open lines.
+    var array<line> _bodyLineArray  = array.new_line()
+
+    // @variable The collection of historical right extending open lines.
+    var array<line> _headLineArray  = array.new_line()
+
+
+    // Update the old open and create the new open.
+
+    if change
+        int _x2 = getRightBarIndex()
+
+        // Anchor the previous open end position.
+        _bodyLine.set_x2(openData.barIndex -1)
+
+        // Create the previous open "head".
+        if enableHeadsInput
+            _headLineArray.push(
+                 line.new(
+                     x1    = openData.barIndex -1,
+                     x2    = openData.barIndex,
+                     y1    = _bodyLine.get_y1(),
+                     y2    = _bodyLine.get_y2(),
+                     color = color.new(color, HEAD_TRANSP),
+                     style = LINE_STYLE,
+                     width = LINE_WIDTH
+                     )
+                 )
+
+            // Trim the exceeding number of drawings.
+            if _headLineArray.size() > lookback -1
+                line.delete(_headLineArray.shift())
+
+        // Update the last open label position and tooltip.
+        _label.set_xy(_x2, openData.price)
+        _label.set_tooltip(str.tostring(openData.price, format.mintick))
+
+        // Create and store the last open line.
+        _bodyLine := line.new(
+             x1    = openData.barIndex,
+             x2    = _x2,
+             y1    = openData.price,
+             y2    = openData.price,
+             color = color,
+             style = LINE_STYLE,
+             width = LINE_WIDTH
+             )
+        array.push(_bodyLineArray, _bodyLine)
+
+        // Trim the exceeding number of drawings.
+        if _bodyLineArray.size() > lookback
+            line.delete(_bodyLineArray.shift())
+
+        // Create the last open "tail".
+        if enableTailsInput
+            _tailLine.set_xy1(openData.barIndex -1, openData.price)
+            _tailLine.set_xy2(openData.barIndex,    openData.price)
+
+
+    // Update the right position of the "body" and "heads" lines.
+
+    if barstate.islast
+        if enableHeadsInput
+            int _x2 = getRightBarIndex(HEAD_PADDING)
+            for _head in _headLineArray
+                _head.set_x2(_x2)
+
+        int _x2 = getRightBarIndex(padding)
+        _bodyLine.set_x2(_x2)
+        _label.set_x(_x2)
+
+
+// @function Get the padding to apply to the open right position for not overlapping the other open labels.
+// @returns  int
+method padding(array<Open> this, int idx, float proximityThreshold) =>
+    int _padding = 0
+
+    // Open #2, #3, #4, and #5 can share the same open with #1.
+    if idx > 0 and this.get(0).display and math.abs(this.get(0).price - this.get(idx).price) <= proximityThreshold
+        _padding += 1
+
+    // Open #3, #4, and #5 can share the same open with #2.
+    if idx > 1 and this.get(1).display and math.abs(this.get(1).price - this.get(idx).price) <= proximityThreshold
+        _padding += 1
+
+    // Open #4 and #5 can share the same open with #3.
+    if idx > 2 and this.get(2).display and math.abs(this.get(2).price - this.get(idx).price) <= proximityThreshold
+        _padding += 1
+
+    // Open #5 can share the same open with #4.
+    if idx > 3 and this.get(3).display and math.abs(this.get(3).price - this.get(idx).price) <= proximityThreshold
+        _padding += 1    
+    
+    _padding
+
+
+// @function Update the open levels.
+// @returns  (bool) Is true if the open changes.
+update(
+     Open           data,
+     simple string  tf,
+     simple bool    extendedSession,
+     simple bool    discoverPrice,
+     simple bool    discoverExtendedPrice
+     ) =>
+
+    // @variable The `open` and `time` requested from the timeframe context.
+    [_tfTime, _tfOpen] = tf.request(extendedSession)
+
+    // @variable Is true when the timeframe changes.
+    bool _change = tf.change(_tfTime, discoverPrice, discoverExtendedPrice)
+
+    // @variable Is true when pinpointing the opening bar index on the previous bar.
+    bool _adjust = adjustStartBarIndex(_tfTime)
+
+    // @variable Is true when sourcing the opening price from the chart context.
+    bool _discovery = discoverPrice or discoverExtendedPrice
+
+    if _change
+        data.price    := _discovery ? open : _tfOpen
+        data.barIndex := _discovery ? bar_index : (_adjust ? bar_index -1 : bar_index)
+        
+    _change
+
+//#endregion
+
+
+//--------------------------------------------------------------------
+//#region                 Variables declarations
+//--------------------------------------------------------------------
+
+// @variable The `timeframe` parameters produced from the enum input selections.
+var string timeframe1 = openTimeframeInput1.param()
+var string timeframe2 = openTimeframeInput2.param()
+var string timeframe3 = openTimeframeInput3.param()
+var string timeframe4 = openTimeframeInput4.param()
+var string timeframe5 = openTimeframeInput5.param()
+
+
+// @variable Are true when we can display the opens on the chart.
+var simple bool display1 = enableOpenInput1 and timeframe1.isVisible()
+var simple bool display2 = enableOpenInput2 and timeframe2.isVisible()
+var simple bool display3 = enableOpenInput3 and timeframe3.isVisible()
+var simple bool display4 = enableOpenInput4 and timeframe4.isVisible()
+var simple bool display5 = enableOpenInput5 and timeframe5.isVisible()
+
+
+// @variable Are true when sourcing the open prices from the chart instead of the requested timeframe context.
+var simple bool discoverPrice1 = discoverPrice(timeframe1, discoverPricesInput)
+var simple bool discoverPrice2 = discoverPrice(timeframe2, discoverPricesInput)
+var simple bool discoverPrice3 = discoverPrice(timeframe3, discoverPricesInput)
+var simple bool discoverPrice4 = discoverPrice(timeframe4, discoverPricesInput)
+var simple bool discoverPrice5 = discoverPrice(timeframe5, discoverPricesInput)
+
+
+// @variable Is true when we should plot the opens on the extended trading hours.
+var simple bool extendedSession = enableExtendedSessionInput and syminfo.session == session.extended
+
+
+// @variable Are true when we should source the open prices from the chart instead of the requested timeframe context.
+var simple bool discoverExtendedPrice1 = discoverExtendedPrice(timeframe1, extendedSession)
+var simple bool discoverExtendedPrice2 = discoverExtendedPrice(timeframe2, extendedSession)
+var simple bool discoverExtendedPrice3 = discoverExtendedPrice(timeframe3, extendedSession)
+var simple bool discoverExtendedPrice4 = discoverExtendedPrice(timeframe4, extendedSession)
+var simple bool discoverExtendedPrice5 = discoverExtendedPrice(timeframe5, extendedSession)
+
+
+// @variable The `Open` UDTs. 
+var Open open1 = Open.new(name = timeframe1.displayString(), display = display1)
+var Open open2 = Open.new(name = timeframe2.displayString(), display = display2)
+var Open open3 = Open.new(name = timeframe3.displayString(), display = display3)
+var Open open4 = Open.new(name = timeframe4.displayString(), display = display4)
+var Open open5 = Open.new(name = timeframe5.displayString(), display = display5)
+
+
+// @variable The collection of last `Open`. 
+var array<Open> openArray = array.from(open1, open2, open3, open4, open5)
+
+
+// @variable The maximum distance to determine if two levels overlap each other.
+float proximityPaddingThreshold = ta.atr(10) /2
+
+//#endregion
+
+
+//--------------------------------------------------------------------
+//#region                         Logic
+//--------------------------------------------------------------------
+
+bool change1 = if display1
+    update(open1, timeframe1, extendedSession, discoverPrice1, discoverExtendedPrice1)
+
+
+bool change2 = if display2
+    update(open2, timeframe2, extendedSession, discoverPrice2, discoverExtendedPrice2)
+
+
+bool change3 = if display3
+    update(open3, timeframe3, extendedSession, discoverPrice3, discoverExtendedPrice3)
+
+
+bool change4 = if display4
+    update(open4, timeframe4, extendedSession, discoverPrice4, discoverExtendedPrice4)
+
+
+bool change5 = if display5
+    update(open5, timeframe5, extendedSession, discoverPrice5, discoverExtendedPrice5)
+
+//#endregion
+
+
+//--------------------------------------------------------------------
+//#region                        Visuals
+//--------------------------------------------------------------------
+
+//#region - Draw the open levels.
+
+if display5
+    draw(
+         change5,
+         open5,
+         openLookbackInput5,
+         openColorInput5,
+         barstate.islast ? openArray.padding(4, proximityPaddingThreshold) : 0
+         )
+
+
+if display4
+    draw(
+         change4,
+         open4,
+         openLookbackInput4,
+         openColorInput4,
+         barstate.islast ? openArray.padding(3, proximityPaddingThreshold) : 0
+         )
+
+
+if display3
+    draw(
+         change3,
+         open3,
+         openLookbackInput3,
+         openColorInput3,
+         barstate.islast ? openArray.padding(2, proximityPaddingThreshold) : 0
+         )
+
+
+if display2
+    draw(
+         change2,
+         open2,
+         openLookbackInput2,
+         openColorInput2,
+         barstate.islast ? openArray.padding(1, proximityPaddingThreshold) : 0
+         )
+
+
+if display1
+    draw(
+         change1,
+         open1,
+         openLookbackInput1,
+         openColorInput1,
+         0
+         )
+
+//#endregion
+
+
+//#region - Plot the open prices on the `status line`, `price scale`, `data window` as well for providing alert conditions.
+
+displayControls = display.status_line + display.price_scale + display.data_window
+
+plot(
+     series   = open1.price,
+     title    = "#1",
+     color    = openColorInput1,
+     editable = false,
+     display  = enableOpenInput1 ? displayControls : display.none
+     )
+
+plot(
+     series   = open2.price,
+     title    = "#2",
+     color    = openColorInput2,
+     editable = false,
+     display  = enableOpenInput2 ? displayControls : display.none
+     )
+
+plot(
+     series = open3.price,
+     title    = "#3",
+     color    = openColorInput3,
+     editable = false,
+     display  = enableOpenInput3 ? displayControls : display.none
+     )
+
+plot(
+     series   = open4.price,
+     title    = "#4",
+     color    = openColorInput4,
+     editable = false,
+     display  = enableOpenInput4 ? displayControls : display.none
+     )
+     
+plot(
+     series   = open5.price,
+     title    = "#5",
+     color    = openColorInput5,
+     editable = false,
+     display  = enableOpenInput5 ? displayControls : display.none
+     )
+
+//#endregion
+
+//#endregion-

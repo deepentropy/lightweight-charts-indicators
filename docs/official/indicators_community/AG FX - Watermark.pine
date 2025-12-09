@@ -1,0 +1,45 @@
+//@version=4
+study(title = "AG FX - Watermark", overlay = true)
+
+//text inputs
+title = input("AG FX TRADING", "Tittle", group = "text")
+subtitle= input("PATIENCE  |  DISCIPLINE  |  FEARLESS", "Subtitle", group = "text")
+//symbol info
+symInfoCheck = input(title="Show Symbol Info", type=input.bool, defval=true, group = "watermark position")
+symInfo= syminfo.ticker  + " | " + timeframe.period + (timeframe.isminutes ? "M" : na)
+date = tostring(dayofmonth(time_close)) + "/" + tostring(month(time_close)) + "/" + tostring(year(time_close))
+//text positioning
+textVPosition = input("top", "Vertical Position", options = ["top", "middle", "bottom"], group = "watermark position")
+textHPosition = input("center", "Horizontal Position", options = ["left", "center", "right"], group = "watermark position")
+//symbol info positioning
+symVPosition = input("bottom", "Vertical Position", options = ["top", "middle", "bottom"], group = "symbol position")
+symHPosition = input("center", "Horizontal Position", options = ["left", "center", "right"], group = "symbol position")
+//cell size
+width     = input(0, "Width",  minval = 0, maxval = 100, tooltip="The width of the cell as a % of the indicator's visual space. Optional. By default, auto-adjusts the width based on the text inside the cell. Value 0 has the same effect.", group = "cell size")
+height    = input(0, "Height", minval = 0, maxval = 100, tooltip="The height of the cell as a % of the indicator's visual space. Optional. By default, auto-adjusts the height based on the text inside of the cell. Value 0 has the same effect.", group = "cell size")
+//title settings
+c_title    = input(color.new(color.black, 0), "Title Color", group = "title settings")
+s_title  = input("large", "Title Size", options = ["tiny", "small", "normal", "large", "huge", "auto"], group = "title settings")
+a_title = input("center","Title Alignment", options = ["center","left", "right"], group = "title settings")
+//subtitle settings
+c_subtitle    = input(color.new(color.black, 30), "Subitle Color", group = "subtitle settings")
+s_subtitle  = input("normal", "Subtitle Size", options = ["tiny", "small", "normal", "large", "huge", "auto"], group = "subtitle settings")
+a_subtitle = input("center","Subtitle Alignment", options = ["center","left", "right"], group = "subtitle settings")
+
+//symbol settings
+c_symInfo    = input(color.new(color.black, 30), "Subitle Color", group = "symbol settings")
+s_symInfo  = input("normal", "Subtitle Size", options = ["tiny", "small", "normal", "large", "huge", "auto"], group = "symbol settings")
+a_symInfo = input("center","Subtitle Alignment", options = ["center","left", "right"], group = "symbol settings")
+c_bg      = input(color.new(color.blue, 100), "Background", group = "background")
+
+
+//text watermark creation
+textWatermark = table.new(textVPosition + "_" + textHPosition, 1, 3)
+table.cell(textWatermark, 0, 0, title, width, height, c_title, a_title, text_size = s_title, bgcolor = c_bg)
+table.cell(textWatermark, 0, 1, subtitle, width, height, c_subtitle, a_subtitle, text_size = s_subtitle, bgcolor = c_bg)
+//symbol info watermark creation
+symWatermark = table.new(symVPosition + "_" + symHPosition, 5, 5)
+if symInfoCheck == true
+    table.cell(symWatermark, 0, 1, symInfo, width, height, c_symInfo, a_symInfo, text_size = s_symInfo, bgcolor = c_bg)
+    table.cell(symWatermark,0, 0, date, width, height, c_symInfo, a_symInfo, text_size = s_symInfo, bgcolor = c_bg)
+

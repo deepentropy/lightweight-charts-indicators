@@ -1,0 +1,283 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © JacobMagleby
+
+//@version=5
+
+indicator(title = "Volume Profile Bar-Magnified Order Blocks [JacobMagleby]", shorttitle = "Volume Profile Bar-Magnified Order Blocks [JacobMagleby]", overlay = true, max_boxes_count = 500, max_lines_count = 500)
+
+// { <CONSTANTS>
+
+OB_BORDER_WIDTH = 2
+
+// } <CONSTANTS>
+
+
+
+// { <INPUTS>
+
+tuning   = input.int(
+ title   = "Tuning",
+  defval = 7,
+   group = "Main Settings")
+
+amountOfBoxes = input.int(
+ title        = "Amount Of Grids",
+  defval      = 10,
+   group      = "Main Settings")
+
+mitigationMethod = input.string(
+ title           = "Mitigation Method",
+  defval         = "Close Engulfs 100% Of Order Block",
+   group         = "Main Settings",
+     inline      = "mitigation",
+      options    = [
+       "Close Engulfs 100% Of Order Block",
+         "Close Engulfs 75% Of Order Block",
+          "Close Engulfs 50% Of Order Block",
+           "Close Engulfs 25% Of Order Block",
+             "Wick Engulfs 100% Of Order Block",
+              "Wick Engulfs 75% Of Order Block",
+               "Wick Engulfs 50% Of Order Block",
+                 "Wick Engulfs 25% Of Order Block"])
+
+obHighVolumeColor = input.color(
+ title            = "",
+  defval          = color.new(color.yellow, 35),
+   group          = "Color Settings", inline = "colors")
+
+obLowVolumeColor = input.color(
+ title           = "",
+  defval         = color.new(color.orange, 35),
+   group         = "Color Settings",
+     inline      = "colors")
+
+obBorderColor = input.color(
+ title        = "",
+  defval      = color.new(color.gray, 85),
+   group      = "Color Settings",
+     inline   = "colors")
+   
+obLinefillColor = input.color(
+ title          = "",
+  defval        = color.new(color.gray, 75),
+   group        = "Color Settings",
+     inline     = "colors")
+
+// } <INPUTS>
+
+
+
+// { <FUNCTIONS>
+
+checkObCondition(set)=>
+    bear = false
+    for i = tuning - 1 to 0
+        start = tuning - 1
+        if i == start
+            if close[i] <= open[i]
+                break
+        else
+            if close[i] > open[i]
+                break
+            
+            if i == 0
+                bear := true
+
+    bull = false
+    for i = tuning - 1 to 0
+        start = tuning - 1
+        if i == start
+            if close[i] >= open[i]
+                break
+        else
+            if close[i] < open[i]
+                break
+            
+            if i == 0
+                bull := true
+    
+    [bear, bull]
+
+// } <FUNCTIONS>
+
+
+
+// { <USER DEFINED TYPES>
+
+type orderBlock
+    line topLine
+    line botLine
+    linefill bgFill
+    array<box> boxArray = na
+    array<float> boxVolume = na
+    float topValue
+    float botValue
+    int leftTime
+    int rightTime
+    string direction
+    float highestTop = na
+    float highestBot = na
+
+method generateBorderLines(orderBlock self, topValue, botValue)=>
+    newTopLine = line.new(x1 = self.leftTime, y1 = topValue, x2 = time, y2 = topValue, xloc = xloc.bar_time, extend = extend.none, color = obBorderColor, style = line.style_solid, width = OB_BORDER_WIDTH)
+    newbotLine = line.new(x1 = self.leftTime, y1 = botValue, x2 = time, y2 = botValue, xloc = xloc.bar_time, extend = extend.none, color = obBorderColor, style = line.style_solid, width = OB_BORDER_WIDTH)
+    newlinefill = linefill.new(newTopLine, newbotLine, obLinefillColor)
+    self.topLine := newTopLine
+    self.botLine := newbotLine
+    self.bgFill := newlinefill
+
+method generateVolume(orderBlock self, topValue, botValue, vArray, hArray, lArray)=>
+    newVolumeArray = self.boxVolume
+    startingValue = topValue
+    increment = (topValue - botValue) / amountOfBoxes
+    for i = 0 to amountOfBoxes - 1
+        topOfGrid = startingValue - (increment * i)
+        botOfGrid = startingValue - (increment * (i + 1))
+        if array.size(vArray) > 0 and array.size(hArray) > 0 and array.size(lArray) > 0
+            for j = 0 to array.size(vArray) - 1
+                candleVolume = array.get(vArray, j)
+                candleHigh = array.get(hArray, j)
+                candleLow = array.get(lArray, j)
+                ltfDiff = candleHigh - candleLow
+
+                
+                if candleLow <= topOfGrid and candleHigh >= botOfGrid
+                    topRegister = math.min(candleHigh, topOfGrid)
+                    botRegister = math.max(candleLow, botOfGrid)
+
+                    registerDiff = topRegister - botRegister
+                    registerVolume = registerDiff / ltfDiff
+                    array.set(newVolumeArray, i, array.get(newVolumeArray, i) + nz(registerVolume * candleVolume))
+
+    array.sum(newVolumeArray)
+
+method generateBoxes(orderBlock self, topValue, botValue, leftValue, rightValue)=>
+    newBoxesArray = array.new_box()
+
+    highestVolume = array.max(self.boxVolume)
+    lowestVolume = array.min(self.boxVolume)
+    timeLength = self.rightTime - self.leftTime
+    timeRatio = timeLength / highestVolume
+
+    startingValue = topValue
+    increment = (topValue - botValue) / amountOfBoxes
+    for i = 0 to amountOfBoxes - 1
+        topOfGrid = startingValue - (increment * i)
+        botOfGrid = startingValue - (increment * (i + 1))
+        color_ = color.from_gradient(array.get(self.boxVolume, i), lowestVolume, highestVolume, obLowVolumeColor, obHighVolumeColor)
+        newbox = box.new(left = self.leftTime, top = topOfGrid, right = self.leftTime + math.round(array.get(self.boxVolume, i) * timeRatio), bottom = botOfGrid, border_color = color_, border_width = 2, xloc = xloc.bar_time, bgcolor = color_, extend = extend.none)
+        array.push(newBoxesArray, newbox)
+    
+    self.boxArray := newBoxesArray
+
+method updateBoxes(orderBlock self, currentTime)=>
+    self.rightTime := currentTime
+
+    highestVolume = array.max(self.boxVolume)
+    lowestVolume = array.min(self.boxVolume)
+    timeLength = self.rightTime - self.leftTime
+    timeRatio = timeLength / highestVolume
+
+    for i = 0 to amountOfBoxes - 1
+        box.set_right(array.get(self.boxArray, i), self.leftTime + math.round(array.get(self.boxVolume, i) * timeRatio))
+        if array.get(self.boxVolume, i) == highestVolume
+            self.highestTop := box.get_top(array.get(self.boxArray, i))
+            self.highestBot := box.get_bottom(array.get(self.boxArray, i))
+    
+    line.set_x2(self.topLine, self.rightTime)
+    line.set_x2(self.botLine, self.rightTime)
+
+method wipeBlock(orderBlock self)=>
+    line.delete(self.topLine)
+    line.delete(self.botLine)
+    linefill.delete(self.bgFill)
+    for i = array.size(self.boxArray) - 1 to 0
+        selectedBox = array.get(self.boxArray, i)
+        box.delete(selectedBox)
+
+// } <USER DEFINED TYPES>
+
+
+
+// { <CALCULATIONS>
+
+bool bullRealtimeTouch = false
+bool bearRealtimeTouch = false
+bool bullishRejection = false
+bool bearishRejection = false
+bool newBull = false
+bool newBear = false
+
+rawTimeframe = timeframe.isdaily ? 1440 : timeframe.isweekly ? 1440 * 7 : timeframe.ismonthly ? 1440 * 30 : str.tonumber(timeframe.period)
+fixedTimeframe = math.round(rawTimeframe / 15) < 1 ? "30S" : str.tostring(math.round(rawTimeframe / 15))
+[h, l, v] = request.security_lower_tf(syminfo.tickerid, fixedTimeframe, [high, low, volume])
+
+[bear, bull] = checkObCondition(tuning)
+
+var array<orderBlock> orderBlockArray = array.new<orderBlock>(0)
+
+if not na(bar_index[tuning]) and barstate.isconfirmed
+    topValue = high[tuning - 1]
+    botValue = low[tuning - 1]
+    leftValue = time[tuning - 1]
+    rightValue = time
+    if bull or bear
+        newBull := bull ? true : newBull
+        newBear := bear ? true : newBear
+        neworderBlock = orderBlock.new(topValue = topValue, botValue = botValue, leftTime = leftValue, rightTime = rightValue, boxVolume = array.new_float(amountOfBoxes, 0), direction = bull ? "Bull" : "Bear")
+        neworderBlock.generateBorderLines(neworderBlock.topValue, neworderBlock.botValue)
+        vol = neworderBlock.generateVolume(neworderBlock.topValue, neworderBlock.botValue, v[tuning - 1], h[tuning - 1], l[tuning - 1])
+        neworderBlock.generateBoxes(neworderBlock.topValue, neworderBlock.botValue, neworderBlock.leftTime, neworderBlock.rightTime)
+        if vol == 0
+            neworderBlock.wipeBlock()
+        else
+            array.push(orderBlockArray, neworderBlock)
+
+maxBlocks = math.floor(500 / amountOfBoxes)
+if array.size(orderBlockArray) > 0
+    for i = array.size(orderBlockArray) - 1 to 0
+        block = array.get(orderBlockArray, i)
+        block.updateBoxes(time)
+        if close <= block.highestTop and close >= block.highestBot
+            if block.direction == "Bull"
+                bullRealtimeTouch := true
+            else
+                bearRealtimeTouch := true
+
+        if low <= block.highestBot and close >= block.highestBot and block.direction == "Bull" and barstate.isconfirmed
+            bullishRejection := true
+        
+        if high >= block.highestTop and close <= block.highestTop and block.direction == "Bear" and barstate.isconfirmed
+            bearishRejection := true
+
+        blockDifference = block.topValue - block.botValue
+        startingValue = block.direction == "Bull" ? block.topValue : block.botValue
+        sourceToUse = str.contains(mitigationMethod, "Close") ? close : 
+         (block.direction == "Bull" ? low : high)
+        incrementMultiplier = 
+         str.contains(mitigationMethod, "100%") ? math.abs(blockDifference * 1) :
+          str.contains(mitigationMethod, "75%") ? math.abs(blockDifference * .75) :
+           str.contains(mitigationMethod, "50%") ? math.abs(blockDifference * .50) : .25
+        incrementMultiplier *= block.direction == "Bull" ? -1 : 1 
+        breakValue = startingValue + incrementMultiplier
+
+        bullBreak = block.direction == "Bull" and sourceToUse < breakValue
+        bearBreak = block.direction == "Bear" and sourceToUse > breakValue
+        if (bullBreak or bearBreak or i < (array.size(orderBlockArray) - 1 - maxBlocks)) and barstate.isconfirmed
+            block.wipeBlock()
+            array.remove(orderBlockArray, i)
+
+// } <CALCULATIONS>
+
+
+
+// { <ALERTS>
+
+alertcondition(condition = bullRealtimeTouch, title = "Price Inside Bullish Max Volume Zone")
+alertcondition(condition = bearRealtimeTouch, title = "Price Inside Bearish Max Volume Zone")
+alertcondition(condition = bullishRejection, title = "Confirmed Rejection Off Bullish Max Volume Zone")
+alertcondition(condition = bearishRejection, title = "Confirmed Rejection Off Bearish Max Volume Zone")
+alertcondition(condition = newBull, title = "New Bullish Order Block")
+alertcondition(condition = newBear, title = "New Bearish Order Block")
+
+// } <ALERTS>

@@ -1,0 +1,495 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © algotraderdev
+
+//@version=5
+indicator('Volume Profile Plus', 'VP+', overlay = true, max_bars_back = 1)
+
+import algotraderdev/contrast/1
+
+//#region Inputs & Constants
+
+const string VOLUME_PROFILE = 'Volume Profile'
+const string MARKET_PROFILE = 'Market Profile / TPO'
+string MODE = input.string(
+  VOLUME_PROFILE,
+  'Mode',
+  options = [VOLUME_PROFILE, MARKET_PROFILE],
+  tooltip = 'This setting determines the mode in which the indicator operates.\n\n' +
+      'Volume Profile (Default Mode): In this mode, the volume of each bar is taken into consideration to construct ' +
+      'the profile.\n\n' + 
+      'Market Profile (a.k.a. Time Price Opportunity): In this mode, volume data is disregarded. This indicator ' +
+      'analyzes the price distribution solely over time.\n\n' +
+      'NOTE: in case the ticker does not have any volume data, this indicator uses the `Market Profile` mode.')
+const string RANGE_GROUP = 'TIME RANGE'
+const string VISIBLE_RANGE = 'Visible Range'
+const string ANCHORED_RANGE = 'Anchored Range'
+const string ALL_RANGE = 'All Range'
+string RANGE_MODE = input.string(
+  VISIBLE_RANGE,
+  'Range Mode',
+  options = [VISIBLE_RANGE, ANCHORED_RANGE, ALL_RANGE],
+  tooltip = 'This setting determines the start time of the volume profile calculation.\n\n' +
+      'Visible Range (Default Mode): In this mode, the volume profile calculation begins at the time of the ' +
+      'left-most bar displayed in the current viewport. As the user scrolls through the viewport, the volume profile ' +
+      'updates automatically.\n\n' +
+      'Anchored Range: This mode allows the user to set the start time either by using the "Anchor Time" input box ' +
+      'below or by dragging the anchor line on the chart.\n\n' +
+      'All Range: In this mode, the volume profile calculation is based on all the historical bars available in the ' +
+      'chart.',
+  group = RANGE_GROUP)
+int ANCHORED_TIME = input.time(
+  timestamp('2023-01-01T12:00:00'),
+  'Anchor Time',
+  tooltip = 'The start time of the volume profile calculation. This setting is only used when the "Range Mode" above ' +
+      'is set to "Anchored Range".',
+  group = RANGE_GROUP)
+
+const string GRANULARITY_GROUP = 'GRANULARITY'
+int NUM_ROWS = input.int(
+  300,
+  'Number of Rows',
+  minval = 100,
+  maxval = 2500,
+  step = 100,
+  tooltip = 'The number of rows to display in the volume profile histogram (Max 2500)',
+  group = GRANULARITY_GROUP,
+  display = display.none)
+int MAX_LTF_BARS = input.int(
+  5000,
+  'Max Lower Timeframe Bars',
+  minval = 1000,
+  step = 1000,
+  tooltip = 'The max number of lower timeframe bars to use for the volume profile calculation.\n\n' +
+      'NOTE: The higher the number, the more time and memory the calculation needs. If you encounter a time limit ' +
+      'or memory limit error, please try lowering the number here.',
+  group = GRANULARITY_GROUP)
+bool USE_SECOND_BASED_TIMEFRAMES = input.bool(
+  false,
+  'Use Second-Based Timeframes',
+  tooltip = 'Whether to use second-based timeframes (e.g. 1 second, 5 seconds) when the chart\'s current timeframe ' +
+      'is low (e.g. 5 minutes).\n\n' +
+      'NOTE: second-based timeframes are only supported if you\'re subscribed to the TradingView Premium Plan and ' +
+      'above.',
+  group = GRANULARITY_GROUP)
+
+const string APPEARANCE_GROUP = 'APPEARANCE'
+int HORIZONTAL_OFFSET = input.int(
+  20,
+  'Horizontal Offset',
+  step = 5,
+  tooltip = 'The distance, measured in the number of bars, between the last bar in the chart and the left of the ' +
+      'volume profile histogram.',
+  group = APPEARANCE_GROUP,
+  display = display.none)
+int MAX_WIDTH = input.int(
+  80,
+  'Max Width',
+  maxval = 500,
+  minval = 10,
+  step = 10,
+  tooltip = 'The maximum width, measured in number of bars, for the volume profile histogram.',
+  group = APPEARANCE_GROUP,
+  display = display.none)
+int HEIGHT_PERCENTAGE_PER_ROW = input.int(
+  40,
+  'Height % per Row',
+  minval = 1,
+  maxval = 100,
+  tooltip = 'The height of each volume profile histogram row, measured as the percentage of the price range ' +
+      'of each price bucket.',
+  group = APPEARANCE_GROUP,
+  display = display.none)
+bool SHOW_DELTA = input.bool(
+  false,
+  'Show Volume Delta',
+  tooltip = 'Whether to show Volume Delta (the net difference between buying and selling volume).',
+  group = APPEARANCE_GROUP,
+  display = display.none)
+
+const string COLOR_GROUP = 'COLOR'
+color COLOR = input.color(#5d606b77, 'Default', group = COLOR_GROUP)
+color BUY_COLOR = input.color(#00bcd480, 'Buy Volume', group = COLOR_GROUP)
+color SELL_COLOR = input.color(#e91e6380, 'Sell Volume', group = COLOR_GROUP)
+color POC_COLOR = input.color(color.yellow, 'POC (Point of Control)', group = COLOR_GROUP)
+color VAH_COLOR = input.color(color.blue, 'VAH (Value Area High)', group = COLOR_GROUP)
+color VAL_COLOR = input.color(color.blue, 'VAL (Value Area Low)', group = COLOR_GROUP)
+
+const string KEY_PRICES_GROUP = 'POC & Value Area'
+int VALUE_AREA_PERCENT = input.int(
+  70,
+  'Value Area Percent',
+  minval = 1,
+  maxval = 100,
+  tooltip = 'The percentage of the total trading volume that\'s considered as the value area.',
+  group = KEY_PRICES_GROUP,
+  display = display.none)
+bool DISPLAY_VA = input.bool(
+  true,
+  'Display VAH/VAL',
+  group = KEY_PRICES_GROUP,
+  display = display.none)
+bool DISPLAY_POC = input.bool(
+  true,
+  'Display POC',
+  group = KEY_PRICES_GROUP,
+  display = display.none)
+bool EXTEND_LEFT = input.bool(
+  true,
+  'Extend Key Price Lines to the Left',
+  tooltip = 'Whether to extend the key price lines (POC, VAH, VAL) to the left of the chart.',
+  group = KEY_PRICES_GROUP)
+
+int BASE_OFFSET = HORIZONTAL_OFFSET + MAX_WIDTH
+int LABEL_OFFSET = BASE_OFFSET + 2
+
+int START_TIME = switch RANGE_MODE
+    VISIBLE_RANGE => chart.left_visible_bar_time
+    ANCHORED_RANGE => ANCHORED_TIME
+    ALL_RANGE => 0
+
+// If second-based timeframe is enabled, then set the minimal timeframe to 1 second.
+// Otherwise, set it to 60 seconds (1 minute).
+int MIN_TIMEFRAME_IN_SECONDS = USE_SECOND_BASED_TIMEFRAMES ? 1 : 60
+
+//#endregion
+
+//#region Utils
+
+// @function Identifies the index of the max value in the array.
+// @param a The array to find max index for.
+// @returns The index of the max value in the array.
+maxIndex(float[] a) =>
+    if a.size() == 0
+        na
+    float max = a.first()
+    int maxIndex = 0
+    for [i, v] in a
+        if v > max
+            max := v
+            maxIndex := i
+    maxIndex
+
+//#endregion
+
+//#region Candle
+
+const int DIRECTION_NONE = 0
+const int DIRECTION_BUY = 1
+const int DIRECTION_SELL = -1
+
+// @type The candle object holds the required information for each candle in the chart.
+// @field high The `high` of the candle.
+// @field low The `low` of the candle.
+// @field volume The `volume` of the candle.
+// @field direction Any of DIRECTION_NONE, DIRECTION_BUY, or DIRECTION_BUY.
+type Candle
+    float high
+    float low
+    float volume = 1
+    int direction
+
+//#endregion
+
+//#region Marker
+
+// @type The Marker type is for highlighting a specific price point in the volume profile.
+// @field poly The polyline for highlighting the price point. Note that we're using a `polyline` instead of `line`
+// here since there seems to be bug in TradingView that prevents a `line` to be overlaid on top of a `polyline`.
+// @field extendedLine A line at the price level that extends to the left of the screen.
+// @field label Label for this marker.
+type Marker
+    polyline poly
+    line extendedLine
+    label label
+
+// @function Sets the properties of the marker.
+// @param name The name of the marker. This is also displayed as part of the label text.
+// @param left The bar index of the left x coordinate of the volume profile row.
+// @param right The bar index of the right x coordinate of the volume profile row.
+// @param price The price / y-coordinate of the marker.
+// @param bg The background color of the marker.
+// @param height The height of the volume profile row.
+method set(Marker this, string name, int left, int right, float price, color bg, float height) =>
+    // Create a polyline to highlight the row.
+    if not na(this.poly)
+        this.poly.delete()
+    float bottom = price - height / 2
+    float top = bottom + height
+    chart.point[] points = array.from(
+      chart.point.from_index(left, bottom),
+      chart.point.from_index(left, top),
+      chart.point.from_index(right, top),
+      chart.point.from_index(right, bottom))
+    this.poly := polyline.new(points, line_color = bg, fill_color = bg)
+
+    // Create a dotted line and extend it to the left.
+    if not na(this.extendedLine)
+        this.extendedLine.delete()
+    if EXTEND_LEFT
+        this.extendedLine := line.new(
+          x1 = left,
+          y1 = price,
+          x2 = right,
+          y2 = price,
+          extend = extend.left,
+          style = line.style_dotted,
+          color = bg)
+
+    // Create a label to the right of the row.
+    if na(this.label)
+        this.label.delete()
+    string txt = str.format('{0}: {1}', name, math.round_to_mintick(price))
+    this.label := label.new(
+      x = bar_index + LABEL_OFFSET,
+      y = price,
+      text = txt,
+      style = label.style_label_left,
+      size = size.small,
+      color = bg,
+      textcolor = bg.contrast(0.6))
+
+    this
+
+//#endregion
+
+//#region VP
+
+// @type The VP (Volume Profile) type is responsible for calculating and visualizing the distribution of
+// volumes at various price points.
+// @field candles The stored candles based on which the distribution will be calculated.
+// @field minPrice The minimum price for all the stored candles.
+// @field maxPrice The maximum price for all the stored candles.
+// @field step The price difference between adjacent price buckets.
+// @field poly The polyline that's used to draw the histogram of the volume profile.
+// @field buyPoly The polyline that's used to draw the histogram of the buying volume.
+// @field sellPoly The polyline that's used to draw the histogram of the selling volume.
+// @field markers Markers that highlight POC, VAH, and VAL.
+type VP
+    Candle[] candles
+    float minPrice
+    float maxPrice
+    float step
+    polyline poly
+    polyline buyPoly
+    polyline sellPoly
+    map<string, Marker> markers
+
+// @function Initializes a new VP instance.
+// @returns The initialized VP instance.
+method init(VP this) =>
+    this.candles := array.new<Candle>()
+    this.markers := map.new<string, Marker>()
+    this
+
+// @function Gets the bucket index for the given price.
+// @param price The price to get index for.
+// @returns The bucket index for the price.
+method getBucketIndex(VP this, float price) =>
+    math.min(math.floor((price - this.minPrice) / this.step), NUM_ROWS - 1)
+
+// @function Gets the bucketed price for the given index
+// @param index The bucket index.
+// @returns The average price for the bucket.
+method getBucketedPrice(VP this, int index) =>
+    (index + 0.5) * this.step + this.minPrice
+
+// @function Highlights a specific price / volume bucket.
+// @param name The name of the label.
+// @param index The index of the bucket to highlight.
+// @param left The x coordinate of the left endpoint of the volume profile.
+// @param bg The background highlight color.
+// @param height The height of each row.
+method mark(VP this, string name, float price, int left, color bg, float height) =>
+    int right = bar_index + BASE_OFFSET
+    Marker marker = this.markers.get(name)
+    if na(marker)
+        marker := Marker.new().set(name = name, left = left, right = right, price = price, bg = bg, height = height)
+
+// @function Stores a candle for it to be analyzed later.
+// Note that this method is expected to be called on every tick. The actual calculation of VP is deferred to only when
+// the last bar in the chart is reached, as an optimization.
+// @param candle The candle to store.
+method store(VP this, Candle candle) =>
+    this.candles.push(candle)
+    this.minPrice := na(this.minPrice) ? candle.low : math.min(this.minPrice, candle.low)
+    this.maxPrice := na(this.maxPrice) ? candle.high : math.max(this.maxPrice, candle.high)
+    this.step := (this.maxPrice - this.minPrice) / NUM_ROWS
+
+// @function Draws a histogram for the given coordinates.
+// @param xs The x-coordinates for the left of the histogram rows.
+// @param baseX The x-coordinate for the base of the histogram.
+// @param step The step / delta between adjacent price points.
+// @param height The height for each row.
+// @param color The color for the histogram.
+// @returns The drawn polyline.
+method drawHistogram(VP this, int[] xs, int baseX, float step, float height, color color) =>
+    // Construct the polyline points.
+    chart.point[] points = array.new<chart.point>()
+    float gap = (step - height) / 2
+    for [i, x] in xs
+        float lo = i * step + gap + this.minPrice
+        float hi = lo + height
+        points.push(chart.point.from_index(index = baseX, price = lo))
+        points.push(chart.point.from_index(index = x, price = lo))
+        points.push(chart.point.from_index(index = x, price = hi))
+        points.push(chart.point.from_index(index = baseX, price = hi))
+    polyline.new(points, closed = true, line_color = color, fill_color = color)
+
+// @function Calculates the distribution and visualizes it on the chart.
+method update(VP this) =>
+    // Calculate the step size for each bucket.
+    float step = (this.maxPrice - this.minPrice) / NUM_ROWS
+
+    // Loop through the candles and populate the distribution array.
+    float[] dist = array.new_float(NUM_ROWS, 0)
+    float[] deltaDist = array.new_float(NUM_ROWS, 0)
+    for c in this.candles
+        // Calculate the start and end index of the buckets to fill the volume.
+        int start = this.getBucketIndex(c.low)
+        int end = this.getBucketIndex(c.high)
+        int buckets = end - start + 1
+        
+        float vol = c.volume / buckets
+        for i = start to end
+            dist.set(i, dist.get(i) + vol)
+            deltaDist.set(i, deltaDist.get(i) + vol * c.direction)
+    float maxVol = dist.max()
+
+    // Calculate the x coordinate for each row.
+    int baseX = bar_index + BASE_OFFSET
+    int[] xs = array.new_int()
+    for vol in dist
+        int width = math.round(vol / maxVol * MAX_WIDTH)
+        int x = baseX - width
+        xs.push(x)
+    float height = HEIGHT_PERCENTAGE_PER_ROW / 100 * step
+
+    // Draw the histogram.
+    if not na(this.poly)
+        this.poly.delete()
+    this.poly := this.drawHistogram(xs, baseX, step, height, COLOR)
+
+    // Draw the delta histograms.
+    if SHOW_DELTA
+        int[] buyXs = array.new_int()
+        int[] sellXs = array.new_int()
+        for vol in deltaDist
+            int width = math.round(math.abs(vol) / maxVol * MAX_WIDTH)
+            int x = baseX - width
+            buyXs.push(vol > 0 ? x : baseX)
+            sellXs.push(vol < 0 ? x : baseX)
+        if not na(this.buyPoly)
+            this.buyPoly.delete()
+        this.buyPoly := this.drawHistogram(buyXs, baseX, step, height, BUY_COLOR)
+        if not na(this.sellPoly)
+            this.sellPoly.delete()
+        this.sellPoly := this.drawHistogram(sellXs, baseX, step, height, SELL_COLOR)
+
+    // Calculate the cumulative distribution.
+    float[] cumdist = dist.copy()
+    for i = 1 to cumdist.size() - 1
+        cumdist.set(i, cumdist.get(i - 1) + cumdist.get(i))
+    float totalVolume = cumdist.last()
+
+    // Highlight VAH and VAL.
+    if DISPLAY_VA
+        float valPercentile = (100 - VALUE_AREA_PERCENT) / 100 / 2
+        float vahPercentile = 1 - valPercentile
+        int valIndex = cumdist.binary_search_leftmost(totalVolume * valPercentile)
+        this.mark(
+          name = 'VAL',
+          price = this.getBucketedPrice(valIndex),
+          left = xs.get(valIndex),
+          bg = VAL_COLOR,
+          height = height)
+
+        int vahIndex = cumdist.binary_search_leftmost(totalVolume * vahPercentile)
+        this.mark(
+          name = 'VAH',
+          price = this.getBucketedPrice(vahIndex),
+          left = xs.get(vahIndex),
+          bg = VAH_COLOR,
+          height = height)
+
+    // Highlight POC.
+    if DISPLAY_POC
+        int pocIndex = maxIndex(dist)
+        this.mark(
+          name = 'POC',
+          price = this.getBucketedPrice(pocIndex),
+          left = xs.get(pocIndex),
+          bg = POC_COLOR,
+          height = height)
+
+    // Create another vertical polyline to mask the rightmost pixel of the volume profile, so that the minimum
+    // width for each price bucket can be 0 rather than 1.
+    chart.point maxPoint = chart.point.from_index(index = baseX, price = this.maxPrice)
+    chart.point minPoint = chart.point.from_index(index = baseX, price = this.minPrice)
+    polyline.new(array.from(maxPoint, minPoint), line_color = chart.bg_color)
+
+//#endregion
+
+//#region main
+
+var VP vp = VP.new().init()
+
+// @function Returns a lower timeframe string given the multiplier.
+// @param multiplier The multiplier to use.
+// @returns The timeframe string.
+ltf(simple int multiplier) =>
+    timeframe.from_seconds(math.max(MIN_TIMEFRAME_IN_SECONDS, math.round(timeframe.in_seconds() / multiplier)))
+
+simple string ltf1  = timeframe.period
+simple string ltf2  = ltf(2)
+simple string ltf4  = ltf(4)
+simple string ltf8  = ltf(8)
+simple string ltf16 = ltf(16)
+
+// Checks a list of lower timeframes to see which one should be used for the volume profile calculation.
+// NOTE: unfortunately we cannot use a for-loop to go through an array of timeframe strings since the timeframe
+// parameter in `request.security_lower_tf` has to be an `simple string` whereas the type for items in array is
+// always `series`, even if the array itself is marked as `const` or `simple`.
+bool canProcess = time >= START_TIME and (last_bar_index - bar_index) < MAX_LTF_BARS
+bool cp1  = canProcess
+bool cp2  = request.security(syminfo.tickerid, ltf2,  canProcess)
+bool cp4  = request.security(syminfo.tickerid, ltf4,  canProcess)
+bool cp8  = request.security(syminfo.tickerid, ltf8,  canProcess)
+bool cp16 = request.security(syminfo.tickerid, ltf16, canProcess)
+
+// A list of candidate candles in various timeframes.
+int dir = switch
+    close > open => DIRECTION_BUY
+    close < open => DIRECTION_SELL
+    => DIRECTION_NONE
+float vol = MODE == VOLUME_PROFILE ? nz(volume, 100) : 100
+Candle candle = Candle.new(high, low, vol, dir)
+Candle[] c1  = array.from(candle)
+Candle[] c2  = request.security_lower_tf(syminfo.tickerid, ltf2,  candle, ignore_invalid_timeframe = true)
+Candle[] c4  = request.security_lower_tf(syminfo.tickerid, ltf4,  candle, ignore_invalid_timeframe = true)
+Candle[] c8  = request.security_lower_tf(syminfo.tickerid, ltf8,  candle, ignore_invalid_timeframe = true)
+Candle[] c16 = request.security_lower_tf(syminfo.tickerid, ltf16, candle, ignore_invalid_timeframe = true)
+
+var string ltf = na
+if na(ltf)
+    ltf := switch
+        cp16 => ltf16
+        cp8  => ltf8
+        cp4  => ltf4
+        cp2  => ltf2
+        cp1  => ltf1
+
+Candle[] cs = switch ltf
+    ltf1 => c1
+    ltf2 => c2
+    ltf4 => c4
+    ltf8 => c8
+    ltf16 => c16
+
+if not na(cs)
+    for c in cs
+        vp.store(c)
+
+if barstate.islast
+    vp.update()
+
+//#endregion

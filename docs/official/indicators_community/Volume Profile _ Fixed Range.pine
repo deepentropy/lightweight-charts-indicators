@@ -1,0 +1,111 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=5
+indicator('Volume Profile / Fixed Range', overlay=true, max_boxes_count=200, max_bars_back=501)
+bbars = input.int(title='Number of Bars', defval=150, minval=1, maxval=500)
+cnum = input.int(title='Row Size', defval=24, minval=5, maxval=100)
+percent = input.float(70., title='Value Area Volume %', minval=0, maxval=100)
+poc_color = input.color(defval=#ff0000, title='POC Color', inline='poc')
+poc_width = input.int(defval=2, title='Width', minval=1, maxval=5, inline='poc')
+vup_color = input(defval=color.new(color.blue, 30), title='Value Area Up')
+vdown_color = input(defval=color.new(color.orange, 30), title='Value Area Down')
+up_color = input(defval=color.new(color.blue, 75), title='UP Volume')
+down_color = input(defval=color.new(color.orange, 75), title='Down Volume')
+show_poc = input.bool(defval = true, title = "Show POC Label")
+
+top = ta.highest(bbars)
+bot = ta.lowest(bbars)
+dist = (top - bot) / 500
+step = (top - bot) / cnum
+
+// calculate/keep channel levels
+levels = array.new_float(cnum + 1)
+for x = 0 to cnum by 1
+    array.set(levels, x, bot + step * x)
+
+// get the volume if there is intersection
+get_vol(y11, y12, y21, y22, height, vol) =>
+    nz(math.max(math.min(math.max(y11, y12), math.max(y21, y22)) - math.max(math.min(y11, y12), math.min(y21, y22)), 0) * vol / height)
+
+if barstate.islast
+    // calculate/get volume for each channel and candle
+    volumes = array.new_float(cnum * 2, 0.)
+    for bars = 0 to bbars - 1 by 1
+        body_top = math.max(close[bars], open[bars])
+        body_bot = math.min(close[bars], open[bars])
+        itsgreen = close[bars] >= open[bars]
+
+        topwick = high[bars] - body_top
+        bottomwick = body_bot - low[bars]
+        body = body_top - body_bot
+
+        bodyvol = body * volume[bars] / (2 * topwick + 2 * bottomwick + body)
+        topwickvol = 2 * topwick * volume[bars] / (2 * topwick + 2 * bottomwick + body)
+        bottomwickvol = 2 * bottomwick * volume[bars] / (2 * topwick + 2 * bottomwick + body)
+        for x = 0 to cnum - 1 by 1
+            array.set(volumes, x, array.get(volumes, x) + (itsgreen ? get_vol(array.get(levels, x), array.get(levels, x + 1), body_bot, body_top, body, bodyvol) : 0) + get_vol(array.get(levels, x), array.get(levels, x + 1), body_top, high[bars], topwick, topwickvol) / 2 + get_vol(array.get(levels, x), array.get(levels, x + 1), body_bot, low[bars], bottomwick, bottomwickvol) / 2)
+            array.set(volumes, x + cnum, array.get(volumes, x + cnum) + (itsgreen ? 0 : get_vol(array.get(levels, x), array.get(levels, x + 1), body_bot, body_top, body, bodyvol)) + get_vol(array.get(levels, x), array.get(levels, x + 1), body_top, high[bars], topwick, topwickvol) / 2 + get_vol(array.get(levels, x), array.get(levels, x + 1), body_bot, low[bars], bottomwick, bottomwickvol) / 2)
+
+    totalvols = array.new_float(cnum, 0.)
+    for x = 0 to cnum - 1 by 1
+        array.set(totalvols, x, array.get(volumes, x) + array.get(volumes, x + cnum))
+
+    int poc = array.indexof(totalvols, array.max(totalvols))
+
+    // calculate value area
+    totalmax = array.sum(totalvols) * percent / 100.
+    va_total = array.get(totalvols, poc)
+    int up = poc
+    int down = poc
+    for x = 0 to cnum - 1 by 1
+        if va_total >= totalmax
+            break
+        uppervol = up < cnum - 1 ? array.get(totalvols, up + 1) : 0.
+        lowervol = down > 0 ? array.get(totalvols, down - 1) : 0.
+        if uppervol == 0 and lowervol == 0
+            break
+        if uppervol >= lowervol
+            va_total += uppervol
+            up += 1
+            up
+        else
+            va_total += lowervol
+            down -= 1
+            down
+
+    maxvol = array.max(totalvols)
+    for x = 0 to cnum * 2 - 1 by 1
+        array.set(volumes, x, array.get(volumes, x) * bbars / (3 * maxvol))
+
+
+    // Draw VP rows
+    var vol_bars = array.new_box(cnum * 2, na)
+    for x = 0 to cnum - 1 by 1
+        box.delete(array.get(vol_bars, x))
+        box.delete(array.get(vol_bars, x + cnum))
+        array.set(vol_bars, x, box.new(bar_index - bbars + 1, 
+                                       array.get(levels, x + 1) - dist, 
+                                       bar_index - bbars + 1 + math.round(array.get(volumes, x)), 
+                                       array.get(levels, x) + dist, 
+                                       border_width=0, 
+                                       bgcolor=x >= down and x <= up ? vup_color : up_color))
+        array.set(vol_bars, x + cnum, box.new(bar_index - bbars + 1 + math.round(array.get(volumes, x)), 
+                                              array.get(levels, x + 1) - dist, 
+                                              bar_index - bbars + 1 + math.round(array.get(volumes, x)) + math.round(array.get(volumes, x + cnum)), 
+                                              array.get(levels, x) + dist, 
+                                              border_width=0, 
+                                              bgcolor=x >= down and x <= up ? vdown_color : down_color))
+
+    // Draw POC line and label
+    poc_level = (array.get(levels, poc) + array.get(levels, poc + 1)) / 2
+    var line poc_line = na
+    line.delete(poc_line)
+    poc_line := line.new(bar_index - bbars + 1, poc_level, bar_index - bbars + 2, poc_level, extend=extend.right, color=poc_color, width=poc_width)
+    
+    if show_poc
+        var label poc_label = na
+        label.delete(poc_label)
+        poc_label := label.new(bar_index + 15, poc_level, 
+                               text = "POC: " + str.tostring(math.round_to_mintick(poc_level)),
+                               style = close >= poc_level ? label.style_label_up : label.style_label_down)

@@ -1,0 +1,124 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fluxchart
+
+//@version=6
+const bool DEBUG = false
+const int maxDistanceToLastBar = 5000 // Affects Running Time
+const bool renderingEnabled = true
+indicator(title = 'Liquidity Grabs | Flux Charts', overlay = true)
+//#region Liquidity Grabs
+
+const int liqGrabLiqZoneCount = 5
+const int bubbleSize = 5
+const int liqGrabCooldown = 3
+
+buysideColorGrab = input(#f2364680, "Buyside", inline = "EV", group = "Liquidity Grabs", display = display.none)
+sellsideColorGrab = input(#08998180, "Sellside", inline = "EV", group = "Liquidity Grabs", display = display.none)
+pivotLenLiqGrab = input.int(25, "Pivot Length", group = "Liquidity Grabs", display = display.none)
+WBR = input.float(0.5, "Wick-Body Ratio", step = 0.1, group = "Liquidity Grabs", display = display.none)
+
+invalidateBottomClose = math.min(close, open)
+invalidateTopClose = math.max(close, open)
+getInvalidationPoint (bool isTop, bool isClose) =>
+    if isTop and isClose
+        invalidateTopClose
+    else if isTop and (not isClose)
+        high
+    else if (not isTop) and isClose
+        invalidateBottomClose
+    else
+        low
+
+float pivotHighLiqGrab = ta.pivothigh(pivotLenLiqGrab, pivotLenLiqGrab)
+float pivotLowLiqGrab = ta.pivotlow(pivotLenLiqGrab, pivotLenLiqGrab)
+
+detectLiquidityGrab () =>
+    var buysideLiqs = array.new<float>()
+    var sellsideLiqs = array.new<float>()
+    var liqsToRemove = array.new<float>()
+    series bool _grabFound = false
+    series bool _grabBuyside = true
+    series int _grabSize = 1
+
+    if not na(pivotHighLiqGrab)
+        buysideLiqs.push(pivotHighLiqGrab)
+        if buysideLiqs.size() > liqGrabLiqZoneCount
+            buysideLiqs.shift()
+    if not na(pivotLowLiqGrab)
+        sellsideLiqs.push(pivotLowLiqGrab)
+        if sellsideLiqs.size() > liqGrabLiqZoneCount
+            sellsideLiqs.shift()
+    
+    for curLiq in buysideLiqs
+        if getInvalidationPoint(true, false) > curLiq and getInvalidationPoint(true, true) < curLiq
+            bodySize = math.abs(close - open)
+            wickSize = (high - math.max(close, open))
+            curWBR = wickSize / bodySize
+            _grabFound := true
+            _grabBuyside := true
+            _grabSize := math.floor(math.min(curWBR / WBR, 3))
+            liqsToRemove.push(curLiq)
+            break
+        if getInvalidationPoint(true, true) > curLiq
+            liqsToRemove.push(curLiq)
+            break
+    if (not _grabFound)
+        for curLiq in sellsideLiqs
+            if getInvalidationPoint(false, false) < curLiq and getInvalidationPoint(false, true) > curLiq
+                bodySize = math.abs(close - open)
+                wickSize = (math.min(close, open) - low)
+                curWBR = wickSize / bodySize
+                _grabFound := true
+                _grabBuyside := false
+                _grabSize := math.floor(math.min(curWBR / WBR, 3))
+                liqsToRemove.push(curLiq)
+                break
+            if getInvalidationPoint(false, true) < curLiq
+                liqsToRemove.push(curLiq)
+                break
+
+    for liqToRemove in liqsToRemove
+        buysideIndex = buysideLiqs.indexof(liqToRemove)
+        if buysideIndex != -1
+            buysideLiqs.remove(buysideIndex)
+            continue
+        sellsideIndex = sellsideLiqs.indexof(liqToRemove)
+        if sellsideIndex != -1
+            sellsideLiqs.remove(sellsideIndex)
+    liqsToRemove.clear()
+
+    [_grabFound, _grabBuyside, _grabSize]
+
+buysideLiqGrabSmall = false
+buysideLiqGrabMedium = false
+buysideLiqGrabLarge = false
+sellsideLiqGrabSmall = false
+sellsideLiqGrabMedium = false
+sellsideLiqGrabLarge = false
+var lastBuysideGrab = 0
+var lastSellsideGrab = 0
+liqGrabCooldownOK = false
+if (last_bar_index - bar_index) < maxDistanceToLastBar and barstate.isconfirmed
+    [_grabFound, _grabBuyside, _grabSize] = detectLiquidityGrab()
+    liqGrabCooldownOK := ((_grabBuyside and (bar_index - lastBuysideGrab) > liqGrabCooldown) or ((not _grabBuyside) and (bar_index - lastSellsideGrab) > liqGrabCooldown))
+    if _grabFound and _grabSize > 0
+        buysideLiqGrabSmall := _grabBuyside and (_grabSize == 1)
+        buysideLiqGrabMedium := _grabBuyside and (_grabSize == 2)
+        buysideLiqGrabLarge := _grabBuyside and (_grabSize == 3)
+        sellsideLiqGrabSmall := (not _grabBuyside) and (_grabSize == 1)
+        sellsideLiqGrabMedium := (not _grabBuyside) and (_grabSize == 2)
+        sellsideLiqGrabLarge := (not _grabBuyside) and (_grabSize == 3)
+        if liqGrabCooldownOK
+            lastBuysideGrab := _grabBuyside ? bar_index : lastBuysideGrab
+            lastSellsideGrab := _grabBuyside ? lastSellsideGrab : bar_index
+
+plot((buysideLiqGrabSmall and renderingEnabled and liqGrabCooldownOK) ? high : na, "Buyside Liq Grab Small", buysideColorGrab, bubbleSize, plot.style_circles, false, 0, display = display.pane)
+plot((buysideLiqGrabMedium and renderingEnabled and liqGrabCooldownOK) ? high : na, "Buyside Liq Grab Medium", buysideColorGrab, int(bubbleSize * 1.5), plot.style_circles, false, 0, display = display.pane)
+plot((buysideLiqGrabLarge and renderingEnabled and liqGrabCooldownOK) ? high : na, "Buyside Liq Grab Large", buysideColorGrab, bubbleSize * 2, plot.style_circles, false, 0, display = display.pane)
+plot((sellsideLiqGrabSmall and renderingEnabled and liqGrabCooldownOK) ? low : na, "Sellside Liq Grab Small", sellsideColorGrab, bubbleSize, plot.style_circles, false, 0, display = display.pane)
+plot((sellsideLiqGrabMedium and renderingEnabled and liqGrabCooldownOK) ? low : na, "Sellside Liq Grab Medium", sellsideColorGrab, int(bubbleSize * 1.5), plot.style_circles, false, 0, display = display.pane)
+plot((sellsideLiqGrabLarge and renderingEnabled and liqGrabCooldownOK) ? low : na, "Sellside Liq Grab Large", sellsideColorGrab, bubbleSize * 2, plot.style_circles, false, 0, display = display.pane)
+//#endregion
+
+alertcondition((buysideLiqGrabSmall or buysideLiqGrabMedium or buysideLiqGrabLarge) and barstate.isconfirmed, "Buyside Liquidity Grab @ {{ticker}}", "Buyside Liquidity Grab @ {{ticker}}")
+alertcondition((sellsideLiqGrabSmall or sellsideLiqGrabMedium or sellsideLiqGrabLarge) and barstate.isconfirmed, "Sellside Liquidity Grab @ {{ticker}}", "Sellside Liquidity Grab @ {{ticker}}")

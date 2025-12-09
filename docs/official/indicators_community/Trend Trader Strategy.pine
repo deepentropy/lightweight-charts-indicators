@@ -1,0 +1,29 @@
+//@version=5
+////////////////////////////////////////////////////////////
+//  Copyright by HPotter v1.0 21/01/2021
+// This is plots the indicator developed by Andrew Abraham 
+// in the Trading the Trend article of TASC September 1998  
+//
+// WARNING:
+// - For purpose educate only
+// - This script to change bars colors.
+////////////////////////////////////////////////////////////
+indicator(title='Trend Trader Strategy', overlay=true)
+Length = input.int(21, minval=1)
+Multiplier = input.float(3, minval=0.000001)
+avgTR = ta.wma(ta.atr(1), Length)
+highestC = ta.highest(Length)
+lowestC = ta.lowest(Length)
+hiLimit = highestC[1] - avgTR[1] * Multiplier
+loLimit = lowestC[1] + avgTR[1] * Multiplier
+ret = 0.0
+pos = 0.0
+ret:= close > hiLimit and close > loLimit ? hiLimit :
+         close < loLimit and close < hiLimit ? loLimit : nz(ret[1], close)
+pos:=  close > ret ? 1 :close < ret ? -1 : nz(pos[1], 0)
+if pos != pos[1] and pos == 1
+    alert("Color changed - Buy", alert.freq_once_per_bar_close)
+if pos != pos[1] and pos == -1
+    alert("Color changed - Sell", alert.freq_once_per_bar_close)
+barcolor(pos == -1 ? color.red : pos == 1 ? color.green : color.blue)
+plot(ret, color=color.new(color.blue, 0), title='Trend Trader Strategy')

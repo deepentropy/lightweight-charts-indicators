@@ -1,0 +1,79 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=5
+indicator("Zero-Lag MA Trend Levels [ChartPrime]", overlay = true)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+int  length     = input.int(15, title="Length") // Length for the moving average calculations
+bool show_levl  = input.bool(true, "Trend Levels") // Toggle to show trend levels
+
+// Colors for the trend levels
+color up = input.color(#30d453, "+", group = "Colors", inline = "i")
+color dn = input.color(#4043f1, "-", group = "Colors", inline = "i")
+
+var box1         = box(na) // Variable to store the box
+series float atr = ta.atr(200) // Average True Range (ATR) for trend levels
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+series float emaValue   = ta.ema(close, length) // EMA of the closing price
+series float correction = close + (close - emaValue) // Correction factor for zero-lag calculation
+series float zlma       = ta.ema(correction, length) // Zero-Lag Moving Average (ZLMA)
+
+bool  signalUp          = ta.crossover(zlma, emaValue) // Signal for bullish crossover
+bool  signalDn          = ta.crossunder(zlma, emaValue) // Signal for bearish crossunder
+
+// Determine the color of ZLMA based on its direction
+color zlma_color        = zlma > zlma[3] ? up : zlma < zlma[3] ? dn : na
+color ema_col           = emaValue < zlma ? up : dn // Determine the EMA color
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// --------------------------------------------------------------------------------------------------------------------{
+
+// Plot the Zero-Lag Moving Average
+p1 = plot(zlma,     color = zlma_color, linewidth = 1) // Plot ZLMA
+p2 = plot(emaValue, color = ema_col,    linewidth = 1) // Plot EMA
+fill(p1, p2, zlma, emaValue, color.new(zlma_color, 80), color.new(ema_col, 80)) // Fill between ZLMA and EMA
+
+// Method to draw a box on the chart
+method draw_box(color col, top, bot, price)=>
+    box.new(
+             bar_index, top, bar_index, bot, col, 1, 
+             bgcolor         = color.new(col, 90), 
+             text            = str.tostring(math.round(price, 2)), 
+             text_size       = size.tiny,
+             text_color      = chart.fg_color,
+             text_halign     = text.align_right
+             )
+
+// Logic to draw trend levels as boxes on the chart
+if show_levl
+    bool check_signals = signalUp or signalDn // Check if there is an up or down signal
+
+    switch
+        // Draw a box when a bullish signal is detected
+        signalUp => box1 := up.draw_box(zlma, zlma - atr, close)
+        // Draw a box when a bearish signal is detected
+        signalDn => box1 := dn.draw_box(zlma + atr, zlma, close)
+    switch
+        // Extend the right side of the box if no new signal is detected
+        not signalUp or not signalDn => box1.set_right(bar_index + 4)  
+        => box1 := box(na) // Otherwise, reset the box
+    switch
+        // Add a downward label when price crosses below the bottom of the box
+        ta.crossunder(high, box1.get_bottom()) and not check_signals[1] and not check_signals and emaValue > zlma=>
+            label.new(bar_index - 1, high[1], "▼", color = color(na), textcolor = dn, style = label.style_label_down)
+        // Add an upward label when price crosses above the top of the box
+        ta.crossover(low, box1.get_top()) and not check_signals and not check_signals[1] and emaValue < zlma=>
+            label.new(bar_index - 1, low[1],  "▲", color = color(na), textcolor = up, style = label.style_label_up)
+
+// Plot shapes for up and down signals
+plotshape(signalUp ? zlma : na, "", shape.diamond, location.absolute, color = up, size = size.tiny)
+plotshape(signalDn ? zlma : na, "", shape.diamond, location.absolute, color = dn, size = size.tiny)
+// --------------------------------------------------------------------------------------------------------------------}

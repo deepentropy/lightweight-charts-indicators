@@ -1,0 +1,24 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ahmedirshad419
+
+//@version=4
+study("EngulfingCandle", overlay=true )
+bullishCandle=close >= open[1] and close[1] < open[1] //and high >= high[1] and low <= low[1]
+bearishCandle=close <= open[1] and close[1] >open[1] //and high > high[1] and low < low[1]
+// RSI integration
+rsiSource=input(title="rsiSource", defval=close, type=input.source)
+rsiLenghth=input(title="rsi length", type=input.integer, defval=14)
+rsiOverBought=input(title="rsi overbought level", type=input.integer, defval=70)
+rsiOverSold=input(title="rsi over sold level", type=input.integer, defval=30)
+//rsiOverBoughtThreshold=input(title="rsiOBThreshold level", type=input.integer, defval=97)
+//rsiOverSoldThreshold=input(title="rsiOSThreshold level", type=input.integer, defval=18)
+//get RSI value
+rsiValue=rsi(rsiSource,rsiLenghth)
+isRSIOB=rsiValue >= rsiOverBought and rsiValue
+isRSIOS=rsiValue <= rsiOverSold and rsiValue
+
+tradeSignal=((isRSIOS or isRSIOS[1] or isRSIOS[2]) and bullishCandle ) or ((isRSIOB or isRSIOB[1] or isRSIOB[2]) and bearishCandle)
+//plot on chart
+plotshape(tradeSignal and bullishCandle,title="bullish", location=location.belowbar, color=color.green,style=shape.triangleup, text="buy MIT")
+plotshape(tradeSignal and bearishCandle,title="bearish", location=location.abovebar, color=color.red,style=shape.triangledown, text="sell MIT")
+

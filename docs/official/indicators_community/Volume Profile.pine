@@ -1,0 +1,249 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © kv4coins
+
+//@version=6
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//// INDICATOR
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+indicator(title = 'Volume Profile', shorttitle = 'VP', overlay = true, max_bars_back = 5000, max_lines_count = 500)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//// INPUTS
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+vp_use_visible_range = input.bool(
+     defval  = false, 
+     title   = 'Use Visible Range', 
+     group   = 'Lookback Period',
+     tooltip = 'Calculate Volume Profile using all visible bars in the current chart'
+ )
+
+vp_lookback_depth = input.int(
+     defval  = 200, 
+     minval  = 10, 
+     maxval  = 3000, 
+     title   = 'Fixed Range Lookback Depth [10-3000]',
+     group   = 'Lookback Period', 
+     tooltip = 'Number of historical bars to include in the calculation. Ignored if "Use Visible Range" is enabled'
+ )
+
+vp_num_bars = input.int(
+     defval  = 200, 
+     minval  = 10, 
+     maxval  = 490, 
+     title   = 'Number of Volume Bars [10-490]', 
+     group   = 'Volume Bars',
+     tooltip = 'Number of Volume Profile bars'
+ )
+
+vp_bar_thickness = input.int(
+     defval  = 1, 
+     minval  = 1, 
+     maxval  = 30, 
+     title   = 'Volume Bar Thickness [1-30]', 
+     group   = 'Volume Bars',
+     tooltip = 'Width of each volume bar in the Volume Profile'
+ )
+
+vp_bar_len_mult = input.int(
+     defval  = 20, 
+     minval  = 1, 
+     maxval  = 50, 
+     title   = 'Bar Length Multiplier [1-50]', 
+     group   = 'Volume Bars',
+     tooltip = 'Volume Profile Bar length multiplier'
+ )
+
+vp_right_offset = input.int(
+     defval  = 70, 
+     minval  = 0, 
+     maxval  = 400, 
+     title   = 'Right Offset [0-400]', 
+     group   = 'Volume Bars',
+     tooltip = 'Space between the right bar of the chart and the Volume Profile'
+ )
+
+vp_volume_type = input.string(
+     defval  = 'Both', 
+     title   = 'Volume Type', 
+     options = ['Both', 'Bullish', 'Bearish'],
+     group   = 'Volume Bars',
+     tooltip = 'Select the type of Volume to include'
+ )
+
+vp_bar_color = input.color(
+     defval  = color.new(color.gray, 50), 
+     title   = 'Volume Bar Color', 
+     group   = 'Volume Bars',
+     tooltip = 'Color of the volume bars in the Volume Profile'
+ )
+
+vp_display_poc = input.bool(
+     defval  = true, 
+     title   = 'Display Point of Control (PoC)', 
+     group   = 'Point of Control', 
+     tooltip = 'Enable or disable the display of the Point of Control (PoC)'
+ )
+
+vp_poc_line_thickness = input.int(
+     defval  = 1, 
+     minval  = 1, 
+     maxval  = 30, 
+     title   = 'PoC Line Thickness [1-30]', 
+     group   = 'Point of Control', 
+     tooltip = 'Width of the PoC line'
+ )
+
+vp_poc_line_color = input.color(
+     defval  = color.red, 
+     title   = 'PoC Line Color', 
+     group   = 'Point of Control', 
+     tooltip = 'Color of the Point of Control (PoC) line'
+ )
+
+vp_display_va = input.bool(
+     defval  = true, 
+     title   = 'Display Value Area', 
+     group   = 'Value Area',
+     tooltip = 'Enable or disable the display of the Value Area'
+ )
+
+vp_va_percent = input.int(
+     defval  = 68, 
+     minval  = 5, 
+     maxval  = 95, 
+     title   = 'Value Area Percentage(%) [5-95]', 
+     group   = 'Value Area',
+     tooltip = 'Percentage of the Value Area'
+ )
+
+vp_va_bar_color = input.color(
+     defval  = color.blue, 
+     title   = 'Value Area Bar Color', 
+     group   = 'Value Area',
+     tooltip = 'Color of the volume bars in the Value Area'
+ )
+
+vp_display_va_lines = input.bool(
+     defval  = true, 
+     title   = 'Display Value Area Lines', 
+     group   = 'Value Area',
+     tooltip = 'Enable or disable the display of the Value Area lines. Ignored if "Display Value Area" is disabled'
+ )
+
+vp_va_lines_thickness = input.int(
+     defval  = 1, 
+     minval  = 1, 
+     maxval  = 20, 
+     title   = 'Value Area Lines Thickness [1-20]', 
+     group   = 'Value Area',
+     tooltip = 'Width of the Value Area lines'
+ )
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//// VARIABLES
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+var int timeframe_minutes = 1000 * timeframe.in_seconds()
+var int lookback_bars = vp_use_visible_range ? math.round((last_bar_time - chart.left_visible_bar_time) / timeframe_minutes) : vp_lookback_depth
+
+var line poc = na
+var line vah = na
+var line val = na
+var array<line> bars = array.new_line()
+var array<float> volumes = array.new_float(vp_num_bars, 0)
+
+float highest_price = ta.highest(lookback_bars)
+float lowest_price = ta.lowest(lookback_bars)
+float price_interval = (highest_price - lowest_price) / (vp_num_bars - 1)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//// FUNCTIONS
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+scale_volume(vol, max) =>
+    float d = max / lookback_bars / (vp_bar_len_mult / 100)
+    int scaled_vol = math.round(vol / d)
+    scaled_vol
+
+calculate_vp() =>
+    array.fill(volumes, 0)
+    for i = 0 to (lookback_bars - 1)
+        for j = 0 to (vp_num_bars - 1)
+            float price_level = lowest_price + price_interval * j
+            bool is_bullish = close[i] >= open[i]
+            bool include_vol = vp_volume_type == 'Both' ? true : (vp_volume_type == 'Bullish' ? is_bullish : not is_bullish)
+            if (price_level >= low[i] and price_level < high[i] and include_vol)
+                array.set(volumes, j, volumes.get(j) + volume[i])
+
+calculate_va(int max_idx, float max_vol) =>
+    float sum_vol = volumes.sum()
+    float va_vol = sum_vol * vp_va_percent / 100
+    int va_up = max_idx
+    int va_dn = max_idx
+    float va_sum = max_vol
+    while va_sum < va_vol
+        float v_up = (va_up < vp_num_bars - 1) ? volumes.get(va_up + 1) : 0.0
+        float v_dn = (va_dn > 0) ? volumes.get(va_dn - 1) : 0.0
+        if v_up == 0 and v_dn == 0
+            break
+        if v_up >= v_dn
+            va_sum += v_up
+            va_up += 1
+        else
+            va_sum += v_dn
+            va_dn -= 1
+    [va_dn, va_up]
+
+draw() =>
+    float max_vol = volumes.max()
+    int max_idx = volumes.indexof(max_vol)
+    int x2 = bar_index + vp_right_offset
+    for i = 0 to (vp_num_bars - 1)
+        int vol = scale_volume(volumes.get(i), max_vol)
+        int x1 = x2 - vol
+        float y = lowest_price + price_interval * i
+        line.set_xy1(bars.get(i), x1, y)
+        line.set_xy2(bars.get(i), x2, y)
+        line.set_color(bars.get(i), max_idx == i ? vp_poc_line_color : vp_bar_color)
+    if vp_display_poc
+        int vol = scale_volume(max_vol, max_vol)
+        int poc_x1 = bar_index - lookback_bars
+        int poc_x2 = x2 - vol - 10
+        float y = lowest_price + price_interval * max_idx
+        line.set_xy1(poc, poc_x1, y)
+        line.set_xy2(poc, poc_x2, y)
+    if vp_display_va
+        [va_dn, va_up] = calculate_va(max_idx, max_vol)
+        for i = va_dn to va_up
+            if i != max_idx
+                line.set_color(bars.get(i), vp_va_bar_color)
+        if vp_display_va_lines
+            int vah_vol = scale_volume(volumes.get(va_up), max_vol)
+            int val_vol = scale_volume(volumes.get(va_dn), max_vol)
+            int va_x1 = bar_index - lookback_bars
+            int vah_x2 = x2 - vah_vol - 10
+            int val_x2 = x2 - val_vol - 10
+            float vah_y1 = lowest_price + price_interval * va_up
+            float val_y1 = lowest_price + price_interval * va_dn
+            line.set_xy1(vah, va_x1, vah_y1)
+            line.set_xy1(val, va_x1, val_y1)
+            line.set_xy2(vah, vah_x2, vah_y1)
+            line.set_xy2(val, val_x2, val_y1)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//// CALCULATIONS
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+if barstate.isfirst
+    for i = 0 to (vp_num_bars - 1)
+        array.push(bars, line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, width = vp_bar_thickness))
+    if vp_display_poc
+        poc := line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, color = vp_poc_line_color, width = vp_poc_line_thickness)
+    if vp_display_va and vp_display_va_lines
+        vah := line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, color = vp_va_bar_color, width = vp_va_lines_thickness)
+        val := line.new(x1 = bar_index, y1 = close, x2 = bar_index, y2 = close, color = vp_va_bar_color, width = vp_va_lines_thickness)
+
+if barstate.islast
+    calculate_vp()
+    draw()
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//// END
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

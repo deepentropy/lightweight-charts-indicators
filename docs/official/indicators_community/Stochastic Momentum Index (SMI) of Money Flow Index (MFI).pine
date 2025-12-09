@@ -1,0 +1,1086 @@
+// @version=5
+// @Author andre_007
+// @Thanks and credits:
+//      - TradingView and PineCoders: for SMI, Moving Averages and MFI
+//      - allanster: for Dynamic Zones
+// @description Stochastic Momentum Index (SMI) of Money Flow Index (MFI).
+// The Stochastic Momentum Index (SMI) is a technical analysis indicator that uses the difference between the current
+// closing price and the high or low price over a specific time period to measure price momentum. On the other hand,
+// the Money Flow Index (MFI) is an indicator that uses volume and price to measure buying and selling pressure.
+// When these two indicators are combined, they can provide a more comprehensive view of price direction and market strength.
+indicator(title="Stochastic Momentum Index (SMI) of Money Flow Index (MFI)", shorttitle="SMI MFI", format=format.price, precision=2)
+
+import andre_007/MomentumIndicators/6 as MI
+import andre_007/Utils/11 as UTIL
+import HoanGhetti/SimpleTrendlines/5 as TL
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Constants
+
+// Tooltips
+
+string TYPE_MA_TOOLTIP =
+  '4 = Arnaud Legoux Moving Average\n' +
+  '12 = Donchian Middle Channel\n' +
+  '18 = Exponential Moving Average\n' +
+  '28 = Hull Moving Average\n' +
+  '29 = Jurik Moving Average\n' +
+  '34 = Least Squares Moving Average\n' +
+  '37 = Median\n' +
+  '38 = Regularized Exponential Moving Average\n' +
+  '41 = Relative Moving Average\n' +
+  '42 = RSI Moving average\n' +
+  '44 = Simple Moving Average\n' +
+  '45 = Smoothed Moving Average\n' +
+  '46 = Square Root Weighted Moving Average\n' +
+  '56 = * VWAP\n' +
+  '58 = Weighted Moving Average\n' +
+  '59 = Welles Wilder Moving Average'
+
+string THEME_TOOLTIP = '1 = User defined\n' +
+  '2 = User defined with gradient\n' +
+  '10 to 15   → Spectrum Blue-Green-Red\n' +
+  '20 to 21   → Monokai\n' +
+  '30 to 31   → Spectrum White-Green-Red\n' +
+  '40 to 41   → Green-Purple\n' +
+  '50 to 51   → Blue-Red\n' +
+  '60 to 61   → Blue-Yellow\n' +
+  '70 to 71   → Green-Red\n' +
+  '80 to 81   → Green\n' +
+  '90 to 91   → Purple\n' +
+  '100 to 107 → Blue\n' +
+  '120 to 123 → Blue-Aqua\n' +
+  '130 to 137 → Blue-Green\n' +
+  '140 to 153 → Red\n' +
+  '160 to 165 → Red-Yellow\n' +
+  '170 to 171 → Red-White\n' +
+  '180 to 185 → White-Black\n' +
+  '190 to 200 → Spectrum Blue-Red'
+
+string TRANSPARENCY_TOOLTIP = 'To not use the color fill between the Oscillator and the Signal, leave this value at 100.\n' + 
+  'The closer to zero, the greater the intensity of the filled color.'
+
+// Timeframe Selection
+string ON      = "On"
+string OFF     = "Off"
+string TF0     = "Fixed TF"
+string TF1     = "Multiple of chart TF"
+string TICKER  = syminfo.tickerid
+
+string TT_TFT = "The higher timeframe selection method. Possible options: '" + TF0 + "'' or '" + TF1 + "'."
+string TT_FTF = "A fixed timeframe value. If the 'HTF Selection' value is 'Fixed TF', this input determines the higher timeframe for the data requests."
+string TT_TFM = "The multiplier applied to the chart's timeframe. For example, the higher timeframe calculated on a 
+  15m chart with a multiple of 4 is 60m (1h). This input only affects the output when using 'Multiple of chart TF' 
+  as the 'HTF Selection' value."
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Inputs
+
+string GRP1         = "Calculations"
+bool   repaintInput = input.string(ON,     "Repainting",                group = GRP1, options = [ON, OFF]) == ON
+string tfTypeInput  = input.string(TF0,     "HTF Selection",             group = GRP1, options = [TF0, TF1], tooltip = TT_TFT)
+string fixedTfInput = input.timeframe("", "  Fixed Higher Timeframe:", group = GRP1,                       tooltip = TT_FTF)
+int    tfMultInput  = input.int(1,          "  Timeframe Multiple",      group = GRP1, minval = 1,           tooltip = TT_TFM)
+i_mtf_mode = input.bool(true, "MTF Smoothed Mode", group=GRP1, 
+  tooltip = "Smoothes the indicators between the bars of higher timeframes or shows the actual value (step lines).")
+
+// #region SMI
+string GRP_SMI = 'Stochastic Momentum Index'
+float mfiSourceInput = input.source(close, "MFI Source", group=GRP_SMI, inline='MFI')
+int mfiLengthInput = input.int(13, minval=1, title="MFI Length", group=GRP_SMI, inline='MFI')
+
+int stochKLen = input.int(13, minval=1, title="SMI K% Length", group=GRP_SMI, inline='SMI-K', tooltip='Length of the Stochastic Momentum Index (SMI). First smoothing.')
+int stochDLen = input.int(5, minval=1, title="SMI D% Length", group=GRP_SMI, inline='SMI-D', tooltip='Length for smoothing the Stochastic Momentum Index (SMI). Second smoothing.')
+int stochSigLen = input.int(5, minval=1, title="Signal Length", group=GRP_SMI, inline='Signal', tooltip='Length for signal line.')
+int maTypeSMI = input.int(defval=18, title='Type of Smoothing (SMI)', 
+  options=[4,12,18,28,29,34,37,38,41,42,44,45,46,56,58,59],
+  tooltip=TYPE_MA_TOOLTIP, group=GRP_SMI, inline='Smooth1')
+int maTypeSignal = input.int(defval=18, title='Type of Smoothing (Signal)', 
+  options=[4,12,18,28,29,34,37,38,41,42,44,45,46,56,58,59],
+  tooltip=TYPE_MA_TOOLTIP, group=GRP_SMI, inline='Smooth2')
+// #endregion
+
+// #region Histogram
+string GRP_HISTOGRAM = 'Histogram'
+float lenMultiplier = input.float(1, minval=1, title="Multiplier", group=GRP_HISTOGRAM, inline='m')
+float mfiSourceInputHistogram = input.source(close, "MFI Source", group=GRP_HISTOGRAM, inline='MFI')
+int mfiLengthInputHistogram = input.int(13, minval=1, title="MFI Length", group=GRP_HISTOGRAM, inline='MFI')
+int stochKLenHistogram = input.int(13, minval=1, title="SMI K% Length", group=GRP_HISTOGRAM, inline='SMI-K', tooltip='Length of the Stochastic Momentum Index (SMI). First smoothing.')
+int stochDLenHistogram = input.int(5, minval=1, title="SMI D% Length", group=GRP_HISTOGRAM, inline='SMI-D', tooltip='Length for smoothing the Stochastic Momentum Index (SMI). Second smoothing.')
+int stochSigLenHistogram = input.int(5, minval=1, title="Signal Length", group=GRP_HISTOGRAM, inline='Signal', tooltip='Length for signal line.')
+int maTypeSMIHistogram = input.int(defval=18, title='Type of Smoothing (SMI)', 
+  options=[4,12,18,28,29,34,37,38,41,42,44,45,46,56,58,59],
+  tooltip=TYPE_MA_TOOLTIP, group=GRP_HISTOGRAM, inline='Smooth1')
+int maTypeSignalHistogram = input.int(defval=18, title='Type of Smoothing (Signal)', 
+  options=[4,12,18,28,29,34,37,38,41,42,44,45,46,56,58,59],
+  tooltip=TYPE_MA_TOOLTIP, group=GRP_HISTOGRAM, inline='Smooth2')
+// #endregion
+
+// #region Theme for SMI
+string GRP_THEME_SMI = 'Theme for SMI'
+int themeStoch_1 = input.int(defval=10, title='Theme',
+  options=[
+  1,                                                                                // User defined
+  2,                                                                                // User defined with gradient
+  10, 11, 12, 13, 14, 15,                                                           // Spectrum Blue-Green-Red
+  20, 21,                                                                           // Monokai
+  30, 31,                                                                           // Spectrum White-Green-Red
+  40, 41,                                                                           // Green-Purple
+  50, 51,                                                                           // Blue-Red
+  60, 61,                                                                           // Blue-Yellow
+  70, 71,                                                                           // Green-Red
+  80, 81,                                                                           // Green
+  90, 91,                                                                           // Purple
+  100, 101, 102, 103, 104, 105, 106, 107,                                           // Blue
+  120, 121, 122, 123,                                                               // Blue-Aqua
+  130, 131, 132, 133, 134, 135, 136, 137,                                           // Blue-Green
+  140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153,             // Red
+  160, 161, 162, 163, 164, 165,                                                     // Red-Yellow
+  170, 171,                                                                         // Red-White
+  180, 181, 182, 183, 184, 185,                                                     // White-Black
+  190, 191                                                                          // Spectrum Blue-Red
+  ],
+  inline='61', group=GRP_THEME_SMI, tooltip=THEME_TOOLTIP)
+color colorUpStoch_1 = input.color(color.blue, title='Bull', group=GRP_THEME_SMI, inline='61')
+color colorDownStoch_1 = input.color(color.rgb(255, 0, 0), title='Bear', group=GRP_THEME_SMI, inline='61')
+int transparencyStoch_1 = input.int(0, minval=0, maxval=100, inline='62', title='Transparency', group=GRP_THEME_SMI)
+// #endregion
+
+// #region Theme for Stoch Signal
+string GRP_THEME_SIGNAL = 'Theme for Signal'
+int themeStoch_2 = input.int(defval=1, title='Theme',
+  options=[
+  1,                                                                                // User defined
+  2,                                                                                // User defined with gradient
+  10, 11, 12, 13, 14, 15,                                                           // Spectrum Blue-Green-Red
+  20, 21,                                                                           // Monokai
+  30, 31,                                                                           // Spectrum White-Green-Red
+  40, 41,                                                                           // Green-Purple
+  50, 51,                                                                           // Blue-Red
+  60, 61,                                                                           // Blue-Yellow
+  70, 71,                                                                           // Green-Red
+  80, 81,                                                                           // Green
+  90, 91,                                                                           // Purple
+  100, 101, 102, 103, 104, 105, 106, 107,                                           // Blue
+  120, 121, 122, 123,                                                               // Blue-Aqua
+  130, 131, 132, 133, 134, 135, 136, 137,                                           // Blue-Green
+  140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153,             // Red
+  160, 161, 162, 163, 164, 165,                                                     // Red-Yellow
+  170, 171,                                                                         // Red-White
+  180, 181, 182, 183, 184, 185,                                                     // White-Black
+  190, 191                                                                          // Spectrum Blue-Red
+  ],
+  inline='63', group=GRP_THEME_SIGNAL, tooltip=THEME_TOOLTIP)
+color colorUpStoch_2 = input.color(color.blue, title='Bull', group=GRP_THEME_SIGNAL, inline='63')
+color colorDownStoch_2 = input.color(color.rgb(255, 0, 0), title='Bear', group=GRP_THEME_SIGNAL, inline='63')
+int transparencyStoch_2 = input.int(0, minval=0, maxval=100, inline='64', title='Transparency', group=GRP_THEME_SIGNAL)
+int transparencyStoch_3 = input.int(60, minval=0, maxval=100, inline='64', title='Transparency for fill', group=GRP_THEME_SIGNAL, tooltip=TRANSPARENCY_TOOLTIP)
+// #endregion
+
+// #region Theme for Histogram above 0
+string GRP_THEME_HISTOGRAM_ABOVE = 'Theme for Histogram above 0'
+int themeHistoP = input.int(defval=101, title='Theme',
+  options=[
+  1,                                                                                // User defined
+  2,                                                                                // User defined with gradient
+  10, 11, 12, 13, 14, 15,                                                           // Spectrum Blue-Green-Red
+  20, 21,                                                                           // Monokai
+  30, 31,                                                                           // Spectrum White-Green-Red
+  40, 41,                                                                           // Green-Purple
+  50, 51,                                                                           // Blue-Red
+  60, 61,                                                                           // Blue-Yellow
+  70, 71,                                                                           // Green-Red
+  80, 81,                                                                           // Green
+  90, 91,                                                                           // Purple
+  100, 101, 102, 103, 104, 105, 106, 107,                                           // Blue
+  120, 121, 122, 123,                                                               // Blue-Aqua
+  130, 131, 132, 133, 134, 135, 136, 137,                                           // Blue-Green
+  140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153,             // Red
+  160, 161, 162, 163, 164, 165,                                                     // Red-Yellow
+  170, 171,                                                                         // Red-White
+  180, 181, 182, 183, 184, 185,                                                     // White-Black
+  190, 191                                                                          // Spectrum Blue-Red
+  ],
+  inline='1',  group='Theme for Histogram above 0', tooltip=THEME_TOOLTIP)
+int transparencyHistogramUp = input.int(0, minval=0, maxval=100, inline='1', title='Transparency', group=GRP_THEME_HISTOGRAM_ABOVE)
+color colorHistogramUp_1 = input.color(color.new(#1c3bfb, 0), "", inline="2", group=GRP_THEME_HISTOGRAM_ABOVE)
+color colorHistogramUp_2 = input.color(color.new(#2855fc, 0), "", inline="2", group=GRP_THEME_HISTOGRAM_ABOVE)
+color colorHistogramUp_3 = input.color(color.new(#346ffd, 0), "", inline="2", group=GRP_THEME_HISTOGRAM_ABOVE)
+color colorHistogramUp_4 = input.color(color.new(#4078fe, 0), "", inline="2", group=GRP_THEME_HISTOGRAM_ABOVE)
+color colorHistogramUp_5 = input.color(color.new(#5b9bf9, 0), "", inline="2", group=GRP_THEME_HISTOGRAM_ABOVE)
+color colorHistogramUp_6 = input.color(color.new(#72b6fc, 0), "", inline="2", group=GRP_THEME_HISTOGRAM_ABOVE)
+// #endregion
+
+// #region Theme for Histogram below 0
+string GRP_THEME_HISTOGRAM_BELOW = 'Theme for Histogram below 0'
+int themeHistoN = input.int(defval=141, title='Theme',
+  options=[
+  1,                                                                                // User defined
+  2,                                                                                // User defined with gradient
+  10, 11, 12, 13, 14, 15,                                                           // Spectrum Blue-Green-Red
+  20, 21,                                                                           // Monokai
+  30, 31,                                                                           // Spectrum White-Green-Red
+  40, 41,                                                                           // Green-Purple
+  50, 51,                                                                           // Blue-Red
+  60, 61,                                                                           // Blue-Yellow
+  70, 71,                                                                           // Green-Red
+  80, 81,                                                                           // Green
+  90, 91,                                                                           // Purple
+  100, 101, 102, 103, 104, 105, 106, 107,                                           // Blue
+  120, 121, 122, 123,                                                               // Blue-Aqua
+  130, 131, 132, 133, 134, 135, 136, 137,                                           // Blue-Green
+  140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153,             // Red
+  160, 161, 162, 163, 164, 165,                                                     // Red-Yellow
+  170, 171,                                                                         // Red-White
+  180, 181, 182, 183, 184, 185,                                                     // White-Black
+  190, 191                                                                          // Spectrum Blue-Red
+  ],
+  inline='1', group='Theme for Histogram below 0')
+int transparencyHistogramDown = input.int(0, minval=0, maxval=100, inline='1', title='Transparency', group=GRP_THEME_HISTOGRAM_BELOW)
+color colorHistogramDown_1 = input.color(color.rgb(255, 0, 0), "", inline="2", group=GRP_THEME_HISTOGRAM_BELOW)
+color colorHistogramDown_2 = input.color(color.rgb(255, 30, 30), "", inline="2", group=GRP_THEME_HISTOGRAM_BELOW)
+color colorHistogramDown_3 = input.color(color.rgb(255, 60, 60), "", inline="2", group=GRP_THEME_HISTOGRAM_BELOW)
+color colorHistogramDown_4 = input.color(color.rgb(255, 90, 90), "", inline="2", group=GRP_THEME_HISTOGRAM_BELOW)
+color colorHistogramDown_5 = input.color(color.rgb(255, 120, 120), "", inline="2", group=GRP_THEME_HISTOGRAM_BELOW)
+color colorHistogramDown_6 = input.color(color.rgb(255, 150, 150), "", inline="2", group=GRP_THEME_HISTOGRAM_BELOW)
+// #endregion
+
+// #region Dynamic Zone
+string GRP_DZ = 'Dynamic Zones'
+int dataSmple = input.int(defval=50, title="Sample Length", minval=1, group=GRP_DZ, inline='1')
+float pcntAbove = input.float(defval=90, title="High is Above X% of Sample", minval=0, maxval=100, step=1.0, group=GRP_DZ, inline='2')
+float pcntBelow = input.float(defval=90, title="Low is Below X% of Sample", minval=0, maxval=100, step=1.0, group=GRP_DZ, inline='2')
+
+color lineDzoneTop = input.color(#3064fc, 'Upper Line of Dynamic Zone', inline='3', group=GRP_DZ)
+color lineDzoneBottom = input.color(#f23645, 'Lower Line of Dynamic Zone', inline='3', group=GRP_DZ)
+color fillDzoneAbove = input.color(color.new(#3064fc, 100), 'Fill outside of DZone when above', inline='4', group=GRP_DZ)
+color fillDzoneAbove2 = input.color(color.new(#3064fc, 70), 'Fill entire chart when above', inline='4', group=GRP_DZ)
+color fillDzoneInside = input.color(color.new(#7e58c0, 100), 'Dynamic Zone', inline='5', group=GRP_DZ)
+color fillDzoneBelow = input.color(color.new(#f23645, 100), 'Fill outside of DZone when below', inline='6', group=GRP_DZ)
+color fillDzoneBelow2 = input.color(color.new(#f03449, 70), 'Fill entire chart when below', inline='6', group=GRP_DZ)
+
+color lineDzoneCenter = input.color(color.new(#b2b5be, 0), 'Center Line', inline='7', group=GRP_DZ)
+int lineDzoneCenterDensity = input.int(defval=1, title='Density', options=[1, 2, 3, 4, 5], inline='7', group=GRP_DZ, tooltip='Density for line.\n' +
+  '1 = 100% density (continuous line)\n' +
+  '2 = Dotted line flashing every 2 bars\n' +
+  '3 = Dotted line flashing every 3 bars\n' +
+  '4 = Dotted line flashing every 4 bars\n' +
+  '5 = Dotted line flashing every 5 bars')
+// #endregion
+
+// #region Cross Alerts 1
+string CROSS_ALERTS_1 = 'Cross Alerts 1'
+string showAlerts1    = input.string(title='Show alerts for cross?', defval='Show alerts with shape',
+  options=['Don\'t show alerts', 'Show alerts with char', 'Show alerts with shape'], group=CROSS_ALERTS_1, inline='A')
+color colorAlertBull1 = input.color(color.new(#14e024, 0), title='Bull', group=CROSS_ALERTS_1, inline='B')
+color colorAlertBear1 = input.color(color.new(#ff0000, 0), title='Bear', group=CROSS_ALERTS_1, inline='B')
+
+float topAlertLine1 = input.float(-100, title='Above', inline='B', group=CROSS_ALERTS_1, minval=-100, maxval=100)
+float bottomAlertLine1 = input.float(100, title='Below', inline='B', group=CROSS_ALERTS_1, minval=-100, maxval=100,
+  tooltip='Alerts at the cross between the Oscillator and the Signal.\n\n' +
+  '🔻 Above: cross under alert will only appear when the oscillator is above this level.\n\n' +
+  '🔺 Below : Cross over alert will only appear when the oscillator is below this level.\n\n' +
+  'To show alerts for all intersections, put the maximum values within the limits:\n' +
+  '-100 for Above and 100 for Below')
+bool onlyOutsideDZ = input.bool(true, title='Only outside DZ?', group=CROSS_ALERTS_1, inline='O', tooltip='Only alerts when the cross occurs outside the Dynamic Zone')
+
+bool showBarColorsCross1 = input.bool(true, title='Colorize bars?', group=CROSS_ALERTS_1, inline='C')
+color colorBarSignal1 = input.color(color.new(#ffffff, 0), title='', group=CROSS_ALERTS_1, inline='C')
+// #endregion
+
+// #region Cross Alerts 2
+string CROSS_ALERTS_2 = 'Cross Alerts 2'
+string showAlerts2    = input.string(title='Show alerts for cross?', defval='Show alerts with shape',
+  options=['Don\'t show alerts', 'Show alerts with char', 'Show alerts with shape'], group=CROSS_ALERTS_2, inline='A')
+color colorAlertBull2 = input.color(color.new(#2962ff, 0), title='Bull', group=CROSS_ALERTS_2, inline='B')
+color colorAlertBear2 = input.color(color.new(color.orange, 0), title='Bear', group=CROSS_ALERTS_2, inline='B')
+
+float topAlertLine2 = input.float(-100, title='Above', inline='B', group=CROSS_ALERTS_2, minval=-100, maxval=100)
+float bottomAlertLine2 = input.float(100, title='Below', inline='B', group=CROSS_ALERTS_2, minval=-100, maxval=100,
+  tooltip='Alerts at the cross between the Oscillator and the Signal.\n\n' +
+  '🔻 Above: cross under alert will only appear when the oscillator is above this level.\n\n' +
+  '🔺 Below : Cross over alert will only appear when the oscillator is below this level.\n\n' +
+  'To show alerts for all intersections, put the maximum values within the limits:\n' +
+  '-100 for Above and 100 for Below')
+bool onlyInsideDZ = input.bool(true, title='Only inside DZ?', group=CROSS_ALERTS_2, inline='I', tooltip='Only alerts when the cross occurs within the Dynamic Zone')
+
+bool showBarColorsCross2 = input.bool(false, title='Colorize bars?', group=CROSS_ALERTS_2, inline='C')
+color colorBarSignal2 = input.color(color.new(color.yellow, 0), title='', group=CROSS_ALERTS_2, inline='C')
+// #endregion
+
+// #region Trend Alerts
+string TREND_ALERTS = 'Trend Alerts'
+bool showBarColorsTrendHisto = input.bool(true, title='Colorize bars for histogram?', group=TREND_ALERTS, inline='A')
+color colorBarTrendBullHisto = input.color(color.new(color.blue, 0), title='', group=TREND_ALERTS, inline='A')
+color colorBarTrendBearHisto = input.color(color.new(#ff1000, 0), title='', group=TREND_ALERTS, inline='A', tooltip='When Histogram above or below 0')
+bool barColorsTrendHistoTheme = input.bool(true, title='Use same theme of Histogram?', group=TREND_ALERTS, inline='B', tooltip='Only applies when the above checkbox is checked')
+
+bool showBarColorsTrendSMI = input.bool(false, title='Colorize bars for SMI?', group=TREND_ALERTS, inline='C')
+color colorBarTrendBullSMI = input.color(color.new(color.blue, 0), title='', group=TREND_ALERTS, inline='C')
+color colorBarTrendBearSMI = input.color(color.new(#ff1000, 0), title='', group=TREND_ALERTS, inline='C', tooltip='When SMI above or below Signal')
+bool barColorsTrendSmiTheme = input.bool(false, title='Use same theme of SMI?', group=TREND_ALERTS, inline='D', tooltip='Only applies when the above checkbox is checked')
+bool showBarColorsTrendSignal = input.bool(false, title='Colorize bars for Signal?', group=TREND_ALERTS, inline='E')
+color colorBarTrendBullSignal = input.color(color.new(color.blue, 0), title='', group=TREND_ALERTS, inline='E')
+color colorBarTrendBearSignal = input.color(color.new(#ff1000, 0), title='', group=TREND_ALERTS, inline='E', tooltip='When Signal above or below SMI')
+bool barColorsTrendSignalTheme = input.bool(false, title='Use same theme of Signal?', group=TREND_ALERTS, inline='F', tooltip='Only applies when the above checkbox is checked')
+// #endregion
+
+// #region Custom Levels for SMI\'s Theme
+int level1SMI   = input.int(defval=5, title="Level 1", minval=0, maxval=100, group='Custom Levels for SMI\'s Theme', inline='1')
+int level2SMI   = input.int(defval=10, title="Level 2", minval=0, maxval=100, group='Custom Levels for SMI\'s Theme', inline='1')
+int level3SMI   = input.int(defval=15, title="Level 3", minval=0, maxval=100, group='Custom Levels for SMI\'s Theme', inline='1')
+int level4SMI   = input.int(defval=20, title="Level 4", minval=0, maxval=100, group='Custom Levels for SMI\'s Theme', inline='2')
+int level5SMI   = input.int(defval=30, title="Level 5", minval=0, maxval=100, group='Custom Levels for SMI\'s Theme', inline='2')
+// #endregion
+
+// #region Custom Levels for SMI\'s Gradient Theme
+float levelSMIgrB = input.float(defval=-50, title="Bottom position ", minval=-100, maxval=100, group='Custom Levels for SMI\'s Gradient Theme (26)', inline='3')
+float levelSMIgrT = input.float(defval=50, title="Top position", minval=-100, maxval=100, group='Custom Levels for SMI\'s Gradient Theme (26)', inline='3')
+// #endregion
+
+// #region Custom Levels for Signal\'s Theme
+int level1Signal = input.int(defval=5,  title="Level 1", minval=0, maxval=100, group='Custom Levels for Signal\'s Theme', inline='1')
+int level2Signal = input.int(defval=10, title="Level 2", minval=0, maxval=100, group='Custom Levels for Signal\'s Theme', inline='1')
+int level3Signal = input.int(defval=15, title="Level 3", minval=0, maxval=100, group='Custom Levels for Signal\'s Theme', inline='1')
+int level4Signal = input.int(defval=20, title="Level 4", minval=0, maxval=100, group='Custom Levels for Signal\'s Theme', inline='2')
+int level5Signal = input.int(defval=30, title="Level 5", minval=0, maxval=100, group='Custom Levels for Signal\'s Theme', inline='2')
+// #endregion
+
+// #region Custom Levels for Signal\'s Gradient Theme
+float levelSignalgrB = input.float(defval=-50, title="Bottom position ", minval=-100, maxval=100, group='Custom Levels for Signal\'s Gradient Theme (26)', inline='3')
+float levelSignalgrT = input.float(defval=50, title="Top position", minval=-100, maxval=100, group='Custom Levels for Signal\'s Gradient Theme (26)', inline='3')
+// #endregion
+
+// #region Custom Levels for Histogram\'s Theme
+int level1Histogram = input.int(defval=0, title="Level 1",  minval=0, maxval=100, group='Custom Levels for Histogram\'s Theme', inline='1')
+int level2Histogram = input.int(defval=5, title="Level 2", minval=0, maxval=100, group='Custom Levels for Histogram\'s Theme', inline='1')
+int level3Histogram = input.int(defval=10, title="Level 3", minval=0, maxval=100, group='Custom Levels for Histogram\'s Theme', inline='1')
+int level4Histogram = input.int(defval=15, title="Level 4", minval=0, maxval=100, group='Custom Levels for Histogram\'s Theme', inline='2')
+int level5Histogram = input.int(defval=30, title="Level 5", minval=0, maxval=100, group='Custom Levels for Histogram\'s Theme', inline='2')
+// #endregion
+
+// #region Alert Messages
+bool showMsgAlert_1 = input.bool(false, title='SMI crossing above Signal when within limits (alert 1)', group='Alert Messages',
+  tooltip="Crossing considering the levels defined in the 'Cross Alerts' section, alert 1")
+bool showMsgAlert_2 = input.bool(false, title='SMI crossing below the Signal when within limits (alert 1)', group='Alert Messages',
+  tooltip="Crossing considering the levels defined in the 'Cross Alerts' section, alert 1")
+
+bool showMsgAlert_3 = input.bool(false, title='SMI exiting the Dynamic Zone at the top', group='Alert Messages')
+bool showMsgAlert_4 = input.bool(false, title='SMI entering the Dynamic Zone at the top', group='Alert Messages')
+
+bool showMsgAlert_5 = input.bool(false, title='SMI exiting the Dynamic Zone at the bottom', group='Alert Messages')
+bool showMsgAlert_6 = input.bool(false, title='SMI entering the Dynamic Zone at the bottom', group='Alert Messages')
+
+bool showMsgAlert_7 = input.bool(false, title='SMI crossing above the centerline', group='Alert Messages')
+bool showMsgAlert_8 = input.bool(false, title='SMI crossing below the centerline', group='Alert Messages')
+
+bool showMsgAlert_9 = input.bool(false, title='SMI crossing above Signal when within limits (alert 2)', group='Alert Messages',
+  tooltip="Crossing considering the levels defined in the 'Cross Alerts' section, alert 2")
+bool showMsgAlert_10 = input.bool(false, title='SMI crossing below the Signal when within limits (alert 2)', group='Alert Messages',
+  tooltip="Crossing considering the levels defined in the 'Cross Alerts' section, alert 2")
+// #endregion
+
+// #region Trend Lines with Breakout
+string G_TRENDLINES = 'Trend Lines with Breakout'
+bool input_showLines = input.bool(defval = false, title = 'Show Trend Lines', group = G_TRENDLINES, inline='0')
+string sourceTrendLine = input.string(defval = 'SMI', title = 'Source for Trend Lines', options = ['Histogram', 'SMI'], group = G_TRENDLINES)
+int input_pLen      = input.int(defval = 21, title = 'Lookback Range', minval = 1, group = G_TRENDLINES, tooltip = 'How many bars to determine when a swing high/low is detected.')
+int input_smiDiff   = input.int(defval = 21, title = 'Difference', group = G_TRENDLINES, tooltip = 'The difference between the current Oscillator value and the breakout value.\n\nHow much higher in value should the current Oscillator be compared to the breakout value in order to detect a breakout?')
+int input_width     = input.int(defval = 2, title = 'Line Width', minval = 1, group = G_TRENDLINES)
+string input_lblType   = input.string(defval = 'None', title = 'Label Type', group = G_TRENDLINES, options = ['Full', 'Simple', 'None'])
+string input_lblSize   = input.string(defval = size.small, title = 'Label Size', group = G_TRENDLINES, options = [size.huge, size.large, size.normal, size.small, size.tiny])
+color input_pLowCol   = input.color(defval = #ffffff, title = 'Pivot Low', inline = 'col', group = G_TRENDLINES)
+color input_pHighCol  = input.color(defval = #ffffff, title = 'Pivot High', inline = 'col', group = G_TRENDLINES)
+bool input_override  = input.bool(defval = false, title = 'Override Text Color', group = G_TRENDLINES, inline = 'override')
+color input_overCol   = input.color(defval = color.white, title = ' ', group = G_TRENDLINES, inline = 'override')
+// #endregion
+
+// #region Divergence Detector
+sourceDivergence = input.string(defval='SMI', title='Source for Divergence', options=['Histogram', 'SMI'], group='Divergence Detector', inline='0')
+lbR = input.int(title="Pivot Lookback Right", defval=5, group="Divergence Detector", inline="1")
+lbL = input.int(title="Pivot Lookback Left", defval=5, group="Divergence Detector", inline="1")
+
+rangeUpper = input.int(title="Max of Lookback Range", defval=60, group="Divergence Detector", inline="2")
+rangeLower = input.int(title="Min of Lookback Range", defval=5, group="Divergence Detector", inline="2")
+
+plotBull = input.bool(title="Plot Bullish", defval=false, group="Divergence Detector", inline="3")
+bullColor = input.color(title="", defval=#14e024, group="Divergence Detector", inline="3")
+
+plotHiddenBull = input.bool(title="Plot Hidden Bullish", defval=false, group="Divergence Detector", inline="4")
+hiddenBullColor = input.color(title="", defval=#2962ff, group="Divergence Detector", inline="4")
+
+plotBear = input.bool(title="Plot Bearish", defval=false, group="Divergence Detector", inline="5")
+bearColor = input.color(title="", defval=#ff1000, group="Divergence Detector", inline="5")
+
+plotHiddenBear = input.bool(title="Plot Hidden Bearish", defval=false, group="Divergence Detector", inline="6")
+hiddenBearColor = input.color(title="", defval=color.orange, group="Divergence Detector", inline="6")
+
+showDivLabel = input.bool(title="Show Divergence Label", defval=true, group="Divergence Detector", inline="7")
+textColor = input.color(title="Text Color", defval=color.rgb(0, 0, 0), group="Divergence Detector", inline="8")
+// #endregion
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Calculations
+
+// @variable A multiple of the chart's timeframe or a fixed higher timeframe, depending on the `tfTypeInput` value.
+string requestedTf = switch tfTypeInput
+    TF0 => fixedTfInput
+    TF1 => timeframe.from_seconds(timeframe.in_seconds() * tfMultInput)
+
+// Set `offset` and `lookahead` variables based on `repaintInput` to control repainting: 
+// 0 and `barmerge.lookahead_off` for repainting, 1 and `barmerge.lookahead_on` for non-repainting.
+int offset = repaintInput ? 0 : 1
+lookahead  = repaintInput ? barmerge.lookahead_off : barmerge.lookahead_on
+
+// Get values for the selected timeframe.
+f_get_tf_values() =>
+    // SMI and Signal
+    [smi, signal, _histogram] = MI.smiMFI(source=mfiSourceInput, length=mfiLengthInput, lengthK=stochKLen, lengthD=stochDLen, maTypeSMI=maTypeSMI, maTypeSignal=maTypeSignal, smoothingLengthSignal=stochSigLen)
+    // Histogram
+    [_smi, _signal, histogram] = MI.smiMFI(source=mfiSourceInputHistogram, length=mfiLengthInputHistogram, lengthK=stochKLenHistogram, lengthD=stochDLenHistogram, maTypeSMI=maTypeSMIHistogram, maTypeSignal=maTypeSignalHistogram, smoothingLengthSignal=stochSigLenHistogram)
+    histogram *= lenMultiplier
+    
+    [smi[offset], signal[offset], histogram[offset], bar_index, ta.percentile_nearest_rank(smi, dataSmple, pcntAbove)[offset], ta.percentile_nearest_rank(smi, dataSmple, 100 - pcntBelow)[offset], ta.percentile_nearest_rank(smi, dataSmple, 100 - 50)[offset]]
+
+// Request a tuple of the `SMI`, `Signal` and `Histogram` using `offset` and `lookahead` to manage repainting.
+// Note that each expression in the tuple applies the `offset`.
+[smi, signal, histogram, bindex, dZoneAbove, dZoneBelow, dZoneCenter] = request.security(TICKER, requestedTf, f_get_tf_values(), lookahead = lookahead)
+
+[tf_smi, tf_signal, tf_histogram] = if i_mtf_mode
+    int lbindex = na
+    lbindex := na(lbindex[1]) or bindex > lbindex[1] ? bindex : lbindex[1]
+    tf_smi = lbindex != lbindex[1] or barstate.islast ? smi : na
+    tf_signal = lbindex != lbindex[1] or barstate.islast ? signal : na
+    tf_histogram = lbindex != lbindex[1] or barstate.islast ? histogram : na
+    [tf_smi, tf_signal, tf_histogram]
+else
+    [smi, signal, histogram]
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Theme for Histogram
+
+color colorHistogram = if (histogram >= 0)
+
+    if (themeHistoP == 1)           // User defined
+
+        vcHistogramUp = UTIL.valueColorSpectrum.new()
+        UTIL.setCustomLevels(vcHistogramUp, level1Histogram, level2Histogram, level3Histogram, level4Histogram, level5Histogram)
+        UTIL.setTheme(vcHistogramUp, colorHistogramUp_1, colorHistogramUp_2, colorHistogramUp_3, colorHistogramUp_4, colorHistogramUp_5, colorHistogramUp_6)
+
+        vcHistogramUp.currentValue         := histogram
+        vcHistogramUp.previousValue        := histogram[1]
+
+        UTIL.setCurrentColorValue(vcHistogramUp)
+        vcHistogramUp.currentColorValue
+
+    else if (themeHistoP == 2)       // User defined with gradient
+
+        vcHistogramUp = UTIL.valueColor.new()
+
+        vcHistogramUp.currentValue         := histogram
+        vcHistogramUp.previousValue        := histogram[1]
+        vcHistogramUp.colorUp              := colorHistogramUp_1
+        vcHistogramUp.colorDown            := colorHistogramUp_6
+
+        UTIL.setCurrentColorValue(vcHistogramUp, true, 0, level5Histogram)
+        vcHistogramUp.currentColorValue
+
+    else                            // Theme with predefined colors
+
+        vcHistogramUp = UTIL.valueColorSpectrum.new()
+        UTIL.setCustomLevels(vcHistogramUp, level1Histogram, level2Histogram, level3Histogram, level4Histogram, level5Histogram)
+        UTIL.setTheme(vcHistogramUp, themeHistoP)
+
+        vcHistogramUp.currentValue         := histogram
+        vcHistogramUp.previousValue        := histogram[1]
+
+        UTIL.setCurrentColorValue(vcHistogramUp)
+        vcHistogramUp.currentColorValue
+
+else
+
+    if (themeHistoN == 1)            // User defined
+
+        vcHistogramDown = UTIL.valueColorSpectrum.new()
+        UTIL.setCustomLevels(vcHistogramDown, level1Histogram, level2Histogram, level3Histogram, level4Histogram, level5Histogram)
+        UTIL.setTheme(vcHistogramDown, colorHistogramDown_1, colorHistogramDown_2, colorHistogramDown_3, colorHistogramDown_4, colorHistogramDown_5, colorHistogramDown_6)
+
+        vcHistogramDown.currentValue         := histogram
+        vcHistogramDown.previousValue        := histogram[1]
+
+        UTIL.setCurrentColorValue(vcHistogramDown)
+        vcHistogramDown.currentColorValue
+
+    else if (themeHistoN == 2)       // User defined with gradient
+
+        vcHistogramDown = UTIL.valueColor.new()
+
+        vcHistogramDown.currentValue         := math.abs(histogram)
+        vcHistogramDown.previousValue        := math.abs(histogram[1])
+        vcHistogramDown.colorUp              := colorHistogramDown_1
+        vcHistogramDown.colorDown            := colorHistogramDown_6
+
+        UTIL.setCurrentColorValue(vcHistogramDown, true, 0, level5Histogram)
+        vcHistogramDown.currentColorValue
+
+    else                            // Theme with predefined colors
+
+        vcHistogramDown = UTIL.valueColorSpectrum.new()
+        UTIL.setCustomLevels(vcHistogramDown, level1Histogram, level2Histogram, level3Histogram, level4Histogram, level5Histogram)
+        UTIL.setTheme(vcHistogramDown, themeHistoN)
+
+        vcHistogramDown.currentValue         := histogram
+        vcHistogramDown.previousValue        := histogram[1]
+
+        UTIL.setCurrentColorValue(vcHistogramDown)
+        vcHistogramDown.currentColorValue
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Theme for Oscillator
+
+color colorStoch = if (themeStoch_1 >= 3)       // Theme with 5 colors
+
+    vcOscillator = UTIL.valueColorSpectrum.new()
+    UTIL.setCustomLevels(vcOscillator, level1SMI, level2SMI, level3SMI, level4SMI, level5SMI)
+
+    vcOscillator.currentValue         := smi
+    vcOscillator.previousValue        := smi[1]
+
+    UTIL.setTheme(vcOscillator, themeStoch_1)
+    UTIL.setCurrentColorValue(vcOscillator)
+    color.new(vcOscillator.currentColorValue, transparencyStoch_1)
+
+else                                            // Theme with 2 colors ('User defined' or 'User defined with gradient')
+
+    vcOscillator = UTIL.valueColor.new()
+
+    vcOscillator.currentValue     := smi
+    vcOscillator.previousValue    := smi[1]
+    vcOscillator.colorUp          := colorUpStoch_1
+    vcOscillator.colorDown        := colorDownStoch_1
+
+    UTIL.setCurrentColorValue(vcOscillator, (themeStoch_1 == 2), levelSMIgrB, levelSMIgrT)
+    color.new(vcOscillator.currentColorValue, transparencyStoch_1)
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Theme for Signal
+
+color colorMaStoch = if (themeStoch_2 >= 3)      // Theme with 5 colors
+
+    vcSignal = UTIL.valueColorSpectrum.new()
+    UTIL.setCustomLevels(vcSignal, level1Signal, level2Signal, level3Signal, level4Signal, level5Signal)
+
+    vcSignal.currentValue         := signal
+    vcSignal.previousValue        := signal[1]
+
+    UTIL.setTheme(vcSignal, themeStoch_2)
+    UTIL.setCurrentColorValue(vcSignal)
+    color.new(vcSignal.currentColorValue, transparencyStoch_2)
+
+else                                            // Theme with 2 colors ('User defined' or 'User defined with gradient')
+
+    vcSignal = UTIL.valueColor.new()
+
+    vcSignal.currentValue     := signal
+    vcSignal.previousValue    := signal[1]
+    vcSignal.colorUp          := colorUpStoch_2
+    vcSignal.colorDown        := colorDownStoch_2
+
+    UTIL.setCurrentColorValue(vcSignal, (themeStoch_2 == 2), levelSignalgrB, levelSignalgrT)
+    color.new(vcSignal.currentColorValue, transparencyStoch_2)
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Theme for fill between Oscillator and Signal
+
+color colorFill = if (themeStoch_2 >= 3)        // Theme with 5 colors
+
+    vcFillOscillator = UTIL.valueColorSpectrum.new()
+    UTIL.setCustomLevels(vcFillOscillator, level1Signal, level2Signal, level3Signal, level4Signal, level5Signal)
+
+    vcFillOscillator.currentValue         := smi
+    vcFillOscillator.previousValue        := signal
+
+    UTIL.setTheme(vcFillOscillator, themeStoch_2)
+
+    UTIL.setCurrentColorValue(vcFillOscillator)
+    color.new(vcFillOscillator.currentColorValue, transparencyStoch_3)
+
+else                                            // Theme with 2 colors ('User defined' or 'User defined with gradient')
+
+    vcFillOscillator = UTIL.valueColor.new()
+
+    vcFillOscillator.currentValue     := smi
+    vcFillOscillator.previousValue    := signal
+    vcFillOscillator.colorUp          := colorUpStoch_2
+    vcFillOscillator.colorDown        := colorDownStoch_2
+
+    UTIL.setCurrentColorValue(vcFillOscillator, (themeStoch_2 == 2), levelSignalgrB, levelSignalgrT)
+    color.new(vcFillOscillator.currentColorValue, transparencyStoch_3)
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Plots
+
+// #region Histogram
+plot(tf_histogram, color=color.new(colorHistogram, histogram >= 0 ? transparencyHistogramUp : transparencyHistogramDown), style=plot.style_histogram, title="SMI Ergodic Histogram", linewidth=2)
+// #endregion
+
+// #region Stoch
+p_smi = plot(tf_smi, title="SMI", color=colorStoch, linewidth=2)
+p_signal = plot(tf_signal, title="Signal", color=colorMaStoch, linewidth=1)
+fill(p_smi, p_signal, color=colorFill, title='Fill beetween Stoch and Signal', display=(transparencyStoch_3 < 100 ? display.all : display.none) )
+// #endregion
+
+// #region Dynamic Zones
+hline(0, color = lineDzoneCenter, title="Fixed Center Line", linewidth=1, linestyle=hline.style_dotted)
+plot(dZoneCenter, title="Dynamic Zone: Center Line", color=UTIL.getPeriodicColor(lineDzoneCenter, lineDzoneCenterDensity),
+  linewidth=1, style=plot.style_line)
+
+above     = plot(smi > dZoneAbove ? tf_smi : dZoneAbove, title = "", color = color(na))
+probOB    = plot(dZoneAbove, title = "Dynamic Zone: Top Line", color = lineDzoneTop, linewidth=1)
+probOS    = plot(dZoneBelow, title = "Dynamic Zone: Bottom Line", color = lineDzoneBottom, linewidth=1)
+below     = plot(smi < dZoneBelow ? tf_smi : dZoneBelow, title = "", color = color(na))
+
+fill(above,  probOB, color = fillDzoneAbove)
+fill(probOB, probOS, color = fillDzoneInside)
+fill(below,  probOS, color = fillDzoneBelow)
+
+top = hline(40, "Top", color=color.blue, linestyle=hline.style_dotted)
+bottom = hline(-40, "Bottom", color=color.red, linestyle=hline.style_dotted)
+fill(probOB, probOS, smi < dZoneBelow ? fillDzoneBelow2 : na, 'Fill background when below Dynamic Zone')
+fill(probOB, probOS, smi > dZoneAbove ? fillDzoneAbove2 : na, 'Fill background when above Dynamic Zone')
+// #endregion
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Trend Alerts
+
+_barcolor = (showBarColorsTrendHisto and (histogram >= 0) ? (barColorsTrendHistoTheme ? colorHistogram : colorBarTrendBullHisto) : na)
+_barcolor := (showBarColorsTrendHisto and (histogram < 0) ? (barColorsTrendHistoTheme ? colorHistogram : colorBarTrendBearHisto) : _barcolor)
+
+_barcolor := (showBarColorsTrendSMI and (smi >= signal) ? (barColorsTrendSmiTheme ? colorStoch : colorBarTrendBullSMI) : _barcolor)
+_barcolor := (showBarColorsTrendSMI and (smi < signal) ? (barColorsTrendSmiTheme ? colorStoch : colorBarTrendBearSMI) : _barcolor)
+
+_barcolor := (showBarColorsTrendSignal and (smi >= signal) ? (barColorsTrendSignalTheme ? colorMaStoch : colorBarTrendBullSignal) : _barcolor)
+_barcolor := (showBarColorsTrendSignal and (smi < signal) ? (barColorsTrendSignalTheme ? colorMaStoch : colorBarTrendBearSignal) : _barcolor)
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Cross Alerts
+
+// Cross Alerts 1
+smiOutside = if onlyOutsideDZ
+    (smi[1] < dZoneBelow or smi[1] > dZoneAbove)
+else
+    true
+
+bool crossUp1 = (smi[1] <= bottomAlertLine1) and smiOutside and ta.crossover(smi, signal)
+bool crossDown1 = (smi[1] >= topAlertLine1) and smiOutside and ta.crossunder(smi, signal)
+
+plotchar(showAlerts1 == 'Show alerts with char' ? crossUp1 : na, title="[Alert 1] Crossing up char", char='↑', location=location.bottom,
+  color=colorAlertBull1, size=size.small, offset=0)
+plotchar(showAlerts1 == 'Show alerts with char' ? crossDown1 : na, title="[Alert 1] Crossing down char",char='↓', location=location.top,
+  color=colorAlertBear1, size=size.small, offset=0)
+
+plotshape(showAlerts1 == 'Show alerts with shape' and crossUp1 ? signal : na, title="[Alert 1] Crossing up shape", location=location.bottom,
+  style=shape.circle, size=size.tiny, color=colorAlertBull1, offset=0)
+plotshape(showAlerts1 == 'Show alerts with shape' and crossDown1 ? signal : na, title="[Alert 1] Crossing down shape", location=location.top,
+  style=shape.circle, size=size.tiny, color=colorAlertBear1, offset=0)
+
+_barcolor := (showBarColorsCross1 and (crossUp1 or crossDown1) ? colorBarSignal1 : _barcolor)
+
+// Cross Alerts 2
+smiInside = if onlyInsideDZ
+    (smi[1] >= dZoneBelow and smi[1] <= dZoneAbove)
+else
+    true
+
+bool crossUp2 = (smi[1] <= bottomAlertLine2) and smiInside and ta.crossover(smi, signal)
+bool crossDown2 = (smi[1] >= topAlertLine2) and smiInside and ta.crossunder(smi, signal)
+
+plotchar(showAlerts2 == 'Show alerts with char' ? crossUp2 : na, title="[Alert 2] Crossing up char", char='↑', location=location.bottom,
+  color=colorAlertBull2, size=size.small, offset=0)
+plotchar(showAlerts2 == 'Show alerts with char' ? crossDown2 : na, title="[Alert 2] Crossing down char",char='↓', location=location.top,
+  color=colorAlertBear2, size=size.small, offset=0)
+
+plotshape(showAlerts2 == 'Show alerts with shape' and crossUp2 ? signal : na, title="[Alert 2] Crossing up shape", location=location.bottom,
+  style=shape.diamond, size=size.tiny, color=colorAlertBull2, offset=0)
+plotshape(showAlerts2 == 'Show alerts with shape' and crossDown2 ? signal : na, title="[Alert 2] Crossing down shape", location=location.top,
+  style=shape.diamond, size=size.tiny, color=colorAlertBear2, offset=0)
+
+_barcolor := (showBarColorsCross2 and (crossUp2 or crossDown2) ? colorBarSignal2 : _barcolor)
+
+barcolor(_barcolor)
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Alert variables
+
+// Dynamic Zone: Top
+bool smiExitingDynamicZoneTop = ta.crossover(smi, dZoneAbove)
+bool smiEnteringDynamicZoneTop = ta.crossunder(smi, dZoneAbove)
+// Dynamic Zone: Bottom
+bool smiExitingDynamicZoneBottom = ta.crossunder(smi, dZoneBelow)
+bool smiEnteringDynamicZoneBottom = ta.crossover(smi, dZoneBelow)
+// Dynamic Zone: Center
+bool smiCrossOverCentral = ta.crossover(smi, dZoneCenter)
+bool smiCrossUnderCentral = ta.crossunder(smi, dZoneCenter)
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Alert Conditions
+
+// The alert() function is the most recent addition to Pine Script™.
+// It more or less supersedes alertcondition(), and when used in strategies, provides a useful complement to alerts on order fill events.
+// [...]
+// The alertcondition() function remains in Pine Script™ for backward compatibility, but it can also be used advantageously
+// to generate distinct alerts available for selection as individual items in the “Create Alert” dialog box’s “Condition” field.
+
+// #region SMI crossover\crossunder Signal
+// alertcondition(crossUp1, title="SMI crossing above Signal when within limits (alert 1)",
+//   message="SMI crossed above the Signal.\nSymbol: {{ticker}}\nPrice: {{close}}")
+// alertcondition(crossDown1, title="SMI crossing below the Signal when within limits (alert 1)",
+//   message="SMI crossed below the Signal.\nSymbol: {{ticker}}\nPrice: {{close}}")
+
+// alertcondition(crossUp2, title="SMI crossing above Signal when within limits (alert 2)",
+//   message="SMI crossed above the Signal.\nSymbol: {{ticker}}\nPrice: {{close}}")
+// alertcondition(crossDown2, title="SMI crossing below the Signal when within limits (alert 2)",
+//   message="SMI crossed below the Signal.\nSymbol: {{ticker}}\nPrice: {{close}}")
+// // #endregion
+
+// #region Dynamic Zone: Top
+// alertcondition(smiExitingDynamicZoneTop, title="SMI exiting the Dynamic Zone at the top",
+//   message="SMI exiting the Dynamic Zone at the top.\nSymbol: {{ticker}}\nPrice: {{close}}")
+// alertcondition(smiEnteringDynamicZoneTop, title="SMI entering the Dynamic Zone at the top",
+//   message="SMI entering the Dynamic Zone at the top.\nSymbol: {{ticker}}\nPrice: {{close}}")
+// #endregion
+
+// #region Dynamic Zone: Bottom
+// alertcondition(smiExitingDynamicZoneBottom, title="SMI exiting the Dynamic Zone at the bottom",
+//   message="SMI exiting the Dynamic Zone at the bottom.\nSymbol: {{ticker}}\nPrice: {{close}}")
+// alertcondition(smiEnteringDynamicZoneBottom, title="SMI entering the Dynamic Zone at the bottom",
+//   message="SMI entering the Dynamic Zone at the bottom.\nSymbol: {{ticker}}\nPrice: {{close}}")
+// #endregion
+
+// #region Dynamic Zone: Center
+// alertcondition(smiCrossOverCentral, title="SMI crossing above the centerline",
+//   message="SMI crossing above the centerline.\nSymbol: {{ticker}}\nPrice: {{close}}")
+// alertcondition(smiCrossUnderCentral, title="SMI crossing below the centerline",
+//   message="SMI crossing below the centerline.\nSymbol: {{ticker}}\nPrice: {{close}}")
+// #endregion
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Alert Messages
+
+// #region SMI crossover\crossunder Signal
+if showMsgAlert_1 and crossUp1
+    alert("SMI crossing above Signal within limits " + str.tostring(bottomAlertLine1) + " and " + str.tostring(topAlertLine1) + ".\n" +
+      "SMI value: " + str.tostring(smi, "#.##") + "\n" +
+      "Price: " + str.tostring(close))
+if showMsgAlert_2 and crossDown1
+    alert("SMI crossing below Signal within limits " + str.tostring(bottomAlertLine1) + " and " + str.tostring(topAlertLine1) + ".\n" +
+      "SMI value: " + str.tostring(smi, "#.##") + "\n" +
+      "Price: " + str.tostring(close))
+
+if showMsgAlert_9 and crossUp2
+    alert("SMI crossing above Signal within limits " + str.tostring(bottomAlertLine2) + " and " + str.tostring(topAlertLine2) + ".\n" +
+      "SMI value: " + str.tostring(smi, "#.##") + "\n" +
+      "Price: " + str.tostring(close))
+if showMsgAlert_10 and crossDown2
+    alert("SMI crossing below Signal within limits " + str.tostring(bottomAlertLine2) + " and " + str.tostring(topAlertLine2) + ".\n" +
+      "SMI value: " + str.tostring(smi, "#.##") + "\n" +
+      "Price: " + str.tostring(close))
+// #endregion
+
+// #region Dynamic Zone: Top
+if showMsgAlert_3 and smiExitingDynamicZoneTop
+    alert("SMI exiting the Dynamic Zone at the top.\n" +
+      "SMI value: " + str.tostring(smi, "#.##") + "\n" +
+      "Price: " + str.tostring(close))
+
+if showMsgAlert_4 and smiEnteringDynamicZoneTop
+    alert("SMI entering the Dynamic Zone at the top.\n" +
+      "SMI value: " + str.tostring(smi, "#.##") + "\n" +
+      "Price: " + str.tostring(close))
+// #endregion
+
+// #region Dynamic Zone: Bottom
+if showMsgAlert_5 and smiExitingDynamicZoneBottom
+    alert("SMI exiting the Dynamic Zone at the bottom.\n" +
+      "SMI value: " + str.tostring(smi, "#.##") + "\n" +
+      "Price: " + str.tostring(close))
+
+if showMsgAlert_6 and smiEnteringDynamicZoneBottom
+    alert("SMI entering the Dynamic Zone at the bottom.\n" +
+      "SMI value: " + str.tostring(smi, "#.##") + "\n" +
+      "Price: " + str.tostring(close))
+// #endregion
+
+// #region Dynamic Zone: Center
+if showMsgAlert_7 and smiCrossOverCentral
+    alert("SMI crossing above the centerline.\n" +
+      "SMI value: " + str.tostring(smi, "#.##") + "\n" +
+      "Price: " + str.tostring(close))
+
+if showMsgAlert_8 and smiCrossUnderCentral
+    alert("SMI crossing below the centerline.\n" +
+      "SMI value: " + str.tostring(smi, "#.##") + "\n" +
+      "Price: " + str.tostring(close))
+// #endregion
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Trend Lines with Breakout
+
+srcTrendLine = (sourceTrendLine == 'Histogram' ? histogram : smi)
+
+lblText = switch input_lblType
+    'Simple' => 'Br'
+    'Full'   => 'Break'
+
+pl = fixnan(ta.pivotlow(srcTrendLine, 1, input_pLen))
+ph = fixnan(ta.pivothigh(srcTrendLine, 1, input_pLen))
+
+pivot(float pType) =>
+    pivot = pType == pl ? pl : ph
+    xAxis = ta.valuewhen(bool(ta.change(pivot)), bar_index, 0) - ta.valuewhen(bool(ta.change(pivot)), bar_index, 1)
+    prevPivot = ta.valuewhen(bool(ta.change(pivot)), pivot, 1)
+    pivotCond = bool(ta.change(pivot)) and (pType == pl ? pivot > prevPivot : pivot < prevPivot)
+    pData = TL.new(x_axis = xAxis, offset = input_pLen, strictMode = true, strictType = pType == pl ? 0 : 1)
+    if input_showLines
+        pData.drawLine(pivotCond, prevPivot, pivot, srcTrendLine)
+    pData
+
+breakout(TL.Trendline this, float pType) =>
+    var bool hasCrossed = false
+    if bool(ta.change(this.lines.startline.get_y1()))
+        hasCrossed := false
+    if input_showLines
+        this.drawTrendline(not hasCrossed)
+    condType = (pType == pl ? srcTrendLine < this.lines.trendline.get_y2() - input_smiDiff : srcTrendLine > this.lines.trendline.get_y2() + input_smiDiff) and not hasCrossed
+    if condType and input_showLines
+        hasCrossed := true
+        this.lines.startline.set_xy2(this.lines.trendline.get_x2(), this.lines.trendline.get_y2())
+        this.lines.trendline.set_xy2(na, na)
+        this.lines.startline.copy()
+        if input_lblType != 'None'
+            label.new(
+              bar_index,
+              this.lines.startline.get_y2(),
+              text = lblText, color = pType == pl ? color.new(input_pLowCol, 50) : color.new(input_pHighCol, 50),
+              size = input_lblSize,
+              style =  pType == pl ? label.style_label_lower_left : label.style_label_upper_left,
+              textcolor = pType == pl ? (input_override ? input_overCol : input_pLowCol) : input_override ? input_overCol : input_pHighCol
+              )
+    hasCrossed
+
+method style(TL.Trendline this, color col) =>
+    this.lines.startline.set_color(col)
+    this.lines.startline.set_width(input_width)
+    this.lines.trendline.set_color(col)
+    this.lines.trendline.set_width(input_width)
+    this.lines.trendline.set_style(line.style_dashed)
+
+plData = pivot(pl)
+phData = pivot(ph)
+plData.style(input_pLowCol)
+phData.style(input_pHighCol)
+cu = breakout(plData, pl)
+co = breakout(phData, ph)
+
+alertcondition(bool(ta.change(plData.lines.startline.get_y1())), 'New Pivot Low Trendline')
+alertcondition(bool(ta.change(cu)) and cu, 'Pivot Low Breakout')
+alertcondition(bool(ta.change(phData.lines.startline.get_y1())), 'New Pivot High Trendline')
+alertcondition(bool(ta.change(co)) and co, 'Pivot High Breakout')
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }
+
+
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— {
+// #region Divergence Detector
+
+var color NONE_COLOR = color.new(color.white, 100)
+
+// Oscillator for divergence
+osc = sourceDivergence == 'SMI' ? smi : histogram
+
+plFound = na(ta.pivotlow(osc, lbL, lbR)) ? false : true
+phFound = na(ta.pivothigh(osc, lbL, lbR)) ? false : true
+_inRange(cond) =>
+	bars = ta.barssince(cond == true)
+	rangeLower <= bars and bars <= rangeUpper
+
+//------------------------------------------------------------------------------
+// Regular Bullish
+// Osc: Higher Low
+
+oscHL = osc[lbR] > ta.valuewhen(plFound, osc[lbR], 1) and _inRange(plFound[1])
+
+// Price: Lower Low
+
+priceLL = low[lbR] < ta.valuewhen(plFound, low[lbR], 1)
+bullCond = plotBull and priceLL and oscHL and plFound
+
+plot(
+     plFound ? osc[lbR] : na,
+     offset=-lbR,
+     title="Regular Bullish",
+     linewidth=2,
+     color=(bullCond ? bullColor : NONE_COLOR)
+     )
+
+plotshape(
+	 bullCond ? osc[lbR] : na,
+	 offset=-lbR,
+	 title="Regular Bullish Label",
+	 text=" Bull ",
+	 style=shape.labelup,
+	 location=location.absolute,
+	 color=bullColor,
+	 textcolor=textColor,
+     display= showDivLabel ? display.all : display.none
+	 )
+
+//------------------------------------------------------------------------------
+// Hidden Bullish
+// Osc: Lower Low
+
+oscLL = osc[lbR] < ta.valuewhen(plFound, osc[lbR], 1) and _inRange(plFound[1])
+
+// Price: Higher Low
+
+priceHL = low[lbR] > ta.valuewhen(plFound, low[lbR], 1)
+hiddenBullCond = plotHiddenBull and priceHL and oscLL and plFound
+
+plot(
+	 plFound ? osc[lbR] : na,
+	 offset=-lbR,
+	 title="Hidden Bullish",
+	 linewidth=2,
+	 color=(hiddenBullCond ? hiddenBullColor : NONE_COLOR)
+	 )
+
+plotshape(
+	 hiddenBullCond ? osc[lbR] : na,
+	 offset=-lbR,
+	 title="Hidden Bullish Label",
+	 text=" H Bull ",
+	 style=shape.labelup,
+	 location=location.absolute,
+	 color=hiddenBullColor,
+	 textcolor=textColor,
+     display= showDivLabel ? display.all : display.none
+	 )
+
+//------------------------------------------------------------------------------
+// Regular Bearish
+// Osc: Lower High
+
+oscLH = osc[lbR] < ta.valuewhen(phFound, osc[lbR], 1) and _inRange(phFound[1])
+
+// Price: Higher High
+
+priceHH = high[lbR] > ta.valuewhen(phFound, high[lbR], 1)
+
+bearCond = plotBear and priceHH and oscLH and phFound
+
+plot(
+	 phFound ? osc[lbR] : na,
+	 offset=-lbR,
+	 title="Regular Bearish",
+	 linewidth=2,
+	 color=(bearCond ? bearColor : NONE_COLOR)
+	 )
+
+plotshape(
+	 bearCond ? osc[lbR] : na,
+	 offset=-lbR,
+	 title="Regular Bearish Label",
+	 text=" Bear ",
+	 style=shape.labeldown,
+	 location=location.absolute,
+	 color=bearColor,
+	 textcolor=textColor,
+     display= showDivLabel ? display.all : display.none
+	 )
+
+//------------------------------------------------------------------------------
+// Hidden Bearish
+// Osc: Higher High
+
+oscHH = osc[lbR] > ta.valuewhen(phFound, osc[lbR], 1) and _inRange(phFound[1])
+
+// Price: Lower High
+
+priceLH = high[lbR] < ta.valuewhen(phFound, high[lbR], 1)
+
+hiddenBearCond = plotHiddenBear and priceLH and oscHH and phFound
+
+plot(
+	 phFound ? osc[lbR] : na,
+	 offset=-lbR,
+	 title="Hidden Bearish",
+	 linewidth=2,
+	 color=(hiddenBearCond ? hiddenBearColor : NONE_COLOR)
+	 )
+
+plotshape(
+	 hiddenBearCond ? osc[lbR] : na,
+	 offset=-lbR,
+	 title="Hidden Bearish Label",
+	 text=" H Bear ",
+	 style=shape.labeldown,
+	 location=location.absolute,
+	 color=hiddenBearColor,
+	 textcolor=textColor,
+     display= showDivLabel ? display.all : display.none
+	 )
+
+// #endregion
+// ———————————————————————————————————————————————————————————————————————————————————————————————————————————— }

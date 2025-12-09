@@ -1,0 +1,110 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=5
+indicator("Higher Time Frame Chart Overlay", overlay = true)
+HTF = input.timeframe(defval = "1D", title = "Higher Time Frame", group = "Higher Time Frame")
+symbolu = input.string(defval = "", title = "Symbol", tooltip = "If you leave the Symbol empty then current symbol is used")
+bodycolorup = input.color(defval = color.rgb(0, 255, 0, 0), title = "Body", inline = "bodycol", group = "Candles")
+bodycolordn = input.color(defval = color.rgb(255, 0, 0, 0), title = "", inline = "bodycol", group = "Candles")
+topwickcolor = input.color(defval = #b5b5b8, title = "Wick", inline = "wickcol", group = "Candles")
+bottomwickcolor = input.color(defval = #b5b5b8, title = "", inline = "wickcol", group = "Candles")
+cellwidthbody = input.float(defval = 1.0, title = "Body Width", minval = 0.001, step = 0.1, group = "Candles") 
+cellwidthwick = input.float(defval = 0.15, title = "Wick Width", minval = 0.001, step = 0.05, group = "Candles")
+cellheight = input.float(defval = 0.6, title = "Cell Height", minval = 0.001, step = 0.1, group = "Candles")
+backgcolor = input.color(defval = #20073e, title = "Background Color", group = "Chart")
+frmcolor = input.color(defval = #1848cc, title = "Frame Color", group = "Chart")
+showstatus = input.bool(defval = true, title = "Show Status Panel", group = "Chart")
+statustextcolor = input.color(defval = color.white, title = " Text Color", group = "Chart")
+textsize = input.string(defval = size.small, title =" Text Size", options = [size.tiny, size.small, size.normal, size.large, size.huge], group = "Chart")
+statusbackgcolor = input.color(defval = #3e1c7a, title = " Background", group = "Chart")
+tableposy = input.string(defval='bottom', title='Chart Location', options=['bottom', 'middle', 'top'], inline='chartpos', group = "Chart")
+tableposx = input.string(defval='left', title='', options=['left', 'center', 'right'], inline='chartpos', group = "Chart")
+
+var symbol = symbolu == "" ? syminfo.tickerid : symbolu
+float highest = request.security(symbol, HTF, ta.highest(10))
+float lowest = request.security(symbol, HTF, ta.lowest(10))
+bool highest_or_lowest_changed = highest != highest[1] or lowest != lowest[1]
+float mintick = (highest - lowest) / 50
+
+get_ohlc(int [] ohcl_array, int index, float highest, float lowest)=>
+    [o, h, l, c] =  request.security(symbol, HTF, [open[index], high[index], low[index], close[index]])
+    
+    array.push(ohcl_array, 5 + math.ceil((highest - o) / mintick) - 1) // open
+    array.push(ohcl_array, 5 + math.ceil((highest - h) / mintick) - 1) // high
+    array.push(ohcl_array, 5 + math.ceil((highest - l) / mintick) - 1) // low
+    array.push(ohcl_array, 5 + math.ceil((highest - c) / mintick) - 1) // close
+
+draw_candle_part(table mychart, int index, int up, int down, int left, int right, color colour)=>
+    if up <= down
+        for y = up to down
+            for x = left to right
+                table.cell(table_id = mychart, column = 39 - index * 4 - x, row = y, width = (x % 2) == 0 ? cellwidthbody : cellwidthwick, height = cellheight, bgcolor = colour)
+            
+draw_candle(int [] ohcl_array, table mychart, int index)=>
+    colour = array.get(ohcl_array, index * 4 + 3) <= array.get(ohcl_array, index * 4) ? bodycolorup : bodycolordn
+
+    // top wick
+    draw_candle_part(mychart, index, array.get(ohcl_array, index * 4 + 1), math.min(array.get(ohcl_array, index * 4 + 0), array.get(ohcl_array, index * 4 + 3)) - 1, 1, 1, topwickcolor)
+    // bottom wick
+    draw_candle_part(mychart, index, math.max(array.get(ohcl_array, index * 4 + 0), array.get(ohcl_array, index * 4 + 3)) + 1, array.get(ohcl_array, index * 4 + 2), 1, 1, bottomwickcolor)
+    // body
+    draw_candle_part(mychart, index, math.min(array.get(ohcl_array, index * 4 + 0), array.get(ohcl_array, index * 4 + 3)),  math.max(array.get(ohcl_array, index * 4 + 0), array.get(ohcl_array, index * 4 + 3)), 0, 2, colour)  
+
+draw_rt_candle(int [] ohcl_array, table mychart)=>
+    // clean candle
+    for x = 37 to 39
+        for y = 0 to 59
+            table.cell(table_id = mychart, column = x, row = y, width = (x % 2) == 1 ? cellwidthbody : cellwidthwick, height = cellheight, bgcolor = backgcolor)
+    // draw candle
+    draw_candle(ohcl_array, mychart, 0)
+    
+ohcl_array = array.new_int(0)
+get_ohlc(ohcl_array, 0, highest, lowest)
+get_ohlc(ohcl_array, 1, highest, lowest)
+get_ohlc(ohcl_array, 2, highest, lowest)
+get_ohlc(ohcl_array, 3, highest, lowest)
+get_ohlc(ohcl_array, 4, highest, lowest)
+get_ohlc(ohcl_array, 5, highest, lowest)
+get_ohlc(ohcl_array, 6, highest, lowest)
+get_ohlc(ohcl_array, 7, highest, lowest)
+get_ohlc(ohcl_array, 8, highest, lowest)
+get_ohlc(ohcl_array, 9, highest, lowest)
+
+
+
+symbolclose = str.tostring(request.security(symbol, HTF, math.round_to_mintick(close)))
+symbolhighest = str.tostring(request.security(symbol, HTF, math.round_to_mintick(highest)))
+symbollowest = str.tostring(request.security(symbol, HTF, math.round_to_mintick(lowest)))
+
+newbar = ta.change(time(HTF)) != 0 
+var mychart = table.new(position = tableposy + '_' + tableposx, columns = 43, rows= 60, frame_width = 3, frame_color = frmcolor, border_width = 0)
+if barstate.islast
+    var isfirst = true
+    if isfirst or newbar or highest_or_lowest_changed
+        
+        isfirst := false
+        //redraw table
+        for x = 0 to 40
+            for y = 0 to 59
+                table.cell(table_id = mychart, column = x, row = y, width = (x % 2) == 1 ? cellwidthbody : cellwidthwick, height = cellheight, bgcolor = backgcolor)
+        
+        if showstatus
+            for y = 0 to 59
+                table.cell(table_id = mychart, column = 41, row = y, width = cellwidthwick, height = cellheight, bgcolor = frmcolor)
+                table.cell(table_id = mychart, column = 42, row = y, width = cellwidthbody, height = cellheight, bgcolor = statusbackgcolor)
+            table.cell(table_id = mychart, column = 42, row = 0, text = symbol + "/" + HTF, text_halign = text.align_left, text_size = textsize, text_color = statustextcolor, bgcolor = statusbackgcolor)
+            table.cell(table_id = mychart, column = 42, row = 3, text = "Highest :" + symbolhighest, text_halign = text.align_left, text_size = textsize, text_color = statustextcolor, bgcolor = statusbackgcolor)
+            table.cell(table_id = mychart, column = 42, row = 55, text = "Lowest :" + symbollowest, text_halign = text.align_left, text_size = textsize, text_color = statustextcolor, bgcolor = statusbackgcolor)
+            colour = array.get(ohcl_array, 3) <= array.get(ohcl_array, 0) ? bodycolorup : bodycolordn
+            table.cell(table_id = mychart, column = 42, row = 1, text = "Close :" + symbolclose, text_halign = text.align_left, text_size = textsize, text_color = colour, bgcolor = statusbackgcolor)
+        
+        for x = 0 to 9
+            draw_candle(ohcl_array, mychart, x)
+            
+    else if not isfirst
+        draw_rt_candle(ohcl_array, mychart)
+        if showstatus
+            colour = array.get(ohcl_array, 3) <= array.get(ohcl_array, 0) ? bodycolorup : bodycolordn
+            table.cell(table_id = mychart, column = 42, row = 1, text = "Close :" + symbolclose, text_halign = text.align_left, text_size = textsize, text_color = colour, bgcolor = statusbackgcolor)
+ 

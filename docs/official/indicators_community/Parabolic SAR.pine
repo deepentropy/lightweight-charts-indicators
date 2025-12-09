@@ -1,0 +1,46 @@
+//@version=6
+// Copyright (c) 2019-present, Alex Orekhov (everget)
+// Parabolic SAR script may be freely distributed under the terms of the GPL-3.0 license.
+indicator('Parabolic SAR', shorttitle = 'PSAR', overlay = true)
+
+const string calcGroup = 'Calculation'
+start = input.float(0.02, step = 0.001, title = 'Start', group = calcGroup)
+increment = input.float(0.02, step = 0.001, title = 'Increment', group = calcGroup)
+maximum = input.float(0.2, step = 0.01, title = 'Maximum', group = calcGroup)
+
+const string visualGroup = 'Visuals'
+width = input.int(2, minval = 1, title = 'Point Width', group = visualGroup)
+showLabels = input.bool(true, title = 'Show Buy/Sell Labels', group = visualGroup)
+highlightStartPoints = input.bool(true, title = 'Highlight Start Points', group = visualGroup)
+highlightState = input.bool(true, title = 'Highlight State', group = visualGroup)
+
+//---
+
+psar = ta.sar(start, increment, maximum)
+dir = psar < close ? 1 : -1
+
+psarColor = dir == 1 ? #3388bb : #fdcc02
+psarPlot = plot(psar, title = 'PSAR', style = plot.style_circles, linewidth = math.max(1, width), color = psarColor)
+
+const color textColor = color.white
+const color longColor = color.green
+const color shortColor = color.red
+const color longFillColor = color.new(color.green, 85)
+const color shortFillColor = color.new(color.red, 85)
+
+buySignal = dir == 1 and dir[1] == -1
+plotshape(buySignal and highlightStartPoints ? psar : na, title = 'Long Start', location = location.absolute, style = shape.circle, size = size.tiny, color = longColor)
+plotshape(buySignal and showLabels ? psar : na, title = 'Buy Label', text = 'Buy', location = location.absolute, style = shape.labelup, size = size.tiny, color = longColor, textcolor = textColor)
+
+sellSignal = dir == -1 and dir[1] == 1
+plotshape(sellSignal and highlightStartPoints ? psar : na, title = 'Short Start', location = location.absolute, style = shape.circle, size = size.tiny, color = shortColor)
+plotshape(sellSignal and showLabels ? psar : na, title = 'Sell Label', text = 'Sell', location = location.absolute, style = shape.labeldown, size = size.tiny, color = shortColor, textcolor = textColor)
+
+midPricePlot = plot(ohlc4, title = '', display = display.none, editable = false)
+
+fillColor = highlightState ? (dir == 1 ? longFillColor : dir == -1 ? shortFillColor : na) : na
+fill(midPricePlot, psarPlot, title = 'Trade State Filling', color = fillColor)
+
+alertcondition(dir != dir[1], title = 'Direction Change', message = 'PSAR has changed direction, {{exchange}}:{{ticker}}')
+alertcondition(buySignal, title = 'Long', message = 'PSAR Long, {{exchange}}:{{ticker}}')
+alertcondition(sellSignal, title = 'Short', message = 'PSAR Sell, {{exchange}}:{{ticker}}')

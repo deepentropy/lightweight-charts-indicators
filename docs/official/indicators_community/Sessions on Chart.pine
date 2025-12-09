@@ -1,0 +1,168 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Aurocks_AIF
+
+//@version=5
+
+indicator("Sessions", overlay=true)
+
+bgColor = input.bool(false, "Activate High/Low View")
+
+LondonColor = color.new(color.green, 90)
+NYColor = color.new(color.red, 90)
+AsiaColor = color.new(color.yellow, 90)
+SydneyColor = color.new(color.blue, 90)
+
+///Sessions
+
+res = input.timeframe("D", "Resolution", ["D","W","M"])
+london = input.session("0300-1200:1234567", "London Session")
+ny = input.session("0800-1700:1234567", "New York Session")
+tokyo = input.session("2000-0400:1234567", "Tokyo Session")
+sydney = input.session("1700-0200:1234567", "Sydney Session")
+
+//Bars
+
+is_newbar(sess) =>
+    t = time(res, sess, "America/New_York")
+    na(t[1]) and not na(t) or t[1] < t
+
+is_session(sess) =>
+    not na(time(timeframe.period, sess, "America/New_York"))
+    
+
+//London
+
+London = input.bool(true, "London Session")
+
+londonNewbar = is_newbar(london)
+londonSession = is_session(london)
+
+float londonLow = na
+londonLow := if londonSession
+    if londonNewbar
+        low
+    else
+        math.min(londonLow[1],low)
+else
+    londonLow
+
+float londonHigh = na
+londonHigh := if londonSession
+    if londonNewbar
+        high
+    else
+        math.max(londonHigh[1],high)
+else
+    londonHigh
+
+
+plotLL = plot(londonLow, color=color.new(#000000, 100))
+plotLH = plot(londonHigh, color=color.new(#000000, 100))
+fill(plotLL, plotLH, color = londonSession and London and bgColor ? LondonColor : na)
+
+bgcolor(londonSession and London and not bgColor ? LondonColor : na)
+
+
+
+//New York
+
+NY = input.bool(true, "New York Session")
+
+nyNewbar = is_newbar(ny)
+nySession = is_session(ny)
+
+float nyLow = na
+nyLow := if nySession
+    if nyNewbar
+        low
+    else
+        math.min(nyLow[1],low)
+else
+    nyLow
+
+float nyHigh = na
+nyHigh := if nySession
+    if nyNewbar
+        high
+    else
+        math.max(nyHigh[1],high)
+else
+    nyHigh
+
+
+plotNYL = plot(nyLow, color=color.new(#000000, 100))
+plotNYH = plot(nyHigh, color=color.new(#000000, 100))
+fill(plotNYL, plotNYH, color = nySession and NY and bgColor ? NYColor : na)
+
+bgcolor(nySession and NY and not bgColor ? NYColor : na)
+
+
+//Tokyo
+
+Tokyo = input.bool(true, "Tokyo Session")
+
+tokyoNewbar = is_newbar(tokyo)
+tokyoSession = is_session(tokyo)
+
+float tokyoLow = na
+tokyoLow := if tokyoSession
+    if tokyoNewbar
+        low
+    else
+        math.min(tokyoLow[1],low)
+else
+    tokyoLow
+
+float tokyoHigh = na
+tokyoHigh := if tokyoSession
+    if tokyoNewbar
+        high
+    else
+        math.max(tokyoHigh[1],high)
+else
+    tokyoHigh
+
+
+plotTL = plot(tokyoLow, color=color.new(#000000, 100))
+plotTH = plot(tokyoHigh, color=color.new(#000000, 100))
+fill(plotTL, plotTH, color = tokyoSession and Tokyo and bgColor ? AsiaColor : na)
+
+bgcolor(tokyoSession and Tokyo and not bgColor ? AsiaColor : na)
+
+
+
+//Sydney
+
+Sydney = input.bool(false, "Sydney Session")
+
+sydneyNewbar = is_newbar(sydney)
+sydneySession = is_session(sydney)
+
+float sydneyLow = na
+sydneyLow := if sydneySession
+    if sydneyNewbar
+        low
+    else
+        math.min(sydneyLow[1],low)
+else
+    sydneyLow
+
+float sydneyHigh = na
+sydneyHigh := if sydneySession
+    if sydneyNewbar
+        high
+    else
+        math.max(sydneyHigh[1],high)
+else
+    sydneyHigh
+
+
+plotSL = plot(sydneyLow, color=color.new(#000000, 100))
+plotSH = plot(sydneyHigh, color=color.new(#000000, 100))
+fill(plotSL, plotSH, color = sydneySession and Sydney and bgColor ? SydneyColor : na)
+
+bgcolor(sydneySession and Sydney and not bgColor ? SydneyColor : na)
+
+
+
+

@@ -1,0 +1,31 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Coded By: Mit Nayi
+//@version=4
+// Bill Williams Fractal Template
+
+// Define our title and that this script will overlay the candles.
+study("Williams Fractals",shorttitle="WICK.ED Fractals", overlay=true)
+
+// Define "n" as the number of periods and keep a minimum value of 2 for error handling.
+n = input(title="Periods", defval=2, minval=2, type=input.integer)
+fractalBars = input(title="3 or 5 Bar Fractal", defval="3", options=["3", "5"])
+// Logic 
+dnFractal = if fractalBars == "5"
+    dnFractal5 = (high[n-2] < high[n]) and (high[n-1] < high[n]) and (high[n+1] < high[n]) and (high[n+2] < high[n])
+else
+    if fractalBars == "3"
+        dnFractal3 = (high[n-1] < high[n]) and (high[n+1] < high[n]) 
+
+upFractal = if fractalBars == "5"
+    upFractal5 = (low[n-2] > low[n]) and (low[n-1] > low[n]) and (low[n+1] > low[n]) and (low[n+2] > low[n])
+else
+    if fractalBars == "3"
+        upFractal3 = (low[n-1] > low[n]) and (low[n+1] > low[n]) 
+
+// Plot the fractals as shapes on the chart.
+// Down Arrow above candles
+plotshape(dnFractal, style=shape.triangledown, location=location.abovebar,  offset=-2, color=color.white, transp=25)    
+// Up Arrow below candles
+plotshape(upFractal, style=shape.triangleup, location=location.belowbar,  offset=-2, color=color.white, transp=25)
+
+// END. 

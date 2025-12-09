@@ -1,0 +1,152 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("Trend Lines for RSI, CCI, Momentum, OBV", overlay=false, max_bars_back = 4000)
+indi = input(defval = 'RSI', title = 'Indicator', options = ['RSI', 'CCI', 'OBV', 'Momentum'])
+Src = input(defval = close, title="Source")
+rsilen = input(defval = 14, title="RSI Length", minval = 1)
+ccilen = input(defval = 20, title="CCI Length", minval = 1)
+momlen = input(defval = 10, title="Momentum Length", minval = 1)
+prd = input(defval = 10, title="Pivot Point Period", minval = 5, maxval = 50)
+PPnum = input(defval = 3, title="Number of Pivot Point to check", minval = 2, maxval = 3)
+
+Rsi = rsi(Src, rsilen)
+Cci = cci(Src, ccilen)
+Mom = cci(Src, momlen)
+src = indi == 'RSI' ? Rsi :
+   indi == 'CCI' ? Cci :
+   indi == 'Momentum' ? Mom :
+   obv
+
+hline1 = indi == 'RSI' ? 70 :
+   indi == 'CCI' ? 100 : na
+
+hline2 = indi == 'RSI' ? 30 :
+   indi == 'CCI' ? -100 : na
+ 
+h1 = hline(hline1)
+h2 = hline(hline2)
+fill(h1, h2, color = #9915ff)
+plot(src, linewidth = 2)
+
+
+float ph = na, float pl = na
+ph := pivothigh(src, prd, prd)
+pl := pivotlow(src, prd, prd)
+
+getloc(bar_i)=>
+    _ret = bar_index + prd - bar_i 
+    
+t1pos = valuewhen(ph, bar_index, 0)
+t1val = nz(src[getloc(t1pos)])
+t2pos = valuewhen(ph, bar_index, 1)
+t2val = nz(src[getloc(t2pos)])
+t3pos = valuewhen(ph, bar_index, 2)
+t3val = nz(src[getloc(t3pos)])
+    
+b1pos = valuewhen(pl, bar_index, 0)
+b1val = nz(src[getloc(b1pos)])
+b2pos = valuewhen(pl, bar_index, 1)
+b2val = nz(src[getloc(b2pos)])
+b3pos = valuewhen(pl, bar_index, 2)
+b3val = nz(src[getloc(b3pos)])
+
+getloval(l1, l2)=>
+    _ret1 = l1 == 1 ? b1val : l1 == 2 ? b2val : l1 ==3 ? b3val : 0
+    _ret2 = l2 == 1 ? b1val : l2 == 2 ? b2val : l2 ==3 ? b3val : 0
+    [_ret1, _ret2]
+
+getlopos(l1, l2)=>
+    _ret1 = l1 == 1 ? b1pos : l1 == 2 ? b2pos : l1 ==3 ? b3pos : 0
+    _ret2 = l2 == 1 ? b1pos : l2 == 2 ? b2pos : l2 ==3 ? b3pos : 0
+    [_ret1, _ret2]
+
+gethival(l1, l2)=>
+    _ret1 = l1 == 1 ? t1val : l1 == 2 ? t2val : l1 ==3 ? t3val : 0
+    _ret2 = l2 == 1 ? t1val : l2 == 2 ? t2val : l2 ==3 ? t3val : 0
+    [_ret1, _ret2]
+
+gethipos(l1, l2)=>
+    _ret1 = l1 == 1 ? t1pos : l1 == 2 ? t2pos : l1 ==3 ? t3pos :  0
+    _ret2 = l2 == 1 ? t1pos : l2 == 2 ? t2pos : l2 ==3 ? t3pos :  0
+    [_ret1, _ret2]
+
+// line definitions
+var line l1 = na, var line l2 = na, var line l3 = na
+var line t1 = na, var line t2 = na, var line t3 = na
+
+//delete old lines
+line.delete(l1), line.delete(l2), line.delete(l3)
+line.delete(t1), line.delete(t2), line.delete(t3)
+
+countlinelo = 0
+countlinehi = 0
+for p1 = 1 to PPnum - 1 
+    uv1 = 0.0
+    uv2 = 0.0
+    up1 = 0
+    up2 = 0
+    for p2 = PPnum to p1 + 1
+        [val1, val2] = getloval(p1, p2)
+        [pos1, pos2] = getlopos(p1, p2)
+        if val1 > val2
+            diff = (val1 - val2) / (pos1 - pos2)
+            hline = val2 + diff
+            lloc = bar_index
+            lval = src
+            valid = true
+            for x = pos2 + 1 - prd to bar_index
+                if nz(src[getloc(x + prd)]) < hline
+                    valid := false
+                lloc := x
+                lval := hline
+                hline := hline + diff
+            
+            if valid
+                uv1 := hline
+                uv2 := val2
+                up1 := lloc
+                up2 := pos2
+                break
+    dv1 = 0.0
+    dv2 = 0.0
+    dp1 = 0
+    dp2 = 0                
+    for p2 = PPnum to p1 + 1                
+        [val1, val2] = gethival(p1, p2)
+        [pos1, pos2] = gethipos(p1, p2)
+        if val1 < val2
+            diff = (val2 - val1) / (pos1 - pos2)
+            hline = val2 - diff
+            lloc = bar_index
+            lval = src
+            valid = true
+            for x = pos2 + 1 - prd to bar_index
+                if nz(src[getloc(x + prd)]) > hline
+                    valid := false
+                    break
+                lloc := x
+                lval := hline
+                hline := hline - diff
+                
+            if valid
+                dv1 := hline
+                dv2 := val2
+                dp1 := lloc
+                dp2 := pos2
+                break
+
+    if up1 != 0 and up2 != 0
+        countlinelo := countlinelo + 1
+        l1 := countlinelo == 1 ? line.new(up2 - prd, uv2, up1, uv1) : l1
+        l2 := countlinelo == 2 ? line.new(up2 - prd, uv2, up1, uv1) : l2
+        l3 := countlinelo == 3 ? line.new(up2 - prd, uv2, up1, uv1) : l3
+    
+    if dp1 != 0 and dp2 != 0
+        countlinehi := countlinehi + 1
+        t1 := countlinehi == 1 ? line.new(dp2 - prd, dv2, dp1, dv1) : t1
+        t2 := countlinehi == 2 ? line.new(dp2 - prd, dv2, dp1, dv1) : t2
+        t3 := countlinehi == 3 ? line.new(dp2 - prd, dv2, dp1, dv1) : t3
+           
+ 

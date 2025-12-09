@@ -1,0 +1,9 @@
+//@version=6
+strategy("BarUpDn Strategy", overlay=true, default_qty_type = strategy.percent_of_equity, default_qty_value = 10)
+maxIdLossPcnt = input.float(1, "Max intraday loss (%)")
+strategy.risk.max_intraday_loss(maxIdLossPcnt, strategy.percent_of_equity)
+if (close > open and open > close[1])
+	strategy.entry("BarUp", strategy.long)
+if (close < open and open < close[1])
+	strategy.entry("BarDn", strategy.short)
+//plot(strategy.equity, title="equity", color=color.red, linewidth=2, style=plot.style_areabr)

@@ -1,0 +1,112 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Nadaraya-Watson Smoothers [LuxAlgo]", "LuxAlgo - Nadaraya-Watson Smoothers", overlay = true, max_lines_count = 500, max_labels_count = 500, max_bars_back=500)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+h = input.float(8.,'Bandwidth', minval = 0)
+src = input(close,'Source')
+
+repaint = input(true, 'Repainting Smoothing', tooltip = 'Repainting is an effect where the indicators historical output is subject to change over time. Disabling repainting will cause the indicator to output the endpoint of the estimator')
+
+//Style
+upCss = input.color(color.teal, 'Colors', inline = 'inline1', group = 'Style')
+dnCss = input.color(color.red, '', inline = 'inline1', group = 'Style')
+
+//-----------------------------------------------------------------------------}
+//Functions
+//-----------------------------------------------------------------------------{
+//Gaussian window
+gauss(x, h) => math.exp(-(math.pow(x, 2)/(h * h * 2)))
+
+//-----------------------------------------------------------------------------}
+//Append lines
+//-----------------------------------------------------------------------------{
+n = bar_index
+
+var ln = array.new_line(0) 
+
+if barstate.isfirst and repaint
+    for i = 0 to 499
+        array.push(ln,line.new(na,na,na,na))
+
+//-----------------------------------------------------------------------------}
+//End point method
+//-----------------------------------------------------------------------------{
+var coefs = array.new_float(0)
+var den = 0.
+
+if barstate.isfirst and not repaint
+    for i = 0 to 499
+        w = gauss(i, h)
+        coefs.push(w)
+
+    den := coefs.sum()
+
+out = 0.
+if not repaint
+    for i = 0 to 499
+        out += src[i] * coefs.get(i)
+out /= den
+ 
+//-----------------------------------------------------------------------------}
+//Compute and display NWE
+//-----------------------------------------------------------------------------{
+float y2 = na
+float y1 = na
+float y1_d = na
+line l = na
+label lb = na
+
+if barstate.islast and repaint
+    //Compute and set NWE point 
+    for i = 0 to math.min(499,n - 1)
+        sum = 0.
+        sumw = 0.
+        //Compute weighted mean 
+        for j = 0 to math.min(499,n - 1)
+            w = gauss(i - j, h)
+            sum += src[j] * w
+            sumw += w
+
+        y2 := sum / sumw
+        d = y2 - y1
+        
+        //Set coordinate line
+        l := array.get(ln,i)
+        line.set_xy1(l,n-i+1,y1)
+        line.set_xy2(l,n-i,y2)
+        line.set_color(l,y2 > y1 ? dnCss : upCss)
+        line.set_width(l,2)
+        
+        if d * y1_d < 0
+            label.new(n-i+1, src[i], y1_d < 0 ? '▲' : '▼'
+              , color = color(na)
+              , style = y1_d < 0 ? label.style_label_up : label.style_label_down
+              , textcolor = y1_d < 0 ? upCss : dnCss
+              , textalign = text.align_center)
+
+        y1 := y2
+        y1_d := d
+
+//-----------------------------------------------------------------------------}
+//Dashboard
+//-----------------------------------------------------------------------------{
+var tb = table.new(position.top_right, 1, 1
+  , bgcolor = #1e222d
+  , border_color = #373a46
+  , border_width = 1
+  , frame_color = #373a46
+  , frame_width = 1)
+
+if repaint
+    tb.cell(0, 0, 'Repainting Mode Enabled', text_color = color.white, text_size = size.small)
+
+//-----------------------------------------------------------------------------}
+//Plot
+//-----------------------------------------------------------------------------}
+plot(repaint ? na : out, 'NWE Endpoint Estimator', out > out[1] ? upCss : dnCss)
+
+//-----------------------------------------------------------------------------}

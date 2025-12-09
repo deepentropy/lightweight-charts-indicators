@@ -1,0 +1,78 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TFlab
+//@version=5
+
+
+indicator("Power Of 3 ICT 01 [TradingFinder] AMD ICT & SMC Accumulations", "TFlab AMD", overlay = true, max_bars_back = 5000, max_boxes_count = 500,max_labels_count = 500,max_lines_count = 500)
+
+// Accumulation
+show_Accumulation = input(true, 'Accumulation ', group = 'Accumulation ')
+Accumulation_ses = input.session('1900-0100', '', inline = 'Accumulation', group = 'Accumulation ')
+Accumulation_color = input.color(#8bbcfc, 'Color', inline = 'Accumulation', group = 'Accumulation ')
+Accumulation_text = 'Accumulation'
+
+// Manipulation
+show_Manipulation = input(true, 'Manipulation ', group = 'Manipulation ') 
+Manipulation_ses = input.session('0100-0700', '', inline = 'Manipulation', group = 'Manipulation ')
+Manipulation_color = input.color(#F0B884, 'Color', inline = 'Manipulation', group = 'Manipulation ')
+Manipulation_text = 'Manipulation'
+
+// Distribution
+show_Distribution = input(true, 'Distribution ', group = 'Distribution ') 
+Distribution_ses = input.session('0700-1300', '', inline = 'Distribution', group = 'Distribution ')
+Distribution_color = input.color(#0CC1C0, 'Color', inline = 'Distribution', group = 'Distribution ')
+Distribution_text = 'Distribution'
+
+//zones
+On_Accumulation = math.sign(nz(time(timeframe.period, Accumulation_ses, "America/New_York")))
+On_Manipulation = math.sign(nz(time(timeframe.period, Manipulation_ses, "America/New_York")))
+On_Distribution = math.sign(nz(time(timeframe.period, Distribution_ses, "America/New_York")))
+
+
+
+//High & Low  Detector 
+LowHighDetector(On, Color, Text) =>
+    var int Bar = 0
+    var float High = 0.0 
+    var float Low = 0.0
+    var box BoX = na
+    var line H_Line = na
+    var line L_Line = na
+    var label LabeL = na 
+    var bool Permit = false
+    if  (On[1] == 0 and On == 1)
+        Bar := bar_index
+        High := high
+        Low := low
+        
+    else 
+        if On[1] == 1 or On == 1
+            High := math.max(high , High) 
+            Low :=   math.min(low , Low)
+
+    if On > On[1] and str.tonumber(timeframe.period) <= 60
+        BoX := box.new(bar_index,High, bar_index , Low, bgcolor = color.new(Color, 85),
+         border_color = color.rgb(34, 101, 155),
+         border_style = line.style_dotted)
+        
+        LabeL := label.new(int(math.avg(Bar,bar_index)), High , text = Text ,xloc = xloc.bar_index, yloc = yloc.price, size = size.normal ,
+         style =  label.style_label_down  , textcolor = color.rgb(34, 101, 155), color = color.rgb(255, 255, 255, 100))
+    if On[1] == 1 or On == 1
+        box.set_top(BoX, High)
+        box.set_bottom(BoX, Low)
+        box.set_right(BoX, bar_index)
+        label.set_x(LabeL,math.round(math.avg(Bar,bar_index)))
+        label.set_y(LabeL, High)
+    
+
+
+
+if show_Accumulation 
+    LowHighDetector(On_Accumulation, Accumulation_color,Accumulation_text)
+
+if show_Manipulation 
+    LowHighDetector(On_Manipulation,Manipulation_color,Manipulation_text)
+
+if show_Distribution 
+    LowHighDetector(On_Distribution,Distribution_color,Distribution_text)
+

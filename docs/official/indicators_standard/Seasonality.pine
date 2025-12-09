@@ -1,0 +1,253 @@
+//@version=6
+indicator("Seasonality", overlay = false, max_boxes_count = 500)
+
+//#region ———————————————————— Constants, inputs, and global variables
+
+// Tooltips
+string TT_SY = "The year to start seasonality calculations. Box drawings start one year after this value."
+string TT_PC = "The base color for boxes and table cells that show positive values."
+string TT_NC = "The base color for boxes and table cells that show negative values."
+string TT_CP = "The cutoff for maximum color intensity. Absolute values at or above this level have the same color."
+string TT_WT = "The table width as a percentage of the pane where the table is located. If this value is 0, the width fits the contents of the table, and the table can be wider than the pane."
+string TT_HG = "The table height as a percentage of the pane where the table is located. If this value is 0, the height fits the contents of the table, and the table can be taller than the pane."
+string TT_SA = "Toggles the 'Avgs' row, which shows average change percentages for each month."
+string TT_SD = "Toggles the 'StDev' row, which shows the standard deviation of each month's percentages."
+string TT_SP = "Toggles the 'Pos%' row, which shows the percentage of positive changes in each month's column."
+string TT_SM = "Specifies months to skip. Write months in the 'YYYY-MM' format, separated by commas and spaces."
+
+
+// Start year setting 
+int startYearInput = input.int(2015, "Starting year", minval = 1800, tooltip = TT_SY, display = display.data_window)
+
+// Color settings 
+string COLOR_GRP          = "Color settings"
+color  posColorInput      = color.new(input.color(#089981, "Positive Color", group = COLOR_GRP, tooltip = TT_PC), 0)
+color  negColorInput      = color.new(input.color(#F23745, "Negative Color", group = COLOR_GRP, tooltip = TT_NC), 0)
+int    cutoffPercentInput = input.int(10, "Color intensity cutoff (%)", group = COLOR_GRP, tooltip = TT_CP, display = display.none)
+
+// Table settings
+string HEATMAP_GRP          = "Heatmap settings"
+string tablePositionInput   = input.string("Center", "Table Position", options = ["Left", "Center", "Right"], group = HEATMAP_GRP, display = display.none)
+float  tableWidthInput      = input.float(100, "Table Width (%)", maxval = 100, minval = 0, group = HEATMAP_GRP, tooltip = TT_WT,  display = display.none)
+float  tableHeightInput     = input.float(95, "Table Height (%)", maxval = 100, minval = 0, group = HEATMAP_GRP, tooltip = TT_HG,  display = display.none)
+bool   showAvgInput         = input.bool(true, "Show Averages",            group = HEATMAP_GRP, tooltip = TT_SA)
+bool   showStDevInput       = input.bool(true, "Show Standard Deviation",  group = HEATMAP_GRP, tooltip = TT_SD)
+bool   showPosInput         = input.bool(true, "Show Percent Positive",    group = HEATMAP_GRP, tooltip = TT_SP)
+//@variable Controls the display of metric rows at the bottom of the Heatmap.
+bool showMetrics = showAvgInput or showStDevInput or showPosInput
+
+// Additional settings
+string ADD_GRP            = "Additional settings"
+string skippedMonthsInput = input.text_area("YYYY-MM, YYYY-MM", "Ignored months", group = ADD_GRP, tooltip = TT_SM)
+
+//@variable An "int" array with all specific months to ignore, formatted as "YYYYMM".
+var ignoredMonthsArray = array.new<int>()
+if barstate.isfirst
+    var ignoredStrArray = str.split(str.replace_all(skippedMonthsInput, " ", ""), ",")
+    var ignoredIntArray = array.new<int>()
+    for item in ignoredStrArray
+        num = str.tonumber(str.replace_all(item, "-", ""))
+        ignoredIntArray.push(math.round(num))
+    ignoredMonthsArray := ignoredIntArray
+
+
+//@variable The current year at the time.
+int currYear = year(time_close - 1)
+//@variable The current month at the time.
+int currMonth = month(time_close - 1)
+
+prevTimeClose = time_close[1] - 1
+int prevBarYear  = year(prevTimeClose)
+int prevBarMonth = month(prevTimeClose)
+//#endregion
+
+
+//#region ———————————————————— Functions and methods
+
+//@function                 Calculates color used by the boxes and Heatmap cells.
+//@param value              The percentage value for the calculation.
+//@param topTranspValue     The cutoff value. An absolute `value` at or above this level returns the most intense color. 
+//@returns                  The calculated color.
+calcColor(float value, int topTranspValue = na) =>
+    color naColor     = color.gray
+    float heavyTransp = 50
+    float lightTransp = 90
+    color heavyColor  = color.new(value >= 0 ? posColorInput : negColorInput, heavyTransp)
+    color lightColor  = color.new(value >= 0 ? posColorInput : negColorInput, lightTransp)
+    color baseColor   = na(value) ? naColor : value >= 0 ? posColorInput : negColorInput
+    color transpColor = color.from_gradient(math.abs(value), 0, topTranspValue, lightColor, heavyColor)
+    color result      = na(topTranspValue) ? baseColor : transpColor
+
+//@function                 Returns the one-bar change percentage of the `source`.
+changePercent(float source) => 100.0 * (source - source[1]) / source[1]
+
+//@function                 Returns the number of non-na values in `this` array.
+method nonNA(array<float> this) =>
+    int result = 0
+    for item in this
+        if not na(item)
+            result += 1
+    result
+
+//@function                 Returns the percentage of positive non-na values in `this` array.
+method percentPositive(array<float> this) =>
+    int nonNA = 0
+    int pos   = 0
+    for item in this
+        if not na(item)
+            nonNA += 1
+            if item >= 0
+                pos += 1
+    float result = 100.0 * pos / nonNA
+
+//@function                 Calculates a matrix of monthly changes, starting from the beginning of a specified year.
+//@param startYear          The year where the calculations start.
+//@returns                  A tuple containing an array of year indices and the matrix of monthly changes.
+calculateMontlyChanges(int startYear, int prevBarYear, int prevBarMonth) =>
+    var matrix<float> dataMatrix        = matrix.new<float>(0, 13)
+    var array<int>    yearIndexArray    = array.new<int>()
+    float             prevChangePercent = changePercent(close[1])
+    if prevBarYear >= startYear and not ignoredMonthsArray.includes(prevBarYear * 100 + prevBarMonth)
+        if prevBarYear != prevBarYear[1] or dataMatrix.rows() == 0
+            dataMatrix.add_row()
+            yearIndexArray.push(prevBarYear)
+        dataMatrix.set(dataMatrix.rows() - 1, prevBarMonth, prevChangePercent)
+    [yearIndexArray, dataMatrix]
+//#endregion
+
+
+//#region ———————————————————— Main calculations and outputs
+
+// A tuple containing year indices and monthly changes.
+[yearIndexArray, changesMatrix] = request.security(
+     syminfo.tickerid, "1M", calculateMontlyChanges(startYearInput, prevBarYear, prevBarMonth), lookahead = barmerge.lookahead_on
+ )
+
+// Box drawing and plot calculations
+var float currMonthAverage       = na
+var float currMonthStDev         = na
+var float currAvgNumberOfMonths  = na
+var float currMonthExpectedPrice = na
+if timeframe.change("1M") and not na(changesMatrix)
+    currMonthAverage       := changesMatrix.col(currMonth).avg()
+    currMonthStDev         := changesMatrix.col(currMonth).stdev(false)
+    currAvgNumberOfMonths  := changesMatrix.col(currMonth).nonNA()
+    currMonthExpectedPrice := close[1] + close[1] * currMonthAverage / 100
+    // Draw a new monthly projection box.
+    box.new(
+         left          = time,
+         top           = currMonthExpectedPrice,
+         right         = time_close("1M"),
+         bottom        = close[1],
+         xloc          = xloc.bar_time,
+         bgcolor       = calcColor(currMonthAverage, cutoffPercentInput),
+         border_color  = calcColor(currMonthAverage),
+         text          = str.tostring(currMonthAverage, format.percent),
+         text_color    = color.new(chart.fg_color, 60),
+         border_style  = line.style_dashed,
+         force_overlay = true
+     )
+
+//@variable The display location for series plots, excluding `currAvgNumberOfMonths`.
+displayLoc = display.data_window + display.status_line 
+// Plot `currMonthExpectedPrice`, `currMonthAverage`, and `currMonthStDev` in the status line and Data Window.
+plot(
+     currMonthExpectedPrice, "Expected price for current month", color = calcColor(currMonthAverage), 
+     display = displayLoc
+ )
+plot(
+     currMonthAverage, "Historical average for current month", color = calcColor(currMonthAverage), 
+     display = displayLoc, format = format.percent
+ )
+plot(
+     currMonthStDev, "Historical standard deviation for current month", color = color.gray, 
+     display = displayLoc, precision = 2
+ )
+// Plot `currAvgNumberOfMonths` in the Data Window.
+plot(currAvgNumberOfMonths, "No. of months used in the current average", display = display.data_window, precision = 0)
+
+//@variable An array containing the abbreviated names for each month.
+var monthNames = array.from("Year", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+//@function Calculates the total number of rows to be displayed in the Heatmap table.
+countRows(changesMatrix, showMetrics, showAvgInput, showStDevInput, showPosInput) =>
+    totalRowCount = 1                       // Months header 
+    totalRowCount += changesMatrix.rows()   // Number of years
+    if showMetrics
+        totalRowCount += 1 // Metrics divider
+        totalRowCount += showAvgInput ? 1 : 0
+        totalRowCount += showStDevInput ? 1 : 0
+        totalRowCount += showPosInput ? 1 : 0
+    totalRowCount
+
+
+// Heatmap calculations
+if barstate.islast
+
+    tablePosition = switch tablePositionInput
+        "Left" => position.bottom_left
+        "Center" => position.bottom_center
+        "Right" => position.bottom_right
+
+    table dataTable           = table.new(tablePosition, 13, changesMatrix.rows() + 5)
+    color informerCellBgcolor = color.new(color.gray, 80)
+    color textColor           = chart.fg_color
+    int   totalRowCount       = countRows(changesMatrix, showMetrics, showAvgInput, showStDevInput, showPosInput)
+    float cellHeight          = tableHeightInput / totalRowCount
+    float cellWidth           = tableWidthInput / 13.0
+
+    // Month headers 
+    for [index, item] in monthNames
+        dataTable.cell(index, 0, item, bgcolor = informerCellBgcolor, text_color = textColor, height = cellHeight, width = cellWidth)
+    // Monthly change data cell logic
+    for [arrIndex, arr] in changesMatrix
+        thisYear = yearIndexArray.get(arrIndex)
+        for [itemIndex, item] in arr
+            if itemIndex == 0
+                dataTable.cell(
+                         itemIndex, arrIndex + 1, str.tostring(thisYear), bgcolor = informerCellBgcolor, 
+                         text_color = textColor, height = cellHeight, width = cellWidth
+                     )
+            else
+                isSkipped = ignoredMonthsArray.includes(int(thisYear * 100 + itemIndex))
+                cellText  = isSkipped ? "SKIP" : str.tostring(item, format.percent)
+                cellColor = isSkipped ? color.new(color.gray, 50) : calcColor(item, cutoffPercentInput)
+                dataTable.cell(itemIndex, arrIndex + 1, cellText, bgcolor = cellColor, text_color = textColor, height = cellHeight, width = cellWidth)
+    // Metrics cell logic
+    if showMetrics
+        // Divider row for metrics display.
+        dividerRow = changesMatrix.rows() + 1
+        dataTable.cell(0, dividerRow, "", text_color = na, bgcolor = informerCellBgcolor, text_size = size.tiny, height = cellHeight, width = cellWidth)
+        dataTable.merge_cells(0, dividerRow, 12, dividerRow)
+
+        if showAvgInput
+            // "Avgs" data cell calculations
+            avgsRow = changesMatrix.rows() + 2
+            dataTable.cell(0, avgsRow, "Avgs:", bgcolor = informerCellBgcolor, text_color = textColor, height = cellHeight, width = cellWidth)
+            for i = 1 to changesMatrix.columns() - 1
+                avgValue = changesMatrix.col(i).avg()
+                dataTable.cell(
+                     i, avgsRow, str.tostring(avgValue, format.percent), 
+                     bgcolor = calcColor(avgValue, cutoffPercentInput), text_color = textColor, height = cellHeight, width = cellWidth
+                 )
+        // "StDev" data cell calculations
+        if showStDevInput
+            stDevRow = changesMatrix.rows() + 3
+            dataTable.cell(0, stDevRow, "StDev:", bgcolor = informerCellBgcolor, text_color = textColor, height = cellHeight, width = cellWidth)
+            for i = 1 to changesMatrix.columns() - 1
+                stdevValue = changesMatrix.col(i).stdev(false)
+                dataTable.cell(
+                     i, stDevRow, str.tostring(stdevValue, "##.##"), bgcolor = color.new(color.gray, 80), 
+                     text_color = textColor, height = cellHeight, width = cellWidth
+                 )
+        // "Pos%" data cell calculations
+        if showPosInput
+            ratioRow = changesMatrix.rows() + 4
+            dataTable.cell(0, ratioRow, "Pos%:", bgcolor = informerCellBgcolor, text_color = textColor, height = cellHeight, width = cellWidth)
+            for i = 1 to changesMatrix.columns() - 1
+                ratioValue = changesMatrix.col(i).percentPositive()
+                dataTable.cell(
+                     i, ratioRow, str.tostring(ratioValue, '#') + "%", bgcolor = calcColor(ratioValue - 50, 50), 
+                     text_color = textColor, height = cellHeight, width = cellWidth
+                 )
+//#endregion

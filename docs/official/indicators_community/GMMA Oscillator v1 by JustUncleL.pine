@@ -1,0 +1,201 @@
+//@version=3
+
+study(title="GMMA Oscillator v1 by JustUncleL", shorttitle="GMMA_Osc", overlay=false)
+
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ //
+// 
+//  Author:   @JustUncleL
+//  Revision: v1
+//  Date:     17-July-2018
+//
+//  Description:
+//  ============
+//      The Guppy Multiple Moving Average (GMMA) is a technical indicator that displays two sets of
+//      moving averages. The first set contains six exponential moving averages that use 
+//      faster periods to monitor the trading activity of short-term traders. The second set 
+//      contains six exponential moving averages that use slower periods to monitor the trading
+//      activity of long-term investors.
+//
+//      The GMMA Oscillator is a technical indicator developed by Leon Wilson. The oscillator line, 
+//      which percentage difference between the Fast and Slow GMMA sets. The second line is the 
+//      signal line and it is simply the exponential moving average of the oscillator line.
+//
+//      As with many trend following indicators, a bullish signal occurs when the oscillator line 
+//      crosses above the signal line and a bearish signal when the oscillator line crosses 
+//      below the signal line.
+//
+//      Options:
+//      - Select between Guppy MMA or SuperGuppy MMA calculated Oscillator.
+//      - Option to apply smoothing to the Oscillator line (recommendation 3)
+//      - Option to change Signal line period length
+//      - Option to use Anchor Time frame to match the Guppy or SuperGuppy chart
+//      - Option to show coloured Bullish/Bearish trading Zones
+//
+//   References:
+//   ===========
+//
+//
+//   Revisions:
+//   ==========
+//      v1.00   - Original version.
+//
+//   -----------------------------------------------------------------------------
+//   Copyright 2018 @JustUncleL
+//
+//   This program is free software: you can redistribute it and/or modify
+//   it under the terms of the GNU General Public License as published by
+//   the Free Software Foundation, either version 3 of the License, or
+//   any later version.
+//
+//   This program is distributed in the hope that it will be useful,
+//   but WITHOUT ANY WARRANTY; without even the implied warranty of
+//   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//   GNU General Public License for more details.
+// 
+//   The GNU General Public License can be found here
+//   <http://www.gnu.org/licenses/>.
+//
+//   -----------------------------------------------------------------------------
+//
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ //
+
+// === INPUTS === 
+
+// Use Alternate Anchor TF for MAs 
+anchor      = input(0,minval=0,maxval=1440,title="Use Alternate Anchor TimeFrame (0=none, max=1440 (mins,D,W)")
+//
+gmmaType    = input("Guppy", title="Calculate Oscillator From Which GMMA Sets", options=["Guppy","SuperGuppy"])
+smoothLen   = input(1,  minval=1, title="Oscillator Smoothing Length (1=none)")
+signalLen   = input(13, minval=1, title="GMMA Oscillator Signal Length")
+showZones   = input(true, title="Show Bullish/Bearish Zones")
+//
+src         =  input(close, title="Source")
+
+//
+// === /INPUTS === 
+//
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ //
+
+// === FUNCTIONS === 
+
+//Fast Guppy Avg EMA
+GMMAFast(src, mult) => 
+    ema1 = ema(src, 3*mult)
+    ema2 = ema(src, 5*mult)
+    ema3 = ema(src, 8*mult)
+    ema4 = ema(src, 10*mult)
+    ema5 = ema(src, 12*mult)
+    ema6 = ema(src, 15*mult)
+    return = (ema1 + ema2 + ema3 + ema4 + ema5 + ema6)
+    return
+
+//Slow Guppy Avg EMA
+GMMASlow(src, mult) => 
+    ema7 = ema(src, 30*mult)
+    ema8 = ema(src, 35*mult)
+    ema9 = ema(src, 40*mult)
+    ema10 = ema(src, 45*mult)
+    ema11 = ema(src, 50*mult)
+    ema12 = ema(src, 60*mult)
+    return = (ema7 + ema8 + ema9 + ema10 + ema11 + ema12)
+    return
+    
+//Fast SuperGuppy Avg EMA
+superGMMAFast(src, mult) => 
+    emaF1 = ema(src, 3*mult)
+    emaF2 = ema(src, 5*mult)
+    emaF3 = ema(src, 7*mult)
+    emaF4 = ema(src, 9*mult)
+    emaF5 = ema(src, 11*mult)
+    emaF6 = ema(src, 13*mult)
+    emaF7 = ema(src, 15*mult)
+    emaF8 = ema(src, 17*mult)
+    emaF9 = ema(src, 19*mult)
+    emaF10 = ema(src, 21*mult)
+    emaF11 = ema(src, 23*mult)
+    return = (emaF1 + emaF2 + emaF3 + emaF4 + emaF5 + emaF6 + emaF7 + emaF8 + emaF9 + emaF10 + emaF11)/11
+    return
+    
+//Slow SuperGuppy Avg EMA
+superGMMASlow(src, mult) => 
+    emaS1 = ema(src, 25*mult)
+    emaS2 = ema(src, 28*mult)
+    emaS3 = ema(src, 31*mult)
+    emaS4 = ema(src, 34*mult)
+    emaS5 = ema(src, 37*mult)
+    emaS6 = ema(src, 40*mult)
+    emaS7 = ema(src, 43*mult)
+    emaS8 = ema(src, 46*mult)
+    emaS9 = ema(src, 49*mult)
+    emaS10 = ema(src, 52*mult)
+    emaS11 = ema(src, 55*mult)
+    emaS12 = ema(src, 58*mult)
+    emaS13 = ema(src, 61*mult)
+    emaS14 = ema(src, 64*mult)
+    emaS15 = ema(src, 67*mult)
+    emaS16 = ema(src, 70*mult)
+    // average
+    return = (emaS1 + emaS2 + emaS3 + emaS4 + emaS5 + emaS6 + emaS7 + emaS8 + 
+          emaS9 + emaS10 + emaS11 + emaS12 + emaS13 + emaS14 + emaS15 + emaS16)/16
+    return
+
+// === /FUNCTIONS === 
+
+//
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ //
+
+// === SERIES === 
+
+//
+// Calculate the Multiplier for Anchor MAs.
+mult = not isintraday or anchor==0 or interval<=0 or interval>=anchor or anchor>1440 ? 1 : round(anchor/interval)>1? round(anchor/interval) : 1
+mult := isintraday or anchor==0 or interval<=0 or interval>=anchor or anchor>52 ? mult : round(anchor/interval)>1? round(anchor/interval) : 1 
+
+// Select type of Oscillator calculation
+gmmaFast = gmmaType=="Guppy" ? GMMAFast(src, mult) : superGMMAFast(src, mult)
+gmmaSlow = gmmaType=="Guppy" ? GMMASlow(src, mult) : superGMMASlow(src, mult)
+
+// Calculate Oscillator, Smoothed Osc and signal line
+gmmaOscRaw = ((gmmaFast - gmmaSlow) / gmmaSlow) * 100
+gmmaOsc    = sma(gmmaOscRaw, smoothLen)
+gmmaSignal = ema(gmmaOscRaw, signalLen)
+gmmaClr  = gmmaOsc < gmmaSignal ? red : gmmaOsc > gmmaSignal ? green : gray
+
+// bullish signal rule: 
+bullishRule = crossover(gmmaOsc, gmmaSignal)
+// bearish signal rule: 
+bearishRule = crossunder(gmmaOsc, gmmaSignal)
+// current trading State
+ruleState = 0
+ruleState := bullishRule ? 1 : bearishRule ? -1 : nz(ruleState[1])
+
+// === /SERIES === 
+
+//
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ //
+
+// === PLOTTING === 
+
+
+plot(gmmaOsc, title="GMMA OSC Smooth", style=line, linewidth=2, color=gmmaClr, transp=10)
+plot(gmmaSignal, title="GMMA Signal", style=line, linewidth=1, color=orange, transp=10)
+hline(0,title="Zero line", linestyle=dotted, linewidth=2, color=gray)
+
+// === /PLOTTING === 
+
+//
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ //
+
+// === ALERTS === 
+
+bgcolor(showZones ? ( ruleState==1 ? green : ruleState==-1 ? red : gray ) : na , title="Guppy Bullish/Bearish Zones", transp=90)
+
+alertcondition(bullishRule,title="Guppy Bullish",message="Guppy Bullish")
+alertcondition(bearishRule,title="Guppy Bearish",message="Guppy Bearish")
+
+// === /ALERTS === 
+
+//
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ //
+//
+//EOF

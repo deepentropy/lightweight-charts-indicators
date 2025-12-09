@@ -1,0 +1,14 @@
+//@version=6
+indicator(title="Envelope", shorttitle="Env", overlay=true, timeframe="", timeframe_gaps=true)
+len = input.int(20, title="Length", minval=1)
+percent = input(10.0, "Percent")
+src = input(close, title="Source")
+exponential = input(false, "Exponential")
+basis = exponential ? ta.ema(src, len) : ta.sma(src, len)
+k = percent/100.0
+upper = basis * (1 + k)
+lower = basis * (1 - k)
+plot(basis, "Basis", color=#FF6D00)
+u = plot(upper, "Upper", color=#2962FF)
+l = plot(lower, "Lower", color=#2962FF)
+fill(u, l, color=color.rgb(33, 150, 243, 95), title="Background")

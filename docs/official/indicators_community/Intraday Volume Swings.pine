@@ -1,0 +1,198 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © rumpypumpydumpy
+
+//@version=4
+study("Intraday Volume Swings", overlay = true)
+
+mark_swings         = input(true,   title = "Mark all volume swings?")
+mark_new_day        = input(true,   title = "Mark first bar of a new day?")
+mark_greater_swings = input(true,   title = "Mark daily lower/higher swings?")
+plot_current        = input(false,  title = "Display levels as they form?")
+region_must_close   = input(true,   title = "Must close in region to trigger alert?")
+
+// Necessary variables to construct conditions
+// -----------------------------------------------------------------------------
+new_day                 = change(time("D")) != 0
+increasing_volume       = volume > volume[1]
+lower_low               = low < low[1]
+higher_high             = high > high[1]
+high_bar                = increasing_volume and higher_high                     // Base conditions of increasing volume and a higher high / lower low
+low_bar                 = increasing_volume and lower_low
+swing_low               = low_bar and low_bar[1] and low_bar[2]                 // Minimum Swing Conditions of three bars of increasing volume and higher high / lower low
+swing_high              = high_bar and high_bar[1] and high_bar[2]
+confirmed_swing_low     = not swing_low and swing_low[1]                        // Condition to indicate the end of a swing
+confirmed_swing_high    = not swing_high and swing_high[1]
+hh3                     = highest(high, 3)
+ll3                     = lowest(low, 3)
+// -----------------------------------------------------------------------------
+
+// Variables to track the top and bottom of the swing region for the duration of the swing
+// -----------------------------------------------------------------------------
+float   swing_low_top = na
+float   swing_low_bottom = na
+float   swing_high_top = na
+float   swing_high_bottom = na
+// -----------------------------------------------------------------------------
+
+
+// Initial Swing conditions
+// -----------------------------------------------------------------------------
+if swing_low and not swing_low[1]                                               // Indicates a new 3 bar swing low
+    swing_low_top       := hh3                                                  // Sets the top and bottom to the highest high / lowest low of the three bars
+    swing_low_bottom    := ll3
+else if swing_low and swing_low[1]                                              // Indicates both the current bar and the previous bar are both volume swings. This condition will remain true until the swing is complete
+    swing_low_top       := max(swing_low_top[1], high)                          // Modify the top and bottom swing levels if they are higher/lower on the new bar
+    swing_low_bottom    := min(swing_low_bottom[1], low)
+
+if swing_high and not swing_high[1]
+    swing_high_top      := hh3
+    swing_high_bottom   := ll3
+else if swing_high and swing_high[1]
+    swing_high_top      := max(swing_high_top[1], high)
+    swing_high_bottom   := min(swing_high_bottom[1], low)
+// -----------------------------------------------------------------------------
+
+
+// Variables to determine the lowest swing low and highest swing high for the day
+// -----------------------------------------------------------------------------
+var float   daily_swing_low_top = na
+var float   daily_swing_low_bottom = na
+var float   daily_swing_high_top = na
+var float   daily_swing_high_bottom = na
+// -----------------------------------------------------------------------------
+
+
+// Conditional statements to determine the lowest swing low for the day
+// -----------------------------------------------------------------------------
+
+// Daily Lowest Swing Low
+// -----------------------------------------------------------------------------
+
+if new_day and not swing_low and not confirmed_swing_low                        // If the first bar of the day is not part of an existing swing or the last bar of the previous day is not part of a completed swing then reset for the day
+    daily_swing_low_top     := na
+    daily_swing_low_bottom  := na
+
+if new_day and swing_low                                                        // If the first bar is part of an unfinished swing, continue tracking levels established the previous day
+    daily_swing_low_top     := swing_low_top
+    daily_swing_low_bottom  := swing_low_bottom
+
+if new_day and confirmed_swing_low                                              // Returns true if the first bar of the day is not part of a volume swing, but the last bar of the previous day is. Rolls over the swing levels to the current day
+    daily_swing_low_top     := swing_low_top[1]
+    daily_swing_low_bottom  := swing_low_bottom[1]
+
+if not new_day and confirmed_swing_low and na(daily_swing_low_bottom)           // If it isn't the first bar of the day AND the current bar indicates a swing low is finished AND it is the FIRST swing low of the day. Store levels
+    daily_swing_low_top     := swing_low_top[1]
+    daily_swing_low_bottom  := swing_low_bottom[1]
+
+if not new_day and confirmed_swing_low and not na(daily_swing_low_bottom) and swing_low_bottom[1] < daily_swing_low_bottom
+    daily_swing_low_top     := swing_low_top[1]                                 // If it isn't the first bar of the day AND the current bar indicates a swing low is finished AND it is NOT the FIRST swing of the day AND ...
+    daily_swing_low_bottom  := swing_low_bottom[1]                              // the current swing is LOWER than the previous then store the new swing's levels (otherwise the previous and lower swing's levels remain)
+// -----------------------------------------------------------------------------
+
+
+// Daily Highest Swing High
+// -----------------------------------------------------------------------------
+if new_day and not swing_high and not confirmed_swing_high
+    daily_swing_high_top     := na
+    daily_swing_high_bottom  := na
+
+if new_day and swing_high
+    daily_swing_high_top     := swing_high_top
+    daily_swing_high_bottom  := swing_high_bottom
+
+if new_day and confirmed_swing_high
+    daily_swing_high_top     := swing_high_top[1]
+    daily_swing_high_bottom  := swing_high_bottom[1]
+
+if not new_day and confirmed_swing_high and na(daily_swing_high_bottom)
+    daily_swing_high_top     := swing_high_top[1]
+    daily_swing_high_bottom  := swing_high_bottom[1]
+
+if not new_day and confirmed_swing_high and not na(daily_swing_high_top) and swing_high_top[1] > daily_swing_high_top
+    daily_swing_high_top     := swing_high_top[1]
+    daily_swing_high_bottom  := swing_high_bottom[1]
+// -----------------------------------------------------------------------------
+
+// Final Calculations
+// -----------------------------------------------------------------------------
+
+valid_chart = timeframe.isintraday and not na(volume)                           // Is the chart intraday and have volume (eg non index)?
+
+// Variables for yesterday's levels
+float prev_swing_low_top = na
+float prev_swing_low_bottom = na
+float prev_swing_high_top = na
+float prev_swing_high_bottom = na
+
+// Variables for the day before yesterday's levels
+float prev_swing_low_top2 = na
+float prev_swing_low_bottom2 = na
+float prev_swing_high_top2 = na
+float prev_swing_high_bottom2 = na
+
+// Retrieve yesterday's Lowest Swing Low and Highest Swing High
+prev_swing_low_top      := valuewhen(new_day, daily_swing_low_top[1],       0)  // This is also equivalent to :
+prev_swing_low_bottom   := valuewhen(new_day, daily_swing_low_bottom[1],    0)  // prev_swing_low_top := new_day ? daily_swing_low_top[1] : prev_swing_low_top[1]
+prev_swing_high_top     := valuewhen(new_day, daily_swing_high_top[1],      0)
+prev_swing_high_bottom  := valuewhen(new_day, daily_swing_high_bottom[1],   0)
+
+prev_swing_low_bottom2  := valuewhen(new_day, daily_swing_low_bottom[1],    1)  // However to obtain older values from previous days it is easier to use valuewhen
+prev_swing_high_top2    := valuewhen(new_day, daily_swing_high_top[1],      1)
+
+
+lower_swing_low     = prev_swing_low_bottom < prev_swing_low_bottom2            // Check if we have a higher daily swing high / lower daily swing low
+higher_swing_high   = prev_swing_high_top > prev_swing_high_top2
+// -----------------------------------------------------------------------------
+
+
+
+// Plots and labels
+// -----------------------------------------------------------------------------
+
+current_swing_low_top_plot      = plot(valid_chart and plot_current ? daily_swing_low_top : na,     style = plot.style_circles, color = color.maroon,   transp = 50, linewidth = 1)
+current_swing_low_bottom_plot   = plot(valid_chart and plot_current ? daily_swing_low_bottom : na,  style = plot.style_circles, color = color.maroon,   transp = 50, linewidth = 1)
+current_swing_high_top_plot     = plot(valid_chart and plot_current ? daily_swing_high_top : na,    style = plot.style_circles, color = color.green,    transp = 50, linewidth = 1)
+current_swing_high_bottom_plot  = plot(valid_chart and plot_current ? daily_swing_high_bottom : na, style = plot.style_circles, color = color.green,    transp = 50, linewidth = 1)
+
+swing_low_top_plot      = plot(valid_chart ? prev_swing_low_top : na,       color = #00000000, title = "Swing Low Upper Plot")
+swing_low_bottom_plot   = plot(valid_chart ? prev_swing_low_bottom : na,    color = #00000000, title = "Swing Low Lower Plot")
+swing_high_top_plot     = plot(valid_chart ? prev_swing_high_top : na,      color = #00000000, title = "Swing High Upper Plot")
+swing_high_bottom_plot  = plot(valid_chart ? prev_swing_high_bottom : na,   color = #00000000, title = "Swing High Lower Plot")
+
+fill(swing_low_top_plot,    swing_low_bottom_plot,  color = color.red,   transp = 70)
+fill(swing_high_top_plot,   swing_high_bottom_plot, color = color.lime,  transp = 70)
+
+plotshape(mark_swings ? confirmed_swing_low : na,   style = shape.triangleup,   location = location.belowbar, size = size.tiny, color = color.red,  title = "Swing Low")
+plotshape(mark_swings ? confirmed_swing_high : na,  style = shape.triangledown, location = location.abovebar, size = size.tiny, color = color.lime, title = "Swing High")
+
+higher_swing_label  = mark_greater_swings and higher_swing_high ? label.new(x = time, y = avg(prev_swing_high_bottom, prev_swing_high_top), xloc = xloc.bar_time, color = color.green,  textcolor = color.white, style = label.style_label_left, size = size.small, text = "Higher Swing High") : na
+lower_swing_label   = mark_greater_swings and lower_swing_low   ? label.new(x = time, y = avg(prev_swing_low_bottom, prev_swing_low_top),   xloc = xloc.bar_time, color = color.red,    textcolor = color.white, style = label.style_label_left, size = size.small, text = "Lower Swing Low") : na
+label.delete(higher_swing_label[1])
+label.delete(lower_swing_label[1])
+
+bgcolor(new_day and mark_new_day ? color.yellow : #00000000)
+
+warning_label = not valid_chart ? label.new(x = time, y = close, xloc = xloc.bar_time, color = color.red, textcolor = color.white, style = label.style_label_left, size = size.normal, text = "Warning!!!\nIntraday Timeframes with Volume Only") : na
+label.delete(warning_label[1])
+// -----------------------------------------------------------------------------
+
+
+// Alerts
+// -----------------------------------------------------------------------------
+
+// Alerts for the previous day's highest/lowest swings
+if region_must_close ? open[1] < prev_swing_high_bottom and close[1] >= prev_swing_high_bottom : open < prev_swing_high_bottom and high >= prev_swing_high_bottom
+    alert("Pushing up into yesterday's swing high region", alert.freq_once_per_bar)
+
+if region_must_close ? open[1] > prev_swing_low_top and close[1] <= prev_swing_low_top : open > prev_swing_low_top and low <= prev_swing_low_top
+    alert("Pushing down into yesterday's swing low region", alert.freq_once_per_bar)
+
+// Alerts for the current day's highest/lowest swings
+if region_must_close ? open[1] < daily_swing_high_bottom and close[1] >= daily_swing_high_bottom :  open < daily_swing_high_bottom and high >= daily_swing_high_bottom
+    alert("Pushing up into current swing high region", alert.freq_once_per_bar)
+
+if region_must_close ? open[1] > daily_swing_low_top and close[1] <= daily_swing_low_top : open > daily_swing_low_top and low <= daily_swing_low_top
+    alert("Pushing down into current swing low region", alert.freq_once_per_bar)
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------

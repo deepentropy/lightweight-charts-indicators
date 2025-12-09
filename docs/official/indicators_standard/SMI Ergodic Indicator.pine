@@ -1,0 +1,9 @@
+//@version=6
+indicator(title="SMI Ergodic Indicator", shorttitle="SMII", format=format.price, precision=4, timeframe="", timeframe_gaps=true)
+longlen = input.int(20, minval=1, title="Long Length")
+shortlen = input.int(5, minval=1, title="Short Length")
+siglen = input.int(5, minval=1, title="Signal Line Length")
+erg = ta.tsi(close, shortlen, longlen)
+sig = ta.ema(erg, siglen)
+plot(erg, color=#2962FF, title="SMI")
+plot(sig, color=#FF6D00, title="Signal")

@@ -1,0 +1,423 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © veryfid
+
+//@version=5
+
+title = 'Boom Hunter Pro'
+stitle = 'Boom Pro'
+version = ' 1.022'
+indicator(title=title + version, shorttitle=stitle, overlay=false, timeframe='')
+theme = 'Dark'  //, "Theme:", options=["Dark", "Light"], group = "Main Settings", inline = "main")
+showfib = input.bool(defval=false, title='Show Fibonacci Lines?', group='Main Settings', inline='main2')
+showentry = input.bool(defval=true, title='Show Entry and Exit Points?', group='Main Settings')
+square = input.bool(true, title='Square Line?', group='Main Settings')
+showdboom = input.bool(true, title='Show Downward Boom Line?', group='Main Settings')
+showlongs = input.bool(true, title='Show Long Entries?', group='Main Settings')
+showshorts = input.bool(true, title='Show Short Entries?', group='Main Settings')
+//showsignals = input(defval = false, title = "Show Alerts?", group = "Main Settings")
+//Quotient
+LPPeriod = input.int(6, title='Quotient | LPPeriod', inline='quotient', group='EOT 1 (Main Oscillator)')
+K1 = input.int(0, title='K1', inline='quotient', group='EOT 1 (Main Oscillator)')
+K2 = 0.3
+esize = 60  //, title = "Size", inline = "quotient2", group = "EOT 1 (Main Oscillator)")
+ey = 50  //, title = "Y axis", inline = "quotient2", group = "EOT 1 (Main Oscillator)")
+trigno = input.int(2, 'Trigger Length', group='EOT 1 (Main Oscillator)', inline='quotient2')
+osccol = input.color(color.blue, title='Oscillator Color:', group='EOT 1 (Main Oscillator)', inline='q2')
+trigcol = input.color(color.white, title='Trigger Color:', group='EOT 1 (Main Oscillator)', inline='q2')
+
+
+// EOT 2
+//Inputs
+LPPeriod2 = input.int(27, title='LPPeriod2', group='EOT 2 (Red Wave)', inline='q2')
+K12 = input.float(0.8, title='K1', group='EOT 2 (Red Wave)', inline='q2')
+K22 = input.float(0.3, title='K2', group='EOT 2 (Red Wave)', inline='q2')
+esize3 = 60  //, title = "Size", inline = "quotient2", group = "EOT 2 (Red Wave)")
+ey3 = 50  //, title = "Y axis2", inline = "quotient2", group = "EOT 2 (Red Wave)")
+osccol2 = input.color(color.red, title='Line Color:', inline='quotient22', group='EOT 2 (Red Wave)')
+osccol22 = input.color(color.red, title='Fill Color:', inline='quotient22', group='EOT 2 (Red Wave)')
+// EOT 3
+//Inputs
+LPPeriod3 = input.int(11, title='LPPeriod3', group='EOT 3 (Yellow Line)', inline='q2')
+K13 = input.float(0.99, title='K1', group='EOT 3 (Yellow Line)', inline='q2')
+K33 = K13 * -1
+esize2 = 60  //, title = "Size", inline = "quotient3", group = "EOT 3 (Yellow Line)")
+ey2 = 50  //, title = "Y axis", inline = "quotient3", group = "EOT 3 (Yellow Line)")
+osccol3 = input.color(color.yellow, title='Line Color:', group='EOT 3 (Yellow Line)', inline='quotient3')
+
+// LSMAWT
+n1 = input.int(9, 'WT | master', inline='lsma', group='LSMA Wave Trend Settings')
+n2 = input.int(6, 'time 1', inline='lsma', group='LSMA Wave Trend Settings')
+n3 = input.int(3, '2', inline='lsma', group='LSMA Wave Trend Settings')
+n4 = input.int(21, 'LSMA | 1', inline='LSMA', group='LSMA Wave Trend Settings')
+n5 = input.int(0, '2', inline='LSMA', group='LSMA Wave Trend Settings')
+smalen = 2
+lsmaline = input.int(200, title='LSMA Long', group='LSMA Wave Trend Settings', inline='LSMA')
+
+if square
+    K13 := 0.9999
+    K33 := -0.9999
+    K33
+//FIB LINES
+
+hline(showfib ? 84 : na, linestyle=hline.style_solid, color=color.new(color.blue, 50))
+hline(showfib ? 64 : na, linestyle=hline.style_solid, color=color.new(color.blue, 50))
+hline(showfib ? 50 : na, linestyle=hline.style_solid, color=color.new(color.blue, 50))
+hline(showfib ? 36 : na, linestyle=hline.style_solid, color=color.new(color.blue, 50))
+hline(showfib ? 18 : na, linestyle=hline.style_solid, color=color.new(color.blue, 50))
+
+//EOT 1
+//Vars
+alpha1 = 0.00
+HP = 0.00
+a1 = 0.00
+b1 = 0.00
+c1 = 0.00
+c2 = 0.00
+c3 = 0.00
+Filt = 0.00
+Peak = 0.00
+X = 0.00
+Quotient1 = 0.00
+Quotient2 = 0.00
+pi = 2 * math.asin(1)
+
+//Highpass filter cyclic components
+//whose periods are shorter than 100 bars
+alpha1 := (math.cos(.707 * 2 * pi / 100) + math.sin(.707 * 2 * pi / 100) - 1) / math.cos(.707 * 2 * pi / 100)
+HP := (1 - alpha1 / 2) * (1 - alpha1 / 2) * (close - 2 * nz(close[1]) + nz(close[2])) + 2 * (1 - alpha1) * nz(HP[1]) - (1 - alpha1) * (1 - alpha1) * nz(HP[2])
+
+//SuperSmoother Filter
+a1 := math.exp(-1.414 * pi / LPPeriod)
+b1 := 2 * a1 * math.cos(1.414 * pi / LPPeriod)
+c2 := b1
+c3 := -a1 * a1
+c1 := 1 - c2 - c3
+Filt := c1 * (HP + nz(HP[1])) / 2 + c2 * nz(Filt[1]) + c3 * nz(Filt[2])
+
+//Fast Attack - Slow Decay Algorithm
+Peak := .991 * nz(Peak[1])
+if math.abs(Filt) > Peak
+    Peak := math.abs(Filt)
+    Peak
+
+//Normalized Roofing Filter
+if Peak != 0
+    X := Filt / Peak
+    X
+
+Quotient1 := (X + K1) / (K1 * X + 1)
+Quotient2 := (X + K2) / (K2 * X + 1)
+
+// EOT 2
+
+
+//Vars
+alpha1222 = 0.00
+HP2 = 0.00
+a12 = 0.00
+b12 = 0.00
+c12 = 0.00
+c22 = 0.00
+c32 = 0.00
+Filt2 = 0.00
+Peak2 = 0.00
+X2 = 0.00
+Quotient3 = 0.00
+Quotient4 = 0.00
+
+alpha1222 := (math.cos(.707 * 2 * pi / 100) + math.sin(.707 * 2 * pi / 100) - 1) / math.cos(.707 * 2 * pi / 100)
+HP2 := (1 - alpha1222 / 2) * (1 - alpha1222 / 2) * (close - 2 * nz(close[1]) + nz(close[2])) + 2 * (1 - alpha1222) * nz(HP2[1]) - (1 - alpha1222) * (1 - alpha1222) * nz(HP2[2])
+
+//SuperSmoother Filter
+a12 := math.exp(-1.414 * pi / LPPeriod2)
+b12 := 2 * a12 * math.cos(1.414 * pi / LPPeriod2)
+c22 := b12
+c32 := -a12 * a12
+c12 := 1 - c22 - c32
+Filt2 := c12 * (HP2 + nz(HP2[1])) / 2 + c22 * nz(Filt2[1]) + c32 * nz(Filt2[2])
+
+//Fast Attack - Slow Decay Algorithm
+Peak2 := .991 * nz(Peak2[1])
+if math.abs(Filt2) > Peak2
+    Peak2 := math.abs(Filt2)
+    Peak2
+
+//Normalized Roofing Filter
+if Peak2 != 0
+    X2 := Filt2 / Peak2
+    X2
+
+Quotient3 := (X2 + K12) / (K12 * X2 + 1)
+Quotient4 := (X2 + K22) / (K22 * X2 + 1)
+
+// EOT 3
+
+//Vars
+alpha1333 = 0.12
+HP3 = 0.00
+a13 = 0.00
+b13 = 0.00
+c13 = 0.00
+c33 = 0.00
+c333 = 0.00
+Filt3 = 0.00
+Peak3 = 0.00
+X3 = 0.00
+Quotient5 = 0.00
+Quotient6 = 0.00
+
+alpha1333 := (math.cos(.707 * 2 * pi / 100) + math.sin(.707 * 2 * pi / 100) - 1) / math.cos(.707 * 2 * pi / 100)
+HP3 := (1 - alpha1333 / 3) * (1 - alpha1333 / 2) * (close - 2 * nz(close[1]) + nz(close[2])) + 2 * (1 - alpha1333) * nz(HP3[1]) - (1 - alpha1333) * (1 - alpha1333) * nz(HP3[2])
+
+//SuperSmoother Filter
+a13 := math.exp(-1.414 * pi / LPPeriod3)
+b13 := 2 * a13 * math.cos(1.414 * pi / LPPeriod3)
+c33 := b13
+c333 := -a13 * a13
+c13 := 1 - c33 - c333
+Filt3 := c13 * (HP3 + nz(HP3[1])) / 2 + c33 * nz(Filt3[1]) + c333 * nz(Filt3[2])
+
+//Fast Attack - Slow Decay Algorithm
+Peak3 := .991 * nz(Peak3[1])
+if math.abs(Filt3) > Peak3
+    Peak3 := math.abs(Filt3)
+    Peak3
+
+//Normalized Roofing Filter
+if Peak3 != 0
+    X3 := Filt3 / Peak3
+    X3
+
+Quotient5 := (X3 + K13) / (K13 * X3 + 1)
+Quotient6 := (X3 + K33) / (K33 * X3 + 1)
+
+line1 = -0.9
+
+// LSMAWT
+// Sources:
+src0 = open
+src1 = high
+src2 = low
+src3 = close
+src4 = hl2
+src5 = hlc3
+src6 = ohlc4
+src7 = ta.tr
+vol = volume
+
+tci(src) =>
+    ta.ema((src - ta.ema(src, n1)) / (0.025 * ta.ema(math.abs(src - ta.ema(src, n1)), n1)), n2) + 50
+
+mf(src) =>
+    100.0 - 100.0 / (1.0 + math.sum(volume * (ta.change(src) <= 0 ? 0 : src), n3) / math.sum(volume * (ta.change(src) >= 0 ? 0 : src), n3))
+
+willy(src) =>
+    60 * (src - ta.highest(src, n2)) / (ta.highest(src, n2) - ta.lowest(src, n2)) + 80
+
+csi(src) =>
+    math.avg(ta.rsi(src, n3), ta.tsi(src0, n1, n2) * 50 + 50)
+
+phoenix(src) =>
+    math.avg(tci(src), csi(src), mf(src), willy(src))
+
+tradition(src) =>
+    math.avg(tci(src), mf(src), ta.rsi(src, n3))
+
+// Indi FUnctions {
+wt1 = tradition(src5)
+wt2 = ta.sma(wt1, 6)
+//wt5 = sma(j,6)
+
+// LSMA
+wt3 = ta.linreg(wt1, n4, n5)
+wt4 = ta.ema((wt1 - wt2) * 2 + 50, n3)
+trig = ta.sma(wt3, smalen)
+
+q3 = Quotient3 * esize + ey
+q4 = Quotient4 * esize + ey
+Plot33 = plot(q3, color=color.new(color.red, 50), linewidth=1, title='Quotient 1')
+Plot44 = plot(q4, color=color.new(color.red, 50), linewidth=1, title='Quotient 2')
+fill(Plot33, Plot44, color=color.new(color.red, 90))
+
+//Plot EOT
+q1 = Quotient1 * esize + ey
+q2 = Quotient2 * esize + ey
+trigger = ta.sma(q1, trigno)
+//Plot3 =  plot(q1, color= theme == "Tartan" ? color.white : color.blue, linewidth =2,title = "Quotient 1")
+
+//PLOT LSMAWT
+ext1 = wt2 < 20 ? trigger + 9 : wt2 > 80 ? trigger - 9 : na
+
+//plot(wt3, color = color.gray, linewidth = 1, transp = 50)
+//plot(ext1,  "Pressure", color =  wt2<20 ? color.lime : wt2>80 ? color.red : na,  style = plot.style_circles, linewidth = 2, transp = 10)
+//plot(osc == "LSMA Wave Trend" ? sma(wt3,smalen) : na, color= theme == "Tartan" ? color.blue : theme == "Classic" ? #ff6a00 : color.yellow, linewidth = 2)
+lsma = ta.linreg(wt3, lsmaline, 0)
+//lsma = linreg(rsi(close,13),lsmaline,0)
+
+//plot(lsma, color= color.gray, linewidth = 1,transp = 50)
+
+
+
+q5 = Quotient5 * esize2 + ey2
+q6 = Quotient6 * esize2 + ey2
+Plot54 = plot(showdboom ? q6 : na, color=color.new(color.blue, 0), linewidth=1, title='Quotient 1')
+Plot55 = plot(q5, color=theme == 'Light' ? color.new(color.orange, 0) : color.new(color.yellow, 0), linewidth=1, title='Quotient 1')
+//Conditions
+sma200 = ta.sma(close, 200)
+entry = ta.crossunder(Quotient2, line1)
+color2 = Quotient1 <= -1 and Quotient2 <= -1
+exit = ta.cross(Quotient1, Quotient2) and close > sma200 and Quotient1 > 0.5
+over = ta.cross(Quotient5, Quotient6) and Quotient5 > 0.5
+over2 = ta.crossover(Quotient5, Quotient6) and Quotient5 > 0.5
+over3 = ta.cross(Quotient3, Quotient4) and Quotient3 > 0
+enter = ta.crossover(q1, trigger) and q1 < lsma
+plotshape(showentry ? over : na, title='Exit Warning', location=location.bottom, style=shape.circle, size=size.tiny, color=color.new(color.orange, 0))
+plotshape(showentry ? over3 : na, title='Exit Warning', location=location.bottom, style=shape.circle, size=size.tiny, color=color.new(color.red, 0), text='Overbought')
+
+// Breaks - luxalgo
+toggleBreaks = input.bool(false, title='Show Break Lines?', group='Support and Resistance Breaks')
+//track = input(true, title = "Show Price lines?", group = "Support and Resistance Breaks" )
+leftBars = input.int(1, title='Resistance | Left Bars ', group='Support and Resistance Breaks', inline='2')
+rightBars = input.int(1, title='Right Bars', group='Support and Resistance Breaks', inline='2')
+//toggleBreaks2  = input(false, title = "Show Resistance", group = "Support and Resistance Breaks" )
+leftBars2 = input.int(5, title='Support (Long) | Left Bars ', group='Support and Resistance Breaks', inline='3')
+rightBars2 = input.int(5, title='Right Bars', group='Support and Resistance Breaks', inline='3')
+//toggleBreaks3  = input(false, title = "Show Support (long)", group = "Support and Resistance Breaks" )
+leftBars3 = input.int(1, title='Support (Short) |Left Bars ', group='Support and Resistance Breaks', inline='4')
+rightBars3 = input.int(1, title='Right Bars', group='Support and Resistance Breaks', inline='4')
+//toggleBreaks4  = input(false, title = "Show Support (Short)", group = "Support and Resistance Breaks" )
+
+highUsePivot = fixnan(ta.pivothigh(q1, leftBars, rightBars)[1])
+lowUsePivot = fixnan(ta.pivotlow(q1, leftBars2, rightBars2)[1])
+lowUsePivot2 = fixnan(ta.pivotlow(q1, leftBars3, rightBars3)[1])
+highUsePivot2 = fixnan(ta.pivothigh(q1, leftBars3, rightBars3)[1])
+r1 = plot(toggleBreaks ? highUsePivot : na, color=ta.change(highUsePivot) ? na : color.red, linewidth=1, offset=-(rightBars + 1), title='Resistance')
+s2 = plot(toggleBreaks ? lowUsePivot2 : na, color=ta.change(lowUsePivot2) ? na : color.silver, linewidth=1, offset=-(rightBars3 + 1), title='Support')
+s1 = plot(toggleBreaks ? lowUsePivot : na, color=ta.change(lowUsePivot) ? na : color.blue, linewidth=1, offset=-(rightBars2 + 1), title='Support')
+
+crossover = ta.crossover(q1, trigger)
+crossunder = ta.crossunder(q1, trigger)
+//VAR
+var ubreak = 0
+var ubreak2 = 0
+var dbreak = 0
+var cont = 0
+var cont2 = 0
+var pull = 0
+var dbreak2 = 0
+var cross = 0
+
+if crossunder
+    cross := 0
+    cross
+if crossover
+    cross := 1
+    cross
+
+if ta.crossunder(q1, lowUsePivot)
+    dbreak += 1
+    dbreak
+if entry
+    dbreak := 0
+    dbreak2 := 0
+    ubreak := 0
+    ubreak2 := 0
+    cont := 0
+    cont2 := 0
+    cont2
+//if dbreak > 2
+//    dbreak := 0
+volcond = ta.linreg(volume, 20, 0)
+
+var drag = 0
+if Quotient1 <= -1
+    drag += 1
+    drag
+if ta.crossover(Quotient1, -0.9)
+    drag := 0
+    drag
+
+if ta.crossover(q1, highUsePivot) and dbreak >= 1
+    ubreak += 1
+    ubreak
+
+dragno = input(3)
+
+
+if ta.crossover(q1, highUsePivot) and dbreak >= 1 and ubreak <= 1
+    cont := 1
+    cont
+if ta.crossover(q1, highUsePivot) and dbreak >= 2 and ubreak >= 2 and cont <= 2
+    cont2 := 1
+    cont2
+
+if ta.crossunder(q1, lowUsePivot2)
+    dbreak2 += 1
+    dbreak2
+
+if ta.crossunder(q1, highUsePivot2)
+    ubreak2 += 1
+    ubreak2
+
+if ta.crossunder(q1, lowUsePivot2) and dbreak2 == 1
+    ubreak2 := 0
+    ubreak2
+
+
+
+Plot = plot(q1, color=cross == 1 ? #00ffaa : drag >= dragno ? color.purple : Quotient1 <= -0.8 ? color.yellow : Quotient3 <= -0.9 ? color.white : cross == 0 ? color.red : color.gray, linewidth=2, title='Quotient 2', trackprice=true)
+Plot4 = plot(q1, color=osccol, linewidth=2, title='Quotient 2')
+
+Plot3 = plot(trigger, color=trigcol, linewidth=2, title='Quotient 1')
+plot(ext1, 'Pressure', color=wt2 < 20 ? #00ffaa : wt2 > 80 ? color.red : na, style=plot.style_circles, linewidth=2, transp=10)
+
+warn = ta.crossover(Quotient3, -0.9)
+warn2 = ta.crossover(Quotient1, -0.9)
+warn3 = ta.crossunder(Quotient1, 0.9)
+enter2 = Quotient1 <= -0.9 and ta.crossover(q1, trigger) and ta.barssince(warn) <= 7  // and Quotient3 <= -0.6 // and close > sma // QUALITY ENTRIES
+enter3 = Quotient3 <= -0.9 and ta.crossover(q1, trigger) and ta.barssince(warn2) <= 7 and q1 <= 20 and ta.barssince(ta.crossover(q1, 20)) <= 21  // and Quotient3 <= -0.6 // and close > sma // QUALITY ENTRIES
+entercond = ta.crossover(q1, trigger) and q1 < 10
+enter4 = q1 <= 20 and ta.barssince(entercond) <= 5 and ta.crossover(q1, trigger)
+enter5 = ta.barssince(q1 <= 0 and ta.crossunder(q1, trigger)) <= 5 and ta.crossover(q1, trigger)
+enter6 = ta.barssince(q1 <= 20 and ta.crossunder(q1, trigger)) <= 11 and ta.crossover(q1, trigger)
+enter7 = Quotient3 <= -0.9 and ta.crossover(q1, trigger)
+//shorts
+senter3 = Quotient3 >= -0.9 and ta.crossunder(q1, trigger) and ta.barssince(warn3) <= 7 and q1 >= 99 and ta.barssince(ta.crossover(q1, 80)) <= 21  // and Quotient3 <= -0.6 // and close > sma // QUALITY ENTRIES
+
+//plotshape(enter2, title="Boom!", location=location.top, style=shape.circle, size=size.normal, color=color.yellow, transp=0)
+plotshape(showlongs and enter6 and q1 <= 60, title='Long gray', text='Long', style=shape.labeldown, location=location.top, color=color.new(color.silver, 20), textcolor=color.new(color.white, 20), size=size.tiny)
+plotshape(showlongs and enter7, title='Long yellow', text='Long', style=shape.labeldown, location=location.top, color=color.new(color.yellow, 20), textcolor=color.new(color.white, 20), size=size.tiny)
+plotshape(showlongs and enter5, title='Long blue', text='Long', style=shape.labeldown, location=location.top, color=color.new(color.blue, 20), textcolor=color.new(color.white, 20), size=size.tiny)
+plotshape(showlongs and enter3, title='Long Lime', text='Long', style=shape.labeldown, location=location.top, color=color.new(color.lime, 20), textcolor=color.new(color.white, 20), size=size.tiny)
+
+plotshape(showshorts ? senter3 : na, title='Break', text='Short', style=shape.labeldown, location=location.top, color=color.new(color.red, 20), textcolor=color.new(color.white, 20), size=size.tiny)
+
+
+plotshape(ta.crossover(q1, highUsePivot) and dbreak >= 1 and ubreak <= 1, title='Break', style=shape.triangleup, location=location.bottom, color=color.new(#00ffaa, 0), size=size.tiny, text='Continuation')
+
+allbars = input(false, title='Show Bar Colors?')
+barc = input(false, title='Show Pump Bar Colors?')
+barcolor(allbars and drag >= dragno ? color.purple : allbars and Quotient3 <= -0.9 ? color.white : allbars and Quotient1 <= -0.9 ? color.yellow : na)
+barcolor(allbars and barc and q1 > trigger ? #00ffaa : allbars and barc and q1 < trigger ? color.red : allbars and barc ? color.gray : na)
+
+plotshape(ta.barssince(ta.crossover(wt2,80)) <= 1 and ta.crossunder(wt2,80) ? wt2 + 9 : na, location = location.absolute, style = shape.triangledown, color = color.yellow, size = size.tiny)//, text = "Bounce", textcolor = color.white)
+plotshape(ta.barssince(ta.crossunder(wt2,20)) <= 1 and ta.crossover(wt2,20) ? wt2 - 9 : na, location = location.absolute, style = shape.triangleup, color = color.yellow, size = size.tiny)//, text = "Bounce", textcolor = color.white)
+
+//ALERTS
+alertcondition(crossover, title='Crossover')
+alertcondition(crossunder, title='Crossunder')
+alertcondition(enter6 or enter7 or enter5 or enter3, title='Long')
+alertcondition(ta.crossunder(Quotient5, -0.9), title='Entry Zone')
+//alertcondition(crossunder(q1,lowUsePivot), title='Short') 
+alertcondition(ta.crossover(q1, highUsePivot), title='Break Resistance')
+alertcondition(ta.crossunder(q1, lowUsePivot), title='Break Support')
+alertcondition(Quotient1 <= -0.9 and crossover, title='Crossover - Market Low')
+alertcondition(Quotient1 >= 0.9 and crossunder, title='Crossunder - Market High')
+alertcondition(wt2 <= 20 and crossover, title='Crossover With Pressure')
+alertcondition(wt2 >= 80 and crossunder, title='Crossunder With Pressure')
+alertcondition(ta.crossover(q1, highUsePivot) and dbreak >= 1 and ubreak <= 1, title='Continuation')
+alertcondition(over, title='Orange - Overbought')
+alertcondition(over3, title='Red - Overbought')
+alertcondition(ta.barssince(ta.crossover(wt2,80)) <= 1 and ta.crossunder(wt2,80) , title='Bounce down')
+alertcondition(ta.barssince(ta.crossunder(wt2,20)) <= 1 and ta.crossover(wt2,20), title='Bounce up')
+alertcondition(senter3, title='Short')

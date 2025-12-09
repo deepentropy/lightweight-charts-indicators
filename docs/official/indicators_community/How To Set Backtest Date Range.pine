@@ -1,0 +1,42 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © allanster
+
+// Revision: 7
+
+//@version=5
+strategy(title = "How To Set Backtest Range", shorttitle = "Dates", overlay = true, format = format.price, precision = 8,
+     default_qty_type = strategy.cash, default_qty_value = 100, initial_capital = 10000, currency = currency.NONE,
+     slippage = 2, commission_type = strategy.commission.percent, commission_value = 0.25)
+
+// === INPUT MA SOURCES AND LENGTHS ===
+i_srcF = input     (defval = hlc3, title = "Faster   ",                       inline = 'F')
+i_lenF = input.int (defval = 12,   title = "Length",    minval = 1, step = 1, inline = 'F')
+i_srcS = input     (defval = hlc3, title = "Slower ",                         inline = 'S')
+i_lenS = input.int (defval = 26,   title = "Length",    minval = 1, step = 1, inline = 'S')
+
+// === INPUT BACKTEST RANGE ===
+i_from = input.time(defval = timestamp("01 Jan 2023 00:00 +0000"), title = "From")
+i_thru = input.time(defval = timestamp("01 Mar 2023 00:00 +0000"), title = "Thru")
+
+// === INPUT SHOW PLOT ===
+i_show = input     (defval = true, title = "Show Date Range")
+
+// === FUNCTION EXAMPLE ===
+date() => time >= i_from and time <= i_thru  // create date function "within window of time"
+
+// === LOGIC ===
+fastMA = ta.ema(i_srcF, i_lenF)              // create Fast MA
+slowMA = ta.ema(i_srcS, i_lenS)              // create Slow MA
+crsOvr = ta.crossover (fastMA, slowMA)       // true when Fast MA crosses over  Slow MA
+crsUnd = ta.crossunder(fastMA, slowMA)       // true when Fast MA crosses under Slow MA
+
+// === EXECUTION ===
+if date() and crsOvr                         // if "within window of time" AND crossover
+    strategy.entry("Long", strategy.long)    //     enter long
+if date() and crsUnd                         // if "within window of time" AND crossunder
+    strategy.close("Long")                   //     close long         
+
+// === PLOTTING ===
+bgcolor(color = i_show and date() ? color.new(color.gray, 90) : na)  // plot if "Show Date Range" and "within window of time"
+plot(series = fastMA, title = 'FastMA', color = color.yellow, linewidth = 2, style = plot.style_line)  // plot Fast MA
+plot(series = slowMA, title = 'SlowMA', color = color.aqua,   linewidth = 2, style = plot.style_line)  // plot Slow MA

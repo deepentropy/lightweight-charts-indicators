@@ -1,0 +1,51 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © HarryBot
+// @version=5
+indicator('Trend Line - HarryBot', shorttitle='TrendLine.HarryBot', max_bars_back=600, overlay=true)
+limit = input.int(title='Bars Limit', defval=100, minval=10, maxval=500, step=2)
+segment = input.int(title='Segment Range', defval=55, minval=1, maxval=200, step=1)
+term = input.int(title='Fractals Period', defval=15, minval=3, maxval=999, step=2)
+ray = input.string(title='Ray Style', defval=extend.right, options=[extend.none, extend.both, extend.left, extend.right])
+colora = input.color(color.lime, 'Color Top Line')
+colorb = input.color(color.yellow, 'Color Bottom Line')
+var ratio = timeframe.isseconds ? timeframe.multiplier : timeframe.isminutes ? timeframe.multiplier * 60 : timeframe.isdaily ? timeframe.multiplier * 86400 : timeframe.isweekly ? 86400 * 7 : 86400 * 30.5
+var mid = int(term / 2) + 1
+chg = ta.highest(term) - ta.lowest(term)
+cal(x1, y1, x2, y2) =>
+    math.atan((y2 - y1) / (x2 - x1)) / (355 / 113) * 180
+draw(dat, idx, up) =>
+    ang = 0.0
+    maxv = 90.0
+    maxk = 0
+    if time > timenow - (limit * ratio * 1000)
+        for i = 0 to segment - 1 by 1
+            if not na(dat[i])
+                ang := cal(bar_index[i], dat[i], bar_index, dat)
+                ang := up ? ang : - ang
+                if ang < maxv
+                    maxk := i
+                    maxv := ang
+        maxk > 0 ? line.new(bar_index[maxk] - mid, dat[maxk], bar_index - mid, dat, color=up ? colora : colorb, extend=ray) : line(na)
+care(lin) =>
+    if barstate.islast
+        ref = 0.0
+        gap = 0.0
+        var cls = close
+        for i = 0 to limit - 1
+            if not na(lin[i])
+                ref := line.get_price(lin[i], last_bar_index)
+                gap := math.abs(cls - ref) / chg
+                if gap > 2 or math.abs(line.get_x1(lin[i]) - line.get_x2(lin[i])) < term
+                    line.delete(lin[i])
+                if gap > 1
+                    line.set_style(lin[i], line.style_dotted)
+            ref
+[idx_up, frac_up] = if ta.highest(term) == high[mid]
+    [bar_index[mid], high[mid]]
+[idx_dn, frac_dn] = if ta.lowest(term) == low[mid]
+    [bar_index[mid], low[mid]]
+up_lin = draw(frac_up, idx_up, true)
+dn_lin = draw(frac_dn, idx_dn, false)
+up_lim = care(up_lin)
+dn_lim = care(dn_lin)
+alertcondition((close[1] < up_lim and close > up_lim) or (close[1] > dn_lim and close < dn_lim) or (close[1] > up_lim and close < up_lim) or (close[1] < dn_lim and close > dn_lim), title='HarryBot Alert', message='Defense line is being crossed')

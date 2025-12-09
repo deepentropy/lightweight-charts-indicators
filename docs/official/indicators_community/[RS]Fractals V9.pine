@@ -1,0 +1,266 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © RicardoSantos
+
+//@version=5
+indicator(title='[RS]Fractals V9', overlay=true)
+
+bool showPatterns  = input.bool( true, 'Show Patterns?')
+bool showBarColors = input.bool(false, 'Show Bar Colors?')
+//  ||---   Fractal Recognition:
+bool filter_bw = input.bool(false, "Filter Bill Williams Fractals?")
+
+//  ||-----------------------------------------------------------------------------------------------------||
+//  ||---   Fractal Recognition Functions:  ---------------------------------------------------------------||
+isRegularFractal(int mode) =>
+    switch mode
+        +1 => high[4] < high[3] and high[3] < high[2] and high[2] > high[1] and high[1] > high[0]
+        -1 =>  low[4] > low[3]  and  low[3] > low[2]  and  low[2] < low[1]  and  low[1] < low[0]
+        => false
+
+isBWFractal(int mode) =>
+    switch mode
+        +1 => high[4] < high[2] and high[3] <= high[2] and high[2] >= high[1] and high[2] > high[0]
+        -1 =>  low[4] > low[2]  and  low[3] >= low[2]  and  low[2] <= low[1]  and  low[2] < low[0]
+        => false
+//  ||-----------------------------------------------------------------------------------------------------||
+
+bool filteredtopf = filter_bw ? isRegularFractal(+1) : isBWFractal(+1)
+bool filteredbotf = filter_bw ? isRegularFractal(-1) : isBWFractal(-1)
+
+plotshape(filteredtopf, 'Filtered Top Fractals'   , shape.triangledown, location.abovebar, color.red , offset=-2)
+plotshape(filteredbotf, 'Filtered Bottom Fractals', shape.triangleup  , location.belowbar, color.lime, offset=-2)
+
+//  ||-----------------------------------------------------------------------------------------------------||
+//  ||---   Higher Highs, Lower Highs, Higher Lows, Lower Lows  -------------------------------------------||
+bool ShowHHLL = input(false, 'Show HH/LL Pivot labels?')
+
+// reference to previous top/bottom fractals
+float last_top_0 = ta.valuewhen(filteredtopf == true, high[2], 0)
+float last_top_1 = ta.valuewhen(filteredtopf == true, high[2], 1)
+float last_top_2 = ta.valuewhen(filteredtopf == true, high[2], 2)
+float last_bot_0 = ta.valuewhen(filteredbotf == true, low[2], 0)
+float last_bot_1 = ta.valuewhen(filteredbotf == true, low[2], 1)
+float last_bot_2 = ta.valuewhen(filteredbotf == true, low[2], 2)
+
+bool higherhigh = filteredtopf == false ? false : (last_top_1 < last_top_0 and last_top_2 < last_top_0)
+bool lowerhigh  = filteredtopf == false ? false : (last_top_1 > last_top_0 and last_top_2 > last_top_0)
+bool higherlow  = filteredbotf == false ? false : (last_bot_1 < last_bot_0 and last_bot_2 < last_bot_0)
+bool lowerlow   = filteredbotf == false ? false : (last_bot_1 > last_bot_0 and last_bot_2 > last_bot_0)
+
+plotshape(ShowHHLL ? higherhigh : na, 'Higher High', shape.square, location.abovebar, color.maroon, text="[HH]", offset=-2)
+plotshape(ShowHHLL ? lowerhigh  : na, 'Lower High' , shape.square, location.abovebar, color.maroon, text="[LH]", offset=-2)
+plotshape(ShowHHLL ? higherlow  : na, 'High Low'   , shape.square, location.belowbar, color.green , text="[HL]", offset=-2)
+plotshape(ShowHHLL ? lowerlow   : na, 'Lower Low'  , shape.square, location.belowbar, color.green , text="[LL]", offset=-2)
+
+//  ||-----------------------------------------------------------------------------------------------------||
+//  ||-----------------------------------------------------------------------------------------------------||
+//  ||---   Fractals from higher Timeframe:  --------------------------------------------------------------||
+string timeframe1        = input("240", 'Timeframe:', inline='tf')
+bool   ShowTimeFractals1 = input.bool(false, 'Show Higher Timeframe Fractals?', inline='tf')
+__REPAINT                = input.bool(true, 'Repaint?', inline='tf') ? barmerge.lookahead_on : barmerge.lookahead_off
+
+isTFFractal(mode, tf) => 
+    [tfh, tfl] = request.security(syminfo.tickerid, tf, [high, low], lookahead=__REPAINT)
+    switch mode
+        +1 => ta.valuewhen(higherhigh == true, high[2], 0) >= tfh
+        -1 => ta.valuewhen(  lowerlow == true,  low[2], 0) <= tfl
+        =>    false
+
+bool ref_isTFFractal_top = isTFFractal( 1, timeframe1)
+bool ref_isTFFractal_bot = isTFFractal(-1, timeframe1)
+
+bool higherhhigh = higherhigh == false ? false : ref_isTFFractal_top
+bool lowerllow   = lowerlow   == false ? false : ref_isTFFractal_bot
+
+plotshape(ShowTimeFractals1 ? higherhhigh : na, 'Timed Top Fractals'   , shape.square, location.abovebar, color.maroon, text="[TH]", offset=-2)
+plotshape(ShowTimeFractals1 ? lowerllow   : na, 'Timed Bottom Fractals', shape.square, location.belowbar, color.green , text="[TL]", offset=-2)
+
+//  ||-----------------------------------------------------------------------------------------------------||
+//  ||---   V2 : Plot Lines based on the fractals.
+bool showchannel1 = input.bool(false, '1, ', inline='ch')
+plot(not showchannel1 ? na : (filteredtopf ? high[2] : na), 'Top Channel 1'   , color.black, offset=-2)
+plot(not showchannel1 ? na : (filteredbotf ? low[2] : na) , 'Bottom Channel 1', color.black, offset=-2)
+bool showchannel2 = input.bool(false, '2, ', inline='ch')
+plot(not showchannel2 ? na : (higherhigh ? high[2] : na), 'Top Channel 2'   , color.gray, offset=-2)
+plot(not showchannel2 ? na : (lowerlow ? low[2] : na)   , 'Bottom Channel 2', color.gray, offset=-2)
+bool showchannel3 = input.bool(false, '3, Show Channels?', inline='ch')
+plot(not showchannel3 ? na : (higherhhigh ? high[2] : na), 'Top Channel 3'   , color.silver, offset=-2)
+plot(not showchannel3 ? na : (lowerllow ? low[2] : na)   , 'Bottom Channel 3', color.silver, offset=-2)
+//  ||-----------------------------------------------------------------------------------------------------||
+//  ||---   HLswings channel: unable to offset values
+//plot(showchannel ? (highswings ? high[2] : na) : na, color=black, offset=-2)
+//plot(showchannel ? (lowswings ? low[2] : na) : na, color=black, offset=-2)
+//  ||-----------------------------------------------------------------------------------------------------||
+//  ||---------------------------------------------------------------------------------------------------------------------------------------------------||
+//  ||---   ZigZag:
+bool showZigZag = input.bool(true, 'Show ZigZag?')
+
+bool istop = ShowTimeFractals1 ? (higherhhigh ? true : false) : (filteredtopf ? true : false)
+bool isbot = ShowTimeFractals1 ? (lowerllow ? true : false)   : (filteredbotf ? true : false)
+int topcount = ta.barssince(istop)
+int botcount = ta.barssince(isbot)
+
+float zigzag = (
+         istop and topcount[1] > botcount[1] ? high[2] :
+         isbot and topcount[1] < botcount[1] ? low[2] :
+         na )
+//zigzag = not showZigZag ? na : ( filteredtopf == true ? high[2] : filteredbotf == true ? low[2] : na )
+plot(not showZigZag ? na : zigzag, 'ZigZag', color.black, offset=-2)
+
+//  ||-----------------------------------------------------------------------------------------------------||
+color bc = zigzag and high[2] == zigzag ? color.red : zigzag and low[2] == zigzag ? color.lime : color.silver
+barcolor(showBarColors ? bc : na, offset=-2)
+
+//  ||---   Pattern Recognition:
+
+float x = ta.valuewhen(zigzag, zigzag, 4) 
+float a = ta.valuewhen(zigzag, zigzag, 3) 
+float b = ta.valuewhen(zigzag, zigzag, 2) 
+float c = ta.valuewhen(zigzag, zigzag, 1) 
+float d = ta.valuewhen(zigzag, zigzag, 0)
+
+float xab = math.abs(b - a) / math.abs(x-a)
+float xad = math.abs(a - d) / math.abs(x-a)
+float abc = math.abs(b - c) / math.abs(a-b)
+float bcd = math.abs(c - d) / math.abs(b-c)
+
+//  ||-->   Functions:
+isBat(_mode)=>
+    _xab = xab >= 0.382 and xab <= 0.5
+    _abc = abc >= 0.382 and abc <= 0.886
+    _bcd = bcd >= 1.618 and bcd <= 2.618
+    _xad = xad <= 0.886
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isAltBat(_mode)=>
+    _xab = xab <= 0.382
+    _abc = abc >= 0.382 and abc <= 0.886
+    _bcd = bcd >= 2.0 and bcd <= 3.618
+    _xad = xad <= 1.13
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isButterfly(_mode)=>
+    _xab = xab <= 0.786
+    _abc = abc >= 0.382 and abc <= 0.886
+    _bcd = bcd >= 1.618 and bcd <= 2.618
+    _xad = xad >= 1.27 and xad <= 1.618
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isABCD(_mode)=>
+    _abc = abc >= 0.382 and abc <= 0.886
+    _bcd = bcd >= 1.13 and bcd <= 2.618
+    _abc and _bcd and (_mode == 1 ? d < c : d > c)
+
+isGartley(_mode)=>
+    _xab = xab >= 0.5 and xab <= 0.618 // 0.618
+    _abc = abc >= 0.382 and abc <= 0.886
+    _bcd = bcd >= 1.13 and bcd <= 2.618
+    _xad = xad >= 0.75 and xad <= 0.875 // 0.786
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isCrab(_mode)=>
+    _xab = xab >= 0.75 and xab <= 0.875 // 0.886
+    _abc = abc >= 0.382 and abc <= 0.886
+    _bcd = bcd >= 2.0 and bcd <= 3.618
+    _xad = xad >= 1.5 and xad <= 1.625 // 1.618
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isShark(_mode)=>
+    _xab = xab >= 0.5 and xab <= 0.875 // 0.886
+    _abc = abc >= 1.13 and abc <= 1.618
+    _bcd = bcd >= 1.27 and bcd <= 2.24
+    _xad = xad >= 0.88 and xad <= 1.13
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+is5o(_mode)=>
+    _xab = xab >= 1.13 and xab <= 1.618
+    _abc = abc >= 1.618 and abc <= 2.24
+    _bcd = bcd >= 0.5 and bcd <= 0.625 // 0.5
+    _xad = xad >= 0.0 and xad <= 0.236 // negative?
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isWolf(_mode)=>
+    _xab = xab >= 1.27 and xab <= 1.618
+    _abc = abc >= 0 and abc <= 5
+    _bcd = bcd >= 1.27 and bcd <= 1.618
+    _xad = xad >= 0.0 and xad <= 5
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isHnS(_mode)=>
+    _xab = xab >= 2.0 and xab <= 10
+    _abc = abc >= 0.90 and abc <= 1.1
+    _bcd = bcd >= 0.236 and bcd <= 0.88
+    _xad = xad >= 0.90 and xad <= 1.1
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isConTria(_mode)=>
+    _xab = xab >= 0.382 and xab <= 0.618
+    _abc = abc >= 0.382 and abc <= 0.618
+    _bcd = bcd >= 0.382 and bcd <= 0.618
+    _xad = xad >= 0.236 and xad <= 0.764
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isExpTria(_mode)=>
+    _xab = xab >= 1.236 and xab <= 1.618
+    _abc = abc >= 1.000 and abc <= 1.618
+    _bcd = bcd >= 1.236 and bcd <= 2.000
+    _xad = xad >= 2.000 and xad <= 2.236
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+plotshape(not showPatterns ? na : isABCD(-1)      and not isABCD(-1)[1]     , text="\nAB=CD"             , title='Bear ABCD'                , style=shape.labeldown, color=color.maroon, textcolor=color.white, location=location.top, offset=-2)
+plotshape(not showPatterns ? na : isBat(-1)       and not isBat(-1)[1]      , text="Bat"                 , title='Bear Bat'                 , style=shape.labeldown, color=color.maroon, textcolor=color.white, location=location.top, offset=-2)
+plotshape(not showPatterns ? na : isAltBat(-1)    and not isAltBat(-1)[1]   , text="Alt Bat"             , title='Bear Alt Bat'             , style=shape.labeldown, color=color.maroon, textcolor=color.white, location=location.top)
+plotshape(not showPatterns ? na : isButterfly(-1) and not isButterfly(-1)[1], text="Butterfly"           , title='Bear Butterfly'           , style=shape.labeldown, color=color.maroon, textcolor=color.white, location=location.top)
+plotshape(not showPatterns ? na : isGartley(-1)   and not isGartley(-1)[1]  , text="Gartley"             , title='Bear Gartley'             , style=shape.labeldown, color=color.maroon, textcolor=color.white, location=location.top)
+plotshape(not showPatterns ? na : isCrab(-1)      and not isCrab(-1)[1]     , text="Crab"                , title='Bear Crab'                , style=shape.labeldown, color=color.maroon, textcolor=color.white, location=location.top)
+plotshape(not showPatterns ? na : isShark(-1)     and not isShark(-1)[1]    , text="Shark"               , title='Bear Shark'               , style=shape.labeldown, color=color.maroon, textcolor=color.white, location=location.top)
+plotshape(not showPatterns ? na : is5o(-1)        and not is5o(-1)[1]       , text="5-O"                 , title='Bear 5-O'                 , style=shape.labeldown, color=color.maroon, textcolor=color.white, location=location.top)
+plotshape(not showPatterns ? na : isWolf(-1)      and not isWolf(-1)[1]     , text="Wolf Wave"           , title='Bear Wolf Wave'           , style=shape.labeldown, color=color.maroon, textcolor=color.white, location=location.top)
+plotshape(not showPatterns ? na : isHnS(-1)       and not isHnS(-1)[1]      , text="Head and Shoulders"  , title='Bear Head and Shoulders'  , style=shape.labeldown, color=color.maroon, textcolor=color.white, location=location.top)
+plotshape(not showPatterns ? na : isConTria(-1)   and not isConTria(-1)[1]  , text="Contracting Triangle", title='Bear Contracting triangle', style=shape.labeldown, color=color.maroon, textcolor=color.white, location=location.top)
+plotshape(not showPatterns ? na : isExpTria(-1)   and not isExpTria(-1)[1]  , text="Expanding Triangle"  , title='Bear Expanding Triangle'  , style=shape.labeldown, color=color.maroon, textcolor=color.white, location=location.top)
+
+plotshape(not showPatterns ? na : isABCD(1)      and not isABCD(1)[1]     , text="AB=CD\n"             , title='Bull ABCD'                , style=shape.labelup, color=color.green, textcolor=color.white, location=location.bottom)
+plotshape(not showPatterns ? na : isBat(1)       and not isBat(1)[1]      , text="Bat"                 , title='Bull Bat'                 , style=shape.labelup, color=color.green, textcolor=color.white, location=location.bottom)
+plotshape(not showPatterns ? na : isAltBat(1)    and not isAltBat(1)[1]   , text="Alt Bat"             , title='Bull Alt Bat'             , style=shape.labelup, color=color.green, textcolor=color.white, location=location.bottom)
+plotshape(not showPatterns ? na : isButterfly(1) and not isButterfly(1)[1], text="Butterfly"           , title='Bull Butterfly'           , style=shape.labelup, color=color.green, textcolor=color.white, location=location.bottom)
+plotshape(not showPatterns ? na : isGartley(1)   and not isGartley(1)[1]  , text="Gartley"             , title='Bull Gartley'             , style=shape.labelup, color=color.green, textcolor=color.white, location=location.bottom)
+plotshape(not showPatterns ? na : isCrab(1)      and not isCrab(1)[1]     , text="Crab"                , title='Bull Crab'                , style=shape.labelup, color=color.green, textcolor=color.white, location=location.bottom)
+plotshape(not showPatterns ? na : isShark(1)     and not isShark(1)[1]    , text="Shark"               , title='Bull Shark'               , style=shape.labelup, color=color.green, textcolor=color.white, location=location.bottom)
+plotshape(not showPatterns ? na : is5o(1)        and not is5o(1)[1]       , text="5-O"                 , title='Bull 5-O'                 , style=shape.labelup, color=color.green, textcolor=color.white, location=location.bottom)
+plotshape(not showPatterns ? na : isWolf(1)      and not isWolf(1)[1]     , text="Wolf Wave"           , title='Bull Wolf Wave'           , style=shape.labelup, color=color.green, textcolor=color.white, location=location.bottom)
+plotshape(not showPatterns ? na : isHnS(1)       and not isHnS(1)[1]      , text="Head and Shoulders"  , title='Bull Head and Shoulders'  , style=shape.labelup, color=color.green, textcolor=color.white, location=location.bottom)
+plotshape(not showPatterns ? na : isConTria(1)   and not isConTria(1)[1]  , text="Contracting Triangle", title='Bull Contracting Triangle', style=shape.labelup, color=color.green, textcolor=color.white, location=location.bottom)
+plotshape(not showPatterns ? na : isExpTria(1)   and not isExpTria(1)[1]  , text="Expanding Triangle"  , title='Bull Expanding Triangle'  , style=shape.labelup, color=color.green, textcolor=color.white, location=location.bottom)
+
+bool bear_abcd      = isABCD(-1)      and not isABCD(-1)[1]
+bool bear_bat       = isBat(-1)       and not isBat(-1)[1]
+bool bear_altbat    = isAltBat(-1)    and not isAltBat(-1)[1]
+bool bear_butterfly = isButterfly(-1) and not isButterfly(-1)[1]
+bool bear_gartley   = isGartley(-1)   and not isGartley(-1)[1]
+bool bear_crab      = isCrab(-1)      and not isCrab(-1)[1]
+bool bear_shark     = isShark(-1)     and not isShark(-1)[1]
+bool bear_5o        = is5o(-1)        and not is5o(-1)[1]
+bool bear_wolf      = isWolf(-1)      and not isWolf(-1)[1]
+bool bear_hns       = isHnS(-1)       and not isHnS(-1)[1]
+bool bear_contria   = isConTria(-1)   and not isConTria(-1)[1]
+bool bear_exptria   = isExpTria(-1)   and not isExpTria(-1)[1]
+
+bool bull_abcd      = isABCD(1)      and not isABCD(1)[1]
+bool bull_bat       = isBat(1)       and not isBat(1)[1]
+bool bull_altbat    = isAltBat(1)    and not isAltBat(1)[1]
+bool bull_butterfly = isButterfly(1) and not isButterfly(1)[1]
+bool bull_gartley   = isGartley(1)   and not isGartley(1)[1]
+bool bull_crab      = isCrab(1)      and not isCrab(1)[1]
+bool bull_shark     = isShark(1)     and not isShark(1)[1]
+bool bull_5o        = is5o(1)        and not is5o(1)[1]
+bool bull_wolf      = isWolf(1)      and not isWolf(1)[1]
+bool bull_hns       = isHnS(1)       and not isHnS(1)[1]
+bool bull_contria   = isConTria(1)   and not isConTria(1)[1]
+bool bull_exptria   = isExpTria(1)   and not isExpTria(1)[1]
+
+bool bear_patterns = bear_abcd and bear_bat and bear_altbat and bear_butterfly and bear_gartley and bear_crab and bear_shark and bear_5o and bear_wolf and bear_hns and bear_contria and bear_exptria
+bool bull_patterns = bull_abcd and bull_bat and bull_altbat and bull_butterfly and bull_gartley and bull_crab and bull_shark and bull_5o and bull_wolf and bull_hns and bull_contria and bull_exptria
+
+bool all_patterns = bear_patterns and bull_patterns
+alertcondition(condition=all_patterns, title='all patterns', message='The Patterns')

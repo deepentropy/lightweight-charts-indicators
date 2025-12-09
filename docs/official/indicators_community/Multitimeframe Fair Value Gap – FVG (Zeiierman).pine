@@ -1,0 +1,227 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+
+//@version=6
+indicator('Multitimeframe Fair Value Gap – FVG (Zeiierman)',shorttitle = "MTF FVG (Zeiierman)", overlay = true, max_bars_back = 5000, max_boxes_count = 500)
+//~~}
+
+//~~ Tooltips {
+var string t1 = "Select the timeframe for calculating Fair Value Gaps (FVGs).\n\nThis setting controls which candle data 
+ is used to identify FVGs. For example, selecting '15' uses the 15-minute chart even if you’re viewing a different timeframe.
+ \n\nA higher timeframe (e.g., 1H, 4H) can show more significant institutional gaps, while a lower timeframe (e.g., 5min) 
+ can detect intraday inefficiencies."
+var string t2 = "Adjusts the minimum required candle body size (relative to average) to validate a Fair Value Gap.
+ \n\n**How it works:**\nA wick is considered significant only if it is greater than or equal to the average body size 
+ multiplied by this sensitivity.\n\n- Increase to only show strong, impulsive moves (fewer but more powerful FVGs).
+ \n- Decrease to detect more FVGs, including minor ones (may include noise)."
+var string t3 = "Enable this to consider a Fair Value Gap 'mitigated' when price reaches the midpoint of the gap.
+ \n\n**Without this**, mitigation requires full price fill from top to bottom of the gap.\n**With this**, 
+ a touch of the midpoint is enough to consider the imbalance resolved.\n\nMidpoint logic allows earlier detection of 
+ mitigation for traders seeking speed over precision."
+var string t4 = "Toggle the visibility of the Fair Value Gap summary table on the chart.\n\nThis table shows each FVG’s 
+ placement and context. Turning it off hides the visual output (but the logic still runs)."
+var string t5 = "Adjust the horizontal distance from the current bar to where the FVG info table begins.\n\n**Increase** 
+ to move the table further to the left (away from price).\n**Decrease** to pull the table closer to price action.\nUseful 
+ for positioning the overlay in non-intrusive areas."
+var string t6 = "Set how far the FVG data table extends to the right of each row.\n\n**Larger values** give more space 
+ per FVG block, useful for long labels or wide screens.\n**Smaller values** create a more compact layout, saving screen real estate."
+var string t7 = "Control how far each Fair Value Gap box extends into the future.\n\nThis determines the horizontal 
+ length (in bars) of the visual box representing the FVG.\n\n- A higher value keeps unfilled gaps visible longer 
+ (good for swing traders).\n- A lower value limits clutter on active charts (better for scalpers)."
+var string t8 = "Set the background color used to display **buy-side Fair Value Gaps** (bullish direction).\n\nA more 
+ transparent color makes it subtle, while a more opaque shade makes it prominent."
+var string t9 = "Set the background color used to display **sell-side Fair Value Gaps** (bearish direction).\n\nUse 
+ this to visually distinguish bearish gaps from bullish ones."
+var string t10 = "Set the base color used for all FVG boxes and borders.\n\nThis neutral tone is used before the price 
+ fills the gap, or for the general FVG zone display.\nCombine with bullish/bearish highlights for a multi-layered visual effect."
+var string t11 = "Toggle the display of a trendline based on the average direction of valid Fair Value Gaps.
+ \n\n**Enabled:** You'll see a dynamic line that updates based on confirmed FVGs, giving directional context.
+ \n**Disabled:** No trendline is shown, only individual FVGs are plotted."
+var string t12 = "Sets the ripple level (in decibels) for the low-pass trend filter that processes FVG trend direction.
+ \n\nHigher values allow more fluctuations (more sensitive).\nLower values produce smoother, slower trend transitions.
+ \n\nRecommended: Start with 10dB and adjust based on market noise."
+var string t13 = "Sets the cutoff frequency for the trend filter (range: 0 to 0.5).\n\n**Lower values** filter out 
+ more noise (slower trend reaction).\n**Higher values** allow faster reaction to price changes.\n\nSet based on how 
+ reactive you want the FVG trendline to be."
+var string t14 = "Set the color of the **bullish trendline** when the FVG trend is rising.
+ \n\nUse a vibrant green or lime for clear uptrend confirmation."
+var string t15 = "Set the color of the **bearish trendline** when the FVG trend is falling.
+ \n\nUse a strong red to clearly highlight downtrends based on FVGs."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+tf          = input.timeframe('', title = 'Timeframe', group="FVG Timeframe",inline = 'tf')
+BodySens    = input.float(1.0, title = 'Sensativity', step = .1, minval = 0,group="FVG Timeframe",inline='tf', tooltip=t1+t2)
+mit         = input.bool(true,"Mitigated on mid", group="FVG Mitigation", tooltip=t3)
+showActive  = input.bool(false, title = 'Show FVG table', group="FVG Table", tooltip=t4)
+TableLeft   = input.int(5, title = 'Table Left', minval = 0, maxval = 30, group="FVG Table",inline = 'Tab') * 10
+TableRight  = input.int(10, title = 'Right', minval = 10, maxval = 50, group="FVG Table",inline = 'Tab', tooltip=t5+t6) * 10
+extendLength= input.int(10,"Extend Boxes", group="FVG Style", tooltip=t7)
+UpCol       = input.color(color.new(#00ffbb, 50), title = '', group="FVG Style", inline = 'FVG')
+DnCol       = input.color(color.new(#ff1100, 50), title = '', group="FVG Style",inline = 'FVG')
+Col         = input.color(color.new(color.gray, 85), title = '', group="FVG Style", inline = 'FVG', tooltip=t8+t9+t10)
+showTrend   = input.bool(true, title = 'Show FVG Trend', group="Trend", tooltip=t11)
+rp          = input.float(10.0, "Passband Ripple (dB)", group="Trend",minval=0.1, step=0.1, tooltip=t12)
+fc          = input.float(0.1, "Cutoff Frequency (0 to 0.5)",group="Trend",minval=0.001, maxval=0.5, step=0.01, tooltip=t13)
+TUpCol      = input.color(color.lime, title = '', group="Trend",inline = 'Trend')
+TDnCol      = input.color(color.red, title = '', group="Trend",inline = 'Trend', tooltip=t14+t15)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Arrays {
+type Data
+    array<box> fvg
+    array<box> bv
+    array<box> sv
+    array<line>mid
+
+var bv = Data.new(array.new<box>(),array.new<box>(),array.new<box>(),array.new<line>())
+var sv = Data.new(array.new<box>(),array.new<box>(),array.new<box>(),array.new<line>())
+
+var save  = array.new<float>(0)
+var FVGs  = array.new<box>()
+var TLine = array.new<float>(1, 0.0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Functions {
+getMTF() => [close, high, low, high[2], low[2], volume]
+
+getCandle() =>
+    wick = math.max(close, open) - math.min(close, open)
+    array.push(save, wick)
+    avgFVG = array.avg(save)
+    [wick, avgFVG]
+
+getBarTime(t, barsOffset) =>
+    t + (barsOffset * timeframe.in_seconds(timeframe.period) * 1000)
+
+BarsBack(val, hl) =>
+    back = time
+    for i = 0 to 4999 by 1
+        if val == hl[i]
+            back := time[i]
+            break
+    back
+
+VolumePower(v,c,l,h,ca)=> ca ? math.round(math.round(v * (c - l) / (h - l)) / v * 100) :
+ math.round(math.round(v * (h - c) / (h - l)) / v * 100)
+
+method Cleaner(Data d, cond) =>
+    if d.fvg.size()>0
+        for [i,e] in d.fvg
+            top = e.get_top()
+            bot = e.get_bottom()
+            mid = math.avg(top,bot)
+            Cond = mit ? (cond ? low<=mid : high>=mid) : (cond ? low <= bot : high >= top)
+            if Cond
+                e.delete()
+                d.mid.get(i).delete()
+                d.bv.get(i).delete()
+                d.sv.get(i).delete()
+                d.fvg.remove(i)
+                d.mid.remove(i)
+                d.bv.remove(i)
+                d.sv.remove(i)
+
+UpdateFVG(Box) =>
+    if Box.size() > 0
+        for e in Box
+            date = str.format_time(e.get_left(),"yyyy-MM-dd HH:mm",syminfo.timezone)
+            b = box.new(bar_index + TableLeft, e.get_top(), bar_index + TableRight, e.get_bottom(), 
+             bgcolor = close<e.get_bottom()?DnCol:UpCol, border_color = color(na),text=date,text_color=chart.fg_color)
+            FVGs.push(b)
+
+FVG(l,l2,h,h2,c1,LBack,L2Back,HBack,H2Back,wick,avgFVG,buyVol,sellVol) =>
+    BullFVG = l > h2 and c1 > h2 
+    BearFVG = h < l2 and c1 < l2
+
+    if BullFVG and not BullFVG[1] and wick >= avgFVG * BodySens
+        prev = array.get(TLine, 0)
+        array.unshift(TLine, math.avg(ohlc4, prev))
+
+        future = getBarTime(HBack,extendLength)
+        b = box.new(H2Back, l, future, h2, bgcolor = Col, border_color = Col, extend = extend.none,xloc = xloc.bar_time)
+        bv.fvg.unshift(b)
+
+        mid = math.avg(l,h2)
+        m = line.new(H2Back,mid,future,mid,xloc=xloc.bar_time,color=color.white,style=line.style_dashed)
+        bv.mid.unshift(m)
+
+        dist = (future-H2Back)
+        bb = box.new(H2Back,mid,int(H2Back+dist*(buyVol/100)),l,bgcolor = UpCol, border_color = UpCol, extend = extend.none,xloc = xloc.bar_time)
+        sb = box.new(H2Back,h2,int(H2Back+dist*(sellVol/100)),mid,bgcolor = DnCol, border_color = DnCol, extend = extend.none,xloc = xloc.bar_time)
+        bv.bv.unshift(bb)
+        bv.sv.unshift(sb)
+
+    if BearFVG and not BearFVG[1] and wick >= avgFVG * BodySens
+        prev = array.get(TLine, 0)
+        array.unshift(TLine, math.avg(ohlc4, prev))
+
+        future = getBarTime(LBack,extendLength)
+        b = box.new(L2Back, l2, future, h, bgcolor = Col, border_color = Col, extend = extend.none,xloc = xloc.bar_time)
+        sv.fvg.unshift(b)
+
+        mid = math.avg(l2,h)
+        m = line.new(L2Back,mid,future,mid,xloc=xloc.bar_time,color=color.white,style=line.style_dashed)
+        sv.mid.unshift(m)
+
+        dist = (future-L2Back)
+        bb = box.new(L2Back,mid,int(L2Back+dist*(buyVol/100)),l2,bgcolor = UpCol, border_color = UpCol, extend = extend.none,xloc = xloc.bar_time)
+        sb = box.new(L2Back,h,int(L2Back+dist*(sellVol/100)),mid,bgcolor = DnCol, border_color = DnCol, extend = extend.none,xloc = xloc.bar_time)
+        sv.bv.unshift(bb)
+        sv.sv.unshift(sb)
+
+    else
+        prev = array.get(TLine, 0)
+        array.unshift(TLine, prev)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Main {
+[c1, h, l, h2, l2, v] = request.security(syminfo.tickerid, tf, getMTF(), lookahead = barmerge.lookahead_on)
+[wick, avgFVG] = request.security(syminfo.tickerid, tf, getCandle(), lookahead = barmerge.lookahead_on)
+HBack = BarsBack(h, high)
+LBack = BarsBack(l, low)
+H2Back = BarsBack(h2, high)
+L2Back = BarsBack(l2, low)
+
+buyVol  = VolumePower(v, c1, l, h,true)
+sellVol = VolumePower(v, c1, l, h,false)
+
+FVG(l,l2,h,h2,c1,LBack,L2Back,HBack,H2Back,wick,avgFVG,buyVol,sellVol)
+bv.Cleaner(true)
+sv.Cleaner(false)
+
+if showActive
+    b = box.new(bar_index + TableLeft, ta.max(high), bar_index + TableRight, ta.min(low), bgcolor = color.new(color.gray, 100), border_color = color.gray, extend = extend.none)
+    box.delete(b[1])
+
+    //Delete Old
+    for e in FVGs
+        e.delete()
+
+    //Insert new
+    FVGs.clear()
+    UpdateFVG(bv.fvg)
+    UpdateFVG(sv.fvg)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Trend {
+var TCol = color.gray
+Trend = array.get(TLine, 0)
+TCol := Trend > Trend[1] ? TUpCol : Trend < Trend[1] ? TDnCol : TCol[1]
+src  = math.avg(h,l,Trend)
+epsilon = math.sqrt(math.pow(10, rp/10) - 1)
+d       = math.sqrt(1 + epsilon*epsilon)
+c    = 1 / math.tan(math.pi * fc)
+norm = 1 / (1 + d*c + c*c)
+b0   = norm
+b1   = 2 * norm
+b2   = norm
+a1   = 2 * norm * (1 - c*c)
+a2   = norm * (1 - d*c + c*c)
+trend = 0.0
+trend := (bar_index < 2) ? src : (b0*src + b1*src[1] + b2*src[2] - a1*nz(trend[1]) - a2*nz(trend[2]))
+Trend_ = plot(showTrend?trend:na, color=TCol, title="FVG Trend Filter")
+visualclose  = ta.ema(Trend,10)
+visualclose_ = plot(visualclose, color=color.new(color.blue,100), title="visualtrend", editable = false)
+fill(Trend_, visualclose_, trend, visualclose,color.new(TCol, 70),na, title="Fill")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

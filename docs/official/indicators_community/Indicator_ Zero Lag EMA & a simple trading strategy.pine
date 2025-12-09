@@ -1,0 +1,11 @@
+//
+// @author LazyBear
+//
+study(title = "Almost Zero Lag EMA [LazyBear]", shorttitle="ZeroLagEMA_LB", overlay=true)
+length=input(10)
+src=close
+ema1=ema(src, length)
+ema2=ema(ema1, length)
+d=ema1-ema2
+zlema=ema1+d
+plot(zlema)

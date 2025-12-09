@@ -1,0 +1,25 @@
+// @version 2
+// @author seiglerj
+// MFI indicator based on LazyBear's MFI/RSI indicator
+// 
+study(title = "MFI [seiglerj]", shorttitle="MFI", precision=0)
+source = hlc3
+length = input(14, minval=1), lower = input(20, minval=0, maxval=50, type=integer), upper = input(80, minval=50, maxval=100, type=integer)
+// DrawMFI_f=input(true, title="Draw MFI?", type=bool)
+HighlightBreaches=input(true, title="Highlight Oversold/Overbought?", type=bool)
+
+// MFI
+upper_s = sum(volume * (change(source) <= 0 ? 0 : source), length)
+lower_s = sum(volume * (change(source) >= 0 ? 0 : source), length)
+mf = rsi(upper_s, lower_s)
+mfp = plot(mf, color=color(gray,0), linewidth=1)
+top = hline(upper, color=color(gray,100), linewidth=1, editable=false)
+bottom = hline(lower, color=color(gray,100), linewidth=1, editable=false)
+hline(0, color=color(black,100), editable=false)
+hline(100, color=color(black,100), editable=false)
+
+// Breaches
+b_color = (mf > upper) ? color(red,70) : (mf < lower) ? color(green,60) : na
+bgcolor(HighlightBreaches ? b_color : na)
+
+fill(top, bottom, color=gray, transp=75)

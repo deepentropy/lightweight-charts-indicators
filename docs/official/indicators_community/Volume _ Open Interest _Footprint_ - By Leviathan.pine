@@ -1,0 +1,317 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LeviathanCapital
+
+//@version=5
+indicator("Volume / Open Interest Footprint - By Leviathan",shorttitle = 'Volume / OI Footprint - By Leviathan', overlay=true, max_boxes_count=500, max_bars_back = 1000)
+
+t1 = 'Choose the data that will be analyzed and displayed in the bar'
+t2 = 'Resolution is the number of rows displayed in a bar. Increasing it will provide more granular data and vice versa. You might need to decrease the resolution when viewing larger ranges'
+t3 = 'Total (Total Volume or Total Open Interest Increase), Up/Down (Buy/Sell Volume or OI Increase/Decrease), Delta (Buy Volume - Sell Volume or OI Increase - OI Decrease)'
+t4 = 'This input moves the bar to the right for N number of bars'
+t5 = 'This input defines the width of the footprint bar (in number of bars)'
+t6 = 'Choose location where the bar is positioned (relative to the visible range)'
+t7 = 'This will aggregate volume from your selected sources. Make sure to turn on RQC if volume is reported in quote currrency (eg. USD)'
+t8 = 'This will draw price levels where Volume/OI Delta was positive. These may serve as significant points of interest'
+
+voltype        = input.string('Volume', 'Source', options=['Volume', 'Open Interest'], tooltip = t1)
+res            = input.int(20, 'Resolution', minval=5, tooltip = t2)
+ntype          = input.string('Up/Down', 'Type', options = ['Total', 'Up/Down', 'Delta'], tooltip = t3)
+pos            = input.string('Right', 'Positioning', options = ['Right', 'Left'], tooltip = t6)
+st1            = input.int(30, 'Offset', tooltip = t4)
+wid            = input.int(40, 'Width', tooltip = t5)
+sr             = input.bool(false, 'Positive Delta Levels')
+
+// Aggregate
+aggr = input.bool(false, 'Aggregate Volume', group = 'Volume Aggregation')
+
+A0  = input.bool(true, '   CHART PAIR', group = 'Volume Aggregation')
+A1B = input.bool(false, '' , inline='a1', group = 'Volume Aggregation')
+A2B = input.bool(false, '' , inline='a2', group = 'Volume Aggregation')
+A3B = input.bool(false, '' , inline='a3', group = 'Volume Aggregation')
+A4B = input.bool(false, '' , inline='a4', group = 'Volume Aggregation')
+A5B = input.bool(false, '' , inline='a5', group = 'Volume Aggregation')
+A6B = input.bool(false, '' , inline='a6', group = 'Volume Aggregation')
+A7B = input.bool(false, '' , inline='a7', group = 'Volume Aggregation')
+A8B = input.bool(false, '' , inline='a8', group = 'Volume Aggregation')
+
+A1  = input.symbol('BINANCE:BTCUSDTPERP', '' , inline='a1', group = 'Volume Aggregation')
+A1t = input.bool(false, 'RQC', inline='a1', group = 'Volume Aggregation')
+A2  = input.symbol('BYBIT:BTCUSDT.P', '' , inline='a2', group = 'Volume Aggregation')
+A2t = input.bool(false, 'RQC', inline='a2', group = 'Volume Aggregation')
+A3  = input.symbol('OKX:BTCUSDT.P', '' ,     inline='a3', group = 'Volume Aggregation')
+A3t = input.bool(false, 'RQC', inline='a3', group = 'Volume Aggregation')
+A4  = input.symbol('BINGX:BTCUSDT', '' , inline='a4', group = 'Volume Aggregation')
+A4t = input.bool(false, 'RQC', inline='a4', group = 'Volume Aggregation')
+A5  = input.symbol('BITGET:BTCUSDT.P', '' , inline='a5', group = 'Volume Aggregation')
+A5t = input.bool(false, 'RQC', inline='a5', group = 'Volume Aggregation')
+A6  = input.symbol('PHEMEX:BTCUSDT.P', '' , inline='a6', group = 'Volume Aggregation')
+A6t = input.bool(false, 'RQC', inline='a6', group = 'Volume Aggregation')
+A7  = input.symbol('MEXC:BTCUSDT.P', '' , inline='a7', group = 'Volume Aggregation')
+A7t = input.bool(false, 'RQC', inline='a7', group = 'Volume Aggregation')
+A8  = input.symbol('WOONETWORK:BTCUSDT.P', '' , inline='a8', group = 'Volume Aggregation')
+A8t = input.bool(false, 'RQC', inline='a8', group = 'Volume Aggregation')
+
+A1vol = A1B ? request.security(A1, timeframe.period, A1t ? volume/close : volume) : 0
+A2vol = A2B ? request.security(A2, timeframe.period, A2t ? volume/close : volume) : 0
+A3vol = A3B ? request.security(A3, timeframe.period, A3t ? volume/close : volume) : 0
+A4vol = A4B ? request.security(A4, timeframe.period, A4t ? volume/close : volume) : 0
+A5vol = A5B ? request.security(A5, timeframe.period, A5t ? volume/close : volume) : 0
+A6vol = A6B ? request.security(A6, timeframe.period, A6t ? volume/close : volume) : 0
+A7vol = A7B ? request.security(A7, timeframe.period, A7t ? volume/close : volume) : 0
+A8vol = A8B ? request.security(A8, timeframe.period, A8t ? volume/close : volume) : 0
+
+//Appearance
+ndsize         = input.string('Small', 'Node Text Size', options = ['Tiny', 'Small', 'Normal', 'Large', 'Auto'], group= 'Additional Settings')
+ndpos          = input.string('Center', 'Node Text Position', options = ['Left', 'Right', 'Center'], group= 'Additional Settings')
+
+netcol1        = input.color(color.rgb(255, 82, 82, 100), 'Negative Cold/Hot', inline='n', group= 'Additional Settings')
+netcol2        = input.color(#f7525f, '', inline='n', group= 'Additional Settings')
+netcol3        = input.color(color.rgb(76, 175, 79, 100), 'Positive Cold/Hot ', inline='p', group= 'Additional Settings')
+netcol4        = input.color(#81c784, '', inline='p', group= 'Additional Settings')
+totcol1        = input.color(color.rgb(33, 149, 243, 100), 'Total Cold/Hot    ', inline='t', group= 'Additional Settings')
+totcol2        = input.color(color.blue,'', inline='t', group= 'Additional Settings')
+pdlcol         = input.color(color.rgb(33, 149, 243, 74),'Positive Delta Color', group= 'Additional Settings')
+hmopt          = input.bool(true, 'Total Based Coloring', group= 'Additional Settings')
+
+//
+st         = chart.right_visible_bar_time == time or pos=='Left' ? st1 : -2 * wid
+float data = aggr ? (A0 ? volume : 0) + A1vol + A2vol + A3vol + A4vol + A5vol + A6vol + A7vol + A8vol : volume
+
+//
+startTime      = chart.left_visible_bar_time
+endTime        = chart.right_visible_bar_time
+
+//
+bool inZone           = time >= startTime and time <= endTime
+bool newSession       = inZone and not inZone[1]
+bool endSession       = not inZone and inZone[1]
+var int barsInSession = 0
+barsInSession        := inZone ? barsInSession + 1 : barsInSession
+var zoneStartIndex    = 0
+var zoneEndIndex      = 0
+var int zoneStart     = 0
+if newSession
+    zoneStartIndex   := bar_index 
+if endSession
+    zoneEndIndex     := bar_index
+int lookback          = bar_index - zoneStart
+var activeZone        = false
+
+//
+profHigh   = ta.highest(high, barsInSession+1)[1]
+profLow    = ta.lowest(low, barsInSession+1)[1]
+resolution = res
+
+// 
+var vpGreen    = array.new_float(resolution, 0) 
+var vpRed      = array.new_float(resolution, 0) 
+var vpDelta    = array.new_float(resolution, 0) 
+var vpTotal    = array.new_float(resolution, 0) 
+var zoneBounds = array.new_float(resolution, 0) 
+
+//
+var float[] ltfOpen   =  array.new_float(0)
+var float[] ltfClose  =  array.new_float(0)
+var float[] ltfHigh   =  array.new_float(0)
+var float[] ltfLow    =  array.new_float(0)
+var float[] ltfVolume =  array.new_float(0)
+
+//
+string userSymbol         = 'BINANCE' + ":" + string(syminfo.basecurrency) + 'USDT.P'
+string openInterestTicker = str.format("{0}_OI", userSymbol)
+string timeframe          = syminfo.type == "futures" and timeframe.isintraday ? "1D" : timeframe.period
+deltaOi                   = request.security(openInterestTicker, timeframe, close-close[1], ignore_invalid_symbol = true)
+oi                        = request.security(openInterestTicker, timeframe.period, close, ignore_invalid_symbol = true)
+pldeltaoi                 = deltaOi
+ 
+//
+vol() =>
+    out = data
+    if voltype == 'Open Interest'
+        out := deltaOi
+    out
+
+//
+
+float dO = open
+float dC = close
+float dH = high
+float dL = low 
+float dV = vol()
+
+//
+switchLineStyle(x) =>
+    switch x
+        '────'        => line.style_solid
+        '--------'    => line.style_dashed
+        '┈┈┈┈'        => line.style_dotted
+
+switchPos(x) =>
+    switch x
+        'Left'        => text.align_left
+        'Right'       => text.align_right
+        'Center'      => text.align_center
+
+switchPlotStyle(x) =>
+    switch x
+        '•••••••••'   => plot.style_circles
+        '────'        => plot.style_linebr
+
+switchsize(x) =>
+    switch x
+        'Tiny'   => size.tiny
+        'Small'  => size.small
+        'Normal' => size.normal
+        'Large'  => size.large
+        'Auto'   => size.auto
+
+//
+resetProfile(enable) =>
+    if enable
+        array.fill(vpGreen, 0)
+        array.fill(vpRed, 0)
+        array.clear(ltfOpen)
+        array.clear(ltfHigh)
+        array.clear(ltfLow)
+        array.clear(ltfClose)
+        array.clear(ltfVolume)
+// 
+tr = ta.atr(1)
+atr = ta.atr(14)
+
+// 
+get_vol(y11, y12, y21, y22, height, vol) =>
+    nz(math.max(math.min(math.max(y11, y12), math.max(y21, y22)) - math.max(math.min(y11, y12), math.min(y21, y22)), 0) * vol / height)
+
+// 
+profileAdd(o, h, l, c, v, g, w) =>
+    for i = 0 to array.size(vpGreen) - 1
+        zoneTop  = array.get(zoneBounds, i)
+        zoneBot  = zoneTop - g
+
+        body_top = math.max(c, o)
+        body_bot = math.min(c, o)
+        itsgreen = c >= o
+
+        topwick       = h - body_top
+        bottomwick    = body_bot - l
+        body          = body_top - body_bot
+        bodyvol       = body * v / (2 * topwick + 2 * bottomwick + body)
+        topwickvol    = 2 * topwick * v / (2 * topwick + 2 * bottomwick + body)
+        bottomwickvol = 2 * bottomwick * v / (2 * topwick + 2 * bottomwick + body)
+
+        if voltype == 'Volume'
+            array.set(vpGreen, i, array.get(vpGreen, i) + (itsgreen ? get_vol(zoneBot, zoneTop, body_bot, body_top, body, bodyvol) : 0) + get_vol(zoneBot, zoneTop, body_top, h, topwick, topwickvol) / 2 + get_vol(zoneBot, zoneTop, body_bot, l, bottomwick, bottomwickvol) / 2)
+            array.set(vpRed, i, array.get(vpRed, i) + (itsgreen ? 0 : get_vol(zoneBot, zoneTop, body_bot, body_top, body, bodyvol)) + get_vol(zoneBot, zoneTop, body_top, h, topwick, topwickvol) / 2 + get_vol(zoneBot, zoneTop, body_bot, l, bottomwick, bottomwickvol) / 2)
+            array.set(vpDelta, i, array.get(vpGreen, i) - array.get(vpRed, i))
+            array.set(vpTotal, i, array.get(vpGreen, i) + array.get(vpRed, i))
+        else if voltype == 'Open Interest'
+            if v > 0    
+                array.set(vpGreen, i, array.get(vpGreen, i) + get_vol(zoneBot, zoneTop, body_bot, body_top, body, v))// + get_vol(zoneBot, zoneTop, body_top, h, topwick, topwickvol) / 2 + get_vol(zoneBot, zoneTop, body_bot, l, bottomwick, bottomwickvol) / 2)
+                array.set(vpDelta, i, array.get(vpGreen, i) - array.get(vpRed, i))
+                array.set(vpTotal, i, array.get(vpGreen, i))
+            if v < 0
+                array.set(vpRed, i, array.get(vpRed, i) + get_vol(zoneBot, zoneTop, body_bot, body_top, body, -v))// + get_vol(zoneBot, zoneTop, body_top, h, topwick, topwickvol) / 2 + get_vol(zoneBot, zoneTop, body_bot, l, bottomwick, bottomwickvol) / 2)
+
+// 
+calcSession(update) =>
+    array.fill(vpGreen, 0)
+    array.fill(vpRed, 0)
+    array.fill(vpDelta, 0)
+    if bar_index > lookback and update
+        gap = (profHigh - profLow) / resolution
+
+        for i = 0 to resolution - 1
+            array.set(zoneBounds, i, profHigh - gap * i)
+
+        if array.size(ltfOpen) > 0
+            for j = 0 to array.size(ltfOpen) - 1    
+                profileAdd(array.get(ltfOpen, j), array.get(ltfHigh, j), array.get(ltfLow, j), array.get(ltfClose, j), array.get(ltfVolume, j), gap, 1)
+
+//
+f_newNode(condition, x, top, right, bott, col, txt) =>
+    condition ? box.new(x, top, right, bott, bgcolor=col, border_width=0, text=txt,xloc=xloc.bar_index, text_size = switchsize(ndsize), text_color = chart.fg_color, text_halign = switchPos(ndpos)) : na
+
+//
+drawNewZone(update) =>
+    var box[]   profileBoxesArray  = array.new_box(0)
+    float leftMax = zoneStartIndex
+    float rightMax = (((barstate.islast and inZone) ? bar_index : zoneEndIndex) - zoneStartIndex) + zoneStartIndex
+    if update and array.sum(vpGreen) + array.sum(vpRed) > 0
+        gap = (profHigh - profLow) / resolution
+        float rightMaxVol = array.max(vpGreen)+array.max(vpRed)
+        float buffer = 0
+        size = array.size(profileBoxesArray)
+        if size > 0    
+            for j = 0 to size - 1
+                box.delete(array.get(profileBoxesArray, size - 1 - j))
+                array.remove(profileBoxesArray, size - 1 - j)
+        
+        for i = 0 to array.size(vpRed) - 1
+            vrpct     = array.percentrank(vpGreen, i)/100
+            vgpct     = array.percentrank(vpRed, i)/100
+            dpct      = array.percentrank(vpDelta, i)/100
+            tpct      = array.percentrank(vpTotal, i)/100
+            deltapct  = (array.percentrank(vpGreen, i) - array.percentrank(vpRed, i))/100
+            rcol      = color.from_gradient(hmopt ? vrpct : tpct, 0, 1, netcol1, netcol2)
+            gcol      = color.from_gradient(hmopt ? vgpct : tpct, 0, 1, netcol3, netcol4)
+            dgcol     = color.from_gradient(dpct, 0, 1, netcol3, netcol4)
+            drcol     = color.from_gradient(dpct, 0.1, 1, netcol2, netcol1)
+            upvol     = math.round(array.get(vpGreen, i), 0)
+            downvol   = math.round(array.get(vpRed, i), 0)
+            delta     = upvol-downvol
+            totvol    = str.tostring(voltype=='Volume' ? (upvol + downvol) : upvol , format.volume)
+            totvolcol = color.from_gradient(vrpct, 0, 1, totcol1, totcol2)
+            deltavol  = str.tostring(upvol - downvol , format.volume)
+            gvol      = str.tostring(upvol, format.volume)
+            rvol      = str.tostring(downvol, format.volume)
+            
+            left1  = pos=='Right' ? bar_index+st : int(leftMax)+st
+            left2  = pos=='Right' ? bar_index+(st + wid) : int(leftMax)+(st + wid)
+            left3  = pos=='Right' ? bar_index+st : int(leftMax)+st
+            right1 = pos=='Right' ? bar_index+(st + wid) : int(leftMax)+(st + wid)
+            right2 = pos=='Right' ? bar_index+(st + wid*2) : int(leftMax)+(st + wid*2)
+            right3 = pos=='Right' ? bar_index+(st + wid) : int(leftMax)+(st + wid)
+            if ntype=='Total'
+                array.push(profileBoxesArray, f_newNode(true, left3, array.get(zoneBounds, i) - buffer, right3, array.get(zoneBounds, i) - gap + buffer,totvolcol, totvol))
+                array.push(profileBoxesArray, f_newNode(delta>0 and sr, pos=='Right' ? int(leftMax)+st : right3 , array.get(zoneBounds, i) - buffer, bar_index+st, array.get(zoneBounds, i) - gap + buffer,pdlcol, txt=''))
+
+            if ntype=='Up/Down'
+                array.push(profileBoxesArray, f_newNode(true, left1, array.get(zoneBounds, i) - buffer, right1, array.get(zoneBounds, i) - gap + buffer, rcol, rvol))
+                array.push(profileBoxesArray, f_newNode(true, left2, array.get(zoneBounds, i) - buffer, right2, array.get(zoneBounds, i) - gap + buffer, gcol, gvol))
+                array.push(profileBoxesArray, f_newNode(delta>0 and sr, pos=='Right' ? int(leftMax)+st : right2 , array.get(zoneBounds, i) - buffer, bar_index+st, array.get(zoneBounds, i) - gap + buffer,pdlcol, txt=''))
+
+            if ntype=='Delta'
+                array.push(profileBoxesArray, f_newNode(true, left3, array.get(zoneBounds, i) - buffer, right3, array.get(zoneBounds, i) - gap + buffer,delta>0 ? dgcol : drcol, deltavol))
+                array.push(profileBoxesArray, f_newNode(delta>0 and sr, pos=='Right' ? int(leftMax)+st : right3 , array.get(zoneBounds, i) - buffer, bar_index+st, array.get(zoneBounds, i) - gap + buffer,pdlcol, txt=''))
+
+//
+combArray(arr1, arr2) =>
+    out = array.copy(arr1)
+    if array.size(arr2) > 0
+        for i = 0 to array.size(arr2) - 1
+            array.push(out, array.get(arr2, i))
+    out
+
+//
+updateIntra(o, h, l, c, v) =>
+    array.push(ltfOpen,  o)
+    array.push(ltfHigh, h) 
+    array.push(ltfLow, l) 
+    array.push(ltfClose, c) 
+    array.push(ltfVolume, v)
+    
+//
+calcSession(endSession or (barstate.islast and inZone))
+drawNewZone(endSession or (barstate.islast and inZone))
+resetProfile(newSession)
+
+//
+if inZone
+    updateIntra(dO, dH, dL, dC, dV)
+if endSession 
+    activeZone := false
+if newSession
+    zoneStart := bar_index
+    activeZone := true
+

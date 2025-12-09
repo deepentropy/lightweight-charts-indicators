@@ -1,0 +1,22 @@
+//@version=6
+// Madrid : Squeeze Trend : 02/Aug/2015 : 11:41 : 2.0
+// Last Updated : From Pinescript v.1 to v.6 : 30/Jun/2025 : 08:11
+// This Study determines the range where the trend is more profitable.
+//
+
+indicator('Madrid Trend Squeeze', shorttitle = 'MTrdSqueez')
+len = input.int(34, title = 'Length', minval = 14)
+
+src = close
+ref = 13
+sqzLen = 5
+
+ma = ta.ema(src, len)
+closema = close - ma
+refma = ta.ema(src, ref) - ma
+sqzma = ta.ema(src, sqzLen) - ma
+
+hline(0)
+plotcandle(0, closema, 0, closema, color = closema >= 0 ? color.aqua : color.fuchsia, editable = true)
+plotcandle(0, sqzma, 0, sqzma, color = sqzma >= 0 ? color.lime : color.red)
+plotcandle(0, refma, 0, refma, color = refma >= 0 and closema < refma or refma < 0 and closema > refma ? color.yellow : refma >= 0 ? color.green : color.maroon)

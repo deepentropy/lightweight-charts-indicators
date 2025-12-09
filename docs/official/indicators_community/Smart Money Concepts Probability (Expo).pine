@@ -1,0 +1,294 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator("Smart Money Concepts Probability (Expo)",overlay=true,max_bars_back=5000,max_labels_count=500,max_lines_count=500)
+
+// ~~ Tooltips {
+string t1 = "Set the pivot period"
+string t2 = "Set the response period. A low value returns a short-term structure and a high value returns a long-term structure. If you disable this option the pivot length above will be used."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+prd    = input.int(20,minval=1,title="Structure Period",tooltip=t1)
+s1     = input.bool(true,title="Structure Response  ", inline="resp")
+resp   = input.int(7,minval=1,title="",inline="resp",tooltip=t2)
+bull   = input.bool(true,"Bullish Structure     ",inline="Bullish"), bull2 = input.color(color.rgb(8, 236, 126),"",inline="Bullish"), bull3 = input.color(color.rgb(8, 236, 126),"",inline="Bullish")
+bear   = input.bool(true,"Bearish Structure    ",inline="Bearish"), bear2 = input.color(color.rgb(255, 34, 34),"",inline="Bearish"), bear3 = input.color(color.rgb(255, 34, 34),"",inline="Bearish")
+showPD = input.bool(true,"Premium & Discount",inline="pd"), prem = input.color(color.new(color.rgb(255, 34, 34),80),"",inline="pd"), disc = input.color(color.new(color.rgb(8, 236, 126),80),"",inline="pd")
+hlloc  = input.string("Right","", options=["Left","Right"],inline="pd")
+var bool [] alert_bool  = array.from(
+ input.bool(true,title="Ticker ID",group="Any alert() function call"),
+ input.bool(true,title="Timeframe",group="Any alert() function call"),
+ input.bool(true,title="Probability Percentage",group="Any alert() function call"))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+b       = bar_index
+var Up  = float(na)
+var Dn  = float(na)
+var iUp = int(na)
+var iDn = int(na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Matrix & Array {
+var vals          = matrix.new<float>(9,4,0.0)
+var string [] txt = array.new<string>(2,"")
+var tbl           = matrix.new<table>(1,1,table.new(position.top_right,2,3,
+ frame_color      =color.new(color.gray,50),frame_width=3,
+ border_color     =chart.bg_color,border_width=-2))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Functions {
+//Labels
+CreateLabel(x,y,txt,col,z)=>
+    label.new(x,y,txt,textcolor=col,style=z?label.style_label_down:label.style_label_up,color=color(na))
+//Lines
+CreateLine(x1,x2,y,col)=>
+    line.new(x1,x2,b,y,color=col)
+//Current
+Current(v)=>
+    str = ""
+    val1 = float(na)
+    val2 = float(na)
+    if v>=0
+        if v==1
+            str  := "SMS: "
+            val1 := matrix.get(vals,0,1)
+            val2 := matrix.get(vals,0,3) 
+        else if v==2
+            str  := "BMS: "
+            val1 := matrix.get(vals,1,1)
+            val2 := matrix.get(vals,1,3) 
+        else if v>2
+            str  := "BMS: "
+            val1 := matrix.get(vals,2,1)
+            val2 := matrix.get(vals,2,3) 
+    else if v<=0
+        if v==-1
+            str  := "SMS: "
+            val1 := matrix.get(vals,3,1)
+            val2 := matrix.get(vals,3,3) 
+        else if v==-2
+            str  := "BMS: "
+            val1 := matrix.get(vals,4,1)
+            val2 := matrix.get(vals,4,3) 
+        else if v<-2
+            str  := "BMS: "
+            val1 := matrix.get(vals,5,1)
+            val2 := matrix.get(vals,5,3)
+    [str,val1,val2]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pivots {
+Up   := math.max(Up[1],high)
+Dn   := math.min(Dn[1],low)
+pvtHi = ta.pivothigh(high,prd,prd)
+pvtLo = ta.pivotlow(low,prd,prd)
+if pvtHi
+    Up := pvtHi
+if pvtLo
+    Dn := pvtLo
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Structure {
+var pos = 0
+if Up>Up[1]
+    iUp := b
+    centerBull = math.round(math.avg(iUp[1],b))
+    if pos<=0
+        if bull
+            CreateLabel(centerBull,Up[1],"CHoCH",bull3,true)
+            CreateLine(iUp[1],Up[1],Up[1],bull2)
+        pos := 1
+        matrix.set(vals,6,0,matrix.get(vals,6,0)+1)
+    else if pos==1 and Up>Up[1] and Up[1]==Up[s1?resp:prd]
+        if bull
+            CreateLabel(centerBull,Up[1],"SMS",bull3,true)
+            CreateLine(iUp[1],Up[1],Up[1],bull2)
+        pos := 2
+        matrix.set(vals,6,1,matrix.get(vals,6,1)+1)
+    else if pos>1 and Up>Up[1] and Up[1]==Up[s1?resp:prd]
+        if bull
+            CreateLabel(centerBull,Up[1],"BMS",bull3,true)
+            CreateLine(iUp[1],Up[1],Up[1],bull2)
+        pos := pos + 1
+        matrix.set(vals,6,2,matrix.get(vals,6,2)+1)
+else if Up<Up[1]
+    iUp := b-prd
+if Dn<Dn[1]
+    iDn := b
+    centerBear = math.round(math.avg(iDn[1],b))
+    if pos>=0
+        if bear
+            CreateLabel(centerBear,Dn[1],"CHoCH",bear3,false)
+            CreateLine(iDn[1],Dn[1],Dn[1],bear2)
+        pos := -1
+        matrix.set(vals,7,0,matrix.get(vals,7,0)+1)
+    else if pos==-1 and Dn<Dn[1] and Dn[1]==Dn[s1?resp:prd]
+        if bear
+            CreateLabel(centerBear,Dn[1],"SMS",bear3,false)
+            CreateLine(iDn[1],Dn[1],Dn[1],bear2)
+        pos := -2
+        matrix.set(vals,7,1,matrix.get(vals,7,1)+1)
+    else if pos<-1 and Dn<Dn[1] and Dn[1]==Dn[s1?resp:prd]
+        if bear
+            CreateLabel(centerBear,Dn[1],"BMS",bear3,false)
+            CreateLine(iDn[1],Dn[1],Dn[1],bear2)
+        pos := pos - 1
+        matrix.set(vals,7,2,matrix.get(vals,7,2)+1)
+else if Dn>Dn[1]
+    iDn := b-prd
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Probability Calculation {
+if ta.change(pos)
+    //Results
+    if pos>0 and pos[1]>0 or pos<0 and pos[1]<0
+        if  matrix.get(vals,8,0)<matrix.get(vals,8,1)
+            matrix.set(vals,8,2,matrix.get(vals,8,2)+1)
+        else
+            matrix.set(vals,8,3,matrix.get(vals,8,3)+1)
+    else
+        if  matrix.get(vals,8,0)>matrix.get(vals,8,1)
+            matrix.set(vals,8,2,matrix.get(vals,8,2)+1)
+        else
+            matrix.set(vals,8,3,matrix.get(vals,8,3)+1)
+
+    //Score Calulation
+    //Variables
+    buC0 = matrix.get(vals,0,0)
+    buC1 = matrix.get(vals,0,2)
+    buS0 = matrix.get(vals,1,0)
+    buS1 = matrix.get(vals,1,2)
+    buB0 = matrix.get(vals,2,0)
+    buB1 = matrix.get(vals,2,2)
+    beC0 = matrix.get(vals,3,0)
+    beC1 = matrix.get(vals,3,2)
+    beS0 = matrix.get(vals,4,0)
+    beS1 = matrix.get(vals,4,2)
+    beB0 = matrix.get(vals,5,0)
+    beB1 = matrix.get(vals,5,2)
+    tbuC = matrix.get(vals,6,0)
+    tbuS = matrix.get(vals,6,1)
+    tbuB = matrix.get(vals,6,2)
+    tbeC = matrix.get(vals,7,0)
+    tbeS = matrix.get(vals,7,1)
+    tbeB = matrix.get(vals,7,2)
+
+    //Bull
+    if (pos[1]==1 or pos[1]==0) and pos<0
+        matrix.set(vals,0,0,buC0+1)
+        matrix.set(vals,0,1,math.round(((buC0+1)/tbuC)*100,2))
+    if (pos[1]==1 or pos[1]==0) and pos==2
+        matrix.set(vals,0,2,buC1+1)
+        matrix.set(vals,0,3,math.round(((buC1+1)/tbuC)*100,2))
+    if pos[1]==2 and pos<0
+        matrix.set(vals,1,0,buS0+1)
+        matrix.set(vals,1,1,math.round(((buS0+1)/tbuS)*100,2))
+    if pos[1]==2 and pos>2
+        matrix.set(vals,1,2,buS1+1)
+        matrix.set(vals,1,3,math.round(((buS1+1)/tbuS)*100,2))
+    if pos[1]>2 and pos<0
+        matrix.set(vals,2,0,buB0+1)
+        matrix.set(vals,2,1,math.round(((buB0+1)/tbuB)*100,2))
+    if pos[1]>2 and pos>pos[1]
+        matrix.set(vals,2,2,buB1+1)
+        matrix.set(vals,2,3,math.round(((buB1+1)/tbuB)*100,2))
+    //Bear
+    if (pos[1]==-1 or pos[1]==0) and pos>0
+        matrix.set(vals,3,0,beC0+1)
+        matrix.set(vals,3,1,math.round(((beC0+1)/tbeC)*100,2))
+    if (pos[1]==-1 or pos[1]==0) and pos==-2
+        matrix.set(vals,3,2,beC1+1)
+        matrix.set(vals,3,3,math.round(((beC1+1)/tbeC)*100,2))
+    if pos[1]==-2 and pos>0
+        matrix.set(vals,4,0,beS0+1)
+        matrix.set(vals,4,1,math.round(((beS0+1)/tbeS)*100,2))
+    if pos[1]==-2 and pos<-2
+        matrix.set(vals,4,2,beS1+1)
+        matrix.set(vals,4,3,math.round(((beS1+1)/tbeS)*100,2))
+    if pos[1]<-2 and pos>0
+        matrix.set(vals,5,0,beB0+1)
+        matrix.set(vals,5,1,math.round(((beB0+1)/tbeB)*100,2))
+    if pos[1]<-2 and pos<pos[1]
+        matrix.set(vals,5,2,beB1+1)
+        matrix.set(vals,5,3,math.round(((beB1+1)/tbeB)*100,2))
+    [str,val1,val2] = Current(pos)
+    array.set(txt,0,"CHoCH: "+str.tostring(val1,format.percent))
+    array.set(txt,1,str+str.tostring(val2,format.percent))
+    matrix.set(vals,8,0,val1)
+    matrix.set(vals,8,1,val2)
+    //Alerts
+    if array.includes(alert_bool,true)
+        st1 = syminfo.ticker
+        st2 = timeframe.period 
+        st3 = str.tostring(array.join(txt,'\n'))
+        string [] str_vals = array.from(st1,st2,st3)
+        output = array.new_string()
+        for x=0 to array.size(alert_bool)-1
+            if array.get(alert_bool,x)
+                array.push(output,array.get(str_vals,x))
+        alert(array.join(output,'\n'),alert.freq_once_per_bar_close)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Premium & Discount {
+var hi       = line.new(na,na,na,na,color=bear2)
+var lo       = line.new(na,na,na,na,color=bull2)
+var fill     = linefill.new(hi,lo,na)
+var premium  = box.new(na,na,na,na,na,bgcolor=prem)
+var discount = box.new(na,na,na,na,na,bgcolor=disc)
+var mid      = box.new(na,na,na,na,na,bgcolor=color.new(color.gray,80))
+
+PremiumTop   = Up-(Up-Dn)*.1
+PremiumBot   = Up-(Up-Dn)*.25
+DiscountTop  = Dn+(Up-Dn)*.25
+DiscountBot  = Dn+(Up-Dn)*.1
+MidTop       = Up-(Up-Dn)*.45
+MidBot       = Dn+(Up-Dn)*.45
+
+if barstate.islast and showPD
+    loc = hlloc=="Left"?math.min(iUp,iDn):math.max(iUp,iDn)
+    //High & Low
+    line.set_xy1(hi,loc,Up)
+    line.set_xy2(hi,b,Up)
+    line.set_xy1(lo,loc,Dn)
+    line.set_xy2(lo,b,Dn)
+    linefill.set_color(fill,color.new(color.gray,90))
+    //Premium & Mid & Discount
+    box.set_lefttop(premium,loc,PremiumTop)
+    box.set_rightbottom(premium,b,PremiumBot)
+    box.set_lefttop(discount,loc,DiscountTop)
+    box.set_rightbottom(discount,b,DiscountBot)
+    box.set_lefttop(mid,loc,MidTop)
+    box.set_rightbottom(mid,b,MidBot)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Probability {
+var prob1 = label.new(na,na,na,color=color(na),textcolor=chart.fg_color,style=label.style_label_left)
+var prob2 = label.new(na,na,na,color=color(na),textcolor=chart.fg_color,style=label.style_label_left)
+
+if barstate.islast
+    str1 = pos<0?array.get(txt,0):array.get(txt,1)
+    str2 = pos>0?array.get(txt,0):array.get(txt,1)
+    label.set_xy(prob1,b,Up)
+    label.set_text(prob1,str1)
+    label.set_xy(prob2,b,Dn)
+    label.set_text(prob2,str2)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Table {
+if barstate.islast
+    //Calulate WinRatio
+    W  = matrix.get(vals,8,2)
+    L  = matrix.get(vals,8,3)
+    WR = math.round(W/(W+L)*100,2)
+    string [] tbl_vals = array.from("WIN: "+str.tostring(W),
+     "LOSS: "+str.tostring(L),
+     "Profitability: "+str.tostring(WR,format.percent))
+    color [] tbl_col = array.from(color.green,color.red,chart.fg_color)
+    for i=0 to 2
+        table.cell(matrix.get(tbl,0,0),0,i,array.get(tbl_vals,i),
+         text_halign=text.align_center,bgcolor=chart.bg_color,
+         text_color=array.get(tbl_col,i),text_size=size.auto)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

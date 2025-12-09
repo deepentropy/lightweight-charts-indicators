@@ -1,0 +1,129 @@
+//@version=6
+//@the_MarketWhisperer
+//Based on Pinecoders' codebase
+
+// What is it?
+// A tool that shows Real-time Volume bars split into 3 components: (1) Market Buy Volume - i.e., the volume that got transacted on upticks; (2) Market Sell Volume - i.e.,  the volume that got transacted on downticks;
+// and, (3) Neutral Volume - i.e., the volume that got transacted without a change in price.
+// The tool can also be switched to an Up/Down Vol Only mode where it shows the volume split into Up and Down volume only. All neutral volume will be cetegorized into either Up or Down depending on whether
+// the last price movement was Up or Down.
+// (This feature can be turned off if you want normal volume bars).
+// Market delta (i.e., Market Buy Volume - Market Sell Volume) is also displayed above each volume bar. (On by default; can be switched off from Settings)
+// The split and Market Delta data are ONLY AVAILABLE FOR REAL-TIME BARS. Historical bars are shown just like regular ones.
+// The dotted line marks the start of realtime data (i.e., the bar from which the indicator started collecting and displaying data)
+// You will see accurate data for bars to the right of this line. The longer you keep a chart open with the study enabled, the more data it collects and displays.
+// and the better your analysis can potentially be.
+// Note that the data gets reset everytime any of the options is changed, the market is switched, browser is refreshed, or the script is reloaded
+// DATA ISN'T STORED. I.e., every time a new symbol is loaded, previous symbol's data is lost. So if you intend to monitor a symbol closely, you would need to keep it loaded all the time.
+// An MA option is also provided so that it can used as a complete replcement of the normal Volume indicator.
+// Who is it for?
+// For traders who are used to analysing buy/sell activity using market buy/sell volume and market delta information
+// Use it in conjunction with "Market Delta Volume for Realtime Bars" indicator to get a better visual representation of the numbers
+// 
+
+indicator('Volume with Market Buy/Sell and Neutral Volume Split for Realtime Bars', shorttitle = 'VolMarketBuySellNeutral_MW', overlay = false, max_labels_count = 500)
+
+isMode = input.string('Up/Down/Neutral', 'Mode', options = ['Up/Down/Neutral', 'Up/Down'])
+isDisplaySplit = input(true, 'Show Split')
+isDisplayStartLine = input.bool(true, 'Show Start Line', tooltip = 'Realtime data starts from the bar to the right of this line')
+isDisplayVolumeMA = input.bool(false, 'Show MA |', inline = 'MA')
+volumeMAPeriod = input.int(20, 'MA Period', inline = 'MA', minval = 1, maxval = 100)
+isDisplayMarketDelta = input(true, 'Show Net Delta Vol Above Bar')
+colorDeltaVolUpVal = input.color(color.green, 'Net Delta +ve', inline = 'DeltaNumColor')
+colorDeltaVolDnVal = input.color(color.red, 'Net Delta -ve', inline = 'DeltaNumColor')
+colorDeltaVolNtVal = input.color(color.gray, 'Net Delta 0', inline = 'DeltaNumColor')
+scaleDownFactor = input.int(1, 'Scale Down Factor', options = [1, 10, 100, 1000, 10000], tooltip = 'Display the net delta value scaled down for better readability')
+fontSizeUI = input.string('Medium', 'Font Size', options = ['Auto', 'Tiny', 'Small', 'Medium', 'Large', 'Huge'])
+
+
+UPDOWNNEUTRAL_MODE = 1
+UPDOWN_MODE = 2
+
+iMode = isMode == 'Up/Down/Neutral' ? UPDOWNNEUTRAL_MODE : UPDOWN_MODE
+fontSize = fontSizeUI == 'Auto' ? size.auto : fontSizeUI == 'Tiny' ? size.tiny : fontSizeUI == 'Small' ? size.small : fontSizeUI == 'Medium' ? size.normal : fontSizeUI == 'Large' ? size.large : size.huge
+
+
+f_upDnNtVolume(_mode) =>
+    //{
+    varip float _prevClose = open
+    varip float _prevVolume = 0.
+    varip float _newVolume = 0.
+    varip float _volUp = 0.
+    varip float _volDn = 0.
+    varip float _volNt = 0.
+    varip int _prevPolarity = 0
+
+    if barstate.isnew
+        _volUp := 0.
+        _volDn := 0.
+        _volNt := 0.
+        _prevClose := nz(close[1])
+        _prevVolume := 0.
+        _prevPolarity := nz(_prevPolarity[1])
+        _prevPolarity
+
+    _newVolume := volume - _prevVolume
+
+    if close > _prevClose
+        _prevPolarity := 1
+        _volUp := _volUp + _newVolume
+        _volUp
+    else if close < _prevClose
+        _prevPolarity := -1
+        _volDn := _volDn + _newVolume
+        _volDn
+    else
+        if _mode == UPDOWN_MODE
+            if _prevPolarity == 1
+                _volUp := _volUp + _newVolume
+                _volUp
+            else if _prevPolarity == -1
+                _volDn := _volDn + _newVolume
+                _volDn
+            else
+                _volNt := _volNt + _newVolume
+                _volNt
+        else
+            _volNt := _volNt + _newVolume
+            _volNt
+
+    _prevClose := close
+    _prevVolume := volume
+    [_volUp, _volDn, _volNt]
+    //}
+
+//==============================================================================
+//==============================================================================
+// MAIN
+var bool isbarConsidered = false
+var bool firstBar = true
+[volUp, volDn, volNt] = f_upDnNtVolume(iMode)
+deltaVol = volUp - volDn
+totVol = volUp + volDn + volNt
+
+
+isbarConsidered := barstate.isrealtime ? true : isbarConsidered
+
+baseSeriesColor = close > open ? color.blue : close < open ? color.black : color.gray
+baseSeries = not isbarConsidered ? volume : not isDisplaySplit ? volume : 0
+buySeries = not isbarConsidered ? 0 : isDisplaySplit ? volume : 0
+sellSeries = not isbarConsidered ? 0 : isDisplaySplit ? volDn + volNt : 0
+neutralSeries = not isbarConsidered ? 0 : isDisplaySplit ? volNt : 0
+
+plot(baseSeries, 'Historic Volume', color = baseSeriesColor, style = plot.style_columns)
+plot(buySeries, 'Volume Up', color = color.new(color.green, 0), style = plot.style_columns)
+plot(sellSeries, 'Volume Down', color = color.new(color.red, 0), style = plot.style_columns)
+plot(volNt, 'Volume Neutral', color = color.new(color.gray, 0), style = plot.style_columns)
+plot(isDisplayVolumeMA ? ta.ema(volume, volumeMAPeriod) : 0, 'Volume MA', color = color.new(color.black, 0), style = plot.style_line)
+
+if isbarConsidered
+    if firstBar
+        if isDisplayStartLine
+            line.new(bar_index, volume + 5, bar_index, volume + 6, extend = extend.right, color = color.black, style = line.style_dashed)
+        firstBar := false
+        firstBar
+    if isDisplayMarketDelta
+        text_color = volUp - volDn > 0 ? colorDeltaVolUpVal : volUp - volDn < 0 ? colorDeltaVolDnVal : colorDeltaVolNtVal
+        label.new(x = bar_index, y = volume, yloc = yloc.price, textcolor = text_color, style = label.style_none, size = fontSize, text = str.tostring(int((volUp - volDn) / scaleDownFactor)))
+//==============================================================================
+//==============================================================================

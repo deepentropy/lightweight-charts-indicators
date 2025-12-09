@@ -1,0 +1,5 @@
+//@version=6
+indicator("Average Day Range", shorttitle="ADR", timeframe="", timeframe_gaps=true)
+lengthInput = input.int(14, title="Length")
+adr = ta.sma(high - low, lengthInput)
+plot(adr, title="ADR")

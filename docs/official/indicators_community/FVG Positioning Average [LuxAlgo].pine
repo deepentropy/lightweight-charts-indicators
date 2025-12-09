@@ -1,0 +1,126 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("FVG Positioning Average [LuxAlgo]", shorttitle = "LuxAlgo - FVG Positioning Average", overlay = true)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//User Inputs
+//---------------------------------------------------------------------------------------------------------------------{
+
+lb = input.int(30, title = "FVG Lookback", tooltip = "Determines how many FVGs to consider for calculating the averages.", group = "Settings")
+lbType = input.string("Bar Count", title = "Lookback Type", options = ["Bar Count","FVG Count"], tooltip = "Bar Count => Uses any FVGs within this Bar Lookback\nFVG Count => Uses only this amount of recent FVGs", group = "Settings")
+atrMulti = input.float(0.25, step = 0.25, title = "ATR Multiplier", tooltip = "Only uses FVGs that are greater than ATR * Multiplier.", group = "Settings")
+
+fvgTog = input.bool(true, title = "Show FVGs on Chart", group = "Style")
+green =  input.color(#089981, title = "Bullish Color", group = "Style")
+red = input.color(#f23645, title = "Bearish Color", group = "Style")
+showFill = input.bool(true, title = "Show Gradient Areas", group = "Style")
+
+invis = color.rgb(0,0,0,100)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Constants
+//---------------------------------------------------------------------------------------------------------------------{
+
+//ATR
+atr = nz(ta.atr(200)*atrMulti, ta.cum(high - low) / (bar_index+1))
+
+//FVG Detection
+fvg_up = low > high[2] and close[1] > high[2] and (low-high[2]) > atr
+fvg_down = high < low[2] and close[1] < low[2] and (low[2]-high) > atr
+
+//Highest/Lowest
+hst = ta.highest(high,5)
+lst = ta.lowest(low,5)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Calculations
+//---------------------------------------------------------------------------------------------------------------------{
+
+var up_ary = array.new_box(na)
+var down_ary = array.new_box(na)
+
+if fvg_up
+    up_ary.push(
+      box.new(bar_index[2], low, bar_index, high[2]
+      , border_color = fvgTog?color.new(green,50):na
+      , bgcolor = fvgTog?color.new(green,50):na))
+
+if fvg_down
+    down_ary.push(
+      box.new(bar_index[2],  low[2], bar_index, high
+      , border_color = fvgTog?color.new(red,50):na
+      , bgcolor = fvgTog?color.new(red,50):na))
+
+//Array Size Management
+if lbType == "FVG Count"
+    if up_ary.size() > lb
+        box.delete(up_ary.shift())
+    if down_ary.size() > lb 
+        box.delete(down_ary.shift())
+
+if lbType == "Bar Count"
+    for [index,bx] in up_ary
+        left = bx.get_left()
+        if left < bar_index-lb
+            bx.delete()
+            up_ary.remove(index)
+
+    for [index,bx] in down_ary
+        left = bx.get_left()
+        if left < bar_index-lb
+            bx.delete()
+            down_ary.remove(index)
+
+
+//Value Accumulation
+up_vals = array.new_float(na)
+down_vals = array.new_float(na)
+
+for bx in up_ary
+    up_vals.push(bx.get_bottom())
+for bx in down_ary
+    down_vals.push(bx.get_top())
+
+//Averages
+up_avg = array.avg(up_vals)
+down_avg = array.avg(down_vals)
+
+//Points to use for gradients
+c_mid_h = math.max(math.avg(open,close),up_avg)
+c_mid_l = math.min(math.avg(open,close),down_avg)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Display 
+//---------------------------------------------------------------------------------------------------------------------{
+
+//Up & Down Averages, only displaying if the highest/lowest is above/below the value.
+ua = plot(up_avg
+  , style = plot.style_linebr
+  , color = (hst<up_avg?invis:green)
+  , title = "Bull Average")
+
+da = plot(down_avg
+  , style = plot.style_linebr
+  , color = (lst>down_avg?invis:red)
+  , title = "Bear Average")
+
+ul = plot(c_mid_h,display = display.none, editable = false)
+dl = plot(c_mid_l,display = display.none, editable = false)
+
+fill(ua, ul
+  , c_mid_h
+  , math.min(ta.sma(up_avg,10),up_avg)
+  , color.new(chart.bg_color,100)
+  , c_mid_h<=up_avg?invis:color.new(green,50)
+  , display = showFill ? display.all : display.none)
+
+fill(da, dl
+  , math.max(ta.sma(down_avg,10),down_avg)
+  , c_mid_l 
+  , c_mid_l>=down_avg?invis:color.new(red,50)
+  , color.new(chart.bg_color,100)
+  , display = showFill ? display.all : display.none)
+
+//---------------------------------------------------------------------------------------------------------------------}

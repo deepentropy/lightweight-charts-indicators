@@ -1,0 +1,320 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TradingView
+
+//@version=5
+indicator("Technical Ratings", "Ratings", precision = 2)
+
+// Technical Ratings
+// v3 2023.01.19
+
+// This code was written using the recommendations from the Pine Script™ User Manual's Style Guide:
+//   https://www.tradingview.com/pine-script-docs/en/v5/writing/Style_guide.html
+
+
+
+import TradingView/TechnicalRating/1 as TVtr
+
+
+
+//#region ———————————————————— Constants and Inputs
+
+
+// Colors
+color BLUE    = #013BCAff
+color GOLD    = #CCCC00ff
+color GRAY    = #808080ff
+color GRAY2   = color.gray
+color LIME    = #00FF00ff
+color PINK    = #FF0080ff
+color RED     = #FF0000ff
+color VIOLET  = #AA00FFff
+color WHITE   = #FFFFFFff
+color NEUTRAL = #434650
+color SILVER  = color.silver
+
+// Input `options` selections.
+string RT1 = "MAs and Oscillators"
+string RT2 = "MAs"
+string RT3 = "Oscillators"
+
+string ON  = "On"
+string OFF = "Off"
+
+string TD0 = "None"
+string TD1 = "Longs"
+string TD2 = "Shorts"
+string TD3 = "Longs and Shorts"
+
+string PS1 = "Columns"
+string PS2 = "Histogram"
+string PS3 = "Area"
+string PS4 = "Line"
+
+// Levels determining "Strong Buy/Sell" and "Buy/Sell" ratings.
+float LEVEL_STRONG = 0.5
+float LEVEL_WEAK   = 0.1
+
+// Tooltips.
+string C_TT  = "Pick only one. These are preset colors, but you can modify anyone of them."
+string TF_TT = "When using a higher timeframe, values do not repaint, which means that only values from COMPLETED timeframes are displayed."
+string RP_TT = "When NOT using a higher timeframe, setting this to 'Off' will show you the confirmed value from the last closed bar. This ensures the rating will not change during the current bar."
+string MA_TT = "Determines the respective weight of MAs and Oscillators when both are used to calculate the overall rating. Equal weight for MAs and Oscillators is 50%. If you use 60% for MAs, then Oscillators weigh in at 40% of the overall rating."
+string WD_TT = "Width for styles other than 'Columns'."
+string DR_TT = "Markers only become active when you select a direction here. Your marker setup defines the conditions that will trigger an alert configured on the indicator."
+string AT_TT = "If both Longs and Shorts are displayed, shows only the first marker in a given direction. This prevents triggering successive markers in the same direction. Has no effect when only long or only short markers are displayed."
+string LU_TT = "The level that must be breached upward to trigger a long.\n'Buy' state corresponds to 0.1\n'Strong Buy' state corresponds to 0.5\n\nUse zero if you do not want triggers on this condition."
+string LD_TT = "The level that must be breached downward to trigger a short.\n'Sell' state corresponds to -0.1\n'Strong Sell' state corresponds to -0.5\n\nUse zero if you do not want triggers on this condition."
+string GD_TT = "The number of cumulative advances or declines in the signal (capped to 5). The maximum of 5 corresponds to the brightest color for the signal.\n\nUse zero if you do not want triggers on this condition."
+
+// Inputs
+string  GRP1            = "Calculations"
+string  tfInput         = input.timeframe("",        "Higher timeframe",         group = GRP1, tooltip = TF_TT)
+bool    repaintInput    = input.string(ON,           "Repainting",               group = GRP1, tooltip = RP_TT, options = [ON, OFF]) == ON
+string  calcsInput      = input.string(RT1,          "Rating uses",              group = GRP1,                  options = [RT2, RT3, RT1])
+float   maInput         = input.int(50,              "Weight of MAs (%)",        group = GRP1, tooltip = MA_TT, minval  = 0, maxval = 100, step = 10) / 100
+string  styleInput      = input.string(PS1,          "Plot style",               group = GRP1, inline  = "01",  options = [PS1, PS2, PS3, PS4])
+int     widthInput      = input.int(1,               "",                         group = GRP1, inline  = "01",  minval  = 1, maxval = 50, tooltip = WD_TT)
+color   colorInput1     = input.color(LIME,          "Bull  ",                   group = GRP1, inline  = "02",  tooltip = C_TT)
+bool    showColorInput1 = input.bool(true,           "",                         group = GRP1, inline  = "02")
+color   colorInput2     = input.color(GOLD,          "",                         group = GRP1, inline  = "02")
+bool    showColorInput2 = input.bool(false,          "",                         group = GRP1, inline  = "02")
+color   colorInput3     = input.color(WHITE,         "",                         group = GRP1, inline  = "02")
+bool    showColorInput3 = input.bool(false,          "",                         group = GRP1, inline  = "02")
+color   colorInput4     = input.color(PINK,          "Bear   ",                  group = GRP1, inline  = "03",  tooltip = C_TT)
+bool    showColorInput4 = input.bool(true,           "",                         group = GRP1, inline  = "03")
+color   colorInput5     = input.color(VIOLET,        "",                         group = GRP1, inline  = "03")
+bool    showColorInput5 = input.bool(false,          "",                         group = GRP1, inline  = "03")
+color   colorInput6     = input.color(BLUE,          "",                         group = GRP1, inline  = "03")
+bool    showColorInput6 = input.bool(false,          "",                         group = GRP1, inline  = "03")
+color   neutColorInput  = input.color(NEUTRAL,       "Neutral",                  group = GRP1, inline  = "04")
+
+string  GRP2            = "Alert Markers (non-repainting)"
+string  dirInput        = input.string(TD0,          "Direction",                group = GRP2, tooltip = DR_TT, options = [TD0, TD1, TD2, TD3]) 
+bool    altInput        = input.string(ON,           "Alternate Longs & Shorts", group = GRP2, tooltip = AT_TT, options = [ON, OFF]) == ON and dirInput == TD3
+float   levelUpInput    = input.float( LEVEL_STRONG, "Longs Level",              group = GRP2, tooltip = LU_TT, minval  =  0, maxval = 1, step = 0.05) 
+float   levelDnInput    = input.float(-LEVEL_STRONG, "Shorts Level",             group = GRP2, tooltip = LD_TT, minval  = -1, maxval = 0, step = 0.05) 
+float   gradInput       = input.float(0,             "Cumulative adv./decl.",    group = GRP2, tooltip = GD_TT, minval  =  0, maxval = 5, step = 1) 
+string  alertUpInput    = input.string("Long",       "Alert message: Long",      group = GRP2, inline  = "11")
+string  alertDnInput    = input.string("Short",      "Short",                    group = GRP2, inline  = "11")
+//#endregion
+
+
+
+//#region ———————————————————— Global Variables
+
+
+// Array to hold values for the 3 ratings in this order: All, MAs, Osc.
+var array<float> ratings = array.new<float>(3)
+// Array to hold the text used as a legend in the displayed results.
+var array<string> TEXTS = array.from("All", "MAs", "Osc")
+// Array to hold the index values for `ratings` and `texts` arrays determined by which rating users choose to display.
+var array<int> indices = array.new<int>(3)
+
+// Determine base bull/bear colors based on user selection.
+color bullColor = showColorInput1 ? colorInput1 : showColorInput2 ? colorInput2 : showColorInput3 ? colorInput3 : colorInput1
+color bearColor = showColorInput4 ? colorInput4 : showColorInput5 ? colorInput5 : showColorInput6 ? colorInput6 : colorInput4
+
+bool doLongs  = dirInput == TD1 or dirInput == TD3
+bool doShorts = dirInput == TD2 or dirInput == TD3
+
+style = switch styleInput 
+    PS4 => plot.style_line
+    PS3 => plot.style_area  
+    PS2 => plot.style_histogram
+    =>     plot.style_columns 
+//#endregion
+
+
+
+//#region ———————————————————— Functions 
+
+
+// @function            Orders the `indices` array such that its elements represent the indices into the `ratings` array. The first index will 
+//                      fetch the proper values for each of the three lines in the results in accordance with the user-selected "Rating uses".
+// @param userSelection (series string) User choice of which rating group to display.
+// @returns             (void) Sorts the `indices` array according to the user-selected rating to display as to place the desired rating in the first index. 
+orderSignals(userSelection) =>
+    [i1, i2, i3] = switch userSelection
+        RT2 => [1, 2, 0]
+        RT3 => [2, 1, 0]
+        =>     [0, 1, 2]
+    array.set(indices, 0, i1),
+    array.set(indices, 1, i2),
+    array.set(indices, 2, i3)
+   
+
+// @function            Derives a color gradient based on a number between +5 and -5.
+// @param gradient      (series int) Gradient level (+5 to -5) from which to derive a color.    
+// @returns             (color) A 3 color scale based on the `gradient` input. 
+signalColor(series int gradient) =>
+    color col  = gradient > 0 ? bullColor : gradient < 0 ? bearColor : neutColorInput
+    float transp = 100 - (math.abs(gradient) * 20)
+    transp :=  transp == 80 ? 75 : transp
+    color result = col == neutColorInput ? col : color.new(col, transp)
+
+
+// @function            Produces a color based on a rating value.
+// @param rating        (series float) Rating from which to derive a color.
+// @returns             (color) A color based on the `rating`. 
+colorFromRating(series float rating) =>
+    color result = switch 
+        rating >  LEVEL_STRONG => color.new(bullColor, 20)
+        rating >  LEVEL_WEAK   => color.new(bullColor, 50)
+        rating < -LEVEL_STRONG => color.new(bearColor, 20)
+        rating < -LEVEL_WEAK   => color.new(bearColor, 50)
+        =>                        neutColorInput
+
+
+// @function            Produces a string based on a rating value.
+// @param rating        (series float) Rating from which to derive the output string.   
+// @returns             (string) A string based on the `rating`. Can be either "Strong Sell", "Sell", "Neutral", "Buy", or "Strong Buy". 
+textFromRating(series float rating) =>
+    string result = switch 
+        rating >  LEVEL_STRONG => "Strong Buy"
+        rating >  LEVEL_WEAK   => "Buy"
+        rating < -LEVEL_STRONG => "Strong Sell"
+        rating < -LEVEL_WEAK   => "Sell"
+        =>                        "Neutral"
+
+
+// @function            Prints rating results to the right of the last bar, one line at a time.
+// @param txt           (series string) Text of the line.
+// @param lineNo        (series int) Number of the line (0-2).
+// @param txtColor      (series color) Color of the text.
+// @returns             (void) Draws a label containing rating results on the last bar.  
+print(series string txt, series int lineNo, series color txtColor) =>
+    var label lbl = label.new(na, na, "", xloc.bar_index, yloc.price, color(na), label.style_label_left, color.white, textalign = text.align_left)
+    var array<string> returnsPrefix = array.new<string>(math.max(0, lineNo - 1), "\n")
+    var array<string> returnsSuffix = array.new<string>(math.max(0, 4 - lineNo), "\n")
+    var string prefix = array.join(returnsPrefix, "")
+    var string suffix = array.join(returnsSuffix, "")
+    string labelStr   = prefix + "{0}" + suffix
+    // Update label.
+    if barstate.islast
+    	label.set_x(lbl, bar_index)
+        label.set_text(lbl, str.format(labelStr, txt))
+    	label.set_textcolor(lbl, txtColor)
+//#endregion
+
+
+
+//#region ———————————————————— Calculations 
+
+
+// Set text of results legends and determine their order from user-selected group of ratings.
+if barstate.isfirst
+    orderSignals(calcsInput)
+
+// ————— Calculate ratings.
+
+// Determine if HTF is used.
+bool htfUsed = tfInput != ""
+// If HTF is used, ensure chart TF < HTF.
+bool chartTfIsTooHigh = htfUsed and timeframe.in_seconds() >= timeframe.in_seconds(tfInput)
+// Fetch ratings, adjusting series offset with HTF (which never repaints) and user-selected repaint settings (when no HTF is used). Two-stage offsetting is required because `calcRatingAll()` returns a tuple.
+int idx1 = htfUsed and barstate.isrealtime ? 1 : 0
+int idx2 = (repaintInput and not htfUsed) or (htfUsed and barstate.isrealtime) ? 0 : 1
+[_, _ratingOsc, _ratingMas] = TVtr.calcRatingAll()
+float _ratingTot = nz(_ratingMas * maInput) + nz(_ratingOsc * (1. - maInput))
+
+[ratingTot_, ratingOsc_, ratingMas_] = request.security(syminfo.tickerid, tfInput, [_ratingTot[idx1], _ratingOsc[idx1], _ratingMas[idx1]])
+float ratingTot = ratingTot_[idx2]
+float ratingMas = ratingMas_[idx2]
+float ratingOsc = ratingOsc_[idx2]
+
+// Place ratings in known order.
+array.set(ratings, 0, ratingTot)
+array.set(ratings, 1, ratingMas)
+array.set(ratings, 2, ratingOsc)
+// User-selected ratings group to display as the signal and whose state always appears on the first line of results.
+float userRating = array.get(ratings, array.get(indices, 0))
+//#endregion
+
+
+
+//#region ———————————————————— Plots 
+
+
+if chartTfIsTooHigh
+    runtime.error("Chart's timeframe must be smaller than " + tfInput)
+
+// ————— Build signal color.
+bool  condBuy      = userRating >  LEVEL_WEAK
+bool  condSell     = userRating < -LEVEL_WEAK
+float valsBuy      = condBuy  ? userRating : 0
+float valsSell     = condSell ? userRating : 0
+int   risingBuys   = TVtr.countRising(valsBuy) 
+int   fallingSells = TVtr.countRising(valsSell)
+int   gradientLvl  = condBuy ? risingBuys : condSell ? -fallingSells : 0
+color signalColor  = signalColor(gradientLvl)
+
+// User-selected rating.
+plot(userRating, "Rating", signalColor, widthInput, style)
+
+// ————— Levels.
+// Fixed levels.
+hline( LEVEL_STRONG, "Strong Buy Level",  color.new(bullColor,  50), hline.style_dashed)
+hline( LEVEL_WEAK,   "Buy Level",         color.new(bullColor,  65), hline.style_dashed)
+hline( 0.0,          "0.0 Level",         color.new(GRAY2,      50), hline.style_dashed)
+hline(-LEVEL_WEAK,   "Sell Level",        color.new(bearColor,  75), hline.style_dashed)
+hline(-LEVEL_STRONG, "Strong Sell Level", color.new(bearColor,  50), hline.style_dashed)
+// Marker breach levels.
+hline(doLongs  ? levelUpInput : na, "Long Level",  levelUpInput == 0 ? color(na) : bullColor, hline.style_dotted)
+hline(doShorts ? levelDnInput : na, "Short Level", levelDnInput == 0 ? color(na) : bearColor, hline.style_dotted)
+
+// Data Window values.
+plot(ratingTot, "All",         colorFromRating(ratingTot), display = display.data_window, editable = false)
+plot(ratingMas, "MAs",         colorFromRating(ratingMas), display = display.data_window, editable = false)
+plot(ratingOsc, "Oscillators", colorFromRating(ratingOsc), display = display.data_window, editable = false)
+plot(na,        "═══════",     colorFromRating(ratingTot), display = display.data_window, editable = false)
+
+
+// ————— Print text corresponding to the rating on last bar, with user-selected group always on the first line.
+//       Legends and rating states are printed separately so they align vertically.
+// Indices into `ratings` and `texts` arrays corresponding to the order in which they need to be displayed, given user selection of which group to use as the main signal.
+var int idxOfLine1 = array.get(indices, 0)
+var int idxOfLine2 = array.get(indices, 1)
+var int idxOfLine3 = array.get(indices, 2)
+// Display label to the right of last bar.
+string FORMAT1 = "  {0}{1}"
+string FORMAT2 = "      {0}"
+// Legends.
+print(str.format(FORMAT1, array.get(TEXTS, idxOfLine1), ":"), 1, SILVER)
+print(str.format(FORMAT1, array.get(TEXTS, idxOfLine2), ":"), 2, GRAY2)
+print(str.format(FORMAT1, array.get(TEXTS, idxOfLine3), ":"), 3, GRAY2)
+print(str.format(FORMAT2, textFromRating(array.get(ratings, idxOfLine1))), 1, colorFromRating(array.get(ratings, idxOfLine1)))
+print(str.format(FORMAT2, textFromRating(array.get(ratings, idxOfLine2))), 2, colorFromRating(array.get(ratings, idxOfLine2)))
+print(str.format(FORMAT2, textFromRating(array.get(ratings, idxOfLine3))), 3, colorFromRating(array.get(ratings, idxOfLine3)))
+//#endregion
+
+
+
+//#region ———————————————————— Alerts and markers. 
+
+// ————— Alerts.
+// The triggering conditions can only be met in such a way that they never repaint.
+// If no HTF is used and no-repainting is required, we wait for the bar to close. Otherwise we can trigger at the bar's open because the signal is non-repainting signal.
+int ensureNoRepaintIdx = not htfUsed and repaintInput ? 1 : 0
+bool xUp = levelUpInput != 0 and ta.crossover( userRating, levelUpInput)
+bool xDn = levelDnInput != 0 and ta.crossunder(userRating, levelDnInput)
+bool gUp = gradInput != 0 and gradientLvl ==  gradInput and gradientLvl[1] <  gradInput
+bool gDn = gradInput != 0 and gradientLvl == -gradInput and gradientLvl[1] > -gradInput
+var bool lastDirectionUp = na
+// Trigger alerts on user-selected conditions.
+bool triggerLong  = ((xUp or gUp) and (not altInput or na(lastDirectionUp) or not lastDirectionUp) and doLongs )[ensureNoRepaintIdx]
+bool triggerShort = ((xDn or gDn) and (not altInput or na(lastDirectionUp) or     lastDirectionUp) and doShorts)[ensureNoRepaintIdx]
+
+if triggerLong
+    alert(alertUpInput, alert.freq_once_per_bar)
+    lastDirectionUp := true
+else if triggerShort
+    alert(alertDnInput, alert.freq_once_per_bar)
+    lastDirectionUp := false
+
+// ————— Markers.
+// Plot qty of advances/declines for the Data Window.
+plot(gradientLvl, "Advances/Declines", signalColor, display = display.data_window, editable = false)
+// Plot markers.
+plotchar(triggerLong,  "Long Marker",  "▲", location.bottom, color.new(bullColor, 00), size = size.tiny)
+plotchar(triggerShort, "Short Marker", "▼", location.top,    color.new(bearColor, 00), size = size.tiny)
+//#endregion

@@ -1,0 +1,16 @@
+//@version=5
+indicator('Gann High Low', overlay=true)
+HPeriod = input(13, 'HIGH Period')
+LPeriod = input(21, 'LOW Period')
+iff_1 = close < nz(ta.sma(low, LPeriod))[1] ? -1 : 0
+HLd = close > nz(ta.sma(high, HPeriod))[1] ? 1 : iff_1
+HLv = ta.valuewhen(HLd != 0, HLd, 0)
+sma_1 = ta.sma(high, HPeriod)
+sma_2 = ta.sma(low, LPeriod)
+HiLo = HLv == -1 ? sma_1 : sma_2
+HLcolor = HLv == -1 ? color.maroon : color.blue
+plot(HiLo, linewidth=2, color=HLcolor)
+
+alertcondition(ta.cross(close, HiLo), title='Price Cross Alert', message='Price - HiLo Crossing!')
+alertcondition(ta.crossover(close, HiLo), title='PRICE CrossOver Alarm', message='LAST PRICE is ABOVE HiLo')
+alertcondition(ta.crossunder(close, HiLo), title='PRICE CrossUnder Alarm', message='LAST PRICE is BELOW HiLo!')

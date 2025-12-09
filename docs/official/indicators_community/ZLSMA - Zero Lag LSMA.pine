@@ -1,0 +1,15 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © veryfid
+
+//@version=4
+
+study(title = "ZLSMA - Zero Lag LSMA", shorttitle="ZLSMA", overlay=true, resolution="")
+length = input(title="Length", type=input.integer, defval=32)
+offset = input(title="Offset", type=input.integer, defval=0)
+src = input(close, title="Source")
+lsma = linreg(src, length, offset)
+lsma2 = linreg(lsma, length, offset)
+eq= lsma-lsma2
+zlsma = lsma+eq
+
+plot(zlsma, color=color.yellow, linewidth=3)

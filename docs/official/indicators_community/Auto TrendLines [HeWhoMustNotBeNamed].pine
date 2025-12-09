@@ -1,0 +1,320 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Trendoscope Pty Ltd, Trendoscope®
+//                                       ░▒
+//                                  ▒▒▒   ▒▒
+//                              ▒▒▒▒▒     ▒▒
+//                      ▒▒▒▒▒▒▒░     ▒     ▒▒
+//                  ▒▒▒▒▒▒           ▒     ▒▒
+//             ▓▒▒▒       ▒        ▒▒▒▒▒▒▒▒▒▒▒
+//   ▒▒▒▒▒▒▒▒▒▒▒ ▒        ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+//   ▒  ▒       ░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░
+//   ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░▒▒▒▒▒▒▒▒
+//   ▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ ▒▒
+//    ▒▒▒▒▒         ▒▒▒▒▒▒▒
+//                 ▒▒▒▒▒▒▒▒▒
+//                ▒▒▒▒▒ ▒▒▒▒▒
+//               ░▒▒▒▒   ▒▒▒▒▓      ████████╗██████╗ ███████╗███╗   ██╗██████╗  ██████╗ ███████╗ ██████╗ ██████╗ ██████╗ ███████╗
+//              ▓▒▒▒▒     ▒▒▒▒      ╚══██╔══╝██╔══██╗██╔════╝████╗  ██║██╔══██╗██╔═══██╗██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔════╝
+//              ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒        ██║   ██████╔╝█████╗  ██╔██╗ ██║██║  ██║██║   ██║███████╗██║     ██║   ██║██████╔╝█████╗
+//             ▒▒▒▒▒       ▒▒▒▒▒       ██║   ██╔══██╗██╔══╝  ██║╚██╗██║██║  ██║██║   ██║╚════██║██║     ██║   ██║██╔═══╝ ██╔══╝
+//            ▒▒▒▒▒         ▒▒▒▒▒      ██║   ██║  ██║███████╗██║ ╚████║██████╔╝╚██████╔╝███████║╚██████╗╚██████╔╝██║     ███████╗
+//             ▒▒             ▒
+//@version=6
+indicator('Auto TrendLines [Trendoscope®]', overlay = true, max_lines_count = 500, max_bars_back = 2000, max_labels_count = 500, max_boxes_count = 500, calc_bars_count = 5000)
+import HeWhoMustNotBeNamed/zigzag/5 as zg
+import HeWhoMustNotBeNamed/customcandles/2 as ca
+
+ohlcSource = input.string('regular', 'OHLC Source', options = ['regular', 'ha', 'ma'], group = 'Candles', display = display.none)
+matype = input.string('sma', title = 'Moving Average', group = 'Candles', options = ['sma', 'ema', 'hma', 'rma', 'wma', 'vwma', 'swma', 'linreg', 'median'], inline = 'm', display = display.none)
+malength = input.int(10, step = 5, title = '', group = 'Candles', inline = 'm', display = display.none)
+
+highSource = high
+lowSource = low
+closeSource = close
+openSource = open
+if ohlcSource == 'ma'
+    [maOpen, maHigh, maLow, maClose] = ca.macandles(matype, malength)
+    openSource := maOpen
+    highSource := maHigh
+    lowSource := maLow
+    closeSource := maClose
+    closeSource
+
+if ohlcSource == 'ha'
+    [haOpen, haHigh, haLow, haClose] = ca.hacandles()
+    openSource := haOpen
+    highSource := haHigh
+    lowSource := haLow
+    closeSource := haClose
+    closeSource
+
+zigzagLength = input.int(5, step = 5, minval = 3, title = 'Zigzag Length', group = 'Pattern Detection Settings', display = display.none)
+depth = input.int(34, 'Search Depth', group = 'Pattern Detection Settings', display = display.none)
+showHistorical = input.bool(true, 'Historical Trail', group = 'Pattern Detection Settings', inline = 'b', display = display.none)
+
+uptrendHigh = input.bool(true, 'Upper', group = 'Uptrend', inline = 'uh', display = display.none)
+uptrendHighColor = input.color(color.orange, '', group = 'Uptrend', inline = 'uh', display = display.none)
+uptrendHighStyle = input.string(line.style_dashed, '', group = 'Uptrend', inline = 'uh', options = [line.style_solid, line.style_dashed, line.style_dotted], display = display.none)
+
+uptrendLow = input.bool(true, 'Lower', group = 'Uptrend', inline = 'ul', display = display.none)
+uptrendLowColor = input.color(color.green, '', group = 'Uptrend', inline = 'ul', display = display.none)
+uptrendLowStyle = input.string(line.style_solid, '', group = 'Uptrend', inline = 'ul', options = [line.style_solid, line.style_dashed, line.style_dotted], display = display.none)
+
+downtrendHigh = input.bool(true, 'Upper', group = 'Downtrend', inline = 'uh', display = display.none)
+downtrendHighColor = input.color(color.red, '', group = 'Downtrend', inline = 'uh', display = display.none)
+downtrendHighStyle = input.string(line.style_solid, '', group = 'Downtrend', inline = 'uh', options = [line.style_solid, line.style_dashed, line.style_dotted], display = display.none)
+
+downtrendLow = input.bool(true, 'Lower', group = 'Downtrend', inline = 'ul', display = display.none)
+downtrendLowColor = input.color(color.lime, '', group = 'Downtrend', inline = 'ul', display = display.none)
+downtrendLowStyle = input.string(line.style_dashed, '', group = 'Downtrend', inline = 'ul', options = [line.style_solid, line.style_dashed, line.style_dotted], display = display.none)
+
+showWatermark = input.bool(true, 'Transparency', group = 'Watermark', inline = 'w', display = display.none)
+transparency = input.int(80, '', minval = 75, maxval = 100, step = 5, group = 'Watermark', inline = 'w', display = display.none)
+getTrendLineScore(trendLine, barArray, highLow) =>
+    score = 0
+    minBar = array.min(barArray)
+    for bar = minBar to bar_index by 1
+        linePrice = line.get_price(trendLine, bar)
+        highLowTarget = highLow > 0 ? lowSource[bar_index - bar] : highSource[bar_index - bar]
+        if highSource[bar_index - bar] > linePrice and lowSource[bar_index - bar] < linePrice
+            wickStart = highLow > 0 ? math.max(openSource[bar_index - bar], closeSource[bar_index - bar]) : math.min(openSource[bar_index - bar], closeSource[bar_index - bar])
+            if wickStart * highLow < linePrice * highLow
+                score := score + 2
+                score
+        if highLowTarget * highLow > linePrice * highLow
+            score := score - 1
+            score
+    score
+
+scanTrendPoints(enable, indexArray, startIndex, highLow, trend) =>
+    trendIndexes = array.new_int()
+    endLength = array.size(indexArray)
+    startLength = startIndex
+    while endLength > startLength and enable
+        oTrend = trend * highLow
+        pivots = array.slice(indexArray, startLength, endLength)
+        peak = highLow == 1 ? array.max(pivots) : array.min(pivots)
+        peakIndex = oTrend == 1 ? array.indexof(pivots, peak) : array.lastindexof(pivots, peak)
+        if oTrend == 1
+            array.unshift(trendIndexes, startLength + peakIndex)
+        else
+            array.push(trendIndexes, peakIndex)
+        if oTrend == 1 ? startLength + peakIndex == endLength : peakIndex == 0
+            break
+        if oTrend == 1
+            startLength := startLength + peakIndex + 1
+            startLength
+        else
+            endLength := peakIndex
+            endLength
+    trendIndexes
+
+updateTrendLine(pivotArray, pivotBarArray, trendIndexes, highLow, lineColor, lineStyle) =>
+    var line trendLine = na
+    trendScore = getTrendLineScore(trendLine, pivotBarArray, highLow)
+    updated = false
+    historical = true
+    if array.size(trendIndexes) >= 3
+        for i = 0 to array.size(trendIndexes) - 2 by 1
+            for j = i + 1 to array.size(trendIndexes) - 1 by 1
+                x1Index = array.get(trendIndexes, j)
+                x1 = array.get(pivotArray, x1Index)
+                x1Bar = array.get(pivotBarArray, x1Index)
+
+                x2Index = array.get(trendIndexes, i)
+                x2 = array.get(pivotArray, x2Index)
+                x2Bar = array.get(pivotBarArray, x2Index)
+                tl = line.new(x1Bar, x1, x2Bar, x2, color = lineColor, width = 1, style = lineStyle, extend = extend.both)
+
+                score = getTrendLineScore(tl, pivotBarArray, highLow)
+
+                if score <= 0 or score < trendScore
+                    line.delete(tl)
+                    trendLine
+                else
+                    trendScore := score
+                    updated := true
+                    if historical and showHistorical
+                        y1 = line.get_price(trendLine, x1Bar)
+                        y2 = line.get_price(trendLine, x2Bar)
+                        line.set_x1(trendLine, x1Bar)
+                        line.set_y1(trendLine, y1)
+                        line.set_x2(trendLine, x2Bar)
+                        line.set_y2(trendLine, y2)
+                        line.set_extend(trendLine, extend.none)
+                        line.set_style(trendLine, line.style_dotted)
+                        line.set_width(trendLine, 0)
+                        line.set_color(trendLine, color.new(lineColor, 90))
+                        historical := false
+                        true
+                    else
+                        line.delete(trendLine)
+                        true
+                    trendLine := tl
+                    trendLine
+    [updated, trendLine]
+
+scan(startIndex, newPivot, zigzagpivots, zigzagpivotbars, zigzagpivotdirs, lastD) =>
+    newD = lastD
+    d = array.size(zigzagpivots) > 0 ? array.get(zigzagpivots, 0) : lastD
+    var uptrendHighIndexesCount = 0
+    var uptrendLowIndexesCount = 0
+    var downtrendHighIndexesCount = 0
+    var downtrendLowIndexesCount = 0
+    var line uptrendHighLine = na
+    var line uptrendLowLine = na
+    var line downtrendHighLine = na
+    var line downtrendLowLine = na
+
+    var uptrendHighBar = bar_index
+    var downtrendHighBar = bar_index
+    var uptrendLowBar = bar_index
+    var downtrendLowBar = bar_index
+
+    if d != lastD and array.size(zigzagpivots) >= 6
+        newD := d
+        highArray = array.new_float()
+        highBarArray = array.new_int()
+
+        lowArray = array.new_float()
+        lowBarArray = array.new_int()
+
+        for i = startIndex to array.size(zigzagpivots) - 1 by 1
+            dir = array.get(zigzagpivotdirs, i)
+            if dir > 0
+                array.push(highArray, array.get(zigzagpivots, i))
+                array.push(highBarArray, array.get(zigzagpivotbars, i))
+            else
+                array.push(lowArray, array.get(zigzagpivots, i))
+                array.push(lowBarArray, array.get(zigzagpivotbars, i))
+
+        uptrendHighIndexes = scanTrendPoints(uptrendHigh, highArray, startIndex, 1, 1)
+        uptrendLowIndexes = scanTrendPoints(uptrendLow, lowArray, startIndex, -1, 1)
+        downtrendHighIndexes = scanTrendPoints(downtrendHigh, highArray, startIndex, 1, -1)
+        downtrendLowIndexes = scanTrendPoints(downtrendLow, lowArray, startIndex, -1, -1)
+
+        [updatedUptrendHigh, _uptrendHighLine] = updateTrendLine(highArray, highBarArray, uptrendHighIndexes, 1, uptrendHighColor, uptrendHighStyle)
+        [updatedUptrendLow, _uptrendLowLine] = updateTrendLine(lowArray, lowBarArray, uptrendLowIndexes, -1, uptrendLowColor, uptrendLowStyle)
+        [updatedDowntrendHigh, _downtrendHighLine] = updateTrendLine(highArray, highBarArray, downtrendHighIndexes, 1, downtrendHighColor, downtrendHighStyle)
+        [updatedDowntrendLow, _downtrendLowLine] = updateTrendLine(lowArray, lowBarArray, downtrendLowIndexes, -1, downtrendLowColor, downtrendLowStyle)
+
+        uptrendHighIndexesCount := array.size(uptrendHighIndexes)
+        uptrendLowIndexesCount := array.size(uptrendLowIndexes)
+        downtrendHighIndexesCount := array.size(downtrendHighIndexes)
+        downtrendLowIndexesCount := array.size(downtrendLowIndexes)
+
+        uptrendHighBar := updatedUptrendHigh ? bar_index : uptrendHighBar
+        downtrendHighBar := updatedDowntrendHigh ? bar_index : downtrendHighBar
+
+        uptrendLowBar := updatedUptrendLow ? bar_index : uptrendLowBar
+        downtrendLowBar := updatedDowntrendLow ? bar_index : downtrendLowBar
+
+        uptrendHighLine := _uptrendHighLine
+        uptrendLowLine := _uptrendLowLine
+        downtrendHighLine := _downtrendHighLine
+        downtrendLowLine := _downtrendLowLine
+        downtrendLowLine
+
+
+    [newD, uptrendHighIndexesCount, uptrendLowIndexesCount, downtrendHighIndexesCount, downtrendLowIndexesCount, uptrendHighBar, uptrendLowBar, downtrendHighBar, downtrendLowBar, uptrendHighLine, uptrendLowLine, downtrendHighLine, downtrendLowLine]
+
+[zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagpivotratios, zigzagoscillators, zigzagoscillatordirs, zigzagtrendbias, zigzagdivergence, newPivot, doublePivot] = zg.czigzag(zigzagLength, depth, highSource, lowSource)
+
+TlSrStatsPosition = position.top_center
+label_size = size.small
+
+
+var d = 0.0
+[newD, uptrendHighIndexesCount, uptrendLowIndexesCount, downtrendHighIndexesCount, downtrendLowIndexesCount, uptrendHighBar, uptrendLowBar, downtrendHighBar, downtrendLowBar, uptrendHighLine, uptrendLowLine, downtrendHighLine, downtrendLowLine] = scan(1, newPivot, zigzagpivots, zigzagpivotbars, zigzagpivotdirs, d)
+d := newD
+
+uptrendHighPrice = line.get_price(uptrendHighLine, bar_index)
+uptrendLowPrice = line.get_price(uptrendLowLine, bar_index)
+downtrendHighPrice = line.get_price(downtrendHighLine, bar_index)
+downtrendLowPrice = line.get_price(downtrendLowLine, bar_index)
+
+_uptrendHighPrice = line.get_price(uptrendHighLine, bar_index - 20)
+_uptrendLowPrice = line.get_price(uptrendLowLine, bar_index - 20)
+_downtrendHighPrice = line.get_price(downtrendHighLine, bar_index - 20)
+_downtrendLowPrice = line.get_price(downtrendLowLine, bar_index - 20)
+
+uptrendHighDirection = uptrendHighPrice > _uptrendHighPrice ? '⇈' : uptrendHighPrice < _uptrendHighPrice ? '⇊' : '▣'
+uptrendLowDirection = uptrendLowPrice > _uptrendLowPrice ? '⇈' : uptrendLowPrice < _uptrendLowPrice ? '⇊' : '▣'
+downtrendHighDirection = downtrendHighPrice > _downtrendHighPrice ? '⇈' : downtrendHighPrice < _downtrendHighPrice ? '⇊' : '▣'
+downtrendLowDirection = downtrendLowPrice > _downtrendLowPrice ? '⇈' : downtrendLowPrice < _downtrendLowPrice ? '⇊' : '▣'
+
+uptrendHighDistance = math.abs(close - uptrendHighPrice)
+uptrendLowDistance = math.abs(close - uptrendLowPrice)
+downtrendHighDistance = math.abs(close - downtrendHighPrice)
+downtrendLowDistance = math.abs(close - downtrendLowPrice)
+
+distanceArray = array.from(uptrendHighDistance, uptrendLowDistance, downtrendHighDistance, downtrendLowDistance)
+array.sort(distanceArray)
+
+uptrendHighRow = array.indexof(distanceArray, uptrendHighDistance) + 1
+uptrendLowRow = array.indexof(distanceArray, uptrendLowDistance) + 1
+downtrendHighRow = array.indexof(distanceArray, downtrendHighDistance) + 1
+downtrendLowRow = array.indexof(distanceArray, downtrendLowDistance) + 1
+
+
+rangeDistance = math.min(uptrendHighDistance, downtrendHighDistance) + math.min(uptrendLowDistance, downtrendLowDistance)
+uptrendHighBgColor = uptrendHighDistance < downtrendHighDistance ? close < uptrendHighPrice ? color.orange : color.green : color.silver
+uptrendLowBgColor = uptrendLowDistance < downtrendLowDistance ? close > uptrendLowPrice ? color.lime : color.red : color.silver
+
+downtrendHighBgColor = uptrendHighDistance > downtrendHighDistance ? close < downtrendHighPrice ? color.orange : color.orange : color.silver
+downtrendLowBgColor = uptrendLowDistance > downtrendLowDistance ? close > downtrendLowPrice ? color.lime : color.red : color.silver
+
+isUptrendHigh = uptrendHighDistance < downtrendHighDistance ? true : false
+isUptrendLow = uptrendLowDistance < downtrendLowDistance ? true : false
+
+highDirection = isUptrendHigh ? uptrendHighDirection : downtrendHighDirection
+lowDirection = isUptrendLow ? uptrendLowDirection : downtrendLowDirection
+
+if barstate.islast
+    stats = table.new(position = TlSrStatsPosition, columns = 6, rows = 5, border_width = 1)
+
+    table.cell(table_id = stats, column = 0, row = 0, text = 'TrendLine', bgcolor = color.teal, text_color = color.white, text_size = label_size)
+    table.cell(table_id = stats, column = 1, row = 0, text = 'Direction', bgcolor = color.teal, text_color = color.white, text_size = label_size)
+    table.cell(table_id = stats, column = 2, row = 0, text = 'Strength', bgcolor = color.teal, text_color = color.white, text_size = label_size)
+    table.cell(table_id = stats, column = 3, row = 0, text = 'LastUpdate', bgcolor = color.teal, text_color = color.white, text_size = label_size)
+    table.cell(table_id = stats, column = 4, row = 0, text = 'Price', bgcolor = color.teal, text_color = color.white, text_size = label_size)
+    table.cell(table_id = stats, column = 5, row = 0, text = 'Distance', bgcolor = color.teal, text_color = color.white, text_size = label_size)
+
+    table.clear(stats, 0, 1, 5, 4)
+    if isUptrendHigh
+        table.cell(table_id = stats, column = 0, row = uptrendHighRow, text = 'Up/High', bgcolor = uptrendHighBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 1, row = uptrendHighRow, text = uptrendHighDirection, bgcolor = uptrendHighBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 2, row = uptrendHighRow, text = str.tostring(uptrendHighIndexesCount), bgcolor = uptrendHighBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 3, row = uptrendHighRow, text = str.tostring(bar_index - uptrendHighBar), bgcolor = uptrendHighBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 4, row = uptrendHighRow, text = str.tostring(math.round_to_mintick(uptrendHighPrice)), bgcolor = uptrendHighBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 5, row = uptrendHighRow, text = str.tostring(math.round_to_mintick(close - uptrendHighPrice)), bgcolor = uptrendHighBgColor, text_color = color.black, text_size = label_size)
+    if isUptrendLow
+        table.cell(table_id = stats, column = 0, row = uptrendLowRow, text = 'Up/Low', bgcolor = uptrendLowBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 1, row = uptrendLowRow, text = uptrendLowDirection, bgcolor = uptrendLowBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 2, row = uptrendLowRow, text = str.tostring(uptrendLowIndexesCount), bgcolor = uptrendLowBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 3, row = uptrendLowRow, text = str.tostring(bar_index - uptrendLowBar), bgcolor = uptrendLowBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 4, row = uptrendLowRow, text = str.tostring(math.round_to_mintick(uptrendLowPrice)), bgcolor = uptrendLowBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 5, row = uptrendLowRow, text = str.tostring(math.round_to_mintick(close - uptrendLowPrice)), bgcolor = uptrendLowBgColor, text_color = color.black, text_size = label_size)
+    if not isUptrendHigh
+        table.cell(table_id = stats, column = 0, row = downtrendHighRow, text = 'Down/High', bgcolor = downtrendHighBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 1, row = downtrendHighRow, text = downtrendHighDirection, bgcolor = downtrendHighBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 2, row = downtrendHighRow, text = str.tostring(downtrendHighIndexesCount), bgcolor = downtrendHighBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 3, row = downtrendHighRow, text = str.tostring(bar_index - downtrendHighBar), bgcolor = downtrendHighBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 4, row = downtrendHighRow, text = str.tostring(math.round_to_mintick(downtrendHighPrice)), bgcolor = downtrendHighBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 5, row = downtrendHighRow, text = str.tostring(math.round_to_mintick(close - downtrendHighPrice)), bgcolor = downtrendHighBgColor, text_color = color.black, text_size = label_size)
+    if not isUptrendLow
+        table.cell(table_id = stats, column = 0, row = downtrendLowRow, text = 'Down/Low', bgcolor = downtrendLowBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 1, row = downtrendLowRow, text = downtrendLowDirection, bgcolor = downtrendLowBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 2, row = downtrendLowRow, text = str.tostring(downtrendLowIndexesCount), bgcolor = downtrendLowBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 3, row = downtrendLowRow, text = str.tostring(bar_index - downtrendLowBar), bgcolor = downtrendLowBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 4, row = downtrendLowRow, text = str.tostring(math.round_to_mintick(downtrendLowPrice)), bgcolor = downtrendLowBgColor, text_color = color.black, text_size = label_size)
+        table.cell(table_id = stats, column = 5, row = downtrendLowRow, text = str.tostring(math.round_to_mintick(close - downtrendLowPrice)), bgcolor = downtrendLowBgColor, text_color = color.black, text_size = label_size)
+
+
+
+    if showWatermark
+        highSlope = highDirection == '⇈' ? 1 : highDirection == '⇊' ? -1 : 0
+        lowSlope = lowDirection == '⇈' ? 1 : lowDirection == '⇊' ? -1 : 0
+        trend = highSlope == 1 and lowSlope == 1 ? 'Uptrend' : highSlope == 1 and lowSlope == -1 ? 'Diverging Triangle' : highSlope == 1 and lowSlope == 0 ? 'diverging-ascending-triangle' : highSlope == -1 and lowSlope == 1 ? 'Converging Triangle' : highSlope == -1 and lowSlope == -1 ? 'Downtrend' : highSlope == -1 and lowSlope == 0 ? 'converging-descending-triangle' : highSlope == 0 and lowSlope == 1 ? 'converging-ascending-triangle' : highSlope == 0 and lowSlope == -1 ? 'diverging-descending-triangle' : highSlope == 0 and lowSlope == 0 ? 'range' : 'none'
+        watermark = table.new(position = position.middle_center, columns = 1, rows = 1, border_width = 0)
+        table.cell(table_id = watermark, column = 0, row = 0, text = trend, text_color = color.new(color.aqua, transparency), text_size = size.huge)

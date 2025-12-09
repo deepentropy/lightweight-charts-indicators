@@ -1,0 +1,132 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//  /$$$$$$   /$$                                                         /$$                                            
+// /$$__  $$ | $$                                                        | $$                                            
+//| $$  \__//$$$$$$    /$$$$$$  /$$    /$$ /$$$$$$   /$$$$$$   /$$$$$$$ /$$$$$$    /$$$$$$  /$$    /$$ /$$$$$$   /$$$$$$$
+//|  $$$$$$|_  $$_/   /$$__  $$|  $$  /$$//$$__  $$ /$$__  $$ /$$_____/|_  $$_/   /$$__  $$|  $$  /$$//$$__  $$ /$$_____/
+// \____  $$ | $$    | $$$$$$$$ \  $$/$$/| $$$$$$$$| $$  \__/|  $$$$$$   | $$    | $$$$$$$$ \  $$/$$/| $$$$$$$$|  $$$$$$ 
+// /$$  \ $$ | $$ /$$| $$_____/  \  $$$/ | $$_____/| $$       \____  $$  | $$ /$$| $$_____/  \  $$$/ | $$_____/ \____  $$
+//|  $$$$$$/ |  $$$$/|  $$$$$$$   \  $/  |  $$$$$$$| $$       /$$$$$$$/  |  $$$$/|  $$$$$$$   \  $/  |  $$$$$$$ /$$$$$$$/
+// \______/   \___/   \_______/    \_/    \_______/|__/      |_______/    \___/   \_______/    \_/    \_______/|_______/ 
+
+//       ___________________
+//      /                   \
+//     /  _____        _____ \
+//    /  /     \      /     \  \
+// __/__/       \____/       \__\_____
+//|           ___________           ____|
+// \_________/           \_________/
+//            \  /////// /
+//             \/////////
+// © Steversteves
+//@version=5
+indicator("AR Forecast Scatterplot [SS]", overlay=true, max_lines_count = 500, max_labels_count = 500, max_bars_back = 1000)
+
+import Steversteves/SPTS_StatsPakLib/1 as spts 
+
+//@peacefulLizard50262
+flush(source)=>
+    if source.size() > 0
+        for i = source.size() - 1 to 0
+            source.get(i).delete()
+            source.remove(i)
+
+t1 = "This will plot a line from the first Result to the last Result for the forecast length"
+t2 = "Showing results and variances will plot both the results (blue) and the standard errors based on the variance in the dataset. Only plotting reuslts will only plot the most likely outcome without the variance."
+t3 = "This will omit the need for you to identify the lookback length yourself and will autofind the best lookback period"
+// Inputs 
+src =       input.source(close, "Forecast Source"),      train1 = input.int(150, "Train Time"),        len = input.int(14, "Forecast Length"),    
+typ =       input.string("Scatter Plot", "Scatter Plot Type", ["Line Plot", "Scatter Plot"]),            show_stats = input.bool(true, "Show Model Statistics")
+line_bf =   input.bool(true, "Show Trendline", tooltip = t1),       show_others = input.string("Show Results and Variances","Show Results/Variance", ["Show Results and Variances", "Show Results Only"], tooltip = t2)
+autolen =   input.bool(true, "Use Auto lookback based on strongest trend", tooltip = t3)
+onlytrend = input.bool(false, "Only Show Trendline") 
+// Arrays 
+results = array.new_float() 
+ucl = array.new_float() 
+lcl = array.new_float() 
+
+// Find Trend
+trend_finder(len) => 
+    ta.correlation(close, time, len) 
+
+t50 = trend_finder(50),     t100 = trend_finder(100),       t150 = trend_finder(150),       t200 = trend_finder(200),   t250 = trend_finder(250),       t300 = trend_finder(300),       t350 = trend_finder(350),
+t400 = trend_finder(400),   t450 = trend_finder(450),       t500 = trend_finder(500),       t550 = trend_finder(550),   t600 = trend_finder(600),       t650 = trend_finder(650),       t700 = trend_finder(700),
+strongest_trend = math.max(t50, t100, t150, t200, t250, t300, t350, t400, t450, t500, t550, t600, t650, t700) 
+int find_trend = strongest_trend == t50 ? 50 : strongest_trend == t100 ? 100 : strongest_trend == t150 ? 150 : strongest_trend == t200 ? 200 : strongest_trend == t250 ? 250 : strongest_trend == t300 ? 300 : strongest_trend == t350 ? 350 : strongest_trend == t400 ? 400 : strongest_trend == t450 ? 450 : strongest_trend == t500 ? 500 : strongest_trend == t550 ? 550 : strongest_trend == t600 ? 600 : strongest_trend == t650 ? 650 : strongest_trend == t700 ? 700 : 100
+
+int train = 0 
+if autolen 
+    train := find_trend 
+else 
+    train := train1
+
+
+// Forecast 
+[forecast_result, b, c] = spts.f_forecast(src, src[1], train, len, results, ucl, lcl)
+
+// Model Statistics 
+cor = ta.correlation(src, src[len], train) 
+r2 = math.pow(cor,2) 
+max_val = array.max(ucl) 
+min_val = array.min(lcl) 
+
+f_primary_labels(id) => 
+    label.new(bar_index + id, array.get(results, id), text = "", color = color.blue, style = label.style_circle, size = size.tiny)
+f_secondary_labels(id) => 
+    label.new(bar_index + id, array.get(ucl, id), text = "", color = color.lime, style = label.style_circle, size = size.tiny)
+f_secondary_labels2(id) => 
+    label.new(bar_index + id, array.get(lcl, id), text = "", color = color.red, style = label.style_circle, size = size.tiny)    
+f_primary_line(id) => 
+    line.new(bar_index + id, y1 = array.get(results, id), x2 = bar_index + 1 + id, y2 = array.get(results, id), color = color.blue, width = 3)
+f_secondary_line(id) =>     
+    line.new(bar_index + id, y1 = array.get(ucl, id), x2 = bar_index + 1 + id, y2 = array.get(ucl, id), color = color.lime, width = 3)
+f_secondary_line2(id) =>    
+    line.new(bar_index + id, y1 = array.get(lcl, id), x2 = bar_index + 1 + id, y2 = array.get(lcl, id), color = color.red, width = 3)   
+
+var label1_ar = array.new<label>() 
+var label2_ar = array.new<label>() 
+var label3_ar = array.new<label>() 
+var line1_ar = array.new<line>() 
+var line2_ar = array.new<line>() 
+var line3_ar = array.new<line>() 
+
+flush(label1_ar)
+flush(label2_ar)
+flush(label3_ar)
+flush(line1_ar)
+flush(line2_ar)
+flush(line3_ar)
+
+var forecast_line = array.new<line>()
+flush(forecast_line)
+
+if barstate.islast and line_bf 
+    if forecast_result.size() > 0
+        value = 0.0
+        for i = 1 to forecast_result.size() - 1
+            forecast_line.push(line.new(bar_index + i - 1, forecast_result.get(i - 1), bar_index + i , forecast_result.get(i), color = color.purple, width = 3))
+
+
+// Plots 
+var table data = table.new(position.middle_right, 2, 7, bgcolor = color.blue, frame_color = color.rgb(0, 0, 0), frame_width = 4)
+if show_stats 
+    table.cell(data, 1, 1, text = "Model Data", bgcolor = color.blue, text_color = color.white) 
+    table.cell(data, 1, 2, text = "Correlation: " + str.tostring(math.round(cor,2)), bgcolor = color.blue, text_color = color.white) 
+    table.cell(data, 1, 3, text = "R2: " + str.tostring(math.round(r2, 3)), bgcolor = color.blue, text_color = color.white) 
+    table.cell(data, 1, 4, text = "Max Forecasted Value: " + str.tostring(math.round(max_val, 2)), bgcolor = color.blue, text_color = color.white) 
+    table.cell(data, 1, 5, text = "Min Forecasted Value: " + str.tostring(math.round(min_val, 2)), bgcolor = color.blue, text_color = color.white) 
+    table.cell(data, 1, 6, text = "Lookback Length: " + str.tostring(train), bgcolor = color.blue, text_color = color.white) 
+if barstate.islast and typ == "Scatter Plot" and not onlytrend
+    for idx = 0 to len 
+        label1_ar.push(f_primary_labels(idx))
+        if show_others == "Show Results and Variances"
+            label2_ar.push(f_secondary_labels(idx))
+            label3_ar.push(f_secondary_labels2(idx))
+
+if barstate.islast and typ == "Line Plot" and not onlytrend
+    for idx = 0 to len 
+        line1_ar.push(f_primary_line(idx))
+        if show_others == "Show Results and Variances"
+            line2_ar.push(f_secondary_line(idx))
+            line3_ar.push(f_secondary_line2(idx))
+
+

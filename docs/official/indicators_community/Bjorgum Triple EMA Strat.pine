@@ -1,0 +1,101 @@
+//@Bjorgum on stocktwits 
+
+
+
+//This script uses a triple EMA strategy to establish trend direction and reversal points
+//Inputs are smoothed with Heiken Ashi values to reduce whipsaws, while providing timely execution
+//Buy and sell indications are dictated by bar color
+//Bar color is dictated by the candle close value in relation to the EMAs, specifically the faster of the 3
+//Best results are obtained when coupled with Bjorgum TSI and Bjorgum RSI for confirmation 
+
+
+// It is recommended to disable candle borders in your chart settings
+
+
+//@version=4
+study(title="Bjorgum Triple EMA Strategy", shorttitle="BJ HEMA ", overlay=true)
+
+//Heiken Ashi Input
+
+haClose = (open + high + low + close) / 4
+haOpen  = float(na)
+haOpen := na(haOpen[1]) ? (open + close) / 2 : (nz(haOpen[1]) + nz(haClose[1])) / 2
+haHigh  = max(high, max(haOpen, haClose))
+haLow   = min(low,  min(haOpen, haClose))
+hahl2 = avg(haHigh, haLow)
+
+// 5 ema
+
+emaslow = input(5,title='EMA-Fast')
+
+bjemaslow = ema(haOpen, emaslow)
+up = bjemaslow > bjemaslow [1]
+down =bjemaslow < bjemaslow[1]
+mycolor = up ? #64b5f6 : down ? #d32f2f : na
+bjemafast = ema(hl2, 1)
+
+emaslowplot = plot(bjemaslow, color=mycolor, transp=55, title='EMA-5')
+emafastplot = plot(bjemafast, color=#000000, transp=100, title='EMA fast')
+
+// 9 ema
+
+emaslow2 = input(9,title='EMA-Medium')
+
+bjemaslow2 = ema(haOpen, emaslow2)
+up2 = bjemaslow2 > bjemaslow2 [1]
+down2 =bjemaslow2 < bjemaslow2[1]
+mycolor2 = up2 ? #64b5f6 : down2 ? #d32f2f : na
+
+emaslowplot2 = plot(bjemaslow2, color=mycolor2, transp=45, title='EMA-9')
+
+//21 ema
+
+emaslow3 = input(21,title='EMA-Slow')
+
+bjemaslow3 = ema(haOpen, emaslow3)
+up3 = bjemaslow3 > bjemaslow3 [1]
+down3 =bjemaslow3 < bjemaslow3[1]
+mycolor3 = up3 ? #64b5f6 : down3 ? #d32f2f : na
+
+emaslowplot3 = plot(bjemaslow3, color=mycolor3, transp=35, title='EMA-21')
+
+///area plot fill 
+
+fillData = bjemaslow > bjemafast
+fillData2 = bjemaslow < bjemafast
+
+fillDtat = bjemaslow2 > bjemaslow
+fillDtat2 = bjemaslow2 < bjemaslow
+
+fillDat = bjemaslow3 > bjemaslow2
+fillDat2 = bjemaslow3 < bjemaslow2
+
+
+fillCol1 = fillData ? #ef5350 : fillData2 ? #64b5f6 : na
+fillCol2 = fillDtat ? #ef5350 : fillDtat2 ? #64b5f6 : na
+fillCol3 = fillDat ? #ef5350 : fillDat2 ? #64b5f6 : na
+
+
+fill(emaslowplot, emafastplot, color=fillCol1, transp=85, title="5 - Plot Fill")
+fill(emaslowplot, emaslowplot2, color=fillCol2, transp=80, title="5 - 9 Fill")
+fill(emaslowplot2, emaslowplot3, color=fillCol3, transp=75, title="9 - 21 Fill")
+
+//Barcolor
+
+uc = (close > bjemaslow) and (close > bjemaslow2)
+dc = (close < bjemaslow) and (close < bjemaslow2)
+
+barColor = uc ? #64b5f6 : dc ? #e91e63 : #b2b5be
+barcolor(color=barColor)
+
+c = cross(close, bjemaslow) and cross(close, bjemaslow2)
+alertcondition(c, title='Alert Signal', message='Price is crossing EMAs')
+
+
+
+
+
+
+
+
+

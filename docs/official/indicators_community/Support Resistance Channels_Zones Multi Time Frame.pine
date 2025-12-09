@@ -1,0 +1,221 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=5
+indicator("Support Resistance Channels/Zones Multi Time Frame", "SRMTF", overlay = true)
+TF = input.timeframe(defval = 'D', title = "Higher Time Frame")
+prd = input.int(defval = 5, title="Pivot Period", minval = 1, maxval = 30, tooltip="Used while calculating Pivot Points, checks left&right bars")
+loopback = input.int(defval = 250, title = "Loopback Period", minval = 50, maxval = 400, tooltip="While calculating S/R levels it checks Pivots in Loopback Period")
+ChannelW = input.float(defval = 6, title = "Maximum Channel Width %", minval = 1, maxval = 15, tooltip="Calculated using Highest/Lowest levels in 300 bars")
+minstrength = input.int(defval = 2, title = "Minimum Strength", minval = 1, tooltip = "Channel must contain at least X Pivot Points")
+maxnumsr = input.int(defval = 6, title = "Maximum Number of S/R", minval = 1, maxval = 10, tooltip = "Maximum number of Support/Resistance Channels to Show") - 1
+showsrfit = input.bool(defval = true, title = "Show S/Rs that fits the Chart")
+showtable = input.bool(defval = true, title = "Show S/R channels in a table")
+tableposy = input.string(defval='bottom', title='Chart Location', options=['bottom', 'middle', 'top'], inline='chartpos')
+tableposx = input.string(defval='left', title='', options=['left', 'center', 'right'], inline='chartpos')
+res_col = input(defval = color.new(color.red, 75), title = "Resistance Color")
+sup_col = input(defval = color.new(color.lime, 75), title = "Support Color")
+inch_col = input(defval = color.new(color.gray, 75), title = "Color When Price in Channel")
+
+get_highlow()=>
+    var hlmatrix = matrix.new<float>(loopback, 2, 0.)
+    if barstate.islast // use less memory
+        for x = 0 to loopback - 1
+            matrix.set(hlmatrix, x, 0, high[x])
+            matrix.set(hlmatrix, x, 1, low[x])
+    hlmatrix  
+hlmatrix = request.security(syminfo.tickerid, TF, get_highlow(), lookahead = barmerge.lookahead_on)
+
+
+if na(hlmatrix)
+    runtime.error('You should choose Time Frame wisely')
+if matrix.rows(hlmatrix) < prd * 10
+    runtime.error('There is not enough candles on Time Frame you choose. You better choose Time Frame wisely')
+    
+get_pivotvals(hlmatrix)=>
+    highs = matrix.col(hlmatrix, 0)
+    lows = matrix.col(hlmatrix, 1)
+    pivotvals = array.new_float(0)
+    for x = prd to array.size(highs) - prd - 1
+        if array.get(highs, x) >= array.max(array.slice(highs, x - prd, x + prd + 1))
+            array.push(pivotvals, array.get(highs, x))
+        if array.get(lows, x) <= array.min(array.slice(lows, x - prd, x + prd + 1))
+            array.push(pivotvals, array.get(lows, x))
+    pivotvals
+
+//find/calculate SR channel/strength by using pivot points
+get_sr_vals(pivotvals, cwidth, ind)=>
+    float lo = array.get(pivotvals, ind)
+    float hi = lo
+    int numpp = 0
+    for y = 0 to array.size(pivotvals) - 1
+        float cpp = array.get(pivotvals, y)
+        float wdth = cpp <= hi ? hi - cpp : cpp - lo
+        if wdth <= cwidth // fits the max channel width?
+            if cpp <= hi
+                lo := math.min(lo, cpp)
+            else
+                hi := math.max(hi, cpp)
+                
+            numpp := numpp + 20 // each pivot point added as 20
+    [hi, lo, numpp]
+
+var suportresistance = array.new_float(20, 0) // min & max levels * 10
+
+// Change the location of the array elements
+changeit(suportresistance, x, y)=>
+    tmp = array.get(suportresistance, y * 2)
+    array.set(suportresistance, y * 2, array.get(suportresistance, x * 2))
+    array.set(suportresistance, x * 2, tmp)
+    tmp := array.get(suportresistance, y * 2 + 1)
+    array.set(suportresistance, y * 2 + 1, array.get(suportresistance, x * 2 + 1))
+    array.set(suportresistance, x * 2 + 1, tmp)
+
+// get related S/R level
+get_level(suportresistance, ind)=>
+    float ret = na
+    if ind < array.size(suportresistance)
+        if array.get(suportresistance, ind) != 0
+            ret := array.get(suportresistance, ind)
+    ret
+
+// get the color of elated S/R level
+get_color(suportresistance, ind)=>
+    color ret = na
+    if ind < array.size(suportresistance)
+        if array.get(suportresistance, ind) != 0
+            ret := array.get(suportresistance, ind) > close and array.get(suportresistance, ind + 1) > close ? res_col :
+                   array.get(suportresistance, ind) < close and array.get(suportresistance, ind + 1) < close ? sup_col :
+                   inch_col
+    ret
+
+// find and use highest/lowest on current chart if  "Show S/Rs that fits the Chart" enabled
+var times = array.new_float(0)
+array.unshift(times, time)
+visibleBars = 1
+if time == chart.right_visible_bar_time
+    visibleBars := array.indexof(times, chart.left_visible_bar_time) + 1
+chart_highest = ta.highest(visibleBars)
+chart_lowest = ta.lowest(visibleBars)
+// use 5% more
+chart_highest += (chart_highest - chart_lowest) * 0.05
+chart_lowest -= (chart_highest - chart_lowest) * 0.05
+
+// alerts
+resistancebroken = false
+supportbroken = false
+
+// calculate S/R on last bar 
+if barstate.islast
+    pivotvals = get_pivotvals(hlmatrix)
+    
+    //calculate maximum S/R channel width
+    prdhighest =  array.max(pivotvals)
+    prdlowest = array.min(pivotvals)
+    cwidth = (prdhighest - prdlowest) * ChannelW / 100
+
+    supres = array.new_float(0)  // number of pivot, strength, min/max levels
+    stren = array.new_float(10, 0)
+    // get levels and strengs
+    for x = 0 to array.size(pivotvals) - 1
+        [hi, lo, strength] = get_sr_vals(pivotvals, cwidth, x)
+        array.push(supres, strength)
+        array.push(supres, hi)
+        array.push(supres, lo)
+    
+   
+    // chech last 500 bars on curent time frame and add each OHLC to strengh
+    for x = 0 to array.size(pivotvals) - 1
+        h = array.get(supres, x * 3 + 1)
+        l = array.get(supres, x * 3 + 2)
+        s = 0
+        for y = 0 to 499
+            if (high[y] <= h and high[y] >= l) or
+               (low[y] <= h and low[y] >= l) or
+               (open[y] <= h and open[y] >= l) or
+               (close[y] <= h and close[y] >= l)
+                s := s + 1
+        array.set(supres, x * 3, array.get(supres, x * 3) + s)
+    
+    //reset SR levels
+    array.fill(suportresistance, 0)
+    // get strongest SRs
+    src = 0
+    for x = 0 to array.size(pivotvals) - 1
+        stv = -1. // value
+        stl = -1 // location
+        for y = 0 to array.size(pivotvals) - 1
+            if array.get(supres, y * 3) > stv and array.get(supres, y * 3) >= minstrength * 20
+                stv := array.get(supres, y * 3)
+                stl := y
+        if stl >= 0
+            //get sr level
+            hh = array.get(supres, stl * 3 + 1)
+            ll = array.get(supres, stl * 3 + 2)
+            array.set(suportresistance, src * 2, hh)
+            array.set(suportresistance, src * 2 + 1, ll)
+            array.set(stren, src, array.get(supres, stl * 3))
+            
+            // make included pivot points' strength zero 
+            for y = 0 to array.size(pivotvals) - 1
+                if (array.get(supres, y * 3 + 1) <= hh and array.get(supres, y * 3 + 1) >= ll) or
+                   (array.get(supres, y * 3 + 2) <= hh and array.get(supres, y * 3 + 2) >= ll)
+                    array.set(supres, y * 3, -1)
+
+            src += 1
+            if src >= 10
+                break
+    
+    // sort S/R according to their strengths
+    for x = 0 to 8
+        for y = x + 1 to 9
+            if array.get(stren, y) > array.get(stren, x)
+                tmp = array.get(stren, y) 
+                array.set(stren, y, array.get(stren, x))
+                changeit(suportresistance, x, y)
+    
+    var srtable = table.new(position = tableposy + '_' + tableposx, columns = 5, rows= 11, frame_width = 1, frame_color = color.gray, border_width = 1, border_color = color.gray)
+    if showtable
+        table.cell(srtable, 0, 0, text = "TF:" + str.tostring(TF) + " Sorted by the Strength", text_color = color.rgb(0, 0, 250), bgcolor = color.yellow)
+    	table.merge_cells(srtable, 0, 0, 3, 0)
+	
+	// show S/R channels and tables if enabled
+    var srchannels = array.new_box(10)
+    rowindex = 1
+    for x = 0 to math.min(9, maxnumsr)
+        box.delete(array.get(srchannels, x))
+        srcol = get_color(suportresistance, x * 2)
+        if not na(srcol)
+            if not showsrfit or (get_level(suportresistance,x * 2 + 1) <= chart_highest and get_level(suportresistance,x * 2) >= chart_lowest)
+                array.set(srchannels, x, 
+                          box.new(left = bar_index - 300, top = get_level(suportresistance,x * 2), right = bar_index + 1, bottom = get_level(suportresistance,x * 2 + 1), 
+                                  border_color = srcol, 
+                                  border_width = 1,
+                                  extend = extend.both, 
+                                  bgcolor = srcol))
+            if showtable
+                srtext = srcol == res_col ? "Resistance" : "Support"
+                bgcol = srcol == res_col ? color.rgb(200, 0, 0) : color.rgb(0, 200, 0)
+                txtcol = srcol == res_col ? color.white: color.black
+                table.cell(table_id = srtable, column = 0, row = rowindex, text = str.tostring(rowindex), text_color = txtcol, bgcolor = bgcol)
+                table.cell(table_id = srtable, column = 1, row = rowindex, text = srtext, text_color = txtcol, bgcolor = bgcol)
+                table.cell(table_id = srtable, column = 2, row = rowindex, text = str.tostring(math.round_to_mintick(get_level(suportresistance,x * 2 + 1))), text_color = txtcol, bgcolor = bgcol)
+                table.cell(table_id = srtable, column = 3, row = rowindex, text = str.tostring(math.round_to_mintick(get_level(suportresistance,x * 2))), text_color = txtcol, bgcolor = bgcol)
+                rowindex += 1
+    // alerts
+    // check if the price is not in a channel
+    not_in_a_channel = true
+    for x = 0 to math.min(9, maxnumsr)
+        if close <= array.get(suportresistance, x * 2) and close >= array.get(suportresistance, x * 2 + 1) 
+            not_in_a_channel := false
+    
+    // if price is not in a channel then check if S/R was broken
+    if not_in_a_channel
+        for x = 0 to math.min(9, maxnumsr)
+            if close[1] <= array.get(suportresistance, x * 2) and close > array.get(suportresistance, x * 2)
+                resistancebroken := true
+            if close[1] >= array.get(suportresistance, x * 2 + 1) and close < array.get(suportresistance, x * 2 + 1)
+                supportbroken := true
+
+alertcondition(resistancebroken, title = "Resistance Broken", message = "Resistance Broken")
+alertcondition(supportbroken, title = "Support Broken", message = "Support Broken")

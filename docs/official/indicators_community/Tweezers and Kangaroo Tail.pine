@@ -1,0 +1,109 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("Tweezer and Kangaroo Tail", overlay = true)
+enable_tweezer = input(defval = true, title = "Enable Tweezer")
+maxrate = input(defval = 150., title = "Max Rate % Between Wick Sizes") / 100.
+leveldiff = input(defval = 20., title = "Max Difference in level %") / 100.
+prd =input(defval = 5, title = "Highest/Lowest Period")
+apartprd = input(defval = 12, title = "Max Distance between Tweezers", minval = 1)
+colup = input(defval = color.lime, title = "Color", inline = "col")
+coldn = input(defval = color.red, title = "", inline = "col")
+
+
+topwick = high - max(close, open)
+bottomwick = min(close, open) - low
+body = abs(close - open)
+ishb = highestbars(prd) == 0
+islb = lowestbars(prd) == 0
+aparttweezers_top(len)=>
+    ret = 0
+    if topwick > 0
+        for x = 1 to apartprd
+            if nz(topwick[x]) == 0
+                break
+            if (max(topwick, topwick[x]) / min(topwick, topwick[x])) <= maxrate and abs(high - high[x]) < max(topwick, topwick[x]) * leveldiff and ishb[x]
+                ret := x
+                break
+            else 
+                if high[x] >= high
+                    ret := 0
+                    break
+    ret
+    
+aparttweezers_bottom(len)=>
+    ret = 0
+    if bottomwick > 0
+        for x = 1 to apartprd
+            if nz(bottomwick[x]) == 0
+                break
+            if (max(bottomwick, bottomwick[x]) / min(bottomwick, bottomwick[x])) <= maxrate and abs(low - low[x]) < max(bottomwick, bottomwick[x]) * leveldiff and islb[x]
+                ret := x
+                break
+            else 
+                if low[x] <= low
+                    ret := 0
+                    break
+    ret
+
+top_tweezer = enable_tweezer and aparttweezers_top(apartprd)
+bottom_tweezer = enable_tweezer and aparttweezers_bottom(apartprd)
+plotshape(top_tweezer, text = "T", style = shape.labeldown, location =  location.abovebar, color = coldn, textcolor = color.white)
+plotshape(bottom_tweezer, text = "T", style = shape.labelup, location =  location.belowbar, color = colup, textcolor = color.black)
+
+// KANGAROO TAIL 
+enable_kangaroo_tail = input(defval = true, title = "Enable Kangaroo Tail")
+prd1 = input(defval = 20, title="Period for Room", minval = 2, maxval = 50)
+prd2 = input(defval = 8, title="Minimum Period for Room", minval = 2, maxval = 50)
+atrmult = input(defval = 5, title="ATR Factor for Room Height", minval = 2, maxval = 30)
+wickmult = input(defval = 3., title = "Wick/Body Rate", minval = 1)
+wickmultavg = input(defval = 2., title = "Wick/Average_Wick Rate", minval = 1)
+
+float ph = highestbars(high, prd1) == 0 ? high : na
+float pl = lowestbars(low, prd1) == 0 ? low : na
+var dir = 0
+dir := iff(ph and na(pl), 1, iff(pl and na(ph), -1, dir))
+var max_array_size = 4
+var zigzag = array.new_float(4, 0.)
+
+add_to_zigzag(value, bindex)=>
+    array.unshift(zigzag, bindex)
+    array.unshift(zigzag, value)
+    array.pop(zigzag)
+    array.pop(zigzag)
+    
+update_zigzag(value, bindex)=>
+    if array.size(zigzag) == 0
+        add_to_zigzag(value, bindex)
+    else
+        if (dir == 1 and value > array.get(zigzag, 0)) or (dir == -1 and value < array.get(zigzag, 0))
+            array.set(zigzag, 0, value)
+            array.set(zigzag, 1, bindex)
+        0.
+
+dirchanged = change(dir)
+if ph or pl
+    if dirchanged
+        add_to_zigzag(dir == 1 ? ph : pl, bar_index)
+    else
+        update_zigzag(dir == 1 ? ph : pl, bar_index)
+
+averagetopwicksize = sma(topwick, 50)
+
+topkangaroo = enable_kangaroo_tail and dir == 1  and topwick >= body * wickmult and close <= low + (high - low) / 3 and open <= low + (high - low) / 3 and 
+  open < high[1] and open > low[1] and close < high[1] and close > low[1] and topwick >= wickmultavg * averagetopwicksize and body > 0 and
+  ph and array.get(zigzag, 0) == high and array.get(zigzag, 0) - array.get(zigzag, 2) > atr(50) * atrmult and array.get(zigzag, 1) - array.get(zigzag, 3) > prd2
+
+bottomkangaroo = enable_kangaroo_tail and dir == -1  and bottomwick >= body * wickmult and close >= high - (high - low) / 3 and open >= high - (high - low) / 3 and 
+  open < high[1] and open > low[1] and close < high[1] and close > low[1] and bottomwick >= wickmultavg * averagetopwicksize and body > 0 and
+  pl and array.get(zigzag, 0) == low and array.get(zigzag, 2) - array.get(zigzag, 0) > atr(50) * atrmult and array.get(zigzag, 1) - array.get(zigzag, 3) > prd2
+
+plotshape(topkangaroo, text = "K", style = shape.labeldown, location =  location.abovebar, color = coldn, textcolor = color.white)
+plotshape(bottomkangaroo, text = "K", style = shape.labelup, location =  location.belowbar, color = colup, textcolor = color.black)
+
+alertcondition(topkangaroo, title='Kangaroo Tail Bearish', message='Kangaroo Tail Bearish')
+alertcondition(bottomkangaroo, title='Kangaroo Tail Bullish', message='Kangaroo Tail Bullish')
+alertcondition(top_tweezer, title='Tweezers Bearish', message='Tweezers Bearish')
+alertcondition(bottom_tweezer, title='Tweezers Bullish', message='Tweezers Bullish')
+ 

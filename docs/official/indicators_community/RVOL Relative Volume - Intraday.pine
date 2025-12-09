@@ -1,0 +1,78 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+var tooltip1 = "The more recent the data is, the more relevant it is.  Longer period baselines have lower volumes. This creates too much noise when we generate our results."
+//@version=5
+indicator("RVOL Relative Volume - Intraday", "RVOL", max_lines_count = 500, precision = 2)
+period = input.int(defval = 5, title = "Number of Days", minval = 1, maxval = 55, tooltip = tooltip1)
+dls = input.int(defval = 0, title = "Daylight saving on last weekend", tooltip = "Please enter ±1 if Daylight saving last weekend, Otherwise please keep it 0")
+
+// Chart time frame must be ">=1min" and less than 1Day to run the script
+if not timeframe.isintraday or timeframe.isseconds
+    runtime.error("Chart time frame must be less than 1 Day and greater/equal 1 minute")
+
+hline(0.0, linestyle = hline.style_solid)
+hline(0.5, linestyle = hline.style_dotted)
+hline(1.0, linestyle = hline.style_dashed)
+hline(1.5, linestyle = hline.style_dotted)
+hline(2.0, linestyle = hline.style_dashed)
+
+// if there is daylight saving on last weekend 
+lbi = request.security(syminfo.tickerid, 'W', last_bar_index)
+cbi = request.security(syminfo.tickerid, 'W', bar_index, lookahead = barmerge.lookahead_on)
+
+// get current bar time as hour/minute
+int hour_ = math.floor(time / 3600000) % 24 + (lbi == cbi ? dls : 0)
+int minute_ = math.floor(time / 60000) % 60
+
+// *24*60 => 1 day, *2 is used to make the day 48 hours because session start time may change sometimes and also it may start (say) at 17:00 and ends at 02:00
+// this method is used to calculate exact rvol, other methods may give false results
+var rvols = array.new_float(24 * 60 * 2 * (period + 1), 0)
+// new session started?
+bool newday = ta.change(time('D')) != 0 
+
+// this is used to make the day 48 hours
+var plus24 = 0
+if newday
+    plus24 := 0
+    for x = 1 to 2880
+        array.shift(rvols)
+        array.push(rvols, 0)
+
+// get bar time
+int ctime_ = hour_ * 60 +  minute_
+// calculate addition
+if ctime_ < ctime_[1] and not newday
+    plus24 := 1440
+
+// convert bar time to index (48 hours)
+int ctime = ctime_ + plus24
+
+// draw vertical line at the beginning of the Session
+if newday
+    line.new(x1 = bar_index, y1 = 0, x2 = bar_index, y2 = 1, color = color.gray, style = line.style_dashed, extend = extend.right)
+
+// keep the current cumulative volume at related element in the array
+array.set(rvols, period * 2880 + ctime, newday ? volume : array.get(rvols, period * 2880 + ctime[1]) + volume)
+
+// calculate relative volume
+relativeVolume()=>
+    float hvol = 0//array.sum(array.slice(rvols, x * 2880 + ctime)
+    for x = 0 to period - 1
+        svol = array.get(rvols, x * 2880 + ctime)
+        // if it missing hour in last days, get sum from last hour(s)
+        if svol == 0
+            for y = x * 2880 + ctime to x * 2880
+                svol := array.get(rvols, y)
+                if svol != 0
+                    break
+        hvol +=  svol / period
+
+    cvol = array.get(rvols, period * 2880 + ctime)
+    rvol = hvol == 0 ? 0 : cvol / hvol
+
+RVOL = relativeVolume()
+// plot relative volume
+plot(RVOL, style = plot.style_columns, color = close >= open ? color.rgb(0, math.max(math.min(RVOL * 130, 255), 130), 0, 0) : color.rgb(math.max(math.min(RVOL * 130, 255), 130), 0, 0, 0))
+
+plot(0, color = na(volume) ? color.blue : color.red)

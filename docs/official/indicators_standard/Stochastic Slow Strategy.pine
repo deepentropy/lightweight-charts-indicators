@@ -1,0 +1,17 @@
+//@version=6
+strategy("Stochastic Slow Strategy", overlay=true)
+length = input.int(14, "Length", minval=1)
+OverBought = input(80, "Overbought")
+OverSold = input(20, "Oversold")
+smoothK = 3
+smoothD = 3
+k = ta.sma(ta.stoch(close, high, low, length), smoothK)
+d = ta.sma(k, smoothD)
+co = ta.crossover(k,d)
+cu = ta.crossunder(k,d)
+if (not na(k) and not na(d))
+	if (co and k < OverSold)
+		strategy.entry("StochLE", strategy.long, comment="StochLE")
+	if (cu and k > OverBought)
+		strategy.entry("StochSE", strategy.short, comment="StochSE")
+//plot(strategy.equity, title="equity", color=color.red, linewidth=2, style=plot.style_areabr)

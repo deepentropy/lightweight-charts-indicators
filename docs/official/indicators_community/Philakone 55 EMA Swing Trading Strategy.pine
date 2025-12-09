@@ -1,0 +1,37 @@
+//@version=5
+// Inspired by Philakone's 55 EMA Swing Trading Strategy
+indicator(title='Philakone 55 EMA Swing Trading Strategy', shorttitle='Phil\'s 55 EMA', overlay=true, timeframe = '', timeframe_gaps = true)
+
+float src = input.source(close, title='Source')
+bool exponential = input.bool(true, title='Exponential MA')
+
+float ema_1 = ta.ema(src, 8)
+float sma_1 = ta.sma(src, 8)
+float ma8 = exponential ? ema_1 : sma_1
+
+float ema_2 = ta.ema(src, 13)
+float sma_2 = ta.sma(src, 13)
+float ma13 = exponential ? ema_2 : sma_2
+
+float ema_3 = ta.ema(src, 21)
+float sma_3 = ta.sma(src, 21)
+float ma21 = exponential ? ema_3 : sma_3
+
+float ema_4 = ta.ema(src, 55)
+float sma_4 = ta.sma(src, 55)
+float ma55 = exponential ? ema_4 : sma_4
+
+bool buy_cond = ta.cross(ma21, ma55) and ma8 > ma13 and ma21 > ma55
+bool sell_cond = ta.cross(ma21, ma55) and ma8 < ma13 and ma21 < ma55
+//bool sell_cond = ta.cross(ma8, ma55) and ma8 < ma13 and ma8 < ma21 and ma55 < ma13 and ma55 < ma21
+
+plotshape(buy_cond, title = 'buy', style = shape.triangleup, location = location.belowbar, color = color.new(color.lime, 35), text = 'Buy', textcolor = color.new(color.lime, 35), size = size.normal)
+plotshape(sell_cond, title = 'sell', style = shape.triangledown, location = location.abovebar, color = color.new(color.red, 35), text = 'Sell', textcolor = color.new(color.red, 35), size = size.normal)
+
+plot(ma8, color=color.new(color.red, 0), style=plot.style_line, title='8', linewidth=1)
+plot(ma13, color=color.new(color.orange, 0), style=plot.style_line, title='13', linewidth=2)
+plot(ma21, color=color.new(color.yellow, 0), style=plot.style_line, title='21', linewidth=3)
+plot(ma55, color=color.new(color.lime, 0), style=plot.style_line, title='55', linewidth=4)
+
+alertcondition(buy_cond, title='Buy Condition', message='Buy Condition Alert')
+alertcondition(sell_cond, title='Sell Condition', message='Sell Condition Alert')

@@ -1,0 +1,43 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Signal Moving Average [LuxAlgo]", overlay = true)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+length = input(50)
+
+src = input(close)
+
+//------------------------------------------------------------------------------
+//Signal moving average
+//-----------------------------------------------------------------------------{
+var ma = 0.
+var os = 0.
+
+target = ta.sma(src, length)
+abs_diff = math.abs(target - target[1])
+
+r2 = math.pow(ta.correlation(close, bar_index, length), 2)
+
+os := r2 > 0.5 ? math.sign(src[1] - target[1]) : os
+
+ma := r2 > 0.5 ? r2 * target + (1 - r2) * nz(ma[1], target)
+  : ma[1] - abs_diff * os
+  
+  
+//-----------------------------------------------------------------------------}
+//Plots
+//-----------------------------------------------------------------------------{
+plot0 = plot(src, display = display.none, editable = false)
+
+css = os == 1 ? #0cb51a : #ff1100
+plot1 = plot(ma, 'Signal MA'
+  , css)
+  
+fill_css = src > ma ? color.new(#0cb51a, 80) : color.new(#ff1100, 80)
+fill(plot0, plot1, fill_css, 'Fill')
+
+
+//-----------------------------------------------------------------------------}

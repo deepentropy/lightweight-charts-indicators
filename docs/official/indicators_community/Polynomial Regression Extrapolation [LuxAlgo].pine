@@ -1,0 +1,132 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Polynomial Regression Extrapolation [LuxAlgo]"
+  , overlay = true
+  , max_lines_count = 500)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+length      = input.int(100
+  , minval = 0)
+
+extrapolate = input.int(10
+  , minval = 0)
+
+degree      = input.int(3, 'Polynomial Degree'
+  , minval = 0
+  , maxval = 8)
+
+src         = input(close)
+
+lock        = input(false, 'Lock Forecast')
+
+//Style
+up_css = input.color(#0cb51a, 'Upward Color'
+  , group = 'Style')
+  
+dn_css = input.color(#ff1100, 'Downward Color'
+  , group = 'Style')
+
+ex_css = input.color(#ff5d00, 'Extrapolation Color'
+  , group = 'Style')
+  
+width  = input(1, 'Width'
+  , group = 'Style')
+
+//-----------------------------------------------------------------------------}
+//Fill lines array
+//-----------------------------------------------------------------------------{
+var lines = array.new_line(0)
+
+if barstate.isfirst
+    for i = -extrapolate to length-1
+        array.push(lines, line.new(na, na, na, na))
+
+//-----------------------------------------------------------------------------}
+//Get design matrix & partially solve system
+//-----------------------------------------------------------------------------{
+n = bar_index
+
+var design   = matrix.new<float>(0, 0)
+var response = matrix.new<float>(0, 0)
+
+if barstate.isfirst
+    for i = 0 to degree
+        column = array.new_float(0)
+        
+        for j = 0 to length-1
+            array.push(column, math.pow(j,i))
+        
+        matrix.add_col(design, i, column)
+
+var a = matrix.inv(matrix.mult(matrix.transpose(design), design))
+var b = matrix.mult(a, matrix.transpose(design))
+
+//-----------------------------------------------------------------------------}
+//Get response matrix and compute roling polynomial regression
+//-----------------------------------------------------------------------------{
+var pass = 1
+var matrix<float> coefficients = na
+var x = -extrapolate
+var float forecast = na
+
+if barstate.islast 
+    if pass
+        prices = array.new_float(0)
+        
+        for i = 0 to length-1
+            array.push(prices, src[i])
+        
+        matrix.add_col(response, 0, prices)
+        
+        coefficients := matrix.mult(b, response)
+        
+        float y1 = na
+        idx = 0
+        
+        for i = -extrapolate to length-1
+            y2 = 0.
+            
+            for j = 0 to degree
+                y2 += math.pow(i, j)*matrix.get(coefficients, j, 0)
+            
+            if idx == 0
+                forecast := y2
+                
+            //------------------------------------------------------------------
+            //Set lines
+            //------------------------------------------------------------------
+            css = y2 < y1 ? up_css : dn_css
+            
+            get_line = array.get(lines, idx)
+            
+            line.set_xy1(get_line, n - i + 1, y1)
+            
+            line.set_xy2(get_line, n - i, y2)
+            
+            line.set_color(get_line, i <= 0 ? ex_css : css)
+            
+            line.set_width(get_line, width)
+            
+            y1 := y2
+            idx += 1
+            
+        if lock
+            pass := 0
+    else
+        y2 = 0.
+        x -= 1
+        
+        for j = 0 to degree
+            y2 += math.pow(x, j)*matrix.get(coefficients, j, 0)
+        
+        forecast := y2
+
+plot(pass == 0 ? forecast : na, 'Extrapolation'
+  , color     = ex_css
+  , offset    = extrapolate
+  , linewidth = width)
+
+//-----------------------------------------------------------------------------}

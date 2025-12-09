@@ -1,0 +1,36 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ZenAndTheArtOfTrading / PineScriptMastery
+// @version=6
+indicator("ATR+ (Stop Loss Indicator)", "ATR+", overlay=false, precision=1)
+
+// Import Zen library
+import ZenAndTheArtOfTrading/ZenLibrary/9 as zen
+
+// Get user input
+riskratio       = input.float(title="R/R", defval=1, minval=0.1, tooltip="Risk:Reward profile")
+atrLength       = input.int(title="ATR Length", defval=14, minval=1, tooltip="ATR period")
+lookback        = input.int(title="Lookback", defval=3, minval=1, tooltip="How many bars to look back for highs/lows")
+stopSizeInput   = input.float(title="Stop Distance (in pips or ATR)", defval=1.0, minval=0.0, tooltip="Stop loss distance (pips or ATR multiplier)")
+stopSizeUseATR  = input.bool(title="Use ATR Multiplier for stop loss", defval=true, tooltip="Turns on/off the ATR multiplier / pip-based stop loss")
+
+// Calculate ATR & convert it from points into a whole number
+atrValue = ta.atr(atrLength)
+atrWhole = zen.toWhole(atrValue)
+
+// Convert our fixed pip stop size into a whole number for use later if using a fixed stop size
+stopSize = zen.toPips(stopSizeInput)
+
+// Multiply our stop size by our ATR multiplier (if using ATR multiplier)
+if stopSizeUseATR
+    stopSize := atrValue * stopSizeInput
+
+// Get SL pips
+longEntrySize = zen.toWhole((close - ta.lowest(low, lookback) + stopSize))
+shortEntrySize = zen.toWhole((ta.highest(high, lookback) - close + stopSize))
+
+// Plot data
+plot(atrWhole, color=color.new(color.teal, 100), style=plot.style_circles, title="ATR")
+plot(longEntrySize, color=color.new(color.green, 100), style=plot.style_circles, title="Long Entry Size")
+plot(longEntrySize * riskratio, color=color.new(color.green, 100), style=plot.style_circles, title="Long Target Size")
+plot(shortEntrySize, color=color.new(color.red, 100), style=plot.style_circles, title="Short Entry Size")
+plot(shortEntrySize * riskratio, color=color.new(color.red, 100), style=plot.style_circles, title="Short Target Size")

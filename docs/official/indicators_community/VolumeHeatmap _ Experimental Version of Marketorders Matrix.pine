@@ -1,0 +1,270 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © NXT2017
+
+//@version=5
+//
+// a description you can find here: https://www.tradingview.com/script/peJ263bG-VolumeHeatmap-Experimental-Version-of-Marketorders-Matrix/
+//
+indicator('VolumeHeatmap | NXT2017.com', overlay=true, max_bars_back=1000)
+ // 2.4 works correct
+//INPUTS
+blabla0 = input(false, '========= Box Settings =========')
+//blabla1= input(false,   "Choose Box ID Number of max. Boxes:")
+var show_boxes = input(false, title='    Makes Box visible:')
+var box_ = input(1, title='    Box ID Number:')
+var of = input(1, title='    Max. Boxes to use:')
+var count_len = input(50, title='    Count bars back:')
+
+
+float highp_  = input(12400.0, title='      Manuell High Level:')  //
+float lowp_ = input(12000.0, title='      Manuelle Low Level:')  //
+var poc_ = input(101, title='    Reaching Percentage to be POC (over 100% dont shows POC):')
+
+var box_color = input(title='      Box Line Color:', defval=color.white)
+
+
+blabla4 = input(false, '======== Label Settings ========')
+var show_price_label = input(true, title='Show Price Label')
+var price_on_box = input(1, title='    Label is showing only in Boxnumer:')
+var label_color = input(title='      Label Color:', defval=#888888)
+var text_color = input(title='      Label Text Color:', defval=color.white)
+var label_offset = input(4, title='      Label Offset to last Candle:')
+
+
+blabla5 = input(false, '======= Heatmap Settings =======')
+var plot_line = input(true, title='    Show Horizontal Lines:')
+var width = input(10, title='    Horizontal Linehigh:')
+var color_ = input(title='    POC Color of any Box:', defval=#FF369B)
+
+var tv = 'Total Volume'
+var bv = 'Only Buy Volume'
+var sv = 'Only Sell Volume'
+var volume_delta = input.string(title='    Total Volume', options=[tv, bv, sv], defval=tv)
+var usebg_ = input(false, title='Use Vertical Volume Color on Box 1')
+
+
+
+//Calculation settings
+var highp = highp_
+var lowp = lowp_
+
+var rows_ = 31
+var boxsize = (highp - lowp) / of
+var h = highp - boxsize * (box_ - 1)
+var l = highp - boxsize * box_
+var renko = (h - l) / rows_
+var arrVolume  = request.security_lower_tf(syminfo.tickerid, "1", volume)
+//Initialisieren
+var arr_volumen_vertical = array.new_float(rows_ + 1)
+var arr_volumen_horizontal = array.new_float(count_len)
+
+source() =>
+    var source_ = 0.0
+    source_ := volume_delta == tv or volume_delta == bv and close > open or volume_delta == sv and close < open ? volume : 0.0
+    source_
+
+
+
+//level is supported with 0 1 2 3... 10 20 30 50...100
+volsum(sup, res) =>
+    sum = 0.0
+    for i = 0 to count_len - 1 by 1
+        past = math.round((close[i] - l) / (h - l) * 100)
+        kriterium = past <= res and past >= sup ? source() : 0.0
+        array.set(arr_volumen_horizontal, i, kriterium)
+    sum := array.sum(arr_volumen_horizontal)
+    sum
+
+
+var hm_color100 = color.new(#FE2E2E, 80)
+var hm_color99 = color.new(#FE2E2E, 80)
+var hm_color98 = color.new(#FE2E2E, 80)
+var hm_color97 = color.new(#FE2E2E, 80)
+var hm_color96 = color.new(#FE642E, 80)
+var hm_color95 = color.new(#FE642E, 80)
+var hm_color94 = color.new(#FE642E, 80)
+var hm_color93 = color.new(#FE642E, 80)
+var hm_color92 = color.new(#FE642E, 80)
+var hm_color91 = color.new(#FE642E, 80)
+var hm_color90 = color.new(#FE642E, 80)
+var hm_color89 = color.new(#FE9A2E, 80)
+var hm_color88 = color.new(#FE9A2E, 80)
+var hm_color87 = color.new(#FE9A2E, 80)
+var hm_color86 = color.new(#FE9A2E, 80)
+var hm_color85 = color.new(#FE9A2E, 80)
+var hm_color84 = color.new(#FE9A2E, 80)
+var hm_color83 = color.new(#FE9A2E, 80)
+var hm_color82 = color.new(#FE9A2E, 80)
+var hm_color81 = color.new(#FE9A2E, 80)
+var hm_color80 = color.new(#FE9A2E, 80)
+var hm_color79 = color.new(#FACC2E, 80)
+var hm_color78 = color.new(#FACC2E, 80)
+var hm_color77 = color.new(#FACC2E, 80)
+var hm_color76 = color.new(#FACC2E, 80)
+var hm_color75 = color.new(#FACC2E, 80)
+var hm_color74 = color.new(#FACC2E, 80)
+var hm_color73 = color.new(#FACC2E, 80)
+var hm_color72 = color.new(#FACC2E, 80)
+var hm_color71 = color.new(#FACC2E, 80)
+var hm_color70 = color.new(#FACC2E, 80)
+var hm_color69 = color.new(#F7FE2E, 80)
+var hm_color68 = color.new(#F7FE2E, 80)
+var hm_color67 = color.new(#F7FE2E, 80)
+var hm_color66 = color.new(#F7FE2E, 80)
+var hm_color65 = color.new(#F7FE2E, 80)
+var hm_color64 = color.new(#F7FE2E, 80)
+var hm_color63 = color.new(#F7FE2E, 80)
+var hm_color62 = color.new(#F7FE2E, 80)
+var hm_color61 = color.new(#F7FE2E, 80)
+var hm_color60 = color.new(#F7FE2E, 80)
+var hm_color59 = color.new(#C8FE2E, 80)
+var hm_color58 = color.new(#C8FE2E, 80)
+var hm_color57 = color.new(#C8FE2E, 80)
+var hm_color56 = color.new(#C8FE2E, 80)
+var hm_color55 = color.new(#C8FE2E, 80)
+var hm_color54 = color.new(#C8FE2E, 80)
+var hm_color53 = color.new(#C8FE2E, 80)
+var hm_color52 = color.new(#C8FE2E, 80)
+var hm_color51 = color.new(#C8FE2E, 80)
+var hm_color50 = color.new(#C8FE2E, 80)
+var hm_color49 = color.new(#9AFE2E, 80)
+var hm_color48 = color.new(#9AFE2E, 80)
+var hm_color47 = color.new(#9AFE2E, 80)
+var hm_color46 = color.new(#9AFE2E, 80)
+var hm_color45 = color.new(#9AFE2E, 80)
+var hm_color44 = color.new(#9AFE2E, 80)
+var hm_color43 = color.new(#9AFE2E, 80)
+var hm_color42 = color.new(#9AFE2E, 80)
+var hm_color41 = color.new(#9AFE2E, 80)
+var hm_color40 = color.new(#9AFE2E, 80)
+var hm_color39 = color.new(#64FE2E, 80)
+var hm_color38 = color.new(#64FE2E, 80)
+var hm_color37 = color.new(#64FE2E, 80)
+var hm_color36 = color.new(#64FE2E, 80)
+var hm_color35 = color.new(#64FE2E, 80)
+var hm_color34 = color.new(#64FE2E, 80)
+var hm_color33 = color.new(#64FE2E, 80)
+var hm_color32 = color.new(#64FE2E, 80)
+var hm_color31 = color.new(#64FE2E, 80)
+var hm_color30 = color.new(#64FE2E, 80)
+var hm_color29 = color.new(#2EFE64, 80)
+var hm_color28 = color.new(#2EFE64, 80)
+var hm_color27 = color.new(#2EFE64, 80)
+var hm_color26 = color.new(#2EFE64, 80)
+var hm_color25 = color.new(#2EFE64, 80)
+var hm_color24 = color.new(#2EFE64, 80)
+var hm_color23 = color.new(#2EFE64, 80)
+var hm_color22 = color.new(#2EFE64, 80)
+var hm_color21 = color.new(#2EFE64, 80)
+var hm_color20 = color.new(#2EFE64, 80)
+var hm_color19 = color.new(#2EFE9A, 81)
+var hm_color18 = color.new(#2EFE9A, 82)
+var hm_color17 = color.new(#2EFE9A, 83)
+var hm_color16 = color.new(#2EFE9A, 84)
+var hm_color15 = color.new(#2EFE9A, 85)
+var hm_color14 = color.new(#2EFE9A, 86)
+var hm_color13 = color.new(#2EFE9A, 87)
+var hm_color12 = color.new(#2EFE9A, 88)
+var hm_color11 = color.new(#2EFE9A, 89)
+var hm_color10 = color.new(#2EFE9A, 90)
+var hm_color9 = color.new(#2EFEC8, 91)
+var hm_color8 = color.new(#2EFEC8, 92)
+var hm_color7 = color.new(#2EFEC8, 93)
+var hm_color6 = color.new(#2EFEC8, 94)
+var hm_color5 = color.new(#2EFEC8, 95)
+var hm_color4 = color.new(#2EFEC8, 96)
+var hm_color3 = color.new(#2EFEC8, 97)
+var hm_color2 = color.new(#2EFEC8, 98)
+var hm_color1 = color.new(#2EFEC8, 99)
+var hm_color0 = color.new(#2EFEC8, 100)
+
+
+
+
+//f_green(fill_)=>
+//    fill_ > 100 ? fill_>poc_ ? color_ :  color(#00FF00FF) : fill_ > 99 ? fill_>poc_ ? color_ :  color(#00FF00FC) : fill_ > 98 ? fill_>poc_ ? color_ :  color(#00FF00FA) : fill_ > 97 ? fill_>poc_ ? color_ :  color(#00FF00F7) : fill_ > 96 ? fill_>poc_ ? color_ :  color(#00FF00F5) : fill_ > 95 ? fill_>poc_ ? color_ :  color(#00FF00F2) : fill_ > 94 ? fill_>poc_ ? color_ :  color(#00FF00F0) : fill_ > 93 ? fill_>poc_ ? color_ :  color(#00FF00ED) : fill_ > 92 ? fill_>poc_ ? color_ :  color(#00FF00EB) : fill_ > 91 ? fill_>poc_ ? color_ :  color(#00FF00E8) : fill_ > 90 ? fill_>poc_ ? color_ :  color(#00FF00E6) : fill_ > 89 ? fill_>poc_ ? color_ :  color(#00FF00E3) : fill_ > 88 ? fill_>poc_ ? color_ :  color(#00FF00E0) : fill_ > 87 ? fill_>poc_ ? color_ :  color(#00FF00DE) : fill_ > 86 ? fill_>poc_ ? color_ :  color(#00FF00DB) : fill_ > 85 ? fill_>poc_ ? color_ :  color(#00FF00D9) : fill_ > 84 ? fill_>poc_ ? color_ :  color(#00FF00D6) : fill_ > 83 ? fill_>poc_ ? color_ :  color(#00FF00D4) : fill_ > 82 ? fill_>poc_ ? color_ :  color(#00FF00D1) : fill_ > 81 ? fill_>poc_ ? color_ :  color(#00FF00CF) : fill_ > 80 ? fill_>poc_ ? color_ :  color(#00FF00CC) : fill_ > 79 ? fill_>poc_ ? color_ :  color(#00FF00C9) : fill_ > 78 ? fill_>poc_ ? color_ :  color(#00FF00C7) : fill_ > 77 ? fill_>poc_ ? color_ :  color(#00FF00C4) : fill_ > 76 ? fill_>poc_ ? color_ :  color(#00FF00C2) : fill_ > 75 ? fill_>poc_ ? color_ :  color(#00FF00BF) : fill_ > 74 ? fill_>poc_ ? color_ :  color(#00FF00BD) : fill_ > 73 ? fill_>poc_ ? color_ :  color(#00FF00BA) : fill_ > 72 ? fill_>poc_ ? color_ :  color(#00FF00B8) : fill_ > 71 ? fill_>poc_ ? color_ :  color(#00FF00B5) : fill_ > 70 ? fill_>poc_ ? color_ :  color(#00FF00B3) : fill_ > 69 ? fill_>poc_ ? color_ :  color(#00FF00B0) : fill_ > 68 ? fill_>poc_ ? color_ :  color(#00FF00AD) : fill_ > 67 ? fill_>poc_ ? color_ :  color(#00FF00AB) : fill_ > 66 ? fill_>poc_ ? color_ :  color(#00FF00A8) : fill_ > 65 ? fill_>poc_ ? color_ :  color(#00FF00A6) : fill_ > 64 ? fill_>poc_ ? color_ :  color(#00FF00A3) : fill_ > 63 ? fill_>poc_ ? color_ :  color(#00FF00A1) : fill_ > 62 ? fill_>poc_ ? color_ :  color(#00FF009E) : fill_ > 61 ? fill_>poc_ ? color_ :  color(#00FF009C) : fill_ > 60 ? fill_>poc_ ? color_ :  color(#00FF0099) : fill_ > 59 ? fill_>poc_ ? color_ :  color(#00FF0096) : fill_ > 58 ? fill_>poc_ ? color_ :  color(#00FF0094) : fill_ > 57 ? fill_>poc_ ? color_ :  color(#00FF0091) : fill_ > 56 ? fill_>poc_ ? color_ :  color(#00FF008F) : fill_ > 55 ? fill_>poc_ ? color_ :  color(#00FF008C) : fill_ > 54 ? fill_>poc_ ? color_ :  color(#00FF008A) : fill_ > 53 ? fill_>poc_ ? color_ :  color(#00FF0087) : fill_ > 52 ? fill_>poc_ ? color_ :  color(#00FF0085) : fill_ > 51 ? fill_>poc_ ? color_ :  color(#00FF0082) : fill_ > 50 ? fill_>poc_ ? color_ :  color(#00FF0080) : fill_ > 49 ? fill_>poc_ ? color_ :  color(#00FF007D) : fill_ > 48 ? fill_>poc_ ? color_ :  color(#00FF007A) : fill_ > 47 ? fill_>poc_ ? color_ :  color(#00FF0078) : fill_ > 46 ? fill_>poc_ ? color_ :  color(#00FF0075) : fill_ > 45 ? fill_>poc_ ? color_ :  color(#00FF0073) : fill_ > 44 ? fill_>poc_ ? color_ :  color(#00FF0070) : fill_ > 43 ? fill_>poc_ ? color_ :  color(#00FF006E) : fill_ > 42 ? fill_>poc_ ? color_ :  color(#00FF006B) : fill_ > 41 ? fill_>poc_ ? color_ :  color(#00FF0069) : fill_ > 40 ? fill_>poc_ ? color_ :  color(#00FF0066) : fill_ > 39 ? fill_>poc_ ? color_ :  color(#00FF0063) : fill_ > 38 ? fill_>poc_ ? color_ :  color(#00FF0061) : fill_ > 37 ? fill_>poc_ ? color_ :  color(#00FF005E) : fill_ > 36 ? fill_>poc_ ? color_ :  color(#00FF005C) : fill_ > 35 ? fill_>poc_ ? color_ :  color(#00FF0059) : fill_ > 34 ? fill_>poc_ ? color_ :  color(#00FF0057) : fill_ > 33 ? fill_>poc_ ? color_ :  color(#00FF0054) : fill_ > 32 ? fill_>poc_ ? color_ :  color(#00FF0052) : fill_ > 31 ? fill_>poc_ ? color_ :  color(#00FF004F) : fill_ > 30 ? fill_>poc_ ? color_ :  color(#00FF004D) : fill_ > 29 ? fill_>poc_ ? color_ :  color(#00FF004A) : fill_ > 28 ? fill_>poc_ ? color_ :  color(#00FF0047) : fill_ > 27 ? fill_>poc_ ? color_ :  color(#00FF0045) : fill_ > 26 ? fill_>poc_ ? color_ :  color(#00FF0042) : fill_ > 25 ? fill_>poc_ ? color_ :  color(#00FF0040) : fill_ > 24 ? fill_>poc_ ? color_ :  color(#00FF003D) : fill_ > 23 ? fill_>poc_ ? color_ :  color(#00FF003B) : fill_ > 22 ? fill_>poc_ ? color_ :  color(#00FF0038) : fill_ > 21 ? fill_>poc_ ? color_ :  color(#00FF0036) : fill_ > 20 ? fill_>poc_ ? color_ :  color(#00FF0033) : fill_ > 19 ? fill_>poc_ ? color_ :  color(#00FF0030) : fill_ > 18 ? fill_>poc_ ? color_ :  color(#00FF002E) : fill_ > 17 ? fill_>poc_ ? color_ :  color(#00FF002B) : fill_ > 16 ? fill_>poc_ ? color_ :  color(#00FF0029) : fill_ > 15 ? fill_>poc_ ? color_ :  color(#00FF0026) : fill_ > 14 ? fill_>poc_ ? color_ :  color(#00FF0024) : fill_ > 13 ? fill_>poc_ ? color_ :  color(#00FF0021) : fill_ > 12 ? fill_>poc_ ? color_ :  color(#00FF001F) : fill_ > 11 ? fill_>poc_ ? color_ :  color(#00FF001C) : fill_ > 10 ? fill_>poc_ ? color_ :  color(#00FF001A) : fill_ > 9 ? fill_>poc_ ? color_ :  color(#00FF0017) : fill_ > 8 ? fill_>poc_ ? color_ :  color(#00FF0014) : fill_ > 7 ? fill_>poc_ ? color_ :  color(#00FF0012) : fill_ > 6 ? fill_>poc_ ? color_ :  color(#00FF000F) : fill_ > 5 ? fill_>poc_ ? color_ :  color(#00FF000D) : fill_ > 4 ? fill_>poc_ ? color_ :  color(#00FF000A) : fill_ > 3 ? fill_>poc_ ? color_ :  color(#00FF0008) : fill_ > 2 ? fill_>poc_ ? color_ :  color(#00FF0005) : fill_ > 1 ? fill_>poc_ ? color_ :  color(#00FF0003) : color(#00FF0000) 
+f_green(fill_) =>
+    fill_ > 100 ? fill_ > poc_ ? color_ : hm_color100 : fill_ > 99 ? fill_ > poc_ ? color_ : hm_color99 : fill_ > 98 ? fill_ > poc_ ? color_ : hm_color98 : fill_ > 97 ? fill_ > poc_ ? color_ : hm_color97 : fill_ > 96 ? fill_ > poc_ ? color_ : hm_color96 : fill_ > 95 ? fill_ > poc_ ? color_ : hm_color95 : fill_ > 94 ? fill_ > poc_ ? color_ : hm_color94 : fill_ > 93 ? fill_ > poc_ ? color_ : hm_color93 : fill_ > 92 ? fill_ > poc_ ? color_ : hm_color92 : fill_ > 91 ? fill_ > poc_ ? color_ : hm_color91 : fill_ > 90 ? fill_ > poc_ ? color_ : hm_color90 : fill_ > 89 ? fill_ > poc_ ? color_ : hm_color89 : fill_ > 88 ? fill_ > poc_ ? color_ : hm_color88 : fill_ > 87 ? fill_ > poc_ ? color_ : hm_color87 : fill_ > 86 ? fill_ > poc_ ? color_ : hm_color86 : fill_ > 85 ? fill_ > poc_ ? color_ : hm_color85 : fill_ > 84 ? fill_ > poc_ ? color_ : hm_color84 : fill_ > 83 ? fill_ > poc_ ? color_ : hm_color83 : fill_ > 82 ? fill_ > poc_ ? color_ : hm_color82 : fill_ > 81 ? fill_ > poc_ ? color_ : hm_color81 : fill_ > 80 ? fill_ > poc_ ? color_ : hm_color80 : fill_ > 79 ? fill_ > poc_ ? color_ : hm_color79 : fill_ > 78 ? fill_ > poc_ ? color_ : hm_color78 : fill_ > 77 ? fill_ > poc_ ? color_ : hm_color77 : fill_ > 76 ? fill_ > poc_ ? color_ : hm_color76 : fill_ > 75 ? fill_ > poc_ ? color_ : hm_color75 : fill_ > 74 ? fill_ > poc_ ? color_ : hm_color74 : fill_ > 73 ? fill_ > poc_ ? color_ : hm_color73 : fill_ > 72 ? fill_ > poc_ ? color_ : hm_color72 : fill_ > 71 ? fill_ > poc_ ? color_ : hm_color71 : fill_ > 70 ? fill_ > poc_ ? color_ : hm_color70 : fill_ > 69 ? fill_ > poc_ ? color_ : hm_color69 : fill_ > 68 ? fill_ > poc_ ? color_ : hm_color68 : fill_ > 67 ? fill_ > poc_ ? color_ : hm_color67 : fill_ > 66 ? fill_ > poc_ ? color_ : hm_color66 : fill_ > 65 ? fill_ > poc_ ? color_ : hm_color65 : fill_ > 64 ? fill_ > poc_ ? color_ : hm_color64 : fill_ > 63 ? fill_ > poc_ ? color_ : hm_color63 : fill_ > 62 ? fill_ > poc_ ? color_ : hm_color62 : fill_ > 61 ? fill_ > poc_ ? color_ : hm_color61 : fill_ > 60 ? fill_ > poc_ ? color_ : hm_color60 : fill_ > 59 ? fill_ > poc_ ? color_ : hm_color59 : fill_ > 58 ? fill_ > poc_ ? color_ : hm_color58 : fill_ > 57 ? fill_ > poc_ ? color_ : hm_color57 : fill_ > 56 ? fill_ > poc_ ? color_ : hm_color56 : fill_ > 55 ? fill_ > poc_ ? color_ : hm_color55 : fill_ > 54 ? fill_ > poc_ ? color_ : hm_color54 : fill_ > 53 ? fill_ > poc_ ? color_ : hm_color53 : fill_ > 52 ? fill_ > poc_ ? color_ : hm_color52 : fill_ > 51 ? fill_ > poc_ ? color_ : hm_color51 : fill_ > 50 ? fill_ > poc_ ? color_ : hm_color50 : fill_ > 49 ? fill_ > poc_ ? color_ : hm_color49 : fill_ > 48 ? fill_ > poc_ ? color_ : hm_color48 : fill_ > 47 ? fill_ > poc_ ? color_ : hm_color47 : fill_ > 46 ? fill_ > poc_ ? color_ : hm_color46 : fill_ > 45 ? fill_ > poc_ ? color_ : hm_color45 : fill_ > 44 ? fill_ > poc_ ? color_ : hm_color44 : fill_ > 43 ? fill_ > poc_ ? color_ : hm_color43 : fill_ > 42 ? fill_ > poc_ ? color_ : hm_color42 : fill_ > 41 ? fill_ > poc_ ? color_ : hm_color41 : fill_ > 40 ? fill_ > poc_ ? color_ : hm_color40 : fill_ > 39 ? fill_ > poc_ ? color_ : hm_color39 : fill_ > 38 ? fill_ > poc_ ? color_ : hm_color38 : fill_ > 37 ? fill_ > poc_ ? color_ : hm_color37 : fill_ > 36 ? fill_ > poc_ ? color_ : hm_color36 : fill_ > 35 ? fill_ > poc_ ? color_ : hm_color35 : fill_ > 34 ? fill_ > poc_ ? color_ : hm_color34 : fill_ > 33 ? fill_ > poc_ ? color_ : hm_color33 : fill_ > 32 ? fill_ > poc_ ? color_ : hm_color32 : fill_ > 31 ? fill_ > poc_ ? color_ : hm_color31 : fill_ > 30 ? fill_ > poc_ ? color_ : hm_color30 : fill_ > 29 ? fill_ > poc_ ? color_ : hm_color29 : fill_ > 28 ? fill_ > poc_ ? color_ : hm_color28 : fill_ > 27 ? fill_ > poc_ ? color_ : hm_color27 : fill_ > 26 ? fill_ > poc_ ? color_ : hm_color26 : fill_ > 25 ? fill_ > poc_ ? color_ : hm_color25 : fill_ > 24 ? fill_ > poc_ ? color_ : hm_color24 : fill_ > 23 ? fill_ > poc_ ? color_ : hm_color23 : fill_ > 22 ? fill_ > poc_ ? color_ : hm_color22 : fill_ > 21 ? fill_ > poc_ ? color_ : hm_color21 : fill_ > 20 ? fill_ > poc_ ? color_ : hm_color20 : fill_ > 19 ? fill_ > poc_ ? color_ : hm_color19 : fill_ > 18 ? fill_ > poc_ ? color_ : hm_color18 : fill_ > 17 ? fill_ > poc_ ? color_ : hm_color17 : fill_ > 16 ? fill_ > poc_ ? color_ : hm_color16 : fill_ > 15 ? fill_ > poc_ ? color_ : hm_color15 : fill_ > 14 ? fill_ > poc_ ? color_ : hm_color14 : fill_ > 13 ? fill_ > poc_ ? color_ : hm_color13 : fill_ > 12 ? fill_ > poc_ ? color_ : hm_color12 : fill_ > 11 ? fill_ > poc_ ? color_ : hm_color11 : fill_ > 10 ? fill_ > poc_ ? color_ : hm_color10 : fill_ > 9 ? fill_ > poc_ ? color_ : hm_color9 : fill_ > 8 ? fill_ > poc_ ? color_ : hm_color8 : fill_ > 7 ? fill_ > poc_ ? color_ : hm_color7 : fill_ > 6 ? fill_ > poc_ ? color_ : hm_color6 : fill_ > 5 ? fill_ > poc_ ? color_ : hm_color5 : fill_ > 4 ? fill_ > poc_ ? color_ : hm_color4 : fill_ > 3 ? fill_ > poc_ ? color_ : hm_color3 : fill_ > 2 ? fill_ > poc_ ? color_ : hm_color2 : fill_ > 1 ? fill_ > poc_ ? color_ : hm_color1 : hm_color0
+
+//For Loop reducing
+var zahlo = 1/31*100
+for i = 0 to 30
+    array.set(arr_volumen_vertical, i, volsum(i * zahlo, i * zahlo + zahlo))
+
+f_getcolor(plot_) =>
+    input_ = math.round(array.get(arr_volumen_vertical, plot_) / array.max(arr_volumen_vertical) * 100)
+    f_green(input_)
+
+plot(l + renko * 0, color=f_getcolor(0), linewidth=width, offset=0)
+plot(l + renko * 1, color=f_getcolor(1), linewidth=width, offset=0)
+plot(l + renko * 2, color=f_getcolor(2), linewidth=width, offset=0)
+plot(l + renko * 3, color=f_getcolor(3), linewidth=width, offset=0)
+plot(l + renko * 4, color=f_getcolor(4), linewidth=width, offset=0)
+plot(l + renko * 5, color=f_getcolor(5), linewidth=width, offset=0)
+plot(l + renko * 6, color=f_getcolor(6), linewidth=width, offset=0)
+plot(l + renko * 7, color=f_getcolor(7), linewidth=width, offset=0)
+plot(l + renko * 8, color=f_getcolor(8), linewidth=width, offset=0)
+plot(l + renko * 9, color=f_getcolor(9), linewidth=width, offset=0)
+plot(l + renko * 10, color=f_getcolor(10), linewidth=width, offset=0)
+plot(l + renko * 11, color=f_getcolor(11), linewidth=width, offset=0)
+plot(l + renko * 12, color=f_getcolor(12), linewidth=width, offset=0)
+plot(l + renko * 13, color=f_getcolor(13), linewidth=width, offset=0)
+plot(l + renko * 14, color=f_getcolor(14), linewidth=width, offset=0)
+plot(l + renko * 15, color=f_getcolor(15), linewidth=width, offset=0)
+plot(l + renko * 16, color=f_getcolor(16), linewidth=width, offset=0)
+plot(l + renko * 17, color=f_getcolor(17), linewidth=width, offset=0)
+plot(l + renko * 18, color=f_getcolor(18), linewidth=width, offset=0)
+plot(l + renko * 19, color=f_getcolor(19), linewidth=width, offset=0)
+plot(l + renko * 20, color=f_getcolor(20), linewidth=width, offset=0)
+plot(l + renko * 21, color=f_getcolor(21), linewidth=width, offset=0)
+plot(l + renko * 22, color=f_getcolor(22), linewidth=width, offset=0)
+plot(l + renko * 23, color=f_getcolor(23), linewidth=width, offset=0)
+plot(l + renko * 24, color=f_getcolor(24), linewidth=width, offset=0)
+plot(l + renko * 25, color=f_getcolor(25), linewidth=width, offset=0)
+plot(l + renko * 26, color=f_getcolor(26), linewidth=width, offset=0)
+plot(l + renko * 27, color=f_getcolor(27), linewidth=width, offset=0)
+plot(l + renko * 28, color=f_getcolor(28), linewidth=width, offset=0)
+plot(l + renko * 29, color=f_getcolor(29), linewidth=width, offset=0)
+plot(l + renko * 30, color=f_getcolor(30), linewidth=width, offset=0)
+
+//right version 68.0
+//hvn = 
+
+
+//Vertical Background Volume
+volsrc = volume_delta == tv or volume_delta == bv and close > open or volume_delta == sv and close < open ? volume : 0.0
+bgcolor(usebg_ and box_ == 1 ? f_green(math.round(volsrc / array.max(arr_volumen_horizontal) * 100)) : na, transp=90)
+
+
+
+var line line1 = na
+var line line2 = na
+var line line3 = na
+
+//line line4 = na
+
+line.delete(line1)
+line.delete(line2)
+line.delete(line3)
+
+//line.delete(line4)
+
+var line_len = count_len
+var line_h = h
+var line_l = l
+
+var bi = time - time[1]
+
+if show_boxes
+    line1 := line.new(bar_index, line_h, bar_index[line_len], line_h, style=line.style_solid, color=box_color)
+    line2 := line.new(bar_index, line_l, bar_index[line_len], line_l, style=line.style_solid, color=box_color)
+    line3 := line.new(bar_index[line_len], line_h, bar_index[line_len], line_l, style=line.style_solid, color=box_color)
+    line3
+//line4 := line.new(bar_index, line_h, bar_index, line_l,style=line.style_solid, color=color.white)
+
+if show_price_label
+    var label price_label = na
+    label.delete(price_label)
+    price_label := label.new(time + bi * label_offset, close, text='  Price: ' + str.tostring(close[0], '#.##'), xloc=xloc.bar_time, yloc=yloc.price, style=label.style_label_left, color=label_color, textcolor=text_color)
+    price_label
+

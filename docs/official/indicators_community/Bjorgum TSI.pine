@@ -1,0 +1,223 @@
+//  ________________                                        
+//  ___  __ )_____(_)___________________ ____  ________ ___ 
+//  __  __  |____  /_  __ \_  ___/_  __ `/  / / /_  __ `__ \
+//  _  /_/ /____  / / /_/ /  /   _  /_/ // /_/ /_  / / / / /
+//  /_____/ ___  /  \____//_/    _\__, / \__,_/ /_/ /_/ /_/ 
+//          /___/                /____/                     
+
+//@version=5
+indicator( "Bjorgum TSI", "BJ TSI", precision = 3, timeframe = "", timeframe_gaps = true, explicit_plot_zorder = true)
+
+
+
+//#region ———————————————————— Constants and inputs
+
+
+string SI1 = "Fast"
+string SI2 = "Slow"
+string TI1 = "Classic Bj"
+string TI2 = "Nightlife"
+string TI3 = "Beach Day"
+
+string GRP1             = "TSI Control"
+string speedInput       = input.string(SI1, "Select a Speed", group = GRP1, options = [SI1, SI2])
+string themeInput       = input.string(TI1, "Select a Color", group = GRP1, options = [TI1, TI2, TI3])
+
+string GRP2             = "Overbought/Oversold Lines"
+int    oBotInput        = input.int(30,     "Ob Value",         group = GRP2)
+int    oSoldInput       = input.int(-30,    "Os Value",         group = GRP2)
+bool   showLinesInput   = input.bool(false, "Show Ob/Os Lines", group = GRP2)
+bool   showHiLoInput    = input.bool(false, "Show Ob/Os Cross", group = GRP2)
+bool   showMidInput     = input.bool(false, "Show Zero Line",   group = GRP2)
+bool   showCurlInput    = input.bool(false, "Ob/Os Curl Color", group = GRP2) 
+bool   blankBarsInput   = input.bool(false, "Show White Bars",  group = GRP2)
+
+string GRP3             = "TSI Value Line"
+color  tsiBullInput     = input.color(color.new(#17ff00,0),  "", group = GRP3, inline = "1")
+color  tsiMidInput      = input.color(color.new(#9598a1,0),  "", group = GRP3, inline = "1")
+color  tsiBearInput     = input.color(color.new(#f3ff00,0),  "", group = GRP3, inline = "1") 
+
+string GRP4             = "TSI Signal Line"
+color  tslBullInput     = input.color(color.new(#64b5f6,0),  "", group = GRP4, inline = "2")
+color  tslBearInput     = input.color(color.new(#d32f2f,0),  "", group = GRP4, inline = "2")
+
+string GRP5             = "Fill Color"
+color  fillBullInput    = input.color(color.new(#64b5f6,88), "", group = GRP5, inline = "3")
+color  fillBearInput    = input.color(color.new(#d32f2f,88), "", group = GRP5, inline = "3")
+
+string GRP6             = "Ob/Os Line Color"
+color  oBotColInput     = input.color(color.new(#ff0000,65), "", group = GRP6, inline = "4")
+color  oSoldColInput    = input.color(color.new(#64b5f6,65), "", group = GRP6, inline = "4")
+color  zeroColInput     = input.color(color.new(#b2b5be,65), "", group = GRP6, inline = "4")
+
+string GRP7             = "Bar Color"
+color  obBarInput       = input.color(color.new(#ff0000,0),  "", group = GRP7, inline = "5")
+color  neBarInput       = input.color(color.new(#ffffff,0),  "", group = GRP7, inline = "5")
+color  osBarInput       = input.color(color.new(#17ff00,0),  "", group = GRP7, inline = "5")
+
+string GRP8             = "TSI Fast Settings"
+int    longfLenInput    = input.int(25, "Long Length",   group = GRP8)
+int    shortfLenInput   = input.int(5 , "Short Length",  group = GRP8)
+int    signalfLenInput  = input.int(14, "Signal Length", group = GRP8)
+
+string GRP9             = "TSI Slow Settings"
+int    longsLenInput    = input.int(25, "Long Length",   group = GRP9)
+int    shortsLenInput   = input.int(13, "Short Length",  group = GRP9)
+int    signalsLenInput  = input.int(13, "Signal Length", group = GRP9)
+//#endregion
+
+
+
+//#region ———————————————————— Functions 
+
+
+// @function 	    Determines if a given background color corresponds to a light theme based on its brightness level.
+// @param bgColor   (color) The background color to check. Optional. Default value is the chart's background color.
+// @returns 	    (bool) True if the background color is "light" (has a brightness greater than 0.5), otherwise false.
+isLightTheme(color bgColor = chart.bg_color) =>
+    float r = color.r(bgColor)
+    float g = color.g(bgColor)
+    float b = color.b(bgColor)
+    float brightness = (r + g + b) / (3 * 255)
+    bool  isLight = brightness > 0.5
+//#endregion
+
+
+
+//#region ———————————————————— Calculations 
+
+
+bool  tsifast     = speedInput ==  SI1
+int   shortvar    = tsifast ? shortfLenInput  : shortsLenInput  
+int   longvar     = tsifast ? longfLenInput   : longsLenInput   
+int   signalvar   = tsifast ? signalfLenInput : signalsLenInput 
+float tsi         = ta.tsi(close, shortvar, longvar) * 100
+float tsl         = ta.ema(tsi, signalvar)
+//#endregion
+
+
+
+//#region ———————————————————— Conditions
+
+
+bool  tsiIsBull   = tsi >= tsi[1]
+bool  tslIsBull   = tsl >= tsl[1]
+bool  trendIsBull = tsi >= tsl
+float diff        = tsi  - tsl
+float barHi       = math.max(0, 0 + diff)
+float barLo       = math.min(0, 0 + diff)
+
+bool  curlUp      = tsi > tsi[1] and tsi < tsl
+bool  curlDn      = tsi < tsi[1] and tsi > tsl
+bool  overBought  = tsi > oBotInput  and tsi < tsi[1] and tsi[1] > tsl[1]
+bool  overSold    = tsi < oSoldInput and tsi > tsi[1] and tsi[1] < tsl[1]
+
+bool  crossUp     = ta.crossover(tsi,  tsl)
+bool  crossDn     = ta.crossunder(tsi, tsl)
+bool  cross       = ta.cross(tsi,      tsl)
+bool  tsiXUp      = ta.crossover(tsi,  oBotInput) 
+bool  tsiXDn      = ta.crossunder(tsi, oSoldInput)
+
+bool  osCrossUp   = crossUp and tsi <= oSoldInput
+bool  obCrossDn   = crossDn and tsi >= oBotInput
+
+bool  isLight     = isLightTheme()
+bool  isClassic   = themeInput == TI1
+bool  isBeachy    = themeInput == TI3
+
+bool showObFill   = tsl > oBotInput  and not isClassic 
+bool showOsFill   = tsl < oSoldInput and not isClassic 
+//#endregion
+
+
+
+//#region ———————————————————— Colors
+
+
+color tsiDnUpColor = isBeachy ? #1E90FF : #BA33FF
+color tsiDnDnColor = isBeachy ? #FF6B6B : #8100FF
+color tsiUpUpColor = isBeachy ? #00CED1 : #1FE0F3
+color tslBullColor = isBeachy ? #00CED1 : #1FE0F3
+color tslBearColor = isBeachy ? #1E90FF : #0088A3
+color tsiBullColor = isBeachy ? #FFD700 : #33FF57
+color tsiBearColor = isBeachy ? #FF6B6B : #00940D
+color tsiUpDnColor = isBeachy ? #FFD700 : #FF21D4
+color bullBgColor  = isBeachy ? #FFD700 : #80FFFF
+color bearBgColor  = isBeachy ? #FF6B6B : #FF80FF
+color obFillColor  = isBeachy ? #FFD700 : #33FF57
+color osFillColor  = isBeachy ? #FF6B6B : #33FF57
+
+color barBdColor  = trendIsBull  ? bullBgColor : bearBgColor
+color barBgColor  = isLight ? trendIsBull ? bullBgColor : bearBgColor : chart.bg_color
+int   barBdTransp = isLight ? 50 : 80
+int   barBgTransp = isLight ? 90 : 0
+
+color tsiTheme   = tsiIsBull ? tsiBullColor : tsiBearColor
+color tslTheme   = tslIsBull ? tslBullColor : tslBearColor
+color tsiColor   = isClassic ? curlUp ? tsiBullInput : curlDn ? tsiBearInput : tsiMidInput : tsiTheme
+color tslColor   = isClassic ? tslIsBull ? tslBullInput : tslBearInput : tslTheme
+color fillColor1 = isClassic ? trendIsBull ? fillBullInput : fillBearInput : na
+color oBotColor  = isClassic ? oBotColInput  : color.new(obFillColor, 75)
+color oSoldColor = isClassic ? oSoldColInput : color.new(osFillColor, 75)
+color barColor   = overBought ? obBarInput : overSold ? osBarInput : blankBarsInput ? neBarInput : na
+color fillColor2 = not isClassic ? trendIsBull ? 
+	 tsiIsBull ? tsiUpUpColor : tsiUpDnColor : 
+	 tsiIsBull ? tsiDnUpColor : tsiDnDnColor : color(na)
+//#endregion
+
+
+
+//#region ———————————————————— Display
+
+
+h1 = hline(isClassic ? na : oBotInput,  color = color(na), display = display.none, editable = false)
+h2 = hline(isClassic ? na : oSoldInput, color = color(na), display = display.none, editable = false)
+
+fill(h2, h1, oBotInput,   5, color.new(obFillColor, 80), color(na), fillgaps = true)
+fill(h2, h1, -5, oSoldInput, color(na), color.new(osFillColor, 80), fillgaps = true)
+
+plotcandle(barLo, barLo, barHi, barHi,
+     color       = isClassic ? na : color.new(barBgColor, barBgTransp),
+     bordercolor = isClassic ? na : color.new(barBdColor, barBdTransp),
+     wickcolor   = color(na),
+     display     = display.pane
+ )
+
+p1 = plot(tsi, "TSI Value Line",  tsiColor)
+p2 = plot(tsl, "TSI Signal Line", tslColor)
+p3 = plot(showLinesInput ? oBotInput  : na, "Overbought", oBotColor)
+p4 = plot(showLinesInput ? oSoldInput : na, "Oversold",   oSoldColor)
+p5 = plot(showMidInput   ? 0          : na, "Zero",       zeroColInput)
+p6 = plot(oBotInput , display = display.none, editable = false)
+p7 = plot(oSoldInput, display = display.none, editable = false)
+
+displayFill = isClassic ? display.none : display.all
+int obValue = showObFill ? oBotInput  : na
+int osValue = showOsFill ? oSoldInput : na
+fill(p2, p6, oBotInput + 50, obValue,  color.new(bearBgColor, 30), color.new(bearBgColor, 90), fillgaps = true)
+fill(p2, p7, osValue, oSoldInput - 50, color.new(bullBgColor, 90), color.new(bullBgColor, 30), fillgaps = true)
+fill(p1, p2, fillColor1, fillgaps = true)
+fill(p1, p2, tsi, tsl, fillColor2, color.new(fillColor2, 70), fillgaps = true, display = displayFill)
+barcolor(showCurlInput ? barColor : na)
+
+bgcolor(osCrossUp and showHiLoInput ? isClassic ? color.new(oBotColInput,  80) : color.new(bullBgColor, 80) : na)
+bgcolor(obCrossDn and showHiLoInput ? isClassic ? color.new(oSoldColInput, 80) : color.new(bearBgColor, 80) : na)
+//#endregion
+
+
+
+//#region ———————————————————— Alerts
+
+
+alertcondition(crossUp,    'TSI cross up',              'TSI crossed up on {{interval}} chart. Price is {{close}}')
+alertcondition(crossDn,    'TSI cross down',            'TSI crossed down on {{interval}} chart. Price is {{close}}')
+alertcondition(cross,      'TSI cross',                 'TSI crossed on {{interval}} chart. Price is {{close}}')
+alertcondition(curlUp,     'TSI Curl Up',               'TSI curled up on {{interval}} chart. Price is {{close}}')
+alertcondition(curlDn,     'TSI Curl Down',             'TSI curled down on {{interval}} chart. Price is {{close}}')
+alertcondition(tsiXUp,     'TSI Overbought',            'TSI moved in to overbought on {{interval}} chart. Price is {{close}}')
+alertcondition(tsiXDn,     'TSI Oversold',              'TSI moved in to oversold on {{interval}} chart. Price is {{close}}')
+alertcondition(overBought, 'TSI Curl Overbought',       'TSI Curled Down In Overbought on {{interval}} chart. Price is {{close}}')
+alertcondition(overSold,   'TSI Curl Oversold',         'TSI Curled Up In Oversold on {{interval}} chart. Price is {{close}}')
+alertcondition(obCrossDn,  'TSI Cross Down Overbought', 'TSI Crossed Down In Overbought on {{interval}} chart. Price is {{close}}')
+alertcondition(osCrossUp,  'TSI Cross Up Oversold',     'TSI Crossed Up In Oversold on {{interval}} chart. Price is {{close}}')
+//#endregion

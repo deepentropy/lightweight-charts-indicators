@@ -1,0 +1,8 @@
+//@version=6
+indicator(title="Relative Vigor Index", shorttitle="RVGI", format=format.price, precision=4, timeframe="", timeframe_gaps=true)
+len = input.int(10, title="Length", minval=1)
+rvi = math.sum(ta.swma(close-open), len)/math.sum(ta.swma(high-low),len)
+sig = ta.swma(rvi)
+offset = input.int(0, "Offset", minval = -500, maxval = 500, display = display.data_window)
+plot(rvi, color=#008000, title="RVGI", offset = offset)
+plot(sig, color=#FF0000, title="Signal", offset = offset)

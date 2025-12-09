@@ -1,0 +1,356 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator("TradingView Alerts (Expo)",overlay=true,max_labels_count=500)
+
+
+// ~~ Inputs {
+// ~~ Inputs General {
+inputSrc = input.source(close, title="Indicator",group="Indicator Input", tooltip="Select any indicator you have on your chart and the alerts you create will be based on this input.")
+plot     = input.bool(true, title="Plot Alert",inline="plot", tooltip="Display where the alert is triggered on the chart. Set location and icon size.")
+loc      = input.string("Above Price", title="", options= ["Above Price", "Below Price"],inline="plot")
+size     = input.string(size.normal, options =[size.auto,size.tiny,size.small,size.normal,size.large,size.huge],inline="plot")
+bg       = input.bool(false,title="BG Alert",inline="bg")
+bgcol    = input.color(color.new(#4F772D, 70),title="", inline="bg", tooltip="Display a background color when an alert is triggered and set its color.")
+//~~~}
+
+// ~~ Input Alert Conditions {
+cond = input.string("Select Condition", title="Condition",
+ options=["Crossing","Crossing Up","Crossing Down",
+ "Greater Than","Equal To","Less Than",
+ "Entering Channel","Exiting Channel",
+ "Inside Channel","Outside Channel",
+ "Moving Up","Moving Down","Moving Up %",
+ "Moving Down %","Turning Up","Turning Down","Select Condition"],
+ group="Condition", inline="cond")
+//~~~}
+
+// ~~ Inputs Conditions {
+element     = input.string("Value", title="", options=["Price","Value","Channel"],group="Condition",inline="cond")
+shift       = input.bool(false, title="Reverse (Price Crossings)",group="Condition",inline="cond",tooltip="Select the alert condition and element. For example, if you select [Crossing Up] and [Value], the alert will be triggered when the selected input source crosses up the selected value.\n\nReverse means the following 'The PRICE crosses the indicator' if you disable this option it means 'The INDICATOR crosses the price'.")
+price       = input.string("close", title="Price", options=["open","high","low","close","hl2","hlc3","ohlc4","hlcc4"], tooltip="If you have selected [Price] above, you set the preferred price here.")
+val         = input.float(10.00, title="Value",step=.1, tooltip="If you have selected [Value] above, you set the preferred value here.")
+channel1    = input.float(70.00, title="Upper Channel Boundary",step=10, tooltip="If you have selected [Channel] above, you set the preferred Upper Channel Boundary value here.")
+channel2    = input.float(30.00, title="Lower Channel Boundary",step=10, tooltip="If you have selected [Channel] above, you set the preferred Lower Channel Boundary value here.")
+xbars       = input.float(5, title="Number of bars",step=1,tooltip="If you have selected 'Moving Up/Down or Moving Up/Down %' set the number of bars where the condition has to be met within.")
+//~~~}
+
+// ~~ Input Momentum Conditions {
+Mom = input.string("Select Momentum", title="Source Momentum",
+ options=["Positive Momentum","Negative Momentum","Select Momentum"],
+ group="", inline="Momentum")
+ 
+len = input.int(0, title="for numbers of bars", minval=0, inline = "Momentum", tooltip="Set how many consecutive bars in the positive or negative direction it must have been to trigger an alert. \n\nFor example, you have selected 'positive momentum, and the number for bars is set to '5', which means that the source input must have had at least 5 consecutive positive bars. \n\nThe higher the number of bars is set to, the higher the momentum it must have been.")  
+//~~~}
+
+// ~~ Input Sign Conditions {
+shiftSign =  input.string("Select Sign", title="", options=[">= (src bigger or equal than value)","<= (src less or equal than value)","Select Sign"],group="For Input indicators Below the chart",inline="vv")
+signValue = input.float(0., title="value",group="For Input indicators Below the chart",inline="vv", tooltip="If you want to set alerts for indicators such as RSI, MACD, or any indicator that is displayed on a fixed scale below the chart, you can use this option. \n\nYou set if the selected source has to be ABOVE or BELOW the value you set.")
+//~~~}
+
+// ~~ Trend Conditions {
+TREND = input(false, title='─────── Trend ───────',group="", inline="", tooltip='Set a trend filter. An alert is triggered if the price is above or below the trend filter.')
+// ~~ Input Trend Conditions {
+trendType = input.string("Select Trend Type", title="Select Trend Type",
+ options=["Average","SuperTrend","WVAP","SAR","Donchian channel","Select Trend Type"],
+  inline="Trend", group="Select Trend")
+
+abovebelow = input.string("Above", title="",
+ options=["Above","Below"],
+  inline="Trend", group="Select Trend")
+plotTrend = input.bool(true,title="Plot Trend on Chart", inline = "Trend", group="Select Trend", tooltip="Select the trend type. The settings for the different trend types can be found below. \n\nSet if the price should be ABOVE or BELOW the selected trend! \n\nPlot the trend on the chart.\n\nSo if you only want to get an alert if the price is above or below the trend you can enable this option.")
+
+
+// ~~ Input Average Conditions {
+maType = input.string("SMA", title="Select MA",
+ options=["SMA","EMA","WMA","RMA","VWMA"],
+  inline="MA", group="Average")
+length = input.int(200, title="", minval=1, inline = "MA", group="Average", tooltip="Select the MA type and its length.")
+
+//~~~}
+
+// ~~ Input SuperTrend Conditions {
+factor           = input.int(3, minval=0, title="Factor",group="SuperTrend", inline="SuperTrend")
+atrPeriod        = input.int(7, minval=0, title="Atr Period",group="SuperTrend", inline="SuperTrend", tooltip="Set the supertrend factor and its ATR Period.")
+var supertrendup = 0.0 
+var supertrenddn = 0.0  
+var supertrend   = 0.0  
+
+mult = factor*ta.atr(atrPeriod)
+supertrendup:=close[1]>supertrendup[1]? math.max(close-mult,supertrendup[1]) : close-mult
+supertrenddn:=close[1]<supertrenddn[1]? math.min(close+mult,supertrenddn[1]) : close+mult
+supertrend := close > supertrenddn[1]? 1: close<supertrendup[1]?-1: nz(supertrend[1],1)
+tsl = supertrend==1?supertrendup:supertrenddn
+//~~~}
+
+// ~~ Input WVAP Trend Conditions {
+wvap = ta.vwap(close)
+//~~~}
+
+// ~~ Input SAR Trend Conditions {
+start = input.float(0.02, minval=0, title="Start",group="SAR", inline="SAR")
+inc   = input.float(0.02, minval=0, title="Inc",group="SAR", inline="SAR")
+max   = input.float(0.2, minval=0, title="Max",group="SAR", inline="SAR", tooltip="Set the sar, start, increment, and max values.")
+sar   = ta.sar(start,inc,max)
+//~~~}
+
+// ~~ Input Donchian channel Trend Conditions {
+donlen  = input.int(20, minval=0, title="Donchian Length",group="Donchian", inline="Donchian", tooltip="Set the Donchian Length.")
+highest = ta.highest(donlen)
+lowest  = ta.lowest(donlen)
+mid     = math.avg(highest,lowest)
+//~~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+FILTER = input(false, title='─────── Filter ───────',group="", inline="", tooltip='If you want to filter the signals even more you can use the inbuilt filters below.')
+// ~~ Inputs RSI Filter {
+rsi_src      = input.string("RSI", title="RSI Source",
+ options     =["RSI","RSI Signal Line"],
+  inline="rsi", group="RSI Filter", tooltip="")
+rsiEnable    = input.string("RSI Filter", title="RSI Filter",
+ options     =["RSI(src) has a positive slope", "RSI(src) has a negative slope", "RSI is above the Signal line","RSI is below the Signal line","RSI(src) has the same slope (UP) as the input source","RSI(src) has the same slope (DOWN) as the input source","RSI Filter"],
+  inline="rsi", group="RSI Filter", tooltip="Select if the RSI filter should be based on the RSI line or the RSI signal line. \n\nSelect any of the filters in the list.")
+rsilen       = input.int(14, minval=0,title="RSI Period", group="RSI Filter", inline="RSI")
+rsisignallen = input.int(12, minval=0,title="MA Length", group="RSI Filter", inline="RSI",tooltip="Set the RSI Period and the Signal line length.")
+//~~~}
+
+// ~~ Inputs Volume Filter {
+volumeEnable    = input.string("Volume Filter", title="Volume Filter",
+ options     =["Volume(ma) has a positive slope", "Volume(ma) has a negative slope", "Volume is above the Ma line","Volume is below the Ma line","Volume(ma) has the same slope (UP) as the input source","Volume(ma) has the same slope (DOWN) as the input source","Volume Filter"],
+  inline="vol", group="Volume Filter", tooltip="")
+volumesignallen = input.int(20, minval=0,title="MA Length", group="Volume Filter", inline="vol", tooltip="Select a volume filter. \n\nSet the Signal line length.")
+//~~~}
+
+// ~~ Inputs Alerts {
+ALERT = input(false, title='─────── Alert Message ───────',group="", inline="", tooltip='')
+alert    = input.string("Auto", title="Alert Message", options=["Auto","Custom"],group="Create Any alert() function call",inline="alert")
+trigger  = input.string(alert.freq_once_per_bar_close, title="", options=[alert.freq_once_per_bar_close,alert.freq_once_per_bar],group="Create Any alert() function call",inline="alert") 
+options  = input.string("Only Once", title="", options=["Only Once","Every Time"],group="Create Any alert() function call",inline="alert", tooltip="Set alert message and set alert frequency.\n\nOnly Once: The condition will only be triggered at the first bar when the condition is met.\n\nEvery Time: The alert will trigger every time the condition is met. ")
+msg      = input.string("", title="Custom Message", tooltip="If you have selected the custom alert message above you can set the alert message here.")
+//~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+var float perc = float(na)
+var int bars   = int(na)
+var posMom     = 0
+var negMom     = 0
+var total      = 0
+var days       = 0
+var weeks      = 0 
+var months     = 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alert Condition {
+float src = switch price
+    "open" => open
+    "high" => high
+    "low"  => low
+    "close"=> close
+    "hl2"  => hl2
+    "hlc3" => hlc3
+    "ohlc4"=> ohlc4
+    "hlcc4"=> hlcc4 
+
+// ~~ Price Above/Below Average Condition {
+ma = switch maType
+    "SMA"  => ta.sma(src,length)
+    "EMA"  => ta.ema(src,length)
+    "WMA"  => ta.wma(src,length)
+    "RMA"  => ta.rma(src,length)
+    "VWMA" => ta.vwma(src,length)
+
+trend = switch trendType
+    "Average"          => ma
+    "SuperTrend"       => tsl
+    "WVAP"             => wvap
+    "SAR"              => sar
+    "Donchian channel" => mid
+    "Select Trend Type"=> close
+
+trendcolor = switch trendType
+    "Average"          => ma>ma[1]?color.green:color.red
+    "SuperTrend"      => supertrend==1?color.green:color.red
+    "WVAP"             => wvap>wvap[1]?color.green:color.red
+    "SAR"              => trend>trend[1]?color.green:color.red
+    "Donchian channel" => color.aqua
+
+plot(plotTrend?trend:na, color=trendcolor, title="Trend")
+priceabovebelow = switch abovebelow
+    "Above"          => src>=trend and trendType!="Select Trend Type"
+    "Below"          => src<=trend and trendType!="Select Trend Type"
+if trendType == "Select Trend Type"
+    priceabovebelow := close
+//~~~}  
+
+// ~~ Momentum Condition {
+Count(src,sign)=>
+    var count = 0
+    if Mom=="Positive Momentum"?src>src[1]:Mom=="Negative Momentum"?src<src[1]:src
+        count += 1
+    else
+        count := 0      
+positiveMom = Count(inputSrc,posMom)
+negativeMom = Count(inputSrc,negMom)
+momupdown = Mom!="Negative Momentum"?negativeMom[1]>=len:Mom!="Positive Momentum"?positiveMom[1]>=len:close
+//~~~} 
+
+// ~~ Src bigger/less Condition {
+srcbiggerless = shiftSign==">= (src bigger or equal than value)"?inputSrc >= signValue:shiftSign=="<= (src less or equal than value)"?inputSrc<= signValue:close 
+//~~~}  
+
+// ~~ Trend/Momentum/Src bigger/less  Condition {
+TrendMom = momupdown and priceabovebelow and srcbiggerless
+//~~~} 
+
+// ~~ Additional Condition {
+Positiveslope(src)=>
+    posslope = src>src[1]
+Negativeslope(src)=>
+    negslope = src<src[1] 
+Above(src1,src2)=>
+    above = src1>src2   
+Below(src1,src2)=>
+    below = src1<src2  
+Samedirectionup(src1,src2)=>
+    sameup = src1>src1[1] and src2>src2[1]   
+Samedirectiondown(src1,src2)=>
+    samedown = src1<src1[1] and src2<src2[1]       
+//~~~}       
+
+// ~~ RSI  {
+rsi          = ta.rsi(close,rsilen)
+rsisignal    = ta.sma(rsi,rsisignallen)
+//RSI Cond
+rsipos       = rsiEnable=="RSI(src) has a positive slope"?Positiveslope(rsi_src=="RSI"?rsi:rsisignal):close
+rsineg       = rsiEnable=="RSI(src) has a negative slope"?Negativeslope(rsi_src=="RSI"?rsi:rsisignal):close
+rsiabove     = rsiEnable=="RSI is above the Signal line"?Above(rsi,rsisignal):close
+rsibelow     = rsiEnable=="RSI is below the Signal line"?Below(rsi,rsisignal):close
+rsisameup    = rsiEnable=="RSI(src) has the same slope (UP) as the input source"?Samedirectionup(rsi_src=="RSI"?rsi:rsisignal,inputSrc):close
+rsisamedn    = rsiEnable=="RSI(src) has the same slope (DOWN) as the input source"?Samedirectiondown(rsi_src=="RSI"?rsi:rsisignal,inputSrc):close
+rsicond = rsipos and rsineg and rsiabove and rsibelow and rsisameup and rsisamedn
+//~~~}  
+
+// ~~ Volume  {
+vol          = volume
+volsignal    = ta.sma(vol,volumesignallen)
+volpos       = volumeEnable=="Volume(ma) has a positive slope"?Positiveslope(volsignal):close
+volneg       = volumeEnable=="Volume(ma) has a negative slope"?Negativeslope(volsignal):close
+volabove     = volumeEnable=="Volume is above the Ma line"?Above(vol,volsignal):close
+volbelow     = volumeEnable=="Volume is below the Ma line"?Below(vol,volsignal):close
+volsameup    = volumeEnable=="Volume(ma) has the same slope (UP) as the input source"?Samedirectionup(volsignal,inputSrc):close
+volsamedn    = volumeEnable=="Volume(ma) has the same slope (DOWN) as the input source"?Samedirectiondown(volsignal,inputSrc):close
+volcond = volpos and volneg and volabove and volbelow and volsameup and volsamedn
+//~~~}  
+
+// ~~ All Additinal Cond  {
+ALL = rsicond and volcond
+//~~~}  
+
+Condition(src,val1,val2)=>
+    output = switch cond
+        "Crossing"          =>shift?ta.cross(val1,src) and TrendMom and ALL :ta.cross(src,val1) and TrendMom and ALL
+        "Crossing Up"       =>shift?ta.crossover(val1,src) and TrendMom and ALL:ta.crossover(src,val1) and TrendMom and ALL
+        "Crossing Down"     =>shift?ta.crossunder(val1,src) and TrendMom and ALL:ta.crossunder(src,val1) and TrendMom and ALL
+        "Greater Than"      =>shift?(val1>src) and TrendMom and ALL:(src>val1) and TrendMom and ALL
+        "Equal To"          =>(src==val1) and TrendMom and ALL
+        "Less Than"         =>shift?(val1<src) and TrendMom and ALL:(src<val1) and TrendMom and ALL
+        "Entering Channel"  =>shift?(val2[1]<src and val2>=src) or (val1[1]>src and val1<src) and TrendMom and ALL:(src[1]<val2 and src>=val2) or (src[1]>val1 and src<val1) and TrendMom and ALL
+        "Exiting Channel"   =>shift?(val2[1]>=src and val2<src) or (val1[1]<=src and val1>src) and TrendMom and ALL:(src[1]>=val2 and src<val2) or (src[1]<=val1 and src>val1) and TrendMom and ALL
+        "Inside Channel"    =>shift?(val2>src) and (val1<src) and TrendMom and ALL :(src>val2) and (src<val1) and TrendMom and ALL
+        "Outside Channel"   =>shift?(val2<src) or (val1>src) and TrendMom and ALL:(src<val2) or (src>val1) and TrendMom and ALL
+        "Moving Up"         =>shift?ta.crossover(val1,src) and (bar_index - bars<=xbars) and TrendMom and ALL:ta.crossover(src,val1) and (bar_index - bars<=xbars) and TrendMom and ALL
+        "Moving Down"       =>shift?ta.crossunder(val1,src) and (bar_index - bars<=xbars) and TrendMom and ALL:ta.crossunder(src,val1) and (bar_index - bars<=xbars) and TrendMom and ALL
+        "Moving Up %"       =>(src>=perc+((perc/100)*val1)) and (bar_index - bars<=xbars) and TrendMom and ALL
+        "Moving Down %"     =>(src<=perc-((perc/100)*val1)) and (bar_index - bars<=xbars) and TrendMom and ALL
+        "Turning Up"        =>(src[1]<src and (src[1]<=src[2])) and TrendMom and ALL
+        "Turning Down"      =>(src[1]>src and (src[1]>=src[2])) and TrendMom and ALL
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alert String {
+Alert(val1)=>
+    s = str.tostring(val1)
+    u = str.tostring(channel1)
+    d = str.tostring(channel2)
+    b = str.tostring(bar_index-bars)
+    ba= (bar_index-bars)>1?" bars":" bar"
+    output = switch cond
+        "Crossing"         => "Crossing " + s
+        "Crossing Up"      => "Crossing Up " + s
+        "Crossing Down"    => "Crossing Down " + s
+        "Greater Than"     => "Greater Than " + s
+        "Equal To"         => "Equal To" + s
+        "Less Than"        => "Less Than " + s
+        "Entering Channel" => "Entering Channel (Upper Bound: " +u+ ", Lower Bound: " +d+ ")" 
+        "Exiting Channel"  => "Exiting Channel (Upper Bound: " +u+ ", Lower Bound: " +d+ ")" 
+        "Inside Channel"   => "Inside Channel (Upper Bound: " +u+ ", Lower Bound: " +d+ ")" 
+        "Outside Channel"  => "Outside Channel (Upper Bound: " +u+ ", Lower Bound: " +d+ ")" 
+        "Moving Up"        => "Moving Up " +s+ " in " +b+ba
+        "Moving Down"      => "Moving Down " +s+ " in " +b+ba
+        "Moving Up %"      => "Moving Up % " +s+ " in " +b+ba
+        "Moving Down %"    => "Moving Down % " +s+ " in " +b+ba
+        "Turning Up"       => "Turning Up"
+        "Turning Down"     => "Turning Down"
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Check Condition {
+if barstate.islast and na(perc)
+    perc := inputSrc
+    bars := bar_index
+alertTrigger = false
+alertPlot = false 
+if element=="Price"
+    alertTrigger := Condition(inputSrc,src,float(na))
+else if element=="Value"
+    alertTrigger := Condition(inputSrc,val,float(na))
+else if element=="Channel"
+    alertTrigger := Condition(inputSrc,channel1,channel2)
+if options=="Only Once"?alertTrigger and not alertTrigger[1]:alertTrigger
+    total += 1
+    pv  = element=="Price"?src:val
+    str = alert=="Auto"?syminfo.ticker + ", " + timeframe.period + ", " + Alert(pv):msg
+    alert(str,freq = alert.freq_once_per_bar_close)
+    alertPlot := true
+    perc      := float(na)
+    bars      := int(na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plot Alert and Bg {
+bgcolor(bg and alertPlot?bgcol:na)
+if plot and alertPlot
+    yloc   = loc=="Above Price"?high:low
+    style  = loc=="Above Price"?label.style_label_down:label.style_label_up
+    label.new(bar_index,yloc,text="🔔",style=style,color=color(na),size=size)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alertcondition {
+alertcondition(alertPlot,"Alert","Alert Fired! {{ticker}} {{interval}}")
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alert Frequency {
+if ta.change(dayofmonth(time))
+    days += 1
+if ta.change(weekofyear(time))
+    weeks += 1
+if ta.change(month(time))
+    months += 1
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alert Table {
+var table tbl       = table.new(position.top_right, 1, 9, bgcolor=color.new(color.gray,80), border_width=1)
+var table noticeTbl = table.new(position.bottom_center,1, 1,bgcolor=color.new(color.red,0))
+if barstate.islast
+    aDays = math.round(total/days,2)
+    aWeeks= math.round(total/weeks,2)
+    aMonths=math.round(total/months,2)
+    table.cell(tbl,0,0,text="Alert Frequency",text_color = chart.fg_color)
+    table.cell(tbl,0,1,"Per Day: "+str.tostring(aDays),text_color = chart.fg_color)
+    table.cell(tbl,0,2,"Per Week: "+str.tostring(aWeeks),text_color = chart.fg_color)
+    table.cell(tbl,0,3,"Per Month: "+str.tostring(aMonths),text_color = chart.fg_color)
+    if total<=0
+        table.cell(noticeTbl, 0, 0, "Please select an indicator input and alert condition!",text_color=color.white,text_size=size.large)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

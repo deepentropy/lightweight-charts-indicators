@@ -1,0 +1,26 @@
+//@version=2
+//@Author: AdventTrading
+
+//This indicator was made to allow three moving averages to be displayed without needing to use up 3 charting indicators individually
+
+study(title="Triple Moving Averages", shorttitle="TEMA", overlay=true)
+
+// Checkbox's for the other 2 MA's
+a = input(true, title="Enable 2nd MA")
+b = input(true, title="Enable 3rd MA")
+
+len = input(50, minval=1, title="Length")
+len2 = input(100, minval=1, title="Length2")
+len3 = input(200, minval=1, title="Length3")
+
+src = input(close, title="Source")
+src2 = input(close, title="Source2")
+src3 = input(close, title="Source3")
+
+out = ema(src, len)
+out2 = ema(src2, len2)
+out3 = ema(src3, len3)
+
+plot(out, title="EMA", color=red)
+plot(a and out2 ? out2: na, title="EMA2", color=green)
+plot(b and out3 ? out3: na, title="EMA3", color=blue)

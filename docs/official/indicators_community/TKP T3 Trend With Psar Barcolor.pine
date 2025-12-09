@@ -1,0 +1,170 @@
+//this script is intended to help identify reversals and attempt to anticiapate them. Psar and Tilson templates are from Chris Moody and TKP Trader 
+//@Bjorgum on Stocktwits
+//Bull trends are identified by blue bars, while bear trades are identified by red. Points of reversal are indicated with yellow candles.  
+//Bars change to yellow as bar close crosses the Tilson moving averages. Blue or red is confrimed as the two Tilson avergaes themselves cross. 
+//Buy and sell signal is given on yellow bars 
+//TURN CANDLE BORDERS OFF
+//Psar helps identify reversals and provide stop loss values
+//Arrows appear above or below candles to incorporate a momentum aspect. This condition is based on a rising or falling TSI value while under or over the signal line. 
+//This can show momentum 'headwinds' or 'tailwinds' as TSI 'curls'.
+
+//@version=4
+study("Bjorgum Reversal", shorttitle="Bj Reversal", format=format.price, precision=4, overlay=true, resolution="")
+
+// TSI Arrows //
+
+long = input(title="TSI Long Length", type=input.integer, defval=25, group="TSI Inputs")
+short = input(title="TSI Short Length", type=input.integer, defval=5, group="TSI Inputs")
+signal = input(title="TSI Signal Length", type=input.integer, defval=14, group="TSI Inputs")
+
+price = close
+double_smooth(src, long, short) =>
+	fist_smooth = ema(src, long)
+	ema(fist_smooth, short)
+pc = change(price)
+double_smoothed_pc = double_smooth(pc, long, short)
+double_smoothed_abs_pc = double_smooth(abs(pc), long, short)
+tsi_value = 100 * (double_smoothed_pc / double_smoothed_abs_pc)
+
+data = tsi_value > tsi_value[1] and tsi_value < (ema(tsi_value, signal))
+dtat = tsi_value < tsi_value[1] and tsi_value > (ema(tsi_value, signal))
+
+plotshape(data, style=shape.triangleup,
+                 location=location.belowbar, color=#17ff00, title="Curl Up")
+plotshape(dtat, style=shape.triangledown,
+                 location=location.abovebar, color=#FFEB3B, title="Curl Down")
+
+// Parabolic Stop and Reverse 
+
+start = input(.043, minval=.000, maxval=.099, title="Start - Default = 2 - Multiplied by .001", group="PSAR Inputs")
+increment = input(.043, minval=.000, maxval=.099, title="Step Setting (Sensitivity) - Default = 2 - Multiplied by .001", group="PSAR Inputs")
+maximum = input(.34, minval=.00, maxval=.99, title="Maximum Step (Sensitivity) - Default = 2 - Multiplied by .01", group="PSAR Inputs")
+
+//"------Step Setting Definition------"
+//"A higher step moves SAR closer to the price action, which makes a reversal more likely."
+//"The indicator will reverse too often if the step is set too high."
+
+//"------Maximum Step Definition-----")
+//"The sensitivity of the indicator can also be adjusted using the Maximum Step."
+//"While the Maximum Step can influence sensitivity, the Step carries more weight"
+//"because it sets the incremental rate-of-increase as the trend develops"
+
+startCalc = start
+incrementCalc = increment 
+maximumCalc = maximum 
+
+sarUp = sar(startCalc, incrementCalc, maximumCalc)
+sarDown = sar(startCalc, incrementCalc, maximumCalc)
+
+colUp = close >= sarDown ? #64b5f6 : na
+colDown = close <= sarUp ? #ef5350 : na
+
+plot(sarUp ? sarUp : na, title="Up Trending SAR", style=plot.style_circles, linewidth=1, color=colUp)
+plot(sarDown ? sarDown : na, title="Down Trending SAR", style=plot.style_circles, linewidth=1, color=colDown)
+
+///T3 MA5
+
+aLength = input(5, minval=1, group="T3 MA Lengths")
+AxPrice = close
+axe1 = ema(AxPrice, aLength)
+axe2 = ema(axe1, aLength)
+axe3 = ema(axe2, aLength)
+axe4 = ema(axe3, aLength)
+axe5 = ema(axe4, aLength)
+axe6 = ema(axe5, aLength)
+ab = 0.7
+ac1 = -ab*ab*ab
+ac2 = 3*ab*ab+3*ab*ab*ab
+ac3 = -6*ab*ab-3*ab-3*ab*ab*ab
+ac4 = 1+3*ab+ab*ab*ab+3*ab*ab
+anT3Average = ac1 * axe6 + ac2 * axe5 + ac3 * axe4 + ac4 * axe3
+colOne = anT3Average > anT3Average[1]
+colTwo = anT3Average < anT3Average[1]
+color2 = colOne ? #64b5f6 : colTwo ? #ef5350 : na
+p2 = plot(anT3Average, color=color2, title="T3 Fast")
+
+///T3 MA8
+
+Length = input(8, minval=1, group="T3 MA Lengths")
+xPrice = close
+xe1 = ema(xPrice, Length)
+xe2 = ema(xe1, Length)
+xe3 = ema(xe2, Length)
+xe4 = ema(xe3, Length)
+xe5 = ema(xe4, Length)
+xe6 = ema(xe5, Length)
+b = 0.7
+c1 = -b*b*b
+c2 = 3*b*b+3*b*b*b
+c3 = -6*b*b-3*b-3*b*b*b
+c4 = 1+3*b+b*b*b+3*b*b
+nT3Average = c1 * xe6 + c2 * xe5 + c3 * xe4 + c4 * xe3
+upCol = nT3Average > nT3Average[1]
+downCol = nT3Average < nT3Average[1]
+myColor = upCol ? #64b5f6 : downCol ? #ef5350 : na
+p1 = plot(nT3Average, color=myColor, title="T3 Slow")
+
+// T3 area fill
+
+fillData = nT3Average < anT3Average
+fillDtat = nT3Average > anT3Average
+fillCol = fillData ? #64b5f6 : fillDtat ? #ef5350 : na
+fill(p1,p2, color=fillCol, transp=80, title="T3 Fill")
+
+// Heikin-Ashi Bar Input
+
+haClose = (open + high + low + close) / 4 
+haOpen  = float(na)
+haOpen := na(haOpen[1]) ? (open + close) / 2 : (nz(haOpen[1]) + nz(haClose[1])) / 2 
+haHigh  = max(high, max(haOpen, haClose)) 
+haLow   = min(low,  min(haOpen, haClose)) 
+
+// Bar Color
+
+uc = (close > nT3Average) and (anT3Average >= nT3Average)
+dc = (close < nT3Average) and (anT3Average <= nT3Average)
+dr = (close < nT3Average) and (anT3Average >= nT3Average)
+ur = (close > nT3Average) and (anT3Average <= nT3Average)
+
+bullcol = input(#64b5f6, title="Bull Trend Color", type = input.color, group="Bar Color")
+bearcol = input(#ef5350, title="Bear Trend Color", type = input.color, group="Bar Color")
+bullrev = input(#fff176, title="Bullish Reversal Color", type = input.color, group="Bar Color")
+bearrev = input(#fff176, title="Bearish Reversal Color", type = input.color, group="Bar Color")
+
+hauc = (haClose > nT3Average) and (anT3Average >= nT3Average)
+hadc = (haClose < nT3Average) and (anT3Average <= nT3Average)
+hadr = (haClose < nT3Average) and (anT3Average >= nT3Average)
+haur = (haClose > nT3Average) and (anT3Average <= nT3Average)
+
+hadu = haClose >= haOpen
+hadd = haClose < haOpen
+hadefval = hadu ? bullcol : hadd ? bearcol : na
+
+barColor = iff(uc, bullcol, 
+     iff(dc, bearcol,
+     iff(dr, bearrev,
+     iff(ur, bullrev, na))))
+
+habarColor = iff(hauc, bullcol, 
+     iff(hadc, bearcol,
+     iff(hadr, bearrev,
+     iff(haur, bullrev, hadefval))))
+
+barcolor(color=barColor)
+
+// HA Bar Optional Overlay - allows real close data to avoid false indicator and moving average behavior, while still capturing the smoothed look and reducing whipsaw  
+// Muting of main series is required to aviod candle overlap 
+
+haover = input(title="Overlays HA bars in place of regular candles. (Must 'mute' main candles while in use. Toggle '👁' symbol next to ticker name to hide candles)", 
+     type=input.bool, defval=false, group="Heikin-Ashi Bar Overlay")
+rPrice = input(title="Real Price Line - Displays 'real close' level", type=input.bool, defval=false, group="Heikin-Ashi Bar Overlay")
+plotbar(haOpen, haHigh, haLow, haClose, title='Heikin-Ashi', editable=false, color= haover ? habarColor : true ? na : hadefval) 
+plot(close, trackprice=rPrice ? true : na, offset=-9999, editable=false, color=habarColor)
+
+// Alerts
+
+c = cross(close, nT3Average)
+alertcondition(c, title='Close crosses T3', message='Reversal candle is forming!')
+
+d = cross(nT3Average, anT3Average)
+alertcondition(d, title='T3 crossing T3', message='A new trend may be forming!')

@@ -1,0 +1,6 @@
+//@version=6
+indicator("Bollinger Bars", overlay = true, explicit_plot_zorder = true, behind_chart = false)
+
+plotcandle(high, high, low, low, "Bollinger Bars Wicks", color = #0D349E, bordercolor = #0D349E, wickcolor = na, display = display.pane)
+col = close > open ? #089981 : #F23645
+plotcandle(open, high, low, close, "Bollinger Bars Body", color = col, bordercolor = col, wickcolor = na)

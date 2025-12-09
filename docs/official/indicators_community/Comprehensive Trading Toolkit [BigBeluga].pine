@@ -1,0 +1,221 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Trading Toolkit (Michaël van de Poppe) [BigBeluga]", overlay = false, max_boxes_count = 500, max_bars_back = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// S/R
+bool  show_sr = input.bool(true, "", group = "Support & Resistance", inline = "sr") 
+int   len     = input.int(30, "Support/Resistance", group = "Support & Resistance", inline = "sr")
+color bul_col = input.color(color.rgb(0, 230, 119, 70), "", inline = "sr")
+color ber_col = input.color(color.rgb(255, 82, 82, 70), "", inline = "sr")
+
+// RSI
+int  length   = input.int(24, "RSI", group = "Rsi", inline = "lvl")
+int  overs    = input.int(30, "OS/OB", group = "Rsi", inline = "lvl")
+int  overb    = input.int(70, "", group = "Rsi", inline = "lvl")
+bool show_div = input.bool(false, "", inline = "div"), div_len = input.int(10, "Divergence", inline = "div")
+color bull_col = input.color(color.rgb(0, 230, 211, 20), "", inline = "div")
+color bear_col = input.color(color.rgb(255, 82, 82, 20), "", inline = "div")
+
+// Correction
+bool  show_cor = input.bool(false, "", group = "correction", inline = "cor"), correction = input.int(5, "Correction %", group = "correction", inline = "cor")
+color corr_col = input.color(#2195f32d, "", group = "correction", inline = "cor")
+
+color m_col     = chart.fg_color
+color noneColor = color.new(color.white, 100)
+
+
+series float rsi = ta.rsi(close, length)
+
+// Divergence
+int lookbackRight = div_len
+int lookbackLeft = div_len
+int rangeUpper = 60
+int rangeLower = 5
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+_inRange(bool cond) =>
+    bars = ta.barssince(cond)
+    rangeLower <= bars and bars <= rangeUpper
+
+
+rsi_divergence()=>
+
+    plFound = false
+    phFound = false
+
+    bullCond = false
+    bearCond = false
+
+    rsiLBR = rsi[lookbackRight]
+
+    pl_p = ta.pivotlow(low, lookbackLeft, lookbackRight)
+    ph_p = ta.pivothigh(high, lookbackLeft, lookbackRight)
+
+    //------------------------------------------------------------------------------
+    // Regular Bullish
+    // rsi: Higher Low
+    inrangepl = _inRange(plFound[1])
+    inrangeph = _inRange(phFound[1])
+
+    pl = ta.pivotlow(rsi, lookbackLeft, lookbackRight)
+    plFound := not na(pl)    
+    rsiHL = rsiLBR > ta.valuewhen(plFound, rsiLBR, 1) and inrangepl
+    // Price: Lower Low
+    lowLBR = low[lookbackRight]
+    priceLL = lowLBR < ta.valuewhen(plFound, lowLBR, 1)
+    bullCond := priceLL and rsiHL and plFound
+
+    //------------------------------------------------------------------------------
+    // Regular Bearish
+    // rsi: Lower High
+    ph = ta.pivothigh(rsi, lookbackLeft, lookbackRight)
+    phFound := not na(ph)
+    rsiLH = rsiLBR < ta.valuewhen(phFound, rsiLBR, 1) and inrangeph
+    // Price: Higher High
+    highLBR = high[lookbackRight]
+    priceHH = highLBR > ta.valuewhen(phFound, highLBR, 1)
+    bearCond := priceHH and rsiLH and phFound
+
+    [pl_p, ph_p, bearCond, bullCond, plFound, phFound, rsiLBR]
+
+
+correction(correction)=>
+    var boxes = array.new<box>()
+    roc = ta.roc(close, 15)
+    var roc_indx = int(na)
+    var roc_src = float(na)
+
+    if ta.cross(roc, 0)
+        roc_indx := bar_index
+        roc_src  := high
+
+    if ta.crossunder(roc, -correction) 
+        boxes.push(box.new(roc_indx, roc_src, bar_index+1, low, na, 0, bgcolor = corr_col, force_overlay = true))
+
+    if boxes.size() > 1
+        for i = 0 to boxes.size() - 1
+            box_id = boxes.get(i)
+            indx = i < boxes.size() - 1 ? i+1 : 0 
+            box_id_1 = boxes.get(indx)
+
+            if box_id.get_left() == box_id_1.get_left()
+                box.delete(box_id_1) 
+                //boxes.set(indx, box(na))
+
+            if box_id.get_right() - box_id.get_left() >= 10
+                box.delete(box_id) 
+
+norm_candle_size()=>
+    ((high-low) / ta.stdev(high-low, 200))
+
+
+draw_levels()=>
+
+    PH  = ta.pivothigh(len,len)
+    PL  = ta.pivotlow(len, len)
+    Atr = ta.atr(200)* 0.3
+
+    candle_size = norm_candle_size()
+
+    big_candle = candle_size[len] > 1
+    style      = candle_size[len] > 1.5 ? line.style_solid : line.style_dashed
+
+    var lines = array.new<line>()
+    var boxes = array.new<box>()
+
+    if big_candle
+        if not na(PH)
+            lines.push(line.new(bar_index-len, PH, bar_index, PH, extend = extend.right, style = style, color = m_col, force_overlay = true))
+            boxes.push(box.new(bar_index-len, PH + Atr, bar_index+5, PH - Atr, na, 0, bgcolor = ber_col, force_overlay = true))
+        if not na(PL)
+            lines.push(line.new(bar_index-len, PL, bar_index, PL, extend = extend.right, style = style, color = m_col, force_overlay = true))
+            boxes.push(box.new(bar_index-len, PL + Atr, bar_index+5, PL - Atr, na, 0, bgcolor = bul_col, force_overlay = true))
+
+    for line_id in lines
+        level  = line_id.get_y1()
+        box_id = boxes.get(lines.indexof(line_id))
+        box_id.set_right(bar_index+10)    
+
+        if high[1] > level and high < level 
+            box.set_lefttop(box_id, bar_index, level+Atr)
+            box.set_rightbottom(box_id, bar_index+5, level-Atr)
+            box.set_bgcolor(box_id, ber_col)
+
+        if low[1] < level and low > level 
+            box.set_lefttop(box_id, bar_index, level+Atr)
+            box.set_rightbottom(box_id, bar_index+5, level-Atr)
+            box.set_bgcolor(box_id, bul_col)
+
+    if array.size(lines) > 0    
+        if array.size(lines) > 6
+            line.delete(array.shift(lines))
+            box.delete(array.shift(boxes))
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+if show_sr
+    draw_levels()
+
+if show_cor
+    correction(correction)
+
+[pl_p, ph_p, bearCond, bullCond, plFound, phFound, rsiLBR] = rsi_divergence()
+
+// Divergence Plot
+pr = plot(rsi, color = m_col)
+p7 = plot(overb, display = display.none, editable = false)
+p3 = plot(overs, display = display.none, editable = false)
+
+h2 = hline(overs, "Oversold", color = m_col)
+h1 = hline(overb, "OverBought", color = m_col)
+hline(50, color = color.new(m_col, 50))
+
+fill(h1, h2, color.new(m_col, 85))
+fill(p3, pr, overs, 20, na, rsi < overs ? color.red : na)
+fill(p7, pr, overb, 85, na, rsi > overb ? color.lime : na)
+
+displ_div = show_div ? display.pane : display.none
+plot(
+     plFound ? rsiLBR : na,
+     offset=-lookbackRight,
+     title="Regular Bullish",
+     linewidth=2,
+     color=(bullCond ? bull_col : noneColor),
+     display = displ_div
+     )
+
+plot(
+     phFound ? rsiLBR : na,
+     offset=-lookbackRight,
+     title="Regular Bearish",
+     linewidth=2,
+     color=(bearCond ? bear_col : noneColor),
+     display = displ_div
+     )
+
+plot(
+     plFound ? low[lookbackRight] : na,
+     offset=-lookbackRight,
+     title="Regular Bullish",
+     linewidth=1,
+     color=(bullCond ? bull_col : noneColor),
+     display = displ_div, force_overlay = true
+     )
+
+plot(
+     phFound ? high[lookbackRight] : na,
+     offset=-lookbackRight,
+     title="Regular Bearish",
+     linewidth=1,
+     color=(bearCond ? bear_col : noneColor),
+     display = displ_div, force_overlay = true
+     )
+// }

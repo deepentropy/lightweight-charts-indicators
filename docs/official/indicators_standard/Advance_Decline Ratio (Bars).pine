@@ -1,0 +1,9 @@
+//@version=6
+indicator("Advance/Decline Ratio (Bars)", shorttitle="ADR_B", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+length = input.int(9, minval=1)
+isUp = (close - open) >= 0.0
+upBars = math.sum(isUp ? 1 : 0, length)
+downBars = math.sum(not isUp ? 1 : 0, length)
+ad = downBars == 0 ? upBars : upBars / downBars
+plot(ad, "ADR_B", #2962FF)
+hline(1.0, "Equality Line", #787B86)

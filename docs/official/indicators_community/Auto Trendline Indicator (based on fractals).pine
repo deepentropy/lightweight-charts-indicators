@@ -1,0 +1,163 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © DojiEmoji
+
+// A tool that automatically draws out trend lines by connecting the most recent fractals.
+
+//@version=5
+indicator("Auto Trendline [DojiEmoji]", format=format.price, precision=0, overlay=true, max_lines_count=500)
+
+var int TYPE_UP = 1
+var int TYPE_DOWN = -1
+var string LINE_WIDTH1_STR = "Width 1"
+var string LINE_WIDTH2_STR = "Width 2"
+_get_width(string str_input) =>
+    switch str_input // {string:int}
+        LINE_WIDTH1_STR => 1
+        LINE_WIDTH2_STR => 2
+
+// ----------------------------------------------------------------------------
+// Settings:
+// {
+var string GROUP_FRACT  = "Fractals"
+var int n               = input.int(10, title="Fractal Period", minval=2, group=GROUP_FRACT)
+var color col_hl        = input.color(color.blue, title="Plot:", inline="plot_low", group=GROUP_FRACT)
+var bool show_hl        = input.bool(true, title="HL", inline="plot_low", group=GROUP_FRACT)
+var color col_ll        = input.color(color.gray, title=", Plot:", inline="plot_low", group=GROUP_FRACT)
+var bool show_ll        = input.bool(false, title="LL", inline="plot_low", group=GROUP_FRACT)
+var color col_lh        = input.color(color.red, title="Plot:", inline="plot_high", group=GROUP_FRACT)
+var bool show_lh        = input.bool(true, title="LH", inline="plot_high", group=GROUP_FRACT)
+var color col_hh        = input.color(color.gray, title=", Plot:", inline="plot_high", group=GROUP_FRACT)
+var bool show_hh        = input.bool(false, title="HH", inline="plot_high", group=GROUP_FRACT) 
+
+var string GROUP_ATL    = "Auto trendlines"
+var string subgroup1    = "recent line"
+var color ln_col_recent = input.color(color.new(color.purple, 0), title="Recent Line", group=GROUP_ATL, inline=subgroup1)
+var int lnwidth_recent  = _get_width(input.string(LINE_WIDTH1_STR, options=[LINE_WIDTH1_STR, LINE_WIDTH2_STR], title="", inline=subgroup1, group=GROUP_ATL))
+var string subgroup2    = "historical line"
+var color ln_col_prev   = input.color(color.new(color.gray, 50), title="Historical Line", group=GROUP_ATL, inline=subgroup2)
+var int lnwidth_prev    = _get_width(input.string(LINE_WIDTH1_STR, options=[LINE_WIDTH1_STR, LINE_WIDTH2_STR], title="", inline=subgroup2, group=GROUP_ATL))
+
+var int max_tl          = input.int(1, title="Max pair of lines", maxval=250, minval=1, group=GROUP_ATL)*2
+var string _str_extend  = input.string("Right", options=["Right", "Both ways"], title="Which way to extend lines", group=GROUP_ATL)
+var string str_extend   = _str_extend == "Both ways" ? extend.both : extend.right
+
+var bool show_crosses   = input.bool(false, title="Show crosses", tooltip="Instances when closing price of a bar has crossed lower/upper trendlines", group=GROUP_ATL)
+// }
+
+// ----------------------------------------------------------------------------
+// Fractal UDT and other relevant data structures: 
+// Handle fractals and trendlines associated with them
+// {
+type fractal
+    int up_or_down = na // either TYPE_UP or TYPE_DOWN
+    int xloc = na 
+    float yloc = na
+    int xloc_parent = na
+    float yloc_parent = na
+
+var fractal[] arr_fract = array.new<fractal>()  // Can be used for multiple purposes such as:
+                                                // (a) connecting trendlines but added condition to skip X no. of fractals in between
+                                                // (b) create a zigzag, since knowing foo.parent's x and y
+                                                // ... possibilities are endless
+
+var line[] arr_ln_up = array.new_line() // Array of lines, newest elements inserted to front
+var line[] arr_ln_dn = array.new_line()
+
+// @function init_fractal() returns instance of fractal that has been init'ed
+init_fractal(int fract_type, int xloc, float yloc, int xparent, float yparent)=>
+    f = fractal.new()
+    f.up_or_down := fract_type
+    f.xloc := xloc
+    f.yloc := yloc
+    f.xloc_parent := xparent
+    f.yloc_parent := yparent
+
+    ln = line.new(xloc, yloc, xparent, yparent, xloc.bar_index, str_extend, color=ln_col_recent, style=line.style_dashed, width=lnwidth_recent)
+    if f.up_or_down == TYPE_UP
+        array.unshift(arr_ln_up, ln) 
+    else if f.up_or_down == TYPE_DOWN
+        array.unshift(arr_ln_dn, ln)
+    
+    array.unshift(arr_fract, f) 
+    f // <- return
+
+// @function drop_and_roll(new fractal) returns void
+// Clean up: Drop oldest trendlines, change colors for previous trendline
+drop_and_roll(fractal f) =>
+    arr_ln = f.up_or_down == TYPE_UP ? arr_ln_up : f.up_or_down == TYPE_DOWN ? arr_ln_dn : na
+    if array.size(arr_ln) > 1
+        line.set_color(array.get(arr_ln, 1), ln_col_prev)
+        line.set_width(array.get(arr_ln, 1), lnwidth_prev)
+        while array.size(arr_ln) > math.floor(max_tl/2)
+            line.delete(array.pop(arr_ln))
+
+// @function draw_trendline() returns void
+draw_trendline(fract_type, x2, y2, x1, y1) =>
+    f = init_fractal(fract_type, x2, y2, x1, y1)
+    drop_and_roll(f)
+
+// } end of handle for fractals
+
+// ----------------------------------------------------------------------------
+// Fractals, implemented using ta.pivot high && low 
+// ----------------------------------------------------------------------------
+
+// A Fractal is always a Pivot H/L (but a Pivot H/L is not always a Fractal):
+float ph = ta.pivothigh(n, n)[1], bool upfract = not na(ph)
+float pl = ta.pivotlow(n, n)[1],  bool downfract = not na(pl)
+
+alertcondition(not na(ph) or not na(pl), title="New trendline formed", message="New trendline formed")
+
+// Pointers -> Recent fractals
+// {
+var float recent_dn1   = na,  var int i_recent_dn1 = na
+var float recent_up1   = na,  var int i_recent_up1 = na
+var float recent_dn2   = na,  var int i_recent_dn2 = na
+var float recent_up2   = na,  var int i_recent_up2 = na
+
+if downfract 
+    recent_dn2:=recent_dn1, i_recent_dn2 := i_recent_dn1
+    recent_dn1:=low[n+1],   i_recent_dn1 := bar_index-n-1
+    draw_trendline(TYPE_DOWN, i_recent_dn2, recent_dn2, i_recent_dn1, recent_dn1)
+
+if upfract 
+    recent_up2:=recent_up1, i_recent_up2 := i_recent_up1
+    recent_up1:=high[n+1],  i_recent_up1 := bar_index-n-1
+    draw_trendline(TYPE_UP, i_recent_up2, recent_up2, i_recent_up1, recent_up1)
+
+// }
+
+// Plotting fractals
+bool hh = upfract and recent_up1 > recent_up2 ? high[n+1] : na
+bool lh = upfract and recent_up1 < recent_up2 ? high[n+1] : na
+bool hl = downfract and recent_dn1 > recent_dn2 ? low[n+1] : na
+bool ll = downfract and recent_dn1 < recent_dn2 ? low[n+1] : na
+
+plotshape(show_hh and hh, style=shape.circle, size=size.tiny, offset=-n-1, title="HH", text="HH", location=location.abovebar, textcolor=col_hh, color=na, editable=false)
+plotshape(show_lh and lh, style=shape.circle, size=size.tiny, offset=-n-1, title="LH", text="LH", location=location.abovebar, textcolor=col_lh, color=na, editable=false)
+plotshape(show_ll and ll, style=shape.circle, size=size.tiny, offset=-n-1, title="LL", text="LL", location=location.belowbar, textcolor=col_ll, color=na, editable=false)
+plotshape(show_hl and hl, style=shape.circle, size=size.tiny, offset=-n-1, title="HL", text="HL", location=location.belowbar, textcolor=col_hl, color=na, editable=false)
+
+// ----------------------------------------------------------------------------
+// Finding crosses between closing price & pair of most recent trendlines
+// ----------------------------------------------------------------------------
+
+// @function get_slope()
+get_slope(xA, yA, xB, yB) =>
+    (yB - yA) / (xB - xA)
+
+// Solving for price at current x (bar_index), given two pairs of fractals with x values < bar_index.
+float m_dn = get_slope(i_recent_dn1, recent_dn1, i_recent_dn2, recent_dn2)
+float y_dn = (m_dn * bar_index) + recent_dn1 - (m_dn * i_recent_dn1)
+float m_up = get_slope(i_recent_up1, recent_up1, i_recent_up2, recent_up2)
+float y_up = (m_up * bar_index) + recent_up1 - (m_up * i_recent_up1)
+
+// Plotting crosses
+bool cross_upper = ta.cross(close, y_up) 
+bool cross_lower = ta.cross(close, y_dn) 
+plotshape(show_crosses and cross_upper, title = "Crossed upper trendline", style = shape.xcross, 
+ location = location.belowbar, color = color.new(color = color.blue, transp = 50), size = size.small)
+plotshape(show_crosses and cross_lower, title = "Crossed lower trendline", style = shape.xcross, 
+ location = location.abovebar, color = color.new(color = color.red, transp = 50), size = size.small)
+
+alertcondition(cross_upper or cross_lower, title="Upper/lower trendline crossed", message="Upper/lower trendline crossed")

@@ -1,0 +1,21 @@
+//For those of you that have a limit on how many indicators you can have on a chart, 
+//this may help you out in terms of adding multiple MA's while only adding 1 indicator.
+
+study(title="Moving Averages", shorttitle="MAs", overlay=true)
+exponential = input(true, title="Exponential MA")
+
+src = close
+
+ma20 = exponential ? ema(src, 20) : sma(src, 20)
+ma50 = exponential ? ema(src, 50) : sma(src, 50)
+ma100 = exponential ? ema(src, 100) : sma(src, 100)
+ma200 = exponential ? ema(src, 200) : sma(src, 200)
+
+plot( ma20, color=orange, style=line, title="MMA20", linewidth=1)
+plot( ma50, color=fuchsia, style=line, title="MMA50", linewidth=1)
+plot( ma100, color=purple, style=line, title="MMA100", linewidth=1)
+plot( ma200, color=black, style=line, title="MMA200", linewidth=1)
+
+
+
+

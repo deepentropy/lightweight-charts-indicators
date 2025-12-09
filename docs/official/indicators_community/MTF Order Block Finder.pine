@@ -1,0 +1,395 @@
+//@version=4
+study("MTF Order Block Finder", overlay = true, max_bars_back=22, max_lines_count = 500, max_labels_count= 500)     
+//## ToolTips
+    //Intro
+tip0 = "Instituational Order Blocks (OB) often signal the beginning of a strong move. There is a high probability that OB price levels will be revisited in the future. Bullish Order Block pattern is the last down candle before a sequence of up candles. Bearish Order Block pattern is the last up candle before a sequence of down candles." +
+       "Order Block sources are indicated by an upper, lower, and average line that preceeds the colored zone.\n\nConfused by a setting?\nHover over the ( i ) icon for a description."
+    //Basics
+tip1 = "Find Order Blocks from higher timeframes. Timeframes lower than the chart are ignored."
+tip2 = "Required number of subsequent candles in the same direction to identify Order Block"
+tip3 = "Reject Order Block patterns with a total % move less than this value. Measured from Close of the 1st candle to Close of the last candle in sequence. 0.30 = 0.30%"
+tip4 = "Number of Zones to draw on chart. Higher numbers can lead to messy charts, especially if \"Order Block Draw Distance %\" is not configured!"
+    //Advanced
+tip5 = "Reject Order Block patterns that start with a \"Doji\" which has a % move less than this value. Setting to zero requires the candle has moved at least one tick.\n0.05 = 0.05%"
+tip6 = "Accept Order Blocks with an imperfect sequence. Any candle (after the first) with a % move less than this value will be accepted, regardless of its direction. Useful for accepting \"Doji\" candles that appear in the middle of a sequence. Setting to zero requires the candle has moved at least one tick.\n0.01 = 0.01%"
+tip7 = "Reject Order blocks that are too far from current Open price. A value of 0 will disable this feature.\n2.5 = 2.5%"
+    //Style & Color
+tip8 = "BOX = a solid, borderless rectangle colored to match the direction of the OB\n\nLINE = 3 lines representing the High, Low, and Average price of the OB source\n\nBOTH = draw both previous styles"
+tip9 = "Line width when using the LINE drawing style"
+    //Experimental
+exp1 = "Shift the source candle that is used for drawing Zones. Example: For a Bullish OB, a shift of zero selects the first candle of the pattern - the Bearish candle before a sequence of Bulls. Values higher than \"Order Block Required Length\" are ignored.\nDefault = 1 (selects 2nd candle)"
+exp2 = "Choose the price values to extract from the Order Block candle. These prices are used to set the top and bottom of the Zone.\n\n\"High/Low\" = High and Low of OB Candle.\n\n\"OHLC\" = From the High/Low of the OB Candle to the Open/Close, whichever is in the direction of the OB.\n\n\"Context\" = Context sensitive algorithm. Picks the largest wick near the OB candle with a given search length"
+exp3 = "When using \"Context\" for Order Block Source Selector, you can adjust the search length. Example: A search length of 2 will start with the 1st candle in the pattern and then check the following 2 candles. Values higher than \"Order Block Required Length\" are ignored."
+exp4 = "Choose a Preset that overrides all previous settings. Presets come from real Day Trading experience in an attempt to provide clean charts, valuable information, and lots of trading opportunities!"
+
+//Group Titles
+gp1 = "Basic Configuration"
+gp2 = "Advanced Configuration"
+gp3 = "Style and Colors"
+gp4 = "Experimental Settings"
+
+//Documentation
+doc = input(true,"Hover over ( ! ) for Intro", tooltip = tip0,group="Introduction")
+
+//Basic Configuration (GP1)
+resolution = input("","Order Block Timeframe",input.resolution,tooltip=tip1,group=gp1)
+ob_period = input(5,"Order Block Required Length",maxval=20, minval=1,tooltip=tip2,group=gp1)               // Required number of subsequent candles in the same direction to identify Order Block
+threshold = input(0.3,"Order Block Required Move %", minval = 0,step = 0.05, tooltip=tip3,group=gp1)        // Required minimum % move (from potential OB close to last subsequent candle to identify Order Block)
+bull_channels = input(4,"Bullish Zones to Show",minval=0,tooltip=tip4,group=gp1)                            // Num of zones
+bear_channels = input(4,"Bearish Zones to Show",minval=0,tooltip=tip4,group=gp1)                            // Num of zones
+
+//Adv. Configuration (GP2)
+doji = input(0.05,"1st Candle Filter",minval=0,step=0.005,tooltip=tip5,group=gp2)                           // Min size for first candle
+fuzzy = input(0.01,"2nd+ Candle Filter",minval=0,step=0.005, tooltip=tip6,group=gp2)                        // Tolerance for rest of candles
+near_price = input(0,"Order Block Draw Distance %",input.float,minval=0,step=.5, tooltip=tip7,group=gp2)   // Distant candle rejection
+
+//Style, Colors, and Drawing (GP3)
+style = input("BOX","Zone Drawing Style",options=["BOTH","BOX","LINE"],tooltip=tip8,group=gp3)
+bullcolor = input(color.new(color.green,65),"Bullish Zone Color",input.color,group=gp3)
+bearcolor = input(color.new(color.red,65),"Bearish Zone Color", input.color,group=gp3)
+linewidth_hl = input(1,"Line Width for Zone's High/Low",input.integer,minval=0,group=gp3,tooltip=tip9)
+linewidth_avg = input(1,"Line Width for Zone's Avg",input.integer,minval=0,group=gp3,tooltip=tip9)
+
+//Experimental (GP4)
+ob_shift = input(1,"Order Block Candle Shift",input.integer,minval=0,tooltip=exp1,group=gp4)
+ob_selector = input("OHLC","Order Block Source Selector",options=["High/Low","OHLC","Context"],tooltip=exp2,group=gp4)
+ob_search   = input(2,"Order Block Context Search Length",input.integer,minval=0,maxval=20,tooltip=exp3,group=gp4)
+//preset = input("None","Asset Presets",options=["Crypto","Forex","Stock","None"],tooltip=exp4,group=gp4)
+
+//Version Control
+version = "1.504"
+dummy1 = input(version,"\"MTF Order Block Finder\" Version #",options=[version],group="About")
+
+//Input Sanitization & Adjustments
+ob_search   := ob_search >= ob_period ? ob_period : ob_search
+ob_shift    := ob_shift >= ob_period ? ob_period : ob_shift
+ob_period   += 1
+
+//Convert a given string resolution into seconds
+ResolutionToSec(res)=>
+    mins = res == "1" ? 1 :
+           res == "3" ? 3 :
+           res == "5" ? 5 :
+           res == "10" ? 10 :
+           res == "15" ? 15 :
+           res == "30" ? 30 :
+           res == "45" ? 45 :
+           res == "60" ? 60 :
+           res == "120" ? 120 :
+           res == "180" ? 180 :
+           res == "240" ? 240 :
+           res == "1D" ? 1440 :
+           res == "1W" ? 10080 :
+           res == "1M" ? 43200 : 0
+    ms = mins * 60
+
+//Convert the current chart resolution into seconds
+TimeframeToSec()=>
+    mins = 0.0
+    if(timeframe.isdwm)
+        mins := timeframe.isdaily ? 1440 :
+                 timeframe.isweekly ? 10080 :
+                 timeframe.ismonthly ? 43200 : mins
+    if(timeframe.isintraday)
+        mins := timeframe.isminutes ? 1 :
+                 timeframe.isseconds ? (1/60) : mins
+    ms = round(mins * 60 * timeframe.multiplier)
+
+//Given a source type, resolution, and warmup period;
+//Return 1) an array of prices with gaps removed
+//       2) a bool that is True when the given resolution has new data
+Rem_Gaps_Security(src,res,warm)=>
+    max = security(syminfo.tickerid,res,bar_index,barmerge.gaps_off,barmerge.lookahead_off)
+    gap = security(syminfo.tickerid,res,src,barmerge.gaps_on,barmerge.lookahead_off)
+    clean = array.new_float()
+    if (na(max) or max < warm)
+        array.push(clean,na)
+        [clean,false]
+    else
+        for i=0 to warm
+            if(not na(gap[i]))
+                array.push(clean,gap[i])
+        [clean,not na(gap)]
+        
+//Destroy distant Lines and remove from array
+Rem_Distant_Lines(avg,h,l,source,percent)=>
+    limit = source*percent/100
+    size = array.size(avg)
+    if(size > 0)
+        for i = 1 to size
+            top=line.get_y1(array.get(h,size-i))
+            bottom=line.get_y1(array.get(l,size-i))
+            if(abs(top-source)>limit and abs(bottom-source)>limit)
+                line.delete(array.get(avg,size-i))
+                array.remove(avg,size-i)
+                line.delete(array.get(h,size-i))
+                array.remove(h,size-i)
+                line.delete(array.get(l,size-i))
+                array.remove(l,size-i)
+                
+//Destroy distant Boxes and remove from array
+Rem_Distant_Box(arr,source,percent)=>
+    limit = source*percent/100
+    size = array.size(arr)
+    if(size > 0)
+        for i = 1 to size 
+            top = box.get_top(array.get(arr,size-i))
+            bottom = box.get_bottom(array.get(arr,size-i))
+            if(abs(top-source)>limit and abs(bottom-source)>limit)
+                box.delete(array.get(arr,size-i))
+                array.remove(arr,size-i)
+
+//Returns the lowest wick of a data set and given search range
+//A 'wick' is either: Low to Open, Low to Close
+Low_Wick_Search(start_index,len,copen,clow,cclose)=>
+    wick_h = float(na)
+    wick_l = float(na)
+    index = int(na)
+    for i = 0 to len
+        if(array.get(clow,start_index-i) > wick_l and i > 0)
+            continue
+        bar_dir = sign(array.get(cclose,start_index-i) - array.get(copen,start_index-i))
+        wick_h := bar_dir == 1 ? array.get(cclose,start_index-i) : array.get(copen,start_index-i)
+        wick_l := array.get(clow,start_index-i)
+        index := i
+    [wick_h,wick_l,index]
+    
+//Returns the highest wick of a data set and given search range
+//A 'wick' is either: High to Open, High to Close
+High_Wick_Search(start_index,len,copen,chigh,cclose)=>
+    wick_h = float(na)
+    wick_l = float(na)
+    index = int(na)
+    for i = 0 to len
+        if(array.get(chigh,start_index-i) < wick_h and i > 0)
+            continue
+        bar_dir = sign(array.get(cclose,start_index-i) - array.get(copen,start_index-i))
+        wick_l := bar_dir == 1 ? array.get(copen,start_index-i) : array.get(cclose,start_index-i)
+        wick_h := array.get(chigh,start_index-i)
+        index := i
+    [wick_h,wick_l,index]
+    
+//Returns true if a candle has zero ticks (high, low, open, and close all equal)
+Is_Zero_Candle(index,o,h,l,c)=>
+    base = array.get(o,index)
+    zc = base == array.get(c,index)
+         and base == array.get(h,index)
+         and base == array.get(l,index)
+    zc
+
+//Alert for new candle closing in order block
+
+//Alert for new candle closing out of order block
+
+//Alert for candle forming wick in order block
+    
+//Create a horizontal line spanning one bar
+Horizontal_Line(price,line_color,width,offset1,offset2)=>
+    line.new(bar_index+offset1+1,price,bar_index+offset2-1,price,xloc.bar_index,color=line_color,width=width)
+    
+Horizontal_Line_2(price,t1,t2,line_color,width)=>
+    line.new(t1,price,t2,price,xloc.bar_time,color=line_color,width=width)
+
+//Create a vertical line spanning two prices
+Vertical_Line_Small(p1,p2,line_color,width,offset)=>
+    line.new(bar_index+offset,p1,bar_index+offset,p2,xloc.bar_index,color=line_color,width=width)
+    
+//Create a colored label
+Create_Label(text,text_color,location,style,offset)=>
+    label.new(bar_index+offset,0,text,xloc.bar_index,location,text_color,style,text_color,size.small)
+
+//Create a colored label at a specific time
+Create_Label_2(text,bar_time,price,text_color,style)=>
+    label.new(bar_time,price,text,xloc.bar_time,yloc.price,text_color,style,text_color,size.small)
+//Debugging Function to create label above candle in question
+DEBUG(s)=>
+    label.new(bar_index,0,s,xloc.bar_index,yloc.abovebar,color.white,size=size.normal)
+
+//Initialization
+OB_bull = false
+OB_bull_chigh = float(na)
+OB_bull_clow  = float(na)
+OB_bull_avg  = float(na)
+OB_bear = false
+OB_bear_chigh = float(na)
+OB_bear_clow = float(na)
+OB_bear_avg = float(na)
+//Init Line Arrays
+var LineBullAvg = array.new_line()
+var LineBullHigh = array.new_line()
+var LineBullLow = array.new_line()
+var LineBearAvg = array.new_line()
+var LineBearHigh = array.new_line()
+var LineBearLow = array.new_line()
+//Init Box Arrays
+var BoxBull = array.new_box()
+var BoxBear = array.new_box()
+//MTF Sync vars
+var selector_shift = ob_shift
+var os = 0
+var sync = 0
+var start_time = 0
+var end_time = 0
+res = TimeframeToSec() > ResolutionToSec(resolution) ? "" : resolution
+warmup = ob_period + iff(sign(ob_shift)==-1,-1*ob_shift,0)
+mtf_warmup = res == "" ? warmup : warmup * ResolutionToSec(res)/TimeframeToSec()
+    //Data Curation
+[copen,naopen] = Rem_Gaps_Security(open,res,mtf_warmup)
+[chigh,nahigh] = Rem_Gaps_Security(high,res,mtf_warmup)
+[clow,nalow] = Rem_Gaps_Security(low,res,mtf_warmup)
+[cclose,naclose] = Rem_Gaps_Security(close,res,mtf_warmup)
+[ctime,natime] = Rem_Gaps_Security(time,res,mtf_warmup)
+nastate = naopen and nahigh and nalow and naclose and natime
+    //Array with least data
+MinArraySize = min(array.size(copen),
+                   array.size(chigh),
+                   array.size(clow),
+                   array.size(cclose))
+
+//Despawn distant objects
+if(near_price>0 and barstate.islast)
+    if(style=="LINE" or style=="BOTH")
+        Rem_Distant_Lines(LineBullAvg,LineBullHigh,LineBullLow,open,near_price)
+        Rem_Distant_Lines(LineBearAvg,LineBearHigh,LineBearLow,open,near_price)
+    if(style=="BOX" or style=="BOTH")
+        Rem_Distant_Box(BoxBull,open,near_price)
+        Rem_Distant_Box(BoxBear,open,near_price)
+        
+//Order Block Algorithm
+if(MinArraySize > warmup)
+    
+    //Entire OB sequence has enough price movement to be valid (filter low volatility noise)
+    relmove   = 100*((abs(array.get(cclose,ob_period) - array.get(cclose,1)))/array.get(cclose,ob_period)) > threshold
+    //Can't start with a Doji (active by default)
+    doji_candle = 100*abs(array.get(cclose,ob_period)-array.get(copen,ob_period))/array.get(copen,ob_period) > doji
+
+    //Order Block Identification
+    bullishOB = array.get(cclose,ob_period) < array.get(copen,ob_period)        // Determine potential Bullish OB candle (red candle)
+    bearishOB = array.get(cclose,ob_period) > array.get(copen,ob_period)        // Determine potential Bearish OB candle (green candle)
+    int upcandles  = 0
+    int downcandles = 0
+    for i = 1 to ob_period-1                                                    // Check candles following the OB
+        if(Is_Zero_Candle(i,copen,chigh,clow,cclose))
+            continue
+        float t_close = array.get(cclose,i)
+        float t_open = array.get(copen,i)
+        if(abs(100*(t_close - t_open)/t_open) < fuzzy)
+            upcandles := upcandles +1
+            downcandles := downcandles +1
+            continue
+        if(t_close > t_open)
+            upcandles := upcandles +1
+        else if(t_close < t_open)
+            downcandles := downcandles +1
+            
+    // Timeframe must have non-NaN data, Price action must be valid, Cannot be Doji
+    if(doji_candle and relmove and nastate)                          
+        OB_bull := bullishOB and (upcandles == (ob_period-1))           // Identification logic (red OB candle & subsequent green candles)
+        OB_bear := bearishOB and (downcandles == (ob_period-1))         // Identification logic (green OB candle & subsequent green candles)
+        if(OB_bull)
+            if(ob_selector == "Context")
+                [temp_high,temp_low,index] = Low_Wick_Search(ob_period,ob_search,copen,clow,cclose)
+                selector_shift := index
+                OB_bull_chigh := temp_high
+                OB_bull_clow := temp_low
+            else if(ob_selector == "High/Low")
+                OB_bull_chigh   := array.get(chigh,ob_period-selector_shift)          //Determine OB upper limit (High)
+                OB_bull_clow    := array.get(clow,ob_period-selector_shift)           //Determine OB lower limit (Low)
+            else if(ob_selector == "OHLC")
+                [temp_high,temp_low,index] = Low_Wick_Search(ob_period-selector_shift,0,copen,clow,cclose)
+                OB_bull_chigh := temp_high
+                OB_bull_clow := temp_low
+            OB_bull_avg     := (OB_bull_chigh + OB_bull_clow)/2                 // Determine OB average
+        if(OB_bear)
+            if(ob_selector == "Context")
+                [temp_high,temp_low,index] = High_Wick_Search(ob_period,ob_search,copen,chigh,cclose)
+                selector_shift := index
+                OB_bear_chigh := temp_high
+                OB_bear_clow := temp_low
+            else if(ob_selector == "High/Low")
+                OB_bear_chigh   := array.get(chigh,ob_period-selector_shift)          // Determine OB upper limit (High)
+                OB_bear_clow    := array.get(clow,ob_period-selector_shift)           // Determine OB clower limit (Low)
+            else if(ob_selector == "OHLC")
+                [temp_high,temp_low,index] = High_Wick_Search(ob_period-selector_shift,0,copen,chigh,cclose)
+                OB_bear_chigh := temp_high
+                OB_bear_clow := temp_low
+            OB_bear_avg     := (OB_bear_clow + OB_bear_chigh)/2                 // Determine OB average
+    
+    //Create Zones based on user selection
+    sync := time_close(res) - (res=="" ? TimeframeToSec()*1000 : ResolutionToSec(res)*1000)
+    if(style=="LINE" or style=="BOTH")
+        //Bullish Channel Creation
+        if(OB_bull and bull_channels>0)
+            if array.size(LineBullAvg) == bull_channels
+                line.delete(array.get(LineBullAvg,0))
+                array.remove(LineBullAvg,0)
+                line.delete(array.get(LineBullHigh,0))
+                array.remove(LineBullHigh,0)
+                line.delete(array.get(LineBullLow,0))
+                array.remove(LineBullLow,0)
+            array.push(LineBullAvg,line.new(x1 = sync, xloc=xloc.bar_time, y1 = OB_bull_avg, x2 = sync+12, y2 = OB_bull_avg, extend = extend.right, color = linewidth_avg>0?bullcolor:na, style = line.style_dashed, width = linewidth_avg))
+            array.push(LineBullHigh,line.new(x1 = sync, xloc=xloc.bar_time,y1 = OB_bull_chigh, x2 = sync+12, y2 = OB_bull_chigh, extend = extend.right, color = linewidth_hl>0?bullcolor:na, style = line.style_solid, width = linewidth_hl))
+            array.push(LineBullLow,line.new(x1 = sync, xloc=xloc.bar_time, y1 = OB_bull_clow, x2 = sync+12, y2 = OB_bull_clow, extend = extend.right, color = linewidth_hl>0?bullcolor:na, style = line.style_solid, width = linewidth_hl))
+        //Bearish Channel Creation
+        if(OB_bear and bear_channels>0)
+            if array.size(LineBearAvg) == bear_channels
+                line.delete(array.get(LineBearAvg,0))
+                array.remove(LineBearAvg,0)
+                line.delete(array.get(LineBearHigh,0))
+                array.remove(LineBearHigh,0)
+                line.delete(array.get(LineBearLow,0))
+                array.remove(LineBearLow,0)
+            array.push(LineBearAvg,line.new(x1 = sync, xloc=xloc.bar_time, y1 = OB_bear_avg, x2 = sync+12, y2 = OB_bear_avg, extend = extend.right, color = linewidth_avg>0?bearcolor:na, style = line.style_dashed, width = linewidth_avg))
+            array.push(LineBearHigh,line.new(x1 = sync, xloc=xloc.bar_time, y1 = OB_bear_chigh, x2 = sync+12, y2 = OB_bear_chigh, extend = extend.right, color = linewidth_hl>0?bearcolor:na, style = line.style_solid, width = linewidth_hl))
+            array.push(LineBearLow,line.new(x1 = sync, xloc=xloc.bar_time, y1 = OB_bear_clow, x2 = sync+12, y2 = OB_bear_clow, extend = extend.right, color = linewidth_hl>0?bearcolor:na, style = line.style_solid, width = linewidth_hl))
+    if(style=="BOX" or style=="BOTH")
+        //Bullish Box Creation
+        if(OB_bull and bull_channels>0)
+            if array.size(BoxBull) == bull_channels
+                box.delete(array.get(BoxBull,0))
+                array.remove(BoxBull,0)
+            array.push(BoxBull,box.new(xloc=xloc.bar_time, left = sync, top = OB_bull_chigh, right = sync+12, bottom = OB_bull_clow, extend = extend.right, border_width=0, bgcolor = bullcolor))
+        //Bearish Box Creation
+        if(OB_bear and bear_channels>0)
+            if array.size(BoxBear) == bear_channels
+                box.delete(array.get(BoxBear,0))
+                array.remove(BoxBear,0)
+            array.push(BoxBear,box.new(xloc=xloc.bar_time, left = sync, top = OB_bear_chigh, right = sync+12, bottom = OB_bear_clow, extend = extend.right, border_width=0, bgcolor = bearcolor))
+
+    //Offset Calculation  
+    var sync_mult = ResolutionToSec(res)/TimeframeToSec()
+    os := -(ob_period-selector_shift) * (res == "" ? 1 : sync_mult)
+    start_time := round(array.get(ctime,ob_period-selector_shift))
+    end_time := round(array.get(ctime,ob_period-selector_shift-1))
+    avg_time = round((start_time + end_time)/2)
+    
+    //Custom Line/Label plotting
+    if(OB_bull)
+        _bc = color.new(bullcolor,0)
+        if(res=="")
+            Create_Label("Bull OB",_bc,yloc.belowbar,label.style_none,os)
+            Horizontal_Line(OB_bull_chigh,_bc,2,os,os - sync_mult)
+            Horizontal_Line(OB_bull_clow,_bc,2,os,os - sync_mult)
+            Horizontal_Line(OB_bull_avg,_bc,1,os,os - sync_mult)
+        else
+            Create_Label_2("Bull OB",avg_time,OB_bull_clow,_bc,label.style_none)
+            Horizontal_Line_2(OB_bull_chigh,start_time-1,end_time,_bc,2)
+            Horizontal_Line_2(OB_bull_clow,start_time,end_time,_bc,2)
+            Horizontal_Line_2(OB_bull_avg,start_time,end_time,_bc,1)
+    if(OB_bear)
+        _bc = color.new(bearcolor,0)
+        if(res=="")
+            Create_Label("Bear OB",_bc,yloc.abovebar,label.style_none,os)
+            Horizontal_Line(OB_bear_chigh,_bc,2,os,os - sync_mult)
+            Horizontal_Line(OB_bear_clow,_bc,2,os,os - sync_mult)
+            Horizontal_Line(OB_bear_avg,_bc,1,os,os - sync_mult)
+        else
+            Create_Label_2("Bear OB",avg_time,OB_bear_chigh,_bc,label.style_none)
+            Horizontal_Line_2(OB_bear_chigh,start_time-1,end_time,_bc,2)
+            Horizontal_Line_2(OB_bear_clow,start_time,end_time,_bc,2)
+            Horizontal_Line_2(OB_bear_avg,start_time,end_time,_bc,1)
+        
+//Alert Conditions
+alertcondition(OB_bull or OB_bear, "New Order Block")
+alertcondition(OB_bull,"New Bullish Order Block")                               //New OBs
+alertcondition(OB_bear,"New Bearish Order Block")

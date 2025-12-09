@@ -1,0 +1,1013 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Auto Pitchfork, Fib Retracement and Zig Zag
+//# *                - Auto Pitchfork, derived from build-in Auto Fib Retracement
+//# *                - Auto Fib Retracement, build-in
+//# *                - Zig Zag, derived from build-in Auto Fib Retracement 
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Mar 29, 2021
+//# *  Update     : Apr 03, 2021 : Added extended Pitchfork Levels (1.5, 1.75, 2)
+//# *                              Added ability to display previous Pivot Low/High Fib Retracement Levels
+//# *  Update     : Aug 25, 2022 : Added Second Pitchfork, and amarilla Pivots
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+pivots(src, length, isHigh) =>
+    l2 = length * 2
+    c = nz(src[length])
+    ok = true
+
+    for i = 0 to l2 by 1
+        if isHigh and src[i] > c
+            ok := false
+            ok
+
+        if not isHigh and src[i] < c
+            ok := false
+            ok
+    if ok
+        [bar_index[length], c]
+    else
+        [int(na), float(na)]
+
+calc_dev(base_price, price) =>
+    100 * (price - base_price) / price
+
+pivotFound(dev, dev_thresh, isHigh, isLastHigh, index, price, lastI, lastP, lastLine, ZigZag, zzColor, zzWidth, zzStyle) =>
+    if isLastHigh == isHigh and not na(lastLine)
+        // same direction
+        if isLastHigh ? price > lastP : price < lastP
+            line.set_xy2(lastLine, index, price)
+            [lastLine, isLastHigh]
+        else
+            [line(na), bool(na)]
+    else
+        // reverse the direction (or create the very first line)
+        if math.abs(dev) > dev_thresh
+            // price move is significant
+
+            // ---------------------------------------------------------------------------------------- //
+            [zzCol, zzWid, zzSty] = if not ZigZag
+                [na, 1, line.style_dashed]
+            else
+                [zzColor, zzWidth, zzStyle == 'Solid' ? line.style_solid : zzStyle == 'Dotted' ? line.style_dotted : line.style_dashed]
+            // ---------------------------------------------------------------------------------------- //
+
+            id = line.new(lastI, lastP, index, price, color=zzCol, width=zzWid, style=zzSty)
+            [id, isHigh]
+        else
+            [line(na), bool(na)]
+
+f_drawLineX(_x1, _y1, _x2, _y2, _xloc, _extend, _color, _style, _width) =>
+    var id = line.new(_x1, _y1, _x2, _y2, _xloc, _extend, _color, _style, _width)
+    line.set_xy1(id, _x1, _y1)
+    line.set_xy2(id, _x2, _y2)
+
+f_drawLabelX(_x, _y, _text, _xloc, _yloc, _color, _style, _textcolor, _size, _textalign, _tooltip) =>
+    var id = label.new(_x, _y, _text, _xloc, _yloc, _color, _style, _textcolor, _size, _textalign, _tooltip)
+    label.set_xy(id, _x, _y)
+    label.set_text(id, _text + '\n\n')
+    label.set_tooltip(id, _tooltip)
+
+f_crossingLevel(_curret, _level) =>
+    _level > _curret and _level < _curret[1] or _level < _curret and _level > _curret[1]
+
+f_getPitchfork(_type, iPrev2Pivot, pPrev2Pivot, iPrevPivot, pPrevPivot, iLastPivot, pLastPivot, lineLast) =>
+    var iStartMedian = 0
+    var pStartMedian = 0.
+    var iEndMedian   = 0
+    var pEndMedian   = 0.
+
+    if _type == 'Original'
+        iStartMedian := iPrev2Pivot
+        pStartMedian := pPrev2Pivot
+        iEndMedian   := int(math.avg(iPrevPivot, iLastPivot))
+        pEndMedian   := math.avg(pPrevPivot, pLastPivot)
+        pEndMedian
+
+    else if _type == 'Schiff'
+        iStartMedian := iPrev2Pivot
+        pStartMedian := math.avg(pPrevPivot, pPrev2Pivot)
+        iEndMedian   := int(math.avg(iPrevPivot, iLastPivot))
+        pEndMedian   := math.avg(pPrevPivot, pLastPivot)
+        pEndMedian
+
+    else if _type == 'Modified Schiff'
+        iStartMedian := int(math.avg(iPrevPivot, iPrev2Pivot))
+        pStartMedian := math.avg(pPrevPivot, pPrev2Pivot)
+        iEndMedian   := int(math.avg(iPrevPivot, iLastPivot))
+        pEndMedian   := math.avg(pPrevPivot, pLastPivot)
+        pEndMedian
+
+    else if _type == 'Inside'
+        iStartMedian := int(math.avg(iPrevPivot, iLastPivot))
+        pStartMedian := math.avg(pPrevPivot, pLastPivot)
+
+        iPvtDiff = math.abs(iPrevPivot - iLastPivot) / 2
+        pPvtDiff = math.abs(pPrevPivot - pLastPivot) / 2
+        slopeInside = (pLastPivot - math.avg(pPrevPivot, pPrev2Pivot)) / (iLastPivot - math.avg(iPrevPivot, iPrev2Pivot))
+
+        interceptX = pLastPivot + (pPrevPivot > pLastPivot ? 1 : -1) * pPvtDiff - slopeInside * (iLastPivot - iPvtDiff)
+        iEndMedian := line.get_x2(lineLast)
+        pEndMedian := slopeInside * iEndMedian + interceptX
+        pEndMedian
+
+    [iStartMedian, pStartMedian, iEndMedian, pEndMedian]
+
+//------------------------------------------------------------------------------
+// security() function free higher timeframe price calculations
+
+f_htf_ohlc(_go, _htf, _s, _wStart) =>
+    var htf_o  = 0., var htf_h  = 0., var htf_l  = 0., htf_c = close    // higher time frame ohlc
+    var htf_ox = 0., var htf_hx = 0., var htf_lx = 0., var htf_cx = 0.  // previous higher time frame ohlc
+
+    if _go
+        if _htf == 'D' and _s == 'Daily' ? dayofweek != dayofweek[1] : _htf == 'W' ? dayofweek(time) == _wStart and ta.change(time('D')) : ta.change(time(_htf))
+            htf_ox := htf_o
+            htf_o  := open
+            htf_hx := htf_h
+            htf_h  := high
+            htf_lx := htf_l
+            htf_l  := low
+            htf_cx := htf_c[1]
+            htf_cx
+        else
+            htf_h := math.max(high, htf_h)
+            htf_l := math.min(low, htf_l)
+            htf_l
+
+    [htf_ox, htf_hx, htf_lx, htf_cx, htf_o, htf_h, htf_l, htf_c]
+
+//------------------------------------------------------------------------------
+// Get Pivot Points and Support & Resistance Levels
+
+f_get_pivot(_go, _pvt, _o, _h, _l, _c, _o0) =>
+    var r6x = 0., var r5x = 0., var r4x = 0., var r3x = 0.
+    var s3x = 0., var s4x = 0., var s5x = 0., var s6x = 0.
+
+    if _go
+        if _pvt == 'Camarilla'
+            r5x := _h / _l * _c
+            r4x := _c + (_h - _l) * 1.1 / 2
+            r3x := _c + (_h - _l) * 1.1 / 4
+            //r2x := _c + (_h - _l) * 1.1 / 6
+            //r1x := _c + (_h - _l) * 1.1 / 12
+            r6x := r5x + 1.168 * (r5x - r4x)
+            //s1x := _c - (_h - _l) * 1.1 / 12
+            //s2x := _c - (_h - _l) * 1.1 / 6
+            s3x := _c - (_h - _l) * 1.1 / 4
+            s4x := _c - (_h - _l) * 1.1 / 2
+            s5x := _c - (r5x - _c)
+            s6x := _c - (r6x - _c)
+            s6x
+
+    [r6x, r5x, r4x, r3x, s3x, s4x, s5x, s6x]
+
+f_crossingLevelX(_price, _level) =>
+    (_level > _price and _level < _price[1]) or (_level < _price and _level > _price[1])
+
+f_drawLineX2(_x1, _y1, _x2, _y2, _xloc, _extend, _color, _style, _width) =>
+    var id = line.new(_x1, _y1, _x2, _y2, _xloc, _extend, _color, _style, _width)
+
+    if _y1 > 0 and _y2 > 0
+        line.set_xy1(id, _x1, _y1)
+        line.set_xy2(id, _x2, _y2)
+        line.set_color(id, _color)
+    else
+        line.set_xy1(id, _x1, close)
+        line.set_xy2(id, _x2, close)
+        line.set_color(id, #ffffff00)
+
+f_drawLabelX2(_x, _y, _text, _xloc, _yloc, _color, _style, _textcolor, _size, _textalign, _tooltip) =>
+    var id = label.new(_x, _y, _text, _xloc, _yloc, _color, _style, _textcolor, _size, _textalign, _tooltip)
+    label.set_text(id, _text)
+    label.set_tooltip(id, _tooltip)
+    
+    if _y > 0
+        label.set_xy(id, _x, _y)
+        label.set_textcolor(id, _textcolor)
+    else
+        label.set_xy(id, _x, close)
+        label.set_textcolor(id, #00000000)
+
+f_processPivotLevelX(_show, _x1, _y, _x2, _c, _s, _w, _lb, pivot, _levels, _pos, _size) =>
+    if _show
+        f_drawLineX2(_x1, _y, _x2, _y, xloc.bar_time, extend.none, _c, _s, _w)
+
+        if _levels != 'None' and _lb != ''
+            f_drawLabelX2(_pos == 'Last Bar' ? timenow : _x2, _y, (_levels == 'Levels' ? _lb : _lb + ' (' + str.tostring(_y, format.mintick) + ')') + (_pos == 'Last Bar' ? '\n\n' : ''), xloc.bar_time, yloc.price, #00000000, label.style_label_left, _c, _size, text.align_left, pivot + ' ' + _lb + ' (' + str.tostring(_y, format.mintick) + ')')
+
+    if f_crossingLevelX(close, _y) and _show
+        alert(pivot + ' (PVTvX) : ' + syminfo.ticker + ' crossing ' + pivot + ' level ' + _lb + ' level, price ' + str.tostring(_y, format.mintick))
+
+f_getStyle(_style) =>
+    _style == 'Solid' ? line.style_solid : _style == 'Dotted' ? line.style_dotted : line.style_dashed
+
+indicator('Auto Pitchfork, Fib Retracement and Zig Zag by DGT', 'PITCHFORK ʙʏ DGT ☼☾', true, max_lines_count = 500)
+
+// -Inputs ══════════════════════════════════════════════════════════════════════════════════════ //
+
+tooltip_threshold = 'Deviation is a multiplier that affects how much the price should deviate from the previous pivot in order for the bar to become a new pivot' + 
+                     '\n\nDepth affects the minimum number of bars that will be taken into account when building'
+tooltip_pitchfork = 'Pitchfork is a technical indicator for a quick and easy way for traders to identify possible levels of support and resistance' + 
+                     '\n\nAndrews\' Pitchfork (Original) best fit in a Strong Trending Market' + 
+                     '\nSchiff and Modified Pitchfork better with Correcting or Sideways Market' + 
+                     '\nModified Pitchfork is almost identical to a Parallel Chanel'
+
+group_pitchfork  = 'First Pitchfork Settings'
+
+pPitch   = input.bool(true, 'First Pitchfork Type', inline='PIT', group=group_pitchfork, tooltip=tooltip_pitchfork)
+pTypeP   = input.string('Original', '              ', options=['Original', 'Schiff', 'Modified Schiff', 'Inside'], inline='PIT', group=group_pitchfork)
+
+dev_threshold = ta.atr(10) / close * 100 * input.float(5, 'Deviation', minval=0, inline='Pivots', tooltip=tooltip_threshold, group=group_pitchfork)
+depth         = input.int(34, '         Depth', minval=1, inline='Pivots', group=group_pitchfork)
+
+pLabels  = input.string('Levels (Prices)', 'Pitchfork Level Labels', options=['Levels', 'Prices', 'Levels (Prices)', 'None'], inline='pLines', group=group_pitchfork)
+pLevels  = input.string('Small', '', options=['Small', 'Normal'], inline='pLines', group=group_pitchfork)
+
+bgPitch  = input.int(89, 'Background Transparency', minval=0, maxval=100, group=group_pitchfork)
+histPivot     = input.int(0, 'Historical Pitchforks/Fibonacci Levels', minval=0, group=group_pitchfork)
+pextendL = input.bool(false, 'Extend Pitchfork Lines', group=group_pitchfork)
+pcolor_m = input.color(#f44336, 'Median Line         ', inline='PLM', group=group_pitchfork)
+pwidth_m = input.int(3, '', minval=1, inline='PLM', group=group_pitchfork)
+pstyle_m = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='PLM', group=group_pitchfork)
+
+group_pitchfork2 = 'Second Pitchfork Settings'
+
+pPitch2   = input.bool(false, 'Second Pitchfork Type', inline='PIT2', group=group_pitchfork2, tooltip=tooltip_pitchfork)
+pTypeP2   = input.string('Original', '             ', options=['Original', 'Schiff', 'Modified Schiff', 'Inside'], inline='PIT2', group=group_pitchfork2)
+
+dev_threshold2 = ta.atr(10) / close * 100 * input.float(3, 'Deviation', minval=0, inline='Pivots', tooltip=tooltip_threshold, group=group_pitchfork2)
+depth2         = input.int(13, '         Depth', minval=1, inline='Pivots', group=group_pitchfork2)
+
+pLabels2  = input.string('None', 'Pitchfork Level Labels', options=['Levels', 'Prices', 'Levels (Prices)', 'None'], inline='pLines', group=group_pitchfork2)
+pLevels2  = input.string('Small', '', options=['Small', 'Normal'], inline='pLines', group=group_pitchfork2)
+
+bgPitch2  = input.int(89, 'Background Transparency', minval=0, maxval=100, group=group_pitchfork2)
+histPivot2     = input.int(0, 'Historical Pitchforks/Fibonacci Levels', minval=0, group=group_pitchfork2)
+pextendL2 = input.bool(false, 'Extend Pitchfork Lines', group=group_pitchfork2)
+pcolor_m2 = input.color(#f44336, 'Median Line         ', inline='PLM', group=group_pitchfork2)
+pwidth_m2 = input.int(3, '', minval=1, inline='PLM', group=group_pitchfork2)
+pstyle_m2 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='PLM', group=group_pitchfork2)
+
+// Pitchfork
+// ---------------------------------------------------------------------------------------- //
+// Zig Zag
+
+ZigZag  = input.bool(false, 'First Zig Zag   ', inline='ZZ', group='Zig Zag Settings', tooltip='Deviation/Depth settings from First Pitchfork')
+zzColor = input.color(color.orange, '', inline='ZZ', group='Zig Zag Settings')
+zzWidth = input.int(1, '', minval=1, inline='ZZ', group='Zig Zag Settings')
+zzStyle = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='ZZ', group='Zig Zag Settings')
+
+ZigZag2  = input.bool(false, 'Second Zig Zag   ', inline='ZZ2', group='Zig Zag Settings', tooltip='Deviation/Depth settings from Second Pitchfork')
+zzColor2 = input.color(color.orange, '', inline='ZZ2', group='Zig Zag Settings')
+zzWidth2 = input.int(1, '', minval=1, inline='ZZ2', group='Zig Zag Settings')
+zzStyle2 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='ZZ2', group='Zig Zag Settings')
+
+// Zig Zag
+// ---------------------------------------------------------------------------------------- //
+// Fibonacci 
+
+group_fib_Retracement = 'Fibonacci Retracement/Extension Settings'
+
+i_isFib   = input.bool(true, 'Pick a Fibonacci Tool', inline='FIB', group=group_fib_Retracement, tooltip='Deviation/Depth settings from First Pitchfork')
+i_fibTool = input.string('Extentions', '             ', options=['Retracements', 'Extentions'], inline='FIB', group=group_fib_Retracement)
+
+i_reverse = input.bool(false, 'Reverse Levels   ', inline='fLines', group=group_fib_Retracement)
+i_extend  = input.bool(false, 'Extend Lines', inline='fLines', group=group_fib_Retracement)
+
+i_levels  = input.string('Levels', 'Level Labels', options=['Levels', 'Prices', 'Levels (Prices)', 'None'], inline='fLines1', group=group_fib_Retracement)
+i_levelsP = input.string('Pivot Start', '', options=['Last Bar', 'Pivot Start'], inline='fLines1', group=group_fib_Retracement)
+i_levelsF = input.string('Small', '', options=['Small', 'Normal'], inline='fLines1', group=group_fib_Retracement)
+
+// Fibonacci 
+// ---------------------------------------------------------------------------------------- //
+// Pivots
+
+group_pick_a_pivot = 'Pivot Points Setup'
+tooltip_pick_a_pivot = 'Pivot Points is a technical analysis indicator used to determine the overall trend of the market over different time frames.'
+
+tooltip_tf           = 'The indicator resolution is set by the input of the Pivot Points TF. If the Pivot Points TF is set to AUTO (the default value), then the increased resolution is determined by the following algorithm:\n' +
+                       ' - for intraday resolutions up to and including 15 min, DAY (1D) is used\n - for intraday resolutions more than 15 min, WEEK (1W) is used\n - for daily resolutions MONTH is used (1M)\n - for weekly and monthly resolutions, 12-MONTH (12M) is used\n\n' +
+                       'ps : difference between Session and Daily - Daily will take into account extended hours (if present on the chart) during pivot calculations, whereas Session will assume only regular trading hours. Session is default value for AUTO pivot timeframe'
+
+pivot  = input.string('Camarilla', 'Pick a Pivot', options=['Camarilla', 'None'], group=group_pick_a_pivot, tooltip=tooltip_pick_a_pivot)
+
+htf_tf = input.string('Auto', 'Pivot Points Timeframe', options=['Auto', '15 Min', '1 Hour', '4 Hour', 'Session', 'Daily', 'Weekly', 'Monthly', 'Quarterly', 'Yearly'], group=group_pick_a_pivot, tooltip=tooltip_tf)
+htf    = htf_tf == '15 Min' ? '15' : htf_tf == '1 Hour' ? '60' : htf_tf == '4 Hour' ? '240' : htf_tf == 'Session' ? 'D' : htf_tf == 'Daily' ? 'D' : htf_tf == 'Weekly' ? 'W' : htf_tf == 'Monthly' ? 'M' : htf_tf == 'Quarterly' ? '3M' : htf_tf == 'Yearly' ? '12M' : 
+          timeframe.isintraday and (timeframe.period == '1'  or timeframe.period == '3'  or timeframe.period == '5'  or timeframe.period == '15') ? 'D' : 
+          timeframe.isintraday and (timeframe.period == '30' or timeframe.period == '45' or timeframe.period == '60' or timeframe.period == '120' or timeframe.period == '180' or timeframe.period == '240') ? 'W' : 
+          timeframe.isdaily ? 'M' : timeframe.isweekly or timeframe.ismonthly ? '12M' : '3M'
+
+customStrat = input.string('Monday', '* Start Trading Week from Specific Day', options=['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'], group=group_pick_a_pivot, tooltip='Applicable for Weekly Pivot Points Timeframe only')
+wStart = switch customStrat
+    'Monday'    => 2//dayofweek.monday
+    'Tuesday'   => 3//dayofweek.tuesday 
+    'Wednesday' => 4//dayofweek.wednesday
+    'Thursday'  => 5//dayofweek.thursday
+    'Friday'    => 6//dayofweek.friday
+    'Saturday'  => 7//dayofweek.saturday
+    'Sunday'    => 1//dayofweek.sunday
+
+srLabel    = input.string('Levels (Prices)', 'Pivot S&R Levels', options=['Levels', 'Levels (Prices)', 'None'], inline = 'LBL', group=group_pick_a_pivot)
+srLabelPos = input.string('Pivot End', '', options=['Last Bar', 'Pivot End'], inline = 'LBL', group=group_pick_a_pivot)
+srLableSz  = input.string('Small', '', options=['Small', 'Normal'], inline='LBL', group=group_pick_a_pivot)
+
+i_show_r   = input.bool(true, 'Resistance Lines', inline='rLevel11', group=group_pick_a_pivot)
+i_style_r  = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='rLevel11', group=group_pick_a_pivot)
+i_width_r  = input.int(2, '', minval=1, inline='rLevel11', group=group_pick_a_pivot)
+i_color_r3 = input.color(#ff9800, 'R3', inline='rLevel13', group=group_pick_a_pivot)
+i_color_r4 = input.color(#ff9800, 'R4', inline='rLevel13', group=group_pick_a_pivot)
+i_color_r5 = input.color(#ff9800, 'R5', inline='rLevel13', group=group_pick_a_pivot)
+i_color_r6 = input.color(#ff980000, 'R6', inline='rLevel13', group=group_pick_a_pivot)
+
+i_show_s   = input.bool(true, 'Support Lines ', inline='sLevel1', group=group_pick_a_pivot)
+i_style_s  = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='sLevel1', group=group_pick_a_pivot)
+i_width_s  = input.int(2, '', minval=1, inline='sLevel1', group=group_pick_a_pivot)
+i_color_s3 = input.color(#ff9800, 'S3', inline='sLevel', group=group_pick_a_pivot)
+i_color_s4 = input.color(#ff9800, 'S4', inline='sLevel', group=group_pick_a_pivot)
+i_color_s5 = input.color(#ff9800, 'S5', inline='sLevel', group=group_pick_a_pivot)
+i_color_s6 = input.color(#ff980000, 'S6', inline='sLevel', group=group_pick_a_pivot)
+
+dispHist  = input.string('None', 'Show Historical Pivots', options=['Selected Pivots', 'None'], group=group_pick_a_pivot)
+
+// -Calculations ════════════════════════════════════════════════════════════════════════════════ //
+
+// ---------------------------------------------------------------------------------------- //
+// Fibonacci, Pitchfork and Zig Zag
+
+var line lineLast = na
+var int iLast     = 0
+var int iPrev     = 0
+var float pLast   = 0
+var isHighLast    = false  // otherwise the last pivot is a low pivot
+
+var iPrevPivotRef = 0
+var pPrevPivotRef = 0.
+var iLastPivotRef = 0
+var pLastPivotRef = 0.
+
+[iH, pH]   = pivots(high, depth  / 2, true )
+[iL, pL]   = pivots(low , depth  / 2, false)
+
+if not na(iH)
+    dev = calc_dev(pLast, pH)
+    [id, isHigh] = pivotFound(dev, dev_threshold, true, isHighLast, iH, pH, iLast, pLast, lineLast, ZigZag, zzColor, zzWidth, zzStyle)
+
+    if not na(id)
+        if id != lineLast
+            // ---------------------------------------------------------------------------------------- //
+
+            iPrevPivotRef := line.get_x1(lineLast)
+            pPrevPivotRef := line.get_y1(lineLast)
+            iLastPivotRef := line.get_x2(lineLast)
+            pLastPivotRef := line.get_y2(lineLast)
+
+            if not ZigZag
+            // ---------------------------------------------------------------------------------------- //
+
+                line.delete(lineLast)
+
+        lineLast := id
+        isHighLast := isHigh
+        iPrev := iLast
+        iLast := iH
+        pLast := pH
+        pLast
+else
+    if not na(iL)
+        dev = calc_dev(pLast, pL)
+        [id, isHigh] = pivotFound(dev, dev_threshold, false, isHighLast, iL, pL, iLast, pLast, lineLast, ZigZag, zzColor, zzWidth, zzStyle)
+
+        if not na(id)
+            if id != lineLast
+                // ---------------------------------------------------------------------------------------- //
+
+                iPrevPivotRef := line.get_x1(lineLast)
+                pPrevPivotRef := line.get_y1(lineLast)
+                iLastPivotRef := line.get_x2(lineLast)
+                pLastPivotRef := line.get_y2(lineLast)
+
+                if not ZigZag
+                // ---------------------------------------------------------------------------------------- //
+
+                    line.delete(lineLast)
+
+            lineLast := id
+            isHighLast := isHigh
+            iPrev := iLast
+            iLast := iL
+            pLast := pL
+            pLast
+
+var line lineLast2 = na
+var int iLast2     = 0
+var int iPrev2     = 0
+var float pLast2   = 0
+var isHighLast2    = false  // otherwise the last pivot is a low pivot
+
+var iPrevPivotRef2 = 0
+var pPrevPivotRef2 = 0.
+var iLastPivotRef2 = 0
+var pLastPivotRef2 = 0.
+
+[iH2, pH2] = pivots(high, depth2 / 2, true )
+[iL2, pL2] = pivots(low , depth2 / 2, false)
+
+if not na(iH2)
+    dev = calc_dev(pLast2, pH2)
+    [id, isHigh] = pivotFound(dev, dev_threshold2, true, isHighLast2, iH2, pH2, iLast2, pLast2, lineLast2, ZigZag2, zzColor2, zzWidth2, zzStyle2)
+
+    if not na(id)
+        if id != lineLast2
+            // ---------------------------------------------------------------------------------------- //
+
+            iPrevPivotRef2 := line.get_x1(lineLast2)
+            pPrevPivotRef2 := line.get_y1(lineLast2)
+            iLastPivotRef2 := line.get_x2(lineLast2)
+            pLastPivotRef2 := line.get_y2(lineLast2)
+
+            if not ZigZag2
+            // ---------------------------------------------------------------------------------------- //
+
+                line.delete(lineLast2)
+
+        lineLast2 := id
+        isHighLast2 := isHigh
+        iPrev2 := iLast2
+        iLast2 := iH2
+        pLast2 := pH2
+        pLast2
+else
+    if not na(iL2)
+        dev = calc_dev(pLast2, pL2)
+        [id, isHigh] = pivotFound(dev, dev_threshold2, false, isHighLast2, iL2, pL2, iLast2, pLast2, lineLast2, ZigZag2, zzColor2, zzWidth2, zzStyle2)
+
+        if not na(id)
+            if id != lineLast2
+                // ---------------------------------------------------------------------------------------- //
+
+                iPrevPivotRef2 := line.get_x1(lineLast2)
+                pPrevPivotRef2 := line.get_y1(lineLast2)
+                iLastPivotRef2 := line.get_x2(lineLast2)
+                pLastPivotRef2 := line.get_y2(lineLast2)
+
+                if not ZigZag2
+                // ---------------------------------------------------------------------------------------- //
+
+                    line.delete(lineLast2)
+
+            lineLast2 := id
+            isHighLast2 := isHigh
+            iPrev2 := iLast2
+            iLast2 := iL2
+            pLast2 := pL2
+            pLast2
+
+// Fibonacci, Pitchfork and Zig Zag
+// ---------------------------------------------------------------------------------------- //
+
+iPrev2Pivot = histPivot > 0 ? ta.valuewhen(ta.change(iPrevPivotRef), iPrevPivotRef, histPivot + 1) : ta.valuewhen(ta.change(iPrevPivotRef), iPrevPivotRef, 1)
+pPrev2Pivot = histPivot > 0 ? ta.valuewhen(ta.change(pPrevPivotRef), pPrevPivotRef, histPivot + 1) : ta.valuewhen(ta.change(pPrevPivotRef), pPrevPivotRef, 1)
+iLastPivot  = histPivot > 0 ? ta.valuewhen(ta.change(iLastPivotRef), iLastPivotRef, histPivot)     : ta.valuewhen(ta.change(iLastPivotRef), iLastPivotRef, 0)
+pLastPivot  = histPivot > 0 ? ta.valuewhen(ta.change(pLastPivotRef), pLastPivotRef, histPivot)     : ta.valuewhen(ta.change(pLastPivotRef), pLastPivotRef, 0)
+iPrevPivot  = histPivot > 0 ? ta.valuewhen(ta.change(iPrevPivotRef), iPrevPivotRef, histPivot)     : ta.valuewhen(ta.change(iPrevPivotRef), iPrevPivotRef, 0)
+pPrevPivot  = histPivot > 0 ? ta.valuewhen(ta.change(pPrevPivotRef), pPrevPivotRef, histPivot)     : ta.valuewhen(ta.change(pPrevPivotRef), pPrevPivotRef, 0)
+
+var a_lnr  = array.new_line()
+if ta.change(time) and array.size(a_lnr) > 0
+    for i = 1 to array.size(a_lnr)
+        line.delete(array.shift(a_lnr))
+
+var a_lns  = array.new_line()
+if ta.change(time) and array.size(a_lns) > 0
+    for i = 1 to array.size(a_lns)
+        line.delete(array.shift(a_lns))
+
+var a_lf  = array.new_linefill()
+if ta.change(time) and array.size(a_lf)   > 0
+    for i = 1 to array.size(a_lf)
+        linefill.delete(array.shift(a_lf))
+
+
+f_drawPitchLine(_iStart, _pStart, _iEnd, _pEnd, _color, _width, _style, _level) =>
+    style = _style == 'Solid' ? line.style_solid : _style == 'Dotted' ? line.style_dotted : line.style_dashed
+    if _iEnd < bar_index
+        if _level
+            array.push(a_lnr, line.new(_iStart, _pStart, _iEnd, _pEnd, xloc.bar_index, pextendL ? extend.both : extend.right, _color, style, _width))
+        else
+            array.push(a_lns, line.new(_iStart, _pStart, _iEnd, _pEnd, xloc.bar_index, pextendL ? extend.both : extend.right, _color, style, _width))
+
+iPrev2Pivot2 = histPivot2 > 0 ? ta.valuewhen(ta.change(iPrevPivotRef2), iPrevPivotRef2, histPivot2 + 1) : ta.valuewhen(ta.change(iPrevPivotRef2), iPrevPivotRef2, 1)
+pPrev2Pivot2 = histPivot2 > 0 ? ta.valuewhen(ta.change(pPrevPivotRef2), pPrevPivotRef2, histPivot2 + 1) : ta.valuewhen(ta.change(pPrevPivotRef2), pPrevPivotRef2, 1)
+iLastPivot2  = histPivot2 > 0 ? ta.valuewhen(ta.change(iLastPivotRef2), iLastPivotRef2, histPivot2)     : ta.valuewhen(ta.change(iLastPivotRef2), iLastPivotRef2, 0)
+pLastPivot2  = histPivot2 > 0 ? ta.valuewhen(ta.change(pLastPivotRef2), pLastPivotRef2, histPivot2)     : ta.valuewhen(ta.change(pLastPivotRef2), pLastPivotRef2, 0)
+iPrevPivot2  = histPivot2 > 0 ? ta.valuewhen(ta.change(iPrevPivotRef2), iPrevPivotRef2, histPivot2)     : ta.valuewhen(ta.change(iPrevPivotRef2), iPrevPivotRef2, 0)
+pPrevPivot2  = histPivot2 > 0 ? ta.valuewhen(ta.change(pPrevPivotRef2), pPrevPivotRef2, histPivot2)     : ta.valuewhen(ta.change(pPrevPivotRef2), pPrevPivotRef2, 0)
+
+var a_lnr2  = array.new_line()
+if ta.change(time) and array.size(a_lnr2) > 0
+    for i = 1 to array.size(a_lnr2)
+        line.delete(array.shift(a_lnr2))
+
+var a_lns2  = array.new_line()
+if ta.change(time) and array.size(a_lns2) > 0
+    for i = 1 to array.size(a_lns2)
+        line.delete(array.shift(a_lns2))
+
+var a_lf2  = array.new_linefill()
+if ta.change(time) and array.size(a_lf2)   > 0
+    for i = 1 to array.size(a_lf2)
+        linefill.delete(array.shift(a_lf2))
+
+
+f_drawPitchLine2(_iStart, _pStart, _iEnd, _pEnd, _color, _width, _style, _level) =>
+    style = _style == 'Solid' ? line.style_solid : _style == 'Dotted' ? line.style_dotted : line.style_dashed
+    if _iEnd < bar_index
+        if _level
+            array.push(a_lnr2, line.new(_iStart, _pStart, _iEnd, _pEnd, xloc.bar_index, pextendL2 ? extend.both : extend.right, _color, style, _width))
+        else
+            array.push(a_lns2, line.new(_iStart, _pStart, _iEnd, _pEnd, xloc.bar_index, pextendL2 ? extend.both : extend.right, _color, style, _width))
+
+// ---------------------------------------------------------------------------------------- //
+// Pitchfork
+
+[iStartMedian, pStartMedian, iEndMedian, pEndMedian] = f_getPitchfork(pTypeP, iPrev2Pivot, pPrev2Pivot, iPrevPivot, pPrevPivot, iLastPivot, pLastPivot, lineLast)
+slopeMedianP = (pEndMedian - pStartMedian) / (iEndMedian - iStartMedian)
+
+if pPitch
+    pstyle = pstyle_m == 'Solid' ? line.style_solid : pstyle_m == 'Dotted' ? line.style_dotted : line.style_dashed
+    f_drawLineX(iStartMedian, pStartMedian, iEndMedian, pEndMedian, xloc.bar_index, pextendL ? extend.both : extend.right, pcolor_m, pstyle          , pwidth_m)
+    f_drawLineX(iPrevPivot  , pPrevPivot  , iLastPivot, pLastPivot, xloc.bar_index, extend.none                          , pcolor_m, line.style_solid, pwidth_m)
+
+    if pTypeP != 'Original'
+        f_drawLineX(iPrev2Pivot, pPrev2Pivot, iPrevPivot, pPrevPivot, xloc.bar_index, extend.none, pcolor_m, line.style_solid, pwidth_m)
+
+    if pTypeP == 'Inside'
+        f_drawLineX(int(math.round(math.avg(iPrevPivot, iPrev2Pivot))), math.avg(pPrevPivot, pPrev2Pivot), iLastPivot, pLastPivot, xloc.bar_index, extend.none, pcolor_m, line.style_solid, pwidth_m)
+
+    mPrice = slopeMedianP * bar_index + pStartMedian - slopeMedianP * iStartMedian
+    
+    if pLabels != 'None'
+        mTip = str.tostring(mPrice, format.mintick)
+        mTxt = pLabels == 'Prices' ?  mTip : pLabels == 'Levels (Prices)' ? 'PF1 M (' + mTip + ')' : 'PF1 M'
+        size = pLevels == 'Small' ? size.small : size.normal
+        f_drawLabelX(bar_index, mPrice, mTxt, xloc.bar_index, yloc.price, #00000000 , label.style_label_left, pcolor_m , size     , text.align_left, mTip)
+        f_drawLabelX(bar_index, mPrice, ''  , xloc.bar_index, yloc.price, pcolor_m  , label.style_circle    , #00000000, size.auto, text.align_left, ''  )
+
+    if f_crossingLevel(close, mPrice)
+        alert('AutoPitchfork: ' + syminfo.ticker + ' crossing median level')
+
+processPitchforkLevel(show, level, colorL, widthL, styleL) =>
+    if pPitch
+        iPvtDiff = math.abs(iPrevPivot - iLastPivot) / 2
+        pPvtDiff = math.abs(pPrevPivot - pLastPivot) / 2
+
+        iStartX = pPrevPivot > pLastPivot ? int(math.round((pTypeP == 'Inside' ? iStartMedian : iEndMedian) - iPvtDiff * level)) : int(math.round((pTypeP == 'Inside' ? iStartMedian : iEndMedian) + iPvtDiff * level))
+        interceptX = (pTypeP == 'Inside' ? pStartMedian : pEndMedian) + pPvtDiff * level - slopeMedianP * iStartX
+        pStartX = slopeMedianP * iStartX + interceptX
+        iEndX = line.get_x2(lineLast)
+        pEndX = slopeMedianP * iEndX + interceptX
+
+        iStartY = pPrevPivot > pLastPivot ? int(math.round((pTypeP == 'Inside' ? iStartMedian : iEndMedian) + iPvtDiff * level)) : int(math.round((pTypeP == 'Inside' ? iStartMedian : iEndMedian) - iPvtDiff * level))
+        interceptY = (pTypeP == 'Inside' ? pStartMedian : pEndMedian) - pPvtDiff * level - slopeMedianP * iStartY
+        pStartY = slopeMedianP * iStartY + interceptY
+        iEndY = line.get_x2(lineLast)
+        pEndY = slopeMedianP * iEndY + interceptY
+
+        if show
+            f_drawPitchLine(iStartX, pStartX, iEndX, pEndX, colorL, widthL, styleL, true )
+            f_drawPitchLine(iStartY, pStartY, iEndY, pEndY, colorL, widthL, styleL, false)
+
+            rPrice = slopeMedianP * bar_index + interceptX
+            sPrice = slopeMedianP * bar_index + interceptY
+            
+            if pLabels != 'None' and level != 0.
+                rTip = str.tostring(rPrice, format.mintick)
+                sTip = str.tostring(sPrice, format.mintick)
+                rTxt = pLabels == 'Prices' ?  rTip : pLabels == 'Levels (Prices)' ? 'PF1 ' + str.tostring(level) + ' R (' + rTip + ')' : 'PF1 ' + str.tostring(level) + ' R'
+                sTxt = pLabels == 'Prices' ?  sTip : pLabels == 'Levels (Prices)' ? 'PF1 ' + str.tostring(level) + ' S (' + sTip + ')' : 'PF1 ' + str.tostring(level) + ' S'
+                size = pLevels == 'Small' ? size.small : size.normal
+        
+                f_drawLabelX(bar_index, rPrice, rTxt, xloc.bar_index, yloc.price, #00000000, label.style_label_left, colorL   , size     , text.align_left, rTip)
+                f_drawLabelX(bar_index, sPrice, sTxt, xloc.bar_index, yloc.price, #00000000, label.style_label_left, colorL   , size     , text.align_left, sTip)
+                f_drawLabelX(bar_index, rPrice, ''  , xloc.bar_index, yloc.price, colorL   , label.style_circle    , #00000000, size.auto, text.align_left, ''  )
+                f_drawLabelX(bar_index, sPrice, ''  , xloc.bar_index, yloc.price, colorL   , label.style_circle    , #00000000, size.auto, text.align_left, ''  )
+
+            if f_crossingLevel(close, rPrice)
+                alert('AutoPitchfork: ' + syminfo.ticker + ' crossing resistance level' + str.tostring(level))
+            if f_crossingLevel(close, sPrice)
+                alert('AutoPitchfork: ' + syminfo.ticker + ' crossing support level' + str.tostring(level))
+            
+            if bgPitch > 0
+                rLines = array.size(a_lnr)
+                if rLines > 1
+                    array.push(a_lf, linefill.new(array.get(a_lnr, rLines - 2), array.get(a_lnr, rLines - 1), color.new(colorL, bgPitch)))
+                sLines = array.size(a_lns)
+                if sLines > 1
+                    array.push(a_lf, linefill.new(array.get(a_lns, sLines - 2), array.get(a_lns, sLines - 1), color.new(colorL, bgPitch)))
+
+processPitchforkLevel(pPitch, 0., pcolor_m, pwidth_m, pstyle_m)
+
+pshow_0_25 = input.bool(false, '', inline='pLevel_0_25', group=group_pitchfork)
+pvalue_0_25 = input.float(.25, '', minval=.0, step=.1, inline='pLevel_0_25', group=group_pitchfork)
+pcolor_0_25 = input.color(#ffb74d, '', inline='pLevel_0_25', group=group_pitchfork)
+pwidth_0_25 = input.int(1, '', minval=1, inline='pLevel_0_25', group=group_pitchfork)
+pstyle_0_25 = input.string('Dashed', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_25', group=group_pitchfork)
+processPitchforkLevel(pshow_0_25, pvalue_0_25, pcolor_0_25, pwidth_0_25, pstyle_0_25)
+
+pshow_0_382 = input.bool(false, '', inline='pLevel_0_382', group=group_pitchfork)
+pvalue_0_382 = input.float(.382, '', minval=.0, step=.1, inline='pLevel_0_382', group=group_pitchfork)
+pcolor_0_382 = input.color(#81c784, '', inline='pLevel_0_382', group=group_pitchfork)
+pwidth_0_382 = input.int(1, '', minval=1, inline='pLevel_0_382', group=group_pitchfork)
+pstyle_0_382 = input.string('Dotted', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_382', group=group_pitchfork)
+processPitchforkLevel(pshow_0_382, pvalue_0_382, pcolor_0_382, pwidth_0_382, pstyle_0_382)
+
+pshow_0_50 = input.bool(true, '', inline='pLevel_0_50', group=group_pitchfork)
+pvalue_0_50 = input.float(.5, '', minval=.0, step=.1, inline='pLevel_0_50', group=group_pitchfork)
+pcolor_0_50 = input.color(#4caf50, '', inline='pLevel_0_50', group=group_pitchfork)
+pwidth_0_50 = input.int(1, '', minval=1, inline='pLevel_0_50', group=group_pitchfork)
+pstyle_0_50 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_50', group=group_pitchfork)
+processPitchforkLevel(pshow_0_50, pvalue_0_50, pcolor_0_50, pwidth_0_50, pstyle_0_50)
+
+pshow_0_618 = input.bool(false, '', inline='pLevel_0_618', group=group_pitchfork)
+pvalue_0_618 = input.float(.618, '', minval=.0, step=.1, inline='pLevel_0_618', group=group_pitchfork)
+pcolor_0_618 = input.color(#009688, '', inline='pLevel_0_618', group=group_pitchfork)
+pwidth_0_618 = input.int(1, '', minval=1, inline='pLevel_0_618', group=group_pitchfork)
+pstyle_0_618 = input.string('Dotted', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_618', group=group_pitchfork)
+processPitchforkLevel(pshow_0_618, pvalue_0_618, pcolor_0_618, pwidth_0_618, pstyle_0_618)
+
+pshow_0_75 = input.bool(false, '', inline='pLevel_0_75', group=group_pitchfork)
+pvalue_0_75 = input.float(.75, '', minval=.0, step=.1, inline='pLevel_0_75', group=group_pitchfork)
+pcolor_0_75 = input.color(#64b5f6, '', inline='pLevel_0_75', group=group_pitchfork)
+pwidth_0_75 = input.int(1, '', minval=1, inline='pLevel_0_75', group=group_pitchfork)
+pstyle_0_75 = input.string('Dashed', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_75', group=group_pitchfork)
+processPitchforkLevel(pshow_0_75, pvalue_0_75, pcolor_0_75, pwidth_0_75, pstyle_0_75)
+
+pshow_1 = input.bool(true, '', inline='pLevel_1', group=group_pitchfork)
+pvalue_1 = input.float(1, '', minval=.0, step=.1, inline='pLevel_1', group=group_pitchfork)
+pcolor_1 = input.color(#2196f3, '', inline='pLevel_1', group=group_pitchfork)
+pwidth_1 = input.int(2, '', minval=1, inline='pLevel_1', group=group_pitchfork)
+pstyle_1 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_1', group=group_pitchfork)
+processPitchforkLevel(pshow_1, pvalue_1, pcolor_1, pwidth_1, pstyle_1)
+
+pshow_1_50 = input.bool(false, '', inline='pLevel_1_50', group=group_pitchfork)
+pvalue_1_50 = input.float(1.5, '', minval=.0, step=.1, inline='pLevel_1_50', group=group_pitchfork)
+pcolor_1_50 = input.color(#9c27b0, '', inline='pLevel_1_50', group=group_pitchfork)
+pwidth_1_50 = input.int(1, '', minval=1, inline='pLevel_1_50', group=group_pitchfork)
+pstyle_1_50 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_1_50', group=group_pitchfork)
+processPitchforkLevel(pshow_1_50, pvalue_1_50, pcolor_1_50, pwidth_1_50, pstyle_1_50)
+
+pshow_1_75 = input.bool(false, '', inline='pLevel_1_75', group=group_pitchfork)
+pvalue_1_75 = input.float(1.75, '', minval=.0, step=.1, inline='pLevel_1_75', group=group_pitchfork)
+pcolor_1_75 = input.color(#e91e63, '', inline='pLevel_1_75', group=group_pitchfork)
+pwidth_1_75 = input.int(1, '', minval=1, inline='pLevel_1_75', group=group_pitchfork)
+pstyle_1_75 = input.string('Dashed', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_1_75', group=group_pitchfork)
+processPitchforkLevel(pshow_1_75, pvalue_1_75, pcolor_1_75, pwidth_1_75, pstyle_1_75)
+
+pshow_2 = input.bool(false, '', inline='pLevel_2', group=group_pitchfork)
+pvalue_2 = input.float(2, '', minval=.0, step=.1, inline='pLevel_2', group=group_pitchfork)
+pcolor_2 = input.color(#e57373, '', inline='pLevel_2', group=group_pitchfork)
+pwidth_2 = input.int(2, '', minval=1, inline='pLevel_2', group=group_pitchfork)
+pstyle_2 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_2', group=group_pitchfork)
+processPitchforkLevel(pshow_2, pvalue_2, pcolor_2, pwidth_2, pstyle_2)
+
+
+[iStartMedian2, pStartMedian2, iEndMedian2, pEndMedian2] = f_getPitchfork(pTypeP2, iPrev2Pivot2, pPrev2Pivot2, iPrevPivot2, pPrevPivot2, iLastPivot2, pLastPivot2, lineLast2)
+slopeMedianP2 = (pEndMedian2 - pStartMedian2) / (iEndMedian2 - iStartMedian2)
+
+if pPitch2
+    pstyle = pstyle_m2 == 'Solid' ? line.style_solid : pstyle_m2 == 'Dotted' ? line.style_dotted : line.style_dashed
+    f_drawLineX(iStartMedian2, pStartMedian2, iEndMedian2, pEndMedian2, xloc.bar_index, pextendL2 ? extend.both : extend.right, pcolor_m2, pstyle          , pwidth_m2)
+    f_drawLineX(iPrevPivot2  , pPrevPivot2  , iLastPivot2, pLastPivot2, xloc.bar_index, extend.none                          , pcolor_m2, line.style_solid, pwidth_m2)
+
+    if pTypeP2 != 'Original'
+        f_drawLineX(iPrev2Pivot2, pPrev2Pivot2, iPrevPivot2, pPrevPivot2, xloc.bar_index, extend.none, pcolor_m2, line.style_solid, pwidth_m2)
+
+    if pTypeP2 == 'Inside'
+        f_drawLineX(int(math.round(math.avg(iPrevPivot2, iPrev2Pivot2))), math.avg(pPrevPivot2, pPrev2Pivot2), iLastPivot2, pLastPivot2, xloc.bar_index, extend.none, pcolor_m2, line.style_solid, pwidth_m2)
+
+    mPrice = slopeMedianP2 * bar_index + pStartMedian2 - slopeMedianP2 * iStartMedian2
+    
+    if pLabels != 'None'
+        mTip = str.tostring(mPrice, format.mintick)
+        mTxt = pLabels2 == 'Prices' ?  mTip : pLabels2 == 'Levels (Prices)' ? 'PF2 M (' + mTip + ')' : 'PF2 M'
+        size = pLevels2 == 'Small' ? size.small : size.normal
+        f_drawLabelX(bar_index, mPrice, mTxt, xloc.bar_index, yloc.price, #00000000 , label.style_label_left, pcolor_m2 , size     , text.align_left, mTip)
+        f_drawLabelX(bar_index, mPrice, ''  , xloc.bar_index, yloc.price, pcolor_m2  , label.style_circle    , #00000000, size.auto, text.align_left, ''  )
+
+    if f_crossingLevel(close, mPrice)
+        alert('AutoPitchfork2: ' + syminfo.ticker + ' crossing median level')
+
+processPitchforkLevel2(show, level, colorL, widthL, styleL) =>
+    if pPitch2
+        iPvtDiff = math.abs(iPrevPivot2 - iLastPivot2) / 2
+        pPvtDiff = math.abs(pPrevPivot2 - pLastPivot2) / 2
+
+        iStartX = pPrevPivot2 > pLastPivot2 ? int(math.round((pTypeP2 == 'Inside' ? iStartMedian2 : iEndMedian2) - iPvtDiff * level)) : int(math.round((pTypeP2 == 'Inside' ? iStartMedian2 : iEndMedian2) + iPvtDiff * level))
+        interceptX = (pTypeP2 == 'Inside' ? pStartMedian2 : pEndMedian2) + pPvtDiff * level - slopeMedianP2 * iStartX
+        pStartX = slopeMedianP2 * iStartX + interceptX
+        iEndX = line.get_x2(lineLast2)
+        pEndX = slopeMedianP2 * iEndX + interceptX
+
+        iStartY = pPrevPivot2 > pLastPivot2 ? int(math.round((pTypeP2 == 'Inside' ? iStartMedian2 : iEndMedian2) + iPvtDiff * level)) : int(math.round((pTypeP2 == 'Inside' ? iStartMedian2 : iEndMedian2) - iPvtDiff * level))
+        interceptY = (pTypeP2 == 'Inside' ? pStartMedian2 : pEndMedian2) - pPvtDiff * level - slopeMedianP2 * iStartY
+        pStartY = slopeMedianP2 * iStartY + interceptY
+        iEndY = line.get_x2(lineLast2)
+        pEndY = slopeMedianP2 * iEndY + interceptY
+
+        if show
+            f_drawPitchLine2(iStartX, pStartX, iEndX, pEndX, colorL, widthL, styleL, true )
+            f_drawPitchLine2(iStartY, pStartY, iEndY, pEndY, colorL, widthL, styleL, false)
+
+            rPrice = slopeMedianP2 * bar_index + interceptX
+            sPrice = slopeMedianP2 * bar_index + interceptY
+            
+            if pLabels2 != 'None' and level != 0.
+                rTip = str.tostring(rPrice, format.mintick)
+                sTip = str.tostring(sPrice, format.mintick)
+                rTxt = pLabels2 == 'Prices' ?  rTip : pLabels2 == 'Levels (Prices)' ? 'PF2 ' + str.tostring(level) + ' R (' + rTip + ')' : 'PF2 ' + str.tostring(level) + ' R'
+                sTxt = pLabels2 == 'Prices' ?  sTip : pLabels2 == 'Levels (Prices)' ? 'PF2 ' + str.tostring(level) + ' S (' + sTip + ')' : 'PF2 ' + str.tostring(level) + ' S'
+                size = pLevels2 == 'Small' ? size.small : size.normal
+        
+                f_drawLabelX(bar_index, rPrice, rTxt, xloc.bar_index, yloc.price, #00000000, label.style_label_left, colorL   , size     , text.align_left, rTip)
+                f_drawLabelX(bar_index, sPrice, sTxt, xloc.bar_index, yloc.price, #00000000, label.style_label_left, colorL   , size     , text.align_left, sTip)
+                f_drawLabelX(bar_index, rPrice, ''  , xloc.bar_index, yloc.price, colorL   , label.style_circle    , #00000000, size.auto, text.align_left, ''  )
+                f_drawLabelX(bar_index, sPrice, ''  , xloc.bar_index, yloc.price, colorL   , label.style_circle    , #00000000, size.auto, text.align_left, ''  )
+
+            if f_crossingLevel(close, rPrice)
+                alert('AutoPitchfork: ' + syminfo.ticker + ' crossing resistance level' + str.tostring(level))
+            if f_crossingLevel(close, sPrice)
+                alert('AutoPitchfork: ' + syminfo.ticker + ' crossing support level' + str.tostring(level))
+            
+            if bgPitch2 > 0
+                rLines = array.size(a_lnr2)
+                if rLines > 1
+                    array.push(a_lf2, linefill.new(array.get(a_lnr2, rLines - 2), array.get(a_lnr2, rLines - 1), color.new(colorL, bgPitch2)))
+                sLines = array.size(a_lns2)
+                if sLines > 1
+                    array.push(a_lf2, linefill.new(array.get(a_lns2, sLines - 2), array.get(a_lns2, sLines - 1), color.new(colorL, bgPitch2)))
+
+processPitchforkLevel2(pPitch2, 0., pcolor_m2, pwidth_m2, pstyle_m2)
+
+pshow_0_252 = input.bool(false, '', inline='pLevel_0_252', group=group_pitchfork2)
+pvalue_0_252 = input.float(.25, '', minval=.0, step=.1, inline='pLevel_0_252', group=group_pitchfork2)
+pcolor_0_252 = input.color(#ffb74d, '', inline='pLevel_0_252', group=group_pitchfork2)
+pwidth_0_252 = input.int(1, '', minval=1, inline='pLevel_0_252', group=group_pitchfork2)
+pstyle_0_252 = input.string('Dashed', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_252', group=group_pitchfork2)
+processPitchforkLevel2(pshow_0_252, pvalue_0_252, pcolor_0_252, pwidth_0_252, pstyle_0_252)
+
+pshow_0_3822 = input.bool(false, '', inline='pLevel_0_3822', group=group_pitchfork2)
+pvalue_0_3822 = input.float(.382, '', minval=.0, step=.1, inline='pLevel_0_3822', group=group_pitchfork2)
+pcolor_0_3822 = input.color(#81c784, '', inline='pLevel_0_3822', group=group_pitchfork2)
+pwidth_0_3822 = input.int(1, '', minval=1, inline='pLevel_0_3822', group=group_pitchfork2)
+pstyle_0_3822 = input.string('Dotted', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_3822', group=group_pitchfork2)
+processPitchforkLevel(pshow_0_3822, pvalue_0_3822, pcolor_0_3822, pwidth_0_3822, pstyle_0_3822)
+
+pshow_0_502 = input.bool(true, '', inline='pLevel_0_502', group=group_pitchfork2)
+pvalue_0_502 = input.float(.5, '', minval=.0, step=.1, inline='pLevel_0_502', group=group_pitchfork2)
+pcolor_0_502 = input.color(#4caf50, '', inline='pLevel_0_502', group=group_pitchfork2)
+pwidth_0_502 = input.int(1, '', minval=1, inline='pLevel_0_502', group=group_pitchfork2)
+pstyle_0_502 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_502', group=group_pitchfork2)
+processPitchforkLevel2(pshow_0_502, pvalue_0_502, pcolor_0_502, pwidth_0_502, pstyle_0_502)
+
+pshow_0_6182 = input.bool(false, '', inline='pLevel_0_6182', group=group_pitchfork2)
+pvalue_0_6182 = input.float(.618, '', minval=.0, step=.1, inline='pLevel_0_6182', group=group_pitchfork2)
+pcolor_0_6182 = input.color(#009688, '', inline='pLevel_0_6182', group=group_pitchfork2)
+pwidth_0_6182 = input.int(1, '', minval=1, inline='pLevel_0_6182', group=group_pitchfork2)
+pstyle_0_6182 = input.string('Dotted', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_6182', group=group_pitchfork2)
+processPitchforkLevel2(pshow_0_6182, pvalue_0_6182, pcolor_0_6182, pwidth_0_6182, pstyle_0_6182)
+
+pshow_0_752 = input.bool(false, '', inline='pLevel_0_752', group=group_pitchfork2)
+pvalue_0_752 = input.float(.75, '', minval=.0, step=.1, inline='pLevel_0_752', group=group_pitchfork2)
+pcolor_0_752 = input.color(#64b5f6, '', inline='pLevel_0_752', group=group_pitchfork2)
+pwidth_0_752 = input.int(1, '', minval=1, inline='pLevel_0_752', group=group_pitchfork2)
+pstyle_0_752 = input.string('Dashed', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_752', group=group_pitchfork2)
+processPitchforkLevel2(pshow_0_752, pvalue_0_752, pcolor_0_752, pwidth_0_752, pstyle_0_752)
+
+pshow_12 = input.bool(true, '', inline='pLevel_12', group=group_pitchfork2)
+pvalue_12 = input.float(1, '', minval=.0, step=.1, inline='pLevel_12', group=group_pitchfork2)
+pcolor_12 = input.color(#2196f3, '', inline='pLevel_12', group=group_pitchfork2)
+pwidth_12 = input.int(2, '', minval=1, inline='pLevel_12', group=group_pitchfork2)
+pstyle_12 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_12', group=group_pitchfork2)
+processPitchforkLevel2(pshow_12, pvalue_12, pcolor_12, pwidth_12, pstyle_12)
+
+pshow_1_502 = input.bool(false, '', inline='pLevel_1_502', group=group_pitchfork2)
+pvalue_1_502 = input.float(1.5, '', minval=.0, step=.1, inline='pLevel_1_502', group=group_pitchfork2)
+pcolor_1_502 = input.color(#9c27b0, '', inline='pLevel_1_502', group=group_pitchfork2)
+pwidth_1_502 = input.int(1, '', minval=1, inline='pLevel_1_502', group=group_pitchfork2)
+pstyle_1_502 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_1_502', group=group_pitchfork2)
+processPitchforkLevel2(pshow_1_502, pvalue_1_502, pcolor_1_502, pwidth_1_502, pstyle_1_502)
+
+pshow_1_752 = input.bool(false, '', inline='pLevel_1_752', group=group_pitchfork2)
+pvalue_1_752 = input.float(1.75, '', minval=.0, step=.1, inline='pLevel_1_752', group=group_pitchfork2)
+pcolor_1_752 = input.color(#e91e63, '', inline='pLevel_1_752', group=group_pitchfork2)
+pwidth_1_752 = input.int(1, '', minval=1, inline='pLevel_1_752', group=group_pitchfork2)
+pstyle_1_752 = input.string('Dashed', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_1_752', group=group_pitchfork2)
+processPitchforkLevel2(pshow_1_752, pvalue_1_752, pcolor_1_752, pwidth_1_752, pstyle_1_752)
+
+pshow_22 = input.bool(false, '', inline='pLevel_22', group=group_pitchfork2)
+pvalue_22 = input.float(2, '', minval=.0, step=.1, inline='pLevel_22', group=group_pitchfork2)
+pcolor_22 = input.color(#e57373, '', inline='pLevel_22', group=group_pitchfork2)
+pwidth_22 = input.int(2, '', minval=1, inline='pLevel_22', group=group_pitchfork2)
+pstyle_22 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_22', group=group_pitchfork2)
+processPitchforkLevel2(pshow_22, pvalue_22, pcolor_22, pwidth_22, pstyle_22)
+
+// Pitchfork
+// ---------------------------------------------------------------------------------------- //
+// Fibonacci 
+
+processFibLevel(_show, _level, _color) =>
+    if i_isFib
+        pPivotDiff = math.abs(pPrevPivot - pLastPivot)
+        price = 0.
+
+        if i_fibTool == 'Extentions'
+            f_drawLineX(iPrev2Pivot, pPrev2Pivot, iPrevPivot, pPrevPivot, xloc.bar_index, extend.none, color.gray, line.style_dashed, 1)
+            f_drawLineX(iPrevPivot , pPrevPivot , iLastPivot, pLastPivot, xloc.bar_index, extend.none, color.gray, line.style_dashed, 1)
+
+            offset = math.abs(pPrevPivot - pPrev2Pivot)
+            price := pLastPivot < pPrevPivot ? pPrevPivot - pPivotDiff + (i_reverse ? -1 : 1) * offset * _level : pPrevPivot + pPivotDiff - (i_reverse ? -1 : 1) * offset * _level
+            price
+
+        else if i_fibTool == 'Retracements'
+            f_drawLineX(iPrevPivot, pPrevPivot, iLastPivot, pLastPivot, xloc.bar_index, extend.none, color.gray, line.style_dashed, 1)
+
+            price := pLastPivot < pPrevPivot ? (i_reverse ? pLastPivot : pPrevPivot) - (i_reverse ? -1 : 1) * pPivotDiff * _level : (i_reverse ? pLastPivot : pPrevPivot) + (i_reverse ? -1 : 1) * pPivotDiff * _level
+            price
+
+        if _show
+            f_drawLineX(iPrevPivot, price, bar_index, price, xloc.bar_index, i_extend ? extend.both : extend.right, _color, line.style_solid, 1)
+
+            if i_levels != 'None'
+                bar = i_levelsP == "Last Bar" ? bar_index : iPrevPivot
+                style = i_levelsP == "Last Bar" ? label.style_label_left : label.style_label_right
+                size = i_levelsF == 'Small' ? size.small : size.normal
+                txt  = i_levels =='Levels' ? str.tostring(_level) :  i_levels == 'Prices' ? str.tostring(price, format.mintick) :  str.tostring(_level) + ' (' + str.tostring(price, format.mintick) + ')'
+                f_drawLabelX(bar, price, (i_fibTool == 'Extentions' ? 'EXT ' : 'RET ') + txt, xloc.bar_index, yloc.price, #00000000, style, _color, size, text.align_left, str.tostring(price, format.mintick))
+
+            if f_crossingLevel(close, price)
+                alert('AutoFib ' + (i_fibTool == 'Extentions' ? 'Extention : ' : 'Retracment : ') + syminfo.ticker + ' crossing level ' + str.tostring(_level))
+
+show_0 = input.bool(true, '', inline='Level0', group=group_fib_Retracement)
+value_0 = input.int(0, '', inline='Level0', group=group_fib_Retracement)
+color_0 = input.color(#787b86, '', inline='Level0', group=group_fib_Retracement)
+processFibLevel(show_0, value_0, color_0)
+
+show_0_236 = input.bool(true, '', inline='Level0', group=group_fib_Retracement)
+value_0_236 = input.float(0.236, '', inline='Level0', group=group_fib_Retracement)
+color_0_236 = input.color(#f44336, '', inline='Level0', group=group_fib_Retracement)
+processFibLevel(show_0_236, value_0_236, color_0_236)
+
+show_0_382 = input.bool(true, '', inline='Level1', group=group_fib_Retracement)
+value_0_382 = input.float(0.382, '', inline='Level1', group=group_fib_Retracement)
+color_0_382 = input.color(#81c784, '', inline='Level1', group=group_fib_Retracement)
+processFibLevel(show_0_382, value_0_382, color_0_382)
+
+show_0_5 = input.bool(true, '', inline='Level1', group=group_fib_Retracement)
+value_0_5 = input.float(0.5, '', inline='Level1', group=group_fib_Retracement)
+color_0_5 = input.color(#4caf50, '', inline='Level1', group=group_fib_Retracement)
+processFibLevel(show_0_5, value_0_5, color_0_5)
+
+show_0_618 = input.bool(true, '', inline='Level2', group=group_fib_Retracement)
+value_0_618 = input.float(0.618, '', inline='Level2', group=group_fib_Retracement)
+color_0_618 = input.color(#009688, '', inline='Level2', group=group_fib_Retracement)
+processFibLevel(show_0_618, value_0_618, color_0_618)
+
+show_0_65 = input.bool(false, '', inline='Level2', group=group_fib_Retracement)
+value_0_65 = input.float(0.65, '', inline='Level2', group=group_fib_Retracement)
+color_0_65 = input.color(#009688, '', inline='Level2', group=group_fib_Retracement)
+processFibLevel(show_0_65, value_0_65, color_0_65)
+
+show_0_786 = input.bool(true, '', inline='Level3', group=group_fib_Retracement)
+value_0_786 = input.float(0.786, '', inline='Level3', group=group_fib_Retracement)
+color_0_786 = input.color(#64b5f6, '', inline='Level3', group=group_fib_Retracement)
+processFibLevel(show_0_786, value_0_786, color_0_786)
+
+show_1 = input.bool(true, '', inline='Level3', group=group_fib_Retracement)
+value_1 = input.int(1, '', inline='Level3', group=group_fib_Retracement)
+color_1 = input.color(#787b86, '', inline='Level3', group=group_fib_Retracement)
+processFibLevel(show_1, value_1, color_1)
+
+show_1_272 = input.bool(false, '', inline='Level4', group=group_fib_Retracement)
+value_1_272 = input.float(1.272, '', inline='Level4', group=group_fib_Retracement)
+color_1_272 = input.color(#81c784, '', inline='Level4', group=group_fib_Retracement)
+processFibLevel(show_1_272, value_1_272, color_1_272)
+
+show_1_414 = input.bool(false, '', inline='Level4', group=group_fib_Retracement)
+value_1_414 = input.float(1.414, '', inline='Level4', group=group_fib_Retracement)
+color_1_414 = input.color(#f44336, '', inline='Level4', group=group_fib_Retracement)
+processFibLevel(show_1_414, value_1_414, color_1_414)
+
+show_1_618 = input.bool(true, '', inline='Level5', group=group_fib_Retracement)
+value_1_618 = input.float(1.618, '', inline='Level5', group=group_fib_Retracement)
+color_1_618 = input.color(#2196f3, '', inline='Level5', group=group_fib_Retracement)
+processFibLevel(show_1_618, value_1_618, color_1_618)
+
+show_1_65 = input.bool(false, '', inline='Level5', group=group_fib_Retracement)
+value_1_65 = input.float(1.65, '', inline='Level5', group=group_fib_Retracement)
+color_1_65 = input.color(#2196f3, '', inline='Level5', group=group_fib_Retracement)
+processFibLevel(show_1_65, value_1_65, color_1_65)
+
+show_2_618 = input.bool(false, '', inline='Level6', group=group_fib_Retracement)
+value_2_618 = input.float(2.618, '', inline='Level6', group=group_fib_Retracement)
+color_2_618 = input.color(#f44336, '', inline='Level6', group=group_fib_Retracement)
+processFibLevel(show_2_618, value_2_618, color_2_618)
+
+show_2_65 = input.bool(false, '', inline='Level6', group=group_fib_Retracement)
+value_2_65 = input.float(2.65, '', inline='Level6', group=group_fib_Retracement)
+color_2_65 = input.color(#f44336, '', inline='Level6', group=group_fib_Retracement)
+processFibLevel(show_2_65, value_2_65, color_2_65)
+
+show_3_618 = input.bool(false, '', inline='Level7', group=group_fib_Retracement)
+value_3_618 = input.float(3.618, '', inline='Level7', group=group_fib_Retracement)
+color_3_618 = input.color(#9c27b0, '', inline='Level7', group=group_fib_Retracement)
+processFibLevel(show_3_618, value_3_618, color_3_618)
+
+show_3_65 = input.bool(false, '', inline='Level7', group=group_fib_Retracement)
+value_3_65 = input.float(3.65, '', inline='Level7', group=group_fib_Retracement)
+color_3_65 = input.color(#9c27b0, '', inline='Level7', group=group_fib_Retracement)
+processFibLevel(show_3_65, value_3_65, color_3_65)
+
+show_4_236 = input.bool(false, '', inline='Level8', group=group_fib_Retracement)
+value_4_236 = input.float(4.236, '', inline='Level8', group=group_fib_Retracement)
+color_4_236 = input.color(#e91e63, '', inline='Level8', group=group_fib_Retracement)
+processFibLevel(show_4_236, value_4_236, color_4_236)
+
+show_4_618 = input.bool(false, '', inline='Level8', group=group_fib_Retracement)
+value_4_618 = input.float(4.618, '', inline='Level8', group=group_fib_Retracement)
+color_4_618 = input.color(#81c784, '', inline='Level8', group=group_fib_Retracement)
+processFibLevel(show_4_618, value_4_618, color_4_618)
+
+show_neg_0_236 = input.bool(false, '', inline='Level9', group=group_fib_Retracement)
+value_neg_0_236 = input.float(-0.236, '', inline='Level9', group=group_fib_Retracement)
+color_neg_0_236 = input.color(#f44336, '', inline='Level9', group=group_fib_Retracement)
+processFibLevel(show_neg_0_236, value_neg_0_236, color_neg_0_236)
+
+show_neg_0_382 = input.bool(false, '', inline='Level9', group=group_fib_Retracement)
+value_neg_0_382 = input.float(-0.382, '', inline='Level9', group=group_fib_Retracement)
+color_neg_0_382 = input.color(#81c784, '', inline='Level9', group=group_fib_Retracement)
+processFibLevel(show_neg_0_382, value_neg_0_382, color_neg_0_382)
+
+show_neg_0_618 = input.bool(false, '', inline='Level10', group=group_fib_Retracement)
+value_neg_0_618 = input.float(-0.618, '', inline='Level10', group=group_fib_Retracement)
+color_neg_0_618 = input.color(#009688, '', inline='Level10', group=group_fib_Retracement)
+processFibLevel(show_neg_0_618, value_neg_0_618, color_neg_0_618)
+
+show_neg_0_65 = input.bool(false, '', inline='Level10', group=group_fib_Retracement)
+value_neg_0_65 = input.float(-0.65, '', inline='Level10', group=group_fib_Retracement)
+color_neg_0_65 = input.color(#009688, '', inline='Level10', group=group_fib_Retracement)
+processFibLevel(show_neg_0_65, value_neg_0_65, color_neg_0_65)
+
+// Fibonacci 
+// ---------------------------------------------------------------------------------------- //
+// Pivots
+
+[htf_o1, htf_h1, htf_l1, htf_c1, htf_o  , htf_h, htf_l, htf_c] = f_htf_ohlc(true, htf, htf_tf, wStart)
+[r61, r51, r41, r31, s31, s41, s51, s61] = f_get_pivot(pivot != 'None', pivot, htf_o1, htf_h1, htf_l1, htf_c1, htf_o  )
+
+var time_x10 = 0
+var time_x11 = 0
+if htf == 'D' and htf_tf == 'Daily' ? dayofweek != dayofweek[1] : htf == 'W' ? dayofweek(time) == wStart and ta.change(time('D')) : ta.change(time(htf))
+    time_x10 := time_x11
+    time_x11 := time
+time_x21 = 2 * time_x11 - time_x10
+
+islast   = request.security(syminfo.tickerid, htf, barstate.islast, lookahead=barmerge.lookahead_on)
+htf_time = htf == 'D' and htf_tf == 'Daily' ? dayofweek != dayofweek[1] : htf == 'W' ? dayofweek(time) == wStart and ta.change(time('D')) : ta.change(time(htf)) //ta.change(time(htf))
+
+when = barstate.islast and pivot != 'None'
+style_r = f_getStyle(i_style_r)
+style_s = f_getStyle(i_style_s)
+textSize = srLableSz == 'Normal' ? size.normal : size.small
+
+f_processPivotLevelX(when and i_show_r, time_x11, r61, time_x21, i_color_r6, style_r, i_width_r, 'R6', pivot, srLabel, srLabelPos, textSize)
+f_processPivotLevelX(when and i_show_r, time_x11, r51, time_x21, i_color_r5, style_r, i_width_r, 'R5', pivot, srLabel, srLabelPos, textSize)
+f_processPivotLevelX(when and i_show_r, time_x11, r41, time_x21, i_color_r4, style_r, i_width_r, 'R4', pivot, srLabel, srLabelPos, textSize)
+f_processPivotLevelX(when and i_show_r, time_x11, r31, time_x21, i_color_r3, style_r, i_width_r, 'R3', pivot, srLabel, srLabelPos, textSize)
+
+plot(dispHist == 'Selected Pivots' and r61 > 0 ? htf_time or islast ? na : r61 : na, 'Historical R6', i_color_r6, i_width_r, plot.style_linebr, editable=false)
+plot(dispHist == 'Selected Pivots' and r51 > 0 ? htf_time or islast ? na : r51 : na, 'Historical R5', i_color_r5, i_width_r, plot.style_linebr, editable=false)
+plot(dispHist == 'Selected Pivots' and r41 > 0 ? htf_time or islast ? na : r41 : na, 'Historical R4', i_color_r4, i_width_r, plot.style_linebr, editable=false)
+plot(dispHist == 'Selected Pivots' and r31 > 0 ? htf_time or islast ? na : r31 : na, 'Historical R3', i_color_r3, i_width_r, plot.style_linebr, editable=false)
+
+f_processPivotLevelX(when and i_show_s, time_x11, s31, time_x21, i_color_s3, style_s, i_width_s, 'S3', pivot, srLabel, srLabelPos, textSize)
+f_processPivotLevelX(when and i_show_s, time_x11, s41, time_x21, i_color_s4, style_s, i_width_s, 'S4', pivot, srLabel, srLabelPos, textSize)
+f_processPivotLevelX(when and i_show_s, time_x11, s51, time_x21, i_color_s5, style_s, i_width_s, 'S5', pivot, srLabel, srLabelPos, textSize)
+f_processPivotLevelX(when and i_show_s, time_x11, s61, time_x21, i_color_s6, style_s, i_width_s, 'S6', pivot, srLabel, srLabelPos, textSize)
+
+plot(dispHist == 'Selected Pivots' and s31 > 0 ? htf_time or islast ? na : s31 : na, 'Historical S3', i_color_s3, i_width_s, plot.style_linebr, editable=false)
+plot(dispHist == 'Selected Pivots' and s41 > 0 ? htf_time or islast ? na : s41 : na, 'Historical S4', i_color_s4, i_width_s, plot.style_linebr, editable=false)
+plot(dispHist == 'Selected Pivots' and s51 > 0 ? htf_time or islast ? na : s51 : na, 'Historical S5', i_color_s5, i_width_s, plot.style_linebr, editable=false)
+plot(dispHist == 'Selected Pivots' and s61 > 0 ? htf_time or islast ? na : s61 : na, 'Historical S6', i_color_s6, i_width_s, plot.style_linebr, editable=false)
+
+// Pivots
+// ---------------------------------------------------------------------------------------- //
+
+var table logo = table.new(position.bottom_right, 1, 1)
+table.cell(logo, 0, 0, '☼☾  ', text_size=size.normal, text_color=color.teal)

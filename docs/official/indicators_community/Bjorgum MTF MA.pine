@@ -1,0 +1,249 @@
+// 
+// ██████╗░░░░░░██╗░█████╗░██████╗░░██████╗░██╗░░░██╗███╗░░░███╗
+// ██╔══██╗░░░░░██║██╔══██╗██╔══██╗██╔════╝░██║░░░██║████╗░████║
+// ██████╦╝░░░░░██║██║░░██║██████╔╝██║░░██╗░██║░░░██║██╔████╔██║
+// ██╔══██╗██╗░░██║██║░░██║██╔══██╗██║░░╚██╗██║░░░██║██║╚██╔╝██║
+// ██████╦╝╚█████╔╝╚█████╔╝██║░░██║╚██████╔╝╚██████╔╝██║░╚═╝░██║
+// ╚═════╝░░╚════╝░░╚════╝░╚═╝░░╚═╝░╚═════╝░░╚═════╝░╚═╝░░░░░╚═╝
+//
+// (venv) Bj MacBook-Pro:MTF EMA bj$
+// (venv) Bj MacBook-Pro:MTF EMA bj$ pip3 install awesome
+// (venv) Bj MacBook-Pro:MTF EMA bj$ import gains 
+// (venv) Bj MacBook-Pro:MTF EMA bj$ flask run
+
+// * Running on http://127.0.0.1:5000/ (Press CTRL+C to quit)
+
+//@version=4
+study           ("Bjorgum MTF MA", "Bj Multi-MA",           overlay=true,           precision=3)
+
+smooth          = input (true,      "Smooth",               input.bool,             group="General Settings")
+bar             = input (true,      "Bar Color",            input.bool,             group="General Settings")
+bartype         = input ("MA 1",    "Bar Color Type",       input.string,           group="General Settings",   options=["MA 1", "MA 2", "MA 3", "RSI 1", "RSI 2", "RSI 3"], tooltip="This selects what your bar color is based on") 
+
+maType1         = input ("EMA",     "MA Type #1",           input.string,           group="MA Type",            options=["EMA", "HEMA", "SMA", "HMA", "WMA", "DEMA", "VWMA", "VWAP", "T3", "IT"]) 
+maType2         = input ("EMA",     "MA Type #2",           input.string,           group="MA Type",            options=["EMA", "HEMA", "SMA", "HMA", "WMA", "DEMA", "VWMA", "VWAP", "T3", "IT"]) 
+maType3         = input ("EMA",     "MA Type #3",           input.string,           group="MA Type",            options=["EMA", "HEMA", "SMA", "HMA", "WMA", "DEMA", "VWMA", "VWAP", "T3", "IT"]) 
+
+maLength1       = input (50,        "MA Length #1",         input.integer,          group="MA Settings",        minval=1)
+maLength2       = input (0,         "MA Length #2",         input.integer,          group="MA Settings",        tooltip="Setting to zero disables the MA. Use 1,2 or 3 MA's")
+maLength3       = input (0,         "MA Length #3",         input.integer,          group="MA Settings",        tooltip="Setting to zero disables the MA. Use 1,2 or 3 MA's")
+
+inp             = input (hl2,       "Source",               input.source,           group="IT Trendline",       tooltip="These two are inputs strcity pertaining to Ehlers Instantaneous Trendline (IT)")
+alpha           = input (.07,       "Alpha",                input.float,            group="IT Trendline",       minval=0.01)
+
+tf1             = input ("",        "Timeframe 1",          input.resolution,       group="Resolution",         tooltip="Go multi-time frame with each MA individually! This effects which time frame the RSI color is based from aswell")
+tf2             = input ("",        "Timeframe 2",          input.resolution,       group="Resolution",         tooltip="Go multi-time frame with each MA individually! This effects which time frame the RSI color is based from aswell")
+tf3             = input ("",        "Timeframe 3",          input.resolution,       group="Resolution",         tooltip="Go multi-time frame with each MA individually! This effects which time frame the RSI color is based from aswell")
+
+rsiLen          = input (14,        "RSI Length",           input.integer,          group="Momentum",           tooltip="RSI input is used for momrntum color schemes. Gievs a visual of momentum along with your trend")
+
+colType1        = input ("MA",      "Color Type 1",         input.string,           group="MA Color Type",      options=["RSI", "MA"], tooltip="Choose color scheme. One is based on RSI value, the other a rising or falling MA") 
+colType2        = input ("MA",      "Color Type 2",         input.string,           group="MA Color Type",      options=["RSI", "MA"], tooltip="Choose color scheme. One is based on RSI value, the other a rising or falling MA") 
+colType3        = input ("MA",      "Color Type 3",         input.string,           group="MA Color Type",      options=["RSI", "MA"], tooltip="Choose color scheme. One is based on RSI value, the other a rising or falling MA")
+
+maBull1         = input (#64b5f6,   "",                     input.color,            inline="1",                 group="MA Color/ Transp/ Linewidth",    tooltip="These select MA color if you've chosen rising/ falling scheme")
+maBear1         = input (#ef5350,   "",                     input.color,            inline="1",                 group="MA Color/ Transp/ Linewidth",    tooltip="These select MA color if you've chosen rising/ falling scheme")
+maBull2         = input (#64b5f6,   "",                     input.color,            inline="2",                 group="MA Color/ Transp/ Linewidth",    tooltip="These select MA color if you've chosen rising/ falling scheme")
+maBear2         = input (#ef5350,   "",                     input.color,            inline="2",                 group="MA Color/ Transp/ Linewidth",    tooltip="These select MA color if you've chosen rising/ falling scheme")
+maBull3         = input (#64b5f6,   "",                     input.color,            inline="3",                 group="MA Color/ Transp/ Linewidth",    tooltip="These select MA color if you've chosen rising/ falling scheme")
+maBear3         = input (#ef5350,   "",                     input.color,            inline="3",                 group="MA Color/ Transp/ Linewidth",    tooltip="These select MA color if you've chosen rising/ falling scheme")
+
+transp1         = input (0,         "",                     input.integer,          inline="1",                 group="MA Color/ Transp/ Linewidth")
+transp2         = input (0,         "",                     input.integer,          inline="2",                 group="MA Color/ Transp/ Linewidth")
+transp3         = input (0,         "",                     input.integer,          inline="3",                 group="MA Color/ Transp/ Linewidth")
+
+lineW1          = input (1,         "",                     input.integer,          inline="1",                 group="MA Color/ Transp/ Linewidth")
+lineW2          = input (1,         "",                     input.integer,          inline="2",                 group="MA Color/ Transp/ Linewidth")
+lineW3          = input (1,         "",                     input.integer,          inline="3",                 group="MA Color/ Transp/ Linewidth")
+
+rsiBull1        = input (#0000ff,   "",                     input.color,            inline="a",                 group="RSI Based Colors - Bull/ Bear",  tooltip="These select MA color if you've chosen momentum based scheme")
+rsiBear1        = input (#ff0000,   "",                     input.color,            inline="a",                 group="RSI Based Colors - Bull/ Bear",  tooltip="These select MA color if you've chosen momentum based scheme")
+rsiBull2        = input (#0000ff,   "",                     input.color,            inline="b",                 group="RSI Based Colors - Bull/ Bear",  tooltip="These select MA color if you've chosen momentum based scheme")
+rsiBear2        = input (#ff0000,   "",                     input.color,            inline="b",                 group="RSI Based Colors - Bull/ Bear",  tooltip="These select MA color if you've chosen momentum based scheme")
+rsiBull3        = input (#0000ff,   "",                     input.color,            inline="c",                 group="RSI Based Colors - Bull/ Bear",  tooltip="These select MA color if you've chosen momentum based scheme")
+rsiBear3        = input (#ff0000,   "",                     input.color,            inline="c",                 group="RSI Based Colors - Bull/ Bear",  tooltip="These select MA color if you've chosen momentum based scheme")
+
+// ================================== //
+// ---> F͕̝̺u̝͎͜n̢̠c͓̼̦t̢̺͙i̪͖͜o̘͚͜n̠̺a͖͇̦l͚͔̟ D͎͔͙e̢̢͜c̻̻̘l͔̙͍a͎̞̠r̪͓̫a̟͚̫t̪͚i͇͎͓o͉̘͕n͍͙s͚͙͎ <---- //
+// ================================== //
+
+_haOpen()       =>
+    haClose = (open + high + low + close) / 4
+    haOpen  = float(na)
+    haOpen := na(haOpen[1]) ? (open + close) / 2 : (nz(haOpen[1]) + nz(haClose[1])) / 2
+    
+    haOpen
+
+_NRP(tf, src) => 
+    security(syminfo.tickerid, tf, src[barstate.isrealtime ? 1 : 0], barmerge.gaps_on)[barstate.isrealtime ? 0 : 1]
+
+_NRPrt(tf,src) => 
+    security(syminfo.tickerid, tf, src[barstate.isrealtime ? 1 : 0], barmerge.gaps_off)[barstate.isrealtime ? 0 : 1]
+_itrend()       =>
+    trend       = 0.0
+ 
+    trend       := bar_index < 7 ? (inp + (2 * nz(inp[1])) + nz(inp[2])) / 4 : ((alpha - (pow(alpha, 2) / 4)) * inp) + (0.5 * pow(alpha, 2) * nz(inp[1])) - 
+                 ((alpha - (0.75 * pow(alpha, 2))) * nz(inp[2])) + (2 * (1 - alpha) * nz(trend[1])) - (pow(1 - alpha, 2) * nz(trend[2])) 
+    trigger_    = (2 * trend) - nz(trend[2])
+    
+    [trend, trigger_]
+
+[itrend, trigger]   = _itrend()
+
+HaOpen              = _haOpen()
+
+getMA(type, length) =>
+    maPrice =       ema(close,  length)
+    if type == "HEMA"
+        maPrice :=  ema(HaOpen, length)
+    if type == "SMA"
+        maPrice :=  sma(close,  length)
+    if type == "HMA"
+        maPrice :=  hma(close,  length)
+    if type == "WMA"
+        maPrice :=  wma(close,  length)
+    if type == "VWMA"
+        maPrice :=  vwma(close, length)
+    if type == "VWAP"
+        maPrice :=  vwap
+    if type == "DEMA"
+        e1      =   ema(close,  length)
+        e2      =   ema(e1,     length)
+        maPrice := 2 * e1 - e2
+    if type == "T3"
+        axe1    =   ema(close,  length)
+        axe2    =   ema(axe1,   length)
+        axe3    =   ema(axe2,   length)
+        axe4    =   ema(axe3,   length)
+        axe5    =   ema(axe4,   length)
+        axe6    =   ema(axe5,   length)
+        ab      =   0.7
+        ac1     =   -ab*ab*ab
+        ac2     =   3*ab*ab+3*ab*ab*ab
+        ac3     =   -6*ab*ab-3*ab-3*ab*ab*ab
+        ac4     =   1+3*ab+ab*ab*ab+3*ab*ab
+        maPrice :=  ac1 * axe6 + ac2 * axe5 + ac3 * axe4 + ac4 * axe3
+    if type == "IT"
+        maPrice :=  itrend
+    maPrice
+
+// ================================== //
+// ----> V̦͍a̢͔͎r̙͉͔i̠͖͜a̪͉͚b̻̺̘l͇̙̦e͖̪̻ C̢͓̞a͇͇͙l͖̻̫c͙̦͙u͇̠͔l̺̞̠a͚͍͔t͓͓͙i̘͉͙o̻͜͜n̝̝͚s͚͓ <----- //
+// ================================== //
+
+rsi             = rsi       (close,     rsiLen)
+
+ma1             = getMA     (maType1,   maLength1)
+ma2             = getMA     (maType2,   maLength2 == 0 ? 1 : maLength2)
+ma3             = getMA     (maType3,   maLength3 == 0 ? 1 : maLength3)
+
+ma1step         = _NRPrt    (tf1,       ma1)
+ma2step         = _NRPrt    (tf2,       ma2)
+ma3step         = _NRPrt    (tf3,       ma3)
+
+ma1smooth       = _NRP      (tf1,       ma1)
+ma2smooth       = _NRP      (tf2,       ma2)
+ma3smooth       = _NRP      (tf3,       ma3)
+
+rsiMtf1         = _NRPrt    (tf1,       rsi)          
+rsiMtf2         = _NRPrt    (tf2,       rsi)          
+rsiMtf3         = _NRPrt    (tf3,       rsi)          
+
+// ================================== //
+// ----> C̠̪̫o̼̫͔n̫̝̪d̺͚͎i̦͔͎t̺͖͖i͓͜͜o͉̦̘n̢͎͉a̞̼̠l̼͓͎ P̝͕͜a͕̝͜r̠̼͍a͚͍͓m͙̟̪e͚̫͎t͔̘̟e̺̙͎r̠͇͍s̘̠ <---- //
+// ================================== //
+
+ma1Direc        = ma1 >=    ma1[1]
+ma2Direc        = ma2 >=    ma2[1]
+ma3Direc        = ma3 >=    ma3[1]
+
+ma1MtfDirec     = _NRPrt    (tf1,       ma1Direc)
+ma2MtfDirec     = _NRPrt    (tf2,       ma2Direc)
+ma3MtfDirec     = _NRPrt    (tf3,       ma3Direc)
+
+ma1Con          = tf1 == "" ? ma1Direc  : ma1MtfDirec  
+ma2Con          = tf2 == "" ? ma2Direc  : ma2MtfDirec  
+ma3Con          = tf3 == "" ? ma3Direc  : ma3MtfDirec  
+
+maMtf1          = smooth    ? ma1smooth : ma1step 
+maMtf2          = smooth    ? ma2smooth : ma2step 
+maMtf3          = smooth    ? ma3smooth : ma3step 
+
+plotMa1         = tf1 == "" ? ma1       : maMtf1 
+plotMa2         = tf2 == "" ? ma2       : maMtf2 
+plotMa3         = tf3 == "" ? ma3       : maMtf3
+
+rsi1            = tf1 == "" ? rsi       : rsiMtf1
+rsi2            = tf2 == "" ? rsi       : rsiMtf2
+rsi3            = tf3 == "" ? rsi       : rsiMtf3
+
+ma1Bar          = tf1 == "" ? close >=  plotMa1 : close >= ma1step
+ma2Bar          = tf2 == "" ? close >=  plotMa2 : close >= ma2step
+ma3Bar          = tf3 == "" ? close >=  plotMa3 : close >= ma3step
+
+rsi1col         = color.from_gradient   (rsi1, 30, 70, rsiBear1, rsiBull1)
+rsi2col         = color.from_gradient   (rsi2, 30, 70, rsiBear2, rsiBull2)
+rsi3col         = color.from_gradient   (rsi3, 30, 70, rsiBear3, rsiBull3)
+
+ma1Col          = colType1  ==  "MA"    ? ma1Con  ? maBull1 : maBear1 : rsi1col
+ma2Col          = colType2  ==  "MA"    ? ma2Con  ? maBull2 : maBear2 : rsi2col
+ma3Col          = colType3  ==  "MA"    ? ma3Con  ? maBull3 : maBear3 : rsi3col
+
+barColor        =bartype    ==  "MA 1"  ? ma1Bar  ? maBull1 : maBear1 :
+                 bartype    ==  "MA 2"  ? ma2Bar  ? maBull2 : maBear2 :
+                 bartype    ==  "MA 3"  ? ma3Bar  ? maBull3 : maBear3 :
+                 bartype    == "RSI 1"  ? rsi1col :
+                 bartype    == "RSI 2"  ? rsi2col :
+                 bartype    == "RSI 3"  ? rsi3col : na
+
+plotMA2         = maType2   == "IT"     ? plotMa2 : maLength2 == 0 ? na : plotMa2
+plotMA3         = maType3   == "IT"     ? plotMa3 : maLength3 == 0 ? na : plotMa3
+
+// ================================== //
+// ------> G̡̘͍r̪̻̼a͇͔͜p̫͎͍h͔͇̞i͉͇̞c͍͚a͕͔͉l̝͇ D̡̦͓i̡̡̞s͚͇̫p͓̟͙l͙̪̻a͉͍y̻͖̻ <------- //
+// ================================== //
+
+barcolor        (bar ? barColor : na)
+
+plot            (plotMa1,   "Moving Average #1",    color.new(ma1Col, transp1),     linewidth=lineW1)  
+plot            (plotMA2,   "Moving Average #2",    color.new(ma2Col, transp2),     linewidth=lineW2)  
+plot            (plotMA3,   "Moving Average #3",    color.new(ma3Col, transp3),     linewidth=lineW3)  
+
+// ================================== //
+// -------> A̢̞͔l̼̫͔e̦̻͖r̪̘͇t̺̙̘ C͔͔̙o̪̝̟n̙͓͇d̡͉̙i͓͔̘t̢͕͚i̠͇̟o̘͓n͖͎s̼͓͜ <------- //
+// ================================== //
+
+maSig1          = tf1 == "" ? ma1 : ma1step 
+maSig2          = tf2 == "" ? ma2 : ma2step 
+maSig3          = tf3 == "" ? ma3 : ma3step 
+
+maCrossUp1      = crossover     (close,     maSig1)
+maCrossDn1      = crossunder    (close,     maSig1)
+maCrossUp2      = crossover     (close,     maSig2)
+maCrossDn2      = crossunder    (close,     maSig2)
+maCrossUp3      = crossover     (close,     maSig3)
+maCrossDn3      = crossunder    (close,     maSig3)
+ma1CrossUp2     = crossover     (maSig1,    maSig2)
+ma1CrossDn2     = crossunder    (maSig1,    maSig2)
+ma1CrossUp3     = crossover     (maSig1,    maSig3)
+ma1CrossDn3     = crossunder    (maSig1,    maSig3)
+ma2CrossUp3     = crossover     (maSig2,    maSig3)
+ma2CrossDn3     = crossunder    (maSig2,    maSig3)
+
+alertcondition  (maCrossUp1,    "Close crossed above MA 1",     "Close crossed above MA 1 on {{interval}} chart. Price is {{close}}")
+alertcondition  (maCrossDn1,    "Close crossed below MA 1",     "Close crossed below MA 1 on {{interval}} chart. Price is {{close}}")
+alertcondition  (maCrossUp2,    "Close crossed above MA 2",     "Close crossed above MA 2 on {{interval}} chart. Price is {{close}}")
+alertcondition  (maCrossDn2,    "Close crossed below MA 2",     "Close crossed below MA 2 on {{interval}} chart. Price is {{close}}")
+alertcondition  (maCrossUp3,    "Close crossed above MA 3",     "Close crossed above MA 3 on {{interval}} chart. Price is {{close}}")
+alertcondition  (maCrossDn3,    "Close crossed below MA 3",     "Close crossed below MA 3 on {{interval}} chart. Price is {{close}}")
+alertcondition  (ma1CrossUp2,   "MA 1 crossed above MA 2",      "MA 1 crossed above MA 2 on {{interval}} chart. Price is {{close}}'")
+alertcondition  (ma1CrossDn2,   "MA 1 crossed below MA 2",      "MA 1 crossed below MA 2 on {{interval}} chart. Price is {{close}}'")
+alertcondition  (ma1CrossUp3,   "MA 1 crossed above MA 3",      "MA 1 crossed above MA 3 on {{interval}} chart. Price is {{close}}'")
+alertcondition  (ma1CrossDn3,   "MA 1 crossed below MA 3",      "MA 1 crossed below MA 3 on {{interval}} chart. Price is {{close}}'")
+alertcondition  (ma2CrossUp3,   "MA 2 crossed above MA 3",      "MA 2 crossed above MA 3 on {{interval}} chart. Price is {{close}}'")
+alertcondition  (ma2CrossDn3,   "MA 2 crossed below MA 3",      "MA 2 crossed below MA 3 on {{interval}} chart. Price is {{close}}'")
+
+// ^C(venv) Bj MacBook-Pro:MTF EMA bj$ deactivate
+// Bj MacBook-Pro:MTF EMA bj$ deactivate
+// >>>
+// >>>sys.exit()

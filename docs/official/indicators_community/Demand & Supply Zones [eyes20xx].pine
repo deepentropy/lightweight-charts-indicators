@@ -1,0 +1,477 @@
+// 🄱🄰🄲🄺🅃🄴🅂🅃 🄱🄾🅃
+// © BacktestBot
+//@version=5
+indicator('Supply & Demand Zones [BacktestBot]', shorttitle='S&D', overlay=true, max_labels_count=500, max_boxes_count=500)
+// 1.1
+
+// ================================== //
+// ----> Demand & Supply Inputs <---- //
+// ================================== //
+
+ds_min_pc_change = input.float(title='Min % change', defval=0.25, minval=0, step=0.2, group='Demand & Supply',
+ tooltip=' --- Min % change ---' + '\n\n' + 'A zone is added if one candle or a run of bullish/bearish candles meets this minimum % change.' + '\n\n' +
+ 'The change is from the open to the close when the time period is complete. Adjust the % for the pair and the timeframe.' + '\n' + 
+ 'e.g. Crypto 15m 0.8% 1m 0.5%, Forex 15m 0.4%')
+ds_max_pc_zone = input.float(title='Max % zone height', defval=0.6, minval=0, step=0.2, group='Demand & Supply',
+ tooltip=' --- Max % zone height ---' + '\n\n' + 'The zone height is decided by the size of the candle before a significant drop or rally.' + '\n\n' +
+ 'Setting a higher max % will keep the height closer to candle height.' + '\n' +
+ 'Setting a lower max % makes the boxes look a bit tidier.')
+ds_line_pc_display = input.float(title='% line', defval=3.0, step=0.5, minval=0, maxval=5, inline='line', group='Demand & Supply')
+ds_line_max = input.int(title='Max line', defval=3, minval=0, maxval=5, inline='line', group='Demand & Supply',
+ tooltip=' --- % Line  --- ' + '\n' + 'Display lines of active zones when the close is within this % of the line. Max is 5%.' + '\n\n' +
+ ' --- Max Line  --- ' + '\n' + 'The maximum number of lines to display for each zone type. Max=5')
+ds_max_zones = input.int(title='Max number of zones', defval=100, step=50, maxval=200, group='Demand & Supply',
+ tooltip=' --- Max number of zones ---' + '\n\n' + 'The maximum number of zones for each zone type.\nUp to 200 boxes can be displayed for each zone type.')
+
+ds_hours_offset = input.float(0.0, "Timezone offset (H)", minval=-12, maxval=14, group='Demand & Supply',
+ tooltip=' --- Timezone offset (H)  --- ' + '\n' + 'If your chart timezone is not set set to UTC, set the offset in hours.' + '\n' + 
+ 'Range: -12 to +14.'+ '\n\n' + 
+ 'Time information is displayed when hovering over zone labels.')
+
+showDemandZone = input.bool(title='Demand', defval=true, inline='demand_1', group='Demand & Supply')
+demand_bord_col = input.color(title='Border', defval=color.rgb(255, 0, 255, 50), inline='demand_1', group='Demand & Supply')
+demand_bg_col = input.color(title='Background', defval=color.rgb(255, 0, 255, 80), inline='demand_1', group='Demand & Supply',
+ tooltip='This background colour applies when the zone is active. Once the zone has been hit, it becomes transparent.')
+
+showSupplyZone = input.bool(title='Supply', defval=true, inline='supply_1', group='Demand & Supply')
+supply_bord_col = input.color(title='Border', defval=color.rgb(255, 255, 0, 50), inline='supply_1', group='Demand & Supply')
+supply_bg_col = input.color(title='Background', defval=color.rgb(255, 255, 0, 80), inline='supply_1', group='Demand & Supply',
+ tooltip='This background colour applies when the zone is active. Once the zone has been hit, it becomes transparent.')
+
+dsAlertDemand = input.bool(true, title='Demand', inline='ds_alert_1', group='Demand & Supply Alerts')
+dsAlertSupply = input.bool(true, title='Supply', inline='ds_alert_1', group='Demand & Supply Alerts',
+ tooltip=' --- Demand & Supply Alerts ---' + '\n\n' + 'Two types of alerts are sent:' + '\n' +
+ '1. Hit: The price hits an active zone.' + '\n' + '2. Near: The price approaches the active zone.' + '\n\n' +
+  ' --- Supply Example ---' + '\n' +
+ '1. When the price is below the supply zone and the high hits the zone, an alert is sent.' + '\n' +
+ '2. When the price is below the supply zone and the high is within the Near %, an alert is sent.')
+
+ds_alert_mins_no_repeat = input.int(60, minval=0, maxval=120, title='Mins no repeat', group='Demand & Supply Alerts',
+ tooltip=' --- Mins No Repeat ---' + '\n\n' + 'Wait x mins before sending a similar alert type for the same zone.' + '\n\n' +
+ 'Setting this to 0 will turn this feature off.' + '\n' +
+ 'Max = 120mins.')
+ds_alerts_pc_near = input.float(1.5, title='Near %', step=0.1, maxval=5, group='Demand & Supply Alerts',
+ tooltip=' --- Near % ---' +
+ '\n' + 'The alert is sent when the high or low is within this % of the zone. Max is 5%.')
+
+// ================================== //
+// ---------->  Top Func  <---------- //
+// ================================== //
+
+get_pc_diff_abs(x_start, y_end) =>
+    math.abs((y_end - x_start) / x_start * 100)
+
+get_amount_by_pc(amount, pc, add_minus) =>
+    pc_amount = amount * (pc / 100)
+    add_minus == 'add' ? amount + pc_amount : amount - pc_amount
+
+// ================================== //
+// ---->  Demand & Supply Vars  <---- //
+// ================================== //
+
+var milli_secs_per_bar =
+ timeframe.isseconds ? timeframe.multiplier * 1000 :
+ timeframe.isminutes ? timeframe.multiplier * 60 * 1000 :
+ timeframe.isdaily ? timeframe.multiplier * 24 * 60 * 60 * 1000 :
+ timeframe.isweekly ? timeframe.multiplier * 7 * 24 * 60 * 60 * 1000 : na
+
+// Main labels with limited data
+var demand_zones_alert = array.new_float(0)
+var demand_zones_time = array.new_int(0)
+var demand_zones_s1_active = array.new_bool(0)
+var demand_zones_s1 = array.new_float(0)
+var demand_zones_box = array.new_box(0)
+
+var supply_zones_alert = array.new_float(0)
+var supply_zones_time = array.new_int(0)
+var supply_zones_s1 = array.new_float(0)
+var supply_zones_s1_active = array.new_bool(0)
+var supply_zones_box = array.new_box(0)
+
+var demand_zones_s1_line = array.new_line(ds_line_max)
+var demand_zones_s1_line_price = array.new_label(ds_line_max)
+var supply_zones_s1_line = array.new_line(ds_line_max)
+var supply_zones_s1_line_price = array.new_label(ds_line_max)
+
+// All data with active zones
+var demand_zones_time_all = array.new_int(0)
+var demand_zones_s1_all = array.new_float(0)
+var supply_zones_time_all = array.new_int(0)
+var supply_zones_s1_all = array.new_float(0)
+
+var demand_zones_label_all = array.new_label(ds_line_max)
+var demand_zones_line_all = array.new_line(ds_line_max)
+var supply_zones_label_all = array.new_label(ds_line_max)
+var supply_zones_line_all = array.new_line(ds_line_max)
+
+if barstate.isfirst
+    for i = 0 to ds_line_max - 1
+        array.set(demand_zones_s1_line, i, line.new(na, na, na, na, xloc=xloc.bar_time, color=demand_bord_col, style=line.style_solid))
+        array.set(supply_zones_s1_line, i, line.new(na, na, na, na, xloc=xloc.bar_time, color=supply_bord_col, style=line.style_solid))
+        array.set(demand_zones_s1_line_price, i, label.new(na, na, textcolor=color.new(color.white, 0), style=label.style_label_left))
+        array.set(supply_zones_s1_line_price, i, label.new(na, na, textcolor=color.new(color.white, 0), style=label.style_label_left))
+        
+        array.set(demand_zones_label_all, i, label.new(na, na, textcolor=color.new(color.white, 0), style=label.style_label_left))
+        array.set(supply_zones_label_all, i, label.new(na, na, textcolor=color.new(color.white, 0), style=label.style_label_left))
+        array.set(demand_zones_line_all, i, line.new(na, na, na, na, color=color.new(color.white, 100), style=line.style_solid))
+        array.set(supply_zones_line_all, i, line.new(na, na, na, na, color=color.new(color.white, 100), style=line.style_solid))
+        
+bear_run = ta.barssince(open < close)
+bull_run = ta.barssince(open > close)
+
+var float s1_level = na
+var int s1_time = na
+s1_level :=
+ get_pc_diff_abs(open[1], close[1]) < 0.02 and 
+ ((bull_run == 1 and open[2] > close[2]) or (bear_run == 1 and open[2] < close[2])) ? open[2] :
+ bull_run == 1 or bear_run == 1 ? open[1] :
+ bull_run > 1 or bear_run > 1 ? s1_level : na
+s1_time :=
+ bull_run == 1 or bear_run == 1 ? time[1] :
+ bull_run > 1 or bear_run > 1 ? s1_time : na
+
+// ================================== //
+// ---->  Demand & Supply Func  <---- //
+// ================================== //
+
+get_month_bar_time(_bar_start, _add_minus, _num_bars) =>
+    _add_minus_sign = _add_minus == 'add' ? 1 : -1
+
+    _year_start = year(_bar_start)
+    _month_start = month(_bar_start)
+    _months_div_year = _num_bars / 12
+    _year_change = _months_div_year >= 1 ? math.floor(_months_div_year) : 0
+    _year = _year_start + (_year_change * _add_minus_sign)
+    _month_change = _num_bars % 12
+    _month = _month_start + (_month_change * _add_minus_sign)
+    _year += _month > 12 ? 1 : _month < 1 ? -1 : 0
+    _month += _month > 12 ? -12 : _month < 1 ? 12 : 0
+
+    timestamp(_year, _month, 1, 0, 0, 0)
+
+get_bar_time(_bar_start, _add_minus, _num_bars) =>
+    _add_minus_sign = _add_minus == 'add' ? 1 : -1
+    _bar_time =
+     not na(milli_secs_per_bar) ? _bar_start + ((milli_secs_per_bar * _num_bars) * _add_minus_sign) :   
+     timeframe.ismonthly ? get_month_bar_time(_bar_start, _add_minus, _num_bars) : na
+
+add_ds_zone(_zone_type) =>
+    _showZone = (_zone_type == 'S' and showSupplyZone) or (_zone_type == 'D' and showDemandZone)
+    _zones_time = _zone_type == 'S' ? supply_zones_time : demand_zones_time
+    _bars_to_s1 = _zone_type == 'S' ? bear_run : bull_run
+    _pc_change = _bars_to_s1 >= 1 ? get_pc_diff_abs(close, open[_bars_to_s1 - 1]) : 0
+
+    if not array.includes(_zones_time, s1_time) and _pc_change >= ds_min_pc_change and barstate.isconfirmed
+        _box_left_time = get_bar_time(s1_time, 'minus', 1)
+        _box_right_time = get_bar_time(s1_time, 'add', 2)
+        _zones_s1_active = _zone_type == 'S' ? supply_zones_s1_active : demand_zones_s1_active
+        _zones_s1 = _zone_type == 'S' ? supply_zones_s1 : demand_zones_s1
+        _zones_box = _zone_type == 'S' ? supply_zones_box : demand_zones_box
+
+        _zones_time_all = _zone_type == 'S' ? supply_zones_time_all : demand_zones_time_all
+        _zones_s1_all = _zone_type == 'S' ? supply_zones_s1_all : demand_zones_s1_all
+
+        array.unshift(_zones_time, s1_time)
+        array.unshift(_zones_time_all, s1_time)
+        _top = _zone_type == 'S' ? math.max(high[_bars_to_s1], high[_bars_to_s1-1]) : s1_level
+        _bot = _zone_type == 'S' ? s1_level : math.min(low[_bars_to_s1], low[_bars_to_s1-1])
+        // Adjust the zone if it's too big
+        _top_bot_pc_diff = get_pc_diff_abs(_top, _bot)
+        _candle_before_run_pc = get_pc_diff_abs(open[_bars_to_s1], close[_bars_to_s1])
+        _bot :=
+         _zone_type == 'S' and _top_bot_pc_diff > ds_max_pc_zone and _candle_before_run_pc <= ds_max_pc_zone ? s1_level :
+         _zone_type == 'S' and _top_bot_pc_diff > ds_max_pc_zone ? get_amount_by_pc(close[_bars_to_s1], ds_max_pc_zone/5, 'minus') :
+         _zone_type == 'D' and _top_bot_pc_diff > ds_max_pc_zone ? get_amount_by_pc(_top, ds_max_pc_zone, 'minus') : _bot
+        _top := 
+         _zone_type == 'S' and _top_bot_pc_diff > ds_max_pc_zone ? get_amount_by_pc(_bot, ds_max_pc_zone, 'add') :
+         _zone_type == 'D' and _top_bot_pc_diff > ds_max_pc_zone and _candle_before_run_pc <= ds_max_pc_zone ? s1_level :
+         _zone_type == 'D' and _top_bot_pc_diff > ds_max_pc_zone ? get_amount_by_pc(close[_bars_to_s1], ds_max_pc_zone/5, 'add') : _top
+        _bot := math.round_to_mintick(_bot)
+        _top := math.round_to_mintick(_top)
+        _s1 = _zone_type == 'S' ? _bot : _top
+        array.unshift(_zones_s1, _s1)
+        array.unshift(_zones_s1_active, true)
+        array.unshift(_zones_s1_all, _s1)
+        
+        _bord_col = _zone_type == 'S' ? supply_bord_col : demand_bord_col
+        _bg_col = _zone_type == 'S' ? supply_bg_col : demand_bg_col
+        if _showZone
+            array.unshift(_zones_box, box.new(_box_left_time, _top, _box_right_time, _bot, xloc=xloc.bar_time, border_color=_bord_col, border_width=1, bgcolor=_bg_col))
+
+        if array.size(_zones_time) > ds_max_zones
+            // Start from the end and remove inactive zones
+            for i = array.size(_zones_time) - 1 to (array.size(_zones_time) == 0 ? na : 0)
+                _s1Active = array.size(_zones_s1_active) > i ? array.get(_zones_s1_active, i) : na
+                if not na(_s1Active) and not _s1Active
+                    array.remove(_zones_time, i)
+                    array.remove(_zones_s1_active, i)
+                    array.remove(_zones_s1, i)
+                    if _showZone
+                        array.remove(_zones_box, i)
+                    if array.size(_zones_time) == ds_max_zones
+                        break
+
+        // TV array max size = 100,000
+        if array.size(_zones_time_all) > 90000
+            array.pop(_zones_time_all)
+            array.pop(_zones_s1_all)
+
+
+add_ds_alert(_type, _time_unix, _price) =>
+    _zones_alert = _type == 'S' ? supply_zones_alert : demand_zones_alert
+    // Pairs: Zone price, time
+    array.unshift(_zones_alert, _time_unix)
+    array.unshift(_zones_alert, _price)
+
+remove_ds_alerts(_type, _time_unix) =>
+    int _slice_start = na
+    _zones_alert = _type == 'S' ? supply_zones_alert : demand_zones_alert
+    _noRepeatOff = ds_alert_mins_no_repeat == 0
+    for i = 0 to (array.size(_zones_alert) == 0 or _noRepeatOff ? na : array.size(_zones_alert) - 1) by 2
+        _price = array.size(_zones_alert) > i ? array.get(_zones_alert, i) : na
+        _time = array.size(_zones_alert) > i+1 ? array.get(_zones_alert, i+1) : na
+        _mins_diff = (_time_unix - _time) / (1000 * 60)
+        if _mins_diff >= ds_alert_mins_no_repeat
+            _slice_start := i
+            break
+    // Everything from _slice_start will be expired
+    if not na(_slice_start)
+        _sliceArr = array.slice(_zones_alert, _slice_start, array.size(_zones_alert))
+        array.clear(_sliceArr)
+
+check_repeat_alert(_type, _price) =>
+    _zones_alert = _type == 'S' ? supply_zones_alert : demand_zones_alert
+    _repeatAlert = array.includes(_zones_alert, _price)
+    _repeatAlert
+
+get_ds_zone_info(_zone_type, _s1, _s1_time) =>
+    _info = _zone_type == 'S' ? 'Supply Zone ' : 'Demand Zone '
+    _info += str.tostring(_s1) + '\n'
+    _info += 'from UTC'
+    _info += ds_hours_offset > 0 ? '+' + str.tostring(ds_hours_offset) : ds_hours_offset < 0 ? str.tostring(ds_hours_offset) : ''
+    _info += str.format(': {0,date,yyyy/MM/dd HH:mm}', _s1_time + (60 * 60 * 1000 * ds_hours_offset)) + '\n'
+    _info
+
+alert_ds(_do, _zone_type, _s1, _s1_time, _alert_type) =>
+    _repeatAlert = false
+
+    // Hit only happens once because the zone is deactivated
+    // Near can happen many times, so do not repeat within time limit
+    if _do and _alert_type == 'N' and ds_alert_mins_no_repeat > 0
+        _time_unix = time
+        remove_ds_alerts(_zone_type, _time_unix)
+        _repeatAlert := check_repeat_alert(_zone_type, _s1)
+        if not _repeatAlert
+            add_ds_alert(_zone_type, _time_unix, _s1)
+
+    if _do and not _repeatAlert
+        _msg = _alert_type == 'H' ? 'Zone hit' : 'Near zone'
+        _msg += '\n' + get_ds_zone_info(_zone_type, _s1, _s1_time)
+        alert(_msg)
+
+deactivate_ds_box(_box) =>
+    box.set_bgcolor(_box, color.rgb(0, 0, 0, 100))
+    box.set_border_style(_box, line.style_dotted)
+
+deactivate_ds_limited(_do, _zone_type, _s1, _s1_time) =>
+    if _do
+        _zones_time = _zone_type == 'S' ? supply_zones_time : demand_zones_time
+        _zones_s1 = _zone_type == 'S' ? supply_zones_s1 : demand_zones_s1
+        _zones_s1_active = _zone_type == 'S' ? supply_zones_s1_active : demand_zones_s1_active
+        _zones_box = _zone_type == 'S' ? supply_zones_box : demand_zones_box
+        _index = array.indexof(_zones_time, _s1_time)
+        if _index >= 0
+            array.set(_zones_s1_active, _index, false)
+        if showDemandZone and _index >= 0
+            _box = array.size(_zones_box) > _index ? array.get(_zones_box, _index) : na
+            deactivate_ds_box(_box)
+
+check_ds_zone_hit() =>
+    // max set at 5, so it does not take too long
+    loop_break_pc = 5
+
+    // Use data from all which only contains active zones.
+    // Deactivate the limited labels
+    for i = 0 to (array.size(demand_zones_s1_all) == 0 ? na : array.size(demand_zones_s1_all) - 1)
+        _s1 = array.size(demand_zones_s1_all) > i ? array.get(demand_zones_s1_all, i) : na
+        _s1_time = array.size(demand_zones_time_all) > i ? array.get(demand_zones_time_all, i) : na
+        _price_near = get_amount_by_pc(_s1, ds_alerts_pc_near, 'add')
+        // Hit or Near
+        _alert_type = low <= _s1 ? 'H' : low <= _price_near ? 'N' : ''
+        if _alert_type == 'H'
+            array.remove(demand_zones_s1_all, i)
+            array.remove(demand_zones_time_all, i)
+        
+        alert_ds(_alert_type=='H' or _alert_type=='N', 'D', _s1, _s1_time, _alert_type)
+        deactivate_ds_limited(_alert_type=='H', 'D', _s1, _s1_time)
+        if low > _s1 and get_pc_diff_abs(low, _s1) > loop_break_pc
+            break
+
+    for i = 0 to (array.size(supply_zones_s1_all) == 0 ? na : array.size(supply_zones_s1_all) - 1)
+        _s1 = array.size(supply_zones_s1_all) > i ? array.get(supply_zones_s1_all, i) : na
+        _s1_time = array.size(supply_zones_time_all) > i ? array.get(supply_zones_time_all, i) : na
+        _price_near = get_amount_by_pc(_s1, ds_alerts_pc_near, 'minus')
+        _alert_type = high >= _s1 ? 'H' : high >= _price_near ? 'N' : ''
+        if _alert_type == 'H'
+            array.remove(supply_zones_s1_all, i)
+            array.remove(supply_zones_time_all, i)
+
+        alert_ds(_alert_type=='H' or _alert_type=='N', 'S', _s1, _s1_time, _alert_type)
+        deactivate_ds_limited(_alert_type=='H', 'S', _s1, _s1_time)
+        if high < _s1 and get_pc_diff_abs(high, _s1) > loop_break_pc
+            break
+
+add_ds_lbl_tooltip(_lbl, _zone_type, _s1, _s1_time) =>
+    _info = get_ds_zone_info(_zone_type, _s1, _s1_time)
+    label.set_tooltip(_lbl, _info)
+
+draw_nearby_ds_s1() =>
+    if barstate.isconfirmed and (showDemandZone or showSupplyZone)
+        // Reset
+        _color_transparent = color.new(color.white, 100)
+        for i = 0 to ds_line_max - 1
+            line.set_xy1(array.get(demand_zones_s1_line, i), na, na)
+            line.set_xy1(array.get(supply_zones_s1_line, i), na, na)
+            _lbl_demand = array.get(demand_zones_s1_line_price, i)
+            label.set_text(_lbl_demand, '')
+            label.set_color(_lbl_demand, _color_transparent)
+            _lbl_supply = array.get(supply_zones_s1_line_price, i)
+            label.set_text(_lbl_supply, '')
+            label.set_color(_lbl_supply, _color_transparent)
+
+            _lbl_demand_all = array.get(demand_zones_label_all, i)
+            label.set_text(_lbl_demand_all, '')
+            label.set_color(_lbl_demand_all, _color_transparent)
+            _lbl_supply_all = array.get(supply_zones_label_all, i)
+            label.set_text(_lbl_supply_all, '')
+            label.set_color(_lbl_supply_all, _color_transparent)
+            _line_demand_all = array.get(demand_zones_line_all, i)
+            line.set_color(_line_demand_all, _color_transparent)
+            _line_supply_all = array.get(supply_zones_line_all, i)
+            line.set_color(_line_supply_all, _color_transparent)
+
+        // Main labels with limited data - Demand
+        _demand_line_index = 0
+        _s1_displayed = array.new_float(0)
+        float _s1_prev = na
+        _extra_bars = 0
+        _bars_out = 25
+        for i = 0 to (array.size(demand_zones_s1) == 0 or not showDemandZone ? na : array.size(demand_zones_s1) - 1)
+            _s1 = array.get(demand_zones_s1, i)
+
+            if array.get(demand_zones_s1_active, i) and get_pc_diff_abs(close, _s1) <= ds_line_pc_display
+                line.set_xy1(array.get(demand_zones_s1_line, _demand_line_index), get_bar_time(array.get(demand_zones_time, i), 'add', 2), _s1)
+                line.set_xy2(array.get(demand_zones_s1_line, _demand_line_index), get_bar_time(time, 'add', 1), _s1)
+
+                _lbl_demand = array.get(demand_zones_s1_line_price, _demand_line_index)
+                label.set_color(_lbl_demand, demand_bord_col)
+                _diff_to_prev = not na(_s1_prev) ? get_pc_diff_abs(_s1_prev, _s1) : na
+                _extra_bars := _extra_bars > 0 ? 0 : _diff_to_prev < 0.7 ? _bars_out : 0
+                label.set_xy(_lbl_demand, bar_index + 4 + _extra_bars, _s1)
+                label.set_text(_lbl_demand, str.tostring(_s1))
+
+                _s1_time = array.size(demand_zones_time) > i ? array.get(demand_zones_time, i) : na
+                add_ds_lbl_tooltip(_lbl_demand, 'D', _s1, _s1_time)
+
+                _demand_line_index += 1
+                _s1_prev := _s1
+                array.unshift(_s1_displayed, _s1)
+
+            if _demand_line_index == ds_line_max
+                break
+
+        // All data with active zones - Demand
+        _demand_line_count = _demand_line_index
+        _demand_line_index := 0
+        for i = 0 to (array.size(demand_zones_s1_all) == 0 or _demand_line_count == ds_line_max ? na : array.size(demand_zones_s1_all) - 1)
+            _s1 = array.size(demand_zones_s1_all) > i ? array.get(demand_zones_s1_all, i) : na
+            _diff = get_pc_diff_abs(close, _s1)
+            // Show the ones which were not picked up in limited above
+            _s1Displayed = array.includes(_s1_displayed, _s1)
+            if not _s1Displayed and _diff <= ds_line_pc_display
+                _lbl_demand = array.get(demand_zones_label_all, _demand_line_index)
+                label.set_color(_lbl_demand, demand_bord_col)
+                label.set_xy(_lbl_demand, bar_index + _bars_out, _s1)
+                label.set_text(_lbl_demand, str.tostring(_s1))
+
+                _s1_time = array.size(demand_zones_time_all) > i ? array.get(demand_zones_time_all, i) : na
+                add_ds_lbl_tooltip(_lbl_demand, 'S', _s1, _s1_time)
+
+                _line_demand = array.get(demand_zones_line_all, _demand_line_index)
+                line.set_color(_line_demand, demand_bord_col)
+                line.set_xy1(_line_demand, bar_index - 10, _s1)
+                line.set_xy2(_line_demand, bar_index + _bars_out, _s1)
+
+                _demand_line_index += 1
+                _demand_line_count += 1
+
+            if _demand_line_index == ds_line_max or _demand_line_count == ds_line_max or _diff > ds_line_pc_display
+                break
+
+        // Main labels with limited data - Supply
+        _supply_line_index = 0
+        array.clear(_s1_displayed)
+        _s1_prev := na
+        _extra_bars := 0
+        for i = 0 to (array.size(supply_zones_s1) == 0 or not showSupplyZone ? na : array.size(supply_zones_s1) - 1)
+            _s1 = array.get(supply_zones_s1, i)
+            
+            if array.get(supply_zones_s1_active, i) and get_pc_diff_abs(close, _s1) <= ds_line_pc_display
+                line.set_xy1(array.get(supply_zones_s1_line, _supply_line_index), get_bar_time(array.get(supply_zones_time, i), 'add', 2), _s1)
+                line.set_xy2(array.get(supply_zones_s1_line, _supply_line_index), get_bar_time(time, 'add', 1), _s1)
+
+                _lbl_supply = array.get(supply_zones_s1_line_price, _supply_line_index)
+                label.set_color(_lbl_supply, supply_bord_col)
+                _diff_to_prev = not na(_s1_prev) ? get_pc_diff_abs(_s1_prev, _s1) : na
+                _extra_bars := _extra_bars > 0 ? 0 : _diff_to_prev < 0.7 ? _bars_out : 0
+                label.set_xy(_lbl_supply, bar_index + 4 + _extra_bars, _s1)
+                label.set_text(_lbl_supply, str.tostring(_s1))
+
+                _s1_time = array.size(supply_zones_time) > i ? array.get(supply_zones_time, i) : na
+                add_ds_lbl_tooltip(_lbl_supply, 'S', _s1, _s1_time)
+
+                _supply_line_index += 1
+                _s1_prev := _s1
+                array.unshift(_s1_displayed, _s1)
+                
+            if _supply_line_index == ds_line_max
+                break
+
+        // All data with active zones - Supply
+        _supply_line_count = _supply_line_index
+        _supply_line_index := 0
+        for i = 0 to (array.size(supply_zones_s1_all) == 0 or _supply_line_count == ds_line_max ? na : array.size(supply_zones_s1_all) - 1)
+            _s1 = array.size(supply_zones_s1_all) > i ? array.get(supply_zones_s1_all, i) : na
+            _diff = get_pc_diff_abs(close, _s1)
+            // Show the ones which were not picked up in limited above
+            _s1Displayed = array.includes(_s1_displayed, _s1)
+            if not _s1Displayed and _diff <= ds_line_pc_display
+                _lbl_supply = array.get(supply_zones_label_all, _supply_line_index)
+                label.set_color(_lbl_supply, supply_bord_col)
+                label.set_xy(_lbl_supply, bar_index + _bars_out, _s1)
+                label.set_text(_lbl_supply, str.tostring(_s1))
+
+                _s1_time = array.size(supply_zones_time_all) > i ? array.get(supply_zones_time_all, i) : na
+                add_ds_lbl_tooltip(_lbl_supply, 'S', _s1, _s1_time)
+
+                _line_supply = array.get(supply_zones_line_all, _supply_line_index)
+                line.set_color(_line_supply, supply_bord_col)
+                line.set_xy1(_line_supply, bar_index - 10, _s1)
+                line.set_xy2(_line_supply, bar_index + _bars_out, _s1)
+
+                _supply_line_index += 1
+                _supply_line_count += 1
+
+            if _supply_line_index == ds_line_max or _supply_line_count == ds_line_max or _diff > ds_line_pc_display
+                break
+
+// ================================== //
+// ---->  Demand & Supply Calc  <---- //
+// ================================== //
+
+check_ds_zone_hit()
+
+add_ds_zone('D')
+add_ds_zone('S')
+
+draw_nearby_ds_s1()

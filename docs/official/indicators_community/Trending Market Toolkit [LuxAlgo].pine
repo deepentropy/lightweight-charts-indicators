@@ -1,0 +1,422 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator('Trending Market Toolkit [LuxAlgo]', 'LuxAlgo - Trending Market Toolkit', overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, dynamic_requests = true, calc_bars_count = 5000)
+//---------------------------------------------------------------------------------------------------------------------}
+//CONSTANTS & STRINGS & INPUTS
+//---------------------------------------------------------------------------------------------------------------------{
+BULLISH                     = 1
+BEARISH                     = 0
+
+HIGH                        = 1
+LOW                         = 0
+
+GREEN                       = #089981
+RED                         = #F23645
+GRAY                        = color.gray
+BULLISH_BOX_COLOR           = color.new(GREEN,90)
+BEARISH_BOX_COLOR           = color.new(RED,90)
+
+STRUCTURES_GROUP            = 'STRUCTURES'
+TRADES_GROUP                = 'TRADES'
+
+pivotLengthTooltip          = 'Number of candles to confirm a swing high or swing low. A higher number detects larger swings.'
+internalLengthTooltip       = 'Number of candles to confirm a internal high or internal low. A lower number detects smaller swings. It must be the same size or smaller than the swing length.'
+targetModeTooltip           = 'Traders can choose between the default target (0) or two extended targets (0.27 or 0.618)'
+
+TRENDS                      = 'Trends'
+REVERSALS                   = 'Reversals'
+BOTH                        = 'Both'
+
+DEFAULT                     = '0'
+EXTENDED1                   = '0.27'
+EXTENDED2                   = '0.618'
+
+executionModeInput          = input.string(     BOTH,   'Show',                     options=[BOTH,TRENDS,REVERSALS])
+pivotLengthInput            = input.int(        5,      'Swing Length',             group = STRUCTURES_GROUP,   tooltip = pivotLengthTooltip, minval = 2)
+customTimeframeInput        = input.timeframe(  '',     'Custom Timeframe',         group = STRUCTURES_GROUP)
+reversalAreaThresholdInput  = input.float(      0.50,   'Reversal Area Threshold',  group = STRUCTURES_GROUP) * ta.atr(200)
+internalLengthInput         = input.int(        2,      'Trade Trigger Length',     group = TRADES_GROUP,       tooltip = internalLengthTooltip, minval = 2)
+targetModeInput             = input.string(     DEFAULT,'Extension',                group = TRADES_GROUP,       tooltip = targetModeTooltip,options=[DEFAULT,EXTENDED1,EXTENDED2])
+risk2RewardThresholdInput   = input.float(      3.0,    'Risk to Reward Threshold', group = TRADES_GROUP,       minval= 0, step = 0.25)
+highRisk2RewardInput        = input.bool(       true,   'High Risk to Reward',      group = TRADES_GROUP)
+
+if timeframe.in_seconds(customTimeframeInput) < timeframe.in_seconds()
+    runtime.error('Select a `Custom Timeframe` on the settings panel equal or higher than the chart timaframe.')
+
+//---------------------------------------------------------------------------------------------------------------------}
+//DATA STRUCTURES & VARIABLES
+//---------------------------------------------------------------------------------------------------------------------{
+
+type swingPoint
+    int     barTime
+    int     barIndex
+    float   priceLevel
+    int     swing
+
+type trendline
+    array<chart.point>  points
+    color               lineColor
+    float               slope       = 0    
+    line                plottedLine = na
+
+type retracement
+    trendline   trend
+    bool        retraced    = false
+    bool        checkable   = false
+    bool        trade       = false
+    float       top         = 0
+    float       bottom      = 0
+    float       max         = 0
+    float       min         = 0
+    int         endIndex    = 0    
+
+type trade
+    bool    active      = false
+    int     bias        = na
+    int     entryTime   = na
+    int     exitTime    = na
+    float   entry       = na
+    float   stop        = na
+    float   target      = na    
+    float   riskReward  = na
+    box     risk        = na
+    box     reward      = na
+
+var trade               openTrade               = trade.new()
+var retracement         potentialRetracement    = retracement.new(na)
+var retracement         reversalRetracement     = retracement.new(na)
+var array<trendline>    trendlines              = array.new<trendline>()
+var array<trendline>    reversals               = array.new<trendline>()
+var array<swingPoint>   swingPoints             = array.new<swingPoint>()
+var array<swingPoint>   internalPoints          = array.new<swingPoint>()
+
+//---------------------------------------------------------------------------------------------------------------------}
+//USER-DEFINED FUNCTIONS
+//---------------------------------------------------------------------------------------------------------------------{
+
+chartPoint(swingPoint point) => chart.point.new(point.barTime, point.barIndex, point.priceLevel)
+
+inside(swingPoint point, swingPoint top, swingPoint bottom) => point.priceLevel <= top.priceLevel and point.priceLevel >= bottom.priceLevel
+
+newPivot(array<swingPoint> pivots) =>
+    var swingPoint currentPivot = na
+    if not na(pivots)
+        if pivots.size() > 0
+            currentPivot := pivots.last()
+            ta.change(currentPivot.barIndex)
+        else
+            false
+    else
+        false
+
+var box updatableBox = box.new(na,na,na,na,xloc = xloc.bar_time)
+
+plotLastRevesal() =>
+    trendline   lastReversal            = reversals.last()    
+    float       slope                   = (lastReversal.points.get(2).price - lastReversal.points.get(0).price) / (lastReversal.points.get(2).index - lastReversal.points.get(0).index)    
+    float       priceFinalCoordinate    = lastReversal.points.get(2).price + slope * (lastReversal.points.get(4).index - lastReversal.points.get(2).index)    
+    chart.point finalPoint              = chart.point.new(lastReversal.points.get(4).time,lastReversal.points.get(4).index,priceFinalCoordinate)
+    lastReversal.plottedLine            := line.new(lastReversal.points.get(0),finalPoint,xloc.bar_time,color = lastReversal.lineColor ,style = line.style_solid, width = 2)
+
+plotLastTrendline() =>
+    trendline lastTrendline     = trendlines.last()
+    lastTrendline.plottedLine   := line.new(lastTrendline.points.get(1),lastTrendline.points.last(),xloc.bar_time,color = lastTrendline.lineColor ,style = line.style_solid, width = 2)
+
+updateReversalRetracement() =>    
+    if reversals.size() > 0 and reversalRetracement.checkable and not reversalRetracement.retraced
+        reversalRetracement.endIndex    := bar_index
+        bullishRetracement              = reversalRetracement.trend.points.first().price > reversalRetracement.trend.points.get(1).price    
+
+        if bullishRetracement and ta.crossunder(close,reversalRetracement.bottom)
+            reversalRetracement.checkable := false
+            
+        if not bullishRetracement and ta.crossover(close,reversalRetracement.top)
+            reversalRetracement.checkable := false
+
+        if (bullishRetracement and low <= reversalRetracement.top) or (not bullishRetracement and high >= reversalRetracement.bottom)
+            reversalRetracement.retraced    := true                        
+            timeUnit                        = timeframe.in_seconds() * 1000            
+            box.new(reversalRetracement.trend.points.get(1).time,reversalRetracement.top,time+timeUnit,reversalRetracement.bottom,bullishRetracement ? GREEN : RED,bgcolor = bullishRetracement ? BULLISH_BOX_COLOR : BEARISH_BOX_COLOR,xloc = xloc.bar_time,text = 'Reversal',text_color = bullishRetracement ? GREEN : RED,text_size = size.auto)            
+            
+updateLastRetracement() =>
+    if trendlines.size() > 0
+
+        if not potentialRetracement.retraced and potentialRetracement.checkable
+            potentialRetracement.endIndex   := bar_index
+            bullishTrend                    = potentialRetracement.trend.points.first().price > potentialRetracement.trend.points.get(1).price    
+            point3                          = potentialRetracement.trend.points.get(2)
+            point4                          = potentialRetracement.trend.points.last()
+
+            if bullishTrend
+                if high > point4.price
+                    potentialRetracement.max    := math.max(potentialRetracement.max,high)
+                    potentialRetracement.top    := math.round_to_mintick(potentialRetracement.max - 0.5*(potentialRetracement.max - potentialRetracement.min))
+                    potentialRetracement.bottom := math.round_to_mintick(potentialRetracement.max - 0.618*(potentialRetracement.max - potentialRetracement.min))
+            else                
+                if low < point4.price
+                    potentialRetracement.min    := math.min(potentialRetracement.min,low)
+                    potentialRetracement.top    := math.round_to_mintick(potentialRetracement.min + 0.618*(potentialRetracement.max - potentialRetracement.min))
+                    potentialRetracement.bottom := math.round_to_mintick(potentialRetracement.min + 0.5*(potentialRetracement.max - potentialRetracement.min))
+        
+            if not na(potentialRetracement.top)
+                if bullishTrend and ta.crossunder(close,potentialRetracement.bottom)
+                    potentialRetracement.checkable := false
+                
+                if not bullishTrend and ta.crossover(close,potentialRetracement.top)
+                    potentialRetracement.checkable := false
+                
+            if not na(potentialRetracement.top)
+                updatableBox.set_top(potentialRetracement.top)
+                updatableBox.set_bottom(potentialRetracement.bottom)
+                updatableBox.set_left(point4.time)
+                updatableBox.set_right(time+1*(time-time[1]))
+                updatableBox.set_border_color(bullishTrend ? GREEN : RED)
+                updatableBox.set_bgcolor(bullishTrend ? BULLISH_BOX_COLOR : BEARISH_BOX_COLOR)
+
+            if not na(potentialRetracement.top)                
+                if (bullishTrend and low <= potentialRetracement.top and close >= potentialRetracement.bottom) or (not bullishTrend and high >= potentialRetracement.bottom and close <= potentialRetracement.top)                    
+                    potentialRetracement.retraced   := true                    
+                    timeUnit                        = timeframe.in_seconds() * 1000                        
+                    box.new(point4.time,potentialRetracement.top,time+timeUnit,potentialRetracement.bottom,bullishTrend ? GREEN : RED,bgcolor = bullishTrend ? BULLISH_BOX_COLOR : BEARISH_BOX_COLOR,xloc = xloc.bar_time,text = 'Continuation',text_color = bullishTrend ? GREEN : RED,text_size = size.auto)                                        
+
+closeOpenTrade() =>
+    if openTrade.active
+        openTrade.active    := false
+        openTrade.exitTime  := time
+        if openTrade.exitTime == openTrade.entryTime
+            openTrade.risk.delete()
+            openTrade.reward.delete()
+        else
+            openTrade.risk.set_right(openTrade.exitTime)
+            openTrade.risk.set_extend(extend.none)
+            openTrade.reward.set_right(openTrade.exitTime)
+            openTrade.reward.set_extend(extend.none)
+
+updateOpenTrade() =>
+    if openTrade.active
+        stopHit     = openTrade.bias == BULLISH ? low   <= openTrade.stop   : high  >= openTrade.stop
+        targetHit   = openTrade.bias == BULLISH ? high  >= openTrade.target : low   <= openTrade.target
+        if stopHit or targetHit
+            closeOpenTrade()
+            
+newOpenTrade(float entry,float stop,float target, bool bullish, int lastIndex,swingPoint point) =>    
+    riskReward  = math.abs(target-entry)/math.abs(stop-entry)
+    goodTrade   = (bullish and entry > stop and target > entry) or (not bullish and entry < stop and target < entry)
+
+    if goodTrade and riskReward >= risk2RewardThresholdInput and bar_index > lastIndex
+        openTrade.active        := true
+        openTrade.bias          := bullish ? BULLISH : BEARISH
+        openTrade.entryTime     := time
+        openTrade.exitTime      := last_bar_time
+        openTrade.entry         := entry
+        openTrade.stop          := stop
+        openTrade.target        := target
+        openTrade.riskReward    := riskReward
+
+        chart.point riskTopLeft         = bullish ? chart.point.now(openTrade.entry) : chart.point.now(openTrade.stop)
+        chart.point riskBottomRight     = bullish ? chart.point.new(openTrade.exitTime,na,openTrade.stop) : chart.point.new(openTrade.exitTime,na,openTrade.entry)
+        chart.point rewardTopLeft       = bullish ? chart.point.now(openTrade.target) : chart.point.now(openTrade.entry)
+        chart.point rewardBottomRight   = bullish ? chart.point.new(openTrade.exitTime,na,openTrade.entry) : chart.point.new(openTrade.exitTime,na,openTrade.target)
+
+        openTrade.risk      := box.new(riskTopLeft,riskBottomRight,RED,1,xloc = xloc.bar_time,bgcolor = BEARISH_BOX_COLOR,extend = extend.right,text = 'R : R\n1 : '+str.tostring(openTrade.riskReward,'0.00'), text_color = color.white, text_size = size.auto, text_valign = bullish ? text.align_bottom : text.align_top)        
+        openTrade.reward    := box.new(rewardTopLeft,rewardBottomRight,GREEN,1,xloc = xloc.bar_time,bgcolor = BULLISH_BOX_COLOR,extend = extend.right)
+        line.new(chartPoint(point),chart.point.now(point.priceLevel),color=bullish?GREEN:RED,style=line.style_dashed)            
+        
+newReversalRetracement() =>
+    reversalRetracement.trend       := reversals.last()
+    reversalRetracement.retraced    := false
+    reversalRetracement.checkable   := false
+    reversalRetracement.trade       := false
+
+    if reversalRetracement.trend.points.size() >= 5
+        reversalRetracement.endIndex    := reversalRetracement.trend.points.last().index
+        reversalRetracement.checkable   := true
+        reversalRetracement.top         := math.round_to_mintick(reversalRetracement.trend.points.get(1).price + reversalAreaThresholdInput)
+        reversalRetracement.bottom      := math.round_to_mintick(reversalRetracement.trend.points.get(1).price - reversalAreaThresholdInput)
+
+        bullishRetracement              = reversalRetracement.trend.points.first().price > reversalRetracement.trend.points.get(1).price    
+        reversalRetracement.max         := math.round_to_mintick(bullishRetracement ? reversalRetracement.trend.points.last().price : reversalRetracement.trend.points.get(3).price)
+        reversalRetracement.min         := math.round_to_mintick(bullishRetracement ? reversalRetracement.trend.points.get(3).price : reversalRetracement.trend.points.last().price)
+
+newLastRetracement() =>
+    potentialRetracement.trend      := trendlines.last()
+    potentialRetracement.retraced   := false
+    potentialRetracement.checkable  := true
+    potentialRetracement.trade      := false
+    potentialRetracement.top        := na
+    potentialRetracement.bottom     := na
+    potentialRetracement.max        := trendlines.last().points.last().price
+    potentialRetracement.min        := trendlines.last().points.last().price
+    potentialRetracement.endIndex   := trendlines.last().points.last().index
+    
+getReversal() =>
+    size = array.size(swingPoints)
+
+    if size >= 5
+        point1          = array.get(swingPoints, size - 5)
+        point2          = array.get(swingPoints, size - 4)
+        point3          = array.get(swingPoints, size - 3)
+        point4          = array.get(swingPoints, size - 2)        
+        point5          = array.get(swingPoints, size - 1) 
+
+        bullishReversal = point1.swing == HIGH and inside(point3,point1,point2) and inside(point2,point3,point4) and inside(point3,point5,point4)
+        bearishReversal = point1.swing == LOW and inside(point3,point2,point1) and inside(point2,point4,point3) and inside(point3,point4,point5)
+
+        if bullishReversal or bearishReversal
+            color reversalColor = bullishReversal ? RED : GREEN
+            reversals.push(trendline.new(array.from(chartPoint(point1),chartPoint(point2),chartPoint(point3),chartPoint(point4),chartPoint(point5)),reversalColor))
+            plotLastRevesal()
+            newReversalRetracement()          
+
+getTrendContinuation() =>
+    size = array.size(swingPoints)
+
+    if size >= 4        
+        point1          = array.get(swingPoints, size - 4)
+        point2          = array.get(swingPoints, size - 3)
+        point3          = array.get(swingPoints, size - 2)
+        point4          = array.get(swingPoints, size - 1)        
+
+        bullishTrend = point1.swing == HIGH and inside(point1,point3,point2) and inside(point4,point3,point2)
+        bearishTrend = point1.swing == LOW and inside(point1,point2,point3) and inside(point4,point2,point3)
+
+        if bullishTrend or bearishTrend
+            color trendColor = bullishTrend ? GREEN : RED
+            trendlines.push(trendline.new(array.from(chartPoint(point1),chartPoint(point2),chartPoint(point3),chartPoint(point4)),trendColor))
+            plotLastTrendline()
+            newLastRetracement()
+
+getTarget(float max, float min,bool long) =>
+    float anchor    = long ? max : min
+    int bias        = long ? +1 : -1
+    switch targetModeInput
+        DEFAULT     => anchor
+        EXTENDED1   => anchor + bias*0.27*(max-min)
+        EXTENDED2   => anchor + bias*0.618*(max-min)
+
+getReversalEntry() =>
+    if internalPoints.size() > 1 and reversals.size() > 0 and reversalRetracement.retraced and reversalRetracement.checkable and not reversalRetracement.trade
+        
+        bool bullishTrend               = reversalRetracement.trend.points.first().price > reversalRetracement.trend.points.get(1).price  
+        swingPoint lastInternalPivot    = internalPoints.last()        
+        swingPoint lastInternalHigh     = lastInternalPivot.swing == HIGH ? lastInternalPivot : internalPoints.get(internalPoints.size()-2)
+        swingPoint lastInternalLow      = lastInternalPivot.swing == LOW ? lastInternalPivot : internalPoints.get(internalPoints.size()-2)
+        
+        if bullishTrend and ta.crossover(close,lastInternalHigh.priceLevel)
+            closeOpenTrade()
+            target = getTarget(reversalRetracement.max,reversalRetracement.min,true)
+            newOpenTrade(close, (highRisk2RewardInput ? reversalRetracement.bottom : reversalRetracement.min) - syminfo.mintick, target, bullishTrend,reversalRetracement.endIndex,lastInternalHigh)
+            reversalRetracement.trade := true
+
+        if not bullishTrend and ta.crossunder(close,lastInternalLow.priceLevel)
+            closeOpenTrade()            
+            target = getTarget(reversalRetracement.max,reversalRetracement.min,false)
+            newOpenTrade(close, (highRisk2RewardInput ? reversalRetracement.top : reversalRetracement.max) + syminfo.mintick, target, bullishTrend,reversalRetracement.endIndex,lastInternalLow)
+            reversalRetracement.trade := true
+
+getEntry() =>
+    if internalPoints.size() > 1 and trendlines.size() > 0 and potentialRetracement.retraced and potentialRetracement.checkable and not potentialRetracement.trade
+        
+        bool bullishTrend               = potentialRetracement.trend.points.first().price > potentialRetracement.trend.points.get(1).price  
+        swingPoint lastInternalPivot    = internalPoints.last()
+        swingPoint lastInternalHigh     = lastInternalPivot.swing == HIGH ? lastInternalPivot : internalPoints.get(internalPoints.size()-2)
+        swingPoint lastInternalLow      = lastInternalPivot.swing == LOW ? lastInternalPivot : internalPoints.get(internalPoints.size()-2)
+
+        if bullishTrend and ta.crossover(close,lastInternalHigh.priceLevel)
+            closeOpenTrade()
+            target = getTarget(math.max(potentialRetracement.max,potentialRetracement.trend.points.get(2).price),potentialRetracement.trend.points.get(3).price,true)
+            newOpenTrade(close, (highRisk2RewardInput ? potentialRetracement.bottom : potentialRetracement.min) - syminfo.mintick, target, bullishTrend,potentialRetracement.endIndex,lastInternalHigh)
+            potentialRetracement.trade := true
+            
+        if not bullishTrend and ta.crossunder(close,lastInternalLow.priceLevel)
+            closeOpenTrade()            
+            target = getTarget(potentialRetracement.trend.points.get(3).price,math.min(potentialRetracement.min,potentialRetracement.trend.points.get(2).price),false)
+            newOpenTrade(close, (highRisk2RewardInput ? potentialRetracement.top : potentialRetracement.max) + syminfo.mintick, target, bullishTrend,potentialRetracement.endIndex,lastInternalLow)
+            potentialRetracement.trade := true
+                    
+addPoint(swingPoint point, array<swingPoint> points, int size) =>
+    if points.size() >= size
+        points.shift()
+        
+    points.push(point)
+
+getPivots(int length = 5, int size) =>
+    var array<swingPoint> pivots = array.new<swingPoint>()
+
+    HIGH                        = 1
+    LOW                         = 0
+    
+    var bool newPivot           = na
+    var bool pivotLow           = na
+    var bool pivotHigh          = na
+
+    var float pivotHighPrice    = 0
+    var float pivotLowPrice     = 0
+    var int pivotIndex          = 0
+    var int pivotTime           = 0
+    
+    var int currentLeg          = 0
+    newHigh                     = high  == ta.highest(length)
+    newLow                      = low   == ta.lowest(length)
+    currentLeg                  := newHigh ? HIGH : newLow ? LOW : currentLeg
+
+    newPivot                    := ta.change(currentLeg) != 0
+    pivotLow                    := ta.change(currentLeg) == +1
+    pivotHigh                   := ta.change(currentLeg) == -1
+    bullishLeg                  = currentLeg == HIGH
+    bearishLeg                  = currentLeg == LOW
+
+    if barstate.isconfirmed
+        if newPivot
+            priceLevel      = pivotHighPrice
+            legBias         = HIGH
+        
+            if pivotLow
+                priceLevel  := pivotLowPrice
+                legBias     := LOW
+        
+            addPoint(swingPoint.new(pivotTime,pivotIndex,priceLevel,legBias),pivots,size)
+
+        pivotHighPrice  := pivotLow     ? high  : math.max(high,pivotHighPrice)
+        pivotLowPrice   := pivotHigh    ? low   : math.min(low, pivotLowPrice)
+        pivotIndex      := (bullishLeg and pivotHighPrice == high) or (bearishLeg and pivotLowPrice == low) ? bar_index : pivotIndex
+        pivotTime       := (bullishLeg and pivotHighPrice == high) or (bearishLeg and pivotLowPrice == low) ? time : pivotTime
+    
+    pivots
+    
+getPivotsMTF(int length = 5, int size) => request.security('','',getPivots(length,size)[1],barmerge.gaps_off,barmerge.lookahead_on)   
+
+getPivotsCustomTF(string customTimeframe, int length = 5, int size) => request.security(syminfo.tickerid,customTimeframe,getPivotsMTF(length,size),barmerge.gaps_off,barmerge.lookahead_on)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//MUTABLE VARIABLES & EXECUTION
+//---------------------------------------------------------------------------------------------------------------------{
+showTrends      = executionModeInput == BOTH or executionModeInput == TRENDS
+showReversals   = executionModeInput == BOTH or executionModeInput == REVERSALS
+
+if barstate.isconfirmed
+    swingPoints := getPivotsCustomTF(customTimeframeInput,pivotLengthInput, 5)
+    if newPivot(swingPoints) and not openTrade.active
+
+        if showReversals
+            getReversal()
+
+        if showTrends and not reversalRetracement.checkable
+            getTrendContinuation()
+
+    internalPoints := getPivots(internalLengthInput,pivotLengthInput)
+
+    if showReversals and not openTrade.active       
+        updateReversalRetracement()
+        getReversalEntry()
+        
+    if showTrends and not openTrade.active and not reversalRetracement.checkable
+        updateLastRetracement()    
+        getEntry()
+        
+    if openTrade.active
+        updateOpenTrade()
+        
+//---------------------------------------------------------------------------------------------------------------------}

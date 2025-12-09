@@ -1,0 +1,239 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © QuantVue
+
+//@version=5
+indicator("Order Blocks W/ Realtime Fibs [QuantVue]", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+//----------settings----------//
+var g0      = 'Order Block Settings'
+barsReq     = input.int(6, 'Consecutive Bars Required', group = g0, tooltip = 'The number of bars required after the last bullish or bearish bar to validate an order block')
+percGain    = input.float(0.0, 'Percent Gain Required', step = 0.1, group = g0, tooltip = 'The minimum percent gain or loss of the consecutive bars required to validate an order block')
+opposites   = input.bool(false, 'Require Opposite Order Block', group = g0, tooltip = 'Requires an order block in the opposite direction of the previous order block before a new order block is marked')
+mitType     = input.string('Wicks', 'Mitigation Type', ['Wicks', 'Close'])
+irrOb       = input.string('Length', 'Irrelevant Order Block ', ['Length', 'Distance'], group = g0, tooltip = 'Method for considering Order Blocks irrelevant. Either too long (length) or too far away from current price (distance)')
+maxObLen    = input.int(150, 'Max Ob Length or Distance', group = g0, tooltip = 'Maximum bar length or % distance away from Order Block to be considered irrelevant')
+
+var g1      = 'Order Block Display Settings'
+showOb      = input.bool(true, 'Show Order Blocks', group = g1)
+hideOld     = input.bool(false, 'Remove Old or Irrelevant Order Blocks', group = g1)
+bullCol     = input.color(color.new(color.green,85), 'Bullish Color', group = g1)
+bearCol     = input.color(color.new(color.red,85), 'Bearish Color', group = g1)
+
+var g2      = 'Fibs'
+showFibs    = input.bool(true, 'Show Fibs', group = g2)
+retraceMax  = input.bool(true,'Stop Fib Recalculation After Retracement', group = g2, tooltip = 'Will stop fibs from recalculating when a new high or low is made, if the retracement level has been hit')
+retracelev  = input.string('Order Block', 'Rectracement Level', ['Order Block', '.50', '.618', '.786'], group = g2)
+fibStyle    = input.string('Dashed', 'Line style ', options = ['Dashed', 'Dotted', 'Solid'], group = g2, inline = '2')
+extLines    = input.bool(false, 'Extend', group = g2, inline = '2')
+textColor   = input.color(color.rgb(255, 253, 253), 'Fib Label Color', group = g2)
+show_236    = input.bool(true, '.236', inline = '3', group = g2)
+color_236   = input.color(#c2c5ce, '', inline = '3', group = g2)
+show_382    =  input.bool(true, '.382', inline = '3', group = g2)
+color_382   = input.color(#c2c5ce, '', inline = '3', group = g2)
+show_50     = input.bool(true, '.50', inline = '3', group = g2)
+color_50    = input.color(#c2c5ce, '', inline = '3', group = g2)
+show_618    = input.bool(true, '.618', inline = '4', group = g2)
+color_618   = input.color(#00ccff, '', inline = '4', group = g2)
+show_786    = input.bool(true, '.786', inline = '4', group = g2)
+color_786   = input.color(#c2c5ce, '', inline = '4', group = g2)
+show_hl     = input.bool(true, '0 & 1', inline = '4', group = g2)
+color_hl    = input.color(#c2c5ce, '', inline = '4', group = g2)
+
+//----------types----------//
+type obFibs
+    bool a = true
+    bool bull = true
+    int idx 
+    float l 
+    float h
+    float chl 
+    bool ret = false
+    float [] levArr
+    line [] lineArr
+    label [] labArr
+    label retLab
+
+type obBox
+    bool a = true
+    bool bull = true
+    float top
+    float bottom 
+    box bx
+
+//----------switch----------//
+method switcher(string this) =>
+    switch this
+        'Solid'  => line.style_solid
+        'Dashed' => line.style_dashed
+        'Dotted' => line.style_dotted
+
+//----------variables----------//
+var obFibsArr   = array.new<obFibs>()
+var obBoxArr    = array.new<obBox>()
+var fibBoolArr  = array.from(show_hl, show_hl, show_236, show_382, show_50, show_618, show_786)
+var fibColArr   = array.from(color_hl, color_hl, color_236, color_382, color_50, color_618, color_786)
+var fibLevArr   = array.from('0', '1', '.236', '.382', '.50', '.618', '.786')
+var bu          = false
+var be          = false
+barsCount       = 0
+lines           = line.all
+labels          = label.all
+
+//----------calculations----------//
+if irrOb == 'Distance'
+    maxObLen := maxObLen / 100
+
+gainBull    = ((math.abs(low[barsReq] - close))/low[barsReq]) * 100 
+gainBear    = ((math.abs(high[barsReq] - close))/high[barsReq]) * 100 
+gainCheck   = gainBull >= percGain or gainBear >= percGain
+
+lastDown    = close[barsReq] < open[barsReq]
+lastUp      = close[barsReq] > open[barsReq]
+
+if lastDown
+    for i = 0 to barsReq
+        if close[i] > open[i]
+            barsCount += 1
+            
+if lastUp
+    for i = 0 to barsReq
+        if close[i] < open[i]
+            barsCount += 1
+
+//----------conditions----------//
+bullish = lastDown and barsCount >= barsReq and gainCheck and (opposites ? not bu : not bu or bu)
+bearish = lastUp and barsCount >= barsReq and gainCheck and (opposites ? not be : not be or be)
+
+if bullish
+    for l in lines
+        l.delete()
+    for l in labels
+        l.delete()
+    bu := true
+    be := false
+    fibTotal = high - low[barsReq]
+    lev236   = high - (fibTotal * .236)
+    lev382   = high - (fibTotal * .382)
+    lev50    = high - (fibTotal * .5)
+    lev618   = high - (fibTotal * .618)
+    lev786   = high - (fibTotal * .786)
+    newFibs = obFibs.new(true, true, bar_index[barsReq], low[barsReq], high[barsReq], high, false, array.from(high, low[barsReq], lev236, lev382, lev50, lev618, lev786), array.new<line>(), array.new<label>())
+    if showFibs
+        for i = 0 to newFibs.levArr.size()-1
+            if fibBoolArr.get(i) == true
+                newFibs.lineArr.unshift(line.new(newFibs.idx, newFibs.levArr.get(i), bar_index, newFibs.levArr.get(i), color = fibColArr.get(i), extend = extLines ? extend.right : extend.none, style = fibStyle.switcher()))
+                newFibs.labArr.unshift(label.new(newFibs.idx, newFibs.levArr.get(i), str.tostring(fibLevArr.get(i)) + ' ($' + str.tostring(newFibs.levArr.get(i), format.mintick) + ')', color=color.new(color.white,100), style = label.style_label_right, textcolor = textColor))
+    obFibsArr.unshift(newFibs)
+    if showOb
+        obBoxArr.unshift(obBox.new(true, true, high[barsCount], low[barsReq], box.new(bar_index[barsReq], high[barsReq], bar_index, low[barsReq], bullCol, bgcolor = bullCol)))
+        alert('New Bullish Order Block', alert.freq_once_per_bar_close)
+if bearish
+    for l in lines
+        l.delete()
+    for l in labels
+        l.delete()
+    be := true
+    bu := false
+    fibTotal = high[barsReq] - low
+    lev236   = low + (fibTotal * .236)
+    lev382   = low + (fibTotal * .382)
+    lev50    = low +(fibTotal * .5)
+    lev618   = low + (fibTotal * .618)
+    lev786   = low + (fibTotal * .786)
+    newFibs = obFibs.new(true, false, bar_index[barsReq], low[barsReq], high[barsReq], low, false, array.from(low, high[barsReq], lev236, lev382, lev50, lev618, lev786), array.new<line>(), array.new<label>())
+    if showFibs
+        for i = 0 to newFibs.levArr.size()-1
+            if fibBoolArr.get(i) == true
+                newFibs.lineArr.unshift(line.new(newFibs.idx, newFibs.levArr.get(i), bar_index, newFibs.levArr.get(i), color = fibColArr.get(i), extend = extLines ? extend.right : extend.none, style = fibStyle.switcher()))
+                newFibs.labArr.unshift(label.new(newFibs.idx, newFibs.levArr.get(i), str.tostring(fibLevArr.get(i)) + ' ($' + str.tostring(newFibs.levArr.get(i), format.mintick) + ')', color=color.new(color.white,100), style = label.style_label_right, textcolor = textColor))
+    obFibsArr.unshift(newFibs)
+    if showOb
+        obBoxArr.unshift(obBox.new(true, false, high[barsCount], low[barsReq], box.new(bar_index[barsReq], high[barsReq], bar_index, low[barsReq], bearCol, bgcolor = bearCol)))
+        alert('New Bearish Order Block', alert.freq_once_per_bar_close)
+
+//----------fib management----------//
+if obFibsArr.size() > 0
+    for b in obFibsArr
+        if b.a 
+            for l in b.lineArr
+                l.set_x2(bar_index)
+            if b.bull
+                retlev = retracelev == 'Order Block' ? b.h : retracelev == '.50' ? b.levArr.get(4) : retracelev == '.618' ? b.levArr.get(5) : b.levArr.get(6)
+                if low <= retlev and retraceMax and not b.ret
+                    b.ret    := true
+                    b.retLab := label.new(bar_index,low,'🔺', style=label.style_none, yloc = yloc.belowbar)
+                    alert('Retracement Level Hit', alert.freq_once_per_bar)
+                if high > b.chl and not b.ret
+                    b.chl    := high
+                    fibTotal = b.chl - b.l
+                    lev236   = b.chl - (fibTotal * .236)
+                    lev382   = b.chl - (fibTotal * .382)
+                    lev50    = b.chl - (fibTotal * .5)
+                    lev618   = b.chl - (fibTotal * .618)
+                    lev786   = b.chl - (fibTotal * .786)
+                    b.levArr := array.from(b.chl, b.l, lev236, lev382, lev50, lev618, lev786)
+                    for l in b.lineArr
+                        l.delete()
+                    for l in b.labArr
+                        l.delete()
+                    if showFibs
+                        for i = 0 to b.levArr.size()-1
+                            if fibBoolArr.get(i) == true
+                                b.lineArr.unshift(line.new(b.idx, b.levArr.get(i), bar_index, b.levArr.get(i), color = fibColArr.get(i), extend = extLines ? extend.right : extend.none, style = fibStyle.switcher()))
+                                b.labArr.unshift(label.new(b.idx, b.levArr.get(i), str.tostring(fibLevArr.get(i)) + ' ($' + str.tostring(b.levArr.get(i), format.mintick) + ')', color=color.new(color.white,100), style = label.style_label_right, textcolor = textColor))
+                if (be and not be[1] and opposites) or (close < b.l) or (bullish and bar_index > b.idx + barsReq and not opposites) or (retraceMax and high > b.chl)
+                    b.a := false
+                    if (bullish and bar_index > b.idx + barsReq and not opposites)
+                        for l in b.lineArr
+                            l.delete()
+                        for l in b.labArr
+                            l.delete()
+            if not b.bull
+                retlev = retracelev == 'Order Block' ? b.h : retracelev == '.50' ? b.levArr.get(4) : retracelev == '.618' ? b.levArr.get(5) : b.levArr.get(6)
+                if high >= retlev and retraceMax and not b.ret
+                    b.ret    := true
+                    b.retLab := label.new(bar_index,low,'🔻', style=label.style_none, yloc = yloc.abovebar)
+                    alert('Retracement Level Hit', alert.freq_once_per_bar)
+                if low < b.chl and not b.ret
+                    b.chl    := low
+                    fibTotal = b.h - b.chl
+                    lev236   = b.chl + (fibTotal * .236)
+                    lev382   = b.chl + (fibTotal * .382)
+                    lev50    = b.chl +(fibTotal * .5)
+                    lev618   = b.chl + (fibTotal * .618)
+                    lev786   = b.chl + (fibTotal * .786)
+                    b.levArr := array.from(b.chl, b.h, lev236, lev382, lev50, lev618, lev786)
+                    for l in b.lineArr
+                        l.delete()
+                    for l in b.labArr
+                        l.delete()
+                    if showFibs
+                        for i = 0 to b.levArr.size()-1
+                            if fibBoolArr.get(i) == true
+                                b.lineArr.unshift(line.new(b.idx, b.levArr.get(i), bar_index, b.levArr.get(i), color = fibColArr.get(i), extend = extLines ? extend.right : extend.none, style = fibStyle.switcher()))
+                                b.labArr.unshift(label.new(b.idx, b.levArr.get(i), str.tostring(fibLevArr.get(i)) + ' ($' + str.tostring(b.levArr.get(i), format.mintick) + ')', color=color.new(color.white,100), style = label.style_label_right, textcolor = textColor))
+                if (bu and not bu[1] and opposites) or (close > b.h) or (bearish and bar_index > b.idx + barsReq and not opposites) or (retraceMax and low < b.chl)
+                    b.a := false
+                    if (bearish and bar_index > b.idx + barsReq and not opposites)
+                        for l in b.lineArr
+                            l.delete()
+                        for l in b.labArr
+                            l.delete()
+
+//----------order block management----------//
+if obBoxArr.size() > 0
+    for bx in obBoxArr
+        if bx.a 
+            bx.bx.set_right(bar_index)
+        if bx.bull
+            src = mitType == 'Wicks' ? low : close 
+            if src <= bx.bx.get_top() or (irrOb == 'Length' and bar_index - bx.bx.get_left() > maxObLen-1 or irrOb == 'Distance' and low >= bx.bx.get_top()*(1+maxObLen))
+                bx.a := false
+                if hideOld
+                    bx.bx.delete()
+        else if not bx.bull
+            src = mitType == 'Wicks' ? high : close 
+            if src >= bx.bx.get_bottom() or (irrOb == 'Length' and bar_index - bx.bx.get_left() > maxObLen-1 or irrOb == 'Distance' and high <= bx.bx.get_bottom()*(1-maxObLen))
+                bx.a := false
+                if hideOld
+                    bx.bx.delete()

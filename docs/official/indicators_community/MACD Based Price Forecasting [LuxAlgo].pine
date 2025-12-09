@@ -1,0 +1,157 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("MACD Based Price Forecasting [LuxAlgo]", "LuxAlgo - MACD Based Price Forecasting", overlay = true, max_lines_count = 500)
+//---------------------------------------------------------------------------------------------------------------------}
+//Settings
+//---------------------------------------------------------------------------------------------------------------------{
+//MACD
+fast = input.int(12, 'Fast Length', minval = 2, group = 'MACD')
+slow = input.int(26, 'Slow Length', minval = 2, group = 'MACD')
+sigLen = input.int(9, 'Signal Length', minval = 2, group = 'MACD')
+
+trend = input.string('MACD - Signal', 'Trend Determination',
+  options = ['MACD', 'MACD - Signal'],
+  group = 'MACD')
+
+//Forecast
+maxMemory = input.int(50, 'Maximum Memory', minval = 2, group = 'Forecast')
+fcast = input.int(100, 'Forecasting Length', minval = 1, group = 'Forecast')
+upPer = input(80, 'Top Percentile', group = 'Forecast')
+midPer = input(50, 'Average Percentage', group = 'Forecast')
+dnPer = input(20, 'Bottom Percentile', group = 'Forecast')
+
+//Style
+upLine = input(#3179f5, 'Line Color', inline = 'css', group = 'Style')
+dnLine = input(#ff5d00, '', inline = 'css', group = 'Style')
+
+upArea = input(color.new(#3179f5, 80), 'Areas', inline = 'areas', group = 'Style')
+dnArea = input(color.new(#ff5d00, 80), '', inline = 'areas', group = 'Style')
+
+signalArea = input(true, 'Signal Area', inline = 'signal', group = 'Style')
+signalBull = input(color.new(#089981, 50), '', inline = 'signal', group = 'Style')
+signalBear = input(color.new(#f23645, 50), '', inline = 'signal', group = 'Style')
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Types
+//---------------------------------------------------------------------------------------------------------------------{
+type vector
+    array<float> id
+
+type holder
+    array<vector> id
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Methods/Functions
+//---------------------------------------------------------------------------------------------------------------------{
+n = bar_index
+
+method populate(holder get_holder, idx, init_price)=>
+    if get_holder.id.size() < idx+1
+        get_holder.id.push(vector.new(array.new<float>(0)))
+
+    get_holder.id.get(idx).id.unshift(close - init_price)
+    
+    //Remove last element if array size is greater than specified limit
+    if get_holder.id.get(idx).id.size() > maxMemory
+        get_holder.id.get(idx).id.pop()
+
+method forecast(holder get_holder, idx, init_price, upper_coords, mid_coords, lower_coords)=>
+    max_horizon = get_holder.id.size()
+
+    x = 0
+    for i = idx-1 to math.min(idx+fcast, max_horizon-1)
+        get_vector = get_holder.id.get(i)
+        
+        //Compute forecasts
+        upper = init_price + get_vector.id.percentile_linear_interpolation(upPer)
+        mid   = init_price + get_vector.id.percentile_linear_interpolation(midPer)
+        lower = init_price + get_vector.id.percentile_linear_interpolation(dnPer)
+
+        //Append coordinates
+        upper_coords.push(chart.point.from_index(n+x, upper))
+        mid_coords.push(chart.point.from_index(n+x, mid))
+        lower_coords.unshift(chart.point.from_index(n+x, lower))
+        x += 1
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Calculations
+//---------------------------------------------------------------------------------------------------------------------{
+var memory = map.new<int, holder>()
+var up_idx = 0
+var dn_idx = 0
+var uptrend_init_price = close
+var downtrend_init_price = close
+
+//Compute MACD
+[macd, signal, _] = ta.macd(close, fast, slow, sigLen)
+
+//Populate map
+if barstate.isfirst
+    memory.put(1, holder.new(array.new<vector>(0)))
+    memory.put(0, holder.new(array.new<vector>(0)))
+
+trigger = switch trend
+    'MACD' => ta.cross(macd, 0)
+    => ta.cross(macd, signal)
+
+uptrend = trend == 'MACD' ? macd > 0 : macd > signal
+downtrend = trend == 'MACD' ? macd < 0 : macd < signal
+
+//Reference prices
+uptrend_init_price := uptrend and not uptrend[1] ? close : uptrend_init_price
+downtrend_init_price := downtrend and not downtrend[1] ? close : downtrend_init_price
+init_value = uptrend ? uptrend_init_price : downtrend_init_price
+
+//Uptrend
+if uptrend
+    get_holder = memory.get(1)
+    get_holder.populate(up_idx, uptrend_init_price)
+
+//Downtrend
+if downtrend
+    get_holder = memory.get(0)
+    get_holder.populate(dn_idx, downtrend_init_price)
+
+//Indices
+up_idx := not uptrend ? 0 : up_idx + 1
+dn_idx := not downtrend ? 0 : dn_idx + 1
+
+if trigger
+    upper_coords = array.new<chart.point>(0)
+    mid_coords = array.new<chart.point>(0)
+    lower_coords = array.new<chart.point>(0)
+
+    if uptrend
+        get_holder = memory.get(1)
+        get_holder.forecast(up_idx, uptrend_init_price, upper_coords, mid_coords, lower_coords)
+    else
+        get_holder = memory.get(0)
+        get_holder.forecast(dn_idx, downtrend_init_price, upper_coords, mid_coords, lower_coords)
+    
+    polyline.delete(polyline.new(mid_coords, line_color = uptrend ? upLine : dnLine)[1])
+
+    //Area
+    polyline.delete(polyline.new(array.concat(upper_coords, lower_coords)
+      , line_color = na
+      , fill_color = uptrend ? upArea : dnArea)
+      [1])
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Plots
+//---------------------------------------------------------------------------------------------------------------------{
+init_plot = plot(init_value, "Reference Price", init_value != init_value[1] ? na : color.gray)
+price_plot = plot(close, editable = false, display = display.none)
+
+top_css = not signalArea ? na : uptrend ? signalBull : color.new(chart.bg_color, 100)
+btm_css = not signalArea ? na : uptrend ? color.new(chart.bg_color, 100) : signalBear
+
+//Price to Reference Area
+fill(init_plot, price_plot,
+  top_value = math.max(close, uptrend ? uptrend_init_price : downtrend_init_price),
+  bottom_value = math.min(close, uptrend ? uptrend_init_price : downtrend_init_price),
+  top_color = top_css,
+  bottom_color = btm_css)
+
+//---------------------------------------------------------------------------------------------------------------------}

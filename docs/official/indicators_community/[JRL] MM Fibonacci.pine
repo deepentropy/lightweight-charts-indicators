@@ -1,0 +1,227 @@
+//©   ╦ ╦═╗ ╦  
+//©   ║ ╠╦╝ ║  
+//©  ╚╝ ╩╚═ ╩═╝
+// 
+// Murrey Math Fibonacci Indicator
+
+//@version=4
+
+study(title="MM Fibonacci", shorttitle="MM-Fib", precision=5, overlay=true)
+
+
+// ##############################################################################################
+// INPUTS #######################################################################################
+// ##############################################################################################
+showLabels =    input(title="Show Labels", defval="Closest to Price Only", options=["All", "Closest to Price Only", "None"])
+altRes =        input(title="Use Alternative Timeframe", defval=false, type=input.bool)
+resolution =    input(title="Alternative Timeframe", defval="60", type=input.resolution)
+priceSrc =      input(title="Source", defval="High/Low", options=["High/Low", "Open/Close"])
+frame =         input(title="Frame Size", defval=64, type=input.integer, minval=8, maxval=256)
+multiplier =    input(title="Frame Multiplier", defval=1.5, type=input.float, minval=1.0, maxval=2.0, step=0.5)
+labelOffset =   input(title="Label Offset (moves labels left or", defval=10, type=input.integer)
+
+// Colors
+labelCol =      input(#ffa726, "Color of label text", type = input.color)
+fib2618Col =    input(color.teal, "Color of 261.8% Line", type = input.color)
+fib1618Col =    input(color.olive, "Color of 161.8% Line", type = input.color)
+fib100Col =     input(color.maroon, "Color of 100% Line", type = input.color)
+fib786Col =     input(color.aqua, "Color of 78.6% Line", type = input.color)
+fib618Col =     input(color.yellow, "Color of 61.8% Line", type = input.color)
+fib50Col =      input(color.purple, "Color of 50% Line", type = input.color)
+fib382Col =     input(color.orange, "Color of 38.2% Line", type = input.color)
+fib236Col =     input(color.green, "Color of 23.6% Line", type = input.color)
+fib0Col =       input(color.blue, "Color of 0% Line", type = input.color)
+
+
+// ##############################################################################################
+// CALCULATIONS #################################################################################
+// ##############################################################################################
+
+// Finding Prices and Range
+pHigh = priceSrc=="High/Low" ? high : max(open, close)
+
+pLow = priceSrc=="High/Low" ? low : min(open, close)
+
+h = highest(pHigh, (round(frame * multiplier)))
+l = lowest(pLow, (round(frame * multiplier)))
+
+nRes = altRes ? resolution : timeframe.period
+
+nHigh = security(syminfo.tickerid, nRes, h)
+nLow = security(syminfo.tickerid, nRes, l)
+
+range = nHigh - nLow
+
+// Determining Applicable Fractal Value
+fractal = if nHigh <= 250000 and nHigh > 25000 
+    100000
+else if nHigh <= 25000 and nHigh > 2500
+    10000
+else if nHigh <= 2500 and nHigh > 250
+    1000
+else if nHigh <= 250 and nHigh > 25
+    100
+else if nHigh <= 25 and nHigh > 6.25
+    12.5
+else if nHigh <= 6.25 and nHigh > 3.125
+    6.25
+else if nHigh <= 3.125 and nHigh > 1.5625
+    3.125
+else if nHigh <= 1.5625 and nHigh > 0.390625
+    1.5625
+else 
+    0.1953125
+
+// Calculating the Octave
+sum = floor(log(fractal / range) / log(2))
+octave = fractal * pow(0.5, sum)
+minimum = floor(nLow / octave) * octave
+maximum = (minimum + octave) > nHigh ? minimum + octave : minimum + (2 * octave)
+
+// Finding the Top
+t2 = if (nLow >= (3* (maximum - minimum) / 16 + minimum)) and (nHigh <= (9 * (maximum - minimum) / 16 + minimum))
+    minimum + (maximum - minimum) / 2
+else 
+    0
+
+t1 = if (nLow >= (minimum - (maximum - minimum) / 8)) and (nHigh <= (5 * (maximum - minimum) / 8 + minimum)) and t2==0
+    minimum + (maximum - minimum) / 2
+else
+    0
+
+t4 = if (nLow >= (minimum + 7 * (maximum - minimum) / 16)) and (nHigh <= (13 * (maximum - minimum) / 16 + minimum))
+    minimum + 3 * (maximum - minimum) / 4
+else
+    0
+
+t5 = if (nLow >= (minimum + 3 * (maximum - minimum) / 8)) and (nHigh <= (9 * (maximum - minimum) / 8 + minimum)) and t4==0
+    maximum
+else
+    0
+    
+t3 = if (nLow >= (minimum + (maximum - minimum) / 8)) and (nHigh <= (7 * (maximum - minimum) / 8 + minimum)) and t1==0 and t2==0 and t4==0 and t5==0 
+    minimum + 3 * (maximum - minimum) / 4
+else
+    0
+
+t6 = if (t1 + t2 + t3 + t4 + t5)==0
+    maximum
+else 
+    0
+
+top = t1 + t2 + t3 + t4 + t5 + t6
+
+// Finding the Bottom
+b1 = if (t1 > 0)
+    minimum
+else 
+    0
+
+b2 = if (t2 > 0)
+    minimum + (maximum - minimum) / 4
+else
+    0
+
+b3 = if (t3 > 0)
+    minimum + (maximum - minimum) / 4
+else
+    0
+
+b4 = if (t4 > 0) 
+    minimum + (maximum - minimum) / 2
+else
+    0
+
+b5 = if (t5 > 0) 
+    minimum + (maximum - minimum) / 2
+else
+    0
+
+b6 = if (top > 0) and (b1 + b2 + b3 + b4 + b5)==0
+    minimum
+else
+    0
+
+bottom = b1 + b2 + b3 + b4 + b5 + b6
+
+// Fib Lines
+fibRange = top - bottom
+fibDirUp = barssince(high >= top) > barssince(low <= bottom)
+fibDirDn = barssince(high >= top) < barssince(low <= bottom)
+
+fib2618 =   fibDirUp ? bottom + (fibRange * 2.618) : top - (fibRange * 2.618)   // 2.618
+fib1618 =   fibDirUp ? bottom + (fibRange * 1.618) : top - (fibRange * 1.618)   // 1.618
+fib100 =    fibDirUp ? top : bottom                                             // 1
+fib786 =    fibDirUp ? bottom + (fibRange * 0.786) : top - (fibRange * 0.786)   // 0.786
+fib618 =    fibDirUp ? bottom + (fibRange * 0.618) : top - (fibRange * 0.618)   // 0.618
+fib50 =     fibDirUp ? bottom + (fibRange * 0.5) : top - (fibRange * 0.5)       // 0.5
+fib382 =    fibDirUp ? bottom + (fibRange * 0.382) : top - (fibRange * 0.382)   // 0.382
+fib236 =    fibDirUp ? bottom + (fibRange * 0.236) : top - (fibRange * 0.236)   // 0.236
+fib0 =      fibDirUp ? bottom : top                                             // 0
+
+
+// ##############################################################################################
+// PLOTS AND LABELS #############################################################################
+// ##############################################################################################
+
+// Plot fib Lines
+plot(fib2618,title="Fib 261.8%", style=plot.style_line, color=fib2618Col, linewidth=2, trackprice=true, offset=-9999)
+plot(fib1618,title="Fib 161.8%", style=plot.style_line, color=fib1618Col, linewidth=2, trackprice=true, offset=-9999)
+plot(fib100,title="Fib 100%", style=plot.style_line, color=fib100Col, linewidth=2, trackprice=true, offset=-9999)
+plot(fib786,title="Fib 78.6%", style=plot.style_line, color=fib786Col, linewidth=2, trackprice=true, offset=-9999)
+plot(fib618,title="Fib 61.8%", style=plot.style_line, color=fib618Col, linewidth=2, trackprice=true, offset=-9999)
+plot(fib50,title="Fib 50%", style=plot.style_line, color=fib50Col, linewidth=3, trackprice=true, offset=-9999)
+plot(fib382,title="Fib 38.2%", style=plot.style_line, color=fib382Col, linewidth=2, trackprice=true, offset=-9999)
+plot(fib236,title="Fib 23.6%", style=plot.style_line, color=fib236Col, linewidth=2, trackprice=true, offset=-9999)
+plot(fib0,title="Fib 0%", style=plot.style_line, color=fib0Col, linewidth=2, trackprice=true, offset=-9999)
+
+// Labels
+fib2618Label = if showLabels=="All" or (showLabels=="Closest to Price Only" and ((fibDirUp and close > fib1618) or (fibDirDn and close < fib1618)))
+    fib2618
+else
+    na
+fib1618Label = if showLabels=="All" or (showLabels=="Closest to Price Only" and ((fibDirUp and close > fib100 and close < fib2618) or (fibDirDn and close < fib100 and close > fib2618)))
+    fib1618
+else
+    na
+fib100Label = if showLabels=="All" or (showLabels=="Closest to Price Only" and ((fibDirUp and close > fib786 and close < fib1618) or (fibDirDn and close < fib786 and close > fib1618)))
+    fib100
+else
+    na
+fib786Label = if showLabels=="All" or (showLabels=="Closest to Price Only" and ((fibDirUp and close > fib618 and close < fib100) or (fibDirDn and close < fib618 and close > fib100)))
+    fib786
+else
+    na
+fib618Label = if showLabels=="All" or (showLabels=="Closest to Price Only" and ((fibDirUp and close > fib50 and close < fib786) or (fibDirDn and close < fib50 and close > fib786)))
+    fib618
+else
+    na
+fib50Label = if showLabels=="All" or (showLabels=="Closest to Price Only" and ((fibDirUp and close > fib382 and close < fib618) or (fibDirDn and close < fib382 and close > fib618)))
+    fib50
+else
+    na
+fib382Label = if showLabels=="All" or (showLabels=="Closest to Price Only" and ((fibDirUp and close > fib236 and close < fib50) or (fibDirDn and close < fib236 and close > fib50)))
+    fib382
+else
+    na
+fib236Label = if showLabels=="All" or (showLabels=="Closest to Price Only" and ((fibDirUp and close > fib0 and close < fib382) or (fibDirDn and close < fib0 and close > fib382)))
+    fib236
+else
+    na
+fib0Label = if showLabels=="All" or (showLabels=="Closest to Price Only" and ((fibDirUp and close < fib236) or (fibDirDn and close > fib236)))
+    fib0
+else
+    na
+
+plotshape(fib2618Label,style=shape.labeldown,location=location.absolute,color=#00000000,textcolor=labelCol,show_last=1,text="Fibonacci 261.8%",offset=labelOffset)
+plotshape(fib1618Label,style=shape.labeldown,location=location.absolute,color=#00000000,textcolor=labelCol,show_last=1,text="Fibonacci 161.8%",offset=labelOffset)
+plotshape(fib100Label,style=shape.labeldown,location=location.absolute,color=#00000000,textcolor=labelCol,show_last=1,text="Fibonacci 100%",offset=labelOffset)
+plotshape(fib786Label,style=shape.labeldown,location=location.absolute,color=#00000000,textcolor=labelCol,show_last=1,text="Fibonacci 78.6%",offset=labelOffset)
+plotshape(fib618Label,style=shape.labeldown,location=location.absolute,color=#00000000,textcolor=labelCol,show_last=1,text="Fibonacci 61.8%",offset=labelOffset)
+plotshape(fib50Label,style=shape.labeldown,location=location.absolute,color=#00000000,textcolor=labelCol,show_last=1,text="Fibonacci 50%",offset=labelOffset)
+plotshape(fib382Label,style=shape.labeldown,location=location.absolute,color=#00000000,textcolor=labelCol,show_last=1,text="Fibonacci 38.2%",offset=labelOffset)
+plotshape(fib236Label,style=shape.labeldown,location=location.absolute,color=#00000000,textcolor=labelCol,show_last=1,text="Fibonacci 23.6%",offset=labelOffset)
+plotshape(fib0Label,style=shape.labeldown,location=location.absolute,color=#00000000,textcolor=labelCol,show_last=1,text="Fibonacci 0%",offset=labelOffset)
+
+
+

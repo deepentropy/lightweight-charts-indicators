@@ -1,0 +1,78 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © All_in_Traders
+
+//@version=6
+indicator('EMA+Super', overlay=true)
+
+// ====== EMAs ======
+ema_01_len = input.int(9, title='Ema 9', step=1)
+ema_02_len = input.int(21, title='Ema 21', step=1)
+ema_03_len = input.int(50, title='Ema 50', step=1)
+ema_04_len = input.int(100, title='Ema 100', step=1)
+ema_05_len = input.int(200, title='Ema 200', step=1)
+ema_src = input.source(close, title='Source')
+
+ema_01 = ta.ema(ema_src, ema_01_len)
+ema_02 = ta.ema(ema_src, ema_02_len)
+ema_03 = ta.ema(ema_src, ema_03_len)
+ema_04 = ta.ema(ema_src, ema_04_len)
+ema_05 = ta.ema(ema_src, ema_05_len)
+
+plot(ema_01, title='ema_01', color=color.new(#E0FFFF, 0), style=plot.style_line, linewidth=1)
+plot(ema_02, title='ema_02', color=color.new(#ff0040, 0), style=plot.style_line, linewidth=1)
+plot(ema_03, title='ema_03', color=color.new(#1900ff, 0), style=plot.style_line, linewidth=2)
+plot(ema_04, title='ema_04', color=color.new(#87CEFA, 0), style=plot.style_line, linewidth=1)
+plot(ema_05, title='ema_05', color=color.new(#FAFAD2, 0), style=plot.style_line, linewidth=1)
+
+// ====== Supertrend ======
+atrPeriod = input.int(10, "ATR Length")
+factor = input.float(4.0, "Factor", step=0.01)
+[supertrend, direction] = ta.supertrend(factor, atrPeriod)
+bodyMiddle = plot((open + close) / 2, display=display.none)
+upTrend = plot(direction < 0 ? supertrend : na, "Up Trend", color=color.green, style=plot.style_linebr)
+downTrend = plot(direction < 0 ? na : supertrend, "Down Trend", color=color.red, style=plot.style_linebr)
+fill(bodyMiddle, upTrend, color.new(color.green, 90), fillgaps=false)
+fill(bodyMiddle, downTrend, color.new(color.red, 90), fillgaps=false)
+
+// ====== NovaWave-Style Trend Cloud ======
+nw_fast_len = input.int(9, title="NovaWave Fast EMA")
+nw_slow_len = input.int(21, title="NovaWave Slow EMA")
+nw_signal_len = input.int(10, title="NovaWave Signal MA")
+
+nw_fast = ta.ema(close, nw_fast_len)
+nw_slow = ta.ema(close, nw_slow_len)
+nw_signal = ta.sma(close, nw_signal_len)
+
+nw_bull = nw_fast > nw_slow
+nw_cloud_color = nw_bull ? color.new(color.green, 80) : color.new(color.red, 80)
+p_nw_fast = plot(nw_fast, color=color.rgb(216, 237, 252), linewidth=1, title="NovaWave Fast EMA")
+p_nw_slow = plot(nw_slow, color=color.rgb(122, 230, 113), linewidth=1, title="NovaWave Slow EMA")
+plot(nw_signal, color=color.purple, linewidth=1, title="NovaWave Signal MA")
+fill(p_nw_fast, p_nw_slow, color=nw_cloud_color, title="NovaWave Cloud")
+
+// ====== 20, 50, 200 DMA (Displaced Moving Averages) ======
+dma_src = input.source(close, title="DMA Source")
+dma_disp20 = input.int(0, title="DMA 20 Displacement")
+dma_disp50 = input.int(0, title="DMA 50 Displacement")
+dma_disp200 = input.int(0, title="DMA 200 Displacement")
+dma20 = ta.sma(dma_src, 20)
+dma50 = ta.sma(dma_src, 50)
+dma200 = ta.sma(dma_src, 200)
+plot(dma20[dma_disp20], title="DMA 20", color=color.fuchsia, linewidth=2)
+plot(dma50[dma_disp50], title="DMA 50", color=color.yellow, linewidth=2)
+plot(dma200[dma_disp200], title="DMA 200", color=color.teal, linewidth=2)
+
+// ====== Buy/Sell Signals: 9 EMA crossover 21 EMA ======
+buy_signal = ta.crossover(nw_fast, nw_slow)
+sell_signal = ta.crossunder(nw_fast, nw_slow)
+
+// Plot buy text label below bar
+if buy_signal
+    label.new(bar_index, low, "BUY", color=color.green, style=label.style_label_up, textcolor=color.white, size=size.small)
+
+// Plot sell text label above bar
+if sell_signal
+    label.new(bar_index, high, "SELL", color=color.red, style=label.style_label_down, textcolor=color.white, size=size.small)
+
+
+

@@ -1,0 +1,28 @@
+//@version=6
+strategy(title="Technical Ratings Strategy", shorttitle="Technicals Strategy", default_qty_type = strategy.percent_of_equity, default_qty_value = 5, overlay=true)
+res = input.timeframe("", title="Indicator Timeframe")
+ratingSignal = input.string(defval = "All", title = "Rating is based on", options = ["MAs", "Oscillators", "All"])
+
+import TradingView/TechnicalRating/3 as rating
+
+StrongBound = 0.5
+WeakBound = 0.1
+
+getSignal(ratingTotal, ratingOther, ratingMA) =>
+    if ratingSignal == "MAs"
+        ratingMA
+    else if ratingSignal == "Oscillators"
+        ratingOther
+    else
+    	ratingTotal
+    
+[ratingTotal, ratingOther, ratingMA]  = request.security(syminfo.tickerid, res, rating.calcRatingAll())
+tradeSignal = getSignal(ratingTotal, ratingOther, ratingMA)
+
+dynSLpoints(factor) => factor * ta.atr(14) / syminfo.mintick
+
+if tradeSignal > StrongBound
+    strategy.entry("long", strategy.long)
+if tradeSignal < -StrongBound
+    strategy.entry("short", strategy.short)
+strategy.exit("sl/tp", loss = dynSLpoints(3), trail_points = dynSLpoints(5), trail_offset = dynSLpoints(2))

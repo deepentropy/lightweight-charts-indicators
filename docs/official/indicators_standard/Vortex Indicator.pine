@@ -1,0 +1,10 @@
+//@version=6
+indicator(title = "Vortex Indicator", shorttitle="VI", format=format.price, precision=4, timeframe="", timeframe_gaps=true)
+period_ = input.int(14, title="Length", minval=2)
+VMP = math.sum( math.abs( high - low[1]), period_ )
+VMM = math.sum( math.abs( low - high[1]), period_ )
+STR = math.sum( ta.atr(1), period_ )
+VIP = VMP / STR
+VIM = VMM / STR
+plot(VIP, title="VI +", color=#2962FF)
+plot(VIM, title="VI -", color=#E91E63)

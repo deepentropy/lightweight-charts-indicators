@@ -1,0 +1,8 @@
+//@version=6
+strategy("InSide Bar Strategy", overlay=true)
+if (high < high[1] and low > low[1])
+	if (close > open)
+		strategy.entry("InsBarLE", strategy.long, comment="InsBarLE")
+	if (close < open)
+		strategy.entry("InsBarSE", strategy.short, comment="InsBarSE")
+//plot(strategy.equity, title="equity", color=color.red, linewidth=2, style=plot.style_areabr)

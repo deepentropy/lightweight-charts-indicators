@@ -1,0 +1,9 @@
+//@version=6
+strategy("ChannelBreakOutStrategy", overlay=true)
+length = input.int(title="Length", minval=1, maxval=1000, defval=5)
+upBound = ta.highest(high, length)
+downBound = ta.lowest(low, length)
+if (not na(close[length]))
+	strategy.entry("ChBrkLE", strategy.long, stop=upBound + syminfo.mintick, comment="ChBrkLE")
+strategy.entry("ChBrkSE", strategy.short, stop=downBound - syminfo.mintick, comment="ChBrkSE")
+//plot(strategy.equity, title="equity", color=color.red, linewidth=2, style=plot.style_areabr)

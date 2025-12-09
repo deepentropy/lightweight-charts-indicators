@@ -1,0 +1,141 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BalintDavid
+
+// WHAT IT DOES AND HOW TO USE:
+// In the Input page you configure the RSI
+// 
+// The indicator draws swings on the chart based on RSI extremes
+// Example: Lines are draws from OVERSOLD to OVERBOUGHT and vice-versa
+// If we keep geing in deeper OVERBOUGHT or OVERSOLD, the swinglines follow the price, till another cycle is complete
+// In the labels you see the swing's relation to the structure: If the swing high is higher then the previous, it becomes Higher High aka HH
+
+
+//@version=4
+study("RSI Swing Indicator", overlay=true, max_bars_back=1000)
+
+// RSI Settings for user
+rsiSource = input(title="RSI Source", type=input.source, defval=close)
+rsiLength = input(title="RSI Length", type=input.integer, defval=7)
+rsiOverbought = input(title="RSI Overbought", type=input.integer, defval=70, minval=51, maxval=100)
+rsiOvesold = input(title="RSI Oversold", type=input.integer, defval=30, minval=1, maxval=49)
+
+// RSI value based on inbuilt RSI
+rsiValue = rsi(rsiSource, rsiLength)
+
+// Get the current state
+isOverbought = rsiValue >= rsiOverbought
+isOversold = rsiValue <= rsiOvesold
+
+// State of the last extreme 0 for initialization, 1 = overbought, 2 = oversold
+var laststate = 0
+
+// Highest and Lowest prices since the last state change
+var hh = low
+var ll = high
+
+// Labels
+var label labelll = na
+var label labelhh = na
+
+// Swing lines
+var line line_up = na
+var line line_down = na
+
+var last_actual_label_hh_price = 0.0
+var last_actual_label_ll_price = 0.0
+
+
+// FUNCTIONS
+obLabelText() =>
+    if(last_actual_label_hh_price < high)
+        "HH"
+    else
+        "LH"
+//plot(last_actual_label_hh_price)
+osLabelText() =>
+    if(last_actual_label_ll_price < low)
+        "HL"
+    else
+        "LL"
+
+// Create oversold or overbought label
+createOverBoughtLabel(isIt) =>
+    if(isIt)
+        label.new(x=bar_index, y=na ,yloc=yloc.abovebar, style=label.style_label_down, color=color.red, size=size.tiny, text=obLabelText())
+    else
+        label.new(x=bar_index, y=na ,yloc=yloc.belowbar, style=label.style_label_up, color=color.green, size=size.tiny, text=osLabelText())
+       
+        
+// Move the oversold swing and label
+moveOversoldLabel() =>
+    label.set_x(labelll, bar_index)
+    label.set_y(labelll, low)
+    label.set_text(labelll, osLabelText())
+    line.set_x1(line_down, bar_index)
+    line.set_y1(line_down, low)
+
+moveOverBoughtLabel() =>
+    label.set_x(labelhh, bar_index)
+    label.set_y(labelhh, high)
+    label.set_text(labelhh, obLabelText())
+    line.set_x1(line_up, bar_index)
+    line.set_y1(line_up, high)
+
+// We go from oversold straight to overbought NEW DRAWINGS CREATED HERE
+if(laststate == 2 and isOverbought)
+    hh := high
+    labelhh := createOverBoughtLabel(true)
+    last_actual_label_ll_price := label.get_y(labelll)
+    labelll_ts = label.get_x(labelll)
+    labelll_price = label.get_y(labelll)
+    line_up := line.new(x1=bar_index, y1=high, x2=labelll_ts, y2=labelll_price, width=1)
+
+// We go from overbought straight to oversold  NEW DRAWINGS CREATED HERE
+if(laststate == 1 and isOversold)
+    ll := low
+    labelll := createOverBoughtLabel(false)
+    last_actual_label_hh_price := label.get_y(labelhh)
+    labelhh_ts = label.get_x(labelhh)
+    labelhh_price = label.get_y(labelhh)
+    line_down := line.new(x1=bar_index, y1=high, x2=labelhh_ts, y2=labelhh_price, width=1)
+
+
+// If we are overbought
+if(isOverbought)
+    if(high >= hh)
+        hh := high
+        moveOverBoughtLabel()
+    laststate := 1
+    
+// If we are oversold
+if(isOversold)
+    if(low <= ll)
+        ll := low
+        moveOversoldLabel()
+    laststate := 2
+    
+    
+// If last state was overbought and we are overbought
+if(laststate == 1 and isOverbought)
+    if(hh <= high)
+        hh := high
+        moveOverBoughtLabel()
+    
+//If we are oversold and the last state was oversold, move the drawings to the lowest price
+if(laststate == 2 and isOversold)
+    if(low <= ll)
+        ll := low
+        moveOversoldLabel()
+
+
+// If last state was overbought
+if(laststate == 1)
+    if(hh <= high)
+        hh := high
+        moveOverBoughtLabel()
+        
+// If last stare was oversold
+if(laststate == 2)
+    if(ll >= low)
+        ll := low
+        moveOversoldLabel()

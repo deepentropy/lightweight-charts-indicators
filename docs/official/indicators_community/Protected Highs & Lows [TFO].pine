@@ -1,0 +1,293 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © tradeforopp
+
+//@version=5
+indicator("Protected Highs & Lows [TFO]", "Protected Highs & Lows [TFO]", true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+var g_STR = "Structure"
+ps = input.int(1, "Pivot Strength", group = g_STR)
+color_trend = input.bool(true, "Trend Candles", inline = "TREND", group = g_STR)
+show_labels = input.bool(true, "Show Structure Labels", inline = "MSS", group = g_STR)
+label_type = input.string("MSS", "", options = ['MSS', 'BOS', 'All'], inline = "MSS", group = g_STR)
+
+var g_PHL = "Protected Highs & Lows"
+show_phl = input.bool(true, "Show Protected Highs & Lows", inline = "PHL", group = g_PHL)
+trail_phl = input.bool(true, "Show Protected Trail", inline = "TRAIL", group = g_PHL)
+trail_width = input.int(2, "", inline = "TRAIL", group = g_PHL)
+
+var g_PB = "Pullbacks"
+use_valid_pbs = input.bool(true, "Use Valid Pullback Criteria", tooltip = "When looking at the swing high that price must close above for a BOS/MSS, in order to form a valid protected low, price must first close below the low of the candle that made the swing high (and vice versa for protected highs)", group = g_PB)
+extra_valid_pbs = input.bool(false, "Specific Pullback Candle Criteria", tooltip = "When 'Use Valid Pullback Criteria' is enabled, if a given swing high is formed with a down close candle, the script will look backward to find the most recent up-close candle. Using this candle, price must close below its low to validate a pullback from a swing high (and vice versa)", group = g_PB)
+
+ph_color = input.color(#f23645, "", inline = "PHL", group = g_PHL)
+pl_color = input.color(color.blue, "", inline = "PHL", group = g_PHL)
+
+bull_color = input.color(color.teal, "", inline = "TREND", group = g_STR)
+bear_color = input.color(#f23645, "", inline = "TREND", group = g_STR)
+
+var g_RET = "Retracements"
+show_rets = input.bool(false, "Show Retracements", tooltip = "Show retracements of the previous zone with 30, 50, and 70% retracement levels", group = g_RET)
+box_transp = input.int(85, "Box Transparency", 0, 100, tooltip = "Larger values will make the retracement box more transparent", group = g_RET)
+line_w = input.int(1, "Line Width", 0, 10, group = g_RET)
+line_s = input.string('Dotted', "Line Style", options = ['Solid', 'Dashed', 'Dotted'], group = g_RET)
+
+var style = switch line_s
+    'Solid' => line.style_solid
+    'Dashed' => line.style_dashed
+    'Dotted' => line.style_dotted
+
+var bool bull = na
+
+var float trail_price = na
+var color trail_color = na
+
+var ph = array.new_float()
+var pl = array.new_float()
+
+var pht = array.new_int()
+var plt = array.new_int()
+
+var float last_high = na
+var float last_low = na
+
+var int last_high_idx = na
+var int last_low_idx = na
+
+var float track_high = na
+var float track_low = na
+
+var int track_high_idx = na
+var int track_low_idx = na
+
+type pb
+    float price
+    int idx
+    bool valid = false
+    bool bull
+
+type snd
+    box _box
+    line _30
+    line _50
+    line _70
+
+type dwg
+    label[] _label
+    label[] _phl
+    line[] _line
+    bool[] _bull
+
+method snd_add(snd s, float _high, float _low, bool bull) =>
+    _30 = (_high - _low) * 0.3 + _low
+    _50 = (_high - _low) * 0.5 + _low
+    _70 = (_high - _low) * 0.7 + _low
+    s._box := box.new(time, _high, time, _low, xloc = xloc.bar_time, border_color = na, bgcolor = na)
+    s._30 := line.new(time, _30, time, _30, xloc = xloc.bar_time, color = na, style = style, width = line_w)
+    s._50 := line.new(time, _50, time, _50, xloc = xloc.bar_time, color = na, style = style, width = line_w)
+    s._70 := line.new(time, _70, time, _70, xloc = xloc.bar_time, color = na, style = style, width = line_w)
+
+method dwg_add(dwg d, label LB, label PHL, line LN, bool BL) =>
+    d._label.unshift(LB)
+    d._phl.unshift(PHL)
+    d._line.unshift(LN)
+    d._bull.unshift(BL)
+
+method pb_set(pb p, float P, int I) =>
+    p.price := P
+    p.idx := I
+    p.valid := false
+
+clear_all() =>
+    pl.clear()
+    plt.clear()    
+    ph.clear()
+    pht.clear()
+
+var pb_from_high = pb.new(bull = true)
+var pb_from_low  = pb.new(bull = false)
+
+if ta.pivotlow(low, ps, ps) and pl.size() == 0
+    pl.unshift(low[ps])
+    plt.unshift(time[ps])
+
+    if extra_valid_pbs
+        for i = 0 to 3
+            if close[ps + i] < open[ps + i]
+                pb_set(pb_from_low, high[ps + i], bar_index)
+                break
+    else
+        pb_set(pb_from_low, high[ps], bar_index)
+
+    if na(last_low)
+        last_low := low[ps]
+        last_low_idx := bar_index - ps
+    else
+        if low[ps] < last_low
+            last_low := low[ps]
+            last_low_idx := bar_index - ps
+if ta.pivothigh(high, ps, ps) and ph.size() == 0
+    ph.unshift(high[ps])
+    pht.unshift(time[ps])
+    
+    if extra_valid_pbs
+        for i = 0 to 3
+            if close[ps + i] > open[ps + i]
+                pb_set(pb_from_high, low[ps + i], bar_index)
+                break
+    else
+        pb_set(pb_from_high, low[ps], bar_index)
+    
+    if na(last_high)
+        last_high := high[ps]
+        last_high_idx := bar_index - ps
+    else
+        if high[ps] > last_high
+            last_high := high[ps]
+            last_high_idx := bar_index - ps
+
+check_pb(pb p) =>
+    if p.bull
+        if close < p.price and p.valid == false
+            p.valid := true
+    else
+        if close > p.price and p.valid == false
+            p.valid := true
+
+check_pb(pb_from_high)
+check_pb(pb_from_low)
+
+if (high[ps] > track_high or na(track_high) or last_low_idx >= track_high_idx) and not na(ta.pivothigh(high, ps, ps)) and (use_valid_pbs ? pb_from_low.valid == true : true)
+    track_high := high[ps]
+    track_high_idx := bar_index - ps
+if (low[ps] < track_low or na(track_low) or last_high_idx >= track_low_idx) and not na(ta.pivotlow(low, ps, ps)) and (use_valid_pbs ? pb_from_high.valid == true : true)
+    track_low := low[ps]
+    track_low_idx := bar_index - ps
+
+bos_bear = false
+bos_bull = false
+mss_bear = false
+mss_bull = false
+change = false
+
+var dwgs = dwg.new(array.new_label(), array.new_label(), array.new_line(), array.new_bool())
+var snd = snd.new()
+
+maintain(snd s) =>
+    if not na(s._box)
+        s._box.set_right(time)
+        s._30.set_x2(time)
+        s._50.set_x2(time)
+        s._70.set_x2(time)
+
+maintain(snd)
+
+if ph.size() > 0 
+    if close > ph.get(0)
+        label _label = na
+        label _phl = na
+
+        if show_labels
+            save = false
+            if label_type == 'MSS' and not bull
+                save := true
+            else if label_type == 'BOS' and bull
+                save := true
+            else if label_type == 'All'
+                save := true
+            if save    
+                _label := label.new(math.floor(math.avg(time, pht.get(0))), ph.get(0), bull ? "BOS" : "MSS", xloc = xloc.bar_time, style = label.style_label_down, color = #ffffff00, textcolor = na)
+
+        if bull
+            bos_bull := true
+        else
+            mss_bull := true
+
+        if show_rets and (use_valid_pbs ? pb_from_high.valid == true : true)
+            snd.snd_add(ph.get(0), track_low, true)
+
+        _line = line.new(pht.get(0), ph.get(0), time, ph.get(0), color = na, xloc = xloc.bar_time, style = line.style_dashed)
+        bull := true
+        change := true
+
+        clear_all()
+
+        if not na(track_low)
+            if show_phl
+                _phl := label.new(time[bar_index - track_low_idx], track_low, "▲", xloc = xloc.bar_time, style = label.style_label_up, textcolor = na, color = #ffffff00)
+
+            pl.unshift(track_low)
+            plt.unshift(time[bar_index - track_low_idx])
+            last_high := na
+
+        dwgs.dwg_add(_label, _phl, _line, bull)
+
+if pl.size() > 0
+    if close < pl.get(0)
+        label _label = na
+        label _phl = na
+
+        if show_labels
+            save = false
+            if label_type == 'MSS' and bull
+                save := true
+            else if label_type == 'BOS' and not bull
+                save := true
+            else if label_type == 'All'
+                save := true
+            if save    
+                _label := label.new(math.floor(math.avg(time, plt.get(0))), pl.get(0), not bull ? "BOS" : "MSS", xloc = xloc.bar_time, style = label.style_label_up, color = #ffffff00, textcolor = na)
+
+        if not bull
+            bos_bear := true
+        else
+            mss_bear := true
+
+        if show_rets and (use_valid_pbs ? pb_from_low.valid == true : true)
+            snd.snd_add(pl.get(0), track_high, false)
+
+        _line = line.new(plt.get(0), pl.get(0), time, pl.get(0), color = na, xloc = xloc.bar_time, style = line.style_dashed)
+        bull := false
+        change := true
+                
+        clear_all()
+
+        if not na(track_high)
+            if show_phl
+                _phl := label.new(time[bar_index - track_high_idx], track_high, "▼", xloc = xloc.bar_time, style = label.style_label_down, textcolor = na, color = #ffffff00)
+
+            ph.unshift(track_high)
+            pht.unshift(time[bar_index - track_high_idx])                
+            last_low := na
+            
+        dwgs.dwg_add(_label, _phl, _line, bull)
+
+if change[1]
+    if bos_bear[1] or mss_bear[1]
+        trail_price := track_high
+        trail_color := ph_color
+    else if bos_bull[1] or mss_bull[1]
+        trail_price := track_low
+        trail_color := pl_color
+        
+    _bull = dwgs._bull.get(0)
+    dwgs._label.get(0).set_textcolor(_bull ? bull_color : bear_color)
+    dwgs._phl.get(0).set_textcolor(_bull ? pl_color : ph_color)
+    dwgs._line.get(0).set_color(_bull ? bull_color : bear_color)
+
+    snd._box.set_bgcolor(color.new(bull ? bull_color : bear_color, box_transp))
+    snd._30.set_color(_bull ? bull_color : bear_color)
+    snd._50.set_color(_bull ? bull_color : bear_color)
+    snd._70.set_color(_bull ? bull_color : bear_color)
+
+barcolor(color_trend ? (bull ? bull_color : bear_color) : na)
+
+plot(trail_phl ? trail_price : na, color = trail_color, linewidth = trail_width)
+
+alertcondition(bos_bear[1] or bos_bull[1], "BOS Any")
+alertcondition(mss_bear[1] or mss_bull[1], "MSS Any")
+
+alertcondition(bos_bear[1], "BOS Bear")
+alertcondition(bos_bull[1], "BOS Bull")
+
+alertcondition(mss_bear[1], "MSS Bear")
+alertcondition(mss_bull[1], "MSS Bull")

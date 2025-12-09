@@ -1,0 +1,431 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © HeWhoMustNotBeNamed
+//                                       ░▒             
+//                                  ▒▒▒   ▒▒      
+//                              ▒▒▒▒▒     ▒▒      
+//                      ▒▒▒▒▒▒▒░     ▒     ▒▒          
+//                  ▒▒▒▒▒▒           ▒     ▒▒          
+//             ▓▒▒▒       ▒        ▒▒▒▒▒▒▒▒▒▒▒  
+//   ▒▒▒▒▒▒▒▒▒▒▒ ▒        ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒         
+//   ▒  ▒       ░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░        
+//   ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░▒▒▒▒▒▒▒▒         
+//   ▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ ▒▒                       
+//    ▒▒▒▒▒         ▒▒▒▒▒▒▒                            
+//                 ▒▒▒▒▒▒▒▒▒                           
+//                ▒▒▒▒▒ ▒▒▒▒▒                          
+//               ░▒▒▒▒   ▒▒▒▒▓      ████████╗██████╗ ███████╗███╗   ██╗██████╗  ██████╗ ███████╗ ██████╗ ██████╗ ██████╗ ███████╗
+//              ▓▒▒▒▒     ▒▒▒▒      ╚══██╔══╝██╔══██╗██╔════╝████╗  ██║██╔══██╗██╔═══██╗██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔════╝
+//              ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒        ██║   ██████╔╝█████╗  ██╔██╗ ██║██║  ██║██║   ██║███████╗██║     ██║   ██║██████╔╝█████╗ 
+//             ▒▒▒▒▒       ▒▒▒▒▒       ██║   ██╔══██╗██╔══╝  ██║╚██╗██║██║  ██║██║   ██║╚════██║██║     ██║   ██║██╔═══╝ ██╔══╝  
+//            ▒▒▒▒▒         ▒▒▒▒▒      ██║   ██║  ██║███████╗██║ ╚████║██████╔╝╚██████╔╝███████║╚██████╗╚██████╔╝██║     ███████╗
+//             ▒▒             ▒                        
+//@version=5
+indicator("Next Pivot Projection [Trendoscope]", "NPP[Trendoscope]", overlay=true, max_lines_count = 500, max_labels_count = 500)
+import HeWhoMustNotBeNamed/mZigzag/12 as zg
+import HeWhoMustNotBeNamed/enhanced_ta/14 as eta
+import HeWhoMustNotBeNamed/arrays/1 as pa
+length = input.int(8, 'Length', group='Zigzag', display = display.none)
+oscillatorType = input.string("rsi", title="Oscillator", inline="osc", options=["cci", "cmo", "cog", "mfi", "roc", "rsi"],
+                     group='Oscillator', display = display.none)
+oscLength = input.int(14, title="", inline="osc", group='Oscillator', display = display.none)
+supertrendLength = input.int(5, 'History', inline='st', group='Supertrend', display = display.none)
+drawSupertrend = input.bool(false, "Draw Zigzag Supertrend", inline='st2', group='Supertrend', display = display.none)
+
+showTable = input.bool(false, 'Detailed Stats', inline='txt', group = 'Stats and Display', display = display.none)
+txtSize = input.string(size.tiny, '', [size.tiny, size.small, size.normal, size.large, size.huge],
+                         inline='txt', group = 'Stats and Display', display = display.none)
+txtColor = input.color(color.white, '', inline='txt', group = 'Stats and Display', display = display.none)
+
+showPivotLines = input.bool(true, 'Pivot Lines', inline='pli', group = 'Stats and Display', display = display.none)
+showPivotLabel = input.bool(false, 'Pivot Label', inline='pla', group = 'Stats and Display', display = display.none)
+fillAreas = input.bool(true, 'Fill Bullish/Bearish Sentiments', inline='fil', group = 'Stats and Display', display = display.none)
+increment(mtx, row, col, val=1)=>matrix.set(mtx, row, col, matrix.get(mtx, row, col)+val)
+gettrendindex(int price, int osc, int trend)=>
+    trendFactor = trend > 0 ? 0 : 1
+    priceFactor = math.abs(price) > 1? 1 : 0
+    oscFactor = math.abs(osc) > 1? 1 : 0
+    trendFactor*4 + priceFactor*2 + oscFactor
+
+
+getSentimentDetails(pDir, oDir, sDir) =>
+    sentiment = pDir == oDir ? sDir == pDir or sDir * 2 == -pDir ? -sDir : sDir * 4 : sDir == pDir or sDir == -oDir ? 0 : (math.abs(oDir) > math.abs(pDir) ? sDir : -sDir) * (sDir == oDir ? 2 : 3)
+    sentimentSymbol = sentiment == 4 ? '⬆' : sentiment == -4 ? '⬇' : sentiment == 3 ? '↗' : sentiment == -3 ? '↘' : sentiment == 2 ? '⤴' : sentiment == -2 ? '⤵' : sentiment == 1 ? '⤒' : sentiment == -1 ? '⤓' : '▣'
+    sentimentColor = sentiment == 4 ? color.green : sentiment == -4 ? color.red : sentiment == 3 ? color.lime : sentiment == -3 ? color.orange : sentiment == 2 ? color.rgb(202, 224, 13, 0) : sentiment == -2 ? color.rgb(250, 128, 114, 0) : color.silver
+    sentimentLabel = math.abs(sentiment) == 4 ? 'C' : math.abs(sentiment) == 3 ? 'H' : math.abs(sentiment) == 2 ? 'D' : 'I'
+    [sentimentSymbol, sentimentLabel, sentimentColor]
+
+
+getStatus(int trendIndex, int pivotDir)=>
+    trendFactor = int(trendIndex/4)
+    remainder = trendIndex % 4
+    priceFactor = int(remainder/2)+1
+    oscFactor = (remainder % 2)+1
+    trendChar = (trendFactor == 0)? 'U' : 'D'
+    priceChar = pivotDir > 0? (priceFactor == 2? 'HH' : 'LH') : (priceFactor == 2? 'LL' : 'HL')
+    oscChar = pivotDir > 0? (oscFactor == 2? 'HH' : 'LH') : (oscFactor == 2? 'LL' : 'HL')
+    trendChar + ' - ' + priceChar + '/'+oscChar
+
+draw_zg_line(idx1, idx2, zigzaglines, zigzaglabels, valueMatrix, directionMatrix, ratioMatrix,  divergenceMatrix, doubleDivergenceMatrix,
+                                         barArray, trendArray, lineColor, lineWidth, lineStyle) =>
+    if matrix.rows(valueMatrix) > 2
+        idxLen1 = matrix.rows(valueMatrix)-idx1
+        idxLen2 = matrix.rows(valueMatrix)-idx2
+        lastValues = matrix.row(valueMatrix, idxLen1)
+        llastValues = matrix.row(valueMatrix, idxLen2)
+        
+        lastDirections = matrix.row(directionMatrix, idxLen1)
+        lastRatios = matrix.row(ratioMatrix, idxLen1)
+        lastDivergence = matrix.row(divergenceMatrix, idxLen1)
+        lastDoubleDivergence = matrix.row(doubleDivergenceMatrix, idxLen1)
+
+        y1 = array.get(lastValues, 0)
+        y2 = array.get(llastValues, 0)
+        x1 = array.get(barArray, idxLen1)
+        x2 = array.get(barArray, idxLen2)
+        zline = line.new(x1=x1, y1=y1, x2=x2, y2=y2, color=lineColor, width=lineWidth, style=lineStyle)
+        currentDir = y1 > y2? 1 : -1
+        
+        priceDir = array.get(lastDirections, 0)
+        oscDir = array.get(lastDirections, 1)
+        trendDir = array.get(trendArray, idxLen1)
+        trendIndex = gettrendindex(priceDir, oscDir, trendDir)
+        trendLabel = getStatus(trendIndex, currentDir)
+        [sentimentSymbol, sentimentLabel, sentimentColor] = getSentimentDetails(priceDir, oscDir, trendDir)
+
+        labelStyle = currentDir > 0? label.style_label_down : label.style_label_up
+        zlabel = showPivotLabel ? label.new(x=x1, y=y1, yloc=yloc.price, color=sentimentColor, style=labelStyle, text=sentimentSymbol + ' ' + trendLabel, 
+                                     textcolor=color.black, size = size.small, tooltip=sentimentLabel) : na
+        if array.size(zigzaglines) > 0
+            lastLine = array.get(zigzaglines, array.size(zigzaglines)-1)
+            if line.get_x2(lastLine) == x2 and line.get_x1(lastLine) <= x1
+                pa.pop(zigzaglines)
+                pa.pop(zigzaglabels)
+        
+        pa.push(zigzaglines, zline, 500)
+        pa.push(zigzaglabels, zlabel, 500)
+
+draw(matrix<float> valueMatrix, matrix<int> directionMatrix, matrix<float> ratioMatrix,  matrix<int> divergenceMatrix, matrix<int> doubleDivergenceMatrix, array<int> barArray, array<int> trendArray,
+                 bool newZG, bool doubleZG, color lineColor = color.blue, int lineWidth = 1, string lineStyle = line.style_solid)=>
+    var zigzaglines = array.new_line(0)
+    var zigzaglabels = array.new_label(0)
+    if(newZG)
+        if doubleZG
+            draw_zg_line(2, 3, zigzaglines, zigzaglabels, valueMatrix, directionMatrix, ratioMatrix, divergenceMatrix, doubleDivergenceMatrix, barArray, trendArray,
+                             lineColor, lineWidth, lineStyle)
+
+        if matrix.rows(valueMatrix) >= 2
+            draw_zg_line(1, 2, zigzaglines, zigzaglabels, valueMatrix, directionMatrix, ratioMatrix,  divergenceMatrix, doubleDivergenceMatrix, barArray, trendArray,
+                             lineColor, lineWidth, lineStyle)
+    [valueMatrix, directionMatrix, ratioMatrix, divergenceMatrix, doubleDivergenceMatrix, barArray, zigzaglines, zigzaglabels]
+
+    
+
+indicatorHigh = array.new_float()
+indicatorLow = array.new_float()
+indicatorLabels = array.new_string()
+
+[oscHigh, _, _] = eta.oscillator(oscillatorType, oscLength, oscLength, oscLength, high)
+[oscLow, _, _] = eta.oscillator(oscillatorType, oscLength, oscLength, oscLength, low)
+array.push(indicatorHigh, math.round(oscHigh,2))
+array.push(indicatorLow, math.round(oscLow,2))
+array.push(indicatorLabels, oscillatorType+str.tostring(oscLength))
+
+
+[valueMatrix, directionMatrix, ratioMatrix, divergenceMatrix, doubleDivergenceMatrix, barArray, trendArray, supertrendDir, supertrend, newZG, doubleZG] = 
+                                                         zg.calculate(length, array.from(high, low), indicatorHigh, indicatorLow, supertrendLength = supertrendLength)
+
+nextDirection = matrix.rows(directionMatrix) > 0? matrix.row(directionMatrix, matrix.rows(directionMatrix)-1) : array.new_int()
+lastDirection = matrix.rows(directionMatrix) > 1? matrix.row(directionMatrix, matrix.rows(directionMatrix)-2) : array.new_int()
+llastDirection = matrix.rows(directionMatrix) > 2? matrix.row(directionMatrix, matrix.rows(directionMatrix)-3) : array.new_int()
+lllastDirection = matrix.rows(directionMatrix) > 3? matrix.row(directionMatrix, matrix.rows(directionMatrix)-4) : array.new_int()
+
+var pivotHighStats = matrix.new<int>(64, 3, 0)
+var pivotLowStats = matrix.new<int>(64, 3, 0)
+
+var pivotHighRatios = matrix.new<float>(64, 3, 0)
+var pivotLowRatios = matrix.new<float>(64, 3, 0)
+
+var pivotHighBars = matrix.new<float>(64, 3, 0)
+var pivotLowBars = matrix.new<float>(64, 3, 0)
+
+currentTotalTrendIndex = 0
+nextTotalTrendIndex = 0
+currentDir = matrix.rows(directionMatrix) > 0? matrix.get(directionMatrix, matrix.rows(directionMatrix)-1, 0) : 0
+
+currentPDir = lastDirection.size() > 0 ? lastDirection.first() : na
+changePriceDirection = ta.change(math.sign(currentPDir))
+if(array.size(lllastDirection) > 0)
+    priceDirection = array.get(lastDirection, 0)
+    priceRatio = matrix.get(ratioMatrix, matrix.rows(ratioMatrix)-2, 0)
+
+    numberOfBars = array.get(barArray, array.size(barArray)-2) - array.get(barArray, array.size(barArray)-3)
+    currentPriceDirection = array.get(lastDirection, 0)
+    currentOscDirection = array.get(lastDirection, 1)
+    currentTrend = array.get(trendArray, array.size(trendArray)-2)
+
+    nextPriceDirection = array.get(nextDirection, 0)
+    nextOscDirection = array.get(nextDirection, 1)
+    nextTrend = array.get(trendArray, array.size(trendArray)-1)
+
+    lastPriceDirection = array.get(llastDirection, 0)
+    lastOscDirection = array.get(llastDirection, 1)
+    lastTrend = array.get(trendArray, array.size(trendArray)-3)
+
+    llastPriceDirection = array.get(lllastDirection, 0)
+    llastOscDirection = array.get(lllastDirection, 1)
+    llastTrend = array.get(trendArray, array.size(trendArray)-4)
+
+    colLast = math.abs(priceDirection) %2
+
+    nextTrendIndex = gettrendindex(nextPriceDirection, nextOscDirection, nextTrend)
+    currentTrendIndex = gettrendindex(currentPriceDirection, currentOscDirection, currentTrend)
+    lastTrendIndex = gettrendindex(lastPriceDirection, lastOscDirection, lastTrend)
+    llastTrendIndex = gettrendindex(llastPriceDirection, llastOscDirection, llastTrend)
+
+    totalIndex = lastTrendIndex*8 + llastTrendIndex
+    currentTotalTrendIndex := currentTrendIndex*8 + lastTrendIndex
+    nextTotalTrendIndex := nextTrendIndex*8 + currentTrendIndex
+
+    matrixToSet = math.sign(priceDirection) > 0? pivotHighStats : pivotLowStats
+    ratioMatrixToSet = math.sign(priceDirection) > 0? pivotHighRatios : pivotLowRatios
+    barMatrixToSet = math.sign(priceDirection) > 0? pivotHighBars : pivotLowBars
+
+    if(not na(currentPDir) and changePriceDirection != 0)
+        increment(matrixToSet, totalIndex, colLast)
+        increment(ratioMatrixToSet, totalIndex, colLast, priceRatio)
+        increment(barMatrixToSet, totalIndex, colLast, numberOfBars)
+
+        increment(matrixToSet, totalIndex, 2)
+        increment(ratioMatrixToSet, totalIndex, 2, priceRatio)
+        increment(barMatrixToSet, totalIndex, 2, numberOfBars)
+
+
+var float hhValue = na
+var float lhValue = na
+
+var float llValue = na
+var float hlValue = na
+
+var float hhProbability = na
+var float llProbability = na
+
+var float htRatio = na
+var float ltRatio = na
+if(array.size(barArray) > 10)
+    currentBar = array.get(barArray, array.size(barArray)-1)
+    lastBar = array.get(barArray, array.size(barArray)-2)
+    currentPrice = matrix.get(valueMatrix, matrix.rows(valueMatrix)-1, 0)
+    lastPrice = matrix.get(valueMatrix, matrix.rows(valueMatrix)-2, 0)
+    llastPrice = matrix.get(valueMatrix, matrix.rows(valueMatrix)-3, 0)
+    startRow = 2
+    var statsTable = showTable ? table.new(position=position.top_right, columns=10, rows=64+startRow, border_color = color.black, border_width = 2) : na
+    
+    phSortIndices = array.sort_indices(matrix.col(pivotHighStats, 2), order.descending)
+    
+    phColStart = currentDir > 0 ? 0 : 5
+    
+    if(showTable)
+        table.clear(statsTable, 0, 0, 9, 64+startRow-1)
+        table.cell(statsTable, phColStart, 0, 'Pivot High Projection', text_color = txtColor, text_size = txtSize, bgcolor = color.maroon)
+        table.cell(statsTable, phColStart, 1, 'Last Two Pivots', text_color = txtColor, text_size = txtSize, bgcolor = color.maroon)
+        table.cell(statsTable, phColStart+2, 1, 'HH', text_color = txtColor, text_size = txtSize, bgcolor = color.maroon)
+        table.cell(statsTable, phColStart+3, 1, 'LH', text_color = txtColor, text_size = txtSize, bgcolor = color.maroon)
+        table.cell(statsTable, phColStart+4, 1, 'T', text_color = txtColor, text_size = txtSize, bgcolor = color.maroon)
+        table.merge_cells(statsTable, phColStart, 0, phColStart+4, 0)
+        table.merge_cells(statsTable, phColStart, 1, phColStart+1, 1)
+
+    hlr = startRow
+    for i=0 to 63
+        si = array.get(phSortIndices, i)
+        lastTrendIndex = int(si/8)
+        llastTrendIndex = si%8
+
+        lastPivotStatus = getStatus(lastTrendIndex, -1)
+        llastPivotStatus = getStatus(llastTrendIndex, 1)
+        hhStats = matrix.get(pivotHighStats, si, 0)
+        lhStats = matrix.get(pivotHighStats, si, 1)
+        tStats = matrix.get(pivotHighStats, si, 2)
+
+        hhRatio = math.round(matrix.get(pivotHighRatios, si, 0)/hhStats, 3)
+        lhRatio = math.round(matrix.get(pivotHighRatios, si, 1)/lhStats, 3)
+        tRatio = math.round(matrix.get(pivotHighRatios, si, 2)/tStats, 3)
+
+        hhBars = math.round(matrix.get(pivotHighBars, si, 0)/hhStats)
+        lhBars = math.round(matrix.get(pivotHighBars, si, 1)/lhStats)
+        tBars = math.round(matrix.get(pivotHighBars, si, 2)/tStats)
+        highlight = math.sign(currentDir) < 0 ? nextTotalTrendIndex == si  : currentTotalTrendIndex == si
+
+        hhTooltip = 'Average Ratio - '+str.tostring(hhRatio)+'\n'+'Average Bars - '+str.tostring(hhBars)
+        lhTooltip = 'Average Ratio - '+str.tostring(lhRatio)+'\n'+'Average Bars - '+str.tostring(lhBars)
+        tTooltip = 'Average Ratio - '+str.tostring(tRatio)+'\n'+'Average Bars - '+str.tostring(tBars)
+
+        if(highlight)
+            var line hhLine = na
+            var line lhLine = na
+            var line tLine = na
+            var label hhLabel = na
+            var label lhLabel = na
+            var label tLabel = na
+
+            line.delete(hhLine)
+            line.delete(lhLine)
+            line.delete(tLine)
+            label.delete(hhLabel)
+            label.delete(lhLabel)
+            label.delete(tLabel)
+            
+            x1 = math.sign(currentDir) < 0 ? currentBar : lastBar
+            hhX2 = x1 + hhBars
+            lhX2 = x1 + lhBars
+            tX2 = x1 + tBars
+
+            y1 = math.sign(currentDir) < 0 ? currentPrice : lastPrice
+            prev = math.sign(currentDir) < 0 ? lastPrice : llastPrice
+            hhY2 = math.round_to_mintick(y1 + math.abs(y1-prev)*hhRatio)
+            lhY2 = math.round_to_mintick(y1 + math.abs(y1-prev)*lhRatio)
+            tY2 = math.round_to_mintick(y1 + math.abs(y1-prev)*tRatio)
+            hhLine := line.new(x1, y1, hhX2, hhY2, xloc=xloc.bar_index, color=color.green, style=line.style_arrow_right)
+            lhLine := line.new(x1, y1, lhX2, lhY2, xloc=xloc.bar_index, color=color.lime, style=line.style_arrow_right)
+            tLine := line.new(x1, y1, tX2, tY2, xloc=xloc.bar_index, color=color.yellow, style=line.style_arrow_right)
+
+            hhPercent = str.tostring(hhStats*100/tStats, format.percent)
+            lhPercent = str.tostring(lhStats*100/tStats, format.percent)
+            hhText = 'Number of Historical References :'+str.tostring(hhStats)+'/'+str.tostring(tStats)+
+                         '\nProbability of Higher High :'+hhPercent+
+                         '\nAverage Higher High Ratio :'+str.tostring(hhRatio) +
+                         '\nAverage Higher High Bars :'+str.tostring(hhBars)
+            lhText = 'Number of Historical References :'+str.tostring(lhStats)+'/'+str.tostring(tStats)+
+                         '\nProbability of Lower High :'+lhPercent+
+                         '\nAverage Lower High Ratio :'+str.tostring(lhRatio) +
+                         '\nAverage Lower High Bars :'+str.tostring(lhBars)
+            tText = 'Number of Historical References :'+str.tostring(tStats)+
+                         '\nAverage Fib Ratio :'+str.tostring(tRatio)+
+                         '\nAverage Bars :'+str.tostring(tBars)
+            hhLabel := label.new(hhX2, hhY2, str.tostring(hhY2)+ ' - ' +hhPercent, style=label.style_label_lower_left, color=color.new(color.green, 70), textcolor = color.white, size=size.small, tooltip=hhText)
+            lhLabel := label.new(lhX2, lhY2, str.tostring(lhY2)+ ' - ' +lhPercent, style=label.style_label_upper_left, color=color.new(color.lime, 70), textcolor = color.white, size=size.small, tooltip=lhText)
+            tLabel := label.new(tX2, tY2, str.tostring(tY2)+ '@'+str.tostring(tRatio), style=label.style_label_left, color=color.new(color.yellow, 70), textcolor = color.white, size=size.small, tooltip=tText)
+            hhValue := hhY2
+            lhValue := lhY2
+            hhProbability := hhStats*100/tStats
+            htRatio := tRatio
+
+        if(hhStats != 0 and lhStats != 0) and showTable
+            table.cell(statsTable, phColStart, hlr, llastPivotStatus, text_color = txtColor, text_size = txtSize, bgcolor = color.new(color.lime, 60))
+            table.cell(statsTable, phColStart+1, hlr, lastPivotStatus, text_color = txtColor, text_size = txtSize, bgcolor = color.new(color.orange, 60))
+            table.cell(statsTable, phColStart+2, hlr, str.tostring(hhStats)+' - '+str.tostring(hhRatio), text_color = txtColor, text_size = txtSize, bgcolor = color.new(color.green, highlight ? 50 : 90), tooltip = hhTooltip)
+            table.cell(statsTable, phColStart+3, hlr, str.tostring(lhStats)+' - '+str.tostring(lhRatio), text_color = txtColor, text_size = txtSize, bgcolor = color.new(color.red, highlight? 50 : 90), tooltip = lhTooltip)
+            table.cell(statsTable, phColStart+4, hlr, str.tostring(tStats)+' - '+str.tostring(tRatio), text_color = txtColor, text_size = txtSize, bgcolor = color.from_gradient(hhStats/tStats, 0, 1, color.red, color.green), tooltip = tTooltip)
+            hlr+=1
+
+
+    plColStart = currentDir < 0 ? 0 : 5
+    if(showTable)
+        table.cell(statsTable, plColStart, 0, 'Pivot Low Projection', text_color = txtColor, text_size = txtSize, bgcolor = color.maroon)
+        table.cell(statsTable, plColStart, 1, 'Last Two Pivots', text_color = txtColor, text_size = txtSize, bgcolor = color.maroon)
+        table.cell(statsTable, plColStart+2, 1, 'LL', text_color = txtColor, text_size = txtSize, bgcolor = color.maroon)
+        table.cell(statsTable, plColStart+3, 1, 'HL', text_color = txtColor, text_size = txtSize, bgcolor = color.maroon)
+        table.cell(statsTable, plColStart+4, 1, 'T', text_color = txtColor, text_size = txtSize, bgcolor = color.maroon)
+        table.merge_cells(statsTable, plColStart, 0, plColStart+4, 0)
+        table.merge_cells(statsTable, plColStart, 1, plColStart+1, 1)
+    plSortIndices = array.sort_indices(matrix.col(pivotLowStats, 2), order.descending)
+
+    llr = startRow
+    for i=0 to 63
+        si = array.get(plSortIndices, i)
+        lastTrendIndex = int(si/8)
+        llastTrendIndex = si%8
+
+        lastPivotStatus = getStatus(lastTrendIndex, 1)
+        llastPivotStatus = getStatus(llastTrendIndex, -1)
+        llStats = matrix.get(pivotLowStats, si, 0)
+        hlStats = matrix.get(pivotLowStats, si, 1)
+        tStats = matrix.get(pivotLowStats, si, 2)
+
+        llRatio = math.round(matrix.get(pivotLowRatios, si, 0)/llStats, 3)
+        hlRatio = math.round(matrix.get(pivotLowRatios, si, 1)/hlStats, 3)
+        tRatio = math.round(matrix.get(pivotLowRatios, si, 2)/tStats, 3)
+
+        llBars = math.round(matrix.get(pivotLowBars, si, 0)/llStats)
+        hlBars = math.round(matrix.get(pivotLowBars, si, 1)/hlStats)
+        tBars = math.round(matrix.get(pivotLowBars, si, 2)/tStats)
+
+        highlight = math.sign(currentDir) > 0 ? nextTotalTrendIndex== si  : currentTotalTrendIndex  == si
+
+        llTooltip = 'Average Ratio - '+str.tostring(llRatio)+'\n'+'Average Bars - '+str.tostring(llBars)
+        hlTooltip = 'Average Ratio - '+str.tostring(hlRatio)+'\n'+'Average Bars - '+str.tostring(hlBars)
+        tTooltip = 'Average Ratio - '+str.tostring(tRatio)+'\n'+'Average Bars - '+str.tostring(tBars)
+
+        if(highlight)
+            var line llLine = na
+            var line hlLine = na
+            var line tLine = na
+
+            var label llLabel = na
+            var label hlLabel = na
+            var label tLabel = na
+
+            line.delete(llLine)
+            line.delete(hlLine)
+            line.delete(tLine)
+
+            label.delete(llLabel)
+            label.delete(hlLabel)
+            label.delete(tLabel)
+
+            x1 = math.sign(currentDir) > 0 ? currentBar : lastBar
+            llX2 = x1 + llBars
+            hlX2 = x1 + hlBars
+            tX2 = x1 + tBars
+
+            y1 = math.sign(currentDir) > 0 ? currentPrice : lastPrice
+            prev = math.sign(currentDir) > 0 ? lastPrice : llastPrice
+            llY2 = math.round_to_mintick(y1 - math.abs(y1-prev)*llRatio)
+            hlY2 = math.round_to_mintick(y1 - math.abs(y1-prev)*hlRatio)
+            tY2 = math.round_to_mintick(y1 - math.abs(y1-prev)*tRatio)
+            llLine := line.new(x1, y1, llX2, llY2, xloc=xloc.bar_index, color=color.red, style=line.style_arrow_right)
+            hlLine := line.new(x1, y1, hlX2, hlY2, xloc=xloc.bar_index, color=color.orange, style=line.style_arrow_right)
+            tLine := line.new(x1, y1, tX2, tY2, xloc=xloc.bar_index, color=color.yellow, style=line.style_arrow_right)
+
+            llPercent = str.tostring(llStats*100/tStats, format.percent)
+            hlPercent = str.tostring(hlStats*100/tStats, format.percent)
+            llText = 'Number of Historical References :'+str.tostring(llStats)+'/'+str.tostring(tStats)+
+                         '\nProbability of Lower Low :'+llPercent+
+                         '\nAverage Lower Low Ratio :'+str.tostring(llRatio) +
+                         '\nAverage Lower Low Bars :'+str.tostring(llBars)
+            hlText = 'Number of Historical References :'+str.tostring(hlStats)+'/'+str.tostring(tStats)+
+                         '\nProbability of Higher Low :'+hlPercent+
+                         '\nAverage Higher Low Ratio :'+str.tostring(hlRatio) +
+                         '\nAverage Higher Low Bars :'+str.tostring(hlBars)
+            tText = 'Number of Historical References :'+str.tostring(tStats)+
+                         '\nAverage Fib Ratio :'+str.tostring(tRatio)+
+                         '\nAverage Bars :'+str.tostring(tBars)
+            llLabel := label.new(llX2, llY2, str.tostring(llY2)+ ' - ' +llPercent, style=label.style_label_upper_left, color=color.new(color.red, 70), textcolor = color.white, size=size.small, tooltip=llText)
+            hlLabel := label.new(hlX2, hlY2, str.tostring(hlY2)+ ' - ' +hlPercent, style=label.style_label_lower_left, color=color.new(color.orange, 70), textcolor = color.white, size=size.small, tooltip=hlText)
+            tLabel := label.new(tX2, tY2, str.tostring(tY2)+ '@'+str.tostring(tRatio), style=label.style_label_left, color=color.new(color.yellow, 70), textcolor = color.white, size=size.small, tooltip=tText)
+            llValue := llY2
+            hlValue := hlY2
+            llProbability := llStats*100/tStats
+            ltRatio := tRatio
+
+        if(llStats != 0 and hlStats != 0) and showTable
+            table.cell(statsTable, plColStart, llr, llastPivotStatus, text_color = txtColor, text_size = txtSize, bgcolor = color.new(color.orange, 60))
+            table.cell(statsTable, plColStart+1, llr, lastPivotStatus, text_color = txtColor, text_size = txtSize, bgcolor = color.new(color.lime, 60))
+            table.cell(statsTable, plColStart+2, llr, str.tostring(llStats)+' - '+str.tostring(llRatio), text_color = txtColor, text_size = txtSize, bgcolor = color.new(color.red, highlight? 50 : 90), tooltip=llTooltip)
+            table.cell(statsTable, plColStart+3, llr, str.tostring(hlStats)+' - '+str.tostring(hlRatio), text_color = txtColor, text_size = txtSize, bgcolor = color.new(color.green, highlight? 50 : 90), tooltip = hlTooltip)
+            table.cell(statsTable, plColStart+4, llr, str.tostring(tStats)+' - '+str.tostring(tRatio), text_color = txtColor, text_size = txtSize, bgcolor = color.from_gradient(llStats/tStats, 0, 1, color.green, color.red), tooltip = tTooltip)
+            llr+=1
+
+
+if showPivotLines
+    draw(valueMatrix, directionMatrix, ratioMatrix,  divergenceMatrix, doubleDivergenceMatrix, barArray, trendArray, newZG, doubleZG)
+
+plot(drawSupertrend? supertrend:na, color=supertrendDir>0? color.green:color.red, style=plot.style_linebr)
+
+
+hhp = plot(fillAreas?hhValue:na, 'Higher High Range', color.new(color.green, 100), 1)
+lhp = plot(fillAreas?lhValue:na, 'Lower High Range', color.new(color.lime, 100), 1)
+llp = plot(fillAreas?llValue:na, 'Lower Low Range', color.new(color.red, 100), 1)
+hlp = plot(fillAreas?hlValue:na, 'Higher Low Range', color.new(color.orange, 100), 1)
+
+fill(hhp, lhp, color=color.new(hhProbability > 50 ? color.green : hhProbability < 50? color.red : color.silver, 90))
+fill(llp, hlp, color=color.new(llProbability > 50 ? color.red : llProbability < 50? color.green : color.silver, 90))

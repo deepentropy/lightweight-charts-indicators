@@ -1,0 +1,555 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fluxchart
+
+//@version=5
+const bool DEBUG = false
+const int maxBoxesCount = 500
+const float overlapThresholdPercentage = 0.0
+int maxDistanceToLastBar = 1250 // Affects Running Time
+const int maxSDZones = 30
+const int minZoneSize = 10
+const int RETEST_COOLDOWN   = 5
+const int minDistanceBetweenZones = 5
+const float maxZoneSizeATR = 1.5
+
+indicator(title = 'Supply & Demand (MTF) | Flux Charts', shorttitle = "Supply and Demand (MTF) | Flux Charts", overlay = true, max_boxes_count = maxBoxesCount, max_labels_count = maxBoxesCount, max_lines_count = maxBoxesCount, max_bars_back = 2000, dynamic_requests = true)
+
+maxDistanceString   = input.string("Normal", "Max Distance To Last Bar", options = ["High", "Normal", "Low"],  group = "General Configuration", display = display.none)
+sdEndMethod = input.string("Close", "Zone Invalidation", options = ["Wick", "Close"],  group = "General Configuration", display = display.none)
+combineSDs = DEBUG ? input.bool(true, "Combine Zones", group = "General Configuration", display = display.none) : true
+momentumBodyMult = DEBUG ? input.float(0.5, "Momentum Body Mult", step = 0.1, group = "General Configuration") : 0.5
+momentumCount = DEBUG ? input.int(4,"Momentum Count", group = "General Configuration") : 4
+momentumSpan = DEBUG ? input.int(4, "Momentum Span", group = "General Configuration") : 4
+//zoneCount = input.string("High", 'Zone Count', options = ["High", "Medium", "Low", "One"], tooltip = "Number of S&D Zones to be rendered. Higher options will result in older S&Ds shown.",  group = "General Configuration", display = display.none)
+zoneCount = "High"
+retestsEnabled  = input.bool(true, "Retests", inline = "rb", group = "General Configuration", display = display.none)
+breaksEnabled   = input.bool(false, "Breaks", inline = "rb", group = "General Configuration", display = display.none)
+showInvalidated = input.bool(true, "Show Historic Zones", group = "General Configuration", display = display.none)
+bullSDZoneColor = input(#08998180, 'Demand', inline = 'sdColor', group = 'General Configuration', display = display.none)
+bearSDZoneColor = input(#f2364680, 'Supply', inline = 'sdColor', group = 'General Configuration', display = display.none)
+
+demandZones = zoneCount == "One" ? 1 : zoneCount == "Low" ? 3 : zoneCount == "Medium" ? 5 : 30
+supplyZones = zoneCount == "One" ? 1 : zoneCount == "Low" ? 3 : zoneCount == "Medium" ? 5 : 30
+
+timeframe1Enabled = input.bool(true, title = "", group = "Timeframes", inline = "timeframe1", display = display.none)
+timeframe1 = input.timeframe("", title = "", group = "Timeframes", inline = "timeframe1", display = display.none)
+timeframe2Enabled = input.bool(false, title = "", group = "Timeframes", inline = "timeframe2", display = display.none)
+timeframe2 = input.timeframe("15", title = "", group = "Timeframes", inline = "timeframe2", display = display.none)
+timeframe3Enabled = input.bool(false, title = "", group = "Timeframes", inline = "timeframe3", display = display.none)
+timeframe3 = input.timeframe("30", title = "", group = "Timeframes", inline = "timeframe3", display = display.none)
+
+textColor = input.color(#ffffffcc, "Text Color", group = "Style")
+labelsAtSameLevel   = DEBUG ? input.bool(true, "[DBG] Place Labels At Same Level", group = "Style") : true
+labelsAtSameLevelBreak = false
+
+atr = ta.atr(20)
+averageBodySize = ta.sma(math.abs(close - open), 20)
+
+maxDistanceToLastBar := maxDistanceString == "Low" ? 150 : maxDistanceString == "Normal" ? 500 : 1250
+
+type sdZoneInfo
+    float top
+    float bottom
+    string sdType
+    int startTime
+    int breakTime
+    int guid
+    string timeframeStr
+    bool disabled = false
+    string combinedTimeframesStr = na
+    bool combined = false
+
+type sdZone
+    sdZoneInfo info
+    bool isRendered = false
+
+    box sdBox = na
+
+    line sdBoxLineTop = na
+    line sdBoxLineMiddle = na
+    line sdBoxLineBottom = na
+    //
+    box sdBoxText = na
+
+type retestLabelContainer
+    int guid
+    array<label> labels
+
+createSDZone (sdZoneInfo sdZoneInfoF) =>
+    sdZone newSDZone = sdZone.new(sdZoneInfoF)
+    newSDZone
+
+safeDeleteSDZone (sdZone sdZoneF) =>
+    sdZoneF.isRendered := false
+
+    box.delete(sdZoneF.sdBox)
+    box.delete(sdZoneF.sdBoxText)
+
+    line.delete(sdZoneF.sdBoxLineTop)
+    line.delete(sdZoneF.sdBoxLineMiddle)
+    line.delete(sdZoneF.sdBoxLineBottom)
+
+type timeframeInfo
+    int index = na
+    string timeframeStr = na
+    bool isEnabled = false
+
+    sdZoneInfo[] demandZonesList = na
+    sdZoneInfo[] supplyZonesList = na
+
+newTimeframeInfo (index, timeframeStr, isEnabled) =>
+    newTFInfo = timeframeInfo.new()
+    newTFInfo.index := index
+    newTFInfo.isEnabled := isEnabled
+    newTFInfo.timeframeStr := timeframeStr
+
+    newTFInfo
+
+// ____ TYPES END ____
+
+var timeframeInfo[] timeframeInfos = array.from(newTimeframeInfo(1, timeframe1, timeframe1Enabled), newTimeframeInfo(2, timeframe2, timeframe2Enabled), newTimeframeInfo(3, timeframe3, timeframe3Enabled))
+var demandZonesList = array.new<sdZoneInfo>(0)
+var supplyZonesList = array.new<sdZoneInfo>(0)
+var breakLabels = map.new<int, label>()
+var retestLabels = map.new<int, retestLabelContainer>()
+
+var int oldestBarTime = na
+if bar_index == last_bar_index - maxDistanceToLastBar
+    oldestBarTime := time
+
+var allSDZonesList = array.new<sdZone>(0)
+
+moveLine(_line, _x, _y, _x2) =>
+    line.set_xy1(_line, _x,  _y)
+    line.set_xy2(_line, _x2, _y)
+
+moveBox (_box, _topLeftX, _topLeftY, _bottomRightX, _bottomRightY) =>
+    box.set_lefttop(_box, _topLeftX, _topLeftY)
+    box.set_rightbottom(_box, _bottomRightX, _bottomRightY)
+
+isTimeframeLower (timeframe1F, timeframe2F) =>
+    timeframe.in_seconds(timeframe1F) < timeframe.in_seconds(timeframe2F)
+
+getMinTimeframe (timeframe1F, timeframe2F) =>
+    if isTimeframeLower(timeframe1F, timeframe2F)
+        timeframe1F
+    else
+        timeframe2F
+
+getMaxTimeframe (timeframe1F, timeframe2F) =>
+    if isTimeframeLower(timeframe1F, timeframe2F)
+        timeframe2F
+    else
+        timeframe1F
+
+formatTimeframeString (formatTimeframe) =>
+    timeframeF = formatTimeframe == "" ? timeframe.period : formatTimeframe
+    
+    if str.contains(timeframeF, "D") or str.contains(timeframeF, "W") or str.contains(timeframeF, "S") or str.contains(timeframeF, "M")
+        timeframeF
+    else
+        seconds = timeframe.in_seconds(timeframeF)
+        if seconds >= 3600
+            hourCount = int(seconds / 3600)
+            str.tostring(hourCount) + " Hour" + (hourCount > 1 ? "s" : "")
+        else
+            timeframeF + " Min"
+
+colorWithTransparency (colorF, transparencyX) =>
+    color.new(colorF, color.t(colorF) * transparencyX)
+
+createSDBox (boxColor, transparencyX = 1.0, xlocType = xloc.bar_time) =>
+    box.new(na, na, na, na, xloc = xlocType, extend = extend.none, bgcolor = colorWithTransparency(boxColor, transparencyX), text_color = textColor, text_halign = text.align_right, text_valign = text.align_bottom, text_size = size.small, border_color = boxColor)
+
+renderSDZone (sdZone sd) =>
+    sdZoneInfo info = sd.info
+    
+    sd.isRendered := true
+    
+    sdColor = sd.info.sdType == "Demand" ? bullSDZoneColor : bearSDZoneColor
+
+    int zoneSize = na
+    if na(info.breakTime)
+        zoneSize := (time + 1) - info.startTime
+    else
+        zoneSize := (info.breakTime - info.startTime)
+
+    render = true
+    if zoneSize < timeframe.in_seconds(info.timeframeStr) * minZoneSize * 1000
+        render := false
+    if info.startTime < nz(oldestBarTime, time)
+        render := false
+
+
+    if render and (showInvalidated or (na(sd.info.breakTime)))
+        sd.sdBox := createSDBox(sdColor, 1.5)
+        if sd.info.combined
+            sd.sdBox.set_bgcolor(colorWithTransparency(sdColor, 1.1))
+
+        startX = info.startTime
+        maxEndX = info.startTime + zoneSize / 2
+
+        float middlePoint = (info.top + info.bottom) / 2
+        moveBox(sd.sdBox, info.startTime, info.top, info.startTime + zoneSize, info.bottom)
+        
+        sd.sdBoxLineMiddle := line.new(info.startTime, middlePoint, info.startTime + zoneSize, middlePoint, xloc = xloc.bar_time, color = textColor, style = line.style_dashed)
+
+        sd.sdBoxText := createSDBox(color.new(color.white, 100))
+        moveBox(sd.sdBoxText, maxEndX, middlePoint, info.startTime + zoneSize, info.bottom)
+        SDText = (na(sd.info.combinedTimeframesStr) ? formatTimeframeString(sd.info.timeframeStr) : sd.info.combinedTimeframesStr) + " " + sd.info.sdType
+        //box.set_text(sd.sdBoxText, SDText)
+        boxText = na(sd.info.combinedTimeframesStr) ? formatTimeframeString(sd.info.timeframeStr) : sd.info.combinedTimeframesStr
+        if DEBUG
+            boxText += " | " + str.tostring(sd.info.guid)
+        box.set_text(sd.sdBoxText, boxText)
+        
+
+areaOfSD (sdZoneInfo SDInfoF) =>
+    float XA1 = SDInfoF.startTime
+    float XA2 = na(SDInfoF.breakTime) ? time + 1 : SDInfoF.breakTime
+    float YA1 = SDInfoF.top
+    float YA2 = SDInfoF.bottom
+    float edge1 = math.sqrt((XA2 - XA1) * (XA2 - XA1) + (YA2 - YA2) * (YA2 - YA2))
+    float edge2 = math.sqrt((XA2 - XA2) * (XA2 - XA2) + (YA2 - YA1) * (YA2 - YA1))
+    float totalArea = edge1 * edge2
+    totalArea
+
+doSDsTouch (sdZoneInfo SDInfo1, sdZoneInfo SDInfo2) =>
+    float XA1 = SDInfo1.startTime
+    float XA2 = na(SDInfo1.breakTime) ? (time + 1) : SDInfo1.breakTime
+    float YA1 = SDInfo1.top + atr / 100
+    float YA2 = SDInfo1.bottom - atr / 100
+
+    float XB1 = SDInfo2.startTime
+    float XB2 = na(SDInfo2.breakTime) ? (time + 1) : SDInfo2.breakTime
+    float YB1 = SDInfo2.top + atr / 100
+    float YB2 = SDInfo2.bottom - atr / 100
+    float intersectionArea = math.max(0, math.min(XA2, XB2) - math.max(XA1, XB1)) * math.max(0, math.min(YA1, YB1) - math.max(YA2, YB2))
+    float unionArea = areaOfSD(SDInfo1) + areaOfSD(SDInfo2) - intersectionArea
+    
+    float overlapPercentage = (intersectionArea / unionArea) * 100.0
+
+    if overlapPercentage > overlapThresholdPercentage
+        true
+    else
+        false
+
+isSDValid (sdZoneInfo SDInfo) =>
+    valid = true
+    if SDInfo.disabled
+        valid := false
+    valid
+
+clampSDZone (sdZoneInfo sdZoneF) =>
+    sdZoneSize = sdZoneF.top - sdZoneF.bottom
+    if sdZoneSize > atr * maxZoneSizeATR
+        diff = sdZoneSize - (atr * maxZoneSizeATR)
+        sdZoneF.top -= diff / 2
+        sdZoneF.bottom += diff / 2
+
+combineSDsFunc () =>
+    if allSDZonesList.size() > 0
+        lastCombinations = 999
+        while lastCombinations > 0
+            lastCombinations := 0
+            for i = 0 to allSDZonesList.size() - 1
+                curSD1 = allSDZonesList.get(i)
+                for j = 0 to allSDZonesList.size() - 1
+                    curSD2 = allSDZonesList.get(j)
+                    if i == j
+                        continue
+                    if not isSDValid(curSD1.info) or not isSDValid(curSD2.info)
+                        continue
+                    if curSD1.info.sdType != curSD2.info.sdType
+                        continue
+                    if doSDsTouch(curSD1.info, curSD2.info)
+                        curSD1.info.disabled := true
+                        curSD2.info.disabled := true
+
+                        sdZone newSD = createSDZone(sdZoneInfo.new(math.max(curSD1.info.top, curSD2.info.top), math.min(curSD1.info.bottom, curSD2.info.bottom), curSD1.info.sdType))
+                        newSD.info.startTime := math.min(curSD1.info.startTime, curSD2.info.startTime)
+                        newSD.info.breakTime := math.max(nz(curSD1.info.breakTime), nz(curSD2.info.breakTime))
+                        newSD.info.breakTime := newSD.info.breakTime == 0 ? na : newSD.info.breakTime
+                        newSD.info.guid := newSD.info.startTime
+                        newSD.info.timeframeStr := curSD1.info.timeframeStr
+                        clampSDZone(newSD.info)
+                        
+                        newSD.info.combined := true
+                        if timeframe.in_seconds(curSD1.info.timeframeStr) != timeframe.in_seconds(curSD2.info.timeframeStr)
+                            newSD.info.combinedTimeframesStr := (na(curSD1.info.combinedTimeframesStr) ? formatTimeframeString(curSD1.info.timeframeStr) : curSD1.info.combinedTimeframesStr) + " & " + (na(curSD2.info.combinedTimeframesStr) ? formatTimeframeString(curSD2.info.timeframeStr) : curSD2.info.combinedTimeframesStr)
+                        allSDZonesList.unshift(newSD)
+                        lastCombinations += 1
+
+
+reqSeq (timeframeStr) =>
+    if timeframe.in_seconds(timeframeStr) == timeframe.in_seconds()
+        [demandZonesList, supplyZonesList]
+    else
+        [demandZonesListF, supplyZonesListF] = request.security(syminfo.tickerid, timeframeStr, [demandZonesList, supplyZonesList])
+        [demandZonesListF, supplyZonesListF]
+
+getTFData (timeframeInfo timeframeInfoF, timeframeStr) =>
+    if timeframeInfoF.isEnabled
+        [demandZonesListF, supplyZonesListF] = reqSeq(timeframeStr)
+        [demandZonesListF, supplyZonesListF]
+    else
+        [na, na]
+
+handleTimeframeInfo (timeframeInfo timeframeInfoF, demandZonesListF, supplyZonesListF) =>
+    if timeframeInfoF.isEnabled
+        timeframeInfoF.demandZonesList := demandZonesListF
+        timeframeInfoF.supplyZonesList := supplyZonesListF
+
+handleSDZonesFinal () =>
+    if DEBUG
+        log.info("Demand Count " + str.tostring(demandZonesList.size()))
+        log.info("Supply Count " + str.tostring(supplyZonesList.size()))
+        log.info("All " + str.tostring(allSDZonesList.size()))
+        log.info("Max " + str.tostring(demandZones))
+
+    if allSDZonesList.size() > 0
+        for i = 0 to allSDZonesList.size() - 1
+            safeDeleteSDZone(allSDZonesList.get(i))
+    allSDZonesList.clear()    
+
+    for i = 0 to timeframeInfos.size() - 1
+        curTimeframe = timeframeInfos.get(i)
+        if not curTimeframe.isEnabled
+            continue
+        if curTimeframe.demandZonesList.size() > 0
+            for j = 0 to math.min(curTimeframe.demandZonesList.size() - 1, demandZones - 1)
+                sdZoneInfoF = curTimeframe.demandZonesList.get(j)
+                sdZoneInfoF.timeframeStr := curTimeframe.timeframeStr
+                allSDZonesList.unshift(createSDZone(sdZoneInfo.copy(sdZoneInfoF)))
+
+        if curTimeframe.supplyZonesList.size() > 0
+            for j = 0 to math.min(curTimeframe.supplyZonesList.size() - 1, supplyZones - 1)
+                sdZoneInfoF = curTimeframe.supplyZonesList.get(j)
+                sdZoneInfoF.timeframeStr := curTimeframe.timeframeStr
+                allSDZonesList.unshift(createSDZone(sdZoneInfo.copy(sdZoneInfoF)))
+
+    if combineSDs
+        combineSDsFunc()
+
+    if allSDZonesList.size() > 0
+        for i = 0 to allSDZonesList.size() - 1
+            curSD = allSDZonesList.get(i)
+            if isSDValid(curSD.info)
+                renderSDZone(curSD)
+
+bodySize = math.abs(close - open)
+getMomentumCandleCount (lastBars, reqMult) =>
+    bearishCnt = 0
+    bullishCnt = 0
+    for i = 0 to lastBars - 1
+        if bodySize[i] >= averageBodySize * reqMult
+            if close[i] > open[i]
+                bullishCnt += 1
+            else
+                bearishCnt += 1
+    [bullishCnt, bearishCnt]
+
+[bullishMomentum, bearishMomentum] = getMomentumCandleCount(momentumSpan, momentumBodyMult)
+
+var int lastDemandZone = 0
+var int lastSupplyZone = 0
+// Find Supply & Demand
+if bar_index > last_bar_index - maxDistanceToLastBar
+    if bullishMomentum >= momentumCount and bar_index - lastDemandZone > minDistanceBetweenZones
+        lastDemandZone := bar_index
+        newSDZone = sdZoneInfo.new(high[momentumSpan + 1], low[momentumSpan + 1], "Demand", time[momentumSpan + 1], na, time[momentumSpan + 1])
+        clampSDZone(newSDZone)
+        demandZonesList.unshift(newSDZone)
+        if demandZonesList.size() > maxSDZones
+            demandZonesList.pop()
+    if bearishMomentum >= momentumCount and bar_index - lastSupplyZone > minDistanceBetweenZones
+        lastSupplyZone := bar_index
+        newSDZone = sdZoneInfo.new(high[momentumSpan + 1], low[momentumSpan + 1], "Supply", time[momentumSpan + 1], na, time[momentumSpan + 1])
+        clampSDZone(newSDZone)
+        supplyZonesList.unshift(newSDZone)
+        if supplyZonesList.size() > maxSDZones
+            supplyZonesList.pop()
+
+    // Invalidation
+    if demandZonesList.size() > 0
+        for i = demandZonesList.size() - 1 to 0
+            currentSD = demandZonesList.get(i)
+        
+            if na(currentSD.breakTime) 
+                if (sdEndMethod == "Wick" ? low : math.min(open, close)) < currentSD.bottom
+                    currentSD.breakTime := time
+
+    if supplyZonesList.size() > 0
+        for i = supplyZonesList.size() - 1 to 0
+            currentSD = supplyZonesList.get(i)
+
+            if na(currentSD.breakTime) 
+                if (sdEndMethod == "Wick" ? high : math.max(open, close)) > currentSD.top
+                    currentSD.breakTime := time
+
+[demandZonesListTimeframe1, supplyZonesListTimeframe1] = getTFData(timeframeInfos.get(0), timeframe1)
+[demandZonesListTimeframe2, supplyZonesListTimeframe2] = getTFData(timeframeInfos.get(1), timeframe2)
+[demandZonesListTimeframe3, supplyZonesListTimeframe3] = getTFData(timeframeInfos.get(2), timeframe3)
+
+var lastRetestIndexSupply = 0
+var lastRetestIndexDemand = 0
+
+float renderRetestLabelBuyside = na
+int renderRetestLabelBuysideGUID = na
+
+float renderRetestLabelSellside = na
+int renderRetestLabelSellsideGUID = na
+
+float renderBreakLabelBuyside = na
+int renderBreakLabelBuysideGUID = na
+
+float renderBreakLabelSellside = na
+int renderBreakLabelSellsideGUID = na
+
+var disabledDuplicateTF = false
+// Disable Duplicate Timeframes
+if not disabledDuplicateTF
+    disabledDuplicateTF := true
+    for i = 0 to timeframeInfos.size() - 1
+        for j = 0 to timeframeInfos.size() - 1
+            if i == j
+                continue
+            timeframeInfo1 = timeframeInfos.get(i)
+            timeframeInfo2 = timeframeInfos.get(j)
+            if timeframeInfo1.isEnabled and timeframeInfo2.isEnabled and timeframe.in_seconds(timeframeInfo1.timeframeStr) == timeframe.in_seconds(timeframeInfo2.timeframeStr)
+                timeframeInfo1.isEnabled := false
+
+if barstate.isconfirmed and bar_index > last_bar_index - maxDistanceToLastBar
+    handleTimeframeInfo(timeframeInfos.get(0), demandZonesListTimeframe1, supplyZonesListTimeframe1)
+    handleTimeframeInfo(timeframeInfos.get(1), demandZonesListTimeframe2, supplyZonesListTimeframe2)
+    handleTimeframeInfo(timeframeInfos.get(2), demandZonesListTimeframe3, supplyZonesListTimeframe3)
+    handleSDZonesFinal()
+
+    // Breaks    
+
+    if allSDZonesList.size() > 0
+        for i = 0 to allSDZonesList.size() - 1
+            curZone = allSDZonesList.get(i)
+            if curZone.info.disabled
+                continue
+            if not showInvalidated and not na(curZone.info.breakTime)
+                continue
+            if na(curZone.info.breakTime)
+                continue
+            if time - curZone.info.startTime < minZoneSize * timeframe.in_seconds(curZone.info.timeframeStr) * 1000
+                continue
+            if curZone.info.startTime < nz(oldestBarTime, time)
+                continue
+            
+            if time == curZone.info.breakTime
+                if curZone.info.sdType == "Supply"
+                    if curZone.info.breakTime - curZone.info.startTime > minZoneSize * timeframe.in_seconds() * 1000
+                        renderBreakLabelBuyside := curZone.info.bottom
+                        renderBreakLabelBuysideGUID := curZone.info.guid
+                else
+                    if curZone.info.breakTime - curZone.info.startTime > minZoneSize * timeframe.in_seconds() * 1000
+                        renderBreakLabelSellside := curZone.info.top
+                        renderBreakLabelSellsideGUID := curZone.info.guid
+    
+    // Retests
+    if allSDZonesList.size() > 0
+        for i = 0 to allSDZonesList.size() - 1
+            curZone = allSDZonesList.get(i)
+            
+            if curZone.info.disabled
+                continue
+            if not showInvalidated and not na(curZone.info.breakTime)
+                continue
+            if not na(curZone.info.breakTime)
+                continue
+            if time - curZone.info.startTime < minZoneSize * timeframe.in_seconds(curZone.info.timeframeStr) * 1000
+                continue
+            if curZone.info.startTime < nz(oldestBarTime, time)
+                continue
+            
+            middleLine = (curZone.info.bottom + curZone.info.top) / 2.0
+            if curZone.info.sdType == "Supply" and bar_index - lastRetestIndexSupply > RETEST_COOLDOWN
+                if high > curZone.info.bottom
+                    renderRetestLabelBuyside := curZone.info.top
+                    renderRetestLabelBuysideGUID := curZone.info.guid
+                    lastRetestIndexSupply := bar_index
+            else if curZone.info.sdType == "Demand" and bar_index - lastRetestIndexDemand > RETEST_COOLDOWN
+                if low < curZone.info.top
+                    renderRetestLabelSellside := curZone.info.bottom
+                    renderRetestLabelSellsideGUID := curZone.info.guid
+                    lastRetestIndexDemand := bar_index
+
+//plotshape(not na(renderRetestLabelBuyside) and retestsEnabled ? renderRetestLabelBuyside : na, "", shape.labeldown, color = bearSDZoneColor, text = "R", location = labelsAtSameLevel ? location.absolute : location.abovebar, textcolor = color.white, size = size.small)
+//plotshape(not na(renderRetestLabelSellside) and retestsEnabled ? renderRetestLabelSellside : na, "", shape.labelup, color = bullSDZoneColor, text = "R", location = labelsAtSameLevel ? location.absolute : location.belowbar, textcolor = color.white, size = size.small)
+
+// Retests
+
+if not na(renderRetestLabelBuyside) and retestsEnabled
+    newLabel = label.new(bar_index, renderRetestLabelBuyside, style = label.style_label_down, color = bearSDZoneColor, text = "R", textcolor = color.white, size = size.small)
+    //label.new(bar_index, renderRetestLabelSellside, style = label.style_label_up, color = bullSDZoneColor, text = "R", textcolor = color.white, size = size.small)
+    if na(retestLabels.get(renderRetestLabelBuysideGUID))
+        newContainer = retestLabelContainer.new(renderRetestLabelBuysideGUID)
+        newContainer.labels := array.new<label>()
+        newContainer.labels.push(newLabel)
+        retestLabels.put(renderRetestLabelBuysideGUID, newContainer)
+    else
+        retestLabels.get(renderRetestLabelBuysideGUID).labels.push(newLabel)
+
+if not na(renderRetestLabelSellside) and retestsEnabled
+    newLabel = label.new(bar_index, renderRetestLabelSellside, style = label.style_label_up, color = bullSDZoneColor, text = "R", textcolor = color.white, size = size.small)
+    if na(retestLabels.get(renderRetestLabelSellsideGUID))
+        newContainer = retestLabelContainer.new(renderRetestLabelSellsideGUID)
+        newContainer.labels := array.new<label>()
+        newContainer.labels.push(newLabel)
+        retestLabels.put(renderRetestLabelSellsideGUID, newContainer)
+    else
+        retestLabels.get(renderRetestLabelSellsideGUID).labels.push(newLabel)
+
+
+if retestLabels.keys().size() > 0
+    for i = 0 to retestLabels.keys().size() - 1
+        curKey = retestLabels.keys().get(i)
+        foundKey = false
+        if allSDZonesList.size() > 0
+            for j = 0 to allSDZonesList.size() - 1
+                if allSDZonesList.get(j).info.guid == curKey
+                    if allSDZonesList.get(j).info.disabled
+                        continue
+                    if not showInvalidated and not na(allSDZonesList.get(j).info.breakTime)
+                        continue
+                    if time - allSDZonesList.get(j).info.startTime < minZoneSize * timeframe.in_seconds(allSDZonesList.get(j).info.timeframeStr) * 1000
+                        continue
+                    if allSDZonesList.get(j).info.startTime < nz(oldestBarTime, time)
+                        continue
+                    foundKey := true
+                    break
+        if not foundKey
+            for j = 0 to retestLabels.get(curKey).labels.size() - 1
+                label.delete(retestLabels.get(curKey).labels.get(j))
+
+// Breaks
+if not na(renderBreakLabelBuyside) and breaksEnabled
+    breakLabels.put(renderBreakLabelBuysideGUID, label.new(bar_index, renderBreakLabelBuyside, style = label.style_label_up, color = color.blue, text = "B", textcolor = color.white, size = size.small))
+
+if not na(renderBreakLabelSellside) and breaksEnabled
+    breakLabels.put(renderBreakLabelSellsideGUID, label.new(bar_index, renderBreakLabelSellside, style = label.style_label_down, color = color.blue, text = "B", textcolor = color.white, size = size.small))
+
+if breakLabels.keys().size() > 0
+    for i = 0 to breakLabels.keys().size() - 1
+        curKey = breakLabels.keys().get(i)
+        foundKey = false
+        if allSDZonesList.size() > 0
+            for j = 0 to allSDZonesList.size() - 1
+                if allSDZonesList.get(j).info.guid == curKey
+                    if allSDZonesList.get(j).info.disabled
+                        continue
+                    foundKey := true
+                    break
+        if not foundKey
+            label.delete(breakLabels.get(curKey))
+
+alertcondition(not na(renderRetestLabelBuyside) and barstate.isconfirmed, "Supply Zone Retest @ {{ticker}}", "Supply Zone Retest @ {{ticker}}")
+alertcondition(not na(renderRetestLabelSellside) and barstate.isconfirmed, "Demand Zone Retest @ {{ticker}}", "Demand Zone Retest @ {{ticker}}")
+
+alertcondition(not na(renderBreakLabelBuyside) and barstate.isconfirmed, "Supply Zone Break @ {{ticker}}", "Supply Zone Break @ {{ticker}}")
+alertcondition(not na(renderBreakLabelSellside) and barstate.isconfirmed, "Demand Zone Break @ {{ticker}}", "Demand Zone Break @ {{ticker}}")

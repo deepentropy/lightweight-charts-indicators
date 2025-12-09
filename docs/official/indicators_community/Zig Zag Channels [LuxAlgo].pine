@@ -1,0 +1,115 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=4
+study("Zig Zag Channels [LuxAlgo]",overlay=true,max_bars_back=5000,max_lines_count=500,max_labels_count=500)
+//------------------------------------------------------------------------------
+length      = input(100)
+extend      = input(true,'Extend To Last Bar')
+show_ext    = input(true,'Show Extremities') 
+show_labels = input(true,'Show Labels') 
+
+//Style
+
+upcol = input(#ff1100,'Upper Extremity Color',group='Style')
+midcol = input(#ff5d00,'Zig Zag Color',group='Style')
+dncol = input(#2157f3,'Lower Extremity Color',group='Style')
+//------------------------------------------------------------------------------
+os = 0
+src = close
+n = bar_index
+var float valtop = na
+var float valbtm = na
+
+//------------------------------------------------------------------------------
+upper = highest(src,length)
+lower = lowest(src,length)
+os := src[length] > upper ? 0 : src[length] < lower ? 1 : os[1]
+
+btm = os == 1 and os[1] != 1
+top = os == 0 and os[1] != 0
+
+//------------------------------------------------------------------------------
+btm_n = valuewhen(btm,n,0)
+top_n = valuewhen(top,n,0)
+len = abs(btm_n - top_n)
+
+if btm
+    max_diff_up = 0.
+    max_diff_dn = 0.
+    valbtm := low[length]
+    
+    for i = 0 to len-1
+        point = low[length] + i/(len-1)*(valtop - low[length])
+        max_diff_up := max(max(src[length+i],open[length+i]) - point,max_diff_up)
+        max_diff_dn := max(point - min(src[length+i],open[length+i]),max_diff_dn)
+        
+    line.new(n[len+length],valtop,n[length],low[length],color=midcol)
+    
+    if show_ext
+        line.new(n[len+length],valtop+max_diff_up,n[length],low[length]+max_diff_up
+          ,color=upcol,style=line.style_dotted)
+        line.new(n[len+length],valtop-max_diff_dn,n[length],low[length]-max_diff_dn
+          ,color=dncol,style=line.style_dotted)
+    if show_labels
+        label.new(n[length],low[length],tostring(low[length],'#.####'),color=#00000000
+          ,style=label.style_label_up,textcolor=dncol,textalign=text.align_left,size=size.small)
+
+if top
+    max_diff_up = 0.
+    max_diff_dn = 0.
+    valtop := high[length]
+    
+    for i = 0 to len-1
+        point = high[length] + i/(len-1)*(valbtm - high[length])
+        max_diff_up := max(max(src[length+i],open[length+i]) - point,max_diff_up)
+        max_diff_dn := max(point - min(src[length+i],open[length+i]),max_diff_dn)
+    
+    line.new(n[len+length],valbtm,n[length],high[length],color=midcol)
+    
+    if show_ext
+        line.new(n[len+length],valbtm+max_diff_up,n[length],high[length]+max_diff_up
+          ,color=upcol,style=line.style_dotted)
+        line.new(n[len+length],valbtm-max_diff_dn,n[length],high[length]-max_diff_dn
+          ,color=dncol,style=line.style_dotted)
+    if show_labels
+        label.new(n[length],high[length],tostring(high[length],'#.####'),color=#00000000
+          ,style=label.style_label_down,textcolor=upcol,textalign=text.align_left,size=size.small)
+
+if barstate.islast and extend
+    max_diff_up = 0.
+    max_diff_dn = 0.  
+    x1 = 0
+    y1 = 0.
+    
+    if os == 1
+        x1 := btm_n-length
+        y1 := valbtm
+        
+        for i = 0 to n-btm_n+length-1
+            point = src + i/(n-btm_n+length-1)*(valbtm - src)
+            max_diff_up := max(max(src[i],open[i]) - point,max_diff_up)
+            max_diff_dn := max(point - min(src[i],open[i]),max_diff_dn)
+
+    else 
+        x1 := top_n-length
+        y1 := valtop
+        
+        for i = 0 to n-top_n+length-1
+            point = src + i/(n-top_n+length-1)*(valtop - src)
+            max_diff_up := max(max(src[i],open[i]) - point,max_diff_up)
+            max_diff_dn := max(point - min(src[i],open[i]),max_diff_dn)
+        
+    line.delete(line.new(x1,y1,n,src,color=midcol,extend=extend.right)[1])
+    
+    if show_ext
+        line.delete(line.new(x1,y1+max_diff_up,n,src+max_diff_up
+          ,color=upcol,style=line.style_dotted,extend=extend.right)[1])
+        line.delete(line.new(x1,y1-max_diff_dn,n,src-max_diff_dn
+          ,color=dncol,style=line.style_dotted,extend=extend.right)[1])
+          
+//------------------------------------------------------------------------------
+plot(btm ? low[length] : top ? high[length] : na,'Circles'
+  ,color = btm ? dncol : upcol
+  ,style=plot.style_circles
+  ,offset=-length)

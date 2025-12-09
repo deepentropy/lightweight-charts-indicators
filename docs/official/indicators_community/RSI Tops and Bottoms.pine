@@ -1,0 +1,79 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("RSI Tops and Bottoms", max_bars_back = 300)
+len = input(14, minval=1, title="RSI Length")
+src = input(close, "RSI Source", type = input.source)
+ob = input(defval = 70, title = "Upper Band")
+os = input(defval = 30, title = "lower Band")
+prd = input(defval = 10, title = "Max Number of Bars in OB/OS")
+mindis = input(defval = 5, title = "Min Number of Bars between Tops/Bottoms")
+maxdis = input(defval = 100, title = "Max Number of Bars between Topss/Bottoms")
+topcol = input(defval = color.red, title = "Line Colors", inline = "cols")
+bottomcol = input(defval = color.lime, title = "", inline = "cols")
+lwidth = input(defval = 2, title = "Line Width", minval = 1, maxval = 4)
+chbarcol = input(defval = true, title = "Change Bar Color")
+
+rsi = rsi(src, len)
+plot(rsi, "RSI", color=#8E1599)
+band1 = hline(ob, "Upper Band", color=#C0C0C0)
+band0 = hline(os, "Lower Band", color=#C0C0C0)
+fill(band1, band0, color=#9915FF, transp=90, title="Background")
+
+var bool belowos = false
+var int oscount = 0
+belowos := rsi[1] >= os and rsi < os ? true : rsi > os ? false : belowos
+oscount := belowos ? oscount + 1 : not belowos ? 0 : oscount
+var float lastlowestrsi = na
+var float lastlowestprice = na
+var int lastlowestbi = na
+var bool itsfineos = false
+bool maygoup = false
+if belowos[1] and not belowos and nz(oscount[1]) > 0
+    lastlowestrsi := 101
+    lastlowestbi := bar_index
+    itsfineos := true
+    for x = 1 to oscount[1]
+        if x > prd
+            itsfineos := false
+        if rsi[x] < lastlowestrsi
+            lastlowestrsi := rsi[x]
+            lastlowestbi := bar_index - x
+            lastlowestprice := low[x]
+
+if change(lastlowestrsi) != 0 and lastlowestrsi and lastlowestrsi[1] and lastlowestrsi > lastlowestrsi[1] and 
+   lastlowestprice < lastlowestprice[1] and bar_index - lastlowestbi[1] < maxdis and itsfineos and itsfineos[1] and bar_index - lastlowestbi[1] > mindis
+    line.new(x1 = bar_index, y1 = lastlowestrsi, x2 = lastlowestbi[1], y2 = lastlowestrsi[1], color = bottomcol, width = lwidth, style = line.style_arrow_left)
+    maygoup := true
+
+var bool aboveob = false
+var int obcount = 0
+aboveob := rsi[1] <= ob and rsi > ob ? true : rsi < ob ? false : aboveob
+obcount := aboveob ? obcount + 1 : not aboveob ? 0 : obcount
+var float lasthighestrsi = na
+var float lasthighestprice = na
+var int lasthighestbi = na
+var bool itsfineob = false
+bool maygodown = false
+if aboveob[1] and not aboveob and nz(obcount[1]) > 0
+    lasthighestrsi := -1
+    lasthighestbi := bar_index
+    itsfineob := true
+    for x = 1 to obcount[1]
+        if x > prd
+            itsfineob := false
+        if rsi[x] > lasthighestrsi
+            lasthighestrsi := rsi[x]
+            lasthighestbi := bar_index - x
+            lasthighestprice := high[x]
+           
+if change(lasthighestrsi) != 0 and lasthighestrsi and lasthighestrsi[1] and lasthighestrsi < lasthighestrsi[1] and 
+   lasthighestprice > lasthighestprice[1] and bar_index - lasthighestbi[1] < maxdis and itsfineob and itsfineob[1] and bar_index - lasthighestbi[1] > mindis
+    line.new(x1 = bar_index, y1 = lasthighestrsi, x2 = lasthighestbi[1], y2 = lasthighestrsi[1], color = topcol, width = lwidth, style = line.style_arrow_left)
+    maygodown := true
+
+barcolor(color = iff(chbarcol, iff(maygoup, color.blue, iff(maygodown, color.black, na)), na))
+
+alertcondition(maygoup, title='Divergence at Bottoms', message='Divergence at Bottom, Price may go UP')
+alertcondition(maygodown, title='Divergence at Tops', message='Divergence at Bottom, Price may go DOWN')

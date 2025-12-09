@@ -1,0 +1,10 @@
+//@version=6
+indicator(title="Choppiness Index", shorttitle="CHOP", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+length = input.int(14, minval=1)
+ci = 100 * math.log10(math.sum(ta.atr(1), length) / (ta.highest(length) - ta.lowest(length))) / math.log10(length)
+offset = input.int(0, "Offset",  minval = -500, maxval = 500)
+plot(ci, "CHOP", color=#2962FF, offset = offset)
+band1 = hline(61.8, "Upper Band", color=#787B86, linestyle=hline.style_dashed)
+hline(50, "Middle Band", color=color.new(#787B86, 50))
+band0 = hline(38.2, "Lower Band", color=#787B86, linestyle=hline.style_dashed)
+fill(band1, band0, color = color.rgb(33, 150, 243, 90), title = "Background")

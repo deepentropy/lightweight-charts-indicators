@@ -1,0 +1,374 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+//@version=5
+indicator("Hourly Trading System (Zeiierman)", overlay=true, max_lines_count=100, max_bars_back = 200, max_labels_count=100)
+
+// ~~ Tooltips {
+var t1 = "Sets the color for the 1-Hour Open line. Changing the color helps distinguish it from other lines on the chart. 
+ \n\nChoose between displaying the 1-Hour Open as a Line or a Zone. A zone shows an area around the open price, providing a visual representation of a price range.
+ \n\nSets the line style for the 1-Hour Open (Solid, Dotted, Dashed). Different styles can help visually differentiate the lines on your chart."
+var t2 = "Sets the color for the 4-Hour Open line. Adjusting the color can help you easily identify this line on your chart.
+ \n\nSets the line style for the 4-Hour Open (Solid, Dotted, Dashed). Different styles can help visually differentiate the lines on your chart."
+var t3 = "Specifies the width of the zone around the 1-Hour Open as a percentage. Increasing this value widens the zone, showing a larger range around the open price."
+var t4 = "Enables or disables the display of retest markers. When enabled, markers show where the price retested the 1-Hour Open line."
+var t5 = "Sets the number of retests to display. Increasing this value shows more retest markers on the chart."
+var t6 = "Enables or disables the volume filter for retests. When enabled, only retests with higher volume are displayed.
+ \n\nSets the length of the volume filter. Increasing this value smooths the volume filter, potentially reducing the number of retest markers."
+var t7 = "Enables or disables the 1-hour average line. This line shows the average price over the past hour."
+var t8 = "Enables or disables the display of hourly high and low labels. These labels mark the highest and lowest prices within each hour."
+var t9 = "Enables or disables the display of candlesticks on the chart. Candlesticks provide a detailed view of price action.
+ \n\nEnables or disables bar coloring based on price direction. Up bars are colored green and down bars are colored red."
+var t10 = "Sets the timeframe for higher timeframe candles. Changing this value adjusts the period over which higher timeframe candles are calculated."
+var t11 = "Sets the number of higher timeframe candles to display. Increasing this value shows more candles on the chart."
+var t12 = "Sets the location for higher timeframe candles. Adjusting this value moves the higher timeframe candles left or right on the chart."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Settings {
+H_col      = input.color(color.rgb(105, 255, 190), title="1-Hour Open", group="Levels", inline="1")
+H_line_box = input.string("Zone", title="", options=["Line", "Zone"], group="Levels", inline="1")
+H_style    = input.string("Solid", title="", options=["Solid", "Dotted", "Dashed"], group="Levels", inline="1")
+H_width    = input.int(1, "", 1, 4, group="Levels", inline="1", tooltip=t1)
+
+H4_col     = input.color(color.rgb(105, 255, 190), "4-Hour Open", group="Levels", inline="4")
+H4_style   = input.string("Dashed", title="", options=["Solid", "Dotted", "Dashed"], group="Levels", inline="4", tooltip = t2)
+H4_width   = input.int(1, "", 1, 4, group="Levels", inline="4")
+zoneDev    = input.float(1,"Zone width",minval=0,step=.1, group="Levels", inline="", tooltip = t3)/10000
+
+hour_test = input.bool(false,title="Show Retests", group="Retest", inline="", tooltip = t4)
+retests   = input.int(2, minval=1,maxval =100, title="Nbr of Retest", group="Retest", inline="", tooltip = t5)
+vol       = input.bool(false, title="Volume Filter", group="Retest", inline="Filter")
+volLen    = input.int(20, minval=1, title=" ", group="Retest", inline="Filter", tooltip = t6)
+re_up     = input.color(color.lime, title="",group="Retest", inline="Retest")
+re_dn     = input.color(color.red, title="",group="Retest", inline="Retest")
+
+average  = input.bool(true, title="1 hour average", group="Average", inline="ma", tooltip = t7)
+hourly_hl= input.bool(true,"Hourly High & Low Labels",group="Average", tooltip = t8)
+ma_up    = input.color(color.lime, title="",group="Average", inline="Average")
+ma_dn    = input.color(color.red, title="",group="Average", inline="Average")
+
+candle = input.bool(false, title="Candlesticks", group="BarColor", inline="bar")
+bar    = input.bool(false, title="BarColor", group="BarColor", inline="bar", tooltip = t9)
+c_up   = input.color(color.lime, title="",group="BarColor", inline="barcolor")
+c_dn   = input.color(color.red, title="",group="BarColor", inline="barcolor")
+
+tf       = input.timeframe("60","Timeframe", group="Higher Timeframe Candles", tooltip = t10)
+numb     = input.int(2,"Nbr of Candles",minval=0, maxval=20, group="Higher Timeframe Candles", tooltip = t11)
+dn_col   = input.color(color.new(color.red,10), title="Dn", inline="Candles", group="Higher Timeframe Candles")
+dn_wick  = input.color(color.new(color.red,0), title="Wick", inline="Candles", group="Higher Timeframe Candles")
+up_col   = input.color(color.new(color.lime,10), title="Up",inline="Candles", group="Higher Timeframe Candles")
+up_wick  = input.color(color.new(color.lime,0), title="Wick", inline="Candles", group="Higher Timeframe Candles")
+loc      = input.int(2,"Location", group="Location Settings", tooltip = t12)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Functions {
+Style(styleInput) =>
+    switch styleInput
+        "Solid" => line.style_solid
+        "Dotted" => line.style_dotted
+        "Dashed" => line.style_dashed
+
+Line(_time, _open, duration, color, style, width) =>
+    line.new(_time, _open, _time + duration, _open, xloc=xloc.bar_time, color=color, style=style, width=width)
+
+Line_Vert(start_time, color, style) =>
+    var line ver_line = na
+    ver_line := line.new(start_time, high, start_time, low, xloc=xloc.bar_time, color=color, extend=extend.both, style=style)
+    line.delete(ver_line[1])
+
+Label(end_time, y_, text_, color_, style_)=>
+    var label lab = na
+    lab := label.new(end_time, y_, xloc=xloc.bar_time, text=text_, textcolor = color.white, color=color_, style = style_)
+    label.delete(lab[1])
+
+Box(left,top,right,bot,width,col)=>box.new(left,top,right,bot,border_color=col,border_style=Style(H_style),border_width=width,bgcolor=color.new(col,75),xloc=xloc.bar_time)
+
+bars_per_hour() =>
+    var int bars_per_hour = na
+    if (timeframe.isintraday)
+        if (timeframe.multiplier == 1)
+            bars_per_hour := 60
+        else if (timeframe.multiplier == 5)
+            bars_per_hour := 12
+        else if (timeframe.multiplier == 15)
+            bars_per_hour := 4
+        else
+            bars_per_hour := na
+    else
+        bars_per_hour := na
+    bars_per_hour
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Line Style {
+H_StyleOption   = Style(H_style)
+H4_StyleOption  = Style(H4_style)  
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Arrays {
+var line deletedLine = na
+open_l        = array.new_line()
+start_points  = array.new_float()
+end_points    = array.new_float()
+retest_counts = array.new_int()
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Var {
+var line1 = line(na)
+var line2 = line(na)
+var box1  = box(na)
+var box2  = box(na)
+var count = 0
+var end   = int(na)
+var pos   = false
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Time {
+time_hour  = hour(time)
+time_4hour = (timeframe.isintraday and minute(time) == 0 and hour(time) % 4 == 0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Create 1 -Hour Open Line {
+var start_point = close
+var hourHigh = high
+var hourLow  = low
+var hourHighi = 0
+var hourLowi  = 0
+var hourHL = array.new<label>()
+
+if time_hour != time_hour[1]
+    start_point := open
+    if H_line_box=="Line"
+        line2 := Line(time, open, 3600000, H_col, H_StyleOption, H_width)
+    else
+        box2 := Box(time,open*(1+zoneDev),time+3600000,open*(1-zoneDev),H_width,H_col)
+    count := 0
+    end   := time + 3600000
+    pos   := true
+    //Line_Vert(end, color.white, line.style_dotted)
+    //Label(end, start_point[1],"1 Hour")
+
+    if hourly_hl
+        //Change the previous Labels
+        if hourHL.size()>0
+            for i=0 to hourHL.size()-1 by 2
+                hourHL.get(i+1).set_text("H["+str.tostring(i/2+2)+"]")
+                hourHL.get(i).set_text("L["+str.tostring(i/2+2)+"]")
+        //Save High & Low Labels
+        hourHL.unshift(label.new(hourHighi,hourHigh,"H[1]",xloc.bar_time,textcolor = color.white, color=color.new(color.green,0),style=label.style_label_down))
+        hourHL.unshift(label.new(hourLowi,hourLow,"L[1]",xloc.bar_time,textcolor = color.white, color=color.new(color.red,0), style=label.style_label_up))
+        //High & Low Reset
+        hourHigh    := high
+        hourLow     := low
+
+//Current High & Low Labels
+if hourly_hl
+    hourHigh := math.max(high,hourHigh)
+    hourLow  := math.min(low,hourLow)
+    if hourHigh!=hourHigh[1]
+        Label(time,hourHigh,"High",color.green,label.style_label_down)
+        hourHighi := time
+    if hourLow!=hourLow[1]
+        Label(time,hourLow,"Low",color.red,label.style_label_up)
+        hourLowi := time
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Create 4-Hour Open Line {
+if time_4hour
+    line1 := Line(time, open, 4 * 3600000, H4_col, H4_StyleOption, H4_width)
+    count := 0
+    end   := time + 4 * 3600000
+    pos   := true
+    //Line_Vert(end, color.red, line.style_dotted)
+    //Label(end, high, "4 Hour")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Number of bars per hour for the current timeframe {
+bars_hour = bars_per_hour()
+
+// Calculate how many bars are left until the next hour
+bars_left = 0
+if not na(bars_hour)
+    bars_passed = 0
+    if timeframe.isintraday
+        bars_passed := minute / timeframe.multiplier
+        bars_left := bars_hour - bars_passed
+
+t = ""
+if not na(bars_left)
+    t := str.tostring(math.round(bars_left))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Calculate session average {
+var float[] ma = array.new_float(1, na)
+var int[] lena = array.new_int(1, 0)
+time_avg() =>
+    if (time_hour != time_hour[1])
+        ma.set(0, close)
+        lena.set(0, 1)
+    else
+        ma.set(0, nz(ma.get(0)) + close)
+        lena.set(0, lena.get(0) + 1)
+    ma.get(0) / lena.get(0)
+ma_hour = average?time_avg():na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Direction {
+dir(start_)=>
+    var dir = 0
+    if (not na(start_))
+        dir := close >= start_ ? 1 : -1
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Color the bars based on Dir {
+col    = dir(start_point)==1?c_up:c_dn
+ma_col = dir(start_point)==1?ma_up:ma_dn
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+plot(ma_hour, color=time_hour==time_hour[2]?ma_col:na, linewidth=1, title="Hourly Average Price")
+plotcandle(candle?open:na,candle?high:na,candle?low:na,candle?close:na, color=candle?col:na,  bordercolor =candle?col:na, wickcolor=candle?col:na, title="Candlesticks")
+barcolor(bar?col:na, title="BarColor")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Table {
+var Table = table.new(position = position.top_right, columns = 2, rows = 4, border_color = color.white, frame_color = color.white, bgcolor = color.blue, border_width = 1)
+
+// Hourly, 4-hour, and Daily Percentage Changes
+var float hourly_change    = na
+var float four_hour_change = na
+var float daily_change     = na
+
+// Retrieve the previous 1-hour, 4-hour, and daily close prices
+float prev_hour_close  = request.security(syminfo.tickerid, "60", close[1], lookahead = barmerge.lookahead_on)
+float prev_4hour_close = request.security(syminfo.tickerid, "240", close[1], lookahead = barmerge.lookahead_on)
+float prev_daily_close = request.security(syminfo.tickerid, "D", close[1], lookahead = barmerge.lookahead_on)
+
+if not na(prev_hour_close)
+    hourly_change := (close - prev_hour_close) / prev_hour_close * 100
+
+if not na(prev_4hour_close)
+    four_hour_change := (close - prev_4hour_close) / prev_4hour_close * 100
+
+if not na(prev_daily_close)
+    daily_change := (close - prev_daily_close) / prev_daily_close * 100
+
+H1_color = hourly_change>0?color.lime:color.red
+H4_color = four_hour_change>0?color.lime:color.red
+D_color  = daily_change>0?color.lime:color.red
+
+// Table
+if barstate.islast
+    table.cell(table_id = Table, column = 0, row = 0, text = "1 hour closes in:", text_color = color.white)
+    table.cell(table_id = Table, column = 1, row = 0, text = t + " bars", bgcolor = color.blue, text_color = color.white)
+    table.cell(table_id = Table, column = 0, row = 1, text = "1H Δ%:", text_color = color.white)
+    table.cell(table_id = Table, column = 1, row = 1, text = str.tostring(hourly_change, format.percent), bgcolor = H1_color, text_color = color.white)
+    table.cell(table_id = Table, column = 0, row = 2, text = "4H Δ%:", text_color = color.white)
+    table.cell(table_id = Table, column = 1, row = 2, text = str.tostring(four_hour_change, format.percent), bgcolor = H4_color, text_color = color.white)
+    table.cell(table_id = Table, column = 0, row = 3, text = "Daily Δ%:", text_color = color.white)
+    table.cell(table_id = Table, column = 1, row = 3, text = str.tostring(daily_change, format.percent), bgcolor = D_color, text_color = color.white)
+
+if (timeframe.in_seconds(timeframe.period) >= 15 * 60)
+    var error_table = table.new(position=position.top_center, columns=1, rows=1, border_width=1, frame_width = 1, frame_color = color.maroon,border_color=color.red)
+    error_text = "Error: Timeframe is above 15 minutes. \n\n The system works in the 1 - 5 min Timeframe"
+    table.cell(error_table, 0, 0, error_text, text_size=size.large, bgcolor=color.red, text_color=color.white)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ HFT Candle {
+// ~~ HTF Error Message {
+tfs = str.tonumber(tf)
+if str.tostring(tf) == "1D"
+    tfs := 1440 
+error = str.tonumber(timeframe.period)>=tfs
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ UDT {
+type HTF
+    array<box> candle
+    array<line> wickH
+    array<line> wickL
+    array<float> hl  
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+b = bar_index
+var candle1   = HTF.new(array.new<box>(numb),array.new<line>(numb),array.new<line>(numb),array.new<float>(numb*2))
+[o,h,l,c]     = request.security(syminfo.tickerid,tf,[open,high,low,close],lookahead=barmerge.lookahead_on)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Code {
+if numb>0
+    if o!=o[1] //New candle declaration
+        candle1.candle.shift().delete()
+        candle1.wickH.shift().delete()
+        candle1.wickL.shift().delete()
+        candle1.hl.shift()
+        candle1.hl.shift()
+
+        candle1.candle.push(box.new(b+numb*4+loc,math.max(o,c),b+numb*4+loc+2,math.min(o,c),color(na),bgcolor=o>c?dn_col:up_col))
+        candle1.wickH.push(line.new(b+numb*4+loc+1,math.max(o,c),b+numb*4+loc+1,h,color=o>c?dn_col:up_col))
+        candle1.wickL.push(line.new(b+numb*4+loc+1,math.min(o,c),b+numb*4+loc+1,l,color=o>c?dn_col:up_col))
+        candle1.hl.push(h)
+        candle1.hl.push(l)
+    else // Relocate previous & current candles
+        d = loc
+        for [i,x] in candle1.candle
+            if i<numb-1
+                x.set_left(b+d*2)
+                x.set_right(b+d*2+2)
+                candle1.wickH.get(i).set_x1(b+d*2+1)
+                candle1.wickH.get(i).set_x2(b+d*2+1)
+                candle1.wickL.get(i).set_x1(b+d*2+1)
+                candle1.wickL.get(i).set_x2(b+d*2+1)
+            else
+                x.set_lefttop(b+d*2,math.max(o,c))
+                x.set_rightbottom(b+d*2+2,math.min(o,c))
+                x.set_bgcolor(o>c?dn_col:up_col)
+                candle1.wickH.get(i).set_xy1(b+d*2+1,math.max(o,c))
+                candle1.wickH.get(i).set_xy2(b+d*2+1,h)
+                candle1.wickH.get(i).set_color(o>c?dn_wick:up_wick)
+                candle1.wickL.get(i).set_xy1(b+d*2+1,math.min(o,c))
+                candle1.wickL.get(i).set_xy2(b+d*2+1,l)
+                candle1.wickL.get(i).set_color(o>c?dn_wick:up_wick)
+                candle1.hl.set(numb*2-2,h)
+                candle1.hl.set(numb*2-1,l)
+            d += 2
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Retest condition for 1-Hour Open Line {
+linePrice1          = line2.get_y1()
+var retest_count_1h = 0
+repos_1 = false
+reneg_1 = false
+
+if pos and count > 1 and time <= end and retest_count_1h < retests and 
+     (H4_style=="Line"?low[1] > linePrice1 and low <= linePrice1 and 
+     close >= linePrice1 : low[1] > box2.get_top() and low <= box2.get_top() 
+     and close >= box2.get_bottom()) 
+    repos_1 := true
+    pos := false
+    count := 0
+    retest_count_1h += 1
+if pos and count > 1 and time <= end and retest_count_1h < retests and
+     (H4_style=="Line"?high[1] < linePrice1 and high >= linePrice1 and
+     close <= linePrice1 : high[1] < box2.get_bottom() and high >= box2.get_bottom()
+     and close <= box2.get_top())
+    reneg_1 := true
+    pos := false
+    count := 0
+    retest_count_1h += 1
+
+count += 1
+if (count > 1)
+    pos := true
+
+if (hour(time) != hour(time[1]))
+    retest_count_1h := 0
+
+HourPosRetest = vol?hour_test and repos_1 and volume > ta.wma(volume, volLen):hour_test and repos_1
+HourNegRetest = vol?hour_test and reneg_1 and volume > ta.wma(volume, volLen):hour_test and reneg_1
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+plotshape(HourPosRetest ? low : na, color=HourPosRetest ? re_up : na, location=location.belowbar, style=shape.triangleup, size=size.tiny)
+plotshape(HourNegRetest ? high : na, color=HourNegRetest ? re_dn : na, location=location.abovebar, style=shape.triangledown, size=size.tiny)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

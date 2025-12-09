@@ -1,0 +1,134 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=6
+indicator('RSI Momentum Divergence Zones [ChartPrime]', "RSIM DivergenceZones [ChartPrime]", format = format.price, precision = 2, max_lines_count = 500)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+rsiLength        = input.int(14, 'RSI Length', group = 'Settings')
+enableDivCheck   = input.bool(true, title = 'Enable Divergence Detection', group = 'Divergence')
+showDivLevels    = input.bool(true, "Show Divergence Zones", group = 'Divergence')
+qtyDivLevels     = input.int(10, "Qty Divergence Zones", group = 'Divergence')
+
+divBearColor     = input.color(#ae4ce6, "Bearish Color", group = 'Divergence')
+divBullColor     = input.color(#33c570, "Bullish Color", group = 'Divergence')
+
+// === CONSTANTS ===
+divLookbackR     = 5
+divLookbackL     = 5
+minBarsInRange   = 5
+maxBarsInRange   = 50
+
+textCol          = color.white
+noneCol          = color.new(color.white, 100)
+
+// === TYPES ===
+type divLevel
+    line primaryLine
+    line bgLine
+
+// === ARRAYS ===
+var bearDivLines = array.new<divLevel>()
+var bullDivLines = array.new<divLevel>()
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+rsiSrc = ta.mom(close, 10)
+rsiVal = ta.rsi(rsiSrc, rsiLength)
+rsiRight = rsiVal[divLookbackR]
+
+// Helper: bars between pivots
+_inRange(pivotCond) =>
+    barCount = ta.barssince(pivotCond)
+    minBarsInRange <= barCount and barCount <= maxBarsInRange
+
+// === DIVERGENCE DETECTION ===
+detectDivergence(doCheck) =>
+    bullDiv = false
+    bearDiv = false
+    foundPL = false
+    foundPH = false
+
+    if doCheck
+        // Bullish: Price LL, RSI HL
+        foundPL := not na(ta.pivotlow(rsiVal, divLookbackL, divLookbackR))
+        rsiHL    = rsiRight > ta.valuewhen(foundPL, rsiRight, 1) and _inRange(foundPL[1])
+        priceLL  = low[divLookbackR] < ta.valuewhen(foundPL, low[divLookbackR], 1)
+        bullDiv := foundPL and rsiHL and priceLL
+
+        // Bearish: Price HH, RSI LH
+        foundPH := not na(ta.pivothigh(rsiVal, divLookbackL, divLookbackR))
+        rsiLH    = rsiRight < ta.valuewhen(foundPH, rsiRight, 1) and _inRange(foundPH[1])
+        priceHH  = high[divLookbackR] > ta.valuewhen(foundPH, high[divLookbackR], 1)
+        bearDiv := foundPH and rsiLH and priceHH
+
+    [foundPL, foundPH, bullDiv, bearDiv, high[divLookbackR], low[divLookbackR]]
+
+// === DIVERGENCE PLOTTING ===
+plotDivergenceLevels(arr, cond, isBull) =>
+    levelY = isBull ? low[divLookbackR] : high[divLookbackR]
+    if cond
+        l1 = line.new(bar_index - 5, levelY, bar_index, levelY, color = isBull ? divBullColor : divBearColor, force_overlay = true)
+        l2 = line.new(bar_index - 5, levelY, bar_index, levelY, color = color.new(isBull ? divBullColor : divBearColor, 70), width = 6, force_overlay = true)
+        arr.push(divLevel.new(l1, l2))
+
+    if arr.size() > qtyDivLevels
+        expired = arr.shift()
+        expired.primaryLine.delete()
+        expired.bgLine.delete()
+
+    if arr.size() > 0
+        for dl in arr
+            line1 = dl.primaryLine
+            line2 = dl.bgLine
+            if isBull ? high > line1.get_y1() : low < line1.get_y1()
+                line1.set_x2(bar_index+15)
+                line2.set_x2(bar_index+15)
+            else
+                line1.set_x2(bar_index)
+                line1.set_style(line.style_dashed)
+                line2.delete()    
+                arr.remove(arr.indexof(dl))
+    0
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙋𝘼𝙉𝙀 𝙋𝙇𝙊𝙏𝙎 (𝙍𝙎𝙄 𝘿𝙄𝙑𝙀𝙍𝙂𝙀𝙉𝘾𝙀)
+// --------------------------------------------------------------------------------------------------------------------{
+
+// === MAIN LOGIC ===
+[foundPL, foundPH, isBullDiv, isBearDiv, highLevel, lowLevel] = detectDivergence(enableDivCheck)
+
+// === RSI BAND BACKGROUND ===
+rsiLine = plot(rsiVal, title = 'RSI', color = color.from_gradient(rsiVal, 30, 70, divBullColor, divBearColor))
+p50 = plot(50, color = color.gray)
+fill(rsiLine, p50, 70, 30, divBearColor, na)
+fill(rsiLine, p50, 70, 30, na, divBullColor)
+
+// RSI PANE PLOTS
+plot(foundPL ? rsiRight : na, offset = -divLookbackR, title = 'Bullish RSI HL', color = isBullDiv ? divBullColor : noneCol, linewidth = 2)
+plotshape(isBullDiv ? rsiRight : na, offset = -divLookbackR, title = 'Bullish Label', style = shape.labelup, text = ' Bull ', color = divBullColor, textcolor = textCol, location = location.absolute)
+
+plot(foundPH ? rsiRight : na, offset = -divLookbackR, title = 'Bearish RSI LH', color = isBearDiv ? divBearColor : noneCol, linewidth = 2)
+plotshape(isBearDiv ? rsiRight : na, offset = -divLookbackR, title = 'Bearish Label', style = shape.labeldown, text = ' Bear ', color = divBearColor, textcolor = textCol, location = location.absolute)
+
+// CHART-OVERLAY PLOTS
+plot(foundPL ? lowLevel : na, offset = -divLookbackR, title = 'Bullish Price LL', color = isBullDiv ? divBullColor : noneCol, linewidth = 1, display = display.pane, force_overlay = true)
+plot(foundPL ? lowLevel : na, offset = -divLookbackR, title = 'Bullish Price LL BG', color = isBullDiv ? color.new(divBullColor, 70) : noneCol, linewidth = 6, display = display.pane, force_overlay = true)
+plotshape(isBullDiv ? low[divLookbackR] : na, offset = -divLookbackR, title = 'Bullish Price LL Label', style = shape.labelup, text = '▲\nBull', color = noneCol, textcolor = divBullColor, force_overlay = true, location = location.absolute)
+
+plot(foundPH ? highLevel : na, offset = -divLookbackR, title = 'Bearish Price HH', color = isBearDiv ? divBearColor : noneCol, linewidth = 1, display = display.pane, force_overlay = true)
+plot(foundPH ? highLevel : na, offset = -divLookbackR, title = 'Bearish Price HH BG', color = isBearDiv ? color.new(divBearColor, 70) : noneCol, linewidth = 6, display = display.pane, force_overlay = true)
+plotshape(isBearDiv ? highLevel : na, offset = -divLookbackR, title = 'Bearish Price HH Label', style = shape.labeldown, text = 'Bear\n▼', color = noneCol, textcolor = divBearColor, force_overlay = true, location = location.absolute)
+
+// Update zones if enabled
+if showDivLevels
+    plotDivergenceLevels(bearDivLines, isBearDiv, false)
+    plotDivergenceLevels(bullDivLines, isBullDiv, true)
+
+
+// --------------------------------------------------------------------------------------------------------------------}

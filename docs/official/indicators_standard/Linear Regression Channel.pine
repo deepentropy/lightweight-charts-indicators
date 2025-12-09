@@ -1,0 +1,121 @@
+//@version=6
+indicator("Linear Regression Channel", shorttitle="LinReg", overlay=true)
+
+lengthInput = input.int(100,      "Length", minval = 1, maxval = 5000)
+sourceInput = input.source(close, "Source")
+
+group1 = "Channel Settings"
+useUpperDevInput = input.bool(true, "Upper Deviation",             inline = "Upper Deviation", group = group1)
+upperMultInput   = input.float(2.0, "", active = useUpperDevInput, inline = "Upper Deviation", group = group1)
+useLowerDevInput = input.bool(true, "Lower Deviation",             inline = "Lower Deviation", group = group1)
+lowerMultInput   = input.float(2.0, "", active = useLowerDevInput, inline = "Lower Deviation", group = group1)
+
+group2 = "Display Settings"
+showPearsonInput = input.bool(true,  "Show Pearson's R",   group = group2)
+extendLeftInput  = input.bool(false, "Extend Lines Left",  group = group2)
+extendRightInput = input.bool(true,  "Extend Lines Right", group = group2)
+
+extendStyle = switch
+    extendLeftInput and extendRightInput => extend.both
+    extendLeftInput => extend.left
+    extendRightInput => extend.right
+    => extend.none
+
+group3 = "Color Settings"
+colorUpper = input.color(color.new(color.blue, 85), "", inline = group3, group = group3)
+colorLower = input.color(color.new(color.red,  85), "", inline = group3, group = group3)
+
+calcSlope(source, length) =>
+    max_bars_back(source, 5000)
+    if not barstate.islast or length <= 1
+        [float(na), float(na), float(na)]
+    else
+        sumX = 0.0
+        sumY = 0.0
+        sumXSqr = 0.0
+        sumXY = 0.0
+        for i = 0 to length - 1 by 1
+            val = source[i]
+            per = i + 1.0
+            sumX += per
+            sumY += val
+            sumXSqr += per * per
+            sumXY += val * per
+        slope = (length * sumXY - sumX * sumY) / (length * sumXSqr - sumX * sumX)
+        average = sumY / length
+        intercept = average - slope * sumX / length + slope
+        [slope, average, intercept]
+        
+[s, a, i] = calcSlope(sourceInput, lengthInput)
+startPrice = i + s * (lengthInput - 1)
+endPrice = i
+var line baseLine = na
+if na(baseLine) and not na(startPrice)
+    baseLine := line.new(bar_index - lengthInput + 1, startPrice, bar_index, endPrice, width=1, extend=extendStyle, color=color.new(colorLower, 0))
+else
+    line.set_xy1(baseLine, bar_index - lengthInput + 1, startPrice)
+    line.set_xy2(baseLine, bar_index, endPrice)
+    na
+    
+calcDev(source, length, slope, average, intercept) =>
+    upDev = 0.0
+    dnDev = 0.0
+    stdDevAcc = 0.0
+    dsxx = 0.0
+    dsyy = 0.0
+    dsxy = 0.0
+    periods = length - 1
+    daY = intercept + slope * periods / 2
+    val = intercept
+    for j = 0 to periods by 1
+        price = high[j] - val
+        if price > upDev
+            upDev := price
+        price := val - low[j]
+        if price > dnDev
+            dnDev := price
+        price := source[j]
+        dxt = price - average
+        dyt = val - daY
+        price -= val
+        stdDevAcc += price * price
+        dsxx += dxt * dxt
+        dsyy += dyt * dyt
+        dsxy += dxt * dyt
+        val += slope
+    stdDev = math.sqrt(stdDevAcc / (periods == 0 ? 1 : periods))
+    pearsonR = dsxx == 0 or dsyy == 0 ? 0 : dsxy / math.sqrt(dsxx * dsyy)
+    [stdDev, pearsonR, upDev, dnDev]
+    
+[stdDev, pearsonR, upDev, dnDev] = calcDev(sourceInput, lengthInput, s, a, i)
+upperStartPrice = startPrice + (useUpperDevInput ? upperMultInput * stdDev : upDev)
+upperEndPrice = endPrice + (useUpperDevInput ? upperMultInput * stdDev : upDev)
+var line upper = na
+lowerStartPrice = startPrice + (useLowerDevInput ? -lowerMultInput * stdDev : -dnDev)
+lowerEndPrice = endPrice + (useLowerDevInput ? -lowerMultInput * stdDev : -dnDev)
+var line lower = na
+if na(upper) and not na(upperStartPrice)
+    upper := line.new(bar_index - lengthInput + 1, upperStartPrice, bar_index, upperEndPrice, width=1, extend=extendStyle, color=color.new(colorUpper, 0))
+else
+    line.set_xy1(upper, bar_index - lengthInput + 1, upperStartPrice)
+    line.set_xy2(upper, bar_index, upperEndPrice)
+    na
+if na(lower) and not na(lowerStartPrice)
+    lower := line.new(bar_index - lengthInput + 1, lowerStartPrice, bar_index, lowerEndPrice, width=1, extend=extendStyle, color=color.new(colorUpper, 0))
+else
+    line.set_xy1(lower, bar_index - lengthInput + 1, lowerStartPrice)
+    line.set_xy2(lower, bar_index, lowerEndPrice)
+    na
+linefill.new(upper, baseLine, color = colorUpper)
+linefill.new(baseLine, lower, color = colorLower)
+
+float trend = math.sign(startPrice - endPrice)
+alertcondition(sourceInput > line.get_price(upper, bar_index) or sourceInput < line.get_price(lower, bar_index), title='Regression Channel Exited', message="The price movement has exited Regression Channel's bounds")
+alertcondition(trend[1] >= 0 and trend < 0, title='Switched to Uptrend',   message='The Regression Channel trend switched from Downtrend to Uptrend')
+alertcondition(trend[1] <= 0 and trend > 0, title='Switched to Downtrend', message='The Regression Channel trend switched from Uptrend to Downtrend')
+
+// Pearson's R
+var label r = na
+label.delete(r[1])
+if showPearsonInput and not na(pearsonR)
+    r := label.new(bar_index - lengthInput + 1, lowerStartPrice, str.tostring(pearsonR, "#.################"), color = color.new(color.white, 100), textcolor=color.new(colorUpper, 0), size=size.normal, style=label.style_label_up)

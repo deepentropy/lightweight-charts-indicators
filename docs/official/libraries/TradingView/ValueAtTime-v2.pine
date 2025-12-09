@@ -1,0 +1,507 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TradingView
+
+// @version=6
+library("ValueAtTime")
+
+// ValueAtTime Library
+// v2, 2025.07.24
+
+// This code's style is based on the recommendations from the Pine Script User Manual's Style guide:
+//    https://www.tradingview.com/pine-script-docs/writing/style-guide/
+
+
+
+//#region ———————————————————— Types and functions
+
+
+
+// @type                    A structure for storing successive timestamps and corresponding values from a dataset.
+// @field times             References an "int" array containing a UNIX timestamp for each value in the `values` array.
+// @field values            References a "float" array of values corresponding to the timestamps in the `times` array.
+export type Data
+    array<int>   times
+    array<float> values
+
+
+// @function                Calculates the maximum number of bars covered by a specified time offset.
+//                          The libary uses this helper function to limit the sizes of the arrays maintained using
+//                          `Data` objects.
+// @param timeOffset        (series int) The millisecond time offset (range) from which to calculate the maximum number
+//                          of bars.
+// @returns                 (int) The maximum number of bars included in the `timeOffset` range.
+calcLimit(series int timeOffset) =>
+    math.ceil(timeOffset / (timeframe.in_seconds() * 1000))
+
+
+// @function                Retrieves the multiplier from a period string and converts it to an "int" value.
+//                          The library uses this helper function in the timestamp calculations of the
+//                          `periodToTimestamp()` function.
+// @param period            (series string) A period string in the format `[multiplier]<unit>`. If the string does
+//                          not specify a period multiplier, the function returns 1.
+// @returns                 (int) The period multiplier, as an integer.
+getTFMult(series string period) =>
+    nz(int(str.tonumber(str.substring(period, 0, str.length(period) - 1))), 1)
+
+
+// @function                Counts the number of confirmed bars on which the function call executes, raising a runtime
+//                          error when the count exceeds the total number of bars. The library uses this helper function
+//                          in error-handling logic to prevent calls to functions that collect data from executing
+//                          repeatedly inside loops.
+// @returns                 (void) The function does not return a usable value.
+checkCall() =>
+    var int count = 0
+    count += 1
+    if count > bar_index + 1
+        runtime.error(
+             "This function call can execute up to once per bar. It cannot execute repeatedly inside a loop."
+         )
+
+
+// @function                Splits a string into an array of substrings using the comma (`,`) as the delimiter.
+//                          The function trims surrounding whitespace characters from each substring, and it
+//                          excludes empty substrings from the result.
+// @param str               (series string) The string to split into an array based on its commas.
+// @returns                 (array<string>) The reference of an array containing non-empty trimmed substrings from the
+//                          specified `str` value.
+export getArrayFromString(series string str) =>
+    array<string> result = str.split(str, ",")
+    for [index, item] in result
+        string trimmedItem = str.trim(item)
+        if trimmedItem == ""
+            result.remove(index)
+            continue
+        result.set(index, trimmedItem)
+    result
+
+
+// @function                Calculates a UNIX timestamp representing the point offset behind a reference time by the
+//                          amount of time within a specified period.
+// @param period            (series string) The period string, which determines the time offset of the returned
+//                          timestamp. The specified argument must contain a unit with an optional multiplier
+//                          (e.g., "1Y", "3M", "2W", "YTD"). Supported units are:
+//                           - "Y" for years.
+//                           - "M" for months.
+//                           - "W" for weeks.
+//                           - "D" for days.
+//                           - "YTD" (Year-to-date) for the span from the start of the `referenceTime` value's year in
+//                             the exchange time zone. An argument with this unit cannot contain a multiplier.
+// @param referenceTime     (series int) The millisecond UNIX timestamp from which to calculate the offset time.
+// @returns                 (int) A millisecond UNIX timestamp representing the offset point behind the specified
+//                          reference time.
+export periodToTimestamp(series string period, series int referenceTime) =>
+    int refYear  = year(referenceTime)
+    int refMonth = month(referenceTime)
+    int refDay   = dayofmonth(referenceTime)
+    int refHour  = hour(referenceTime)
+    int refMin   = minute(referenceTime)
+    int result = switch
+        period == "YTD"           => timestamp(refYear, 1, 1, 0, 0)
+        str.endswith(period, "Y") => timestamp(refYear - getTFMult(period), refMonth, refDay, refHour, refMin)
+        str.endswith(period, "M") =>
+            int totalMonths = refYear * 12 + refMonth - getTFMult(period)
+            int pastYear    = int(totalMonths / 12)
+            int pastMonth   = totalMonths % 12
+            if pastMonth == 0
+                pastYear  -= 1
+                pastMonth := 12
+            timestamp(pastYear, pastMonth, refDay, refHour, refMin)
+        str.endswith(period, "W") or (str.endswith(period, "D") and not str.contains(period, "YTD")) =>
+            referenceTime - timeframe.in_seconds(period) * 1000
+        =>
+            runtime.error(
+                 str.format(
+                     "Invalid period: {1}{0}{1}.
+                     The period must use one of the following units: {1}Y{1}, {1}M{1}, {1}W{1}, {1}D{1}, {1}YTD{1}.
+                     All options except for {1}YTD{1} can include a multiplier prefix (e.g., {1}3D{1}).",
+                     period, "'"
+                 )
+             ), na
+    result
+
+
+// @function                Collects `source` and `time` data successively across bars. The function maintains the
+//                          data with a `Data` object, which scripts can use in other exported functions/methods,
+//                          such as `valueAtTimeOffset()` and `valueAtPeriodOffset()`.
+//                          Each separate call to this function cannot execute more than once per script execution.
+// @param source            (series float) The source series to collect. The function stores each value from the series
+//                          with an associated timestamp representing its corresponding bar's opening time.
+// @param timeOffsetLimit   (simple int) Optional. A time offset (range) in milliseconds. If specified, the function
+//                          limits the collected data to the maximum number of bars covered by the range, with a minimum
+//                          of one bar. If the call includes a non-empty `timeframeLimit` value, the function limits the
+//                          data using the largest number of bars covered by the two ranges. The default is `na`.
+// @param timeframeLimit    (simple string) Optional. A valid timeframe string. If specified and not empty, the
+//                          function limits the collected data to the maximum number of bars covered by the timeframe,
+//                          with a minimum of one bar. If the call includes a non-na `timeOffsetLimit` value, the
+//                          function limits the data using the largest number of bars covered by the two ranges. The
+//                          default is `na`.
+// @returns                 (Data) The reference of a `Data` object that stores collected `source` values and
+//                          corresponding timestamps over the allowed time range.
+export collectData(series float source, simple int timeOffsetLimit = na, simple string timeframeLimit = na) =>
+    checkCall()
+    var int sizeLimit =
+         na(timeOffsetLimit) and na(timeframeLimit) ? na
+             : math.max(
+                 nz(calcLimit(timeOffsetLimit)),
+                 calcLimit(timeframe.in_seconds(timeframeLimit) * 1000)
+             )
+    var Data data = Data.new(array.new<int>(sizeLimit), array.new<float>(sizeLimit))
+    data.times.push(time)
+    data.values.push(source)
+    while data.times.size() > sizeLimit
+        data.times.shift()
+        data.values.shift()
+    data
+
+
+// @function                (Overload 1 of 2) Retrieves value and time data from a `Data` object's arrays at the index
+//                          of the earliest timestamp that is closest to a specified timestamp.
+//                          Callable as a method or a function.
+// @param data              (series Data) The reference of the `Data` object that stores the collected times and values.
+// @param timestamp         (series int) The millisecond UNIX timestamp to search. The function returns data for the
+//                          earliest saved timestamp that is closest to the value.
+// @returns                 ([float, int]) A tuple containing the following data from the `Data` object:
+//                           - The stored value corresponding to the identified timestamp ("float").
+//                           - The earliest saved timestamp that is closest to the specified timestamp ("int").
+export method valueAtTime(series Data data, series int timestamp) =>
+    int index = data.times.binary_search_leftmost(timestamp)
+    [data.values.get(index), data.times.get(index)]
+
+
+// @function                (Overload 2 of 2) Retrieves `source` and time information for the earliest bar whose
+//                          opening timestamp is closest to a specified timestamp.
+//                          Each separate call to this function cannot execute more than once per script execution.
+// @param source            (series float) The source series to analyze. The function stores each value from the series
+//                          with an associated timestamp representing its corresponding bar's opening time.
+// @param timestamp         (series int) The millisecond UNIX timestamp to search. The function returns data for the
+//                          earliest bar whose timestamp is closest to the value.
+// @param timeOffsetLimit   (simple int) Optional. A time offset (range) in milliseconds. If specified, the function
+//                          limits the collected data to the maximum number of bars covered by the range, with a minimum
+//                          of one bar. If the call includes a non-empty `timeframeLimit` value, the function limits the
+//                          data using the largest number of bars covered by the two ranges. The default is `na`.
+// @param timeframeLimit    (simple string) Optional. A valid timeframe string. If specified and not empty, the
+//                          function limits the collected data to the maximum number of bars covered by the timeframe,
+//                          with a minimum of one bar. If the call includes a non-na `timeOffsetLimit` value, the
+//                          function limits the data using the largest number of bars covered by the two ranges. The
+//                          default is `na`.
+// @returns                 ([float, int, float]) A tuple containing the following data:
+//                           - The `source` value corresponding to the identified timestamp ("float").
+//                           - The earliest bar's timestamp that is closest to the specified timestamp ("int").
+//                           - The current bar's `source` value ("float").
+export valueAtTime(
+     series float source, series int timestamp, simple int timeOffsetLimit = na, simple string timeframeLimit = na
+ ) =>
+    Data data = collectData(source, timeOffsetLimit, timeframeLimit)
+    [foundValue, foundTime] = data.valueAtTime(timestamp)
+    [foundValue, foundTime, source]
+
+
+// @function                (Overload 1 of 2) Retrieves value and time data from a `Data` object's arrays at the index
+//                          of the earliest saved timestamp that is closest to `timeOffset` milliseconds behind a
+//                          reference time.
+//                          Callable as a method or a function.
+// @param data              (series Data) The reference of the `Data` object that stores the collected times and values.
+// @param timeOffset        (series int) The millisecond offset behind the reference time. The function returns
+//                          data for the earliest saved timestamp that is closest to the calculated offset time.
+// @param referenceTime     (series int) Optional. The millisecond UNIX timestamp from which to calculate the offset
+//                          time. The default is `time`.
+// @returns                 ([float, int]) A tuple containing the following data from the `Data` object:
+//                           - The stored value corresponding to the identified timestamp ("float").
+//                           - The earliest saved timestamp that is closest to `timeOffset` milliseconds behind the
+//                             reference time ("int").
+export method valueAtTimeOffset(series Data data, series int timeOffset, series int referenceTime = time) =>
+    int index = data.times.binary_search_leftmost(referenceTime - timeOffset)
+    [data.values.get(index), data.times.get(index)]
+
+
+// @function                (Overload 2 of 2) Retrieves `source` and time information for the earliest bar whose
+//                          opening timestamp is closest to `timeOffset` milliseconds behind a reference time.
+//                          Each separate call to this function cannot execute more than once per script execution.
+// @param source            (series float) The source series to analyze. The function stores each value from the series
+//                          with an associated timestamp representing its corresponding bar's opening time.
+// @param timeOffset        (series int) The millisecond offset behind the reference time. The function returns
+//                          data for the earliest bar's timestamp that is closest to the calculated offset time.
+// @param referenceTime     (series int) Optional. The millisecond UNIX timestamp from which to calculate the offset
+//                          time. The default is `time`.
+// @param timeOffsetLimit   (simple int) Optional. A time offset (range) in milliseconds. If specified, the function
+//                          limits the collected data to the maximum number of bars covered by the range, with a minimum
+//                          of one bar. If the call includes a non-empty `timeframeLimit` value, the function limits the
+//                          data using the largest number of bars covered by the two ranges. The default is `na`.
+// @param timeframeLimit    (simple string) Optional. A valid timeframe string. If specified and not empty, the
+//                          function limits the collected data to the maximum number of bars covered by the timeframe,
+//                          with a minimum of one bar. If the call includes a non-na `timeOffsetLimit` value, the
+//                          function limits the data using the largest number of bars covered by the two ranges. The
+//                          default is `na`.
+// @returns                 ([float, int, float]) A tuple containing the following data:
+//                           - The `source` value corresponding to the identified timestamp ("float").
+//                           - The earliest bar's timestamp that is closest to `timeOffset` milliseconds behind the
+//                             reference time ("int").
+//                           - The current bar's `source` value ("float").
+export valueAtTimeOffset(
+     series float source, series int timeOffset, series int referenceTime = time, simple int timeOffsetLimit = na,
+     simple string timeframeLimit = na
+ ) =>
+    Data data = collectData(source, timeOffsetLimit, timeframeLimit)
+    [value, timestamp] = data.valueAtTimeOffset(timeOffset, referenceTime)
+    [value, timestamp, source]
+
+
+// @function                (Overload 1 of 2) Retrieves value and time data from a `Data` object's arrays at the index
+//                          of the earliest timestamp that is closest to a calculated offset behind a reference time.
+//                          The offset represents the amount of time covered by a specified period.
+//                          Callable as a method or a function.
+// @param data              (series Data) The reference of the `Data` object that stores the collected times and values.
+// @param period            (series string) The period string, which determines the calculated time offset. The
+//                          specified argument must contain a unit with an optional multiplier
+//                          (e.g., "1Y", "3M", "2W", "YTD"). Supported units are:
+//                           - "Y" for years.
+//                           - "M" for months.
+//                           - "W" for weeks.
+//                           - "D" for days.
+//                           - "YTD" (Year-to-date) for the span from the start of the current bar's year in
+//                             the exchange time zone. An argument with this unit cannot contain a multiplier.
+// @param referenceTime     (series int) Optional. The millisecond UNIX timestamp from which to calculate the offset
+//                          time. The default is `time`.
+// @returns                 ([float, int]) A tuple containing the following data from the `Data` object:
+//                           - The stored value corresponding to the identified timestamp ("float").
+//                           - The earliest saved timestamp that is closest to the calculated offset behind the
+//                             reference time ("int").
+export method valueAtPeriodOffset(series Data data, series string period, series int referenceTime = time) =>
+    int   targetTime = periodToTimestamp(period, referenceTime)
+    int   index      = data.times.binary_search_leftmost(targetTime)
+    int   foundTime  = data.times.get(index)
+    float foundValue = data.values.get(index)
+    [foundValue, foundTime]
+
+
+// @function                (Overload 2 of 2) Retrieves `source` and time information for the earliest bar whose
+//                          opening timestamp is closest to a calculated offset behind a reference time.
+//                          The offset represents the amount of time covered by a specified period.
+//                          Each separate call to this function cannot execute more than once per script execution.
+// @param source            (series float) The source series to analyze. The function stores each value from the series
+//                          with an associated timestamp representing its corresponding bar's opening time.
+// @param period            (series string) The period string, which determines the calculated time offset. The
+//                          specified argument must contain a unit with an optional multiplier
+//                          (e.g., "1Y", "3M", "2W", "YTD"). Supported units are:
+//                           - "Y" for years.
+//                           - "M" for months.
+//                           - "W" for weeks.
+//                           - "D" for days.
+//                           - "YTD" (Year-to-date) for the span from the start of the current bar's year in
+//                             the exchange time zone. An argument with this unit cannot contain a multiplier.
+// @param referenceTime     (series int) Optional. The millisecond UNIX timestamp from which to calculate the offset
+//                          time. The default is `time`.
+// @param timeOffsetLimit   (simple int) Optional. A time offset (range) in milliseconds. If specified, the function
+//                          limits the collected data to the maximum number of bars covered by the range, with a minimum
+//                          of one bar. If the call includes a non-empty `timeframeLimit` value, the function limits the
+//                          data using the largest number of bars covered by the two ranges. The default is `na`.
+// @param timeframeLimit    (simple string) Optional. A valid timeframe string. If specified and not empty, the
+//                          function limits the collected data to the maximum number of bars covered by the timeframe,
+//                          with a minimum of one bar. If the call includes a non-na `timeOffsetLimit` value, the
+//                          function limits the data using the largest number of bars covered by the two ranges. The
+//                          default is `na`.
+// @returns                 ([float, int, float]) A tuple containing the following data:
+//                           - The `source` value corresponding to the identified timestamp ("float").
+//                           - The earliest bar's timestamp that is closest to the calculated offset behind the
+//                             reference time ("int").
+//                           - The current bar's `source` value ("float").
+export valueAtPeriodOffset(
+     series float source, series string period, series int referenceTime = time, simple int timeOffsetLimit = na,
+     simple string timeframeLimit = na
+ ) =>
+    Data data = collectData(source, timeOffsetLimit, timeframeLimit)
+    [foundValue, foundTime] = data.valueAtPeriodOffset(period, referenceTime)
+    [foundValue, foundTime, source]
+
+
+// @function                Retrieves `source` and time information for each bar whose opening timestamp is the earliest
+//                          one that is closest to one of the UNIX timestamps specified in the `timestamps` array.
+//                          Each separate call to this function cannot execute more than once per script execution.
+// @param timestamps        (array<int>) An array of "int" values representing UNIX timestamps. The function retrieves
+//                          `source` and time data for each element in this array.
+// @param source            (series float) The source series to analyze. The function stores each value from the series
+//                          with an associated timestamp representing its corresponding bar's opening time.
+// @param timeOffsetLimit   (simple int) Optional. A time offset (range) in milliseconds. If specified, the function
+//                          limits the collected data to the maximum number of bars covered by the range, with a minimum
+//                          of one bar. If the call includes a non-empty `timeframeLimit` value, the function limits the
+//                          data using the largest number of bars covered by the two ranges. The default is `na`.
+// @param timeframeLimit    (simple string) Optional. A valid timeframe string. If specified and not empty, the
+//                          function limits the collected data to the maximum number of bars covered by the timeframe,
+//                          with a minimum of one bar. If the call includes a non-na `timeOffsetLimit` value, the
+//                          function limits the data using the largest number of bars covered by the two ranges. The
+//                          default is `na`.
+// @returns                 ([array<float>, array<int>, float, string]) A tuple of the following data:
+//                           - An array containing a `source` value for each identified timestamp (array<float>).
+//                           - An array containing an identified timestamp for each item in the `timestamps` array
+//                             (array<int>).
+//                           - The current bar's `source` value ("float").
+//                           - The symbol's description from `syminfo.description` ("string").
+export getDataAtTimes(
+     array<int> timestamps, series float source, simple int timeOffsetLimit = na, simple string timeframeLimit = na
+ ) =>
+    Data data = collectData(source, timeOffsetLimit, timeframeLimit)
+    array<float> values = array.new<float>()
+    array<int>   times  = array.new<int>()
+    for eachTime in timestamps
+        [foundValue, foundTime] = valueAtTime(data, eachTime)
+        values.push(foundValue)
+        times.push(foundTime)
+    [values, times, source, syminfo.description]
+
+
+// @function                Retrieves `source` and time information for each bar whose opening timestamp is the earliest
+//                          one that is closest to one of the time offsets specified in the `timeOffsets` array.
+//                          Each offset in the array represents the absolute number of milliseconds behind a reference
+//                          time.
+//                          Each separate call to this function cannot execute more than once per script execution.
+// @param timeOffsets       (array<int>) An array of "int" values representing the millisecond time offsets used in the
+//                          search. The function retrieves `source` and time data for each element in this array. For
+//                          example, the array `[86400000, 604800000]` specifies that the function returns data for the
+//                          timestamps closest to one day and one week behind the reference time.
+// @param source            (series float) The source series to analyze. The function stores each value from the series
+//                          with an associated timestamp representing its corresponding bar's opening time.
+// @param referenceTime     (series int) Optional. The millisecond UNIX timestamp from which to calculate the offset
+//                          time. The default is `time`.
+// @param timeOffsetLimit   (simple int) Optional. A time offset (range) in milliseconds. If specified, the function
+//                          limits the collected data to the maximum number of bars covered by the range, with a minimum
+//                          of one bar. If the call includes a non-empty `timeframeLimit` value, the function limits the
+//                          data using the largest number of bars covered by the two ranges. The default is `na`.
+// @param timeframeLimit    (simple string) Optional. A valid timeframe string. If specified and not empty, the
+//                          function limits the collected data to the maximum number of bars covered by the timeframe,
+//                          with a minimum of one bar. If the call includes a non-na `timeOffsetLimit` value, the
+//                          function limits the data using the largest number of bars covered by the two ranges. The
+//                          default is `na`.
+// @returns                 ([array<float>, array<int>, float, string]) A tuple of the following data:
+//                           - An array containing a `source` value for each identified timestamp (array<float>).
+//                           - An array containing an identified timestamp for each offset specified in the
+//                             `timeOffsets` array (array<int>).
+//                           - The current bar's `source` value ("float").
+//                           - The symbol's description from `syminfo.description` ("string").
+export getDataAtTimeOffsets(
+     array<int> timeOffsets, series float source, series int referenceTime = time, simple int timeOffsetLimit = na,
+     simple string timeframeLimit = na
+ ) =>
+    Data data = collectData(source, timeOffsetLimit, timeframeLimit)
+    array<float> values = array.new<float>()
+    array<int>   times  = array.new<int>()
+    for timeOffset in timeOffsets
+        [foundValue, foundTime] = valueAtTimeOffset(data, timeOffset, referenceTime)
+        values.push(foundValue)
+        times.push(foundTime)
+    [values, times, source, syminfo.description]
+
+
+// @function                Retrieves `source` and time information for each bar whose opening timestamp is the earliest
+//                          one that is closest to a calculated offset behind a reference time. Each calculated offset
+//                          represents the amount of time covered by one of the periods specified in the `periods` array.
+//                          Each separate call to this function cannot execute more than once per script execution.
+// @param periods           (array<string>) An array of period strings, which determine the time offsets used in
+//                          the search. The function retrieves `source` and time data for each element in this array.
+//                          For example, the array `["1D", "1W", "1M"]` specifies that the function returns
+//                          data for the timestamps closest to one day, week, and month behind the current bar's
+//                          opening time. Each string in the array must contain a unit with an optional multiplier.
+//                          Supported units are:
+//                           - "Y" for years.
+//                           - "M" for months.
+//                           - "W" for weeks.
+//                           - "D" for days.
+//                           - "YTD" (Year-to-date) for the span from the start of the current bar's year in
+//                             the exchange time zone. An argument with this unit cannot contain a multiplier.
+// @param source            (series float) The source series to analyze. The function stores each value from the series
+//                          with an associated timestamp representing its corresponding bar's opening time.
+// @param referenceTime     (series int) Optional. The millisecond UNIX timestamp from which to calculate the offset
+//                          time. The default is `time`.
+// @param timeOffsetLimit   (simple int) Optional. A time offset (range) in milliseconds. If specified, the function
+//                          limits the collected data to the maximum number of bars covered by the range, with a minimum
+//                          of one bar. If the call includes a non-empty `timeframeLimit` value, the function limits the
+//                          data using the largest number of bars covered by the two ranges. The default is `na`.
+// @param timeframeLimit    (simple string) Optional. A valid timeframe string. If specified and not empty, the
+//                          function limits the collected data to the maximum number of bars covered by the timeframe,
+//                          with a minimum of one bar. If the call includes a non-na `timeOffsetLimit` value, the
+//                          function limits the data using the largest number of bars covered by the two ranges. The
+//                          default is `na`.
+// @returns                 ([array<float>, array<int>, float, string]) A tuple of the following data:
+//                           - An array containing a `source` value for each identified timestamp (array<float>).
+//                           - An array containing an identified timestamp for each period specified in the
+//                             `periods` array (array<int>).
+//                           - The current bar's `source` value ("float").
+//                           - The symbol's description from `syminfo.description` ("string").
+export getDataAtPeriodOffsets(
+     array<string> periods, series float source, series int referenceTime, simple int timeOffsetLimit = na,
+     simple string timeframeLimit = na
+ ) =>
+    Data data = collectData(source, timeOffsetLimit, timeframeLimit)
+    array<float> values = array.new<float>()
+    array<int>   times  = array.new<int>()
+    for period in periods
+        [foundValue, foundTime] = valueAtPeriodOffset(data, period, referenceTime)
+        values.push(foundValue)
+        times.push(foundTime)
+    [values, times, source, syminfo.description]
+//#endregion
+
+
+
+//#region ———————————————————— Example code
+
+
+// @variable A user-specified symbol for which to calculate periodic returns.
+string symbolInput = input.symbol("", "Symbol")
+// @variable A comma-separated "string" list of valid periods.
+string tfListInput = input.text_area("1W, 1M, 3M, 6M, 12M, YTD, 5Y", "Period list")
+
+// @variable An array of period strings generated by splitting the `tfListInput` based on its commas.
+var array<string> periods = getArrayFromString(tfListInput)
+// @variable The number of periods in the `periods` array.
+var int numPeriods = periods.size()
+
+// Retrieve an array of daily `close` values at different period offsets, an array of corresponding opening timestamps,
+// the current daily `close`, and the symbol's description.
+[values, anchors, currClose, description] = request.security(
+     symbolInput == "" ? syminfo.tickerid : ticker.inherit(syminfo.tickerid, symbolInput), "1D",
+     getDataAtPeriodOffsets(periods, close, last_bar_time), lookahead = barmerge.lookahead_on
+ )
+
+// Logic to display period returns in a table on the last bar.
+if barstate.islast
+    // @variable A `table` object that displays the latest change percentages for each listed period.
+    var table changesTable = table.new(position.middle_center, numPeriods + 1, 2, border_width = 3)
+    // Calculate cell dimensions based on the number of periods.
+    float cellWidth  = 100 / (numPeriods + 1)
+    float cellHeight = 25.0
+    // Display the symbol's description in the first cell of the second row.
+    changesTable.cell(
+         0, 1, description,  bgcolor = color.new(color.gray, 80), text_color = chart.fg_color, width = cellWidth,
+         height = cellHeight
+     )
+    // Populate the first row with the user-specified periods.
+    for [index, period] in periods
+        changesTable.cell(
+             index + 1, 0, period, bgcolor = color.new(color.gray, 80), text_color = chart.fg_color,
+             width = cellWidth, height = cellHeight
+         )
+    // Loop to calculate and display the percentage change for each period.
+    for [index, value] in values
+        float changePercent = (currClose - value) / value * 100
+        // @variable The base color of the table's cells. Has a green or red hue, depending on the `changePercent`.
+        color cellColorBase = changePercent >= 0 ? #089981 : #F23745
+        // @variable A gradient color that applies varying transparency to the `cellColorBase`.
+        color cellColor = color.from_gradient(
+             changePercent, 0, 10, color.new(cellColorBase, 90), color.new(cellColorBase, 70)
+         )
+        // @variable A formatted "string" expressing the `changePercent` value with the `format.percent` format.
+        string cellText = str.tostring(changePercent, format.percent)
+        // @variable A formatted "string" representing the past sample's date in the exchange time zone.
+        string cellTooltip = str.format_time(anchors.get(index), "'Since' dd MMM yyyy")
+        // Reset the cell components if the `changePercent` is `na`.
+        if na(changePercent)
+            cellColorBase := chart.fg_color
+            cellColor     := color.new(color.gray, 90)
+            cellText      := "No data"
+            cellTooltip   := na
+        // Populate the table cell with the calculated values.
+        changesTable.cell(
+             index + 1, 1, cellText, tooltip = cellTooltip, bgcolor = cellColor, text_color = cellColorBase,
+             width = cellWidth, height = cellHeight
+         )
+//#endregion

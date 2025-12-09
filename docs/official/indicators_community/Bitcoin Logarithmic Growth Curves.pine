@@ -1,0 +1,111 @@
+//@version=4
+//
+// An indicator by @Quantadelic aka Pinescript Pleb aka Stealer of Alpha & Destroyer of Discords
+//
+// "I drink your milkshake! I drink it up."
+//
+// No rights reserved, copy, paste, do what you want.
+//
+
+study(title="Bitcoin Logarithmic Growth Curves", shorttitle="Bitcoin Log Growth Curves", overlay=true)
+
+// INPUTS
+DarkOrLight =   input("Dark", title="Dark mode or Light mode?", options=["Dark", "Light"])
+ShowFibs =      input("Y", title="Show Fibonacci Levels?", options=["Y","N"])
+ShowExtensions= input("Y", title="Show Curve Projections?", options=["Y","N"])
+HighIntercept = input(1.06930947, title="Top Curve Intercept", step=0.001)
+HighSlope =     input(0.00076, title="Top Curve Slope", step=0.00001)
+LowIntercept =  input(-3.0269716, title="Bottom Curve Intercept", step=0.001)
+LowSlope =      input(0.001329, title="Bottom Curve Slope", step=0.00001)
+
+// TIME CALCS
+TimeIndex =     time < 1279670400000 ? 3.0 : (time - 1279670400000) / 86400000
+Weight =        (log10(TimeIndex + 10) * TimeIndex * TimeIndex - TimeIndex) / 30000
+TimeDelta =     time - time[1]
+
+// TOP OF CHANNEL INTERCEPT & SLOPE CALCS
+HighSlopeCum =  HighSlope * TimeIndex
+HighLogDev =    TimeIndex > 2 ? log(Weight) + HighIntercept + HighSlopeCum : na
+
+// BOTTOM OF CHANNEL INTERCEPT & SLOPE CALCS
+LowSlopeCum =   LowSlope * TimeIndex
+LowLogDev =     TimeIndex > 2 ? log(Weight) + LowIntercept + LowSlopeCum : na
+
+// TOTAL CHANNEL LOG RANGE
+LogRange =      HighLogDev - LowLogDev
+
+// FIBONACCI LEVELS
+Fib9098Calc =   (LogRange * 0.9098) + LowLogDev
+Fib8541Calc =   (LogRange * 0.8541) + LowLogDev
+Fib7639Calc =   (LogRange * 0.7639) + LowLogDev
+Fib618Calc =    (LogRange * 0.618) + LowLogDev
+MidCalc =       (LogRange * 0.5) + LowLogDev
+Fib382Calc =    (LogRange * 0.382) + LowLogDev
+Fib2361Calc =   (LogRange * 0.2361) + LowLogDev
+Fib1459Calc =   (LogRange * 0.1459) + LowLogDev
+Fib0902Calc =   (LogRange * 0.0902) + LowLogDev
+
+// SCALE LOG VARIABLES TO LINEAR
+HighDev =       pow(2.718281828459, HighLogDev)
+Fib9098Dev =    ShowFibs == "Y" ? pow(2.718281828459, Fib9098Calc) : na
+Fib8541Dev =    ShowFibs == "Y" ? pow(2.718281828459, Fib8541Calc) : na
+Fib7639Dev =    ShowFibs == "Y" ? pow(2.718281828459, Fib7639Calc) : na
+Fib618Dev =     ShowFibs == "Y" ? pow(2.718281828459, Fib618Calc) : na
+MidDev =        pow(2.718281828459, MidCalc)
+Fib382Dev =     ShowFibs == "Y" ? pow(2.718281828459, Fib382Calc) : na
+Fib2361Dev =    ShowFibs == "Y" ? pow(2.718281828459, Fib2361Calc) : na
+Fib1459Dev =    ShowFibs == "Y" ? pow(2.718281828459, Fib1459Calc) : na
+Fib0902Dev =    ShowFibs == "Y" ? pow(2.718281828459, Fib0902Calc) : na
+LowDev =        pow(2.718281828459, LowLogDev)
+
+// COLOR SCHEME
+ColorScheme =   DarkOrLight == "Dark" ? color(color.white) : color(color.black)
+
+// PLOTS
+plot(HighDev, color=ColorScheme, transp=0, title="100% - Top of Channel")
+plot(Fib9098Dev, color=ColorScheme, transp=50, title="90.98% - Fibonacci Level")
+plot(Fib8541Dev, color=ColorScheme, transp=50, title="85.41% - Fibonacci Level")
+plot(Fib7639Dev, color=ColorScheme, transp=50, title="76.39% - Fibonacci Level")
+plot(Fib618Dev, color=ColorScheme, transp=50, title="61.80% - Fibonacci Level")
+plot(MidDev, color=ColorScheme, transp=0, title="50% - Middle of Channel")
+plot(Fib382Dev, color=ColorScheme, transp=50, title="38.20% - Fibonacci Level")
+plot(Fib2361Dev, color=ColorScheme, transp=50, title="23.61% - Fibonacci Level")
+plot(Fib1459Dev, color=ColorScheme, transp=50, title="14.59% - Fibonacci Level")
+plot(Fib0902Dev, color=ColorScheme, transp=50, title="9.02% - Fibonacci Level")
+plot(LowDev, color=ColorScheme, transp=0, title="0% - Bottom of Channel")
+
+
+
+//////////////////////////////////////////////////////////
+//                                                      //
+// CURVE EXTENSION DRAWING FUNCTION & HELPER VARIABLES  //
+//                                                      //
+//////////////////////////////////////////////////////////
+
+// CURVE EXTENSION FUNCTION
+ExtenZe(_i, _slope, _intercept) =>
+    TI = ((time + TimeDelta *_i) -1279670400000) / 86400000
+    W = (log10(TI + 10) * TI * TI - TI) / 30000
+    HSC = _slope * TI
+    HLD = log(W) + _intercept + HSC
+    HD = pow(2.718281828459, HLD)
+    HD
+
+// VARIABLES FOR ADJUSTING LENGTH OF CURVE EXTENSIONS RELATIVE TO CHART TIME-FRAME
+ForLoopStep = timeframe.ismonthly == 1 ? ceil( 12 / timeframe.multiplier) : 
+              timeframe.isweekly == 1 ? ceil(26 / timeframe.multiplier) : 
+              timeframe.isdaily == 1 ? ceil(91 / timeframe.multiplier) : 
+              (timeframe.isminutes == 1) and (timeframe.multiplier > 59) ? ceil(10080 / timeframe.multiplier) : na
+ForLoopMax =    na(ForLoopStep) ? na : ForLoopStep * 13
+
+// MID CURVE SLOPE & INTERCEPT
+MidSlope =      (HighSlope + LowSlope) * 0.5
+MidIntercept =  (HighIntercept + LowIntercept) * 0.5
+
+// CHECK IF LAST BAR & "Show Curve Projections" IS CHECKED, THEN DRAW CURVE EXTENZES
+if barstate.islast and ShowExtensions == "Y"
+    for i = 0 to ForLoopMax-1 by ForLoopStep
+        line.new(time + TimeDelta * i, ExtenZe(i, HighSlope, HighIntercept), time + TimeDelta * (i + ForLoopStep), ExtenZe(i + ForLoopStep, HighSlope, HighIntercept), xloc=xloc.bar_time, color=ColorScheme)
+        line.new(time + TimeDelta * i, ExtenZe(i, LowSlope, LowIntercept), time + TimeDelta * (i + ForLoopStep), ExtenZe(i + ForLoopStep, LowSlope, LowIntercept), xloc=xloc.bar_time, color=ColorScheme)
+        line.new(time + TimeDelta * i, ExtenZe(i, MidSlope, MidIntercept), time + TimeDelta * (i + ForLoopStep), ExtenZe(i + ForLoopStep, MidSlope, MidIntercept), xloc=xloc.bar_time, color=ColorScheme)
+

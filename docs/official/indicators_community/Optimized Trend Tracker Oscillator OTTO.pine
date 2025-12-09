@@ -1,0 +1,169 @@
+//@version=5
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © KivancOzbilgic
+
+//OTT created by: @Anil_Ozeksi
+//OTTO developer: Kamil HAsan ALPAY
+//author: @kivancozbilgic
+
+indicator('Optimized Trend Tracker Oscillator', 'OTTO', overlay=false)
+length = input.int(2, 'OTT Period', minval=1)
+percent = input.float(0.6, 'OTT Optimization Coeff', step=0.1, minval=0)
+flength = input.int(10, 'FAST VIDYA Length', minval=1)
+slength = input.int(25, 'SLOW VIDYA Length', minval=1)
+coco = input.int(100000, 'Correcting Constant', minval=1)
+
+src1 = input(close, title='Source')
+showsignalsc = input(title='OTTO Crossing Signals?', defval=true)
+highlighting = input(title='Highlighter On/Off ?', defval=true)
+mav = input.string(title='Moving Average Type', defval='VAR', options=['SMA', 'EMA', 'WMA', 'DEMA', 'TMA', 'VAR', 'WWMA', 'ZLEMA', 'TSF', 'HULL'])
+
+
+Var_Func1(src1, length) =>
+    valpha1 = 2 / (length + 1)
+    vud11 = src1 > src1[1] ? src1 - src1[1] : 0
+    vdd11 = src1 < src1[1] ? src1[1] - src1 : 0
+    vUD1 = math.sum(vud11, 9)
+    vDD1 = math.sum(vdd11, 9)
+    vCMO1 = nz((vUD1 - vDD1) / (vUD1 + vDD1))
+    VAR1 = 0.0
+    VAR1 := nz(valpha1 * math.abs(vCMO1) * src1) + (1 - valpha1 * math.abs(vCMO1)) * nz(VAR1[1])
+    VAR1
+
+VAR1 = Var_Func1(src1, length)
+
+
+mov1 = Var_Func1(src1, slength / 2)
+mov2 = Var_Func1(src1, slength)
+mov3 = Var_Func1(src1, slength * flength)
+
+src = mov1 / (mov2 - mov3 + coco)
+
+
+
+
+
+
+Var_Func(src, length) =>
+    valpha = 2 / (length + 1)
+    vud1 = src > src[1] ? src - src[1] : 0
+    vdd1 = src < src[1] ? src[1] - src : 0
+    vUD = math.sum(vud1, 9)
+    vDD = math.sum(vdd1, 9)
+    vCMO = nz((vUD - vDD) / (vUD + vDD))
+    VAR = 0.0
+    VAR := nz(valpha * math.abs(vCMO) * src) + (1 - valpha * math.abs(vCMO)) * nz(VAR[1])
+    VAR
+
+VAR = Var_Func(src, length)
+
+
+DEMA = 2 * ta.ema(src, length) - ta.ema(ta.ema(src, length), length)
+Wwma_Func(src, length) =>
+    wwalpha = 1 / length
+    WWMA = 0.0
+    WWMA := wwalpha * src + (1 - wwalpha) * nz(WWMA[1])
+    WWMA
+WWMA = Wwma_Func(src, length)
+Zlema_Func(src, length) =>
+    zxLag = length / 2 == math.round(length / 2) ? length / 2 : (length - 1) / 2
+    zxEMAData = src + src - src[zxLag]
+    ZLEMA = ta.ema(zxEMAData, length)
+    ZLEMA
+ZLEMA = Zlema_Func(src, length)
+Tsf_Func(src, length) =>
+    lrc = ta.linreg(src, length, 0)
+    lrc1 = ta.linreg(src, length, 1)
+    lrs = lrc - lrc1
+    TSF = ta.linreg(src, length, 0) + lrs
+    TSF
+TSF = Tsf_Func(src, length)
+HMA = ta.wma(2 * ta.wma(src, length / 2) - ta.wma(src, length), math.round(math.sqrt(length)))
+Var_Funcl(srcl, length) =>
+    valphal = 2 / (length + 1)
+    vud1l = srcl > srcl[1] ? srcl - srcl[1] : 0
+    vdd1l = srcl < srcl[1] ? srcl[1] - srcl : 0
+    vUDl = math.sum(vud1l, 9)
+    vDDl = math.sum(vdd1l, 9)
+    vCMOl = nz((vUDl - vDDl) / (vUDl + vDDl))
+    VARl = 0.0
+    VARl := nz(valphal * math.abs(vCMOl) * srcl) + (1 - valphal * math.abs(vCMOl)) * nz(VARl[1])
+    VARl
+
+getMA(src, length) =>
+    ma = 0.0
+    if mav == 'SMA'
+        ma := ta.sma(src, length)
+        ma
+
+    if mav == 'EMA'
+        ma := ta.ema(src, length)
+        ma
+
+    if mav == 'WMA'
+        ma := ta.wma(src, length)
+        ma
+
+    if mav == 'DEMA'
+        ma := DEMA
+        ma
+
+    if mav == 'TMA'
+        ma := ta.sma(ta.sma(src, math.ceil(length / 2)), math.floor(length / 2) + 1)
+        ma
+
+    if mav == 'VAR'
+        ma := VAR
+        ma
+
+    if mav == 'WWMA'
+        ma := WWMA
+        ma
+
+    if mav == 'ZLEMA'
+        ma := ZLEMA
+        ma
+
+    if mav == 'TSF'
+        ma := TSF
+        ma
+
+    if mav == 'HULL'
+        ma := HMA
+        ma
+    ma
+
+
+MAvg = getMA(src, length)
+fark = MAvg * percent * 0.01
+longStop = MAvg - fark
+longStopPrev = nz(longStop[1], longStop)
+longStop := MAvg > longStopPrev ? math.max(longStop, longStopPrev) : longStop
+shortStop = MAvg + fark
+shortStopPrev = nz(shortStop[1], shortStop)
+shortStop := MAvg < shortStopPrev ? math.min(shortStop, shortStopPrev) : shortStop
+dir = 1
+dir := nz(dir[1], dir)
+dir := dir == -1 and MAvg > shortStopPrev ? 1 : dir == 1 and MAvg < longStopPrev ? -1 : dir
+MT = dir == 1 ? longStop : shortStop
+HOTT = MAvg > MT ? MT * (200 + percent) / 200 : MT * (200 - percent) / 200
+HOTTC = color.new(color.red, 0)
+
+
+
+LOTT = src
+LOTTC = color.new(color.blue, 0)
+HOTTLine = plot(nz(HOTT[2]), title='HOTT', color=HOTTC, linewidth=2, style=plot.style_line)
+LOTTLine = plot(nz(LOTT), title='LOTT', color=LOTTC, linewidth=2, style=plot.style_line)
+FillColor = highlighting and LOTT < HOTT[2] ? color.new(color.red, 20) : color.new(color.green, 20)
+fill(HOTTLine, LOTTLine, title='Highligter', color=FillColor)
+alertcondition(ta.crossunder(HOTT[2], LOTT), title='Crossover Alarm', message='OTTO - BUY SIGNAL!')
+alertcondition(ta.crossover(HOTT[2], LOTT), title='Crossunder Alarm', message='OTTO - SELL SIGNAL!')
+
+buySignalc = ta.crossunder(HOTT[2], LOTT)
+plotshape(buySignalc and showsignalsc ? HOTT[2] * 0.9995 : na, title='Buy', text='Buy', location=location.absolute, style=shape.labelup, size=size.tiny, color=color.new(color.green, 0), textcolor=color.new(color.white, 0))
+sellSignallc = ta.crossover(HOTT[2], LOTT)
+plotshape(sellSignallc and showsignalsc ? LOTT * 1.0005 : na, title='Sell', text='Sell', location=location.absolute, style=shape.labeldown, size=size.tiny, color=color.new(color.red, 0), textcolor=color.new(color.white, 0))
+
+
+

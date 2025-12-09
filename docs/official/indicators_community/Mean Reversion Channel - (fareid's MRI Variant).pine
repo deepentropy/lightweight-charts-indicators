@@ -1,0 +1,377 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// REUSING THIS CODE: You are welcome to reuse this code without permission, including in closed-source publications, as long as proper credits are given :)
+// Author: ©fareidzulkifli
+
+// Description : 
+// Mean Reversion Channel objective, based on Mean Reversion theory (everything has a tendency to revert back to its mean), is to help visualizing: 
+//     Inner Channel -> Dynamic Support and Resistance 
+//     Outer Channel -> Overbought/Oversold Zone which may signal consolidation phase or potential reversal due to unsustainable move
+
+// The concept of this indicator oriiginally derived from Keltner Channel (The Keltner Channel was first introduced by Chester Keltner in the 1960s. The original formula used simple moving averages (SMA) and the high-low price range to calculate the bands. In the 1980s, a new formula was introduced that used ATR.)
+// Instead if using SMA/EMA, this indicator used SuperSmoother MA as it's mean with longer lookback period (default to 200) to get more stable channel line. i also added second level so the indicator will have inner and outer channel
+// Details of each filtering type used for mean calculation can be read in Ehlers Technical Papers: "Swiss Army Knife Indicator" and/or his book "Cybernetics Analysis for Stock and Futures"
+
+// Disclaimer:
+// Past performance is not an indicator of future results.
+// My opinions are my own and do not constitute financial advice in any way whatsoever. 
+// Nothing published by me constitutes an investment/trading recommendation, nor should any data or Content published by me be relied upon for any investment/trading activities.
+// I strongly recommends that you perform your own independent research and/or speak with a qualified investment professional before making any financial decisions.
+
+// Any ideas to further improve this indicator are welcome :)
+
+//@version=4
+study("Mean Reversion Channel - MRI Variant", shorttitle="MRC", overlay=true, format=format.inherit)
+
+//************************************************************************************************************
+// Parameter
+//************************************************************************************************************
+
+indiSet     = input(false,              "═════════ MRC Parameter ════════")
+source      = input(hlc3,               title="Price Source", type=input.source)
+type        = input("SuperSmoother",    title="Filter Type", options=["SuperSmoother", "Ehlers EMA", "Gaussian", "Butterworth", "BandStop", "SMA", "EMA", "RMA"])
+length      = input(200,                title="Lookback Period",minval=1)
+innermult   = input(1.0,                title="Inner Channel Size Multiplier", minval = 0.1)
+outermult   = input(2.415,              title="Outer Channel Size Multiplier", minval = 0.1)
+
+ChartSet    = input(false,              "═════════ Chart Setting ════════")
+drawchannel = input(true,               title="Draw Channel")
+displayzone = input(true,               title="Draw Zone (With Channel)")
+zonetransp  = input(60,                 title="Zone Transparency", minval=0, maxval=100)
+displayline = input(true,               title="Display Line Extension")
+
+MTFSet      = input(false,              "═════════ MTF Setting ════════")
+enable_mtf  = input(true,               title="Enable Multiple TimeFrame Analysis")
+mtf_disp_typ= input("On Hover",         title="MTF Display Type", options=["Always Display", "On Hover"])
+mtf_typ     = input("Auto",             title="Multiple TimeFrame Type", options=["Auto", "Custom"])
+mtf_lvl1    = input("D",                title="Custom MTF Level 1", type=input.resolution)
+mtf_lvl2    = input("W",                title="Custom MTF Level 2", type=input.resolution)
+
+//************************************************************************************************************
+// Functions Start {
+//************************************************************************************************************
+var pi          = 2 * asin(1)
+var mult        = pi * innermult
+var mult2       = pi * outermult
+var gradsize    = 0.5
+var gradtransp  = zonetransp
+
+//-----------------------
+// Ehler SwissArmyKnife Function
+//-----------------------
+SAK_smoothing(_type, _src, _length) =>
+    c0          = 1.0 
+    c1          = 0.0 
+    b0          = 1.0 
+    b1          = 0.0 
+    b2          = 0.0 
+    a1          = 0.0 
+    a2          = 0.0 
+    alpha       = 0.0 
+    beta        = 0.0 
+    gamma       = 0.0 
+    cycle       = 2 * pi / _length
+    
+    if _type == "Ehlers EMA"
+        alpha   := (cos(cycle) + sin(cycle) - 1) / cos(cycle)
+        b0      := alpha
+        a1      := 1 - alpha
+    if _type == "Gaussian"
+        beta    := 2.415 * (1 - cos(cycle))
+        alpha   := -beta + sqrt((beta * beta) + (2 * beta))
+        c0      := alpha * alpha
+        a1      := 2 * (1 - alpha)
+        a2      := -(1 - alpha) * (1 - alpha)
+    if _type == "Butterworth"
+        beta    := 2.415 * (1 - cos(cycle))
+        alpha   := -beta + sqrt((beta * beta) + (2 * beta))
+        c0      := alpha * alpha / 4
+        b1      := 2
+        b2      := 1
+        a1      := 2 * (1 - alpha)
+        a2      := -(1 - alpha) * (1 - alpha)
+    if _type == "BandStop"
+        beta    := cos(cycle)
+        gamma   := 1 / cos(cycle*2*0.1) // delta default to 0.1. Acceptable delta -- 0.05<d<0.5
+        alpha   := gamma - sqrt((gamma * gamma) - 1)
+        c0      := (1 + alpha) / 2
+        b1      := -2 * beta
+        b2      := 1
+        a1      := beta * (1 + alpha)
+        a2      := -alpha
+    if _type == "SMA"
+        c1      := 1 / _length
+        b0      := 1 / _length
+        a1      := 1
+    if _type == "EMA"
+        alpha   := 2/(_length+1)
+        b0      := alpha
+        a1      := 1 - alpha
+    if _type == "RMA"
+        alpha   := 1 / _length
+        b0      := alpha
+        a1      := 1 - alpha
+
+    _Input       = _src
+    _Output      = 0.0
+    _Output     := (c0 * ((b0 * _Input) + (b1 * nz(_Input[1])) + (b2 * nz(_Input[2])))) + (a1 * nz(_Output[1])) + (a2 * nz(_Output[2])) - (c1 * nz(_Input[_length])) 
+
+//-----------------------
+// SuperSmoother Function
+//-----------------------
+supersmoother(_src, _length) =>
+    s_a1    = exp(-sqrt(2) * pi / _length)
+    s_b1    = 2 * s_a1 * cos(sqrt(2) * pi / _length)
+    s_c3    = -pow(s_a1, 2)
+    s_c2    = s_b1
+    s_c1    = 1 - s_c2 - s_c3
+    ss      = 0.0
+    ss     := s_c1 * _src + s_c2 * nz(ss[1], _src[1]) + s_c3 * nz(ss[2], _src[2])
+
+//-----------------------
+// Auto TimeFrame Function
+//-----------------------
+// ————— Converts current chart resolution into a float minutes value.
+f_resInMinutes() => 
+    _resInMinutes = timeframe.multiplier * (
+      timeframe.isseconds ? 1. / 60             :
+      timeframe.isminutes ? 1.                  :
+      timeframe.isdaily   ? 60. * 24            :
+      timeframe.isweekly  ? 60. * 24 * 7        :
+      timeframe.ismonthly ? 60. * 24 * 30.4375  : na)
+
+get_tf(_lvl)=>
+    y = f_resInMinutes()
+    z = timeframe.period
+    if(mtf_typ=="Auto")
+        if y < 1
+            z := _lvl == 1 ? "1"   : _lvl == 2 ? "5"  : z
+        else if y <= 3
+            z := _lvl == 1 ? "5"   : _lvl == 2 ? "15" : z
+        else if y <= 10
+            z := _lvl == 1 ? "15"  : _lvl == 2 ? "60" : z
+        else if y <= 30
+            z := _lvl == 1 ? "60"  : _lvl == 2 ? "240" : z
+        else if y <= 120
+            z := _lvl == 1 ? "240" : _lvl == 2 ? "D"  : z
+        else if y <= 240
+            z := _lvl == 1 ? "D"   : _lvl == 2 ? "W"  : z
+        else if y <= 1440
+            z := _lvl == 1 ? "W"   : _lvl == 2 ? "M"  : z
+        else if y <= 10080
+            z := _lvl == 1 ? "M"   : z
+        else
+            z := z
+    else
+        z := _lvl == 1 ? mtf_lvl1   : _lvl == 2 ? mtf_lvl2 : z
+
+    z
+
+//-----------------------
+// Mean Reversion Channel Function
+//-----------------------
+get_mrc()=>
+    v_condition   = 0
+    v_meanline    = source
+    v_meanrange   = supersmoother(tr, length)
+    
+    //-- Get Line value
+    if(type == "SuperSmoother")
+        v_meanline    := supersmoother(source, length)
+        
+    if(type != "SuperSmoother")
+        v_meanline    := SAK_smoothing(type, source, length)
+        
+    v_upband1 = v_meanline+(v_meanrange*mult)
+    v_loband1 = v_meanline-(v_meanrange*mult)
+    v_upband2 = v_meanline+(v_meanrange*mult2)
+    v_loband2 = v_meanline-(v_meanrange*mult2)
+    
+    //-- Check Condition
+    if(close > v_meanline)
+        v_upband2_1 = v_upband2  + (v_meanrange * gradsize * 4)
+        v_upband2_9 = v_upband2  + (v_meanrange * gradsize * -4)
+        if(high >= v_upband2_9 and high < v_upband2)
+            v_condition   := 1
+        else if(high >= v_upband2 and high < v_upband2_1)
+            v_condition   := 2
+        else if(high >= v_upband2_1)
+            v_condition   := 3
+        else if(close <= v_meanline+v_meanrange)
+            v_condition   := 4
+        else
+            v_condition   := 5
+
+    if(close < v_meanline)
+        v_loband2_1 = v_loband2  - (v_meanrange * gradsize * 4)
+        v_loband2_9 = v_loband2  - (v_meanrange * gradsize * -4)
+        if(low <= v_loband2_9 and low > v_loband2)
+            v_condition   := -1
+        else if(low <= v_loband2 and low > v_loband2_1)
+            v_condition   := -2
+        else if(low <= v_loband2_1)
+            v_condition   := -3
+        else if(close >= v_meanline+v_meanrange)
+            v_condition   := -4
+        else
+            v_condition   := -5
+            
+    [v_meanline, v_meanrange, v_upband1, v_loband1, v_upband2, v_loband2, v_condition]
+
+//-----------------------
+// MTF Analysis
+//-----------------------
+
+get_stat(_cond) =>
+    ret = "Price at Mean Line\n"
+    if (_cond == 1)
+        ret := "Overbought (Weak)\n"
+    else if (_cond == 2)
+        ret := "Overbought\n"
+    else if (_cond == 3)
+        ret := "Overbought (Strong)\n"
+    else if (_cond == 4)
+        ret := "Price Near Mean\n"
+    else if (_cond == 5)
+        ret := "Price Above Mean\n"
+    else if (_cond == -1)
+        ret := "Oversold (Weak)\n"
+    else if (_cond == -2)
+        ret := "Oversold\n"
+    else if (_cond == -3)
+        ret := "Oversold (Strong)\n"
+    else if (_cond == -4)
+        ret := "Price Near Mean\n"
+    else if (_cond == -5)
+        ret := "Price Below Mean\n"
+    ret
+
+//-----------------------
+// Chart Drawing Function
+//-----------------------
+format_price(x) =>
+    y = tostring(x, "0.00000")
+    if(x>10)
+        y := tostring(x, "0.000")
+    if(x>1000)
+        y := tostring(x, "0.00")
+    y
+
+f_PriceLine(_ref, linecol) =>
+    line.new(
+      x1     = bar_index, x2     = bar_index - 1,
+      y1     = _ref,      y2     = _ref,
+      extend = extend.left,
+      color  = linecol)
+
+f_MTFLabel(_txt, _yloc) =>
+    label.new(
+      x         = time + round(change(time)*20),
+      y         = _yloc, 
+      xloc      = xloc.bar_time, 
+      text      = mtf_disp_typ == "Always Display" ? _txt : "Check MTF",
+      tooltip   = mtf_disp_typ == "Always Display" ? ""   : _txt,
+      color     = color.black, 
+      textcolor = color.white,
+      size      = size.normal, 
+      style     = mtf_disp_typ == "On Hover" and displayline ? label.style_label_lower_left : label.style_label_left,
+      textalign = text.align_left)
+
+//} Function End
+
+//************************************************************************************************************
+// Calculate Channel
+//************************************************************************************************************
+var tf_0 = timeframe.period
+var tf_1 = get_tf(1)
+var tf_2 = get_tf(2)
+
+[meanline, meanrange, upband1, loband1, upband2, loband2, condition]                                    = get_mrc()
+[mtf1_meanline, mtf1_meanrange, mtf1_upband1, mtf1_loband1, mtf1_upband2, mtf1_loband2, mtf1_condition] = security(syminfo.tickerid, tf_1, get_mrc())
+[mtf2_meanline, mtf2_meanrange, mtf2_upband1, mtf2_loband1, mtf2_upband2, mtf2_loband2, mtf2_condition] = security(syminfo.tickerid, tf_2, get_mrc())
+
+//************************************************************************************************************
+// Drawing Start {
+//************************************************************************************************************
+float p_meanline  = drawchannel ? meanline   : na
+float p_upband1   = drawchannel ? upband1    : na
+float p_loband1   = drawchannel ? loband1    : na
+float p_upband2   = drawchannel ? upband2    : na
+float p_loband2   = drawchannel ? loband2    : na
+
+z  = plot(p_meanline, color=#FFCD00,     style=plot.style_line,    title=" Mean", linewidth=2)
+x1 = plot(p_upband1,  color=color.green, style=plot.style_circles, title=" R1", linewidth=1, transp=50)
+x2 = plot(p_loband1,  color=color.green, style=plot.style_circles, title=" S1", linewidth=1, transp=50)
+y1 = plot(p_upband2,  color=color.red,   style=plot.style_line,    title=" R2", linewidth=1, transp=50)
+y2 = plot(p_loband2,  color=color.red,   style=plot.style_line,    title=" S2", linewidth=1, transp=50)
+
+//-----------------------
+// Draw zone
+//-----------------------
+//---
+var color1 = #FF0000, var color2 = #FF4200, var color3 = #FF5D00, var color4 = #FF7400, var color5 = #FF9700, var color6 = #FFAE00, var color7 = #FFC500, var color8 = #FFCD00
+//---
+float upband2_1 = drawchannel and displayzone ? upband2 + (meanrange * gradsize * 4)  : na, float loband2_1 = drawchannel and displayzone ? loband2 - (meanrange * gradsize * 4)  : na
+float upband2_2 = drawchannel and displayzone ? upband2 + (meanrange * gradsize * 3)  : na, float loband2_2 = drawchannel and displayzone ? loband2 - (meanrange * gradsize * 3)  : na
+float upband2_3 = drawchannel and displayzone ? upband2 + (meanrange * gradsize * 2)  : na, float loband2_3 = drawchannel and displayzone ? loband2 - (meanrange * gradsize * 2)  : na
+float upband2_4 = drawchannel and displayzone ? upband2 + (meanrange * gradsize * 1)  : na, float loband2_4 = drawchannel and displayzone ? loband2 - (meanrange * gradsize * 1)  : na
+float upband2_5 = drawchannel and displayzone ? upband2 + (meanrange * gradsize * 0)  : na, float loband2_5 = drawchannel and displayzone ? loband2 - (meanrange * gradsize * 0)  : na
+float upband2_6 = drawchannel and displayzone ? upband2 + (meanrange * gradsize * -1) : na, float loband2_6 = drawchannel and displayzone ? loband2 - (meanrange * gradsize * -1) : na
+float upband2_7 = drawchannel and displayzone ? upband2 + (meanrange * gradsize * -2) : na, float loband2_7 = drawchannel and displayzone ? loband2 - (meanrange * gradsize * -2) : na
+float upband2_8 = drawchannel and displayzone ? upband2 + (meanrange * gradsize * -3) : na, float loband2_8 = drawchannel and displayzone ? loband2 - (meanrange * gradsize * -3) : na
+float upband2_9 = drawchannel and displayzone ? upband2 + (meanrange * gradsize * -4) : na, float loband2_9 = drawchannel and displayzone ? loband2 - (meanrange * gradsize * -4) : na
+
+//---
+plot_upband2_1 = plot(upband2_1, color=na, transp=100, display=display.none), plot_loband2_1 = plot(loband2_1, color=na, transp=100, display=display.none)
+plot_upband2_2 = plot(upband2_2, color=na, transp=100, display=display.none), plot_loband2_2 = plot(loband2_2, color=na, transp=100, display=display.none)
+plot_upband2_3 = plot(upband2_3, color=na, transp=100, display=display.none), plot_loband2_3 = plot(loband2_3, color=na, transp=100, display=display.none)
+plot_upband2_4 = plot(upband2_4, color=na, transp=100, display=display.none), plot_loband2_4 = plot(loband2_4, color=na, transp=100, display=display.none)
+plot_upband2_5 = plot(upband2_5, color=na, transp=100, display=display.none), plot_loband2_5 = plot(loband2_5, color=na, transp=100, display=display.none)
+plot_upband2_6 = plot(upband2_6, color=na, transp=100, display=display.none), plot_loband2_6 = plot(loband2_6, color=na, transp=100, display=display.none)
+plot_upband2_7 = plot(upband2_7, color=na, transp=100, display=display.none), plot_loband2_7 = plot(loband2_7, color=na, transp=100, display=display.none)
+plot_upband2_8 = plot(upband2_8, color=na, transp=100, display=display.none), plot_loband2_8 = plot(loband2_8, color=na, transp=100, display=display.none)
+plot_upband2_9 = plot(upband2_9, color=na, transp=100, display=display.none), plot_loband2_9 = plot(loband2_9, color=na, transp=100, display=display.none)
+
+//---
+fill(plot_upband2_1,plot_upband2_2, color=color1, transp=gradtransp), fill(plot_loband2_1,plot_loband2_2, color=color1, transp=gradtransp)
+fill(plot_upband2_2,plot_upband2_3, color=color2, transp=gradtransp), fill(plot_loband2_2,plot_loband2_3, color=color2, transp=gradtransp)
+fill(plot_upband2_3,plot_upband2_4, color=color3, transp=gradtransp), fill(plot_loband2_3,plot_loband2_4, color=color3, transp=gradtransp)
+fill(plot_upband2_4,plot_upband2_5, color=color4, transp=gradtransp), fill(plot_loband2_4,plot_loband2_5, color=color4, transp=gradtransp)
+fill(plot_upband2_5,plot_upband2_6, color=color5, transp=gradtransp), fill(plot_loband2_5,plot_loband2_6, color=color5, transp=gradtransp)
+fill(plot_upband2_6,plot_upband2_7, color=color6, transp=gradtransp), fill(plot_loband2_6,plot_loband2_7, color=color6, transp=gradtransp)
+fill(plot_upband2_7,plot_upband2_8, color=color7, transp=gradtransp), fill(plot_loband2_7,plot_loband2_8, color=color7, transp=gradtransp)
+fill(plot_upband2_8,plot_upband2_9, color=color8, transp=gradtransp), fill(plot_loband2_8,plot_loband2_9, color=color8, transp=gradtransp)
+
+//-----------------------
+// Plot Extension
+//-----------------------
+if(displayline and enable_mtf and mtf_disp_typ == "Always Display")
+    displayline := false
+    
+var line mean = na, line.delete(mean), mean := displayline ? f_PriceLine(meanline, #FFCD00)     : na
+var line res1 = na, line.delete(res1), res1 := displayline ? f_PriceLine(upband1,  color.green) : na
+var line sup1 = na, line.delete(sup1), sup1 := displayline ? f_PriceLine(loband1,  color.green) : na
+var line res2 = na, line.delete(res2), res2 := displayline ? f_PriceLine(upband2,  color.red)   : na
+var line sup2 = na, line.delete(sup2), sup2 := displayline ? f_PriceLine(loband2,  color.red)   : na
+
+//--------------
+// Prep MTF Label
+//--------------
+var brl         = "\n--------------------------------------"
+dist_0          = "Distance from Mean: "+ tostring(((close-meanline)/close)*100, "#.##") + " %"
+dist_1          = "Distance from Mean: "+ tostring(((close-mtf1_meanline)/close)*100, "#.##") + " %"
+dist_2          = "Distance from Mean: "+ tostring(((close-mtf2_meanline)/close)*100, "#.##") + " %"
+
+var title   = "Mean Reversion Channel\nMultiple TimeFrame Analysis" + brl
+tf0 = 
+      "\n\nTimeframe: "+ tf_0 + " (Current)\n\nStatus: " + get_stat(condition) + dist_0 + brl
+
+tf1 = not timeframe.ismonthly ? 
+      "\n\nTimeframe: "+ tf_1 + "\n\nStatus: " + get_stat(mtf1_condition) + dist_1 + brl : ""
+
+tf2 = not timeframe.isweekly and not timeframe.ismonthly ? 
+      "\n\nTimeframe: "+ tf_2 + "\n\nStatus: " + get_stat(mtf2_condition) + dist_2 + brl : ""
+
+mtf_lbl = title+tf0+tf1+tf2
+var label label_mtf = na, label.delete(label_mtf), label_mtf := enable_mtf ? f_MTFLabel(mtf_lbl, meanline) : na
+
+//} Drawing End

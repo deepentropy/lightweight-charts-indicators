@@ -1,0 +1,15 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Calculates Average Daily Range percentage over last 20 periods
+// Original: alpine_trader
+// Amended 08/12/20 by TheScrutiniser, MikeC on advise from GlinckEastwoot
+
+//@version=4
+
+study(title="ADR% - Average Daily Range %", overlay=false)
+Length = input(20, title="length")
+
+dhigh = security(syminfo.tickerid, 'D', high)
+dlow  = security(syminfo.tickerid, 'D', low)
+// formula amended, thanks to GlinckEastwoot
+ADR = 100 * (sma(dhigh/dlow, Length) - 1)
+plot(ADR, color=color.orange,title="ADR",linewidth=1)

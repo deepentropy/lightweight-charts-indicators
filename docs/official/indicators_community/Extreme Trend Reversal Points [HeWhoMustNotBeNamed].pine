@@ -1,0 +1,133 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © HeWhoMustNotBeNamed
+
+//   __    __            __       __  __                  __       __                        __      __    __              __      _______             __    __                                          __ 
+//  /  |  /  |          /  |  _  /  |/  |                /  \     /  |                      /  |    /  \  /  |            /  |    /       \           /  \  /  |                                        /  |
+//  $$ |  $$ |  ______  $$ | / \ $$ |$$ |____    ______  $$  \   /$$ | __    __   _______  _$$ |_   $$  \ $$ |  ______   _$$ |_   $$$$$$$  |  ______  $$  \ $$ |  ______   _____  ____    ______    ____$$ |
+//  $$ |__$$ | /      \ $$ |/$  \$$ |$$      \  /      \ $$$  \ /$$$ |/  |  /  | /       |/ $$   |  $$$  \$$ | /      \ / $$   |  $$ |__$$ | /      \ $$$  \$$ | /      \ /     \/    \  /      \  /    $$ |
+//  $$    $$ |/$$$$$$  |$$ /$$$  $$ |$$$$$$$  |/$$$$$$  |$$$$  /$$$$ |$$ |  $$ |/$$$$$$$/ $$$$$$/   $$$$  $$ |/$$$$$$  |$$$$$$/   $$    $$< /$$$$$$  |$$$$  $$ | $$$$$$  |$$$$$$ $$$$  |/$$$$$$  |/$$$$$$$ |
+//  $$$$$$$$ |$$    $$ |$$ $$/$$ $$ |$$ |  $$ |$$ |  $$ |$$ $$ $$/$$ |$$ |  $$ |$$      \   $$ | __ $$ $$ $$ |$$ |  $$ |  $$ | __ $$$$$$$  |$$    $$ |$$ $$ $$ | /    $$ |$$ | $$ | $$ |$$    $$ |$$ |  $$ |
+//  $$ |  $$ |$$$$$$$$/ $$$$/  $$$$ |$$ |  $$ |$$ \__$$ |$$ |$$$/ $$ |$$ \__$$ | $$$$$$  |  $$ |/  |$$ |$$$$ |$$ \__$$ |  $$ |/  |$$ |__$$ |$$$$$$$$/ $$ |$$$$ |/$$$$$$$ |$$ | $$ | $$ |$$$$$$$$/ $$ \__$$ |
+//  $$ |  $$ |$$       |$$$/    $$$ |$$ |  $$ |$$    $$/ $$ | $/  $$ |$$    $$/ /     $$/   $$  $$/ $$ | $$$ |$$    $$/   $$  $$/ $$    $$/ $$       |$$ | $$$ |$$    $$ |$$ | $$ | $$ |$$       |$$    $$ |
+//  $$/   $$/  $$$$$$$/ $$/      $$/ $$/   $$/  $$$$$$/  $$/      $$/  $$$$$$/  $$$$$$$/     $$$$/  $$/   $$/  $$$$$$/     $$$$/  $$$$$$$/   $$$$$$$/ $$/   $$/  $$$$$$$/ $$/  $$/  $$/  $$$$$$$/  $$$$$$$/ 
+//                                                                                                                                                                                                          
+//                                                                                                                                                                                                          
+//
+//@version=5
+indicator("Extreme Trend Reversal Points [HeWhoMustNotBeNamed]", shorttitle = "ETRP[HWMNBN]", overlay=true)
+import HeWhoMustNotBeNamed/_matrix/5 as ma
+import HeWhoMustNotBeNamed/arrayutils/21 as ar
+import HeWhoMustNotBeNamed/enhanced_ta/14 as eta
+import HeWhoMustNotBeNamed/drawingutils/8 as dr
+import HeWhoMustNotBeNamed/arrays/1 as pa
+
+source = input.source(close, "Source", group="Moving Average")
+type = input.string("sma", "Type", options = ["sma", "ema", "rma", "wma"], group="Moving Average")
+length = input.int(20, "Length", step=5, group="Moving Average")
+level = input.int(10, "Level", minval = 5, step=5, group="Moving Average")
+minMaxRangePercentile = input.int(20, 'Range Percentile', minval=5, maxval=45, step=5)
+extremeMinMaxRangePercentile = input.int(45, 'Extreme Range Percentile', minval=40, maxval=48, step=2)
+history = input.int(1000, 'Percentile History', minval=1000, maxval=5000, step=500)
+realTimeAlerts = input.bool(false, 'Real Time Alerts', 'If set to true, alerts are fired on latest candle - which may repaint. For safer option set this to false')
+maxHistory = length-1
+
+ema(float currentEma, float source, simple int length) =>
+    k = 2 / (length + 1)
+    ema = source * k + (1 - k) * currentEma
+    ema
+
+rma(float currentRma, float source, simple int length) =>
+    k = 2 / (length + 1)
+    rma = (currentRma * (length-1) + source)/length
+    rma
+
+var maMatrix = matrix.new<float>(1, level+1, source)
+
+if(type == "ema")
+    emaArray = array.new<float>(1, source)
+    for i=1 to matrix.columns(maMatrix)-1
+        ema = ema(matrix.get(maMatrix, 0, i), array.get(emaArray, array.size(emaArray)-1), length)
+        array.push(emaArray, ema)
+    ma.unshift(maMatrix, emaArray, maxHistory)
+
+if(type == "rma")
+    rmaArray = array.new<float>(1, source)
+    for i=1 to matrix.columns(maMatrix)-1
+        rma = rma(matrix.get(maMatrix, 0, i), array.get(rmaArray, array.size(rmaArray)-1), length)
+        array.push(rmaArray, rma)
+    ma.unshift(maMatrix, rmaArray, maxHistory)
+
+if(type == "sma" or type == "wma")
+    maArray = array.new<float>(1, source)
+    for i=1 to matrix.columns(maMatrix)-1
+        values = matrix.col(maMatrix, i-1)
+        tmpArray = array.new<float>(1, array.get(maArray, i-1))
+        tmpArray := array.concat(tmpArray, values)
+        array.push(maArray, ar.ma(tmpArray, type, length))
+
+    ma.unshift(maMatrix, maArray, maxHistory)
+
+strength = 0
+bearishStrength = 0
+diffMatrix = matrix.new<float>(level+1, level+1, 0)
+
+var linesArray = array.new<line>()
+var labelsArray = array.new<label>()
+
+ar.clear(linesArray)
+ar.clear(labelsArray)
+
+for i = 0 to level
+    for j = 0 to level
+        pma = matrix.get(maMatrix, 0, i)
+        nma = matrix.get(maMatrix, 0, j)
+        
+        //strength := pma > nma ? strength+1 : strength
+        if(j > i)
+            strength := pma > nma ? strength+1 : strength
+        matrix.set(diffMatrix, i, j, math.sign(pma-nma))
+       
+lastRow = matrix.row(maMatrix, 0)
+lastRowIndex = array.sort_indices(array.slice(lastRow, 1, array.size(lastRow)), order.descending)
+
+if(barstate.islast)
+    for i=1 to level
+        levelColor = color.from_gradient(i, 1, level, color.green, color.red)
+        dr.draw_labelled_line(array.get(lastRow, i), type+'('+str.tostring(i)+')',levelColor, levelColor, 0, true, linesArray, labelsArray)
+
+minRange = ta.percentile_nearest_rank(strength, history, 50-minMaxRangePercentile)
+maxRange = ta.percentile_nearest_rank(strength, history, 50+minMaxRangePercentile)
+
+extremeMinRange = ta.percentile_nearest_rank(strength, history, 50-extremeMinMaxRangePercentile)
+extremeMaxRange = ta.percentile_nearest_rank(strength, history, 50+extremeMinMaxRangePercentile)
+plotColor = strength > extremeMaxRange? color.green :
+                 strength > maxRange? color.lime :
+                 strength < extremeMinRange ? color.red : 
+                 strength < minRange? color.orange : color.silver
+
+strengthRange = strength > extremeMaxRange? 2 :
+                 strength > maxRange? 1 :
+                 strength > minRange ? 0 : 
+                 strength < extremeMinRange? -1 : -2
+maxStrength = level * (level+1)/2
+
+ma = eta.ma(source, type, length)
+
+bullishTrendReversalPoint = strength[1]== maxStrength and ta.crossunder(source, ma)
+bearishTrendReversalPoint = strength[1]==0 and ta.crossover(source, ma)
+
+plotshape(bullishTrendReversalPoint, 'Bullish Trend Reversal Point',
+                     style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)
+plotshape(bearishTrendReversalPoint, 'Bearish Trend Reversal Point',
+                     style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+
+plot(strength, "Strength", color=color.silver, display = display.data_window)
+plot(minRange, "Min Range", color=color.orange, display = display.data_window)
+plot(maxRange, "Max Range", color=color.lime, display = display.data_window)
+plot(extremeMinRange, "Extreme Min Range", color=color.red, display = display.data_window)
+plot(extremeMaxRange, "Extreme Max Range", color=color.green, display = display.data_window)
+plot(strengthRange, "Strength Range", color=color.blue, display = display.data_window)
+plot(ma, "Moving Average", plotColor)
+
+alertcondition(bullishTrendReversalPoint[realTimeAlerts?0:1], "Bullish Trend Reversal", "Possible reversal of bullish trend")
+alertcondition(bearishTrendReversalPoint[realTimeAlerts?0:1], "Bearish Trend Reversal", "Possible reversal of bearish trend")

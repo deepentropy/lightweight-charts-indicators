@@ -1,0 +1,30 @@
+//@version=3
+//author KIVANC @fr3762 on twitter
+//indicates the price bars whether it's supported by volume or not
+
+study("Volume Based Coloured Bars", title="VCB", overlay=true)
+length=input(21, "length", minval=1)
+avrg=sma(volume,length)
+
+vold1 = volume > avrg*1.5 and close<open
+vold2 = volume >= avrg*0.5 and volume<=avrg*1.5 and close<open
+vold3 = volume < avrg *0.5 and close<open
+
+volu1 = volume > avrg*1.5 and close>open
+volu2 = volume >= avrg*0.5 and volume<=avrg*1.5 and close>open
+volu3 = volume< avrg*0.5 and close>open
+
+
+cold1=#800000
+cold2=#FF0000
+cold3=orange
+
+
+colu1=#006400
+colu2=lime
+colu3=#7FFFD4
+
+
+color = vold1 ? cold1 : vold2 ? cold2 : vold3 ? cold3 : volu1 ? colu1 : volu2 ? colu2 : volu3 ? colu3 : na
+
+barcolor(color)

@@ -1,0 +1,45 @@
+//@version=3
+study("GMMA", overlay=true)
+
+//inputs
+_Period1 = input(3, "EMA1 Period")
+_Period2 = input(5, "EMA2 Period")
+_Period3 = input(8, "EMA3 Period")
+_Period4 = input(10, "EMA4 Period")
+_Period5 = input(12, "EMA5 Period")
+_Period6 = input(15, "EMA6 Period")
+_Period7 = input(30, "EMA7 Period")
+_Period8 = input(35, "EMA8 Period")
+_Period9 = input(40, "EMA9 Period")
+_Period10 = input(45, "EMA10 Period")
+_Period11 = input(50, "EMA11 Period")
+_Period12 = input(60, "EMA12 Period")
+
+
+//calculate ema
+ema1 = ema(close, _Period1)
+ema2 = ema(close, _Period2)
+ema3 = ema(close, _Period3)
+ema4 = ema(close, _Period4)
+ema5 = ema(close, _Period5)
+ema6 = ema(close, _Period6)
+ema7 = ema(close, _Period7)
+ema8 = ema(close, _Period8)
+ema9 = ema(close, _Period9)
+ema10 = ema(close, _Period10)
+ema11 = ema(close, _Period11)
+ema12 = ema(close, _Period12)
+
+plot(ema1, color=green, title="short1")
+plot(ema2, color=green, title="short2")
+plot(ema3, color=green, title="short3")
+plot(ema4, color=green, title="short4")
+plot(ema5, color=green, title="short5")
+plot(ema6, color=green, title="short6")
+
+plot(ema7, color=red, title="long1")
+plot(ema8, color=red, title="long2")
+plot(ema9, color=red, title="long3")
+plot(ema10, color=red, title="long4")
+plot(ema11, color=red, title="long5")
+plot(ema12, color=red, title="long6")

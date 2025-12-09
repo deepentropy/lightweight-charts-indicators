@@ -1,0 +1,9 @@
+//@version=6
+indicator(title="Awesome Oscillator", shorttitle="AO", timeframe="", timeframe_gaps=true)
+ao = ta.sma(hl2,5) - ta.sma(hl2,34)
+diff = ao - ao[1]
+plot(ao, "AO", color = diff <= 0 ? #F44336 : #009688, style = plot.style_columns)
+changeToGreen = ta.crossover(diff, 0)
+changeToRed = ta.crossunder(diff, 0)
+alertcondition(changeToGreen, title = "AO color changed to green", message = "Awesome Oscillator's color has changed to green")
+alertcondition(changeToRed, title = "AO color changed to red", message = "Awesome Oscillator's color has changed to red")

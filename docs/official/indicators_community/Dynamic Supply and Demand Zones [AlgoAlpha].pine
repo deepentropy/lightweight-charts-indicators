@@ -1,0 +1,116 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Dynamic Supply and Demand Zones [AlgoAlpha]", "AlgoAlpha - 📦Dynamic Supply/Demand",overlay = true, max_boxes_count = 500, max_bars_back = 4999)
+import PineCoders/VisibleChart/4
+
+dynamic = input.bool(true, "Use Dynamic Look-Back", "If true, the indicator adjusts its lookback such that it considers data from the previous major pivot point to present", group = "Main Calculation")
+len = input.int(100, "Look-back (For Non-Dynamic Look-Back)", group = "Main Calculation", tooltip = "If Dynamic Look-Back is disabled, the indicator will use this fixed look-back instead")
+plen = input.int(200, "Pivot Point Detection Period", tooltip = "The look-back period of pivot points detection, pivots are detected with delay(depending on user imput, 100 by default)", group = "Main Calculation")
+res = input.int(40, "Resolution", group = "Main Calculation", tooltip = "The profile resolution")
+scale = input.int(33, "Profile Horizontal Width", tooltip = "The Horizontal Width of the profile, a smaller value will make the profile thinner", maxval = 100, minval = 1, group = "Main Calculation")
+tolerance = input.float(0.93,"Zone Tolerance",tooltip = "The tolerance for zone detection, the lower the value the less zones will be marked", maxval = 1, minval = 0.01, group = "Main Calculation")
+h = input.bool(true, "Show Profile", group = "Appearance")
+h1 = input.bool(true, "Show Background Box", group = "Appearance")
+neut = input.color(color.gray, "Levels Color", group = "Appearance")
+green = input.color(#00ffbb, "Bullish Color", group = "Appearance")
+red = input.color(#ff1100, "Bearish Color", group = "Appearance")
+
+ph = ta.pivothigh(plen, plen)
+pl = ta.pivotlow(plen, plen)
+
+var pivotindex = 0
+
+if not na(ph) or not na(pl)
+    pivotindex := bar_index - plen
+
+len1 = dynamic ? bar_index - pivotindex : len
+var left = 0
+top_boundaries = array.new_float(res)
+bottom_boundaries = array.new_float(res)
+binlen = array.new_float(res)
+var boxes = array.new_box()
+highs = array.new_float()
+lows = array.new_float()
+volumes = array.new_float()
+
+for i = 0 to bar_index - (bar_index - len1)
+    highs.push(high[i])
+    lows.push(low[i])
+    volumes.push(volume[i])
+
+maxx = array.max(highs)
+minn = array.min(lows)
+size = array.size(highs)
+var t = array.new_box()
+var lab = array.new_label()
+
+while t.size() > 0
+    t.shift().delete()
+while boxes.size() > 0
+    boxes.shift().delete()
+while lab.size() > 0
+    lab.shift().delete()
+
+
+if size > 0
+    step = (maxx - minn) / res
+    granularity = res
+    for i = 0 to granularity - 1
+        bin_size = 0.0
+        bottom = minn + (i*step)
+        top = minn + ( (i+1)*step )
+        bottom_boundaries.insert(i, bottom)
+        top_boundaries.insert(i, top)   
+        for j = 0 to array.size(highs) - 1
+            candle_above_hbar = lows.get(j) > top
+            candle_below_hbar = highs.get(j) < bottom
+            is_candle_in_bucket = not (candle_above_hbar or candle_below_hbar)
+            bin_size += is_candle_in_bucket ? volumes.get(j) : 0
+        array.insert(binlen, i, bin_size)
+
+for i = 0 to res - 1
+    iskey = (i == res - 1 ? true : binlen.get(i) < binlen.get(i + 1)*tolerance) and (i == 0 ? true : binlen.get(i) < binlen.get(i - 1)*tolerance)
+    box_right = bar_index// + 7 + scale
+    box_left = iskey ? (bar_index - len1) : bar_index
+    box_top = array.get(top_boundaries, i)
+    box_bottom = array.get(bottom_boundaries, i)
+    left := box_left
+    if iskey
+        boxes.push(box.new(box_left, box_top, box_right, box_bottom, border_style = line.style_solid, border_color = color.new(neut, 70), border_width = 1, bgcolor = color.new(neut, 80)))
+        lab.push(label.new(box_left, math.avg(box_top, box_bottom), str.tostring((1-(binlen.get(i)/binlen.max()))*100, format.percent), color = chart.fg_color, textcolor = chart.bg_color, style = label.style_label_right))
+
+for i = 0 to res - 1
+    box_right = bar_index + 7 + scale//binlen.max()
+    box_left = box_right - math.round(binlen.get(i))/math.round(binlen.max()) * scale
+    box_top = array.get(top_boundaries, i)
+    box_bottom = array.get(bottom_boundaries, i)
+    left := box_left
+    boxes.push(h ? box.new(box_left, box_top, box_right, box_bottom, border_style = line.style_solid, border_color = color.black, border_width = 1, bgcolor = color.gray) : na)
+    
+
+if h1
+    t.push(box.new(bar_index-len1, top_boundaries.max(), bar_index, bottom_boundaries.min(), color.new(color.blue, 70), 1, line.style_solid, extend.none, bgcolor = color.new(color.blue, 90), text = "Total Look-Back Data", text_size = size.tiny, text_color = color.gray, text_halign =  text.align_center, text_valign = text.align_top))
+
+if boxes.size() > 0
+    qt = boxes.size()
+
+    for ln = qt - 1 to 0
+        if ln < boxes.size()
+            cL = boxes.get(ln)
+            yL = cL.get_top()
+            yLa = cL.get_bottom()
+
+            if close > yL
+                cL.set_border_color(color.new(green, 50))
+                cL.set_bgcolor(color.new(green, 50))
+
+            else if close < yLa
+                cL.set_border_color(color.new(red, 50))
+                cL.set_bgcolor(color.new(red, 50))
+
+plotchar(ph != 0 ? true : false, "Pivot Highs", "●", location.abovebar, chart.fg_color, size = size.tiny, offset = -plen)
+plotchar(pl != 0 ? true : false, "Pivot Lows", "●", location.belowbar, chart.fg_color, size = size.tiny, offset = -plen)
+
+alertcondition(not na(ph) or not na(pl), "New Pivot Detected!")

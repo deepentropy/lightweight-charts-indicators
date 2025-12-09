@@ -1,0 +1,367 @@
+//@version=5
+indicator('DR/IDR V1.5', overlay=true, max_lines_count=500, max_boxes_count=500, max_labels_count=500)
+import PineCoders/VisibleChart/4 as PCchart
+
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TheMas7er and bmistiaen
+
+// Input options
+// {
+LS0='Solid', LS1='Dashed', LS2='Dotted'
+BX0='DR', BX1='IDR'
+XL0='Follow Time', XL1='Session End', XL2='ADR End', XL3='ODR End', XL4='RDR End'
+STDLT0='Dynamic',STDLT1='Static'
+// } Input options
+
+TIMEZONE = 'America/New_York'
+ONE_HOUR = 3600*1000
+ONE_DAY = 24*ONE_HOUR
+
+// Inputs
+// {
+var GRP1 = "Time Settings"
+//timings
+exchangeOffset      = input.int(0,"Exchange Offset (hours)", group=GRP1)
+regularTime         = input.session('0930-1030', 'RDR Time', group=GRP1)
+regularExtend       = input.session('1030-1600', 'RDR Lines Time', group=GRP1)
+afterTime           = input.session('1930-2030', 'ADR Time', group=GRP1)
+afterExtend         = input.session('2030-0200', 'ADR Lines Time', group=GRP1)
+overnightTime       = input.session('0300-0400', 'ODR Time', group=GRP1)
+overnightExtend     = input.session('0400-0830', 'ODR Lines Time', group=GRP1)
+
+var GRP2 = "General Settings"
+//lines
+showRegular         = input.bool(true, 'Regular',                                 group=GRP2, inline='session',       tooltip='Show Regular and/or After and/or Overnight session')
+showAfter           = input.bool(true, 'After',                                   group=GRP2, inline='session')
+showOvernight       = input.bool(true, 'Overnight',                               group=GRP2, inline='session')
+drlines             = input.bool(true, 'Show DR Lines ?', group=GRP2)
+idrlines            = input.bool(true, 'Show IDR Lines ?', group=GRP2)
+middledrline        = input.bool(false, 'Show Middle DR Line ?', group=GRP2)
+middleidrline       = input.bool(true, 'Show Middle IDR Line ?', group=GRP2)
+openline            = input.bool(true, 'Show Opening Line ?',                     group=GRP2, inline='openline',      tooltip='Shows the Opening line of the Defining Range.\n- Extend: Extends the drawing of the Opening line into the RDR/ODR Lines Time.')
+extendopLines       = input.bool(true, 'Extend',                                  group=GRP2, inline='openline') // Extend, follow price
+extendopLinesType   = input.string(XL1, '', options=[XL0,XL1,XL2,XL3,XL4], group=GRP2, inline='openline')
+showBackground      = input.bool(true, 'Show DR/IDR Box ?', group=GRP2)
+boxType             = input.string(BX1, 'Box DR or IDR ?', options=[BX0,BX1], group=GRP2)
+extenddrLines       = input.bool(true, 'Extend DR Lines ?', group=GRP2)
+extendidrLines      = input.bool(true, 'Extend IDR Lines ?', group=GRP2)
+showAllHistory      = input.bool(false, 'Show complete history ?', 'Might cause a slight drawing delay when panning/moving/zooming the chart.', group=GRP2)
+useBoxColors        = input.bool(false, 'Box color based on open and close', 'If unchecked, it will default to the selected Box Background Color', group=GRP2)
+extendToEndOfRDR    = input.bool(false, 'Extend lines of all ranges to end of most recent Regular session?', group=GRP2)
+showStdLines                = input.bool(true, 'Show STD Lines ?',                        group=GRP2, inline='stdlines',      tooltip='Shows the Standard Deviation lines in 0.5 IDR range increments.\n- All = Shows all the STD lines on previous sessions.\n- Labels = Show STD level labels.\n- Dropdown = Choose between Dynamic or Static STD lines.')
+showStdLinesAll             = input.bool(true, 'All',                                     group=GRP2, inline='stdlines')
+showStdLineLabels           = input.bool(true, 'Labels',                                  group=GRP2, inline='stdlines')
+stdLineType                 = input.string(STDLT1, '', [STDLT0,STDLT1],                   group=GRP2, inline='stdlines')
+stdLineDynamicExtraPos      = input.int(0, 'Dynamic (+)', minval=0,                       group=GRP2, inline='stdlinedynamic', tooltip='Dynamic STD Lines.\nDynamically draw STD lines around price action. Progresses with price.\n- (+) = Number of positive extra levels to draw in addition to the lines that are automatically drawn around price action.\n- (-) = Number of negative extra levels to draw in addition to the lines that are automatically drawn around price action.\n- Auto = Automatically determine number of STD lines that need to be drawn. Follows price action.')
+stdLineDynamicExtraNeg      = input.int(0, '(-)',         minval=0,                       group=GRP2, inline='stdlinedynamic')
+stdLineDynamicExtraAuto     = input.bool(false, 'Auto',                                   group=GRP2, inline='stdlinedynamic')
+stdLineStaticExtraPos       = input.int(10, 'Static (+)',  minval=0,                       group=GRP2, inline='stdlinestatic', tooltip='Static STD Lines.\nDraws a fixed number of STD lines.\n- (+) = Number of positive levels to draw.\n- (-) = Number of negative levels to draw.')
+stdLineStaticExtraNeg       = input.int(10, '(-)',         minval=0,                       group=GRP2, inline='stdlinestatic')
+
+
+var GRP3 = "Styles"
+linesWidth          = input.int(1, 'Box And Lines Width ?', minval=1, maxval=4, group=GRP3)
+drLineColor         = input.color(color.gray, 'DR Line Color', group=GRP3, inline='drline')
+drLineStyle         = input.string(LS0, 'Style', options=[LS0,LS1,LS2], group=GRP3, inline='drline')
+idrLineColor        = input.color(color.red, 'IDR Line Color', group=GRP3, inline='idrline')
+idrLineStyle        = input.string(LS1, 'Style', options=[LS0,LS1,LS2], group=GRP3, inline='idrline')
+middleLineColor     = input.color(color.gray, 'Middle Line Color', group=GRP3, inline='midline')
+middleLineStyle     = input.string(LS2, 'Style', options=[LS0,LS1,LS2], group=GRP3, inline='midline')
+opLineColor         = input.color(color.green, 'Opening Line',                  group=GRP3, inline='openline',      tooltip='Opening line:\n- Color\n- Style\n- Width')
+opLineStyle         = input.string(LS2, '', options=[LS0,LS1,LS2],                group=GRP3, inline='openline')
+stdLineColor        = input.color(color.gray, 'STD Lines',                  group=GRP3, inline='stdline',      tooltip='Standard deviation lines:\n- Color\n- Style\n- Width')
+stdLineStyle        = input.string(LS2, '', options=[LS0,LS1,LS2],                group=GRP3, inline='stdline')
+backgroundColor     = input.color(color.new(color.gray, 75), 'Box Background Color', group=GRP3)
+boxBorderSize       = input.int(0, title="Box border size", minval=0, group=GRP3)
+upBoxColor          = input.color(color.new(color.green, 85), 'Up box', group=GRP3, inline='upbox')
+upBorderColor       = input.color(color.green, 'border', group=GRP3, inline='upbox')
+downBoxColor        = input.color(color.new(color.red, 85), 'Down box', group=GRP3, inline='downbox')
+downBorderColor     = input.color(color.red, 'border', group=GRP3, inline='downbox')
+// } Inputs
+ 
+ 
+// Constants
+// {
+exchangeOffsetMS = exchangeOffset * 3600000
+// } Constants
+ 
+ 
+// Variables {
+var int     startTime           = na
+var int     endTime             = na
+var string  currentSession      = na
+
+var line    lowrdrl             = na
+var line    highrdrl            = na
+var line    lowridrl            = na
+var line    highridrl           = na
+var line    leftrdrl            = na
+var line    rightrdrl           = na
+var line    middlerdrl          = na
+var line    middleridrl         = na
+var line    drLineOpen          = na
+var box     bgBox               = na
+
+var line[] stdLines                                 = array.new<line>()
+var float[] stdLevels                               = array.new<float>()
+var label[] stdLabels                               = array.new<label>()
+
+var float   rdrlow              = na
+var float   rdrhigh             = na
+var float   ridrlow             = na
+var float   ridrhigh            = na
+var float   rdrmiddle           = na
+var float   ridrmiddle          = na
+var float   sessionOpen         = na
+
+var float   regidrlow             = na
+var float   regidrhigh            = na
+var float   sessionHigh                             = na
+var float   sessionLow                              = na
+var int     stdLinesStartTime                       = na
+var int     stdLinesStopTime                        = na
+
+var bool    use_m5              = false
+// } Variables
+ 
+ 
+// Functions {
+f_insession(_session) => 
+    not na(time(timeframe.period, _session, TIMEZONE))
+   
+f_timestrToHM(_timeStr) =>
+    var int     hourInt   = na
+    var int     minuteInt = na
+    if str.length(_timeStr) == 4
+        hourInt   := int(str.tonumber(str.substring(_timeStr, 0, 2)))
+        minuteInt := int(str.tonumber(str.substring(_timeStr, 2, 4)))
+    [hourInt, minuteInt]
+
+f_sessionTime(_session, _timezone=syminfo.timezone, _part) =>
+    var int ts = na
+    if str.length(_session) == 9 and (_part == 0 or _part == 1)
+        arraySessionSplit = str.split(_session, '-')
+        timeStrTo          = array.get(arraySessionSplit, _part)
+        [hourTo, minuteTo] = f_timestrToHM(timeStrTo)
+        ts := timestamp(_timezone, year, month, dayofmonth, hourTo, minuteTo)
+    ts
+
+f_sessionStartTime(_session, _timezone=syminfo.timezone) => f_sessionTime(_session, _timezone, 0)
+f_sessionStopTime(_session, _timezone=syminfo.timezone)  => f_sessionTime(_session, _timezone, 1)
+f_timestamp_to_date(int _ts = na, string _tz = na) => timestamp(_tz, year(_ts, _tz), month(_ts, _tz), dayofmonth(_ts, _tz))
+
+f_lineStyle(_inputOption) =>
+    switch(_inputOption)
+        LS0 => line.style_solid
+        LS1 => line.style_dashed
+        LS2 => line.style_dotted
+        => line.style_solid 
+
+f_newline(_color, _style) => line.new(na, na, na, na, xloc=xloc.bar_time, color=_color, style=_style, width=linesWidth)
+f_newdrline()   => f_newline(drLineColor, f_lineStyle(drLineStyle))
+f_newidrline()  => f_newline(idrLineColor, f_lineStyle(idrLineStyle))
+f_newmdline()   => f_newline(middleLineColor, f_lineStyle(middleLineStyle)) 
+f_newopline()   => f_newline(opLineColor, f_lineStyle(opLineStyle)) 
+f_newstdine()   => f_newline(stdLineColor, f_lineStyle(stdLineStyle)) 
+
+
+f_newbox()      => box.new(na, na, na, na, xloc=xloc.bar_time, bgcolor=backgroundColor, border_width=boxBorderSize)
+ 
+f_moveLine(_line, _x1, _y, _x2) => line.set_xy1(_line, _x1 + exchangeOffsetMS, _y), line.set_xy2(_line, _x2 + exchangeOffsetMS, _y), _line
+
+f_movebox(_box, _left, _top, _right, _bottom, _bordercolor, _bgcolor) => box.set_lefttop(_box, _left + exchangeOffsetMS, _top), box.set_rightbottom(_box, _right + exchangeOffsetMS, _bottom), box.set_border_color(_box, _bordercolor), box.set_bgcolor(_box, _bgcolor)
+
+f_newLabel() => label.new(na, na, '', xloc = xloc.bar_time, yloc=yloc.price, style=label.style_label_left, color=color(na), textcolor=stdLineColor)
+f_moveLabel(_label, _x, _y, _text) => 
+    label.set_xy(_label, _x, _y)
+    label.set_text(_label, _text)
+    _label
+
+f_drawStdLine(_fromTime, _toTime, _level, float _stdLabelValue=na) =>
+    if not na(_level)
+        if not array.includes(stdLevels, _level)
+            array.push(stdLevels, _level)
+            array.push(stdLines, f_moveLine(f_newstdine(), _fromTime, _level, _toTime))
+            if showStdLineLabels
+                array.push(stdLabels, f_moveLabel(f_newLabel(), _toTime, _level, str.format('{0}',_stdLabelValue)))
+
+
+f_drawStdLines(_fromTime, _toTime, bool _clear = false) =>
+    var float   stdStepFactor   = 0.5
+    var float   stdStep         = na
+    var float   stdLevel        = na
+    var float   stdLabelValue   = na
+    var int     nrLevels        = na
+    var int     nrLevelsPos     = na
+    var int     nrLevelsNeg     = na
+
+    if _clear and not showStdLinesAll and array.size(stdLevels) > 0
+        // If we don't need to show all the lines, delete them each time we clear. If we do need to show all the previous lines, don't delete them.
+        for tmpIndex = 0 to array.size(stdLines)-1
+            line.delete(array.get(stdLines, tmpIndex))
+            if showStdLineLabels
+                label.delete(array.get(stdLabels, tmpIndex))
+    
+    if _clear
+        array.clear(stdLevels)
+        array.clear(stdLines)
+        if showStdLineLabels
+            array.clear(stdLabels)
+
+    stdStep := math.abs(regidrhigh-regidrlow)  * stdStepFactor
+
+    if stdStep != 0
+
+        switch stdLineType
+            STDLT0 => 
+                nrLevelsPos := math.ceil(math.max(sessionHigh - regidrhigh, 0) / stdStep) + (stdLineDynamicExtraAuto ? 0 : stdLineDynamicExtraPos)
+                nrLevelsNeg := math.ceil(math.max(regidrlow - sessionLow, 0)   / stdStep) + (stdLineDynamicExtraAuto ? 0 : stdLineDynamicExtraNeg)
+            STDLT1 => 
+                nrLevelsPos := stdLineStaticExtraPos
+                nrLevelsNeg := stdLineStaticExtraNeg
+
+        // Positive lines
+        if nrLevelsPos >= 1
+            for cnt = 1 to nrLevelsPos
+                stdLevel      := regidrhigh + (cnt * stdStep)
+                stdLabelValue := cnt * stdStepFactor
+                f_drawStdLine(_fromTime, _toTime, stdLevel, stdLabelValue)
+
+        // Negative lines
+        if nrLevelsNeg >= 1
+            for cnt = 1 to nrLevelsNeg
+                stdLevel      := regidrlow - (cnt * stdStep)
+                stdLabelValue := cnt * (-stdStepFactor)
+                f_drawStdLine(_fromTime, _toTime, stdLevel, stdLabelValue)
+
+// } Functions
+ 
+// Use the 5 minute timeframe if the chart timeframe is lower than 5m
+if barstate.isfirst
+    use_m5 := timeframe.in_seconds() < 300
+ 
+[m5_open, m5_high, m5_low, m5_close] = request.security(syminfo.tickerid, '5', [open, high, low, close], lookahead = barmerge.lookahead_on)
+ 
+open_value  = use_m5 ? m5_open  : open
+high_value  = use_m5 ? m5_high  : high
+low_value   = use_m5 ? m5_low   : low
+close_value = use_m5 ? m5_close : close
+ 
+inRegularSession    = f_insession(regularTime)     and showRegular
+inRegularExtend     = f_insession(regularExtend)   and showRegular
+inAfterSession      = f_insession(afterTime)       and showAfter
+inAfterExtend       = f_insession(afterExtend)     and showAfter
+inOvernightSession  = f_insession(overnightTime)   and showOvernight
+inOvernightExtend   = f_insession(overnightExtend) and showOvernight
+
+inSession           = inRegularSession or inOvernightSession or inAfterSession
+inExtend            = inRegularExtend  or inOvernightExtend  or inAfterExtend
+
+enterSession        = inSession and not inSession[1]
+enterExtend         = inExtend  and not inExtend[1]
+
+leaveRegularSession     = not  inRegularSession  and     inRegularSession[1]
+enterRegularExtend      =      inRegularExtend   and not inRegularExtend[1]
+
+
+if timeframe.isintraday //and (PCchart.barIsVisible() or not showAllHistory)
+    if enterSession
+        currentSession := inRegularSession ? regularTime : inOvernightSession ? overnightTime : inAfterSession ? afterTime : na
+    else if enterExtend
+        currentSession := inRegularExtend ? regularExtend : inOvernightExtend ? overnightExtend : inAfterExtend ? afterExtend : na
+
+    if inSession
+ 
+        // Initialize levels
+        if not inSession[1]
+            startTime   := time
+            sessionOpen := open_value
+            rdrhigh     := high_value
+            rdrlow      := low_value 
+            ridrlow     := math.min(open_value, close_value)
+            ridrhigh    := math.max(open_value, close_value)
+
+            // Initialize drawing objects
+            if showBackground
+                bgBox       := f_newbox()
+ 
+            if drlines
+                highrdrl    := f_newdrline()
+                lowrdrl     := f_newdrline()
+
+            if idrlines
+                highridrl   := f_newidrline()
+                lowridrl    := f_newidrline()
+ 
+            if middledrline
+                middlerdrl  := f_newmdline()
+            
+            if middleidrline
+                middleridrl := f_newmdline()
+ 
+            if openline
+                drLineOpen    := f_newopline()
+
+        // Calculate levels
+        rdrhigh     := math.max(high_value, rdrhigh)
+        rdrlow      := math.min(low_value, rdrlow)
+        ridrhigh    := math.max(open_value, close_value, ridrhigh)
+        ridrlow     := math.min(open_value, close_value, ridrlow)
+        rdrmiddle   := math.avg(rdrhigh, rdrlow)
+        ridrmiddle  := math.avg(ridrhigh, ridrlow)
+
+    if leaveRegularSession
+        regidrhigh := ridrhigh
+        regidrlow  := ridrlow
+        if inRegularExtend
+            stdLinesStartTime := f_sessionStartTime(regularExtend, TIMEZONE)
+            stdLinesStopTime :=  f_sessionStopTime(overnightExtend, TIMEZONE) + ONE_DAY * (dayofweek == dayofweek.friday and syminfo.type != 'crypto' ? 3 : 1)
+
+    if enterRegularExtend
+        // Initialize session high/low.
+        sessionHigh := high_value
+        sessionLow  := low_value
+
+    // Remember high/low since session started. Needed for drawing STD levels. Also keep high low beyond Extend.
+    sessionHigh     := math.max(sessionHigh, high_value)
+    sessionLow      := math.min(sessionLow,  low_value)
+
+    // Draw objects
+    if showBackground and inSession
+        boxUp               = close_value > sessionOpen
+        boxBorderColor      = useBoxColors ? (boxUp ? upBorderColor : downBorderColor) : backgroundColor
+        boxBackgroundColor  = useBoxColors ? (boxUp ? upBoxColor    : downBoxColor)    : backgroundColor
+        boxHigh             = boxType==BX0 ? rdrhigh : ridrhigh
+        boxLow              = boxType==BX0 ? rdrlow  : ridrlow
+        f_movebox(bgBox, startTime, boxHigh, time, boxLow, boxBorderColor, boxBackgroundColor)
+ 
+    if extendToEndOfRDR
+        if syminfo.type == 'warrant' or syminfo.type == 'structured' or syminfo.type == 'right'
+            endTime := time
+        else if time > (timenow - 2 * ONE_DAY) // no need to call functions every bar. Only start checking 2 days ago.
+            if f_timestamp_to_date(f_sessionStopTime(currentSession, TIMEZONE), TIMEZONE) == f_timestamp_to_date(timenow, TIMEZONE)  //timenow_date
+                endTime := f_sessionStopTime(regularExtend, TIMEZONE)
+            else
+                endTime := time
+        else
+            endTime := time
+    else
+        endTime := time
+
+    if drlines and (inSession or (extenddrLines and inExtend))
+        f_moveLine(highrdrl, startTime, rdrhigh, endTime)
+        f_moveLine(lowrdrl,  startTime, rdrlow,  endTime)
+        if middledrline
+            f_moveLine(middlerdrl, startTime, rdrmiddle, endTime)
+    
+    if idrlines and (inSession or (extendidrLines and inExtend))
+        f_moveLine(highridrl, startTime, ridrhigh, endTime)
+        f_moveLine(lowridrl,  startTime, ridrlow,  endTime)
+        if middleidrline
+            f_moveLine(middleridrl, startTime, ridrmiddle, endTime)
+
+    if openline and (inSession or (extendopLines and inExtend))
+        f_moveLine(drLineOpen, startTime, sessionOpen, endTime)
+
+    if showStdLines
+        f_drawStdLines(stdLinesStartTime, stdLinesStopTime, enterRegularExtend) 

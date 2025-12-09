@@ -1,0 +1,16 @@
+//@version=6
+indicator(title = "Visible Average Price", shorttitle = "Avg Price", overlay = true)
+
+src = input(title = "Source", defval = close)
+
+var float[] src_vals = array.new<float>()
+
+timeLeft = chart.left_visible_bar_time
+timeRight= chart.right_visible_bar_time
+
+if time >= timeLeft and time <= timeRight 
+    array.unshift(src_vals, src)
+
+avgSRC = array.avg(src_vals)
+    
+plot(avgSRC, 'Avg Price', color = #787B86, trackprice = true, show_last = 1, offset=-100000)

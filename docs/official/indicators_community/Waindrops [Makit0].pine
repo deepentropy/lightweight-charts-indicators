@@ -1,0 +1,804 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © makit0
+
+// WAINDROPS INDICATOR v0.67beta 20210510
+
+
+// █ [b]OVERALL[/b]
+
+// Plot waindrops (custom volume profiles) on user defined periods, for each period you get high and low, it slices each period in half to get independent vwap, volume profile and the volume traded per price at each half.
+// It works on intraday charts only, up to 720m (12H). It can plot balanced or unbalanced waindrops, and volume profiles up to 24H sessions.
+// As example you can setup unbalanced periods to get independent volume profiles for the overnight and cash sessions on the futures market, or 24H periods to get the full session volume profile of EURUSD
+
+// The purpouse of this indicator is twofold:
+// 1 — from a Chartist point of view, to have an indicator which displays the volume in a more readable way
+// 2 — from a Pine Coder point of view, to have an example of use for two very powerful tools on Pine Script: 
+//    • the recently updated drawing limit to 500 (from 50) 
+//    • the recently ability to use drawings arrays (lines and labels)
+
+// If you are new to Pine Script and you are learning how to code, I hope you read all the code and comments on this indicator, all is designed for you,
+// the variables and functions names, the sometimes too big explanations, the overall structure of the code, all is intended as an example on how to code
+// in Pine Script a specific indicator from a very good specification in form of white paper
+
+// If you wanna learn Pine Script form scratch just start [url=https://www.pinecoders.com/learning_pine_roadmap/]HERE[/url]
+// In case you have any kind of problem with Pine Script please use some of the awesome resources at our disposal: [url=https://www.tradingview.com/pine-script-docs/en/v4/Introduction.html]USRMAN[/url], [url=https://www.tradingview.com/pine-script-reference/v4/]REFMAN[/url], [url=https://www.pinecoders.com/]AWESOMENESS[/url], [url=https://www.tradingview.com/pine-wizards/]MAGIC[/url]
+
+
+// █ [b]FEATURES[/b]
+
+// Waindrops are a different way of seeing the volume and price plotted in a chart, its a volume profile indicator where you can see the volume of each price level
+// plotted as a vertical histogram for each half of a custom period. By default the period is 60 so it plots an independent volume profile each 30m
+
+// You can think of each waindrop as an user defined candlestick or bar with four key values:
+//  • high of the period
+//  • low of the period
+//  • left vwap (volume weighted average price of the first half period)
+//  • right vwap (volume weighted average price of the second half period)
+
+// The waindrop can have 3 different colors (configurable by the user):
+//  • GREEN: when the right vwap is higher than the left vwap (bullish sentiment )
+//  • RED: when the right vwap is lower than the left vwap (bearish sentiment )
+//  • BLUE: when the right vwap is equal than the left vwap ( neutral sentiment )
+
+// [b]KEY FEATURES[/b]
+//  • Help menu
+//  • Custom periods
+//  • Central bars
+//  • Left/Right VWAPs
+//  • Custom central bars and vwaps: color and pixels
+//  • Highly configurable volume histogram: execution window, ticks, pixels, color, update frequency and fine tuning the neutral meaning
+//  • Volume labels with custom size and color
+//  • Tracking price dot to be able to see the current price when you hide your default candlesticks or bars
+
+
+// █ [b]SETTINGS[/b]
+
+// [i]Click here or set any impar period to see the HELP INFO[/i]: show the HELP INFO, if it is activated the indicator will not plot
+// [i]PERIOD SIZE (max 2880 min)[/i]: waindrop size in minutes, default 60, max 2880 to allow the first half of a 48H period as a full session volume profile
+// [i]BARS[/i]: show the central and vwap bars, default true
+//   [i]Central bars[/i]: show the central bars, default true
+//   [i]VWAP bars[/i]: show the left and right vwap bars, default true
+//   [i]Bars pixels[/i]: width of the bars in pixels, default 2
+//   [i]Bars color mode[/i]: bars color behavior
+//    • [i]BARS[/i]: gets the color from the 'Bars color' option on the settings panel
+//    • [i]HISTOGRAM[/i]: gets the color from the Bearish/Bullish/Neutral Histogram color options from the settings panel
+//   [i]Bars color[/i]: color for the central and vwap bars, default white
+// [i]HISTOGRAM[/i] show the volume histogram, default true
+//   [i]Execution window (x24H)[/i]: last 24H periods where the volume funcionality will be plotted, default 5
+//   [i]Ticks per bar (max 50)[/i]: width in ticks of each histogram bar, default 2
+//   [i]Updates per period[/i]: number of times the histogram will update
+//    • [i]ONE[/i]: update at the last bar of the period
+//    • [i]TWO[/i]: update at the last bar of each half period
+//    • [i]FOUR[/i]: slice the period in 4 quarters and updates at the last bar of each of them
+//    • [i]EACH BAR[/i]: updates at the close of each bar
+//   [i]Pixels per bar[/i]: width in pixels of each histogram bar, default 4
+//   [i]Neutral Treshold (ticks)[/i]: delta in ticks between left and right vwaps to identify a waindrop as neutral, default 0
+//   [i]Bearish Histogram color[/i]: histogram color when right vwap is lower than left vwap, default red
+//   [i]Bullish Histogram color[/i]: histogram color when right vwap is higher than left vwap, default green
+//   [i]Neutral Histogram color[/i]: histogram color when the delta between right and left vwaps is equal or lower than the Neutral treshold, default blue
+// [i]VOLUME LABELS[/i]: show volume labels
+//   [i]Volume labels color[/i]: color for the volume labels, default white
+//   [i]Volume Labels size[/i]: text size for the volume labels, choose between AUTO, TINY, SMALL, NORMAL or LARGE, default TINY
+// [i]TRACK PRICE[/i]: show a yellow ball tracking the last price, default true
+
+
+// █ [b]LIMITS[/b]
+
+// This indicator only works on intraday charts (minutes only) up to 12H (720m), the lower chart timeframe you can use is 1m
+// This indicator needs price, time and volume to work, it will not work on an index (there is no volume), the execution will not be allowed
+// The histogram (volume profile) can be plotted on 24H sessions as limit but you can plot several 24H sessions
+
+
+// █ [b]ERRORS AND PERFORMANCE[/b]
+
+// Depending on the choosed settings, the script performance will be highly affected and it will experience errors
+// Two of the more common errors it can throw are:
+//  • Calculation takes too long to execute
+//  • Loop takes too long
+// The indicator performance is highly related to the underlying volatility (tick wise), the script takes each candlestick or bar and for each tick in it stores the price and volume, if the ticker in your chart has thousands and thousands of ticks per bar the indicator will throw an error for sure, it can not calculate in time such amount of ticks.
+// What all of that means? Simply put, this will throw error on the BITCOIN pair BTCUSD (high volatility with tick size 0.01) because it has too many ticks per bar, but lucky you it will work just fine on the futures contract BTC1! (tick size 5) because it has a lot less ticks per bar
+// There are some options you can fine tune to boost the script performance, the more demanding option in terms of resources consumption is [i]Updates per period[/i], by default is maxed out so lowering this setting will improve the performance in a high way.
+// If you wanna know more about how to improve the script performance, read the [i]HELP INFO[/i] accessible from the settings panel
+
+
+// █ [b]HOW-TO SETUP[/b]
+
+// The basic parameters to adjust are [i]Period size[/i], [i]Ticks per bar[/i] and [i]Pixels per bar[/i]
+//  • [i]Period size[/i] is the main setting, defines the waindrop size, to get a better looking histogram set bigger period and smaller chart timeframe
+//  • [i]Ticks per bar[/i] is the tricky one, adjust it differently for each underlying (ticker) volatility wise, for some you will need a low value, for others a high one.
+//    To get a more accurate histogram set it as lower as you can (min value is 1)
+//  • [i]Pixels per bar[/i] allows you to adjust the width of each histogram bar, with it you can adjust the blank space between them or allow overlaping
+// You must play with these three parameters until you obtain the desired histogram: smoother, sharper, etc...
+
+// These are some of the different kind of charts you can setup thru the settings:
+//  • Balanced Waindrops (default): charts with waindrops where the two halfs are of same size.
+//    This is the default chart, just select a period (30m, 60m, 120m, 240m, pick your poison), adjust the histogram ticks and pixels and watch
+//  • Unbalanced Waindrops: chart with waindrops where the two halfs are of different sizes.
+//    Do you trade futures and want to plot a waindrop with the first half for the overnight session and the second half for the cash session? you got it;
+//    just adjust the period to 1860 for any CME ticker (like ES1! for example) adjust the histogram ticks and pixels and watch
+//  • Full Session Volume Profile: chart with waindrops where only the first half plots.
+//    Do you use Volume profile to analize the market? Lucky you, now you can trick this one to plot it, just try a period of 780 on SPY, 2760 on ES1!, or 2880 on EURUSD
+//    remember to adjust the histogram ticks and pixels for each underlying
+//  • Only Bars: charts with only central and vwap bars plotted, simply deactivate the histogram and volume labels
+//  • Only Histogram: charts with only the histogram plotted (volume profile charts), simply deactivate the bars and volume labels
+//  • Only Volume: charts with only the raw volume numbers plotted, simply deactivate the bars and histogram
+
+// If you wanna know more about custom full session periods for different asset classes, read the [i]HELP INFO[/i] accessible from the settings panel
+
+// [b]EXAMPLES[/b]
+
+// Full Session Volume Profile on [symbol="CME_MINI:MES1!"]MES[/symbol] 5m chart: https://www.tradingview.com/x/Ge1LSlue/
+
+// Full Session Unbalanced Waindrop on [symbol="CME_MINI:MNQ1!"]MNQ[/symbol] 2m chart (left side Overnight session, right side Cash Session): https://www.tradingview.com/x/Ff03btNh/
+
+// The following examples will have the exact same charts but on four different tickers representing a futures contract, a forex pair, an etf and a stock.
+// We are doing this to be able to see the different parameters we need for plotting the same kind of chart on different assets
+// The chart composition is as follows:
+//  • Left side: Volume Labels chart (period 10)
+//  • Upper Right side: Waindrops (period 60)
+//  • Lower Right side: Full Session Volume Profile
+// The first example will specify the main parameters, the rest of the charts will have only the differences
+
+// https://www.tradingview.com/x/ztX3eR23/
+// [symbol="CME_MINI:MES1!"]MES[/symbol]:
+//  • Left: Period size: 10, Bars: uncheck, Histogram: uncheck, Execution window: 1, Ticks per bar: 2, Updates per period: EACH BAR,
+//    Pixels per bar: 4, Volume labels: check, Track price: check
+//  • Upper Right: Period size: 60, Bars: check, Bars color mode: HISTOGRAM, Histogram: check, Execution window: 2, Ticks per bar: 2,
+//    Updates per period: EACH BAR, Pixels per bar: 4, Volume labels: uncheck, Track price: check
+//  • Lower Right: Period size: 2760, Bars: uncheck, Histogram: check, Execution window: 1, Ticks per bar: 1, Updates per period: EACH BAR,
+//    Pixels per bar: 2, Volume labels: uncheck, Track price: check
+
+// https://www.tradingview.com/x/lYF2qxsS/
+// [symbol="FX:EURUSD"]EURUSD[/symbol]: 
+//  • Upper Right: Ticks per bar: 10
+//  • Lower Right: Period size: 2880, Ticks per bar: 1, Pixels per bar: 1
+
+// https://www.tradingview.com/x/swsja8Uq/
+// [symbol="AMEX:SPY"]SPY[/symbol]: 
+//  • Left: Ticks per bar: 3
+//  • Upper Right: Ticks per bar: 5, Pixels per bar: 3
+//  • Lower Right: Period size: 780, Ticks per bar: 2, Pixels per bar: 2
+
+// https://www.tradingview.com/x/HHMI3bJh/
+// [symbol="NASDAQ:AAPL"]AAPL[/symbol]: 
+//  • Left: Ticks per bar: 2
+//  • Upper Right: Ticks per bar: 6, Pixels per bar: 3
+//  • Lower Right: Period size: 780, Ticks per bar: 1, Pixels per bar: 2
+
+
+// █ [b]THANKS TO[/b]
+
+// [url=https://www.tradingview.com/u/PineCoders/]PineCoders[/url] for all they do, all the tools and help they provide and their involvement in making a better community
+// [url=https://www.tradingview.com/u/scarf/#published-scripts]scarf[/url] for the idea of coding a waindrops like indicator, I did not know something like that existed at all
+// All the Pine Coders, Pine Pros and Pine Wizards, people who share their work and knowledge for the sake of it and helping others, I'm very grateful indeed
+// I'm learning at each step of the way from you all, thanks for this awesome community;
+// Opensource and shared knowledge: this is the way! (said with canned voice from inside my helmet :D)
+
+
+// █ [b]NOTE[/b]
+
+// This description was formatted following [url=https://www.pinecoders.com/techniques/script_description/]THIS[/url] guidelines
+
+
+// █ [b]VERSIONS[/b]
+
+// [b]v0.66b[/b]
+//  • Fixed minor typos
+//  • Updated publication metadata
+//  • Updated execution condition and HELP INFO (message and positioning)
+//    From
+// [pine]
+// isPeriodOK = not i_showHelp and timeframe.isminutes == true and _timeframe_multiplier <= 720 and i_period % 2 == 0 and i_period % _timeframe_multiplier == 0
+// if not isPeriodOK
+//     f_printHelp(
+//       ...
+//       "\nWaindrops [Makit0] v0.65beta"+
+//       "\n"+
+//       "\nParameters not allowed!"+
+//       ...
+// if isPeriodOK
+//     halfPeriod = int(.5*i_period)
+//     ...
+// [/pine]      
+//    To
+// [pine]
+// isIndex = syminfo.type == 'index'
+// isPeriodOK = timeframe.isminutes == true and _timeframe_multiplier <= 720 and i_period % 2 == 0 and i_period % _timeframe_multiplier == 0 
+// customHelpHeader = isIndex ? 'Ticker not allowed! It is an index, select a ticker with volume data.' : not isPeriodOK ? 'Parameters not allowed! Select a new period size and/or chart timeframe.' : 'HELP INFO'
+// isGoodToGo = not isIndex and not i_showHelp and isPeriodOK
+// if not isGoodToGo
+//     f_printHelp(
+//       ...
+//       "\nWaindrops [Makit0] v0.66beta"+
+//       "\n"+
+//       "\n"+customHelpHeader+
+//       ...
+// if isGoodToGo
+//     halfPeriod = int(.5*i_period)
+//     ...
+// [/pine]      
+//    And from [pine]f_printHelp(_txt) => var _lbl = label.new(... label.style_label_upper_right ...), label.set_xy(... highest(200)) ...[/pine]
+//    To [pine]f_printHelp(_txt) => var _lbl = label.new(... label.style_label_right ...), label.set_xy(... 0.5*(highest(300)+lowest(300))) ...[/pine]
+//  • Updated LIMITS section, added the following:
+//    This indicator needs price, time and volume to work, it will not work on an index (there is no volume), the execution will not be allowed
+//  • Updated ERRORS AND PERFORMANCE section, added the following:
+//    The indicator performance is highly related to the underlying volatility (tick wise), the script takes each candlestick or bar and for each tick in it stores the price and volume, if the ticker in your chart has thousands and thousands of ticks per bar the indicator will throw an error for sure, it can not calculate in time such amount of ticks.
+//    What all of that means? Simply put, this will throw error on the BITCOIN pair BTCUSD (high volatility with tick size 0.01) because it has too many ticks per bar, but lucky you it will work just fine on the futures contract BTC1! (tick size 5) because it has a lot less ticks per bar
+
+// [b]v0.67b[/b]
+//  • Updated indicator's name to Waindrops
+//  • Updated all references inside code
+
+
+// ═════════════════════════════════════════════════════════════════════════
+
+// I sincerely hope you enjoy reading and using this work as much as I enjoyed developing it :D
+
+// [b][i]GOOD LUCK AND HAPPY TRADING![/i][/b]
+
+
+//@version=4
+study("Waindrops_v0.67beta",shorttitle="WD_v067b",overlay=true,max_lines_count=500,max_labels_count=500)
+// A little explanation about the code structure and the behavior coded
+
+// The code is structured in four different blocks, each block need the precedent blocks to function properly
+//  • Constants: a way to avoid having unecessary strings in the code, in this case declaring them as variables
+//  • Inputs: this will be the menu on the indicator settings panel, all options can be modified by the user
+//  • Functions: structured and independent chunks of code to perform specific tasks needed by the main logic
+//  • Main logic: this is where the behavior of the indicator is coded, it makes use of all three blocks above
+
+// The indicator behavior is as follows:
+// 1 — First it gets the period time coordinates: start, middle point and end of period
+// 2 — Then it calculates the high, low and vwaps at each side of the period
+// 3 — And plot the bar formed by those four datapoints at the right time coordinates:
+//      • the central bar from low to high is plotted at the middle point
+//      • the left vwap is plotted from the start to the middle point
+//      • the right vwap is plotted from the middle point to the end
+// 4 — Then it comes the volume logic to plot the histogram and the labels
+// 5 — First checks if it must run the logic or not based on the options activated on the settings panel
+// 6 — If it is good to go, it stores the volume and price data on arrays
+// 7 — Then it checks if must update the histogram or labels based on the settings too
+// 8 — It parses the volume data into two arrays, one for each half of the period
+// 9 — It gets the right coordinates to plot the histogram based on the parsed arrays
+// 10 — And finally plots the histogram and/or the volume labels
+// 11 — The last line of code plots a circle at the last known price to keep track of it
+
+// ##################
+// #    CONSTANTS   #
+
+// constants for i_barsColorMode
+BARS = 'BARS'
+HISTOGRAM = 'HISTOGRAM'
+
+// constants for i_histogramUpdateMode
+ONE = 'ONE'
+TWO = 'TWO'
+FOUR = 'FOUR'
+EACHBAR = 'EACH BAR'
+
+// constants for i_volumeLabelsSize
+AUTO = 'AUTO'
+TINY = 'TINY'
+SMALL = 'SMALL'
+NORMAL = 'NORMAL'
+LARGE = 'LARGE'
+
+
+// ##############
+// #    INPUTS  #
+
+// just a message as 1st menu item
+i_showHelp                  = input(false,                      'Click here or set any impar period to see the HELP INFO')
+
+// period input
+i_period                    = input(60,                         'PERIOD SIZE (max 2880 min)',   minval=2,maxval=2880)
+
+// bars inputs
+i_showBars                  = input(true,                       'BARS')
+i_showCentralBars           = input(true,                       'Central bars')
+i_showVWAPBars              = input(true,                       'VWAP bars')
+i_barPixels                 = input(2,                          '  Bars pixels',                minval=1)
+i_barsColorMode             = input(BARS,                       '  Bars color mode',            options=[BARS,HISTOGRAM])
+i_barsColor                 = input(color.white,                '  Bars color')
+
+// histogram inputs
+i_showHistogram             = input(true,                       'HISTOGRAM')            
+i_histogramPeriods          = input(5,                          '  Execution window (x24H)',    minval=1)
+i_histogramGranularity      = input(2,                          '  Ticks per bar (max 50)',     minval=1,maxval=50)
+i_histogramUpdateMode       = input(EACHBAR,                    '  Updates per period',         options=[ONE,TWO,FOUR,EACHBAR])
+i_histogramPixels           = input(4,                          '  Pixels per bar',             minval=1)
+i_histogramNeutralTreshold  = input(0,                          '  Neutral treshold (ticks)',   minval=0)
+i_histogramBearColor        = input(color.new(color.red,50),    '  Bearish Histogram color')
+i_histogramBullColor        = input(color.new(color.green,50),  '  Bullish histogram color')
+i_histogramNeutralColor     = input(color.new(color.blue,50),   '  Neutral histogram color')
+
+// volume info input
+i_showVolumeInfo            = input(true,                       'VOLUME LABELS')
+i_volumeLabelsColor         = input(color.new(color.white,50),  '  Volume labels color')
+i_volumeLabelsSize          = input(TINY,                       '  Volume labels size',         options=[AUTO,TINY,SMALL,NORMAL,LARGE])
+
+// track price input
+i_trackPrice                = input(true,                       'TRACK PRICE')
+
+
+// ###################
+// #    FUNCTIONS    #
+
+// WORKING WITH TICKS
+
+// system to global var
+var _mintick = syminfo.mintick
+// round a price to tick
+f_round_tick(price) => round(price/_mintick)*_mintick
+// getting delta (in ticks) between two prices 
+f_delta_tick(price1,price2) => (price1/_mintick - price2/_mintick)
+// getting the amount of ticks in the range between high and low
+f_ticksInRange(rangeHigh,rangeLow) => (rangeHigh/_mintick - rangeLow/_mintick) + 1
+
+
+// WORKING WITH LINES
+
+// crating a new line with time coordinates
+f_line_new(timeX1,y1,timeX2,y2) => line.new(timeX1,y1,timeX2,y2,xloc=xloc.bar_time,width=i_barPixels)
+
+// setting `y1`and `y2` coordinates at the same time on one line
+f_line_set_y1y2(id,y1,y2) => line.set_y1(id,y1), line.set_y2(id,y2)
+
+// setting `y` coordinate as `y1` and `y2` coordinates on one line
+f_line_set_y(id,y) => f_line_set_y1y2(id,y,y)
+
+// setting same color up to 3 lines
+f_line_set_color(l_1,l_2,l_3,lineColor) => line.set_color(l_1,lineColor),line.set_color(l_2,lineColor),line.set_color(l_3,lineColor)
+
+// simply returning `void` value (necessary for getting the same return on `if/else` blocks to avoid the compilation error)
+f_void() => line.delete(na)
+
+
+// WORKING WITH LABELS
+
+// printing a message, adapted from @PineCoders
+f_printHelp(_txt) => var _lbl = label.new(bar_index, highest(200), _txt, xloc.bar_index, yloc.price, #00000000, label.style_label_right, i_barsColor, size.large, text.align_left), label.set_xy(_lbl, bar_index, 0.5*(highest(300)+lowest(300))), label.set_text(_lbl, _txt)
+
+// creating a new label with time coordinates
+f_label_new(timex,y,text,style,size,align) => label.new(timex,y,text,xloc=xloc.bar_time,color=color.new(color.white,100),style=style,textcolor=i_volumeLabelsColor,size=size,textalign=align)
+
+// setting the same `y` coordinate up to 3 labels
+f_label_set_y(label1,label2,label3,y) => label.set_y(label1,y),label.set_y(label2,y),label.set_y(label3,y)
+
+
+// WORKING WITH TIME
+
+// system to global var
+var _timeframe_multiplier = timeframe.multiplier
+// getting ms of each bar (period unit)
+var msByPeriodUnit = 1000*60*_timeframe_multiplier
+// getting time as start time plus x units of increment
+f_getTimePointInPeriod(_startTime,_unitsIncrement) => _startTime + (_unitsIncrement / _timeframe_multiplier) * msByPeriodUnit
+
+
+// WORKING WITH ARRAYS
+
+// clearing up to 6 arrays at once
+f_clearArrays(a_1,a_2,a_3,a_4,a_5,a_6) => array.clear(a_1),array.clear(a_2),array.clear(a_3),array.clear(a_4),array.clear(a_5),array.clear(a_6)
+
+// getting the array index of the element that equals `value`, `-1` in case the element does not exist in the array
+// this function do the same that the built-in function array.indexof(), so why do not use it? you may ask...
+// this is because of a bug in the built-in function with small numbers, so we need the custom function to get accurate values
+f_array_indexof(a_base,value) =>
+    _init = 0
+    _end = array.size(a_base)-1
+    output = -1
+    for i = _init to _end
+        if _end < 0 or output != -1
+            break
+        if array.get(a_base,i) == value
+            output := i
+    output 
+
+// getting price and volume data from the bar range and storing it into a functional array map structure: 
+//  - two arrays sharing same index, price array for storing the keys and volume array for storing the values
+// for each price level (key) in the range we search if that level is already in the array:
+//  - if finds out, it just add the volume (data)
+//  - if not, it adds the price level (key) and the volume (data)
+f_populate_array(a_lvl,a_vol) =>
+    _high = high, _low = low
+    rangeTicks = f_ticksInRange(_high,_low)
+    volumeByTick = volume/rangeTicks
+    for level = _low to _high by _mintick
+        index = f_array_indexof(a_lvl,level)
+        if index < 0
+            array.push(a_lvl,level)
+            array.push(a_vol,volumeByTick)
+        else            
+            updatedVol = array.get(a_vol,index) + volumeByTick
+            array.set(a_vol,index,updatedVol)
+            
+// getting volume from a single price level: first get index from price array, then get value from volume array
+// its a search into a functional array map, search for the key (price) to retrieve the data (volume)
+f_volumeByLevel(a_lvl,a_vol,level) => index = f_array_indexof(a_lvl,level), index != -1 ? array.get(a_vol,index) : 0
+
+// getting volume from several price levels from lowest to highest in LOOP form: elegant code in few lines but with higher impact on the performance
+// I do not use this function by default in the code, it's here as example for you guys whom are starting in Pine Script, see next function comments.
+// f_volumeByMultiLevel_LOOP(a_lvl,a_vol,level,count) =>
+//     var output = 0., output := 0.
+//     for i = 1 to count
+//         _lvl = level + i*_mintick-_mintick
+//         output := output + f_volumeByLevel(a_lvl,a_vol,_lvl)
+//     output
+
+// Getting volume from several price levels from lowest to highest in CONDITIONAL (NO LOOP) form: same funcionality than f_volumeByMultiLevel_LOOP() but capped to 50 levels
+// The code is not elegant, it's a big force brute thing, but it gets the work done with lower impact on the performance
+// I use this function by default, it's ugly yes, but it does the work and it does it faster.
+// As coders (or traders for the case) we are presented with an infinity of choices along the way, I know in a clear way what my choices are:
+// - as a coder: I want a code that gets the work done with the less possible impact on the system resources (it must do the job, and do it fast)
+// - as a trader: I want a trade that gets the work done (making money) with the less possible impact on my time and mental capital (my system resources)
+// First we use a function to get the volume of 5 levels and then we use a function to get the volume of 50 levels using calls to the first function,
+// we are doing it this way for two reasons:
+// - readablility: we want a code easy to read, so if you are new to Pine Script you can get the grasp of it
+// - performance: we need a way to avoid unnecessary calls that will undermine the overall perfomance, we could check every level instead of every 5
+// but this would make the code bigger and harder to read, so we decided to check 5 levels at once but avoiding unecessary calls, well with this design
+// we can get up to 4 unnecessary checks in case we need to check only 1 level (or 6, 11, 16, 21, 26... you get the idea), but still the pros outnumber the cons
+// so to check 1 to 5 levels we make a call and this call will check 5 levels, and to check 19 levels we will make 5 calls, and each call will check 5 levels, and so on...
+// on the code you can see how the calls for unnecessary levels are avoided, if you wanna check 35 levels, thats what the code will do, it will not check the level 36 nor any of the following ones
+// getting 5 levels at once
+f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level,count) =>
+    output = 0.
+    output := count >=  1 ? output + f_volumeByLevel(a_lvl,a_vol,level)              : output
+    output := count >=  2 ? output + f_volumeByLevel(a_lvl,a_vol,level+    _mintick) : output
+    output := count >=  3 ? output + f_volumeByLevel(a_lvl,a_vol,level+  2*_mintick) : output
+    output := count >=  4 ? output + f_volumeByLevel(a_lvl,a_vol,level+  3*_mintick) : output
+    output := count >=  5 ? output + f_volumeByLevel(a_lvl,a_vol,level+  4*_mintick) : output
+// getting up to 50 levels by 5 lots
+f_volumeByMultiLevel_NOLOOP(a_lvl,a_vol,level,count) =>
+    output = 0.
+    if count <= 5
+        output := f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level,count)
+    else if count <= 10
+        output := f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 5 *_mintick,count - 5)
+    else if count <= 15
+        output := f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 5 *_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 10*_mintick,count - 10)
+    else if count <= 20
+        output := f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 5 *_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 10*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 15*_mintick,count - 15)
+    else if count <= 25 
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 5 *_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 10*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 15*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 20*_mintick,count - 20)
+    else if count <= 30
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 5 *_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 10*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 15*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 20*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 25*_mintick,count - 25)
+    else if count <= 35
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 5 *_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 10*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 15*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 20*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 25*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 30*_mintick,count - 30)
+    else if count <= 40
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 5 *_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 10*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 15*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 20*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 25*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 30*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 35*_mintick,count - 35)
+    else if count <= 45
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 5 *_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 10*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 15*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 20*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 25*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 30*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 35*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 40*_mintick,count - 40)
+    else if count <= 50
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 5 *_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 10*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 15*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 20*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 25*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 30*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 35*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 40*_mintick,count)
+        output := output + f_volumeBy5Levels_NOLOOP(a_lvl,a_vol,level + 45*_mintick,count - 45)
+
+// deleting all lines inside an array
+f_deleteHistogram(a_histogram) =>
+    _end = array.size(a_histogram)
+    if _end > 0
+        for i=0 to _end - 1
+            line.delete(array.shift(a_histogram))
+
+// deleting all labels inside an array            
+f_deleteVolumeLabels(a_volumeLabels) =>
+    _end = array.size(a_volumeLabels)
+    if _end > 0
+        for i=0 to _end - 1
+            label.delete(array.shift(a_volumeLabels))            
+
+// creating a new line inside the histogram array
+f_updateHistogram(a_histogram,x1,x2,y,histogramColor,histogramPixels) => array.push(a_histogram,line.new(x1,y,x2,y,xloc=xloc.bar_time,color=histogramColor,width=histogramPixels))
+
+// creating a new label inside the volume labels array
+f_updateVolumeLabels(a_volumeLabels,x,y,leftVolume,rightVolume,size) => 
+    array.push(a_volumeLabels,f_label_new(x,y,tostring(leftVolume,'0')+' - '+tostring(rightVolume,'0'),label.style_label_center,size,text.align_center))
+
+
+// ##################
+// #    MAIN LOGIC  #
+
+// check if the ticker is an index: an index has no volume only price, so we can not allow the logic to execute
+isIndex = syminfo.type == 'index'
+
+// check the chart timeframe and period input to allow or not the execution of the logic
+isPeriodOK = timeframe.isminutes == true and _timeframe_multiplier <= 720 and i_period % 2 == 0 and i_period % _timeframe_multiplier == 0 
+
+// message to help the user to identify the problem
+customHelpHeader = isIndex ? 'Ticker not allowed! It is an index, select a ticker with volume data.' : not isPeriodOK ? 'Parameters not allowed! Select a new period size and/or chart timeframe.' : 'HELP INFO'
+
+// we check all conditions to allow the execution of the logic
+isGoodToGo = not isIndex and not i_showHelp and isPeriodOK
+
+// if it does not pass the check, print the HELP message; it must not be an index, the HELP INFO must be unchecked on the settings and the period must be a valid one
+if not isGoodToGo
+    f_printHelp(""+
+      "\n"+
+      "\n"+
+      "\nWaindrops [Makit0] v0.67beta"+
+      "\n"+
+      "\n"+customHelpHeader+
+      "\n"+
+      "\n • Max allowed period input 2880 min (48H)"+
+      "\n • Max allowed chart resolution 720 min (12H)"+
+      "\n • You must choose a value divisible by 2 and multiple of the current chart timeframe"+
+      "\n • For example a period of 10 on 1 min chart, a period of 60 on a 5 min chart, etc..."+
+      "\n • Rule of thumb (valid period size): multiply your current chart timeframe by a par number"+
+      "\n"+
+      "\nHow-to set full session periods:"+
+      "\n • ES -> waindrop: 1380 | volume profile: 2760 | overnight/cash waindrop: 1860"+
+      "\n • SPY -> waindrop:  390 | volume profile:  780"+
+      "\n • EURUSD -> waindrop: 1440 | volume profile: 2880"+
+      "\n"+
+      "\nHow-to avoid errors:"+
+      "\n • Hide and show the indicator (eye-shape button): this makes the script recalculate"+
+      "\n • Increase the chart timeframe: less bars on the same period size equals less script iterations"+
+      "\n • Lower the period size: equals smaller histograms and those are easier to calculate"+
+      "\n • Lower the execution window: it is faster to execute in the last day than in the last 100 days"+
+      "\n • Lower the ticks per bar: more ticks per bar equals more calculations to generate the histogram"+
+      "\n • Lower the updates per period: huge impact, avoid the each bar update to boost speed execution"+
+      "\n • Deactivate the volume labels: high impact, avoid to plot labels to boost speed execution"+
+      "\n • Deactivate the histogram (yep, this is a bit overkill I know... but very effective too :D)"+
+      "\n")
+
+// if it pass the check execute the logic
+if isGoodToGo
+    
+    // check if the current candle is the start of a new period or the half of the current period
+    halfPeriod = int(.5*i_period)
+    isNewPeriod = change(time(tostring(i_period))) != 0
+    isHalfPeriod = change(time(tostring(halfPeriod))) != 0
+    
+    // getting the values of the period time points: start, half and end  
+    var newPeriodTime = 0, var _time = 0, _time := time
+    newPeriodTime := isNewPeriod ? _time : newPeriodTime
+    halfPeriodTime = f_getTimePointInPeriod(newPeriodTime,halfPeriod)
+    fullPeriodTime = f_getTimePointInPeriod(halfPeriodTime,halfPeriod)
+    
+    // we need to know if the current candle is in the first or second half of the period
+    is2ndHalf = _time >= halfPeriodTime
+
+    // #############################
+    // #   CENTRAL AND VWAP BARS   #
+    
+    // base calculations for the vwap of each half period: cumulative volume and cumulative price times volume
+    var cumVol = 0., var cumPriceXVol = 0.
+    var _volume = 0., _volume := volume
+    var _hlc3 = 0., _hlc3 := hlc3
+    cumVol := isHalfPeriod ? _volume : cumVol + _volume
+    cumPriceXVol := isHalfPeriod ? _hlc3 * _volume : cumPriceXVol + _hlc3 * _volume
+    
+    // calculations to get the high and low of each period
+    var periodHigh = 0., var periodLow = 0.
+    var _high = 0., _high := high
+    var _low = 0., _low := low
+    periodHigh := isNewPeriod ? _high : _high > periodHigh ? _high : periodHigh
+    periodLow := isNewPeriod ? _low : _low < periodLow ? _low : periodLow
+    
+    // calculations to get the vwaps at each side of the period
+    var vwapLeft = 0., var vwapRight = 0.
+    vwapLeft := f_round_tick(is2ndHalf ? vwapLeft : cumPriceXVol / cumVol)
+    vwapRight := f_round_tick(is2ndHalf ? cumPriceXVol / cumVol : vwapRight)
+    // on the paper they talk about the central point, which they mark with a dot right at the middle of vwaps
+    // I'm writing here the calculation for those how wanna plot it
+    // I'm not plotting it because I like the drawings balance right now: 3 lines + dynamic histogram lines and 3 labels + dynamic volume labels
+    // So at each period there are the exact same amount of lines and labels, I simply like it like that
+    // var centralPoint = 0., centralPoint := f_round_tick(is2ndHalf ? .5*(vwapLeft + vwapRight) : vwapLeft)
+
+    // getting histogram and bars colors
+    vwapDelta = is2ndHalf ? f_delta_tick(vwapRight,vwapLeft) : f_delta_tick(vwapLeft,vwapRight)
+    histogramColor = abs(vwapDelta) <= i_histogramNeutralTreshold ? i_histogramNeutralColor : vwapDelta > 0 ? i_histogramBullColor : i_histogramBearColor            
+    barsColor = i_barsColorMode == BARS ? i_barsColor : histogramColor
+
+    // once we have all the data, we plot the lines to form the bars of each period
+    // variables for the 3 lines forming the bars: central bar from period high to period low, and left and right lines at the vwap of each half of the period
+    var line l_central = na, var line l_left = na, var line l_right = na
+    // cheking if the input `BARS` is activated on the settings panel
+    if i_showBars
+        // if we are on the second half of the period we must create the right vwap line at the first bar or update it on any other case
+        if is2ndHalf
+            if isHalfPeriod
+                l_right := i_showVWAPBars ? f_line_new(halfPeriodTime,vwapRight,fullPeriodTime,vwapRight) : na
+                // note the use of the `f_void()` function to avoid the compilation error "Return type of one of the 'if' blocks is not compatible with return type of other block(s) (series[line]; void)"
+                f_void()
+            else
+                f_line_set_y(l_right,vwapRight)
+        // if we are on the first half of the period, we must create the central and left lines at the first bar or update the left line in any other case        
+        else
+            // at each new period we create the central and left lines in case they are activated on the settings panel
+            if isNewPeriod
+                l_central := i_showCentralBars ? f_line_new(halfPeriodTime,periodHigh,halfPeriodTime,periodLow) : na
+                l_left := i_showVWAPBars ? f_line_new(newPeriodTime,vwapLeft,halfPeriodTime,vwapLeft) : na
+                // in case we select a custom period to create an unbalanced drop, we need to do two things:
+                // - update the right vwap line to the right size when a new period starts
+                // - fix the line into the chart pointing `l_right` to `na` to avoid future modifications
+                if is2ndHalf[1]
+                    line.set_x2(l_right,_time)
+                    l_right := na
+                // note the use of the `f_void()` function to avoid the compilation error "Return type of one of the 'if' blocks is not compatible with return type of other block(s) (series[line]; void)"    
+                f_void()
+            else
+                f_line_set_y(l_left,vwapLeft)
+        // at each iteration we update the central line and the color of the 3 lines
+        f_line_set_y1y2(l_central,periodHigh,periodLow)        
+        f_line_set_color(l_left,l_central,l_right,barsColor)
+
+    // ##################################
+    // #   VOLUME HISTOGRAM AND LABELS  #   
+    
+    // check if we are inside the execution window setted on the settings panel: last 5 24H periods by default
+    executionWindow = timenow-_time < 1000*60*60*24*i_histogramPeriods
+    // the logic is executed only at the last iteration of each bar if the histogram or volume labels options are activated on the settings panel and we are into the execution window
+    isExecutionAllowed = (i_showHistogram or i_showVolumeInfo) and executionWindow and barstate.isconfirmed
+    
+    // if all is right go for it baby!
+    if isExecutionAllowed
+    
+        // we use arrays to store the data we need in order to plot the histogram and the volume labels:
+        // - float arrays to store left and right volume and price levels
+        // - line array to store the histogram lines
+        // - label array to store the volume labels
+        var a_priceLeft = array.new_float(0),   var a_volumeLeft = array.new_float(0)
+        var a_priceRight = array.new_float(0),  var a_volumeRight = array.new_float(0)
+        var a_histogram = array.new_line(na),   var a_volumeLabels = array.new_label(na)
+        
+        // declaration of the 3 volume labels plotted at the bottom of the histogram: total left volume, total right volume and total period volume
+        var label leftVolumeInfoLabel = na,var label rightVolumeInfoLabel = na,var label totalVolumeInfoLabel = na
+        // getting the right label size from the input variable
+        labelSize = i_volumeLabelsSize == AUTO ? size.auto : i_volumeLabelsSize == TINY ? size.tiny : i_volumeLabelsSize == SMALL ? size.small : i_volumeLabelsSize == NORMAL ? size.normal : size.large
+
+        // at each new period reset all arrays to fix the plots on the chart and avoid modifications
+        // and create the new period volume labels if the option is checked on the settings panel
+        if isNewPeriod
+            f_clearArrays(a_priceLeft,a_volumeLeft,a_priceRight,a_volumeRight,a_histogram,a_volumeLabels)
+            if i_showVolumeInfo
+                leftVolumeInfoLabel := f_label_new(halfPeriodTime,periodLow,'',label.style_label_right,labelSize,text.align_right)
+                rightVolumeInfoLabel := f_label_new(halfPeriodTime,periodLow,'',label.style_label_left,labelSize,text.align_left)
+                totalVolumeInfoLabel := f_label_new(halfPeriodTime,periodLow,'',label.style_label_up,labelSize,text.align_center)
+                
+        // at each confirmed bar populate the arrays with price and volume data
+        // if we are on the second half of the period we gather the data into the `right` arrays
+        // if we are on the first half we gather the data into the `left` arrays
+        if is2ndHalf
+            f_populate_array(a_priceRight,a_volumeRight)
+        else
+            f_populate_array(a_priceLeft,a_volumeLeft)
+        
+        // we need a way to set the current size of the histogram, the histogram grows with each confirmed bar by default (see `update mode` option)
+        // to achieve this behavior we need to know the max size the histogram can have at each bar of the period
+        // factorLeft and factorRight represent the max size the histogram can have at each side of the period by counting the bars (time units) elpased
+        var factorLeft = 0, var factorRight = 0
+        factorLeft := not is2ndHalf ? int((_time - newPeriodTime)/msByPeriodUnit) + 1 : factorLeft
+        factorRight := is2ndHalf ? int((_time - halfPeriodTime)/msByPeriodUnit) + 1 : factorRight
+       
+        // all the following logic allows us to know if we should update the histogram lines and volume labels at the current iteration
+        // there are four possible choices on the settings:
+        //  - ONE: updates once per period right at the last bar of the period
+        //  - TWO: updates twice per period, at the last bar of the first half and the last bar of the second half (last bar of the period)
+        //  - FOUR: updates four times: at the halfs of 1st and 2nd halfs of the period, plus at the same times that `TWO` updates
+        //  - EACH BAR: updates once per bar
+        // in order to code that behavior we need to know the differents points in time inside the period that trigger an update
+        // we get the points in time when the 1st and 3rd quarter end
+        quarterPeriod = int(.5*halfPeriod)
+        quarter1PeriodTime = f_getTimePointInPeriod(newPeriodTime,quarterPeriod)
+        quarter3PeriodTime = f_getTimePointInPeriod(halfPeriodTime,quarterPeriod)
+        // we get the conditions to know if the current bar is at any of the four points in time (end of each quarter)
+        isEndOfQuarter1 = _time == (quarter1PeriodTime - msByPeriodUnit)
+        isEndOf1stHalf = _time == (halfPeriodTime - msByPeriodUnit)
+        isEndOfQuarter3 = _time == (quarter3PeriodTime - msByPeriodUnit)
+        isEndOfPeriod = _time == (fullPeriodTime - msByPeriodUnit)
+        // we get the trigger conditions for each update mode
+        triggerUpdateONE = isEndOfPeriod
+        triggerUpdateTWO = triggerUpdateONE or isEndOf1stHalf
+        triggerUpdateFOUR = triggerUpdateTWO or isEndOfQuarter1 or isEndOfQuarter3
+        // we check the update mode selected on the settings against its own trigger
+        // note that the trigger for the `EACHBAR` mode is implicit in `isExecutionAllowed` (the condition that allows this entire block to execute)
+        isUpdateAllowed = 
+          (i_histogramUpdateMode == EACHBAR                         ) or
+          (i_histogramUpdateMode == ONE     and triggerUpdateONE    ) or
+          (i_histogramUpdateMode == TWO     and triggerUpdateTWO    ) or
+          (i_histogramUpdateMode == FOUR    and triggerUpdateFOUR   )
+        
+        // all the above lines to get at this point: do we must run the logic that allows the histogram and labels to update or not?
+        // as coders we must use only the strictly necessary logic, at only the strictly necessary points in time
+        // we must code with the resources consumption in mind, trying to avoid possible errors derived from a too heavy logic
+        // we must achieve the smoothest experience possible for the final user with the resources at our disposal
+        // so 3, 2, 1... fire in the hole!
+        if isUpdateAllowed
+
+            // we need two arrays for the parsed volume: one for the left half, another for the right one
+            // why is that so? you may ask... well, the histogram size is calculated dynamically at run time
+            // and the number of elements on it is known only at run time too thanks to the `ticks per bar` option on the settings
+            // each element in this parsed arrays will contain the volume of each displayable histogram bar no matter the size in ticks of such bar
+            // this volume will be the cumulative volume of the next price levels setted by `ticks per bar`
+            a_volumeLeftParsed = array.new_float(0), a_volumeRightParsed = array.new_float(0)
+            // we get the step for the `for` loop and iterate the period range from low to high adding new elements to the arrays on each iteration
+            // note the use of a `NOLOOP` function to avoid the nefarious nested loop (consumer of resources... DESTROYER OF WORLDS!)
+            step = i_histogramGranularity*_mintick
+            for level = periodLow to periodHigh by step
+                array.push(a_volumeLeftParsed,f_volumeByMultiLevel_NOLOOP(a_priceLeft,a_volumeLeft,level,i_histogramGranularity))
+                array.push(a_volumeRightParsed,f_volumeByMultiLevel_NOLOOP(a_priceRight,a_volumeRight,level,i_histogramGranularity))
+
+            // setting the volume labels position and text if the option on the settings panel says so
+            if i_showVolumeInfo
+                f_label_set_y(leftVolumeInfoLabel,rightVolumeInfoLabel,totalVolumeInfoLabel,periodLow-step)
+                label.set_text(leftVolumeInfoLabel,tostring(array.sum(a_volumeLeftParsed),'0'))
+                label.set_text(rightVolumeInfoLabel,tostring(array.sum(a_volumeRightParsed),'0'))
+                label.set_text(totalVolumeInfoLabel,tostring(array.sum(a_volumeLeftParsed)+array.sum(a_volumeRightParsed),'0'))
+
+            // calculate the number of elements in the histogram (parsed arrays)
+            endIndex = (is2ndHalf ? max(array.size(a_volumeLeftParsed),array.size(a_volumeRightParsed)) : array.size(a_volumeLeftParsed)) - 1
+            // if there are elements go for it
+            if endIndex >= 0
+            
+                // first of all: we delete the histogram lines and the volume labels already plotted on this period
+                // why delete and create at each update, instead of using the line.setXXX and label.setXXX built-in functions?
+                // this is because the way we plot the lines from the low of the period, we compare the differents lines and labels
+                // thru the `y` parameter (the price level where are plotted), because of the calculation of this parameter from the low
+                // of the period we can have on all the life of the period differents `y` parameters for the same histogram element
+                // making the search only possible (accurate) for `i_histogramGranularity == 1` but not for the rest
+                f_deleteHistogram(a_histogram)
+                f_deleteVolumeLabels(a_volumeLabels)
+                
+                // iterate thru the elements of the histogram (parsed arrays)
+                for i = 0 to endIndex
+                
+                    // we get the left and right volume for the `i` element of the histogram
+                    volumeLeft = array.get(a_volumeLeftParsed,i)
+                    volumeRight = array.get(a_volumeRightParsed,i)
+                    
+                    // we get the left and right size for each volume
+                    sizeLeft = round(factorLeft*(volumeLeft/array.max(a_volumeLeftParsed)))
+                    sizeRight = round(factorRight*(volumeRight/array.max(a_volumeRightParsed)))
+                    
+                    // we get the x1, x2 and y coordinates for plotting the histogram bar and the volume label
+                    x1 = halfPeriodTime - sizeLeft * msByPeriodUnit
+                    x2 = halfPeriodTime + sizeRight * msByPeriodUnit
+                    y = periodLow + i*step
+
+                    // we plot the histogram bar and the volume label if the options on the settings panel are activated 
+                    if i_showHistogram
+                        f_updateHistogram(a_histogram,x1,x2,y,histogramColor,i_histogramPixels)
+                    if i_showVolumeInfo
+                        f_updateVolumeLabels(a_volumeLabels,halfPeriodTime,y,volumeLeft,volumeRight,labelSize)
+
+// this is a way of see where the current price is once the candles or bars are hidded                     
+plot(i_trackPrice?close:na,title='',style=plot.style_circles,show_last=1,linewidth=4,color=color.yellow)

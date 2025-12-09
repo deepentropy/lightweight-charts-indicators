@@ -1,0 +1,843 @@
+//@version=5
+indicator("R:R Trading System Framework", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500) 
+
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+// 1. COLOR ————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+
+C_BLUE          = #00e5ff       // L0 - Stochastic                                                                   
+C_ORANGE        = #ffa300       // L1 - 2x MA Cross            
+C_LIME_GREEN    = #14ff00       // L2 - MACD             
+C_PURPLE        = #e757ff       // L3 - Bollinger Bands                                                                  
+C_YELLOW        = #fdff5f       // L4 - Supertrend                                                     
+C_DARK_BLUE     = #005ae6       // S5 - Stochastic 
+C_LIME_YELLOW   = #c9ff00       // S6 - 2x MA Cross  
+C_DARK_PURPLE   = #a600ff       // S7 - MACD
+C_MINT          = #00ffa9       // S8 - Bollinger Bands
+C_BURNT_ORANGE  = #ff5f00       // S9 - Supertrend
+C_PINK          = #ff0078       // Recommend this color not be used for a trade type option.      
+
+//—————————— Outlines / Borders
+
+C_WHITE             = #ffffff
+C_BLACK             = #000000
+C_TV_GRAY_OUTLINE   = #434651
+C_LIGHT_GRAY        = #d1d4dc
+C_MEDIUM_GRAY       = #787b86 
+C_TV_BLACK          = #131722
+
+//—————————— Gradient Color Function
+
+f_gradientColor(_col, _val, _max, _min) => color.from_gradient(_val, _min, _max, color.new(_col, 80), color.new(_col, 0))     
+
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+// 2. INPUTS ———————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+
+Backtest_A      = input.string("0. Stochastic", "     A)",  options = ["None", "0. Stochastic", "1. 2x MA Cross", "2. MACD", "3. Bollinger Bands", "4. Supertrend", "5. Stochastic (Short)", "6. 2x MA Cross (Short)", "7. MACD (Short)", "8. Bollinger Bands (Short)", "9. Supertrend (Short)"], group = "📈 BACKTESTING BOXES / LABELS / TRAILING STOP", inline = "1")
+Backtest_B      = input.string("1. 2x MA Cross","  B)",     options = ["None", "0. Stochastic", "1. 2x MA Cross", "2. MACD", "3. Bollinger Bands", "4. Supertrend", "5. Stochastic (Short)", "6. 2x MA Cross (Short)", "7. MACD (Short)", "8. Bollinger Bands (Short)", "9. Supertrend (Short)"], group = "📈 BACKTESTING BOXES / LABELS / TRAILING STOP", inline = "1", tooltip = "Display 2 different trade types.\n\nCompare and contrast all the different components of the trades and their relationships with one another.\n\nThis system is designed to force you to consider Risk:Reward at all times throughout the trading process. Get creative but try your best to only include things that improve your decision-making process, create consistency, improve risk:reward concepts, and are realsitic once met with the brutal truth of the trading world.")
+
+TTT_Activated   = input.bool    (true,      "Active",           group = "📊 TRADE TRACKING TABLE",        inline = "1")   
+TTT_textSize    = input.string  ("normal" ,  "",                group = "📊 TRADE TRACKING TABLE",        inline = "1",   options = ["tiny", "small", "normal", "large"])
+TTT_tableYpos   = input.string  ("top",  "",                    group = "📊 TRADE TRACKING TABLE",        inline = "1",   options = ["top", "middle", "bottom"])
+TTT_tableXpos   = input.string  ("center",   "",                group = "📊 TRADE TRACKING TABLE",        inline = "1",   options = ["left", "center", "right"], tooltip = "- Activate Table\n- Text Size\n- Table Position (Y)\n- Table Position (X)")
+
+RRT_Activated   = input.bool    (true,      "Active",           group = "📊 RISK:REWARD TABLE",           inline = "1",   tooltip = "")                                                      
+RRT_textSize    = input.string  ("normal" , "",                 group = "📊 RISK:REWARD TABLE",           inline = "1",   options = ["tiny", "small", "normal", "large"])
+RRT_tableYpos   = input.string  ("bottom",  "",                 group = "📊 RISK:REWARD TABLE",           inline = "1",   options = ["top", "middle", "bottom"])
+RRT_tableXpos   = input.string  ("left",   "",                  group = "📊 RISK:REWARD TABLE",           inline = "1",   options = ["left", "center", "right"], tooltip = "- Activate Table\n- Text Size\n- Table Position (Y)\n- Table Position (X)")
+
+L0_Activated    = input.bool    (true, "Active |  ",            group = "▷ 0. Stochastic",                inline = "1")                           
+L0_SL_Value     = input.float   (2.,   "Stop %",    step = .25, group = "▷ 0. Stochastic",                inline = "1",   tooltip = "% of price. The Trailing Stop is built to only become active once the Trailing Stop is above the Entry price and uses the same % set here for the Entry Stop.") 
+L0_TP1_Value    = input.float   (1.,   "    TP 1",  step = .25, group = "▷ 0. Stochastic",                inline = "2")                           
+L0_TP2_Value    = input.float   (2.,   "TP 2",      step = .25, group = "▷ 0. Stochastic",                inline = "2",   tooltip = "Multiple of the Stop % above. This represents your risk:reward ratio for each TP level.") 
+L0_TP3_Value    = input.float   (3.,   "    TP 3",  step = .25, group = "▷ 0. Stochastic",                inline = "3") 
+L0_TP4_Value    = input.float   (4.,   "TP 4",      step = .25, group = "▷ 0. Stochastic",                inline = "3",   tooltip = "Multiple of the Stop % above. This represents your risk:reward ratio for each TP level.")
+
+L1_Activated    = input.bool    (true, "Active |  ",            group = "▷ 1. 2x MA Cross",               inline = "1")
+L1_SL_Value     = input.float   (2.5,  "Stop %",    step = .25, group = "▷ 1. 2x MA Cross",               inline = "1")
+L1_TP1_Value    = input.float   (1.,   "    TP 1",  step = .25, group = "▷ 1. 2x MA Cross",               inline = "2")
+L1_TP2_Value    = input.float   (2.,   "TP 2",      step = .25, group = "▷ 1. 2x MA Cross",               inline = "2")
+L1_TP3_Value    = input.float   (3.,   "    TP 3",  step = .25, group = "▷ 1. 2x MA Cross",               inline = "3")
+L1_TP4_Value    = input.float   (4.,   "TP 4",      step = .25, group = "▷ 1. 2x MA Cross",               inline = "3")
+
+L2_Activated    = input.bool    (true, "Active |  ",            group = "▷ 2. MACD",                      inline = "1")
+L2_SL_Value     = input.float   (2.,   "Stop %",    step = .25, group = "▷ 2. MACD",                      inline = "1")
+L2_TP1_Value    = input.float   (1.,   "    TP 1",  step = .25, group = "▷ 2. MACD",                      inline = "2")
+L2_TP2_Value    = input.float   (2.,   "TP 2",      step = .25, group = "▷ 2. MACD",                      inline = "2")
+L2_TP3_Value    = input.float   (3.,   "    TP 3",  step = .25, group = "▷ 2. MACD",                      inline = "3")
+L2_TP4_Value    = input.float   (4.,   "TP 4",      step = .25, group = "▷ 2. MACD",                      inline = "3")
+
+L3_Activated    = input.bool    (true, "Active |  ",            group = "▷ 3. Bollinger Bands",           inline = "1")
+L3_SL_Value     = input.float   (2.,   "Stop %",    step = .25, group = "▷ 3. Bollinger Bands",           inline = "1")
+L3_TP1_Value    = input.float   (1.,   "    TP 1",  step = .25, group = "▷ 3. Bollinger Bands",           inline = "2")
+L3_TP2_Value    = input.float   (2.,   "TP 2",      step = .25, group = "▷ 3. Bollinger Bands",           inline = "2")
+L3_TP3_Value    = input.float   (3.,   "    TP 3",  step = .25, group = "▷ 3. Bollinger Bands",           inline = "3")
+L3_TP4_Value    = input.float   (4.,   "TP 4",      step = .25, group = "▷ 3. Bollinger Bands",           inline = "3")
+
+L4_Activated    = input.bool    (true, "Active |  ",            group = "▷ 4. Supertrend",                inline = "1")
+L4_SL_Value     = input.float   (2.,   "Stop %",    step = .25, group = "▷ 4. Supertrend",                inline = "1")
+L4_TP1_Value    = input.float   (1.,   "    TP 1",  step = .25, group = "▷ 4. Supertrend",                inline = "2")
+L4_TP2_Value    = input.float   (2.,   "TP 2",      step = .25, group = "▷ 4. Supertrend",                inline = "2")
+L4_TP3_Value    = input.float   (3.,   "    TP 3",  step = .25, group = "▷ 4. Supertrend",                inline = "3")
+L4_TP4_Value    = input.float   (4.,   "TP 4",      step = .25, group = "▷ 4. Supertrend",                inline = "3")
+
+S5_Activated    = input.bool    (true, "Active |  ",            group = "▷ 5. Stochastic (Short)",        inline = "1")
+S5_SL_Value     = input.float   (2.,   "Stop %",    step = .25, group = "▷ 5. Stochastic (Short)",        inline = "1")
+S5_TP1_Value    = input.float   (1.,   "    TP 1",  step = .25, group = "▷ 5. Stochastic (Short)",        inline = "2")
+S5_TP2_Value    = input.float   (2.,   "TP 2",      step = .25, group = "▷ 5. Stochastic (Short)",        inline = "2")
+S5_TP3_Value    = input.float   (3.,   "    TP 3",  step = .25, group = "▷ 5. Stochastic (Short)",        inline = "3")
+S5_TP4_Value    = input.float   (4.,   "TP 4",      step = .25, group = "▷ 5. Stochastic (Short)",        inline = "3")
+
+S6_Activated    = input.bool    (true, "Active |  ",            group = "▷ 6. 2x MA Cross (Short)",       inline = "1")
+S6_SL_Value     = input.float   (2.,   "Stop %",    step = .25, group = "▷ 6. 2x MA Cross (Short)",       inline = "1")
+S6_TP1_Value    = input.float   (1.,   "    TP 1",  step = .25, group = "▷ 6. 2x MA Cross (Short)",       inline = "2")
+S6_TP2_Value    = input.float   (2.,   "TP 2",      step = .25, group = "▷ 6. 2x MA Cross (Short)",       inline = "2")
+S6_TP3_Value    = input.float   (3.,   "    TP 3",  step = .25, group = "▷ 6. 2x MA Cross (Short)",       inline = "3")
+S6_TP4_Value    = input.float   (4.,   "TP 4",      step = .25, group = "▷ 6. 2x MA Cross (Short)",       inline = "3")
+
+S7_Activated    = input.bool    (true, "Active |  ",            group = "▷ 7. MACD (Short)",              inline = "1")
+S7_SL_Value     = input.float   (2.,   "Stop %",    step = .25, group = "▷ 7. MACD (Short)",              inline = "1")
+S7_TP1_Value    = input.float   (1.,   "    TP 1",  step = .25, group = "▷ 7. MACD (Short)",              inline = "2")
+S7_TP2_Value    = input.float   (2.,   "TP 2",      step = .25, group = "▷ 7. MACD (Short)",              inline = "2")
+S7_TP3_Value    = input.float   (3.,   "    TP 3",  step = .25, group = "▷ 7. MACD (Short)",              inline = "3")
+S7_TP4_Value    = input.float   (4.,   "TP 4",      step = .25, group = "▷ 7. MACD (Short)",              inline = "3")
+
+S8_Activated    = input.bool    (true, "Active |  ",            group = "▷ 8. Bollinger Bands (Short)",   inline = "1")
+S8_SL_Value     = input.float   (2.,   "Stop %",    step = .25, group = "▷ 8. Bollinger Bands (Short)",   inline = "1")
+S8_TP1_Value    = input.float   (1.,   "    TP 1",  step = .25, group = "▷ 8. Bollinger Bands (Short)",   inline = "2")
+S8_TP2_Value    = input.float   (2.,   "TP 2",      step = .25, group = "▷ 8. Bollinger Bands (Short)",   inline = "2")
+S8_TP3_Value    = input.float   (3.,   "    TP 3",  step = .25, group = "▷ 8. Bollinger Bands (Short)",   inline = "3")
+S8_TP4_Value    = input.float   (4.,   "TP 4",      step = .25, group = "▷ 8. Bollinger Bands (Short)",   inline = "3")
+
+S9_Activated    = input.bool    (true, "Active |  ",            group = "▷ 9. Supertrend (Short)",        inline = "1")
+S9_SL_Value     = input.float   (2.,   "Stop %",    step = .25, group = "▷ 9. Supertrend (Short)",        inline = "1")
+S9_TP1_Value    = input.float   (1.,   "    TP 1",  step = .25, group = "▷ 9. Supertrend (Short)",        inline = "2")
+S9_TP2_Value    = input.float   (2.,   "TP 2",      step = .25, group = "▷ 9. Supertrend (Short)",        inline = "2")
+S9_TP3_Value    = input.float   (3.,   "    TP 3",  step = .25, group = "▷ 9. Supertrend (Short)",        inline = "3")
+S9_TP4_Value    = input.float   (4.,   "TP 4",      step = .25, group = "▷ 9. Supertrend (Short)",        inline = "3")
+
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+// 3. MATRICES / ARRAYS ————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+
+//—————————— FIRST VARIABLES
+
+var matrix<float>  matrix       = na
+var int[]          row          = array.from(0) 
+var int[]          col          = array.from(0)
+
+var matrix<line>   matrixLine   = na
+var int[]          colLine      = array.from(0)
+
+var matrix<label>  matrixLabel  = na
+var int[]          colLabel     = array.from(0)
+
+//—————————— FUNCTIONS
+
+row(row) => 
+    if barstate.isfirst
+        get = array.get(row, 0)
+        array.set(row, 0, get + 1)
+        get
+
+col(col) => 
+    if barstate.isfirst
+        get = array.get(col, 0)
+        array.set(col, 0, get + 1)
+        get
+
+//—————————— ROWS
+
+var L0 = row(row), var L1 = row(row), var L2 = row(row), var L3 = row(row), var L4 = row(row)
+var S5 = row(row), var S6 = row(row), var S7 = row(row), var S8 = row(row), var S9 = row(row)
+
+//—————————— COLUMNS
+
+// Prices
+var Entry_Price             = col(col), var Exit_Price             = col(col), var Stop_Price              = col(col), var TP1_Price               = col(col), var TP2_Price               = col(col)
+var TP3_Price               = col(col), var TP4_Price              = col(col), var Bullish_Price           = col(col), var Bearish_Price           = col(col), var TSL_Price               = col(col)
+
+// Max & Min prices reached
+var Max_Reached             = col(col), var Min_Reached            = col(col)
+
+// Event Counters
+var Entry_Count             = col(col), var In_Trade_Bar_Count     = col(col), var TSL_Hit_Count           = col(col), var TP1_Hit_Count           = col(col), var TP2_Hit_Count           = col(col)
+var TP3_Hit_Count           = col(col), var TP4_Hit_Count          = col(col), var Fail_Hit_Count          = col(col), var Bullish_Hit_Count       = col(col), var Bearish_Hit_Count       = col(col)
+
+// Bar Counter per Event type
+var TSL_Bars_Count          = col(col), var TP1_Bars_Count         = col(col), var TP2_Bars_Count          = col(col), var TP3_Bars_Count          = col(col), var TP4_Bars_Count          = col(col)
+var Fail_Bars_Count         = col(col)
+
+// Event Booleans 
+var Entry_is_Active         = col(col), var TP1_Hit                = col(col), var TP2_Hit                 = col(col), var TP3_Hit                 = col(col), var TP4_Hit                 = col(col)
+var TSL_Hit                 = col(col), var Fail_Hit               = col(col)
+
+// Trade tracking results and calculations
+var Win_RR_Ratio_Sum        = col(col), var Loss_RR_Ratio_Sum      = col(col), var Bullish_Amount_Sum      = col(col), var Bearish_Amount_Sum      = col(col), var Bullish_to_Min_Amount   = col(col)        
+var Bearish_to_Max_Amount   = col(col), var PL_Amount              = col(col), var Stop_Amount             = col(col), var Trade_RR_Ratio          = col(col), var Number_of_Wins          = col(col)     
+var Number_of_Losses        = col(col), var Win_Percent            = col(col), var Loss_Percent            = col(col), var Avg_Win_RR              = col(col), var Avg_Loss_RR             = col(col) 
+var Avg_Risk_Reward         = col(col), var Avg_Bullish_Dev        = col(col), var Avg_Bearish_Dev         = col(col), var Avg_Bullish_RR          = col(col), var Avg_Bearish_RR          = col(col)    
+
+var RRT_Fail_Hit_Percentage = col(col), var RRT_TP1_Hit_Percentage = col(col), var RRT_TP2_Hit_Percentage  = col(col), var RRT_TP3_Hit_Percentage  = col(col), var RRT_TP4_Hit_Percentage  = col(col)
+var RRT_TSL_Hit_Percentage  = col(col)
+
+var RRT_Avg_Fail_Bars       = col(col), var RRT_Avg_TP1_Bars       = col(col), var RRT_Avg_TP2_Bars        = col(col), var RRT_Avg_TP3_Bars        = col(col), var RRT_Avg_TP4_Bars        = col(col)
+var RRT_Avg_TSL_Bars        = col(col)
+
+//—————————— LINES / LABELS / BACKTESTING BOXES 
+
+var a_entryPriceLabel   = array.new_label()
+var a_newLine           = array.new_line ()
+var a_newLabel          = array.new_label()
+var a_newBox_0          = array.new_box  ()
+var a_newBox_1          = array.new_box  ()
+var a_newBox_2          = array.new_box  ()
+var a_newBox_3          = array.new_box  ()
+var a_newBox_4          = array.new_box  ()
+var a_newBox_5          = array.new_box  ()
+var a_newBox_6          = array.new_box  ()
+var a_newBox_7          = array.new_box  ()
+var a_newBox_8          = array.new_box  ()
+var a_newBox_9          = array.new_box  ()
+
+if array.size   (a_entryPriceLabel ) >  50
+    label.delete(array.pop(a_entryPriceLabel))
+//if array.size   (a_newLine     ) > 100
+//    line.delete (array.pop(a_newLine))
+if array.size   (a_newLabel     ) > 350
+    label.delete(array.pop(a_newLabel))
+cleanBox(bx) =>
+    if array.size  (bx) > 450
+        box.delete (array.pop(bx))
+
+cleanBox(a_newBox_0), cleanBox(a_newBox_1), cleanBox(a_newBox_2), cleanBox(a_newBox_3), cleanBox(a_newBox_4)    
+cleanBox(a_newBox_5), cleanBox(a_newBox_6), cleanBox(a_newBox_7), cleanBox(a_newBox_8), cleanBox(a_newBox_9)    
+
+var Entry_Line  = col(colLine)
+var SL_Line     = col(colLine) 
+var TP1_Line    = col(colLine)
+var TP2_Line    = col(colLine)
+var TP3_Line    = col(colLine)
+var TP4_Line    = col(colLine)
+var TSL_Line    = col(colLine)
+
+var Entry_Label = col(colLabel)
+var SL_Label    = col(colLabel) 
+var TP1_Label   = col(colLabel)
+var TP2_Label   = col(colLabel)
+var TP3_Label   = col(colLabel)
+var TP4_Label   = col(colLabel)
+var TSL_Label   = col(colLabel)
+
+//—————————— FILL MATRIX
+
+if barstate.isfirst
+    
+    matrix      := matrix.new<float> (array.get(row, 0), array.get(col  ,    0), 0.)  
+    matrixLine  := matrix.new<line>  (array.get(row, 0), array.get(colLine,  0), na)        
+    matrixLabel := matrix.new<label> (array.get(row, 0), array.get(colLabel, 0), na)        
+
+    for i = 0 to array.get(row, 0) - 1
+        for j = 0 to array.get(colLine, 0) - 1
+            matrix.set(matrixLine, i, j, line.new (bar_index, close, bar_index, close, width = 3))
+        for j = 0 to array.get(colLabel, 0) - 1
+            matrix.set(matrixLabel, i, j, label.new(bar_index, close, color = na))
+            
+//—————————— PRICE BOXES
+
+var box[] a_priceBox = array.new_box()
+if barstate.isfirst
+    for i = 0 to 9
+        array.unshift(a_priceBox, box.new(bar_index, close, bar_index, close, border_color = na, bgcolor = na))
+
+//—————————— TABLES
+
+var Risk_Reward_Table    = table.new(position = RRT_tableYpos + "_" + RRT_tableXpos, columns = 30, rows = 20, bgcolor = C_TV_BLACK, border_color = C_TV_GRAY_OUTLINE, border_width = 2, frame_color = C_TV_GRAY_OUTLINE, frame_width = 4)
+var Trade_Tracking_Table = table.new(position = TTT_tableYpos + "_" + TTT_tableXpos, columns = 20, rows = 20, bgcolor = C_TV_BLACK, border_color = C_TV_GRAY_OUTLINE, border_width = 2, frame_color = C_TV_GRAY_OUTLINE, frame_width = 4)
+
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+// 4. ENTRY CONDITIONS —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+
+//—————————— CUSTOM INDICATOR LOGIC
+
+// L0 / S5 - Stochastic
+length          = 14
+OverBought      = 80
+OverSold        = 20
+smoothK         = 3
+smoothD         = 3
+k               = ta.sma(ta.stoch(close, high, low, length), smoothK)
+d               = ta.sma(k, smoothD)
+co              = ta.crossover(k,d)
+cu              = ta.crossunder(k,d)
+stochBull       = not na(k) and not na(d) and co and k < OverSold
+stochBear       = not na(k) and not na(d) and cu and k > OverBought
+
+// L1 / S6 - 2x MA Cross
+price           = close
+fastLength      = 9
+slowLength      = 18
+mafast          = ta.sma(price, fastLength)
+maslow          = ta.sma(price, slowLength)
+XoverFastSlow   = ta.crossover(mafast, maslow),  XunderFastSlow = ta.crossunder(mafast, maslow)
+
+// L2 / S7 - MACD
+[MACD, aMACD, delta]  = ta.macd(close, 12, 26, 9)    
+XoverDt         = ta.crossover(delta , 0),       XunderDt = ta.crossunder(delta , 0)
+
+// L3 / S8 - Bollinger Bands
+[basis, upper, lower] = ta.bb(close, 20, 2)          
+
+buyEntry        = ta.crossover (close, lower)
+sellEntry       = ta.crossunder(close, upper)
+
+// L4 / S9 - SuperTrend
+atrPeriod       = 10
+factor          = 3.0
+[_, STdirection]= ta.supertrend(factor, atrPeriod)
+chDir           = ta.change(STdirection)
+
+//—————————— CUSTOM ENTRY CONDITIONS 
+
+// Filters
+sma200         = ta.sma(close, 200)
+aboveSma200    = close > sma200 , belowSma200 = close < sma200
+
+L0_Entry = matrix.get(matrix, L0, Entry_is_Active) == 0 and       L0_Activated  and       stochBull        and aboveSma200                                        
+L1_Entry = matrix.get(matrix, L1, Entry_is_Active) == 0 and       L1_Activated  and       XoverFastSlow    and aboveSma200            
+L2_Entry = matrix.get(matrix, L2, Entry_is_Active) == 0 and       L2_Activated  and       XoverDt          and aboveSma200        
+L3_Entry = matrix.get(matrix, L3, Entry_is_Active) == 0 and       L3_Activated  and       buyEntry         and aboveSma200                
+L4_Entry = matrix.get(matrix, L4, Entry_is_Active) == 0 and       L4_Activated  and       chDir < 0        and aboveSma200        
+
+S5_Entry = matrix.get(matrix, S5, Entry_is_Active) == 0 and       S5_Activated  and       stochBear        and belowSma200                  
+S6_Entry = matrix.get(matrix, S6, Entry_is_Active) == 0 and       S6_Activated  and       XunderFastSlow   and belowSma200                            
+S7_Entry = matrix.get(matrix, S7, Entry_is_Active) == 0 and       S7_Activated  and       XunderDt         and belowSma200                        
+S8_Entry = matrix.get(matrix, S8, Entry_is_Active) == 0 and       S8_Activated  and       sellEntry        and belowSma200                
+S9_Entry = matrix.get(matrix, S9, Entry_is_Active) == 0 and       S9_Activated  and       chDir > 0        and belowSma200                     
+
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+// 5. BULLISH / BEARISH CONDITIONS —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+
+//—————————— FAVORABLE CONDITION (means Bullish green 🠉 occurs on Long Trades and Bearish red 🠋 occurs on Short Trades)
+
+L0_Entry_Bullish = L0_Activated  and    stochBull       and aboveSma200
+L1_Entry_Bullish = L1_Activated  and    XoverFastSlow   and aboveSma200
+L2_Entry_Bullish = L2_Activated  and    XoverDt         and aboveSma200
+L3_Entry_Bullish = L3_Activated  and    buyEntry        and aboveSma200
+L4_Entry_Bullish = L4_Activated  and    chDir < 0       and aboveSma200
+
+S5_Entry_Bearish = S5_Activated  and    stochBear       and belowSma200
+S6_Entry_Bearish = S6_Activated  and    XunderFastSlow  and belowSma200
+S7_Entry_Bearish = S7_Activated  and    XunderDt        and belowSma200
+S8_Entry_Bearish = S8_Activated  and    sellEntry       and belowSma200
+S9_Entry_Bearish = S9_Activated  and    chDir > 0       and belowSma200
+
+//—————————— NON-FAVORABLE CONDITION (means Bearish red 🠋 occurs on Long Trades and Bullish green 🠉 occurs on Short Trades)
+
+L0_Entry_Bearish = L0_Activated  and    stochBear      
+L1_Entry_Bearish = L1_Activated  and    XunderFastSlow
+L2_Entry_Bearish = L2_Activated  and    XunderDt            
+L3_Entry_Bearish = L3_Activated  and    sellEntry                   
+L4_Entry_Bearish = L4_Activated  and    chDir > 0            
+
+S5_Entry_Bullish = S5_Activated  and    stochBull                                                         
+S6_Entry_Bullish = S6_Activated  and    XoverFastSlow                                     
+S7_Entry_Bullish = S7_Activated  and    XoverDt                                                  
+S8_Entry_Bullish = S8_Activated  and    buyEntry                                                               
+S9_Entry_Bullish = S9_Activated  and    chDir < 0                                             
+
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+// 6. SYSTEM LOGIC —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+
+f_TP_Hit(direction, tradeColor, trade, TP_Price, TP_Hit_Count, TP_Bars_Count, TP_Hit, TPtext, entryText) => 
+    
+    gTP_Price   = matrix.get(matrix, trade, TP_Price)
+    f_TP_Hit    = direction == 'L' ? high > gTP_Price and matrix.get(matrix, trade, TP_Hit) == 0 : low < gTP_Price and matrix.get(matrix, trade, TP_Hit) == 0    
+
+    if f_TP_Hit                                                                                                             
+        gTP_Hit_Count  = matrix.get(matrix, trade, TP_Hit_Count )
+        gTP_Bars_Count = matrix.get(matrix, trade, TP_Bars_Count)
+        matrix.set(matrix, trade, TP_Hit_Count , gTP_Hit_Count  + 1)                                                               
+        matrix.set(matrix, trade, TP_Bars_Count, gTP_Bars_Count + matrix.get(matrix, trade, In_Trade_Bar_Count))                                 
+        matrix.set(matrix, trade, TP_Hit, 1)                                                
+
+        if Backtest_A == entryText or Backtest_B == entryText
+            array.unshift(a_newLabel, label.new(bar_index, gTP_Price, 
+             text       = TPtext, 
+             color      = color.new(tradeColor, 0), 
+             style      = direction == 'L' ? label.style_label_lower_right : label.style_label_upper_right, 
+             textcolor  = C_BLACK, 
+             size       = size.small, 
+             tooltip    = str.tostring(gTP_Price)))                                     
+       
+f_Entry(direction, entryActivated, tradeColor, offset, entry, bullishTrigger, bearishTrigger, trade, stopLossValue, takeProfit_1_value, takeProfit_2_value, takeProfit_3_value, takeProfit_4_value, entryText, box, i) =>
+    
+    if entryActivated 
+
+        // Min and Max Reached price points updated througout trade
+        matrix.set(matrix, trade, Max_Reached, math.max(matrix.get(matrix, trade, Max_Reached), high)) 
+        matrix.set(matrix, trade, Min_Reached, math.min(matrix.get(matrix, trade, Min_Reached), low )) 
+        
+        maxReached = matrix.get(matrix, trade, Max_Reached)    
+        minReached = matrix.get(matrix, trade, Min_Reached)
+        
+        if entry[1]
+               
+            matrix.set(matrix, trade, Entry_is_Active,  1)                                                   
+            stopPrice = direction == 'L' ? open - (open * (stopLossValue / 100)) : open + (open * (stopLossValue / 100))
+            matrix.set(matrix, trade, Stop_Price,       stopPrice)    
+            matrix.set(matrix, trade, TP1_Price,        direction == 'L' ? open + (open * (stopLossValue * takeProfit_1_value / 100)) : open - (open * (stopLossValue * takeProfit_1_value / 100)))    
+            matrix.set(matrix, trade, TP2_Price,        direction == 'L' ? open + (open * (stopLossValue * takeProfit_2_value / 100)) : open - (open * (stopLossValue * takeProfit_2_value / 100)))    
+            matrix.set(matrix, trade, TP3_Price,        direction == 'L' ? open + (open * (stopLossValue * takeProfit_3_value / 100)) : open - (open * (stopLossValue * takeProfit_3_value / 100)))    
+            matrix.set(matrix, trade, TP4_Price,        direction == 'L' ? open + (open * (stopLossValue * takeProfit_4_value / 100)) : open - (open * (stopLossValue * takeProfit_4_value / 100)))      
+            matrix.set(matrix, trade, Entry_Price,      open)                                                 
+            matrix.set(matrix, trade, Exit_Price,       0)                                                    
+            matrix.set(matrix, trade, TP1_Hit,          0)                                                        
+            matrix.set(matrix, trade, TP2_Hit,          0)                                                           
+            matrix.set(matrix, trade, TP3_Hit,          0)                                                    
+            matrix.set(matrix, trade, TP4_Hit,          0)                                                       
+            matrix.set(matrix, trade, TSL_Hit,          0)                                                                       
+            matrix.set(matrix, trade, Trade_RR_Ratio,   0)                                                                          
+            matrix.set(matrix, trade, Stop_Amount   ,   open - stopPrice)                                                     
+            matrix.set(matrix, trade, Entry_Count   ,   matrix.get(matrix, trade, Entry_Count) + 1)                                            
+                  
+            if Backtest_A == entryText or Backtest_B == entryText 
+                array.unshift(a_entryPriceLabel, label.new(bar_index, open, 
+                 text       = "ENTRY", 
+                 color      = color.new(tradeColor,  0), 
+                 style      = label.style_label_right, 
+                 textcolor  = C_BLACK, 
+                 size       = size.small, 
+                 tooltip    = str.tostring(open)))                                      
+                array.unshift(box, box.new(bar_index, open, bar_index, open, border_color = color.new(tradeColor,  0), bgcolor = color.new(tradeColor, 90)))     
+                array.unshift(box, box.new(bar_index, high, bar_index, low , border_color = color.new(tradeColor, 70), bgcolor = color.new(tradeColor, 98)))     
+        
+        gActive = matrix.get(matrix, trade, Entry_is_Active) == 1         
+        
+        //—————————— TRAILING STOP LOSS
+
+        trailingStop    = matrix.get(matrix, trade, TSL_Price)
+        trailingStopMax = gActive ? math.max(open - (open * (stopLossValue / 100)), trailingStop) : 0
+        trailingStopMin = gActive ? math.min(open + (open * (stopLossValue / 100)), trailingStop) : 10e6
+        matrix.set(matrix, trade, TSL_Price, direction == 'L' ? trailingStopMax : trailingStopMin)
+        
+        //—————————— ACTIVE TRADE BLOCK
+
+        gEntry_Line  = matrix.get(matrixLine, trade, Entry_Line ), gEntry_Price = matrix.get(matrix, trade, Entry_Price), gExit_Price         = matrix.get(matrix, trade, Exit_Price        )
+        gSL_Line     = matrix.get(matrixLine, trade, SL_Line    ), gStop_Price  = matrix.get(matrix, trade, Stop_Price ), gTrade_RR_Ratio     = matrix.get(matrix, trade, Trade_RR_Ratio    )
+        gTP1_Line    = matrix.get(matrixLine, trade, TP1_Line   ), gTP1_Price   = matrix.get(matrix, trade, TP1_Price  ), gIn_Trade_Bar_Count = matrix.get(matrix, trade, In_Trade_Bar_Count)
+        gTP2_Line    = matrix.get(matrixLine, trade, TP2_Line   ), gTP2_Price   = matrix.get(matrix, trade, TP2_Price  ), gPL_Amount          = matrix.get(matrix, trade, PL_Amount         ) 
+        gTP3_Line    = matrix.get(matrixLine, trade, TP3_Line   ), gTP3_Price   = matrix.get(matrix, trade, TP3_Price  )
+        gTP4_Line    = matrix.get(matrixLine, trade, TP4_Line   ), gTP4_Price   = matrix.get(matrix, trade, TP4_Price  )
+        gTSL_Line    = matrix.get(matrixLine, trade, SL_Line    ), gStop_amount = matrix.get(matrix, trade, Stop_Amount)
+        
+        gEntry_Label = matrix.get(matrixLabel, trade, Entry_Label)
+        gSL_Label    = matrix.get(matrixLabel, trade, SL_Label   )
+        gTP1_Label   = matrix.get(matrixLabel, trade, TP1_Label  )
+        gTP2_Label   = matrix.get(matrixLabel, trade, TP2_Label  )
+        gTP3_Label   = matrix.get(matrixLabel, trade, TP3_Label  )
+        gTP4_Label   = matrix.get(matrixLabel, trade, TP4_Label  )
+        gTSL_Label   = matrix.get(matrixLabel, trade, SL_Label   )
+        
+        if gActive
+            trailingStop   := matrix.get(matrix, trade, TSL_Price)
+            
+            if direction == 'L'
+
+                // Lines to the right of price
+                line.set_xy1(gEntry_Line   , bar_index + offset, gEntry_Price), line.set_xy2  (gEntry_Line , bar_index + offset + 8, gEntry_Price), line.set_color     (gEntry_Line , close > gEntry_Price ? tradeColor : color.new(tradeColor, 50))
+                line.set_xy1(gSL_Line      , bar_index + offset, gStop_Price ), line.set_xy2  (gSL_Line    , bar_index + offset + 8, gStop_Price ), line.set_color     (gSL_Line    ,                                     color.new(tradeColor, 50))
+                line.set_xy1(gTP1_Line     , bar_index + offset, gTP1_Price  ), line.set_xy2  (gTP1_Line   , bar_index + offset + 8, gTP1_Price  ), line.set_color     (gTP1_Line   , close > gTP1_Price   ? tradeColor : color.new(tradeColor, 50))
+                line.set_xy1(gTP2_Line     , bar_index + offset, gTP2_Price  ), line.set_xy2  (gTP2_Line   , bar_index + offset + 8, gTP2_Price  ), line.set_color     (gTP2_Line   , close > gTP2_Price   ? tradeColor : color.new(tradeColor, 50))
+                line.set_xy1(gTP3_Line     , bar_index + offset, gTP3_Price  ), line.set_xy2  (gTP3_Line   , bar_index + offset + 8, gTP3_Price  ), line.set_color     (gTP3_Line   , close > gTP3_Price   ? tradeColor : color.new(tradeColor, 50))
+                line.set_xy1(gTP4_Line     , bar_index + offset, gTP4_Price  ), line.set_xy2  (gTP4_Line   , bar_index + offset + 8, gTP4_Price  ), line.set_color     (gTP4_Line   , close > gTP4_Price   ? tradeColor : color.new(tradeColor, 50))
+                if trailingStop > gEntry_Price 
+                    line.set_xy1(gTSL_Line , bar_index + offset, trailingStop), line.set_xy2  (gTSL_Line   , bar_index + offset + 8, trailingStop), line.set_color     (gTSL_Line   ,                                     color.new(tradeColor, 50))
+                        
+                // Labels to the right of price
+                label.set_xy(gEntry_Label  , bar_index + offset + 4, gEntry_Price), label.set_text(gEntry_Label, str.upper(entryText) + "\n "), label.set_textcolor(gEntry_Label, tradeColor)
+                label.set_xy(gSL_Label     , bar_index + offset + 4, gStop_Price ), label.set_text(gSL_Label   , "STOP\n ")                   , label.set_textcolor(gSL_Label   ,                                     color.new(tradeColor, 50))
+                label.set_xy(gTP1_Label    , bar_index + offset + 4, gTP1_Price  ), label.set_text(gTP1_Label  , "TP 1\n ")                   , label.set_textcolor(gTP1_Label  , close > gTP1_Price   ? tradeColor : color.new(tradeColor, 50))
+                label.set_xy(gTP2_Label    , bar_index + offset + 4, gTP2_Price  ), label.set_text(gTP2_Label  , "TP 2\n ")                   , label.set_textcolor(gTP2_Label  , close > gTP2_Price   ? tradeColor : color.new(tradeColor, 50))
+                label.set_xy(gTP3_Label    , bar_index + offset + 4, gTP3_Price  ), label.set_text(gTP3_Label  , "TP 3\n ")                   , label.set_textcolor(gTP3_Label  , close > gTP3_Price   ? tradeColor : color.new(tradeColor, 50))
+                label.set_xy(gTP4_Label    , bar_index + offset + 4, gTP4_Price  ), label.set_text(gTP4_Label  , "TP 4\n ")                   , label.set_textcolor(gTP4_Label  , close > gTP4_Price   ? tradeColor : color.new(tradeColor, 50))
+                if trailingStop > gEntry_Price
+                    label.set_xy(gTSL_Label, bar_index + offset + 4, trailingStop), label.set_text(gTSL_Label  , "STOP\n ")                   , label.set_textcolor(gTSL_Label  ,                                     color.new(tradeColor, 50))
+                
+                label.set_tooltip(gEntry_Label , str.tostring(gEntry_Price))
+                label.set_tooltip(gSL_Label    , str.tostring(gStop_Price ))
+                label.set_tooltip(gTP1_Label   , str.tostring(gTP1_Price  ))
+                label.set_tooltip(gTP2_Label   , str.tostring(gTP2_Price  ))
+                label.set_tooltip(gTP3_Label   , str.tostring(gTP3_Price  ))
+                label.set_tooltip(gTP4_Label   , str.tostring(gTP4_Price  ))
+                label.set_tooltip(gTSL_Label   , str.tostring(trailingStop))
+            
+            if direction == 'S'
+                
+                // Lines to the right of price
+                line.set_xy1(gEntry_Line   , bar_index + offset, gEntry_Price), line.set_xy2  (gEntry_Line , bar_index + offset + 8, gEntry_Price), line.set_color     (gEntry_Line , close < gEntry_Price ? tradeColor : color.new(tradeColor, 50))
+                line.set_xy1(gSL_Line      , bar_index + offset, gStop_Price ), line.set_xy2  (gSL_Line    , bar_index + offset + 8, gStop_Price ), line.set_color     (gSL_Line    ,                                     color.new(tradeColor, 50))
+                line.set_xy1(gTP1_Line     , bar_index + offset, gTP1_Price  ), line.set_xy2  (gTP1_Line   , bar_index + offset + 8, gTP1_Price  ), line.set_color     (gTP1_Line   , close < gTP1_Price   ? tradeColor : color.new(tradeColor, 50))
+                line.set_xy1(gTP2_Line     , bar_index + offset, gTP2_Price  ), line.set_xy2  (gTP2_Line   , bar_index + offset + 8, gTP2_Price  ), line.set_color     (gTP2_Line   , close < gTP2_Price   ? tradeColor : color.new(tradeColor, 50))
+                line.set_xy1(gTP3_Line     , bar_index + offset, gTP3_Price  ), line.set_xy2  (gTP3_Line   , bar_index + offset + 8, gTP3_Price  ), line.set_color     (gTP3_Line   , close < gTP3_Price   ? tradeColor : color.new(tradeColor, 50))
+                line.set_xy1(gTP4_Line     , bar_index + offset, gTP4_Price  ), line.set_xy2  (gTP4_Line   , bar_index + offset + 8, gTP4_Price  ), line.set_color     (gTP4_Line   , close < gTP4_Price   ? tradeColor : color.new(tradeColor, 50))
+                if trailingStop < gEntry_Price 
+                    line.set_xy1(gTSL_Line , bar_index + offset, trailingStop), line.set_xy2  (gTSL_Line   , bar_index + offset + 8, trailingStop), line.set_color     (gTSL_Line   ,                                     color.new(tradeColor, 50))
+                        
+                label.set_xy(gEntry_Label  , bar_index + offset + 4, gEntry_Price), label.set_text(gEntry_Label, str.upper(entryText) + "\n "), label.set_textcolor(gEntry_Label, tradeColor)
+                label.set_xy(gSL_Label     , bar_index + offset + 4, gStop_Price ), label.set_text(gSL_Label   , "STOP\n ")                   , label.set_textcolor(gSL_Label   ,                                     color.new(tradeColor, 50))
+                label.set_xy(gTP1_Label    , bar_index + offset + 4, gTP1_Price  ), label.set_text(gTP1_Label  , "TP 1\n ")                   , label.set_textcolor(gTP1_Label  , close < gTP1_Price   ? tradeColor : color.new(tradeColor, 50))
+                label.set_xy(gTP2_Label    , bar_index + offset + 4, gTP2_Price  ), label.set_text(gTP2_Label  , "TP 2\n ")                   , label.set_textcolor(gTP2_Label  , close < gTP2_Price   ? tradeColor : color.new(tradeColor, 50))
+                label.set_xy(gTP3_Label    , bar_index + offset + 4, gTP3_Price  ), label.set_text(gTP3_Label  , "TP 3\n ")                   , label.set_textcolor(gTP3_Label  , close < gTP3_Price   ? tradeColor : color.new(tradeColor, 50))
+                label.set_xy(gTP4_Label    , bar_index + offset + 4, gTP4_Price  ), label.set_text(gTP4_Label  , "TP 4\n ")                   , label.set_textcolor(gTP4_Label  , close < gTP4_Price   ? tradeColor : color.new(tradeColor, 50))
+                if trailingStop < gEntry_Price
+                    label.set_xy(gTSL_Label, bar_index + offset + 4, trailingStop), label.set_text(gTSL_Label  , "STOP\n ")                   , label.set_textcolor(gTSL_Label  ,                                     color.new(tradeColor, 50))
+                
+                label.set_tooltip(gEntry_Label , str.tostring(gEntry_Price))
+                label.set_tooltip(gSL_Label    , str.tostring(gStop_Price ))
+                label.set_tooltip(gTP1_Label   , str.tostring(gTP1_Price  ))
+                label.set_tooltip(gTP2_Label   , str.tostring(gTP2_Price  ))
+                label.set_tooltip(gTP3_Label   , str.tostring(gTP3_Price  ))
+                label.set_tooltip(gTP4_Label   , str.tostring(gTP4_Price  ))
+                label.set_tooltip(gTSL_Label   , str.tostring(trailingStop))
+
+            //—————————— TPs
+
+            f_TP_Hit(direction, tradeColor, trade, TP1_Price, TP1_Hit_Count, TP1_Bars_Count, TP1_Hit, "TP1", entryText)     
+            f_TP_Hit(direction, tradeColor, trade, TP2_Price, TP2_Hit_Count, TP2_Bars_Count, TP2_Hit, "TP2", entryText)     
+            f_TP_Hit(direction, tradeColor, trade, TP3_Price, TP3_Hit_Count, TP3_Bars_Count, TP3_Hit, "TP3", entryText)     
+            f_TP_Hit(direction, tradeColor, trade, TP4_Price, TP4_Hit_Count, TP4_Bars_Count, TP4_Hit, "TP4", entryText)     
+            
+            //—————————— GREEN ARROWS
+
+            if bullishTrigger
+                matrix.set(matrix, trade, Bullish_Price, close)                                                                                       
+                gBullish_Price = matrix.get(matrix, trade, Bullish_Price)
+
+                if gBullish_Price < gEntry_Price                                                                                               
+                    matrix.set(matrix, trade, Bullish_to_Min_Amount, gBullish_Price - minReached)                                                   
+                else                                                                                                                           
+                    matrix.set(matrix, trade, Bullish_to_Min_Amount, gBullish_Price - trailingStop)                       
+
+                matrix.set(matrix, trade, Bullish_Amount_Sum,   matrix.get(matrix, trade, Bullish_Amount_Sum) + matrix.get(matrix, trade, Bullish_to_Min_Amount))   
+                matrix.set(matrix, trade, Bullish_Hit_Count,    matrix.get(matrix, trade, Bullish_Hit_Count ) + 1)   
+                matrix.set(matrix, trade, Avg_Bullish_Dev,      matrix.get(matrix, trade, Bullish_Amount_Sum) / matrix.get(matrix, trade, Bullish_Hit_Count    ))   
+                matrix.set(matrix, trade, Avg_Bullish_RR,       matrix.get(matrix, trade, Avg_Bullish_Dev   ) / gStop_amount)   
+
+                if Backtest_A == entryText or Backtest_B == entryText 
+                    array.unshift(a_newLabel, label.new(bar_index, close, yloc= yloc.belowbar, 
+                     text       = "", 
+                     color      = color.new(C_LIME_GREEN, 0), 
+                     style      = label.style_triangleup, 
+                     textcolor  = na, 
+                     size       = size.tiny, 
+                     tooltip    = entryText + " - " + str.tostring(close)))
+
+            //—————————— RED ARROWS
+
+            if bearishTrigger
+                matrix.set(matrix, trade, Bearish_Price, close)                                                                                       
+                gBearish_Price = matrix.get(matrix, trade, Bearish_Price)
+
+                if gBearish_Price > gEntry_Price                                                                                               
+                    matrix.set(matrix, trade, Bearish_to_Max_Amount, gBearish_Price - maxReached)                                                   
+                else                                                                                                                           
+                    matrix.set(matrix, trade, Bearish_to_Max_Amount, gBearish_Price - trailingStop)            
+
+                matrix.set(matrix, trade, Bearish_Amount_Sum,   matrix.get(matrix, trade, Bearish_Amount_Sum) + matrix.get(matrix, trade, Bearish_to_Max_Amount))   
+                matrix.set(matrix, trade, Bearish_Hit_Count,    matrix.get(matrix, trade, Bearish_Hit_Count ) + 1)   
+                matrix.set(matrix, trade, Avg_Bearish_Dev,      matrix.get(matrix, trade, Bearish_Amount_Sum) / matrix.get(matrix, trade, Bearish_Hit_Count))   
+                matrix.set(matrix, trade, Avg_Bearish_RR,       matrix.get(matrix, trade, Avg_Bearish_Dev   ) / gStop_amount)   
+                
+                if Backtest_A == entryText or Backtest_B == entryText 
+                    array.unshift(a_newLabel, label.new(bar_index, close, yloc= yloc.abovebar, 
+                     text       = "", 
+                     color      = color.new(C_PINK, 0), 
+                     style      = label.style_triangledown, 
+                     textcolor  = na, 
+                     size       = size.tiny, 
+                     tooltip    = entryText + " - " + str.tostring(close)))
+            
+            posLab = direction == 'L' ? label.style_label_upper_left : label.style_label_lower_left
+            
+            //—————————— FAIL
+
+            gTP1_Hit = matrix.get(matrix, trade, TP1_Hit)
+            failed   = (direction == 'L' ? low < gStop_Price : high > gStop_Price) and gTP1_Hit == 0   
+
+            if failed                                                                                                                           
+                matrix.set(matrix, trade, Exit_Price       , gStop_Price)                                                                              
+                matrix.set(matrix, trade, Fail_Hit_Count   , matrix.get(matrix, trade, Fail_Hit_Count   ) + 1)           
+                matrix.set(matrix, trade, Fail_Bars_Count  , matrix.get(matrix, trade, Fail_Bars_Count  ) + matrix.get(matrix, trade, In_Trade_Bar_Count))           
+                matrix.set(matrix, trade, Number_of_Losses , matrix.get(matrix, trade, Number_of_Losses ) + 1)           
+                matrix.set(matrix, trade, PL_Amount        , matrix.get(matrix, trade, Exit_Price       ) - gEntry_Price)           
+                matrix.set(matrix, trade, Trade_RR_Ratio   , matrix.get(matrix, trade, PL_Amount        ) / gStop_amount)           
+                matrix.set(matrix, trade, Loss_RR_Ratio_Sum, matrix.get(matrix, trade, Loss_RR_Ratio_Sum) + matrix.get(matrix, trade, Trade_RR_Ratio))           
+                matrix.set(matrix, trade, Entry_is_Active  , 0)     
+
+                if Backtest_A == entryText or Backtest_B == entryText 
+                    array.unshift(a_newLabel, label.new(bar_index, gStop_Price, 
+                     text       = "FAIL", 
+                     color      = color.new(tradeColor, 0), 
+                     style      = posLab, 
+                     textcolor  = C_BLACK, 
+                     size       = size.small, 
+                     tooltip    = str.tostring(gStop_Price)))
+            
+            //—————————— TRAILING STOP HIT
+
+            trailingStop := matrix.get(matrix, trade, TSL_Price)
+            trailingStopHit = (direction == 'L' ? low < trailingStop and trailingStop > gEntry_Price : high > trailingStop and trailingStop < gEntry_Price) and matrix.get (matrix, trade, TSL_Hit) == 0       
+
+            if trailingStopHit                                                                                                                        
+                matrix.set(matrix, trade, Exit_Price       , trailingStop)           
+                matrix.set(matrix, trade, TSL_Hit_Count    , matrix.get(matrix, trade, TSL_Hit_Count   ) + 1)           
+                matrix.set(matrix, trade, TSL_Hit          , 1)           
+                matrix.set(matrix, trade, TSL_Bars_Count   , matrix.get(matrix, trade, TSL_Bars_Count  ) + gIn_Trade_Bar_Count)           
+                matrix.set(matrix, trade, Number_of_Wins   , matrix.get(matrix, trade, Number_of_Wins  ) + 1)           
+                matrix.set(matrix, trade, PL_Amount        , matrix.get(matrix, trade, Exit_Price      ) - gEntry_Price)           
+                matrix.set(matrix, trade, Trade_RR_Ratio   , matrix.get(matrix, trade, PL_Amount       ) / gStop_amount)
+                matrix.set(matrix, trade, Win_RR_Ratio_Sum , matrix.get(matrix, trade, Win_RR_Ratio_Sum) + matrix.get(matrix, trade, Trade_RR_Ratio))           
+                matrix.set(matrix, trade, Entry_is_Active  , 0)                                                                                
+
+                if Backtest_A == entryText or Backtest_B == entryText 
+                    array.unshift(a_newLabel, label.new(bar_index, trailingStop, 
+                     text       = "TSL", 
+                     color      = color.new(tradeColor, 0), 
+                     style      = posLab, 
+                     textcolor  = C_BLACK, 
+                     size       = size.small, 
+                     tooltip    = str.tostring(trailingStop)))
+            
+            //—————————— STOP HIT
+
+            stopHit = (direction == 'L' ? low < gStop_Price : high > gStop_Price) and gTP1_Hit == 1      
+
+            if stopHit                                                                                                                       
+                matrix.set(matrix, trade, Exit_Price       , gStop_Price)           
+                matrix.set(matrix, trade, Number_of_Losses , matrix.get(matrix, trade, Number_of_Losses)  + 1 )           
+                matrix.set(matrix, trade, PL_Amount        , matrix.get(matrix, trade, Exit_Price) - gEntry_Price)           
+                matrix.set(matrix, trade, Trade_RR_Ratio   , matrix.get(matrix, trade, PL_Amount) / gStop_amount)           
+                matrix.set(matrix, trade, Loss_RR_Ratio_Sum, matrix.get(matrix, trade, Loss_RR_Ratio_Sum) + matrix.get(matrix, trade, Trade_RR_Ratio))                                 
+                matrix.set(matrix, trade, Entry_is_Active  , 0)           
+                if Backtest_A == entryText or Backtest_B == entryText 
+                    array.unshift(a_newLabel, label.new(bar_index, gStop_Price, 
+                     text       = "STOP", 
+                     color      = color.new(tradeColor, 0), 
+                     style      = posLab, 
+                     textcolor  = C_BLACK, 
+                     size       = size.small, 
+                     tooltip    = str.tostring(gStop_Price)))
+            
+            box.set_lefttop    (array.get(a_priceBox, i), bar_index + offset, gStop_Price)
+            box.set_rightbottom(array.get(a_priceBox, i), bar_index + offset + 8, direction == 'L' ? (trailingStop > gTP4_Price ? trailingStop : gTP4_Price) : (trailingStop < gTP4_Price ? trailingStop : gTP4_Price))
+            box.set_bgcolor    (array.get(a_priceBox, i), color.new(tradeColor, 97))
+            
+            if array.size(box) > 0
+
+                // Trade Tracking box overlayed onto price.
+                box.set_rightbottom(array.get(box, 1), bar_index, failed ? gStop_Price : stopHit ? gStop_Price : trailingStopHit ? trailingStop : close)
+                box.set_top        (array.get(box, 1), gEntry_Price)
+                
+                // Trade potential box overlayed onto price in lighter shade.
+                box.set_rightbottom(array.get(box, 0), bar_index, direction == 'L' ? (minReached > gStop_Price ? minReached : gStop_Price) : (minReached < gStop_Price ? minReached : gStop_Price))
+                box.set_top        (array.get(box, 0), maxReached)
+            
+            matrix.set(matrix, trade, In_Trade_Bar_Count, gIn_Trade_Bar_Count + 1)
+            
+        else
+            line.set_xy1(gEntry_Line, na, na), label.set_x(gEntry_Label, na)
+            line.set_xy1(gSL_Line   , na, na), label.set_x(gSL_Label   , na)
+            line.set_xy1(gTP1_Line  , na, na), label.set_x(gTP1_Label  , na)
+            line.set_xy1(gTP2_Line  , na, na), label.set_x(gTP2_Label  , na)
+            line.set_xy1(gTP3_Line  , na, na), label.set_x(gTP3_Label  , na)
+            line.set_xy1(gTP4_Line  , na, na), label.set_x(gTP4_Label  , na)
+            line.set_xy1(gTSL_Line  , na, na), label.set_x(gTSL_Label  , na)
+            matrix.set(matrix, trade, Max_Reached, direction == 'L' ? low  : high)
+            matrix.set(matrix, trade, Min_Reached, direction == 'L' ? high : low )
+            matrix.set(matrix, trade, In_Trade_Bar_Count, 0)
+            box.set_bgcolor(array.get(a_priceBox, i), color.new(tradeColor, 100))
+
+            if array.size  (box) > 0
+                box.set_bgcolor(array.get(box, 1), direction == 'L' and gExit_Price < gEntry_Price ? color.new(C_PINK, 90) : direction == 'S' and gExit_Price > gEntry_Price ? color.new(C_PINK, 90) : color.new(tradeColor, 90)) 
+        
+        //—————————— TRADE CALCULATIONS
+
+        gNumber_of_Wins      = matrix.get(matrix, trade, Number_of_Wins    )
+        gNumber_of_Losses    = matrix.get(matrix, trade, Number_of_Losses  )
+        gLoss_Percent        = matrix.get(matrix, trade, Loss_Percent      )
+        gWin_RR_Ratio_Sum    = matrix.get(matrix, trade, Win_RR_Ratio_Sum  )
+        gLoss_RR_Ratio_Sum   = matrix.get(matrix, trade, Loss_RR_Ratio_Sum )
+        gEntry_Count         = matrix.get(matrix, trade, Entry_Count       )
+        gFail_Hit_Count      = matrix.get(matrix, trade, Fail_Hit_Count    )
+        gFail_Bars_Count     = matrix.get(matrix, trade, Fail_Bars_Count   )
+        gTP1_Hit_Count       = matrix.get(matrix, trade, TP1_Hit_Count     )
+        gTP2_Hit_Count       = matrix.get(matrix, trade, TP2_Hit_Count     )
+        gTP3_Hit_Count       = matrix.get(matrix, trade, TP3_Hit_Count     )
+        gTP4_Hit_Count       = matrix.get(matrix, trade, TP4_Hit_Count     )
+        gTSL_Hit_Count       = matrix.get(matrix, trade, TSL_Hit_Count     )
+        gIn_Trade_Bar_Count := matrix.get(matrix, trade, In_Trade_Bar_Count)
+        
+        matrix.set(matrix, trade, Win_Percent , gNumber_of_Wins   / gEntry_Count)
+        matrix.set(matrix, trade, Loss_Percent, gNumber_of_Losses / gEntry_Count)
+        
+        gWin_Percent       = matrix.get(matrix, trade, Win_Percent)
+        RRT_Win_Percent    = math.round(gWin_Percent * 100)
+        
+        matrix.set(matrix, trade, Avg_Win_RR       , gWin_RR_Ratio_Sum  / gNumber_of_Wins  )
+        matrix.set(matrix, trade, Avg_Loss_RR      , gLoss_RR_Ratio_Sum / gNumber_of_Losses)
+        matrix.set(matrix, trade, Avg_Risk_Reward  , (gWin_Percent * matrix.get(matrix, trade, Avg_Win_RR) - (gLoss_Percent * matrix.get(matrix, trade, Avg_Loss_RR)))) 
+
+        RRT_ARRR           = math.round(matrix.get(matrix, trade, Avg_Risk_Reward), 2)
+        
+        matrix.set(matrix, trade, RRT_Fail_Hit_Percentage, math.round(gFail_Hit_Count / gEntry_Count * 100))
+        matrix.set(matrix, trade, RRT_TP1_Hit_Percentage , math.round(gTP1_Hit_Count  / gEntry_Count * 100))
+        matrix.set(matrix, trade, RRT_TP2_Hit_Percentage , math.round(gTP2_Hit_Count  / gEntry_Count * 100))
+        matrix.set(matrix, trade, RRT_TP3_Hit_Percentage , math.round(gTP3_Hit_Count  / gEntry_Count * 100))
+        matrix.set(matrix, trade, RRT_TP4_Hit_Percentage , math.round(gTP4_Hit_Count  / gEntry_Count * 100))
+        matrix.set(matrix, trade, RRT_TSL_Hit_Percentage , math.round(gTSL_Hit_Count  / gEntry_Count * 100))
+        
+        matrix.set(matrix, trade, RRT_Avg_Fail_Bars      , math.round(gFail_Bars_Count / gFail_Hit_Count))
+        matrix.set(matrix, trade, RRT_Avg_TP1_Bars       , math.round(matrix.get(matrix, trade, TP1_Bars_Count) / gTP1_Hit_Count))
+        matrix.set(matrix, trade, RRT_Avg_TP2_Bars       , math.round(matrix.get(matrix, trade, TP2_Bars_Count) / gTP2_Hit_Count))
+        matrix.set(matrix, trade, RRT_Avg_TP3_Bars       , math.round(matrix.get(matrix, trade, TP3_Bars_Count) / gTP3_Hit_Count))
+        matrix.set(matrix, trade, RRT_Avg_TP4_Bars       , math.round(matrix.get(matrix, trade, TP4_Bars_Count) / gTP4_Hit_Count))
+        matrix.set(matrix, trade, RRT_Avg_TSL_Bars       , math.round(matrix.get(matrix, trade, TSL_Bars_Count) / gTSL_Hit_Count))    
+
+        if RRT_Activated
+
+            //—————————— COLUMN LABELS
+
+            table.cell(table_id = Risk_Reward_Table, column = 1,  row = 0, text = "#",           text_color = C_LIGHT_GRAY,  text_size = RRT_textSize,    bgcolor = C_TV_BLACK                   , tooltip = "")
+            table.cell(table_id = Risk_Reward_Table, column = 2,  row = 0, text = "Fail",        text_color = C_BLACK,       text_size = RRT_textSize,    bgcolor = C_PINK                       , tooltip = "Fail means that this strategy failed to hit at least TP 1 before being stopped out.")
+            table.cell(table_id = Risk_Reward_Table, column = 5,  row = 0, text = "TP 1",        text_color = C_BLACK,       text_size = RRT_textSize,    bgcolor = color.new(C_LIME_GREEN,   15), tooltip = "Price crossed above/below TP 1")
+            table.cell(table_id = Risk_Reward_Table, column = 8,  row = 0, text = "TP 2",        text_color = C_BLACK,       text_size = RRT_textSize,    bgcolor = color.new(C_LIME_GREEN,   30), tooltip = "Price crossed above/below TP 2")
+            table.cell(table_id = Risk_Reward_Table, column = 11, row = 0, text = "TP 3",        text_color = C_BLACK,       text_size = RRT_textSize,    bgcolor = color.new(C_LIME_GREEN,   15), tooltip = "Price crossed above/below TP 3")
+            table.cell(table_id = Risk_Reward_Table, column = 14, row = 0, text = "TP 4",        text_color = C_BLACK,       text_size = RRT_textSize,    bgcolor = color.new(C_LIME_GREEN,   30), tooltip = "Price crossed above/below TP 4")
+            table.cell(table_id = Risk_Reward_Table, column = 17, row = 0, text = "TSL",         text_color = C_BLACK,       text_size = RRT_textSize,    bgcolor = C_BLUE                       , tooltip = "Price crossed above/below the Trailing Stop Loss (TSL)")
+            table.cell(table_id = Risk_Reward_Table, column = 20, row = 0, text = "▲",           text_color = C_LIME_GREEN,  text_size = RRT_textSize,    bgcolor = color.new(C_LIME_GREEN, 92)  , tooltip = "Bullish condition Triangle Signal")
+            table.cell(table_id = Risk_Reward_Table, column = 22, row = 0, text = "▼",           text_color = C_PINK,        text_size = RRT_textSize,    bgcolor = color.new(C_PINK,       92)  , tooltip = "Bearish condition Triangle Signal")
+            table.cell(table_id = Risk_Reward_Table, column = 24, row = 0, text = "Win %",       text_color = C_LIGHT_GRAY,  text_size = RRT_textSize,    bgcolor = C_TV_BLACK                   , tooltip = "Winning % of this trade type.\n\n* Of Note - If a trade does not FAIL, but still hits the STOP, it was more than likely due to a large price move occuring after entry, which caused you to hit TP1, but not have the TSL rise above your entry price, and then price reversing to hit your STOP. This does not happen very often and your R:R calculations do account for it, however it is important to note if you notice what looks like a small discrepancy in your Win % and/or Fail %...this explains why because it is still a losing trade when this occurs but is not considered a FAIL due to hitting at least 1 profit taking scenario (TP1).")
+            table.cell(table_id = Risk_Reward_Table, column = 25, row = 0, text = "ARRR",        text_color = C_LIGHT_GRAY,  text_size = RRT_textSize,    bgcolor = C_TV_BLACK                   , tooltip = "ARRR - Average Risk:Reward Return of this trade type shown as a multiple of Risk, where a losing trade's risk ratio always equals -1 based on the design of this system.\n\nReturns greater than 1.0 are generally winning systems and less than 1 is a generally losing. For example, if the ARRR was .75, you would expect to only win .75 times (or 75%) the amount you risked on each trade. This is more accurate than profit factor, in my opinion, due to the influence of win/loss percentage and the size of those wins/losses.\n\nFormula:\n\nARRR = (Win % * Avg Winning Trade's R:R Ratio) - (Loss % * Avg Losing Trade's R:R Ratio)")
+        
+            // ENTRY
+            table.cell(table_id = Risk_Reward_Table, column = 0,  row = trade + 1, text = entryText, text_halign = text.align_left,                               text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(tradeColor ,     0),    tooltip = "Enter Trade criteria or other useful info here")
+            table.cell(table_id = Risk_Reward_Table, column = 1,  row = trade + 1, text = str.tostring(gEntry_Count    ),                                         text_color = C_LIGHT_GRAY,  text_size = RRT_textSize,   bgcolor = color.new(C_TV_BLACK,      0),    tooltip = "# of entries of this trade type") 
+            // FAIL
+            table.cell(table_id = Risk_Reward_Table, column = 2,  row = trade + 1, text = str.tostring(gFail_Hit_Count ) ,                                        text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_PINK,         30),    tooltip = "# total hit of this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 3,  row = trade + 1, text = str.tostring(matrix.get(matrix, trade, RRT_Fail_Hit_Percentage)) + "%", text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_PINK,         30),    tooltip = "% of trades it occured on of this trade type") 
+            table.cell(table_id = Risk_Reward_Table, column = 4,  row = trade + 1, text = str.tostring(matrix.get(matrix, trade, RRT_Avg_Fail_Bars)),             text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_PINK,         30),    tooltip = "Avg age when it occured on this trade type")
+            // TP 1
+            table.cell(table_id = Risk_Reward_Table, column = 5,  row = trade + 1, text = str.tostring(gTP1_Hit_Count  ),                                         text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   15),    tooltip = "# total hit of this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 6,  row = trade + 1, text = str.tostring(matrix.get(matrix, trade, RRT_TP1_Hit_Percentage )) + "%", text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   15),    tooltip = "% of trades it occured on of this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 7,  row = trade + 1, text = str.tostring(matrix.get(matrix, trade, RRT_Avg_TP1_Bars )),             text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   15),    tooltip = "Avg age when it occured on this trade type")
+            // TP 2
+            table.cell(table_id = Risk_Reward_Table, column = 8,  row = trade + 1, text = str.tostring(gTP2_Hit_Count  ),                                         text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   30),    tooltip = "# total hit of this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 9,  row = trade + 1, text = str.tostring(matrix.get(matrix, trade, RRT_TP2_Hit_Percentage )) + "%", text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   30),    tooltip = "% of trades it occured on of this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 10, row = trade + 1, text = str.tostring(matrix.get(matrix, trade, RRT_Avg_TP2_Bars )),             text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   30),    tooltip = "Avg age when it occured on this trade type")
+            // TP 3
+            table.cell(table_id = Risk_Reward_Table, column = 11, row = trade + 1, text = str.tostring(gTP3_Hit_Count  ),                                         text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   15),    tooltip = "# total hit of this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 12, row = trade + 1, text = str.tostring(matrix.get(matrix, trade, RRT_TP3_Hit_Percentage )) + "%", text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   15),    tooltip = "% of trades it occured on of this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 13, row = trade + 1, text = str.tostring(matrix.get(matrix, trade, RRT_Avg_TP3_Bars )),             text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   15),    tooltip = "Avg age when it occured on this trade type")
+            // TP 4
+            table.cell(table_id = Risk_Reward_Table, column = 14, row = trade + 1, text = str.tostring(gTP4_Hit_Count  ),                                         text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   30),    tooltip = "# total hit of this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 15, row = trade + 1, text = str.tostring(matrix.get(matrix, trade, RRT_TP4_Hit_Percentage )) + "%", text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   30),    tooltip = "% of trades it occured on of this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 16, row = trade + 1, text = str.tostring(matrix.get(matrix, trade, RRT_Avg_TP4_Bars )),             text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   30),    tooltip = "Avg age when it occured on this trade type")
+            // TSL
+            table.cell(table_id = Risk_Reward_Table, column = 17, row = trade + 1, text = str.tostring(gTSL_Hit_Count  ),                                         text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_BLUE,         15),    tooltip = "# total hit of this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 18, row = trade + 1, text = str.tostring(matrix.get(matrix, trade, RRT_Avg_TSL_Bars )),             text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_BLUE,         15),    tooltip = "Avg age when it occured on this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 19, row = trade + 1, text = str.tostring(math.round(matrix.get(matrix, trade, Avg_Win_RR  ),   2)), text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = color.new(C_BLUE,         15),    tooltip = "Since the TSL is not active until its over your Entry price it can be counted as a winning trade. This number represents the Avg Risk:Reward Ratio for trades of this type that hit your TSL.")
+            // GREEN ARROW
+            table.cell(table_id = Risk_Reward_Table, column = 20, row = trade + 1, text = str.tostring(matrix.get(matrix, trade, Bullish_Hit_Count)),             text_color = C_LIGHT_GRAY,  text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   95),    tooltip = "- # total hit of this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 21, row = trade + 1, text = str.tostring(math.round(matrix.get(matrix, trade, Avg_Bullish_RR), 2)), text_color = C_LIGHT_GRAY,  text_size = RRT_textSize,   bgcolor = color.new(C_LIME_GREEN,   95),    tooltip = "Risk:Reward Ratio of where the Avg Green Arrow occurs in relation to either the min-reached price when occuring below (above for Short) the Entry Price or the Trailing Stop when occuring above (below for Short)")
+            // RED ARROW
+            table.cell(table_id = Risk_Reward_Table, column = 22, row = trade + 1, text = str.tostring(matrix.get(matrix, trade, Bearish_Hit_Count)),             text_color = C_LIGHT_GRAY,  text_size = RRT_textSize,   bgcolor = color.new(C_PINK,         95),    tooltip = "- # total hit of this trade type")
+            table.cell(table_id = Risk_Reward_Table, column = 23, row = trade + 1, text = str.tostring(math.round(matrix.get(matrix, trade, Avg_Bearish_RR), 2)), text_color = C_LIGHT_GRAY,  text_size = RRT_textSize,   bgcolor = color.new(C_PINK,         95),    tooltip = "Risk:Reward Ratio of where the Avg Red Arrow occurs in relation to either the max-reached price when occuring above (below for Long) the Entry Price or the Trailing Stop when occuring below (above for Long)")
+            // WIN %
+            table.cell(table_id = Risk_Reward_Table, column = 24, row = trade + 1, text = str.tostring(RRT_Win_Percent) + "%",                                    text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = tradeColor,                       tooltip = "Winning % of this trade type.\n\n* Of Note - If a trade does not FAIL, but still hits the STOP, it was more than likely due to a large price move occuring after entry, which caused you to hit TP1, but not have the TSL rise above your entry price, and then price reversing to hit your STOP. This does not happen very often and your R:R calculations do account for it, however it is important to note if you notice what looks like a small discrepancy in your Win % and/or Fail %...this explains why because it is still a losing trade when this occurs but is not considered a FAIL due to hitting at least 1 profit taking scenario (TP1).")
+            // ARRR
+            table.cell(table_id = Risk_Reward_Table, column = 25, row = trade + 1, text = str.tostring(RRT_ARRR),                                                 text_color = C_BLACK,       text_size = RRT_textSize,   bgcolor = tradeColor,                       tooltip = "ARRR - Average Risk:Reward Return of this trade type shown as a multiple of Risk, where a losing trade's risk always equals -1 based on the design of this system.\n\nReturns greater than 1.0 are generally winning systems and less than 1 is a generally losing. For example, if the ARRR was .75, you would expect to only win .75 times (or 75%) the amount you risked on each trade. This is more accurate than profit factor, in my opinion, due to the influence of win/loss percentage and the size of those wins/losses.\n\nFormula:\n\nARRR = (Win % * Avg Winning Trade's R:R Ratio) - (Loss % * Avg Losing Trade's R:R Ratio)")
+            
+            table.merge_cells(Risk_Reward_Table, 2,  0, 4,  0) // Fail
+            table.merge_cells(Risk_Reward_Table, 5,  0, 7,  0) // TP1
+            table.merge_cells(Risk_Reward_Table, 8,  0, 10, 0) // TP2
+            table.merge_cells(Risk_Reward_Table, 11, 0, 13, 0) // TP3
+            table.merge_cells(Risk_Reward_Table, 14, 0, 16, 0) // TP4
+            table.merge_cells(Risk_Reward_Table, 17, 0, 19, 0) // TSL
+            table.merge_cells(Risk_Reward_Table, 20, 0, 21, 0) // Bullish 🠉
+            table.merge_cells(Risk_Reward_Table, 22, 0, 23, 0) // Bearish 🠋
+        
+        if TTT_Activated
+
+            //—————————— COLUMN LABELS
+
+            table.cell(table_id = Trade_Tracking_Table, column =  0, row = 0, text = "Trade Name",  text_color = C_LIGHT_GRAY,  text_size = TTT_textSize, bgcolor = C_TV_BLACK)
+            table.cell(table_id = Trade_Tracking_Table, column =  1, row = 0, text = "Side",        text_color = C_LIGHT_GRAY,  text_size = TTT_textSize, bgcolor = C_TV_BLACK,       tooltip = "Side of Trade, Long is Green and Short is Red by default")
+            table.cell(table_id = Trade_Tracking_Table, column =  2, row = 0, text = "Entry",       text_color = C_LIGHT_GRAY,  text_size = TTT_textSize, bgcolor = C_TV_BLACK)
+            table.cell(table_id = Trade_Tracking_Table, column =  3, row = 0, text = "Stop",        text_color = C_BLACK,       text_size = TTT_textSize, bgcolor = C_MEDIUM_GRAY,    tooltip = "Color brightens as the trade gets closer to the Entry Stop's Avg age in RRT")
+            table.cell(table_id = Trade_Tracking_Table, column =  4, row = 0, text = "TP 1",        text_color = C_BLACK,       text_size = TTT_textSize, bgcolor = C_MEDIUM_GRAY,    tooltip = "Color brightens as the trade gets closer to TP1's Avg age in RRT")
+            table.cell(table_id = Trade_Tracking_Table, column =  5, row = 0, text = "TP 2",        text_color = C_BLACK,       text_size = TTT_textSize, bgcolor = C_MEDIUM_GRAY,    tooltip = "Color brightens as the trade gets closer to TP2's Avg age in RRT")
+            table.cell(table_id = Trade_Tracking_Table, column =  6, row = 0, text = "TP 3",        text_color = C_BLACK,       text_size = TTT_textSize, bgcolor = C_MEDIUM_GRAY,    tooltip = "Color brightens as the trade gets closer to TP3's Avg age in RRT")
+            table.cell(table_id = Trade_Tracking_Table, column =  7, row = 0, text = "TP 4",        text_color = C_BLACK,       text_size = TTT_textSize, bgcolor = C_MEDIUM_GRAY,    tooltip = "Color brightens as the trade gets closer to TP4's Avg age in RRT")
+            table.cell(table_id = Trade_Tracking_Table, column =  8, row = 0, text = "TSL",         text_color = C_BLACK,       text_size = TTT_textSize, bgcolor = C_MEDIUM_GRAY,    tooltip = "Color brightens as the trade gets closer to TSL's Avg age in RRT")
+            table.cell(table_id = Trade_Tracking_Table, column =  9, row = 0, text = "Age",         text_color = C_LIGHT_GRAY,  text_size = TTT_textSize, bgcolor = C_TV_BLACK,       tooltip = "Age (# of bars) of this specific trade")
+            
+            if gActive
+                table.cell(table_id = Trade_Tracking_Table, column = 0, row = trade + 1, text = entryText,                                                                                                                                                                                                                                                                                                                                                              text_color = C_BLACK, text_size = TTT_textSize, bgcolor = tradeColor , text_halign = text.align_left)
+                table.cell(table_id = Trade_Tracking_Table, column = 1, row = trade + 1, text = direction == 'L' ? "Long" : "Short",                                                                                                                                                                                                                                                                                                                                    text_color = C_BLACK, text_size = TTT_textSize, bgcolor = direction == 'L' ? C_LIME_GREEN : C_PINK,                                                             tooltip = "Side of Trade, Long is Green and Short is Red by default")
+                table.cell(table_id = Trade_Tracking_Table, column = 2, row = trade + 1, text = direction == 'L' ? close  > gEntry_Price ? "☑️" + str.tostring(math.round_to_mintick(gEntry_Price)) : str.tostring(math.round_to_mintick(gEntry_Price)) : direction == 'S' ? close < gEntry_Price ? "☑️" + str.tostring(math.round_to_mintick(gEntry_Price)) : str.tostring(math.round_to_mintick(gEntry_Price)) : str.tostring(math.round_to_mintick(gEntry_Price)),  text_color = C_BLACK, text_size = TTT_textSize, bgcolor = tradeColor )
+                table.cell(table_id = Trade_Tracking_Table, column = 3, row = trade + 1, text = str.tostring(math.round_to_mintick(gStop_Price)),                                                                                                                                                                                                                                                                                                                       text_color = C_BLACK, text_size = TTT_textSize, bgcolor = f_gradientColor(tradeColor, gIn_Trade_Bar_Count, matrix.get(matrix, trade, RRT_Avg_Fail_Bars), 0),    tooltip = "Color brightens as the trade gets closer to the inital Stop's Avg age in RRT")
+                table.cell(table_id = Trade_Tracking_Table, column = 4, row = trade + 1, text = direction == 'L' ? close  > gTP1_Price   ? "☑️" + str.tostring(math.round_to_mintick(gTP1_Price  )) : str.tostring(math.round_to_mintick(gTP1_Price  )) : direction == 'S' ? close < gTP1_Price   ? "☑️" + str.tostring(math.round_to_mintick(gTP1_Price  )) : str.tostring(math.round_to_mintick(gTP1_Price  )) : str.tostring(math.round_to_mintick(gTP1_Price  )),  text_color = C_BLACK, text_size = TTT_textSize, bgcolor = f_gradientColor(tradeColor, gIn_Trade_Bar_Count, matrix.get(matrix, trade, RRT_Avg_TP1_Bars ), 0),     tooltip = "Color brightens as the trade gets closer to TP1's Avg age in RRT")
+                table.cell(table_id = Trade_Tracking_Table, column = 5, row = trade + 1, text = direction == 'L' ? close  > gTP2_Price   ? "☑️" + str.tostring(math.round_to_mintick(gTP2_Price  )) : str.tostring(math.round_to_mintick(gTP2_Price  )) : direction == 'S' ? close < gTP2_Price   ? "☑️" + str.tostring(math.round_to_mintick(gTP2_Price  )) : str.tostring(math.round_to_mintick(gTP2_Price  )) : str.tostring(math.round_to_mintick(gTP2_Price  )),  text_color = C_BLACK, text_size = TTT_textSize, bgcolor = f_gradientColor(tradeColor, gIn_Trade_Bar_Count, matrix.get(matrix, trade, RRT_Avg_TP2_Bars ), 0),     tooltip = "Color brightens as the trade gets closer to TP2's Avg age in RRT")
+                table.cell(table_id = Trade_Tracking_Table, column = 6, row = trade + 1, text = direction == 'L' ? close  > gTP3_Price   ? "☑️" + str.tostring(math.round_to_mintick(gTP3_Price  )) : str.tostring(math.round_to_mintick(gTP3_Price  )) : direction == 'S' ? close < gTP3_Price   ? "☑️" + str.tostring(math.round_to_mintick(gTP3_Price  )) : str.tostring(math.round_to_mintick(gTP3_Price  )) : str.tostring(math.round_to_mintick(gTP3_Price  )),  text_color = C_BLACK, text_size = TTT_textSize, bgcolor = f_gradientColor(tradeColor, gIn_Trade_Bar_Count, matrix.get(matrix, trade, RRT_Avg_TP3_Bars ), 0),     tooltip = "Color brightens as the trade gets closer to TP3's Avg age in RRT")
+                table.cell(table_id = Trade_Tracking_Table, column = 7, row = trade + 1, text = direction == 'L' ? close  > gTP4_Price   ? "☑️" + str.tostring(math.round_to_mintick(gTP4_Price  )) : str.tostring(math.round_to_mintick(gTP4_Price  )) : direction == 'S' ? close < gTP4_Price   ? "☑️" + str.tostring(math.round_to_mintick(gTP4_Price  )) : str.tostring(math.round_to_mintick(gTP4_Price  )) : str.tostring(math.round_to_mintick(gTP4_Price  )),  text_color = C_BLACK, text_size = TTT_textSize, bgcolor = f_gradientColor(tradeColor, gIn_Trade_Bar_Count, matrix.get(matrix, trade, RRT_Avg_TP4_Bars ), 0),     tooltip = "Color brightens as the trade gets closer to TP4's Avg age in RRT")
+                table.cell(table_id = Trade_Tracking_Table, column = 8, row = trade + 1, text = str.tostring(math.round_to_mintick(trailingStop)),                                                                                                                                                                                                                                                                                                                      text_color = C_BLACK, text_size = TTT_textSize, bgcolor = f_gradientColor(tradeColor, gIn_Trade_Bar_Count, matrix.get(matrix, trade, RRT_Avg_TSL_Bars ), 0),    tooltip = "Color brightens as the trade gets closer to TSL's Avg age in RRT")
+                table.cell(table_id = Trade_Tracking_Table, column = 9, row = trade + 1, text = str.tostring(gIn_Trade_Bar_Count),                                                                                                                                                                                                                                                                                                                                      text_color = C_BLACK, text_size = TTT_textSize, bgcolor = tradeColor ,                                                                                          tooltip = "Age (# of bars) of this specific trade")
+            
+            else
+                table.clear(Trade_Tracking_Table, 0, trade + 1, 9, trade + 1)
+
+//—————————— ENTRIES
+
+f_Entry('L', L0_Activated, C_BLUE        ,  2, L0_Entry, L0_Entry_Bullish, L0_Entry_Bearish, L0, L0_SL_Value, L0_TP1_Value, L0_TP2_Value, L0_TP3_Value, L0_TP4_Value, "0. Stochastic"             , a_newBox_0, 0)
+f_Entry('L', L1_Activated, C_ORANGE      , 11, L1_Entry, L1_Entry_Bullish, L1_Entry_Bearish, L1, L1_SL_Value, L1_TP1_Value, L1_TP2_Value, L1_TP3_Value, L1_TP4_Value, "1. 2x MA Cross"            , a_newBox_1, 1)
+f_Entry('L', L2_Activated, C_LIME_GREEN  , 20, L2_Entry, L2_Entry_Bullish, L2_Entry_Bearish, L2, L2_SL_Value, L2_TP1_Value, L2_TP2_Value, L2_TP3_Value, L2_TP4_Value, "2. MACD"                   , a_newBox_2, 2)
+f_Entry('L', L3_Activated, C_PURPLE      , 29, L3_Entry, L3_Entry_Bullish, L3_Entry_Bearish, L3, L3_SL_Value, L3_TP1_Value, L3_TP2_Value, L3_TP3_Value, L3_TP4_Value, "3. Bollinger Bands"        , a_newBox_3, 3)
+f_Entry('L', L4_Activated, C_YELLOW      , 38, L4_Entry, L4_Entry_Bullish, L4_Entry_Bearish, L4, L4_SL_Value, L4_TP1_Value, L4_TP2_Value, L4_TP3_Value, L4_TP4_Value, "4. Supertrend"             , a_newBox_4, 4)
+f_Entry('S', S5_Activated, C_DARK_BLUE   , 47, S5_Entry, S5_Entry_Bullish, S5_Entry_Bearish, S5, S5_SL_Value, S5_TP1_Value, S5_TP2_Value, S5_TP3_Value, S5_TP4_Value, "5. Stochastic (Short)"     , a_newBox_5, 5)
+f_Entry('S', S6_Activated, C_LIME_YELLOW , 56, S6_Entry, S6_Entry_Bullish, S6_Entry_Bearish, S6, S6_SL_Value, S6_TP1_Value, S6_TP2_Value, S6_TP3_Value, S6_TP4_Value, "6. 2x MA Cross (Short)"    , a_newBox_6, 6)
+f_Entry('S', S7_Activated, C_DARK_PURPLE , 65, S7_Entry, S7_Entry_Bullish, S7_Entry_Bearish, S7, S7_SL_Value, S7_TP1_Value, S7_TP2_Value, S7_TP3_Value, S7_TP4_Value, "7. MACD (Short)"           , a_newBox_7, 7)
+f_Entry('S', S8_Activated, C_MINT        , 74, S8_Entry, S8_Entry_Bullish, S8_Entry_Bearish, S8, S8_SL_Value, S8_TP1_Value, S8_TP2_Value, S8_TP3_Value, S8_TP4_Value, "8. Bollinger Bands (Short)", a_newBox_8, 8)
+f_Entry('S', S9_Activated, C_BURNT_ORANGE, 83, S9_Entry, S9_Entry_Bullish, S9_Entry_Bearish, S9, S9_SL_Value, S9_TP1_Value, S9_TP2_Value, S9_TP3_Value, S9_TP4_Value, "9. Supertrend (Short)"     , a_newBox_9, 9)
+
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+// 7. TRAILING STOP PLOTS ——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+
+// TSL LINE PLOT
+gL0_TSL_Price   = matrix.get(matrix, L0, TSL_Price), gL0_Entry_Price = matrix.get(matrix, L0, Entry_Price)
+gL1_TSL_Price   = matrix.get(matrix, L1, TSL_Price), gL1_Entry_Price = matrix.get(matrix, L1, Entry_Price)
+gL2_TSL_Price   = matrix.get(matrix, L2, TSL_Price), gL2_Entry_Price = matrix.get(matrix, L2, Entry_Price)
+gL3_TSL_Price   = matrix.get(matrix, L3, TSL_Price), gL3_Entry_Price = matrix.get(matrix, L3, Entry_Price)
+gL4_TSL_Price   = matrix.get(matrix, L4, TSL_Price), gL4_Entry_Price = matrix.get(matrix, L4, Entry_Price)
+gS5_TSL_Price   = matrix.get(matrix, S5, TSL_Price), gS5_Entry_Price = matrix.get(matrix, S5, Entry_Price)
+gS6_TSL_Price   = matrix.get(matrix, S6, TSL_Price), gS6_Entry_Price = matrix.get(matrix, S6, Entry_Price)
+gS7_TSL_Price   = matrix.get(matrix, S7, TSL_Price), gS7_Entry_Price = matrix.get(matrix, S7, Entry_Price)
+gS8_TSL_Price   = matrix.get(matrix, S8, TSL_Price), gS8_Entry_Price = matrix.get(matrix, S8, Entry_Price)
+gS9_TSL_Price   = matrix.get(matrix, S9, TSL_Price), gS9_Entry_Price = matrix.get(matrix, S9, Entry_Price)
+
+plot((Backtest_A == "0. Stochastic"              or Backtest_B == "0. Stochastic"              ) and matrix.get(matrix, L0, Entry_is_Active) == 1 ? gL0_TSL_Price : na, title ='L0 TSL', color = gL0_TSL_Price > gL0_Entry_Price ? C_BLUE         : color.new(C_BLUE        , 50), style = plot.style_linebr, linewidth = 2)
+plot((Backtest_A == "1. 2x MA Cross"             or Backtest_B == "1. 2x MA Cross"             ) and matrix.get(matrix, L1, Entry_is_Active) == 1 ? gL1_TSL_Price : na, title ='L1 TSL', color = gL1_TSL_Price > gL1_Entry_Price ? C_ORANGE       : color.new(C_ORANGE      , 50), style = plot.style_linebr, linewidth = 2)
+plot((Backtest_A == "2. MACD"                    or Backtest_B == "2. MACD"                    ) and matrix.get(matrix, L2, Entry_is_Active) == 1 ? gL2_TSL_Price : na, title ='L2 TSL', color = gL2_TSL_Price > gL2_Entry_Price ? C_LIME_GREEN   : color.new(C_LIME_GREEN  , 50), style = plot.style_linebr, linewidth = 2)
+plot((Backtest_A == "3. Bollinger Bands"         or Backtest_B == "3. Bollinger Bands"         ) and matrix.get(matrix, L3, Entry_is_Active) == 1 ? gL3_TSL_Price : na, title ='L3 TSL', color = gL3_TSL_Price > gL3_Entry_Price ? C_PURPLE       : color.new(C_PURPLE      , 50), style = plot.style_linebr, linewidth = 2)
+plot((Backtest_A == "4. Supertrend"              or Backtest_B == "4. Supertrend"              ) and matrix.get(matrix, L4, Entry_is_Active) == 1 ? gL4_TSL_Price : na, title ='L4 TSL', color = gL4_TSL_Price > gL4_Entry_Price ? C_YELLOW       : color.new(C_YELLOW      , 50), style = plot.style_linebr, linewidth = 2)
+plot((Backtest_A == "5. Stochastic (Short)"      or Backtest_B == "5. Stochastic (Short)"      ) and matrix.get(matrix, S5, Entry_is_Active) == 1 ? gS5_TSL_Price : na, title ='S5 TSL', color = gS5_TSL_Price < gS5_Entry_Price ? C_DARK_BLUE    : color.new(C_DARK_BLUE   , 50), style = plot.style_linebr, linewidth = 2)
+plot((Backtest_A == "6. 2x MA Cross (Short)"     or Backtest_B == "6. 2x MA Cross (Short)"     ) and matrix.get(matrix, S6, Entry_is_Active) == 1 ? gS6_TSL_Price : na, title ='S6 TSL', color = gS6_TSL_Price < gS6_Entry_Price ? C_LIME_YELLOW  : color.new(C_LIME_YELLOW , 50), style = plot.style_linebr, linewidth = 2)
+plot((Backtest_A == "7. MACD (Short)"            or Backtest_B == "7. MACD (Short)"            ) and matrix.get(matrix, S7, Entry_is_Active) == 1 ? gS7_TSL_Price : na, title ='S7 TSL', color = gS7_TSL_Price < gS7_Entry_Price ? C_DARK_PURPLE  : color.new(C_DARK_PURPLE , 50), style = plot.style_linebr, linewidth = 2)
+plot((Backtest_A == "8. Bollinger Bands (Short)" or Backtest_B == "8. Bollinger Bands (Short)" ) and matrix.get(matrix, S8, Entry_is_Active) == 1 ? gS8_TSL_Price : na, title ='S8 TSL', color = gS8_TSL_Price < gS8_Entry_Price ? C_MINT         : color.new(C_MINT        , 50), style = plot.style_linebr, linewidth = 2)
+plot((Backtest_A == "9. Supertrend (Short)"      or Backtest_B == "9. Supertrend (Short)"      ) and matrix.get(matrix, S9, Entry_is_Active) == 1 ? gS9_TSL_Price : na, title ='S9 TSL', color = gS9_TSL_Price < gS9_Entry_Price ? C_BURNT_ORANGE : color.new(C_BURNT_ORANGE, 50), style = plot.style_linebr, linewidth = 2)
+

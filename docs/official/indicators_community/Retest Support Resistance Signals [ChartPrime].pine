@@ -1,0 +1,357 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Â© ChartPrime
+
+//@version=5
+
+indicator(title = "Support/Resistance Re-test Finder [ChartPrime]", overlay = true, max_lines_count = 500)
+
+// { <CONSTANTS>
+
+MAIN_GROUP       = "Main Settings"
+DELETE_GROUP     = "Deletion Settings"
+COSMETIC_GROUP   = "Cosmetic Settings"
+
+// } <CONSTANTS>
+
+
+
+// { <INPUTS>
+
+levelMethod = input.string(
+ title = "Detection Method",
+  defval = "Wick",
+   options = ["Wick", "Body"],
+     group = MAIN_GROUP)
+
+leftBars = input.int(
+ title = "Left Bars",
+  defval = 20,
+   group = MAIN_GROUP,
+     inline = "pivot")
+
+rightBars = input.int(
+ title = "Right Bars",
+  defval = 20,
+   group = MAIN_GROUP,
+     inline = "pivot")
+
+retestLogic = input.bool(
+ title = "Retest Weaker",
+  defval = false,
+  tooltip = "Retest makes level weaker vs retest makes level stronger",
+   group = MAIN_GROUP)
+
+definitionOfDelete = input.string(
+ title = "Delete Definition",
+  defval = "Stop Updating Level",
+   options = ["Stop Updating Level", "Completely Delete Level", "Stop Updating Level & Turn Level Unique Color"],
+     group = DELETE_GROUP)
+
+flipsUntilDeletion = input.int(
+ title = "Breakouts Until Level Deletes",
+  defval = 1,
+   group = DELETE_GROUP)
+
+ageUntilDeletion = input.int(
+ title = "Bars Until Level Deletes",
+  defval = 300,
+   group = DELETE_GROUP)
+
+supportColor = input.color(
+ title = "Initial Support Re-Test Color",
+  defval = color.rgb(76, 175, 79, 50),
+   group = COSMETIC_GROUP)
+
+resistanceColor = input.color(
+ title = "Initial Resistance Re-Test Color",
+  defval = color.rgb(255, 82, 82, 50),
+   group = COSMETIC_GROUP)
+
+uniqueDeleteColor = input.color(
+ title = "Unique Deletion Color",
+  defval = color.rgb(120, 123, 134, 50),
+   group = COSMETIC_GROUP)
+
+changeColorMethod = input.string(
+ title = "Change Color Method",
+  defval = "Price Above/Below",
+   options = ["Price Above/Below", "Fade Out Based On Age"],
+     group = COSMETIC_GROUP)
+
+lineWidth = input.int(
+ title = "Line Width",
+  defval = 10,
+   group = COSMETIC_GROUP)
+
+// } <INPUTS>
+
+
+
+// { <USER DEFINED TYPES>
+
+type flipLevelManager
+    array<string> variation
+    array<line> lineArray
+    array<int> lineAge
+    array<int> lineFlips
+    array<int> linePhase
+
+// } <USER DEFINED TYPES>
+
+
+
+// { <CALCULATIONS>
+
+pivotHigh = ta.pivothigh(
+ levelMethod == "Wick" ?
+  high : close > open ? close : open,
+   leftBars,
+     rightBars)
+
+pivotLow = ta.pivotlow(
+ levelMethod == "Wick" ?
+  low : close < open ? close : open,
+   leftBars,
+     rightBars)
+
+newHigh = not na(pivotHigh)
+newLow  = not na(pivotLow)
+
+newTestedSupport        = false
+newTestedResistance     = false
+supportBrokeDownside    = false
+supportBrokeUpside      = false
+resistanceBrokeDownside = false
+resistanceBrokeUpside   = false
+
+var firstPhaseHigh  = array.new_float()
+var firstPhaseHighI = array.new_int()
+var firstPhaseLow   = array.new_float()
+var firstPhaseLowI  = array.new_int()
+
+var secondPhaseHigh  = array.new_float()
+var secondPhaseHighI = array.new_int()
+var secondPhaseLow   = array.new_float()
+var secondPhaseLowI  = array.new_int()
+
+var flipManager = flipLevelManager.new(
+ array.new_string(),
+  array.new_line(),
+   array.new_int(),
+     array.new_int(),
+      array.new_int())
+
+if barstate.isconfirmed
+    if newHigh
+        array.push(firstPhaseHigh, pivotHigh)
+        array.push(firstPhaseHighI, bar_index[rightBars])
+    
+    if newLow
+        array.push(firstPhaseLow, pivotLow)
+        array.push(firstPhaseLowI, bar_index[rightBars])
+
+    for i = array.size(secondPhaseHigh) > 0 ? array.size(secondPhaseHigh) - 1 : na to 0
+        price = array.get(secondPhaseHigh, i)
+        index = array.get(secondPhaseHighI, i)
+
+        if low <= price and close > price and close > open
+            newLine = line.new(
+             x1 = index, y1 = price,
+              x2 = bar_index, y2 = price,
+               xloc = xloc.bar_index, extend = extend.none,
+                 color = supportColor, width = lineWidth)
+
+            array.push(flipManager.lineArray, newLine)
+            array.push(flipManager.variation, "Support")
+            array.push(flipManager.lineAge, 0)
+            array.push(flipManager.lineFlips, 0)
+            array.push(flipManager.linePhase, 1)
+            array.remove(secondPhaseHigh, i)
+            array.remove(secondPhaseHighI, i)
+            newTestedSupport := true
+    
+        else if bar_index - index > 1000 or close < price
+            array.remove(secondPhaseHigh, i)
+            array.remove(secondPhaseHighI, i)
+
+    for i = array.size(secondPhaseLow) > 0 ? array.size(secondPhaseLow) - 1 : na to 0
+        price = array.get(secondPhaseLow, i)
+        index = array.get(secondPhaseLowI, i)
+
+        if high >= price and close < price and close < open
+            newLine = line.new(
+             x1 = index, y1 = price,
+              x2 = bar_index, y2 = price,
+               xloc = xloc.bar_index, extend = extend.none,
+                 color = resistanceColor, width = lineWidth)
+
+            array.push(flipManager.lineArray, newLine)
+            array.push(flipManager.variation, "Resistance")
+            array.push(flipManager.lineAge, 0)
+            array.push(flipManager.lineFlips, 0)
+            array.push(flipManager.linePhase, -1)
+            array.remove(secondPhaseLow, i)
+            array.remove(secondPhaseLowI, i)
+            newTestedResistance := true
+        
+        else if bar_index - index > 1000 or close > price
+            array.remove(secondPhaseLow, i)
+            array.remove(secondPhaseLowI, i)
+
+    for i = array.size(firstPhaseHigh) > 0 ? array.size(firstPhaseHigh) - 1 : na to 0
+        price = array.get(firstPhaseHigh, i)
+        index = array.get(firstPhaseHighI, i)
+
+        if low > price
+            array.push(secondPhaseHigh, price)
+            array.push(secondPhaseHighI, index)
+            array.remove(firstPhaseHigh, i)
+            array.remove(firstPhaseHighI, i)
+        else if bar_index - index > 1000
+            array.remove(firstPhaseHigh, i)
+            array.remove(firstPhaseHighI, i)
+        
+    for i = array.size(firstPhaseLow) > 0 ? array.size(firstPhaseLow) - 1 : na to 0
+        price = array.get(firstPhaseLow, i)
+        index = array.get(firstPhaseLowI, i)
+
+        if high < price
+            array.push(secondPhaseLow, price)
+            array.push(secondPhaseLowI, index)
+            array.remove(firstPhaseLow, i)
+            array.remove(firstPhaseLowI, i)
+        else if bar_index - index > 1000
+            array.remove(firstPhaseLow, i)
+            array.remove(firstPhaseLowI, i)
+
+    for i = array.size(flipManager.lineArray) > 0 ? array.size(flipManager.lineArray) - 1 : na to 0
+        lineObject = array.get(flipManager.lineArray, i)
+        lineAge   = array.get(flipManager.lineAge, i)
+        lineType  = array.get(flipManager.variation, i)
+        lineFlips = array.get(flipManager.lineFlips, i)
+        linePhase = array.get(flipManager.linePhase, i)
+
+        linePrice  = line.get_y1(lineObject)
+        line.set_x2(lineObject, bar_index + 1)
+
+        lineColor = lineType == "Support" ? supportColor : resistanceColor
+        gradientLineColor = color.from_gradient(lineAge, 0, ageUntilDeletion, lineColor, color.new(lineColor, 100))
+        newLineColor = changeColorMethod == "Fade Out Based On Age" ?
+         gradientLineColor : close > linePrice ? supportColor : resistanceColor
+        line.set_color(lineObject, newLineColor)
+
+        array.set(flipManager.lineAge, i, lineAge + 1)
+
+        if lineType == "Support"
+
+            if linePhase == 1 and close < linePrice
+                array.set(flipManager.lineFlips, i, lineFlips + 1)
+                array.set(flipManager.linePhase, i, -1)
+                supportBrokeDownside := true
+            else if linePhase == -1 and close > linePrice
+                array.set(flipManager.lineFlips, i, lineFlips + 1)
+                array.set(flipManager.linePhase, i, 1)
+                supportBrokeUpside := true
+        
+        if lineType == "Resistance"
+
+            if linePhase == -1 and close > linePrice
+                array.set(flipManager.lineFlips, i, lineFlips + 1)
+                array.set(flipManager.linePhase, i, 1)
+                resistanceBrokeUpside := true
+            else if linePhase == 1 and close < linePrice
+                array.set(flipManager.lineFlips, i, lineFlips + 1)
+                array.set(flipManager.linePhase, i, -1)
+                resistanceBrokeDownside := true
+
+        lineFlips := array.get(flipManager.lineFlips, i)
+
+        if lineFlips >= flipsUntilDeletion or lineAge >= ageUntilDeletion
+            if definitionOfDelete == "Completely Delete Level"
+                line.delete(lineObject)
+                array.remove(flipManager.lineArray, i)
+                array.remove(flipManager.lineAge, i)
+                array.remove(flipManager.lineFlips, i)
+                array.remove(flipManager.variation, i)
+                array.remove(flipManager.linePhase, i)
+            else if definitionOfDelete == "Stop Updating Level"
+                array.remove(flipManager.lineArray, i)
+                array.remove(flipManager.lineAge, i)
+                array.remove(flipManager.lineFlips, i)
+                array.remove(flipManager.variation, i)
+                array.remove(flipManager.linePhase, i)
+            else if definitionOfDelete == "Stop Updating Level & Turn Level Unique Color"
+                line.set_color(lineObject, uniqueDeleteColor)
+                array.remove(flipManager.lineArray, i)
+                array.remove(flipManager.lineAge, i)
+                array.remove(flipManager.lineFlips, i)
+                array.remove(flipManager.variation, i)
+                array.remove(flipManager.linePhase, i)
+
+// } <CALCULATIONS>
+            
+
+
+// { <VISUALS>
+
+plotshape(
+ series = newTestedSupport,
+  title = "New Support Re-Test X",
+   style = retestLogic ? shape.labeldown : shape.labelup,
+     text = "R",
+      textcolor = color.white,
+       location = retestLogic ? location.abovebar : location.belowbar,
+         color = retestLogic ? color.red :color.green,
+          size = size.tiny,
+           show_last = 20000)
+
+plotshape(
+ series = newTestedResistance,
+  title = "New Resistance Re-Test X",
+   style = retestLogic ? shape.labelup : shape.labeldown,
+     text = "R",
+      textcolor = color.white,
+       location = retestLogic ? location.belowbar : location.abovebar,
+         color = retestLogic ? color.green : color.red,
+          size = size.tiny,
+           show_last = 20000)
+         
+// } <VISUALS>
+
+
+
+// { <ALERTS>
+
+alertcondition(
+ condition = newTestedSupport,
+  title = "New Support Re-Test")
+
+alertcondition(
+ condition = newTestedResistance,
+  title = "New Resistance Re-Test")
+
+alertcondition(
+ condition = supportBrokeDownside,
+  title = "Support Re-Test Downside Break")
+
+alertcondition(
+ condition = supportBrokeUpside,
+  title = "Support Re-Test Upside Break")
+
+alertcondition(
+ condition = resistanceBrokeDownside,
+  title = "Resistance Re-Test Downside Break")
+
+alertcondition(
+ condition = resistanceBrokeUpside,
+  title = "Resistance Re-Test Upside Break")
+
+alertcondition(
+ condition = supportBrokeDownside or resistanceBrokeDownside,
+  title = "Any Downside Break")
+
+alertcondition(
+ condition = supportBrokeUpside or resistanceBrokeUpside,
+  title = "Any Upside Break")
+
+// } <ALERTS>

@@ -1,0 +1,1217 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# * 
+//# * Study       : Higher Timeframe Candles and Mini Charts
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : May 29, 2021
+//# *  Update     : May 29, 2021 : performance statistics added
+//# *  Update     : Jun 12, 2021 : added moving averages and extended performance statistics
+//# *  Update     : Jun 14, 2021 : Heikin Ashi ability added
+//# *  Update     : Jun 29, 2021 : Second HTF Candle plotting added
+//# *  Update     : Jul 01, 2021 : Mini HTF Charts added
+//# *  Update     : Jul 15, 2021 : Mini HTF Charts enhancements 
+//# *  Update     : Jan 31, 2022 : added 5 period simple moving average on top of mini HTF charts 
+//# *  Update     : Jun 14, 2022 : new indicator aditions 
+//# *                               - Volume Weighted Colored Bars
+//# *                               - Mini Overlay RSI Indicator, including higher timeframe mini charts
+//# *                               - Forex Market Sessions
+//# *  Update     : Jul 27, 2022 : various moving aveareges can now be applied to htf mini charts  
+//# *  Update     : Oct 17, 2022 : refactored mini charts code, enhanced and extended htf mini charts  
+//# *                              new : candlestick pattern detection 
+//# *                              improved statistical panel 
+//# *                              extended alerts
+//# *                              removed Forex Market Sessions display
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+// ---------------------------------------------------------------------------------------------- //
+// Functions  ----------------------------------------------------------------------------------- //
+
+checkIf(_chartTF, _candlestickTF) =>
+    // This function will lead to the warning message 'XXX should be called on each calculation for consistency. It is recommended to extract the call from this scope'
+    var stat = false
+    candlestickTF = _candlestickTF == 'D' ? 1440 : _candlestickTF == 'W' ? 10080 :  _candlestickTF == 'M' ? 302400 :  _candlestickTF == '3M' ? 3 * 302400 :  _candlestickTF == '6M' ? 6 * 302400 :  _candlestickTF == '12M' ? 12 * 302400 : str.tonumber(_candlestickTF)
+
+    if timeframe.isintraday
+        stat := candlestickTF >= str.tonumber(_chartTF)
+    else
+        chartTF = str.contains(_chartTF, 'D') ? _chartTF == 'D' ? 1440 : str.tonumber(str.replace(_chartTF, 'D', '', 0)) * 1440 : str.contains(_chartTF, 'W') ? _chartTF == 'W' ? 10080 : str.tonumber(str.replace(_chartTF, 'W', '', 0)) * 10080 : _chartTF == 'M' ? 302400 : str.tonumber(str.replace(_chartTF, 'M', '', 0)) * 302400
+        stat := candlestickTF >= chartTF
+    stat
+
+f_htf_ohlc(_htf) =>
+    var htf_o  = 0., var htf_h  = 0., var htf_l  = 0.,     htf_c  = close
+    var htf_ox = 0., var htf_hx = 0., var htf_lx = 0., var htf_cx = 0.
+
+    if ta.change(time(_htf))
+        htf_ox := htf_o, htf_o := open
+        htf_hx := htf_h, htf_h := high
+        htf_lx := htf_l, htf_l := low
+        htf_cx := htf_c[1]
+        true
+    else
+        htf_h := math.max(high, htf_h)
+        htf_l := math.min(low , htf_l)
+        true
+
+    [htf_ox, htf_hx, htf_lx, htf_cx, htf_o, htf_h, htf_l, htf_c]
+
+f_getPriceValue(_htf) =>
+    var value = 0.
+    if ta.change(time(_htf))
+        value := close[1]
+    value
+
+f_getOHLC(_o , _h , _l , _c, _atr, _hist) =>
+    Ox = ta.valuewhen(ta.change(_o), _o, _hist)
+    Hx = ta.valuewhen(ta.change(_h), _h, _hist)
+    Lx = ta.valuewhen(ta.change(_l), _l, _hist)
+    Cx = ta.valuewhen(ta.change(_c), _c, _hist)
+    Ax = ta.valuewhen(ta.change(_atr), _atr, _hist + 1)
+    [Ox , Hx , Lx , Cx, Ax]
+
+f_drawLineX(_x1, _y1, _x2, _y2, _xloc, _extend, _color, _style, _width) =>
+    var id = line.new(_x1, _y1, _x2, _y2, _xloc, _extend, _color, _style, _width)
+    line.set_xy1(id, _x1, _y1)
+    line.set_xy2(id, _x2, _y2)
+    line.set_color(id, _color)
+
+f_drawLabelX(_x, _y, _text, _xloc, _yloc, _color, _style, _textcolor, _size, _textalign, _tooltip) =>
+    var id = label.new(_x, _y, _text, _xloc, _yloc, _color, _style, _textcolor, _size, _textalign, _tooltip)
+    label.set_xy(id, _x, _y)
+    label.set_text(id, _text)
+    label.set_tooltip(id, _tooltip)
+    label.set_textcolor(id, _textcolor)
+
+ma(_source, _length, _type) => 
+    switch _type
+        "SMA"  => ta.sma (_source, _length)
+        "EMA"  => ta.ema (_source, _length)
+        "HMA"  => ta.hma (_source, _length)
+        "RMA"  => ta.rma (_source, _length)
+        "WMA"  => ta.wma (_source, _length)
+        "VWMA" => ta.vwma(_source, _length)
+
+rsi(_rsiSource, _rsiLength) => ta.rsi(_rsiSource, _rsiLength)
+f_haTicker(_htf) =>
+    haTicker = ticker.heikinashi(syminfo.tickerid)
+    [ha_o, ha_h, ha_l, ha_c] = request.security(haTicker, _htf, [open, high, low, close])
+    ha_ox = ta.valuewhen(ta.change(time(_htf)), ha_o, 0)
+    ha_hx = ta.valuewhen(ta.change(time(_htf)), ha_h, 0)
+    ha_lx = ta.valuewhen(ta.change(time(_htf)), ha_l, 0)
+    ha_cx = ta.valuewhen(ta.change(time(_htf)), ha_c, 0)
+
+    [ha_ox, ha_hx, ha_lx, ha_cx, ha_o, ha_h, ha_l, ha_c]
+
+f_getTF(_htf) =>
+    htf = _htf == '3 Mins' ? '3' : _htf == '5 Mins' ? '5' : _htf == '10 Mins' ? '10' : _htf == '15 Mins' ? '15' : _htf == '30 Mins' ? '30' : _htf == '45 Mins' ? '45' : _htf == '1 Hour' ? '60' : _htf == '2 Hours' ? '120' : _htf == '3 Hours' ? '180' : _htf == '4 Hours' ? '240' : _htf == '1 Day' ? 'D' : _htf == '1 Week' ? 'W' : _htf == '1 Month' ? 'M' : _htf == '3 Months' ? '3M' : _htf == '6 Months' ? '6M' : _htf == '1 Year' ? '12M' : na
+    htf
+
+f_atr(_length, _htf) =>
+    request.security(syminfo.tickerid, _htf, ta.atr(_length))
+
+f_getTooltip(_o, _h, _l, _c, _c1, _atr, _atrM) =>
+    highVolatility = _h - _l > _atr * _atrM
+    'Change % : ' + str.tostring((_c / _c1 - 1) * 100, '#.##') + '%\n' + (highVolatility ? '⚡ High Volatility Detected\nATR Value ' + str.tostring(_atr, '#.##') + '\n' : 'ATR Value : ' + str.tostring(_atr, '#.##') + '\n') + 'Candle Range : ' + str.tostring(_h - _l) + '\n\nO : ' + str.tostring(_o) + '\nH : ' + str.tostring(_h) + '\nL : ' + str.tostring(_l) + '\nC : ' + str.tostring(_c)
+f_crossingLevel(_curret, _level) =>
+    _level > _curret and _level < _curret[1] or _level < _curret and _level > _curret[1]
+f_drawCandle(_x, _o, _h, _l, _c, _color, _text, _tooltip) =>
+    f_drawLineX(_x, _o, _x, _c, xloc.bar_index, extend.none, _color, line.style_solid, 3)
+    f_drawLineX(_x, _h, _x, _l, xloc.bar_index, extend.none, _color, line.style_solid, 1)
+    f_drawLabelX(_x, _h, _text, xloc.bar_index, yloc.price, #00000000, label.style_label_down, _color, size.normal, text.align_left, _tooltip)
+
+alarm(_cond, _message, _htfUser, _oncePerBarClose) => 
+    if _cond
+        alert(_message + '\n' + syminfo.ticker + ' Price (' + str.tostring(close, format.mintick) + '), Timeframe ' + _htfUser + '\n')
+        if _oncePerBarClose 
+            alert(_message + '\n' + syminfo.ticker + ' Price (' + str.tostring(close, format.mintick) + '), Timeframe ' + _htfUser + '\n', alert.freq_once_per_bar_close)
+
+f_processPatterns(_htf, _htfUser, _color_bullish, _color_bearish, _color_neutral, _a_bullPatterns, _a_bearPatterns, _a_notrPatterns, _a_patternHigh, _a_patternLow, _appyToChart, _alarm) =>
+    [O1 , H1 , L1 , C1 , O0 , H0 , L0 , C0 ] = f_htf_ohlc(_htf)
+    
+    O2 = ta.valuewhen(ta.change(O1), O1, 1)
+    H2 = ta.valuewhen(ta.change(H1), H1, 1)
+    L2 = ta.valuewhen(ta.change(L1), L1, 1)
+    C2 = ta.valuewhen(ta.change(C1), C1, 1)
+
+    O3 = ta.valuewhen(ta.change(O1), O1, 2)
+    H3 = ta.valuewhen(ta.change(H1), H1, 2)
+    L3 = ta.valuewhen(ta.change(L1), L1, 2)
+    C3 = ta.valuewhen(ta.change(C1), C1, 2)
+    
+    string bull_tooltip = 'Bullish Pattern(s)'
+    string bear_tooltip = 'Bearish Pattern(s)'
+    string neutral_tooltip = 'Indecision Pattern(s)'
+
+    int bull_count = 0
+    int bear_count = 0
+    int neutral_count = 0
+
+    C_DownTrend = true
+    C_UpTrend   = true
+
+
+    C_DownTrend1 = true
+    C_DownTrend2 = true
+
+    C_UpTrend1   = true
+    C_UpTrend2   = true
+
+    C_Len = 14
+    C_ShadowPercent = 5.0
+    C_ShadowEqualsPercent = 100.0
+    C_DojiBodyPercent = 5.0
+    C_Factor = 2.0
+
+    C_BodyHi       = math.max(C0, O0)
+    C_BodyHi1      = math.max(C1, O1)
+    C_BodyHi2      = math.max(C2, O2)
+
+    C_BodyLo       = math.min(C0, O0)
+    C_BodyLo1      = math.min(C1, O1)
+    C_BodyLo2      = math.min(C2, O2)
+
+    C_Body         = C_BodyHi  - C_BodyLo
+    C_Body1        = C_BodyHi1 - C_BodyLo1
+    C_Body2        = C_BodyHi2 - C_BodyLo2
+
+    C_BodyAvg      = request.security(syminfo.tickerid, _htf, ta.ema(C_Body, C_Len))
+    C_BodyAvg1     = ta.valuewhen(ta.change(time(_htf)), C_BodyAvg, 1)
+    C_BodyAvg2     = ta.valuewhen(ta.change(time(_htf)), C_BodyAvg, 2)
+
+    C_SmallBody    = C_Body  < C_BodyAvg
+    C_SmallBody1   = C_Body1 < C_BodyAvg1
+    C_SmallBody2   = C_Body2 < C_BodyAvg2
+
+    C_LongBody     = C_Body  > C_BodyAvg
+    C_LongBody1    = C_Body1 > C_BodyAvg1
+    C_LongBody2    = C_Body2 > C_BodyAvg2
+
+    C_UpShadow     = H0 - C_BodyHi
+    C_UpShadow1    = H1 - C_BodyHi1
+    C_UpShadow2    = H2 - C_BodyHi2
+
+    C_DnShadow     = C_BodyLo  - L0
+    C_DnShadow1    = C_BodyLo1 - L1
+    C_DnShadow2    = C_BodyLo2 - L2
+
+    C_HasUpShadow  = C_UpShadow > C_ShadowPercent / 100 * C_Body
+    C_HasDnShadow  = C_DnShadow > C_ShadowPercent / 100 * C_Body
+
+    C_WhiteBody    = O0 < C0
+    C_WhiteBody1   = O1 < C1
+    C_WhiteBody2   = O2 < C2
+
+    C_BlackBody    = O0 > C0
+    C_BlackBody1   = O1 > C1
+    C_BlackBody2   = O2 > C2
+
+    C_Range        = H0 - L0
+    C_Range1       = H1 - L1
+    C_Range2       = H2 - L2
+
+    C_IsInsideBar  = C_BodyHi1 > C_BodyHi and C_BodyLo1 < C_BodyLo
+
+    C_BodyMiddle   = C_Body  / 2 + C_BodyLo
+    C_BodyMiddle1  = C_Body1 / 2 + C_BodyLo1
+    C_BodyMiddle2  = C_Body2 / 2 + C_BodyLo2
+
+    C_ShadowEquals = C_UpShadow  == C_DnShadow  or (math.abs(C_UpShadow  - C_DnShadow ) / C_DnShadow  * 100) < C_ShadowEqualsPercent and (math.abs(C_DnShadow  - C_UpShadow ) / C_UpShadow  * 100) < C_ShadowEqualsPercent
+    C_ShadowEquals1= C_UpShadow1 == C_DnShadow1 or (math.abs(C_UpShadow1 - C_DnShadow1) / C_DnShadow1 * 100) < C_ShadowEqualsPercent and (math.abs(C_DnShadow1 - C_UpShadow1) / C_UpShadow1 * 100) < C_ShadowEqualsPercent
+    C_ShadowEquals2= C_UpShadow2 == C_DnShadow2 or (math.abs(C_UpShadow2 - C_DnShadow2) / C_DnShadow2 * 100) < C_ShadowEqualsPercent and (math.abs(C_DnShadow2 - C_UpShadow2) / C_UpShadow2 * 100) < C_ShadowEqualsPercent
+
+    C_IsDojiBody   = C_Range  > 0 and C_Body  <= C_Range  * C_DojiBodyPercent / 100
+    C_IsDojiBody1  = C_Range1 > 0 and C_Body1 <= C_Range1 * C_DojiBodyPercent / 100
+    C_IsDojiBody2  = C_Range2 > 0 and C_Body2 <= C_Range2 * C_DojiBodyPercent / 100
+
+    C_Doji         = C_IsDojiBody  and C_ShadowEquals
+    C_Doji1        = C_IsDojiBody1 and C_ShadowEquals1
+    C_Doji2        = C_IsDojiBody2 and C_ShadowEquals2
+
+    patternLabelPosLow  = L1 - (ta.atr(30) * 0.6)
+    patternLabelPosHigh = H1 + (ta.atr(30) * 0.6)
+
+    //C_OnNeckBearishNumberOfCandles = 2
+    C_OnNeckBearish = false
+    if  C_DownTrend and C_BlackBody1 and C_LongBody1 and C_WhiteBody and O0 < C1 and C_SmallBody and C_Range!=0 and math.abs(C0-L1)<=C_BodyAvg*0.05
+    	C_OnNeckBearish := true
+    if C_OnNeckBearish[1] and ta.change(time(_htf))
+        bear_tooltip := bear_tooltip + '\n * On Neck(2)'
+        bear_count += 1
+
+    //C_RisingWindowBullishNumberOfCandles = 2
+    C_RisingWindowBullish = false
+    if C_UpTrend1 and (C_Range!=0 and C_Range1!=0) and L0 > H1
+    	C_RisingWindowBullish := true
+    if C_RisingWindowBullish[1] and ta.change(time(_htf))
+        bull_tooltip := bull_tooltip + '\n * Rising Window(2)'
+        bull_count += 1
+
+    //C_FallingWindowBearishNumberOfCandles = 2
+    C_FallingWindowBearish = false
+    if C_DownTrend1 and (C_Range!=0 and C_Range1!=0) and H0 < L1
+        C_FallingWindowBearish := true
+    if C_FallingWindowBearish[1] and ta.change(time(_htf))
+        bear_tooltip := bear_tooltip + '\n * Falling Window(2)'
+        bear_count += 1
+
+    //C_TweezerTopBearishNumberOfCandles = 2
+    C_TweezerTopBearish = false
+    if C_UpTrend1 and (not C_IsDojiBody or (C_HasUpShadow and C_HasDnShadow)) and math.abs(H0-H1) <= C_BodyAvg*0.05 and C_WhiteBody1 and C_BlackBody and C_LongBody1
+    	C_TweezerTopBearish := true
+    if C_TweezerTopBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Tweezer Top(2)'
+        bear_count += 1
+
+    //C_TweezerBottomBullishNumberOfCandles = 2
+    C_TweezerBottomBullish = false
+    if C_DownTrend1 and (not C_IsDojiBody or (C_HasUpShadow and C_HasDnShadow)) and math.abs(L0-L1) <= C_BodyAvg*0.05 and C_BlackBody1 and C_WhiteBody and C_LongBody1
+    	C_TweezerBottomBullish := true
+    if C_TweezerBottomBullish[1] and ta.change(time(_htf))
+        bull_tooltip := bull_tooltip + '\n * Tweezer Bottom(2)'
+        bull_count += 1
+    
+    //C_DarkCloudCoverBearishNumberOfCandles = 2
+    C_DarkCloudCoverBearish = false
+    if (C_UpTrend1 and C_WhiteBody1 and C_LongBody1) and (C_BlackBody and O0 >= H1 and  C0 < C_BodyMiddle1 and C0 > O1)
+    	C_DarkCloudCoverBearish := true
+    if C_DarkCloudCoverBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Dark Cloud Cover(2)'
+        bear_count += 1
+
+    //C_DownsideTasukiGapBearishNumberOfCandles = 3
+    C_DownsideTasukiGapBearish = false
+    if C_LongBody2 and C_SmallBody1 and C_DownTrend and C_BlackBody2 and C_BodyHi1 < C_BodyLo2 and C_BlackBody1 and C_WhiteBody and C_BodyHi <= C_BodyLo2 and C_BodyHi >= C_BodyHi1
+    	C_DownsideTasukiGapBearish := true
+    if C_DownsideTasukiGapBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Downside Tasuki Gap(3)'
+        bear_count += 1
+
+    //C_UpsideTasukiGapBullishNumberOfCandles = 3
+    C_UpsideTasukiGapBullish = false
+    if C_LongBody2 and C_SmallBody1 and C_UpTrend and C_WhiteBody2 and C_BodyLo1 > C_BodyHi2 and C_WhiteBody1 and C_BlackBody and C_BodyLo >= C_BodyHi2 and C_BodyLo <= C_BodyLo1
+    	C_UpsideTasukiGapBullish := true
+    if C_UpsideTasukiGapBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Upside Tasuki Gap(3)'
+        bull_count += 1
+
+    //C_EveningDojiStarBearishNumberOfCandles = 3
+    C_EveningDojiStarBearish = false
+    if C_LongBody2 and C_IsDojiBody1 and C_LongBody and C_UpTrend and C_WhiteBody2 and C_BodyLo1 > C_BodyHi2 and C_BlackBody and C_BodyLo <= C_BodyMiddle2 and C_BodyLo > C_BodyLo2 and C_BodyLo1 > C_BodyHi
+    	C_EveningDojiStarBearish := true
+    if C_EveningDojiStarBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Evening Doji Star(3)'
+        bear_count += 1
+
+    //C_DojiStarBearishNumberOfCandles = 2
+    C_DojiStarBearish = false
+    if C_UpTrend and C_WhiteBody1 and C_LongBody1 and C_IsDojiBody and C_BodyLo > C_BodyHi1
+    	C_DojiStarBearish := true
+    if C_DojiStarBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Doji Star(2)'
+        bear_count += 1
+
+    //C_DojiStarBullishNumberOfCandles = 2
+    C_DojiStarBullish = false
+    if C_DownTrend and C_BlackBody1 and C_LongBody1 and C_IsDojiBody and C_BodyHi < C_BodyLo1
+    	C_DojiStarBullish := true
+    if C_DojiStarBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Doji Star(2)'
+        bull_count += 1
+
+    //C_MorningDojiStarBullishNumberOfCandles = 3
+    C_MorningDojiStarBullish = false
+    if C_LongBody2 and C_IsDojiBody1 and C_LongBody and C_DownTrend and C_BlackBody2 and C_BodyHi1 < C_BodyLo2 and C_WhiteBody and C_BodyHi >= C_BodyMiddle2 and C_BodyHi < C_BodyHi2 and C_BodyHi1 < C_BodyLo
+    	C_MorningDojiStarBullish := true
+    if C_MorningDojiStarBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Morning Doji Star(3)'
+        bull_count += 1
+
+    //C_PiercingBullishNumberOfCandles = 2
+    C_PiercingBullish = false
+    if (C_DownTrend1 and C_BlackBody1 and C_LongBody1) and (C_WhiteBody and O0 <= L1 and C0 > C_BodyMiddle1 and C0 < O1)
+    	C_PiercingBullish := true
+    if C_PiercingBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Piercing(2)'
+        bull_count += 1
+
+    //C_HammerBullishNumberOfCandles = 1
+    C_HammerBullish = false
+    if C_SmallBody and C_Body > 0 and C_BodyLo > math.avg(H0, L0) and C_DnShadow >= C_Factor * C_Body and not C_HasUpShadow
+        if C_DownTrend
+            C_HammerBullish := true
+    if C_HammerBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Hammer(1)'
+        bull_count += 1
+
+    //C_HangingManBearishNumberOfCandles = 1
+    C_HangingManBearish = false
+    if C_SmallBody and C_Body > 0 and C_BodyLo > math.avg(H0, L0) and C_DnShadow >= C_Factor * C_Body and not C_HasUpShadow
+    	if C_UpTrend
+    	    C_HangingManBearish := true
+    if C_HangingManBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Hanging Man(1)'
+        bear_count += 1
+
+    //C_ShootingStarBearishNumberOfCandles = 1
+    C_ShootingStarBearish = false
+    if C_SmallBody and C_Body > 0 and C_BodyHi < math.avg(H0, L0) and C_UpShadow >= C_Factor * C_Body and not C_HasDnShadow
+    	if C_UpTrend
+    	    C_ShootingStarBearish := true
+    if C_ShootingStarBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Shooting Star(1)'
+        bear_count += 1
+
+    //C_InvertedHammerBullishNumberOfCandles = 1
+    C_InvertedHammerBullish = false
+    if C_SmallBody and C_Body > 0 and C_BodyHi < math.avg(H0, L0) and C_UpShadow >= C_Factor * C_Body and not C_HasDnShadow
+        if C_DownTrend
+            C_InvertedHammerBullish := true
+    if C_InvertedHammerBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Inverted Hammer(1)'
+        bull_count += 1
+
+    //C_MorningStarBullishNumberOfCandles = 3
+    C_MorningStarBullish = false
+    if C_LongBody2 and C_SmallBody1 and C_LongBody
+        if C_DownTrend and C_BlackBody2 and C_BodyHi1 < C_BodyLo2 and C_WhiteBody and C_BodyHi >= C_BodyMiddle2 and C_BodyHi < C_BodyHi2 and C_BodyHi1 < C_BodyLo
+            C_MorningStarBullish := true
+    if C_MorningStarBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Morning Star(3)'
+        bull_count += 1
+
+    //C_EveningStarBearishNumberOfCandles = 3
+    C_EveningStarBearish = false
+    if C_LongBody2 and C_SmallBody1 and C_LongBody
+        if C_UpTrend and C_WhiteBody2 and C_BodyLo1 > C_BodyHi2 and C_BlackBody and C_BodyLo <= C_BodyMiddle2 and C_BodyLo > C_BodyLo2 and C_BodyLo1 > C_BodyHi
+            C_EveningStarBearish := true
+    if C_EveningStarBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Evening Star(3)'
+        bear_count += 1
+
+    //C_MarubozuWhiteBullishNumberOfCandles = 1
+    C_MarubozuShadowPercentWhite = 5.0
+    C_MarubozuWhiteBullish = C_WhiteBody and C_LongBody and C_UpShadow <= C_MarubozuShadowPercentWhite/100*C_Body and C_DnShadow <= C_MarubozuShadowPercentWhite/100*C_Body and C_WhiteBody
+    if C_MarubozuWhiteBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Marubozu White(1)'
+        bull_count += 1
+
+    //C_MarubozuBlackBearishNumberOfCandles = 1
+    C_MarubozuShadowPercentBearish = 5.0
+    C_MarubozuBlackBearish = C_BlackBody and C_LongBody and C_UpShadow <= C_MarubozuShadowPercentBearish/100*C_Body and C_DnShadow <= C_MarubozuShadowPercentBearish/100*C_Body and C_BlackBody
+    if C_MarubozuBlackBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Marubozu Black(1)'
+        bear_count += 1
+
+    //C_DojiNumberOfCandles = 1
+    C_DragonflyDoji = C_IsDojiBody and C_UpShadow <= C_Body
+    C_GravestoneDojiOne = C_IsDojiBody and C_DnShadow <= C_Body
+    if C_Doji[1] and not C_DragonflyDoji[1] and not C_GravestoneDojiOne[1] and ta.change(time(_htf))
+        neutral_tooltip := neutral_tooltip + '\n * Doji(1)'
+        neutral_count += 1
+
+    //C_GravestoneDojiBearishNumberOfCandles = 1
+    C_GravestoneDojiBearish = C_IsDojiBody and C_DnShadow <= C_Body
+    if C_GravestoneDojiBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Gravestone Doji(1)'
+        bear_count += 1
+
+    //C_DragonflyDojiBullishNumberOfCandles = 1
+    C_DragonflyDojiBullish = C_IsDojiBody and C_UpShadow <= C_Body
+    if C_DragonflyDojiBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Dragonfly Doji(1)'
+        bull_count += 1
+
+    //C_HaramiCrossBullishNumberOfCandles = 2
+    C_HaramiCrossBullish = C_LongBody1 and C_BlackBody1 and C_DownTrend1 and C_IsDojiBody and H0 <= C_BodyHi1 and L0 >= C_BodyLo1
+    if C_HaramiCrossBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Harami Cross(2)'
+        bull_count += 1
+
+    //C_HaramiCrossBearishNumberOfCandles = 2
+    C_HaramiCrossBearish = C_LongBody1 and C_WhiteBody1 and C_UpTrend1 and C_IsDojiBody and H0 <= C_BodyHi1 and L0 >= C_BodyLo1
+    if C_HaramiCrossBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Harami Cross(2)'
+        bear_count += 1
+
+    //C_HaramiBullishNumberOfCandles = 2
+    C_HaramiBullish = C_LongBody1 and C_BlackBody1 and C_DownTrend1 and C_WhiteBody and C_SmallBody and H0 <= C_BodyHi1 and L0 >= C_BodyLo1
+    if C_HaramiBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Harami(2)'
+        bull_count += 1
+
+    //C_HaramiBearishNumberOfCandles = 2
+    C_HaramiBearish = C_LongBody1 and C_WhiteBody1 and C_UpTrend1 and C_BlackBody and C_SmallBody and H0 <= C_BodyHi1 and L0 >= C_BodyLo1
+    if C_HaramiBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Harami(2)'
+        bear_count += 1
+
+    //C_LongLowerShadowBullishNumberOfCandles = 1
+    C_LongLowerShadowPercent = 75.0
+    C_LongLowerShadowBullish = C_DnShadow > C_Range/100*C_LongLowerShadowPercent
+    if C_LongLowerShadowBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Long Lower Shadow(1)'
+        bull_count += 1
+
+    //C_LongUpperShadowBearishNumberOfCandles = 1
+    C_LongShadowPercent = 75.0
+    C_LongUpperShadowBearish = C_UpShadow > C_Range/100*C_LongShadowPercent
+    if C_LongUpperShadowBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Long Upper Shadow(1)'
+        bear_count += 1
+
+    //C_SpinningTopWhiteNumberOfCandles = 1
+    C_SpinningTopWhitePercent = 34.0
+    C_IsSpinningTopWhite = C_DnShadow >= C_Range / 100 * C_SpinningTopWhitePercent and C_UpShadow >= C_Range / 100 * C_SpinningTopWhitePercent and not C_IsDojiBody
+    C_SpinningTopWhite = C_IsSpinningTopWhite and C_WhiteBody
+    if C_SpinningTopWhite[1] and ta.change(time(_htf)) 
+        neutral_tooltip := neutral_tooltip + '\n * Spinning Top White(1)'
+        neutral_count += 1
+
+    //C_SpinningTopBlackNumberOfCandles = 1
+    C_SpinningTopBlackPercent = 34.0
+    C_IsSpinningTop = C_DnShadow >= C_Range / 100 * C_SpinningTopBlackPercent and C_UpShadow >= C_Range / 100 * C_SpinningTopBlackPercent and not C_IsDojiBody
+    C_SpinningTopBlack = C_IsSpinningTop and C_BlackBody
+    if C_SpinningTopBlack[1] and ta.change(time(_htf)) 
+        neutral_tooltip := neutral_tooltip + '\n * Spinning Top Black(1)'
+        neutral_count += 1
+
+    //C_ThreeWhiteSoldiersBullishNumberOfCandles = 3
+    C_3WSld_ShadowPercent = 5.0
+    C_3WSld_HaveNotUpShadow  = C_Range  * C_3WSld_ShadowPercent / 100 > C_UpShadow
+    C_3WSld_HaveNotUpShadow1 = C_Range1 * C_3WSld_ShadowPercent / 100 > C_UpShadow1
+    C_3WSld_HaveNotUpShadow2 = C_Range2 * C_3WSld_ShadowPercent / 100 > C_UpShadow2
+    C_ThreeWhiteSoldiersBullish = false
+    if C_LongBody and C_LongBody1 and C_LongBody2
+        if C_WhiteBody and C_WhiteBody1 and C_WhiteBody2
+            C_ThreeWhiteSoldiersBullish := C0 > C1 and C1 > C2 and O0 < C1 and O0 > O1 and O1 < C2 and O1 > O2 and C_3WSld_HaveNotUpShadow and C_3WSld_HaveNotUpShadow1 and C_3WSld_HaveNotUpShadow2
+    if C_ThreeWhiteSoldiersBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Three White Soldiers(3)'
+        bull_count += 1
+
+    //C_ThreeBlackCrowsBearishNumberOfCandles = 3
+    C_3BCrw_ShadowPercent = 5.0
+    C_3BCrw_HaveNotDnShadow  = C_Range  * C_3BCrw_ShadowPercent / 100 > C_DnShadow
+    C_3BCrw_HaveNotDnShadow1 = C_Range1 * C_3BCrw_ShadowPercent / 100 > C_DnShadow1
+    C_3BCrw_HaveNotDnShadow2 = C_Range2 * C_3BCrw_ShadowPercent / 100 > C_DnShadow2
+    C_ThreeBlackCrowsBearish = false
+    if C_LongBody and C_LongBody1 and C_LongBody2
+        if C_BlackBody and C_BlackBody1 and C_BlackBody2
+            C_ThreeBlackCrowsBearish := C0 < C1 and C1 < C2 and O0 > C1 and O0 < O1 and O1 > C2 and O1 < O2 and C_3BCrw_HaveNotDnShadow and C_3BCrw_HaveNotDnShadow1 and C_3BCrw_HaveNotDnShadow2
+    if C_ThreeBlackCrowsBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Three Black Crows(3)'
+        bear_count += 1
+
+    //C_EngulfingBullishNumberOfCandles = 2
+    C_EngulfingBullish = C_DownTrend and C_WhiteBody and C_LongBody and C_BlackBody1 and C_SmallBody1 and C0 >= O1 and O0 <= C1 and ( C0 > O1 or O0 < C1 )
+    if C_EngulfingBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Engulfing(2)'
+        bull_count += 1
+
+    //C_EngulfingBearishNumberOfCandles = 2
+    C_EngulfingBearish = C_UpTrend and C_BlackBody and C_LongBody and C_WhiteBody1 and C_SmallBody1 and C0 <= O1 and O0 >= C1 and ( C0 < O1 or O0 > C1 )
+    if C_EngulfingBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Engulfing(2)'
+        bear_count += 1
+
+    //C_AbandonedBabyBullishNumberOfCandles = 3
+    C_AbandonedBabyBullish = C_DownTrend2 and C_BlackBody2 and C_IsDojiBody1 and L2 > H1 and C_WhiteBody and H1 < L0
+    if C_AbandonedBabyBullish[1] and ta.change(time(_htf))
+        bull_tooltip := bull_tooltip + '\n * Abandoned Baby(3)'
+        bull_count += 1
+
+    //C_AbandonedBabyBearishNumberOfCandles = 3
+    C_AbandonedBabyBearish = C_UpTrend2 and C_WhiteBody2 and C_IsDojiBody1 and H2 < L1 and C_BlackBody and L1 > H0
+    if C_AbandonedBabyBearish[1] and ta.change(time(_htf))
+        bear_tooltip := bear_tooltip + '\n * Abandoned Baby(3)'
+        bear_count += 1
+
+    //C_TriStarBullishNumberOfCandles = 3
+    C_3DojisBullish = C_Doji2 and C_Doji1 and C_Doji
+    C_BodyGapUpBullish = C_BodyHi1 < C_BodyLo
+    C_BodyGapDnBullish  = C_BodyLo1 > C_BodyHi
+    C_BodyGapDnBullish1 = C_BodyLo2 > C_BodyHi1
+    C_TriStarBullish = C_3DojisBullish and C_DownTrend2 and C_BodyGapDnBullish1 and C_BodyGapUpBullish
+    if C_TriStarBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Tri-Star(3)'
+        bull_count += 1
+
+    //C_TriStarBearishNumberOfCandles = 3
+    C_3Dojis = C_Doji2 and C_Doji1 and C_Doji
+    C_BodyGapUp  = C_BodyHi1 < C_BodyLo
+    C_BodyGapUp1 = C_BodyHi2 < C_BodyLo1
+    C_BodyGapDn = C_BodyLo1 > C_BodyHi
+    C_TriStarBearish = C_3Dojis and C_UpTrend2 and C_BodyGapUp1 and C_BodyGapDn
+    if C_TriStarBearish[1] and ta.change(time(_htf))
+        bear_tooltip := bear_tooltip + '\n * Tri-Star(3)'
+        bear_count += 1
+
+    //C_KickingBullishNumberOfCandles = 2
+    C_MarubozuShadowPercent = 5.0
+    C_Marubozu = C_LongBody and C_UpShadow <= C_MarubozuShadowPercent/100*C_Body and C_DnShadow <= C_MarubozuShadowPercent/100*C_Body
+    C_Marubozu1 = C_LongBody1 and C_UpShadow1 <= C_MarubozuShadowPercent/100*C_Body1 and C_DnShadow1 <= C_MarubozuShadowPercent/100*C_Body1
+    C_MarubozuWhiteBullishKicking = C_Marubozu and C_WhiteBody
+    C_MarubozuBlackBullish  = C_Marubozu  and C_BlackBody
+    C_MarubozuBlackBullish1 = C_Marubozu1 and C_BlackBody1
+    C_KickingBullish = C_MarubozuBlackBullish1 and C_MarubozuWhiteBullishKicking and H1 < L0
+    if C_KickingBullish[1] and ta.change(time(_htf)) 
+        bull_tooltip := bull_tooltip + '\n * Kicking(2)'
+        bull_count += 1
+
+    //C_KickingBearishNumberOfCandles = 2
+    C_MarubozuBullishShadowPercent = 5.0
+    C_MarubozuBearishKicking  = C_LongBody  and C_UpShadow  <= C_MarubozuBullishShadowPercent/100*C_Body  and C_DnShadow  <= C_MarubozuBullishShadowPercent/100*C_Body
+    C_MarubozuBearishKicking1 = C_LongBody1 and C_UpShadow1 <= C_MarubozuBullishShadowPercent/100*C_Body1 and C_DnShadow1 <= C_MarubozuBullishShadowPercent/100*C_Body1
+    C_MarubozuWhiteBearish  = C_MarubozuBearishKicking  and C_WhiteBody
+    C_MarubozuWhiteBearish1 = C_MarubozuBearishKicking1 and C_WhiteBody1
+    C_MarubozuBlackBearishKicking = C_MarubozuBearishKicking and C_BlackBody
+    C_KickingBearish = C_MarubozuWhiteBearish1 and C_MarubozuBlackBearishKicking and L1 > H0
+    if C_KickingBearish[1] and ta.change(time(_htf)) 
+        bear_tooltip := bear_tooltip + '\n * Kicking(2)'
+        bear_count += 1
+
+    var barIndex = 0, var barIndex1 = 0, var barIndex2 = 0, var barIndex3 = 0, var C_WhiteBody3 = false
+    if ta.change(time(_htf))
+        C_WhiteBody3 := C_WhiteBody2
+        barIndex3 := barIndex2
+        barIndex2 := barIndex1
+        barIndex1 := barIndex
+        barIndex  := bar_index[1]
+
+        if array.size(_a_bearPatterns) > 17 + 1
+            array.pop(_a_bearPatterns)
+            array.pop(_a_bullPatterns)
+            array.pop(_a_notrPatterns)
+            array.pop(_a_patternHigh)
+            array.pop(_a_patternLow)
+
+        if not na(_a_patternHigh)
+            array.unshift(_a_patternHigh, patternLabelPosHigh)
+            array.unshift(_a_patternLow , patternLabelPosLow )
+
+        if bull_tooltip != 'Bullish Pattern(s)' and neutral_tooltip != 'Indecision Pattern(s)'
+            bull_tooltip := bull_tooltip + '\n\n' + neutral_tooltip
+        if bear_tooltip != 'Bearish Pattern(s)' and neutral_tooltip != 'Indecision Pattern(s)'
+            bear_tooltip := bear_tooltip + '\n\n' + neutral_tooltip
+
+        if bear_tooltip != 'Bearish Pattern(s)' 
+            alarm(_alarm, 'New ' + str.replace(bear_tooltip, "Pattern(s)",  "Pattern(s) Detected", 0), _htfUser, false)
+            if _appyToChart
+                label.new(math.floor(math.avg(barIndex, barIndex1) + 1), patternLabelPosHigh, text=bear_count > 1 ? str.tostring(bear_count) : '', style=label.style_label_down, color = color.new(_color_bearish, 50), textcolor=color.white, tooltip = bear_tooltip, size = bear_count > 1 ? size.small : size.tiny, textalign = text.align_center)
+            array.unshift(_a_bearPatterns, bear_tooltip)
+        else
+            array.unshift(_a_bearPatterns, '')
+
+        if bull_tooltip != 'Bullish Pattern(s)' 
+            alarm(_alarm, 'New ' + str.replace(bull_tooltip, "Pattern(s)",  "Pattern(s) Detected", 0), _htfUser, false)
+            if _appyToChart
+                label.new(math.floor(math.avg(barIndex, barIndex1) + 1), patternLabelPosLow, text=bull_count > 1 ? str.tostring(bull_count)  : '', style=label.style_label_up, color = color.new(_color_bullish, 50), textcolor=color.white, tooltip = bull_tooltip, size = bull_count > 1 ? size.small : size.tiny, textalign = text.align_center)
+            array.unshift(_a_bullPatterns, bull_tooltip)
+        else
+            array.unshift(_a_bullPatterns, '')
+
+        if neutral_tooltip != 'Indecision Pattern(s)'
+            alarm(_alarm, 'New ' + str.replace(neutral_tooltip, "Pattern(s)",  "Pattern(s) Detected", 0), _htfUser, false)
+            if _appyToChart
+                if bull_tooltip == 'Bullish Pattern(s)'
+                    label.new(math.floor(math.avg(barIndex, barIndex1) + 1), patternLabelPosLow , text=neutral_count > 1 ? str.tostring(neutral_count) : '', style=label.style_label_up  , color = color.new(_color_neutral, 50), textcolor=color.white, tooltip = neutral_tooltip, size = neutral_count > 1 ? size.small : size.tiny, textalign = text.align_center)
+                if bear_tooltip == 'Bearish Pattern(s)'
+                    label.new(math.floor(math.avg(barIndex, barIndex1) + 1), patternLabelPosHigh, text=neutral_count > 1 ? str.tostring(neutral_count) : '', style=label.style_label_down, color = color.new(_color_neutral, 50), textcolor=color.white, tooltip = neutral_tooltip, size = neutral_count > 1 ? size.small : size.tiny, textalign = text.align_center)
+            array.unshift(_a_notrPatterns, neutral_tooltip)
+        else
+            array.unshift(_a_notrPatterns, '')
+
+f_processCandles(_show, _htf, _cndl, _bullC, _bearC, _trans, _btransp, _width, _mini, _offset, _atr, _atrM, _hcount, _a_hst, _a_lst, _disableCandle, _alarm) =>
+    if _show
+        [O1 , H1 , L1 , C1 , O0 , H0 , L0 , C0 ] = f_htf_ohlc(_htf)
+        [hO1, hH1, hL1, hC1, hO0, hH0, hL0, hC0] = f_haTicker(_htf)
+
+        O0 := _cndl == 'Heikin Ashi' ? hO0 : O0, O1 := _cndl == 'Heikin Ashi' ? hO1 : O1
+        H0 := _cndl == 'Heikin Ashi' ? hH0 : H0, H1 := _cndl == 'Heikin Ashi' ? hH1 : H1
+        L0 := _cndl == 'Heikin Ashi' ? hL0 : L0, L1 := _cndl == 'Heikin Ashi' ? hL1 : L1
+        C0 := _cndl == 'Heikin Ashi' ? hC0 : C0, C1 := _cndl == 'Heikin Ashi' ? hC1 : C1
+
+        color0  = O0 < C0 ? color.new(_bullC, _trans)   : color.new(_bearC, _trans)
+        color01 = O0 < C0 ? color.new(_bullC, _btransp) : color.new(_bearC, _btransp)
+        color1  = O1 < C1 ? color.new(_bullC, _trans)   : color.new(_bearC, _trans)
+        color11 = O1 < C1 ? color.new(_bullC, _btransp) : color.new(_bearC, _btransp)
+
+        alarm(H0 > array.max(_a_hst) and H0[1] < array.max(_a_hst) and _alarm, 'New High Detected (among plotted htf candles)', _htf, false)
+        alarm(L0 < array.min(_a_lst) and L0[1] > array.min(_a_lst) and _alarm, 'New Low Detected (among plotted htf candles)' , _htf, false)
+
+        var box hl  = na
+        var box oc  = na
+        var int x11 = na
+        var int x1  = na
+
+        if _htf != timeframe.period and not _disableCandle
+            if ta.change(time(_htf))
+                x11 := x1
+                x1  := bar_index
+
+                if L1 != 0 
+                    box.new(x11, H1, x1 - 1, L1, color11, _width, line.style_dotted, extend.none, xloc.bar_index, color1)
+                    box.new(x11, O1, x1 - 1, C1, color11, _width, line.style_solid , extend.none, xloc.bar_index, color1)
+
+                box.delete(hl), hl := box.new(x1, H0, 2 * x1 - x11 - 1, L0, color01, _width, line.style_dotted, extend.none, xloc.bar_index, color0)
+                box.delete(oc), oc := box.new(x1, O0, 2 * x1 - x11 - 1, C0, color01, _width, line.style_solid , extend.none, xloc.bar_index, color0)
+                true
+            else
+                box.set_top(hl, H0)
+                box.set_bottom(hl, L0)
+                box.set_bgcolor(hl, color0)
+                box.set_border_color(hl, color01)
+
+                box.set_top(oc, math.max(O0, C0))
+                box.set_bottom(oc, math.min(O0, C0))
+                box.set_bgcolor(oc, color0)
+                box.set_border_color(oc, color01)
+                true
+        
+        if _mini
+            if ta.change(time(_htf))
+                array.push(_a_hst, H1), array.push(_a_lst, L1)
+
+            if _hcount > 0
+                f_drawCandle(bar_index + _offset, O0, H0, L0, C0, O0 < C0 ? _bullC : _bearC, _htf, f_getTooltip(O0, H0, L0, C0, C1, _atr, _atrM) ) 
+            if _hcount > 1
+                f_drawCandle(bar_index + _offset - 1, O1, H1, L1, C1, O1 < C1 ? _bullC : _bearC, '', f_getTooltip(O1, H1, L1, C1, ta.valuewhen(ta.change(C1), C1, 1), ta.valuewhen(ta.change(_atr), _atr, 1), _atrM) ) 
+            if _hcount > 2
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 1)
+                f_drawCandle(bar_index + _offset - 2, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM) ) 
+            if _hcount > 3
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 2)
+                f_drawCandle(bar_index + _offset - 3, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM) ) 
+            if _hcount > 4
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 3)
+                f_drawCandle(bar_index + _offset - 4, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM) )
+            if _hcount > 5
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 4)
+                f_drawCandle(bar_index + _offset - 5, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM) ) 
+            if _hcount > 6
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 5)
+                f_drawCandle(bar_index + _offset - 6, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM) ) 
+            if _hcount > 7
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 6)
+                f_drawCandle(bar_index + _offset - 7, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM) )
+            if _hcount > 8
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 7)
+                f_drawCandle(bar_index + _offset - 8, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM) ) 
+            if _hcount > 9
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 8)
+                f_drawCandle(bar_index + _offset - 9, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM) ) 
+            if _hcount > 10
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 9)
+                f_drawCandle(bar_index + _offset - 10, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM)) 
+            if _hcount > 11
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 10)
+                f_drawCandle(bar_index + _offset - 11, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM)) 
+            if _hcount > 12
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 11)
+                f_drawCandle(bar_index + _offset - 12, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM)) 
+            if _hcount > 13
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 12)
+                f_drawCandle(bar_index + _offset - 13, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM)) 
+            if _hcount > 14
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 13)
+                f_drawCandle(bar_index + _offset - 14, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM)) 
+            if _hcount > 15
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 14)
+                f_drawCandle(bar_index + _offset - 15, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM)) 
+            if _hcount > 16
+                [Ox , Hx , Lx , Cx, Ax] = f_getOHLC(O1 , H1 , L1 , C1, _atr, 15)
+                f_drawCandle(bar_index + _offset - 16, Ox, Hx, Lx, Cx, Ox < Cx ? _bullC : _bearC, '', f_getTooltip(Ox, Hx, Lx, Cx, ta.valuewhen(ta.change(Cx), Cx, 1), Ax, _atrM)) 
+
+f_drawAssistLineLableX(_x1, _y, _x2, _color, _text, _size) =>
+    f_drawLineX(_x1, _y, _x2, _y, xloc.bar_index, extend.none, _color, line.style_solid, 1)
+    f_drawLabelX(_x2, _y, _text + ' (' + str.tostring(_y, format.mintick) + ')', xloc.bar_index, yloc.price, #00000000, label.style_label_left, _color, _size, text.align_left, str.tostring(_y, format.mintick)) 
+
+f_processAssistanceLines(_assist, _x2_offset, _size, _length, _htf, _a_hst, _a_lst, _cndl) =>
+    bar_indexX = ta.valuewhen(ta.change(time(_htf)), bar_index, _length - 1)
+
+    int qty = array.size(_a_hst)
+    if  qty > _length - 1
+        array.remove(_a_hst, 0)
+        array.remove(_a_lst, 0)
+
+    [_, _, _, _, _, H0 , L0 , _] = f_htf_ohlc(_htf)
+    [_, _, _, _, _, hH0, hL0, _] = f_haTicker(_htf)
+
+    H0 := _cndl == 'Heikin Ashi' ? hH0 : H0
+    L0 := _cndl == 'Heikin Ashi' ? hL0 : L0
+
+    H = math.max(array.max(_a_hst), H0)
+    L = math.min(array.min(_a_lst), L0)
+
+    if _assist == 'Range' and L != 0
+        f_drawAssistLineLableX(bar_indexX, H, bar_index + _x2_offset + 1, #787b86, 'H', _size)
+        f_drawAssistLineLableX(bar_indexX, L, bar_index + _x2_offset + 1, #787b86, 'L', _size)
+
+    else if (_assist == 'Fib Levels' or _assist == 'Reverse Fib Levels') and L != 0
+        diff = _assist == 'Fib Levels' ? H - L : L - H
+        base = _assist == 'Fib Levels' ? L : H
+        
+        f_drawAssistLineLableX(bar_indexX, base + diff * 0.00, bar_index + _x2_offset + 1, #787b86, '0.00%'  , _size)
+        f_drawAssistLineLableX(bar_indexX, base + diff * .236, bar_index + _x2_offset + 1, #f44336, '23.60%' , _size)
+        f_drawAssistLineLableX(bar_indexX, base + diff * .382, bar_index + _x2_offset + 1, #81c784, '38.20%' , _size)
+        f_drawAssistLineLableX(bar_indexX, base + diff * .500, bar_index + _x2_offset + 1, #4caf50, '50.00%' , _size)
+        f_drawAssistLineLableX(bar_indexX, base + diff * .618, bar_index + _x2_offset + 1, #009688, '61.80%' , _size)
+        f_drawAssistLineLableX(bar_indexX, base + diff * .786, bar_index + _x2_offset + 1, #64b5f6, '78.60%' , _size)
+        f_drawAssistLineLableX(bar_indexX, base + diff * 1.00, bar_index + _x2_offset + 1, #787b86, '100.00%', _size)
+
+    [H, L]
+
+// Functions  ----------------------------------------------------------------------------------- //
+// ---------------------------------------------------------------------------------------------- //
+
+indicator('HTF Candles by DGT', 'HTF Candles ʙʏ DGT ☼☾', true, max_boxes_count = 500, max_bars_back = 5000, max_lines_count = 500, max_labels_count = 500)
+
+// ---------------------------------------------------------------------------------------------- //
+// Inputs  -------------------------------------------------------------------------------------- //
+
+group_candle = 'HTF Candle & Mini Chart Settings'
+htfCndl1  = input.bool(true, '1st HTF Candle', inline='TYP', group=group_candle)
+cndlType1 = input.string('Standart', '', options=['Standart', 'Heikin Ashi'], inline='TYP', group=group_candle)
+htfUser1  = input.string('1 Week', 'TF', options=['3 Mins', '5 Mins', '10 Mins', '15 Mins', '30 Mins', '45 Mins', '1 Hour', '2 Hours', '3 Hours', '4 Hours', '1 Day', '1 Week', '1 Month', '3 Months', '6 Months', '1 Year'], inline='TYP', group=group_candle)
+htfCndl2  = input.bool(false, '2nd HTF Candle', inline='TYP3', group=group_candle)
+cndlType2 = input.string('Standart', '', options=['Standart', 'Heikin Ashi'], inline='TYP3', group=group_candle)
+htfUser2  = input.string('1 Month', 'TF', options=['3 Mins', '5 Mins', '10 Mins', '15 Mins', '30 Mins', '45 Mins', '1 Hour', '2 Hours', '3 Hours', '4 Hours', '1 Day', '1 Week', '1 Month', '3 Months', '6 Months', '1 Year'], inline='TYP3', group=group_candle)
+bullC     = input.color(#26a69a, 'Candle : Bull', inline='CNDL', group=group_candle)
+bearC     = input.color(#ef5350, 'Bear', inline='CNDL', group=group_candle)
+trans     = input.int(85, 'Transp', inline='CNDL', minval=65, maxval=95, group=group_candle)
+cndlAlarm = input.bool(true, 'Enable Candle Alerts', group=group_candle, tooltip = '')
+
+group_mini = 'HTF Mini Chart Settings'
+tp_mini    = 'HTF Mini Charts feature adds ability to display higher timeframe candles on the current chart timeframe with additional candle statistics included in the tooltips available on each htf candle top'
+mChart     = input.bool(true, 'Enable HTF Mini Chart(s) Display', inline='mini', group=group_mini, tooltip = tp_mini)
+count1     = input.int(13, 'Number of Bars : 1st', minval=1, maxval=17, inline='TYP1', group=group_mini)
+count2     = input.int(9, '2nd', minval=1, maxval=17, inline='TYP1', group=group_mini)
+assist1    = input.string('Range', 'Assistant Lines : 1st', options=['Range', 'Fib Levels', 'Reverse Fib Levels', 'None'], inline='asis', group=group_mini)
+assist2    = input.string('Range', '2nd', options=['Range', 'Fib Levels', 'Reverse Fib Levels', 'None'], inline='asis', group=group_mini)
+assistSize = input.string('Small', 'Text Size', options=['Small', 'Normal', 'Large'], inline='oth', group=group_mini)
+textSiz    = assistSize == 'Small' ? size.small : assistSize == 'Normal' ? size.normal : size.large
+mOffset    = input.int(0, "Horizontal Offset", minval = -3, maxval = 25, inline='oth', group=group_mini)
+disableMum = input.bool(false, 'Disable HTF Candle(s) Display', group=group_mini)
+
+group_pattern     = 'HTF Mini Chart Candlestick Pattern Settings'
+tp_pattern        = 'Candlesticks are graphical representations of price movements for a given period of time. Over time, individual candlesticks form patterns that traders can use to identify potential upcoming opportunities based on current context'
+patternDisplay    = input.bool(true, 'Enable HTF Mini Chart(s) Candlestick Patterns Display', group=group_pattern, tooltip = tp_pattern)
+applyToChart      = input.bool(false, 'Enable on Current Chart Timeframe', group=group_pattern)
+color_bullish     = input(#26a69a, "Color : Bullish", inline = 'COL', group=group_pattern)
+color_bearish     = input(#ef5350, "Bearish", inline = 'COL', group=group_pattern)
+color_neutral     = input(#787b86, "Indecision", inline = 'COL', group=group_pattern)
+cndlStikAlarm     = input.bool(true, 'Enable Candlestick Pattern Alerts', group=group_pattern, tooltip = 'candlestick pattern alerts : new bullish, bearish or indecision candlestick pattern(s) detection')
+
+group_htf_ma  = 'HTF Mini Chart Moving Average Settings'
+tp_ma         = 'Dispaly Various MAs for HTF Mini Charts'
+maDisp        = input.bool(true, 'Enable HTF Mini Chart(s) Moving Average Display', group=group_htf_ma, tooltip = tp_ma)
+maType        = input.string("SMA", "", options=["SMA", "EMA", "HMA", "RMA", "WMA", "VWMA"], inline='mMA', group=group_htf_ma)
+maSource      = input.source(close, "", inline='mMA', group=group_htf_ma)
+maLength      = input.int(5, "", minval = 1, inline='mMA', group=group_htf_ma)
+maColor       = input.color(color.blue, '', inline='mMA', group=group_htf_ma)
+
+group_rsi         = 'HTF Mini Chart Overlay RSI Settings'
+tp_rsi            = 'Presents mini RSI Oscillator display for Chart, 1st and 2nd HTF Mini Chart (if enabled)'
+oscDisplay        = input.bool(true, 'Enable HTF Mini Chart(s) Overlay RSI Display', group=group_rsi, tooltip = tp_rsi)
+applyRSIToChart   = input.bool(true, 'Enable on Current Chart Timeframe', group=group_rsi)
+rsiSource         = input.source(close, "RSI Source", inline = 'RSI1', group=group_rsi)
+rsiLength         = input.int(14, " Length", minval = 1, inline = 'RSI1', group=group_rsi)
+rsiObThresh       = input.int(70, 'Overbought', minval=50, maxval=100, inline = 'RSI2', group=group_rsi)
+rsiOsThresh       = input.int(30, 'Oversold' , minval=1 , maxval=50 , inline = 'RSI2', group=group_rsi)
+oscHight          = input.float(.75, 'Hight' , minval = .5, maxval = 5, step = .25 , inline = 'RSI3', group=group_rsi )
+oscVerticalOffset = input.int(0, "Vertical Offset", minval = -30, maxval = 100, inline = 'RSI3', group=group_rsi) / 10
+oscPlacement      = input.string('Bottom', 'Placement', options = ['Top', 'Bottom'], inline = 'IN', group=group_rsi)
+rsiAlarm          = input.bool(true, 'Enable RSI Alerts', group=group_rsi, tooltip = 'rsi alerts : crossing overbough/oversold levels detection')
+
+
+// ---------------------------------------------------------------------------------------------- //
+// HTF Candles, Mini Charts, Candlestick Paterrns ----------------------------------------------- //
+
+htf1       = f_getTF(htfUser1)
+htf2       = f_getTF(htfUser2)
+htfOffset1 = 23 + mOffset
+htfOffset2 = 47 + mOffset
+supported1 = checkIf(timeframe.period, htf1)
+supported2 = checkIf(timeframe.period, htf2)
+
+var a_hst1 = array.new_float(), var a_lst1 = array.new_float(), var a_patternHigh1  = array.new_float() , var a_patternLow1   = array.new_float()
+var a_hst2 = array.new_float(), var a_lst2 = array.new_float(), var a_patternHigh2  = array.new_float() , var a_patternLow2   = array.new_float()
+var a_bullPatterns1 = array.new_string(), var a_bearPatterns1 = array.new_string(), var a_notrPatterns1 = array.new_string()
+var a_bullPatterns2 = array.new_string(), var a_bearPatterns2 = array.new_string(), var a_notrPatterns2 = array.new_string() 
+var a_dummyS        = array.new_string(), var a_dummyF        = array.new_float()
+
+if chart.is_standard
+    if supported1
+        f_processCandles(htfCndl1, htf1, cndlType1, bullC, bearC, trans, 34, 1, mChart, htfOffset1, f_atr(14, htf1), 1.5, count1, a_hst1, a_lst1, disableMum, cndlAlarm)
+    if supported2
+        f_processCandles(htfCndl2, htf2, cndlType2, bullC, bearC, 100  , 0 , 2, mChart, htfOffset2, f_atr(14, htf2), 1.5, count2, a_hst2, a_lst2, disableMum, cndlAlarm)
+
+[priceHighest1, priceLowest1] = f_processAssistanceLines(assist1, htfOffset1, textSiz, count1, htf1, a_hst1, a_lst1, cndlType1)
+[priceHighest2, priceLowest2] = f_processAssistanceLines(assist2, htfOffset2, textSiz, count2, htf2, a_hst2, a_lst2, cndlType2)
+
+if patternDisplay and chart.is_standard
+    if applyToChart
+        f_processPatterns(timeframe.period, timeframe.period, color_bullish, color_bearish, color_neutral, a_dummyS, a_dummyS, a_dummyS, a_dummyF, a_dummyF, applyToChart, cndlStikAlarm)
+    if supported1
+        f_processPatterns(htf1, htfUser1, color_bullish, color_bearish, color_neutral, a_bullPatterns1, a_bearPatterns1, a_notrPatterns1, a_patternHigh1, a_patternLow1, false, cndlStikAlarm)
+    if supported2
+        f_processPatterns(htf2, htfUser2, color_bullish, color_bearish, color_neutral, a_bullPatterns2, a_bearPatterns2, a_notrPatterns2, a_patternHigh2, a_patternLow2, false, cndlStikAlarm)
+
+// HTF Candles, Mini Charts, Candlestick Paterrns ----------------------------------------------- //
+// ---------------------------------------------------------------------------------------------- //
+// Moving Averages ------------------------------------------------------------------------------ //
+
+group_ma  = ' Settings'
+showMA    = input.bool(true, 'Show MAs SMA(20-50-100-200)', inline='MA', group=group_ma)
+source    = input.source(close, '', inline='MA', group=group_ma)
+
+i_masw    = input.bool(false, '', inline='COL', group=group_ma)
+i_ma20C   = input.color(#311B92, 'Current TF', inline='COL', group=group_ma)
+i_ma50C   = input.color(#2196F3, '', inline='COL', group=group_ma)
+i_ma100C  = input.color(#00BCD4, '', inline='COL', group=group_ma)
+i_ma200C  = input.color(#FF9800, '', inline='COL', group=group_ma)
+
+i_maswh   = input.bool(true, 'HTF', inline='MAHTF', group=group_ma)
+i_htfMA   = input.string('Daily', '', options=['15 Min', '1 Hour', '4 Hour', 'Daily', 'Weekly', 'Monthly'], inline='MAHTF', group=group_ma)
+i_ma20Ch  = input.color(#311B92, '', inline='MAHTF', group=group_ma)
+i_ma50Ch  = input.color(#2196F3, '', inline='MAHTF', group=group_ma)
+i_ma100Ch = input.color(#00BCD4, '', inline='MAHTF', group=group_ma)
+i_ma200Ch = input.color(#FF9800, '', inline='MAHTF', group=group_ma)
+
+maAlarm   = input.bool(true, 'Enable Moving Average Alerts', group=group_ma, tooltip = 'ma alerts : price crossing ma levels detection')
+
+htf_multiplier = i_htfMA == '15 Min' ? 15 : i_htfMA == '1 Hour' ? 60 : i_htfMA == '4 Hour' ? 240 : i_htfMA == 'Daily' ? 1440 : i_htfMA == 'Weekly' ? 1440 * 7 : i_htfMA == 'Monthly' ? 1440 * 30 : na
+htfMA = i_htfMA == '15 Min' ? '15' : i_htfMA == '1 Hour' ? '60' : i_htfMA == '4 Hour' ? '240' : i_htfMA == 'Daily' ? 'D' : i_htfMA == 'Weekly' ? 'W' : 'M'
+
+sma20  = ta.sma(source,  20)
+sma50  = ta.sma(source,  50)
+sma100 = ta.sma(source, 100)
+sma200 = ta.sma(source, 200)
+
+if showMA and i_masw and maAlarm
+    alarm(f_crossingLevel(close, sma20) , 'Price crossing current tf sma20('  + str.tostring(sma20 , format.mintick) + ')', timeframe.period, true)
+    alarm(f_crossingLevel(close, sma50) , 'Price crossing current tf sma50('  + str.tostring(sma50 , format.mintick) + ')', timeframe.period, true)
+    alarm(f_crossingLevel(close, sma100), 'Price crossing current tf sma100(' + str.tostring(sma100, format.mintick) + ')', timeframe.period, true)
+    alarm(f_crossingLevel(close, sma200), 'Price crossing current tf sma200(' + str.tostring(sma200, format.mintick) + ')', timeframe.period, true)
+
+plot(showMA and i_masw ? sma20  : na, 'SMA (20)' , i_ma20C , 1)
+plot(showMA and i_masw ? sma50  : na, 'SMA (50)' , i_ma50C , 1)
+plot(showMA and i_masw ? sma100 : na, 'SMA (100)', i_ma100C, 1)
+plot(showMA and i_masw ? sma200 : na, 'SMA (200)', i_ma200C, 1)
+
+plot(showMA and i_maswh and  20 * htf_multiplier / timeframe.multiplier < 5000 ? ta.sma(source,  20 * htf_multiplier / timeframe.multiplier) : na, 'HTF Smooth SMA (20)' , i_ma20Ch , 2)
+plot(showMA and i_maswh and  50 * htf_multiplier / timeframe.multiplier < 5000 ? ta.sma(source,  50 * htf_multiplier / timeframe.multiplier) : na, 'HTF Smooth SMA (50)' , i_ma50Ch , 2)
+plot(showMA and i_maswh and 100 * htf_multiplier / timeframe.multiplier < 5000 ? ta.sma(source, 100 * htf_multiplier / timeframe.multiplier) : na, 'HTF Smooth SMA (100)', i_ma100Ch, 2)
+plot(showMA and i_maswh and 200 * htf_multiplier / timeframe.multiplier < 5000 ? ta.sma(source, 200 * htf_multiplier / timeframe.multiplier) : na, 'HTF Smooth SMA (200)', i_ma200Ch, 2)
+
+[hsma20, hsma50, hsma100, hsma200] = request.security(syminfo.tickerid, htfMA, [sma20, sma50, sma100, sma200])
+
+if showMA and i_maswh and maAlarm
+    alarm(f_crossingLevel(close, hsma20) , 'Price crossing higher tf(' + htfMA + ') sma20('  + str.tostring(hsma20 , format.mintick) + ')', timeframe.period, true)
+    alarm(f_crossingLevel(close, hsma50) , 'Price crossing higher tf(' + htfMA + ') sma50('  + str.tostring(hsma50 , format.mintick) + ')', timeframe.period, true)
+    alarm(f_crossingLevel(close, hsma100), 'Price crossing higher tf(' + htfMA + ') sma100(' + str.tostring(hsma100, format.mintick) + ')', timeframe.period, true)
+    alarm(f_crossingLevel(close, hsma200), 'Price crossing higher tf(' + htfMA + ') sma200(' + str.tostring(hsma200, format.mintick) + ')', timeframe.period, true)
+
+plot(showMA and i_maswh and  20 * htf_multiplier / timeframe.multiplier > 5000 ? hsma20  : na, 'HTF SMA (20)' , i_ma20Ch , 2)
+plot(showMA and i_maswh and  50 * htf_multiplier / timeframe.multiplier > 5000 ? hsma50  : na, 'HTF SMA (50)' , i_ma50Ch , 2)
+plot(showMA and i_maswh and 100 * htf_multiplier / timeframe.multiplier > 5000 ? hsma100 : na, 'HTF SMA (100)', i_ma100Ch, 2)
+plot(showMA and i_maswh and 200 * htf_multiplier / timeframe.multiplier > 5000 ? hsma200 : na, 'HTF SMA (200)', i_ma200Ch, 2)
+
+// Moving Averages ------------------------------------------------------------------------------ //
+// ---------------------------------------------------------------------------------------------- //
+// Statistical Panel ---------------------------------------------------------------------------- //
+
+group_stat = 'Statistic Panel'
+chgStat    = input.bool(true, 'Performance | Distance to MA', inline='FAN2', group=group_stat, tooltip='Performance , displays values from the beginning of the month, week, year etc (So = Start of)\n\nDistance from/to MA - Multi TimeFrame Price Distance from/to MA')
+pmaStat    = input.bool(true, '', inline='FAN2', group=group_stat)
+volStat    = input.bool(true, 'Volume Stats, Volume MA Length', inline='VOL', group=group_stat)
+volLen     = input.int(21, '', inline='VOL', group=group_stat)
+statSize   = input.string('Small', 'Statistic Panel Text Size', options=['Tiny', 'Small', 'Normal'],  group=group_stat)
+textSize   = statSize == 'Small' ? size.small : statSize == 'Normal' ? size.normal : size.tiny
+
+upColor = #26a69a
+dnColor = #ef5350
+naColor = color.blue
+
+//var float firstC = na
+//if barstate.isfirst
+//    firstC := close
+
+dROR = (close / f_getPriceValue('D')   - 1) * 100
+wROR = (close / f_getPriceValue('W')   - 1) * 100
+mROR = (close / f_getPriceValue('M')   - 1) * 100
+qROR = (close / f_getPriceValue('3M')  - 1) * 100
+yROR = (close / f_getPriceValue('12M') - 1) * 100
+
+//if na(yROR)
+//    yROR := (close / firstC - 1) * 100
+
+var float q1 = na, var float q2 = na, var float q3 = na, var float q4 = na
+
+if month < 4
+    q1 := qROR, q2 := na, q3 := na, q4 := na
+else if month > 3 and month < 7
+    q2 := qROR
+else if month > 6 and month < 10
+    q3 := qROR
+else if month > 9
+    q4 := qROR
+
+var float yROR1 = na, var float yROR2 = na, var float yROR3 = na
+var int yr1 = na, var int yr2 = na, var int yr3= na
+
+if ta.change(time('12M'))
+    yROR3 := yROR2  , yr3 := yr2
+    yROR2 := yROR1  , yr2 := yr1
+    yROR1 := yROR[1], yr1 := year[1]
+
+var table change = table.new(position.top_right, 4, 10, border_width=3)
+if barstate.islast and chgStat and chart.is_standard
+    table.cell(change, 0, 0, 'PERF', text_color=naColor, bgcolor=color.new(naColor, 80), text_halign=text.align_left, text_size=textSize)
+
+    if not timeframe.isweekly and not timeframe.ismonthly
+        table.cell(change, 1, 0, str.tostring( dROR, '#.##')  + '%\nDTD' , text_color=dROR > 0  ? upColor : dnColor, bgcolor=dROR > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize, tooltip='Day to Date')
+    if not timeframe.ismonthly
+        table.cell(change, 2, 0, na(wROR) ? '-\nWTD' : str.tostring( wROR, '#.##')  + '%\nWTD' , text_color=na(wROR) ? naColor : wROR > 0  ? upColor : dnColor, bgcolor=na(wROR) ? color.new(naColor, 80) : wROR > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize, tooltip='Week to Date' )
+    table.cell    (change, 3, 0, na(mROR) ? '-\nMTD' : str.tostring( mROR, '#.##')  + '%\nMTD' , text_color=na(mROR) ? naColor : mROR > 0  ? upColor : dnColor, bgcolor=na(mROR) ? color.new(naColor, 80) : mROR > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize, tooltip='Month to Date')
+
+    if not na(q1) and not na(q2) and not na(q3) and not na(q4)
+        table.cell(change, 0, 1, na(q1) ? '-\nQ1' : str.tostring( q1, '#.##') + '%\nQ1', text_color=na(q1) ? naColor : q1 > 0 ? upColor : dnColor, bgcolor=na(q1) ? color.new(naColor, 80) : q1 > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize, tooltip='1st Quarter of ' + str.tostring(year))
+        table.cell(change, 1, 1, na(q2) ? '-\nQ2' : str.tostring( q2, '#.##') + '%\nQ2', text_color=na(q2) ? naColor : q2 > 0 ? upColor : dnColor, bgcolor=na(q2) ? color.new(naColor, 80) : q2 > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize, tooltip='2nd Quarter of ' + str.tostring(year))
+        table.cell(change, 2, 1, na(q3) ? '-\nQ3' : str.tostring( q3, '#.##') + '%\nQ3', text_color=na(q3) ? naColor : q3 > 0 ? upColor : dnColor, bgcolor=na(q3) ? color.new(naColor, 80) : q3 > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize, tooltip='3rd Quarter of ' + str.tostring(year))
+        table.cell(change, 3, 1, na(q4) ? '-\nQ4' : str.tostring( q4, '#.##') + '%\nQ4', text_color=na(q4) ? naColor : q4 > 0 ? upColor : dnColor, bgcolor=na(q4) ? color.new(naColor, 80) : q4 > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize, tooltip='4th Quarter of ' + str.tostring(year))
+
+    if not na(yROR)
+        table.cell(change, 3, 2, str.tostring(yROR , '#.##') + '%\n' + str.tostring(year), text_color=yROR  > 0 ? upColor : dnColor, bgcolor=yROR  > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize, tooltip= str.tostring(year) + ' Year to Date')
+        table.cell(change, 2, 2, na(yROR1) ? '-\n-' : str.tostring(yROR1, '#.##') + '%\n' + str.tostring(yr1) , text_color=na(yROR1) ? naColor : yROR1 > 0 ? upColor : dnColor, bgcolor=na(yROR1) ? color.new(naColor, 80) : yROR1 > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize, tooltip=na(yROR1) and na(yr1) ? '' : str.tostring(yr1) + ' Rate of Return')
+        table.cell(change, 1, 2, na(yROR2) ? '-\n-' : str.tostring(yROR2, '#.##') + '%\n' + str.tostring(yr2) , text_color=na(yROR2) ? naColor : yROR2 > 0 ? upColor : dnColor, bgcolor=na(yROR2) ? color.new(naColor, 80) : yROR2 > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize, tooltip=na(yROR2) and na(yr2) ? '' : str.tostring(yr2) + ' Rate of Return')
+        table.cell(change, 0, 2, na(yROR3) ? '-\n-' : str.tostring(yROR3, '#.##') + '%\n' + str.tostring(yr3) , text_color=na(yROR3) ? naColor : yROR3 > 0 ? upColor : dnColor, bgcolor=na(yROR3) ? color.new(naColor, 80) : yROR3 > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize, tooltip=na(yROR3) and na(yr3) ? '' : str.tostring(yr3) + ' Rate of Return')
+
+pma20  = (source / sma20  - 1) * 100
+pma50  = (source / sma50  - 1) * 100
+pma100 = (source / sma100 - 1) * 100
+pma200 = (source / sma200 - 1) * 100
+
+[pma204h, pma504h, pma1004h, pma2004h] = request.security(syminfo.tickerid, '240', [pma20, pma50, pma100, pma200])
+[pma20d, pma50d, pma100d, pma200d]     = request.security(syminfo.tickerid, 'D'  , [pma20, pma50, pma100, pma200])
+[pma20w, pma50w, pma100w, pma200w]     = request.security(syminfo.tickerid, 'W'  , [pma20, pma50, pma100, pma200])
+
+if barstate.islast and pmaStat and chart.is_standard
+    table.cell(change, 1, 3, '4H'  , text_color=naColor, bgcolor=color.new(naColor, 80), text_size=textSize)
+    table.cell(change, 2, 3, 'Day' , text_color=naColor, bgcolor=color.new(naColor, 80), text_size=textSize)
+    table.cell(change, 3, 3, 'Week', text_color=naColor, bgcolor=color.new(naColor, 80), text_size=textSize)
+
+    table.cell(change, 0, 4, 'MA20', text_color=naColor, bgcolor=color.new(naColor, 80), text_halign=text.align_left, text_size=textSize)
+    table.cell(change, 1, 4, na(pma204h) ? '-' : str.tostring(pma204h, '#.##') + '%', text_color=na(pma204h) ? naColor : pma204h > 0 ? upColor : dnColor, bgcolor=na(pma204h) ? color.new(naColor, 80) : pma204h > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize)
+    table.cell(change, 2, 4, na(pma20d)  ? '-' : str.tostring(pma20d, '#.##')  + '%', text_color=na(pma20d)  ? naColor : pma20d  > 0 ? upColor : dnColor, bgcolor=na(pma20d)  ? color.new(naColor, 80) : pma20d  > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize)
+    table.cell(change, 3, 4, na(pma20w)  ? '-' : str.tostring(pma20w, '#.##')  + '%', text_color=na(pma20w)  ? naColor : pma20w  > 0 ? upColor : dnColor, bgcolor=na(pma20w)  ? color.new(naColor, 80) : pma20w  > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize)
+
+    table.cell(change, 0, 5, 'MA50', text_color=naColor, bgcolor=color.new(naColor, 80), text_halign=text.align_left, text_size=textSize)
+    table.cell(change, 1, 5, na(pma504h) ? '-' : str.tostring(pma504h, '#.##') + '%', text_color=na(pma504h) ? naColor : pma504h > 0 ? upColor : dnColor, bgcolor=na(pma504h) ? color.new(naColor, 80) : pma504h > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize)
+    table.cell(change, 2, 5, na(pma50d)  ? '-' : str.tostring(pma50d, '#.##')  + '%', text_color=na(pma50d)  ? naColor : pma50d  > 0 ? upColor : dnColor, bgcolor=na(pma50d)  ? color.new(naColor, 80) : pma50d  > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize)
+    table.cell(change, 3, 5, na(pma50w)  ? '-' : str.tostring(pma50w, '#.##')  + '%', text_color=na(pma50w)  ? naColor : pma50w  > 0 ? upColor : dnColor, bgcolor=na(pma50w)  ? color.new(naColor, 80) : pma50w  > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize)
+
+    table.cell(change, 0, 6, 'MA100', text_color=naColor, bgcolor=color.new(naColor, 80), text_halign=text.align_left, text_size=textSize)
+    table.cell(change, 1, 6, na(pma1004h) ? '-' : str.tostring(pma1004h, '#.##') + '%', text_color=na(pma1004h) ? naColor : pma1004h > 0 ? upColor : dnColor, bgcolor=na(pma1004h) ? color.new(naColor, 80) : pma1004h > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize)
+    table.cell(change, 2, 6, na(pma100d)  ? '-' : str.tostring(pma100d , '#.##') + '%', text_color=na(pma100d)  ? naColor : pma100d  > 0 ? upColor : dnColor, bgcolor=na(pma100d)  ? color.new(naColor, 80) : pma100d  > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize)
+    table.cell(change, 3, 6, na(pma100w)  ? '-' : str.tostring(pma100w , '#.##') + '%', text_color=na(pma100w)  ? naColor : pma100w  > 0 ? upColor : dnColor, bgcolor=na(pma100w)  ? color.new(naColor, 80) : pma100w  > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize)
+
+    table.cell(change, 0, 7, 'MA200', text_color=naColor, bgcolor=color.new(naColor, 80), text_halign=text.align_left, text_size=textSize)
+    table.cell(change, 1, 7, na(pma2004h) ? '-' : str.tostring(pma2004h, '#.##') + '%', text_color=na(pma2004h) ? naColor : pma2004h > 0 ? upColor : dnColor, bgcolor=na(pma2004h) ? color.new(naColor, 80) : pma2004h > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize)
+    table.cell(change, 2, 7, na(pma200d)  ? '-' : str.tostring(pma200d, '#.##')  + '%', text_color=na(pma200d)  ? naColor : pma200d  > 0 ? upColor : dnColor, bgcolor=na(pma200d)  ? color.new(naColor, 80) : pma200d  > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize)
+    table.cell(change, 3, 7, na(pma200w)  ? '-' : str.tostring(pma200w, '#.##')  + '%', text_color=na(pma200w)  ? naColor : pma200w  > 0 ? upColor : dnColor, bgcolor=na(pma200w)  ? color.new(naColor, 80) : pma200w  > 0 ? color.new(upColor, 80) : color.new(dnColor, 80), text_size=textSize)
+
+nzVolume  = nz(volume)
+avgVolume = ma(nzVolume, volLen, 'SMA')
+[volumeHTF1, avgVolumeHTF1] = request.security(syminfo.tickerid, htf1, [nzVolume, avgVolume])
+[volumeHTF2, avgVolumeHTF2] = request.security(syminfo.tickerid, htf2, [nzVolume, avgVolume])
+
+if barstate.islast and volStat
+    table.cell(change, 1, 8, 'Last'  , text_color=naColor, bgcolor=color.new(naColor, 80), text_size=textSize)
+    table.cell(change, 2, 8, htfUser1, text_color=naColor, bgcolor=color.new(naColor, 80), text_size=textSize)
+    table.cell(change, 3, 8, htfUser2, text_color=naColor, bgcolor=color.new(naColor, 80), text_size=textSize)
+
+    table.cell(change, 0, 9, 'VOL\nAVG(' + str.tostring(volLen) + ')', text_color=naColor, bgcolor=color.new(naColor, 80), text_halign=text.align_left, text_size=textSize)
+    table.cell(change, 1, 9, str.tostring(nzVolume  , format.volume) + '\n' + (na(avgVolume)     ? '-' : str.tostring(avgVolume    , format.volume)), text_color=nzVolume   > avgVolume     ? upColor : naColor, bgcolor=nzVolume   > avgVolume     ? color.new(upColor, 80) : color.new(naColor, 80), text_size=textSize)
+    table.cell(change, 2, 9, str.tostring(volumeHTF1, format.volume) + '\n' + (na(avgVolumeHTF1) ? '-' : str.tostring(avgVolumeHTF1, format.volume)), text_color=volumeHTF1 > avgVolumeHTF1 ? upColor : naColor, bgcolor=volumeHTF1 > avgVolumeHTF1 ? color.new(upColor, 80) : color.new(naColor, 80), text_size=textSize)
+    table.cell(change, 3, 9, str.tostring(volumeHTF2, format.volume) + '\n' + (na(avgVolumeHTF2) ? '-' : str.tostring(avgVolumeHTF2, format.volume)), text_color=volumeHTF2 > avgVolumeHTF2 ? upColor : naColor, bgcolor=volumeHTF2 > avgVolumeHTF2 ? color.new(upColor, 80) : color.new(naColor, 80), text_size=textSize)
+
+// Statistical Panel ---------------------------------------------------------------------------- //
+// ---------------------------------------------------------------------------------------------- //
+// Overlay RSI & Mini Chart MA ------------------------------------------------------------------ //
+
+oscLookbackLength = 17
+priceHighest      = math.max(ta.highest(high, oscLookbackLength), na(priceHighest1) ? high : priceHighest1, na(priceHighest2) ? high : priceHighest2)
+priceLowest       = math.min(ta.lowest (low , oscLookbackLength), na(priceLowest1)  ? low  : priceLowest1 , na(priceLowest2)  ? low  : priceLowest2 )
+priceChangeRate   = (priceHighest - priceLowest) / priceHighest
+priceLowest      := priceLowest  * (1 - priceChangeRate * oscVerticalOffset)
+priceHighest     := priceHighest * (1 + priceChangeRate * oscVerticalOffset)
+oscHighest        = 100//ta.highest(osc, oscLookbackLength)
+
+osc               = rsi(rsiSource, rsiLength)
+if oscDisplay and rsiAlarm
+    alarm(f_crossingLevel(osc, rsiObThresh), (osc > rsiObThresh ? 'Watch out, rsi cross above' : 'Probable short trade opportunity, rsi cross below') + ' overbought line detected', timeframe.period, true)
+    alarm(f_crossingLevel(osc, rsiOsThresh), (osc > rsiOsThresh ? 'Probable long trade opportunity, rsi cross above' : 'Watch out, rsi cross below')  + ' oversold line detected'  , timeframe.period, true) 
+
+htfRSI1           = request.security(syminfo.tickerid, htf1 , rsi(rsiSource, rsiLength))
+if htfCndl1 and mChart and oscDisplay and supported1 and rsiAlarm
+    alarm(f_crossingLevel(htfRSI1, rsiObThresh), (htfRSI1 > rsiObThresh ? 'Watch out, rsi cross above' : 'Probable short trade opportunity, rsi cross below') + ' overbought line detected', htf1, true)
+    alarm(f_crossingLevel(htfRSI1, rsiOsThresh), (htfRSI1 > rsiOsThresh ? 'Probable long trade opportunity, rsi cross above' : 'Watch out, rsi cross below')  + ' oversold line detected'  , htf1, true) 
+
+htfMA1            = request.security(syminfo.tickerid, htf1 , ma(maSource, maLength, maType))
+var a_htfRSI1     = array.new_float()
+var a_htfMA1      = array.new_float()
+
+if ta.change(time(htf1))
+    array.unshift(a_htfRSI1, htfRSI1)
+else if array.size(a_htfRSI1) > 0
+    array.set(a_htfRSI1 , 0, htfRSI1)
+
+if array.size(a_htfRSI1) > oscLookbackLength + 1
+    array.pop(a_htfRSI1)
+
+if ta.change(time(htf1))
+    array.unshift(a_htfMA1, htfMA1)
+else if array.size(a_htfMA1) > 0
+    array.set(a_htfMA1 , 0, htfMA1)
+
+if array.size(a_htfMA1) > oscLookbackLength + 1
+    array.pop(a_htfMA1)
+
+htfRSI2           = request.security(syminfo.tickerid, htf2, rsi(rsiSource, rsiLength))
+if htfCndl2 and mChart and oscDisplay and supported2 and rsiAlarm
+    alarm(f_crossingLevel(htfRSI2, rsiObThresh), (htfRSI2 > rsiObThresh ? 'Watch out, rsi cross above' : 'Probable short trade opportunity, rsi cross below') + ' overbought line detected', htf2, true)
+    alarm(f_crossingLevel(htfRSI2, rsiOsThresh), (htfRSI2 > rsiOsThresh ? 'Probable long trade opportunity, rsi cross above' : 'Watch out, rsi cross below')  + ' oversold line detected'  , htf2, true) 
+
+htfMA2            = request.security(syminfo.tickerid, htf2, ma(maSource, maLength, maType))
+var a_htfRSI2     = array.new_float()
+var a_htfMA2      = array.new_float()
+
+
+if ta.change(time(htf2))
+    array.unshift(a_htfRSI2, htfRSI2)
+else if array.size(a_htfRSI2) > 0
+    array.set(a_htfRSI2, 0, htfRSI2)
+
+if array.size(a_htfRSI2) > oscLookbackLength + 1
+    array.pop(a_htfRSI2)
+
+if ta.change(time(htf2))
+    array.unshift(a_htfMA2, htfMA2)
+else if array.size(a_htfMA2) > 0
+    array.set(a_htfMA2 , 0, htfMA2)
+
+if array.size(a_htfMA2) > oscLookbackLength + 1
+    array.pop(a_htfMA2)
+
+var a_lines       = array.new_line()
+var a_labels      = array.new_label()
+
+if barstate.islast and priceLowest != 0 and chart.is_standard
+    if array.size(a_lines) > 0
+        for i = 1 to array.size(a_lines)
+            line.delete(array.shift(a_lines))
+    
+    if array.size(a_labels) > 0
+        for i = 1 to array.size(a_labels)
+            label.delete(array.shift(a_labels))
+
+    hight      = priceChangeRate * oscHight
+    oscColor   = #7e57c2
+    obLevel1   = oscPlacement == 'Top' ? priceHighest * (1 + rsiObThresh / oscHighest * hight) : priceLowest * (1 + (rsiObThresh - oscHighest) / oscHighest * hight)
+    midLevel   = oscPlacement == 'Top' ? priceHighest * (1 +          50 / oscHighest * hight) : priceLowest * (1 +          (50 - oscHighest) / oscHighest * hight)
+    osLevel1   = oscPlacement == 'Top' ? priceHighest * (1 + rsiOsThresh / oscHighest * hight) : priceLowest * (1 + (rsiOsThresh - oscHighest) / oscHighest * hight)
+
+    if array.size(a_htfRSI1) > oscLookbackLength and htfCndl1 and mChart and oscDisplay and supported1
+        array.push(a_lines, line.new(bar_index[oscLookbackLength] + htfOffset1 , obLevel1  , bar_index + htfOffset1 , obLevel1  , xloc.bar_index, extend.none, color.new(color.red  , 50), line.style_solid , 5))
+        array.push(a_lines, line.new(bar_index[oscLookbackLength] + htfOffset1 , midLevel  , bar_index + htfOffset1 , midLevel  , xloc.bar_index, extend.none, color.new(color.gray , 50), line.style_solid , 1))
+        array.push(a_lines, line.new(bar_index[oscLookbackLength] + htfOffset1 , osLevel1  , bar_index + htfOffset1 , osLevel1  , xloc.bar_index, extend.none, color.new(color.green, 50), line.style_solid , 5))
+    
+    if array.size(a_htfRSI2) > oscLookbackLength and htfCndl2 and mChart and oscDisplay and supported2
+        array.push(a_lines, line.new(bar_index[oscLookbackLength] + htfOffset2 , obLevel1  , bar_index + htfOffset2 , obLevel1  , xloc.bar_index, extend.none, color.new(color.red  , 50), line.style_solid , 5))
+        array.push(a_lines, line.new(bar_index[oscLookbackLength] + htfOffset2 , midLevel  , bar_index + htfOffset2 , midLevel  , xloc.bar_index, extend.none, color.new(color.gray , 50), line.style_solid , 1))
+        array.push(a_lines, line.new(bar_index[oscLookbackLength] + htfOffset2 , osLevel1  , bar_index + htfOffset2 , osLevel1  , xloc.bar_index, extend.none, color.new(color.green, 50), line.style_solid , 5))
+
+    if oscDisplay and applyRSIToChart
+        array.push(a_lines, line.new(bar_index[oscLookbackLength], obLevel1  , bar_index, obLevel1  , xloc.bar_index, extend.none, color.new(color.red  , 50), line.style_solid , 5))
+        array.push(a_lines, line.new(bar_index[oscLookbackLength], midLevel  , bar_index, midLevel  , xloc.bar_index, extend.none, color.new(color.gray , 50), line.style_solid , 1))
+        array.push(a_lines, line.new(bar_index[oscLookbackLength], osLevel1  , bar_index, osLevel1  , xloc.bar_index, extend.none, color.new(color.green, 50), line.style_solid , 5))
+
+    for barIndex = 0 to oscLookbackLength - 1
+        if array.size(a_lines) < 498
+            if array.size(a_htfRSI1) > oscLookbackLength and htfCndl1 and mChart and oscDisplay and supported1
+                array.push(a_lines, line.new(bar_index[barIndex]     + htfOffset1, oscPlacement == 'Top' ? priceHighest * (1 + array.get(a_htfRSI1, barIndex)     / oscHighest  * hight) : priceLowest * (1 + (array.get(a_htfRSI1, barIndex)     - oscHighest) / oscHighest * hight), 
+                                             bar_index[barIndex + 1] + htfOffset1, oscPlacement == 'Top' ? priceHighest * (1 + array.get(a_htfRSI1, barIndex + 1) / oscHighest  * hight) : priceLowest * (1 + (array.get(a_htfRSI1, barIndex + 1) - oscHighest) / oscHighest * hight), xloc.bar_index, extend.none, oscColor, line.style_solid, 2))
+            
+            if array.size(a_htfRSI2) > oscLookbackLength and htfCndl2 and mChart and oscDisplay and supported2
+                array.push(a_lines, line.new(bar_index[barIndex]     + htfOffset2, oscPlacement == 'Top' ? priceHighest * (1 + array.get(a_htfRSI2, barIndex)     / oscHighest  * hight) : priceLowest * (1 + (array.get(a_htfRSI2, barIndex)     - oscHighest) / oscHighest * hight), 
+                                             bar_index[barIndex + 1] + htfOffset2, oscPlacement == 'Top' ? priceHighest * (1 + array.get(a_htfRSI2, barIndex + 1) / oscHighest  * hight) : priceLowest * (1 + (array.get(a_htfRSI2, barIndex + 1) - oscHighest) / oscHighest * hight), xloc.bar_index, extend.none, oscColor, line.style_solid, 2))
+
+            if oscDisplay and applyRSIToChart
+                array.push(a_lines, line.new(bar_index[barIndex], oscPlacement == 'Top'    ? priceHighest * (1 + osc[barIndex]        / oscHighest * hight) : priceLowest * (1 + (osc[barIndex]      - oscHighest)  / oscHighest * hight), 
+                                         bar_index[barIndex + 1], oscPlacement == 'Top'    ? priceHighest * (1 + osc[barIndex + 1]    / oscHighest * hight) : priceLowest * (1 + (osc[barIndex + 1]  - oscHighest)  / oscHighest * hight), xloc.bar_index, extend.none, oscColor   , line.style_solid, 2))
+
+            if array.size(a_htfMA1) > oscLookbackLength and htfCndl1 and mChart and maDisp and count1 > barIndex and supported1
+                array.push(a_lines, line.new(bar_index[barIndex]     + htfOffset1, array.get(a_htfMA1, barIndex), 
+                                             bar_index[barIndex + 1] + htfOffset1, array.get(a_htfMA1, barIndex + 1), xloc.bar_index, extend.none, maColor, line.style_solid, 2))
+
+            if array.size(a_htfMA2) > oscLookbackLength and htfCndl2 and mChart and maDisp and count2 > barIndex and supported2
+                array.push(a_lines, line.new(bar_index[barIndex]     + htfOffset2, array.get(a_htfMA2, barIndex), 
+                                             bar_index[barIndex + 1] + htfOffset2, array.get(a_htfMA2, barIndex + 1), xloc.bar_index, extend.none, maColor, line.style_solid, 2))
+        
+        if array.size(a_bearPatterns1) > oscLookbackLength and htfCndl1 and mChart and patternDisplay and count1 > barIndex + 1
+            bearPaterns = array.get(a_bearPatterns1, barIndex)
+            bullPaterns = array.get(a_bullPatterns1, barIndex)
+            notrPaterns = array.get(a_notrPatterns1, barIndex)
+
+            if bullPaterns != ''
+                array.push(a_labels, label.new(bar_index[barIndex + 1]     + htfOffset1, array.get(a_patternLow1, barIndex) , '',  style=label.style_label_up  , color = color.new(color_bullish, 50), textcolor=color.white, tooltip = bullPaterns, size = size.tiny) )
+            if bearPaterns != ''
+                array.push(a_labels, label.new(bar_index[barIndex + 1]     + htfOffset1, array.get(a_patternHigh1, barIndex), '',  style=label.style_label_down, color = color.new(color_bearish, 50), textcolor=color.white, tooltip = bearPaterns, size = size.tiny) )
+            if notrPaterns != ''
+                if bullPaterns == ''
+                    array.push(a_labels, label.new(bar_index[barIndex + 1]     + htfOffset1, array.get(a_patternLow1, barIndex) , '',  style=label.style_label_up  , color = color.new(color_neutral, 50), textcolor=color.white, tooltip = notrPaterns, size = size.tiny) )
+                if bearPaterns == ''
+                    array.push(a_labels, label.new(bar_index[barIndex + 1]     + htfOffset1, array.get(a_patternHigh1, barIndex), '',  style=label.style_label_down, color = color.new(color_neutral, 50), textcolor=color.white, tooltip = notrPaterns, size = size.tiny) )
+
+        if array.size(a_bearPatterns2) > oscLookbackLength and htfCndl2 and mChart and patternDisplay and count2 > barIndex + 1
+            bearPaterns = array.get(a_bearPatterns2, barIndex)
+            bullPaterns = array.get(a_bullPatterns2, barIndex)
+            notrPaterns = array.get(a_notrPatterns2, barIndex)
+
+            if bullPaterns != ''
+                array.push(a_labels, label.new(bar_index[barIndex + 1]     + htfOffset2, array.get(a_patternLow2, barIndex) , '',  style=label.style_label_up  , color = color.new(color_bullish, 50), textcolor=color.white, tooltip = bullPaterns, size = size.tiny) )
+            if bearPaterns != ''
+                array.push(a_labels, label.new(bar_index[barIndex + 1]     + htfOffset2, array.get(a_patternHigh2, barIndex), '',  style=label.style_label_down, color = color.new(color_bearish, 50), textcolor=color.white, tooltip = bearPaterns, size = size.tiny) )
+            if notrPaterns != ''
+                if bullPaterns == ''
+                    array.push(a_labels, label.new(bar_index[barIndex + 1]     + htfOffset2, array.get(a_patternLow2, barIndex) , '',  style=label.style_label_up  , color = color.new(color_neutral, 50), textcolor=color.white, tooltip = notrPaterns, size = size.tiny) )
+                if bearPaterns == ''
+                    array.push(a_labels, label.new(bar_index[barIndex + 1]     + htfOffset2, array.get(a_patternHigh2, barIndex), '',  style=label.style_label_down, color = color.new(color_neutral, 50), textcolor=color.white, tooltip = notrPaterns, size = size.tiny) )
+
+// Overlay RSI & Mini Chart MA ------------------------------------------------------------------ //
+// ---------------------------------------------------------------------------------------------- //
+// Volume Weighted Colored Bars ----------------------------------------------------------------- //
+
+tooltip_vwcb  = 'Colors bars based on the bar\'s volume relative to volume moving average'
+group_vwcb    = 'Volume Weighted Colored Bars'
+vwcb          = input.bool(true, 'Volume Weighted Colored Bars', group=group_vwcb, tooltip = tooltip_vwcb)
+bullCandle    = close > open
+vSMA          = ta.sma(nzVolume, input.int(89, 'Volume Moving Average Length', group = group_vwcb))
+vwcbHigh      = input.float(1.618, 'Theshold : Higher', minval=1., step=.1, inline = 'AA', group=group_vwcb) 
+volAlarm   = input.bool(true, 'Enable Volume Alerts', group=group_vwcb, tooltip = 'volume alerts : high trading volume and volume spike detection')
+barcolor(vwcb and nzVolume ? nzVolume > vSMA * vwcbHigh ? bullCandle ? #006400 : #910000 : nzVolume < vSMA * input.float(0.618, 'Lower', minval=.1, step=.1, inline = 'AA', group=group_vwcb) ? bullCandle ? #7FFFD4 : #FF9800 : bullCandle ? color.green : color.red : na, title='Volume Weighted Colored Bars')
+alarm(nzVolume > vSMA * vwcbHigh, 'High trading Volume detected', timeframe.period, false)
+alarm(nzVolume > vSMA * 4.669, 'Watch out, Volume SPIKE detected, may be a sign of exhaustion', timeframe.period, false)
+
+
+// Volume Weighted Colored Bars ----------------------------------------------------------------- //
+// ---------------------------------------------------------------------------------------------- //
+
+var table logo = table.new(position.bottom_right, 1, 1)
+if barstate.islast
+    table.cell(logo, 0, 0, '☼☾  ', text_size=size.normal, text_color=color.teal)

@@ -1,0 +1,116 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Pivot Based Trailing Maxima & Minima [LuxAlgo]", "LuxAlgo - Pivot Based Trailing Maxima & Minima", overlay = true, max_bars_back = 500, max_lines_count = 500)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+length = input.int(24, minval = 2, maxval = 500)
+backpaint = input(false, tooltip = 'Backpainting offset displayed elements in the past. Disable backpainting to see real time information returned by the indicator.')
+
+//Style
+maxCss = input.color(color.teal, 'Trailing Maximum Color', group = 'Style')
+minCss = input.color(color.red , 'Trailing Minimum Color', group = 'Style')
+avgCss = input.color(#ff5d00   , 'Trailing Maximum Color', group = 'Style')
+
+bullFill = input.color(color.new(color.teal,80), 'Uptrend Area'  , group = 'Style')
+bearFill = input.color(color.new(color.red,80) , 'Downtrend Area', group = 'Style')
+
+//-----------------------------------------------------------------------------}
+//Calculation
+//-----------------------------------------------------------------------------{
+var float max = na
+var float min = na
+var offset = backpaint ? length : 0
+
+ph = ta.pivothigh(length, length)
+pl = ta.pivotlow(length, length)
+
+if ph or pl
+    max := high[length]
+    min := low[length]
+
+max := math.max(high[offset], max)
+min := math.min(low[offset], min)
+
+avg = math.avg(max,min)
+
+//-----------------------------------------------------------------------------}
+//Non offset trailing max/min
+//-----------------------------------------------------------------------------{
+n = bar_index
+
+max_prev = max
+min_prev = min
+avg_prev = avg
+max2 = max
+min2 = min
+
+fill_css = fixnan(ph ? bearFill : pl ? bullFill : na)
+
+if barstate.islast and backpaint
+    //Delete previously set lines
+    for line_object in line.all
+        line.delete(line_object)
+
+    //Loop trough calculation window
+    for i = 0 to length-1
+        max2 := math.max(high[length-1-i], max_prev)
+        min2 := math.min(low[length-1-i], min_prev)
+        avg2 = math.avg(max2, min2)
+        
+        //Set lines
+        line1 = line.new(n-(length-i), max_prev, n-(length-1-i), max2, color= maxCss)
+        line2 = line.new(n-(length-i), min_prev, n-(length-1-i), min2, color= minCss)
+        linefill.new(line1,line2,color.new(fill_css, 80))
+
+        line.new(n-(length-i), avg_prev, n-(length-1-i), avg2, color= avgCss)
+        
+        max_prev := max2
+        min_prev := min2
+        avg_prev := avg2
+
+//-----------------------------------------------------------------------------}
+//Plots
+//-----------------------------------------------------------------------------{
+plot1 = plot(max, 'Trailing Maximum'
+  , ph or pl ? na : maxCss
+  , 1
+  , plot.style_linebr
+  , offset = -offset)
+
+plot2 = plot(min, 'Trailing Minimum'
+  , ph or pl ? na : minCss
+  , 1
+  , plot.style_linebr
+  , offset = -offset)
+
+plot(avg, 'Average'
+  , ph or pl ? na : avgCss
+  , 1
+  , plot.style_linebr
+  , offset = -offset)
+
+fill(plot1, plot2, ph or pl ? na : fill_css)
+
+//Labels
+plotshape(pl ? pl : na, "Pivot High"
+  , shape.labelup
+  , location.absolute
+  , maxCss
+  , -offset
+  , text = "▲"
+  , textcolor = color.white
+  , size = size.tiny)
+
+plotshape(ph ? ph : na, "Pivot Low"
+  , shape.labeldown
+  , location.absolute
+  , minCss
+  , -offset
+  , text = "▼"
+  , textcolor = color.white
+  , size = size.tiny)
+
+//-----------------------------------------------------------------------------}

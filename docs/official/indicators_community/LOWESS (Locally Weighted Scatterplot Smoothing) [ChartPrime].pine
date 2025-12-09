@@ -1,0 +1,176 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=5
+indicator("LOWESS (Locally Weighted Scatterplot Smoothing) [ChartPrime]", "Lowess & GaussianMA [ChartPrime]",
+         overlay            = true,
+         max_lines_count    = 500,
+         max_labels_count   = 500)
+
+
+// ---------------------------------------------------------------------------------------------------------------------}
+// 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎 
+// ---------------------------------------------------------------------------------------------------------------------{
+
+// @variable Length for LOWESS calculation
+int length      = input.int(30, minval=1, title="Length", group = "LOWESS (Locally Weighted Scatterplot Smoothing)")
+
+// @variable Number of bars to the left for pivot calculation
+int leftBars    = input.int(5, "Length", group = "Pivots")
+// @variable Number of bars to the right for pivot calculation
+int rightBars   = leftBars - 2
+// @variable Toggle to show break count
+bool show_count = input.bool(false, "Count Breaks", group = "===")
+// @variable Toggle to show Gaussian scatterplot
+bool Gaussian_plot = input.bool(false, "Gaussian Scatterplot")
+
+// @variable Line object for high pivot
+var line line_h = na
+// @variable Line object for low pivot
+var line line_l = na
+
+// @variable Label object for high pivot
+var label lbl_h = na
+// @variable Label object for low pivot
+var label lbl_l = na
+
+// @variable Counter for upward breaks
+var count_up    = 0
+// @variable Counter for downward breaks
+var count_dn    = 0
+
+// @variable Color for upward movements
+color col_up = #60befd
+// @variable Color for downward movements
+color col_dn = #ab61ff
+
+
+// ---------------------------------------------------------------------------------------------------------------------}
+// 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// ---------------------------------------------------------------------------------------------------------------------{
+
+// Calculate pivot high and low
+ph = ta.pivothigh(leftBars, rightBars)
+pl = ta.pivotlow(leftBars, rightBars)
+
+//@function Calculates LOWESS (Locally Weighted Scatterplot Smoothing)
+//@param src (float) Source series
+//@param length (int) Lookback period
+//@returns (float) LOWESS value
+lowess(src, length) =>
+    sum_w = 0.0
+    sum_wx = 0.0
+    sum_wy = 0.0
+    for i = 0 to length - 1
+        w = math.pow(1 - math.pow(i / length, 3), 3)
+        sum_w += w
+        sum_wx += w * i
+        sum_wy += w * src[i]
+    a = sum_wy / sum_w
+    b = sum_wx / sum_w
+    a + b / (length - 1) / 2000
+
+//@function Calculates Modified Adaptive Gaussian Moving Average
+//@param src (float) Source series
+//@param length (int) Lookback period
+//@returns [float, float] Gaussian MA and smoothed Gaussian MA
+GaussianMA(src, length)=>
+    h_l                = array.new<float>(length)
+
+    float gma          = 0.0
+    float sumOfWeights = 0.0
+    float sigma        = (ta.atr(length) + ta.stdev(close, length)) / 2  // Volatility adaption
+    float highest      = 0.0
+    float lowest       = 0.0
+    float smoothed     = 0.0
+
+    for i = 0 to length - 1
+        h_l.push(close[i])
+        highest      := h_l.max()
+        lowest       := h_l.min()
+        weight        = math.exp(-math.pow(((i - (length - 1)) / (2 * sigma)), 2) / 2)
+        value         = math.max(highest[i], highest) + math.min(lowest[i], lowest)
+        gma          := gma + (value * weight)
+        sumOfWeights += weight
+
+    gma := (gma / sumOfWeights) / 2
+
+    smoothed := lowess(gma, 10)
+
+    [gma, smoothed]
+
+[gma, smoothed] = GaussianMA(close, length)
+
+// Generate random color for Gaussian MA plot
+random1       = math.random(0, 255)
+gmaColor      = color.rgb(random1, random1, random1)
+
+// Determine color for smoothed line based on its direction
+smoothedColor =    smoothed > smoothed[2]  ? col_up 
+                 : smoothed <= smoothed[2]  ? col_dn 
+                 : na
+
+
+// ---------------------------------------------------------------------------------------------------------------------}
+// 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// ---------------------------------------------------------------------------------------------------------------------{
+
+plot(gma, "Gaussian Moving Average", bar_index % 4 == 0 ? (Gaussian_plot ? gmaColor : na) : na, 1, plot.style_cross)
+
+plot(smoothed, "Gaussian Moving Average", smoothedColor)
+plot(smoothed, "Gaussian Moving Average", color.new(smoothedColor, 80), 5)
+
+// Draw lines and labels for pivot highs
+if smoothedColor == col_up and ph
+    line_h := line.new(bar_index[rightBars], high[rightBars], bar_index[rightBars], high[rightBars])
+    lbl_h  := label.new(na, high[rightBars], "⬥",color = #00000000, textcolor = col_up, size = size.large)
+
+// Handle crossovers for pivot highs
+if ta.crossover(close, line_h.get_y1())
+    count_dn := 0
+    count_up += 1
+    line_h.set_x2(bar_index),  line_h.set_color(color.new(col_up, 30))
+    lbl_h.set_x(bar_index)
+
+    if not show_count
+        lbl_h.set_style(label.style_label_center)
+    if show_count
+        lbl_h.set_y(high)
+        lbl_h.set_size(size.normal)    
+        lbl_h.set_style(label.style_label_down)
+        lbl_h.set_text(str.tostring(count_up))
+
+    line_h := na    
+
+// Draw lines and labels for pivot lows
+if smoothedColor == col_dn and pl
+    line_l := line.new(bar_index[rightBars], low[rightBars], bar_index[rightBars], low[rightBars])
+    lbl_l  := label.new(na, low[rightBars], "⬥", color = #00000000, textcolor = col_dn, size = size.large)
+
+// Handle crossunders for pivot lows
+if ta.crossunder(close, line_l.get_y1())
+    count_up := 0
+    count_dn += 1
+    line_l.set_x2(bar_index),  line_l.set_color(color.new(col_dn, 30))
+    lbl_l.set_x(bar_index)
+
+    if not show_count
+        lbl_l.set_style(label.style_label_center)
+    if show_count
+        lbl_l.set_y(low)
+        lbl_l.set_size(size.normal)  
+        lbl_l.set_style(label.style_label_up)
+        lbl_l.set_text(str.tostring(count_dn))
+
+    line_l := na
+
+// Trend Change Points
+plotshape(smoothed, "",
+ shape.diamond, 
+ location.absolute, 
+ color  = ta.crossover(smoothed, smoothed[2]) ? col_up : ta.crossunder(smoothed, smoothed[2]) ? col_dn : na, 
+ offset = 0, 
+ size   = size.tiny
+ )
+
+// ---------------------------------------------------------------------------------------------------------------------}

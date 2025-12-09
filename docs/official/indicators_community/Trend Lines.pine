@@ -1,0 +1,59 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+//
+//@version=4
+study("Trend Lines", overlay=true)
+lb = input(30, title="Left Bars", minval=1)
+rb = input(30, title="Right Bars", minval=1)
+showpivot = input(true, title="Show Pivot Points")
+chdashed = input(true, title="Show Old Line as Dashed")
+ucolor = input(defval = color.lime, title = "Uptrend line color")
+dcolor = input(defval = color.red, title = "Downtrend line color")
+
+mb = lb + rb + 1
+
+float top = na
+float bot = na
+top := iff(not na(high[mb]), iff(highestbars(high, mb) == -rb, high[rb], na), na)  // Pivot High
+bot := iff(not na(low[mb]), iff(lowestbars(low, mb) == -rb, low[rb], na), na)  // Pivot Low
+
+plotshape(top and showpivot, text="H",  style=shape.labeldown, color=color.new(color.white, 100), textcolor=color.red, location=location.abovebar, offset = -rb)
+plotshape(bot and showpivot, text="L",  style=shape.labelup, color=color.new(color.white, 100), textcolor=color.lime, location=location.belowbar, offset = -rb)
+
+ltop = valuewhen(top, top, 1)
+bst = 0
+bst := top ? 1 : nz(bst[1]) + 1
+float t_angle = 0.0
+t_angle := t_angle[1]
+if not na(ltop) and not na(top)
+    line tline = na
+    if ltop > top
+        tline := line.new(bar_index - bst[1] - rb, high[bst[1] + rb], bar_index - rb, high[rb], color = dcolor, extend = extend.right)
+        t_angle := (high[bst[1] + rb] - high[rb]) / bst[1]
+        if t_angle < t_angle[1] and t_angle[1] != 0
+            line.set_extend(tline[1], extend = extend.none)
+        if t_angle > t_angle[1] and t_angle[1] != 0
+            line.set_extend(tline, extend = extend.none)
+    if ltop <= top
+        t_angle := 0.0
+    if chdashed
+        line.set_style(tline[1], style = line.style_dashed)
+
+lbot = valuewhen(bot, bot, 1)
+bsb = 0
+bsb := bot ? 1 : nz(bsb[1]) + 1
+float b_angle = 0.0
+b_angle := b_angle[1]
+if not na(lbot) and not na(bot)
+    line bline = na
+    if lbot < bot
+        bline := line.new(bar_index - bsb[1] - rb, low[bsb[1] + rb], bar_index - rb, low[rb], color = ucolor, extend = extend.right)
+        b_angle := (low[bsb[1] + rb] - low[rb]) / bsb[1]
+        if b_angle > b_angle[1] and b_angle[1] != 0
+            line.set_extend(bline[1], extend = extend.none)
+        if b_angle < b_angle[1] and b_angle[1] != 0
+            line.set_extend(bline, extend = extend.none)
+    if lbot >= bot
+        b_angle := 0.0
+    if chdashed
+        line.set_style(bline[1], style = line.style_dashed)

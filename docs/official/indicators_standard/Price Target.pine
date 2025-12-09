@@ -1,0 +1,64 @@
+//@version=6
+indicator("Price Target", overlay = true)
+
+posColorInput = input.color(color.new(#089981, 90), "Positive Color")
+negColorInput = input.color(color.new(#f23645, 90), "Negative Color")
+
+int YearFromNow = syminfo.target_price_date + timeframe.in_seconds("12M") * 1000
+
+changePercentString(value) =>
+    round = (value / close) * 100 - 100
+    (round >= 0 ? "+" : "") + str.tostring(round, format.percent)
+
+deletePastDrawings() =>
+    for _label in label.all
+        _label.delete()
+
+    for _line in line.all
+        _line.delete()
+
+calcColor(price, comparedTo = close, transp = 0) => 
+    color.new(price >= comparedTo ? posColorInput : negColorInput, transp)
+
+drawTarget(price, labelText, currLine) =>
+    priceChange = changePercentString(price)
+    label.new(YearFromNow, price, labelText + " " + priceChange, color = calcColor(price), textcolor = color.white, xloc = xloc.bar_time, style = label.style_label_right)
+    l = line.new(time, close, YearFromNow, price, color = calcColor(price), xloc = xloc.bar_time, style = line.style_dotted)
+    linefill.new(currLine, l, price > close ? posColorInput : negColorInput)
+updateTarget()=>
+    for la in label.all
+        text_ = la.get_text()
+        if str.contains(text_, "Max")
+            la.set_text("Max" + " " + changePercentString(syminfo.target_price_high))
+        else if str.contains(text_, "Avg")
+            la.set_text("Avg" + " " + changePercentString(syminfo.target_price_average))
+        else if str.contains(text_, "Low")
+            la.set_text("Low" + " " + changePercentString(syminfo.target_price_low))  
+var targetShown = false
+var float closeDuringPrediction = na 
+
+if not na(syminfo.target_price_date) and na(syminfo.target_price_date[1])
+    targetShown := true
+    closeDuringPrediction := close
+
+    deletePastDrawings()
+    
+    currLine = line.new(time, close, YearFromNow, close, xloc.bar_time, color = color.blue, style = line.style_dotted)
+    drawTarget(syminfo.target_price_high,    "Max", currLine)
+    drawTarget(syminfo.target_price_average, "Avg", currLine)
+    drawTarget(syminfo.target_price_low,     "Min", currLine)
+
+    nameLabel = label.new(bar_index, close, "⬤", color = color.new(#2962ff, 100), style = label.style_label_center, textcolor = color.new(#2962ff,0),
+      tooltip = str.format("The {0} analysts offering 1 year price forecasts for {1} have a max estimate of {2} and a min estimate of {3}.", 
+      syminfo.target_price_estimates, syminfo.ticker, syminfo.target_price_high, syminfo.target_price_low))
+updateTarget()
+if barstate.islast and not targetShown 
+    t = table.new(position.top_right, 1, 1, chart.fg_color)
+    warningText = "No analyst predictions found."
+    if barstate.isconfirmed    
+        warningText += "\nIf there are any new predictions for this symbol, they should appear once the market opens."
+    t.cell(0, 0, warningText, text_color = chart.bg_color)
+
+plot(syminfo.target_price_high,    "Max", color = calcColor(syminfo.target_price_high,    closeDuringPrediction), display = display.price_scale)
+plot(syminfo.target_price_average, "Avg", color = calcColor(syminfo.target_price_average, closeDuringPrediction), display = display.price_scale)
+plot(syminfo.target_price_low,     "Min", color = calcColor(syminfo.target_price_low,     closeDuringPrediction), display = display.price_scale)

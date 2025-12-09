@@ -1,0 +1,130 @@
+//@version=4
+study("Lucid SAR v1.1.8", shorttitle="Lucid SAR", overlay=true)
+
+// SAR #1
+// Lucid Sar
+// Branded under the name "Lucid SAR"
+// as agreed to with Lucid Investment Strategies LLC on July 9, 2019
+// https://lucidinvestmentstrategies.com/
+
+// SAR #2
+// Peterbolic Sar
+// Using the name "Peterbolic SAR"
+// as agreed to by Peter Brandt on October 2, 2019
+// - https://twitter.com/PeterLBrandt/status/1179365590668075008
+// in response to request from Sawcruhteez
+// - https://twitter.com/Sawcruhteez/status/1179213105705836544
+// Sawcruhteez gives credit to @CrazyGabey for coming up with the name
+// - https://twitter.com/Sawcruhteez/status/1179213196583940097
+
+// SAR #3
+// Sawcruhteez Sar
+// Branded under the name "Sawcruhteez SAR"
+// as agreed to Sawcruhteez on September 11, 2019
+
+// Open Source on github
+// https://github.com/casey-bowman/sar
+
+// Created by Casey Bowman on July 4, 2019
+
+// MIT License
+
+// Copyright (c) 2019 Casey Bowman
+
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+
+AF_initial = input(0.02)
+AF_increment = input(0.02)
+AF_maximum = input(0.2)
+
+LUCID_SAR(initial, increment, maximum) =>
+
+    // start with uptrend
+    uptrend = true
+    new_trend = false
+    EP = high
+    SAR = low
+    AF = AF_initial
+
+    // before a reversal, the reversal_state is 0;
+    // after a reversal, within the same candle as the reversal,
+    // the reversal_state can be 1 (uptrend) or 2 (downtrend)
+    reversal_state = 0
+
+    if not na(uptrend[1]) and not na(new_trend[1])
+        if reversal_state == 0
+            if uptrend[1]
+                EP := max(high, EP[1])
+            else
+                EP := min(low, EP[1])
+            if new_trend[1]
+                AF := AF_initial
+            else
+                if EP != EP[1]
+                    AF := min(AF_maximum, AF[1] + AF_increment)
+                else
+                    AF := AF[1]
+            SAR := SAR[1] + AF * (EP - SAR[1])
+            if uptrend[1]
+                SAR := min(SAR, low[1])
+                if not na(low[2])
+                    SAR := min(SAR, low[2])
+                if SAR > low
+                    uptrend := false
+                    new_trend := true
+                    SAR := max(high, EP[1])
+                    EP := min(low, low[1])
+                    reversal_state := 2
+                else
+                    uptrend := true
+                    new_trend := false
+            else
+                SAR := max(SAR, high[1])
+                if not na(high[2])
+                    SAR := max(SAR, high[2])
+                if SAR < high
+                    uptrend := true
+                    new_trend := true
+                    SAR := min(low, EP[1])
+                    EP := max(high, high[1])
+                    reversal_state := 1
+                else
+                    uptrend := false
+                    new_trend := false
+        else
+            if reversal_state == 1
+                EP := high
+                if low < SAR
+                    SAR := EP
+                    EP := low
+                    reversal_state == 2
+                    uptrend := false
+            else
+                EP := low
+                if high > SAR
+                    SAR := EP
+                    EP := high
+                    reversal_state == 1
+                    uptrend := true
+    SAR
+
+L_SAR = LUCID_SAR(AF_initial, AF_increment, AF_maximum)
+
+plot(L_SAR, color = color.blue, style = plot.style_cross, linewidth = 2)

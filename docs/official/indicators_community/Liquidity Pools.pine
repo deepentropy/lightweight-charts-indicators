@@ -1,0 +1,90 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © FX365_Thailand
+
+//Revision history
+//v100.0 First release
+//v101.0 Added alert conditions for swing high/low creation
+//v107.0 Added alert conditions for liquidity raid
+//v110.0 20240119
+        // Added an option to display liquidity pools
+//v111.0 20251007
+        //Added an option to display the prices of swing highs and lows
+
+
+//@version=5
+indicator('Liquidity Pools', shorttitle='Liquidity Pools(SABAI SABAI FX)', max_lines_count=500,max_labels_count=500,overlay=true)
+    
+
+//Users' input ------
+len_l = input.int(4, 'Left bar&Right bar', minval=1,group="Swing High Low Setting")
+flg_shsl = input.bool(true, 'Show Swing High Swing Low')
+flg_price = input.bool(true, 'Show Price',inline="A")
+i_labelcolor_price = input.color(color.new(#000000, 0),title="",inline="A")
+
+
+
+flg_lq = input.bool(true, 'Show Liquidity Pools',group="Liquidity Pools Settings")
+i_width = input.int(1, 'Line Width', minval=1,maxval=6)
+i_linestyle = input.string(defval=line.style_dotted,options=[line.style_solid,line.style_dashed,line.style_dotted],title="Line Style")
+i_linecolor_bs = input.color(color.new(#ff5252,65),title="Buy Side Liquidity Color")
+i_linecolor_ss = input.color(color.new(#0ef30e,65),title="Sell Side Liquidity Color")
+
+
+h = high
+l = low
+
+
+//Identify swingh high/low -----
+swing_h = barstate.isconfirmed ? ta.pivothigh(h, len_l, len_l) : na
+swing_l = barstate.isconfirmed ? ta.pivotlow(l, len_l, len_l) : na
+
+//Value of Swing High/Swing Low
+LSH = ta.valuewhen(swing_h, high[len_l], 0)
+LSL = ta.valuewhen(swing_l, low[len_l], 0)
+
+plotshape(flg_shsl ? swing_h : na, color=color.new(color.gray, 0), style=shape.labeldown, title='Swing High', text='SH', textcolor=color.new(color.white, 0), location=location.abovebar, offset=-len_l,size=size.auto)
+plotshape(flg_shsl ? swing_l : na, color=color.new(color.gray, 0), style=shape.labelup, title='Swing Low', text='SL', textcolor=color.new(color.white, 0), location=location.belowbar, offset=-len_l,size=size.auto)
+
+//Draw prices
+//Variables
+label lab_LSH = na
+label lab_LSL = na
+
+lab_LSH := (swing_h and flg_price) ? label.new(x=bar_index-len_l, y=high, xloc=xloc.bar_index,yloc=yloc.abovebar, text=str.tostring(LSH),textcolor=i_labelcolor_price,style=label.style_none) : na
+lab_LSL := (swing_l and flg_price) ? label.new(x=bar_index-len_l, y=low, xloc=xloc.bar_index,yloc=yloc.belowbar,text=str.tostring(LSL),textcolor=i_labelcolor_price,style=label.style_none) : na
+
+
+
+//Draw liquidity pools
+//Variables
+var line lin_BSLQ_upper = na
+var line lin_BSLQ_lower = na
+var line lin_SSLQ_upper = na
+var line lin_SSLQ_lower = na
+
+//Threshold 
+thresh = timeframe.isseconds ? 1.0001 :  (timeframe.period == "60" and timeframe.period=="240") ? 3 : (timeframe.isminutes and timeframe.period != "60" and timeframe.period != "240") ? 1.0001 : timeframe.isdaily ? 1.005 : timeframe.isweekly ? 1.01 : timeframe.ismonthly ? 1.01 : 1.001
+thresh_ = timeframe.isseconds ? 0.9999 :  (timeframe.period == "60" and timeframe.period=="240") ? 3 : (timeframe.isminutes and timeframe.period != "60" and timeframe.period != "240") ? 0.9999 : timeframe.isdaily ? 0.995 : timeframe.isweekly ? 0.99 : timeframe.ismonthly ? 0.99 : 0.999
+
+//Lines
+if swing_h
+    lin_BSLQ_lower := flg_lq ? line.new(x1=bar_index-len_l,x2=bar_index, y1=LSH,y2=LSH,color=i_linecolor_bs,style= i_linestyle,width = i_width) : na
+if swing_h
+    lin_BSLQ_upper := flg_lq ? line.new(x1=bar_index-len_l,x2=bar_index, y1=LSH*thresh,y2=LSH*thresh,color=i_linecolor_bs,style= i_linestyle,width = i_width) : na
+if swing_l
+    lin_SSLQ_lower := flg_lq ? line.new(x1=bar_index-len_l,x2=bar_index, y1=LSL*thresh_,y2=LSL*thresh_,color=i_linecolor_ss,style=i_linestyle,width = i_width) : na
+if swing_l
+    lin_SSLQ_upper := flg_lq ? line.new(x1=bar_index-len_l,x2=bar_index, y1=LSL,y2=LSL,color=i_linecolor_ss,style= i_linestyle,width = i_width) : na
+
+//Fill
+linefill.new(lin_BSLQ_upper,lin_BSLQ_lower,color=i_linecolor_bs)
+linefill.new(lin_SSLQ_upper,lin_SSLQ_lower,color=i_linecolor_ss)
+
+//Alert conditions
+//Swing high low creation
+alertcondition(swing_h,message="Swing High Created", title="Swing High")
+alertcondition(swing_l,message="Swing Low Created", title="Swing Low")
+
+//Reach liquidity zone
+alertcondition(ta.crossover(high,LSH),message="Price reached buy side liquidity", title="Buy Side Liquidity Raid")
+alertcondition(ta.crossunder(low,LSL),message="Price reached sell side liquidity", title="Sell Side Liquidity Raid")

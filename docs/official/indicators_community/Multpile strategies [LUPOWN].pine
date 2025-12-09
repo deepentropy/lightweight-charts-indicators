@@ -1,0 +1,728 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Lupown
+
+//@version=4
+study(shorttitle="Multiple strategies [LPWN]", title="Multpile strategies [LUPOWN]", overlay=false)
+//squeeze momoentum by lazy bear
+show_Momen = input(true, title="-----------Show squeeze momentum-------")
+int lengthM = input(20,    title="MOM Length", minval=1, step=1)
+srcM            = input(close, title="MOM Source", type=input.source)
+int length  = input(20,    title="SQZ Length",  minval=1, step=1)
+src = input(close, title="SQZ Source",  type=input.source)
+
+//Momentum
+sz  = linreg(srcM - avg(avg(highest(high, lengthM), lowest(low, lengthM)), sma(close, lengthM)), lengthM, 0)
+
+//Momentum Conditions
+sc1 = sz >= 0
+sc2 = sz < 0
+sc3 = sz >= sz[1]
+sc4 = sz < sz[1]
+
+
+clr = sc1 and sc3 ? #00FF00 : sc1 and sc4 ? #008000 : 
+   sc2 and sc4 ? #FF0000 : sc2 and sc3 ? #800000 : color.gray
+   
+plot(show_Momen ? sz : na, title="Squeeze Momentum", color=clr, style=plot.style_area)
+
+
+
+//SQUEEZE
+
+
+
+lengths = input(20, title="BB Length")
+mult = input(2.0,title="BB MultFactor")
+lengthKC=input(20, title="KC Length")
+multKC = input(1.5, title="KC MultFactor")
+scale    = input(75.0,  title = "General scale")
+useTrueRange = true
+
+
+
+// Calculate BB
+source = close
+basis = sma(source, lengths)
+dev = multKC * stdev(source, lengths)
+upperBB = basis + dev
+lowerBB = basis - dev
+
+// Calculate KC
+ma = sma(source, lengthKC)
+range = useTrueRange ? tr : (high - low)
+rangema = sma(range, lengthKC)
+upperKC = ma + rangema * multKC
+lowerKC = ma - rangema * multKC
+
+sqzOn  = (lowerBB > lowerKC) and (upperBB < upperKC)
+sqzOff = (lowerBB < lowerKC) and (upperBB > upperKC)
+noSqz  = (sqzOn == false) and (sqzOff == false)
+
+scolor = noSqz ? color.blue : sqzOn ? #000000 : color.gray
+//plotshape(show_Momen? true : na, color=scolor, style=shape.xcross)
+plot(show_Momen ? 0 : na, title="Squeeze Zero Line", color=scolor, linewidth=2, style=plot.style_cross, transp=0)
+//plotshape(show_Momen?0:na,style=shape.xcross,color=scolor,location=location.absolute)
+
+
+
+///// ADX
+
+
+
+show_ADX = input(true, title = "------------Show ADX------------")
+scaleADX    = input(2.0,  title = "ADX scale")
+show_di = input(false, title = "    Show +DI -DI")
+show_aa = input(false, "Mostrar punto 23 aparte", inline="adx line")
+far = input(-7, "Separacion", inline="adx line") 
+adxlen   = input(14,    title = "ADX Smoothing")
+dilen    = input(14,    title = "DI Length") 
+keyLevel = input(23,    title = "Key level for ADX")
+show_bg = input (false, title = "Show bg color")
+
+
+dirmov(len) =>
+	up = change(high)
+	down = -change(low)
+	truerange = rma(tr, len)
+	plus = fixnan(100 * rma(up > down and up > 0 ? up : 0, len) / truerange)
+	minus = fixnan(100 * rma(down > up and down > 0 ? down : 0, len) / truerange)
+	[plus, minus]
+
+adx(dilen, adxlen) => 
+	[plus, minus] = dirmov(dilen)
+	sum = plus + minus
+	adx = 100 * rma(abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen)
+	[adx, plus, minus]
+
+[adxValue, diplus, diminus] = adx(dilen, adxlen)
+
+///////////////////////////////////////////////////////////////
+
+//[diplus, diminus, adxValue] = dmi(dilen, adxlen)
+
+biggest(series) =>
+    max = 0.0
+    max := nz(max[1], series)
+    if series > max
+        max := series
+    max
+
+// Calculate ADX Scale
+ni = biggest(sz)
+far1=far* ni/scale
+adx_scale = (adxValue - keyLevel) * ni/scale
+
+adx_scale2 = (adxValue - keyLevel+far) * ni/scale
+
+
+
+dip= (diplus - keyLevel) * ni/scale
+dim= (diminus - keyLevel) * ni/scale
+plot (show_di ? dip * scaleADX :na, color=color.green, title="DI+")
+plot (show_di ? dim * scaleADX :na, color=color.red, title="DI-")
+
+color_ADX  = adxValue > adxValue[1] ? #ffffff : #a09a9a
+
+bgcolor(adxValue > adxValue[1] and adxValue > 23 and show_Momen and show_bg? clr : na, transp=95)
+
+
+
+
+
+
+/////////////////WHALE BY BLACKCAT1404
+
+show_whale = input(false,title = "Show Whale detector")
+
+
+//functions
+xrf(values, length) =>
+    r_val = float(na)
+    if length >= 1
+        for i = 0 to length by 1
+            if na(r_val) or not na(values[i])
+                r_val  :=  values[i]
+                r_val
+    r_val
+
+xsa(src,len,wei) =>
+    sumf = 0.0
+    ma = 0.0
+    out = 0.0
+    sumf  :=  nz(sumf[1]) - nz(src[len]) + src
+    ma  :=  na(src[len]) ? na : sumf/len
+    out  :=  na(out[1]) ? ma : (src*wei+out[1]*(len-wei))/len
+    out
+
+//trend follower algorithm
+var2 = xrf(low,1)
+var3 = xsa(abs(low-var2),3,1)/xsa(max(low-var2,0),3,1)*100
+var4 = ema(iff(close*1.2,var3*10,var3/10),3)
+var5 = lowest(low,30)
+var6 = highest(var4,30)
+var7 = iff(lowest(low,58),1,0)
+var8 = ema(iff(low<=var5,(var4+var6*2)/2,0),3)/618*var7
+
+
+//whale pump detector
+//plotcandle(0,var8 * (ni/scale) ,0,var8* (ni/scale),color= var8 > 0 and show_whale ?color.yellow:na)
+
+plot(show_whale? var8 * (ni/scale) : na, title = "whale" , style = plot.style_columns,color=color.yellow, transp=80)
+
+
+
+
+
+
+///////////////////
+
+
+
+
+//RSI
+show_rsi = input(true, title="------------Show RSI---------")
+show_RSIfondo=input(true, title="Show RSI background")
+rsiApart = input(0,title="RSI separation")
+len = input(14, minval=1, title="Length RSI ")
+upperR = input (70,title="Upper band")
+middleR = input (50,title="Middle band")
+lowerR = input(30,title="Lower band")
+rsi = rsi(src, len)
+rsiColor = rsi <= lowerR ? color.green : rsi >= upperR ? color.red : #da00ff
+rsi_scale=(rsi+rsiApart)* ni/scale
+
+
+b1s=(rsiApart+upperR) * ni/scale
+bm= (rsiApart+middleR) * ni/scale
+b0s=(rsiApart+lowerR) * ni/scale
+
+
+
+/////otro RSI DIVERGENCE
+show_rsi2 = input (true,title = "Show RSI DIVERGENCE")
+farRSI = input(70,title = "Adjust RSI DIVERGENCE")
+src_fast = close, len_fast = input(5, minval=1, title="Length Fast RSI")
+src_slow = close, len_slow = input(14,minval=1, title="Length Slow RSI")
+up_fast = rma(max(change(src_fast), 0), len_fast)
+down_fast = rma(-min(change(src_fast), 0), len_fast)
+rsi_fast = down_fast == 0 ? 100 : up_fast == 0 ? 0 : 100 - (100 / (1 + up_fast / down_fast))
+up_slow = rma(max(change(src_slow), 0), len_slow)
+down_slow = rma(-min(change(src_slow), 0), len_slow)
+rsi_slow = down_slow == 0 ? 100 : up_slow == 0 ? 0 : 100 - (100 / (1 + up_slow / down_slow))
+//plotfast = plot(rsi_fast, color=blue)
+//plotslow = plot(rsi_slow, color=orange)
+divergence = rsi_fast - rsi_slow
+//plotdiv = plot(divergence, color = divergence > 0 ? color.lime:color.red, linewidth = 2)
+divergence_scale = divergence * (ni/scale)
+rsiColor2 = divergence > 0 ? color.lime:color.red
+plot(show_rsi ? rsi_scale : show_rsi2 ? divergence_scale + (farRSI * ni/scale) : na, "RSI", color=show_rsi ? rsiColor : show_rsi2 ? rsiColor2 :na)
+//////
+
+/////////
+/////// estocastico
+
+show_stoch=input(false,title="-------Show Stochastic------")
+
+
+periodK = input(14, title="%K Length", minval=1)
+smoothK = input(1, title="%K Smoothing", minval=1)
+periodD = input(3, title="%D Smoothing", minval=1)
+k = sma(stoch(close, high, low, periodK), smoothK)
+d = sma(k, periodD)
+
+k1=k* ni/scale
+d1=d* ni/scale
+plot(show_stoch?k1:na, title="%K", color=#2962FF)
+plot(show_stoch?d1:na, title="%D", color=#FF6D00)
+upS=input(80,title = "Upper band")
+lowS=input(20,title = "Lower band")
+
+h1s=upS * ni/scale
+h0s=lowS * ni/scale
+//plot(show_stoch? h1s : na,color=bar_index % 2 == 0 ? color.white : #00000000,transp=60)
+//plot(show_stoch? h0s : na,color=bar_index % 2 == 0 ? color.white : #00000000,transp=60)
+
+//band1 = plot(show_rsi? b1s : show_stoch? h1s: na,color=bar_index % 2 == 0 ? color.white : #00000000,transp=60)
+//bandm = plot(show_rsi? bm : na,color=bar_index % 2 == 0 ? color.white : #00000000,transp=70)
+//band0 = plot(show_rsi? b0s : show_stoch ? h0s: na,color=bar_index % 2 == 0 ? color.white : #00000000,transp=60)
+
+
+///////
+
+
+
+/////////////////AWESOME
+show_ao = input(false, title="-----------Show AO-------")
+show_aoF = input(true, title = "Show ao away 0 point")
+farAO = input(-30 , title =  "Away from 0 point")
+
+fastLength = input(5,title="Fast Length")
+slowLength = input(34,title="Slow Length")
+
+
+ao = sma(hl2, fastLength) - sma(hl2, slowLength)
+//nia = biggest(aoN)
+//ao = aoN*nia/scale
+
+
+ao_f = ao + (farAO * ni /scale)
+
+
+aoColor = ao >= 0 ? (ao[1] < ao ? #26A69A : #B2DFDB) : (ao[1] < ao ? #FFCDD2 : #EF5350)
+
+
+aoPlot = plot(show_aoF and show_ao ? ao_f : show_ao ? ao : na, title="AO", style= show_aoF ? plot.style_line : show_ao ? plot.style_area: plot.style_area , color=aoColor, transp=0) //
+
+
+bandA = plot(show_aoF and show_ao ? farAO * ni /scale : na, color=color.white,transp=60)
+
+
+fill(aoPlot,bandA, color= show_aoF and show_ao ? aoColor : na,transp=90,title="AO Fill")
+
+/////////////////////
+
+
+////////////////////////////////////
+///////MACD
+/////////////////////////////
+show_macd = input(false, title="-----------Show MACD-------")
+show_macdF = input (true, title = "Show MACD area away 0 point")
+show_macdLF = input(true, title = "Show MACD lines away 0 point")
+macdF = input(-30 , title = "Away 0 point")
+show_macdL= input(false, title="Show MACD lines")
+fast_length = input(title="Fast Length", type=input.integer, defval=12)
+slow_length = input(title="Slow Length", type=input.integer, defval=26)
+//src = input(title="Source", type=input.source, defval=close)
+signal_length = input(title="Signal Smoothing", type=input.integer, minval = 1, maxval = 50, defval = 9)
+sma_source = input(title="Oscillator MA Type", type=input.string, defval="EMA", options=["SMA", "EMA"])
+sma_signal = input(title="Signal Line MA Type", type=input.string, defval="EMA", options=["SMA", "EMA"])
+macdScale = input(2,title="MACD scale")
+
+
+//calculating
+fast_ma = sma_source == "SMA" ? sma(src, fast_length) : ema(src, fast_length)
+slow_ma = sma_source == "SMA" ? sma(src, slow_length) : ema(src, slow_length)
+macd1 = fast_ma - slow_ma
+signal = sma_signal == "SMA" ? sma(macd1, signal_length) : ema(macd1, signal_length)
+hist = (macd1 - signal)
+//color
+macdColor = hist >= 0 ? (hist[1] < hist ? #26A69A : #B2DFDB) : (hist[1] < hist ? #FFCDD2 : #EF5350)
+histo = hist * macdScale
+macd=macd1*macdScale
+sign = signal * macdScale
+
+histo_f = histo + (macdF * ni /scale)
+
+colorlineMACD = macd > sign ? color.green : color.red
+
+histoA = plot(show_macdF and show_macd ? histo_f : show_macd ? histo : na, title="Histogram", style=show_macdF and show_macd ? plot.style_line : show_macd ? plot.style_columns : plot.style_columns , color=macdColor)
+plot(show_macdLF and show_macdL ?  macd + (macdF * ni /scale)  : show_macdL ?  macd  : na, title="MACD", color=colorlineMACD)
+plot(show_macdLF and show_macdL ? sign + (macdF * ni /scale) : show_macdL ?  sign  : na, title="Signal", color=color.orange)
+
+band_macd = plot(show_macdF and show_macd ? macdF * ni /scale : na, color=color.white,transp=60)
+
+fill(histoA,band_macd, color= show_macdF and show_macd ? macdColor : na,transp=90,title="MACD Fill")
+////////////////////////////////////////
+//////////////////////END MACD
+/////////////////////////////////
+
+////////////////////////////////////////
+////////////////////// KONOCORDE "Koncorde Inversiones en el Mundo by lkdml all the credits for them
+/////////////////////////////////
+show_K = input(false, title = "---------------Show Koncorde-------------")
+scaleK= input(8,title = "Koncorde scale")
+showKF = input(true, title = "Show Koncorde away 0 point")
+fark= input (-30 , title = "Away from 0 point")
+show_KD = input(false, title = "Show Koncorde Diamond")
+kon_pos =  input (30, title = "Position diamonds Bull")
+kon_posn = input (-30, title = "Position diamonds Bear")
+srcTprice = input(ohlc4, title="Fuente para Precio Total")
+srcMfi = input(hlc3, title="Fuente MFI", group="Money Flow Index")
+tprice=srcTprice
+
+//lengthEMA = input(255, minval=1)
+
+
+m=input(15, title="Media Exponencial")
+longitudPVI=input(90, title="Longitud PVI")
+longitudNVI=input(90, title="Longitud NVI")
+longitudMFI=input(14, title="Longitud MFI")
+multK=input(2.0, title="Multiplicador para derivacion estandar" , group="Bollinger Oscillator")
+boLength=input(25, title="Calculation length ", group="Bollinger Oscillator" )
+
+pvim = ema(pvi, m)
+pvimax = highest(pvim, longitudPVI)
+pvimin = lowest(pvim, longitudPVI)
+oscp = (pvi - pvim) * 100/ (pvimax - pvimin)
+
+nvim = ema(nvi, m)
+nvimax = highest(nvim, longitudNVI)
+nvimin = lowest(nvim, longitudNVI)
+azul =( (nvi - nvim) * 100/ (nvimax - nvimin) )
+
+xmf = mfi(srcMfi, longitudMFI)
+        
+// Bands Calculation
+basisK = sma(tprice, boLength) //Find the 20-day moving average average (n1 + n2 ... + n20)/20
+devK = mult * stdev(tprice, boLength) //Find the standard deviation of the 20-days
+upper = basisK + devK //Upper Band = 20-day Moving Average + (2 x standard deviation of the 20-days)
+lower = basisK - devK //Lower Band = 20-day Moving Average - (2 x standard deviation of the 20-days)
+OB1 = (upper + lower) / 2.0
+OB2 = upper - lower
+
+BollOsc = ((tprice - OB1) / OB2 ) * 100 // percent b
+xrsi = rsi(tprice, 14)
+
+calc_stoch(src, length,smoothFastD ) =>
+    ll = lowest(low, length)
+    hh = highest(high, length)
+    k = 100 * (src - ll) / (hh - ll)
+    sma(k, smoothFastD)
+
+stoc = calc_stoch(tprice, 21, 3)
+marron =( (xrsi + xmf + BollOsc + (stoc / 3))/2 )
+verde = (marron + oscp) 
+media = ema(marron,m) 
+bandacero= showKF ? fark*ni/scale : 0
+scaleK1 = (ni/scale)/scaleK
+
+//vl=plot(show_K ?  verde *scaleK1: na, color=#66FF66, style=plot.style_area, title="verde")// COLOURED(102,255,102) as “verde” , GREEN
+//ml=plot(show_K ?  marron *scaleK1: na, color= #FFCC99, style=plot.style_area, title="marron", transp=0) // COLOURED(255,204,153) as"marron" , BEIGE
+//al=plot(show_K ?  azul *scaleK1: na, color=#126bd6, style=plot.style_area, title="azul") // COLOURED(0,255,255) as “azul” ,
+
+lk1 = plot(show_K and showKF ?  (marron *scaleK1) + (fark * ni /scale) : show_K ?  marron *scaleK1: na, color= #330000, style=plot.style_line, linewidth=3, title="lmarron") // COLOURED(51,0,0) as “lmarron” ,
+lk2 = plot(show_K and showKF ?  (verde *scaleK1) + (fark * ni /scale) : show_K ?  verde *scaleK1: na, color=#006600, style=plot.style_line, linewidth=3, title="lineav") // COLOURED(0,102,0) as “lineav” ,
+lk3 = plot(show_K and showKF ?  (azul *scaleK1) + (fark * ni /scale): show_K ?  azul *scaleK1: na, color=#000066, style=plot.style_line, title="lazul" ) // COLOURED(0,0,102) as “lazul” ,
+plot(show_K and showKF ? (media *scaleK1) + (fark * ni /scale) : show_K ?  media *scaleK1: na, color=color.red, title="media", style=plot.style_line, linewidth=2) // COLOURED(255,0,0) as “media” ,
+band0k = plot(show_K ? bandacero : na , color=color.black, title="cero")
+
+fill(lk2,band0k,color = show_K ? #66FF66 : na , title = "verde", transp = 50)
+fill(lk1,band0k,color = show_K ? #FFCC99 : na , title = "marron", transp = 50)
+fill(lk3,band0k,color = show_K ? #00FFFF : na , title = "azul", transp = 50)
+
+
+konBull = crossover(marron,media) and show_KD
+konBear = crossunder(marron,media) and show_KD
+
+konlBull=kon_pos * ni/scale
+konlBear=kon_posn * ni/scale
+plotchar(konBull  ? konlBull : konBear ? konlBear : na, title = 'Koncorde diamond', char='◆', color = konBull ? color.lime : konBear ? color.maroon : color.white, location = location.absolute, size = size.tiny, transp = 0)
+    
+
+
+////////////////////////////////////////
+////////////////////// END KONCORDE
+/////////////////////////////////
+
+
+////////////////////////////////////////
+////////////////////// CCI
+/////////////////////////////////
+show_cci = input(false, title="------------Show CCI---------")
+cci_len = input(14, "CCI length")
+cci_src = input(close, "CCI source")
+upperCCI = input(100, "CCI Upper band")
+lowerCCI = input(-100, "CCI lower band")
+
+b1cci = (upperCCI * ni/scale)*30/100
+b0cci = (lowerCCI * ni/scale) *30/100
+cci = cci(cci_src, cci_len)
+
+
+cci_scale = (30) * ((cci) * ni/scale) / 100
+//cci_scale=((cci * ni/scale)/scale) *scale_cci
+//(cci / (ni * scale) ) + (50*ni/scale)
+//cci_color = c1 ? #F8B856 : c2 ? #F6AD3C : c3 ? #F5A21B : #F39800
+plot(show_cci ? cci_scale : na, color=color.blue, transp=0, linewidth=2, title="CCI")
+
+////////////////////////////////////////
+////////////////////// END CCI
+/////////////////////////////////
+
+///////////////////
+////////
+////////////////////
+colorcm = show_cci ? color.blue : color.white
+band1 = plot(show_rsi? b1s : show_stoch? h1s : na,color=bar_index % 2 == 0 ? color.white : #00000000,transp=60)
+band0 = plot(show_rsi? b0s : show_stoch ? h0s: show_cci ? b0cci : na,color=bar_index % 2 == 0 ? color.white : #00000000,transp=60)
+bandm = plot(show_cci ? b1cci : show_rsi? bm : show_rsi2 ? (farRSI * ni/scale): na,color=bar_index % 2 == 0 ? colorcm : #00000000,transp=70)
+band00 = plot(show_cci? b0cci : na, color=bar_index % 2 == 0 ? color.blue : #00000000,transp=60)
+fill(band1,band0, color= show_rsi and show_RSIfondo? color.purple : na,transp=90,title="RSI background")
+//////////////
+////////
+
+
+
+
+
+
+/////////////////////\/
+/////////////MFI i got the code fo=rom the CIPHER indicator by vumanchu 
+//////////////////////
+
+
+rsiMFIShow = input(true, title = '----------Show MFI---------', type = input.bool)
+rsiMFIperiod = input(60,title = 'MFI Period', type = input.integer)
+rsiMFIMultiplier = input(150, title = 'MFI Area multiplier', type = input.float)
+rsiMFIPosY = input(2.5, title = 'MFI Area Y Pos', type = input.float)
+
+
+// RSI+MFI
+f_rsimfi(_period, _multiplier, _tf) => security(syminfo.tickerid, _tf, sma(((close - open) / (high - low)) * _multiplier, _period) - rsiMFIPosY)
+
+rsiMFI = f_rsimfi(rsiMFIperiod, rsiMFIMultiplier, timeframe.period)
+rsiMFIColor1 = #ffffff
+rsiMFIColor2 = #d1d4dc
+
+rsiMFIColor = rsiMFI >= 0 ? rsiMFIColor1: rsiMFI < 0 ? rsiMFIColor2 : na
+rsiMFIplot = plot(rsiMFIShow ? rsiMFI * ni/scale: na, title = 'RSI+MFI Area', color =rsiMFIColor , transp = 80,style=plot.style_area)
+
+
+/////////////////////
+/////////
+//////////////////////
+
+//WT the cipher dots use a indicator by lazy bear
+show_cphr = input(true,title = "------------Show Cipher dots---------")
+n1       = input(9,  title = "Channel Length")
+n2       = input(12, title = "Average Length")
+smooth   = input(3,  title = "Smooth Factor")
+
+	//wt
+CALC(n1, n2, smooth) =>
+	ap  = hlc3 
+	esa = ema(ap, n1)
+	dw  = ema(abs(ap - esa), n1)
+	ci  = (ap - esa) / (0.015 * dw)
+	tci = ema(ci, n2)
+ 
+	wt1 = tci
+	wt2 = sma(wt1,smooth)
+	wave = wt1 - wt2
+	wavecolor = wave >=0? color.lime : color.red
+	[wave, wavecolor]
+
+    //CIPHERR
+[wave, wavecolor] = CALC(n1, n2, smooth)
+
+middle = 0
+condWt = cross(wave,middle) ? true : na
+wtjeje= show_Momen ? sz : show_ao ? ao : show_macd ? macd : na
+plot(condWt and show_cphr ? wtjeje : na, title = 'Buy and sell circle', color = wavecolor, style = plot.style_circles, linewidth = 3, transp = 15)
+
+/////plot ADX
+
+plot(show_aa ? far1 *scaleADX : na,color=color.white, title="Punto 23")
+p1 = plot(show_aa ? adx_scale2 * scaleADX : show_ADX ? adx_scale * scaleADX : na, color = color_ADX, title = "ADX", linewidth = 2)
+
+///
+///////////////
+// ESTADOOO
+show_status = input(true, title = "------Show STATUS----------")
+dist= input(10,title="Distancia del monitor")
+dashColor = input(color.new(#696969, 90), "label Color", inline="Dash Line")
+dashTextColor = input(color.new(#ffffff, 0), "Text Color", inline="Dash Line")
+
+
+if(adxValue > adxValue[1] and adxValue > 23)
+    iadx='ADX con pendiente positiva por encima punto 23'
+if(adxValue > adxValue[1] and adxValue < 23)
+    iadx='ADX con pendiente positiva por debajo punto 23'
+if(adxValue < adxValue[1] and adxValue < 23)
+    iadx='ADX con pendiente negativa por debajo punto 23'
+if(adxValue < adxValue[1] and adxValue > 23)
+    iadx='ADX con pendiente negativa por encima punto 23'
+
+
+
+
+a1=adxValue >= 23
+a2=adxValue < 23
+a3=adxValue >= adxValue[1]
+a4=adxValue < adxValue[1]
+
+
+iAdx = a1 and a3 ? 'Pendiente positiva ↑ 23' : a1 and a4 ? 'Pendiente negativa ↑ 23' : 
+   a2 and a4 ? 'Pendiente negativa ↓ 23' : a2 and a3 ? 'Pendiente positiva ↓ 23' : '-'
+   
+   
+iMom = sc1 and sc3 ? 'Direccionalidad alcista' : sc1 and sc4 ? 'Direccionalidad bajista' : 
+   sc2 and sc4 ? 'Direccionalidad bajista' : sc2 and sc3 ? 'Direccinalidad alcista' : '-'
+   
+igral = a1 and a3 and sc1 and sc3 ? 'Fuerte movimiento alcista' : a1 and a3 and sc1 and sc4 ?  'Monitor muestra rango-caida pero\nel movimiento tiene fuerza':
+ a1 and a3 and sc2 and sc4 ? 'Fuerte movimiento bajista' : a1 and a3 and sc2 and sc3 ?  'Monitor muestra rango-subida pero\nel movimiento tiene fuerza':
+ a1 and a4 and sc1 and sc3 ? 'Movimiento alcista sin fuerza' : a1 and a4 and sc1 and sc4 ?  'Monitor muestra rango-caida\n pendiente negativa en ADX ':
+ a1 and a4 and sc2 and sc4 ? 'Movimiento bajista sin fuerza' : a1 and a4 and sc2 and sc3 ?  'Monitor muestra rango-subida con \npendiente negativa en ADX ':
+ a2 and a4 and sc1 and sc3 ? 'Movimiento alcista sin fuerza' :  a2 and a4 and sc1 and sc4 ?  'Monitor muestra rango-caida sin fuerza ':
+ a2 and a4 and sc2 and sc4 ? 'Movimiento bajista sin fuerza' :  a2 and a4 and sc2 and sc3 ?  'Monitor muestra rango-subida sin fuerza ':
+ a2 and a3 and sc1 and sc3 ? 'Movimiento alcista que \n quiere agarrar fuerza' : a2 and a3 and sc1 and sc4 ?  'Monitor muestra rango-caida,\n el movimiento quiere agarrar fuerza':
+ a2 and a3 and sc2 and sc4 ? 'Movimiento bajista que \n quiere agarrar fuerza' : a2 and a3 and sc2 and sc3 ?  'Monitor muestra rango-subida,\n el movimiento quiere agarrar fuerza': '-'
+
+
+s='\n'
+scr_label='Info ADX: '+iAdx+s+'Info monitor: '+iMom+s+'Info general:'+s+igral
+// Plot Label on the chart
+// Plot Label on the chart
+
+if show_status
+
+    lab_l = label.new(
+              bar_index + dist, 0, '\t Estatus segun estrategia\n\t' + scr_label, 
+              color     = dashColor, 
+              textcolor = dashTextColor, 
+              style     = label.style_label_left,
+              yloc      = yloc.price)
+    label.delete(lab_l[1])
+
+// Send alert only if screener is not empty
+if (scr_label != '')
+    alert('Estatus segun estrategia\n' + scr_label, freq = alert.freq_once_per_bar_close )
+
+
+
+
+//////////////////////////////////
+
+
+//DIVERGENCIAS BUENNNNNNNAS
+show_div=input(true,title="------Divergencias--------")
+lbR = input(title="Pivot Lookback Right", defval=1)
+lbL = input(title="Pivot Lookback Left", defval=1)
+rangeUpper = input(title="Max of Lookback Range", defval=60)
+rangeLower = input(title="Min of Lookback Range", defval=1)
+plotBull = input(title="Plot Bullish", defval=true)
+plotHiddenBull = input(title="Plot Hidden Bullish", defval=true)
+plotBear = input(title="Plot Bearish", defval=true)
+plotHiddenBear = input(title="Plot Hidden Bearish", defval=true)
+
+
+bearColor = #ff0000
+bullColor = #1bff00 
+hiddenBullColor =  #a4ff99 
+hiddenBearColor = #ff9e9e
+textColor = color.white
+noneColor = color.new(color.white, 100)
+
+//FUNCTIONS
+plFound(osc) => na(pivotlow(osc, lbL, lbR)) ? false : true
+phFound(osc) => na(pivothigh(osc, lbL, lbR)) ? false : true
+
+_inRange(cond) =>
+    bars = barssince(cond == true)
+    rangeLower <= bars and bars <= rangeUpper
+    
+    
+_findDivRB(osc)=>
+    // Osc: Higher Low
+    oscHL = osc[lbR] > valuewhen(plFound(osc), osc[lbR], 1) and _inRange(plFound(osc)[1])
+
+    // Price: Lower Low
+    priceLL = low[lbR] < valuewhen(plFound(osc), low[lbR], 1)
+
+    bullCond = plotBull and priceLL and oscHL and plFound(osc)
+
+
+    //------------------------------------------------------------------------------
+    // Hidden Bullish
+
+    // Osc: Lower Low
+    oscLL = osc[lbR] < valuewhen(plFound(osc), osc[lbR], 1) and _inRange(plFound(osc)[1])
+
+    // Price: Higher Low
+    priceHL = low[lbR] > valuewhen(plFound(osc), low[lbR], 1)
+
+    hiddenBullCond = plotHiddenBull and priceHL and oscLL and plFound(osc)
+
+
+
+    //------------------------------------------------------------------------------
+    // Regular Bearish
+
+    // Osc: Lower High
+    oscLH = osc[lbR] < valuewhen(phFound(osc), osc[lbR], 1) and _inRange(phFound(osc)[1])
+
+    // Price: Higher High
+    priceHH = high[lbR] > valuewhen(phFound(osc), high[lbR], 1)
+
+    bearCond = plotBear and priceHH and oscLH and phFound(osc)
+
+
+
+    //------------------------------------------------------------------------------
+    // Hidden Bearish
+
+    // Osc: Higher High
+    oscHH = osc[lbR] > valuewhen(phFound(osc), osc[lbR], 1) and _inRange(phFound(osc)[1])
+
+    // Price: Lower High
+    priceLH = high[lbR] < valuewhen(phFound(osc), high[lbR], 1)
+
+    hiddenBearCond = plotHiddenBear and priceLH and oscHH and phFound(osc)
+    
+    [bullCond,hiddenBullCond,bearCond,hiddenBearCond]
+    
+
+
+
+[sz_bullCond,sz_hiddenBullCond,sz_bearCond,sz_hiddenBearCond]=_findDivRB(sz)
+
+
+foundDivBSZ = plFound(sz) and show_Momen and show_div ? true : false 
+colordivBSZ = sz_bullCond ? bullColor : sz_hiddenBullCond ? hiddenBullColor : noneColor
+foundDivBeSZ = phFound(sz)  and show_Momen and show_div ? true : false
+colordivBeSZ = sz_bearCond ? bearColor : sz_hiddenBearCond ? hiddenBearColor : noneColor
+
+
+
+plot(
+	 foundDivBSZ ? sz[lbR] : na,
+	 offset=-lbR,
+	 title="Regular Bullish",
+	 linewidth=1,
+	 color=colordivBSZ,
+	 transp=0
+	 )
+plot(
+	 foundDivBeSZ ? sz[lbR] : na,
+	 offset=-lbR,
+	 title="Regular Bullish",
+	 linewidth=1,
+	 color=colordivBeSZ,
+	 transp=0
+	 )
+
+
+
+
+
+
+////////////////////RSI DIV//////////////////
+
+
+[rsi_bullCond,rsi_hiddenBullCond,rsi_bearCond,rsi_hiddenBearCond]=_findDivRB(rsi_scale)
+
+
+foundDivBRSI = plFound(rsi_scale) and show_rsi and show_div ? true : false 
+colordivBRSI = rsi_bullCond ? bullColor : rsi_hiddenBullCond ? hiddenBullColor : noneColor
+foundDivBeRSI = phFound(rsi_scale)  and show_rsi and show_div ? true : false
+colordivBeRSI = rsi_bearCond ? bearColor : rsi_hiddenBearCond ? hiddenBearColor : noneColor
+
+
+
+plot(
+	 foundDivBRSI ? rsi_scale[lbR] : na,
+	 offset=-lbR,
+	 title="Regular Bullish",
+	 linewidth=1,
+	 color=colordivBRSI,
+	 transp=0
+	 )
+plot(
+	 foundDivBeRSI ? rsi_scale[lbR] : na,
+	 offset=-lbR,
+	 title="Regular Bullish",
+	 linewidth=1,
+	 color=colordivBeRSI,
+	 transp=0
+	 )
+	 

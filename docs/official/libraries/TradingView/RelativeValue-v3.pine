@@ -1,0 +1,185 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TradingView
+
+// @version=6
+library("RelativeValue")
+
+// RelativeValue Library
+// v3, 2024.11.26
+
+// This code was written using the recommendations from the Pine Script™ User Manual's Style Guide:
+//   https://www.tradingview.com/pine-script-docs/en/v5/writing/Style_guide.html
+
+
+
+//#region ———————————————————— Library functions
+
+
+// @type                    A structure that contains collected values and corresponding timestamps within a period.
+// @field data              An array containing the values collected since the `startTime` of the period.
+// @field times             An array containing the timestamps corresponding to each value entry in the `data` array.
+// @field startTime         The starting time of the period for time offset calculations.
+type collectedData
+	array<float> data
+	array<int>   times
+	int          startTime
+
+
+
+// @function                Adds a `value` to the `id` array, and removes its first value if the array's size exceeds
+//                          the specified `maxSize`. Can be used as either a method or a function.
+// @param id                (array<collectedData>) An array of `collectedData` objects.
+// @param maxSize           (simple int) The maximum size of the `id` array.
+// @param value             (series collectedData) The value of the element added to the end of the `id` array.
+// @returns                 (void) Function has no explicit return value.
+method maintainArray(array<collectedData> id, simple int maxSize, series collectedData value) =>
+    id.push(value)
+    if id.size() > maxSize
+        id.shift()
+
+
+// @function                Calculates the average of all elements in the `data` field of every `collectedData` object
+//                          in the `id` array that correspond to the time offset closest to the specified `timeOffset`.
+//                          If the current index exceeds the last index of any past period, it uses the last available
+//                          value from that past period instead. Can be used as either a method or a function.
+// @param id                (array<collectedData>) An array of `collectedData` objects that reference the values from
+//                          all necessary periods.
+// @param timeOffset        (series int) The target difference between values in the `times` array from each
+//                          `collectedData` object and the object's `startTime`.
+// @returns                 (float) The average `data` value from each `collectedData` instance corresponding to
+//                          time differences closest to the `timeOffset`.
+method calcAverageByTime(array<collectedData> id, series int timeOffset) =>
+	float sum = 0.0
+	for eachItem in id
+		int   startTime = eachItem.startTime
+		int   index     = eachItem.times.binary_search_leftmost(startTime + timeOffset)
+		float adjData   = eachItem.data.size() - 1 >= index ? eachItem.data.get(index) : eachItem.data.last()
+		sum += adjData
+	float result = sum / id.size()
+
+
+// @function           		Calculates the cumulative sum of the `source` since the last bar where `anchor` was `true`.
+// @param source        	(series float) Source used for the calculation.
+// @param anchor        	(series bool) The condition that triggers the reset of the calculation. The calculation
+//                          resets when `anchor` is `true`, and continues accumulating values since the previous reset
+//                          when `anchor` is `false`.
+// @param adjustRealtime    (simple bool) If `true`, estimates the cumulative value on unclosed bars based on the
+//                          data since the last `anchor` condition. Optional. The default is `false`.
+// @returns             	(float) The cumulative sum of the `source`.
+export calcCumulativeSeries(series float source, series bool anchor, simple bool adjustRealtime = false) =>
+    var float sum = 0.0
+	var int lastAnchor = na
+    if anchor
+        sum := 0.0
+		lastAnchor := time
+    sum += source
+	if adjustRealtime and not barstate.isconfirmed
+		int    timePassed   = math.min(timenow, time_close) - lastAnchor
+		int    timeTotal    = time_close - lastAnchor
+		float  currentRatio = sum / timePassed
+		sum := currentRatio * timeTotal
+    float result = sum
+
+
+// @function                (Overload 1 of 2) Calculates the average `source` value over `length` periods, where the
+//                          values in the average are from each bar whose time offset from the start of its respective
+//                          period is closest to that of the current bar in the most recent period.
+// @param source            (series float) Source used for the calculation.
+// @param length            (simple int) The number of periods to use for the historical average calculation.
+// @param anchor            (series bool) The condition that triggers the onset of a new period. A new period starts
+//                          when `anchor` is `true`.
+// @param isCumulative      (simple bool) If `true`, calculates the average of cumulative `source` values in each
+//                          period at the current time offset. Optional. The default is `true`.
+// @returns        		    (float) The historical average of the `source` series at the current time offset.
+export averageAtTime(
+     series float source, simple int length, series bool anchor, simple bool isCumulative = true
+ ) =>
+	var array<collectedData> historicalData = array.new<collectedData>()
+	var collectedData newData = collectedData.new(array.new<float>(), array.new<int>())
+    float src = isCumulative ? calcCumulativeSeries(source, anchor) : source
+	if anchor
+		historicalData.maintainArray(length, newData)
+		newData := collectedData.new(array.new<float>(), array.new<int>(), time)
+	newData.times.push(time)
+	newData.data.push(src)
+	float result = calcAverageByTime(historicalData, time - newData.startTime)
+
+
+// @function                (Overload 2 of 2) Calculates the average `source` value over `length` periods, where the
+//                          values in the average are from each bar whose time offset from the start of its respective
+//                          period is closest to that of the current bar in the most recent period.
+// @param source            (series float) Source used for the calculation.
+// @param length            (simple int) The number of periods to use for the historical average calculation.
+// @param timeframe         (series string) Specifies the size of each period in the average calculation. A new period
+//						    begins when a new bar opens on the specified timeframe.
+// @param isCumulative      (simple bool) If `true`, calculates the average of cumulative `source` values in each
+//                          period at the current time offset. Optional. The default is `true`.
+// @returns        		    (float) The historical average of the `source` series at the current time offset.
+export averageAtTime(
+     series float source, simple int length, simple string timeframe, simple bool isCumulative = true
+ ) =>
+	var array<collectedData> historicalData = array.new<collectedData>()
+	var collectedData newData = collectedData.new(array.new<float>(), array.new<int>(), time(timeframe))
+	bool anchor = timeframe.change(timeframe)
+    float src = isCumulative ? calcCumulativeSeries(source, anchor) : source
+	if anchor
+		historicalData.maintainArray(length, newData)
+		newData := collectedData.new(array.new<float>(), array.new<int>(), time(timeframe))
+	newData.times.push(time)
+	newData.data.push(src)
+	float result = calcAverageByTime(historicalData, time - newData.startTime)
+//#endregion
+
+
+//#region ———————————————————— Example Code
+
+// Color variables
+color  TEAL  = color.new(color.teal, 50)
+color  RED   = color.new(color.red,  50)
+color  GRAY  = color.new(color.gray, 70)
+
+// String options
+string MI01  = "Cumulative"
+string MI02  = "Regular"
+string EQ01  = "On"
+string EQ02  = "Off"
+
+// Tooltips
+string TT_RT = "The timeframe for the period reset condition. Default is 'D'."
+string TT_LI = "The number of periods in the average volume calculation. Default is 5."
+string TT_MI = "Choose between 'Cumulative' for a running total of volume since the last anchor point, or 'Regular' for
+ non-cumulative volume. Default is 'Cumulative'"
+string TT_SR = "If enabled, the volume will be displayed as 'Relative Volume', which is the ratio of the current volume
+ to the historical average volume."
+string TT_AR = "When activated in 'Cumulative' mode, this feature estimates the volume of the unclosed bar using the
+ volume data from the current session."
+
+// @variable The timeframe of periods to compare.
+string resetTimeInput = input.timeframe("D", "Anchor Timeframe", tooltip = TT_RT)
+// @variable The number of periods to include in the average calculation.
+int lengthInput = input.int(5, "No. of periods to avg.", tooltip = TT_LI)
+// @variable Controls whether the average calculation will use cumulative or non-cumulative values.
+string modeInput = input.string("Cumulative", "Calculation Mode", tooltip = TT_MI, options = [MI01, MI02])
+// @variable If `true`, the script will display the relative volume ratio.
+bool showRvolInput = input.string(EQ02, "Show as Relative Ratio", tooltip = TT_SR, options = [EQ01, EQ02]) == EQ01
+// @variable If `true` and `modeInput` is "Cumulative", estimates the cumulative volume on unclosed bars.
+bool estimateInput = input.string(EQ02, "Estimate Unconfirmed",   tooltip = TT_AR, options = [EQ01, EQ02]) == EQ01
+
+// @variable Is `true` when a new bar opens on the `resetTimeInput` timeframe.
+bool anchor = timeframe.change(resetTimeInput)
+// @variable Is `true` when the `modeInput` is "Cumulative".
+bool isCumulative = modeInput == MI01
+
+// @variable The average volume at the current time offset over the last `lengthInput` periods.
+float pastVolume = averageAtTime(volume, lengthInput, resetTimeInput, isCumulative)
+// @variable The current cumulative or non-cumulative volume in the current period.
+float currentVolume = isCumulative ? calcCumulativeSeries(volume, anchor, estimateInput) : volume
+// @variable The relative volume ratio.
+float relativeValue = currentVolume / pastVolume
+
+// Dispaly the values.
+display(show) => show ? display.all : display.data_window
+plot(relativeValue, "Relative Value",  relativeValue >= 1 ? TEAL : RED, 1, plot.style_columns, display = display(    showRvolInput), histbase = 1)
+plot(pastVolume,    "Past Volume Avg", GRAY,                            1, plot.style_columns, display = display(not showRvolInput))
+plot(currentVolume, "Current Volume",  close >= open      ? TEAL : RED, 1, plot.style_columns, display = display(not showRvolInput))
+//#endregion

@@ -1,0 +1,23 @@
+//@version=6
+indicator(title="Time Weighted Average Price", shorttitle="TWAP", overlay=true, timeframe="", timeframe_gaps=true)
+
+anchor = input.timeframe(defval = "1D", title = "Anchor Period")
+src = input(title = "Source", defval = ohlc4)
+offset = input(0, title = "Offset", display = display.data_window)
+
+twap(source, anchorChange) =>
+    var prices = 0.0
+    var count = 0
+
+    if anchorChange
+        prices := 0
+        count := 0
+
+	prices += source
+	count += 1
+
+    prices / count
+
+twapValue = twap(src, timeframe.change(anchor))
+
+plot(twapValue, title = "TWAP", color = #dd7a28, offset = offset)

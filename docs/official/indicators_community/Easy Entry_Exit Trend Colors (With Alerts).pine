@@ -1,0 +1,76 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © countseven12 (PostalCrypt)
+
+//@version=4
+study("Easy Entry/Exit Trend Colors (With Alerts)", overlay=false)
+
+length = input(10, minval=1, title="BB Periods")
+dev = input(1, minval=0.0001, title="Deviations")
+
+//MACD
+fastLength = input(12, minval=1, title="FastLength") 
+slowLength=input(26,minval=1, title="SlowLength")
+signalLength=input(9,minval=1, title="SignalLength")
+fastMA = ema(close, fastLength)
+slowMA = ema(close, slowLength)
+macd = fastMA - slowMA
+multiscale = input(10000, minval=1, title="Scaling for ALTS")
+scaleFactor = 100 / input(30, "% of vertical space used", step = 10, maxval = 100)
+
+//DEATH AND GOLDEN CROSS
+fast_period = input(50, minval=1, title="Short-Term SMA Length")
+slow_period = input(200, minval=1, title="Long-Term SMA Length")
+
+
+fastMA1 = sma(close, fast_period)
+slowMA1 = sma(close, slow_period)
+golden_cross = cross(slowMA1,fastMA1) and fastMA1[1] <= slowMA1[1]
+death_cross = cross(slowMA1,fastMA1) and slowMA1[1] <= fastMA1[1] 
+
+
+//plot(fastMA1, color=color.red)
+//plot(slowMA1, color=color.blue)
+//plot(cross(fastMA1, slowMA1) ? fastMA1 : na, color = (slowMA1 - fastMA1 > 0 ? color.red : color.lime) , style = shape.circle, linewidth = 4)
+plotshape(death_cross ? fastMA1 : na, color=#880E4F, text="Death Cross", textcolor=color.white, style=shape.labeldown, location=location.top, title="Death Cross Text")
+plotshape(golden_cross ? fastMA1 : na, color=color.lime, text="Golden Cross", textcolor=color.black, style=shape.labeldown, location=location.bottom, title="Golden Cross Text")
+colorpick = cross(slowMA1,fastMA1) and slowMA1[1] <= fastMA1[1] ? #880E4F : na
+colorpick1 = cross(slowMA1,fastMA1) and fastMA1[1] <= slowMA1[1] ? color.lime : na
+bgcolor(colorpick, transp=10)
+bgcolor(colorpick1, transp=10)
+
+//BollingerBands
+
+Std = stdev(macd, length)
+Upper = (Std * dev + (sma(macd, length)))
+Lower = ((sma(macd, length)) - (Std * dev))
+
+
+Band1 = plot(Upper, color=color.gray, style=plot.style_line, linewidth=2,title="Upper Band")
+Band2 = plot(Lower, color=color.gray, style=plot.style_line, linewidth=2,title="Lower Band")
+fill(Band1, Band2, color=color.blue, transp=75,title="Fill")
+
+//mc = macd >= Upper ? color.lime : color.red
+mcl = macd >= Upper ? color.lime : na
+mcr = macd <= Upper ? color.red : na
+crossoverBear = cross(macd, Upper) and macd < Upper ? avg(macd, Upper) : na
+crossoverBull = cross(macd, Upper) and macd > Upper ? avg(macd, Upper) : na
+
+// Indicator
+plotshape(crossoverBear, title='Bear MACD', style=shape.xcross, text='Bear', location=location.absolute, color=color.red, textcolor=color.red, size=size.normal) 
+plotshape(crossoverBull, title='Bull MACD', style=shape.diamond, text='Bull', location=location.absolute, color=color.lime, textcolor=color.lime, size=size.normal)
+plotshape(macd, color=mcl, style=shape.triangleup, title="Green Triangles", location=location.absolute, size=size.tiny)
+plotshape(macd, color=mcr, style=shape.triangledown, title="Red Triangles", location=location.absolute, size=size.tiny)
+zeroline = 0 
+plot(zeroline, color= color.orange,linewidth= 1,title="Zeroline")
+
+//buy
+barcolor(macd >Upper ? color.yellow:na)
+//short
+barcolor(macd <Lower ? color.aqua:na)
+
+//Volume
+//barColorsOnPrevClose = false
+//palette = barColorsOnPrevClose ? close[1] > close ? color.red : color.green : open > close ? color.red : color.green
+
+//plot(volume/multiscale, color = palette, style=plot.style_area, title="Volume", transp=75)
+//plot(volume/multiscale*-1, color = palette, style=plot.style_area, title="Volume", transp=75)

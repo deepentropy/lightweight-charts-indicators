@@ -1,0 +1,542 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// REUSING THIS CODE: You are welcome to reuse this code without permission, including in closed-source publications, as long as proper credits are given :)
+// Author: ©fareidzulkifli
+
+// Description : 
+// This is Screener script for Mean Reversion Channel Indicator which can be found at https://www.tradingview.com/script/5uaoczeP-Mean-Reversion-Channel-fareid-s-MRI-Variant/
+
+// Disclaimer:
+// Past performance is not an indicator of future results.
+// My opinions are my own and do not constitute financial advice in any way whatsoever. 
+// Nothing published by me constitutes an investment recommendation, nor should any data or Content published by me be relied upon for any investment/trading activities.
+// I strongly recommends that you perform your own independent research and/or speak with a qualified investment professional before making any financial decisions.
+
+// Any ideas to further improve this indicator are welcome :)
+
+//@version=4
+study("Screener - Mean Reversion Channel", overlay=true)
+
+//************************************************************************************************************
+// Parameter
+//************************************************************************************************************
+
+indiSet     = input(false,                  "═════════ MRC Parameter ════════")
+length      = input(200,                    title="Lookback Period",minval=1)
+type        = input("SuperSmoother",        title="Filter Type",    options=["SuperSmoother", "Ehlers EMA", "Gaussian", "Butterworth", "BandStop", "SMA", "EMA", "RMA"])
+source      = input(hlc3,                   title="Price Source",   type=input.source)
+innermult   = input(1.0,                    title="Inner Channel Size Multiplier", minval = 0.1)
+outermult   = input(2.415,                  title="Outer Channel Size Multiplier", minval = 0.1)
+
+screenSet   = input(false,                  "═════════ Screening Setting ════════")
+custom_tf   = input("",                     title="Timeframe for Screening", type=input.resolution)
+checkweak   = input(true,                   title="Screen for Weak OB/OS")
+checknorm   = input(true,                   title="Screen for OB/OS")
+checkstrong = input(true,                   title="Screen for Strong OB/OS")
+
+screenList  = input(false,                  "═════════ Asset for Screening ════════")
+asset_01    = input(title="Asset 01",       type=input.symbol, defval='')
+asset_02    = input(title="Asset 02",       type=input.symbol, defval='')
+asset_03    = input(title="Asset 03",       type=input.symbol, defval='')
+asset_04    = input(title="Asset 04",       type=input.symbol, defval='')
+asset_05    = input(title="Asset 05",       type=input.symbol, defval='')
+asset_06    = input(title="Asset 06",       type=input.symbol, defval='')
+asset_07    = input(title="Asset 07",       type=input.symbol, defval='')
+asset_08    = input(title="Asset 08",       type=input.symbol, defval='')
+asset_09    = input(title="Asset 09",       type=input.symbol, defval='')
+asset_10    = input(title="Asset 10",       type=input.symbol, defval='')
+asset_11    = input(title="Asset 11",       type=input.symbol, defval='')
+asset_12    = input(title="Asset 12",       type=input.symbol, defval='')
+asset_13    = input(title="Asset 13",       type=input.symbol, defval='')
+asset_14    = input(title="Asset 14",       type=input.symbol, defval='')
+asset_15    = input(title="Asset 15",       type=input.symbol, defval='')
+asset_16    = input(title="Asset 16",       type=input.symbol, defval='')
+asset_17    = input(title="Asset 17",       type=input.symbol, defval='')
+asset_18    = input(title="Asset 18",       type=input.symbol, defval='')
+asset_19    = input(title="Asset 19",       type=input.symbol, defval='')
+asset_20    = input(title="Asset 20",       type=input.symbol, defval='')
+asset_21    = input(title="Asset 21",       type=input.symbol, defval='')
+asset_22    = input(title="Asset 22",       type=input.symbol, defval='')
+asset_23    = input(title="Asset 23",       type=input.symbol, defval='')
+asset_24    = input(title="Asset 24",       type=input.symbol, defval='')
+asset_25    = input(title="Asset 25",       type=input.symbol, defval='')
+asset_26    = input(title="Asset 26",       type=input.symbol, defval='')
+asset_27    = input(title="Asset 27",       type=input.symbol, defval='')
+asset_28    = input(title="Asset 28",       type=input.symbol, defval='')
+asset_29    = input(title="Asset 29",       type=input.symbol, defval='')
+asset_30    = input(title="Asset 30",       type=input.symbol, defval='')
+asset_31    = input(title="Asset 31",       type=input.symbol, defval='')
+asset_32    = input(title="Asset 32",       type=input.symbol, defval='')
+asset_33    = input(title="Asset 33",       type=input.symbol, defval='')
+asset_34    = input(title="Asset 34",       type=input.symbol, defval='')
+asset_35    = input(title="Asset 35",       type=input.symbol, defval='')
+asset_36    = input(title="Asset 36",       type=input.symbol, defval='')
+asset_37    = input(title="Asset 37",       type=input.symbol, defval='')
+asset_38    = input(title="Asset 38",       type=input.symbol, defval='')
+asset_39    = input(title="Asset 39",       type=input.symbol, defval='')
+asset_40    = input(title="Asset 40",       type=input.symbol, defval='')
+
+
+//************************************************************************************************************
+// Indicator and Function
+//************************************************************************************************************
+
+// Constant Variable
+var pi          = 2 * asin(1)
+var mult        = pi * innermult
+var mult2       = pi * outermult
+var gradsize    = 0.5
+
+//********************************************
+// Ehler SwissArmyKnife Function
+//********************************************
+SAK_smoothing(_type, _src, _length) =>
+    c0          = 1.0 
+    c1          = 0.0 
+    b0          = 1.0 
+    b1          = 0.0 
+    b2          = 0.0 
+    a1          = 0.0 
+    a2          = 0.0 
+    alpha       = 0.0 
+    beta        = 0.0 
+    gamma       = 0.0 
+    cycle       = 2 * pi / _length
+    
+    if _type == "Ehlers EMA"
+        alpha   := (cos(cycle) + sin(cycle) - 1) / cos(cycle)
+        b0      := alpha
+        a1      := 1 - alpha
+    if _type == "Gaussian"
+        beta    := 2.415 * (1 - cos(cycle))
+        alpha   := -beta + sqrt((beta * beta) + (2 * beta))
+        c0      := alpha * alpha
+        a1      := 2 * (1 - alpha)
+        a2      := -(1 - alpha) * (1 - alpha)
+    if _type == "Butterworth"
+        beta    := 2.415 * (1 - cos(cycle))
+        alpha   := -beta + sqrt((beta * beta) + (2 * beta))
+        c0      := alpha * alpha / 4
+        b1      := 2
+        b2      := 1
+        a1      := 2 * (1 - alpha)
+        a2      := -(1 - alpha) * (1 - alpha)
+    if _type == "BandStop"
+        beta    := cos(cycle)
+        gamma   := 1 / cos(cycle*2*0.1) // delta default to 0.1. Acceptable delta -- 0.05<d<0.5
+        alpha   := gamma - sqrt((gamma * gamma) - 1)
+        c0      := (1 + alpha) / 2
+        b1      := -2 * beta
+        b2      := 1
+        a1      := beta * (1 + alpha)
+        a2      := -alpha
+    if _type == "SMA"
+        c1      := 1 / _length
+        b0      := 1 / _length
+        a1      := 1
+    if _type == "EMA"
+        alpha   := 2/(_length+1)
+        b0      := alpha
+        a1      := 1 - alpha
+    if _type == "RMA"
+        alpha   := 1 / _length
+        b0      := alpha
+        a1      := 1 - alpha
+
+    _Input       = _src
+    _Output      = 0.0
+    _Output     := (c0 * ((b0 * _Input) + (b1 * nz(_Input[1])) + (b2 * nz(_Input[2])))) + (a1 * nz(_Output[1])) + (a2 * nz(_Output[2])) - (c1 * nz(_Input[_length])) 
+
+//********************************************
+// SuperSmoother Function
+//********************************************
+
+supersmoother(_src, _length) =>
+    s_a1    = exp(-sqrt(2) * pi / _length)
+    s_b1    = 2 * s_a1 * cos(sqrt(2) * pi / _length)
+    s_c3    = -pow(s_a1, 2)
+    s_c2    = s_b1
+    s_c1    = 1 - s_c2 - s_c3
+    ss      = 0.0
+    ss     := s_c1 * _src + s_c2 * nz(ss[1], _src[1]) + s_c3 * nz(ss[2], _src[2])
+    
+
+//********************************************
+// Indicator Function
+//********************************************
+
+screen_mrc() =>
+    int     condition    = 0
+    float   meanline     = source
+    float   meanrange    = supersmoother(tr, length)
+    
+    if(type == "SuperSmoother")
+        meanline    := supersmoother(source, length)
+    if(type != "SuperSmoother")
+        meanline    := SAK_smoothing(type, source, length)
+    
+    if(close > meanline)
+        upband2   = meanline + (meanrange * mult2)
+        upband2_1 = upband2  + (meanrange * gradsize * 4)
+        upband2_9 = upband2  + (meanrange * gradsize * -4)
+        if(checkweak and high >= upband2_9 and high < upband2)
+            condition   := 1
+        if(checknorm and high >= upband2 and high < upband2_1)
+            condition   := 2
+        if(checkstrong and high >= upband2_1)
+            condition   := 3
+
+    if(close < meanline)
+        loband2   = meanline - (meanrange * mult2)
+        loband2_1 = loband2  - (meanrange * gradsize * 4)
+        loband2_9 = loband2  - (meanrange * gradsize * -4)
+        if(checkweak and low <= loband2_9 and low > loband2)
+            condition   := -1
+        if(checknorm and low <= loband2 and low > loband2_1)
+            condition   := -2
+        if(checkstrong and low <= loband2_1)
+            condition   := -3
+    condition
+
+//************************************************************************************************************
+// Screener Logic
+//************************************************************************************************************
+// set asset status {
+asset_01_status     = asset_01 == '' ? 0 : security(asset_01, custom_tf, screen_mrc())
+asset_02_status     = asset_02 == '' ? 0 : security(asset_02, custom_tf, screen_mrc())
+asset_03_status     = asset_03 == '' ? 0 : security(asset_03, custom_tf, screen_mrc())
+asset_04_status     = asset_04 == '' ? 0 : security(asset_04, custom_tf, screen_mrc())
+asset_05_status     = asset_05 == '' ? 0 : security(asset_05, custom_tf, screen_mrc())
+asset_06_status     = asset_06 == '' ? 0 : security(asset_06, custom_tf, screen_mrc())
+asset_07_status     = asset_07 == '' ? 0 : security(asset_07, custom_tf, screen_mrc())
+asset_08_status     = asset_08 == '' ? 0 : security(asset_08, custom_tf, screen_mrc())
+asset_09_status     = asset_09 == '' ? 0 : security(asset_09, custom_tf, screen_mrc())
+asset_10_status     = asset_10 == '' ? 0 : security(asset_10, custom_tf, screen_mrc())
+asset_11_status     = asset_11 == '' ? 0 : security(asset_11, custom_tf, screen_mrc())
+asset_12_status     = asset_12 == '' ? 0 : security(asset_12, custom_tf, screen_mrc())
+asset_13_status     = asset_13 == '' ? 0 : security(asset_13, custom_tf, screen_mrc())
+asset_14_status     = asset_14 == '' ? 0 : security(asset_14, custom_tf, screen_mrc())
+asset_15_status     = asset_15 == '' ? 0 : security(asset_15, custom_tf, screen_mrc())
+asset_16_status     = asset_16 == '' ? 0 : security(asset_16, custom_tf, screen_mrc())
+asset_17_status     = asset_17 == '' ? 0 : security(asset_17, custom_tf, screen_mrc())
+asset_18_status     = asset_18 == '' ? 0 : security(asset_18, custom_tf, screen_mrc())
+asset_19_status     = asset_19 == '' ? 0 : security(asset_19, custom_tf, screen_mrc())
+asset_20_status     = asset_20 == '' ? 0 : security(asset_20, custom_tf, screen_mrc())
+asset_21_status     = asset_21 == '' ? 0 : security(asset_21, custom_tf, screen_mrc())
+asset_22_status     = asset_22 == '' ? 0 : security(asset_22, custom_tf, screen_mrc())
+asset_23_status     = asset_23 == '' ? 0 : security(asset_23, custom_tf, screen_mrc())
+asset_24_status     = asset_24 == '' ? 0 : security(asset_24, custom_tf, screen_mrc())
+asset_25_status     = asset_25 == '' ? 0 : security(asset_25, custom_tf, screen_mrc())
+asset_26_status     = asset_26 == '' ? 0 : security(asset_26, custom_tf, screen_mrc())
+asset_27_status     = asset_27 == '' ? 0 : security(asset_27, custom_tf, screen_mrc())
+asset_28_status     = asset_28 == '' ? 0 : security(asset_28, custom_tf, screen_mrc())
+asset_29_status     = asset_29 == '' ? 0 : security(asset_29, custom_tf, screen_mrc())
+asset_30_status     = asset_30 == '' ? 0 : security(asset_30, custom_tf, screen_mrc())
+asset_31_status     = asset_31 == '' ? 0 : security(asset_31, custom_tf, screen_mrc())
+asset_32_status     = asset_32 == '' ? 0 : security(asset_32, custom_tf, screen_mrc())
+asset_33_status     = asset_33 == '' ? 0 : security(asset_33, custom_tf, screen_mrc())
+asset_34_status     = asset_34 == '' ? 0 : security(asset_34, custom_tf, screen_mrc())
+asset_35_status     = asset_35 == '' ? 0 : security(asset_35, custom_tf, screen_mrc())
+asset_36_status     = asset_36 == '' ? 0 : security(asset_36, custom_tf, screen_mrc())
+asset_37_status     = asset_37 == '' ? 0 : security(asset_37, custom_tf, screen_mrc())
+asset_38_status     = asset_38 == '' ? 0 : security(asset_38, custom_tf, screen_mrc())
+asset_39_status     = asset_39 == '' ? 0 : security(asset_39, custom_tf, screen_mrc())
+asset_40_status     = asset_40 == '' ? 0 : security(asset_40, custom_tf, screen_mrc())
+//} end
+
+// set weak ob {
+weak_ob  = ""
+weak_ob := asset_01 != '' and asset_01_status == 1 ? weak_ob + asset_01 + " (Weak) \n" : weak_ob
+weak_ob := asset_02 != '' and asset_02_status == 1 ? weak_ob + asset_02 + " (Weak) \n" : weak_ob
+weak_ob := asset_03 != '' and asset_03_status == 1 ? weak_ob + asset_03 + " (Weak) \n" : weak_ob
+weak_ob := asset_04 != '' and asset_04_status == 1 ? weak_ob + asset_04 + " (Weak) \n" : weak_ob
+weak_ob := asset_05 != '' and asset_05_status == 1 ? weak_ob + asset_05 + " (Weak) \n" : weak_ob
+weak_ob := asset_06 != '' and asset_06_status == 1 ? weak_ob + asset_06 + " (Weak) \n" : weak_ob
+weak_ob := asset_07 != '' and asset_07_status == 1 ? weak_ob + asset_07 + " (Weak) \n" : weak_ob
+weak_ob := asset_08 != '' and asset_08_status == 1 ? weak_ob + asset_08 + " (Weak) \n" : weak_ob
+weak_ob := asset_09 != '' and asset_09_status == 1 ? weak_ob + asset_09 + " (Weak) \n" : weak_ob
+weak_ob := asset_10 != '' and asset_10_status == 1 ? weak_ob + asset_10 + " (Weak) \n" : weak_ob
+weak_ob := asset_11 != '' and asset_11_status == 1 ? weak_ob + asset_11 + " (Weak) \n" : weak_ob
+weak_ob := asset_12 != '' and asset_12_status == 1 ? weak_ob + asset_12 + " (Weak) \n" : weak_ob
+weak_ob := asset_13 != '' and asset_13_status == 1 ? weak_ob + asset_13 + " (Weak) \n" : weak_ob
+weak_ob := asset_14 != '' and asset_14_status == 1 ? weak_ob + asset_14 + " (Weak) \n" : weak_ob
+weak_ob := asset_15 != '' and asset_15_status == 1 ? weak_ob + asset_15 + " (Weak) \n" : weak_ob
+weak_ob := asset_16 != '' and asset_16_status == 1 ? weak_ob + asset_16 + " (Weak) \n" : weak_ob
+weak_ob := asset_17 != '' and asset_17_status == 1 ? weak_ob + asset_17 + " (Weak) \n" : weak_ob
+weak_ob := asset_18 != '' and asset_18_status == 1 ? weak_ob + asset_18 + " (Weak) \n" : weak_ob
+weak_ob := asset_19 != '' and asset_19_status == 1 ? weak_ob + asset_19 + " (Weak) \n" : weak_ob
+weak_ob := asset_20 != '' and asset_20_status == 1 ? weak_ob + asset_20 + " (Weak) \n" : weak_ob
+weak_ob := asset_21 != '' and asset_21_status == 1 ? weak_ob + asset_21 + " (Weak) \n" : weak_ob
+weak_ob := asset_22 != '' and asset_22_status == 1 ? weak_ob + asset_22 + " (Weak) \n" : weak_ob
+weak_ob := asset_23 != '' and asset_23_status == 1 ? weak_ob + asset_23 + " (Weak) \n" : weak_ob
+weak_ob := asset_24 != '' and asset_24_status == 1 ? weak_ob + asset_24 + " (Weak) \n" : weak_ob
+weak_ob := asset_25 != '' and asset_25_status == 1 ? weak_ob + asset_25 + " (Weak) \n" : weak_ob
+weak_ob := asset_26 != '' and asset_26_status == 1 ? weak_ob + asset_26 + " (Weak) \n" : weak_ob
+weak_ob := asset_27 != '' and asset_27_status == 1 ? weak_ob + asset_27 + " (Weak) \n" : weak_ob
+weak_ob := asset_28 != '' and asset_28_status == 1 ? weak_ob + asset_28 + " (Weak) \n" : weak_ob
+weak_ob := asset_29 != '' and asset_29_status == 1 ? weak_ob + asset_29 + " (Weak) \n" : weak_ob
+weak_ob := asset_30 != '' and asset_30_status == 1 ? weak_ob + asset_30 + " (Weak) \n" : weak_ob
+weak_ob := asset_31 != '' and asset_31_status == 1 ? weak_ob + asset_31 + " (Weak) \n" : weak_ob
+weak_ob := asset_32 != '' and asset_32_status == 1 ? weak_ob + asset_32 + " (Weak) \n" : weak_ob
+weak_ob := asset_33 != '' and asset_33_status == 1 ? weak_ob + asset_33 + " (Weak) \n" : weak_ob
+weak_ob := asset_34 != '' and asset_34_status == 1 ? weak_ob + asset_34 + " (Weak) \n" : weak_ob
+weak_ob := asset_35 != '' and asset_35_status == 1 ? weak_ob + asset_35 + " (Weak) \n" : weak_ob
+weak_ob := asset_36 != '' and asset_36_status == 1 ? weak_ob + asset_36 + " (Weak) \n" : weak_ob
+weak_ob := asset_37 != '' and asset_37_status == 1 ? weak_ob + asset_37 + " (Weak) \n" : weak_ob
+weak_ob := asset_38 != '' and asset_38_status == 1 ? weak_ob + asset_38 + " (Weak) \n" : weak_ob
+weak_ob := asset_39 != '' and asset_39_status == 1 ? weak_ob + asset_39 + " (Weak) \n" : weak_ob
+weak_ob := asset_40 != '' and asset_40_status == 1 ? weak_ob + asset_40 + " (Weak) \n" : weak_ob
+//} end
+// set normal ob {
+normal_ob  = ""
+normal_ob := asset_01 != '' and asset_01_status == 2 ? normal_ob + asset_01 + "\n" : normal_ob
+normal_ob := asset_02 != '' and asset_02_status == 2 ? normal_ob + asset_02 + "\n" : normal_ob
+normal_ob := asset_03 != '' and asset_03_status == 2 ? normal_ob + asset_03 + "\n" : normal_ob
+normal_ob := asset_04 != '' and asset_04_status == 2 ? normal_ob + asset_04 + "\n" : normal_ob
+normal_ob := asset_05 != '' and asset_05_status == 2 ? normal_ob + asset_05 + "\n" : normal_ob
+normal_ob := asset_06 != '' and asset_06_status == 2 ? normal_ob + asset_06 + "\n" : normal_ob
+normal_ob := asset_07 != '' and asset_07_status == 2 ? normal_ob + asset_07 + "\n" : normal_ob
+normal_ob := asset_08 != '' and asset_08_status == 2 ? normal_ob + asset_08 + "\n" : normal_ob
+normal_ob := asset_09 != '' and asset_09_status == 2 ? normal_ob + asset_09 + "\n" : normal_ob
+normal_ob := asset_10 != '' and asset_10_status == 2 ? normal_ob + asset_10 + "\n" : normal_ob
+normal_ob := asset_11 != '' and asset_11_status == 2 ? normal_ob + asset_11 + "\n" : normal_ob
+normal_ob := asset_12 != '' and asset_12_status == 2 ? normal_ob + asset_12 + "\n" : normal_ob
+normal_ob := asset_13 != '' and asset_13_status == 2 ? normal_ob + asset_13 + "\n" : normal_ob
+normal_ob := asset_14 != '' and asset_14_status == 2 ? normal_ob + asset_14 + "\n" : normal_ob
+normal_ob := asset_15 != '' and asset_15_status == 2 ? normal_ob + asset_15 + "\n" : normal_ob
+normal_ob := asset_16 != '' and asset_16_status == 2 ? normal_ob + asset_16 + "\n" : normal_ob
+normal_ob := asset_17 != '' and asset_17_status == 2 ? normal_ob + asset_17 + "\n" : normal_ob
+normal_ob := asset_18 != '' and asset_18_status == 2 ? normal_ob + asset_18 + "\n" : normal_ob
+normal_ob := asset_19 != '' and asset_19_status == 2 ? normal_ob + asset_19 + "\n" : normal_ob
+normal_ob := asset_20 != '' and asset_20_status == 2 ? normal_ob + asset_20 + "\n" : normal_ob
+normal_ob := asset_21 != '' and asset_21_status == 2 ? normal_ob + asset_21 + "\n" : normal_ob
+normal_ob := asset_22 != '' and asset_22_status == 2 ? normal_ob + asset_22 + "\n" : normal_ob
+normal_ob := asset_23 != '' and asset_23_status == 2 ? normal_ob + asset_23 + "\n" : normal_ob
+normal_ob := asset_24 != '' and asset_24_status == 2 ? normal_ob + asset_24 + "\n" : normal_ob
+normal_ob := asset_25 != '' and asset_25_status == 2 ? normal_ob + asset_25 + "\n" : normal_ob
+normal_ob := asset_26 != '' and asset_26_status == 2 ? normal_ob + asset_26 + "\n" : normal_ob
+normal_ob := asset_27 != '' and asset_27_status == 2 ? normal_ob + asset_27 + "\n" : normal_ob
+normal_ob := asset_28 != '' and asset_28_status == 2 ? normal_ob + asset_28 + "\n" : normal_ob
+normal_ob := asset_29 != '' and asset_29_status == 2 ? normal_ob + asset_29 + "\n" : normal_ob
+normal_ob := asset_30 != '' and asset_30_status == 2 ? normal_ob + asset_30 + "\n" : normal_ob
+normal_ob := asset_31 != '' and asset_31_status == 2 ? normal_ob + asset_31 + "\n" : normal_ob
+normal_ob := asset_32 != '' and asset_32_status == 2 ? normal_ob + asset_32 + "\n" : normal_ob
+normal_ob := asset_33 != '' and asset_33_status == 2 ? normal_ob + asset_33 + "\n" : normal_ob
+normal_ob := asset_34 != '' and asset_34_status == 2 ? normal_ob + asset_34 + "\n" : normal_ob
+normal_ob := asset_35 != '' and asset_35_status == 2 ? normal_ob + asset_35 + "\n" : normal_ob
+normal_ob := asset_36 != '' and asset_36_status == 2 ? normal_ob + asset_36 + "\n" : normal_ob
+normal_ob := asset_37 != '' and asset_37_status == 2 ? normal_ob + asset_37 + "\n" : normal_ob
+normal_ob := asset_38 != '' and asset_38_status == 2 ? normal_ob + asset_38 + "\n" : normal_ob
+normal_ob := asset_39 != '' and asset_39_status == 2 ? normal_ob + asset_39 + "\n" : normal_ob
+normal_ob := asset_40 != '' and asset_40_status == 2 ? normal_ob + asset_40 + "\n" : normal_ob
+//} end
+// set strong ob {
+strong_ob  = ""
+strong_ob := asset_01 != '' and asset_01_status == 3 ? strong_ob + asset_01 + " (Strong) \n" : strong_ob
+strong_ob := asset_02 != '' and asset_02_status == 3 ? strong_ob + asset_02 + " (Strong) \n" : strong_ob
+strong_ob := asset_03 != '' and asset_03_status == 3 ? strong_ob + asset_03 + " (Strong) \n" : strong_ob
+strong_ob := asset_04 != '' and asset_04_status == 3 ? strong_ob + asset_04 + " (Strong) \n" : strong_ob
+strong_ob := asset_05 != '' and asset_05_status == 3 ? strong_ob + asset_05 + " (Strong) \n" : strong_ob
+strong_ob := asset_06 != '' and asset_06_status == 3 ? strong_ob + asset_06 + " (Strong) \n" : strong_ob
+strong_ob := asset_07 != '' and asset_07_status == 3 ? strong_ob + asset_07 + " (Strong) \n" : strong_ob
+strong_ob := asset_08 != '' and asset_08_status == 3 ? strong_ob + asset_08 + " (Strong) \n" : strong_ob
+strong_ob := asset_09 != '' and asset_09_status == 3 ? strong_ob + asset_09 + " (Strong) \n" : strong_ob
+strong_ob := asset_10 != '' and asset_10_status == 3 ? strong_ob + asset_10 + " (Strong) \n" : strong_ob
+strong_ob := asset_11 != '' and asset_11_status == 3 ? strong_ob + asset_11 + " (Strong) \n" : strong_ob
+strong_ob := asset_12 != '' and asset_12_status == 3 ? strong_ob + asset_12 + " (Strong) \n" : strong_ob
+strong_ob := asset_13 != '' and asset_13_status == 3 ? strong_ob + asset_13 + " (Strong) \n" : strong_ob
+strong_ob := asset_14 != '' and asset_14_status == 3 ? strong_ob + asset_14 + " (Strong) \n" : strong_ob
+strong_ob := asset_15 != '' and asset_15_status == 3 ? strong_ob + asset_15 + " (Strong) \n" : strong_ob
+strong_ob := asset_16 != '' and asset_16_status == 3 ? strong_ob + asset_16 + " (Strong) \n" : strong_ob
+strong_ob := asset_17 != '' and asset_17_status == 3 ? strong_ob + asset_17 + " (Strong) \n" : strong_ob
+strong_ob := asset_18 != '' and asset_18_status == 3 ? strong_ob + asset_18 + " (Strong) \n" : strong_ob
+strong_ob := asset_19 != '' and asset_19_status == 3 ? strong_ob + asset_19 + " (Strong) \n" : strong_ob
+strong_ob := asset_20 != '' and asset_20_status == 3 ? strong_ob + asset_20 + " (Strong) \n" : strong_ob
+strong_ob := asset_21 != '' and asset_21_status == 3 ? strong_ob + asset_21 + " (Strong) \n" : strong_ob
+strong_ob := asset_22 != '' and asset_22_status == 3 ? strong_ob + asset_22 + " (Strong) \n" : strong_ob
+strong_ob := asset_23 != '' and asset_23_status == 3 ? strong_ob + asset_23 + " (Strong) \n" : strong_ob
+strong_ob := asset_24 != '' and asset_24_status == 3 ? strong_ob + asset_24 + " (Strong) \n" : strong_ob
+strong_ob := asset_25 != '' and asset_25_status == 3 ? strong_ob + asset_25 + " (Strong) \n" : strong_ob
+strong_ob := asset_26 != '' and asset_26_status == 3 ? strong_ob + asset_26 + " (Strong) \n" : strong_ob
+strong_ob := asset_27 != '' and asset_27_status == 3 ? strong_ob + asset_27 + " (Strong) \n" : strong_ob
+strong_ob := asset_28 != '' and asset_28_status == 3 ? strong_ob + asset_28 + " (Strong) \n" : strong_ob
+strong_ob := asset_29 != '' and asset_29_status == 3 ? strong_ob + asset_29 + " (Strong) \n" : strong_ob
+strong_ob := asset_30 != '' and asset_30_status == 3 ? strong_ob + asset_30 + " (Strong) \n" : strong_ob
+strong_ob := asset_31 != '' and asset_31_status == 3 ? strong_ob + asset_31 + " (Strong) \n" : strong_ob
+strong_ob := asset_32 != '' and asset_32_status == 3 ? strong_ob + asset_32 + " (Strong) \n" : strong_ob
+strong_ob := asset_33 != '' and asset_33_status == 3 ? strong_ob + asset_33 + " (Strong) \n" : strong_ob
+strong_ob := asset_34 != '' and asset_34_status == 3 ? strong_ob + asset_34 + " (Strong) \n" : strong_ob
+strong_ob := asset_35 != '' and asset_35_status == 3 ? strong_ob + asset_35 + " (Strong) \n" : strong_ob
+strong_ob := asset_36 != '' and asset_36_status == 3 ? strong_ob + asset_36 + " (Strong) \n" : strong_ob
+strong_ob := asset_37 != '' and asset_37_status == 3 ? strong_ob + asset_37 + " (Strong) \n" : strong_ob
+strong_ob := asset_38 != '' and asset_38_status == 3 ? strong_ob + asset_38 + " (Strong) \n" : strong_ob
+strong_ob := asset_39 != '' and asset_39_status == 3 ? strong_ob + asset_39 + " (Strong) \n" : strong_ob
+strong_ob := asset_40 != '' and asset_40_status == 3 ? strong_ob + asset_40 + " (Strong) \n" : strong_ob
+//} end
+
+// set weak os {
+weak_os  = ""
+weak_os := asset_01 != '' and asset_01_status == -1 ? weak_os + asset_01 + " (Weak) \n" : weak_os
+weak_os := asset_02 != '' and asset_02_status == -1 ? weak_os + asset_02 + " (Weak) \n" : weak_os
+weak_os := asset_03 != '' and asset_03_status == -1 ? weak_os + asset_03 + " (Weak) \n" : weak_os
+weak_os := asset_04 != '' and asset_04_status == -1 ? weak_os + asset_04 + " (Weak) \n" : weak_os
+weak_os := asset_05 != '' and asset_05_status == -1 ? weak_os + asset_05 + " (Weak) \n" : weak_os
+weak_os := asset_06 != '' and asset_06_status == -1 ? weak_os + asset_06 + " (Weak) \n" : weak_os
+weak_os := asset_07 != '' and asset_07_status == -1 ? weak_os + asset_07 + " (Weak) \n" : weak_os
+weak_os := asset_08 != '' and asset_08_status == -1 ? weak_os + asset_08 + " (Weak) \n" : weak_os
+weak_os := asset_09 != '' and asset_09_status == -1 ? weak_os + asset_09 + " (Weak) \n" : weak_os
+weak_os := asset_10 != '' and asset_10_status == -1 ? weak_os + asset_10 + " (Weak) \n" : weak_os
+weak_os := asset_11 != '' and asset_11_status == -1 ? weak_os + asset_11 + " (Weak) \n" : weak_os
+weak_os := asset_12 != '' and asset_12_status == -1 ? weak_os + asset_12 + " (Weak) \n" : weak_os
+weak_os := asset_13 != '' and asset_13_status == -1 ? weak_os + asset_13 + " (Weak) \n" : weak_os
+weak_os := asset_14 != '' and asset_14_status == -1 ? weak_os + asset_14 + " (Weak) \n" : weak_os
+weak_os := asset_15 != '' and asset_15_status == -1 ? weak_os + asset_15 + " (Weak) \n" : weak_os
+weak_os := asset_16 != '' and asset_16_status == -1 ? weak_os + asset_16 + " (Weak) \n" : weak_os
+weak_os := asset_17 != '' and asset_17_status == -1 ? weak_os + asset_17 + " (Weak) \n" : weak_os
+weak_os := asset_18 != '' and asset_18_status == -1 ? weak_os + asset_18 + " (Weak) \n" : weak_os
+weak_os := asset_19 != '' and asset_19_status == -1 ? weak_os + asset_19 + " (Weak) \n" : weak_os
+weak_os := asset_20 != '' and asset_20_status == -1 ? weak_os + asset_20 + " (Weak) \n" : weak_os
+weak_os := asset_21 != '' and asset_21_status == -1 ? weak_os + asset_21 + " (Weak) \n" : weak_os
+weak_os := asset_22 != '' and asset_22_status == -1 ? weak_os + asset_22 + " (Weak) \n" : weak_os
+weak_os := asset_23 != '' and asset_23_status == -1 ? weak_os + asset_23 + " (Weak) \n" : weak_os
+weak_os := asset_24 != '' and asset_24_status == -1 ? weak_os + asset_24 + " (Weak) \n" : weak_os
+weak_os := asset_25 != '' and asset_25_status == -1 ? weak_os + asset_25 + " (Weak) \n" : weak_os
+weak_os := asset_26 != '' and asset_26_status == -1 ? weak_os + asset_26 + " (Weak) \n" : weak_os
+weak_os := asset_27 != '' and asset_27_status == -1 ? weak_os + asset_27 + " (Weak) \n" : weak_os
+weak_os := asset_28 != '' and asset_28_status == -1 ? weak_os + asset_28 + " (Weak) \n" : weak_os
+weak_os := asset_29 != '' and asset_29_status == -1 ? weak_os + asset_29 + " (Weak) \n" : weak_os
+weak_os := asset_30 != '' and asset_30_status == -1 ? weak_os + asset_30 + " (Weak) \n" : weak_os
+weak_os := asset_31 != '' and asset_31_status == -1 ? weak_os + asset_31 + " (Weak) \n" : weak_os
+weak_os := asset_32 != '' and asset_32_status == -1 ? weak_os + asset_32 + " (Weak) \n" : weak_os
+weak_os := asset_33 != '' and asset_33_status == -1 ? weak_os + asset_33 + " (Weak) \n" : weak_os
+weak_os := asset_34 != '' and asset_34_status == -1 ? weak_os + asset_34 + " (Weak) \n" : weak_os
+weak_os := asset_35 != '' and asset_35_status == -1 ? weak_os + asset_35 + " (Weak) \n" : weak_os
+weak_os := asset_36 != '' and asset_36_status == -1 ? weak_os + asset_36 + " (Weak) \n" : weak_os
+weak_os := asset_37 != '' and asset_37_status == -1 ? weak_os + asset_37 + " (Weak) \n" : weak_os
+weak_os := asset_38 != '' and asset_38_status == -1 ? weak_os + asset_38 + " (Weak) \n" : weak_os
+weak_os := asset_39 != '' and asset_39_status == -1 ? weak_os + asset_39 + " (Weak) \n" : weak_os
+weak_os := asset_40 != '' and asset_40_status == -1 ? weak_os + asset_40 + " (Weak) \n" : weak_os
+//} end
+// set normal os {
+normal_os  = ""
+normal_os := asset_01 != '' and asset_01_status == -2 ? normal_os + asset_01 + "\n" : normal_os
+normal_os := asset_02 != '' and asset_02_status == -2 ? normal_os + asset_02 + "\n" : normal_os
+normal_os := asset_03 != '' and asset_03_status == -2 ? normal_os + asset_03 + "\n" : normal_os
+normal_os := asset_04 != '' and asset_04_status == -2 ? normal_os + asset_04 + "\n" : normal_os
+normal_os := asset_05 != '' and asset_05_status == -2 ? normal_os + asset_05 + "\n" : normal_os
+normal_os := asset_06 != '' and asset_06_status == -2 ? normal_os + asset_06 + "\n" : normal_os
+normal_os := asset_07 != '' and asset_07_status == -2 ? normal_os + asset_07 + "\n" : normal_os
+normal_os := asset_08 != '' and asset_08_status == -2 ? normal_os + asset_08 + "\n" : normal_os
+normal_os := asset_09 != '' and asset_09_status == -2 ? normal_os + asset_09 + "\n" : normal_os
+normal_os := asset_10 != '' and asset_10_status == -2 ? normal_os + asset_10 + "\n" : normal_os
+normal_os := asset_11 != '' and asset_11_status == -2 ? normal_os + asset_11 + "\n" : normal_os
+normal_os := asset_12 != '' and asset_12_status == -2 ? normal_os + asset_12 + "\n" : normal_os
+normal_os := asset_13 != '' and asset_13_status == -2 ? normal_os + asset_13 + "\n" : normal_os
+normal_os := asset_14 != '' and asset_14_status == -2 ? normal_os + asset_14 + "\n" : normal_os
+normal_os := asset_15 != '' and asset_15_status == -2 ? normal_os + asset_15 + "\n" : normal_os
+normal_os := asset_16 != '' and asset_16_status == -2 ? normal_os + asset_16 + "\n" : normal_os
+normal_os := asset_17 != '' and asset_17_status == -2 ? normal_os + asset_17 + "\n" : normal_os
+normal_os := asset_18 != '' and asset_18_status == -2 ? normal_os + asset_18 + "\n" : normal_os
+normal_os := asset_19 != '' and asset_19_status == -2 ? normal_os + asset_19 + "\n" : normal_os
+normal_os := asset_20 != '' and asset_20_status == -2 ? normal_os + asset_20 + "\n" : normal_os
+normal_os := asset_21 != '' and asset_21_status == -2 ? normal_os + asset_21 + "\n" : normal_os
+normal_os := asset_22 != '' and asset_22_status == -2 ? normal_os + asset_22 + "\n" : normal_os
+normal_os := asset_23 != '' and asset_23_status == -2 ? normal_os + asset_23 + "\n" : normal_os
+normal_os := asset_24 != '' and asset_24_status == -2 ? normal_os + asset_24 + "\n" : normal_os
+normal_os := asset_25 != '' and asset_25_status == -2 ? normal_os + asset_25 + "\n" : normal_os
+normal_os := asset_26 != '' and asset_26_status == -2 ? normal_os + asset_26 + "\n" : normal_os
+normal_os := asset_27 != '' and asset_27_status == -2 ? normal_os + asset_27 + "\n" : normal_os
+normal_os := asset_28 != '' and asset_28_status == -2 ? normal_os + asset_28 + "\n" : normal_os
+normal_os := asset_29 != '' and asset_29_status == -2 ? normal_os + asset_29 + "\n" : normal_os
+normal_os := asset_30 != '' and asset_30_status == -2 ? normal_os + asset_30 + "\n" : normal_os
+normal_os := asset_31 != '' and asset_31_status == -2 ? normal_os + asset_31 + "\n" : normal_os
+normal_os := asset_32 != '' and asset_32_status == -2 ? normal_os + asset_32 + "\n" : normal_os
+normal_os := asset_33 != '' and asset_33_status == -2 ? normal_os + asset_33 + "\n" : normal_os
+normal_os := asset_34 != '' and asset_34_status == -2 ? normal_os + asset_34 + "\n" : normal_os
+normal_os := asset_35 != '' and asset_35_status == -2 ? normal_os + asset_35 + "\n" : normal_os
+normal_os := asset_36 != '' and asset_36_status == -2 ? normal_os + asset_36 + "\n" : normal_os
+normal_os := asset_37 != '' and asset_37_status == -2 ? normal_os + asset_37 + "\n" : normal_os
+normal_os := asset_38 != '' and asset_38_status == -2 ? normal_os + asset_38 + "\n" : normal_os
+normal_os := asset_39 != '' and asset_39_status == -2 ? normal_os + asset_39 + "\n" : normal_os
+normal_os := asset_40 != '' and asset_40_status == -2 ? normal_os + asset_40 + "\n" : normal_os
+//} end
+// set strong os {
+strong_os  = ""
+strong_os := asset_01 != '' and asset_01_status == -3 ? strong_os + asset_01 + " (Strong) \n" : strong_os
+strong_os := asset_02 != '' and asset_02_status == -3 ? strong_os + asset_02 + " (Strong) \n" : strong_os
+strong_os := asset_03 != '' and asset_03_status == -3 ? strong_os + asset_03 + " (Strong) \n" : strong_os
+strong_os := asset_04 != '' and asset_04_status == -3 ? strong_os + asset_04 + " (Strong) \n" : strong_os
+strong_os := asset_05 != '' and asset_05_status == -3 ? strong_os + asset_05 + " (Strong) \n" : strong_os
+strong_os := asset_06 != '' and asset_06_status == -3 ? strong_os + asset_06 + " (Strong) \n" : strong_os
+strong_os := asset_07 != '' and asset_07_status == -3 ? strong_os + asset_07 + " (Strong) \n" : strong_os
+strong_os := asset_08 != '' and asset_08_status == -3 ? strong_os + asset_08 + " (Strong) \n" : strong_os
+strong_os := asset_09 != '' and asset_09_status == -3 ? strong_os + asset_09 + " (Strong) \n" : strong_os
+strong_os := asset_10 != '' and asset_10_status == -3 ? strong_os + asset_10 + " (Strong) \n" : strong_os
+strong_os := asset_11 != '' and asset_11_status == -3 ? strong_os + asset_11 + " (Strong) \n" : strong_os
+strong_os := asset_12 != '' and asset_12_status == -3 ? strong_os + asset_12 + " (Strong) \n" : strong_os
+strong_os := asset_13 != '' and asset_13_status == -3 ? strong_os + asset_13 + " (Strong) \n" : strong_os
+strong_os := asset_14 != '' and asset_14_status == -3 ? strong_os + asset_14 + " (Strong) \n" : strong_os
+strong_os := asset_15 != '' and asset_15_status == -3 ? strong_os + asset_15 + " (Strong) \n" : strong_os
+strong_os := asset_16 != '' and asset_16_status == -3 ? strong_os + asset_16 + " (Strong) \n" : strong_os
+strong_os := asset_17 != '' and asset_17_status == -3 ? strong_os + asset_17 + " (Strong) \n" : strong_os
+strong_os := asset_18 != '' and asset_18_status == -3 ? strong_os + asset_18 + " (Strong) \n" : strong_os
+strong_os := asset_19 != '' and asset_19_status == -3 ? strong_os + asset_19 + " (Strong) \n" : strong_os
+strong_os := asset_20 != '' and asset_20_status == -3 ? strong_os + asset_20 + " (Strong) \n" : strong_os
+strong_os := asset_21 != '' and asset_21_status == -3 ? strong_os + asset_21 + " (Strong) \n" : strong_os
+strong_os := asset_22 != '' and asset_22_status == -3 ? strong_os + asset_22 + " (Strong) \n" : strong_os
+strong_os := asset_23 != '' and asset_23_status == -3 ? strong_os + asset_23 + " (Strong) \n" : strong_os
+strong_os := asset_24 != '' and asset_24_status == -3 ? strong_os + asset_24 + " (Strong) \n" : strong_os
+strong_os := asset_25 != '' and asset_25_status == -3 ? strong_os + asset_25 + " (Strong) \n" : strong_os
+strong_os := asset_26 != '' and asset_26_status == -3 ? strong_os + asset_26 + " (Strong) \n" : strong_os
+strong_os := asset_27 != '' and asset_27_status == -3 ? strong_os + asset_27 + " (Strong) \n" : strong_os
+strong_os := asset_28 != '' and asset_28_status == -3 ? strong_os + asset_28 + " (Strong) \n" : strong_os
+strong_os := asset_29 != '' and asset_29_status == -3 ? strong_os + asset_29 + " (Strong) \n" : strong_os
+strong_os := asset_30 != '' and asset_30_status == -3 ? strong_os + asset_30 + " (Strong) \n" : strong_os
+strong_os := asset_31 != '' and asset_31_status == -3 ? strong_os + asset_31 + " (Strong) \n" : strong_os
+strong_os := asset_32 != '' and asset_32_status == -3 ? strong_os + asset_32 + " (Strong) \n" : strong_os
+strong_os := asset_33 != '' and asset_33_status == -3 ? strong_os + asset_33 + " (Strong) \n" : strong_os
+strong_os := asset_34 != '' and asset_34_status == -3 ? strong_os + asset_34 + " (Strong) \n" : strong_os
+strong_os := asset_35 != '' and asset_35_status == -3 ? strong_os + asset_35 + " (Strong) \n" : strong_os
+strong_os := asset_36 != '' and asset_36_status == -3 ? strong_os + asset_36 + " (Strong) \n" : strong_os
+strong_os := asset_37 != '' and asset_37_status == -3 ? strong_os + asset_37 + " (Strong) \n" : strong_os
+strong_os := asset_38 != '' and asset_38_status == -3 ? strong_os + asset_38 + " (Strong) \n" : strong_os
+strong_os := asset_39 != '' and asset_39_status == -3 ? strong_os + asset_39 + " (Strong) \n" : strong_os
+strong_os := asset_40 != '' and asset_40_status == -3 ? strong_os + asset_40 + " (Strong) \n" : strong_os
+//} end
+
+//--------------
+// Prep Label Value
+//--------------
+var assetcount = asset_01=='' and asset_02=='' and asset_03=='' and asset_04=='' and asset_05=='' and asset_06=='' and asset_07=='' and asset_08=='' and asset_09=='' and asset_10=='' and asset_11=='' and asset_12=='' and asset_13=='' and asset_14=='' and asset_15=='' and asset_16=='' and asset_17=='' and asset_18=='' and asset_19=='' and asset_20=='' and asset_21=='' and asset_22=='' and asset_23=='' and asset_24=='' and asset_25=='' and asset_26=='' and asset_27=='' and asset_28=='' and asset_29=='' and asset_30=='' and asset_31=='' and asset_32=='' and asset_33=='' and asset_34=='' and asset_35=='' and asset_36=='' and asset_37=='' and asset_38=='' and asset_39=='' and asset_40=='' ? 0 : 1 
+var tf         = custom_tf == "" ? timeframe.period : custom_tf 
+var brl        = "\n-----------------------\n"
+
+title  = "Mean Reversal Screener:\nTimeframe = "+tf+brl
+
+checklist   = assetcount==0 ? "No Asset Defined\nPlease update parameter " : ""
+obList      = ""
+osList      = ""
+
+if(assetcount>0)
+    if(strong_ob+normal_ob+weak_ob != "")
+        obList := "\nOverBought List: "+brl+strong_ob+normal_ob+weak_ob
+    
+    if(strong_os+normal_os+weak_os != "")
+        osList := "\nOverSold List: "+brl+strong_os+normal_os+weak_os
+    
+    if(obList=="" and osList == "")
+        checklist := "Nothing Interesting"
+
+
+//--------------
+// Draw Label
+//--------------
+label _lbl  = label.new(time, close, xloc=xloc.bar_time,
+  text      = title + checklist + osList + obList,
+  color     = color.black, 
+  style     = label.style_label_left, 
+  textcolor = color.white,
+  size      = size.normal, 
+  textalign = text.align_left)
+  
+label.set_x(_lbl, label.get_x(_lbl) + round(change(time)*10))
+label.delete(_lbl[1])

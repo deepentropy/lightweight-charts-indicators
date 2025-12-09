@@ -1,0 +1,161 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=6
+indicator("Volume Profile + Pivot Levels [ChartPrime]", overlay = true, max_bars_back = 500, max_labels_count = 500, max_polylines_count = 100, max_lines_count = 500)
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+start = input.int(200, "Period", maxval = 500, group = "Volume Profile")
+bins  = input.int(50, "Volume Profile Resolution", group = "Volume Profile")
+poc_  = input.bool(true, "PoC", group = "Volume Profile")
+
+pivots_     = input.bool(true, "Display", group = "Pivots")
+pivotLength = input.int(10, "Length", group = "Pivots")
+pivotFilter = input.int(20, "Filter % 0-100", group = "Pivots")
+
+type Pivot 
+    float value 
+    int index 
+    bool isHigh
+
+Bins        = array.new<float>(bins, 0)
+Delta       = array.new<float>(bins, 0)
+var points  = array.new<chart.point>()
+
+var polyline poly = na
+var line poc      = na
+var label pocLbl  = na
+var pivots        = array.new<Pivot>()
+var pivotLevels   = array.new<line>()
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+ph = ta.pivothigh(pivotLength, pivotLength)
+pl = ta.pivotlow(pivotLength, pivotLength)
+
+if not na(ph)
+    p = Pivot.new(high[pivotLength], bar_index-pivotLength, true)
+    pivots.push(p)
+if not na(pl)
+    p = Pivot.new(low[pivotLength], bar_index-pivotLength, false)
+    pivots.push(p)
+
+
+if pivots.size() > 0
+    for p in pivots
+        if p.index <= bar_index-start
+
+            pivots.remove(pivots.indexof(p))
+
+
+HL      = array.new<float>()
+offset  = 100
+
+if  barstate.islast 
+
+    for i = 0 to start - 1
+        HL.push(high[i])
+        HL.push(low[i])
+
+    H = HL.max()
+    L = HL.min()
+
+    poly.delete()
+    array.clear(points)
+    poc.delete()
+    pocLbl.delete()
+
+    // Bin size
+    bin_size = (H - L) / bins
+
+    // Populate Bins with frequency counts
+    for i = 0 to bins - 1
+        bin_low = L + bin_size * i
+        bin_high = bin_low + bin_size
+
+        for j = 0 to start-1
+            if close[j] >= bin_low-bin_size and close[j] < bin_high+bin_size
+                array.set(Bins, i, array.get(Bins, i) + volume[j])
+            array.set(Delta, i, array.get(Delta, i) + (close[j] > open[j] ? volume : - volume))
+
+
+    // Draw boxes for each bin
+    for i = 0 to bins - 1
+        
+        bin_low = L + bin_size * i
+        bin_high = bin_low + bin_size
+
+        mid = math.avg(bin_low, bin_high)    
+
+        bin_value = array.get(Bins, i)
+        bin_value1 = array.get(Bins, i-1)
+
+        left = bar_index-start
+        right = left + math.round(bin_value/Bins.max()*50)
+
+        volPercent = bin_value/Bins.max()*100
+
+        if i == 0 
+            points.push(chart.point.from_index(left, bin_low))
+
+        cp1 = chart.point.from_index(right+4, mid)
+ 
+        points.push(cp1)
+ 
+        if i == bins - 1
+            points.push(chart.point.from_index(left, bin_high))
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// --------------------------------------------------------------------------------------------------------------------{
+
+        if volPercent == 100 and poc_
+            poc := line.new(right+4, mid, bar_index, mid, width = 2)
+            pocLbl := label.new(bar_index, mid, style = label.style_label_left, text = str.tostring(bin_value, format.volume))
+
+        if pivots.size() > 0 and pivots_
+            for p in pivots
+
+                val = p.value
+
+                if math.abs(mid-val) <= bin_size and volPercent >= pivotFilter and bar_index-start + 54 <= p.index
+
+                    color = p.isHigh ? color.maroon : color.teal
+
+                    txt = p.isHigh ? str.tostring(bin_value, format.volume) + "\n" + str.tostring(volPercent, format.percent) : str.tostring(volPercent, format.percent) + "\n" + str.tostring(bin_value, format.volume)
+
+                    label.new(p.index, p.value, style = p.isHigh ? label.style_label_down : label.style_label_up, color = color, text = txt, force_overlay = true)
+                    line.new(p.index-pivotLength, p.value, p.index+pivotLength, p.value, color = color, force_overlay = true, width = 2)
+
+                    pivotLevels.push(line.new(p.index, p.value, p.index, p.value, style = line.style_dotted, color = color))
+
+
+
+    for j = start-1 to 0
+  
+        if pivotLevels.size() > 0 
+            for p in pivotLevels
+
+                priceVal = p.get_y1()
+                if high[j] > priceVal and low[j] < priceVal and bar_index[j] > p.get_x1()
+                    p.set_x2(bar_index[j])
+                    pivotLevels.remove(pivotLevels.indexof(p))
+                else 
+                    p.set_x2(bar_index)
+
+    delta = Delta.sum()
+
+    MColor = delta > 0 ? color.teal : color.maroon
+
+    poc.set_color(MColor)
+    pocLbl.set_color(MColor)
+    poly     := polyline.new(points, line_color = MColor, line_width = 4, force_overlay = true, curved = true)
+// --------------------------------------------------------------------------------------------------------------------}

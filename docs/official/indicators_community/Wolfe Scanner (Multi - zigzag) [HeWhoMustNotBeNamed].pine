@@ -1,0 +1,226 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Trendoscope Pty Ltd, Trendoscope®
+//                                       ░▒             
+//                                  ▒▒▒   ▒▒      
+//                              ▒▒▒▒▒     ▒▒      
+//                      ▒▒▒▒▒▒▒░     ▒     ▒▒          
+//                  ▒▒▒▒▒▒           ▒     ▒▒          
+//             ▓▒▒▒       ▒        ▒▒▒▒▒▒▒▒▒▒▒  
+//   ▒▒▒▒▒▒▒▒▒▒▒ ▒        ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒         
+//   ▒  ▒       ░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░        
+//   ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░▒▒▒▒▒▒▒▒         
+//   ▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ ▒▒                       
+//    ▒▒▒▒▒         ▒▒▒▒▒▒▒                            
+//                 ▒▒▒▒▒▒▒▒▒                           
+//                ▒▒▒▒▒ ▒▒▒▒▒                          
+//               ░▒▒▒▒   ▒▒▒▒▓      ████████╗██████╗ ███████╗███╗   ██╗██████╗  ██████╗ ███████╗ ██████╗ ██████╗ ██████╗ ███████╗
+//              ▓▒▒▒▒     ▒▒▒▒      ╚══██╔══╝██╔══██╗██╔════╝████╗  ██║██╔══██╗██╔═══██╗██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔════╝
+//              ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒        ██║   ██████╔╝█████╗  ██╔██╗ ██║██║  ██║██║   ██║███████╗██║     ██║   ██║██████╔╝█████╗ 
+//             ▒▒▒▒▒       ▒▒▒▒▒       ██║   ██╔══██╗██╔══╝  ██║╚██╗██║██║  ██║██║   ██║╚════██║██║     ██║   ██║██╔═══╝ ██╔══╝  
+//            ▒▒▒▒▒         ▒▒▒▒▒      ██║   ██║  ██║███████╗██║ ╚████║██████╔╝╚██████╔╝███████║╚██████╗╚██████╔╝██║     ███████╗
+//             ▒▒             ▒                        
+//@version=5
+indicator("Wolfe Scanner [Trendoscope®]", shorttitle='Wolfe [Trendoscope®]', max_lines_count=500, max_labels_count=500, overlay=true)
+import HeWhoMustNotBeNamed/rzigzag/10 as zigzag
+import HeWhoMustNotBeNamed/_matrix/5 as ma
+
+theme = input.string('Dark', title='Theme', options=['Light', 'Dark'], group='Generic',
+         tooltip='Chart theme settings. Line and label colors are generted based on the theme settings. If dark theme is selected, '+
+         'lighter colors are used and if light theme is selected, darker colors are used.')
+avoidOverlap = input.bool(false, 'Suppress Overlap', group='Generic',
+         tooltip='Avoids plotting wedge if there is an existing wedge at starting point. This does not avoid nesting wedges (Wedge within wedge)')
+drawZigzag = input.bool(true, 'Draw Zigzag', group='Generic', tooltip='Draw zigzag lines and mark pivots within wedge')
+drawProjection = input.bool(true, 'Draw Projection', group='Generic', tooltip='Draw Wolfe projection')
+
+zigzagLength = input.int(3, step=5, minval=3, title='Length', group='Zigzag')
+zigzagDepth = input.int(250, step=5, minval=3, title='Depth', group='Zigzag')
+minLevel = input.int(2, "Min Level", group='Zigzag', minval = 1, tooltip = 'Min Level to calculate Wolfe')
+
+var themeColors = theme=="Dark"? array.from(
+         color.rgb(251, 244, 109),
+         color.rgb(141, 186, 81),
+         color.rgb(74, 159, 245),
+         color.rgb(255, 153, 140),
+         color.rgb(255, 149, 0),
+         color.rgb(0, 234, 211),
+         color.rgb(167, 153, 183),
+         color.rgb(255, 210, 113),
+         color.rgb(119, 217, 112),
+         color.rgb(95, 129, 228),
+         color.rgb(235, 146, 190),
+         color.rgb(198, 139, 89),
+         color.rgb(200, 149, 149),
+         color.rgb(196, 182, 182),
+         color.rgb(255, 190, 15),
+         color.rgb(192, 226, 24),
+         color.rgb(153, 140, 235),
+         color.rgb(206, 31, 107),
+         color.rgb(251, 54, 64),
+         color.rgb(194, 255, 217),
+         color.rgb(255, 219, 197),
+         color.rgb(121, 180, 183)
+         ) : array.from(
+         color.rgb(61, 86, 178),
+         color.rgb(57, 163, 136),
+         color.rgb(250, 30, 14),
+         color.rgb(169, 51, 58),
+         color.rgb(225, 87, 138),
+         color.rgb(62, 124, 23),
+         color.rgb(244, 164, 66),
+         color.rgb(134, 72, 121),
+         color.rgb(113, 159, 176),
+         color.rgb(170, 46, 230),
+         color.rgb(161, 37, 104),
+         color.rgb(189, 32, 0),
+         color.rgb(16, 86, 82),
+         color.rgb(200, 92, 92),
+         color.rgb(63, 51, 81),
+         color.rgb(114, 106, 149),
+         color.rgb(171, 109, 35),
+         color.rgb(247, 136, 18),
+         color.rgb(51, 71, 86),
+         color.rgb(12, 123, 147),
+         color.rgb(195, 43, 173)
+         )
+
+
+maxPatternsReference = 10
+
+var pivotBarMatrix = matrix.new<int>()
+
+
+wedgeLine(l1StartX, l1StartY, l1EndX, l1EndY, l2StartX, l2StartY, l2EndX, l2EndY, zgColor, lastDir)=>
+    l1t = line.new(l1StartX, l1StartY, l1EndX, l1EndY, color=zgColor, extend=extend.both)
+    l2t = line.new(l2StartX, l2StartY, l2EndX, l2EndY, color=zgColor, extend=extend.both)
+    
+    startBar = l1StartX
+    endBar = l1EndX
+    l2Start = line.get_price(l2t,startBar)
+    l2End = line.get_price(l2t, endBar)
+
+    line.set_x1(l2t, startBar)
+    line.set_y1(l2t, l2Start)
+    line.set_x2(l2t, endBar)
+    line.set_y2(l2t, l2End)
+    
+    l1Diff = l1StartY-l1EndY
+    l2Diff = l2Start-l2End
+    
+    width = math.abs(endBar-startBar)
+    
+    closingEndBar = endBar
+    closingEndPrice = l2End
+    closingSoon = false
+    
+    isContracting = math.abs(l1StartY-l2Start) > math.abs(l1EndY-l2End)
+    
+    isNotTriangle = math.sign(l1StartY-l1EndY) == math.sign(l2Start-l2End)
+    
+    isWolfeWedge = isContracting and isNotTriangle
+    
+    if(isWolfeWedge)
+        for i =endBar to endBar+math.min(500, 2*width)
+            l1Price = line.get_price(l1t, i)
+            l2Price = line.get_price(l2t, i)
+            if(lastDir* (l1Price-l2Price) <= 0)
+                closingEndBar := i
+                closingSoon := true
+                closingEndPrice := (l1Price + l2Price)/2
+                break
+    
+        if(closingSoon)
+            line.set_x2(l2t, closingEndBar)
+            line.set_y2(l2t, closingEndPrice)
+            line.set_x2(l1t, closingEndBar)
+            line.set_y2(l1t, closingEndPrice)
+    
+    line.set_extend(l1t, extend.none)
+    line.set_extend(l2t, extend.none)
+    [l1t, l2t, closingEndBar, closingEndPrice, isWolfeWedge and closingSoon]
+    
+find_wedge(zigzagmatrix, startIndex)=>
+    _5 = matrix.get(zigzagmatrix, startIndex, 0)
+    _5Bar = int(matrix.get(zigzagmatrix, startIndex, 1))
+    lastDir = matrix.get(zigzagmatrix, startIndex, 3)
+    _4 = matrix.get(zigzagmatrix, startIndex+1, 0)
+    _4Bar = int(matrix.get(zigzagmatrix, startIndex+1, 1))
+    _3 = matrix.get(zigzagmatrix, startIndex+2, 0)
+    _3Bar = int(matrix.get(zigzagmatrix, startIndex+2, 1))
+    _2 = matrix.get(zigzagmatrix, startIndex+3, 0)
+    _2Bar = int(matrix.get(zigzagmatrix, startIndex+3, 1))
+    _1 = matrix.get(zigzagmatrix, startIndex+4, 0)
+    _1Bar = int(matrix.get(zigzagmatrix, startIndex+4, 1))
+
+    existingPattern = false
+    for i=0 to matrix.rows(pivotBarMatrix) > 0? matrix.rows(pivotBarMatrix)-1 : na
+        commonPivotsCount = (_1Bar == matrix.get(pivotBarMatrix, i, 0) ? 1 : 0) + 
+                             (_2Bar == matrix.get(pivotBarMatrix, i, 1) ? 1 : 0) + 
+                             (_3Bar == matrix.get(pivotBarMatrix, i, 2) ? 1 : 0) + 
+                             (_4Bar == matrix.get(pivotBarMatrix, i, 3) ? 1 : 0) + 
+                             (_5Bar == matrix.get(pivotBarMatrix, i, 4) ? 1 : 0)
+
+        if ( commonPivotsCount >=3 ) or (avoidOverlap and _1Bar >= matrix.get(pivotBarMatrix, i, 0) and _1Bar <= matrix.get(pivotBarMatrix, i, 4))
+            existingPattern := true
+            break
+        
+
+    if(not existingPattern)
+        basicCondition = lastDir > 0? _2 < math.min(_1, _3, _4, _5) and _5 > math.max(_1, _2, _3, _4) and _1 < _3 and _1 > _4 :
+                             _2 > math.max(_1, _3, _4, _5) and _5 < math.min(_1, _2, _3, _4) and _1 > _3 and _1 < _4
+                             
+        
+        if(basicCondition)
+            zgColor = array.pop(themeColors)
+            [l1t, l2t, closingEndBar, closingEndPrice, isWolfeWedge] = wedgeLine(_1Bar, _1, _5Bar, _5, _2Bar, _2, _4Bar, _4, zgColor, lastDir)
+            array.unshift(themeColors, zgColor)
+            
+
+            delete = true
+            if(isWolfeWedge)
+                ma.unshift(pivotBarMatrix, array.from(_1Bar, _2Bar, _3Bar, _4Bar, _5Bar), maxPatternsReference)
+                alert('New Wolfe Wave Identified')
+                if(barstate.ishistory)
+                    log.info('New Wolfe Wave Identified')
+                
+                delete := false
+                if(drawZigzag)
+                    line.new(_1Bar, _1, _2Bar, _2, color=zgColor, extend=extend.none, width=0, style=line.style_dotted)
+                    line.new(_2Bar, _2, _3Bar, _3, color=zgColor, extend=extend.none, width=0, style=line.style_dotted)
+                    line.new(_3Bar, _3, _4Bar, _4, color=zgColor, extend=extend.none, width=0, style=line.style_dotted)
+                    line.new(_4Bar, _4, _5Bar, _5, color=zgColor, extend=extend.none, width=0, style=line.style_dotted)
+
+                if(drawProjection)
+                    lproj = line.new(_1Bar, _1, _4Bar, _4, color=zgColor, extend=extend.right, width=0, style=line.style_dashed)
+                    lProjEndPrice = line.get_price(lproj, closingEndBar)
+                    line.set_x2(lproj, closingEndBar)
+                    line.set_y2(lproj, lProjEndPrice)
+                    line.set_extend(lproj, extend.none)
+                    line.new(closingEndBar, lProjEndPrice, closingEndBar, closingEndPrice, color=zgColor, extend=extend.none, width=0, style=line.style_dashed)
+                    
+            if(delete)
+                line.delete(l1t)
+                line.delete(l2t)
+
+scan_patterns(startIndex, newPivot, zigzagmatrix)=>
+    length = matrix.rows(zigzagmatrix)
+    numberOfPivots=5
+    if(length >= startIndex+5 and newPivot)
+        find_wedge(zigzagmatrix, startIndex)
+
+ohlc = array.from(high, low)
+
+setup(zigzagLength, zigzagDepth)=>
+    [zigzagmatrix, flags] = zigzag.zigzag(zigzagLength, ohlc, numberOfPivots= zigzagDepth)
+    newPivot = array.get(flags, 1)
+    doublePivot = array.get(flags, 2)
+    if(newPivot)
+        mlzigzag = zigzagmatrix
+        level = 1
+        while(matrix.rows(mlzigzag) >= 5)
+            if(level >= minLevel)
+                scan_patterns(1, doublePivot, zigzagmatrix)
+                scan_patterns(0, newPivot,zigzagmatrix)
+            mlzigzag := zigzag.nextlevel(mlzigzag, zigzagDepth)
+            level := level+1
+
+setup(zigzagLength, zigzagDepth)

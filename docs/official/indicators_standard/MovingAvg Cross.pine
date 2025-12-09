@@ -1,0 +1,17 @@
+//@version=6
+strategy("MovingAvg Cross", overlay=true)
+length = input(9, "Length")
+confirmBars = input(1, "Confirm bars")
+price = close
+ma = ta.sma(price, length)
+bcond = price > ma
+bcount = 0
+bcount := bcond ? nz(bcount[1]) + 1 : 0
+if (bcount == confirmBars)
+	strategy.entry("MACrossLE", strategy.long, comment="MACrossLE")
+scond = price < ma
+scount = 0
+scount := scond ? nz(scount[1]) + 1 : 0
+if (scount == confirmBars)
+	strategy.entry("MACrossSE", strategy.short, comment="MACrossSE")
+//plot(strategy.equity, title="equity", color=color.red, linewidth=2, style=plot.style_areabr)

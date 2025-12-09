@@ -1,0 +1,20 @@
+//@version=6
+indicator(title="Keltner Channels", shorttitle="KC", overlay=true, timeframe="", timeframe_gaps=true)
+length = input.int(20, minval=1)
+mult = input(2.0, "Multiplier")
+src = input(close, title="Source")
+exp = input(true, "Use Exponential MA", display = display.data_window)
+BandsStyle = input.string("Average True Range", options = ["Average True Range", "True Range", "Range"], title="Bands Style", display = display.data_window)
+atrlength = input(10, "ATR Length", display = display.data_window)
+esma(source, length)=>
+	s = ta.sma(source, length)
+	e = ta.ema(source, length)
+	exp ? e : s
+ma = esma(src, length)
+rangema = BandsStyle == "True Range" ? ta.tr(true) : BandsStyle == "Average True Range" ? ta.atr(atrlength) : ta.rma(high - low, length)
+upper = ma + rangema * mult
+lower = ma - rangema * mult
+u = plot(upper, color=#2962FF, title="Upper")
+plot(ma, color=#2962FF, title="Basis")
+l = plot(lower, color=#2962FF, title="Lower")
+fill(u, l, color=color.rgb(33, 150, 243, 95), title="Background")

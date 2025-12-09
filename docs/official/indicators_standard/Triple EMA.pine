@@ -1,0 +1,8 @@
+//@version=6
+indicator(title="Triple EMA", shorttitle="TEMA", overlay=true, timeframe="", timeframe_gaps=true)
+length = input.int(9, minval=1)
+ema1 = ta.ema(close, length)
+ema2 = ta.ema(ema1, length)
+ema3 = ta.ema(ema2, length)
+out = 3 * (ema1 - ema2) + ema3
+plot(out, "TEMA", color=#2962FF)

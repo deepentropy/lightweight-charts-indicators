@@ -1,0 +1,15 @@
+// 
+// @author LazyBear
+// 
+study("CCI coded OBV", shorttitle="CCIOBV_LB")
+src = close
+length = input(20, minval=1, title="CCI Length")
+threshold=input(0, title="CCI threshold for OBV coding")
+lengthema=input(13, title="EMA length")
+obv(src) => 
+    cum(change(src) > 0 ? volume : change(src) < 0 ? -volume : 0*volume)
+    
+o=obv(src)
+c=cci(src, length)
+plot(o, color=c>=threshold?green:red, title="OBV_CCI coded", linewidth=2)
+plot(ema(o,lengthema), color=orange, linewidth=2)

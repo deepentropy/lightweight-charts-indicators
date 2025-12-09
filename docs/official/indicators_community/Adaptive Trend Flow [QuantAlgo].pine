@@ -1,0 +1,162 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © QuantAlgo
+
+//@version=6
+indicator(title="Adaptive Trend Flow [QuantAlgo]", overlay=true, max_labels_count=500)
+
+//              ╔════════════════════════════════╗              //
+//              ║      USER-DEFINED SETTINGS     ║              //
+//              ╚════════════════════════════════╝              //
+
+// Input Groups
+var string trend_settings    = "════════ Trend Settings ════════"
+var string visual_settings   = "════════ Visualization Settings ════════"
+
+// Tooltips
+tooltip_length      = "Length of the trend calculation period. Higher values create smoother signals."
+tooltip_smooth      = "Smoothing period for volatility. Higher values reduce noise."
+tooltip_sens        = "Multiplier for volatility bands. Higher values create wider bands."
+tooltip_bars        = "Enable/disable bar coloring based on trend direction"
+tooltip_bg          = "Enable/disable background gradient coloring"
+tooltip_signals     = "Enable/disable signal markers on trend changes"
+
+// Trend Settings
+length        = input.int(10, "Main Length", minval=2, 
+                 group=trend_settings, tooltip=tooltip_length)
+smooth_len    = input.int(14, "Smoothing Length", minval=2, 
+                 group=trend_settings, tooltip=tooltip_smooth)
+sensitivity   = input.float(2.0, "Sensitivity", step=0.1, 
+                 group=trend_settings, tooltip=tooltip_sens)
+
+// Visualization Settings
+bullcolor     = input.color(#00ffaa, "Bullish Color", group=visual_settings)
+bearcolor     = input.color(#ff0000, "Bearish Color", group=visual_settings)
+showbars      = input.bool(true, "Color Bars?", group=visual_settings, tooltip=tooltip_bars)
+showbg        = input.bool(true, "Background Color?", group=visual_settings, tooltip=tooltip_bg)
+showsignals   = input.bool(true, "Show Signals?", group=visual_settings, tooltip=tooltip_signals)
+
+//              ╔════════════════════════════════╗              //
+//              ║       TREND CALCULATIONS       ║              //
+//              ╚════════════════════════════════╝              //
+
+calculate_trend_levels() =>
+    typical = hlc3
+    fast_ema = ta.ema(typical, length)
+    slow_ema = ta.ema(typical, length * 2)
+    basis = (fast_ema + slow_ema) / 2
+    
+    vol = ta.stdev(typical, length)
+    smooth_vol = ta.ema(vol, smooth_len)
+    
+    upper = basis + (smooth_vol * sensitivity)
+    lower = basis - (smooth_vol * sensitivity)
+    
+    [basis, upper, lower]
+
+get_trend_state(upper, lower, basis) =>
+    var float prev_level = na
+    var int trend = 0
+    
+    if na(prev_level)
+        trend := close > basis ? 1 : -1
+        prev_level := trend == 1 ? lower : upper
+    
+    if trend == 1
+        if close < lower
+            trend := -1
+            prev_level := upper
+        else
+            prev_level := lower
+    else
+        if close > upper
+            trend := 1
+            prev_level := lower
+        else
+            prev_level := upper
+    
+    [trend, prev_level]
+
+[basis, upper, lower] = calculate_trend_levels()
+[trend, level] = get_trend_state(upper, lower, basis)
+
+//              ╔════════════════════════════════╗              //
+//              ║         VISUALIZATION          ║              //
+//              ╚════════════════════════════════╝              //
+
+// Signal detection
+long_signal = trend == 1 and trend[1] == -1
+short_signal = trend == -1 and trend[1] == 1
+
+// Plot average/basis line
+p2 = plot(basis, color=trend == 1 ? bullcolor : bearcolor, linewidth=2)
+
+// Plot trend line with breaks
+p1 = plot(level, 
+     color=close > level ? bullcolor : bearcolor,
+     linewidth=2, 
+     style=plot.style_linebr)
+
+// Plot additional trend line
+plot(level, 
+     color=close > level ? bullcolor : bearcolor,
+     linewidth=2, 
+     style=plot.style_linebr)
+
+// Add labels for crossovers
+if showsignals and ta.crossunder(close, level)
+    label.new(bar_index, level, "𝑺", 
+             color=bearcolor,
+             textcolor=chart.fg_color,
+             style=label.style_label_lower_right)
+
+if showsignals and ta.crossover(close, level)
+    label.new(bar_index, level, "𝑳", 
+             color=bullcolor,
+             textcolor=chart.bg_color,
+             style=label.style_label_upper_right)
+
+// Background gradient coloring
+var float intensity = 0.0
+var int prev_trend = 0
+
+// Reset intensity on trend change
+if trend != prev_trend
+    intensity := 0.0
+    prev_trend := trend
+
+// Increment intensity based on trend
+intensity := trend == 1 ? math.min(intensity + 1, 20) : trend == -1 ? math.min(intensity + 1, 20) : intensity
+
+// Calculate gradient colors
+color grad_color = trend == 1 ? 
+     color.from_gradient(intensity, 0, 20, color.new(bullcolor, 95), color.new(bullcolor, 80)) :
+     color.from_gradient(intensity, 0, 20, color.new(bearcolor, 95), color.new(bearcolor, 80))
+
+bgcolor(showbg ? grad_color : na)
+
+// Fill between the lines
+fill(p1, p2, level, basis, trend == 1 ? bullcolor : bearcolor, na)
+fill(p1, p2, level, basis, trend == 1 ? bullcolor : bearcolor, na)
+
+// Bar Coloring
+barcolor(showbars ? (trend == 1 ? color.new(bullcolor, 15) : color.new(bearcolor, 15)) : na)
+
+//              ╔════════════════════════════════╗              //
+//              ║             ALERTS             ║              //
+//              ╚════════════════════════════════╝              //
+
+alertcondition(long_signal, title="Adaptive Trend Flow Long", 
+     message="Adaptive Trend Flow Long {{exchange}}:{{ticker}}")
+alertcondition(short_signal, title="Adaptive Trend Flow Short", 
+     message="Adaptive Trend Flow Short {{exchange}}:{{ticker}}")
+
+//              ╔════════════════════════════════╗              //
+//              ║           CREATED BY           ║              //
+//              ╚════════════════════════════════╝              //
+
+// ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗     █████╗ ██╗      ██████╗  ██████╗ 
+//██╔═══██╗██║   ██║██╔══██╗████╗  ██║╚══██╔══╝    ██╔══██╗██║     ██╔════╝ ██╔═══██╗
+//██║   ██║██║   ██║███████║██╔██╗ ██║   ██║       ███████║██║     ██║  ███╗██║   ██║
+//██║▄▄ ██║██║   ██║██╔══██║██║╚██╗██║   ██║       ██╔══██║██║     ██║   ██║██║   ██║
+//╚██████╔╝╚██████╔╝██║  ██║██║ ╚████║   ██║       ██║  ██║███████╗╚██████╔╝╚██████╔╝
+// ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝       ╚═╝  ╚═╝╚══════╝ ╚═════╝  ╚═════╝

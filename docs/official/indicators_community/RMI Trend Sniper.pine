@@ -1,0 +1,98 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TZack88
+
+//@version=5
+indicator('RMI Trend Sniper', overlay=true,max_labels_count = 500)
+
+// ** ---> Inputs ------------- {
+var bool positive                   = false
+var bool negative                   = false
+string RSI_group                    = "RMI Settings"
+string mom_group                    = "Range Vales"
+string visual                       = "Visuals" 
+int Length                          = input(14,"RMI Length ",inline = "RMI",group = RSI_group)
+int pmom                            = input(66," Positive above",inline = "rsi1",group =RSI_group )
+int nmom                            = input(30,"Negative below",inline = "rsi1",group =RSI_group )
+bool filleshow                      = input(true,"Show Range MA ",inline = "002",group =visual )
+color bull                          = input(#00bcd4,"",inline = "002",group =visual )
+color bear                          = input(#ff5252,"",inline = "002",group =visual )
+float BarRange                      = high - low
+
+up = ta.rma(math.max(ta.change(close), 0), Length)
+down = ta.rma(-math.min(ta.change(close), 0), Length)
+rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+mf = ta.mfi(hlc3, Length)
+rsi_mfi = math.avg(rsi,mf)
+
+
+
+//------------------- }
+
+bool p_mom                          = rsi_mfi[1] < pmom and
+      rsi_mfi > pmom and
+      rsi_mfi > nmom and
+       ta.change(ta.ema(close,5)) > 0
+
+bool n_mom                          = rsi_mfi < nmom and
+      ta.change(ta.ema(close,5)) < 0
+// //  ---> Momentums ------------- {
+
+if p_mom
+    positive:= true
+    negative:= false
+
+if n_mom
+    positive:= false
+    negative:= true     
+
+
+
+//
+method _Band(int len)=>
+    math.min (ta.atr (len) * 0.3, close * (0.3/100)) [20] /2 * 8 
+
+
+Band = _Band(30) 
+
+
+method rangeMA(float Range,Prd)=>
+    weight = Range / math.sum(Range, Prd)
+    sum = math.sum(close * weight, Prd)
+    tw= math.sum(weight, Prd)
+    sum / tw
+
+
+// Calculate the RWMA
+rwma = rangeMA(BarRange,20)
+
+// Plotting the RWMA.
+colour = positive ? bull : bear
+RWMA = positive ? rwma - Band : negative ? rwma + Band : na
+alpha = color.new(color.black, 100)
+
+center = plot(filleshow ? RWMA : na, "RRTH", colour, editable = true)
+plot(filleshow ? RWMA : na, "RRTH", color.new(colour, 70), 2, editable = true)
+plot(filleshow ? RWMA : na, "RRTH", color.new(colour, 80), 3, editable = true)
+plot(filleshow ? RWMA : na, "RRTH", color.new(colour, 90), 4, editable = true)
+
+max = RWMA + Band
+min = RWMA - Band
+
+top = plot(filleshow ? max: na, "RRTH", alpha)
+bottom = plot(filleshow ? min: na, "RRTH", alpha)
+fill(top, center, top_value =  max, bottom_value = RWMA, bottom_color = color.new(colour, 75), top_color = alpha, editable = true)
+fill(center, bottom, top_value =  RWMA, bottom_value = min, bottom_color = alpha, top_color = color.new(colour, 75), editable = true)
+Barcol = positive ? color.green:color.red
+
+if negative and not negative[1]
+    label.new(bar_index,max+(Band/2),"",color = color.red,size=size.small)
+if positive and not positive[1]
+    label.new(bar_index,min-(Band/2),"",color = color.green,size=size.small,style= label.style_label_up)
+
+plotcandle(open, high, low, close,color = Barcol,wickcolor = Barcol,bordercolor  = Barcol)
+barcolor(color = Barcol)
+
+
+// SPOT Trading Alerts
+alertcondition(positive and not positive[1],"BUY")
+alertcondition(negative and not negative[1],"SELL")

@@ -1,0 +1,84 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("Supertrend MTF Heikin Ashi", overlay = true)
+mode =input(title = "HTF Method", defval = 'Auto', options=['Auto', 'User Defined'])
+//auto higher time frame
+HTFo =timeframe.period == '1' ? '5' : 
+  timeframe.period == '3' ? '15' : 
+  timeframe.period == '5' ? '15' : 
+  timeframe.period == '15' ? '60' : 
+  timeframe.period == '30' ? '120' : 
+  timeframe.period == '45' ? '120' : 
+  timeframe.period == '60' ? '240' : 
+  timeframe.period == '120' ? '240' : 
+  timeframe.period == '180' ? '240' : 
+  timeframe.period == '240' ? 'D' : 
+  timeframe.period == 'D' ? 'W' :
+  timeframe.period == 'W' ? '5W' :
+  'D'
+  
+HTFm = input('5', title = "Time Frame (if HTF Method=User Defined)", type=input.resolution)
+HTF = mode == 'Auto' ? HTFo : HTFm
+
+Mult = input(defval = 2.0, title = "ATR Factor", minval = 0.5, maxval = 100, step = 0.1)
+Period = input(defval = 7, title = "ATR Period", minval = 1,maxval = 100)
+
+// current time frame
+
+//Heikin Ashi high, low, close
+h = security(heikinashi(syminfo.tickerid), timeframe.period, high)
+l = security(heikinashi(syminfo.tickerid), timeframe.period, low)
+c = security(heikinashi(syminfo.tickerid), timeframe.period, close)
+
+//HeikinAshi atr
+Atr = security(heikinashi(syminfo.tickerid), timeframe.period, atr(Period))
+
+Up = (h + l) / 2 - (Mult * Atr)
+Dn = (h + l) / 2 + (Mult * Atr)
+
+float TUp = na
+float TDown = na
+Trend = 0
+
+TUp := c[1] > TUp[1] ? max(Up,TUp[1]) : Up
+TDown := c[1] < TDown[1] ? min(Dn,TDown[1]) : Dn
+Trend := c > TDown[1] ? 1: c < TUp[1]? -1: nz(Trend[1],1)
+Trailingsl = Trend == 1 ? TUp : TDown
+linecolor = Trend == 1 and nz(Trend[1]) == 1 ? color.lime : Trend == -1 and nz(Trend[1]) == -1 ? color.red : na
+plot(Trailingsl, color = linecolor ,  linewidth = 2, title = "SuperTrend")
+
+// Higher Time Frame
+
+////// HTF high, low, close
+highhtf = security(heikinashi(syminfo.tickerid), HTF, high[1], lookahead = barmerge.lookahead_on)
+lowhtf = security(heikinashi(syminfo.tickerid), HTF, low[1], lookahead = barmerge.lookahead_on)
+closehtf = security(heikinashi(syminfo.tickerid), HTF, close[1], lookahead = barmerge.lookahead_on)
+
+// ATR for HTF
+HTfatr = security(heikinashi(syminfo.tickerid), HTF, atr(Period)[1], lookahead = barmerge.lookahead_on)
+
+Uphtf = abs(highhtf + lowhtf) / 2 - (Mult * HTfatr)
+Dnhtf = abs(highhtf + lowhtf) / 2 + (Mult * HTfatr)
+
+float TUphtf = na
+float TDownhtf = na
+TrendHtf = 0
+
+TUphtf := closehtf[1] > TUphtf[1] ? max(Uphtf, TUphtf[1]) : Uphtf
+TDownhtf := closehtf[1] < TDownhtf[1] ? min(Dnhtf,TDownhtf[1]) : Dnhtf
+TrendHtf := closehtf > TDownhtf[1] ? 1 : closehtf < TUphtf[1] ? -1: nz(TrendHtf[1], 1)
+TrailingslHtf = TrendHtf == 1 ? TUphtf : TDownhtf
+
+linecolorHtf = TrendHtf == 1 and nz(TrendHtf[1]) == 1 ? color.blue : TrendHtf == -1 and nz(TrendHtf[1]) == -1 ? color.red : na
+st = plot(TrailingslHtf, color = linecolorHtf ,  linewidth = 3, title = "Supertrend HTF")
+
+plot(TrendHtf == 1 and TrendHtf[1] == -1 ? TrailingslHtf : na, title="Supertrend HTF Trend Up", linewidth = 4, color=color.blue, style = plot.style_circles)
+plot(TrendHtf == -1 and TrendHtf[1] == 1 ? TrailingslHtf : na, title="Supertrend HTF Trend Down", linewidth = 4, color=color.red, style = plot.style_circles)
+
+//Alerts
+alertcondition(Trend == 1 and Trend[1] == -1, title='Supertrend Trend Up', message='Supertrend Trend Up')
+alertcondition(Trend == -1 and Trend[1] == 1, title='Supertrend  Trend Down', message='Supertrend Trend Down')
+alertcondition(TrendHtf == 1 and TrendHtf[1] == -1, title='Supertrend HTF Trend Up', message='Supertrend HTF Trend Upl')
+alertcondition(TrendHtf == -1 and TrendHtf[1] == 1, title='Supertrend HTF Trend Down', message='Supertrend HTF Trend Down')

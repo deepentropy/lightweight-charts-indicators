@@ -1,0 +1,16 @@
+//@version=3
+//created by Buff DORMEIER
+//author: KIVANC @fr3762 on twitter
+study("VOLUME WEIGHTED MACD V2", shorttitle="VWMACDV2")
+fastperiod = input(12,title="fastperiod",type=integer,minval=1,maxval=500)
+slowperiod = input(26,title="slowperiod",type=integer,minval=1,maxval=500)
+signalperiod = input(9,title="signalperiod",type=integer,minval=1,maxval=500)
+fastMA = ema(volume*close, fastperiod)/ema(volume, fastperiod)
+slowMA = ema(volume*close, slowperiod)/ema(volume, slowperiod)
+vwmacd = fastMA - slowMA
+signal = ema(vwmacd, signalperiod)
+hist= vwmacd - signal
+plot(vwmacd, color=blue, linewidth=2)
+plot(signal, color=red, linewidth=2)
+plot(hist, color=green, linewidth=4, style=histogram)
+plot(0, color=black)

@@ -1,0 +1,81 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © zzzcrypto123
+
+//@version=4
+study("Position Size Calculator","Calc", true)
+accbalance = input(1000.00, title="Account Balance")
+riskper = input(2.0, title="Risk Percentage")
+entry = input(0.0, title="Entry")
+sl = input(0.0, title = "Stop Loss")
+tp = input(0.0, title="Target Price")
+
+sldist = entry - sl
+tgdist = tp - entry 
+slper = sldist / entry * 100
+tgper = tgdist / entry * 100
+
+rr = tgper / slper
+size = accbalance * riskper / slper
+
+entryp = plot(entry, show_last = 20, offset = 20, title="Entry", color=#787b8600)
+tpp    = plot(tp   , show_last = 20, offset = 20, title="TP"   , color=#4caf5000)
+slp    = plot(sl   , show_last = 20, offset = 20, title="SL"   , color=#ff525200)
+
+fill(entryp, tpp, show_last=1, color=color.green, transp=50)
+fill(entryp, slp, show_last=1, color=color.red  , transp=50)
+
+f_tickFormat() =>
+    _s = tostring(syminfo.mintick)
+    _s := str.replace_all(_s, "25", "00")
+    _s := str.replace_all(_s, "5",  "0")
+    _s := str.replace_all(_s, "1",  "0")
+
+
+showscr = input(true, "Show Position Size Label")
+posscrX = input(30, "Position Size Label x-axis")
+color col = input(color.white, type=input.color, title="Text Color")
+f_color (_val ) => 
+     _val  ? #00000000 : na
+f_print (_txt ) => 
+     var _lbl  = label(na), 
+     label.delete(_lbl ), 
+     _lbl  := label.new(
+     time + (time-time[1])*posscrX , 
+     ohlc4[1], 
+     _txt ,
+     xloc.bar_time, 
+     yloc.price, 
+     f_color (  showscr ),
+     textcolor =  showscr ? col : na, 
+     size = size.normal, 
+     style=label.style_label_center
+     )
+f_print ( 
+     "\n Account Balance : "     + tostring(accbalance) + 
+     "\n Risk % : "              + tostring(riskper) + 
+     "\n\n Entry: "              + tostring(entry) + 
+     "\n Target : "              + tostring(tp) + 
+     "\n Stop Loss : "           + tostring(sl) + 
+     "\n\n Position Size : "     + tostring(abs(size), f_tickFormat()) +
+     "\n R/R : "                 + tostring(rr,"#.##") + " R"
+     )
+
+showLabel = input(true, title="Show R/R box labels")
+poslblX = input(10, "R/R Label x-axis")
+
+f_colorl(_val) => _val ? #4caf50 : na
+f_printl(_txt) => var _lbl = label(na), label.delete(_lbl), _lbl := label.new(time + (time-time[1])*poslblX, tp, _txt,
+     xloc.bar_time, yloc.price, f_colorl(showLabel), textcolor = showLabel ? color.white : na, size = size.normal, style=label.style_label_center)
+f_printl("Target: " + tostring(tgdist) + " (" + tostring(tgper, "#.##") + "%)")
+
+f_colors(_val) => _val ? #ff5252 : na
+f_prints(_txt) => var _lbl = label(na), label.delete(_lbl), _lbl := label.new(time + (time-time[1])*poslblX, sl, _txt,
+     xloc.bar_time, yloc.price, f_colors(showLabel), textcolor = showLabel ? color.white : na, size = size.normal, style=label.style_label_center)
+f_prints("Stop: " + tostring(sldist) + " (" + tostring(slper, "#.##") + "%)")
+
+f_colore(_val) => _val ? #787b86 : na
+rrlbl = "\n Account Balance : " + tostring(accbalance) + "\n Risk % : " + tostring(riskper) + "\n\n Position Size : " + tostring(abs(size), f_tickFormat())
+f_printe(_txt) => var _lbl = label(na), label.delete(_lbl), _lbl := label.new(time + (time-time[1])*poslblX, entry, _txt,
+     xloc.bar_time, yloc.price, f_colore(showLabel), textcolor = showLabel ? color.white : na, size = size.normal, style=label.style_label_center, tooltip=rrlbl)
+f_printe("R/R: " + tostring(rr, "#.##"))
+

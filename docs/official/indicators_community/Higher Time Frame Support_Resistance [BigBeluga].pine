@@ -1,0 +1,143 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Higher Time Frame Support/Resistance [BigBeluga]", "HTF Support/Resistance [BigBeluga]",
+             overlay            = true, 
+             max_bars_back      = 5000, 
+             max_labels_count   = 500)
+
+
+// Groups
+string group1 = "Levels 1"
+string group2 = "Levels 2"
+string group3 = "Levels 3"
+string group4 = "Levels 4"
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+bool   on_1        = input.bool(true, "", inline = group1)
+int    len1        = input.int(4, group1, inline = group1), 
+string timeframe1  = input.timeframe("240", "", inline = group1), 
+string style1      = input.string("Solid", "", ["Solid", "Dashed", "Dotted"], inline = group1)
+color  color1      = input.color(color.green, "", inline = group1)
+
+bool   on_2        = input.bool(true, "", inline = group2)
+int    len2        = input.int(5, group2, inline = group2), 
+string timeframe2  = input.timeframe("720", "", inline = group2), 
+string style2      = input.string("Solid", "", ["Solid", "Dashed", "Dotted"], inline = group2)
+color  color2      = input.color(color.blue, "", inline = group2)
+
+bool   on_3        = input.bool(true, "", inline = group3)
+int    len3        = input.int(5, group3, inline = group3), 
+string timeframe3  = input.timeframe("D", "", inline = group3), 
+string style3      = input.string("Solid", "", ["Solid", "Dashed", "Dotted"], inline = group3)
+color  color3      = input.color(color.purple, "", inline = group3)
+
+bool   on_4        = input.bool(true, "", inline = group4)
+int    len4        = input.int(5, group4, inline = group4), 
+string timeframe4  = input.timeframe("W", "", inline = group4), 
+string style4      = input.string("Solid", "", ["Solid", "Dashed", "Dotted"], inline = group4)
+color  color4      = input.color(color.orange, "", inline = group4)
+
+// Shadow of levels inputs
+int   s_lWidth    = input.int(5, "Levels Width", group = "Shadow", inline = "Shadow")
+int   s_tnsp      = input.int(85, "Transperent", group = "Shadow", inline = "Shadow")
+
+int    offset      = input.int(15, "Offset", group = "Labels")
+string t_size      = input.string("Small", "Size", ["Tiny", "Small", "Normal"], group = "Labels")
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Non Repainting data request function
+non_rep_request(tf, expresion1)=>
+    indexHighTF = barstate.isrealtime ? 1 : 0
+    indexCurrTF = barstate.isrealtime ? 0 : 1
+    nonRepainting = request.security(syminfo.tickerid, tf, expresion1[indexHighTF])[indexCurrTF]
+    nonRepainting
+
+// Pivot levels function
+pivot_levels(timeframe, len, color, stl)=>
+    
+    style = switch stl 
+        "Solid" => line.style_solid
+        "Dotted" => line.style_dotted
+        "Dashed" => line.style_dashed
+
+    text_s = switch t_size 
+        "Small"  => size.small
+        "Tiny"   => size.tiny
+        "Normal" => size.normal
+
+
+    var line pivot_h = line(na)
+    var line pivot_l = line(na)
+
+    var line pivot_hs = line(na)
+    var line pivot_ls = line(na)
+
+    var float p_h = float(na)
+    var float p_l = float(na)
+
+    bool ph = ta.pivothigh(len, len)
+    bool pl = ta.pivotlow(len, len)
+
+    float p_H = non_rep_request(timeframe, (not na(ph) ? high[len] : na))
+    float p_L = non_rep_request(timeframe, (not na(pl) ? low[len] : na))
+
+    if not na(p_H)
+        p_h := float(na)
+        p_h := p_H
+        pivot_h := line.new(bar_index[len], p_H, last_bar_index, p_H, color = color)
+
+        pivot_h.set_extend(extend.both)
+        pivot_h.set_style(style)
+        line.delete(pivot_h[1])
+
+        // Shadow Line
+        pivot_hs := line.new(bar_index[len], p_H, last_bar_index, p_H, color = color.new(color, s_tnsp), width = s_lWidth)
+        pivot_hs.set_extend(extend.both)        
+        line.delete(pivot_hs[1])        
+
+    if not na(p_L)
+        p_l := float(na)
+        p_l := p_L
+        pivot_l := line.new(bar_index[len], p_L, last_bar_index, p_L, color = color)
+        pivot_l.set_extend(extend.both)
+        pivot_l.set_style(style)
+        line.delete(pivot_l[1])
+
+        // Shadow Line
+        pivot_ls := line.new(bar_index[len], p_L, last_bar_index, p_L, color = color.new(color, s_tnsp), width = s_lWidth)
+        pivot_ls.set_extend(extend.both)        
+        line.delete(pivot_ls[1])        
+
+    if barstate.islast
+        count1 = 0
+        count2 = 0
+
+        for i = 1 to 4000
+            if high[i]*1.0009 >= p_h and high[i] *0.9999 <= p_h and count1 == 0
+                count1 := 1
+                label.delete(label.new(bar_index[i], p_h, "", color = color, style = label.style_label_down, size = size.tiny)[1])
+
+            if  low[i]*1.0009 >= p_l and low[i]*0.999 <= p_l and count2 == 0
+                count2 := 1
+                label.delete(label.new(bar_index[i], p_l, "", color = color, style = label.style_label_up, size = size.tiny)[1])
+
+        label.delete(label.new(bar_index+offset, p_h, timeframe + " Pivot High " + str.tostring(p_h, "(#.#)"), color = chart.bg_color, style = label.style_label_left, textcolor = chart.fg_color, size = text_s)[1])
+        label.delete(label.new(bar_index+offset, p_l, timeframe + " Pivot Low " + str.tostring(p_l, "(#.#)"),  color = chart.bg_color, style = label.style_label_left, textcolor = chart.fg_color, size = text_s)[1])
+
+if on_1
+    pivot_levels(timeframe1,len1,color1, style1)
+if on_2
+    pivot_levels(timeframe2,len2,color2, style2)
+if on_3
+    pivot_levels(timeframe3,len3,color3, style3)
+if on_4
+    pivot_levels(timeframe4,len4,color4, style4)
+// }

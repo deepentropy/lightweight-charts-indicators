@@ -1,0 +1,36 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("Donchian Trend Ribbon", precision = 0)
+dlen = input(defval = 20, title = "Donchian Channel Period", minval = 10)
+
+dchannel(len)=>
+    float hh = highest(len)
+    float ll = lowest(len)
+    
+    int trend = 0
+    trend := close > hh[1] ? 1 : close < ll[1] ? -1 : nz(trend[1])
+    
+dchannelalt(len, maintrend)=>
+    float hh = highest(len)
+    float ll = lowest(len)
+    
+    int trend = 0
+    trend := close > hh[1] ? 1 : close < ll[1] ? -1 : nz(trend[1])
+    maintrend == 1  ? trend == 1  ? #00FF00ff :  #00FF009f :
+     maintrend == -1 ? trend == -1 ? #FF0000ff :  #FF00009f :
+     na
+
+maintrend = dchannel(dlen)
+
+plot( 5, color = dchannelalt(dlen - 0, maintrend), style = plot.style_columns, histbase= 0)
+plot(10, color = dchannelalt(dlen - 1, maintrend), style = plot.style_columns, histbase= 5)
+plot(15, color = dchannelalt(dlen - 2, maintrend), style = plot.style_columns, histbase=10)
+plot(20, color = dchannelalt(dlen - 3, maintrend), style = plot.style_columns, histbase=15)
+plot(25, color = dchannelalt(dlen - 4, maintrend), style = plot.style_columns, histbase=20)
+plot(30, color = dchannelalt(dlen - 5, maintrend), style = plot.style_columns, histbase=25)
+plot(35, color = dchannelalt(dlen - 6, maintrend), style = plot.style_columns, histbase=30)
+plot(40, color = dchannelalt(dlen - 7, maintrend), style = plot.style_columns, histbase=35)
+plot(45, color = dchannelalt(dlen - 8, maintrend), style = plot.style_columns, histbase=40)
+plot(50, color = dchannelalt(dlen - 9, maintrend), style = plot.style_columns, histbase=45)

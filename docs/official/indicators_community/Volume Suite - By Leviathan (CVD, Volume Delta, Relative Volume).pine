@@ -1,0 +1,423 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LeviathanCapital
+
+//@version=5
+indicator("Volume Suite - By Leviathan", overlay = false, format = format.volume)
+
+
+g1 = 'General'
+g2 = 'Large Change Thresholds'
+g3 = 'Volume-Price Imbalances'
+g5 = 'Additional Settings'
+g4 = 'Display Settings'
+g6 = 'Moving Averages'
+
+// General
+disp     = input.string('Relative Volume', 'Display', options = ['Relative Volume', 'CRVOL (Cumulative Relative Volume)', 'Volume', 'Buy/Sell Volume', 'Volume Delta', 'CVD (Cumulative Volume Delta)'])
+upcol    = input.color(#d1d4dc, 'Primary Colors              ▲', inline = 'udcol')
+downcol  = input.color(#9598a1f6, '▼', inline = 'udcol')
+
+// Large Change Thresholds
+show_mult1     = input.bool(true, '',  inline = 'mult1', group = g2)
+mult           = input.float(1.5, '>', inline = 'mult1', group = g2, step = 0.1)
+upcol_mult1    = input.color(#c8e6c9, '     ▲', inline = 'mult1', group = g2)
+downcol_mult1  = input.color(#faa1a4, '▼', inline = 'mult1', group = g2)
+
+show_mult2     = input.bool(true, '', inline = 'mult2', group = g2)
+mult2          = input.float(2.5, '>', inline = 'mult2', group = g2, step = 0.1)
+upcol_mult2    = input.color(#a5d6a7, '     ▲', inline = 'mult2', group = g2)
+downcol_mult2  = input.color(#f77c80, '▼', inline = 'mult2', group = g2)
+
+show_mult3     = input.bool(true, '', inline = 'mult3', group = g2)
+mult3          = input.float(3.5, '>', inline = 'mult3', group = g2, step = 0.1)
+upcol_mult3    = input.color(#66bb6a, '     ▲', inline = 'mult3', group = g2)
+downcol_mult3  = input.color(#f7525f, '▼', inline = 'mult3', group = g2)
+
+// Imbalances
+show_imb1 = input.bool(false, 'High Volume + Small Price Change', group = g3, inline = 'imb1')
+imb1_col  = input.color(color.orange, '', group = g3, inline = 'imb1')
+vimb1     = input.float(1, 'V >', group = g3, inline = 'imb11', step = 0.1)
+pimb1     = input.float(0, 'P <', group = g3, inline = 'imb11', step = 0.1)
+
+show_imb2 = input.bool(false, 'Low Volume + Large Price Change', group = g3, inline = 'imb2')
+imb2_col  = input.color(color.blue, '', group = g3, inline = 'imb2')
+vimb2     = input.float(0, 'V <', group = g3, inline = 'imb22', step = 0.1)
+pimb2     = input.float(1, 'P >', group = g3, inline = 'imb22', step = 0.1)
+
+showPlot1 = input.bool(false, '',                                inline = 'pl1', group = g6)
+showPlot2 = input.bool(false, '',                                inline = 'pl2', group = g6)
+showPlot3 = input.bool(false, '',                                inline = 'pl3', group = g6)
+showPlot4 = input.bool(false, '',                                inline = 'pl4', group = g6)
+showPlot5 = input.bool(false, '',                                inline = 'pl5', group = g6)
+plot1     = input.string('SMA',  '', ['SMA', 'EMA', 'VWMA']  ,   inline = 'pl1', group = g6)
+plot2     = input.string('EMA',  '', ['SMA', 'EMA', 'VWMA']  ,   inline = 'pl2', group = g6)
+plot3     = input.string('VWMA', '', ['SMA', 'EMA', 'VWMA']  ,   inline = 'pl3', group = g6)
+plot4     = input.string('SMA',  '', ['SMA', 'EMA', 'VWMA']  ,   inline = 'pl4', group = g6)
+plot5     = input.string('VWAP', '', ['VWAP', 'VWAP & STDEV'],   inline = 'pl5', group = g6)
+len1      = input.int(50, '',                                    inline = 'pl1', group = g6)
+len2      = input.int(50, '',                                    inline = 'pl2', group = g6)
+len3      = input.int(50, '',                                    inline = 'pl3', group = g6)
+len4      = input.int(50, '',                                    inline = 'pl4', group = g6)
+len5      = input.timeframe('D', '',                             inline = 'pl5', group = g6)
+plot1Col  = input.color(color.gray, '',                        inline = 'pl1', group = g6)
+plot2Col  = input.color(color.gray, '',                        inline = 'pl2', group = g6)
+plot3Col  = input.color(color.gray, '',                        inline = 'pl3', group = g6)
+plot4Col  = input.color(color.gray, '',                        inline = 'pl4', group = g6)
+plot5Col  = input.color(color.gray, '',                        inline = 'pl5', group = g6)
+
+// Additional settings
+color_candles = input.bool(false, 'Color Candles', group = g5)
+gradient      = input.bool(false, 'Gradient Coloring', inline = 'g', group = g5)
+gr1           = input.color(#f7525f, '', inline = 'g', group = g5)
+gr2           = input.color(#ffe0b2, '', inline = 'g', group = g5)
+tf            = input.timeframe('1', 'LTF Timeframe', group = g5)
+threshtype    = input.string('RELATIVE', 'Threshold Calculation Type', options = ['SMA', 'RELATIVE', 'Z-SCORE'], group = g5)
+zlen          = input.int(50, 'Z Length', group = g5)
+smalen        = input.int(300, 'SMA Length', group = g5)
+rellen        = input.int(20, 'Relative Length', group = g5)
+vwapstd       = input.int(1, 'VWAP SD Multiplier', group = g5)
+
+// Display
+rv_disp  = input.string('Columns', 'Relative Volume', options = ['Columns', 'Histogram', 'Line'], group = g4)
+crv_disp = input.string('Candles', 'Cumulative Relative Volume', options = ['Candles', 'Line'], group = g4)
+bsv_disp = input.string('Columns', 'Buy/Sell Volume', options = ['Columns', 'Histogram', 'Line'], group = g4)
+vd_disp  = input.string('Columns', 'Volume Delta', options = ['Columns', 'Histogram', 'Line'], group = g4)
+cvd_disp = input.string('Candles', 'CVD', options = ['Candles', 'Line'], group = g4)
+
+
+disp_type(x) =>
+    switch x
+        'Columns'   => plot.style_columns
+        'Histogram' => plot.style_histogram
+        'Line'      => plot.style_line
+
+// SMA Function
+f_mult1(src) =>
+    ta.sma(src, smalen) * (mult + 1)
+f_mult2(src) =>
+    ta.sma(src, smalen) * (mult2 + 1)
+f_mult3(src) =>
+    ta.sma(src, smalen) * (mult3 + 1)
+
+// Relative function
+f_relative(src) =>
+    src / ta.sma(src, rellen)
+
+// Z-Score function
+f_zscore(src) =>
+    mean    = ta.sma(src, zlen)
+    std     = ta.stdev(src, zlen)
+    z_score = (src - mean) / std
+
+// Volume calculations
+vol      = volume
+vol_sma  = f_mult1(vol)
+vol_sma2 = f_mult2(vol)
+vol_sma3 = f_mult3(vol)
+
+// Relative Volume and Cumulative Relative Volume calculations
+rvol      = f_relative(volume)
+rvol_sma  = f_mult1(rvol)
+rvol_sma2 = f_mult2(rvol)
+rvol_sma3 = f_mult3(rvol)
+obv       = ta.cum(close > open ? rvol : -rvol)
+
+// Volume Delta, CVD, Buy/Sell Volume Calculations
+[buy_volume, sell_volume] = request.security_lower_tf(syminfo.tickerid, tf, [close>open ? volume : 0, close<open ? volume : 0])
+
+buy_vol       = array.sum(buy_volume)
+sell_vol      = array.sum(sell_volume)
+delta_vol     = buy_vol-sell_vol
+cum_delta_vol = ta.cum(delta_vol)
+delta_abs     = math.abs(delta_vol)
+
+rposdelta = f_relative(delta_vol>0 ? delta_vol : 0)
+rnegdelta = f_relative(delta_vol<0 ? delta_vol : 0)
+
+vdp_sma   = f_mult1(delta_vol>0 ? delta_vol : 0) * 2
+vdp_sma2  = f_mult2(delta_vol>0 ? delta_vol : 0) * 3
+vdp_sma3  = f_mult3(delta_vol>0 ? delta_vol : 0) * 7
+
+vdn_sma   = f_mult1(delta_vol<0 ? delta_vol : 0) * 2
+vdn_sma2  = f_mult2(delta_vol<0 ? delta_vol : 0) * 3
+vdn_sma3  = f_mult3(delta_vol<0 ? delta_vol : 0) * 7
+
+bvl_sma   = f_mult1(buy_vol)
+bvl2_sma  = f_mult2(buy_vol)
+bvl3_sma  = f_mult3(buy_vol)
+
+svl_sma   = f_mult1(sell_vol)
+svl2_sma  = f_mult2(sell_vol)
+svl3_sma  = f_mult3(sell_vol)
+
+// Coloring 
+V_COL         = close > open ? upcol : downcol
+VD_COL        = delta_vol > 0 ? upcol : downcol
+CRV_COL       = close>open ? upcol : downcol
+BV_COL        = upcol
+SV_COL        = downcol
+color bar_col = color.rgb(0,0,0,100)
+
+// 
+if threshtype=='SMA'
+    if disp=='Volume'
+        if show_mult1 and vol >= vol_sma
+            V_COL   := close>open ? upcol_mult1 : downcol_mult1
+            bar_col := V_COL
+        if show_mult2 and vol >= vol_sma2
+            V_COL   := close>open ? upcol_mult2 : downcol_mult2
+            bar_col := V_COL
+        if show_mult3 and vol >= vol_sma3
+            V_COL   := close>open ? upcol_mult3 : downcol_mult3
+            bar_col := V_COL
+    if disp=='CRVOL (Cumulative Relative Volume)' or disp=='Relative Volume'
+        if show_mult1 and rvol >= rvol_sma
+            CRV_COL := close>open ? upcol_mult1 : downcol_mult1
+            bar_col := CRV_COL
+        if show_mult2 and rvol >= rvol_sma2
+            CRV_COL := close>open ? upcol_mult2 : downcol_mult2
+            bar_col := CRV_COL
+        if show_mult3 and rvol >= rvol_sma3
+            CRV_COL := close>open ? upcol_mult3 : downcol_mult3
+            bar_col := CRV_COL
+    if disp=='Volume Delta' or disp=='CVD (Cumulative Volume Delta)'
+        if show_mult1 and delta_vol>0 and delta_vol>vdp_sma
+            VD_COL  := upcol_mult1
+            bar_col := VD_COL
+        if show_mult2 and delta_vol>0 and delta_vol>vdp_sma2
+            VD_COL  := upcol_mult2
+            bar_col := VD_COL
+        if show_mult3 and delta_vol>0 and delta_vol>vdp_sma3
+            VD_COL  := upcol_mult3
+            bar_col := VD_COL
+        if show_mult1 and delta_vol<0 and delta_vol<vdn_sma
+            VD_COL  := downcol_mult1
+            bar_col := VD_COL
+        if show_mult2 and delta_vol<0 and delta_vol<vdn_sma2
+            VD_COL  := downcol_mult2
+            bar_col := VD_COL
+        if show_mult3 and delta_vol<0 and delta_vol<vdn_sma3
+            VD_COL  := downcol_mult3
+            bar_col := VD_COL
+    if disp=='Buy/Sell Volume'
+        if show_mult1 and buy_vol>bvl_sma
+            BV_COL  := upcol_mult1
+            bar_col := BV_COL
+        if show_mult2 and buy_vol>bvl2_sma
+            BV_COL  := upcol_mult2
+            bar_col := BV_COL
+        if show_mult3 and buy_vol>bvl3_sma
+            BV_COL  := upcol_mult3
+            bar_col := BV_COL
+        if show_mult1 and sell_vol>svl_sma
+            SV_COL  := downcol_mult1
+            bar_col := SV_COL
+        if show_mult2 and sell_vol>svl2_sma
+            SV_COL  := downcol_mult2
+            bar_col := SV_COL
+        if show_mult3 and sell_vol>svl3_sma
+            SV_COL  := downcol_mult3
+            bar_col := SV_COL
+
+if threshtype=='RELATIVE'
+    if disp=='Volume'
+        if show_mult1 and f_relative(vol)>mult
+            V_COL   := close>open ? upcol_mult1 : downcol_mult1
+            bar_col := V_COL
+        if show_mult2 and f_relative(vol)>mult2
+            V_COL   := close>open ? upcol_mult2 : downcol_mult2
+            bar_col := V_COL
+        if show_mult3 and f_relative(vol)>mult3
+            V_COL   := close>open ? upcol_mult3 : downcol_mult3
+            bar_col := V_COL
+    if disp=='CRVOL (Cumulative Relative Volume)' or disp=='Relative Volume'
+        if show_mult1 and rvol >= mult//rvol_sma
+            CRV_COL := close>open ? upcol_mult1 : downcol_mult1
+            bar_col := CRV_COL
+        if show_mult2 and rvol >= mult2//rvol_sma2
+            CRV_COL := close>open ? upcol_mult2 : downcol_mult2
+            bar_col := CRV_COL
+        if show_mult3 and rvol >= mult3//rvol_sma3
+            CRV_COL := close>open ? upcol_mult3 : downcol_mult3
+            bar_col := CRV_COL
+    if disp=='Volume Delta' or disp=='CVD (Cumulative Volume Delta)'
+        if show_mult1 and delta_vol>0 and rposdelta > mult * 1.5
+            VD_COL  := upcol_mult1
+            bar_col := VD_COL
+        if show_mult2 and delta_vol>0 and rposdelta > mult2 * 1.5
+            VD_COL  := upcol_mult2
+            bar_col := VD_COL
+        if show_mult3 and delta_vol>0 and rposdelta > mult3 * 1.5
+            VD_COL  := upcol_mult3
+            bar_col := VD_COL
+        if show_mult1 and delta_vol<0 and -rnegdelta < -mult * 1.5
+            VD_COL  := downcol_mult1
+            bar_col := VD_COL
+        if show_mult2 and delta_vol<0 and -rnegdelta < -mult2 * 1.5
+            VD_COL  := downcol_mult2
+            bar_col := VD_COL
+        if show_mult3 and delta_vol<0 and -rnegdelta < -mult3 * 1.5
+            VD_COL  := downcol_mult3
+            bar_col := VD_COL
+    if disp=='Buy/Sell Volume'
+        if show_mult1 and f_relative(buy_vol)>mult
+            BV_COL  := upcol_mult1
+            bar_col := BV_COL
+        if show_mult2 and f_relative(buy_vol)>mult2
+            BV_COL  := upcol_mult2
+            bar_col := BV_COL
+        if show_mult3 and f_relative(buy_vol)>mult3
+            BV_COL  := upcol_mult3
+            bar_col := BV_COL
+        if show_mult1 and f_relative(sell_vol)>=mult
+            SV_COL  := downcol_mult1
+            bar_col := SV_COL
+        if show_mult2 and f_relative(sell_vol)>=mult2
+            SV_COL  := downcol_mult2
+            bar_col := SV_COL
+        if show_mult3 and f_relative(sell_vol)>=mult3
+            SV_COL  := downcol_mult3
+            bar_col := SV_COL
+
+if threshtype=='Z-SCORE'
+    if disp=='Volume'
+        if show_mult1 and f_zscore(vol) >= mult
+            V_COL   := close>open ? upcol_mult1 : downcol_mult1
+            bar_col := V_COL
+        if show_mult2 and f_zscore(vol) >= mult2
+            V_COL   := close>open ? upcol_mult2 : downcol_mult2
+            bar_col := V_COL
+        if show_mult3 and f_zscore(vol) >= mult3
+            V_COL   := close>open ? upcol_mult3 : downcol_mult3
+            bar_col := V_COL
+    if disp=='CRVOL (Cumulative Relative Volume)' or disp=='Relative Volume'
+        if show_mult1 and f_zscore(rvol) >= mult
+            CRV_COL := close>open ? upcol_mult1 : downcol_mult1
+            bar_col := CRV_COL
+        if show_mult2 and f_zscore(rvol) >= mult2
+            CRV_COL := close>open ? upcol_mult2 : downcol_mult2
+            bar_col := CRV_COL
+        if show_mult3 and f_zscore(rvol) >= mult3
+            CRV_COL := close>open ? upcol_mult3 : downcol_mult3
+            bar_col := CRV_COL
+    if disp=='Volume Delta' or disp=='CVD (Cumulative Volume Delta)'
+        if show_mult1 and delta_vol>0 and f_zscore(rposdelta) >= mult
+            VD_COL  := upcol_mult1
+            bar_col := VD_COL
+        if show_mult2 and delta_vol>0 and f_zscore(rposdelta) >= mult2
+            VD_COL  := upcol_mult2
+            bar_col := VD_COL
+        if show_mult3 and delta_vol>0 and f_zscore(rposdelta) >= mult3
+            VD_COL  := upcol_mult3
+            bar_col := VD_COL
+        if show_mult1 and delta_vol<0 and f_zscore(rnegdelta) >= mult
+            VD_COL  := downcol_mult1
+            bar_col := VD_COL
+        if show_mult2 and delta_vol<0 and f_zscore(rnegdelta) >= mult2
+            VD_COL  := downcol_mult2
+            bar_col := VD_COL
+        if show_mult3 and delta_vol<0 and f_zscore(rnegdelta) >= mult3
+            VD_COL  := downcol_mult3
+            bar_col := VD_COL   
+    if disp=='Buy/Sell Volume'
+        if show_mult1 and f_zscore(buy_vol)>=mult
+            BV_COL  := upcol_mult1
+            bar_col := BV_COL
+        if show_mult2 and f_zscore(buy_vol)>=mult2
+            BV_COL  := upcol_mult2
+            bar_col := BV_COL
+        if show_mult3 and f_zscore(buy_vol)>=mult3
+            BV_COL  := upcol_mult3
+            bar_col := BV_COL
+        if show_mult1 and f_zscore(sell_vol)>=mult
+            SV_COL  := downcol_mult1
+            bar_col := SV_COL
+        if show_mult2 and f_zscore(sell_vol)>=mult2
+            SV_COL  := downcol_mult2
+            bar_col := SV_COL
+        if show_mult3 and f_zscore(sell_vol)>=mult3
+            SV_COL  := downcol_mult3
+            bar_col := SV_COL
+
+switch_src(disp) =>
+    switch disp
+        'Volume'                           => vol
+        'Relative Volume'                  => rvol
+        'CRVOL (Cumulative Relative Volume)' => rvol
+        'Volume Delta'                     => math.abs(delta_vol)
+        'CVD (Cumulative Volume Delta)'    => math.abs(delta_vol)
+        'Buy/Sell Volume'                  => math.abs(delta_vol)
+
+if show_imb1 and f_zscore(switch_src(disp)) > vimb1 and f_zscore(high-low) < pimb1
+    V_COL   := imb1_col
+    CRV_COL := imb1_col
+    VD_COL  := imb1_col
+    BV_COL  := buy_vol>sell_vol ? imb1_col : na
+    SV_COL  := sell_vol>buy_vol ? imb1_col : na
+    bar_col := imb1_col
+if show_imb2 and f_zscore(switch_src(disp)) < vimb2 and f_zscore(high-low) > pimb2
+    V_COL   := imb2_col
+    CRV_COL := imb2_col
+    VD_COL  := imb2_col
+    BV_COL  := buy_vol<sell_vol ? imb2_col : na
+    SV_COL  := sell_vol<buy_vol ? imb2_col : na
+    bar_col := imb2_col
+
+if gradient
+    glen = 50
+    V_COL   := color.from_gradient(vol, 0, ta.highest(vol, glen), gr2, gr1)
+    CRV_COL := color.from_gradient(rvol, 0, ta.highest(rvol, glen), gr2, gr1)
+    VD_COL  := color.from_gradient(delta_vol, ta.lowest(delta_vol, glen), ta.highest(delta_vol, glen), gr2, gr1)
+    BV_COL  := color.from_gradient(buy_vol, 0, ta.highest(buy_vol, glen), gr2, gr1)
+    SV_COL  := color.from_gradient(sell_vol, 0, ta.highest(sell_vol, glen), gr2, gr1)
+
+
+// Plotting 
+o_ = disp=='CRVOL (Cumulative Relative Volume)' ? obv[1] : cum_delta_vol[1]
+h_ = disp=='CRVOL (Cumulative Relative Volume)' ? obv    : cum_delta_vol
+l_ = disp=='CRVOL (Cumulative Relative Volume)' ? obv    : cum_delta_vol
+c_ = disp=='CRVOL (Cumulative Relative Volume)' ? obv    : cum_delta_vol
+
+// Plotting CRV
+crv_cond = disp=='CRVOL (Cumulative Relative Volume)' and crv_disp=='Candles'
+plotcandle(crv_cond ? o_ : na, crv_cond ? h_ : na, crv_cond ? l_ : na, crv_cond ? c_ : na, color = CRV_COL, wickcolor = CRV_COL, bordercolor = CRV_COL, title = 'CRVOL', editable = false)
+plot(disp=='CRVOL (Cumulative Relative Volume)' and crv_disp=='Line' ? obv : na, color = CRV_COL, title = 'CRVOL', editable = false)
+
+// Plotting CVD
+cvd_cond = disp=='CVD (Cumulative Volume Delta)' and cvd_disp=='Candles'
+plotcandle(cvd_cond    ? o_ : na, cvd_cond    ? h_ : na, cvd_cond    ? l_ : na, cvd_cond    ? c_ : na, color = VD_COL, wickcolor = VD_COL, bordercolor = VD_COL, title = 'CVD', editable = false)
+plot(disp=='CVD (Cumulative Volume Delta)' and cvd_disp=='Line' ? cum_delta_vol : na, color = VD_COL, title = 'CVD', editable = false)
+
+// Plotting Relative Volume
+plot(disp=='Relative Volume' ? rvol : na, style = disp_type(rv_disp), color = CRV_COL, title = 'RVOL', editable = false)
+
+// Plotting Regular Volume
+plot(disp=='Volume' ? volume : na, style=plot.style_columns, color = V_COL, title = 'VOL', editable = false)
+
+// Plotting Buy/Sell Volume
+plot(disp=='Buy/Sell Volume' ? buy_vol : na, style = disp_type(bsv_disp), color = BV_COL, title = 'Buy Volume', editable = false)
+plot(disp=='Buy/Sell Volume' ? -sell_vol : na, style = disp_type(bsv_disp), color = SV_COL, title = 'Sell Volume', editable = false)
+
+// Plotting Volume Delta
+plot(disp=='Volume Delta' ? delta_vol : na, style = disp_type(vd_disp), color = VD_COL, title = 'Volume Delta', editable = false)
+
+// Coloring candles
+barcolor(color_candles and bar_col != color.rgb(0,0,0,100) ? bar_col : na)
+
+f_plots(x, l) =>
+    switch x
+        'SMA'  => ta.sma(close,  l)
+        'EMA'  => ta.ema(close,  l)
+        'VWMA' => ta.vwma(close, l)
+
+[vwap, vwapSDu, vwapSDl] = ta.vwap(hlc3, timeframe.change(len5), vwapstd)
+vwapSDbu = vwap + (vwapSDu - vwap)
+vwapSDbl = vwap - (vwapSDu - vwap)
+
+plot(showPlot1 ? f_plots(plot1, len1) : na, 'Plot 1',                  force_overlay = true, color = plot1Col, display = display.pane)
+plot(showPlot2 ? f_plots(plot2, len2) : na, 'Plot 2',                  force_overlay = true, color = plot2Col, display = display.pane)
+plot(showPlot3 ? f_plots(plot3, len3) : na, 'Plot 3',                  force_overlay = true, color = plot3Col, display = display.pane)
+plot(showPlot4 ? f_plots(plot4, len4) : na, 'Plot 4',                  force_overlay = true, color = plot4Col, display = display.pane)
+plot(showPlot5 ? vwap                 : na, 'VWAP'  ,                  force_overlay = true, color = timeframe.change(len5) ? na : plot5Col, display = display.pane)
+plot(showPlot5 and plot5=='VWAP & STDEV' ? vwapSDbu : na, 'VWAP +SD',  force_overlay = true, color = timeframe.change(len5) ? na : plot5Col, display = display.pane)
+plot(showPlot5 and plot5=='VWAP & STDEV' ? vwapSDbl : na, 'VWAP -SD',  force_overlay = true, color = timeframe.change(len5) ? na : plot5Col, display = display.pane)

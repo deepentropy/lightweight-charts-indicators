@@ -1,0 +1,2392 @@
+//@version=4
+study("Volume Profile Free Ultra SLI by RRB", shorttitle="VolumeProfileFree_Ultra_RRB", overlay=true)
+
+// Volume Profile Free Ultra SLI by RagingRocketBull 2019
+// Version 3.0
+//
+// Changes in ver 3.0:
+//
+// Features:
+// - Custom color for line object levels
+//
+// WARNING: 
+// - Compilation Time: 1 min 30 sec
+// - This indicator is packed to the max and barely fits Pinescript's limits of max 1000 vars per script and max 50K for the compiled code size
+// - This script has exactly 50K compiled code size, uses max 50 line objects, uses max 64 plot outputs and ~700 of max 1000 vars
+// - Adding more features is not possible. It takes a lot of work to even make it compile. Please see comments on tips how to shave off a few bytes here and there.
+//
+// Changes in ver 2.0:
+//
+// Features:
+// - Internal Buy/Sell mode using max 2x50 levels. You don't have to use SLI now
+//
+// Internal Buy/Sell mode lets you view 2x50 Buy/Sell Levels at the same time:
+//   - when num_levels > 50 => num_levels/2 are used, otherwise num_levels are used as buy/sell levels
+//   - volume type total: line = sell, plot = total => line objects appear as red sell levels on top of blue total plot levels (overlapping)
+//   - volume type buy: line = buy, plot = total => line objects appear as green buy levels on top of blue total plot levels (overlapping)
+//   - volume type sell: line = sell, plot = buy => line objects appear as red sell levels extending blue buy plot levels from the edge (no overlapping)
+// 
+// WARNING: 
+// - Compilation Time: 1 min 30 sec
+// - This indicator is packed to the max and barely fits Pinescript's limits of max 1000 vars per script
+//
+// --------------------------------
+//
+// This indicator calculates Volume Profile for a given range and shows it as a histogram consisting of 100 horizontal bars.
+// This is basically the MAX SLI version with +50 more Pinescript v4 line objects added as levels.
+// It can also show Point of Control (POC), Developing POC, Value Area/VWAP StdDev High/Low as dynamically moving levels.
+// Free accounts can't access Standard TradingView Volume Profile, hence this indicator. 
+//
+// There are several versions: Free Pro, Free MAX SLI, Free Ultra SLI, Free History. This is the Free Ultra SLI version. The Differences are listed below:
+// - Free Pro: 25 levels, +Developing POC, Value Area/VWAP High/Low Levels, Above/Below Area Dimming
+// - Free MAX SLI: 50 levels, 2x SLI modes for Buy/Sell or even higher res 150 levels
+// - Free Ultra SLI: 100 levels, packed to the limit, 2x SLI modes for Buy/Sell or even higher res 300 levels, internal Buy/Sell mode 2x50 levels
+// - Free History: auto highest/lowest, historic poc/va levels for each session
+//
+// Features:
+// - High-Res Volume Profile with up to 100 levels (line implementation)
+// - Internal Buy/Sell mode using max 2x50 levels
+// - 2x SLI modes for even higher res: 300 levels with 3x vertical SLI, 100 buy/sell levels with 2x horiz SLI
+// - Calculate Volume Profile on full history
+// - POC, Developing POC Levels
+// - Buy/Sell/Total volume modes
+// - Side Cover
+// - Value Area, VAH/VAL dynamic levels
+// - VWAP High/Low dynamic levels with Source, Length, StdDev as params
+// - Show/Hide all levels
+// - Dim Non Value Area Zones
+// - Custom Range with Highlighting
+// - 3 Anchor points for Volume Profile
+// - Flip Levels Horizontally
+// - Adjustable width, offset and spacing of levels
+// - Custom Color for POC/VA/VWAP levels, Transparency for buy/sell plot levels, and both Color/Transparency for line objects
+// 
+// Usage:
+// - specify max_level/min_level/spacing (required)
+// - select range (start_bar, range length), confirm with range highlighting
+// - select volume type: Buy/Sell/Total
+// - select mode Value Area/VWAP to show corresponding levels
+// - flip/select anchor point to position the buy/sell levels
+// - use Internal Buy/Sell mode with 2x50 or Horiz Buy/Sell SLI mode with 100 or Vertical SLI with 300 levels if needed
+// - use POC/Developing POC/VA/VWAP High/Low as S/R levels. Usually daily values from 1-3 days back are used as levels for the current day.
+//
+// SLI:
+//
+// SLI modes extend the functionality of the indicator:
+//   - Horiz Buy/Sell 2x SLI lets you view 100 Buy/Sell Levels at the same time
+//   - Vertical Max_Vol 3x SLI lets you increase the resolution to 300 levels
+//   - you need at least 2 instances of the indicator attached to the same chart for SLI to work
+//
+// 1) Horiz SLI:
+//   - attach 2 indicator instances to the chart
+//   - make sure all instances have the same min_level/max_level/range/spacing settings
+//   - select volume type for each instance: you can have a buy/sell or buy/total or sell/total SLI. Make sure your buy volume instance is the last attached to be displayed on top of sell/total instances without overlapping.
+//   - set buy_sell_sli_mode to true for indicator instances with volume_type = buy/sell, for type total this is optional.
+//   - this basically tells the script to calculate % lengths based on total volume instead of individual buy/sell volumes and use ext offset for sell levels
+//   - Sell Offset is calculated relative to Buy Offset to stack/extend sell after buy. Buy Offset = Zero - Buy Length. Sell Offset = Buy Offset - Sell Length = Zero - Buy Length - Sell Length
+//   - there are no master/slave instances in this mode, all indicators are equal, poc/va levels are not affected and can work independently, i.e. one instance can show va levels, another - vwap.
+//
+// 2) Vertical SLI:
+//   - attach the first instance and evaluate the full range to roughly determine where is the highest max_vol/poc level i.e. 0..20000, poc is in the bottom half (third, middle etc) or
+//   - add more instances and split the full vertical range between them, i.e. set min_level/max_level of each corresponding instance to 0..10000, 10000..20000 etc
+//   - make sure all instances have the same range/spacing settings
+//   - an instance with a subrange containing the poc level of the full range is now your master instance (bottom half). All other instances are slaves, their levels will be calculated based on the max_vol/poc of the master instance instead of local values
+//   - set show_max_vol_sli to true for the master instance. for slave instances this is optional and can be used to check if master/slave max_vol values match and slave can read the master's value. This simply plots the max_vol value
+//   - you can also attach all instances and set show_max_vol_sli to true in all of them - the instance with the largest max_vol should become the master
+//
+//   Auto/Manual Ext Max_Vol Modes:
+//   - for auto vertical max_vol SLI mode set max_vol_sli_src in all slave instances to the max_vol of the master indicator: "VolumeProfileFree_MAX_RRB: Max Volume for Vertical SLI Mode". It can be tricky with 2+ instances
+//   - in case auto SLI mode doesn't work - assign max_vol_sli_ext in all slave instances the max_vol value of the master indicator manually and repeat on each change
+//   - manual override max_vol_sli_ext has higher priority than auto max_vol_sli_src when both values are assigned, when they are 0 and close respectively - SLI is disabled
+//   - master/slave max_vol values must match on each bar at all times to maintain proper level scale, otherwise slave's levels will look larger than they should relative to the master's levels. 
+//   - Max_vol (red) is the last param in the long list of indicator outputs
+//   - the only true max_vol/poc in this SLI mode is the master's max_vol/poc. All poc/va levels in slaves will be irrelevant and are disabled automatically. Slaves can only show VWAP levels.
+//   - VA Levels of the master instance in this SLI mode are calculated based on the subrange, not the whole range and may be inaccurate. Cross check with the full range.
+//
+//   WARNING! 
+//   - auto mode max_vol_sli_src is experimental and may not work as expected
+//   - you can only assign auto mode max_vol_sli_src = max_vol once due to some bug with unhandled exception/buffer overflow in Tradingview. Seems that you can clear the value only by removing the indicator instance
+//   - sometimes you may see a "study in error state" error when attempting to set it back to close. Remove indicator/Reload chart and start from scratch
+//   - volume profile may not finish to redraw and freeze in an ugly shape after an UI parameter change when max_vol_sli_src is assigned a max_vol value. Assign it to close - VP should redraw properly, but it may not clear the assigned max_vol value
+//   - you can't seem to be able to assign a proper auto max_vol value to the 3rd slave instance
+//   - 2x Vertical SLI works and tested in both auto/manual, 3x SLI - only manual seems to work (you can have a mixed mode: 2nd instance - auto, 3rd - manual)
+//
+//
+// Notes:
+// - This code uses Pinescript v3 compatibility framework
+// - This code is more like 5-10x faster (main for cycle is removed) especially on lower tfs with long history - only 4-10 sec load/redraw time vs 30-60 sec of the old Pro versions
+// - Instead of repeatedly calculating the total sum of volumes for the whole range on each bar, vol sums are now increased on each bar and passed to the next in the range making it a per range vs per bar calculation that reduces time dramatically
+// - 100 levels consist of 50 main plot levels and 50 line objects used as alternate levels, differences are:
+//   - line objects are always shown on top of other objects, such as plot levels, zero line and side cover, it's not possible to cover/move them below.
+//   - all line objects have variable lengths, use actual x,y coords and don't need side cover, while all plot levels have a fixed length of 100 bars, use offset and require cover.
+//   - all key properties of line objects, such as x,y coords, color can be modified, objects can be moved/deleted, while this is not possible for static plot levels.
+//   - large width values cause line objects to expand only up/down from center while their length remains the same and stays within the level's start/end points similar to an area style.
+//   - large width values make plot levels expand in all directions (both h/v), beyond level start/end points, sometimes overlapping zero line, making them an inaccurate % length representation, as opposed to line objects/plot levels with area style.
+//   - large width values translate into different widths on screen for line objects and plot levels.
+//   - you can't compensate for this unwanted horiz width expansion of plot levels because width uses its own units, that don't translate into bars/pixels.
+//   - line objects are visible when num_levels > 50 or in the Internal Buy/Sell mode, plot levels are used otherwise
+// - Since line objects are lines, plot levels also use style line because other style implementations will break the symmetry/spacing between levels.
+// - if you don't see a volume profile check range settings: min_level/max_level and spacing, set spacing to 0 (or adjust accordingly based on the symbol's precision, i.e. 0.00001)
+// - you can view either 100 levels with Total volumes or 2x50 levels with Buy/Sell volumes. Use 2 indicator instances in Horiz Buy/Sell SLI mode for 2x100 levels.
+// - Volume Profile/Value Area are calculated for a given range and updated on each bar. Each level has a fixed length. Offsets control visible level parts. Side Cover hides the invisible parts.
+// - Custom Color for POC/VA/VWAP levels - UI Style color/transparency can only change shape's color and doesn't affect textcolor, hence this additional option
+// - Custom Width - UI Style supports only width <= 4, hence this additional option
+// - POC is visible in both modes. In VWAP mode Developing POC becomes VWAP, VA High and Low => VWAP High and Low correspondingly to minimize the number of plot outputs
+// - You can't change buy/sell plot level colors from input (only plot transparency) - this requires 2x plot outputs => 2x reduces the number of levels to fit the max 64 limit. That's why 2 additional plots are used to dim the non Value Area zones
+// - You can change level color/transparency of line objects. Due to Pinescript limitations, only discrete values are supported.
+// - Inverse transp correlation creates the necessary illusion of "covered" line objects, although they are shown on top of the cover all the time
+// - If custom lines_transp is set the illusion will break because transp range can't be skewed easily (i.e. transp 0..100 is always mapped to 100..0 and can't be mapped to 50..0)
+// - transparency can be applied to lines dynamically but nva top zone can't be completely removed because plot/mixed type of levels are still used when num_levels < 50 and require cover
+// - transparency can't be applied to plot levels dynamically from script this can be done only once from UI, and you can't change plot color for the past length bars
+// - All buy/sell volume lengths are calculated as % of a fixed base width = 100 bars (100%). You can't set show_last from input to change it
+// - Range selection/Anchoring is not accurate on charts with time gaps since you can only anchor from a point in the future and measure distance in time periods, not actual bars, and there's no way of knowing the number of future gaps in advance.
+// - Adjust Width for Log Scale mode now also works on high precision charts with small prices (i.e. 0.00001)
+// - in Adjust Width for Log Scale mode Level1 width extremes can be capped using max deviation (when level1 = 0, shift = 0 width becomes infinite)
+// - There's no such thing as buy/sell volume, there's just volume, but for the purposes of the Volume Profile method, assume: bull candle = buy volume, bear candle = sell volume
+//
+//
+// P.S. I am your grandfather, Luke! Now, join the Dark Side in your father's steps or be destroyed! Once more the Sith will rule the Galaxy, and we shall have peace...
+
+// Links on Volume Profile and Value Area calculation and usage:
+// https://www.tradingview.com/wiki/Volume_Profile
+// https://stockcharts.com/school/doku.php?id=chart_school:technical_indicators:volume_by_price
+// https://onlinelibrary.wiley.com/doi/pdf/10.1002/9781118659724.app1
+//
+// More Scripts:
+// https://www.tradingview.com/u/RagingRocketBull/
+//
+
+// ================================================================================================================
+
+// Pinescript v3 Compatibility Framework
+
+// This code makes most v3 scripts work in v4 with only a few minor changes below. Place this code before the first input statement
+// some lines are commented out to minimize the total number of vars used <= max 1000 vars limit
+
+// Input types
+
+// types can't be var names hence _
+bool_ = input.bool
+integer_ = input.integer
+float_ = input.float
+string_ = input.string
+
+// resolution = input.resolution
+// session = input.session
+source = input.source
+// symbol = input.symbol
+// doesn't work
+// color_ = input.color
+
+// Styles
+
+// plot styles
+// line can't be a var name
+lines = plot.style_line
+// linebr = plot.style_linebr
+// stepline  = plot.style_stepline 
+histogram = plot.style_histogram
+// cross = plot.style_cross
+area = plot.style_area
+// areabr = plot.style_areabr
+// columns = plot.style_columns
+// circles = plot.style_circles
+
+// hline styles
+// solid = hline.style_solid
+// dotted = hline.style_dotted
+// dashed = hline.style_dashed
+
+// Colors
+aqua = color.aqua
+black = color.black
+blue = color.blue
+fuchsia = color.fuchsia
+gray = color.gray
+green = color.green
+lime = color.lime
+maroon = color.maroon
+navy = color.navy
+olive = color.olive
+orange = color.orange
+purple = color.purple
+red = color.red 
+silver = color.silver
+teal = color.teal
+white = color.white
+yellow = color.yellow
+
+// doesn't work
+// color can't be a var name error, transp can't be int must be const, const param becomes int var
+// color_(col, transp) => 
+//     color.new(col, transp)
+
+// Days
+// monday  = dayofweek.monday 
+// tuesday = dayofweek.tuesday
+// wednesday = dayofweek.wednesday
+// thursday  = dayofweek.thursday 
+// friday = dayofweek.friday
+// saturday  = dayofweek.saturday 
+// sunday = dayofweek.sunday
+
+// Timeframe
+interval = timeframe.multiplier
+period = timeframe.period
+isintraday = timeframe.isintraday
+isdaily = timeframe.isdaily
+isweekly = timeframe.isweekly
+ismonthly = timeframe.ismonthly
+// isdwm = timeframe.isdwm
+
+// Ticker
+// ticker = syminfo.ticker
+// tickerid = syminfo.tickerid
+
+// Bar index
+n = bar_index
+
+
+// ================================================================================================================
+// Inputs
+// ================================================================================================================
+
+// Show/Hide Flags
+show_levels = input(true, type=bool_, title="Show Plot Levels")
+show_lines = input(true, type=bool_, title="Show Alternate Levels")
+show_zero = input(true, type=bool_, title="Show Zero Line")
+show_poc = input(true, type=bool_, title="Show POC Level")
+show_poc2 = input(true, type=bool_, title="Show Developing POC/VWAP Level")
+show_va = input(true, type=bool_, title="Show Value Area/VWAP High/Low Levels")
+show_cover = input(true, type=bool_, title="Show Side Cover")
+dim_nva_zones = input(false, type=bool_, title="Dim Non Value Area Zones")
+flip_levels = input(false, type=bool_, title="Flip Levels Horizontally")
+// highlight_bars = input(false, type=bool_, title="Highlight Range Bars")
+highlight_background = input(false, type=bool_, title="Highlight Range Background")
+adjust_width = input(false, type=bool_, title="Adjust Level Width for Log Scale")
+
+// SLI
+// internal buy/sell mode (when num_levels > 50 uses num_levels/2, otherwise num_levels as buy/sell levels)
+buy_sell_mode = input(false, type=bool_, title="Horizontal Buy/Sell Mode (Num Levels/2)")
+// for horiz buy/sell SLI mode: set to true for indicator instances with volume_type = buy/sell, for type total - optional
+buy_sell_sli_mode = input(false, type=bool_, title="Horizontal Buy/Sell SLI Mode (Master/Slave)")
+// enables vertical max_vol SLI mode in the master indicator instance, for slave instances - optional (to check if master/slave max_vol values match)
+show_max_vol_sli = input(false, type=bool_, title="Vertical Max Volume SLI Mode (Master Only)")
+// for auto vertical max_vol SLI mode set in all slave instances to the max_vol of the master indicator: "VolumeProfileFree_MAX_RRB: Max Volume for Vertical SLI Mode"
+max_vol_sli_src = input(close, type=source, title="Auto Ext Max Volume Override (Vertical SLI Mode Slave Only, Close - Disabled)")
+// in case auto SLI mode doesn't work - assign all slave instances the max_vol value of the master indicator manually and repeat on each change
+max_vol_sli_ext = input(0, type=float_, minval=0, title="Manual Ext Max Volume Override (Vertical SLI Mode Slave Only, 0 - Disabled)")
+
+// Levels, Range
+num_levels_ = input(100, type=integer_, minval=0, maxval=100, title="Num Levels [0..100]")
+max_level = input(1000, type=float_, minval=0, title="Max Price Level")
+min_level = input(0, type=float_, minval=0, title="Min Price Level")
+spacing = input(10, type=float_, minval=0, title="Vertical Spacing")
+range = input(1000, type=integer_, minval=0, title="VP Range Length (0 - All History)")
+start_bar = input(0, type=integer_, minval=0, title="VP Range Start Bar (0-Based)")
+
+// Value Area & VWAP
+levels_mode = input("va", type=string_, title="Value Area/VWAP Mode", options=["va", "vwap"])
+volume_type = input("total", type=string_, title="Volume Type Buy/Sell/Total", options=["buy", "sell", "total"])
+// there can only be 1 input type=source for ext sources to show up in the source dropdown for max vol SLI mode to work (max_vol_sli_src) - using string_ inputs for the 2nd and all subsequent sources instead
+// vp_src = input(close, type=source, title="Volume Profile Source")
+// vwap_src = input(hlc3, type=source, title="VWAP Source")
+vp_src_str = input("close", type=string_, title="Volume Profile Source", options=["open", "high", "low", "close", "hl2", "hlc3", "ohlc4"])
+vwap_src_str = input("hlc3", type=string_, title="VWAP Source", options=["open", "high", "low", "close", "hl2", "hlc3", "ohlc4"])
+vwap_len = input(100, type=integer_, minval=1, title="VWAP Length")
+stddev = input(2, type=float_, minval=0.1, title="VWAP Standard Deviation")
+va_percent = input(70, type=float_, minval=0, maxval=100, title="Value Area % Of Total Volume")
+
+// Offset & Width
+anchor = input("cur bar", type=string_, title="Zero Line Anchor Point", options=["cur bar", "range start", "range end"])
+zero_offset = input(80, type=integer_, title="Zero Line Offset")
+adj_zero_offset = input(0, type=integer_, title="Zero Line Offset Adjustment (Depending on Scale)")
+cover_offset = input(0, type=integer_, title="Cover Offset (Relative to Zero Line)")
+poc_offset = input(-40, type=integer_, title="POC Line Offset (Relative to Zero Line)")
+va_offset = input(-40, type=integer_, title="VA High/Low Lines Offset (Relative to Zero Line)")
+// compensate level price for large width outline, % of step h
+// important! either level_shift or 100.0 must be float otherwise level_shift/100 => integer 0 instead of 0.5! => width1 = 0, level1 shows with default tiny width=1
+level_shift = input(50, type=float_, minval=0, maxval=100, title="Level Vertical Shift % (50% - middle)")
+// you can only set width <= 4 in UI, hence these boxes allowing for larger values
+// levels appear more solid with larger values (30-50) but this results in misalignment (especially when zoomed out) due to extreme bar thickness and requires micro adjustment of zero/cover offset depending on scale
+// histogram becomes so thick that left sides of both side cover and zero levels (length = 0) are pushed beyond the zero line boundary which is not desirable
+// 12 is the optimal level density for a solid look on both large/small zoom scales, higher values require micro adjustment when zoomed out
+line_width = input(12, type=integer_, title="Level Width")
+// line_width is used for normal scale and line_width * width_multiplier for log scale, so that you can switch without adjusting each time
+width_multiplier = input(200, type=float_, minval=0, title="Level Width Multiplier (Log Scale)")
+// in adjust width for log scale mode when level1 = 0 (shift = 0) line_width1 = log(0) = na => disappears/becomes infinite and is assigned line_width2 * max_deviation instead
+max_deviation = input(2, type=float_, minval=0, title="Max Level Width Deviation (Log Scale)")
+zero_width = input(2, type=integer_, title="Zero Line Width")
+// compensate for large width outline - cover additional area above/below, N = step h
+cover_ext_height = input(2, type=integer_, title="Extend Cover by N Levels Up/Down/Right")
+
+// Level Colors & Transparency
+level_transp = input(40, type=integer_, minval=0, maxval=100, title="Plot Level Transparency [0..100]")
+// custom color transparency uses only discrete values forced by options, can't be done by step=10
+lines_transp = input(40, type=integer_, minval=0, maxval=100, title="Alternate Level Transparency [0..100], step 10", options=[0,10,20,30,40,50,60,70,80,90,100])
+nva_transp = input(20, type=integer_, minval=0, maxval=100, title="Non Value Area Level Transparency [0..100], step 10", options=[0,10,20,30,40,50,60,70,80,90,100])
+lines_col_str = input("", type=string_, title="Alternate Level Color", options=["", "black", "silver", "gray", "white", "maroon", "red", "purple", "fuchsia", "green", "lime", "olive", "yellow", "navy", "blue", "teal", "aqua", "orange"])
+poc_col_str = input("", type=string_, title="POC Level Color", options=["", "black", "silver", "gray", "white", "maroon", "red", "purple", "fuchsia", "green", "lime", "olive", "yellow", "navy", "blue", "teal", "aqua", "orange"])
+poc2_col_str = input("", type=string_, title="Developing POC Color", options=["", "black", "silver", "gray", "white", "maroon", "red", "purple", "fuchsia", "green", "lime", "olive", "yellow", "navy", "blue", "teal", "aqua", "orange"])
+va_high_col_str = input("", type=string_, title="VA High Level Color", options=["", "black", "silver", "gray", "white", "maroon", "red", "purple", "fuchsia", "green", "lime", "olive", "yellow", "navy", "blue", "teal", "aqua", "orange"])
+va_low_col_str = input("", type=string_, title="VA Low Level Color", options=["", "black", "silver", "gray", "white", "maroon", "red", "purple", "fuchsia", "green", "lime", "olive", "yellow", "navy", "blue", "teal", "aqua", "orange"])
+vwap_col_str = input("", type=string_, title="VWAP Level Color", options=["", "black", "silver", "gray", "white", "maroon", "red", "purple", "fuchsia", "green", "lime", "olive", "yellow", "navy", "blue", "teal", "aqua", "orange"])
+vwap_high_col_str = input("", type=string_, title="VWAP High Level Color", options=["", "black", "silver", "gray", "white", "maroon", "red", "purple", "fuchsia", "green", "lime", "olive", "yellow", "navy", "blue", "teal", "aqua", "orange"])
+vwap_low_col_str = input("", type=string_, title="VWAP Low Level Color", options=["", "black", "silver", "gray", "white", "maroon", "red", "purple", "fuchsia", "green", "lime", "olive", "yellow", "navy", "blue", "teal", "aqua", "orange"])
+
+
+// Const
+
+// Colors
+
+// #0D68AF - default VPVR blue, #C18E24 - default VPVR yellow
+level_color = #0D68AF // blue // teal // color(blue,90)
+// lines_color = color.new(#0D68AF, 40)
+total_color = color.new(#0D68AF, 40)
+buy_color = green // color(green,90)
+sell_color = red // color(red,90)
+range_bg_color = color.new(aqua,80)
+range_bar_color = yellow
+
+poc_color = black
+poc2_color = silver
+va_high_color = red
+va_low_color = green
+vwap_color = orange
+vwap_high_color = fuchsia
+vwap_low_color = lime
+zero_color = black
+
+// color(white,80) transparency doesn't affect textcolor, plotshape transp=20 does
+nva_zone_color = white
+cover_color = white
+
+// base width for buy/sell level length calculation: 100% length = 100 bars
+// you can't set plot show_last from input or dynamically from script - must be constant. Change/recompile if needed.
+length = 100
+ext_length = 50
+
+// since line objects have a fixed style lines this style is also used for plot levels to make all levels look/behave similarly
+level_style = lines
+
+
+// POC/VWAP Level Strings
+
+poc_text = "_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _" // monospaced font - occupies less width
+text_under = "____________________________________________________________________________________________"
+text_upper = "‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾" // same width as text_under
+
+// 26 lines = num_levels - should cover all 26 levels in a given dir (depends on scale)
+// characters use their own units, their height depends on scale, so it is not possible to cover non va areas completely
+// in Pinescript v4 dots (.) or spaces at start/end are required or the whole \n string will be discarded as empty with only the first line visible
+line_block = ".\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n."
+
+// VA mode 1 - lines
+va_high1_text = text_under
+va_low1_text = text_under
+
+// VA mode 2 - zones
+va_high2_text = line_block + text_under
+va_low2_text = text_upper + line_block
+
+// level_text1 = "____________________________________________________________________________________________"
+// level_text2 = "___ _ ___ _ ___ _ ___ _ ___ _ ___ _ ___ _ ___ _ ___ _ ___ _ ___ _ ___ _ ___ _ ___ _ ___ _ ___ "
+// level_text3 = "__ ι ___ ι ___ ι ___ ι ___ ι ___ ι ___ ι ___ ι ___ ι ___ ι ___ ι ___ ι ___ ι ___ ι ___ ι ___ " // uses unicode char
+
+
+// ================================================================================================================
+// Functions
+// ================================================================================================================
+
+// working - not for highest/highestbars/security
+// cast series to int
+to_int(val) =>
+    k = 0
+    p = 0 // 0.0
+    d = 0.0 // can't be 0 int => can't assign series to int error
+    pow = 1
+    // for i = floor(val) to round(val)
+    // for i = 1 to round(val)
+    s = val
+    for i = 0 to 9
+        // get last digit
+        d := s % 10 // s - floor(s/10)*10
+        // k := k + 1 can't be inside if => series
+        // if s > 0
+        k := -1
+        for j = 0 to 9
+            k := k + 1
+            if j == d
+                break
+
+        pow := 1
+        if i > 0
+            for m = 0 to i-1
+                pow := 10 * pow
+        
+        p := p + k * pow // can't use pow(10, i) => series
+        
+        s := floor(s/10)        
+        if s == 0
+            break
+    p
+
+// convert string to color
+// - you can set color from input if you cast str to color first
+// - str can't be a color literal (i.e. #CC0000) - can't cast string to a # color literal
+// - you can't set color_transp color(red, color_transp) from input (must be const), but you can set plot_transp (can be var)
+// - this increases plot outputs 1x color => 2x color because color is the result of a cond
+get_color(str, def) =>
+    // "", "black", "silver", "gray", "white", "maroon", "red", "purple", "fuchsia", "green", "lime", "olive", "yellow", "navy", "blue", "teal", "aqua", "orange"
+    get_color = str == "black" ? black : str == "silver" ? silver : str == "gray" ? gray : str == "white" ? white : str == "maroon" ? maroon : str == "red" ? red : 
+         str == "purple" ? purple : str == "fuchsia" ? fuchsia : str == "green" ? green : str == "lime" ? lime : str == "olive" ? olive : str == "yellow" ? yellow : 
+             str == "navy" ? navy : str == "blue" ? blue : str == "teal" ? teal : str == "aqua" ? aqua : str == "orange" ? orange : def
+
+// set custom transparency for a custom color
+// All Hail Hydra! This is the only possible way of doing this 
+// both color and color_transp in color.new must be constants, can't be integer or function
+// redundant code below is required
+color_tr(col_str, transp) =>
+    col = color(na)
+
+    // Standard Colors
+    if col_str == "buy"
+        col := transp == 0 ? color.new(buy_color, 0) : transp == 10 ? color.new(buy_color, 10) : transp == 20 ? color.new(buy_color, 20) : transp == 30 ? color.new(buy_color, 30) : transp == 40 ? color.new(buy_color, 40) : transp == 50 ? color.new(buy_color, 50) : 
+             transp == 60 ? color.new(buy_color, 60) : transp == 70 ? color.new(buy_color, 70) : transp == 80 ? color.new(buy_color, 80) : transp == 90 ? color.new(buy_color, 90) : transp == 100 ? color.new(buy_color, 100) : buy_color
+
+    if col_str == "sell"
+        col := transp == 0 ? color.new(sell_color, 0) : transp == 10 ? color.new(sell_color, 10) : transp == 20 ? color.new(sell_color, 20) : transp == 30 ? color.new(sell_color, 30) : transp == 40 ? color.new(sell_color, 40) : transp == 50 ? color.new(sell_color, 50) : 
+             transp == 60 ? color.new(sell_color, 60) : transp == 70 ? color.new(sell_color, 70) : transp == 80 ? color.new(sell_color, 80) : transp == 90 ? color.new(sell_color, 90) : transp == 100 ? color.new(sell_color, 100) : sell_color
+
+    if col_str == "total"
+        col := transp == 0 ? color.new(total_color, 0) : transp == 10 ? color.new(total_color, 10) : transp == 20 ? color.new(total_color, 20) : transp == 30 ? color.new(total_color, 30) : transp == 40 ? color.new(total_color, 40) : transp == 50 ? color.new(total_color, 50) : 
+             transp == 60 ? color.new(total_color, 60) : transp == 70 ? color.new(total_color, 70) : transp == 80 ? color.new(total_color, 80) : transp == 90 ? color.new(total_color, 90) : transp == 100 ? color.new(total_color, 100) : total_color
+
+
+    // Custom Colors
+    if col_str == "aqua"
+        col := transp == 0 ? color.new(aqua, 0) : transp == 10 ? color.new(aqua, 10) : transp == 20 ? color.new(aqua, 20) : transp == 30 ? color.new(aqua, 30) : transp == 40 ? color.new(aqua, 40) : transp == 50 ? color.new(aqua, 50) : 
+             transp == 60 ? color.new(aqua, 60) : transp == 70 ? color.new(aqua, 70) : transp == 80 ? color.new(aqua, 80) : transp == 90 ? color.new(aqua, 90) : transp == 100 ? color.new(aqua, 100) : aqua
+    
+    if col_str == "black"
+        col := transp == 0 ? color.new(black, 0) : transp == 10 ? color.new(black, 10) : transp == 20 ? color.new(black, 20) : transp == 30 ? color.new(black, 30) : transp == 40 ? color.new(black, 40) : transp == 50 ? color.new(black, 50) : 
+             transp == 60 ? color.new(black, 60) : transp == 70 ? color.new(black, 70) : transp == 80 ? color.new(black, 80) : transp == 90 ? color.new(black, 90) : transp == 100 ? color.new(black, 100) : black
+    
+    if col_str == "blue"
+        col := transp == 0 ? color.new(blue, 0) : transp == 10 ? color.new(blue, 10) : transp == 20 ? color.new(blue, 20) : transp == 30 ? color.new(blue, 30) : transp == 40 ? color.new(blue, 40) : transp == 50 ? color.new(blue, 50) : 
+             transp == 60 ? color.new(blue, 60) : transp == 70 ? color.new(blue, 70) : transp == 80 ? color.new(blue, 80) : transp == 90 ? color.new(blue, 90) : transp == 100 ? color.new(blue, 100) : blue
+    
+    if col_str == "fuchsia"
+        col := transp == 0 ? color.new(fuchsia, 0) : transp == 10 ? color.new(fuchsia, 10) : transp == 20 ? color.new(fuchsia, 20) : transp == 30 ? color.new(fuchsia, 30) : transp == 40 ? color.new(fuchsia, 40) : transp == 50 ? color.new(fuchsia, 50) : 
+             transp == 60 ? color.new(fuchsia, 60) : transp == 70 ? color.new(fuchsia, 70) : transp == 80 ? color.new(fuchsia, 80) : transp == 90 ? color.new(fuchsia, 90) : transp == 100 ? color.new(fuchsia, 100) : fuchsia
+    
+    if col_str == "gray"
+        col := transp == 0 ? color.new(gray, 0) : transp == 10 ? color.new(gray, 10) : transp == 20 ? color.new(gray, 20) : transp == 30 ? color.new(gray, 30) : transp == 40 ? color.new(gray, 40) : transp == 50 ? color.new(gray, 50) : 
+             transp == 60 ? color.new(gray, 60) : transp == 70 ? color.new(gray, 70) : transp == 80 ? color.new(gray, 80) : transp == 90 ? color.new(gray, 90) : transp == 100 ? color.new(gray, 100) : gray
+    
+    if col_str == "green"
+        col := transp == 0 ? color.new(green, 0) : transp == 10 ? color.new(green, 10) : transp == 20 ? color.new(green, 20) : transp == 30 ? color.new(green, 30) : transp == 40 ? color.new(green, 40) : transp == 50 ? color.new(green, 50) : 
+             transp == 60 ? color.new(green, 60) : transp == 70 ? color.new(green, 70) : transp == 80 ? color.new(green, 80) : transp == 90 ? color.new(green, 90) : transp == 100 ? color.new(green, 100) : green
+    
+    if col_str == "lime"
+        col := transp == 0 ? color.new(lime, 0) : transp == 10 ? color.new(lime, 10) : transp == 20 ? color.new(lime, 20) : transp == 30 ? color.new(lime, 30) : transp == 40 ? color.new(lime, 40) : transp == 50 ? color.new(lime, 50) : 
+             transp == 60 ? color.new(lime, 60) : transp == 70 ? color.new(lime, 70) : transp == 80 ? color.new(lime, 80) : transp == 90 ? color.new(lime, 90) : transp == 100 ? color.new(lime, 100) : lime
+    
+    if col_str == "maroon"
+        col := transp == 0 ? color.new(maroon, 0) : transp == 10 ? color.new(maroon, 10) : transp == 20 ? color.new(maroon, 20) : transp == 30 ? color.new(maroon, 30) : transp == 40 ? color.new(maroon, 40) : transp == 50 ? color.new(maroon, 50) : 
+             transp == 60 ? color.new(maroon, 60) : transp == 70 ? color.new(maroon, 70) : transp == 80 ? color.new(maroon, 80) : transp == 90 ? color.new(maroon, 90) : transp == 100 ? color.new(maroon, 100) : maroon
+    
+    if col_str == "navy"
+        col := transp == 0 ? color.new(navy, 0) : transp == 10 ? color.new(navy, 10) : transp == 20 ? color.new(navy, 20) : transp == 30 ? color.new(navy, 30) : transp == 40 ? color.new(navy, 40) : transp == 50 ? color.new(navy, 50) : 
+             transp == 60 ? color.new(navy, 60) : transp == 70 ? color.new(navy, 70) : transp == 80 ? color.new(navy, 80) : transp == 90 ? color.new(navy, 90) : transp == 100 ? color.new(navy, 100) : navy
+    
+    if col_str == "olive"
+        col := transp == 0 ? color.new(olive, 0) : transp == 10 ? color.new(olive, 10) : transp == 20 ? color.new(olive, 20) : transp == 30 ? color.new(olive, 30) : transp == 40 ? color.new(olive, 40) : transp == 50 ? color.new(olive, 50) : 
+             transp == 60 ? color.new(olive, 60) : transp == 70 ? color.new(olive, 70) : transp == 80 ? color.new(olive, 80) : transp == 90 ? color.new(olive, 90) : transp == 100 ? color.new(olive, 100) : olive
+    
+    if col_str == "orange"
+        col := transp == 0 ? color.new(orange, 0) : transp == 10 ? color.new(orange, 10) : transp == 20 ? color.new(orange, 20) : transp == 30 ? color.new(orange, 30) : transp == 40 ? color.new(orange, 40) : transp == 50 ? color.new(orange, 50) : 
+             transp == 60 ? color.new(orange, 60) : transp == 70 ? color.new(orange, 70) : transp == 80 ? color.new(orange, 80) : transp == 90 ? color.new(orange, 90) : transp == 100 ? color.new(orange, 100) : orange
+    
+    if col_str == "purple"
+        col := transp == 0 ? color.new(purple, 0) : transp == 10 ? color.new(purple, 10) : transp == 20 ? color.new(purple, 20) : transp == 30 ? color.new(purple, 30) : transp == 40 ? color.new(purple, 40) : transp == 50 ? color.new(purple, 50) : 
+             transp == 60 ? color.new(purple, 60) : transp == 70 ? color.new(purple, 70) : transp == 80 ? color.new(purple, 80) : transp == 90 ? color.new(purple, 90) : transp == 100 ? color.new(purple, 100) : purple
+    
+    if col_str == "red"
+        col := transp == 0 ? color.new(red, 0) : transp == 10 ? color.new(red, 10) : transp == 20 ? color.new(red, 20) : transp == 30 ? color.new(red, 30) : transp == 40 ? color.new(red, 40) : transp == 50 ? color.new(red, 50) : 
+             transp == 60 ? color.new(red, 60) : transp == 70 ? color.new(red, 70) : transp == 80 ? color.new(red, 80) : transp == 90 ? color.new(red, 90) : transp == 100 ? color.new(red, 100) : red
+    
+    if col_str == "silver"
+        col := transp == 0 ? color.new(silver, 0) : transp == 10 ? color.new(silver, 10) : transp == 20 ? color.new(silver, 20) : transp == 30 ? color.new(silver, 30) : transp == 40 ? color.new(silver, 40) : transp == 50 ? color.new(silver, 50) : 
+             transp == 60 ? color.new(silver, 60) : transp == 70 ? color.new(silver, 70) : transp == 80 ? color.new(silver, 80) : transp == 90 ? color.new(silver, 90) : transp == 100 ? color.new(silver, 100) : silver
+    
+    if col_str == "teal"
+        col := transp == 0 ? color.new(teal, 0) : transp == 10 ? color.new(teal, 10) : transp == 20 ? color.new(teal, 20) : transp == 30 ? color.new(teal, 30) : transp == 40 ? color.new(teal, 40) : transp == 50 ? color.new(teal, 50) : 
+             transp == 60 ? color.new(teal, 60) : transp == 70 ? color.new(teal, 70) : transp == 80 ? color.new(teal, 80) : transp == 90 ? color.new(teal, 90) : transp == 100 ? color.new(teal, 100) : teal
+    
+    if col_str == "white"
+        col := transp == 0 ? color.new(white, 0) : transp == 10 ? color.new(white, 10) : transp == 20 ? color.new(white, 20) : transp == 30 ? color.new(white, 30) : transp == 40 ? color.new(white, 40) : transp == 50 ? color.new(white, 50) : 
+             transp == 60 ? color.new(white, 60) : transp == 70 ? color.new(white, 70) : transp == 80 ? color.new(white, 80) : transp == 90 ? color.new(white, 90) : transp == 100 ? color.new(white, 100) : white
+    
+    if col_str == "yellow"
+        col := transp == 0 ? color.new(yellow, 0) : transp == 10 ? color.new(yellow, 10) : transp == 20 ? color.new(yellow, 20) : transp == 30 ? color.new(yellow, 30) : transp == 40 ? color.new(yellow, 40) : transp == 50 ? color.new(yellow, 50) : 
+             transp == 60 ? color.new(yellow, 60) : transp == 70 ? color.new(yellow, 70) : transp == 80 ? color.new(yellow, 80) : transp == 90 ? color.new(yellow, 90) : transp == 100 ? color.new(yellow, 100) : yellow
+
+    col
+
+// extracts source from source str
+// moving the code from this particular function into global scope increases the compliled code size by a few bytes instead of decreasing it!
+get_src(src_str) =>
+    res = src_str == "open" ? open : src_str == "high" ? high : src_str == "low" ? low : src_str == "close" ? close : src_str == "hl2" ? hl2 : src_str == "hlc3" ? hlc3 : src_str == "ohlc4" ? ohlc4 : na
+
+// Converts TF to mins - Respect the 40 Security Calls Limit
+// 1. you can't convert timeframe to minutes directly! period returns string, interval - int TF multiplier. You don't have any string processing.
+// - you can't use change(time(tf)) because it fails on gaps
+// - you must use isdaily, isweekly... etc functions, but they don't have tf arg and only work for current TF, so you must use security on them
+// 2. you can only have 40 security calls per script/computation cycle - does not compile, weird errors if exceeded: node from line undefined UP -1
+// - you can't have a set of separate is_daily(tf) => security(tickerid, tf, isdaily) ...  functions to call from tf_to_mins - does not compile, function has too many arguments 158 (max limit 100)
+// - you can't have a set of direct security calls from from tf_to_mins: is_daily = security(tickerid, tf, isdaily) - does not compile
+// - in general, you can't have 2-3 levels deep nested function calls with security. Instead, call security from the global scope cycle or from 1-2 level functions, keep track of all those calls <= 40
+// - you must wrap all isdaily functions for current TF in tf_to_mins and then call one function using a single security call from global scope
+// moving the code from this particular function into global scope increases the compliled code size by a few bytes instead of decreasing it!
+tf_to_mins() =>
+    // time_range = 60 * 24 * 30 * 12 // min * hours * days * months
+    // isintraday, isdaily, isweekly, ismonthly are mutually exclusive. Only one returns true. isdaily, isweekly, ismonthly return:
+    // - true for "D", "2D", "4D" etc - their respective TFs with/without multipliers and 
+    // - false for 1440 (D), 7D (W), 4W (M) (don't see 1440 as daily, 7D as weekly)
+    mins = isintraday ? interval * 1 : 1
+    days = isdaily ? interval * 1 * 24 * 60: 1
+    weeks = isweekly ? interval * 7 * 24 * 60: 1
+    months = ismonthly ? interval * 30 * 24 * 60: 1
+    result = mins * days * weeks * months
+
+// moving the code from a rarely used function back into global scope saves a few bytes
+// Compiled script code is too long: 50008. The limit is 50000
+// check if price is within bounds
+// is_valid(price) =>
+//     min_cond = (min_level == 0) or ((min_level > 0) and (min_level <= price))
+//     max_cond = (max_level == 0) or ((max_level > 0) and (price <= max_level))
+//     res = min_cond and max_cond
+
+
+// ================================================================================================================
+// Processing
+// ================================================================================================================
+
+// Sources
+// convert src str inputs to sources
+vp_src = get_src(vp_src_str)
+vwap_src = get_src(vwap_src_str)
+
+
+// Buy Sell Internal Mode
+// num_levels = 100 = 2 * 50, where 50 are used for buy, and another 50 - for sell levels
+// num_levels can't be mutable := because side cover plot histbase depends on h = f(num_levels)
+half_levels = num_levels_ <= 50 ? num_levels_ : floor(num_levels_/2)
+num_levels = buy_sell_mode ? half_levels : num_levels_
+
+// Max Vol SLI Mode check
+max_vol_sli_mode = (max_vol_sli_ext > 0) or (max_vol_sli_src != close)
+// get ext max vol value
+// manual override has higher priority than auto, 0 and close - disabled
+max_vol_sli = max_vol_sli_ext > 0 ? max_vol_sli_ext : max_vol_sli_src != close ? max_vol_sli_src : 0
+
+
+// Range
+bar_range = 1000 * 60 * tf_to_mins() // cur period bar time in millisecs
+// cast n to int to prevent can't assign series to int error later
+// n - 0-based bar count, total bars = n + 1, first bar offset is always n
+total_bars = to_int(n)
+// start_bar can't exceed total_bars => in this case range starts and ends on the first bar n=0, has length 1 bar
+// range can exceed total_bars
+// start_bars = min(total_bars, start_bar)
+
+// if range = 0 (All History) range_bars is always the offset to the first bar n=0 on the chart regardless of start_bar it is applied to cur_bar not start_bar
+// range_bars = range == 0 ? max(0, min(total_bars, total_bars - start_bars)) : min(total_bars, start_bars + range - 1)
+range_bars = range == 0 ? total_bars : range
+
+first_bar = range == 0 ? total_bars : start_bar + range  // must not use -1 to include the first bar (start_bar is 0-based)!
+first_time = first_bar * bar_range
+last_time = start_bar * bar_range
+time_range = timenow - time
+
+// time is in range check, starting from left to right
+// range = 0 - process all history, starting from the first bar on a chart n = 0
+is_after_start = ((time_range <= first_time) or (range == 0)) 
+is_before_end = (time_range > last_time)
+is_in_range = is_after_start and is_before_end
+
+
+// first bar of the visible time based range - num_bars back
+range_start = is_in_range and not is_in_range[1]
+range_start_bars = barssince(range_start)
+// range_end = is_in_range and (range_start_bars == range_bars) // is_in_range[1] and not is_in_range - 1 bar lag
+// range_end_bars = barssince(range_end)
+
+// Range
+
+// auto range
+// will result in curves, not straight lines, due to variable min/max bounds
+// you can't delete plot history or predict future highest/lowest points to expand the range
+// ph = highest(range)
+// pl = lowest(range)
+
+// doesn't work - cover plot histbase must be a const expression, can be set from input, can't be var, mutable or function
+// even if completely replaced with label object min/max level must be const because buy/sell vol is accumulated on each bar in this version
+// ph := max_level > 0 ? min(max_level, ph) : ph
+// pl := min_level > 0 ? max(min_level, pl) : pl
+
+// fixed user defined price range
+ph = max_level
+pl = min_level
+
+// level height/step
+p_range = ph - pl
+h = num_levels > 0 ? p_range/num_levels : 0
+
+is_valid_range = is_in_range and (num_levels > 0) and (min_level <= max_level)
+
+// Volume Totals
+
+var buy_vol1 = 0.0
+var buy_vol2 = 0.0
+var buy_vol3 = 0.0
+var buy_vol4 = 0.0
+var buy_vol5 = 0.0
+var buy_vol6 = 0.0
+var buy_vol7 = 0.0
+var buy_vol8 = 0.0
+var buy_vol9 = 0.0
+var buy_vol10 = 0.0
+var buy_vol11 = 0.0
+var buy_vol12 = 0.0
+var buy_vol13 = 0.0
+var buy_vol14 = 0.0
+var buy_vol15 = 0.0
+var buy_vol16 = 0.0
+var buy_vol17 = 0.0
+var buy_vol18 = 0.0
+var buy_vol19 = 0.0
+var buy_vol20 = 0.0
+var buy_vol21 = 0.0
+var buy_vol22 = 0.0
+var buy_vol23 = 0.0
+var buy_vol24 = 0.0
+var buy_vol25 = 0.0
+var buy_vol26 = 0.0
+var buy_vol27 = 0.0
+var buy_vol28 = 0.0
+var buy_vol29 = 0.0
+var buy_vol30 = 0.0
+var buy_vol31 = 0.0
+var buy_vol32 = 0.0
+var buy_vol33 = 0.0
+var buy_vol34 = 0.0
+var buy_vol35 = 0.0
+var buy_vol36 = 0.0
+var buy_vol37 = 0.0
+var buy_vol38 = 0.0
+var buy_vol39 = 0.0
+var buy_vol40 = 0.0
+var buy_vol41 = 0.0
+var buy_vol42 = 0.0
+var buy_vol43 = 0.0
+var buy_vol44 = 0.0
+var buy_vol45 = 0.0
+var buy_vol46 = 0.0
+var buy_vol47 = 0.0
+var buy_vol48 = 0.0
+var buy_vol49 = 0.0
+var buy_vol50 = 0.0
+var buy_vol51 = 0.0
+var buy_vol52 = 0.0
+var buy_vol53 = 0.0
+var buy_vol54 = 0.0
+var buy_vol55 = 0.0
+var buy_vol56 = 0.0
+var buy_vol57 = 0.0
+var buy_vol58 = 0.0
+var buy_vol59 = 0.0
+var buy_vol60 = 0.0
+var buy_vol61 = 0.0
+var buy_vol62 = 0.0
+var buy_vol63 = 0.0
+var buy_vol64 = 0.0
+var buy_vol65 = 0.0
+var buy_vol66 = 0.0
+var buy_vol67 = 0.0
+var buy_vol68 = 0.0
+var buy_vol69 = 0.0
+var buy_vol70 = 0.0
+var buy_vol71 = 0.0
+var buy_vol72 = 0.0
+var buy_vol73 = 0.0
+var buy_vol74 = 0.0
+var buy_vol75 = 0.0
+var buy_vol76 = 0.0
+var buy_vol77 = 0.0
+var buy_vol78 = 0.0
+var buy_vol79 = 0.0
+var buy_vol80 = 0.0
+var buy_vol81 = 0.0
+var buy_vol82 = 0.0
+var buy_vol83 = 0.0
+var buy_vol84 = 0.0
+var buy_vol85 = 0.0
+var buy_vol86 = 0.0
+var buy_vol87 = 0.0
+var buy_vol88 = 0.0
+var buy_vol89 = 0.0
+var buy_vol90 = 0.0
+var buy_vol91 = 0.0
+var buy_vol92 = 0.0
+var buy_vol93 = 0.0
+var buy_vol94 = 0.0
+var buy_vol95 = 0.0
+var buy_vol96 = 0.0
+var buy_vol97 = 0.0
+var buy_vol98 = 0.0
+var buy_vol99 = 0.0
+var buy_vol100 = 0.0
+
+var sell_vol1 = 0.0
+var sell_vol2 = 0.0
+var sell_vol3 = 0.0
+var sell_vol4 = 0.0
+var sell_vol5 = 0.0
+var sell_vol6 = 0.0
+var sell_vol7 = 0.0
+var sell_vol8 = 0.0
+var sell_vol9 = 0.0
+var sell_vol10 = 0.0
+var sell_vol11 = 0.0
+var sell_vol12 = 0.0
+var sell_vol13 = 0.0
+var sell_vol14 = 0.0
+var sell_vol15 = 0.0
+var sell_vol16 = 0.0
+var sell_vol17 = 0.0
+var sell_vol18 = 0.0
+var sell_vol19 = 0.0
+var sell_vol20 = 0.0
+var sell_vol21 = 0.0
+var sell_vol22 = 0.0
+var sell_vol23 = 0.0
+var sell_vol24 = 0.0
+var sell_vol25 = 0.0
+var sell_vol26 = 0.0
+var sell_vol27 = 0.0
+var sell_vol28 = 0.0
+var sell_vol29 = 0.0
+var sell_vol30 = 0.0
+var sell_vol31 = 0.0
+var sell_vol32 = 0.0
+var sell_vol33 = 0.0
+var sell_vol34 = 0.0
+var sell_vol35 = 0.0
+var sell_vol36 = 0.0
+var sell_vol37 = 0.0
+var sell_vol38 = 0.0
+var sell_vol39 = 0.0
+var sell_vol40 = 0.0
+var sell_vol41 = 0.0
+var sell_vol42 = 0.0
+var sell_vol43 = 0.0
+var sell_vol44 = 0.0
+var sell_vol45 = 0.0
+var sell_vol46 = 0.0
+var sell_vol47 = 0.0
+var sell_vol48 = 0.0
+var sell_vol49 = 0.0
+var sell_vol50 = 0.0
+var sell_vol51 = 0.0
+var sell_vol52 = 0.0
+var sell_vol53 = 0.0
+var sell_vol54 = 0.0
+var sell_vol55 = 0.0
+var sell_vol56 = 0.0
+var sell_vol57 = 0.0
+var sell_vol58 = 0.0
+var sell_vol59 = 0.0
+var sell_vol60 = 0.0
+var sell_vol61 = 0.0
+var sell_vol62 = 0.0
+var sell_vol63 = 0.0
+var sell_vol64 = 0.0
+var sell_vol65 = 0.0
+var sell_vol66 = 0.0
+var sell_vol67 = 0.0
+var sell_vol68 = 0.0
+var sell_vol69 = 0.0
+var sell_vol70 = 0.0
+var sell_vol71 = 0.0
+var sell_vol72 = 0.0
+var sell_vol73 = 0.0
+var sell_vol74 = 0.0
+var sell_vol75 = 0.0
+var sell_vol76 = 0.0
+var sell_vol77 = 0.0
+var sell_vol78 = 0.0
+var sell_vol79 = 0.0
+var sell_vol80 = 0.0
+var sell_vol81 = 0.0
+var sell_vol82 = 0.0
+var sell_vol83 = 0.0
+var sell_vol84 = 0.0
+var sell_vol85 = 0.0
+var sell_vol86 = 0.0
+var sell_vol87 = 0.0
+var sell_vol88 = 0.0
+var sell_vol89 = 0.0
+var sell_vol90 = 0.0
+var sell_vol91 = 0.0
+var sell_vol92 = 0.0
+var sell_vol93 = 0.0
+var sell_vol94 = 0.0
+var sell_vol95 = 0.0
+var sell_vol96 = 0.0
+var sell_vol97 = 0.0
+var sell_vol98 = 0.0
+var sell_vol99 = 0.0
+var sell_vol100 = 0.0
+
+
+// Price Volume Profile
+//
+// 1. Determine the highest/lowest range for the entire period.
+// 2. Divide this range by the number of levels (profile resolution) to create a set of vertically distributed price zones.
+// 3. Total the buy/sell volume traded within each price zone (based on price close and candle dir)
+
+// process range
+int k = na
+// sum of volumes is calculated only within the range till the end of range
+// - if start_bar = 0 - the range "never ends" and sum of volumes continues to be updated on each new bar
+// - if start_bar > 0 - the range ends at a fixed point in time (start_bar bars back), sum of volumes remains const after the end of range
+if is_valid_range
+    // both range and start_bar can be > n producing negative index values
+    // range_bars = range == 0 ? n - start_bar : start_bar + range - 1
+    // for i = start_bar to range_bars
+
+    // Pro Tip:
+    // this code is faster than for i above especially on lower tfs with long history
+    // instead of repeatedly calculating the total sum of volumes for the whole range on each bar, vol sums are increased on each bar and passed to the next in the range making it a per range vs per bar calculation that reduces time dramatically
+    price = vp_src // vp_src[i] // close[i]
+    
+    // check if price is within bounds
+
+    // Pro Tip:
+    // moving the code from a rarely used function back into the global scope saves 7 bytes of compiled code size! Still doesn't fit the 50K limit
+    // Compiled script code is too long: 50001. The limit is 50000
+    // min_cond = (min_level == 0) or ((min_level > 0) and (min_level <= price))
+    // max_cond = (max_level == 0) or ((max_level > 0) and (price <= max_level))
+    // is_valid_price = min_cond and max_cond
+
+    // merging several cond vars into 1 line squeezes the final 1 byte to fit exactly into the 50000 compiled code size limit!
+    is_valid_price = ( (min_level == 0) or ((min_level > 0) and (min_level <= price)) ) and ( (max_level == 0) or ((max_level > 0) and (price <= max_level)) )
+
+    if is_valid_price // is_valid(price)
+        // find volume profile level matching cur bar's price
+        k := floor((price - pl) / h) + 1
+
+    if not na(k)
+        // for volume_type=total total_vol = buy vol + sell vol - regardless of the dir sign
+        dir = sign(close - open)
+
+        // we could calculate any one of the buy/sell/total volumes instead of all of them if it weren't for the buy/sell sli mode
+        // vol_cond = volume_type == "buy" ? dir >= 0 : volume_type == "sell" ? dir < 0 : true
+        // if vol_cond
+        //     if k == 1
+        //         vol1 := vol1 + volume
+        // ...
+
+        // increase sums of buy/sell volumes for matching price level when inside the range
+        // - for buy_sell_sli_mode we need to calculate both buy and sell volumes at all times
+        // - for buy_sell_mode num_levels has been already halved and buy/sell volumes with index > num_levels will be empty
+        // redundant code below is required - you don't have arrays
+        if k == 1
+            buy_vol1 := dir >= 0 ? buy_vol1 + volume : buy_vol1
+            sell_vol1 := dir < 0 ? sell_vol1 + volume : sell_vol1
+        
+        if k == 2
+            buy_vol2 := dir >= 0 ? buy_vol2 + volume : buy_vol2
+            sell_vol2 := dir < 0 ? sell_vol2 + volume : sell_vol2
+        
+        if k == 3
+            buy_vol3 := dir >= 0 ? buy_vol3 + volume : buy_vol3
+            sell_vol3 := dir < 0 ? sell_vol3 + volume : sell_vol3
+        
+        if k == 4
+            buy_vol4 := dir >= 0 ? buy_vol4 + volume : buy_vol4
+            sell_vol4 := dir < 0 ? sell_vol4 + volume : sell_vol4
+        
+        if k == 5
+            buy_vol5 := dir >= 0 ? buy_vol5 + volume : buy_vol5
+            sell_vol5 := dir < 0 ? sell_vol5 + volume : sell_vol5
+        
+        if k == 6
+            buy_vol6 := dir >= 0 ? buy_vol6 + volume : buy_vol6
+            sell_vol6 := dir < 0 ? sell_vol6 + volume : sell_vol6
+        
+        if k == 7
+            buy_vol7 := dir >= 0 ? buy_vol7 + volume : buy_vol7
+            sell_vol7 := dir < 0 ? sell_vol7 + volume : sell_vol7
+        
+        if k == 8
+            buy_vol8 := dir >= 0 ? buy_vol8 + volume : buy_vol8
+            sell_vol8 := dir < 0 ? sell_vol8 + volume : sell_vol8
+        
+        if k == 9
+            buy_vol9 := dir >= 0 ? buy_vol9 + volume : buy_vol9
+            sell_vol9 := dir < 0 ? sell_vol9 + volume : sell_vol9
+        
+        if k == 10
+            buy_vol10 := dir >= 0 ? buy_vol10 + volume : buy_vol10
+            sell_vol10 := dir < 0 ? sell_vol10 + volume : sell_vol10
+        
+        if k == 11
+            buy_vol11 := dir >= 0 ? buy_vol11 + volume : buy_vol11
+            sell_vol11 := dir < 0 ? sell_vol11 + volume : sell_vol11
+        
+        if k == 12
+            buy_vol12 := dir >= 0 ? buy_vol12 + volume : buy_vol12
+            sell_vol12 := dir < 0 ? sell_vol12 + volume : sell_vol12
+        
+        if k == 13
+            buy_vol13 := dir >= 0 ? buy_vol13 + volume : buy_vol13
+            sell_vol13 := dir < 0 ? sell_vol13 + volume : sell_vol13
+        
+        if k == 14
+            buy_vol14 := dir >= 0 ? buy_vol14 + volume : buy_vol14
+            sell_vol14 := dir < 0 ? sell_vol14 + volume : sell_vol14
+        
+        if k == 15
+            buy_vol15 := dir >= 0 ? buy_vol15 + volume : buy_vol15
+            sell_vol15 := dir < 0 ? sell_vol15 + volume : sell_vol15
+        
+        if k == 16
+            buy_vol16 := dir >= 0 ? buy_vol16 + volume : buy_vol16
+            sell_vol16 := dir < 0 ? sell_vol16 + volume : sell_vol16
+        
+        if k == 17
+            buy_vol17 := dir >= 0 ? buy_vol17 + volume : buy_vol17
+            sell_vol17 := dir < 0 ? sell_vol17 + volume : sell_vol17
+        
+        if k == 18
+            buy_vol18 := dir >= 0 ? buy_vol18 + volume : buy_vol18
+            sell_vol18 := dir < 0 ? sell_vol18 + volume : sell_vol18
+        
+        if k == 19
+            buy_vol19 := dir >= 0 ? buy_vol19 + volume : buy_vol19
+            sell_vol19 := dir < 0 ? sell_vol19 + volume : sell_vol19
+        
+        if k == 20
+            buy_vol20 := dir >= 0 ? buy_vol20 + volume : buy_vol20
+            sell_vol20 := dir < 0 ? sell_vol20 + volume : sell_vol20
+        
+        if k == 21
+            buy_vol21 := dir >= 0 ? buy_vol21 + volume : buy_vol21
+            sell_vol21 := dir < 0 ? sell_vol21 + volume : sell_vol21
+        
+        if k == 22
+            buy_vol22 := dir >= 0 ? buy_vol22 + volume : buy_vol22
+            sell_vol22 := dir < 0 ? sell_vol22 + volume : sell_vol22
+        
+        if k == 23
+            buy_vol23 := dir >= 0 ? buy_vol23 + volume : buy_vol23
+            sell_vol23 := dir < 0 ? sell_vol23 + volume : sell_vol23
+        
+        if k == 24
+            buy_vol24 := dir >= 0 ? buy_vol24 + volume : buy_vol24
+            sell_vol24 := dir < 0 ? sell_vol24 + volume : sell_vol24
+        
+        if k == 25
+            buy_vol25 := dir >= 0 ? buy_vol25 + volume : buy_vol25
+            sell_vol25 := dir < 0 ? sell_vol25 + volume : sell_vol25
+        
+        if k == 26
+            buy_vol26 := dir >= 0 ? buy_vol26 + volume : buy_vol26
+            sell_vol26 := dir < 0 ? sell_vol26 + volume : sell_vol26
+        
+        if k == 27
+            buy_vol27 := dir >= 0 ? buy_vol27 + volume : buy_vol27
+            sell_vol27 := dir < 0 ? sell_vol27 + volume : sell_vol27
+        
+        if k == 28
+            buy_vol28 := dir >= 0 ? buy_vol28 + volume : buy_vol28
+            sell_vol28 := dir < 0 ? sell_vol28 + volume : sell_vol28
+        
+        if k == 29
+            buy_vol29 := dir >= 0 ? buy_vol29 + volume : buy_vol29
+            sell_vol29 := dir < 0 ? sell_vol29 + volume : sell_vol29
+        
+        if k == 30
+            buy_vol30 := dir >= 0 ? buy_vol30 + volume : buy_vol30
+            sell_vol30 := dir < 0 ? sell_vol30 + volume : sell_vol30
+        
+        if k == 31
+            buy_vol31 := dir >= 0 ? buy_vol31 + volume : buy_vol31
+            sell_vol31 := dir < 0 ? sell_vol31 + volume : sell_vol31
+        
+        if k == 32
+            buy_vol32 := dir >= 0 ? buy_vol32 + volume : buy_vol32
+            sell_vol32 := dir < 0 ? sell_vol32 + volume : sell_vol32
+        
+        if k == 33
+            buy_vol33 := dir >= 0 ? buy_vol33 + volume : buy_vol33
+            sell_vol33 := dir < 0 ? sell_vol33 + volume : sell_vol33
+        
+        if k == 34
+            buy_vol34 := dir >= 0 ? buy_vol34 + volume : buy_vol34
+            sell_vol34 := dir < 0 ? sell_vol34 + volume : sell_vol34
+        
+        if k == 35
+            buy_vol35 := dir >= 0 ? buy_vol35 + volume : buy_vol35
+            sell_vol35 := dir < 0 ? sell_vol35 + volume : sell_vol35
+        
+        if k == 36
+            buy_vol36 := dir >= 0 ? buy_vol36 + volume : buy_vol36
+            sell_vol36 := dir < 0 ? sell_vol36 + volume : sell_vol36
+        
+        if k == 37
+            buy_vol37 := dir >= 0 ? buy_vol37 + volume : buy_vol37
+            sell_vol37 := dir < 0 ? sell_vol37 + volume : sell_vol37
+        
+        if k == 38
+            buy_vol38 := dir >= 0 ? buy_vol38 + volume : buy_vol38
+            sell_vol38 := dir < 0 ? sell_vol38 + volume : sell_vol38
+        
+        if k == 39
+            buy_vol39 := dir >= 0 ? buy_vol39 + volume : buy_vol39
+            sell_vol39 := dir < 0 ? sell_vol39 + volume : sell_vol39
+        
+        if k == 40
+            buy_vol40 := dir >= 0 ? buy_vol40 + volume : buy_vol40
+            sell_vol40 := dir < 0 ? sell_vol40 + volume : sell_vol40
+        
+        if k == 41
+            buy_vol41 := dir >= 0 ? buy_vol41 + volume : buy_vol41
+            sell_vol41 := dir < 0 ? sell_vol41 + volume : sell_vol41
+        
+        if k == 42
+            buy_vol42 := dir >= 0 ? buy_vol42 + volume : buy_vol42
+            sell_vol42 := dir < 0 ? sell_vol42 + volume : sell_vol42
+        
+        if k == 43
+            buy_vol43 := dir >= 0 ? buy_vol43 + volume : buy_vol43
+            sell_vol43 := dir < 0 ? sell_vol43 + volume : sell_vol43
+        
+        if k == 44
+            buy_vol44 := dir >= 0 ? buy_vol44 + volume : buy_vol44
+            sell_vol44 := dir < 0 ? sell_vol44 + volume : sell_vol44
+        
+        if k == 45
+            buy_vol45 := dir >= 0 ? buy_vol45 + volume : buy_vol45
+            sell_vol45 := dir < 0 ? sell_vol45 + volume : sell_vol45
+        
+        if k == 46
+            buy_vol46 := dir >= 0 ? buy_vol46 + volume : buy_vol46
+            sell_vol46 := dir < 0 ? sell_vol46 + volume : sell_vol46
+        
+        if k == 47
+            buy_vol47 := dir >= 0 ? buy_vol47 + volume : buy_vol47
+            sell_vol47 := dir < 0 ? sell_vol47 + volume : sell_vol47
+        
+        if k == 48
+            buy_vol48 := dir >= 0 ? buy_vol48 + volume : buy_vol48
+            sell_vol48 := dir < 0 ? sell_vol48 + volume : sell_vol48
+        
+        if k == 49
+            buy_vol49 := dir >= 0 ? buy_vol49 + volume : buy_vol49
+            sell_vol49 := dir < 0 ? sell_vol49 + volume : sell_vol49
+        
+        if k == 50
+            buy_vol50 := dir >= 0 ? buy_vol50 + volume : buy_vol50
+            sell_vol50 := dir < 0 ? sell_vol50 + volume : sell_vol50
+        
+        if k == 51
+            buy_vol51 := dir >= 0 ? buy_vol51 + volume : buy_vol51
+            sell_vol51 := dir < 0 ? sell_vol51 + volume : sell_vol51
+        
+        if k == 52
+            buy_vol52 := dir >= 0 ? buy_vol52 + volume : buy_vol52
+            sell_vol52 := dir < 0 ? sell_vol52 + volume : sell_vol52
+        
+        if k == 53
+            buy_vol53 := dir >= 0 ? buy_vol53 + volume : buy_vol53
+            sell_vol53 := dir < 0 ? sell_vol53 + volume : sell_vol53
+        
+        if k == 54
+            buy_vol54 := dir >= 0 ? buy_vol54 + volume : buy_vol54
+            sell_vol54 := dir < 0 ? sell_vol54 + volume : sell_vol54
+        
+        if k == 55
+            buy_vol55 := dir >= 0 ? buy_vol55 + volume : buy_vol55
+            sell_vol55 := dir < 0 ? sell_vol55 + volume : sell_vol55
+        
+        if k == 56
+            buy_vol56 := dir >= 0 ? buy_vol56 + volume : buy_vol56
+            sell_vol56 := dir < 0 ? sell_vol56 + volume : sell_vol56
+        
+        if k == 57
+            buy_vol57 := dir >= 0 ? buy_vol57 + volume : buy_vol57
+            sell_vol57 := dir < 0 ? sell_vol57 + volume : sell_vol57
+        
+        if k == 58
+            buy_vol58 := dir >= 0 ? buy_vol58 + volume : buy_vol58
+            sell_vol58 := dir < 0 ? sell_vol58 + volume : sell_vol58
+        
+        if k == 59
+            buy_vol59 := dir >= 0 ? buy_vol59 + volume : buy_vol59
+            sell_vol59 := dir < 0 ? sell_vol59 + volume : sell_vol59
+        
+        if k == 60
+            buy_vol60 := dir >= 0 ? buy_vol60 + volume : buy_vol60
+            sell_vol60 := dir < 0 ? sell_vol60 + volume : sell_vol60
+        
+        if k == 61
+            buy_vol61 := dir >= 0 ? buy_vol61 + volume : buy_vol61
+            sell_vol61 := dir < 0 ? sell_vol61 + volume : sell_vol61
+        
+        if k == 62
+            buy_vol62 := dir >= 0 ? buy_vol62 + volume : buy_vol62
+            sell_vol62 := dir < 0 ? sell_vol62 + volume : sell_vol62
+        
+        if k == 63
+            buy_vol63 := dir >= 0 ? buy_vol63 + volume : buy_vol63
+            sell_vol63 := dir < 0 ? sell_vol63 + volume : sell_vol63
+        
+        if k == 64
+            buy_vol64 := dir >= 0 ? buy_vol64 + volume : buy_vol64
+            sell_vol64 := dir < 0 ? sell_vol64 + volume : sell_vol64
+        
+        if k == 65
+            buy_vol65 := dir >= 0 ? buy_vol65 + volume : buy_vol65
+            sell_vol65 := dir < 0 ? sell_vol65 + volume : sell_vol65
+        
+        if k == 66
+            buy_vol66 := dir >= 0 ? buy_vol66 + volume : buy_vol66
+            sell_vol66 := dir < 0 ? sell_vol66 + volume : sell_vol66
+        
+        if k == 67
+            buy_vol67 := dir >= 0 ? buy_vol67 + volume : buy_vol67
+            sell_vol67 := dir < 0 ? sell_vol67 + volume : sell_vol67
+        
+        if k == 68
+            buy_vol68 := dir >= 0 ? buy_vol68 + volume : buy_vol68
+            sell_vol68 := dir < 0 ? sell_vol68 + volume : sell_vol68
+        
+        if k == 69
+            buy_vol69 := dir >= 0 ? buy_vol69 + volume : buy_vol69
+            sell_vol69 := dir < 0 ? sell_vol69 + volume : sell_vol69
+        
+        if k == 70
+            buy_vol70 := dir >= 0 ? buy_vol70 + volume : buy_vol70
+            sell_vol70 := dir < 0 ? sell_vol70 + volume : sell_vol70
+        
+        if k == 71
+            buy_vol71 := dir >= 0 ? buy_vol71 + volume : buy_vol71
+            sell_vol71 := dir < 0 ? sell_vol71 + volume : sell_vol71
+        
+        if k == 72
+            buy_vol72 := dir >= 0 ? buy_vol72 + volume : buy_vol72
+            sell_vol72 := dir < 0 ? sell_vol72 + volume : sell_vol72
+        
+        if k == 73
+            buy_vol73 := dir >= 0 ? buy_vol73 + volume : buy_vol73
+            sell_vol73 := dir < 0 ? sell_vol73 + volume : sell_vol73
+        
+        if k == 74
+            buy_vol74 := dir >= 0 ? buy_vol74 + volume : buy_vol74
+            sell_vol74 := dir < 0 ? sell_vol74 + volume : sell_vol74
+        
+        if k == 75
+            buy_vol75 := dir >= 0 ? buy_vol75 + volume : buy_vol75
+            sell_vol75 := dir < 0 ? sell_vol75 + volume : sell_vol75
+        
+        if k == 76
+            buy_vol76 := dir >= 0 ? buy_vol76 + volume : buy_vol76
+            sell_vol76 := dir < 0 ? sell_vol76 + volume : sell_vol76
+        
+        if k == 77
+            buy_vol77 := dir >= 0 ? buy_vol77 + volume : buy_vol77
+            sell_vol77 := dir < 0 ? sell_vol77 + volume : sell_vol77
+        
+        if k == 78
+            buy_vol78 := dir >= 0 ? buy_vol78 + volume : buy_vol78
+            sell_vol78 := dir < 0 ? sell_vol78 + volume : sell_vol78
+        
+        if k == 79
+            buy_vol79 := dir >= 0 ? buy_vol79 + volume : buy_vol79
+            sell_vol79 := dir < 0 ? sell_vol79 + volume : sell_vol79
+        
+        if k == 80
+            buy_vol80 := dir >= 0 ? buy_vol80 + volume : buy_vol80
+            sell_vol80 := dir < 0 ? sell_vol80 + volume : sell_vol80
+        
+        if k == 81
+            buy_vol81 := dir >= 0 ? buy_vol81 + volume : buy_vol81
+            sell_vol81 := dir < 0 ? sell_vol81 + volume : sell_vol81
+        
+        if k == 82
+            buy_vol82 := dir >= 0 ? buy_vol82 + volume : buy_vol82
+            sell_vol82 := dir < 0 ? sell_vol82 + volume : sell_vol82
+        
+        if k == 83
+            buy_vol83 := dir >= 0 ? buy_vol83 + volume : buy_vol83
+            sell_vol83 := dir < 0 ? sell_vol83 + volume : sell_vol83
+        
+        if k == 84
+            buy_vol84 := dir >= 0 ? buy_vol84 + volume : buy_vol84
+            sell_vol84 := dir < 0 ? sell_vol84 + volume : sell_vol84
+        
+        if k == 85
+            buy_vol85 := dir >= 0 ? buy_vol85 + volume : buy_vol85
+            sell_vol85 := dir < 0 ? sell_vol85 + volume : sell_vol85
+        
+        if k == 86
+            buy_vol86 := dir >= 0 ? buy_vol86 + volume : buy_vol86
+            sell_vol86 := dir < 0 ? sell_vol86 + volume : sell_vol86
+        
+        if k == 87
+            buy_vol87 := dir >= 0 ? buy_vol87 + volume : buy_vol87
+            sell_vol87 := dir < 0 ? sell_vol87 + volume : sell_vol87
+        
+        if k == 88
+            buy_vol88 := dir >= 0 ? buy_vol88 + volume : buy_vol88
+            sell_vol88 := dir < 0 ? sell_vol88 + volume : sell_vol88
+        
+        if k == 89
+            buy_vol89 := dir >= 0 ? buy_vol89 + volume : buy_vol89
+            sell_vol89 := dir < 0 ? sell_vol89 + volume : sell_vol89
+        
+        if k == 90
+            buy_vol90 := dir >= 0 ? buy_vol90 + volume : buy_vol90
+            sell_vol90 := dir < 0 ? sell_vol90 + volume : sell_vol90
+        
+        if k == 91
+            buy_vol91 := dir >= 0 ? buy_vol91 + volume : buy_vol91
+            sell_vol91 := dir < 0 ? sell_vol91 + volume : sell_vol91
+        
+        if k == 92
+            buy_vol92 := dir >= 0 ? buy_vol92 + volume : buy_vol92
+            sell_vol92 := dir < 0 ? sell_vol92 + volume : sell_vol92
+        
+        if k == 93
+            buy_vol93 := dir >= 0 ? buy_vol93 + volume : buy_vol93
+            sell_vol93 := dir < 0 ? sell_vol93 + volume : sell_vol93
+        
+        if k == 94
+            buy_vol94 := dir >= 0 ? buy_vol94 + volume : buy_vol94
+            sell_vol94 := dir < 0 ? sell_vol94 + volume : sell_vol94
+        
+        if k == 95
+            buy_vol95 := dir >= 0 ? buy_vol95 + volume : buy_vol95
+            sell_vol95 := dir < 0 ? sell_vol95 + volume : sell_vol95
+        
+        if k == 96
+            buy_vol96 := dir >= 0 ? buy_vol96 + volume : buy_vol96
+            sell_vol96 := dir < 0 ? sell_vol96 + volume : sell_vol96
+        
+        if k == 97
+            buy_vol97 := dir >= 0 ? buy_vol97 + volume : buy_vol97
+            sell_vol97 := dir < 0 ? sell_vol97 + volume : sell_vol97
+        
+        if k == 98
+            buy_vol98 := dir >= 0 ? buy_vol98 + volume : buy_vol98
+            sell_vol98 := dir < 0 ? sell_vol98 + volume : sell_vol98
+        
+        if k == 99
+            buy_vol99 := dir >= 0 ? buy_vol99 + volume : buy_vol99
+            sell_vol99 := dir < 0 ? sell_vol99 + volume : sell_vol99
+        
+        if k == 100
+            buy_vol100 := dir >= 0 ? buy_vol100 + volume : buy_vol100
+            sell_vol100 := dir < 0 ? sell_vol100 + volume : sell_vol100
+
+
+// buy volumes array (read only)
+// uses calculated buy/sell volumes - must remain after
+// returns 0 instead of na - important!
+// single buy_volume with 100 vars => script has a function with too many arguments: 101 => you must split it into 2 functions and call them separately
+buy_volumes1(group) =>
+    // res = 0.0
+    // if (group >= 1) and (group <= num_levels)
+    res = group == 1 ? buy_vol1 : group == 2 ? buy_vol2 : group == 3 ? buy_vol3 : group == 4 ? buy_vol4 : group == 5 ? buy_vol5 : group == 6 ? buy_vol6 : group == 7 ? buy_vol7 : group == 8 ? buy_vol8 : group == 9 ? buy_vol9 : group == 10 ? buy_vol10 : 
+         group == 11 ? buy_vol11 : group == 12 ? buy_vol12 : group == 13 ? buy_vol13 : group == 14 ? buy_vol14 : group == 15 ? buy_vol15 : group == 16 ? buy_vol16 : group == 17 ? buy_vol17 : group == 18 ? buy_vol18 : group == 19 ? buy_vol19 : group == 20 ? buy_vol20 : 
+             group == 21 ? buy_vol21 : group == 22 ? buy_vol22 : group == 23 ? buy_vol23 : group == 24 ? buy_vol24 : group == 25 ? buy_vol25 : group == 26 ? buy_vol26 : group == 27 ? buy_vol27 : group == 28 ? buy_vol28 : group == 29 ? buy_vol29 : group == 30 ? buy_vol30 : 
+                 group == 31 ? buy_vol31 : group == 32 ? buy_vol32 : group == 33 ? buy_vol33 : group == 34 ? buy_vol34 : group == 35 ? buy_vol35 : group == 36 ? buy_vol36 : group == 37 ? buy_vol37 : group == 38 ? buy_vol38 : group == 39 ? buy_vol39 : group == 40 ? buy_vol40 : 
+                     group == 41 ? buy_vol41 : group == 42 ? buy_vol42 : group == 43 ? buy_vol43 : group == 44 ? buy_vol44 : group == 45 ? buy_vol45 : group == 46 ? buy_vol46 : group == 47 ? buy_vol47 : group == 48 ? buy_vol48 : group == 49 ? buy_vol49 : group == 50 ? buy_vol50 : 0.0
+
+buy_volumes2(group) =>
+    res = group == 51 ? buy_vol51 : group == 52 ? buy_vol52 : group == 53 ? buy_vol53 : group == 54 ? buy_vol54 : group == 55 ? buy_vol55 : group == 56 ? buy_vol56 : group == 57 ? buy_vol57 : group == 58 ? buy_vol58 : group == 59 ? buy_vol59 : group == 60 ? buy_vol60 : 
+         group == 61 ? buy_vol61 : group == 62 ? buy_vol62 : group == 63 ? buy_vol63 : group == 64 ? buy_vol64 : group == 65 ? buy_vol65 : group == 66 ? buy_vol66 : group == 67 ? buy_vol67 : group == 68 ? buy_vol68 : group == 69 ? buy_vol69 : group == 70 ? buy_vol70 : 
+             group == 71 ? buy_vol71 : group == 72 ? buy_vol72 : group == 73 ? buy_vol73 : group == 74 ? buy_vol74 : group == 75 ? buy_vol75 : group == 76 ? buy_vol76 : group == 77 ? buy_vol77 : group == 78 ? buy_vol78 : group == 79 ? buy_vol79 : group == 80 ? buy_vol80 : 
+                 group == 81 ? buy_vol81 : group == 82 ? buy_vol82 : group == 83 ? buy_vol83 : group == 84 ? buy_vol84 : group == 85 ? buy_vol85 : group == 86 ? buy_vol86 : group == 87 ? buy_vol87 : group == 88 ? buy_vol88 : group == 89 ? buy_vol89 : group == 90 ? buy_vol90 : 
+                     group == 91 ? buy_vol91 : group == 92 ? buy_vol92 : group == 93 ? buy_vol93 : group == 94 ? buy_vol94 : group == 95 ? buy_vol95 : group == 96 ? buy_vol96 : group == 97 ? buy_vol97 : group == 98 ? buy_vol98 : group == 99 ? buy_vol99 : group == 100 ? buy_vol100 : 0.0
+
+
+// Pro Tip: 
+// apparently you can't have a function/call a function with the total number of vars inside all function bodies in a call stack > 100
+// doesn't work: script has a function with too many arguments: 101. The limit is 100 error => 2 function calls with 50 vars each: 50 + 50 + 1
+// buy_volumes(group) =>
+    // res = group <= 50 ? buy_volumes1(group) : buy_volumes2(group)
+    // group <= 50 ? buy_volumes1(group) : buy_volumes2(group)
+
+// sell volumes array (read only)
+// returns 0 instead of na - important!
+sell_volumes1(group) =>
+    // res = 0.0
+    // if (group >= 1) and (group <= num_levels)
+    res = group == 1 ? sell_vol1 : group == 2 ? sell_vol2 : group == 3 ? sell_vol3 : group == 4 ? sell_vol4 : group == 5 ? sell_vol5 : group == 6 ? sell_vol6 : group == 7 ? sell_vol7 : group == 8 ? sell_vol8 : group == 9 ? sell_vol9 : group == 10 ? sell_vol10 : 
+         group == 11 ? sell_vol11 : group == 12 ? sell_vol12 : group == 13 ? sell_vol13 : group == 14 ? sell_vol14 : group == 15 ? sell_vol15 : group == 16 ? sell_vol16 : group == 17 ? sell_vol17 : group == 18 ? sell_vol18 : group == 19 ? sell_vol19 : group == 20 ? sell_vol20 : 
+             group == 21 ? sell_vol21 : group == 22 ? sell_vol22 : group == 23 ? sell_vol23 : group == 24 ? sell_vol24 : group == 25 ? sell_vol25 : group == 26 ? sell_vol26 : group == 27 ? sell_vol27 : group == 28 ? sell_vol28 : group == 29 ? sell_vol29 : group == 30 ? sell_vol30 : 
+                 group == 31 ? sell_vol31 : group == 32 ? sell_vol32 : group == 33 ? sell_vol33 : group == 34 ? sell_vol34 : group == 35 ? sell_vol35 : group == 36 ? sell_vol36 : group == 37 ? sell_vol37 : group == 38 ? sell_vol38 : group == 39 ? sell_vol39 : group == 40 ? sell_vol40 : 
+                     group == 41 ? sell_vol41 : group == 42 ? sell_vol42 : group == 43 ? sell_vol43 : group == 44 ? sell_vol44 : group == 45 ? sell_vol45 : group == 46 ? sell_vol46 : group == 47 ? sell_vol47 : group == 48 ? sell_vol48 : group == 49 ? sell_vol49 : group == 50 ? sell_vol50 : 0.0
+
+sell_volumes2(group) =>
+    res = group == 51 ? sell_vol51 : group == 52 ? sell_vol52 : group == 53 ? sell_vol53 : group == 54 ? sell_vol54 : group == 55 ? sell_vol55 : group == 56 ? sell_vol56 : group == 57 ? sell_vol57 : group == 58 ? sell_vol58 : group == 59 ? sell_vol59 : group == 60 ? sell_vol60 : 
+         group == 61 ? sell_vol61 : group == 62 ? sell_vol62 : group == 63 ? sell_vol63 : group == 64 ? sell_vol64 : group == 65 ? sell_vol65 : group == 66 ? sell_vol66 : group == 67 ? sell_vol67 : group == 68 ? sell_vol68 : group == 69 ? sell_vol69 : group == 70 ? sell_vol70 : 
+             group == 71 ? sell_vol71 : group == 72 ? sell_vol72 : group == 73 ? sell_vol73 : group == 74 ? sell_vol74 : group == 75 ? sell_vol75 : group == 76 ? sell_vol76 : group == 77 ? sell_vol77 : group == 78 ? sell_vol78 : group == 79 ? sell_vol79 : group == 80 ? sell_vol80 : 
+                 group == 81 ? sell_vol81 : group == 82 ? sell_vol82 : group == 83 ? sell_vol83 : group == 84 ? sell_vol84 : group == 85 ? sell_vol85 : group == 86 ? sell_vol86 : group == 87 ? sell_vol87 : group == 88 ? sell_vol88 : group == 89 ? sell_vol89 : group == 90 ? sell_vol90 : 
+                     group == 91 ? sell_vol91 : group == 92 ? sell_vol92 : group == 93 ? sell_vol93 : group == 94 ? sell_vol94 : group == 95 ? sell_vol95 : group == 96 ? sell_vol96 : group == 97 ? sell_vol97 : group == 98 ? sell_vol98 : group == 99 ? sell_vol99 : group == 100 ? sell_vol100 : 0.0
+
+
+// Max/Total Volumes
+
+// max_vol sli override
+// in vertical sli mode max_vol from the master indicator instance is used as base length for all slave's levels
+// in all slave instances poc/poc2/va levels are auto hidden, but vwap levels will work, since they don't depend on the range
+max_vol = max_vol_sli
+max_buy_vol = 0.0
+max_sell_vol = 0.0
+max_vol2 = 0.0
+total_vol = 0.0
+
+poc_index = 0
+poc2_index = 0
+poc_level = 0.0
+poc2_level = 0.0
+
+// compensate level price with vertical shift because line width is center-based, not bottom-based
+// either level_shift or 100.0 must be float otherwise width1 = 0 and level1 will have a tiny default width
+shift = level_shift/100 * h
+
+// no max_vol processing in max vol sli mode - using external max_vol value instead
+// is_valid_range := is_valid_range and (max_vol_sli == 0)
+// if is_valid_range
+// calculate max_vol and show levels even after the end of range
+if is_after_start and not max_vol_sli_mode
+    // here we calculate the denominator/divisor max_vol of the vol/max_vol ratio (fraction bottom)
+    // - for total - we always calculate max_total volume/poc
+    // - for buy/sell in normal mode => respective max_buy/max_sell volumes/poc. individual max_buy/max_sell levels may differ from max_total
+    // - for buy/sell in buy_sell_mode with extended buy + sell offset for sell => max_total volume/poc    
+    // - for buy/sell in buy_sell_sli_mode with extended buy + sell offset for sell => max_total volume/poc in both master/slave indicators
+    a = (volume_type == "total") or buy_sell_sli_mode or buy_sell_mode ? 1 : volume_type == "buy" ? 1 : volume_type == "sell" ? 0 : 0
+    b = (volume_type == "total") or buy_sell_sli_mode or buy_sell_mode ? 1 : volume_type == "buy" ? 0 : volume_type == "sell" ? 1 : 0
+
+    for i = 1 to num_levels
+
+        // max buy/sell volumes for buy_sell_sli_mode
+        // bv = buy_volumes(i)
+        // to access 100 vol vars we must call 2 separate array functions with 50 vars each
+        bv = i <= 50 ? buy_volumes1(i) : buy_volumes2(i)
+        if max_buy_vol < bv
+            max_buy_vol := bv
+    
+        // sv = sell_volumes(i)
+        sv = i <= 50 ? sell_volumes1(i) : sell_volumes2(i)
+        if max_sell_vol < sv
+            max_sell_vol := sv
+
+        // calculate max_vol and poc with respect to volume_type
+        vol = a * bv + b * sv
+        total_vol := total_vol + vol
+
+        // max total volume for a given price level in a range - POC level
+        // nested structure enables further search for the 2nd largest Developing POC till the end of range even after the main POC is found
+        // check for Developing POC
+        if max_vol2 < vol
+            // check for POC
+            // in 1,2,3 sequence will assign POC=3, POC2=2
+            if max_vol < vol
+                // save cur max_vol and poc_index as Developing POC
+                max_vol2 := max_vol
+                poc2_index := poc_index
+                // save new max_vol and poc_index as POC
+                max_vol := vol
+                poc_index := i
+            else
+                // in 1,3,2 sequence will still assign POC=3, POC2=2 properly instead of POC=3, POC2=1 which is incorrect
+                // in 1,4,2,3,5 sequence will correctly assign POC=5, POC2=4
+                // save new max_vol and poc_index as Developing POC only if further POC check failed
+                max_vol2 := vol
+                poc2_index := i
+
+
+    // POC, Developing POC Levels
+    poc_level := pl + (poc_index - 1) * h + shift // h/2
+    poc2_level := poc2_index > 0 ? pl + (poc2_index - 1) * h + shift : 0.0 // h/2
+
+
+// Value Area VAH/VAL
+
+// Point of Control (POC) – price level with the highest traded volume for the time period
+// Value Area (VA) – range of price levels with the sum of traded volumes = 70% of the total traded volume during the time period
+// Value Area High (VAH) – highest price level within the value area
+// Value Area Low (VAL) – lowest price level within the value area
+//
+// 1. Calculate the total volume (buy and sell) traded in the profile.
+// 2. VA % target = 70% of total volume
+// 3. Start with POC
+//   - VA Volume0 = POC Total Volume
+//   - VA Area0/VAH0/VAL0 = POC
+// 4. Get the sums of total volumes:
+//   - of the 2 rows above the current VAH (VAH0 = POC) => sum above
+//   - of the 2 rows below the current VAL (VAL0 = POC) => sum below
+// 5. Increase VA Volume with the largest of the 2 sums: VA Volume1 = VA Volume0 + max(sum above, sum below)
+// 6. Increase VA Area above or below with 2 rows (+2 rows in the dir of the largest of the 2 sums): 
+//   - if sum above > sum below VAH1 = VAH0 + 2 else VAL1 = VAL0 - 2
+//   - if sum above = sum below choose the level closest to the middle of the range
+//   - VA Area1 = [VAL1..VAH1] range of rows
+// 7. Repeat steps 4-6 until VA Volume matches or exceeds the 70% target: VA Volume_i >= VA % Target
+// 8. final VAH = VAH i - highest row of VA Area i, final VAL = VAL i - lowest row of VA Area i
+
+va_limit = total_vol * va_percent / 100
+mid_index = num_levels/2
+
+// POC - starting point for Value Area Calculation
+va_vol = max_vol // buy_volumes(poc_index) + sell_volumes(poc_index)
+va_high = poc_index
+va_low = poc_index
+va_high_level = 0.0
+va_low_level = 0.0
+
+// POC = num_levels => show only VAL, don't show VAH above num_levels
+// POC = 1 => show only VAH, don't show VAL below 1
+// empty volume range - don't show anything
+// is_valid_range := is_valid_range and (va_vol > 0)
+
+// no va levels processing in max vol sli mode max_vol_sli > 0 - va levels in a slave indicator instance are always hidden
+// using num_levels but there are max num_levels/2 estimated total iterations where 2 is the number of adj levels in each dir
+// if is_valid_range
+// calculate and show va_levels even after the end of range
+if is_after_start and not max_vol_sli_mode and (va_vol > 0)
+
+    for i = 1 to num_levels
+        // calculate and compare the sum of volumes for 2 rows above and below to expand Value Area in either dir
+        // va_low/va_high are adjusted independently and can fall outside of range [1..num_levels] => buy/sell_volumes must return 0 instead of na for va levels to be calculated properly - important!
+        // doesn't work with 100 vars
+        // above_vol = total_volumes(va_high + 1) + total_volumes(va_high + 2)
+        // below_vol = total_volumes(va_low - 1) + total_volumes(va_low - 2)
+        // above_vol = buy_volumes(va_high + 1) + sell_volumes(va_high + 1) + buy_volumes(va_high + 2) + sell_volumes(va_high + 2)
+        // below_vol = buy_volumes(va_low - 1) + sell_volumes(va_low - 1) + buy_volumes(va_low - 2) + sell_volumes(va_low - 2)
+
+        // single total_volumes/buy_volume with 100 vars => script has a function with too many arguments: 101 => you must split it into 2 functions and call them separately        
+        buy_vol_vh1 = va_high + 1 <= 50 ? buy_volumes1(va_high + 1) : buy_volumes2(va_high + 1)
+        buy_vol_vh2 = va_high + 2 <= 50 ? buy_volumes1(va_high + 2) : buy_volumes2(va_high + 2)
+        sell_vol_vh1 = va_high + 1 <= 50 ? sell_volumes1(va_high + 1) : sell_volumes2(va_high + 1)
+        sell_vol_vh2 = va_high + 2 <= 50 ? sell_volumes1(va_high + 2) : sell_volumes2(va_high + 2)
+
+        buy_vol_vl1 = va_low - 1 <= 50 ? buy_volumes1(va_low - 1) : buy_volumes2(va_low - 1)
+        buy_vol_vl2 = va_low - 2 <= 50 ? buy_volumes1(va_low - 2) : buy_volumes2(va_low - 2)
+        sell_vol_vl1 = va_low - 1 <= 50 ? sell_volumes1(va_low - 1) : sell_volumes2(va_low - 1)
+        sell_vol_vl2 = va_low - 2 <= 50 ? sell_volumes1(va_low - 2) : sell_volumes2(va_low - 2)
+
+        above_vol = buy_vol_vh1 + sell_vol_vh1 + buy_vol_vh2 + sell_vol_vh2
+        below_vol = buy_vol_vl1 + sell_vol_vl1 + buy_vol_vl2 + sell_vol_vl2
+
+        // increase value area volume with the max sum of volumes
+        // va_vol := va_vol + max(above_vol, below_vol)
+        
+        // when above_vol > below_vol include the 2 rows above into the value area
+        // when above_vol = below_vol the area closest to the middle of the range is included in the Value Area
+        // and when they both have the same volume and are also equidistant from the middle of the range - only the above area is included
+        if (va_high <= num_levels) 
+            if (above_vol > below_vol) or ( (above_vol == below_vol) and (abs(va_high + 2 - mid_index) <= abs(va_low - 2 - mid_index)) )
+                va_high := va_high + 2
+                va_vol := va_vol + above_vol
+    
+        // when above_vol < below_vol include the 2 rows below into the value area
+        if (va_low > 0) 
+            if (above_vol < below_vol) or ( (above_vol == below_vol) and (abs(va_high + 2 - mid_index) > abs(va_low - 2 - mid_index)) )
+                va_low := va_low - 2
+                va_vol := va_vol + below_vol
+    
+        // value area limit target reached or the whole range is processed
+        if (va_vol >= va_limit) or ((va_low <= 0) and (va_high > num_levels))
+            break
+
+
+    va_high := (va_high > num_levels) ? num_levels : va_high
+    va_low := (va_low <= 0) ? 1 : va_low
+    
+    // both va low / va high include their underlying levels
+    // low boundary of a level = level, high boundary of a level = level_top, doesn't need shift
+    va_high_level := pl + va_high * h - spacing // + shift // h/2
+    // lower boundary of a level
+    va_low_level := pl + (va_low - 1) * h - spacing // + shift // h/2
+
+
+// VWAP
+// is not affected by shift
+vwap_level = vwap(vwap_src)
+vwap_stdev = stdev(vwap_src, vwap_len) * stddev
+vwap_up = vwap_level + vwap_stdev
+vwap_down = vwap_level - vwap_stdev
+
+// in VWAP mode POC2, VAH/VAL are reused and become => VWAP, VWAP High/Low to minimize plot outputs
+// doesn't need a valid range
+// in max vol sli mode - a slave indicator instance can show vwap levels, while the master instance - poc2/va levels
+// wvap levels are the same for both master/slave versions - they are duplicate levels
+if (levels_mode == "vwap")
+    poc2_level := vwap_level
+    va_high_level := vwap_up
+    va_low_level := vwap_down
+
+
+// Buy/Sell/Total Lengths as % of Base Width
+
+// calculate base level length
+// 100 static vol vars removed and replaced with a function to minimize the total number of vars <= max 1000 vars limit
+// here we calculate the numerator vol of the vol/max_vol ratio (fraction top)
+// - for total - we need to use total buy+sell volume
+// - for buy/sell in normal mode => respective buy/sell volumes
+// - for buy/sell in buy_sell_sli_mode with extended buy + sell offset for sell => total buy+sell volume for sell, buy volume for buy master/slave indicator
+// - for buy/sell in buy_sell_mode with extended buy + sell offset for sell => depends on volume_type
+// - basically for buy level we use buy len, for sell level - buy + sell len, but the buy part is below/covered by the corresponding buy level because each sell is an extension of a buy level, so it's technically a sell len with a buy len offset
+
+// doesn't work - won't compile
+// - you can't use buy/sell_volumes inside a function because of max 100 vars limit for the entire call stack with nested functions
+// - you must call buy/sell_volumes from a global scope, then pass buy/sell_vol values as args into a function instead
+// - similarly you can't have get_vol(index), get_len(index), get_offset(index) => you must calculate vol,len and pass them as args: get_vol(buy/sell_vol), len = get_len(buy/sell_vol), get_offset(len)
+// get_vol(index) =>
+//     buy_sell_cond = buy_sell_mode and (index > num_levels)
+//     i = buy_sell_cond ? index - 50 : index
+
+//     a = volume_type == "buy" ? 1 : volume_type == "sell" ? buy_sell_sli_mode or buy_sell_cond ? 1 : 0 : volume_type == "total" ? 1 : 0
+//     b = volume_type == "buy" ? 0 : volume_type == "sell" ? 1 : volume_type == "total" ? 1 : 0
+    
+//     bv = i <= 50 ? buy_volumes1(i) : buy_volumes2(i)
+//     sv = i <= 50 ? sell_volumes1(i) : sell_volumes2(i)
+
+//     res = a * bv + b * sv
+
+// get_len(index) =>
+//     // prevent division by zero
+//     len = max_vol > 0 ? round(get_vol(index)/max_vol * length) : 0
+
+
+// determines how level len is calculated depending on level, normal/buy_sell_mode, buy/sell volumes and volume_type
+// uses num_levels, max_vol - must remain after
+// - line object = [buy,sell], can't be total due to overlapping (line objects are always shown above plot levels and will completely obscure them, including side cover)
+// - plot level = [buy,total], can't be sell due to fixed width (always uses offset from zero, can't extend a buy from an edge as a sell)
+// - for buy_sell_mode/volume_type combo:
+// 		line = sell, plot = buy => volume_type sell - line objects appear as red sell levels extending blue buy plot levels from the edge (no overlapping)
+// 		line = buy, plot = total => volume_type buy - line objects appear as green buy levels on top of blue total plot levels (overlapping)
+// 		line = sell, plot = total => volume_type total - line objects appear as red sell levels on top of blue total plot levels (overlapping)
+// - overlapping/engulfing is particularly visible in adjust for log scale mode when the edges of total plot go past the edges of a sell line level
+// Pro Tip:
+// apparently merging 2 nested functions get_len(get_vol) into 1 get_len fits the max 50K compiled size limit!
+// get_vol(index, buy_vol, sell_vol) =>
+get_len(index, buy_vol, sell_vol) =>
+    a = volume_type == "buy" ? 1 : volume_type == "sell" ? buy_sell_sli_mode ? 1 : 0 : volume_type == "total" ? 1 : 0
+    b = volume_type == "buy" ? 0 : volume_type == "sell" ? 1 : volume_type == "total" ? 1 : 0
+
+    // in buy_sell_mode num_levels is already halved and volume_type defines the len of line objects
+    // regardless of volume_type: total, buy or buy, total are passed as len1, len2 defining all 3 points for a buy/sell combo level.
+    if buy_sell_mode
+        // plot levels 1..50 are:
+        // - for volume_type buy/total - total_vol with a fixed total_len=buy_vol+sell_vol
+        // - for volume_type sell - buy_vol with offset=zero
+        if index <= num_levels
+            a := 1
+            b := volume_type == "sell" ? 0 : 1
+
+        // line object levels 51..100 are:
+        // - for volume_type = buy:
+        //   - a line is drawn between (x1=buy_vol, x2=zero), buy_len=buy_vol, overlapping plot levels
+        //   - overlapping is acceptable because line objects are always shown above plot levels anyway
+        // - for volume_type = sell/total:
+        //   - a line is drawn between (x1=total_vol, x2=zero-buy_vol), sell_len=total_vol-buy_vol, extending plot buy level
+        //   - overlapping with plot buy must be avoided because line objects can't be moved below plot levels and will be obscuring them otherwise
+        if index > num_levels
+            a := 1
+            b := volume_type == "sell" ? 1 : 0
+
+    res = a * buy_vol + b * sell_vol
+
+    // prevents division by zero
+    len = max_vol > 0 ? round(res/max_vol * length) : 0
+
+// get level len
+// get_len(index, buy_vol, sell_vol) =>
+//     len = max_vol > 0 ? round(get_vol(index, buy_vol, sell_vol)/max_vol * length) : 0
+
+// len can be a function, because only offset depends on it
+// must pass buy/sell_vol explicitly and calculate each len once
+// in buy_sell_mode len1..50 = total/buy volume, len51..100 - buy/total volume
+len1 = get_len(1, buy_vol1, sell_vol1)
+len2 = get_len(2, buy_vol2, sell_vol2)
+len3 = get_len(3, buy_vol3, sell_vol3)
+len4 = get_len(4, buy_vol4, sell_vol4)
+len5 = get_len(5, buy_vol5, sell_vol5)
+len6 = get_len(6, buy_vol6, sell_vol6)
+len7 = get_len(7, buy_vol7, sell_vol7)
+len8 = get_len(8, buy_vol8, sell_vol8)
+len9 = get_len(9, buy_vol9, sell_vol9)
+len10 = get_len(10, buy_vol10, sell_vol10)
+len11 = get_len(11, buy_vol11, sell_vol11)
+len12 = get_len(12, buy_vol12, sell_vol12)
+len13 = get_len(13, buy_vol13, sell_vol13)
+len14 = get_len(14, buy_vol14, sell_vol14)
+len15 = get_len(15, buy_vol15, sell_vol15)
+len16 = get_len(16, buy_vol16, sell_vol16)
+len17 = get_len(17, buy_vol17, sell_vol17)
+len18 = get_len(18, buy_vol18, sell_vol18)
+len19 = get_len(19, buy_vol19, sell_vol19)
+len20 = get_len(20, buy_vol20, sell_vol20)
+len21 = get_len(21, buy_vol21, sell_vol21)
+len22 = get_len(22, buy_vol22, sell_vol22)
+len23 = get_len(23, buy_vol23, sell_vol23)
+len24 = get_len(24, buy_vol24, sell_vol24)
+len25 = get_len(25, buy_vol25, sell_vol25)
+len26 = get_len(26, buy_vol26, sell_vol26)
+len27 = get_len(27, buy_vol27, sell_vol27)
+len28 = get_len(28, buy_vol28, sell_vol28)
+len29 = get_len(29, buy_vol29, sell_vol29)
+len30 = get_len(30, buy_vol30, sell_vol30)
+len31 = get_len(31, buy_vol31, sell_vol31)
+len32 = get_len(32, buy_vol32, sell_vol32)
+len33 = get_len(33, buy_vol33, sell_vol33)
+len34 = get_len(34, buy_vol34, sell_vol34)
+len35 = get_len(35, buy_vol35, sell_vol35)
+len36 = get_len(36, buy_vol36, sell_vol36)
+len37 = get_len(37, buy_vol37, sell_vol37)
+len38 = get_len(38, buy_vol38, sell_vol38)
+len39 = get_len(39, buy_vol39, sell_vol39)
+len40 = get_len(40, buy_vol40, sell_vol40)
+len41 = get_len(41, buy_vol41, sell_vol41)
+len42 = get_len(42, buy_vol42, sell_vol42)
+len43 = get_len(43, buy_vol43, sell_vol43)
+len44 = get_len(44, buy_vol44, sell_vol44)
+len45 = get_len(45, buy_vol45, sell_vol45)
+len46 = get_len(46, buy_vol46, sell_vol46)
+len47 = get_len(47, buy_vol47, sell_vol47)
+len48 = get_len(48, buy_vol48, sell_vol48)
+len49 = get_len(49, buy_vol49, sell_vol49)
+len50 = get_len(50, buy_vol50, sell_vol50)
+
+// for normal mode we use buy/sell vol 51..100
+// for buy_sell_mode num_levels has been already halved and buy/sell volumes with index > num_levels are empty => use buy/sell vol 1..50 instead
+len51 = not buy_sell_mode ? get_len(51, buy_vol51, sell_vol51) : get_len(51, buy_vol1, sell_vol1)
+len52 = not buy_sell_mode ? get_len(52, buy_vol52, sell_vol52) : get_len(52, buy_vol2, sell_vol2)
+len53 = not buy_sell_mode ? get_len(53, buy_vol53, sell_vol53) : get_len(53, buy_vol3, sell_vol3)
+len54 = not buy_sell_mode ? get_len(54, buy_vol54, sell_vol54) : get_len(54, buy_vol4, sell_vol4)
+len55 = not buy_sell_mode ? get_len(55, buy_vol55, sell_vol55) : get_len(55, buy_vol5, sell_vol5)
+len56 = not buy_sell_mode ? get_len(56, buy_vol56, sell_vol56) : get_len(56, buy_vol6, sell_vol6)
+len57 = not buy_sell_mode ? get_len(57, buy_vol57, sell_vol57) : get_len(57, buy_vol7, sell_vol7)
+len58 = not buy_sell_mode ? get_len(58, buy_vol58, sell_vol58) : get_len(58, buy_vol8, sell_vol8)
+len59 = not buy_sell_mode ? get_len(59, buy_vol59, sell_vol59) : get_len(59, buy_vol9, sell_vol9)
+len60 = not buy_sell_mode ? get_len(60, buy_vol60, sell_vol60) : get_len(60, buy_vol10, sell_vol10)
+len61 = not buy_sell_mode ? get_len(61, buy_vol61, sell_vol61) : get_len(61, buy_vol11, sell_vol11)
+len62 = not buy_sell_mode ? get_len(62, buy_vol62, sell_vol62) : get_len(62, buy_vol12, sell_vol12)
+len63 = not buy_sell_mode ? get_len(63, buy_vol63, sell_vol63) : get_len(63, buy_vol13, sell_vol13)
+len64 = not buy_sell_mode ? get_len(64, buy_vol64, sell_vol64) : get_len(64, buy_vol14, sell_vol14)
+len65 = not buy_sell_mode ? get_len(65, buy_vol65, sell_vol65) : get_len(65, buy_vol15, sell_vol15)
+len66 = not buy_sell_mode ? get_len(66, buy_vol66, sell_vol66) : get_len(66, buy_vol16, sell_vol16)
+len67 = not buy_sell_mode ? get_len(67, buy_vol67, sell_vol67) : get_len(67, buy_vol17, sell_vol17)
+len68 = not buy_sell_mode ? get_len(68, buy_vol68, sell_vol68) : get_len(68, buy_vol18, sell_vol18)
+len69 = not buy_sell_mode ? get_len(69, buy_vol69, sell_vol69) : get_len(69, buy_vol19, sell_vol19)
+len70 = not buy_sell_mode ? get_len(70, buy_vol70, sell_vol70) : get_len(70, buy_vol20, sell_vol20)
+len71 = not buy_sell_mode ? get_len(71, buy_vol71, sell_vol71) : get_len(71, buy_vol21, sell_vol21)
+len72 = not buy_sell_mode ? get_len(72, buy_vol72, sell_vol72) : get_len(72, buy_vol22, sell_vol22)
+len73 = not buy_sell_mode ? get_len(73, buy_vol73, sell_vol73) : get_len(73, buy_vol23, sell_vol23)
+len74 = not buy_sell_mode ? get_len(74, buy_vol74, sell_vol74) : get_len(74, buy_vol24, sell_vol24)
+len75 = not buy_sell_mode ? get_len(75, buy_vol75, sell_vol75) : get_len(75, buy_vol25, sell_vol25)
+len76 = not buy_sell_mode ? get_len(76, buy_vol76, sell_vol76) : get_len(76, buy_vol26, sell_vol26)
+len77 = not buy_sell_mode ? get_len(77, buy_vol77, sell_vol77) : get_len(77, buy_vol27, sell_vol27)
+len78 = not buy_sell_mode ? get_len(78, buy_vol78, sell_vol78) : get_len(78, buy_vol28, sell_vol28)
+len79 = not buy_sell_mode ? get_len(79, buy_vol79, sell_vol79) : get_len(79, buy_vol29, sell_vol29)
+len80 = not buy_sell_mode ? get_len(80, buy_vol80, sell_vol80) : get_len(80, buy_vol30, sell_vol30)
+len81 = not buy_sell_mode ? get_len(81, buy_vol81, sell_vol81) : get_len(81, buy_vol31, sell_vol31)
+len82 = not buy_sell_mode ? get_len(82, buy_vol82, sell_vol82) : get_len(82, buy_vol32, sell_vol32)
+len83 = not buy_sell_mode ? get_len(83, buy_vol83, sell_vol83) : get_len(83, buy_vol33, sell_vol33)
+len84 = not buy_sell_mode ? get_len(84, buy_vol84, sell_vol84) : get_len(84, buy_vol34, sell_vol34)
+len85 = not buy_sell_mode ? get_len(85, buy_vol85, sell_vol85) : get_len(85, buy_vol35, sell_vol35)
+len86 = not buy_sell_mode ? get_len(86, buy_vol86, sell_vol86) : get_len(86, buy_vol36, sell_vol36)
+len87 = not buy_sell_mode ? get_len(87, buy_vol87, sell_vol87) : get_len(87, buy_vol37, sell_vol37)
+len88 = not buy_sell_mode ? get_len(88, buy_vol88, sell_vol88) : get_len(88, buy_vol38, sell_vol38)
+len89 = not buy_sell_mode ? get_len(89, buy_vol89, sell_vol89) : get_len(89, buy_vol39, sell_vol39)
+len90 = not buy_sell_mode ? get_len(90, buy_vol90, sell_vol90) : get_len(90, buy_vol40, sell_vol40)
+len91 = not buy_sell_mode ? get_len(91, buy_vol91, sell_vol91) : get_len(91, buy_vol41, sell_vol41)
+len92 = not buy_sell_mode ? get_len(92, buy_vol92, sell_vol92) : get_len(92, buy_vol42, sell_vol42)
+len93 = not buy_sell_mode ? get_len(93, buy_vol93, sell_vol93) : get_len(93, buy_vol43, sell_vol43)
+len94 = not buy_sell_mode ? get_len(94, buy_vol94, sell_vol94) : get_len(94, buy_vol44, sell_vol44)
+len95 = not buy_sell_mode ? get_len(95, buy_vol95, sell_vol95) : get_len(95, buy_vol45, sell_vol45)
+len96 = not buy_sell_mode ? get_len(96, buy_vol96, sell_vol96) : get_len(96, buy_vol46, sell_vol46)
+len97 = not buy_sell_mode ? get_len(97, buy_vol97, sell_vol97) : get_len(97, buy_vol47, sell_vol47)
+len98 = not buy_sell_mode ? get_len(98, buy_vol98, sell_vol98) : get_len(98, buy_vol48, sell_vol48)
+len99 = not buy_sell_mode ? get_len(99, buy_vol99, sell_vol99) : get_len(99, buy_vol49, sell_vol49)
+len100 = not buy_sell_mode ? get_len(100, buy_vol100, sell_vol100) : get_len(100, buy_vol50, sell_vol50)
+
+
+
+// Buy/Sell Levels
+
+// levels are relative to pl with step h, shift compensates for width outline plotted from the center of each line instead of its bottom
+// level can't be mutable/function because plot linewidth depends on it
+level1 = pl + 0 * h + shift
+level2 = pl + 1 * h + shift
+level3 = pl + 2 * h + shift
+level4 = pl + 3 * h + shift
+level5 = pl + 4 * h + shift
+level6 = pl + 5 * h + shift
+level7 = pl + 6 * h + shift
+level8 = pl + 7 * h + shift
+level9 = pl + 8 * h + shift
+level10 = pl + 9 * h + shift
+level11 = pl + 10 * h + shift
+level12 = pl + 11 * h + shift
+level13 = pl + 12 * h + shift
+level14 = pl + 13 * h + shift
+level15 = pl + 14 * h + shift
+level16 = pl + 15 * h + shift
+level17 = pl + 16 * h + shift
+level18 = pl + 17 * h + shift
+level19 = pl + 18 * h + shift
+level20 = pl + 19 * h + shift
+level21 = pl + 20 * h + shift
+level22 = pl + 21 * h + shift
+level23 = pl + 22 * h + shift
+level24 = pl + 23 * h + shift
+level25 = pl + 24 * h + shift
+level26 = pl + 25 * h + shift
+level27 = pl + 26 * h + shift
+level28 = pl + 27 * h + shift
+level29 = pl + 28 * h + shift
+level30 = pl + 29 * h + shift
+level31 = pl + 30 * h + shift
+level32 = pl + 31 * h + shift
+level33 = pl + 32 * h + shift
+level34 = pl + 33 * h + shift
+level35 = pl + 34 * h + shift
+level36 = pl + 35 * h + shift
+level37 = pl + 36 * h + shift
+level38 = pl + 37 * h + shift
+level39 = pl + 38 * h + shift
+level40 = pl + 39 * h + shift
+level41 = pl + 40 * h + shift
+level42 = pl + 41 * h + shift
+level43 = pl + 42 * h + shift
+level44 = pl + 43 * h + shift
+level45 = pl + 44 * h + shift
+level46 = pl + 45 * h + shift
+level47 = pl + 46 * h + shift
+level48 = pl + 47 * h + shift
+level49 = pl + 48 * h + shift
+level50 = pl + 49 * h + shift
+level51 = pl + 50 * h + shift  // required for width calculation
+
+// for 51..100 line objects level can be a function
+// removed 50 level vars to minimize the total number of vars <= max 1000 vars limit
+// uses pl, h, shift - must remain after
+get_level(index) =>
+    level = not buy_sell_mode or (buy_sell_mode and index <= 50) ? pl + (index - 1) * h + shift : pl + (index - 51) * h + shift
+
+
+// we don't need level tops in this version
+
+// Level Offsets
+
+dir = flip_levels ? 1 : -1
+
+// both range and start_bar can be > n producing negative index vaes
+// must be >= 0 for other offsets to work
+
+// if range = 0 (All History) first_bar_offset is always the offset to the first bar n=0 on the chart regardless of start_bar it is applied to cur_bar not start_bar
+first_bar_offset = range == 0 ? total_bars : range_start_bars // min(total_bars, start_bar + range - 1)
+
+last_bar_offset = range_start_bars >= range_bars ? range_start_bars - range_bars + 1 : 0 // na(range_end_bars) ? first_bar_offset : range_end_bars
+
+range_offset = anchor == "cur bar" ? 0 : anchor == "range start" ? last_bar_offset : first_bar_offset
+// range_offset = anchor == "cur bar" ? 0 : anchor == "range start" ? start_bar : start_bar + range - 1
+
+// zero line offset
+// zero offset is added to the anchor point
+z_offset = zero_offset - range_offset
+
+// for levels facing left from zero (default) - apply offset to the last bar, for flipped levels facing right from zero - apply offset to the first bar
+l_offset = dir == 1 ? z_offset - 1 : z_offset + length // - 1
+
+// micro adjustments for zero and cover offsets depending on the cover/level histogram bar width for proper alignment
+adj_z_offset = z_offset - dir * adj_zero_offset
+
+// extend cover to the right to compensate for cover offset adjustment
+cover_length = length + ext_length
+c_offset = dir == 1 ? z_offset : z_offset + cover_length - 1
+c_offset := c_offset - dir * cover_offset
+
+// for plotshape you need z_offset, for plot columns - l_offset with length
+// relative to zero = inverse dir
+poc_offset := z_offset - dir * poc_offset
+va_offset := z_offset - dir * va_offset
+
+
+// removed 100 offset vars to minimize the total number of vars <= max 1000 vars limit
+get_offset(len) =>
+    dir = flip_levels ? 1 : -1
+    res = l_offset + dir * len
+
+
+// Level Widths
+
+// doesn't work - plot linewidth can't be mutable/function, can't be float, can only be a math/const expression => produces default tiny line, changes don't affect output
+// adj_width(level1, level2) =>
+    // k = 1 - log(level1)/log(level2)
+    // w = line_width * width_multiplier
+    // res = adjust_width ? floor(k * w) : floor(w)
+
+// use line_width for normal scale and line_width * width_multiplier for log scale
+w = adjust_width ? line_width * width_multiplier : line_width
+
+// Adjust Line Width for Log Scale mode:
+//  - produces smaller width for higher price values based on 1 - log ratio of adjacent levels
+//  - when h <= 1 or level = 0 (shift = 0) or level = 1 widths may not work due to log() limits
+//  - double abs is required for high precision small price charts with h < 0.01 => log(0.01), when width is negative
+//  - log(0) => NaN, log(1) = 0, division by zero => when h = 0.1, 0.2 and 0.5 widths of certain levels will be zero
+//  - when Adjust Line Width for Log Scale is false there are no width issues
+// this ensures that width1 will be shown and within max_deviation from width2 (this doesn't fix other levels):
+//  - when level1 = 0 width1 is NaN (not shown) 
+//  - when level1 = 1 width1 is extremely large value w
+line_width1_ = adjust_width ? abs(floor((1 - abs(log10(level1)/log10(level2))) * w)) : floor(w)
+line_width2 = adjust_width ? abs(floor((1 - abs(log10(level2)/log10(level3))) * w)) : floor(w)
+line_width2_ = floor(line_width2 * max_deviation)
+
+// na, nz, fixnan, float don't work as log(0) na check - can't cast to const
+// line_width1 = line_width1_ ? line_width1_ : line_width2_
+// line_width1 = not na(line_width1_) ? line_width1_ : line_width2_
+// line_width1 = line_width1_ == log(0) ? line_width1_ : line_width2_
+
+// works as log(0) na check for const expressions - nothing else works!
+line_width1 = line_width1_ > 0 ? line_width1_ : line_width2_
+
+// line_width1 = adjust_width ? abs(floor((1 - abs(log10(level1)/log10(level2))) * w)) : floor(w)
+// line_width2 = adjust_width ? abs(floor((1 - abs(log10(level2)/log10(level3))) * w)) : floor(w)
+line_width3 = adjust_width ? abs(floor((1 - abs(log10(level3)/log10(level4))) * w)) : floor(w)
+line_width4 = adjust_width ? abs(floor((1 - abs(log10(level4)/log10(level5))) * w)) : floor(w)
+line_width5 = adjust_width ? abs(floor((1 - abs(log10(level5)/log10(level6))) * w)) : floor(w)
+line_width6 = adjust_width ? abs(floor((1 - abs(log10(level6)/log10(level7))) * w)) : floor(w)
+line_width7 = adjust_width ? abs(floor((1 - abs(log10(level7)/log10(level8))) * w)) : floor(w)
+line_width8 = adjust_width ? abs(floor((1 - abs(log10(level8)/log10(level9))) * w)) : floor(w)
+line_width9 = adjust_width ? abs(floor((1 - abs(log10(level9)/log10(level10))) * w)) : floor(w)
+line_width10 = adjust_width ? abs(floor((1 - abs(log10(level10)/log10(level11))) * w)) : floor(w)
+line_width11 = adjust_width ? abs(floor((1 - abs(log10(level11)/log10(level12))) * w)) : floor(w)
+line_width12 = adjust_width ? abs(floor((1 - abs(log10(level12)/log10(level13))) * w)) : floor(w)
+line_width13 = adjust_width ? abs(floor((1 - abs(log10(level13)/log10(level14))) * w)) : floor(w)
+line_width14 = adjust_width ? abs(floor((1 - abs(log10(level14)/log10(level15))) * w)) : floor(w)
+line_width15 = adjust_width ? abs(floor((1 - abs(log10(level15)/log10(level16))) * w)) : floor(w)
+line_width16 = adjust_width ? abs(floor((1 - abs(log10(level16)/log10(level17))) * w)) : floor(w)
+line_width17 = adjust_width ? abs(floor((1 - abs(log10(level17)/log10(level18))) * w)) : floor(w)
+line_width18 = adjust_width ? abs(floor((1 - abs(log10(level18)/log10(level19))) * w)) : floor(w)
+line_width19 = adjust_width ? abs(floor((1 - abs(log10(level19)/log10(level20))) * w)) : floor(w)
+line_width20 = adjust_width ? abs(floor((1 - abs(log10(level20)/log10(level21))) * w)) : floor(w)
+line_width21 = adjust_width ? abs(floor((1 - abs(log10(level21)/log10(level22))) * w)) : floor(w)
+line_width22 = adjust_width ? abs(floor((1 - abs(log10(level22)/log10(level23))) * w)) : floor(w)
+line_width23 = adjust_width ? abs(floor((1 - abs(log10(level23)/log10(level24))) * w)) : floor(w)
+line_width24 = adjust_width ? abs(floor((1 - abs(log10(level24)/log10(level25))) * w)) : floor(w)
+line_width25 = adjust_width ? abs(floor((1 - abs(log10(level25)/log10(level26))) * w)) : floor(w)
+line_width26 = adjust_width ? abs(floor((1 - abs(log10(level26)/log10(level27))) * w)) : floor(w)
+line_width27 = adjust_width ? abs(floor((1 - abs(log10(level27)/log10(level28))) * w)) : floor(w)
+line_width28 = adjust_width ? abs(floor((1 - abs(log10(level28)/log10(level29))) * w)) : floor(w)
+line_width29 = adjust_width ? abs(floor((1 - abs(log10(level29)/log10(level30))) * w)) : floor(w)
+line_width30 = adjust_width ? abs(floor((1 - abs(log10(level30)/log10(level31))) * w)) : floor(w)
+line_width31 = adjust_width ? abs(floor((1 - abs(log10(level31)/log10(level32))) * w)) : floor(w)
+line_width32 = adjust_width ? abs(floor((1 - abs(log10(level32)/log10(level33))) * w)) : floor(w)
+line_width33 = adjust_width ? abs(floor((1 - abs(log10(level33)/log10(level34))) * w)) : floor(w)
+line_width34 = adjust_width ? abs(floor((1 - abs(log10(level34)/log10(level35))) * w)) : floor(w)
+line_width35 = adjust_width ? abs(floor((1 - abs(log10(level35)/log10(level36))) * w)) : floor(w)
+line_width36 = adjust_width ? abs(floor((1 - abs(log10(level36)/log10(level37))) * w)) : floor(w)
+line_width37 = adjust_width ? abs(floor((1 - abs(log10(level37)/log10(level38))) * w)) : floor(w)
+line_width38 = adjust_width ? abs(floor((1 - abs(log10(level38)/log10(level39))) * w)) : floor(w)
+line_width39 = adjust_width ? abs(floor((1 - abs(log10(level39)/log10(level40))) * w)) : floor(w)
+line_width40 = adjust_width ? abs(floor((1 - abs(log10(level40)/log10(level41))) * w)) : floor(w)
+line_width41 = adjust_width ? abs(floor((1 - abs(log10(level41)/log10(level42))) * w)) : floor(w)
+line_width42 = adjust_width ? abs(floor((1 - abs(log10(level42)/log10(level43))) * w)) : floor(w)
+line_width43 = adjust_width ? abs(floor((1 - abs(log10(level43)/log10(level44))) * w)) : floor(w)
+line_width44 = adjust_width ? abs(floor((1 - abs(log10(level44)/log10(level45))) * w)) : floor(w)
+line_width45 = adjust_width ? abs(floor((1 - abs(log10(level45)/log10(level46))) * w)) : floor(w)
+line_width46 = adjust_width ? abs(floor((1 - abs(log10(level46)/log10(level47))) * w)) : floor(w)
+line_width47 = adjust_width ? abs(floor((1 - abs(log10(level47)/log10(level48))) * w)) : floor(w)
+line_width48 = adjust_width ? abs(floor((1 - abs(log10(level48)/log10(level49))) * w)) : floor(w)
+line_width49 = adjust_width ? abs(floor((1 - abs(log10(level49)/log10(level50))) * w)) : floor(w)
+line_width50 = adjust_width ? abs(floor((1 - abs(log10(level50)/log10(level51))) * w)) : floor(w)
+
+width_ratio(level1, level2) =>
+    res = adjust_width ? abs(floor((1 - abs(log10(level1)/log10(level2))) * w)) : floor(w)
+
+// removed 50 width vars to minimize the total number of vars <= max 1000 vars limit
+// for 51..100 line object levels width can be a function
+// get_adj_width(index) =>
+//     l1 = index
+//     l2 = l1 + 1
+//     l3 = l1 + 2
+//     level1 = get_level(l1)
+//     level2 = get_level(l2)
+//     level3 = get_level(l3)
+
+//     // in buy_sell_mode for last level50 use static level51 (required) instead of level1 (returned by get_level) to prevent extremely large width
+//     if buy_sell_mode and (index == 50)
+//         level2 := level51
+
+//     // this should fix any log(0) level in 51..100 range - replace it with the next level's width * max_deviation
+//     // width1_ = adjust_width ? abs(floor((1 - abs(log10(level1)/log10(level2))) * w)) : floor(w)
+//     // width2 = adjust_width ? abs(floor((1 - abs(log10(level2)/log10(level3))) * w)) : floor(w)
+//     // moving calculations into a nested function width_ratio reduces the compiled code size
+//     // Compiled script code is too long: 50157. The limit is 50000
+//     width1_ = width_ratio(level1, level2)
+//     width2 = width_ratio(level2, level3)
+//     width2_ = floor(width2 * max_deviation)
+    
+//     // this particular cond results in the 50K limit for the compiled code size error
+//     // Compiled script code is too long: 50164. The limit is 50000
+//     // here this doesn't work as log(0) na check
+//     // adj_width = width1_ > 0 ? width1_ : width2_
+//     // not na works because line object's width can be var, not const
+//     // adj_width = not na(width1_) ? width1_ : width2_
+//     // dropping the cond will fit the compiled size limit
+//     // adj_width = width1_
+
+//     adj_width = not na(width1_) ? width1_ : width2_
+
+// get_width(index) =>
+//     // normal and buy/sell mode indexes
+//     l1 = index
+//     l2 = l1 - 50
+//     adj_width1 = get_adj_width(l1)
+//     adj_width2 = get_adj_width(l2)
+
+//     width = not buy_sell_mode ? adj_width1 : adj_width2
+
+// Pro Tip:
+// apparently merging 2 nested width functions into 1 fits the max 50K compiled size limit!
+// for 51..100 line object levels width can be a function
+// - in normal mode returns level 51..100 widths
+// - in buy_sell_mode returns level 1..50 widths for levels 51..100 respectively because levels 51..100 don't exist
+// uses fixed level51 - must remain after
+get_width(index) =>
+    // normal and buy/sell mode indexes
+    l1a = index
+    l2a = l1a + 1
+    l3a = l1a + 2
+    level1a = get_level(l1a)
+    level2a = get_level(l2a)
+    level3a = get_level(l3a)
+
+    // this should fix any log(0) level in 51..100 range - replace it with the next level's width * max_deviation
+    // moving calculations into a nested function width_ratio reduces the compiled code size
+    width1_ = width_ratio(level1a, level2a)
+    width2 = width_ratio(level2a, level3a)
+    width2_ = floor(width2 * max_deviation)
+    
+    adj_width1 = not na(width1_) ? width1_ : width2_
+    adj_width2 = 0
+
+    // always true
+    if index > 50
+        l1b = index - 50
+        l2b = l1b + 1
+        l3b = l1b + 2
+        level1b = get_level(l1b)
+        level2b = get_level(l2b)
+        level3b = get_level(l3b)
+
+        // in normal mode index = 100 => get_level(101) returns proper level101
+        // in buy_sell_mode last level 51..100 index = 100 => l1b = 50, l2b = 51, get_level(51) returns level1 - use static level51 instead (required for log calculation) to prevent extremely large width
+        // level50 => level1, level51 => level2 instead of level1
+        if buy_sell_mode and (index == 100)
+            level2b := level51
+
+        width3_ = width_ratio(level1b, level2b)
+        width4 = width_ratio(level2b, level3b)
+        width4_ = floor(width4 * max_deviation)
+        
+        adj_width2 := not na(width3_) ? width3_ : width4_
+
+
+    width = not buy_sell_mode ? adj_width1 : adj_width2
+
+
+// Levels
+
+// This script:
+// - has exactly 50K compiled code size
+// - uses max 50 line objects:
+// - uses max 64 plot outputs:
+//   - 50 * 1x color plots (levels) = 50
+//   - 2 * 1x color plots (zero + cover) = 2
+//   - 2 * 2x color plots (poc levels) = 4
+//   - 2 * 2x color plots (va lines) + 2 * 1x color plots (va zones) = 6
+//   - 1 * 1x color plot (bgcolor) = 1
+//   - 1 * 1x color plot (max_vol for sli) = 1
+// - ~300 vars were removed to fit the max 1000 vars limit: Script has too many local variables (1064) in "#f51": #loc_0, #loc_1, #loc_2, #loc_3, #loc_4... The limit is 1000
+//   var count: 800 => 500
+//   - 100 buy_vol (required)
+//   - 100 sell_vol (required)
+//   - 50 levels (required) (-50)
+//   - 0 offsets (-100)
+//   - 0 vol (-100)
+//   - 100 len (required)
+//   - 50 width (required) (-50)
+//   - 50 lines (required)
+//   - 50 framework
+//
+// - you can't plot dynamic profile levels using plotchar because you can't modify show_last in script - can ony hide using is_in_range na cond, but can't delete history
+// - histbase can't be var/function/mutable (doesn't affect the output), can only be const expression, can be set from input
+//
+// Pro Tip:
+// - you can use Atom/VS Code multi-caret editing, auto numbering and pine snippets to speed up code generation and even debug it in some cases (FF60+ also supports multi-caret editing)
+// - the following set of 50 lines is auto generated by these 2 Emmet lines (Ctrl-E to expand in Atom):
+// {plot(show_levels and (num_levels >= $) ? level$ : na, title="Volume $", style=level_style, linewidth=line_width$, color=level_color, transp=level_transp, offset=get_offset(len$), show_last=length)
+// }*50
+// you can only have 50 plot levels
+plot(show_levels and (num_levels >= 1) ? level1 : na, title="Volume 1", style=level_style, linewidth=line_width1, color=level_color, transp=level_transp, offset=get_offset(len1), show_last=length)
+plot(show_levels and (num_levels >= 2) ? level2 : na, title="Volume 2", style=level_style, linewidth=line_width2, color=level_color, transp=level_transp, offset=get_offset(len2), show_last=length)
+plot(show_levels and (num_levels >= 3) ? level3 : na, title="Volume 3", style=level_style, linewidth=line_width3, color=level_color, transp=level_transp, offset=get_offset(len3), show_last=length)
+plot(show_levels and (num_levels >= 4) ? level4 : na, title="Volume 4", style=level_style, linewidth=line_width4, color=level_color, transp=level_transp, offset=get_offset(len4), show_last=length)
+plot(show_levels and (num_levels >= 5) ? level5 : na, title="Volume 5", style=level_style, linewidth=line_width5, color=level_color, transp=level_transp, offset=get_offset(len5), show_last=length)
+plot(show_levels and (num_levels >= 6) ? level6 : na, title="Volume 6", style=level_style, linewidth=line_width6, color=level_color, transp=level_transp, offset=get_offset(len6), show_last=length)
+plot(show_levels and (num_levels >= 7) ? level7 : na, title="Volume 7", style=level_style, linewidth=line_width7, color=level_color, transp=level_transp, offset=get_offset(len7), show_last=length)
+plot(show_levels and (num_levels >= 8) ? level8 : na, title="Volume 8", style=level_style, linewidth=line_width8, color=level_color, transp=level_transp, offset=get_offset(len8), show_last=length)
+plot(show_levels and (num_levels >= 9) ? level9 : na, title="Volume 9", style=level_style, linewidth=line_width9, color=level_color, transp=level_transp, offset=get_offset(len9), show_last=length)
+plot(show_levels and (num_levels >= 10) ? level10 : na, title="Volume 10", style=level_style, linewidth=line_width10, color=level_color, transp=level_transp, offset=get_offset(len10), show_last=length)
+plot(show_levels and (num_levels >= 11) ? level11 : na, title="Volume 11", style=level_style, linewidth=line_width11, color=level_color, transp=level_transp, offset=get_offset(len11), show_last=length)
+plot(show_levels and (num_levels >= 12) ? level12 : na, title="Volume 12", style=level_style, linewidth=line_width12, color=level_color, transp=level_transp, offset=get_offset(len12), show_last=length)
+plot(show_levels and (num_levels >= 13) ? level13 : na, title="Volume 13", style=level_style, linewidth=line_width13, color=level_color, transp=level_transp, offset=get_offset(len13), show_last=length)
+plot(show_levels and (num_levels >= 14) ? level14 : na, title="Volume 14", style=level_style, linewidth=line_width14, color=level_color, transp=level_transp, offset=get_offset(len14), show_last=length)
+plot(show_levels and (num_levels >= 15) ? level15 : na, title="Volume 15", style=level_style, linewidth=line_width15, color=level_color, transp=level_transp, offset=get_offset(len15), show_last=length)
+plot(show_levels and (num_levels >= 16) ? level16 : na, title="Volume 16", style=level_style, linewidth=line_width16, color=level_color, transp=level_transp, offset=get_offset(len16), show_last=length)
+plot(show_levels and (num_levels >= 17) ? level17 : na, title="Volume 17", style=level_style, linewidth=line_width17, color=level_color, transp=level_transp, offset=get_offset(len17), show_last=length)
+plot(show_levels and (num_levels >= 18) ? level18 : na, title="Volume 18", style=level_style, linewidth=line_width18, color=level_color, transp=level_transp, offset=get_offset(len18), show_last=length)
+plot(show_levels and (num_levels >= 19) ? level19 : na, title="Volume 19", style=level_style, linewidth=line_width19, color=level_color, transp=level_transp, offset=get_offset(len19), show_last=length)
+plot(show_levels and (num_levels >= 20) ? level20 : na, title="Volume 20", style=level_style, linewidth=line_width20, color=level_color, transp=level_transp, offset=get_offset(len20), show_last=length)
+plot(show_levels and (num_levels >= 21) ? level21 : na, title="Volume 21", style=level_style, linewidth=line_width21, color=level_color, transp=level_transp, offset=get_offset(len21), show_last=length)
+plot(show_levels and (num_levels >= 22) ? level22 : na, title="Volume 22", style=level_style, linewidth=line_width22, color=level_color, transp=level_transp, offset=get_offset(len22), show_last=length)
+plot(show_levels and (num_levels >= 23) ? level23 : na, title="Volume 23", style=level_style, linewidth=line_width23, color=level_color, transp=level_transp, offset=get_offset(len23), show_last=length)
+plot(show_levels and (num_levels >= 24) ? level24 : na, title="Volume 24", style=level_style, linewidth=line_width24, color=level_color, transp=level_transp, offset=get_offset(len24), show_last=length)
+plot(show_levels and (num_levels >= 25) ? level25 : na, title="Volume 25", style=level_style, linewidth=line_width25, color=level_color, transp=level_transp, offset=get_offset(len25), show_last=length)
+plot(show_levels and (num_levels >= 26) ? level26 : na, title="Volume 26", style=level_style, linewidth=line_width26, color=level_color, transp=level_transp, offset=get_offset(len26), show_last=length)
+plot(show_levels and (num_levels >= 27) ? level27 : na, title="Volume 27", style=level_style, linewidth=line_width27, color=level_color, transp=level_transp, offset=get_offset(len27), show_last=length)
+plot(show_levels and (num_levels >= 28) ? level28 : na, title="Volume 28", style=level_style, linewidth=line_width28, color=level_color, transp=level_transp, offset=get_offset(len28), show_last=length)
+plot(show_levels and (num_levels >= 29) ? level29 : na, title="Volume 29", style=level_style, linewidth=line_width29, color=level_color, transp=level_transp, offset=get_offset(len29), show_last=length)
+plot(show_levels and (num_levels >= 30) ? level30 : na, title="Volume 30", style=level_style, linewidth=line_width30, color=level_color, transp=level_transp, offset=get_offset(len30), show_last=length)
+plot(show_levels and (num_levels >= 31) ? level31 : na, title="Volume 31", style=level_style, linewidth=line_width31, color=level_color, transp=level_transp, offset=get_offset(len31), show_last=length)
+plot(show_levels and (num_levels >= 32) ? level32 : na, title="Volume 32", style=level_style, linewidth=line_width32, color=level_color, transp=level_transp, offset=get_offset(len32), show_last=length)
+plot(show_levels and (num_levels >= 33) ? level33 : na, title="Volume 33", style=level_style, linewidth=line_width33, color=level_color, transp=level_transp, offset=get_offset(len33), show_last=length)
+plot(show_levels and (num_levels >= 34) ? level34 : na, title="Volume 34", style=level_style, linewidth=line_width34, color=level_color, transp=level_transp, offset=get_offset(len34), show_last=length)
+plot(show_levels and (num_levels >= 35) ? level35 : na, title="Volume 35", style=level_style, linewidth=line_width35, color=level_color, transp=level_transp, offset=get_offset(len35), show_last=length)
+plot(show_levels and (num_levels >= 36) ? level36 : na, title="Volume 36", style=level_style, linewidth=line_width36, color=level_color, transp=level_transp, offset=get_offset(len36), show_last=length)
+plot(show_levels and (num_levels >= 37) ? level37 : na, title="Volume 37", style=level_style, linewidth=line_width37, color=level_color, transp=level_transp, offset=get_offset(len37), show_last=length)
+plot(show_levels and (num_levels >= 38) ? level38 : na, title="Volume 38", style=level_style, linewidth=line_width38, color=level_color, transp=level_transp, offset=get_offset(len38), show_last=length)
+plot(show_levels and (num_levels >= 39) ? level39 : na, title="Volume 39", style=level_style, linewidth=line_width39, color=level_color, transp=level_transp, offset=get_offset(len39), show_last=length)
+plot(show_levels and (num_levels >= 40) ? level40 : na, title="Volume 40", style=level_style, linewidth=line_width40, color=level_color, transp=level_transp, offset=get_offset(len40), show_last=length)
+plot(show_levels and (num_levels >= 41) ? level41 : na, title="Volume 41", style=level_style, linewidth=line_width41, color=level_color, transp=level_transp, offset=get_offset(len41), show_last=length)
+plot(show_levels and (num_levels >= 42) ? level42 : na, title="Volume 42", style=level_style, linewidth=line_width42, color=level_color, transp=level_transp, offset=get_offset(len42), show_last=length)
+plot(show_levels and (num_levels >= 43) ? level43 : na, title="Volume 43", style=level_style, linewidth=line_width43, color=level_color, transp=level_transp, offset=get_offset(len43), show_last=length)
+plot(show_levels and (num_levels >= 44) ? level44 : na, title="Volume 44", style=level_style, linewidth=line_width44, color=level_color, transp=level_transp, offset=get_offset(len44), show_last=length)
+plot(show_levels and (num_levels >= 45) ? level45 : na, title="Volume 45", style=level_style, linewidth=line_width45, color=level_color, transp=level_transp, offset=get_offset(len45), show_last=length)
+plot(show_levels and (num_levels >= 46) ? level46 : na, title="Volume 46", style=level_style, linewidth=line_width46, color=level_color, transp=level_transp, offset=get_offset(len46), show_last=length)
+plot(show_levels and (num_levels >= 47) ? level47 : na, title="Volume 47", style=level_style, linewidth=line_width47, color=level_color, transp=level_transp, offset=get_offset(len47), show_last=length)
+plot(show_levels and (num_levels >= 48) ? level48 : na, title="Volume 48", style=level_style, linewidth=line_width48, color=level_color, transp=level_transp, offset=get_offset(len48), show_last=length)
+plot(show_levels and (num_levels >= 49) ? level49 : na, title="Volume 49", style=level_style, linewidth=line_width49, color=level_color, transp=level_transp, offset=get_offset(len49), show_last=length)
+plot(show_levels and (num_levels >= 50) ? level50 : na, title="Volume 50", style=level_style, linewidth=line_width50, color=level_color, transp=level_transp, offset=get_offset(len50), show_last=length)
+
+
+// Pinescript v4 Lines
+
+// Colors
+
+// doesn't work
+// fc(col) =>
+//     res = lines_transp == 0 ? color.new(col, 0) : lines_transp == 10 ? color.new(col, 10) : lines_transp == 20 ? color.new(col, 20) : lines_transp == 30 ? color.new(col, 30) : lines_transp == 40 ? color.new(col, 40) : lines_transp == 50 ? color.new(col, 50) : 
+//          lines_transp == 60 ? color.new(col, 60) : lines_transp == 70 ? color.new(col, 70) : lines_transp == 80 ? color.new(col, 80) : lines_transp == 90 ? color.new(col, 90) : lines_transp == 100 ? color.new(col, 100) : col
+
+// lines_col := fc(blue)
+
+
+lines_col = color(na)
+lines_dim_col = color(na)
+
+// change color/transparency of line object levels
+// set custom transparency for predefined default buy/sell/total colors of the line object
+// inverse transp correlation creates the necessary illusion of "covered" line objects, although they are shown on top of the cover all the time
+// however, only discrete values in 0..100 range are supported. If custom lines_transp is set the inverse effect will not render properly because transp range can't be skewed easily
+// more transparent dim color => more visible "underlying" line object level
+// moving this code inside new_level increases compiled code size instead of reducing it
+// Compiled script code is too long: 50228. The limit is 50000
+if (lines_col_str == "")
+    if buy_sell_mode
+        // lines_col := volume_type == "buy" ? buy_color : sell_color
+
+        if volume_type == "buy"
+            lines_col := color_tr("buy", lines_transp)
+            lines_dim_col := color_tr("buy", 100 - nva_transp)
+        else
+            lines_col := color_tr("sell", lines_transp)
+            lines_dim_col := color_tr("sell", 100 - nva_transp)
+
+    if not buy_sell_mode
+        lines_col := color_tr("total", lines_transp)
+        lines_dim_col := color_tr("total", 100 - nva_transp)
+
+
+// set custom transparency for a custom color of the line object
+if (lines_col_str != "")
+    // regardless of buy_sell_mode, single custom user color replaces all default colors
+    lines_col := color_tr(lines_col_str, lines_transp)
+    lines_dim_col := color_tr(lines_col_str, 100 - nva_transp)
+
+
+// Line Objects
+
+// is_nva_zone(level) =>
+//     res = ((va_high_level > 0) and (level >= va_high_level)) or ((va_low_level > 0) and (level <= va_low_level))
+
+// create/delete line objects
+// uses va_high/low_level, lines_col, lines_dim_col, get_width() - must remain after
+new_level(index, line_obj, len1, len2) =>
+
+    level = get_level(index)
+    line_width = get_width(index)
+    offset1 = get_offset(len1)
+    offset2 = get_offset(len2)
+
+    line_ = line_obj
+    line.delete(line_obj)
+    line_ := na
+
+    dir = flip_levels ? 1 : -1
+    m_offset = dir == 1 ? 1 : -length
+
+    // buy_sell_mode
+    // len1 = 51..100, len2 = 1..50
+    // volume_type = buy/total => len1 = buy, len2 = total
+    // volume_type = sell => len1 = total, len2 = buy
+
+    // offset1 is buy_len for buy_sell_mode volume_type buy or total_len for normal mode
+    x1_offset = m_offset + offset1
+    x2_offset = z_offset
+    if buy_sell_mode
+        // offset1 is sell/total_offset, offset2 is buy_len/offset for sell_len (sell_len extends buy_len without overlapping)
+        if (volume_type == "total") or (volume_type == "sell")
+            x2_offset := m_offset + offset2
+
+
+    x1 = time + x1_offset * bar_range
+    x2 = time + x2_offset * bar_range
+    y1 = level
+    y2 = level
+
+    // Line Color
+    // when side cover is shown:
+    // - for both nva zones dim the actual line object levels because they can't be displayed below the cover
+    // - both top/bottom zone covers are still needed in case only plot levels are used (buy_sell_mode or num_levels <= 50)
+
+    // this particular cond results in the 50K limit for the compiled code size error
+    // Pro Tip: to save a few bytes in a compiled code size
+    // - reduce the number of conds in heavily used functions
+    // - move some code from heavily used functions into global scope
+    // - reduce the number of nested function calls in heavily used functions, merge them into a single function
+    // - reducing the number of functions gives varied results: saves/loses a few bytes here and there
+    // - reducing the number of vars doesn't help much
+    // - comments and declared but not used vars/functions are naturally ignored by the compiler
+    // wrapping cond in a nested function increases the compiled code size instead of reducing it
+    // Compiled script code is too long: 50223. The limit is 50000
+    // col = show_va and dim_nva_zones and is_nva_zone(level) ? lines_dim_col : lines_col
+    // Compiled script code is too long: 50208. The limit is 50000
+    // apparently commenting out the 2nd part of the cond will fit the 50K limit
+    nva_cond = ((va_high_level > 0) and (level >= va_high_level)) or ((va_low_level > 0) and (level <= va_low_level))
+    col = show_va and dim_nva_zones and nva_cond ? lines_dim_col : lines_col
+
+    // if na(line_) and not na(n[offset]) and show_lines and (index + half_levels <= num_levels)
+    if na(line_) and show_lines // and (index <= half_levels)
+        // line.style_solid, line.style_dotted, line.style_dashed, line.style_arrow_left, line.style_arrow_right, line.style_arrow_both
+        // x1, y1, x2, y2, xloc, color, style, width
+        line_ := line.new(x1, y1, x2, y2, style=line.style_solid, color=col, width=line_width, xloc=xloc.bar_time)
+
+    line_
+
+
+var line line1 = na
+var line line2 = na
+var line line3 = na
+var line line4 = na
+var line line5 = na
+var line line6 = na
+var line line7 = na
+var line line8 = na
+var line line9 = na
+var line line10 = na
+var line line11 = na
+var line line12 = na
+var line line13 = na
+var line line14 = na
+var line line15 = na
+var line line16 = na
+var line line17 = na
+var line line18 = na
+var line line19 = na
+var line line20 = na
+var line line21 = na
+var line line22 = na
+var line line23 = na
+var line line24 = na
+var line line25 = na
+var line line26 = na
+var line line27 = na
+var line line28 = na
+var line line29 = na
+var line line30 = na
+var line line31 = na
+var line line32 = na
+var line line33 = na
+var line line34 = na
+var line line35 = na
+var line line36 = na
+var line line37 = na
+var line line38 = na
+var line line39 = na
+var line line40 = na
+var line line41 = na
+var line line42 = na
+var line line43 = na
+var line line44 = na
+var line line45 = na
+var line line46 = na
+var line line47 = na
+var line line48 = na
+var line line49 = na
+var line line50 = na
+
+// use 51..100 levels
+line1 := new_level(51, line1, len51, len1)
+line2 := new_level(52, line2, len52, len2)
+line3 := new_level(53, line3, len53, len3)
+line4 := new_level(54, line4, len54, len4)
+line5 := new_level(55, line5, len55, len5)
+line6 := new_level(56, line6, len56, len6)
+line7 := new_level(57, line7, len57, len7)
+line8 := new_level(58, line8, len58, len8)
+line9 := new_level(59, line9, len59, len9)
+line10 := new_level(60, line10, len60, len10)
+line11 := new_level(61, line11, len61, len11)
+line12 := new_level(62, line12, len62, len12)
+line13 := new_level(63, line13, len63, len13)
+line14 := new_level(64, line14, len64, len14)
+line15 := new_level(65, line15, len65, len15)
+line16 := new_level(66, line16, len66, len16)
+line17 := new_level(67, line17, len67, len17)
+line18 := new_level(68, line18, len68, len18)
+line19 := new_level(69, line19, len69, len19)
+line20 := new_level(70, line20, len70, len20)
+line21 := new_level(71, line21, len71, len21)
+line22 := new_level(72, line22, len72, len22)
+line23 := new_level(73, line23, len73, len23)
+line24 := new_level(74, line24, len74, len24)
+line25 := new_level(75, line25, len75, len25)
+line26 := new_level(76, line26, len76, len26)
+line27 := new_level(77, line27, len77, len27)
+line28 := new_level(78, line28, len78, len28)
+line29 := new_level(79, line29, len79, len29)
+line30 := new_level(80, line30, len80, len30)
+line31 := new_level(81, line31, len81, len31)
+line32 := new_level(82, line32, len82, len32)
+line33 := new_level(83, line33, len83, len33)
+line34 := new_level(84, line34, len84, len34)
+line35 := new_level(85, line35, len85, len35)
+line36 := new_level(86, line36, len86, len36)
+line37 := new_level(87, line37, len87, len37)
+line38 := new_level(88, line38, len88, len38)
+line39 := new_level(89, line39, len89, len39)
+line40 := new_level(90, line40, len90, len40)
+line41 := new_level(91, line41, len91, len41)
+line42 := new_level(92, line42, len92, len42)
+line43 := new_level(93, line43, len93, len43)
+line44 := new_level(94, line44, len94, len44)
+line45 := new_level(95, line45, len95, len45)
+line46 := new_level(96, line46, len96, len46)
+line47 := new_level(97, line47, len97, len47)
+line48 := new_level(98, line48, len98, len48)
+line49 := new_level(99, line49, len99, len49)
+line50 := new_level(100, line50, len100, len50)
+
+
+// Zero line, Cover
+
+// extend cover with cover_ext_height levels up/down to compensate for large level width 
+c_height = h * cover_ext_height
+c_top = ph + c_height
+c_base = pl - c_height
+
+// can't assign show_last dynamically must use a set of 2 plots
+plot(show_cover ? c_top : na, title="Side Cover", style=area, histbase=c_base, color=cover_color, transp=0, offset=c_offset, show_last=cover_length)
+plot(show_zero ? ph : na, title="Zero Line", style=histogram, histbase=pl, color=zero_color, linewidth=zero_width, offset=adj_z_offset, show_last=1)
+
+
+// POC Lines
+
+// - POC line is a dynamic level and can't be a plot because you can't delete history. Dynamic levels can only be implemented with plotshape/plotchar fixed str text labels
+// - you can't set textcolor from TradingView Style UI, its color option only affects plot color, not textcolor => custom textbox input for textcolor and str to color conversion is necessary
+// - setting only textcolor from input: 1x color => 2x color outputs
+// - setting both color and textcolor from input: 1x color => 3x color outputs - would reduce the number of levels even more - you can manually set shape (dot) color from Style UI instead
+poc_col = get_color(poc_col_str, poc_color)
+poc2_col = get_color(poc2_col_str, poc2_color)
+
+// in VWAP mode Developing POC => VWAP Level
+if levels_mode == "vwap"
+    poc2_col := get_color(vwap_col_str, vwap_color)
+
+// POC and developing POC (2nd largest traded volume)
+// don' confuse poc_color (1x outputs) with poc_col (2x outputs)
+plotshape(show_poc and (poc_level > 0) ? poc_level : na, title="POC Level", style=shape.circle, color=poc_color, text=poc_text, textcolor=poc_col, transp=0, location=location.absolute, size=size.auto, offset=poc_offset, show_last=1)
+plotshape(show_poc2 and (poc2_level > 0) ? poc2_level : na, title="Developing POC/VWAP Level", style=shape.circle, color=poc2_color, text=poc_text, textcolor=poc2_col, transp=0, location=location.absolute, size=size.auto, offset=poc_offset, show_last=1)
+
+
+// Value Area/VWAP High/Low
+
+va_high_col = get_color(va_high_col_str, va_high_color)
+va_low_col = get_color(va_low_col_str, va_low_color)
+
+// in VWAP mode VAH/VAL => VWAP High/Low
+if levels_mode == "vwap"
+    va_high_col := get_color(vwap_high_col_str, vwap_high_color)
+    va_low_col := get_color(vwap_low_col_str, vwap_low_color)
+
+
+// VA mode 2 - zones
+// textcolor = na => 2x plot outputs
+va_zone_high = va_high_level + spacing
+va_zone_low = va_low_level + spacing
+
+plotshape(show_va and dim_nva_zones and (va_high_level > 0) ? va_zone_high : na, title="Zone Above VA/VWAP High", style=shape.labeldown, color=nva_zone_color, text=va_high2_text, textcolor=nva_zone_color, transp=nva_transp, location=location.absolute, size=size.auto, offset=va_offset, show_last=1)
+plotshape(show_va and dim_nva_zones and (va_low_level > 0) ? va_zone_low : na, title="Zone Below VA/VWAP Low", style=shape.labelup, color=nva_zone_color, text=va_low2_text, textcolor=nva_zone_color, transp=nva_transp, location=location.absolute, size=size.auto, offset=va_offset, show_last=1)
+
+
+// VA mode 1 - lines
+// objects further down are plotted above prev ones - lines must remain after zones
+// don' confuse va_high_color (1x outputs) with va_high_col (2x outputs)
+plotshape(show_va and (va_high_level > 0) ? va_high_level : na, title="VA/VWAP High", style=shape.circle, color=va_high_color, text=va_high1_text, textcolor=va_high_col, transp=0, location=location.absolute, size=size.auto, offset=va_offset, show_last=1)
+plotshape(show_va and (va_low_level > 0) ? va_low_level : na, title="VA/VWAP Low", style=shape.circle, color=va_low_color, text=va_low1_text, textcolor=va_low_col, transp=0, location=location.absolute, size=size.auto, offset=va_offset, show_last=1)
+
+
+// Highlight Range
+bgcolor_cond = highlight_background and is_in_range ? range_bg_color : na
+bgcolor(bgcolor_cond, title="Range Background Highlight Color")
+
+// not enough plot outputs for this
+// barcolor_cond = highlight_bars and is_in_range ? range_bar_color : na
+// barcolor(barcolor_cond, title="Range Bar Highlight Color")
+
+// Max Volume for Vertical SLI
+plot(show_max_vol_sli ? max_vol : na, color=red, title="Max Volume For Vertical SLI Mode", show_last=1) 
+
+// plot(n, color=red)

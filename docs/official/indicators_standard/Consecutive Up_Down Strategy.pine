@@ -1,0 +1,14 @@
+//@version=6
+strategy("Consecutive Up/Down Strategy", overlay=true)
+consecutiveBarsUp = input(3, "Consecutive bars up")
+consecutiveBarsDown = input(3, "Consecutive bars down")
+price = close
+ups = 0.0
+ups := price > price[1] ? nz(ups[1]) + 1 : 0
+dns = 0.0
+dns := price < price[1] ? nz(dns[1]) + 1 : 0
+if (ups >= consecutiveBarsUp)
+	strategy.entry("ConsUpLE", strategy.long, comment="ConsUpLE")
+if (dns >= consecutiveBarsDown)
+	strategy.entry("ConsDnSE", strategy.short, comment="ConsUpLE")
+//plot(strategy.equity, title="equity", color=color.red, linewidth=2, style=plot.style_areabr)

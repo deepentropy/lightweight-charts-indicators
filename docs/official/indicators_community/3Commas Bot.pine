@@ -1,0 +1,334 @@
+// ▒█▀▀█ ░░░▒█ ▒█▀▀▀█ ▒█▀▀█ ▒█▀▀█ ▒█░▒█ ▒█▀▄▀█ 
+// ▒█▀▀▄ ░▄░▒█ ▒█░░▒█ ▒█▄▄▀ ▒█░▄▄ ▒█░▒█ ▒█▒█▒█ 
+// ▒█▄▄█ ▒█▄▄█ ▒█▄▄▄█ ▒█░▒█ ▒█▄▄█ ░▀▄▄▀ ▒█░░▒█
+//
+// @strategy_alert_message {{strategy.order.alert_message}} 
+//@version=5
+
+strategy("3Commas Bot", "Bj Bot", true, precision=3, default_qty_type=strategy.cash, commission_value= 0.05, commission_type=strategy.commission.percent, slippage=1, currency=currency.USD, default_qty_value= 10000, initial_capital= 10000)
+
+// ================================== //
+// ---------> Tool Time <------------ //
+// ================================== //
+
+longTradesTip           = "Turn on/off long trades. Perhaps you are overall bearish and wish to exempt long trades on this asset"  
+shortTradesTip          = "Turn on/off short trades. Perhaps you are overall bullish and wish to exempt long trades on this asset"
+useLimitTip             = "Turns on/off the limit exit method. eg: using trail and not setting a limit exit. Must use trail, or strategy has no exit criteria"
+trailStopTip            = "Turns on/off the ATR trailing stop exit method." 
+FLIPTip                 = "Allows a reversal trade. eg. flipping short from a long pos. False will isolate trades from one another, while true allows an opposite bias entry while in a position already"
+setMaxDrawdownTip       = "Enables max drawdown protection. Enabling this will stop the bot if the overall strategy drawdown drops below the defined risk appetite"
+RnRTip                  = "This sets your risk to reward as a multiple. 1 is stop/limit equal distance from entry" 
+RiskMTip                = "Multiplier as a function of the ATR value projected from the calculated swing high/low. This allows for a buffer for your stop placing it behind support/resistance for the lookback period"  
+swinglookbackTip        = "This is your swing lookback. The the number of bars within the period calculated for lowest or highest value to establish a swing pivot"  
+maxPercDdTip            = "Risk appetite. Every strategy sees downside. This is how much you could stomach to allow the bot to lose if you let it run. Strategy stops taking trades below this level" 
+atrLenTip               = "Length of the period for the ATR to average"  
+trailStopSizeTip        = "The ATR multiplier for ATR-based trailing stop. Higher number yields a higher volatility based risk adjustment from the swing low"
+trailSourceTip          = "The price source for calculating ATR trailing stop"
+rrExitTip               = "This is the % of reward (target price) that must hit in order to trigger the trail expressed as a decimal. eg. 0.5 = 50% to target."
+maType1Tip              = "Sets the moving average type for the first MA" 
+maType2Tip              = "Sets the moving average type for the second MA"
+maLength1Tip            = "Sets the length for the first MA. (it is likely best to keep MA1 length less than MA2, or it may result in opposite trade bias desired depending on MA type"
+maLength2Tip            = "Sets the length for the second MA. (it is likely best to keep MA2 length greater than MA2, or it may result in opposite trade bias desired depending on MA type"  
+drawEntryTip            = "Shows the trade entry level"
+exitLvlTip              = "Shows the level that the trailing stop is triggered"
+useTimeFilterTip        = "Turns on/off time session filter"
+timeSessionTip          = "Time session to ignore trades (useful for ignoring trades during times you don't want to trade. eg. Markets are slow for a period of time in the night)"
+startTimeTip            = "Start date & time to begin backtest period. Also useful for beginning new bot. eg. Set time to now to make broker emulator in a flat position before setting alerts"
+endTimeTip              = "End date & time to stop searching for setups for back testing."
+
+// ================================== //
+// ---------> User Input <----------- //
+// ================================== //
+
+longTrades              = input.bool    (true,       "Detect Long Trades",                  group="Trade variables",    tooltip=longTradesTip)
+shortTrades             = input.bool    (true,       "Detect Short Trades",                 group="Trade variables",    tooltip=shortTradesTip)
+useLimit                = input.bool    (true,       "Use Limit exit",                      group="Trade variables",    tooltip=useLimitTip)   
+trailStop               = input.bool    (false,      "Use ATR Trailing Stop",               group="Trade variables",    tooltip=trailStopTip)  
+FLIP                    = input.bool    (false,      "Allow Reversal Trades",               group="Trade variables",    tooltip=FLIPTip)       
+setMaxDrawdown          = input.bool    (false,      "Set Max Total DrawDown",              group="Trade variables",    tooltip=setMaxDrawdownTip)  
+
+RnR                     = input.float   (1,          "Reward to Risk Ratio",                group="Risk Management",    tooltip=RnRTip,         minval=0)
+RiskM                   = input.float   (1,          "Risk Adjustment",                     group="Risk Management",    tooltip=RiskMTip,       minval=0)
+swinglookback           = input.int     (5,          "Swing Lookback",                      group="Risk Management",    tooltip=swinglookbackTip) 
+maxPercDd               = input.int     (20,         "Max Drawdown (%)",                    group="Risk Management",    tooltip=maxPercDdTip)       
+atrLen                  = input.int     (14,         "ATR length",                          group="Risk Management",    tooltip=atrLenTip)          
+
+trailStopSize           = input.float   (1.0,       "ATR Trailing Stop Multiplier",         group="Trailing Stop",      tooltip=trailStopSizeTip)
+trailSource             = input.string  ("High/Low","ATR Trailing Stop Source",             group="Trailing Stop",      tooltip=trailSourceTip, options=["High/Low", "Close", "Open"])
+rrExit                  = input.float   (0.0,       "R:R To Trigger Exit",                  group="Trailing Stop",      tooltip=rrExitTip)
+
+maType1                 = input.string  ("EMA",     "MA Type #1",                           group="MA Type",            tooltip=maType1Tip,     options=["EMA", "HEMA", "SMA", "HMA", "WMA", "DEMA", "VWMA", "VWAP", "T3"]) 
+maType2                 = input.string  ("EMA",     "MA Type #2",                           group="MA Type",            tooltip=maType2Tip,     options=["EMA", "HEMA", "SMA", "HMA", "WMA", "DEMA", "VWMA", "VWAP", "T3"]) 
+
+maLength1               = input.int     (21,        "MA Length #1",                         group="MA Settings",        tooltip=maLength1Tip,   minval=1)
+maLength2               = input.int     (50,        "MA Length #2",                         group="MA Settings",        tooltip=maLength2Tip,   minval=1)
+
+maBull1                 = input.color   (#64b5f6,   "",                                     inline="1",                 group="MA Color/ Transp/ Linewidth")
+maBear1                 = input.color   (#ef5350,   "",                                     inline="1",                 group="MA Color/ Transp/ Linewidth")
+maBull2                 = input.color   (#64b5f6,   "",                                     inline="2",                 group="MA Color/ Transp/ Linewidth")
+maBear2                 = input.color   (#ef5350,   "",                                     inline="2",                 group="MA Color/ Transp/ Linewidth")
+
+drawEntry               = input.bool    (false,     "Draw entry price",                     group="Display",            tooltip=drawEntryTip)
+exitLvl                 = input.bool    (true,      "Draw trail trigger price",             group="Display",            tooltip=exitLvlTip)
+
+useTimeFilter           = input.bool    (false,     "Use Time Session Filter",              group="Filters",            tooltip=useTimeFilterTip)  
+timeSession             = input.session ("0000-0300", "Time Session To Ignore Trades",      group="Filters",            tooltip=timeSessionTip)    
+startTime               = input.time(timestamp("01 Jan 2000 00:00 GMT-7"), "Start Filter",  group="Filters",            tooltip=startTimeTip)      
+endTime                 = input.time(timestamp("01 Jan 2099 00:00 GMT-7"), "End Filter",    group="Filters",            tooltip=endTimeTip)        
+
+// ================================== //
+// -----> Invariable Constants <----- //
+// ================================== //
+
+    // built in functions to make the script more readable when referencing position conditions //
+    
+FLAT                        = strategy.position_size == 0
+LONG                        = strategy.position_size > 0
+SHORT                       = strategy.position_size < 0
+confirmed                   = barstate.isconfirmed
+entry                       = strategy.position_avg_price
+
+    // using the var function allows "saving" of values to be set later. This allows us to "set" a stop for example and not have it change as its recalcualted on each bar. //
+
+var lookForExit             = false   
+var tradeStopPrice          = 0.0
+var tradeTargetPrice        = 0.0
+var trailingStop            = 0.0
+var tradeExitTriggerPrice   = 0.0
+var tradeStopDistance       = 0.0
+var tradeTriggerPrice       = 0.0
+
+// ================================== //
+// ---> Functional Declarations <---- //
+// ================================== //
+
+    // Function to calculate HA value for Bj HEMA MA type //
+
+_haOpen()       =>
+    haClose = (open + high + low + close) / 4
+    haOpen  = float(na)
+    haOpen := na(haOpen[1]) ? (open + close) / 2 : (nz(haOpen[1]) + nz(haClose[1])) / 2
+    
+    haOpen
+
+HaOpen              = _haOpen()
+
+    // Custom MA function. This alows variable MA selection from the input menu. Fucntion to be rendered later //
+    
+getMA(type, length) =>
+    maPrice =       ta.ema(close,  length)
+    if type == "HEMA"
+        maPrice :=  ta.ema(HaOpen, length)
+    if type == "SMA"
+        maPrice :=  ta.sma(close,  length)
+    if type == "HMA"
+        maPrice :=  ta.hma(close,  length)
+    if type == "WMA"
+        maPrice :=  ta.wma(close,  length)
+    if type == "VWMA"
+        maPrice :=  ta.vwma(close, length)
+    if type == "VWAP"
+        maPrice :=  ta.vwap
+    if type == "DEMA"
+        e1      =   ta.ema(close,  length)
+        e2      =   ta.ema(e1,     length)
+        maPrice := 2 * e1 - e2
+    if type == "T3"
+        axe1    =   ta.ema(close,  length)
+        axe2    =   ta.ema(axe1,   length)
+        axe3    =   ta.ema(axe2,   length)
+        axe4    =   ta.ema(axe3,   length)
+        axe5    =   ta.ema(axe4,   length)
+        axe6    =   ta.ema(axe5,   length)
+        ab      =   0.7
+        ac1     =   -ab*ab*ab
+        ac2     =   3*ab*ab+3*ab*ab*ab
+        ac3     =   -6*ab*ab-3*ab-3*ab*ab*ab
+        ac4     =   1+3*ab+ab*ab*ab+3*ab*ab
+        maPrice :=  ac1 * axe6 + ac2 * axe5 + ac3 * axe4 + ac4 * axe3
+    maPrice
+
+    // This is what allows time session filter to function. Perhaps you don't want to trade during certain hours. 
+    
+isInSession(sess) => na(time(timeframe.period, sess + ":1234567", "GMT-6")) == false
+
+// ================================== //
+// ----> Variable Calculations <----- //
+// ================================== //
+
+    // Using the custom function from above, MAs are rendered using the inputs from the user menu.
+    
+ma1                         = getMA     (maType1, maLength1)
+ma2                         = getMA     (maType2, maLength2)
+
+    // calculate atr for volatility based stops 
+    
+atr                         = ta.atr    (atrLen)
+
+    // Calculate the swing high/ low. Takes the highest/ lowest point over the user defined lookback period
+    
+lowestLow                   = ta.lowest (low,  swinglookback)
+highestHigh                 = ta.highest(high, swinglookback)
+
+    // renders the time filter funciton and sets the date filter used for screeening out trades, or adjusting back test. 
+    
+timeFilter                  = (useTimeFilter and not isInSession(timeSession)) or not useTimeFilter
+dateFilter                  = time >= startTime and time <= endTime
+
+withinTime                  = timeFilter and dateFilter
+
+// ================================== //
+// ----> Conditional Parameters <---- //
+// ================================== //
+
+    // =================================== //
+    
+    // These conditions are the only thing that you would change to put in your own criteria. 
+    // Calcualte them above, and use conditions to alter the definition of "validLongEntry" and "validShortEntry"
+
+ma1CrossUp2                 = ta.crossover (ma1,    ma2) // used to create the cross condition of the MA's 
+ma1CrossDn2                 = ta.crossunder(ma1,    ma2)
+
+validLongEntry              = ma1CrossUp2 and not na(atr) // assigns the cross conditon to each entry variable. 
+validShortEntry             = ma1CrossDn2 and not na(atr) // "and not na(atr)" is used to prevent entries at very beginning of the backtest before ATR can render over its 14 period lookback. 
+                                                          // Stops and targets cannot calcualte in this period resulting in a broken strategy. Its reccomended to keep that with your own criteria. 
+    // =================================== //
+    
+
+condmaxdrawdown             = setMaxDrawdown        ? maxPercDd         : 100 // used to set the max draw down, if used 
+
+ma1Con                      = ma1 >=    ma1[1]   // create a rising condition for MA
+ma2Con                      = ma2 >=    ma2[1]
+
+ma1Col                      = ma1Con  ? maBull1 : maBear1 // check if MA is rising, assing a color
+ma2Col                      = ma2Con  ? maBull2 : maBear2
+
+// ================================== //
+// -------> Risk Mitigation <-------- //
+// ================================== //
+
+    // check what trail source was chosen, calcualte the trail price, check if its higher than last bar, assing new trail value
+if LONG and trailStop and lookForExit and confirmed 
+    trailSrcLong            = (trailSource == "Close" ? close[1] : trailSource == "Open" ? open[1] : lowestLow)
+    trail                   = trailSrcLong - (atr * trailStopSize)
+    needsUpdate             = trail > trailingStop
+    trailingStop            := needsUpdate ? trail : trailingStop 
+
+    // check what trail source was chosen, calcualte the trail price, check if its lower than last bar, assing new trail value
+if SHORT and trailStop and lookForExit and confirmed
+    trailSrcShort           = (trailSource == "Close" ? close[1] : trailSource == "Open" ? open[1] : highestHigh)
+    trail                   = trailSrcShort + (atr * trailStopSize)
+    needsUpdate             = trail < trailingStop
+    trailingStop            := needsUpdate ? trail : trailingStop 
+    
+    ///     Calculate Stops      ///
+ 
+longStop                    = lowestLow -   (atr*RiskM)
+shortStop                   = highestHigh + (atr*RiskM)
+ 
+longRisk                    = close -       longStop 
+shortRisk                   = shortStop -   close
+ 
+longlimit                   = close +       (RnR*longRisk)
+shortlimit                  = close -       (RnR*shortRisk)
+
+longLimitDist               = close -       longlimit
+shortLimitDist              = shortlimit -  close
+
+// ================================== //
+// --------> Logical Order <--------- //
+// ================================== //
+
+    ///     Save Stops and set entries    ///
+ 
+if validShortEntry and (FLAT or (LONG and FLIP)) and confirmed and withinTime and shortTrades
+    tradeStopPrice          := shortStop 
+    tradeTargetPrice        := useLimit ? shortlimit : na 
+    tradeExitTriggerPrice   := close + (shortLimitDist * rrExit)
+    lookForExit             := false
+    trailingStop            := tradeStopPrice
+else
+    validShortEntry         := false
+ 
+if validLongEntry and (FLAT or (SHORT and FLIP)) and confirmed and withinTime and longTrades
+    tradeStopPrice          := longStop
+    tradeTargetPrice        := useLimit ? longlimit : na 
+    tradeExitTriggerPrice   := close - (longLimitDist  * rrExit)
+    lookForExit             := false
+    trailingStop            := tradeStopPrice
+else
+    validLongEntry          := false
+
+    // check to see if the rrExit level was exceeded to trigger the trail. If not set then begin trail on entry 
+if LONG and rrExit != 0.0 and (high >= tradeExitTriggerPrice and trailStop) or (rrExit == 0.0 and trailStop)
+    lookForExit             := true
+    
+if SHORT and rrExit != 0.0 and (low <= tradeExitTriggerPrice and trailStop) or (rrExit == 0.0 and trailStop)
+    lookForExit             := true
+
+// ================================== //
+// ------> Graphical Display <------- //
+// ================================== //
+
+    // draw orders if in trade, draw targets or triggers if not exceeded, only draw exit if within RnR boundary. Use draw orders offset to plot one bar before entry to make plot levels visible on first bar of trade 
+    
+drawOrders                  = (validLongEntry or validShortEntry) or not FLAT 
+stopPrice                   = trailStop ? trailingStop : tradeStopPrice
+targetPrice                 = lookForExit and not useLimit ? na : tradeTargetPrice
+drawExit                    = SHORT and tradeExitTriggerPrice > targetPrice and tradeExitTriggerPrice < entry or 
+                              LONG and tradeExitTriggerPrice < targetPrice and tradeExitTriggerPrice > entry 
+plotExitPrice               = ((drawExit and trailStop) or (trailStop and not useLimit)) and (drawOrders or drawOrders[1]) and not lookForExit ? drawOrders ? tradeExitTriggerPrice : tradeExitTriggerPrice[1] : na
+plotStopPrice               = drawOrders or drawOrders[1] ? drawOrders ? stopPrice   : stopPrice[1]   : na
+plotTarget                  = drawOrders or drawOrders[1] ? drawOrders ? targetPrice : targetPrice[1] : na 
+
+plot                        (drawEntry ? entry : na,        "Entry Price",          #9598a1,                        style=plot.style_linebr)
+plot                        (exitLvl ? plotExitPrice : na,  "Trigger Exit",         color.blue,                     style=plot.style_linebr)
+plot                        (plotStopPrice,                 "Stop Price",           color.red,                      style=plot.style_linebr)
+plot                        (plotTarget,                    "Target Price",         color.green,                    style=plot.style_linebr)
+plot                        (ma1,                           "Moving Average #1",    ma1Col)  
+plot                        (ma2,                           "Moving Average #2",    ma2Col) 
+
+    // color background if bars outside of time filter 
+bgcolor                     (color=(useTimeFilter and isInSession(timeSession)) or not dateFilter ? color.new(color.red,80) : na, title="Filter Color")
+
+// ================================== //
+// --------> 3-Commas Keys <--------- //
+// ================================== //
+
+        // Paste your bot messages here. Make sure you keep single quotes ' on either side of your paste. example: ' paste ' //
+        
+        // ** SPECIAL NOTE ** Notice that for long and short entries ONLY there is a delay of 1 second. I noticed that flip trades can cause problems at 3commas causing it to miss orders, so a small delay allows things to run smoothly.
+        // This is up to you, but be aware of it that it is an option to put in a delay to stagger the alerts slightly // 
+
+Long        =  '    {  "message_type": "bot",  "bot_id": 4635591,  "email_token": "25byourtefcodeuufyd2-43314-ab98-bjorg224",  "delay_seconds": 1}  ' //start long deal
+ 
+ExitLong    =  '    {  "message_type": "bot",  "bot_id": 4635591,  "email_token": "25byourtefcodeuufyd2-43314-ab98-bjorg224",  "delay_seconds": 0,  "action": "close_at_market_price"}  ' // close long deal market 
+ 
+Goshort     =  '    {  "message_type": "bot",  "bot_id": 4635690,  "email_token": "25byourtefcodeuufyd2-43314-ab98-bjorg224",  "delay_seconds": 1}  ' // start short deal
+ 
+ExitShort   =  '    {  "message_type": "bot",  "bot_id": 4635690,  "email_token": "25byourtefcodeuufyd2-43314-ab98-bjorg224",  "delay_seconds": 0,  "action": "close_at_market_price"}  ' // close short deal market
+
+// Create a JSON array to include the close bot and entry bot tags in one alert message 
+
+enterLong   = SHORT and validLongEntry  ? str.format("[{0}, {1}]", ExitShort, Long)    : Long 
+enterShort  = LONG  and validShortEntry ? str.format("[{0}, {1}]", ExitLong,  Goshort) : Goshort
+
+// ================================== //
+// ------> Strategy Execution <------ //
+// ================================== //
+
+strategy.risk.max_drawdown (value=condmaxdrawdown, type=strategy.percent_of_equity)
+
+    // lONG 
+ 
+strategy.entry  ("Long", strategy.long, when=validLongEntry, comment="Long", alert_message=enterLong)
+ 
+strategy.exit   ("Long Exit", from_entry="Long", stop=trailStop ? trailingStop : tradeStopPrice, limit=tradeTargetPrice, comment="L Exit",   alert_message=ExitLong)
+ 
+    // SHORT  
+ 
+strategy.entry  ("Short", strategy.short, when=validShortEntry, comment="Short",   alert_message=enterShort)
+ 
+strategy.exit   ("Short Exit", from_entry="Short", stop=trailStop ? trailingStop : tradeStopPrice, limit=tradeTargetPrice, comment="S Exit",   alert_message=ExitShort)
+ 
+// END

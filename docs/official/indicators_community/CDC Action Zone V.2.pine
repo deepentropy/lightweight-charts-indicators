@@ -1,0 +1,38 @@
+//@version=2
+study("CDC Action Zone V.2", overlay=true)
+
+// CDC ActionZone V2 29 Sep 2016
+// CDC ActionZone is based on a simple 2MA and is most suitable for use with medium volatility market
+// 11 Nov 2016 : Ported to Trading View with minor UI enhancement
+
+src = input(title="Data Array",type=source,defval=ohlc4)
+prd1=input(title="Short MA period", type=integer,defval=12)
+prd2=input(title="Long MA period",type=integer,defval=26)
+AP = ema(src,2)
+Fast = ema(AP,prd1)
+Slow = ema(AP,prd2)
+
+
+Bullish = Fast>Slow
+Bearish = Fast<Slow
+
+Green = Bullish and AP>Fast
+Red = Bearish and AP<Fast
+Yellow = Bullish and AP<Fast
+Blue = Bearish and AP>Fast
+
+Buy = Bullish and Bearish[1]
+Sell = Bearish and Bullish[1]
+
+
+alertcondition(Buy,"Buy Signal","Buy")
+alertcondition(Sell,"Sell Signal","Sell")
+
+
+//Plot
+
+l1=plot(Fast,"Fast", linewidth=1,color=red)
+l2=plot(Slow,"Slow", linewidth=2,color=blue)
+bcolor = Green ? lime : Red ? red : Yellow ? yellow : Blue ? blue : white
+barcolor(color=bcolor)
+fill(l1,l2,bcolor)

@@ -1,0 +1,13 @@
+// This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=4
+study("Trend Regularity Adaptive Moving Average","TRAMA [LuxAlgo]",overlay=true)
+length=input(99),src = input(close)
+//----
+ama = 0.
+hh = max(sign(change(highest(length))),0)
+ll = max(sign(change(lowest(length))*-1),0)
+tc = pow(sma(hh or ll ? 1 : 0,length),2)
+ama := nz(ama[1]+tc*(src-ama[1]),src)
+plot(ama,"Plot",#ff1100,2)

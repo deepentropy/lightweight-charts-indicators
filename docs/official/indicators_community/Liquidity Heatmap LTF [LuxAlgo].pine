@@ -1,0 +1,109 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("LTF Activity Heatmap [LuxAlgo]"
+  , overlay = true
+  , max_boxes_count = 500
+  , max_lines_count = 500)
+
+//------------------------------------------------------------------------------
+//Settings
+//------------------------------------------------------------------------------
+
+res = input.timeframe('1','LTF Timeframe')
+
+//--------------
+//Style settings
+//--------------
+
+heatmap_color0  = input(#0a0032,'Heatmap'
+  , group  = 'Style'
+  , inline = 'inline0')
+
+heatmap_color1  = input(#880e4f,''
+  , group  = 'Style'
+  , inline = 'inline0')
+
+heatmap_color2  = input(#ffeb3b,''
+  , group  = 'Style'
+  , inline = 'inline0')
+
+bull_color = input(#0cb51a,'Lines'
+  , group  = 'Style'
+  , inline = 'inline1')
+  
+bear_color = input(#ff1100,''
+  , group  = 'Style'
+  , inline = 'inline1')
+
+//------------------------------------------------------------------------------
+//Requests ltf open, close, volume series
+//------------------------------------------------------------------------------
+
+n = bar_index
+
+c = request.security_lower_tf(syminfo.tickerid, res, close)
+o = request.security_lower_tf(syminfo.tickerid, res, open)
+v = request.security_lower_tf(syminfo.tickerid, res, volume)
+
+//------------------------------------------------------------------------------
+//Display heatmaps
+//------------------------------------------------------------------------------
+
+css1 = close > open ? bull_color : bear_color
+
+if array.size(c) != 0
+    
+    //--------------------------------------------------------------------------
+    //Highlight candle range
+    //--------------------------------------------------------------------------
+    
+    line.new(n
+     , high
+     , n
+     , low
+     , color = css1)
+    
+    //--------------------------------------------------------------------------
+    //Display heatmap
+    //--------------------------------------------------------------------------
+    
+    for i = 0 to array.size(c)-1
+        get_v = array.get(v,i)
+        get_o = array.get(o,i)
+        get_c = array.get(c,i)
+        
+        css0 = color.from_gradient(
+          get_v
+          , array.min(v)
+          , array.max(v)
+          , heatmap_color0
+          , heatmap_color1)
+        
+        box.new(
+          n
+          , get_o
+          , n+1
+          , get_c
+          , bgcolor = get_v == array.max(v) ? heatmap_color2 : css0
+          , border_color = na)
+          
+        //----------------------------------------------------------------------
+        //Highest body with highest volume
+        //----------------------------------------------------------------------
+    
+        if get_v == array.max(v)
+            line.new(
+              n
+              , get_c
+              , n+1
+              , get_c
+              , color = css1)
+            
+            line.new(
+              n
+              , get_o
+              , n+1
+              , get_o
+              , color = css1)

@@ -1,0 +1,15 @@
+//@version=5
+////////////////////////////////////////////////////////////
+//  Copyright by HPotter v1.0 01/04/2014
+//
+//    This is a bullish reversal pattern formed by two candlesticks. Following a downtrend, 
+//    the first candlestick is a down candlestick which is followed by an up candlestick 
+//    which has a long real body that engulfs or contains the real body of the prior bar. 
+//    The Engulfing pattern is the reverse of the Harami pattern. 
+////////////////////////////////////////////////////////////
+
+indicator(title = "Bullish Engulfing", overlay = true)
+signal = open[1] > close[1] ? close > open ? close >= open[1] ? close[1] >= open ? close - open > open[1] - close[1] ? true :false :false : false : false : false
+if signal   
+    alert("Bullish Engulfing Formed", alert.freq_once_per_bar_close)
+barcolor(signal ? color.yellow :na )

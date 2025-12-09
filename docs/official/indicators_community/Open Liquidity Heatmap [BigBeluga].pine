@@ -1,0 +1,206 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Bigbeluga
+
+//@version=5
+indicator("Open Liquidity Heatmap [Bigbeluga]", "Open Liquidity Heatmap [1.5]", overlay = true, max_bars_back = 5000, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_polylines_count = 100)
+
+
+const string gs  = "Settings"
+const string gd  = "Display"
+const string tlo = "Range period lookback for the liquidity calculation"
+const string tle = "Leverage (counts as distance from price) for the liquidation"
+const string ttl = "Amount of total levels"
+const string tmo = "[MAX] Applay color gradient from the min to the max volume in the range\n[Fixed] Use the user input to determine the color gradient max value in the volume"
+const string tof = "[Auto] Automatic Offset via lookback period\n[Manual] Offset by input"
+const string tpo = "Display POC Liquidation\n[INPUT] Width of the POC line"
+const string tvp = "Display Volume Profile"
+const string tlv = "Display Liquidation Volume Profile"
+const string trl = "Display Resting liquidity on the chart"
+const string tmr = "Display Max range calculation"
+const string dib = "Display VP Border"
+const color cpoc = #13dffa
+const color cvop = #434651
+const color cvup = #006446
+const color cvdn = #801922
+
+
+back = input.int   (200       , "Lookback"                 ,  50,   500,     1      , tlo,          "1",    gs)
+lvgr = input.float (4.5       , "Leverage"                 ,  0.1,   20,  0.01      , tle,          "2",    gs)
+step = input.int   (250       , "Levels    "               ,  50,   250,     1      , ttl,          "3",    gs)
+offs = input.string("Auto"    , "Offset    "               , ["Auto", "Manual"]     , tof,          "o",    gs)
+ofle = input.int   (100       , ""                         ,  10,                     inline = "o", group = gs)
+disP = input.bool  (true      , "POC                "      ,                     tpo,          "5",         gd)
+pocC = input.color (cpoc      , ""                         ,                          inline = "5", group = gd)
+pocW = input.int   (4         , ""                         ,                          inline = "5", group = gd)
+disV = input.bool  (true      , "VP                 "      ,                     tvp,          "6",         gd)
+vpC  = input.color (cvop      , ""                         ,                          inline = "6", group = gd)
+VPL  = input.bool  (true      , "VP LIQ"                   ,                     tlv,          "7",         gd)
+VPUP = input.color (cvup      , ""                         ,                          inline = "7", group = gd)
+VPDN = input.color (cvdn      , ""                         ,                          inline = "7", group = gd)
+disR = input.bool  (true      , "Display Resting Liquidity",                     trl,          "8",         gd)
+disL = input.bool  (true      , "Display Vertical Line"    ,                     tmr,          "9",         gd)
+
+
+type store
+    array<line> ln 
+    array<float> hm
+    map<float, float> vp
+    float lH
+    float lL
+    float lvl
+
+
+lvgr      /= 100
+float hs   = ta.highest(back) * (1 + lvgr)
+float ls   = ta.lowest (back) * (1 - lvgr)
+float diff = (hs - ls) / step
+
+
+if barstate.islast
+    for obj in line.all
+        obj.delete()
+    for obj in polyline.all
+        obj.delete()
+    for obj in label.all
+        obj.delete()
+    for obj in box.all
+        obj.delete()
+
+    var store        cls = store.new(array.new<line>(step, line(na)), array.new<float>(step, 0.), map.new<float, float>(), high, low, hs)
+    chart.point[] cp =                      array.new<chart.point>()
+    chart.point[] cp1 =                      array.new<chart.point>()
+
+
+    if disL
+        cp.unshift          (chart.point.from_time(time[back], hs+diff))
+        cp.unshift          (chart.point.from_time(time[back], ls))
+        cp1.unshift          (chart.point.from_time(time, hs+diff))
+        cp1.unshift          (chart.point.from_time(time, ls))
+                
+        polyline.new(cp, line_color = color.white, xloc = xloc.bar_time, force_overlay = true)
+        polyline.new(cp1, line_color = color.new(chart.fg_color, 50), xloc = xloc.bar_time, force_overlay = true, line_style = line.style_dotted)
+
+    for i = 0 to step - 1
+        float plotter = na
+        switch i
+            0 =>
+                plotter := hs
+            =>
+                plotter := hs - diff * (  i  )
+
+        cls.ln.set(i, line.new(x1 = time[back], x2 = time, y1 = plotter, y2 = plotter, color = na, xloc = xloc.bar_time, width = 4))
+        cls.vp.put(plotter, 0)
+
+    line [] grid = cls.ln
+    for i        = 0 to back
+        for x = 0 to grid.size() - 2
+         
+            line current = grid.get  (   x    )
+            line   next  = grid.get  (x  +  1 )
+            float lP     = low [i] * (1 - lvgr)
+            float hP     = high[i] * (1 + lvgr)
+            float cL     = current.get_y2()
+            float nL     =   next .get_y2()
+
+            if low[i] <= current.get_y2() and high[i] >= next.get_y2()
+                cls.vp.put(current.get_y2(), cls.vp.get(current.get_y2()) + volume[i])
+
+            if cL < cls.lL
+                current.set_x1(time[i])
+                if low[i] < cls.lL
+                    current.set_x1(time[i])
+
+            if cL > cls.lH
+                current.set_x1(time[i])
+                if high[i] > cls.lH
+                    current.set_x1(time[i])
+
+            if lP < cls.lL
+                if low[i] < cls.lL
+                    cls.lL := low[i]
+                if lP >= nL and lP <= cL
+                    cls.hm.set(x,cls.hm.get(x) + volume[i])
+
+            if hP > cls.lH
+                if high[i] > cls.lH
+                    cls.lH := high[i]
+                if hP >= nL and hP <= cL
+                    cls.hm.set(x,cls.hm.get(x) + volume[i])
+
+    float[] heat = cls.hm
+    float[] volt = cls.vp.values()
+    int     pocL = na
+
+    for i = 0 to grid.size() - 2
+    
+        line     ln = grid.get(  i  )
+        line     lx = grid.get(i + 1)
+
+        int   ancor = math.round((offs == "Auto" ? (back / 2) : ofle) * heat.get(i) / heat.max())
+
+        color    bC = color.from_gradient(heat.get(i), heat.min(), heat.max(), #ffffff00, close > ln.get_y2() ? VPUP : VPDN)
+        color    gC = color.from_gradient(heat.get(i), heat.min(), heat.max(), #ffffff00, close < ln.get_y2() ? VPDN : VPUP)
+        color    vC = color.from_gradient(volt.get(i), volt.min(), volt.max(), chart.bg_color, vpC)
+
+        pocL := heat.get(i) == heat.max() ? ancor : pocL
+
+        if disR
+            ln.set_color(gC)
+
+        if VPL 
+            box.new(
+                   top          = lx.get_y2() + diff + diff/2
+                 , bottom       = lx.get_y2()+ diff/2
+                 , left         = time
+                 , right        = time + (time - time[1]) * ancor
+                 , bgcolor      = bC
+                 , border_color = bC
+                 , xloc         = xloc.bar_time
+                 )
+
+        if disV
+            int   vpcim = math.round((offs == "Auto" ? (back / 2) : ofle) * volt.get(i) / volt.max())
+            box.new(
+                   top          = ln.get_y2()
+                 , bottom       = lx.get_y2()
+                 , left         = time[back + vpcim]
+                 , right        = time[back]
+                 , bgcolor      = vC
+                 , border_color = vC
+                 , xloc         = xloc.bar_time
+                 )
+
+    if disP
+        avg = math.avg(
+               grid.get(heat.indexof(heat.max())    ).get_y2()
+             , grid.get(heat.indexof(heat.max()) + 1).get_y2()
+             )
+        line.new(
+               x1        = time[back]
+             , x2        = time + (time - time[1]) * pocL
+             , y1        = avg+ diff/2
+             , y2        = avg+ diff/2
+             , color     = pocC
+             , xloc      = xloc.bar_time
+             , width     = pocW
+             , force_overlay = true
+             )
+        label.new(
+               x         = time + (time - time[1]) * pocL
+             , y         = avg+ diff/2
+             , textcolor = pocC
+             , color     = #ffffff00
+             , style     = label.style_label_left
+             , size      = size.normal
+             , text      = "POC | " + str.tostring(math.round(avg, 2))
+             , xloc      = xloc.bar_time
+             )
+        label.new(
+               x         = time + (time - time[1]) * pocL
+             , y         = avg+ diff/2
+             , color     = pocC
+             , style     = label.style_circle
+             , size      = size.tiny
+             , xloc      = xloc.bar_time
+             , force_overlay = true
+             )

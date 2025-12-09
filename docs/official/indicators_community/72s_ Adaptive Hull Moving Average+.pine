@@ -1,0 +1,148 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// 2020 © io72signals / Antorio Bergasdito
+
+//@version=4
+study("72s: Adaptive Hull Moving Average+", shorttitle="72s: Adaptive HMA+", overlay=true)
+
+//Optional Inputs
+charger     = input("Volatility", title="Choose which charger to adapt to:", options=["Volatility", "Volume"])
+src         = input(close, title="Source:")
+minLength   = input(172, title="Minimum period:")
+maxLength   = input(233, title="Maximum period:")
+adaptPct    = 0.03141 //input(3.141, minval = 0, maxval = 100, title="Adapting Percentage:") / 100.0
+
+flat        = input(17, title="Consolidation area is when slope below:")
+
+showMinor   = input(true, title="Show minor xHMA+", group="Minor Adaptive HMA+ Period")
+minorMin    = input(89, title="Minimum:", group="Minor Adaptive HMA+ Period", inline="mHMA+")
+minorMax    = input(121, title="Maximum:", group="Minor Adaptive HMA+ Period", inline="mHMA+")
+
+showZone    = input(false, title="Show Adaptive HMA+ Distance Zone", group="DISTANCE ZONE")
+mult        = input(2.7, title="Distance (Envelope) Multiplier", step=.1, group="DISTANCE ZONE") 
+
+showSignals = input(true, title="Show Possible Signals", group="OTHER")
+useBg       = input(true, title="Background color to differentiate movement", group="OTHER")
+
+//Source to adapt to
+highVolatility = atr(14) > atr(46)                  //Volatility Meter. Change it to match to your strat/pair/tf if needs.
+
+rsivol  = rsi(volume,14)                            //RSI Volume Osc:
+osc     = hma(rsivol,10)                            //Basically it's almost the same as: vol > ma(volume,20)
+volBreak = osc > 49                                 //but smoothed using weight to filter noise or catch earlier signs.    
+
+//Dynamics 
+var float dynamicLength = avg(minLength,maxLength)
+var float minorLength   = avg(minorMin,minorMax)
+plugged = charger=="Volume"? volBreak : highVolatility
+dynamicLength   := iff(plugged, max(minLength, dynamicLength * (1 - adaptPct)), min(maxLength, dynamicLength * (1 + adaptPct)))
+minorLength     := iff(plugged, max(minorMin, minorLength * (1 - adaptPct)), min(minorMax, minorLength * (1 + adaptPct)))
+
+//Slope calculation to determine whether market is in trend, or in consolidation or choppy, or might about to change current trend
+slope_period = 34, range = 25, pi = atan(1) * 4
+highestHigh = highest(slope_period), lowestLow = lowest(slope_period)
+slope_range = range / (highestHigh - lowestLow) * lowestLow
+calcslope(_ma)=>
+    dt = (_ma[2] - _ma) / src * slope_range  
+    c = sqrt(1 + dt * dt)
+    xAngle = round(180 * acos(1 / c) / pi)
+    maAngle = iff(dt > 0, -xAngle, xAngle)
+    maAngle
+
+//MA coloring to mark market dynamics 
+dynColor(_ma,_col1a,_col1b, _col2a, _col2b, _col0) =>
+    slope = calcslope(_ma)
+    slope >= flat ? plugged? _col1a : _col1b :
+     slope < flat and slope > -flat ? _col0 : 
+     slope <= -flat ? plugged? _col2a : _col2b : _col0
+
+//Adaptive HMA 
+xhma(_src,_length) => _return = wma(2 * wma(_src, _length / 2) - wma(_src, _length), floor(sqrt(_length))) 
+
+dynamicHMA  = xhma(src,int(dynamicLength))      //<--Batman - Our main xHMA+
+minorHMA    = xhma(src,int(minorLength))        //<--Robin  - Faster minor xHMA+ (Optional). Can be use to assist for 
+                                                //            faster entry, slower exit point, or pullbacks info too.
+
+//Plot
+plot(dynamicHMA, "Dynamic HMA+", dynColor(dynamicHMA, #6fbf73, #c0f5ae, #eb4d5c, #f2b1d4, color.yellow), 3)
+plot(showMinor? minorHMA:na, "minor HMA+", dynColor(minorHMA, #6fbf73, #c0f5ae, #eb4d5c, #f2b1d4, color.yellow), 1)
+
+//Backgroud coloring
+notgreat = calcslope(dynamicHMA) < flat and calcslope(dynamicHMA) > -flat
+bgcolor(useBg? plugged? na : notgreat? #757779: #afb4b9 : na)
+
+// Comparative study
+// staticHMA = hma(close, 200)
+// plot(staticHMA,  "Static HMA")
+// plotchar(dynamicLength, "dynamicLengthgth", "", location.top) //check output the calculated Dynamic Length in the Data Window.
+
+//{ DISTANCE ZONE
+// Envelope the main DynamicHMA with ATR band, just one way to approximate current price distance to MA. Other usages/methods may vary.
+upperTL = dynamicHMA + mult * atr(40)        ,  lowerTL = dynamicHMA - mult * atr(40)           //<--Half distance zone
+topTL = dynamicHMA + (mult*2) * atr(40)      ,  botTL = dynamicHMA - (mult*2) * atr(40)         //<--One distance zone
+stopupperTL = dynamicHMA + (mult/2) * atr(40),  stoplowerTL = dynamicHMA - (mult/2) * atr(40)   //<--Half of the half. If need ie. tighter SL or trailing
+
+// Plotting Distance Zone
+plot(showZone?upperTL:na, color=color.green, transp=72)
+plot(showZone?lowerTL:na, color=color.red,   transp=72)
+plot(showZone?topTL:na, color=color.gray, transp=72)
+plot(showZone?botTL:na, color=color.gray, transp=72)
+sutl = plot(showZone?stopupperTL:na, color=color.white, transp=100)
+sltl = plot(showZone?stoplowerTL:na, color=color.white, transp=100)
+colZone = showZone? color.purple:color.new(color.white,100)
+fill(sutl, sltl, color=colZone, transp=90)
+//}
+
+//{ SIGNALS
+_slope = calcslope(dynamicHMA)
+
+// Entry Base; When HMA+ turn to a darker color and market is out from low volatility. 
+// Remember to also considering price distance to MA and strength (ie. RSI)
+_upSig = _slope >=  flat and plugged
+_dnSig = _slope <= -flat and plugged
+buy  = _upSig and not _upSig[1] 
+sell = _dnSig and not _dnSig[1] 
+
+// Possible Exits. These only based on faster xHMA+
+_upExit = _slope>=flat  and (not plugged) and close<minorHMA 
+_dnExit = _slope<=-flat and (not plugged) and close>minorHMA 
+fastExits  = (_upExit and not _upExit[1]) or (_dnExit and not _dnExit[1])
+
+// Caution Sign. When Price crossed most outer distance zone. Could also be a good TP spot if your already in profit
+_topWarn    = high>topTL
+_botWarn    = low<botTL
+warningSigns = (_topWarn and not _topWarn[1]) or (_botWarn and not _botWarn[1])
+
+// Plot 'em up
+atrPos = 0.72 * atr(5)
+plotchar(showSignals and buy?  dynamicHMA-atrPos: na, color=color.green, location=location.absolute, char="⬆", size = size.tiny)
+plotchar(showSignals and sell? dynamicHMA+atrPos: na, color=color.red,   location=location.absolute, char="⬇", size = size.tiny)
+plotchar(showSignals and fastExits? _upExit? minorHMA+atrPos: _dnExit? minorHMA-atrPos: na: na, 
+     color=_upExit?color.green:_dnExit?color.red: na, location=location.absolute, char="ⓧ", size=size.tiny)
+plotchar(showSignals and warningSigns? _topWarn? high+atrPos: _botWarn? low-atrPos: na: na, 
+     color=color.orange, location=location.absolute, char="⚠", size=size.tiny)
+//} 
+
+//{ ALERTS
+// Previous alerts:
+// alertcondition(highVolatility and not notgreat, "72s: Volatility Meter", "Market is on the move")
+// alertcondition(volBreak[1] and volBreak and not notgreat, "72s: Volume Break", "Volume has just break above average")
+
+// New Alert: 
+// Delete what alert you don't need:
+if buy 
+    alert("Possible Buy Signal at" + tostring(close), alert.freq_once_per_bar_close)
+if sell
+    alert("Possible Sell Signal at" + tostring(close), alert.freq_once_per_bar_close)
+    
+if fastExits and _upExit
+    alert("Price has just crossed down minor xHMA+ at" + tostring(close), alert.freq_once_per_bar_close)
+if fastExits and _dnExit
+    alert("Price has just crossed up minor xHMA+ at" + tostring(close), alert.freq_once_per_bar_close)
+    
+if warningSigns and _topWarn
+    alert("Price has just crossed above top xHMA+ zone", alert.freq_once_per_bar_close)
+if warningSigns and _botWarn
+    alert("Price has just crossed below bottom xHMA+ zone", alert.freq_once_per_bar_close)
+//}
+    
+

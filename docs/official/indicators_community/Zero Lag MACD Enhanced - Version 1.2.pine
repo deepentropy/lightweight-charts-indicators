@@ -1,0 +1,63 @@
+// ENHANCED ZERO LAG MACD 
+// Version 1.2
+//
+// Based on ZeroLag EMA - see Technical Analysis of Stocks and Commodities, April 2000
+// Original version by user Glaz. Thanks ! https://www.tradingview.com/chart/EURUSD/UV0YI6Wy-ZeroLag-Macd
+// Ideas and code from @yassotreyo version.
+// Tweaked by Albert Callisto (AC)
+// 
+// Last Update 19.12.2017
+// (AC - 1.0) Histogram with two colors, choice between SMA/EMA (SMA = "Glaz mode"),  names for sub-components, renaming of variables
+// (AC - 1.1) Added choice between "Glaz" and legacy algorithm + introduced EMA on MACD (thanks @yassotreyo for your original version)
+// (AC - 1.2) Added option to show dots above (requested by another user)
+
+
+study(title="Zero Lag MACD Enhanced - Version 1.2", shorttitle="Zero Lag MACD Enhanced 1.2")
+source = close
+
+fastLength = input(12, title="Fast MM period", minval=1)
+slowLength = input(26,title="Slow MM period",  minval=1)
+signalLength =input(9,title="Signal MM period",  minval=1)
+MacdEmaLength =input(9, title="MACD EMA period", minval=1)
+useEma = input(true, title="Use EMA (otherwise SMA)")
+useOldAlgo = input(false, title="Use Glaz algo (otherwise 'real' original zero lag)")
+showDots = input(true, title="Show symbols to indicate crossing")
+dotsDistance = input(1.5, title="Symbols distance factor", minval=0.1)
+
+// Fast line
+ma1= useEma ? ema(source, fastLength) : sma(source, fastLength) 
+ma2 = useEma ?  ema(ma1,fastLength) :  sma(ma1,fastLength) 
+zerolagEMA = ((2 * ma1) - ma2)
+
+// Slow line
+mas1=  useEma ? ema(source , slowLength) :  sma(source , slowLength)
+mas2 =  useEma ? ema(mas1 , slowLength): sma(mas1 , slowLength)
+zerolagslowMA = ((2 * mas1) - mas2)
+
+// MACD line
+ZeroLagMACD = zerolagEMA - zerolagslowMA 
+
+// Signal line
+emasig1 = ema(ZeroLagMACD, signalLength)
+emasig2 = ema(emasig1, signalLength)
+signal = useOldAlgo ? sma(ZeroLagMACD, signalLength) : (2 * emasig1) - emasig2
+
+hist = ZeroLagMACD - signal
+
+upHist = (hist > 0) ? hist : 0
+downHist = (hist <= 0) ? hist : 0
+
+p1 = plot(upHist, color=green, transp=40, style=columns, title='Positive delta')
+p2 = plot(downHist, color=purple, transp=40, style=columns, title='Negative delta') 
+
+zeroLine = plot(ZeroLagMACD, color=black, transp=0, linewidth=2, title='MACD line')
+signalLine = plot(signal, color=gray, transp=0, linewidth=2, title='Signal')
+
+ribbonDiff = hist > 0 ? green : purple
+fill(zeroLine, signalLine, color=ribbonDiff)
+
+circleYPosition = signal*dotsDistance
+plot(ema(ZeroLagMACD,MacdEmaLength) , color=red, transp=0, linewidth=2, title='EMA on MACD line')
+
+ribbonDiff2 = hist > 0 ? green : purple
+plot(showDots and cross(ZeroLagMACD, signal) ? circleYPosition : na,style=circles, linewidth=4, color=ribbonDiff2, title='Dots')

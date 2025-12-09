@@ -1,0 +1,582 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=5
+//@author=LucF
+
+// Delta Volume Candles [LucF]
+//  v8, 2023.04.09 19:31 — LucF
+
+// This indicator plots replacement candles colored using delta volume calculated with intrabar information. 
+// It can also help visualize delta volume by appending top and bottom segments to candles and plotting their averages.
+
+// This code was written using the following:
+//  • The recommendations from the Pine Script™ User Manual's Style Guide: https://www.tradingview.com/pine-script-docs/en/v5/writing/Style_guide.html
+//  • The "lower_tf" library from PineCoders to manage the LTF user selection: https://www.tradingview.com/script/UxiDkNg0-lower-tf/
+//  • The "Time" library from PineCoders to convert a TF string into long form for display: https://www.tradingview.com/script/tyeeNU9I-Time/
+//  • My "ta" lib which holds many of the functions I use across my scripts: https://www.tradingview.com/script/UZQxuS7X-ta/
+//    The `gradientAdvDecPro()` function in that lib comes from the PineCoders Color Gradient Framework: https://www.tradingview.com/script/hqH4YIFa-Color-Gradient-Framework-PineCoders/
+
+// This indicator's page on TV: https://www.tradingview.com/script/h0yZPTiS-Delta-Volume-Candles-LucF/
+
+indicator("Delta Volume Candles [LucF]", "Delta Volume Candles", true, max_labels_count = 500, linktoseries = true)
+
+
+import PineCoders/Time/2 as PCtime
+import PineCoders/lower_tf/4 as PCltf
+import LucF/ta/3 as LucfTa
+
+
+
+//#region ———————————————————— Constants
+
+
+// Colors used as defaults in inputs.
+color GRAY    = #808080ff
+color GREEN   = #008000ff
+color LIME    = #00FF00ff
+color MAROON  = #800000ff
+color ORANGE  = #FF8000ff
+color PINK    = #FF0080ff
+color RED     = #FF0000ff
+color REDLITE = #EF535018
+color YELLOW  = #FFFF00ff
+
+// Colors used for Data Window and markers.
+color GENERAL_UP_HI = LIME
+color GENERAL_DN_HI = RED
+color GENERAL_UP_LO = GREEN
+color GENERAL_DN_LO = MAROON
+color GENERAL_NT    = GRAY
+
+// Input options
+string ON  = "On"
+string OFF = "Off"
+
+string CB0 = "None"
+string CB1 = "Bar Balance"
+string CB2 = "Average Balance"
+string CB3 = "Momentum Balance"
+string CB4 = "Relative Balance"
+string CB5 = "Percent Balance"
+string CB6 = "Combined Balances"
+string CB7 = "Markers Bias"
+string CB8 = "Bar polarity (like normal candles)"
+
+string TB0 = "None"
+string TB1 = "Up volume on top, down volume at bottom"
+string TB2 = "Volume delta on winning side only"
+string TB3 = "Momentum Balance on winning side only"
+
+string SR0 = "Each candle's body size"
+string SR1 = "Average body size of last 100 bars"
+
+string DL0 = "None"
+string DL1 = "Body divergences"
+string DL2 = "Top and bottom divergences"
+string DL3 = "Both divergences"
+
+string HL0 = "Full Range"
+string HL1 = "Top and Bottom"
+string HL2 = "Open and Close"
+string HL3 = "High and Low"
+
+string DV0 = "Range: Full"
+string DV1 = "Range: Top to Bottom"
+string DV2 = "Range: Open to Close"
+string DV3 = "Range: High to Low"
+string DV4 = "Level: Top or Bottom"
+string DV5 = "Level: High or Low"
+string DV6 = "Level: Close"
+
+string LTF1  = "Covering most chart bars (least precise)"
+string LTF2  = "Covering some chart bars (less precise)"
+string LTF3  = "Covering less chart bars (more precise)"
+string LTF4  = "Covering few chart bars (very precise)"
+string LTF5  = "Covering the least chart bars (most precise)"
+string LTF6  = "~12 intrabars per chart bar"
+string LTF7  = "~24 intrabars per chart bar"
+string LTF8  = "~50 intrabars per chart bar"
+string LTF9  = "~100 intrabars per chart bar"
+string LTF10 = "~250 intrabars per chart bar"
+
+string TD1 = "Both"
+string TD2 = "Longs Only"
+string TD3 = "Shorts Only"
+
+// Tooltips
+string TT_BODIES        = "These choices determine the coloring scheme used for candle bodies only, i.e., not the wicks nor the tops and bottoms. 
+  \n\nWhen 'Gradient' is selected, a color gradient is calculated on the advances/declines of the signal used. The gradient has no effect when '" + CB8 + "' is selected).
+  \n\nUse 'None' if you do not want the indicator to display candle bodies and wicks so you can use your own candles on charts."
+string TT_BODY_DIVS     = "Body divergences occur on discrepancies between the polarity of the bar and that of the specified balance, 
+  which is independent from the one used above to determine the color of bodies."
+string TT_EMPTY_BODIES  = "Coloring only the body of bars where volume increases can help you identify more significant bars.
+  \n\nIf you choose to color bodies on divergences, that setting has precedence over this one."
+string TT_BORDERS       = "Borders and wicks are always colored using the bar's polarity."
+string TT_TB            = ""
+string TT_TB_SIZE       = "This determines the baseline from which the size of tops and bottoms is calculated.
+  \n\nWith the first choice, the body size of each candle is used as the baseline. With the second choice an average is used,
+  making it easier to appraise the relative size of consecutive tops and bottomes, as their size will be calculated from a more stable baseline."
+string TT_TB_DIVS       = "Top and bottom divergences occur on discrepancies between the polarity of the bar and that of the specified balance." 
+string TT_DL            = "This controls the type of divergences that will trigger the creation of a new set of levels if the previous levels were breached,
+  or the expansion of the current levels if they were not breached yet."
+string TT_DL_LEVELS     = "The first selection here controls the levels used to establish or resize levels when a divergence occurs.
+  The second choice determines which values must reach outside divergence levels for them to be breached.
+  \n\nTogether, these settings control the sensitivity of the levels."
+string TT_BRITE         = "0 (darkest) — 100 (brightest)."
+string TT_LTF           = "Your selection here controls how many intrabars will be analyzed for each chart bar. 
+  The more intrabars you analyze, the more precise the calculations will be,
+  but the less chart bars will be covered by the indicator's calculations because a maximum of 100K intrabars can be analyzed.
+  \n\nThe first five choices determine the lower timeframe used for intrabars using how much chart coverage you want.
+  The last five choices allow you to select approximately how many intrabars you want analyzed per chart bar."
+string TT_LTF_BOX       = "Displays the lower timeframe used to access intrabars and intrabar statistics in a configurable position and color."
+string TT_MARKER1       = "A bump up occurs when: 
+  \n• The bar's polarity is up.
+  \n• The `close` is higher than the previous bar's `close`.
+  \n• Bar Balance (VD) is positive.
+  \n• Up volume is greater than the EMA of up volume calculated in the Average Balance.
+  \n• Up volume is greater than the previous bar's up volume.
+  \n\nA bump down occurs when:
+  \n• The bar's polarity is down.
+  \n• The `close` is lower than the previous bar's `close`.
+  \n• Bar Balance (VD) is negative.
+  \n• Down volume is greater than the EMA of down volume calculated in the Average Balance.
+  \n• Down volume is greater (more negative) than the previous bar's down volume."
+string TT_MARKER2       = "A double bump is two consecutive bumps up or down."
+string TT_MARKER3       = "A divergence is confirmed up/dn when the chosen balance is up/dn on the previous bar when that bar was dn/up, and this bar is up/dn."
+string TT_MARKER4       = "Balance shifts occur when the chosen balance crosses into bull/bear territory."
+string TT_MARKER5       = "Marker bias shifts occur when it crosses into bull/bear territory."
+string TT_MARKER6       = "All balances are bull or bear."
+string TT_TEXT_UP       = "This text will replace the alert message for up alerts."
+string TT_TEXT_DN       = "This text will replace the alert message for down alerts."
+string TT_VOL_DISC      = "This displays a background coloron historical bars to indicate that the volume from the chart's timeframe does not match the sum of intrabar volume.
+  \n\nDiscrepancies occur when the two values differ by more than the percentage in the 'Tolerance' field, where '1' indicates 1%.
+  \n\nSee my 'Volume X-ray' indicator's description for an explanation of why this occurs."
+//#endregion
+
+
+
+//#region ———————————————————— Inputs
+
+
+string  GP00 = "Normal Candles"
+string  bodyColorCalcInput           = input.string(CB8,             "Color bodies on",                         inline = "bodies", group = GP00, options = [CB0, CB8, CB1, CB2, CB3, CB4, CB5, CB6])
+color   bodyUpColorInput             = input.color(GREEN,            "",                                        inline = "bodies", group = GP00)
+color   bodyDnColorInput             = input.color(MAROON,           "",                                        inline = "bodies", group = GP00, tooltip = TT_BODIES)
+bool    bodyGradientInput            = input.bool(false,             "Gradient",                                inline = "bodies", group = GP00)
+bool    bodyShowDivInput             = input.bool(false,             "Body divergences calculated on",          inline = "bodyDivs", group = GP00)
+string  bodyDivModeInput             = input.string(CB1,             "",                                        inline = "bodyDivs", group = GP00, options = [CB0, CB1, CB2, CB3, CB4, CB5, CB6])
+color   bodyDivColorInput            = input.color(YELLOW,           "",                                        inline = "bodyDivs", group = GP00, tooltip = TT_BODY_DIVS)
+bool    bodyHollowOnDecVolInput      = input.bool(true,              "Empty bodies on decreasing volume",       group = GP00, tooltip = TT_EMPTY_BODIES)
+color   borderWickUpColorInput       = input.color(GREEN,            "Borders & wicks ",                        inline = "b&w", group = GP00)
+color   borderWickDnColorInput       = input.color(MAROON,           "",                                        inline = "b&w", group = GP00, tooltip = TT_BORDERS)
+
+string  GP01 = "Volume Tops & Bottoms"
+string  topBotRefModeInput           = input.string(SR1,             "Size tops and bottoms relative to",       inline = "ref", group = GP01, options = [SR0, SR1], tooltip = TT_TB_SIZE)
+string  topBotModeInput              = input.string(TB2,             "Display",                                 inline = "tbCalc", group = GP01, options = [TB0, TB1, TB2, TB3])
+color   topBotBodyUpColorInput       = input.color(LIME,             "Fills: ",                                 inline = "tbCalc", group = GP01)
+color   topBotBodyDnColorInput       = input.color(RED,              "",                                        inline = "tbCalc", group = GP01)
+color   topBotWickUpColorInput       = input.color(LIME,             "Borders: ",                               inline = "tbCalc", group = GP01)
+color   topBotWickDnColorInput       = input.color(PINK,             "",                                        inline = "tbCalc", group = GP01, tooltip = TT_TB)
+bool    topBotShowDivInput           = input.bool(false,             "Top & bottom divergences calculated on",  inline = "tbDivs", group = GP01)
+string  topBotDivModeInput           = input.string(CB2,             "",                                        inline = "tbDivs", group = GP01, options = [CB0, CB1, CB2, CB3, CB4, CB5, CB6])
+color   topBotDivColorInput          = input.color(ORANGE,           "",                                        inline = "tbDivs", group = GP01, tooltip = TT_TB_DIVS)
+bool    showMasInput                 = input.bool(false,             "Show EMAs of tops/bottoms",               inline = "mas", group = GP01)
+color   maUpColorInput               = input.color(GREEN,            "",                                        inline = "mas", group = GP01)
+color   maDnColorInput               = input.color(MAROON,           "",                                        inline = "mas", group = GP01)
+string  maFillCalcInput              = input.string(CB1,             "Color the EMA channel on",                inline = "masColor", group = GP01, options = [CB0, CB1, CB2, CB3, CB4, CB5, CB6])
+color   maFillUpColorInput           = input.color(GREEN,            "",                                        inline = "masColor", group = GP01)
+color   maFillDnColorInput           = input.color(MAROON,           "",                                        inline = "masColor", group = GP01)
+
+string  GP02 = "Divergence Channel"
+string  divLevelsModeInput           = input.string(DL0,             "Draw levels on",                          inline = "divsLevels", group = GP02, options = [DL0, DL1, DL2, DL3])
+color   divLevelsBullColorInput      = input.color(GREEN,            "",                                        inline = "divsLevels", group = GP02)
+color   divLevelsBearColorInput      = input.color(MAROON,           "",                                        inline = "divsLevels", group = GP02)
+color   divLevelsNeutColorInput      = input.color(GRAY,             "",                                        inline = "divsLevels", group = GP02, tooltip = TT_DL)
+string  divLevelsModeHiLoInput       = input.string(HL2,             "Hi/Lo levels",                            inline = "hiLoLevels", group = GP02, options = [HL0, HL1, HL2, HL3])
+string  divLevelsModeHiLoRefInput    = input.string(DV6,             "Breach reference",                        inline = "hiLoLevels", group = GP02, options = [DV0, DV1, DV2, DV3, DV4, DV5, DV6], tooltip = TT_DL_LEVELS)
+bool    divLevelsFillInput           = input.bool(false,             "Fill",                                    inline = "fillLevels", group = GP02)
+float   divLevelsFillBriteInput      = 100 - input.int(50,           "🔆",                                      inline = "fillLevels", group = GP02, minval = 0, maxval = 100, step = 5, tooltip = TT_BRITE)
+
+string  GP03 = "Background"
+string  bgCalcInput                  = input.string(CB0,             "Color On",                                inline = "31", group = GP03, options = [CB0, CB1, CB2, CB3, CB4, CB5, CB6])
+color   bgUpColorInput               = input.color(GREEN,            "",                                        inline = "31", group = GP03)
+color   bgDnColorInput               = input.color(MAROON,           "",                                        inline = "31", group = GP03)
+float   bgBriteInput                 = 100 - input.int(30,           "🔆",                                      inline = "31", group = GP03, minval = 0, maxval = 100, step = 5, tooltip = TT_BRITE)
+bool    volDiscShowInput             = input.bool(true,              "Show volume discrepancies",               inline = "volDiscs", group = GP03)
+color   volDiscColorInput            = input.color(REDLITE,          "",                                        inline = "volDiscs", group = GP03)
+float   volDiscToleranceInput        = input.float(1.,               "Tolerance (%)",                           inline = "volDiscs", group = GP03, minval = 0., step = 0.25, tooltip = TT_VOL_DISC) / 100
+
+string  GP04 = "Intrabars"
+string  ltfModeInput                 = input.string(LTF9,            "Intrabar precision",                      options = [LTF1, LTF2, LTF3, LTF4, LTF5, LTF6, LTF7, LTF8, LTF9, LTF10], group = GP04, tooltip = TT_LTF)
+bool    showInfoBoxInput             = input.bool(true,              "Show information box",                    group = GP04, tooltip = TT_LTF_BOX)
+string  infoBoxSizeInput             = input.string("small",         "Size ",                                   inline = "infoBox", group = GP04, options = ["tiny", "small", "normal", "large", "huge", "auto"])
+string  infoBoxYPosInput             = input.string("bottom",        "↕",                                       inline = "infoBox", group = GP04, options = ["top", "middle", "bottom"])
+string  infoBoxXPosInput             = input.string("right",         "↔",                                       inline = "infoBox", group = GP04, options = ["left", "center", "right"])
+color   infoBoxColorInput            = input.color(color.gray,     "",                                        inline = "infoBox", group = GP04)
+color   infoBoxTxtColorInput         = input.color(color.black,    "T",                                       inline = "infoBox", group = GP04)
+
+string  GP05 = "Markers"
+string  markerDirInput               = input.string(TD1,             "Direction",                               inline = "dir", group = GP05, options = [TD1, TD2, TD3])
+bool    showMarker1Input             = input.bool(false,             "Marker 1: bumps",                         group = GP05, tooltip = TT_MARKER1)
+bool    showMarker2Input             = input.bool(false,             "Marker 2: double bumps",                  group = GP05, tooltip = TT_MARKER2)
+bool    showMarker3Input             = input.bool(false,             "Marker 3: divergence confirmations",      inline = "m3", group = GP05, tooltip = TT_MARKER3)
+string  marker3ModeInput             = input.string(CB1,             "on",                                      inline = "m3", group = GP05, options = [CB1, CB2, CB3, CB4, CB5, CB6])
+bool    showMarker4Input             = input.bool(false,             "Marker 4: Balance shifts",                inline = "m4", group = GP05, tooltip = TT_MARKER4)
+string  marker4ModeInput             = input.string(CB2,             "on",                                      inline = "m4", group = GP05, options = [CB2, CB3, CB4, CB5, CB6])
+bool    showMarker5Input             = input.bool(false,             "Marker 5: Markers Bias shifts",           group = GP05, tooltip = TT_MARKER5)
+bool    showMarker6Input             = input.bool(false,             "Marker 6: All balances agree",            group = GP05, tooltip = TT_MARKER6)
+string  alertMsgUpInput              = input.text_area("",           "Up alert message",                        group = GP05, tooltip = TT_TEXT_UP)
+string  alertMsgDnInput              = input.text_area("",           "Down alert message",                      group = GP05, tooltip = TT_TEXT_DN)
+
+string  GP06 = "Periods"
+int     balAvgPeriodInput            = input.int(50,                 "Average Balance",                         group = GP06, minval = 2)
+int     balMomPeriodInput            = input.int(14,                 "Momentum Balance",                        group = GP06, minval = 2)
+int     balRelPeriodInput            = input.int(14,                 "Relative Balance",                        group = GP06, minval = 1)
+int     balPctPeriodInput            = input.int(14,                 "Percent Balance",                         group = GP06, minval = 1)
+int     biasPeriodInput              = input.int(14,                 "Markers Bias",                            group = GP06, minval = 2)
+int     topBotMasPeriodInput         = input.int(14,                 "Tops/Bottoms EMAs",                       group = GP06, minval = 1)
+//#endregion
+
+
+
+//#region ———————————————————— Calculations
+
+
+// ————— Calculate DV using LTF intrabars.
+// Determine intrabar LTF.
+string intrabarTf = PCltf.ltf(ltfModeInput, LTF1, LTF2, LTF3, LTF4, LTF5, LTF6, LTF7, LTF8, LTF9, LTF10)
+// Fetch two arrays containing one element per intrabar. One array contains up volume values (positive), the other down volume values (negative). Volume for each intrabar is either up or down.
+[ltfVolumesUp, ltfVolumesDn] = request.security_lower_tf(syminfo.tickerid, intrabarTf, LucfTa.upDnIntrabarVolumesByPolarity())
+// Total up/dn volumes for intrabars.
+float ltfVolUp = nz(array.sum(ltfVolumesUp))
+float ltfVolDn = nz(array.sum(ltfVolumesDn))
+
+// ———— Intrabar stats
+[intrabars, chartBarsCovered, avgIntrabars] = PCltf.ltfStats(ltfVolumesUp)
+int chartBars = bar_index + 1
+
+// ————— Bar polarity.
+bool  barUp = close > open
+bool  barDn = close < open
+bool  closeUp = ta.rising(close, 1)
+bool  closeDn = ta.falling(close, 1)
+
+// ————— Rising volume.
+bool  volUp = ta.rising(volume, 1)
+
+// ————— Total intrabar volume for the bar.
+float volB = ltfVolUp
+float volS = - ltfVolDn
+float volT = volB + volS
+
+// ————— Determine if intrabar volume is available for the symbol.
+bool  intrabarVolumeIsAvailable = ta.cum(nz(volT)) != 0
+
+// ————— Bar Balance (Volume Delta) (CB1).
+float balBar          = volB - volS
+bool  balBarBull      = balBar > 0
+bool  balBarBear      = balBar < 0
+// ————— Average Balance (CB2).
+float balAvgBMa       = ta.ema(volB, balAvgPeriodInput)
+float balAvgSMa       = ta.ema(volS, balAvgPeriodInput)
+float balAvg          = balAvgBMa - balAvgSMa
+bool  balAvgBull      = balAvg > 0
+bool  balAvgBear      = balAvg < 0
+// ————— Momentum Balance (CB3).
+float balMomBMa       = ta.sma(volB, balAvgPeriodInput * 2)
+float balMomSMa       = ta.sma(volS, balAvgPeriodInput * 2)
+float balMomBMaDelta  = balAvgBMa - balMomBMa
+float balMomSMaDelta  = balAvgSMa - balMomSMa
+float balMomDeltaDelta= balMomBMaDelta - balMomSMaDelta
+float balMom          = ta.rsi(balMomDeltaDelta, balMomPeriodInput) - 50
+bool  balMomBull      = balMom > 0
+bool  balMomBear      = balMom < 0
+// ————— Relative Balance (CB4).
+float volUpDelta      = math.max(0, volB - balAvgBMa)
+float volDnDelta      = math.max(0, volS - balAvgSMa)
+float balRel          = ta.alma(volUpDelta - volDnDelta, balRelPeriodInput, 0.85, 6)
+bool  balRelBull      = balRel > 0
+bool  balRelBear      = balRel < 0
+// ————— Percent Balance (CB5).
+float balPct          = ta.alma(100 * balBar / volume, balPctPeriodInput, 0.85, 6)
+bool  balPctBull      = balPct > 0
+bool  balPctBear      = balPct < 0
+// ————— Combined Balances (CB6).
+int   BALANCES_QTY    = 5
+float balAll          = LucfTa.zeroOne(balBarBull) + LucfTa.zeroOne(balAvgBull) + LucfTa.zeroOne(balMomBull) + LucfTa.zeroOne(balRelBull) + LucfTa.zeroOne(balPctBull) 
+                      - LucfTa.zeroOne(balBarBear) - LucfTa.zeroOne(balAvgBear) - LucfTa.zeroOne(balMomBear) - LucfTa.zeroOne(balRelBear) - LucfTa.zeroOne(balPctBear)
+bool  balAllBull      = balAll > 0
+bool  balAllBear      = balAll < 0
+
+// ————— Size of tops and bottoms
+float bodyTop       = math.max(close, open)
+float bodyBot       = math.min(close, open)
+float bodySize      = bodyTop - bodyBot
+float referenceSize = switch topBotRefModeInput
+    SR0 => bodySize
+    SR1 => ta.sma(bodySize, 100)
+    => na
+float topFactor = switch topBotModeInput
+    TB1 => volB / volT
+    TB2 => balBar > 0 ? balBar / volT : na
+    TB3 => balAll > 0 ? balAll / BALANCES_QTY : na
+    => na
+float botFactor = switch topBotModeInput
+    TB1 => volS / volT
+    TB2 => balBar < 0 ? math.abs(balBar / volT) : na
+    TB3 => balAll < 0 ? math.abs(balAll / BALANCES_QTY) : na
+    => na
+float volTop = bodyTop + (referenceSize * topFactor)
+float volBot = bodyBot - (referenceSize * botFactor)
+
+
+// @function            Converts the type of balance to its actual value.
+// @param balance       (string) The string identifying the type of balance.
+// @returns             (float) The value of the balance.
+markerSignal(string balance) =>
+    float result = 
+      switch balance
+        CB1 => balBar
+        CB2 => balAvg
+        CB3 => balMom
+        CB4 => balRel
+        CB5 => balPct
+        CB6 => balAll
+        => na
+
+
+// @function            Detects a divergence for a given balance, i.e., a difference in the polarity of the balance and the bar.
+// @param balance       (string) The string identifying the type of balance.
+// @returns             (bool) `true` when a divergence occurred, `false` otherwise.
+divFromMode(string balance) =>
+    bool result = math.sign(markerSignal(balance)) != math.sign(close - open)
+
+
+// ————— Marker calcs
+// User-selected marker directions.
+bool doLongs     = markerDirInput == TD1 or markerDirInput == TD2
+bool doShorts    = markerDirInput == TD1 or markerDirInput == TD3
+// Marker conditions 1 to 4
+bool  bumpUp     = barUp and closeUp and balBarBull and volB > balAvgBMa and ta.rising(volB, 1)
+bool  bumpDn     = barDn and closeDn and balBarBear and volS > balAvgSMa and ta.rising(volS, 1)
+bool  div        = divFromMode(marker3ModeInput)
+bool  c1U        = bumpUp
+bool  c1D        = bumpDn
+bool  c2U        = bumpUp and bumpUp[1]
+bool  c2D        = bumpDn and bumpDn[1]
+bool  c3U        = div[1] and barUp and not div
+bool  c3D        = div[1] and barDn and not div
+bool  c4U        = ta.crossover( markerSignal(marker4ModeInput), 0)
+bool  c4D        = ta.crossunder(markerSignal(marker4ModeInput), 0)
+// Marker bias needed for marker 5.
+float cUps       = LucfTa.zeroOne(c1U) + LucfTa.zeroOne(c2U) + LucfTa.zeroOne(c3U) + LucfTa.zeroOne(c4U)
+float cDns       = LucfTa.zeroOne(c1D) + LucfTa.zeroOne(c2D) + LucfTa.zeroOne(c3D) + LucfTa.zeroOne(c4D)
+float balMrk     = math.sum(cUps - cDns, biasPeriodInput)
+bool  balMrkBull = balMrk > 0
+bool  balMrkBear = balMrk < 0
+// Marker conditions 5 and 6
+bool  c5U        = ta.crossover( balMrk, 0)
+bool  c5D        = ta.crossunder(balMrk, 0)
+bool  c6U        = balAll ==   BALANCES_QTY
+bool  c6D        = balAll == - BALANCES_QTY
+// Assembly.
+bool  a1U        = showMarker1Input and doLongs  and c1U
+bool  a1D        = showMarker1Input and doShorts and c1D
+bool  a2U        = showMarker2Input and doLongs  and c2U
+bool  a2D        = showMarker2Input and doShorts and c2D
+bool  a3U        = showMarker3Input and doLongs  and c3U
+bool  a3D        = showMarker3Input and doShorts and c3D
+bool  a4U        = showMarker4Input and doLongs  and c4U
+bool  a4D        = showMarker4Input and doShorts and c4D
+bool  a5U        = showMarker5Input and doLongs  and c5U
+bool  a5D        = showMarker5Input and doShorts and c5D
+bool  a6U        = showMarker6Input and doLongs  and c6U
+bool  a6D        = showMarker6Input and doShorts and c6D
+
+// ————— Divergence levels
+// Detect divergences.
+bool  bodyDiv      = intrabarVolumeIsAvailable and divFromMode(bodyDivModeInput)
+bool  topBotDiv    = intrabarVolumeIsAvailable and divFromMode(topBotDivModeInput)
+bool  divLevelsDiv = switch divLevelsModeInput
+    DL1 => bodyDiv
+    DL2 => topBotDiv
+    DL3 => bodyDiv or topBotDiv
+    => false
+// Determine reference and breach levels for the divergence channel.
+float divLevelsHiNew = switch divLevelsModeHiLoInput
+    HL0 => math.max(nz(volTop, high), high)
+    HL1 => nz(volTop, high)
+    HL2 => bodyTop
+    HL3 => high
+    => high
+float divLevelsLoNew = switch divLevelsModeHiLoInput
+    HL0 => math.min(nz(volBot, low), low)
+    HL1 => nz(volBot, low)
+    HL2 => bodyBot
+    HL3 => low
+    => low
+float divLevelsHiRef = switch divLevelsModeHiLoRefInput
+    DV0 => math.min(nz(volBot, low), low)
+    DV1 => nz(volBot, low)
+    DV2 => bodyBot
+    DV3 => low
+    DV4 => nz(volTop, high)
+    DV5 => high
+    DV6 => close
+    => close
+float divLevelsLoRef = switch divLevelsModeHiLoRefInput
+    DV0 => math.max(nz(volTop, high), high)
+    DV1 => nz(volTop, high)
+    DV2 => bodyTop
+    DV3 => high
+    DV4 => nz(volBot, low)
+    DV5 => low
+    DV6 => close
+    => close
+// Update the divergence channel.
+[divLevelsHi, divLevelsLo, divLevelsHState, divLevelsLState, divLevelsBreached, divLevelsChanged, _, _] = 
+  LucfTa.divergenceChannel(divLevelsDiv, divLevelsHiNew, divLevelsLoNew, divLevelsHiRef, divLevelsLoRef)
+bool  divLevelsNState = not (divLevelsHState or divLevelsLState)
+//#endregion
+
+
+
+//#region ———————————————————— Visuals
+
+// @function            Determines the correct number of steps to be used in gradient for each type of balance.
+// @param signalCalc    (simple string) The string identifying the type of balance.
+// @returns             (int) The number of steps.
+gradientSteps(simple string signalCalc) =>
+    int result = signalCalc == CB8 ? 4 : 8
+
+// @function            Converts the type of balance to its actual value.
+// @param signalCalc    (string) The string identifying the type of balance.
+// @returns             (float) The value of the balance.
+signal(string signalCalc) => 
+    float result = switch signalCalc
+        CB1 => balBar
+        CB2 => balAvg
+        CB3 => balMom
+        CB4 => balRel
+        CB5 => balPct
+        CB6 => balAll
+        CB7 => balMrk
+        CB8 => close - open
+        => na
+
+// ————— Data Window
+plotLocations = display.data_window + display.status_line
+plot(balBar,              "Volume Delta",       balBarBull ? GENERAL_UP_HI : GENERAL_DN_HI,  display = plotLocations)
+plot(100 * balBar / volT, "Volume Delta %",     balBarBull ? GENERAL_UP_HI : GENERAL_DN_HI,  display = plotLocations)
+plot(volB,                "Up Volume",          balBarBull ? GENERAL_UP_HI : GENERAL_UP_LO,  display = plotLocations)
+plot(volS,                "Dn Volume",          balBarBear ? GENERAL_DN_HI : GENERAL_DN_LO,  display = plotLocations)
+plot(volT,                "Intrabar Volume",    balBarBull ? GENERAL_UP_HI : GENERAL_DN_HI,  display = plotLocations)
+plot(volume,              "Chart bar Volume",   balBarBull ? GENERAL_UP_HI : GENERAL_DN_HI,  display = plotLocations)
+plot(na,                  "═════════════",      GENERAL_NT,                                  display = plotLocations)
+plot(balBar,              "Bar Balance",        balBarBull ? GENERAL_UP_HI : GENERAL_DN_HI,  display = plotLocations)
+plot(balAvg,              "Average Balance",    balAvgBull ? GENERAL_UP_HI : GENERAL_DN_HI,  display = plotLocations)
+plot(balMom,              "Momentum Balance ",  balMomBull ? GENERAL_UP_HI : GENERAL_DN_HI,  display = plotLocations)
+plot(balRel,              "Relative Balance",   balRelBull ? GENERAL_UP_HI : GENERAL_DN_HI,  display = plotLocations)
+plot(balPct,              "Percent Balance",    balPctBull ? GENERAL_UP_HI : GENERAL_DN_HI,  display = plotLocations)
+plot(balAll,              "Combined Balances",  balAllBull ? GENERAL_UP_HI : GENERAL_DN_HI,  display = plotLocations)
+plot(balMrk,              "Marker Bias",        balMrkBull ? GENERAL_UP_HI : GENERAL_DN_HI,  display = plotLocations)
+plot(na,                  "═════════════",      GENERAL_NT,                                  display = plotLocations)
+plot(volTop,              "Top",                GENERAL_UP_HI,                               display = plotLocations)
+plot(volBot,              "Bottom",             GENERAL_DN_HI,                               display = plotLocations)
+
+// ————— Divergence levels
+color divLevelsColor = divLevelsHState ? divLevelsBullColorInput : divLevelsLState ? divLevelsBearColorInput : divLevelsNeutColorInput
+divLevelsHiPlot = plot(divLevelsModeInput != CB0 ? divLevelsHi : na, "Divergence Hi Level", divLevelsChanged ? na : divLevelsColor)
+divLevelsLoPlot = plot(divLevelsModeInput != CB0 ? divLevelsLo : na, "Divergence Lo Level", divLevelsChanged ? na : divLevelsColor)
+fill(divLevelsHiPlot, divLevelsLoPlot, divLevelsFillInput and not divLevelsChanged ? color.new(divLevelsColor, divLevelsFillBriteInput) : na)
+
+// ————— Tops/Bottoms
+var color borderBriteTop = color.new(topBotBodyUpColorInput, 0)
+var color borderBriteBot = color.new(topBotBodyDnColorInput, 0)
+bool buyWins = nz(topFactor) > nz(botFactor)
+color topsColor = topBotShowDivInput and topBotDiv ? topBotDivColorInput : buyWins ? topBotBodyUpColorInput : na
+color botsColor = topBotShowDivInput and topBotDiv ? topBotDivColorInput : buyWins ? na : topBotBodyDnColorInput
+color topsBorderColor = topBotShowDivInput and topBotDiv ? topBotDivColorInput : buyWins ? borderBriteTop : topBotBodyUpColorInput
+color botsBorderColor = topBotShowDivInput and topBotDiv ? topBotDivColorInput : buyWins ? topBotBodyDnColorInput : borderBriteBot
+plotcandle(bodyTop, volTop, bodyTop, volTop, "Tops",    buyWins ? topsColor : na, bordercolor = topBotWickUpColorInput, display = display.pane)
+plotcandle(bodyBot, volBot, bodyBot, volBot, "Bottoms", buyWins ? na : botsColor, bordercolor = topBotWickDnColorInput, display = display.pane)
+
+// ————— MAs
+color masFillColor = LucfTa.gradientAdvDecPro(signal(maFillCalcInput), 0, gradientSteps(maFillCalcInput), color.new(maFillDnColorInput, 90), maFillDnColorInput, color.new(maFillUpColorInput, 90), maFillUpColorInput)
+topsPlot = plot(showMasInput ? ta.ema(fixnan(volTop), topBotMasPeriodInput) : na, "Tops MA",     maUpColorInput)
+botsPlot = plot(showMasInput ? ta.ema(fixnan(volBot), topBotMasPeriodInput) : na, "Botttoms MA", maDnColorInput)
+fill(topsPlot, botsPlot, masFillColor)
+
+// ————— Normal candles
+// Build colors.
+float bodySignal = signal(bodyColorCalcInput)
+bool  bodyBull   = bodySignal > 0
+bool  bodyBear   = bodySignal < 0
+color bodyGradientColor = LucfTa.gradientAdvDecPro(bodySignal, 0, gradientSteps(bodyColorCalcInput), color.new(bodyDnColorInput, 90), bodyDnColorInput, color.new(bodyUpColorInput, 90), bodyUpColorInput)
+color bodyColor  = switch
+    bodyColorCalcInput == CB0 => na
+    bodyShowDivInput and bodyDiv => bodyDivColorInput
+    bodyHollowOnDecVolInput and not volUp => na
+    bodyColorCalcInput != CB8 and bodyGradientInput => bodyGradientColor
+    bodyBull => bodyUpColorInput
+    bodyBear => bodyDnColorInput
+    => na
+color bordersAndWicksColor = switch
+    bodyColorCalcInput == CB0 => na
+    barUp => borderWickUpColorInput
+    => borderWickDnColorInput
+// Plot candles.
+plotcandle(open, high, low, close, "Candle Structure", color = bodyColor, wickcolor = bordersAndWicksColor, bordercolor = bordersAndWicksColor, display = display.pane)
+
+// ————— Background
+var color bgUpLoColor = color.new(bgUpColorInput, math.max(90, bgBriteInput))
+var color bgUpHiColor = color.new(bgUpColorInput, bgBriteInput)
+var color bgDnLoColor = color.new(bgDnColorInput, math.max(90, bgBriteInput))
+var color bgDnHiColor = color.new(bgDnColorInput, bgBriteInput)
+color bgFillColor = LucfTa.gradientAdvDecPro(signal(bgCalcInput), 0, gradientSteps(bgCalcInput), bgDnLoColor, bgDnHiColor, bgUpLoColor, bgUpHiColor)
+bool volDiscrepancy = math.abs(volT - volume) / volume > volDiscToleranceInput
+bgcolor(not barstate.isrealtime and volDiscShowInput and volDiscrepancy and color.t(volDiscColorInput) != 100 ? volDiscColorInput : bgFillColor)
+
+// ————— Information box
+// Display information box only once on the last historical bar, instead of on all realtime updates, as when `barstate.islast` is used.
+if showInfoBoxInput and barstate.islastconfirmedhistory
+    var table infoBox = table.new(infoBoxYPosInput + "_" + infoBoxXPosInput, 1, 1)
+    color infoBoxBgColor = infoBoxColorInput
+    string txt = str.format(
+      "Uses intrabars at {0}\nAvg intrabars per chart bar: {1,number,#.##}\nChart bars covered: {2} / {3} ({4,number,percent})", 
+      PCtime.formattedNoOfPeriods(timeframe.in_seconds(intrabarTf) * 1000), 
+      avgIntrabars, chartBarsCovered, bar_index + 1, chartBarsCovered / (bar_index + 1))
+    if avgIntrabars < 5
+        txt := "This quantity of intrabars is dangerously small.\nResults will not be as reliable with so few.\n\n" + txt
+        infoBoxBgColor := color.red
+    else if not intrabarVolumeIsAvailable
+        txt := "No intrabar volume exists for the symbol.\nCannot calculate values.\n\n" + txt
+        infoBoxBgColor := color.red
+    table.cell(infoBox, 0, 0, txt, text_color = infoBoxTxtColorInput, text_size = infoBoxSizeInput, bgcolor = infoBoxBgColor)
+
+// ————— Markers and alerts
+// Only process markers and alerts on the bar's close.
+if barstate.isconfirmed
+    topPos = math.max(nz(volTop), high)
+    botPos = math.min(nz(volBot, 10e15), low)
+    array<bool> markerCondUps = array.from(a1U, a2U, a3U, a4U, a5U, a6U)
+    array<bool> markerCondDns = array.from(a1D, a2D, a3D, a4D, a5D, a6D)
+    // Build marker label's text from user-selected marker conditions.
+    string labelMsgUp   = ""
+    string labelMsgDn   = ""
+    bool   triggerLong  = false
+    bool   triggerShort = false
+    for markerNo = 0 to array.size(markerCondUps) - 1
+        bool cUp = array.get(markerCondUps, markerNo)
+        bool cDn = array.get(markerCondDns, markerNo)
+        triggerLong  := triggerLong  or cUp
+        triggerShort := triggerShort or cDn
+        labelMsgUp   := LucfTa.addTextIf(cUp, labelMsgUp, "M" + str.tostring(markerNo + 1) + "▲", "\n")
+        labelMsgDn   := LucfTa.addTextIf(cDn, labelMsgDn, "M" + str.tostring(markerNo + 1) + "▼", "\n")
+    // Display marker and generate alert when needed.
+    if triggerLong
+        alert(alertMsgUpInput == "" ? labelMsgUp : alertMsgUpInput, alert.freq_once_per_bar)
+        label.new(bar_index, botPos, labelMsgUp, style = label.style_label_up, color = color(na), textcolor = GENERAL_UP_HI)
+    if triggerShort
+        alert(alertMsgDnInput == "" ? labelMsgDn : alertMsgDnInput, alert.freq_once_per_bar)
+        label.new(bar_index, topPos, labelMsgDn, style = label.style_label_down, color = color(na), textcolor = GENERAL_DN_HI)
+//#endregion

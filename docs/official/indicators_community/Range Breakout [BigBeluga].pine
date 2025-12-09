@@ -1,0 +1,107 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('Range Breakout [BigBeluga]', overlay = true, max_lines_count = 4, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int length = 100 // Length of the line extension
+float multi = input.float(4, 'Channel Width', step = 0.1) // Multiplier for channel width
+bool show_x = input.bool(false, "Show X signals")
+bool filter_sig = input.bool(false, "Filter Signals by Trends", "If True indicator filters ▲▼ based on channels breakout condition. If channel is bullish with green circle only ▲ displayed if bearish with red only ▼ signals displayed")
+
+color color1 = input.color(#1dac70, "", inline = "col", group = "OB/OS")
+color color3 = input.color(#df3a79, "", inline = "col", group = "OB/OS")
+bool gradient = input.bool(true, "Gradient", inline = "ll", group = "OB/OS")
+int transp = input.int(80, "", inline = "ll", group = "OB/OS")
+color color2 = chart.fg_color // Mid line color
+
+// Initialize Variables
+var float value = na
+var float value_upper = na
+var float value_lower = na
+var float value_upper_mid = na
+var float value_lower_mid = na
+var bool trend = false
+
+var count = 0
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+float atr = ta.sma(ta.atr(200), 100) * multi // ATR-based channel width
+
+// Initialize channel values
+if bar_index == 301
+    value := hl2
+    value_upper := hl2 + atr
+    value_lower := hl2 - atr
+    value_upper_mid := math.avg(value, value_upper)
+    value_lower_mid := math.avg(value, value_lower)
+    value_lower_mid
+
+
+// Check for crossovers
+bool cross_upper = ta.crossover(low, value_upper) and barstate.isconfirmed
+bool cross_lower = ta.crossunder(high, value_lower) and barstate.isconfirmed
+
+// Count bars outside the channel
+if low > value_upper or high < value_lower
+    count := count + 1
+    count
+
+// Reset channel values on crossover or after 100 bars
+if cross_upper or cross_lower or count == 100
+    count := 0
+    value := hl2
+    value_upper := hl2 + atr
+    value_lower := hl2 - atr
+    value_upper_mid := math.avg(value, value_upper)
+    value_lower_mid := math.avg(value, value_lower)
+    value_lower_mid
+
+bool chage = not(value != value[1])
+bool buy_ = ta.crossover(low, value_lower_mid) and low[10] > value_lower_mid and barstate.isconfirmed and chage
+bool sell_ = ta.crossunder(high, value_upper_mid) and high[10] < value_upper_mid and barstate.isconfirmed and chage
+bool fakeout_up = ta.crossunder(high, value_upper) and barstate.isconfirmed and chage
+bool fakeout_dn = ta.crossover(low, value_lower) and barstate.isconfirmed and chage
+
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Plot and fill lines
+p1 = plot(value_upper != value_upper[1] ? na : value_upper, color = color1, linewidth = 1, style = plot.style_linebr)
+p0 = plot(bar_index % 2 == 0 ? value : na, color = color2, style = plot.style_linebr)
+p2 = plot(value_lower != value_lower[1] ? na : value_lower, color = color3, linewidth = 1, style = plot.style_linebr)
+
+upper_mid = math.avg(value_upper, value)
+lower_mid = math.avg(value_lower, value)
+
+
+p01 = plot(upper_mid != upper_mid[1] ? na : upper_mid, color = color.new(color2, 50), style = plot.style_linebr)
+p02 = plot(lower_mid != lower_mid[1] ? na : lower_mid, color = color.new(color2, 50), style = plot.style_linebr)
+
+fill(p1, p01, value_upper, value, color.new(value_upper != value_upper[1] ? na : color1, transp), color.new(value_upper != value_upper[1] ? na : color1, gradient ? 100 : transp))
+fill(p2, p02, value, value_lower, color.new(value_upper != value_upper[1] ? na : color3, gradient ? 100 : transp), color.new(value_upper != value_upper[1] ? na : color3, transp))
+
+// Plot cross signals
+if cross_upper
+    trend := true
+    label.new(bar_index - 1, value_upper[1], text = '⦿', textcolor = color1, style = label.style_label_center, color = color(na), size = size.large, tooltip = "Bullish Break")
+if cross_lower
+    trend := false
+    label.new(bar_index - 1, value_lower[1], text = '⦿', textcolor = color3, style = label.style_label_center, color = color(na), size = size.large, tooltip = "Bearish Break")
+
+if buy_ and (filter_sig ? trend : true)
+    label.new(bar_index - 1, low[1], text = '▲', textcolor = color1, style = label.style_label_up, color = color(na), size = size.normal)
+if sell_ and  (filter_sig ? not trend : true)
+    label.new(bar_index - 1, high[1], text = '▼', textcolor = color3, style = label.style_label_down, color = color(na), size = size.normal)
+
+if fakeout_up and show_x
+    label.new(bar_index - 1, high[1], text = 'X', textcolor = color3, style = label.style_label_down, color = color(na), size = size.normal)
+if fakeout_dn and show_x
+    label.new(bar_index - 1, low[1], text = 'X', textcolor = color1, style = label.style_label_up, color = color(na), size = size.normal)
+// }

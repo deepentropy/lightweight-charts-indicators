@@ -1,0 +1,80 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © RedKTrader
+
+//@version=5
+indicator('RedK Trader Pressure Index (TPX)', shorttitle='RedK_TPX v5.0', overlay=false, timeframe='', precision=1)
+
+// ======================================================================================================================
+// Inputs
+// ======================================================================================================================
+length  = input.int(title='Avg Length',         defval=7, minval=1)
+smooth  = input.int(title='Smoothing',          defval=3, minval=1)
+
+// ****    CLevel is the "critical or control" level, whoever builds pressure that exceeds that level will be in control
+clevel  = input.int(title='Control Level',      defval=30, minval=5, maxval=100)
+
+// version 3.0 - adding optional pre-smoothing - will cause a signal lag of ~1 bar @ value of 3 - will be off by default   
+pre_s   = input.bool(title='Pre-smoothing?',    defval=false,       inline='pre-smoothing')
+pre_sv  = input.int(title='',                   defval=3, minval=1, inline='pre-smoothing')
+
+// ======================================================================================================================
+// Calculations
+// ======================================================================================================================
+//R is the 2-bar range used as "baseline" or denominator 
+R           = ta.highest(2) - ta.lowest(2)
+
+// Bull pressure is represented by how far they can pull the high and the low of previous bar up relative to the 2-bar range
+hiup        = math.max(ta.change(high), 0)
+loup        = math.max(ta.change(low), 0)
+bulls       = math.min((hiup + loup) / R, 1) * 100  //prevent big gaps causing a % over 100%
+avgbull     = ta.wma(nz(bulls), length)
+
+avgbulls    = pre_s ? ta.wma(avgbull, pre_sv) : avgbull
+
+// Bear pressure is represented by how far they can push the high and the low of previous bar down relative to the 2-bar range
+hidn        = math.min(ta.change(high), 0)
+lodn        = math.min(ta.change(low), 0)
+bears       = math.max((hidn + lodn) / R, -1) * -100  //convert to positive value
+avgbear     = ta.wma(nz(bears), length)
+
+avgbears    = pre_s ? ta.wma(avgbear, pre_sv) : avgbear
+
+net         = avgbulls - avgbears
+TPX         = ta.wma(net, smooth)  // final smoothing
+
+// ======================================================================================================================
+// colors & plots
+// ======================================================================================================================
+col_bulls   = #33ff0099  // 40% transp
+col_bears   = #ff111166  // 60% transp
+col_level   = #ffee0070
+col_TPXup   = color.white
+col_TPXdn   = color.gray
+TPXBullish  = TPX > 0
+
+hline(0, color=col_level, linestyle=hline.style_solid, linewidth=1, editable=false)
+hline(clevel, title='Control Level', color=col_level, linestyle=hline.style_dotted, linewidth=2)
+
+plot(avgbulls,  title='Bull Pressure',  color=col_bulls, style=plot.style_area,     linewidth=3)
+plot(avgbears,  title='Bear Pressure',  color=col_bears, style=plot.style_area,     linewidth=3)
+plot(TPX,       title='Net Pressure',   color=TPXBullish ? col_TPXup : col_TPXdn,   linewidth=3)
+
+// ======================================================================================================================
+// version 4.0 adds Dominant Pressure Signal and enables basic Alerts
+
+slevel_on   = input.bool(title='Pressure Signal Line?', defval=false,                               inline='signal')
+slevel      = input.int(title='',                       defval=70, minval=0, maxval=100, step=5,    inline='signal')
+
+maxbulls    = avgbulls >= clevel
+maxbears    = avgbears >= clevel
+TPXswing    = ta.cross(TPX, 0)
+
+plot(maxbears and slevel_on ? slevel : na, 'Cold',  style=plot.style_circles,   color=color.new(color.maroon, 0),   linewidth=3)
+plot(maxbulls and slevel_on ? slevel : na, 'Hot',   style=plot.style_cross,     color=color.new(color.green, 0),    linewidth=3)
+
+alertcondition(maxbulls, 'TPX Bulls in Control',    'TPX Bull Pressure >= Control Level')
+alertcondition(maxbears, 'TPX Bears in Control',    'TPX Bear Pressure >= Control Level')
+
+//  v5.0 adds alert of TPX line changing color (swinging around the 0 line)
+alertcondition(TPXswing, 'Net Pressure Swing',      'Net Pressure Swing Detected!')
+

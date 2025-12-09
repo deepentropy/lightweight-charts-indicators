@@ -1,0 +1,49 @@
+//@version=3
+study("Fibonacci levels", overlay=true, precision=8)
+fastperiod=input(title="50 MA", defval=50, minval=1)
+emaperiod=input(title="100 MA", defval=100, minval=1)
+
+toc=max(open,close)
+boc=min(open,close)
+
+effclose=if close>=open
+    toc
+else
+    boc
+
+midline=nz(ema(effclose,emaperiod))
+plot(midline,color=red, title="mid line", linewidth=2, transp=0)
+
+dev=stdev(effclose,emaperiod)
+
+plusdevmult=if toc>midline
+    (toc-midline)/dev
+else
+    0
+
+minusdevmult=if boc<midline
+    (midline-boc)/dev
+else
+    0
+
+maxmult=max(minusdevmult,plusdevmult)
+
+lm=ema(maxmult,emaperiod)
+lm2=lm/2
+lm3=lm2*0.38196601
+lm4=lm*1.38196601
+lm5=lm*1.61803399
+lm6=(lm+lm2)/2
+
+plot(midline+(dev*lm5), title="6 up", color=black, transp=25)
+plot(midline+(dev*lm4), title="5 up", color=black, transp=25)
+plot(midline+(dev*lm), title="4 up", color=black, transp=25)
+plot(midline+(dev*lm6), title="3 up", color=black, transp=25)
+plot(midline+(dev*lm2), title="2 up", color=black, transp=25)
+plot(midline+(dev*lm3), title="1 up", color=black, transp=25)
+plot(midline-(dev*lm3), title="1 down", color=black, transp=25)
+plot(midline-(dev*lm2), title="2 down", color=black, transp=25)
+plot(midline-(dev*lm6), title="3 down", color=black, transp=25)
+plot(midline-(dev*lm), title="4 down", color=black, transp=25)
+plot(midline-(dev*lm4), title="5 down", color=black, transp=25)
+plot(midline-(dev*lm5), title="6 down", color=black, transp=25)

@@ -1,0 +1,100 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator('MACD & RSI Overlay (Expo)', overlay=true)
+
+// ~~ ToolTips {
+t1 = "Select if you want to display MACD [12,26] or RSI [14] or both at the same time on your chart."
+t2 = "Set the smoothing length"
+t3 = "Set the signal line length"
+t4 = "Increase this value if you want to factor in the underlying trend. A high value returns a long-term underlying trend and a low value returns the short-term underlying trend."
+t5 = "The scale refers to how far or close the MACD and RSI lines should be relative to the price. A higher scale means that the lines should be further away from the price, while a lower scale means that the lines should be closer to the price"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Input variables {
+//MACD & RSI
+macd_rsi           = input.string("MACD", title="", options=["MACD","RSI 14", "Both"], group="MACD/RSI", inline="macdrsi", tooltip = t1)
+macd_rsi_smooth    = input.int(1, minval=1, maxval=200, step=1, title="Smooth", group="MACD/RSI", inline="macdrsi", tooltip = t2)
+signal_line_Length = input.int(14, minval=5, maxval=200, step=1, title="Signal Length", group="MACD/RSI", inline="macdrsi", tooltip = t3)
+macd_col           = input.color(color.aqua, title="MACD Line", group="MACD/RSI", inline="col")
+rsi_col            = input.color(color.rgb(19, 96, 238), title="RSI Line", group="MACD/RSI", inline="col")
+signal_line_col    = input.color(#F8DE7E, title="Signal Line", group="MACD/RSI", inline="col")
+ob                 = input.int(70, minval=0, maxval=100, title="", group="RSI OB/OS", inline="obos_col")
+os                 = input.int(30, minval=0, maxval=100, title="", group="RSI OB/OS", inline="obos_col") 
+ob_col             = input.color(color.lime, title="", group="RSI OB/OS", inline="obos_col")
+os_col             = input.color(color.red, title="", group="RSI OB/OS", inline="obos_col")
+
+//Scaling
+trendFactor   = input.int(30, minval=1, maxval=300, step=2, title="Trend Factor", group="Trend Feature", tooltip = t4)
+scalingFactor = input.float(2.5, step=0.1, maxval=10, title="Scaling Factor", group="Scaling", tooltip = t5)
+
+//Table
+showTable   = input.bool(true,title="Show Trend Table", inline="tbl", group="Trend Table")
+TblSize     = input.string(size.normal,title="Size",options=[size.auto,size.tiny,size.small,size.normal,size.large,size.huge],inline="tbl")
+pos         = input.string(position.top_right, title="Location",options =[position.top_right,position.top_center,
+ position.top_left,position.bottom_right,position.bottom_center,position.bottom_left,position.middle_right,position.middle_left],inline="tbl")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Moving Averages {
+priceMa = ta.sma(close, 2)
+trendMa = ta.sma(close, trendFactor)
+
+//Calculate Scaled Adaptive Moving Average
+error    = math.abs(priceMa - trendMa)
+errorSum = math.sum(error, 10)
+ama      = errorSum == 0 ? close[1] : priceMa * (error / errorSum) + trendMa * (1 - error / errorSum)
+pma      = scalingFactor * close + (1.0 - scalingFactor) * ama[1]
+
+//Averages
+macd   = ta.wma(ta.rma(pma, 5),macd_rsi_smooth)
+rsi    = ta.wma(ta.rma(pma, 1),macd_rsi_smooth)
+signal = ta.sma(pma, signal_line_Length)
+
+//OB/OS color
+rsi_ = ta.rsi(close,14)
+rsi_col_ = rsi_>ob?ob_col:rsi_<os?os_col:rsi_col
+
+//Plots
+plot(macd_rsi=="MACD" or macd_rsi=="Both"?macd:na,color=color.new(macd_col, 0), title='MACD Line')
+plot(macd_rsi=="RSI 14" or macd_rsi=="Both"?rsi:na,color=color.new(rsi_col_, 0), title='RSI Line')
+plot(signal, color=color.new(signal_line_col, 0), title='Signal Line')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Table {
+string h1 = switch macd_rsi
+    "MACD"   => "MACD: "+(macd>close?"Bullish":"Bearish")
+    "RSI 14" => "RSI: "+(close<rsi?"Bullish":"Bearish")
+    "Both"   => "MACD: "+(macd>close?"Bullish":"Bearish")+
+     "\nRSI: "+(close<rsi?"Bullish":"Bearish")
+
+//Plot Table
+var tbl = table.new(pos, 1, 1, frame_color=chart.bg_color, frame_width=2, border_width=2, border_color=chart.bg_color)
+color trend_col = str.contains(h1,"Bullish") and str.contains(h1,"Bearish")?color.orange:str.contains(h1,"Bullish")?color.lime:color.red
+if barstate.islast and showTable
+    table.cell(tbl, 0, 0, text=h1, text_color=color.white, bgcolor=color.new(trend_col,30), text_size=TblSize)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+indicatorcross(indicator) =>
+    over  = ta.crossover(indicator,signal)
+    under = ta.crossunder(indicator,signal)
+    [over,under]
+srccross(src,indicator) =>
+    over  = ta.crossover(src,indicator)
+    under = ta.crossunder(src,indicator)
+    [over,under]    
+
+[over_macd,under_macd] = indicatorcross(macd)   
+[over_rsi,under_rsi]   = indicatorcross(rsi)   
+
+[over_macd_price,under_macd_price] = srccross(close,macd) 
+[over_rsi_price,under_rsi_price]   = srccross(close,rsi) 
+[over_rsi_macd,under_rsi_macd]     = srccross(rsi,macd) 
+
+alertcondition(over_macd, title="MACD Crosses Over Signal Line", message="MACD Crosses Over Signal Line"),alertcondition(under_macd, title="MACD Crosses Under Signal Line", message="MACD Crosses Under Signal Line")
+alertcondition(over_rsi, title="RSI Crosses Over Signal Line", message="RSI Crosses Over Signal Line"),alertcondition(under_rsi, title="RSI Crosses Under Signal Line", message="RSI Crosses Under Signal Line")
+alertcondition(over_macd_price, title="Close Crosses Over MACD", message="Close Crosses Over MACD"),alertcondition(under_macd_price, title="Close Crosses Under MACD", message="Close Crosses Under MACD")
+alertcondition(over_rsi_price, title="Close Crosses Over RSI", message="Close Crosses Over RSI"),alertcondition(under_rsi_price, title="Close Crosses Under RSI", message="Close Crosses Under RSI")
+alertcondition(over_rsi_macd, title="RSI Crosses Over MACD", message="RSI Crosses Over MACD"),alertcondition(under_rsi_macd, title="RSI Crosses Under MACD", message="RSI Crosses Under MACD")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

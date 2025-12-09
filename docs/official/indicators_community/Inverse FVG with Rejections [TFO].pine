@@ -1,0 +1,199 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © tradeforopp
+
+//@version=5
+indicator("Inverse FVG with Rejections [TFO]", "Inverse FVG [TFO]", true)
+
+// -------------------------------------------------- Inputs --------------------------------------------------
+var g_SET = "Settings"
+show_rfvg = input.bool(true, "Show Regular FVG", inline = "RFVG", group = g_SET)
+show_ifvg = input.bool(true, "Show Inverse FVG", inline = "IFVG", group = g_SET)
+extend_right = input.bool(true, "Extend Boxes", group = g_SET)
+
+rfvg_color = input.color(color.new(#2962ff, 60), "", inline = "RFVG", group = g_SET)
+ifvg_color = input.color(color.new(#f23645, 60), "", inline = "IFVG", group = g_SET)
+
+tf = input.timeframe("", "Timeframe", group = g_SET)
+disp_x = input.int(3, "Displacement", 1, 10, tooltip = "Larger Displacement will require larger FVGs", group = g_SET)
+disp_limit = input.int(10, "Display Limit", 1, 50, tooltip = "The maximum amount of FVGs and IFVGs to display", group = g_SET)
+
+session = input.session("0000-0000", "Session", tooltip = "FVGs will only be saved if they are created within this time period", group = g_SET)
+
+var g_RJ = "Rejections"
+ps = input.int(1, "Rejection Strength", tooltip = "Larger values will require larger fractals/swing pivots to justify as rejections", group = g_RJ) 
+
+show_rrj = input.bool(false, "Regular FVG", inline = "RRJ", tooltip = "Show rejections made within regular FVGs", group = g_RJ)
+show_irj = input.bool(false, "Inverse FVG", inline = "IRJ", tooltip = "Show rejections made within inverse FVGs", group = g_RJ)
+show_brj = input.bool(true, "Regular + Inverse FVG", inline = "BRJ", tooltip = "Show rejections made within both regular and inverse FVGs", group = g_RJ)
+
+rrj_color = input.color(#2962ff, "", inline = "RRJ", group = g_RJ)
+irj_color = input.color(#f23645, "", inline = "IRJ", group = g_RJ)
+brj_color = input.color(color.black, "", inline = "BRJ", group = g_RJ)
+// -------------------------------------------------- Inputs --------------------------------------------------
+
+
+// -------------------------------------------------- Logic --------------------------------------------------
+t = not na(time(tf, session, "America/New_York"))
+
+[o, h, l, c, ti] = request.security(syminfo.tickerid, tf, [open[1], high[1], low[1], close[1], time[1]], lookahead = barmerge.lookahead_on, gaps = barmerge.gaps_off)
+
+var tf_o = array.new_float()
+var tf_h = array.new_float()
+var tf_l = array.new_float()
+var tf_c = array.new_float()
+var tf_time = array.new_int()
+var tf_t = array.new_bool()
+
+var reg_fvg = array.new_box()
+var reg_fvg_ce = array.new_line()
+var reg_fvg_side = array.new_string()
+
+var inv_fvg = array.new_box()
+var inv_fvg_ce = array.new_line()
+var inv_fvg_side = array.new_string()
+
+reg_rj_bear = false
+reg_rj_bull = false
+
+inv_rj_bear = false
+inv_rj_bull = false
+
+solid_color(color x) =>
+    color.new(x, 0)
+
+avg_over(float[] h, float[] l, int len) =>
+    sum = 0.0
+    for i = 0 to len
+        sum += (h.get(i) - l.get(i))
+    result = sum / len
+
+var tf_new = false
+
+if timeframe.change(tf) and timeframe.in_seconds(tf) >= timeframe.in_seconds(timeframe.period)
+    tf_o.unshift(o)
+    tf_h.unshift(h)
+    tf_l.unshift(l)
+    tf_c.unshift(c)
+    tf_t.unshift(t[1])
+    tf_time.unshift(ti)
+
+    tf_new := true
+
+    if tf_o.size() > 300
+        tf_o.pop()
+        tf_h.pop()
+        tf_l.pop()
+        tf_c.pop()
+        tf_t.pop()
+        tf_time.pop()
+
+if not extend_right
+    if reg_fvg.size() > 0
+        for i = 0 to reg_fvg.size() - 1
+            reg_fvg.get(i).set_right(time)
+            reg_fvg_ce.get(i).set_x2(time)
+            
+    if inv_fvg.size() > 0
+        for i = 0 to inv_fvg.size() - 1
+            inv_fvg.get(i).set_right(time)
+            inv_fvg_ce.get(i).set_x2(time)
+
+if tf_o.size() > 20 and tf_new
+    bull = tf_c.get(1) > tf_o.get(1)
+    fvg = bull ? (tf_h.get(2) < tf_l.get(0) and tf_l.get(1) <= tf_h.get(2) and tf_h.get(1) >= tf_l.get(0)) : (tf_l.get(2) > tf_h.get(0) and tf_l.get(1) <= tf_h.get(0) and tf_l.get(2) <= tf_h.get(1))
+    fvg_len = bull ? tf_l.get(0) - tf_h.get(2) : tf_l.get(2) - tf_h.get(0)
+    atr_check = fvg_len > avg_over(tf_h, tf_l, 20) * disp_x / 10
+
+    if tf_t.get(2) and fvg and atr_check
+        top = bull ? tf_l.get(0) : tf_l.get(2)
+        bottom = bull ? tf_h.get(2) : tf_h.get(0)
+        reg_fvg.unshift(box.new(tf_time.get(1), top, time, bottom, xloc = xloc.bar_time, extend = extend_right ? extend.right : extend.none, bgcolor = show_rfvg ? rfvg_color : na, border_color = na))
+        reg_fvg_ce.unshift(line.new(tf_time.get(1), math.avg(top, bottom), time, math.avg(top, bottom), xloc = xloc.bar_time, extend = extend_right ? extend.right : extend.none, color = show_rfvg ? solid_color(rfvg_color) : na, style = line.style_dashed))
+        reg_fvg_side.unshift(bull ? 'bull' : 'bear')
+        
+        tf_new := false
+
+    if reg_fvg.size() > 0
+        for i = reg_fvg.size() - 1 to 0
+            remove_bull = reg_fvg_side.get(i) == 'bull' and tf_c.get(0) < reg_fvg.get(i).get_bottom()
+            remove_bear = reg_fvg_side.get(i) == 'bear' and tf_c.get(0) > reg_fvg.get(i).get_top()
+
+            if remove_bull or remove_bear
+                inv_fvg.unshift(box.copy(reg_fvg.get(i)))
+                inv_fvg_ce.unshift(line.copy(reg_fvg_ce.get(i)))
+                inv_fvg.get(0).set_bgcolor(show_ifvg ? ifvg_color : na)
+                inv_fvg_ce.get(0).set_color(show_ifvg ? solid_color(ifvg_color) : na)
+
+                box.delete(reg_fvg.get(i))
+                line.delete(reg_fvg_ce.get(i))
+                reg_fvg.remove(i)
+                reg_fvg_ce.remove(i)
+                reg_fvg_side.remove(i)
+                
+                if remove_bear
+                    inv_fvg_side.unshift('inv bear')
+                else if remove_bull
+                    inv_fvg_side.unshift('inv bull')
+
+        if reg_fvg.size() > disp_limit
+            box.delete(reg_fvg.pop())
+            line.delete(reg_fvg_ce.pop())
+            reg_fvg_side.pop()
+
+    if inv_fvg.size() > 0
+        for i = inv_fvg.size() - 1 to 0
+            remove_inv_bear = inv_fvg_side.get(i) == 'inv bear' and tf_c.get(0) < inv_fvg.get(i).get_bottom()
+            remove_inv_bull = inv_fvg_side.get(i) == 'inv bull' and tf_c.get(0) > inv_fvg.get(i).get_top()
+
+            if remove_inv_bear or remove_inv_bull
+                box.delete(inv_fvg.get(i))
+                line.delete(inv_fvg_ce.get(i))
+                inv_fvg.remove(i)
+                inv_fvg_ce.remove(i)
+                inv_fvg_side.remove(i)
+
+        if inv_fvg.size() > disp_limit
+            box.delete(inv_fvg.pop())
+            line.delete(inv_fvg_ce.pop())
+            inv_fvg_side.pop()
+
+    if math.min(reg_fvg.size(), inv_fvg.size()) > 0
+        for i = 0 to reg_fvg.size() - 1
+            _rrj_bear = ta.pivothigh(high, ps, ps) and high[ps] >= reg_fvg.get(i).get_bottom() and high[ps] <= reg_fvg.get(i).get_top()
+            _rrj_bull = ta.pivotlow(low, ps, ps) and low[ps] >= reg_fvg.get(i).get_bottom() and low[ps] <= reg_fvg.get(i).get_top()
+
+            if _rrj_bear
+                reg_rj_bear := true
+            if _rrj_bull
+                reg_rj_bull := true
+
+        for i = 0 to inv_fvg.size() - 1
+            _irj_bear = ta.pivothigh(high, ps, ps) and high[ps] >= inv_fvg.get(i).get_bottom() and high[ps] <= inv_fvg.get(i).get_top()
+            _irj_bull = ta.pivotlow(low, ps, ps) and low[ps] >= inv_fvg.get(i).get_bottom() and low[ps] <= inv_fvg.get(i).get_top()
+
+            if _irj_bear
+                inv_rj_bear := true
+            if _irj_bull
+                inv_rj_bull := true
+
+plotshape(show_rrj and reg_rj_bear[1], color = rrj_color, size = size.small, location = location.abovebar, style = shape.triangledown)
+plotshape(show_rrj and reg_rj_bull[1], color = rrj_color, size = size.small, location = location.belowbar, style = shape.triangleup)
+
+plotshape(show_irj and inv_rj_bear[1], color = irj_color, size = size.small, location = location.abovebar, style = shape.triangledown)
+plotshape(show_irj and inv_rj_bull[1], color = irj_color, size = size.small, location = location.belowbar, style = shape.triangleup)
+
+plotshape(show_brj and reg_rj_bear[1] and inv_rj_bear[1], color = brj_color, size = size.small, location = location.abovebar, style = shape.triangledown)
+plotshape(show_brj and reg_rj_bull[1] and inv_rj_bull[1], color = brj_color, size = size.small, location = location.belowbar, style = shape.triangleup)
+
+alertcondition(show_rrj and (reg_rj_bear[1] or reg_rj_bull[1]), "Any Regular FVG Rejection")
+alertcondition(show_rrj and reg_rj_bear[1], "Regular FVG Bear Rejection")
+alertcondition(show_rrj and reg_rj_bull[1], "Regular FVG Bull Rejection")
+
+alertcondition(show_irj and (inv_rj_bear[1] or inv_rj_bull[1]), "Any Inverse FVG Rejection")
+alertcondition(show_irj and inv_rj_bear[1], "Inverse FVG Bear Rejection")
+alertcondition(show_irj and inv_rj_bull[1], "Inverse FVG Bull Rejection")
+
+alertcondition(show_brj and ((reg_rj_bear[1] and inv_rj_bear[1]) or (reg_rj_bull[1] and inv_rj_bull[1])), "Any FVG + IFVG Rejection")
+alertcondition(show_brj and reg_rj_bear[1] and inv_rj_bear[1], "FVG + IFVG Bear Rejection")
+alertcondition(show_brj and reg_rj_bull[1] and inv_rj_bull[1], "FVG + IFVG Bull Rejection")
+// -------------------------------------------------- Logic --------------------------------------------------

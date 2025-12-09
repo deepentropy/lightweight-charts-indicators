@@ -1,0 +1,240 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LucemAnb
+
+//@version=4
+
+study("Auto Fib Retracement Alerts", overlay=true)
+dev_threshold = input(title="Deviation", type=input.float, defval=5, minval=0)
+depth = input(title="Depth", type=input.integer, defval=10, minval=1)
+var extendLeft = input(false, "Extend Lines Left")
+var extendRight = input(true, "Extend Lines Right")
+
+retracement = input(0.618)
+
+var extending = extend.none
+if extendLeft and extendRight
+    extending := extend.both
+if extendLeft and not extendRight 
+    extending := extend.left
+if not extendLeft and extendRight
+    extending := extend.right
+
+reverse = input(false, "Reverse")
+prices = input(true, "Prices")
+levels = input(true, "Levels")
+levelsFormat = input("Values", "Levels Format", options=["Values", "Percent"])
+
+var line lineLast = na
+var int iLast = 0
+var int iPrev = 0
+var float pLast = 0
+var isHighLast = false // otherwise the last pivot is a low pivot
+
+pivots(src, length, isHigh) => 
+    l2 = length * 2 
+    c = nz(src[length])
+    ok = true
+    for i = 0 to l2
+        if isHigh and src[i] > c
+            ok := false
+        
+        if not isHigh and src[i] < c
+            ok := false
+    if ok
+        [bar_index[length], c]
+    else
+        [int(na), float(na)]
+[iH, pH] = pivots(high, depth / 2, true)
+[iL, pL] = pivots(low, depth / 2, false)
+
+calc_dev(base_price, price) =>
+    100 * (price - base_price) / price
+    
+pivotFound(dev, isHigh, index, price) => 
+    if isHighLast == isHigh and not na(lineLast)
+        // same direction
+        if isHighLast ? price > pLast : price < pLast
+            line.set_xy2(lineLast, index, price)
+            [lineLast, isHighLast]
+        else
+            [line(na), bool(na)]
+    else // reverse the direction (or create the very first line)
+        if abs(dev) > dev_threshold
+            // price move is significant
+            id = line.new(iLast, pLast, index, price, color=color.gray, width=1, style=line.style_dashed)
+            [id, isHigh]
+        else
+            [line(na), bool(na)]
+            
+if not na(iH)
+    dev = calc_dev(pLast, pH)
+    [id, isHigh] = pivotFound(dev, true, iH, pH)
+    if not na(id)
+        if id != lineLast
+            line.delete(lineLast)
+        lineLast := id
+        isHighLast := isHigh
+        iPrev := iLast
+        iLast := iH
+        pLast := pH
+else
+    if not na(iL)
+        dev = calc_dev(pLast, pL)
+        [id, isHigh] = pivotFound(dev, false, iL, pL)
+        if not na(id)
+            if id != lineLast
+                line.delete(lineLast)
+            lineLast := id
+            isHighLast := isHigh
+            iPrev := iLast
+            iLast := iL
+            pLast := pL
+
+_draw_line(price, col) =>
+    var id = line.new(iLast, price, bar_index, price, color=col, width=1, extend=extending)
+    if not na(lineLast)
+        line.set_xy1(id, line.get_x1(lineLast), price)
+        line.set_xy2(id, line.get_x2(lineLast), price)
+
+
+_draw_label(price, txt, txtColor) =>
+    var id = label.new(x=line.get_x1(lineLast), y=price, text=txt, textcolor=txtColor, style=label.style_none)
+    label.set_xy(id, line.get_x1(lineLast), price)
+    label.set_text(id, txt)
+    label.set_textcolor(id, txtColor)
+
+_wrap(txt) =>
+    "(" + tostring(txt, "#.##") + ")"
+
+_label_txt(level, price) =>
+    l = levelsFormat == "Values" ? tostring(level) : tostring(level * 100) + "%"
+    (levels ? l : "") + (prices ? _wrap(price) : "")
+
+var sl1 = input(true, "0")
+var vall1 = 0.000
+
+var sl2 = input(true, "0.236")
+var vall2 = 0.236
+
+var sl3 = input(true, "0.382")
+var vall3 = 0.382
+
+var sl4 = input(true, "0.5")
+var vall4 = 0.5
+
+var sl5 = input(true, "0.618")
+var vall5 = 0.618
+
+var sl6 = input(true, "0.786")
+var vall6 = 0.786
+
+var sl7 = input(true, "1")
+var vall7 = 1
+
+var sl8 = input(true, "1.272")
+var vall8 = 1.272
+
+var sl9 = input(true, "1.414")
+var vall9 = 1.414
+
+var sl10 = input(true, "1.618")
+var vall10 = 1.618
+
+var sl11 = input(false, "2.618")
+var vall11 = 2.618
+
+var sl12 = input(false, "3.618")
+var vall12 = 3.618
+
+var sl13 = input(false, "4.236")
+var vall13 = 4.236
+
+_draw_retracement(startPrice, endPrice) =>
+    iHL = startPrice > endPrice
+    diff = (iHL ? -1 : 1) * abs(startPrice - endPrice)
+    if sl1
+        l1 = startPrice + diff * vall1
+        _draw_line(l1, #808080)
+        _draw_label(l1, _label_txt(vall1, l1), #808080)
+        
+    if sl2
+        l2 = startPrice + diff * vall2
+        _draw_line(l2, #a61c00)
+        _draw_label(l2, _label_txt(vall2, l2), #a61c00)
+    
+    if sl3
+        l3 = startPrice + diff * vall3
+        _draw_line(l3, #95cc28)
+        _draw_label(l3, _label_txt(vall3, l3), #95cc28)
+    
+    if sl4
+        l4 = startPrice + diff * vall4
+        _draw_line(l4, #28cc28)
+        _draw_label(l4, _label_txt(vall4, l4), #28cc28)
+    
+    if sl5
+        l5 = startPrice + diff * vall5
+        _draw_line(l5, #28cc95)
+        _draw_label(l5, _label_txt(vall5, l5), #28cc95)
+    
+    if sl6
+        l6 = startPrice + diff * vall6
+        _draw_line(l6, #2895cc)
+        _draw_label(l6, _label_txt(vall6, l6), #2895cc)
+    
+    if sl7
+        l7 = startPrice + diff * vall7
+        _draw_line(l7, #808080)
+        _draw_label(l7, _label_txt(vall7, l7), #808080)
+        
+    if sl8
+        l8 = startPrice + diff * vall8
+        _draw_line(l8, #82CA89)
+        _draw_label(l8, _label_txt(vall8, l8), #82CA89)
+
+    if sl9
+        l9 = startPrice + diff * vall9
+        _draw_line(l9, #F32C42)
+        _draw_label(l9, _label_txt(vall9, l9), #F32C42)
+        
+    if sl10
+        l10 = startPrice + diff * vall10
+        _draw_line(l10, #2796ED)
+        _draw_label(l10, _label_txt(vall10, l10), #2796ED)
+        
+    if sl11
+        l11 = startPrice + diff * vall11
+        _draw_line(l11, #a61c00)
+        _draw_label(l11, _label_txt(vall11, l11), #a61c00)
+        
+    if sl12
+        l12 = startPrice + diff * vall12
+        _draw_line(l12, #9B03AE)
+        _draw_label(l12, _label_txt(vall12, l12), #9B03AE)
+        
+    if sl13
+        l13 = startPrice + diff * vall13
+        _draw_line(l13, #E80065)
+        _draw_label(l13, _label_txt(vall13, l13), #E80065)
+    diff
+
+p1 = reverse ? pLast : line.get_y1(lineLast)
+p2 = reverse ? line.get_y1(lineLast) : pLast
+diff = _draw_retracement(p1, p2)
+
+level = p1 + diff * retracement
+plot(p1, "Start", p1==p1[1]?color.red:na, 3, plot.style_line)
+plot(p2, "End", p2==p2[1]?color.lime:na, 3, plot.style_line)
+plot(level, "Target", level==level[1]?color.purple:na, 3, plot.style_line)
+
+buy = p1 < p2 and low <= level and high > level
+buy_alert = buy and barssince(buy)[1] > barssince(p2!=p2[1])
+
+sell = p1 > p2 and high >= level and low < level
+sell_alert = sell and barssince(sell)[1] > barssince(p2!=p2[1])
+
+plotshape(buy_alert, "Buy Retrace", shape.labelup, location.belowbar, color.lime, text="Buy Retrace", textcolor=color.black)
+plotshape(sell_alert, "Sell Retrace", shape.labeldown, color=color.red, text="Sell Retrace", textcolor=color.white)
+
+alertcondition(buy_alert, "Buy Retrace")
+alertcondition(sell_alert, "Sell Retrace")

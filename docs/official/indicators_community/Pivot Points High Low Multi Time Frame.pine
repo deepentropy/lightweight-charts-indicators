@@ -1,0 +1,62 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=5
+indicator("Pivot Points High Low Multi Time Frame", overlay = true, max_lines_count = 500, max_labels_count = 500)
+timeframe = input.timeframe(defval = '240')
+leftBars  = input.int(defval = 2, title = "Left Bars", minval = 1)
+rightBars  = input.int(defval = 2, title = "Right Bars", minval = 1)
+phlinecol = input.color(defval = color.lime, title = "Pivot High/Low Line Colors", inline = "lc")
+pllinecol = input.color(defval = color.red, title = "", inline = "lc")
+phbgcol = input.color(defval = color.lime, title = "Pivot High BG/Text Colors", inline = "ph")
+phtextcol = input.color(defval = color.black, title = "", inline = "ph")
+plbgcol = input.color(defval = color.red, title = "Pivot Low BG/Text Colors", inline = "pl")
+pltextcol = input.color(defval = color.white, title = "", inline = "pl")
+
+get_phpl()=>
+    float ph = ta.pivothigh(leftBars, rightBars)
+    float pl = ta.pivotlow(leftBars, rightBars)
+    phtimestart = ph ? time[rightBars] : na
+    phtimeend = ph ? time[rightBars - 1] : na
+    pltimestart = pl ? time[rightBars] : na
+    pltimeend = pl ? time[rightBars - 1] : na
+
+    [ph, phtimestart, phtimeend, pl, pltimestart, pltimeend]
+
+// get if there if Pivot High/low and their start/end times
+[ph, phtimestart, phtimeend, pl, pltimestart, pltimeend] = request.security(syminfo.tickerid, timeframe, get_phpl(), lookahead = barmerge.lookahead_on)
+
+// keep time of each bars, this is used for lines/labels
+var mytime = array.new_int(0)
+array.unshift(mytime, time)
+
+// calculate end of the line/time for pivot high/low
+bhend = array.get(mytime, math.min(array.indexof(mytime, phtimeend) + 1, array.size(mytime) - 1))
+blend = array.get(mytime, math.min(array.indexof(mytime, pltimeend) + 1, array.size(mytime) - 1))
+
+// to draw once
+float pivothigh = na(ph[1]) and ph ? ph : na
+float pivotlow  = na(pl[1]) and pl ? pl : na
+
+width = (ta.highest(300) - ta.lowest(300)) / 50
+if not na(pivothigh)
+    line.new(x1 = phtimestart, y1 = pivothigh, x2 = bhend, y2 = pivothigh, color = phlinecol, xloc = xloc.bar_time, width = 2)
+    line.new(x1 = phtimestart, y1 = pivothigh, x2 = phtimestart, y2 = pivothigh + width, color = phlinecol, xloc = xloc.bar_time, width = 2)
+    line.new(x1 = bhend, y1 = pivothigh, x2 = bhend, y2 = pivothigh + width, color = phlinecol, xloc = xloc.bar_time, width = 2)
+    label.new(x = (phtimestart + bhend) / 2, y = pivothigh + width, 
+              text = str.tostring(math.round_to_mintick(pivothigh)), 
+              color = phbgcol, 
+              textcolor = phtextcol, 
+              xloc = xloc.bar_time)
+
+if not na(pivotlow)
+    line.new(x1 = pltimestart, y1 = pivotlow, x2 = blend, y2 = pivotlow, color = pllinecol, xloc = xloc.bar_time, width = 2)
+    line.new(x1 = pltimestart, y1 = pivotlow, x2 = pltimestart, y2 = pivotlow - width, color = pllinecol, xloc = xloc.bar_time, width = 2)
+    line.new(x1 = blend, y1 = pivotlow, x2 = blend, y2 = pivotlow - width, color = pllinecol, xloc = xloc.bar_time, width = 2)
+    label.new(x = (pltimestart + blend) / 2, y = pivotlow - width, 
+              text = str.tostring(math.round_to_mintick(pivotlow)), 
+              color = plbgcol, 
+              textcolor = pltextcol, 
+              style = label.style_label_up,
+              xloc = xloc.bar_time)
+    

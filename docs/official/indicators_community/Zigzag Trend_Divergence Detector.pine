@@ -1,0 +1,284 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © HeWhoMustNotBeNamed
+
+//   __    __            __       __  __                  __       __                        __      __    __              __      _______             __    __                                          __ 
+//  /  |  /  |          /  |  _  /  |/  |                /  \     /  |                      /  |    /  \  /  |            /  |    /       \           /  \  /  |                                        /  |
+//  $$ |  $$ |  ______  $$ | / \ $$ |$$ |____    ______  $$  \   /$$ | __    __   _______  _$$ |_   $$  \ $$ |  ______   _$$ |_   $$$$$$$  |  ______  $$  \ $$ |  ______   _____  ____    ______    ____$$ |
+//  $$ |__$$ | /      \ $$ |/$  \$$ |$$      \  /      \ $$$  \ /$$$ |/  |  /  | /       |/ $$   |  $$$  \$$ | /      \ / $$   |  $$ |__$$ | /      \ $$$  \$$ | /      \ /     \/    \  /      \  /    $$ |
+//  $$    $$ |/$$$$$$  |$$ /$$$  $$ |$$$$$$$  |/$$$$$$  |$$$$  /$$$$ |$$ |  $$ |/$$$$$$$/ $$$$$$/   $$$$  $$ |/$$$$$$  |$$$$$$/   $$    $$< /$$$$$$  |$$$$  $$ | $$$$$$  |$$$$$$ $$$$  |/$$$$$$  |/$$$$$$$ |
+//  $$$$$$$$ |$$    $$ |$$ $$/$$ $$ |$$ |  $$ |$$ |  $$ |$$ $$ $$/$$ |$$ |  $$ |$$      \   $$ | __ $$ $$ $$ |$$ |  $$ |  $$ | __ $$$$$$$  |$$    $$ |$$ $$ $$ | /    $$ |$$ | $$ | $$ |$$    $$ |$$ |  $$ |
+//  $$ |  $$ |$$$$$$$$/ $$$$/  $$$$ |$$ |  $$ |$$ \__$$ |$$ |$$$/ $$ |$$ \__$$ | $$$$$$  |  $$ |/  |$$ |$$$$ |$$ \__$$ |  $$ |/  |$$ |__$$ |$$$$$$$$/ $$ |$$$$ |/$$$$$$$ |$$ | $$ | $$ |$$$$$$$$/ $$ \__$$ |
+//  $$ |  $$ |$$       |$$$/    $$$ |$$ |  $$ |$$    $$/ $$ | $/  $$ |$$    $$/ /     $$/   $$  $$/ $$ | $$$ |$$    $$/   $$  $$/ $$    $$/ $$       |$$ | $$$ |$$    $$ |$$ | $$ | $$ |$$       |$$    $$ |
+//  $$/   $$/  $$$$$$$/ $$/      $$/ $$/   $$/  $$$$$$/  $$/      $$/  $$$$$$/  $$$$$$$/     $$$$/  $$/   $$/  $$$$$$/     $$$$/  $$$$$$$/   $$$$$$$/ $$/   $$/  $$$$$$$/ $$/  $$/  $$/  $$$$$$$/  $$$$$$$/ 
+//                                                                                                                                                                                                          
+//                                                                                                                                                                                                          
+//
+//@version=5
+indicator('Zigzag Trend/Divergence Detector', shorttitle='Zigzag-Trend-Divergence', overlay=true, max_bars_back=1000, max_lines_count=500, max_labels_count=500)
+useClosePrices = input.bool(true, title='Close Prices', group='Zigzag', inline='price')
+waitForConfirmation = input.bool(false, title='Confirmed Pivots', group='Zigzag', inline='price')
+pZigzagLength = input.int(5, step=1, minval=3, title='', group='Zigzag', inline='price')
+pZigzagColor = input.color(color.rgb(251, 192, 45, 0), title='', group='Zigzag', inline='price')
+
+oscillatorSource = input.string('RSI', title='Source', options=['CCI', 'CMO', 'COG', 'DMI', 'HIST', 'MACD', 'MFI', 'MOM', 'ROC', 'RSI', 'TSI', 'WPR', 'BB', 'KC', 'DC', 'ADC', 'External'], group='Oscillator', inline='osc')
+externalSource = input.source(close, title='External Source', group='Oscillator', inline='osc')
+oscillatorLength = input.int(22, title='Length', group='Oscillator', inline='osc2')
+oscillatorShortLength = input.int(12, title='Fast', group='Oscillator', inline='osc2')
+oscillatorLongLength = input.int(26, title='Slow', group='Oscillator', inline='osc2')
+
+considerTrendBias = input.bool(true, title='Pivot History', group='Supertrend (Trend Bias)', inline='st')
+supertrendHistory = input.int(4, step=1, title='', group='Supertrend (Trend Bias)', inline='st')
+atrPeriods = input.int(22, title='ATR Length', step=5, group='Supertrend (Trend Bias)')
+atrMult = input.float(1, step=0.5, title='ATR Multiplier', group='Supertrend (Trend Bias)')
+colorCandles = input.bool(true, title='Color Candles', group='Supertrend (Trend Bias)', inline='1')
+showSupertrend = input.bool(true, title='Plot Supertrend', group='Supertrend (Trend Bias)', inline='1')
+
+showStatTable = input.bool(true, title='Max Rows', group='Stats and Display', inline='stats')
+max_array_size = input.int(10, title='', step=5, minval=5, group='Stats and Display', inline='stats')
+text_size = input.string(size.small, title='Size', options=[size.tiny, size.small, size.normal, size.large, size.huge, size.auto], group='Stats and Display', inline='stats')
+showContinuation = input.bool(true, title='Continuation', group='Stats and Display', inline='display')
+showIndeterminate = input.bool(true, title='Indeterminate', group='Stats and Display', inline='display')
+showDivergence = input.bool(true, title='Divergence', group='Stats and Display', inline='display')
+showHiddenDivergence = input.bool(true, title='Hidden Divergence', group='Stats and Display', inline='display')
+
+alertContinuation = input.bool(false, title='Continuation', group='Alert', inline='alert')
+alertIndeterminate = input.bool(false, title='Indeterminate', group='Alert', inline='alert')
+alertDivergence = input.bool(true, title='Divergence', group='Alert', inline='alert')
+alertHiddenDivergence = input.bool(true, title='Hidden Divergence', group='Alert', inline='alert')
+
+startIndex = waitForConfirmation ? 1 : 0
+donchian(rangeLength) =>
+    top = ta.highest(rangeLength)
+    bottom = ta.lowest(rangeLength)
+    middle = (top + bottom) / 2
+    [middle, top, bottom]
+
+adoptive_donchian(rangeLength) =>
+    [middle, top, bottom] = donchian(rangeLength)
+    channelBreak = high >= top[1] or low <= bottom[1]
+    if not channelBreak
+        middle := nz(middle[1], middle)
+        top := nz(top[1], top)
+        bottom := nz(bottom[1], bottom)
+        bottom
+    [middle, top, bottom]
+
+
+[macdLine, signalLine, histLine] = ta.macd(close, oscillatorShortLength, oscillatorLongLength, oscillatorShortLength)
+[bbmiddle, bbupper, bblower] = ta.bb(close, oscillatorLength, 5)
+[kcmiddle, kcupper, kclower] = ta.kc(close, oscillatorLength, 5, true)
+
+[dcmiddle, dcupper, dclower] = donchian(oscillatorLength)
+[adcmiddle, adcupper, adclower] = adoptive_donchian(oscillatorLength)
+[diplus, diminus, adx] = ta.dmi(oscillatorLongLength, oscillatorShortLength)
+oscillator = oscillatorSource == 'CCI' ? ta.cci(close, oscillatorLength) : oscillatorSource == 'CMO' ? ta.cmo(close, oscillatorLength) : oscillatorSource == 'COG' ? ta.cog(close, oscillatorLength) : oscillatorSource == 'DMI' ? adx : oscillatorSource == 'HIST' ? histLine : oscillatorSource == 'MACD' ? macdLine : oscillatorSource == 'MFI' ? ta.mfi(close, oscillatorLength) : oscillatorSource == 'MOM' ? ta.mom(close, oscillatorLength) : oscillatorSource == 'ROC' ? ta.roc(close, oscillatorLength) : oscillatorSource == 'RSI' ? ta.rsi(close, oscillatorLength) : oscillatorSource == 'TSI' ? ta.tsi(close, oscillatorShortLength, oscillatorLongLength) : oscillatorSource == 'WPR' ? ta.wpr(oscillatorLength) : oscillatorSource == 'BB' ? (close - bblower) / (bbupper - bblower) : oscillatorSource == 'KC' ? (close - kclower) / (kcupper - kclower) : oscillatorSource == 'DC' ? (close - dclower) / (dcupper - dclower) : oscillatorSource == 'ADC' ? (close - adclower) / (adcupper - adclower) : externalSource
+
+var zigzagsupertrenddirs = array.new_int(1, 1)
+var zigzagsupertrend = array.new_float(2, na)
+
+var pZigzagPivots = array.new_float(0)
+var pZigzagPivotBars = array.new_int(0)
+var pZigzagPivotDirs = array.new_int(0)
+var opZigzagPivots = array.new_float(0)
+var opZigzagPivotDirs = array.new_int(0)
+
+var pZigzagLines = array.new_line(0)
+var pZigzagLabels = array.new_label(0)
+
+f_initialize_supertrend(zigzagPivots) =>
+    dir = array.get(zigzagsupertrenddirs, 0)
+    buyStop = array.get(zigzagsupertrend, 0)
+    sellStop = array.get(zigzagsupertrend, 1)
+    tail = array.size(zigzagPivots) > 1 + supertrendHistory ? array.slice(zigzagPivots, 1, 1 + supertrendHistory) : array.new_float()
+    highest = array.max(tail)
+    lowest = array.min(tail)
+    atrDiff = ta.atr(atrPeriods) * atrMult
+    newBuyStop = lowest - atrDiff
+    newSellStop = highest + atrDiff
+    newDir = dir > 0 and close[1] < buyStop ? -1 : dir < 0 and close[1] > sellStop ? 1 : dir
+    newBuyStop := newDir > 0 ? math.max(nz(buyStop, newBuyStop), newBuyStop) : newBuyStop
+    newSellStop := newDir < 0 ? math.min(nz(sellStop, newSellStop), newSellStop) : newSellStop
+    array.set(zigzagsupertrenddirs, 0, newDir)
+    array.set(zigzagsupertrend, 0, newBuyStop)
+    array.set(zigzagsupertrend, 1, newSellStop)
+    [newDir, newBuyStop, newSellStop]
+
+[supertrendDir, buyStop, sellStop] = f_initialize_supertrend(pZigzagPivots)
+
+add_to_array(arr, val, maxItems) =>
+    array.unshift(arr, val)
+    if array.size(arr) > maxItems
+        array.pop(arr)
+
+pivots(length, useAlternativeSource, source) =>
+    highsource = useAlternativeSource ? source : high
+    lowsource = useAlternativeSource ? source : low
+    float phigh = ta.highestbars(highsource, length) == 0 ? highsource : na
+    float plow = ta.lowestbars(lowsource, length) == 0 ? lowsource : na
+    [phigh, plow, bar_index, bar_index]
+
+addnewpivot(zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagother, zigzagotherdir, value, otherSource, bar, dir) =>
+    newDir = dir
+    othDir = dir
+    if array.size(zigzagpivots) >= 2
+        LastPoint = array.get(zigzagpivots, 1)
+        newDir := dir * value > dir * LastPoint ? dir * 2 : dir
+
+        LastOther = array.get(zigzagother, 1)
+        othDir := dir * otherSource[bar_index - bar] > dir * LastOther ? dir * 2 : dir
+        othDir
+    add_to_array(zigzagpivots, value, max_array_size + startIndex)
+    add_to_array(zigzagpivotbars, bar, max_array_size + startIndex)
+    add_to_array(zigzagpivotdirs, newDir, max_array_size + startIndex)
+    add_to_array(zigzagother, otherSource[bar_index - bar], max_array_size + startIndex)
+    add_to_array(zigzagotherdir, othDir, max_array_size + startIndex)
+
+zigzagcore(phigh, plow, phighbar, plowbar, zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagother, zigzagotherdir, otherSource) =>
+    pDir = 1
+
+    newZG = false
+    doubleZG = phigh and plow
+    if array.size(zigzagpivots) >= 1
+        pDir := array.get(zigzagpivotdirs, 0)
+        pDir := pDir % 2 == 0 ? pDir / 2 : pDir
+        pDir
+
+
+    if (pDir == 1 and phigh or pDir == -1 and plow) and array.size(zigzagpivots) >= 1
+        pivot = array.shift(zigzagpivots)
+        pivotbar = array.shift(zigzagpivotbars)
+        pivotdir = array.shift(zigzagpivotdirs)
+        otherVal = array.shift(zigzagother)
+        otherDir = array.shift(zigzagotherdir)
+        value = pDir == 1 ? phigh : plow
+        bar = pDir == 1 ? phighbar : plowbar
+
+        useNewValues = value * pivotdir > pivot * pivotdir
+        value := useNewValues ? value : pivot
+        bar := useNewValues ? bar : pivotbar
+        otherVal := useNewValues ? otherSource : otherVal
+        newZG := newZG or useNewValues
+        addnewpivot(zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagother, zigzagotherdir, value, otherVal, bar, pDir)
+
+    if pDir == 1 and plow or pDir == -1 and phigh
+        value = pDir == 1 ? plow : phigh
+        bar = pDir == 1 ? plowbar : phighbar
+        dir = pDir == 1 ? -1 : 1
+        newZG := true
+        addnewpivot(zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagother, zigzagotherdir, value, otherSource, bar, dir)
+
+    [newZG, doubleZG]
+
+zigzag(length, zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagother, zigzagotherdir, useAlternativeSource, source, otherSource) =>
+    [phigh, plow, phighbar, plowbar] = pivots(length, useAlternativeSource, source)
+    zigzagcore(phigh, plow, phighbar, plowbar, zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagother, zigzagotherdir, otherSource)
+
+getSentimentByDivergenceAndBias(divergence, bias) =>
+    sentimentColor = divergence == 1 ? bias == 1 ? color.green : color.red : divergence == -1 ? bias == 1 ? color.lime : color.orange : divergence == -2 ? bias == 1 ? color.lime : color.orange : color.silver
+
+    sentiment = divergence == 0 ? '▣' : bias > 0 ? divergence == 1 ? '⬆' : divergence == -1 ? '⤴' : divergence == -2 ? '↗' : '⤮' : divergence == 1 ? '⬇' : divergence == -1 ? '⤵' : divergence == -2 ? '↘' : '⤭'
+    [sentiment, sentimentColor]
+
+
+f_get_divergence(pDir, oDir, sDir) =>
+    divergence = pDir == oDir ? pDir % 2 == 0 and pDir / 2 == sDir or pDir % 2 != 0 and pDir != sDir ? 1 : 0 : pDir == 2 * oDir and oDir == sDir ? -1 : 2 * pDir == oDir and pDir == -sDir ? -2 : 0
+    divergenceIdentifier = divergence == 1 ? 'C' : divergence == -1 ? 'D' : divergence == -2 ? 'H' : 'I'
+    [divergence, divergenceIdentifier]
+
+f_get_bias(pDir, oDir) =>
+    pDir == 2 and oDir == 2 ? 1 : pDir == -2 and oDir == -2 ? -1 : pDir > 0 ? -1 : pDir < 0 ? 1 : 0
+
+draw_zg_line(idx1, idx2, zigzaglines, zigzaglabels, zigzagpivots, zigzagpivotbars, zigzagpivotdirs, ozigzagpivotdirs, zigzagcolor, zigzagwidth, zigzagstyle) =>
+    if array.size(zigzagpivots) > idx2
+        y1 = array.get(zigzagpivots, idx1)
+        y2 = array.get(zigzagpivots, idx2)
+        x1 = array.get(zigzagpivotbars, idx1)
+        x2 = array.get(zigzagpivotbars, idx2)
+        pDir = array.get(zigzagpivotdirs, idx1)
+        oDir = array.get(ozigzagpivotdirs, idx1)
+        sDir = supertrendDir[bar_index - x1]
+        [divergence, divergenceIdentifier] = f_get_divergence(pDir, oDir, sDir)
+        bias = f_get_bias(pDir, oDir)
+        [sentiment, sentimentColor] = getSentimentByDivergenceAndBias(divergence, bias)
+
+        zline = line.new(x1=x1, y1=y1, x2=x2, y2=y2, color=zigzagcolor, width=zigzagwidth, style=zigzagstyle)
+        zlabel = label.new(x=x1, y=y1, xloc=xloc.bar_index, yloc=yloc.price, text=divergenceIdentifier, color=sentimentColor, style=pDir > 0 ? label.style_label_down : label.style_label_up, textcolor=color.black, size=size.small)
+        if array.size(zigzaglines) >= 1
+            lastLine = array.get(zigzaglines, 0)
+            if x2 == line.get_x2(lastLine) and y2 == line.get_y2(lastLine)
+                line.delete(array.shift(zigzaglines))
+                label.delete(array.shift(zigzaglabels))
+
+        if not showIndeterminate and divergence == 0 or not showContinuation and divergence == 1 or not showDivergence and divergence == -1 or not showHiddenDivergence and divergence == -2
+            label.delete(zlabel)
+        array.unshift(zigzaglines, zline)
+        array.unshift(zigzaglabels, zlabel)
+        if array.size(zigzaglines) > 500
+            line.delete(array.pop(zigzaglines))
+            label.delete(array.pop(zigzaglabels))
+
+draw_zigzag(doubleZG, zigzaglines, zigzaglabels, zigzagpivots, zigzagpivotbars, zigzagpivotdirs, ozigzagpivotdirs, zigzagcolor, zigzagwidth, zigzagstyle) =>
+    if doubleZG
+        draw_zg_line(startIndex + 1, startIndex + 2, zigzaglines, zigzaglabels, zigzagpivots, zigzagpivotbars, zigzagpivotdirs, ozigzagpivotdirs, zigzagcolor, zigzagwidth, zigzagstyle)
+    if array.size(zigzagpivots) >= startIndex + 2
+        draw_zg_line(startIndex + 0, startIndex + 1, zigzaglines, zigzaglabels, zigzagpivots, zigzagpivotbars, zigzagpivotdirs, ozigzagpivotdirs, zigzagcolor, zigzagwidth, zigzagstyle)
+
+getCellColorByDirection(dir) =>
+    dir == 2 ? color.green : dir == 1 ? color.orange : dir == -1 ? color.lime : dir == -2 ? color.red : color.silver
+getLabelByDirection(dir) =>
+    dir == 2 ? '⇈' : dir == 1 ? '↑' : dir == -1 ? '↓' : dir == -2 ? '⇊' : 'NA'
+
+oscillator := nz(oscillator, close)
+[pZG, pdZG] = zigzag(pZigzagLength, pZigzagPivots, pZigzagPivotBars, pZigzagPivotDirs, opZigzagPivots, opZigzagPivotDirs, useClosePrices, close, oscillator)
+
+trendColor = supertrendDir > 0 ? color.lime : color.orange
+barcolor(colorCandles ? trendColor : na)
+plot(supertrendDir > 0 ? buyStop : sellStop, title='Supertrend', color=trendColor)
+if pZG
+    draw_zigzag(pdZG, pZigzagLines, pZigzagLabels, pZigzagPivots, pZigzagPivotBars, pZigzagPivotDirs, opZigzagPivotDirs, pZigzagColor, 1, line.style_solid)
+
+
+if barstate.islast and showStatTable
+    stats = table.new(position=position.top_right, columns=5, rows=max_array_size + startIndex + 2, border_width=1)
+    table.cell(table_id=stats, column=0, row=0, text='Bar Time', bgcolor=color.black, text_color=color.white, text_size=text_size)
+    table.cell(table_id=stats, column=1, row=0, text='Price', bgcolor=color.black, text_color=color.white, text_size=text_size)
+    table.cell(table_id=stats, column=2, row=0, text='Oscillator', bgcolor=color.black, text_color=color.white, text_size=text_size)
+    table.cell(table_id=stats, column=3, row=0, text='Trend', bgcolor=color.black, text_color=color.white, text_size=text_size)
+    table.cell(table_id=stats, column=4, row=0, text='Sentiment', bgcolor=color.black, text_color=color.white, text_size=text_size)
+
+    for i = startIndex to array.size(pZigzagPivotDirs) > 0 ? array.size(pZigzagPivotDirs) - 1 : na by 1
+        pBar = array.get(pZigzagPivotBars, i)
+        pDir = array.get(pZigzagPivotDirs, i)
+        oDir = array.get(opZigzagPivotDirs, i)
+        sDir = supertrendDir[bar_index - pBar]
+        [divergence, divergenceIdentifier] = f_get_divergence(pDir, oDir, sDir)
+        bias = f_get_bias(pDir, oDir)
+        [sentiment, sentimentColor] = getSentimentByDivergenceAndBias(divergence, bias)
+        if not showIndeterminate and divergence == 0 or not showContinuation and divergence == 1 or not showDivergence and divergence == -1 or not showHiddenDivergence and divergence == -2
+            continue
+        trendDirection = sDir > 0 ? '⇑' : '⇓'
+        trendColor = sDir > 0 ? color.green : color.red
+        barTime = time[bar_index - pBar]
+        barTimeString = str.tostring(year(barTime), '0000') + '/' + str.tostring(month(barTime), '00') + '/' + str.tostring(dayofmonth(barTime), '00') + (timeframe.isintraday ? '-' + str.tostring(hour(barTime), '00') + ':' + str.tostring(minute(barTime), '00') + ':' + str.tostring(second(barTime), '00') : '')
+        table.cell(table_id=stats, column=0, row=i + 1 - startIndex, text=barTimeString, bgcolor=getCellColorByDirection(pDir), text_size=text_size)
+        table.cell(table_id=stats, column=1, row=i + 1 - startIndex, text=getLabelByDirection(pDir), bgcolor=getCellColorByDirection(pDir), text_size=text_size)
+        table.cell(table_id=stats, column=2, row=i + 1 - startIndex, text=getLabelByDirection(oDir), bgcolor=getCellColorByDirection(oDir), text_size=text_size)
+        table.cell(table_id=stats, column=3, row=i + 1 - startIndex, text=trendDirection, bgcolor=trendColor, text_size=text_size)
+        table.cell(table_id=stats, column=4, row=i + 1 - startIndex, text=sentiment, bgcolor=sentimentColor, text_size=text_size)
+
+
+if array.size(pZigzagPivotBars) > startIndex
+    lastPivotBar = array.get(pZigzagPivotBars, startIndex)
+    lPivotDir = array.get(pZigzagPivotDirs, startIndex)
+    lOscillatorDir = array.get(opZigzagPivotDirs, startIndex)
+    sDir = supertrendDir[bar_index - lastPivotBar]
+    [divergence, divergenceIdentifier] = f_get_divergence(lPivotDir, lOscillatorDir, sDir)
+    bias = f_get_bias(lPivotDir, lOscillatorDir)
+    [sentiment, sentimentColor] = getSentimentByDivergenceAndBias(divergence, bias)
+
+    isAlertBar = bar_index == lastPivotBar and startIndex == 0 or startIndex == 1 and lastPivotBar != lastPivotBar[1]
+    if isAlertBar and (alertIndeterminate and divergence == 0 or alertContinuation and divergence == 1 or alertDivergence and divergence == -1 or alertHiddenDivergence and divergence == -2)
+        sentimentText = divergence == 1 ? bias == 1 ? 'Bullish Continuation' : 'Bearish Continuation' : divergence == -1 ? bias == 1 ? 'Bullish Divergence' : 'Bearish Divergence' : divergence == -2 ? bias == 1 ? 'Bullish Hidden Divergence' : 'Bearish Hidden Divergence' : 'Indeterminate'
+
+        alert('Sentiment alert on ' + syminfo.tickerid + ' :: ' + sentimentText)
+

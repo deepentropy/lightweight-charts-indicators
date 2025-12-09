@@ -1,0 +1,646 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// ©LuxAlgo
+
+//@version=5
+indicator("ICT Silver Bullet [LuxAlgo]", shorttitle='LuxAlgo - ICT Silver Bullet', max_lines_count=500, max_boxes_count=500, max_labels_count=500, overlay=true)
+
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{                            
+left        = input.int   (    5     ,         ''     ,  minval=1, maxval=20, group='Swings settings (left)')
+showSB      = input.bool (    true   ,    'Show SB session', inline='SB'    , group='Silver Bullet session' )
+col_SB      = input.color(#b2b5be50,       '     '       , inline='SB'    , group='Silver Bullet session' )
+choice      = input.string('Super-Strict',     ''          , inline='fvg'   , group='FVG'
+  , options =['All FVG', 'Only FVG in the same direction of trend', 'Strict', 'Super-Strict']               )
+superstrict = choice == 'Super-Strict'
+iTrend      = choice != 'All FVG' 
+strict      = choice == 'Strict' 
+stricty     = superstrict or strict
+cBullFVG    = input.color (#4dd0e160,        ''         , inline='fvg'    , group='FVG'                   )
+cBearFVG    = input.color (#ffc1b160,        ''         , inline='fvg'    , group='FVG'                   )
+extend      = input.bool  (   true    ,      'extend'     , inline='fvg'    , group='FVG'                   ) 
+opt         = input.string('previous session (similar)','', inline='TG'     , group='Targets          -         Support/Resistance'
+  , options =['previous session (any)', 'previous session (similar)']                                                              )
+prev = opt == 'previous session (any)'
+cSupLine    = input.color (#b22833  ,        ''         , inline='TG'     , group='Targets          -         Support/Resistance')
+cResLine    = input.color (#3e89fa  ,        ''         , inline='TG'     , group='Targets          -         Support/Resistance')
+keep        = input.bool  (true , 'Keep lines (only in [super-]strict mode)', group='Targets          -         Support/Resistance')
+showT       = input.bool  (false, title = 'MSS ~ session'                   , group='Show'                  )
+showZZ      = input.bool  (false, title =    'Trend'                        , group='Show'                  )
+//show_minFr= input.bool  (false, title = 'Minimum Trade Framework'         , group='Show'                  )
+
+n           = bar_index
+maxSize     = 250
+minT        = syminfo.mintick
+
+//------------------------------------------------------------------------------
+//UDT's
+//-----------------------------------------------------------------------------{
+type piv 
+    int   b 
+    float p
+    bool br
+
+type ZZ 
+    int   [] d
+    int   [] x 
+    float [] y 
+    line  [] l
+
+type FVG 
+    box    box
+    bool   active
+    bool   current
+
+type actLine 
+    line ln 
+    bool active
+
+type aPiv
+    piv []GN_swingH    
+    piv []GN_swingL
+    float GN_mnPiv 
+    float GN_mxPiv
+    line[]GN_targHi
+    line[]GN_targLo
+    piv []LN_swingH    
+    piv []LN_swingL
+    float LN_mnPiv 
+    float LN_mxPiv      
+    line[]LN_targHi
+    line[]LN_targLo  
+    piv []AM_swingH
+    piv []AM_swingL  
+    float AM_mnPiv 
+    float AM_mxPiv      
+    line[]AM_targHi
+    line[]AM_targLo
+    piv []PM_swingH
+    piv []PM_swingL
+    float PM_mnPiv 
+    float PM_mxPiv
+    line[]PM_targHi
+    line[]PM_targLo
+
+//-----------------------------------------------------------------------------}
+//Variables
+//-----------------------------------------------------------------------------{
+var aPiv a   = aPiv.new(
+   GN_swingH = array.new<piv>(1, piv.new(na, na))
+ , GN_swingL = array.new<piv>(1, piv.new(na, na))
+ , GN_mnPiv  = 10e6
+ , GN_mxPiv  = 0
+ , GN_targHi = array.new<line>()  
+ , GN_targLo = array.new<line>() 
+ , LN_swingH = array.new<piv>(1, piv.new(na, na)) 
+ , LN_swingL = array.new<piv>(1, piv.new(na, na))
+ , LN_mnPiv  = 10e6
+ , LN_mxPiv  = 0 
+ , LN_targHi = array.new<line>()  
+ , LN_targLo = array.new<line>() 
+ , AM_swingH = array.new<piv>(1, piv.new(na, na)) 
+ , AM_swingL = array.new<piv>(1, piv.new(na, na))
+ , AM_mnPiv  = 10e6
+ , AM_mxPiv  = 0 
+ , AM_targHi = array.new<line>()  
+ , AM_targLo = array.new<line>() 
+ , PM_swingH = array.new<piv>(1, piv.new(na, na))
+ , PM_swingL = array.new<piv>(1, piv.new(na, na))
+ , PM_mnPiv  = 10e6
+ , PM_mxPiv  = 0 
+ , PM_targHi = array.new<line>()  
+ , PM_targLo = array.new<line>() 
+ )
+
+var  ZZ           aZZ         = 
+ ZZ.new(
+ array.new < int    >(maxSize,  0), 
+ array.new < int    >(maxSize,  0), 
+ array.new < float  >(maxSize, na),
+ array.new < line   >(maxSize, na)
+ )
+
+var FVG[] bFVG_bull = array.new<FVG>(
+ 1, FVG.new(
+   box    = box.new(na, na, na, na)
+ , active = na
+  )
+ )
+
+var FVG[] bFVG_bear = array.new<FVG>(
+ 1, FVG.new(
+   box    = box.new(na, na, na, na)
+ , active = na
+  )
+ )
+
+var min  = 10e6
+var max  =  0.
+//var minTrFr = line.new(na, na, na, na, style=line.style_arrow_right, color=color.yellow )
+//var maxTrFr = line.new(na, na, na, na, style=line.style_arrow_left , color=color.fuchsia)
+
+var hilo  = array.from(0, 10e6)
+var aTrend= array.from(0)
+var l_SB  = array.new<   line>() 
+var highs = array.new<actLine>() 
+var lows  = array.new<actLine>()
+var tab   = table.new(position = position.top_right, columns = 1, rows = 1, bgcolor = color(na), border_width = 1)
+
+//-----------------------------------------------------------------------------}
+//General calculations
+//-----------------------------------------------------------------------------{
+ph          = ta.pivothigh(left, 1)
+pl          = ta.pivotlow (left, 1)
+
+//-----------------------------------------------------------------------------}
+//Methods/Functions
+//-----------------------------------------------------------------------------{
+method type(string str) => 
+    ( syminfo.type == 'stock'   and str == 'stock'  ) or 
+     (syminfo.type == 'futures' and str == 'futures') or 
+     (syminfo.type == 'index'   and str == 'index'  ) or 
+     (syminfo.type == 'forex'   and str == 'forex'  ) or 
+     (syminfo.type == 'crypto'  and str == 'crypto' ) or 
+     (syminfo.type == 'fund'    and str == 'fund'   ) 
+
+method timeSess(string timezone, string session) => time(timeframe.period, session, timezone) 
+
+//Silver Bullet Periods
+SB_LN_per = "America/New_York".timeSess("0300-0400") // period/session ~ The London Open Silver Bullet ( 3 AM —  4 AM New York local time)  03:00 - 04:00
+SB_AM_per = "America/New_York".timeSess("1000-1100") // period/session ~ The AM  Session Silver Bullet (10 AM — 11 AM New York local time)  10:00 - 11:00
+SB_PM_per = "America/New_York".timeSess("1400-1500") // period/session ~ The PM  Session Silver Bullet ( 2 PM —  3 PM New York local time)  14:00 - 15:00
+
+is_in_SB  = SB_LN_per or SB_AM_per or SB_PM_per
+strSB     = is_in_SB  and not is_in_SB [1]
+strLN     = SB_LN_per and not SB_LN_per[1]
+strAM     = SB_AM_per and not SB_AM_per[1]
+strPM     = SB_PM_per and not SB_PM_per[1]
+endSB     = not is_in_SB  and is_in_SB [1]
+endLN     = not SB_LN_per and SB_LN_per[1]
+endAM     = not SB_AM_per and SB_AM_per[1]
+endPM     = not SB_PM_per and SB_PM_per[1]
+
+minimum_trade_framework = 
+ 'forex'.type  () ? syminfo.mintick    * 15 * 10 : 
+ 'index'.type  () or 
+ 'futures'.type() ? syminfo.mintick    * 40 :  0
+
+method in_out(ZZ aZZ, int d, int x1, float y1, int x2, float y2) =>
+    aZZ.d.unshift(d), aZZ.x.unshift(x2), aZZ.y.unshift(y2), aZZ.d.pop(), aZZ.x.pop(), aZZ.y.pop()
+    if showZZ
+        aZZ.l.unshift(line.new(x1, y1, x2, y2, color= color.new(color.blue, 50))), aZZ.l.pop().delete()
+
+f_setTrend() =>
+    //
+    MSS_dir = aTrend.get(0)
+    iH = aZZ.d.get(2) ==  1 ? 2 : 1
+    iL = aZZ.d.get(2) == -1 ? 2 : 1
+    //
+    switch
+        // MSS Bullish
+        close > aZZ.y.get(iH) and aZZ.d.get(iH) ==  1 and MSS_dir <  1 =>
+            aTrend.set(0,  1)
+        // MSS Bearish
+        close < aZZ.y.get(iL) and aZZ.d.get(iL) == -1 and MSS_dir > -1 =>
+            aTrend.set(0, -1)
+
+f_swings(start, end, str, col, min, max) => 
+    //
+    max_bars_back(time, 1000)
+    var int MSS_dir = aTrend.get(0)
+    //
+    x2       = n -1
+
+    piv[] swingH = na
+    piv[] swingL = na
+    float mnPiv  = na
+    float mxPiv  = na
+    line[]targHi = na 
+    line[]targLo = na 
+    bool  active = na
+
+    switch str 
+        'GN' => 
+            swingH := a.GN_swingH
+            swingL := a.GN_swingL
+            mnPiv  := a.GN_mnPiv            
+            mxPiv  := a.GN_mxPiv
+            targHi := a.GN_targHi
+            targLo := a.GN_targLo
+            active := is_in_SB
+        'LN' => 
+            swingH := a.LN_swingH            
+            swingL := a.LN_swingL
+            mnPiv  := a.LN_mnPiv            
+            mxPiv  := a.LN_mxPiv              
+            targHi := a.LN_targHi
+            targLo := a.LN_targLo
+            active := SB_LN_per
+        'AM' => 
+            swingH := a.AM_swingH            
+            swingL := a.AM_swingL
+            mnPiv  := a.AM_mnPiv            
+            mxPiv  := a.AM_mxPiv                
+            targHi := a.AM_targHi
+            targLo := a.AM_targLo
+            active := SB_AM_per
+        'PM' => 
+            swingH := a.PM_swingH                    
+            swingL := a.PM_swingL
+            mnPiv  := a.PM_mnPiv            
+            mxPiv  := a.PM_mxPiv                 
+            targHi := a.PM_targHi
+            targLo := a.PM_targLo
+            active := SB_PM_per
+
+    if start 
+        hilo.set(0,  0  )
+        hilo.set(1, 10e6) 
+        if stricty ? not keep : true
+
+            while  highs.size() > 0
+                get=highs.pop()
+                get.ln.delete()         
+            while   lows.size() > 0
+                get= lows.pop()
+                get.ln.delete()  
+            while       targHi.size() > 0
+                targHi.pop().delete() 
+            while       targLo.size() > 0
+                targLo.pop().delete() 
+
+            while       a.GN_targHi.size() > 0
+                a.GN_targHi.pop().delete() 
+            while       a.LN_targHi.size() > 0
+                a.LN_targHi.pop().delete() 
+            while       a.AM_targHi.size() > 0
+                a.AM_targHi.pop().delete() 
+            while       a.PM_targHi.size() > 0
+                a.PM_targHi.pop().delete() 
+
+            while       a.GN_targLo.size() > 0
+                a.GN_targLo.pop().delete() 
+            while       a.LN_targLo.size() > 0
+                a.LN_targLo.pop().delete() 
+            while       a.AM_targLo.size() > 0
+                a.AM_targLo.pop().delete() 
+            while       a.PM_targLo.size() > 0
+                a.PM_targLo.pop().delete() 
+
+    if active 
+        hilo.set(0, math.max(hilo.get(0), high))
+        hilo.set(1, math.min(hilo.get(1), low ))
+
+    if ph 
+        if ph > mxPiv
+            mxPiv := ph
+        if swingH.size() > 0
+            for i      = swingH.size() -1 to 0
+                get    = swingH.get(i)
+                if ph >= get.p
+                    swingH.remove(i)
+        swingH.unshift(piv.new(n -1, ph))    
+
+        if str == 'GN' or str == 'LN'   
+            dir  = aZZ.d.get (0) 
+            x1   = aZZ.x.get (0) 
+            y1   = aZZ.y.get (0) 
+            y2   =    nz(high[1])
+            //
+            if dir <  1  // if previous point was a pl, add, and change direction ( 1)
+                aZZ.in_out( 1, x1, y1, x2, y2)
+            else
+                if dir ==  1 and ph > y1 
+                    aZZ.x.set(0, x2), aZZ.y.set(0, y2)    
+                    if showZZ
+                        aZZ.l.get(0).set_xy2  (x2 ,  y2)  
+    if pl
+        if pl < mnPiv
+            mnPiv := pl    
+        if swingL.size() > 0
+            for i      = swingL.size() -1 to 0
+                get    = swingL.get(i)
+                if pl <= get.p
+                    swingL.remove(i)
+        swingL.unshift(piv.new(n -1, pl))
+        //
+        if str == 'GN' or str == 'LN'   
+            dir  = aZZ.d.get (0) 
+            x1   = aZZ.x.get (0) 
+            y1   = aZZ.y.get (0) 
+            y2   =    nz(low [1])
+            //
+            if dir > -1  // if previous point was a ph, add, and change direction (-1)
+                aZZ.in_out(-1, x1, y1, x2, y2)
+            else
+                if dir == -1 and pl < y1 
+                    aZZ.x.set(0, x2), aZZ.y.set(0, y2)          
+                    if showZZ
+                        aZZ.l.get(0).set_xy2  (x2 , y2)                         
+    //
+    iH = aZZ.d.get(2) ==  1 ? 2 : 1
+    iL = aZZ.d.get(2) == -1 ? 2 : 1
+    //
+    switch
+        // MSS Bullish
+        close > aZZ.y.get(iH) and aZZ.d.get(iH) ==  1 and MSS_dir <  1 =>
+            MSS_dir :=  1 
+            if active and showT
+                line.new(aZZ.x.get(iH), aZZ.y.get(iH), n, aZZ.y.get(iH), color=cResLine, width=2)
+
+        // MSS Bearish
+        close < aZZ.y.get(iL) and aZZ.d.get(iL) == -1 and MSS_dir > -1 =>
+            MSS_dir := -1 
+            if active and showT
+                line.new(aZZ.x.get(iL), aZZ.y.get(iL), n, aZZ.y.get(iL), color=cSupLine, width=2)
+
+    if end
+        sz  = swingH.size()
+        if sz > 0
+            for i = 0 to sz -1
+                y = swingH.get(i).p
+                if y > (stricty ? min : hilo.get(0))
+                    targHi.unshift(line.new(swingH.get(i).b, y, n, y, color=cResLine))
+                    highs.unshift(actLine.new(line.new(   n, y, n, y, color=cResLine), true))
+
+        sz := swingL.size()
+        if sz > 0
+            for i = 0 to sz -1
+                y = swingL.get(i).p
+                if y < (stricty ? max : hilo.get(1))
+                    targLo.unshift(line.new(swingL.get(i).b, y, n, y, color=cSupLine))
+                    lows.unshift(actLine.new(line.new(    n, y, n, y, color=cSupLine), true))
+
+        swingH.clear()     
+        swingL.clear()     
+
+        mnPiv := 10e6
+        mxPiv := 0
+
+    if showZZ
+        if ph or pl
+            aZZ.l.get(0).set_color(MSS_dir == 1 ? cResLine : cSupLine)
+
+    aTrend.set(0, MSS_dir)
+
+//-------------------------------------------}
+//Execution
+//-------------------------------------------}
+f_setTrend()
+
+trend    = aTrend.get(0)
+
+//Targets
+targetHi = false
+targetLo = false
+
+hSz  = highs.size() 
+if hSz > 200
+    highs.pop().ln.delete()
+
+hSz := highs.size() 
+
+if hSz > 0
+    for i = 0 to hSz -1 
+        get = highs.get(i)
+        if get.active
+            get.ln.set_x2(n)
+            if high > get.ln.get_y2() 
+                get.active := false
+                targetHi   := true
+lSz  = lows.size() 
+if lSz > 200
+    lows.pop().ln.delete()
+
+lSz := lows.size() 
+
+if lSz > 0
+    for i = 0 to lSz -1 
+        get = lows.get(i)
+        if get.active
+            get.ln.set_x2(n)
+            if low  < get.ln.get_y2() 
+                get.active := false
+                targetLo   := true
+
+if l_SB.size() > 100
+    l_SB.pop().delete()
+
+// SB session vLines & 'lock' previous FVG boxes
+if strSB
+
+    min := 10e6
+    max :=  0.
+
+    if showSB
+        l_SB.unshift(line.new(n, close, n, close + minT
+                   , color= col_SB, extend=extend.both))
+
+    for i = 0 to bFVG_bull.size  ( ) -1
+        get  =   bFVG_bull.get   (i)
+        if n >  get.box.get_right( ) -1
+            if  get.current == true
+                get.current := false
+    for i = 0 to bFVG_bear.size  ( ) -1
+        get  =   bFVG_bear.get   (i)
+        if n >  get.box.get_right( ) -1
+            if  get.current == true
+                get.current := false
+
+//FVG's
+if is_in_SB
+    trend   := aTrend.get(0)
+    if iTrend
+        switch trend 
+            //bullish
+            1 => 
+                if low  > high[2]
+                    bFVG_bull.unshift( 
+                      FVG.new(
+                       box     = box.new(
+                       n-2, low, n, high[2]
+                      ,border_color=color(na)
+                      ,bgcolor = cBullFVG)
+                     , active  = false
+                     , current = true
+                      )
+                     )
+            //bearish
+            => 
+                if high < low [2]
+                    bFVG_bear.unshift( 
+                      FVG.new(
+                       box     = box.new(
+                       n-2, low[2], n, high  
+                      ,border_color=color(na)
+                      ,bgcolor = cBearFVG)
+                     , active  = false
+                     , current = true
+                      )
+                     )
+    else 
+        if low  > high[2]
+            bFVG_bull.unshift( 
+              FVG.new(
+               box     = box.new(
+               n  , low, n, high[2]
+              ,border_color=color(na)
+              ,bgcolor = cBullFVG)
+             , active  = false
+             , current = true
+              )
+             )
+
+        if high < low [2]
+            bFVG_bear.unshift( 
+              FVG.new(
+               box     = box.new(
+               n  , low[2], n, high
+              ,border_color=color(na)
+              ,bgcolor = cBearFVG)
+             , active  = false
+             , current = true
+              )
+             )
+
+if endSB
+    if showSB 
+        l_SB.unshift(line.new(n, close, n, close + minT
+                   , color= col_SB, extend=extend.both))
+
+if bFVG_bull.size() > 0
+    for i = 0 to bFVG_bull.size     ( ) -1 
+        get   =  bFVG_bull.get      (i)
+        bLeft =  get. box.get_left  ( )
+        bTop  =  get. box.get_top   ( )
+        bBot  =  get. box.get_bottom( )            
+        if n  -  bLeft < 1000
+            if get.current 
+                if is_in_SB 
+                    if close <    bBot 
+                        if superstrict 
+                            get.current  := false                           
+                            get.box.set_bgcolor(color.new(color.blue, 100))
+                            get.box.set_right(bLeft)
+                        if superstrict or strict                     
+                            get.active  := false
+                    else
+                        if extend                                          
+                            if get.active 
+                                //update right when extend
+                                get.box.set_right(n)
+                    //trigger retrace -> activated
+                    if not get.active 
+                        if low  < bTop and close > bBot
+                            get.active := true  
+                            if extend
+                                get.box.set_right(n)                            
+                //if last bar of session and no retrace or close < bottom -> FVG invisible
+                if endSB 
+                    if get.active 
+                        if strict
+                            if close < bBot // needs to be above box bottom
+                                get.active := false
+                        if superstrict 
+                            if close < bTop // needs to be above box top
+                                get.active := false
+                    //All FVG's who are not retraced (activated) are made invisible
+                    if not get.active 
+                        get.box.set_bgcolor(color.new(color.blue, 100))
+                        get.box.set_right(bLeft)
+
+                    if get.active 
+                        min := math.min(min, bBot + minimum_trade_framework)
+                        if extend
+                            get.box.set_right(n)    
+
+                if endSB[1]
+                    get.active := false
+                    //if show_minFr
+                    //    minTrFr.set_xy1(n -1, min - minimum_trade_framework)                    
+                    //    minTrFr.set_xy2(n -1,       min                    )
+
+if bFVG_bear.size() > 0
+    for i = 0 to bFVG_bear.size      ( ) -1 
+        get   =  bFVG_bear.get       (i)                     
+        bLeft =  get.box.  get_left  ( )
+        bTop  =  get.box.  get_top   ( )            
+        bBot  =  get.box.  get_bottom( )            
+        if n  -  bLeft   <    1000            
+            if get.current 
+                if is_in_SB 
+                    if close >    bTop 
+                        if superstrict 
+                            get.current  := false   
+                            get.box.set_bgcolor(color.new(color.blue, 100))
+                            get.box.set_right(bLeft)                                     
+                        if superstrict or strict                     
+                            get.active  := false
+                    else // if close < bTop
+                        if extend
+                            if get.active 
+                                //update right when extend
+                                get.box.set_right(n)
+                    //trigger retrace -> activated   
+                    if not get.active
+                        if high > bBot and close < bTop
+                            get.active := true                                 
+                            if extend
+                                get.box.set_right(n)
+                //if last bar of session and no retrace -> FVG invisible
+                if endSB 
+                    if get.active 
+                        if strict
+                            if close > bTop // needs to be below box top
+                                get.active := false
+                        if superstrict
+                            if close > bBot // needs to be below box bottom
+                                get.active := false
+                    //All FVG's who are not retraced (activated) are made invisible
+                    if not get.active 
+                        get.box.set_bgcolor(color.new(color.blue, 100))
+                        get.box.set_right(bLeft)
+
+                    if get.active 
+                        max := math.max(max, bTop - minimum_trade_framework)
+                        if extend
+                            get.box.set_right(n)    
+
+                if endSB[1]
+                    get.active := false
+                    //if show_minFr
+                    //    maxTrFr.set_xy1(n -1,       max                    )
+                    //    maxTrFr.set_xy2(n -1, max + minimum_trade_framework)                    
+
+if prev
+    f_swings(strSB, endSB, 'GN', col_SB, min, max)
+else
+    f_swings(strLN, endLN, 'LN', col_SB, min, max)
+    f_swings(strAM, endAM, 'AM', col_SB, min, max)
+    f_swings(strPM, endPM, 'PM', col_SB, min, max)
+
+//-------------------------------------------}
+//Plotchar/table
+//-------------------------------------------}
+tfs = (60 / (timeframe.in_seconds(timeframe.period) / 60)) / 2
+
+plotchar(not na(SB_LN_per) and na(SB_LN_per[1]) and showSB
+ , title= '3-4 AM' , location=location.top, text= '3-4 AM\nNY', color=color(na)
+ , textcolor=col_SB, offset= +tfs)
+
+plotchar(not na(SB_AM_per) and na(SB_AM_per[1]) and showSB
+ , title='10-11 AM', location=location.top, text='10-11 AM\nNY', color=color(na)
+ , textcolor=col_SB, offset= +tfs)
+
+plotchar(not na(SB_PM_per) and na(SB_PM_per[1]) and showSB
+ , title= '2-3 PM' , location=location.top, text= '2-3 PM\nNY', color=color(na)
+ , textcolor=col_SB, offset= +tfs)
+
+plotchar(targetHi ? high : na, 'target high', '•', location.abovebar, color=cResLine, size=size.small)     
+plotchar(targetLo ? low  : na, 'target low' , '•', location.belowbar, color=cSupLine, size=size.small)     
+
+if barstate.islast
+    if timeframe.in_seconds(timeframe.period) > 15 * 60
+        table.cell(tab, 0, 0, text = 'Please use a timeframe <= 15 minutes', text_color=#FF0000)
+
+//-------------------------------------------}

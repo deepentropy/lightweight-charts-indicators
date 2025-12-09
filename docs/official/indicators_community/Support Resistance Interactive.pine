@@ -1,0 +1,85 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=5
+indicator("Support Resistance Interactive", overlay=true)
+srnum = input.int(defval = 5, title = "Number of Support/Resistance", minval = 1, maxval = 5, confirm=true, group = "Setup", tooltip = "you can set the number of S/R levels to be shown")
+threshold = input.float(defval = 1., title = "% Threshold", minval = 0, group = "Setup", tooltip = "it's calculated using % of the distance between highest/lowest in last 300 bars")
+
+float thold = (ta.highest(300) - ta.lowest(300)) * math.max(threshold, 0.1) / 100.
+// get SR levels interactively and assign it to the array
+var float [] srarray = array.from(
+ srnum > 0 ? input.price(0.0, title="S/R level 1", confirm=true, group = "Setup") : na,
+ srnum > 1 ? input.price(0.0, title="S/R level 2", confirm=true, group = "Setup") : na,
+ srnum > 2 ? input.price(0.0, title="S/R level 3", confirm=true, group = "Setup") : na,
+ srnum > 3 ? input.price(0.0, title="S/R level 4", confirm=true, group = "Setup") : na,
+ srnum > 4 ? input.price(0.0, title="S/R level 5", confirm=true, group = "Setup") : na)
+
+// colors and labels
+supportcol = input.color(defval = color.rgb(0, 255, 0, 50), title = "Support/Resistance", inline ="srcol", group = "Colors")
+resistancecol = input.color(defval = color.rgb(255, 0, 0, 50), title = "", inline ="srcol", group = "Colors")
+notrcol = input.color(defval = color.rgb(100, 100, 100, 50), title = "", inline ="srcol", group = "Colors")
+showlabel = input.bool(defval = true, title = "Label", inline = "labs", group = "Colors")
+labelloc = input.int(defval = 40, title = "Location +-", inline = "labs", group = "Colors")
+supporttcol = input.color(defval = color.white, title = "Text Color", inline ="srtcol", group = "Colors")
+resistancetcol = input.color(defval = color.white, title = "", inline ="srtcol", group = "Colors")
+notrtcol = input.color(defval = color.white, title = "", inline ="srtcol", group = "Colors")
+
+// variables for the alert
+supportBroken = -1
+resistanceBroken = -1
+priceisSRzone = -1
+
+//run on the last bar
+if barstate.islast
+    var box [] srzones = array.new_box(5, na)
+    var label [] plabels = array.new_label(5, na)
+    for x = 0 to 4
+        // no more SR levels?
+        if na(array.get(srarray, x))
+            break
+        // draw SR zones
+        box.delete(array.get(srzones, x))
+        label.delete(array.get(plabels, x))
+        col = close > array.get(srarray, x) + thold ? supportcol : close < array.get(srarray, x) - thold ? resistancecol : notrcol
+        tcol = close > array.get(srarray, x) + thold ? supporttcol : close < array.get(srarray, x) - thold ? resistancetcol : notrtcol
+        array.set(srzones, x, box.new( bar_index - 280, array.get(srarray, x) + thold, bar_index, array.get(srarray, x) - thold, 
+                                     bgcolor = col,
+                                     border_width = 0,
+                                     extend = extend.right))
+        
+        //show labels
+        if showlabel
+            array.set(plabels, x, label.new(bar_index + labelloc, array.get(srarray, x), text =  "SR: " + str.tostring(x+1) + 
+                                                                                                 " Upper: " + str.tostring(math.round_to_mintick(array.get(srarray, x) + thold)) +
+                                                                                                 " Lower: " + str.tostring(math.round_to_mintick(array.get(srarray, x) - thold)),
+                                                                                                 color = col,
+                                                                                                 textcolor = tcol))
+        // check for the alerts
+        if close[1] <= array.get(srarray, x) + thold and close > array.get(srarray, x) + thold 
+            resistanceBroken := x
+        if close[1] >= array.get(srarray, x) - thold and close < array.get(srarray, x) - thold 
+            supportBroken := x
+        if close >= array.get(srarray, x) - thold and close <= array.get(srarray, x) + thold 
+            priceisSRzone := x
+
+// alerts
+enablesrbroken = input.bool(defval = true, title = "SR Broken Alert", inline = "srb", group = "Alerts")
+supporsrbrknfreq = input.string(defval = alert.freq_once_per_bar, title = "", options = [alert.freq_once_per_bar, alert.freq_once_per_bar_close], inline = "srb", group = "Alerts")
+enablepiz = input.bool(defval = true, title = "Price in SR Zone Alert", inline = "piz", group = "Alerts")
+pizfreq = input.string(defval = alert.freq_once_per_bar_close, title = "", options = [alert.freq_once_per_bar, alert.freq_once_per_bar_close], inline = "piz", group = "Alerts")
+
+if enablesrbroken
+    if supportBroken >= 0
+        alert("Support Broken, Close :" + str.tostring(close) + 
+              " Support :" + str.tostring(math.round_to_mintick(array.get(srarray, supportBroken) - thold)), 
+              supporsrbrknfreq)
+    if resistanceBroken >= 0
+        alert("Resistance Broken, Close :" + str.tostring(close) + 
+              " Resistance :" + str.tostring(math.round_to_mintick(array.get(srarray, resistanceBroken) + thold)), 
+              supporsrbrknfreq)
+if enablepiz and priceisSRzone >= 0
+    alert("Price in SR Zone, Close :" + str.tostring(close) + 
+          " Upper Band :" + str.tostring(math.round_to_mintick(array.get(srarray, priceisSRzone)) + thold) + 
+          " Lower Band :" + str.tostring(math.round_to_mintick(array.get(srarray, priceisSRzone)) - thold), 
+          pizfreq)

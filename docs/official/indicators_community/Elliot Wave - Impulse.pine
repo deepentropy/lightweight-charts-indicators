@@ -1,0 +1,209 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © HeWhoMustNotBeNamed
+
+//@version=4
+study("Elliot Wave - Impulse", shorttitle="EW - Impulse", overlay=true, max_lines_count=500, max_labels_count=500)
+source=input(close)
+zigzagLength = input(10, minval=0, step=5)
+errorPercent = input(5, minval=2, step=5, maxval=20)
+entryPercent = input(30, minval=10, step=10, maxval=100)
+zigzagWidth = input(2, step=1, minval=1)
+zigzagStyle = input(defval=line.style_dotted, options=[line.style_dashed, line.style_dotted, line.style_solid])
+waitForConfirmation = true
+
+max_pivot_size = 10
+zigzagColor = color.black
+showZigZag = true
+
+var zigzagpivots = array.new_float(0)
+var zigzagpivotbars = array.new_int(0)
+var zigzagpivotdirs = array.new_int(0)
+var waveLinesArray = array.new_line(2)
+var targetLabels = array.new_label(0)
+var targetLines = array.new_line(0)
+
+var wavelines = array.new_line(0)
+transparent = color.new(#FFFFFF, 100)
+int max_array_size = 100
+err_min = (100-errorPercent)/100
+err_max = (100+errorPercent)/100
+entry_range = (entryPercent)/100
+var patterncount = array.new_int(2,0)
+
+pivots(length)=>
+    float phigh = highestbars(high, length) == 0 ? high : na
+    float plow = lowestbars(low, length) == 0 ? low : na
+    dir = 0
+    dir := iff(phigh and na(plow), 1, iff(plow and na(phigh), -1, dir[1]))
+    [dir, phigh, plow]
+
+zigzag(length, zigzagpivots, zigzagpivotbars, zigzagpivotdirs)=>
+    [dir, phigh, plow] = pivots(length)
+    dirchanged = change(dir)
+    
+    if(phigh or plow)
+        value = (dir == 1? phigh : plow)
+        bar = bar_index
+        if(not dirchanged and array.size(zigzagpivots) >=1)
+            pivot = array.shift(zigzagpivots)
+            pivotbar = array.shift(zigzagpivotbars)
+            pivotdir = array.shift(zigzagpivotdirs)
+            value:= value*pivotdir < pivot*pivotdir? pivot : value
+            bar:= value*pivotdir < pivot*pivotdir? pivotbar : bar
+        
+        if(array.size(zigzagpivots) >=2)
+            LastPoint = array.get(zigzagpivots,1)
+            dir := dir*value > dir*LastPoint? dir*2 : dir
+        
+        array.unshift(zigzagpivots, value = value)
+        array.unshift(zigzagpivotbars, bar)
+        array.unshift(zigzagpivotdirs, dir)
+        
+        if(array.size(zigzagpivots) > max_pivot_size)
+            array.pop(zigzagpivots)
+            array.pop(zigzagpivotbars)
+            array.pop(zigzagpivotdirs)
+
+draw_zigzag(zigzagpivots, zigzagpivotbars, zigzagcolor, zigzagwidth, zigzagstyle, showZigZag)=>
+    if(array.size(zigzagpivots) > 2 and showZigZag)
+        for i=0 to array.size(zigzagpivots)-2
+            y1 = array.get(zigzagpivots, i)
+            y2 = array.get(zigzagpivots, i+1)
+            x1 = array.get(zigzagpivotbars, i)
+            x2 = array.get(zigzagpivotbars, i+1)
+            zline = line.new(x1=x1, y1=y1, 
+                         x2 = x2, y2=y2,
+                         color=zigzagcolor, width=zigzagwidth, style=zigzagstyle)
+
+//////////////////////////////////// Draw Lines with labels //////////////////////////////////////////////////
+f_drawLinesWithLabels(target, lbl, linecolor)=>
+    timeDiffEnd = time - time[10]
+    timeDiffLabel = time - time[5]
+    
+    line_x1 = time
+    line_x2 = time+timeDiffEnd
+    label_x = time+timeDiffLabel
+    targetLine = line.new(x1=line_x1, y1=target, x2=line_x2, y2=target, color=linecolor, xloc=xloc.bar_time)
+    targetLabel = label.new(x=label_x, y=target, text=lbl + " : "+tostring(target), xloc=xloc.bar_time, style=label.style_none, textcolor=color.black, size=size.normal)
+    [targetLine,targetLabel]
+
+//////////////////////////////////// Delete Lines with labels //////////////////////////////////////////////////
+f_deleteLinesWithLabels(targetLine, targetLabel)=>
+    line.delete(targetLine)
+    label.delete(targetLabel)
+    
+ew_impulse(zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagWidth, zigzagStyle, showZigZag, waveLinesArray, targetLines, targetLabels)=>
+    start = waitForConfirmation? 1: 0
+    waveFound = false
+    if(array.size(zigzagpivots) >= 3+start and showZigZag)
+        Point2 = array.get(zigzagpivots, start)
+        Point2Bar = array.get(zigzagpivotbars, start)
+        Point2Dir = array.get(zigzagpivotdirs, start)
+        
+        Point1 = array.get(zigzagpivots, start+1)
+        Point1Bar = array.get(zigzagpivotbars, start+1)
+        Point1Dir = array.get(zigzagpivotdirs, start+1)
+        
+        Point0 = array.get(zigzagpivots, start+2)
+        Point0Bar = array.get(zigzagpivotbars, start+2)
+        Point0Dir = array.get(zigzagpivotdirs, start+2)
+        
+        W1Length = abs(Point1-Point0)
+        W2Length = abs(Point2-Point1)
+        r2 = W2Length/W1Length
+            
+        existingW1 = array.get(waveLinesArray, 0)
+        existingW2 = array.get(waveLinesArray, 1)
+            
+        existing0 = line.get_y1(existingW1)
+        existing1 = line.get_y1(existingW2)
+        existing2 = line.get_y2(existingW2)
+            
+        dir = Point0 > Point1? -1 : 1
+        entry = Point2 + dir*entry_range*W2Length
+        stop = Point0
+        tstop = Point2 - dir*entry_range*W2Length
+        
+        target1 = Point2 + dir*1.618*W2Length
+        target2 = Point2 + dir*2.0*W2Length
+        target3 = Point2 + dir*2.618*W2Length
+        target4 = Point2 + dir*3.236*W2Length
+    
+        stopColor = dir == 1? color.red : color.green
+        targetColor = dir == 1? color.green : color.red
+        
+        ignore = false
+        patternMatched = false
+        dirMatched = false
+        if(existing0 == Point0 or existing1 == Point1 or existing2 == Point2)
+            ignore := true
+
+        if(r2 > 0.50*err_min and r2 < 0.50*err_max) or (r2 > 0.618*err_min and r2 < 0.618*err_max) or
+                 (r2 > 0.764*err_min and r2 < 0.764*err_max) or (r2 > 0.854*err_min and r2 < 0.854*err_max)
+            patternMatched := true
+
+        if(Point1Dir == 2 and Point2Dir == -1) or (Point1Dir == -2 and Point2Dir == 1)
+            dirMatched := true
+        directionColor = Point1 > Point2 ? color.green : color.red
+        if(not ignore and patternMatched and dirMatched)
+            w1 = line.new(y1=Point0, y2=Point1, x1=Point0Bar, x2=Point1Bar, color=directionColor, width=zigzagWidth, style=zigzagStyle)
+            w2 = line.new(y1=Point1, y2=Point2, x1=Point1Bar, x2=Point2Bar, color=directionColor, width=zigzagWidth, style=zigzagStyle)
+            array.set(waveLinesArray,0,w1)
+            array.set(waveLinesArray,1,w2)
+            
+            if(array.size(targetLines) > 0)
+                for i=0 to array.size(targetLines)-1
+                    line.delete(array.shift(targetLines))
+                for i=0 to array.size(targetLabels)-1
+                    label.delete(array.shift(targetLabels))
+            
+            [entryLine,entryLabel] = f_drawLinesWithLabels(entry, "Entry", color.blue)
+            [stopLine,stopLabel] = f_drawLinesWithLabels(stop, "Stop", stopColor)
+            [tstopLine,tstopLabel] = f_drawLinesWithLabels(tstop, "T.Stop", stopColor)
+            [t1Line,t1Label] = f_drawLinesWithLabels(target1, "Target - 1", targetColor)
+            [t2Line,t2Label] = f_drawLinesWithLabels(target2, "Target - 2", targetColor)
+            [t3Line,t3Label] = f_drawLinesWithLabels(target3, "Target - 3", targetColor)
+            [t4Line,t4Label] = f_drawLinesWithLabels(target4, "Target - 4", targetColor)
+            
+            array.unshift(targetLines, entryLine)
+            array.unshift(targetLines, stopLine)
+            array.unshift(targetLines, tstopLine)
+            array.unshift(targetLines, t1Line)
+            array.unshift(targetLines, t2Line)
+            array.unshift(targetLines, t3Line)
+            array.unshift(targetLines, t4Line)
+            
+            array.unshift(targetLabels, entryLabel)
+            array.unshift(targetLabels, stopLabel)
+            array.unshift(targetLabels, tstopLabel)
+            array.unshift(targetLabels, t1Label)
+            array.unshift(targetLabels, t2Label)
+            array.unshift(targetLabels, t3Label)
+            array.unshift(targetLabels, t4Label)
+            
+            count_index = dir==1?0:1
+            array.set(patterncount, count_index, array.get(patterncount, count_index)+1)
+            waveFound := true
+            if(existing0 == Point0 and existing1 == Point1 and existing2 == Point2) and waveFound[1]
+                line.delete(existingW1)
+                line.delete(existingW2)
+                array.set(patterncount, count_index, array.get(patterncount, count_index)-1)
+    waveFound
+zigzag(zigzagLength, zigzagpivots, zigzagpivotbars, zigzagpivotdirs)
+waveFormed = ew_impulse(zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagWidth, zigzagStyle, showZigZag, waveLinesArray, targetLines, targetLabels)
+
+alertcondition(waveFormed, title='New impulse wave alert', message='New impulse wave detected on {{ticker}}')
+var stats = table.new(position = position.top_right, columns = 3, rows = max_pivot_size+2, border_width = 1)
+
+if(barstate.islast)
+    table.cell(table_id = stats, column = 1, row = 0 , text = "Bullish", bgcolor=color.black, text_color=color.white)
+    table.cell(table_id = stats, column = 2, row = 0 , text = "Bearish", bgcolor=color.black, text_color=color.white)
+
+    dtColor = color.white
+    for type = 1 to (array.size(patterncount)/2)
+        for direction = 0 to 1
+            count_index = (type*2 - 2) + direction
+            row = type
+            column = direction+1
+            text = tostring(array.get(patterncount, count_index))
+            table.cell(table_id = stats, column = column, row = row, text = text, bgcolor=dtColor)

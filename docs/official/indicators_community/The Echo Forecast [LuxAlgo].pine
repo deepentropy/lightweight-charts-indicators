@@ -1,0 +1,118 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Echo Forecast [LuxAlgo]","LuxAlgo - ECHO", overlay = true, max_bars_back = 1000, max_lines_count = 200)
+//-----------------------------------------------------------------------------}
+//Settings
+//-----------------------------------------------------------------------------{
+length = input.int(50, 'Evaluation Window', minval = 0, maxval = 200)
+fcast  = input.int(50, 'Forecast Window', minval = 1, maxval = 200)
+
+fmode  = input.string('Similarity', 'Forecast Mode', options = ['Similarity','Dissimilarity'])
+cmode  = input.string('Cumulative', 'Forecast Construction', options = ['Cumulative','Mean','Linreg'])
+src    = input(close)
+
+//Style
+fcastCss = input(#2157f3, 'Forecast Style', inline = 'fcast_style', group = 'Style')
+fcastStyle = input.string('· · ·', '', options = ['──','- - -','· · ·'], inline = 'fcast_style', group = 'Style')
+
+showArea  = input(true,'Show Area', inline = 'areas', group = 'Style')
+refArea   = input(color.new(#ff5d00, 80), '', inline = 'areas', group = 'Style')
+corrArea  = input(color.new(#089981, 80), '', inline = 'areas', group = 'Style')
+evalArea  = input(color.new(color.gray, 80),'', inline = 'areas', group = 'Style')
+
+//-----------------------------------------------------------------------------}
+//Populate line arrays
+//-----------------------------------------------------------------------------{
+var lines = array.new_line(0)
+if barstate.isfirst
+    for i = 0 to fcast-1
+        array.push(lines,line.new(na,na,na,na
+          , style = fcastStyle == '- - -' ? line.style_dashed : fcastStyle == '· · ·' ? line.style_dotted : line.style_solid
+          , color = fcastCss))
+
+//-----------------------------------------------------------------------------}
+//Calculations
+//-----------------------------------------------------------------------------{
+var eval_window = box.new(na,na,na,na,na, bgcolor = evalArea)
+var ref_window = box.new(na,na,na,na,na, bgcolor = refArea)
+var corr_window = box.new(na,na,na,na,na, bgcolor = corrArea)
+
+n = bar_index
+d = src - src[1]
+
+//Get range maximum/minimum
+top = ta.highest(src, length + fcast * 2)
+btm = ta.lowest(src, length + fcast * 2)
+
+//Set forecast
+if barstate.islast
+    k = 0
+    float val = na
+    A = array.new_float(0)  //Calculation window
+    X = array.new_int(0)    //Linreg independant variable
+
+    //Populate calculation window
+    for i = 0 to fcast*2+length
+        A.push(src[i])
+
+        //Populate independant variable array
+        if cmode == 'Linreg'
+            X.push(n[i]) 
+
+    a = A.slice(0, fcast-1) //Reference window
+    
+    //Find window to produce forecast
+    for i = 0 to length-1
+        b = A.slice(fcast + i, fcast * 2 + i - 1)     //Evaluation window
+        r = a.covariance(b) / (a.stdev() * b.stdev()) //Correlation
+
+        //Maximization or minimization problem
+        if fmode == 'Similarity'
+            val := r >= nz(val, r) ? r : val
+        else
+            val := r <= nz(val, r) ? r : val
+    
+        k := val == r ? i : k
+        
+    //Set ECHO
+    prev = src
+    current = src
+    for i = 0 to fcast-1
+        e = d[fcast + k + (fcast-i-1)]
+
+        //Get forecast point
+        if cmode == 'Mean'
+            current := array.avg(a) + e
+        else if cmode == 'Linreg'
+            a = A.slice(0, fcast)
+            x = X.slice(0, fcast)
+
+            alpha = a.covariance(x) / x.variance()
+            beta = a.avg() - alpha * x.avg()
+            current := alpha * (n + i + 1) + beta + e
+        else
+            current += e
+        
+        l = lines.get(i)
+        l.set_xy1(n+i, prev)
+        l.set_xy2(n+i+1, current)
+        
+        prev := current
+
+    //Set areas
+    if showArea    
+        //Evaluation window
+        eval_window.set_lefttop(n-length-fcast*2+1, top)
+        eval_window.set_rightbottom(n-fcast+1, btm)
+        
+        //Reference window
+        ref_window.set_lefttop(n-fcast+1, top)
+        ref_window.set_rightbottom(n, btm)
+
+        //Correlation window
+        corr_window.set_lefttop(n-k-fcast*2+1, top)
+        corr_window.set_rightbottom(n-k-fcast, btm)
+
+//-----------------------------------------------------------------------------}

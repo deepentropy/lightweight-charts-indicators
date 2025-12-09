@@ -1,0 +1,215 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Peter_O
+// + huge parts of code by Lonesometheblue and Everget's built-in divergence indicator
+
+//@version=4
+study("Multiple divergences rework NON-REPAINT by PeterO", overlay=true)
+
+offset=input(false, "Repaint or not?")
+mindivcount=input(2, minval=1, maxval=10, title="Minimum Div Count to Display")
+
+lbR = input(title="Pivot Lookback Right", defval=1)
+lbL = input(title="Pivot Lookback Left", defval=3)
+off = offset ? lbR : 0
+rangeUpper = input(title="Max of Lookback Range", defval=60)
+rangeLower = input(title="Min of Lookback Range", defval=1)
+plotBull = input(title="Plot Bullish", defval=true)
+plotHiddenBull = input(title="Plot Hidden Bullish", defval=true)
+plotBear = input(title="Plot Bearish", defval=true)
+plotHiddenBear = input(title="Plot Hidden Bearish", defval=true)
+
+// Indicators
+calcmacd = input(true, title="MACD")
+calcmacda = input(true, title="MACD Histogram")
+calcrsi = input(true, title="RSI")
+calcstoc = input(true, title="Stochastic")
+calccci = input(true, title="CCI")
+calcmom = input(true, title="Momentum")
+calcobv = input(true, title="OBV")
+calcdi = input(true, title="Diosc")
+calcvwmacd = input(true, title="VWmacd")
+calccmf = input(true, title="Chaikin Money Flow")
+
+// RSI
+rsi = rsi(close, 14)
+// MACD
+[macd, signal, deltamacd] = macd(close, 12, 26, 9)
+// Momentum
+moment = mom(close, 10)
+// CCI
+cci = cci(close, 10)
+// OBV
+obv = cum(change(close) > 0 ? volume : change(close) < 0 ? -volume : 0 * volume)
+// Stoch
+stk = sma(stoch(close, high, low, 14), 3)
+// DIOSC
+DI = change(high) - (-change(low))
+trur = rma(tr, 14)
+diosc = fixnan(100 * rma(DI, 14) / trur)
+// volume weighted macd
+maFast = vwma(close, 12)
+maSlow = vwma(close, 26)
+vwmacd = maFast - maSlow
+// Chaikin money flow
+Cmfm = ((close-low) - (high-close)) / (high - low)
+Cmfv = Cmfm * volume
+cmf = sma(Cmfv, 21) / sma(volume,21)
+
+plFound(_osc) => not na(pivotlow(_osc, lbL, lbR))
+phFound(_osc) => not na(pivothigh(_osc, lbL, lbR))
+
+_inRange(cond) =>
+    bars = barssince(cond == true)
+    rangeLower <= bars and bars <= rangeUpper
+
+// Regular Bullish
+oscHL(_osc) => _osc[lbR] > valuewhen(plFound(_osc), _osc[lbR], 1) and _inRange(plFound(_osc)[1]) // Higher Low on indicator
+priceLL(_osc) => low[lbR] < valuewhen(plFound(_osc), low[lbR], 1) // Lower Low on Price
+bullCond(_osc) => plotBull and priceLL(_osc) and oscHL(_osc) and plFound(_osc)
+
+// Regular Bearish
+oscLH(_osc) => _osc[lbR] < valuewhen(phFound(_osc), _osc[lbR], 1) and _inRange(phFound(_osc)[1]) // Lower High on indicator
+priceHH(_osc) => high[lbR] > valuewhen(phFound(_osc), high[lbR], 1) // Higher High on Price
+bearCond(_osc) => plotBear and priceHH(_osc) and oscLH(_osc) and phFound(_osc)
+
+// Hidden Bullish
+oscLL(_osc) => _osc[lbR] < valuewhen(plFound(_osc), _osc[lbR], 1) and _inRange(plFound(_osc)[1]) // Lower Low on indicator
+priceHL(_osc) => low[lbR] > valuewhen(plFound(_osc), low[lbR], 1) // Higher Low on Price
+hiddenBullCond(_osc) => plotHiddenBull and priceHL(_osc) and oscLL(_osc) and plFound(_osc)
+
+// Hidden Bearish
+oscHH(_osc) => _osc[lbR] > valuewhen(phFound(_osc), _osc[lbR], 1) and _inRange(phFound(_osc)[1]) // Higher High on indicator
+priceLH(_osc) => high[lbR] < valuewhen(phFound(_osc), high[lbR], 1) // Lower High on Price
+hiddenBearCond(_osc) => plotHiddenBear and priceLH(_osc) and oscHH(_osc) and phFound(_osc)
+
+
+negdivergence = 0
+if calcrsi and bearCond(rsi)
+    negdivergence := 1
+if calcmacd and bearCond(macd)
+    negdivergence := negdivergence + 1
+if calcmacda and bearCond(deltamacd)
+    negdivergence := negdivergence + 1
+if calcmom and bearCond(moment)
+    negdivergence := negdivergence + 1
+if calccci and bearCond(cci)
+    negdivergence := negdivergence + 1
+if calcobv and bearCond(obv)
+    negdivergence := negdivergence + 1
+if calcstoc and bearCond(stk)
+    negdivergence := negdivergence + 1
+if calcdi and bearCond(diosc)
+    negdivergence := negdivergence + 1
+if calcvwmacd and bearCond(vwmacd)
+    negdivergence := negdivergence + 1
+if calccmf and bearCond(cmf)
+    negdivergence := negdivergence + 1
+
+posdivergence = 0
+if calcrsi and bullCond(rsi)
+    posdivergence := 1
+if calcmacd and bullCond(macd)
+    posdivergence := posdivergence + 1
+if calcmacda and bullCond(deltamacd)
+    posdivergence := posdivergence + 1
+if calcmom and bullCond(moment)
+    posdivergence := posdivergence + 1
+if calccci and bullCond(cci)
+    posdivergence := posdivergence + 1
+if calcobv and bullCond(obv)
+    posdivergence := posdivergence + 1
+if calcstoc and bullCond(stk)
+    posdivergence := posdivergence + 1
+if calcdi and bullCond(diosc)
+    posdivergence := posdivergence + 1
+if calcvwmacd and bullCond(vwmacd)
+    posdivergence := posdivergence + 1
+if calccmf and bullCond(cmf)
+    posdivergence := posdivergence + 1
+    
+negdivergencehidden = 0
+if calcrsi and hiddenBearCond(rsi)
+    negdivergencehidden := 1
+if calcmacd and hiddenBearCond(macd)
+    negdivergencehidden := negdivergencehidden + 1
+if calcmacda and hiddenBearCond(deltamacd)
+    negdivergencehidden := negdivergencehidden + 1
+if calcmom and hiddenBearCond(moment)
+    negdivergencehidden := negdivergencehidden + 1
+if calccci and hiddenBearCond(cci)
+    negdivergencehidden := negdivergencehidden + 1
+if calcobv and hiddenBearCond(obv)
+    negdivergencehidden := negdivergencehidden + 1
+if calcstoc and hiddenBearCond(stk)
+    negdivergencehidden := negdivergencehidden + 1
+if calcdi and hiddenBearCond(diosc)
+    negdivergencehidden := negdivergencehidden + 1
+if calcvwmacd and hiddenBearCond(vwmacd)
+    negdivergencehidden := negdivergencehidden + 1
+if calccmf and hiddenBearCond(cmf)
+    negdivergencehidden := negdivergencehidden + 1
+    
+posdivergencehidden = 0
+if calcrsi and hiddenBullCond(rsi)
+    posdivergencehidden := 1
+if calcmacd and hiddenBullCond(macd)
+    posdivergencehidden := posdivergencehidden + 1
+if calcmacda and hiddenBullCond(deltamacd)
+    posdivergencehidden := posdivergencehidden + 1
+if calcmom and hiddenBullCond(moment)
+    posdivergencehidden := posdivergencehidden + 1
+if calccci and hiddenBullCond(cci)
+    posdivergencehidden := posdivergencehidden + 1
+if calcobv and hiddenBullCond(obv)
+    posdivergencehidden := posdivergencehidden + 1
+if calcstoc and hiddenBullCond(stk)
+    posdivergencehidden := posdivergencehidden + 1
+if calcdi and hiddenBullCond(diosc)
+    posdivergencehidden := posdivergencehidden + 1
+if calcvwmacd and hiddenBullCond(vwmacd)
+    posdivergencehidden := posdivergencehidden + 1
+if calccmf and hiddenBullCond(cmf)
+    posdivergencehidden := posdivergencehidden + 1
+
+voffset=5*syminfo.mintick
+
+plotshape(posdivergence==1 and mindivcount<2 ? low[lbR] - voffset : na, offset=-off, title="1 Regular Bullish Div found", text="1", style=shape.labelup, location=location.absolute, color=color.teal, textcolor=color.white, transp=0)
+plotshape(posdivergence==2 and mindivcount<3 ? low[lbR] - voffset : na, offset=-off, title="2 Regular Bullish Divs found", text="2", style=shape.labelup, location=location.absolute, color=color.teal, textcolor=color.white, transp=0)
+plotshape(posdivergence==3 and mindivcount<4 ? low[lbR] - voffset : na, offset=-off, title="3 Regular Bullish Divs found", text="3", style=shape.labelup, location=location.absolute, color=color.teal, textcolor=color.white, transp=0)
+plotshape(posdivergence==4 and mindivcount<5 ? low[lbR] - voffset : na, offset=-off, title="4 Regular Bullish Divs found", text="4", style=shape.labelup, location=location.absolute, color=color.teal, textcolor=color.white, transp=0)
+plotshape(posdivergence==5 and mindivcount<6 ? low[lbR] - voffset : na, offset=-off, title="5 Regular Bullish Divs found", text="5", style=shape.labelup, location=location.absolute, color=color.teal, textcolor=color.white, transp=0)
+plotshape(posdivergence==6 and mindivcount<7 ? low[lbR] - voffset : na, offset=-off, title="6 Regular Bullish Divs found", text="6", style=shape.labelup, location=location.absolute, color=color.teal, textcolor=color.white, transp=0)
+plotshape(posdivergence==7 and mindivcount<8 ? low[lbR] - voffset : na, offset=-off, title="7 Regular Bullish Divs found", text="7", style=shape.labelup, location=location.absolute, color=color.teal, textcolor=color.white, transp=0)
+plotshape(posdivergence==8 and mindivcount<9 ? low[lbR] - voffset : na, offset=-off, title="8 Regular Bullish Divs found", text="8", style=shape.labelup, location=location.absolute, color=color.teal, textcolor=color.white, transp=0)
+plotshape(posdivergence>8 and mindivcount<11 ? low[lbR] - voffset : na, offset=-off, title="8+ Regular Bullish Divs found", text="8+", style=shape.labelup, location=location.absolute, color=color.teal, textcolor=color.white, transp=0)
+
+plotshape(negdivergence==1 and mindivcount<2 ? high[lbR] + voffset : na, offset=-off, title="1 Regular Bearish Div found", text="1", style=shape.labeldown, location=location.absolute, color=color.red, textcolor=color.white, transp=0)
+plotshape(negdivergence==2 and mindivcount<3 ? high[lbR] + voffset : na, offset=-off, title="2 Regular Bearish Divs found", text="2", style=shape.labeldown, location=location.absolute, color=color.red, textcolor=color.white, transp=0)
+plotshape(negdivergence==3 and mindivcount<4 ? high[lbR] + voffset : na, offset=-off, title="3 Regular Bearish Divs found", text="3", style=shape.labeldown, location=location.absolute, color=color.red, textcolor=color.white, transp=0)
+plotshape(negdivergence==4 and mindivcount<5 ? high[lbR] + voffset : na, offset=-off, title="4 Regular Bearish Divs found", text="4", style=shape.labeldown, location=location.absolute, color=color.red, textcolor=color.white, transp=0)
+plotshape(negdivergence==5 and mindivcount<6 ? high[lbR] + voffset : na, offset=-off, title="5 Regular Bearish Divs found", text="5", style=shape.labeldown, location=location.absolute, color=color.red, textcolor=color.white, transp=0)
+plotshape(negdivergence==6 and mindivcount<7 ? high[lbR] + voffset : na, offset=-off, title="6 Regular Bearish Divs found", text="6", style=shape.labeldown, location=location.absolute, color=color.red, textcolor=color.white, transp=0)
+plotshape(negdivergence==7 and mindivcount<8 ? high[lbR] + voffset : na, offset=-off, title="7 Regular Bearish Divs found", text="7", style=shape.labeldown, location=location.absolute, color=color.red, textcolor=color.white, transp=0)
+plotshape(negdivergence==8 and mindivcount<9 ? high[lbR] + voffset : na, offset=-off, title="8 Regular Bearish Divs found", text="8", style=shape.labeldown, location=location.absolute, color=color.red, textcolor=color.white, transp=0)
+plotshape(negdivergence>8 and mindivcount<11 ? high[lbR] + voffset : na, offset=-off, title="8+ Regular Bearish Divs found", text="8+", style=shape.labeldown, location=location.absolute, color=color.red, textcolor=color.white, transp=0)
+
+plotshape(posdivergencehidden==1 and mindivcount<2 ? low[lbR] - voffset : na, offset=-off, title="1 Hidden Bullish Div found", text="1", style=shape.labelup, location=location.absolute, color=color.green, textcolor=color.white, transp=0)
+plotshape(posdivergencehidden==2 and mindivcount<3 ? low[lbR] - voffset : na, offset=-off, title="2 Hidden Bullish Divs found", text="2", style=shape.labelup, location=location.absolute, color=color.green, textcolor=color.white, transp=0)
+plotshape(posdivergencehidden==3 and mindivcount<4 ? low[lbR] - voffset : na, offset=-off, title="3 Hidden Bullish Divs found", text="3", style=shape.labelup, location=location.absolute, color=color.green, textcolor=color.white, transp=0)
+plotshape(posdivergencehidden==4 and mindivcount<5 ? low[lbR] - voffset : na, offset=-off, title="4 Hidden Bullish Divs found", text="4", style=shape.labelup, location=location.absolute, color=color.green, textcolor=color.white, transp=0)
+plotshape(posdivergencehidden==5 and mindivcount<6 ? low[lbR] - voffset : na, offset=-off, title="5 Hidden Bullish Divs found", text="5", style=shape.labelup, location=location.absolute, color=color.green, textcolor=color.white, transp=0)
+plotshape(posdivergencehidden==6 and mindivcount<7 ? low[lbR] - voffset : na, offset=-off, title="6 Hidden Bullish Divs found", text="6", style=shape.labelup, location=location.absolute, color=color.green, textcolor=color.white, transp=0)
+plotshape(posdivergencehidden==7 and mindivcount<8 ? low[lbR] - voffset : na, offset=-off, title="7 Hidden Bullish Divs found", text="7", style=shape.labelup, location=location.absolute, color=color.green, textcolor=color.white, transp=0)
+plotshape(posdivergencehidden==8 and mindivcount<9 ? low[lbR] - voffset : na, offset=-off, title="8 Hidden Bullish Divs found", text="8", style=shape.labelup, location=location.absolute, color=color.green, textcolor=color.white, transp=0)
+plotshape(posdivergencehidden>8 and mindivcount<11 ? low[lbR] - voffset : na, offset=-off, title="8+ Hidden Bullish Divs found", text="8+", style=shape.labelup, location=location.absolute, color=color.green, textcolor=color.white, transp=0)
+
+plotshape(negdivergencehidden==1 and mindivcount<2 ? high[lbR] + voffset : na, offset=-off, title="1 Hidden Bearish Div found", text="1", style=shape.labeldown, location=location.absolute, color=color.orange, textcolor=color.white, transp=0)
+plotshape(negdivergencehidden==2 and mindivcount<3 ? high[lbR] + voffset : na, offset=-off, title="2 Hidden Bearish Divs found", text="2", style=shape.labeldown, location=location.absolute, color=color.orange, textcolor=color.white, transp=0)
+plotshape(negdivergencehidden==3 and mindivcount<4 ? high[lbR] + voffset : na, offset=-off, title="3 Hidden Bearish Divs found", text="3", style=shape.labeldown, location=location.absolute, color=color.orange, textcolor=color.white, transp=0)
+plotshape(negdivergencehidden==4 and mindivcount<5 ? high[lbR] + voffset : na, offset=-off, title="4 Hidden Bearish Divs found", text="4", style=shape.labeldown, location=location.absolute, color=color.orange, textcolor=color.white, transp=0)
+plotshape(negdivergencehidden==5 and mindivcount<6 ? high[lbR] + voffset : na, offset=-off, title="5 Hidden Bearish Divs found", text="5", style=shape.labeldown, location=location.absolute, color=color.orange, textcolor=color.white, transp=0)
+plotshape(negdivergencehidden==6 and mindivcount<7 ? high[lbR] + voffset : na, offset=-off, title="6 Hidden Bearish Divs found", text="6", style=shape.labeldown, location=location.absolute, color=color.orange, textcolor=color.white, transp=0)
+plotshape(negdivergencehidden==7 and mindivcount<8 ? high[lbR] + voffset : na, offset=-off, title="7 Hidden Bearish Divs found", text="7", style=shape.labeldown, location=location.absolute, color=color.orange, textcolor=color.white, transp=0)
+plotshape(negdivergencehidden==8 and mindivcount<9 ? high[lbR] + voffset : na, offset=-off, title="8 Hidden Bearish Divs found", text="8", style=shape.labeldown, location=location.absolute, color=color.orange, textcolor=color.white, transp=0)
+plotshape(negdivergencehidden>8 and mindivcount<11 ? high[lbR] + voffset : na, offset=-off, title="8+ Hidden Bearish Divs found", text="8+", style=shape.labeldown, location=location.absolute, color=color.orange, textcolor=color.white, transp=0)
+

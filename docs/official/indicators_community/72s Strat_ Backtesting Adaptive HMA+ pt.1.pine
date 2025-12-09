@@ -1,0 +1,312 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// 2020 © io72signals / Antorio Bergasdito
+
+//@version=4
+strategy("72s Strategy: Adaptive Hull Moving Average+ pt.1", shorttitle="72s Strat: Adaptive HMA+ pt.1", overlay=true, 
+     pyramiding=1, initial_capital=1000, commission_type=strategy.commission.cash_per_order, commission_value=.5, 
+     slippage=3, max_bars_back=1000)
+
+atrBase  = atr(21)
+src      = close
+adaptPct = 0.03141
+
+//{ INPUTS
+orderSize   = input(0.1, title="Order Size (in Lot)", step=.1, group="ORDERS")
+minProfit   = input(1, step=.1, title="Base Minimum Profit before exit (ATR)", group="ORDERS") * atrBase
+takeProfit  = input(3, step=.1, title="Default Target Profit (ATR)", group="ORDERS") * atrBase
+useSL       = input(true, title="Use StopLoss", group="ORDERS")
+SLInput     = input("Half Distance Zone", title="Base StopLoss Point", 
+                 options=["One Distance Zone", "Half Distance Zone", "Last High/Low", "ATR Only"], group="ORDERS")
+maxSL       = input(4.5, step=.1, title="Maximum StopLoss (ATR)", group="ORDERS") * atrBase
+
+doubleUp    = input(false, "Activate 2nd order with xHMA+ exits", group="ORDERS")    //If enable, set pyramiding to at least: 2
+
+minLength   = input(172, title="Minimum:", group="Adaptive HMA+ Period", inline="HMA+")
+maxLength   = input(233, title="Maximum:", group="Adaptive HMA+ Period", inline="HMA+")
+
+flat        = input(17, title="Flat Market when xHMA's slope below", group="Market Movement")
+atrFast     = input(14, "Charged if ATR", group="Market Movement", inline="volality", minval=2, maxval=34)
+atrSlow     = input(46, ">= ATR", group="Market Movement", inline="volality", minval=21, maxval=120)
+showZone    = input(false, title="Show Adaptive HMA+ Distance Zone", group="DISTANCE ZONE")
+mult        = input(2.7, title="Distance (Envelope) Multiplier", step=.1, group="DISTANCE ZONE") 
+
+minorMin    = input(89, title="Minimum:", group="Minor Adaptive HMA+ Period", inline="mHMA+")
+minorMax    = input(121, title="Maximum:", group="Minor Adaptive HMA+ Period", inline="mHMA+")
+
+showMA      = input(true, title="Show MA?", group="OTHER")
+useBg       = input(true, title="Background color to differentiate movement", group="OTHER")
+rsi         = rsi(input(close,"RSI Source", inline="RSI", group="OTHER"), input(14, "RSI Length", inline="RSI", group="OTHER"))
+//}...inputs
+
+
+//{ ADAPTIVE HMA+
+//Condition to adapt to:
+charged = atr(atrFast) > atr(atrSlow)           //<--Volatility Meter. Change it to whatever match your strat/pair/tf.
+
+//Dynamics 
+var float dynamicLength = avg(minLength,maxLength)
+var float minorLength   = avg(minorMin,minorMax)
+dynamicLength   := iff(charged, max(minLength, dynamicLength * (1 - adaptPct)), min(maxLength, dynamicLength * (1 + adaptPct)))
+minorLength     := iff(charged, max(minorMin, minorLength * (1 - adaptPct)), min(minorMax, minorLength * (1 + adaptPct)))
+
+//Slope calculation to determine whether market is in trend, or in consolidation or choppy, or might about to change current trend
+pi = atan(1) * 4
+highestHigh = highest(34), lowestLow = lowest(34)
+slope_range = 25 / (highestHigh - lowestLow) * lowestLow
+calcslope(_ma)=>
+    dt = (_ma[2] - _ma) / src * slope_range  
+    c = sqrt(1 + dt * dt)
+    xAngle = round(180 * acos(1 / c) / pi)
+    maAngle = iff(dt > 0, -xAngle, xAngle)
+    maAngle
+    
+//MA coloring+ to mark market dynamics 
+dynColor(_ma,_col1a,_col1b,_col2a,_col2b,_col0) =>
+    slope = calcslope(_ma)
+    slope >= flat ? charged? _col1a : _col1b :
+     slope < flat and slope > -flat ? _col0 : 
+     slope <= -flat ? charged? _col2a : _col2b : _col0
+
+//Adaptive HMA 
+xhma(_src,_length) => _return = wma(2 * wma(_src, _length / 2) - wma(_src, _length), floor(sqrt(_length))) 
+
+dynamicHMA = xhma(src,int(dynamicLength))       //<--Batman - Our main xHMA+
+minorHMA = xhma(src,int(minorLength))           //<--Robin  - Faster minor xHMA+ (Optional). Can be use to assist for 
+                                                //            faster entry, slower exit point, or pullbacks info too.
+
+_slope = calcslope(dynamicHMA)
+plotchar(_slope, "slope is:", "", location.top) //<--Output current slope to Data Window, for our reference when optimizing Strategy
+
+//Envelope the main DynamicHMA with ATR band, just one way to approximate current price distance to MA. Other usages/methods may vary.
+upperTL = dynamicHMA + mult * atr(40)        ,  lowerTL = dynamicHMA - mult * atr(40)           //<--Half distance zone
+topTL = dynamicHMA + (mult*2) * atr(40)      ,  botTL = dynamicHMA - (mult*2) * atr(40)         //<--One distance zone
+stopupperTL = dynamicHMA + (mult/2) * atr(40),  stoplowerTL = dynamicHMA - (mult/2) * atr(40)   //<--Half of the half. If need ie. tighter SL or trailing
+
+//Plotting Distance Zone
+plot(showZone?upperTL:na, color=color.green, transp=72)
+plot(showZone?lowerTL:na, color=color.red,   transp=72)
+plot(showZone?topTL:na, color=color.gray, transp=72)
+plot(showZone?botTL:na, color=color.gray, transp=72)
+sutl = plot(showZone?stopupperTL:na, color=color.white, transp=100)
+sltl = plot(showZone?stoplowerTL:na, color=color.white, transp=100)
+colZone = showZone? color.purple:color.new(color.white,100)
+fill(sutl, sltl, color=colZone, transp=90)
+
+plot(showMA?dynamicHMA:na, "Adaptive HMA+", dynColor(dynamicHMA, #6fbf73, #c0f5ae, #eb4d5c, #f2b1d4, color.yellow), 3)
+plot(showMA?minorHMA:na,   "minor HMA+",    dynColor(minorHMA,   #6fbf73, #c0f5ae, #eb4d5c, #f2b1d4, color.yellow), 1)
+
+//Backgroud color to differentiate market condition
+notgreat = _slope < flat and _slope > -flat
+bgcolor(useBg? charged? na : #afb4b9 : na)
+
+//EMA 200. (Not being use in here. But since they've been a BFF since long, thought I'm just gonna put it here..)
+emma200 = ema(close,200) //, plot(emma200)
+//}...adaptive HMA+
+
+
+//{ SIGNALS
+//Base; When HMA+ turn to a darker color and market is out from low volatility
+upSig = _slope >=  flat and charged
+dnSig = _slope <= -flat and charged
+
+//Default buy/sell, when market switchs to the above base condition, and typical price is still in tolerated distance, and RSI is on the right side.
+buy  = upSig and not upSig[1] and close>dynamicHMA and low<=upperTL  and (rsi>51  and rsi<=70)
+sell = dnSig and not dnSig[1] and close<dynamicHMA and high>=lowerTL and (rsi<49  and rsi>=30)
+
+//Alternative buy/sell, when price is a bit far from MA, and RSI is still on the same side but already on oversold/overbought (relatively).
+overBuy = upSig and not upSig[1] and rsi>70 and close>dynamicHMA and hl2>upperTL and minorHMA>dynamicHMA
+overSell= dnSig and not dnSig[1] and rsi<30 and close<dynamicHMA and hl2<lowerTL and minorHMA<dynamicHMA
+
+//Alternative additional buy/sell with different exits at Robin's.
+secondBuy  = (buy  or overBuy)  and rsi[1]<rsi
+secondSell = (sell or overSell) and rsi[1]>rsi
+
+//Plot 'em up
+atrPos = 0.2 * atr(5)
+plotshape(buy?  dynamicHMA-atrPos:na,color=color.green, location=location.absolute, style=shape.labelup,   text="buy",  textcolor=color.white, size = size.small)
+plotshape(sell? dynamicHMA+atrPos:na,  color=color.red, location=location.absolute, style=shape.labeldown, text="sell", textcolor=color.white, size = size.small)
+plotshape(overBuy? dynamicHMA-atrPos:na,color=color.green, location=location.absolute, style=shape.labelup,   text="overBuy",  textcolor=color.white, size = size.small)
+plotshape(overSell?dynamicHMA+atrPos:na,  color=color.red, location=location.absolute, style=shape.labeldown, text="overSell", textcolor=color.white, size = size.small)
+
+plotshape(doubleUp and secondBuy? dynamicHMA-atrPos*8:na,color=color.green, location=location.absolute, style=shape.labelup,   text="+buy",  textcolor=color.white, size = size.small)
+plotshape(doubleUp and secondSell?dynamicHMA+atrPos*8:na,  color=color.red, location=location.absolute, style=shape.labeldown, text="+sell", textcolor=color.white, size = size.small)
+
+//Alert 
+if buy
+    alert("Buy signal at "+tostring(close), alert.freq_once_per_bar_close)
+if sell
+    alert("Sell signal at "+tostring(close), alert.freq_once_per_bar_close)
+if overBuy
+    alert("OverBuy signal at "+tostring(close), alert.freq_once_per_bar_close)
+if overSell
+    alert("OverSell signal at "+tostring(close), alert.freq_once_per_bar_close)
+if doubleUp and secondBuy
+    alert("2nd Buy signal at "+tostring(close), alert.freq_once_per_bar_close)
+if doubleUp and secondSell
+    alert("2nd Sell signal at "+tostring(close), alert.freq_once_per_bar_close)
+//}...signals
+
+
+//{ ORDERS
+//(I use Lot just because it's how I usually trade, matches my flow when thinking/planning. Change the "qty" in "strategy.entry()" below to use other UOM.)
+//Forex pairs are 100,000 units per 1 lot. Units per 1 lot vary on non-forex pairs, please check with your broker and change accordingly if necessary.
+//(ie: In MT4 and MT5 right click a symbol and then click Specification. The Contract Size field tells how many units are in one lot.)
+standard1LotUnits = 
+     syminfo.type == "forex" ? 100000 : 
+     syminfo.ticker == "XAUUSD" ? 100 : 
+     syminfo.ticker == "XAGUSD" ? 5000 : 
+     syminfo.type == "crypto" ? 1 : 1000
+
+lotSize = standard1LotUnits * orderSize 
+pip() => syminfo.mintick * (syminfo.type == "forex" ? 10 : 1)
+
+//{ StopLoss
+SLHighMax = high + maxSL, SLLowMax = low - maxSL        //<--Maximum StopLoss. If a chosen SL-point from input above happen
+                                                        //   to be outside this max point, then this one will be use as SL.
+
+lastHigh = highest(high, 48) + (5 * pip())              //<--Last High/Low. If use as SL-point, adjust the lookback length  
+lastLow  = lowest(low, 48) - (5 * pip())                //   according to where your comfort lies (and position-size).
+
+//Delivering SL from inputs
+SLBuy = SLInput == "One Distance Zone"? botTL : SLInput == "Half Distance Zone"? lowerTL : 
+     SLInput == "Last High/Low"? lastLow : SLInput == "ATR Only"? SLLowMax : SLLowMax
+SLSell= SLInput == "One Distance Zone"? topTL : SLInput == "Half Distance Zone"? upperTL : 
+     SLInput == "Last High/Low"? lastHigh: SLInput == "ATR Only"? SLHighMax: SLHighMax
+//}---stopLoss
+
+//
+float entryPrice = na, float normOrder = 0, float riskOrder = 0
+float buyTP = na, float sellTP = na, float buySL = na, float sellSL = na
+entryPrice := nz(entryPrice[1]), normOrder := nz(normOrder[1]), riskOrder := nz(riskOrder[1])
+buyTP:=nz(buyTP[1]), sellTP:=nz(sellTP[1]), buySL:=nz(buySL[1]), sellSL :=nz(sellSL[1])
+
+//This part will also make your TP/SL change dynamically if there's a new signal while you have an open position.
+//If you want to fire this TP/SL only in a new position, then add "strategy.position_size == 0" 
+if (buy or sell or overBuy or overSell) //and strategy.position_size == 0
+    entryPrice := close
+    if buy or sell and strategy.position_size == 0
+        normOrder := 1
+    if overBuy or overSell and strategy.position_size == 0
+        riskOrder := 1
+    buyTP   := high + takeProfit 
+    sellTP  := low  - takeProfit 
+    if buy or overBuy
+        buySL := SLLowMax<SLBuy? SLBuy:SLLowMax 
+    if sell or overSell
+        sellSL:= SLHighMax>SLSell? SLSell:SLHighMax 
+
+//Trailing Minimum-Profit. --Just a simple helper to prevent premature exit rule. Or at least to have a
+//change to get break-even (after commission) if market turns its back on us, before heading to stoploss area.
+minBuyProfit  = strategy.position_avg_price  + minProfit 
+minSellProfit = strategy.position_avg_price  - minProfit 
+
+//{ Exit Points
+//TP/SL Exits
+stopLossBuy  = useSL? low <=buySL : na
+stopLossSell = useSL? high>=sellSL: na
+takeProfitBuy  = high>= buyTP
+takeProfitSell = low <= sellTP 
+
+//Simplified RSI Exits
+RSIexitBuy  = crossunder(rsi,70) or rsi<50
+RSIexitSell = crossover(rsi,30)  or rsi>50
+
+//Exit Conditions
+exitBuy  = ( close >= minBuyProfit  and (RSIexitBuy  or crossunder(close,dynamicHMA)) ) or stopLossBuy  or takeProfitBuy  
+exitSell = ( close <= minSellProfit and (RSIexitSell or crossover(close,dynamicHMA) ) ) or stopLossSell or takeProfitSell
+exitoverBuy  = ( close >= minBuyProfit  and (crossunder(rsi,45) or (open<stopupperTL and hl2<stopupperTL)) ) or (open<dynamicHMA and rsi<60)
+     or stopLossBuy  or takeProfitBuy 
+exitoverSell = ( close <= minSellProfit and (crossover(rsi,55)  or (open>stoplowerTL and hl2>stoplowerTL)) ) or (open>dynamicHMA and rsi>40)
+     or stopLossSell or takeProfitSell 
+
+//Alternative 2nd Exits at Robin's (or SL)
+exitSecondBuy  = (close >= minBuyProfit and crossunder(close, minorHMA)) or stopLossBuy
+exitSecondSell = (close <= minSellProfit and crossover(close, minorHMA)) or stopLossSell
+    
+//Plotting and Alert for Exits
+inBuyExit  = strategy.position_size > 0 and ((normOrder == 1 and exitBuy)  or (riskOrder == 1 and exitoverBuy))
+inSellExit = strategy.position_size < 0 and ((normOrder == 1 and exitSell) or (riskOrder == 1 and exitoverSell))
+in2ndBuyExit = strategy.position_size > 0 and (doubleUp and exitSecondBuy)
+in2ndSellExit=  strategy.position_size < 0 and (doubleUp and exitSecondSell)
+
+if inBuyExit or inSellExit
+    if normOrder == 1 and exitBuy 
+        normOrder := 0, alert("Close Buy Position/s at "+tostring(close), alert.freq_once_per_bar_close)
+    if normOrder == 1 and exitSell
+        normOrder := 0, alert("Close Sell Position/s at "+tostring(close), alert.freq_once_per_bar_close)
+    if riskOrder == 1 and exitoverBuy 
+        riskOrder := 0, alert("Close overBuy Position/s at "+tostring(close), alert.freq_once_per_bar_close)
+    if riskOrder == 1 and exitoverSell
+        riskOrder := 0, alert("Close overSell Position/s at "+tostring(close), alert.freq_once_per_bar_close)
+
+if in2ndBuyExit
+    alert("Close 2nd Buy Position/s at "+tostring(close), alert.freq_once_per_bar_close)
+if in2ndSellExit
+    alert("Close 2nd Sell Position/s at "+tostring(close), alert.freq_once_per_bar_close)
+    
+plotchar(inBuyExit, color=color.green, location=location.abovebar, char="ⓧ", size=size.tiny)
+plotchar(inSellExit,  color=color.red, location=location.belowbar, char="ⓧ", size=size.tiny)
+plotchar(in2ndBuyExit, color=color.teal, location=location.abovebar, char="ⓧ", size=size.tiny)
+plotchar(in2ndSellExit,  color=color.maroon, location=location.belowbar, char="ⓧ", size=size.tiny)
+//}---exit points
+
+//{ Actions
+//ENTRIES
+strategy.entry("buy",  strategy.long,  qty=lotSize, when=buy )
+strategy.entry("sell", strategy.short, qty=lotSize, when=sell)
+strategy.entry("overBuy",  strategy.long,  qty=lotSize, when=overBuy )
+strategy.entry("overSell", strategy.short, qty=lotSize, when=overSell)
+
+if doubleUp
+    strategy.entry("2ndBuy",  strategy.long,  qty=lotSize, when=secondBuy )
+    strategy.entry("2ndSell", strategy.short, qty=lotSize, when=secondSell) 
+
+//EXITS
+//We use just "strategy.close" because we already set limit conditions above for SL and TP, fires at candle close. If you want to
+//separate exit data or exit at the exact SL/TP you can add such as: strategy.exit("exitbuy", from_entry="buy", stop=buySL, limit=buyTP)
+//accordingly. And delete stopLossBuy, stopLossSell, takeProfitBuy, takeProfitSell definitions from above.
+strategy.close("buy",  when=exitBuy , comment="close buy")
+strategy.close("sell", when=exitSell, comment="close sell")
+strategy.close("overBuy",  when=exitoverBuy , comment="close overBuy")
+strategy.close("overSell", when=exitoverSell, comment="close overSell")
+
+if doubleUp
+    strategy.close("2ndBuy",  when=exitSecondBuy , comment="close 2nd Buy")
+    strategy.close("2ndSell", when=exitSecondSell, comment="close 2nd Sell")
+//}---actions
+
+orderCol = strategy.position_size>0? color.green : strategy.position_size<0? color.red : na
+// plot(strategy.position_size>0? minBuyProfit : strategy.position_size<0? minSellProfit : na, color=orderCol, style=plot.style_linebr, linewidth=1, title="Minimum Profit")
+plot(strategy.position_size != 0? entryPrice:na, style=plot.style_cross, transp=50)
+plot(useSL and strategy.position_size>0? buySL : useSL and strategy.position_size<0? sellSL : na, color=color.red, style=plot.style_cross, linewidth=1, title="Stop Loss", transp=50)
+plot(strategy.position_size>0? buyTP : strategy.position_size<0? sellTP : na, color=color.green, style=plot.style_cross, linewidth=1, title="Take Profit", transp=50)
+//}...orders
+
+
+//{------------------------------------------------------------------------
+
+//Below is just fancy stuff approximating gain in pips. You probably don't need this.
+//(Also I'm not too sure this is the right way calculating pip gain in pine. If somebody knows how, kindly correct me please)
+mUnit = lotSize*pip()
+ppip = round((strategy.grossprofit-strategy.grossprofit[1]) / syminfo.pointvalue/mUnit,1)
+lpip = round((strategy.grossloss-strategy.grossloss[1]) / syminfo.pointvalue/mUnit,1)
+pipGain = round((strategy.grossprofit/syminfo.pointvalue)/mUnit)
+pipLoss = round((strategy.grossloss/syminfo.pointvalue)/mUnit)
+avg_ppip = round((pipGain/strategy.wintrades),1)
+pctProfit = round(strategy.wintrades/strategy.closedtrades * 100, 2)
+maxDD = ceil(strategy.max_drawdown/ syminfo.pointvalue/mUnit) //check if our margin can handle DD's pips*orderSize
+var txt2 = ""
+txt = "Total trades: "+ tostring(strategy.closedtrades)+"\n("+tostring(pctProfit)+"%) Win: "+tostring(strategy.wintrades)+" / Loss: "+tostring(strategy.losstrades)+
+     "\nAverage win pips per trade: "+ tostring(avg_ppip) + " pips\n\nApproximate (*give n take)\nTotal Pip Gain: "+ tostring(pipGain) +" pips"+
+     "\nTotal Pip Loss: "+tostring(pipLoss)+ " pips"+"\n\nMax Drawdown so far: "+tostring(maxDD)+" pips"
+if strategy.wintrades>strategy.wintrades[1]
+    txt2 := "\n\nLast closed trade: Bagged "+tostring(ppip)+" pips 👻"
+if strategy.losstrades>strategy.losstrades[1]
+    txt2 := "\n\nLast closed trade: Blew "+tostring(lpip)+" pips 😪"
+
+txt += txt2
+label pvtLabel   = label.new(time, lowestLow, text=txt, 
+     color=color.new(color.white,100), xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.gray, textalign=text.align_left)
+label.set_x(pvtLabel, label.get_x(pvtLabel) + ((time-time[1]) * 21))
+label.delete(pvtLabel[1])
+//} 

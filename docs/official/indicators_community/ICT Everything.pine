@@ -1,0 +1,1373 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// ©coldbrewrosh
+ 
+//@version=5
+indicator("ICT Everything @coldbrewrosh", overlay=true, max_lines_count=500, max_labels_count=5, max_boxes_count=500)
+
+// General Settings Inputs
+TZI                     = input.string          (defval="UTC -5", title="Timezone Selection", options=["UTC -10", "UTC -7", "UTC -6", "UTC -5", "UTC -4", "UTC -3", "UTC +0", "UTC +1", "UTC +2", "UTC +3", "UTC +3:30", "UTC +4", "UTC +5", "UTC +5:30", "UTC +6", "UTC +7", "UTC +8", "UTC +9", "UTC +9:30", "UTC +10", "UTC +10:30", "UTC +11", "UTC +13", "UTC +13:45"], tooltip="Select the Timezone. ( Shifts Chart Elements )", group="Global Settings")
+Timezone                = TZI                   == "UTC -10" ? "GMT-10:00" : TZI == "UTC -7" ? "GMT-07:00" : TZI == "UTC -6" ? "GMT-06:00" : TZI == "UTC -5" ? "GMT-05:00" : TZI == "UTC -4" ? "GMT-04:00" : TZI == "UTC -3" ? "GMT-03:00" : TZI == "UTC +0" ? "GMT+00:00" : TZI == "UTC +1" ? "GMT+01:00" : TZI == "UTC +2" ? "GMT+02:00" : TZI == "UTC +3" ? "GMT+03:00" : TZI == "UTC +3:30" ? "GMT+03:30" : TZI == "UTC +4" ? "GMT+04:00" : TZI == "UTC +5" ? "GMT+05:00" : TZI == "UTC +5:30" ? "GMT+05:30" : TZI == "UTC +6" ? "GMT+06:00" : TZI == "UTC +7" ? "GMT+07:00" : TZI == "UTC +8" ? "GMT+08:00" : TZI == "UTC +9" ? "GMT+09:00" : TZI == "UTC +9:30" ? "GMT+09:30" : TZI == "UTC +10" ? "GMT+10:00" : TZI == "UTC +10:30" ? "GMT+10:30" : TZI == "UTC +11" ? "GMT+11:00" : TZI == "UTC +13" ? "GMT+13:00" : "GMT+13:45"
+inputMaxInterval        = input.int             (31, title="Hide Indicator Above Specified Minutes", tooltip="Above 30Min, Chart Will Become Messy & Unreadable", group="Global Settings")
+// Session options
+ShowTSO                 = input.bool            (true, title="Show Today's Session Only", group="Session Options", tooltip="Hide Historical Sessions")
+ShowTWO                 = input.bool            (true, title="Show Current Week's Sessions Only", group="Session Options", tooltip="Show All Sessions from the current week")
+SL4W                    = input.bool            (true, title="Show Last 4 Week Sessions", group="Session Options", tooltip="Show All Sessions from Last Four Weeks \nShould Disable Current Week Session to Work")
+ShowSFill               = input.bool            (false, title="Show Session Highlighting", group="Session Options", tooltip="Highlights Session from Top of the Chart to Bottom")
+//----------------------------------------------
+// Historical Lines
+ShowMOPL                = input.bool            (title="Midnight Historical Price Lines", defval=false, group="Historical Lines", tooltip="Shows Historical Midnight Price Lines")
+MOLHist                 = input.bool            (title="Midnight Historical Vertical Lines", defval=true, group="Historical Lines", tooltip="Shows Historical Midnight Vertical Lines")
+ShowPrev                = input.bool            (false, title="Misc. Historical Price Lines", group="Historical Lines", tooltip="Makes Chart Cluttered, Use For Backtesting Only")
+//----------------------------------------------
+
+// Session Bool
+ShowLondon              = input.bool            (true, "", inline="LONDON", group="Sessions", tooltip="01:00 to 05:00")
+ShowNY                  = input.bool            (true, "", inline="NY", group="Sessions", tooltip="07:00 to 10:00")
+ShowLC                  = input.bool            (true, "", inline="LC", group="Sessions", tooltip="10:00 to 12:00")
+ShowPM                  = input.bool            (true, "",inline="PM", group="Sessions", tooltip="13:00 to 16:00")
+ShowAsian               = input.bool            (false, "",inline="ASIA2", group="Sessions", tooltip="20:00 to 00:00")
+ShowFreeSesh            = input.bool            (false, "",inline="FREE", group="Sessions", tooltip="Custom Session")
+
+// Session Strings
+txt2                    = input.string          ("LONDON", title="", inline="LONDON", group="Sessions")
+txt3                    = input.string          ("NEW YORK", title="", inline="NY", group="Sessions")
+txt4                    = input.string          ("LDN CLOSE", title="", inline="LC", group="Sessions")
+txt5                    = input.string          ("AFTERNOON", title="", inline="PM", group="Sessions")
+txt6                    = input.string          ("ASIA", title="", inline="ASIA2", group="Sessions")
+txt9                    = input.string          ("FREE SESH", title="", inline="FREE", group="Sessions")
+
+// CBDR                = input.session         ('1600-2000:1234567', "", inline="CBDR", group="Sessions")
+// ASIA                = input.session         ('2000-0000:1234567', "", inline="ASIA", group="Sessions")
+
+// Session Times
+LDNsesh                 = input.session         ('0200-0500:1234567', "", inline="LONDON", group="Sessions")
+NYsesh                  = input.session         ('0700-1000:1234567', "", inline="NY", group="Sessions")
+LCsesh                  = input.session         ('1000-1200:1234567', "", inline="LC", group="Sessions")
+PMsesh                  = input.session         ('1300-1600:1234567', "", inline="PM", group="Sessions")
+ASIA2sesh               = input.session         ('2000-2359:1234567', "", inline="ASIA2", group="Sessions")
+FreeSesh                = input.session         ('0000-0000:1234567', "", inline="FREE", group="Sessions")
+// Session Color
+LSFC                    = input.color           (color.new(#787b86, 90), "", inline="LONDON", group="Sessions")
+NYSFC                   = input.color           (color.new(#787b86, 90), "",inline="NY", group="Sessions")
+LCSFC                   = input.color           (color.new(#787b86, 90), "",inline="LC", group="Sessions")
+PMSFC                   = input.color           (color.new(#787b86, 90), "",inline="PM", group="Sessions")
+ASFC                    = input.color           (color.new(#787b86, 90), "",inline="ASIA2", group="Sessions")
+FSFC                    = input.color           (color.new(#787b86, 90), "",inline="FREE", group="Sessions")
+//----------------------------------------------
+
+// Vertical Line Bool
+ShowMOP                 = input.bool            (title="", defval=true, inline="MOP", group="Vertical Lines", tooltip="00:00 AM")
+txt12                   = input.string          ("MIDNIGHT", title="", inline="MOP", group="Vertical Lines")
+ShowLOP                 = input.bool            (title="", defval=false, inline="LOP", group="Vertical Lines", tooltip="03:00 AM")
+txt14                   = input.string          ("LONDON", title="", inline="LOP", group="Vertical Lines")
+ShowNYOP                = input.bool            (title="", defval=true, inline="NYOP", group="Vertical Lines", tooltip="08:30 AM")
+txt15                   = input.string          ("NEW YORK", title="", inline="NYOP", group="Vertical Lines")
+ShowEOP                 = input.bool            (title="", defval=false, inline="EOP", group="Vertical Lines", tooltip="09:30 AM")
+txt16                   = input.string          ("EQUITIES", title="", inline="EOP", group="Vertical Lines")
+
+// Vertical Line Color
+MOPColor                = input.color           (color.new(#787b86, 0), "", inline="MOP", group="Vertical Lines")
+LOPColor                = input.color           (color.rgb(0,128,128,60), "", inline="LOP", group="Vertical Lines")
+NYOPColor               = input.color           (color.rgb(0,128,128,60), "", inline="NYOP", group="Vertical Lines")
+EOPColor                = input.color           (color.rgb(0,128,128,60), "", inline="EOP", group="Vertical Lines")
+
+// Vertical LineStyle
+Midnight_Open_LS        = input.string          ("Dotted", "", options=["Solid", "Dashed", "Dotted"], inline="MOP", group="Vertical Lines")
+london_Open_LS          = input.string          ("Solid", "", options=["Solid", "Dashed", "Dotted"], inline="LOP", group="Vertical Lines")
+NY_Open_LS              = input.string          ("Solid", "", options=["Solid", "Dashed", "Dotted"], inline="NYOP", group="Vertical Lines")
+Equities_Open_LS        = input.string          ("Solid", "", options=["Solid", "Dashed", "Dotted"], inline="EOP", group="Vertical Lines")
+
+// Vertical LineWidth
+Midnight_Open_LW        = input.string          ("1px", "", options=["1px","2px", "3px", "4px", "5px"], inline="MOP", group="Vertical Lines")
+London_Open_LW          = input.string          ("1px", "", options=["1px","2px", "3px", "4px", "5px"], inline="LOP", group="Vertical Lines")
+NY_Open_LW              = input.string          ("1px", "", options=["1px","2px", "3px", "4px", "5px"], inline="NYOP", group="Vertical Lines")
+Equities_Open_LW        = input.string          ("1px", "", options=["1px","2px", "3px", "4px", "5px"], inline="EOP", group="Vertical Lines")
+//----------------------------------------------
+
+// Opening Price Bool
+ShowMOPP                = input.bool            (title="", defval=true, inline="MOPP", group="Opening Price Lines", tooltip="00:00 AM")
+txt13                   = input.string          ("MIDNIGHT", title="", inline="MOPP", group="Opening Price Lines")
+ShowNYOPP               = input.bool            (title="", defval=false, inline="NYOPP", group="Opening Price Lines", tooltip="08:30 AM")
+txt17                   = input.string          ("NEW YORK", title="", inline="NYOPP", group="Opening Price Lines")
+ShowEOPP                = input.bool            (title="", defval=false, inline="EOPP", group="Opening Price Lines", tooltip="09:30 AM")
+txt18                   = input.string          ("EQUITIES", title="", inline="EOPP", group="Opening Price Lines")
+ShowAFTPP               = input.bool            (title="", defval=false, inline="AFTOPP", group="Opening Price Lines", tooltip="01:30 PM")
+txt1330                 = input.string          ("AFTERNOON", title="", inline="AFTOPP", group="Opening Price Lines")
+
+// Opening Price Color
+MOPColP                 = input.color           (color.new(#787b86, 0), "", inline="MOPP", group="Opening Price Lines")
+NYOPColP                = input.color           (color.new(#787b86, 0), "", inline="NYOPP", group="Opening Price Lines")
+EOPColP                 = input.color           (color.new(#787b86, 0), "", inline="EOPP", group="Opening Price Lines")
+AFTOPColP               = input.color           (color.new(#787b86, 0), "", inline="AFTOPP", group="Opening Price Lines")
+
+// Opening Price LineStyle
+MOPLS                   = input.string          ("Dotted", "", options=["Solid", "Dashed", "Dotted"], inline="MOPP", group="Opening Price Lines")
+NYOPLS                  = input.string          ("Dotted", "", options=["Solid", "Dashed", "Dotted"], inline="NYOPP", group="Opening Price Lines")
+EOPLS                   = input.string          ("Dotted", "", options=["Solid", "Dashed", "Dotted"], inline="EOPP", group="Opening Price Lines")
+AFTOPLS                 = input.string          ("Dotted", "", options=["Solid", "Dashed", "Dotted"], inline="AFTOPP", group="Opening Price Lines")
+
+// Opening Price LineWidth
+i_MOPLW                 = input.string          ("1px", "", options=["1px","2px", "3px", "4px", "5px"], inline="MOPP", group="Opening Price Lines")
+i_NYOPLW                = input.string          ("1px", "", options=["1px","2px", "3px", "4px", "5px"], inline="NYOPP", group="Opening Price Lines")
+i_EOPLW                 = input.string          ("1px", "", options=["1px","2px", "3px", "4px", "5px"], inline="EOPP", group="Opening Price Lines")
+i_AFTOPLW               = input.string          ("1px", "", options=["1px","2px", "3px", "4px", "5px"], inline="AFTOPP", group="Opening Price Lines")
+
+//----------------------------------------------
+
+// W&M Bool
+ShowWeekOpen            = input.bool            (defval=false, title="", tooltip="Draw Weekly Open Price Line", group="HTF Opening Price Lines", inline="WO")
+showMonthOpen           = input.bool            (defval=false, title="", tooltip="Draw Monthly Open Price Line", group="HTF Opening Price Lines", inline="MO")
+
+// W&M String
+txt19                   = input.string          ("WEEKLY", title="", inline="WO", group="HTF Opening Price Lines")
+txt20                   = input.string          ("MONTHLY", title="", inline="MO", group="HTF Opening Price Lines")
+
+// W&M Color
+i_WeekOpenCol           = input.color           (title="", defval=color.new(#787b86, 0), group="HTF Opening Price Lines", inline="WO")
+i_MonthOpenCol          = input.color           (title="", tooltip="", defval=color.new(#787b86, 0), group="HTF Opening Price Lines", inline="MO")
+
+// W&M LineStyle
+WOLS                    = input.string          ("Dotted", "", options=["Solid", "Dashed", "Dotted"], inline="WO", group="HTF Opening Price Lines")
+MOLS                    = input.string          ("Dotted", "", options=["Solid", "Dashed", "Dotted"], inline="MO", group="HTF Opening Price Lines")
+
+// W&M LineWidth
+i_WOPLW                 = input.string          ("1px", "", options=["1px","2px", "3px", "4px", "5px"], inline="WO", group="HTF Opening Price Lines")
+i_MONPLW                = input.string          ("1px", "", options=["1px","2px", "3px", "4px", "5px"], inline="MO", group="HTF Opening Price Lines")
+//----------------------------------------------
+
+// CBDR, ASIA & FLOUT
+ShowCBDR                = input.bool            (true, "", inline='CBDR', group="CBDR, ASIA & FLOUT")
+ShowASIA                = input.bool            (true, "", inline='ASIA', group="CBDR, ASIA & FLOUT")
+ShowFLOUT               = input.bool            (false, "", inline='FLOUT', group="CBDR, ASIA & FLOUT")
+
+// Strings
+txt0                    = input.string          ("CBDR", title="", inline="CBDR", group="CBDR, ASIA & FLOUT", tooltip="16:00 to 20:00 \nSD Increments of 1")
+txt1                    = input.string          ("ASIA", title="", inline="ASIA", group="CBDR, ASIA & FLOUT", tooltip="20:00 to 00:00 \nSD Increments of 1")
+txt7                    = input.string          ("FLOUT", title="", inline="FLOUT", group="CBDR, ASIA & FLOUT", tooltip="16:00 to 00:00 \nSD Increments of 0.5")
+
+// Color
+CBDRBoxCol              = input.color           (color.new(#787b86, 0),"", inline='CBDR', group="CBDR, ASIA & FLOUT")
+ASIABoxCol              = input.color           (color.new(#787b86, 0), "", inline='ASIA', group="CBDR, ASIA & FLOUT")
+FLOUTBoxCol             = input.color           (color.new(#787b86, 0),"", inline='FLOUT', group="CBDR, ASIA & FLOUT")
+
+// Extras
+box_text_cbdr           = input.bool            (true, "Show Text", inline="CBDR", group="CBDR, ASIA & FLOUT")
+box_text_cbdr_col       = input.color           (color.new(color.gray, 80), "", inline="CBDR", group="CBDR, ASIA & FLOUT")
+bool_cbdr_dev           = input.bool            (true, "SD", inline="CBDR", group="CBDR, ASIA & FLOUT")
+
+box_text_asia           = input.bool            (true, "Show Text", inline="ASIA", group="CBDR, ASIA & FLOUT")
+box_text_asia_col       = input.color           (color.new(color.gray, 80), "", inline="ASIA", group="CBDR, ASIA & FLOUT")
+bool_asia_dev           = input.bool            (true, "SD", inline="ASIA", group="CBDR, ASIA & FLOUT")
+
+box_text_flout          = input.bool            (true, "Show Text", inline="FLOUT", group="CBDR, ASIA & FLOUT")
+box_text_flout_col      = input.color           (color.new(color.gray, 80), "", inline="FLOUT", group="CBDR, ASIA & FLOUT")
+bool_flout_dev          = input.bool            (true, "SD", inline="FLOUT", group="CBDR, ASIA & FLOUT")
+
+// Table
+
+// SD Lines
+ShowDevLN               = input.bool            (title="", defval=true, inline="DEVLN", group="Standard Deviation", tooltip="Deviation Lines")
+DEVLNTXT                = input.string          ("SD LINES", title="", inline="DEVLN", group="Standard Deviation")
+DevLNCol                = input.color           (color.new(#787b86, 0), "", inline="DEVLN", group="Standard Deviation")
+DEVLS                   = input.string          ("Solid", "", options=["Solid", "Dashed", "Dotted"], inline="DEVLN", group="Standard Deviation")
+i_DEVLW                 = input.string          ("1px", "", options=["1px","2px", "3px", "4px", "5px"], inline="DEVLN", group="Standard Deviation")
+DEVLSS                  = DEVLS=="Solid" ? line.style_solid : DEVLS == "Dotted" ? line.style_dotted : line.style_dashed
+DEVLW                   = i_DEVLW=="1px" ? 1 : i_DEVLW == "2px" ? 2 : i_DEVLW == "3px" ? 3 : i_DEVLW == "4px" ? 4 : 5
+
+ShowDev                 = input.bool            (false, '', inline="DEV", group="Standard Deviation")
+txt8                    = input.string          ("SD COUNT", title="", inline="DEV", group="Standard Deviation")
+SDCountCol              = input.color           (color.new(#787b86, 0), "", inline="DEV", group="Standard Deviation")
+DevInput                = input.string          ("2 SD", "", options=["1 SD","2 SD", "3 SD", "4 SD"], inline="DEV", group="Standard Deviation")
+DevDirection            = input.string          ("Both", "", options=["Upside Only","Both", "Downside Only"], inline="DEV", group="Standard Deviation", tooltip="SD Count, NULL, SD Count, SD Direction")
+DevCount                = DevInput          ==  "1 SD" ? 1 : DevInput == "2 SD" ? 2 : DevInput == "3 SD" ? 3 : 4
+
+Auto_Select             = input.bool            (false, "", group="Standard Deviation", inline="AUTOSD", tooltip="Auto SD Selection | Charter Content, Range Table \nMight Bug Out On Mondays" )
+txtSD                   = input.string          ("AUTO SD", "", group="Standard Deviation", inline="AUTOSD")
+Tab1txtCol              = input.color           (color.new(#808080, 0), "", inline='AUTOSD', group="Standard Deviation")
+TabOptionShow           = input.string          ("Show Table", "", options=["Show Table", "Hide Table"], inline="AUTOSD", group="Standard Deviation")
+Stats                   = TabOptionShow     == "Show Table" ? true : false
+TabOption1              = input.string          ("Top Right", "", options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], inline="AUTOSD", group="Standard Deviation")
+tabinp1                 = TabOption1        == "Top Left" ? position.top_left : TabOption1 == "Top Center" ? position.top_center : TabOption1 == "Top Right" ? position.top_right : TabOption1 == "Middle Left" ? position.middle_left : TabOption1 == "Middle Right" ? position.middle_right : TabOption1 == "Bottom Left" ? position.bottom_left : TabOption1 == "Bottom Center" ? position.bottom_center : position.bottom_right
+L_Prof                  = true
+CellBG                  = color.new(#131722, 100)
+
+//---------------------------------------------- 
+// Day Of Week & Labels
+// Label Settings Inputs
+ShowLabel               = input.bool            (true, title="", inline="Glabel", group="Day Of Week & Labels")
+txt21                   = input.string          ("LABEL", title="", inline="Glabel", group="Day Of Week & Labels")
+LabelColor              = input.color           (color.rgb(0,0,0,100), "", inline="Glabel", group="Day Of Week & Labels")
+LabelSizeInput          = input.string          ("Normal", "", options=["Auto", "Tiny", "Small", "Normal", "Large", "Huge"], inline="Glabel", group="Day Of Week & Labels")
+Terminusinp             = input.string          ("Terminus @ Current Time +1hr", "", options = ["Terminus @ Next Midnight","Terminus @ Current Time", "Terminus @ Current Time +15min", "Terminus @ Current Time +30min", "Terminus @ Current Time +45min", "Terminus @ Current Time +1hr", "Terminus @ Current Time +2hr", "Terminus @ Current Time +3hr"], inline="Glabel", group="Day Of Week & Labels", tooltip="Select Label Size & Color & Terminus \nHistorical Price Lines needs to be toggled off for using Terminus")
+
+ShowLabelText           = input.bool            (true, title="", inline="label", group="Day Of Week & Labels")
+txt22                   = input.string          ("LABEL TEXT", title="", inline="label", group="Day Of Week & Labels")
+LabelTextColor          = input.color           (color.new(#787b86, 0), title="", inline="label", group="Day Of Week & Labels")
+LabelTextOptioninput    = input.string          ("Time", "", options=["Time", "Text"], inline="label", group="Day Of Week & Labels", tooltip="Choose Between Descriptive Text as Label or Time \nShow/Hide Prices on Labels")
+ShowPricesBool          = input.string          ("Hide Prices", title="", options=["Show Prices", "Hide Prices"], group="Day Of Week & Labels", inline="label")
+ShowPrices              = ShowPricesBool    == "Show Prices" ? true : false
+ 
+showDOW                 = input.bool            (true, title="", inline="DOW", group="Day Of Week & Labels")
+txt24                   = input.string          ("DAY OF WEEK", title="", inline="DOW", group="Day Of Week & Labels")
+i_DOWCol                = input.color           (color.new(#787b86, 0), title="", inline="DOW", group="Day Of Week & Labels")
+DOWTime                 = input.int             (defval = 12, title="", inline="DOW", group="Day Of Week & Labels")
+DOWLoc_inpt             = input.string          ("Bottom", "", options = ["Top", "Bottom"], inline="DOW", group="Day Of Week & Labels", tooltip="DOW Color, Time Alignment, Vertical Location")
+DOWLoc                  = DOWLoc_inpt       == "Bottom" ? location.bottom : location.top
+//----------------------------------------------
+
+BIAS_M_Bool             = input.bool            (false, "", group="BIAS & NOTES PRECONFIG", inline="stats")
+txt100                  = input.string          ("BIAS", title="", inline="stats", group="BIAS & NOTES PRECONFIG")
+TableBG2                = color.new(#131722, 100)
+Tab2txtCol              = input.color           (color.new(#787b86, 0), "", inline='stats', group="BIAS & NOTES PRECONFIG")
+TabOption2              = input.string          ("Bottom Right", "", options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], inline="stats", group="BIAS & NOTES PRECONFIG")
+tabinp2                 = TabOption2        == "Top Left" ? position.top_left : TabOption2 == "Top Center" ? position.top_center : TabOption2 == "Top Right" ? position.top_right : TabOption2 == "Middle Left" ? position.middle_left : TabOption2 == "Middle Right" ? position.middle_right : TabOption2 == "Bottom Left" ? position.bottom_left : TabOption2 == "Bottom Center" ? position.bottom_center : position.bottom_right
+notesbool = false
+
+NOTES_M_Bool            = input.bool            (true, "", group="BIAS & NOTES PRECONFIG", inline="stats2")
+txt101                  = input.string          ("NOTES", title="", inline="stats2", group="BIAS & NOTES PRECONFIG")
+Tab3txtCol              = input.color           (color.new(#787b86, 0), "", inline='stats2', group="BIAS & NOTES PRECONFIG")
+TabOption3              = input.string          ("Top Center", "", options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], inline="stats2", group="BIAS & NOTES PRECONFIG")
+tabinp3                 = TabOption3        == "Top Left" ? position.top_left : TabOption3 == "Top Center" ? position.top_center : TabOption3 == "Top Right" ? position.top_right : TabOption3 == "Middle Left" ? position.middle_left : TabOption3 == "Middle Right" ? position.middle_right : TabOption3 == "Bottom Left" ? position.bottom_left : TabOption3 == "Bottom Center" ? position.bottom_center : position.bottom_right
+
+BIASbool1               = input.bool            (true, '', inline="BIAS1", group="BIAS & NOTES")
+txt52                   = input.string          ("DXY ", title="", inline="BIAS1", group="BIAS & NOTES")
+BIASOption1             = input.string          ("Bullish", options=["Bullish", "Bearish", "Consolidating", "Unclear"], title="", inline="BIAS1", group="BIAS & NOTES")
+
+BIASbool2               = input.bool            (true, '', inline="BIAS2", group="BIAS & NOTES")
+txt53                   = input.string          ("EURGBP ", title="", inline="BIAS2", group="BIAS & NOTES")
+BIASOption2             = input.string          ("Bearish", options=["Bullish", "Bearish", "Consolidating", "Unclear"], title="", inline="BIAS2", group="BIAS & NOTES")
+
+BIASbool3               = input.bool            (true, '', inline="BIAS3", group="BIAS & NOTES")
+txt54                   = input.string          ("AUDNZD ", title="", inline="BIAS3", group="BIAS & NOTES")
+BIASOption3             = input.string          ("Bullish", options=["Bullish", "Bearish", "Consolidating", "Unclear"], title="", inline="BIAS3", group="BIAS & NOTES")
+
+BIASbool4               = input.bool            (true, '', inline="BIAS4", group="BIAS & NOTES")
+txt55                   = input.string          ("NASDAQ ", title="", inline="BIAS4", group="BIAS & NOTES")
+BIASOption4             = input.string          ("Bearish", options=["Bullish", "Bearish", "Consolidating", "Unclear"], title="", inline="BIAS4", group="BIAS & NOTES")
+notes                   = input.text_area       ("@coldbrewrosh", "Notes", group = "BIAS & NOTES")
+
+
+
+//--------------------END OF INPUTS--------------------//
+
+// Pre-Def
+DOM                     = (timeframe.multiplier <= inputMaxInterval) and (timeframe.isintraday)
+newDay                  = ta.change(dayofweek)
+newWeek                 = ta.change(weekofyear)
+newMonth                = ta.change(time("M")) 
+
+transparentcol          = color.rgb(255,255,255,100)
+
+LSVLC                   = color.rgb(255,255,255,100)
+NYSVLC                  = color.rgb(255,255,255,100)
+PMSVLC                  = color.rgb(255,255,255,100)
+ASVLC                   = color.rgb(255,255,255,100)
+
+LSVLS                   = "dotted"
+NYSVLS                  = "dotted"
+PMSVLS                  = "dotted"
+ASVLS                   = "dotted"
+
+// Functions
+isToday = false
+if year(timenow) == year(time) and month(timenow) == month(time) and dayofmonth(timenow) == dayofmonth(time) 
+    isToday := true
+
+// Current Week
+thisweek = year(timenow) == year(time) and weekofyear(timenow) == weekofyear(time)
+LastOneWeek = year(timenow) == year(time) and weekofyear(timenow-604800000) == weekofyear(time)
+LastTwoWeek = year(timenow) == year(time) and weekofyear(timenow-1209600000) == weekofyear(time)
+LastThreeWeek = year(timenow) == year(time) and weekofyear(timenow-1814400000) == weekofyear(time)
+LastFourWeek = year(timenow) == year(time) and weekofyear(timenow-2419200000) == weekofyear(time)
+Last4Weeks = false
+if thisweek == true or LastOneWeek == true or LastTwoWeek == true or LastThreeWeek == true or LastFourWeek == true
+    Last4Weeks := true
+
+// Function to draw Vertical Lines
+vline(Start, Color, linestyle, LineWidth) =>
+    line.new(x1=Start, y1=low - ta.tr, x2=Start, y2=high + ta.tr, xloc=xloc.bar_time, extend=extend.both, color=Color, style=linestyle, width=LineWidth)
+
+// Function to convert forex pips into whole numbers
+atr = ta.atr(14)
+toWhole(number) =>
+    if syminfo.type == "forex" // This method only works on forex pairs
+        _return = atr < 1.0 ? (number / syminfo.mintick) / 10 : number
+        _return := atr >= 1.0 and atr < 100.0 and syminfo.currency == "JPY" ? _return * 100 : _return
+    else
+        number
+
+// Function for determining the Start of a Session (taken from the Pinescript manual: https://www.tradingview.com/pine-script-docs/en/v5/concepts/Sessions.html )
+SessionBegins(sess) =>
+    t = time("", sess , Timezone)
+    DOM and (not barstate.isfirst) and na(t[1]) and not na(t)
+
+// BarIn Session
+BarInSession(sess) =>
+    time(timeframe.period, sess, Timezone) != 0
+
+// Label Type Logic
+var SFistrue = true
+if LabelTextOptioninput == "Time"
+    SFistrue := true
+else
+    SFistrue := false
+
+
+// Session String to int
+SeshStartHour(Session) =>
+    math.round(str.tonumber(str.substring(Session,0,2)))
+SeshStartMins(Session) =>
+    math.round(str.tonumber(str.substring(Session,2,4)))
+SeshEndHour(Session) =>
+    math.round(str.tonumber(str.substring(Session,5,7)))
+SeshEndMins(Session) =>
+    math.round(str.tonumber(str.substring(Session,7,9)))
+
+// Time periods
+CBDR                    = "1600-2000:1234567"
+ASIA                    = "2000-0000:1234567"
+FLOUT                   = "1600-0000:1234567"
+midsesh                 = "0000-1600:1234567"
+
+cbdrOpenTime            = timestamp             (Timezone, year, month, dayofmonth, SeshStartHour(CBDR), SeshStartMins(CBDR), 00)
+cbdrEndTime             = timestamp             (Timezone, year, month, dayofmonth, SeshEndHour(CBDR), SeshEndMins(CBDR), 00)
+asiaOpenTime            = timestamp             (Timezone, year, month, dayofmonth, SeshStartHour(ASIA), SeshStartMins(ASIA), 00)
+asiaEndTime             = timestamp             (Timezone, year, month, dayofmonth, SeshEndHour(ASIA), SeshEndMins(ASIA), 00)+86400000
+floutOpenTime           = timestamp             (Timezone, year, month, dayofmonth, SeshStartHour(FLOUT), SeshStartMins(FLOUT), 00)
+floutEndTime            = timestamp             (Timezone, year, month, dayofmonth, SeshEndHour(FLOUT), SeshEndMins(FLOUT), 00)+86400000
+CBDRTime                = time                  (timeframe.period, CBDR, Timezone)
+ASIATime                = time                  (timeframe.period, ASIA, Timezone)
+FLOUTTime               = time                  (timeframe.period, FLOUT, Timezone)
+
+LabelOnlyToday          = true
+
+// Time Periods
+LondonStartTime         = timestamp(Timezone, year, month, dayofmonth, SeshStartHour(LDNsesh), SeshStartMins(LDNsesh), 00)
+LondonEndTime           = timestamp(Timezone, year, month, dayofmonth, SeshEndHour(LDNsesh), SeshEndMins(LDNsesh), 00)
+NYStartTime             = timestamp(Timezone, year, month, dayofmonth, SeshStartHour(NYsesh), SeshStartMins(NYsesh), 00)
+NYEndTime               = timestamp(Timezone, year, month, dayofmonth, SeshEndHour(NYsesh), SeshEndMins(NYsesh), 00)
+LCStartTime             = timestamp(Timezone, year, month, dayofmonth, SeshStartHour(LCsesh), SeshStartMins(LCsesh), 00)
+LCEndTime               = timestamp(Timezone, year, month, dayofmonth, SeshEndHour(LCsesh), SeshEndMins(LCsesh), 00)
+
+PMStartTime             = timestamp(Timezone, year, month, dayofmonth, SeshStartHour(PMsesh), SeshStartMins(PMsesh), 00)
+PMEndTime               = timestamp(Timezone, year, month, dayofmonth, SeshEndHour(PMsesh), SeshEndMins(PMsesh), 00)
+AsianStartTime          = timestamp(Timezone, year, month, dayofmonth, SeshStartHour(ASIA2sesh), SeshStartMins(ASIA2sesh), 00)
+AsianEndTime            = timestamp(Timezone, year, month, dayofmonth, SeshEndHour(ASIA2sesh), SeshEndMins(ASIA2sesh), 00)
+
+FreeStartTime           = timestamp(Timezone, year, month, dayofmonth, SeshStartHour(FreeSesh), SeshStartMins(FreeSesh), 00)
+FreeEndTime             = timestamp(Timezone, year, month, dayofmonth, SeshEndHour(FreeSesh), SeshEndMins(FreeSesh), 00)
+
+MidnightOpenTime        = timestamp(Timezone, year, month, dayofmonth, 0, 0, 00)
+CLEANUPTIME             = timestamp(Timezone, year, month, dayofmonth, 0, 0, 00) - 16200000
+LondonOpenTime          = timestamp(Timezone, year, month, dayofmonth, 3, 0, 00)
+NYOpenTime              = timestamp(Timezone, year, month, dayofmonth, 8, 30, 00)
+EquitiesOpenTime        = timestamp(Timezone, year, month, dayofmonth, 9, 30, 00)
+AfternoonOpenTime       = timestamp(Timezone, year, month, dayofmonth, 13, 30, 00)
+tMidnight               = time("1", "0000-0001:1234567", Timezone)
+
+
+// Cleanup - Remove old drawing objects
+Cleanup(days) =>
+    // Delete old drawing objects
+    // One day is 86400000 milliseconds
+    removal_timestamp = (CLEANUPTIME) - (days * 86400000)    // Remove every drawing object older than the start of the Today's Midnight
+    a_allLines = line.all
+    a_allLabels = label.all
+    a_allboxes = box.all
+    // Remove old lines
+    if array.size(a_allLines) > 0
+	    for i = 0 to array.size(a_allLines) - 1
+		    line_x2 = line.get_x2(array.get(a_allLines, i))    
+		    if line_x2 < (removal_timestamp)
+		        line.delete(array.get(a_allLines, i))
+    // Remove old labels
+    if array.size(a_allLabels) > 0
+	    for i = 0 to array.size(a_allLabels) - 1
+		    label_x = label.get_x(array.get(a_allLabels, i))    
+		    if label_x < removal_timestamp
+		        label.delete(array.get(a_allLabels, i))
+    // Remove old boxes
+    if array.size(a_allboxes) > 0
+	    for i = 0 to array.size(a_allboxes) - 1
+		    box_x = box.get_right(array.get(a_allboxes, i))    
+		    if box_x < (removal_timestamp - 86400000)
+		        box.delete(array.get(a_allboxes, i))
+// End of Cleanup function
+
+// Terminus Function
+Terminus(Terminus_Inp)=>
+    if Terminus_Inp == "Terminus @ Current Time"
+        _return = timenow
+    else if Terminus_Inp == "Terminus @ Current Time +15min"
+        _return = timenow + 900000
+    else if Terminus_Inp == "Terminus @ Current Time +30min"
+        _return = timenow + 1800000
+    else if Terminus_Inp == "Terminus @ Current Time +45min"
+        _return = timenow + 2700000
+    else if Terminus_Inp == "Terminus @ Current Time +1hr"
+        _return = timenow + 3600000
+    else if Terminus_Inp == "Terminus @ Current Time +2hr"
+        _return = timenow + 7200000
+    else
+        _return = timenow + 10800000
+
+// Linestyle Function
+MNOPLS                  = Midnight_Open_LS=="Solid" ? line.style_solid : Midnight_Open_LS == "Dotted" ? line.style_dotted : line.style_dashed
+LNOPLS                  = london_Open_LS=="Solid" ? line.style_solid : london_Open_LS == "Dotted" ? line.style_dotted : line.style_dashed
+NWYOPLS                 = NY_Open_LS=="Solid" ? line.style_solid : NY_Open_LS == "Dotted" ? line.style_dotted : line.style_dashed
+EQOPLS                  = Equities_Open_LS=="Solid" ? line.style_solid : Equities_Open_LS == "Dotted" ? line.style_dotted : line.style_dashed
+
+MOPLSS                  = MOPLS=="Solid" ? line.style_solid : MOPLS == "Dotted" ? line.style_dotted : line.style_dashed
+NYOPLSS                 = NYOPLS=="Solid" ? line.style_solid : NYOPLS == "Dotted" ? line.style_dotted : line.style_dashed
+EOPLSS                  = EOPLS=="Solid" ? line.style_solid : EOPLS == "Dotted" ? line.style_dotted : line.style_dashed
+AFTOPLSS                = AFTOPLS=="Solid" ? line.style_solid : AFTOPLS == "Dotted" ? line.style_dotted : line.style_dashed
+
+WeekOpenLS              = WOLS=="Solid" ? line.style_solid : WOLS == "Dotted" ? line.style_dotted : line.style_dashed
+MonthOpenLS             = MOLS=="Solid" ? line.style_solid : MOLS == "Dotted" ? line.style_dotted : line.style_dashed
+
+// Linewidth Function
+MOPLW                   = Midnight_Open_LW=="1px" ? 1 : Midnight_Open_LW == "2px" ? 2 : Midnight_Open_LW == "3px" ? 3 : Midnight_Open_LW == "4px" ? 4 : 5
+LOPLW                   = London_Open_LW=="1px" ? 1 : London_Open_LW == "2px" ? 2 : London_Open_LW == "3px" ? 3 : London_Open_LW == "4px" ? 4 : 5
+NYOPLW                  = NY_Open_LW=="1px" ? 1 : NY_Open_LW == "2px" ? 2 : NY_Open_LW == "3px" ? 3 : NY_Open_LW == "4px" ? 4 : 5
+EOPLW                   = Equities_Open_LW=="1px" ? 1 : Equities_Open_LW == "2px" ? 2 : Equities_Open_LW == "3px" ? 3 : Equities_Open_LW == "4px" ? 4 : 5
+
+MOPPLW                  = i_MOPLW=="1px" ? 1 : i_MOPLW == "2px" ? 2 : i_MOPLW == "3px" ? 3 : i_MOPLW == "4px" ? 4 : 5
+NYOPPLW                 = i_NYOPLW=="1px" ? 1 : i_NYOPLW == "2px" ? 2 : i_NYOPLW == "3px" ? 3 : i_NYOPLW == "4px" ? 4 : 5
+EOPPLW                  = i_EOPLW=="1px" ? 1 : i_EOPLW == "2px" ? 2 : i_EOPLW == "3px" ? 3 : i_EOPLW == "4px" ? 4 : 5
+AFTOPLW                 = i_AFTOPLW=="1px" ? 1 : i_AFTOPLW == "2px" ? 2 : i_AFTOPLW == "3px" ? 3 : i_AFTOPLW == "4px" ? 4 : 5
+
+WEEKOPPLW               = i_WOPLW=="1px" ? 1 : i_WOPLW == "2px" ? 2 : i_WOPLW == "3px" ? 3 : i_WOPLW == "4px" ? 4 : 5
+MONTHOPPLW              = i_MONPLW=="1px" ? 1 : i_MONPLW == "2px" ? 2 : i_MONPLW == "3px" ? 3 : i_MONPLW == "4px" ? 4 : 5
+
+// Label Size Function
+LabelSize               =LabelSizeInput=="Auto" ? size.auto : LabelSizeInput=="Tiny" ? size.tiny : LabelSizeInput=="Small" ? size.small : LabelSizeInput=="Normal" ? size.normal : LabelSizeInput=="Large" ? size.large : size.huge
+
+
+// Creating Variables
+var London_Start_Vline  = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=LSVLC, width=1)
+var London_End_Vline    = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=LSVLC, width=1)
+var LondonFill          = linefill.new(London_Start_Vline, London_End_Vline, LSFC)
+
+var NY_Start_Vline      = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=NYSVLC, width=1)
+var NY_End_Vline        = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=NYSVLC, width=1)
+var NYFill              = linefill.new(NY_Start_Vline, NY_End_Vline, NYSFC)
+
+var LC_Start_Vline      = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=NYSVLC, width=1)
+var LC_End_Vline        = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=NYSVLC, width=1)
+var LCFill              = linefill.new(LC_Start_Vline, LC_End_Vline, LCSFC)
+
+var PM_Start_Vline      = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=PMSVLC, width=1)
+var PM_End_Vline        = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=PMSVLC, width=1)
+var PMFill              = linefill.new(PM_Start_Vline, PM_End_Vline, PMSFC)
+
+var Asian_Start_Vline   = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=ASVLC, width=1)
+var Asian_End_Vline     = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=ASVLC, width=1)
+var AsianFill           = linefill.new(Asian_Start_Vline, Asian_End_Vline, ASFC)
+
+var Free_Start_Vline    = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=ASVLC, width=1)
+var Free_End_Vline      = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=ASVLC, width=1)
+var FreeFill            = linefill.new(Free_Start_Vline, Free_End_Vline, FSFC)
+
+
+var Midnight_Open       = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=MOPColor, width=1)
+var London_Open         = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=LOPColor, width=1)
+var NY_Open             = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=NYOPColor, width=1)
+var Equities_Open       = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=EOPColor, width=1)
+
+// When a New Day Starts, Start Drawing all lines
+if newDay and dayofweek != dayofweek.sunday
+    // London Session
+    if (ShowLondon and DOM)
+        if ShowTSO
+            line.delete(London_Start_Vline[1])
+            line.delete(London_End_Vline[1])
+            linefill.delete(LondonFill[1])
+        London_Start_Vline := vline(LondonStartTime,transparentcol, line.style_solid, 1)
+        London_End_Vline   := vline(LondonEndTime, transparentcol, line.style_solid, 1)
+        if ShowSFill
+            LondonFill := linefill.new(London_Start_Vline, London_End_Vline, LSFC)
+
+    // New York Session
+    if (ShowNY and DOM)
+        if ShowTSO
+            line.delete(NY_Start_Vline[1])
+            line.delete(NY_End_Vline[1])
+            linefill.delete(NYFill[1])
+        NY_Start_Vline := vline(NYStartTime, transparentcol, line.style_solid, 1)
+        NY_End_Vline   := vline(NYEndTime, transparentcol, line.style_solid, 1)
+        if ShowSFill
+            NYFill := linefill.new(NY_Start_Vline, NY_End_Vline, NYSFC)
+
+    // London Close
+    if (ShowLC and DOM)
+        if ShowTSO
+            line.delete(LC_End_Vline[1])
+            linefill.delete(LCFill[1])
+        LC_Start_Vline := vline(LCStartTime, transparentcol, line.style_solid, 1)
+        LC_End_Vline   := vline(LCEndTime, transparentcol, line.style_solid, 1)
+        if ShowSFill
+            LCFill := linefill.new(LC_Start_Vline, LC_End_Vline, LCSFC)
+
+    // PM Session
+    if (ShowPM and DOM)
+        if ShowTSO
+            line.delete(PM_Start_Vline[1])
+            line.delete(PM_End_Vline[1])
+            linefill.delete(PMFill[1])
+        PM_Start_Vline := vline(PMStartTime, transparentcol, line.style_solid, 1)
+        PM_End_Vline   := vline(PMEndTime, transparentcol, line.style_solid, 1)
+        if ShowSFill
+            PMFill := linefill.new(PM_Start_Vline, PM_End_Vline, PMSFC)
+
+    // Asian Session
+    if (ShowAsian and DOM)
+        if ShowTSO
+            line.delete(Asian_Start_Vline[1])
+            line.delete(Asian_End_Vline[1])
+            linefill.delete(AsianFill[1])
+        Asian_Start_Vline := vline(AsianStartTime, transparentcol, line.style_solid, 1)
+        Asian_End_Vline   := vline(AsianEndTime, transparentcol, line.style_solid, 1)
+        // if dayofweek == dayofweek.friday
+        //     // line.delete(Asian_Start_Vline)
+        //     // line.delete(Asian_End_Vline)
+        //     Asian_Start_Vline := vline(MidnightOpenTime+244800000, transparentcol, line.style_solid, 1)
+        //     Asian_End_Vline   := vline(MidnightOpenTime+259200000, transparentcol, line.style_solid, 1)
+        if ShowSFill
+            AsianFill := linefill.new(Asian_Start_Vline, Asian_End_Vline, ASFC)
+
+    // Free Session
+    if (ShowFreeSesh and DOM)
+        if ShowTSO
+            line.delete(Free_Start_Vline[1])
+            line.delete(Free_End_Vline[1])
+            linefill.delete(FreeFill[1])
+        Free_Start_Vline := vline(FreeStartTime, transparentcol, line.style_solid, 1)
+        Free_End_Vline   := vline(FreeEndTime, transparentcol, line.style_solid, 1)
+        if ShowSFill
+            FreeFill := linefill.new(Free_Start_Vline, Free_End_Vline, FSFC)
+    
+    // Midnight Opening Price
+    if (ShowMOP and DOM)
+        if MOLHist == false 
+            line.delete(Midnight_Open[1])
+        Midnight_Open := vline(MidnightOpenTime, MOPColor, MNOPLS, MOPLW)
+ 
+    // London Opening Price
+    if (ShowLOP and DOM)
+        if ShowTSO
+            line.delete(London_Open[1])
+        London_Open := vline(LondonOpenTime, LOPColor, LNOPLS, LOPLW)
+
+    // New York Opening Price
+    if (ShowNYOP and DOM)
+        if ShowTSO
+            line.delete(NY_Open[1])
+        NY_Open := vline(NYOpenTime, NYOPColor, NWYOPLS, NYOPLW)
+        
+    // Equities Opening Price
+    if (ShowEOP and DOM)
+        if ShowTSO
+            line.delete(Equities_Open[1])
+        Equities_Open := vline(EquitiesOpenTime, EOPColor, EQOPLS, EOPLW)
+
+// Variables
+var label MOPLB = na
+var line MOPLN = na
+var label NYOPLB = na
+var line NYOPLN = na
+var label EOPLB = na
+var line EOPLN = na
+var line AFTLN = na
+var label AFTLB = na
+
+// New York Midnight Open Price line
+var openMidnight  = 0.0
+if tMidnight
+    if not tMidnight[1]
+        openMidnight  := open
+    else
+        openMidnight := math.max(open, openMidnight)
+
+if (ShowMOPP and (openMidnight != openMidnight[1]) and DOM and barstate.isconfirmed)
+    label.delete(MOPLB[1])
+    if ShowMOPL == false
+        line.delete(MOPLN[1])
+    MOPLN := line.new(x1=tMidnight, y1=openMidnight, x2=tMidnight+86400000, xloc=xloc.bar_time, y2=openMidnight, color=MOPColP, style=MOPLSS, width=MOPPLW)
+    if dayofweek == dayofweek.friday and syminfo.type != "crypto"
+        line.set_x2(MOPLN, tMidnight+259200000)
+    if ShowLabel
+        MOPLB := label.new(x=tMidnight+86400000, y=openMidnight, xloc=xloc.bar_time, color=LabelColor, textcolor=MOPColP, style=label.style_label_left, size=LabelSize, tooltip="Midnight Opening Price")
+        if dayofweek == dayofweek.friday and syminfo.type != "crypto"
+            label.set_x(MOPLB, tMidnight+259200000)
+        if ShowLabelText
+            if SFistrue
+                if ShowPrices == true
+                    label.set_text(MOPLB, " 00:00  |  " + str.tostring(open))
+                else
+                    label.set_text(MOPLB, " 00:00 ")
+                label.set_tooltip(MOPLB, "Midnight Opening Price")
+            else
+                if ShowPrices == true
+                    label.set_text(MOPLB, " Midnight Opening Price  |  " + str.tostring(open))
+                else
+                    label.set_text(MOPLB, " Midnight Opening Price ")
+                label.set_tooltip(MOPLB, "")
+            label.set_textcolor(MOPLB, LabelTextColor)
+            label.set_size(MOPLB,LabelSize)
+    if time > PMEndTime and time < (MidnightOpenTime + 86400000)
+        line.delete(MOPLN[0])
+
+if Terminusinp != "Terminus @ Next Midnight" and ShowMOPL == false
+    line.set_x2(MOPLN, Terminus(Terminusinp))
+    label.set_x(MOPLB, Terminus(Terminusinp))
+
+// New York Opening Price Line
+if (ShowNYOPP and (time == NYOpenTime) and DOM)
+    label.delete(NYOPLB[1])
+    if ShowPrev == false
+        line.delete(NYOPLN[1])
+    NYOPLN := line.new(x1=NYOpenTime, y1=open, x2=NYOpenTime+55800000, xloc=xloc.bar_time, y2=open, color=NYOPColP, style=NYOPLSS, width=NYOPPLW)
+    if dayofweek == dayofweek.friday and syminfo.type != "crypto"
+        line.set_x2(NYOPLN, NYOpenTime+228600000)
+    if ShowLabel
+        NYOPLB := label.new(x=NYOpenTime+55800000, y=open, xloc=xloc.bar_time, color=LabelColor, textcolor=NYOPColP, style=label.style_label_left, size=LabelSize, tooltip="New York Opening Price")
+        if dayofweek == dayofweek.friday and syminfo.type != "crypto"
+            label.set_x(NYOPLB, NYOpenTime+228600000)
+        if ShowLabelText
+            if SFistrue
+                if ShowPrices == true
+                    label.set_text(NYOPLB, " 08:30  |  " + str.tostring(open))
+                else
+                    label.set_text(NYOPLB, " 08:30 ")
+                label.set_tooltip(NYOPLB, "New York Opening Price")
+            else
+                if ShowPrices == true
+                    label.set_text(NYOPLB, " New York Opening Price  |  " + str.tostring(open))
+                else
+                    label.set_text(NYOPLB, " New York Opening Price ")
+                label.set_tooltip(NYOPLB, "")
+            label.set_textcolor(NYOPLB, LabelTextColor)
+            label.set_size(NYOPLB,LabelSize)
+if Terminusinp != "Terminus @ Next Midnight" and ShowPrev == false
+    line.set_x2(NYOPLN, Terminus(Terminusinp))
+    label.set_x(NYOPLB, Terminus(Terminusinp))
+
+// Equities Opening Price Line
+if (ShowEOPP and (time == EquitiesOpenTime) and DOM)
+    label.delete(EOPLB[1])
+    if ShowPrev == false
+        line.delete(EOPLN[1])
+    EOPLN := line.new(x1=EquitiesOpenTime, y1=open, x2=EquitiesOpenTime+52200000, xloc=xloc.bar_time, y2=open, color=EOPColP, style=EOPLSS, width=EOPPLW)
+    if dayofweek == dayofweek.friday and syminfo.type != "crypto"
+        line.set_x2(EOPLN, EquitiesOpenTime+225000000)
+    if ShowLabel
+        EOPLB := label.new(x=EquitiesOpenTime+52200000, y=open, xloc=xloc.bar_time, color=LabelColor, textcolor=EOPColP, style=label.style_label_left, size=LabelSize, tooltip="Equities Opening Price")  
+        if dayofweek == dayofweek.friday and syminfo.type != "crypto"
+            label.set_x(EOPLB, EquitiesOpenTime+225000000)
+        if ShowLabelText
+            if SFistrue
+                if ShowPrices == true
+                    label.set_text(EOPLB, " 09:30  |  " + str.tostring(open))
+                else
+                    label.set_text(EOPLB, " 09:30 ")
+                label.set_tooltip(EOPLB, "Equities Opening Price")
+            else
+                if ShowPrices == true
+                    label.set_text(EOPLB, " Equities Opening Price  |  " + str.tostring(open))
+                else
+                    label.set_text(EOPLB, " Equities Opening Price ")
+                label.set_tooltip(EOPLB, "")
+            label.set_textcolor(EOPLB, LabelTextColor)
+            label.set_size(EOPLB,LabelSize)
+if Terminusinp != "Terminus @ Next Midnight" and ShowPrev == false
+    line.set_x2(EOPLN, Terminus(Terminusinp))
+    label.set_x(EOPLB, Terminus(Terminusinp))
+
+// Afternoon Opening Price Line
+if (ShowAFTPP and (time == AfternoonOpenTime) and DOM)
+    label.delete(AFTLB[1])
+    if ShowPrev == false
+        line.delete(AFTLN[1])
+    AFTLN := line.new(x1=AfternoonOpenTime, y1=open, x2=EquitiesOpenTime+52200000, xloc=xloc.bar_time, y2=open, color=AFTOPColP, style=AFTOPLSS, width=AFTOPLW)
+    if dayofweek == dayofweek.friday and syminfo.type != "crypto"
+        line.set_x2(AFTLN, EquitiesOpenTime+225000000)
+    if ShowLabel
+        AFTLB := label.new(x=EquitiesOpenTime+52200000, y=open, xloc=xloc.bar_time, color=LabelColor, textcolor=AFTOPColP, style=label.style_label_left, size=LabelSize, tooltip="Equities Opening Price")  
+        if dayofweek == dayofweek.friday and syminfo.type != "crypto"
+            label.set_x(AFTLB, EquitiesOpenTime+225000000)
+        if ShowLabelText
+            if SFistrue
+                if ShowPrices == true
+                    label.set_text(AFTLB, " 01:30  |  " + str.tostring(open))
+                else
+                    label.set_text(AFTLB, " 01:30 ")
+                label.set_tooltip(AFTLB, " Afternoon Opening Price")
+            else
+                if ShowPrices == true
+                    label.set_text(AFTLB, " Afternoon Opening Price  |  " + str.tostring(open))
+                else
+                    label.set_text(AFTLB, " Afternoon Opening Price ")
+                label.set_tooltip(AFTLB, "")
+            label.set_textcolor(AFTLB, LabelTextColor)
+            label.set_size(AFTLB,LabelSize)
+if Terminusinp != "Terminus @ Next Midnight" and ShowPrev == false
+    line.set_x2(AFTLN, Terminus(Terminusinp))
+    label.set_x(AFTLB, Terminus(Terminusinp))
+
+// HTF Variables
+var Weekly_open     = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=i_WeekOpenCol, style=WeekOpenLS, width=1)
+var Weekly_openlbl  = label.new(x=na, y=na, xloc=xloc.bar_time, color=LabelColor, textcolor=LabelTextColor, style=label.style_label_left, size=LabelSize)
+var WeeklyOpenTime  = time
+
+var Monthly_open    = line.new(x1=na, y1=na, x2=na, xloc=xloc.bar_time, y2=close, color=i_MonthOpenCol, style=MonthOpenLS, width=1)
+var Monthly_openlbl  = label.new(x=na, y=na, xloc=xloc.bar_time, color=LabelColor, textcolor=LabelTextColor, style=label.style_label_left, size=LabelSize)
+var MonthlyOpenTime = time
+
+// Get HTF Price levels
+WeeklyOpen          = request.security(syminfo.tickerid, "W", open, lookahead = barmerge.lookahead_on)
+MonthlyOpen         = request.security(syminfo.tickerid, "M", open, lookahead = barmerge.lookahead_on)
+
+
+// Weekly Open
+if newWeek
+    WeeklyOpenTime := time
+
+if ShowWeekOpen and newDay and Last4Weeks
+    label.delete(Weekly_openlbl[1])
+    line.delete(Weekly_open[1])
+    // if ShowPrev == false
+    //     line.delete(Weekly_open[1])
+    Weekly_open:= line.new(x1=WeeklyOpenTime-25200000, y1=WeeklyOpen, x2=EquitiesOpenTime+52200000, xloc=xloc.bar_time, y2=WeeklyOpen, color=i_WeekOpenCol, style=WeekOpenLS, width=WEEKOPPLW)
+    if dayofweek == dayofweek.friday and syminfo.type != "crypto"
+        line.set_x2(Weekly_open, EquitiesOpenTime+225000000)
+    if ShowLabel
+        Weekly_openlbl := label.new(x=EquitiesOpenTime+52200000, y=WeeklyOpen, xloc=xloc.bar_time, color=LabelColor, textcolor=LabelTextColor, style=label.style_label_left, size=LabelSize, tooltip="Weekly Open: " + str.tostring(WeeklyOpen)) 
+        if dayofweek == dayofweek.friday and syminfo.type != "crypto"
+            label.set_x(Weekly_openlbl, EquitiesOpenTime+225000000)
+        if ShowLabelText
+            if SFistrue
+                if ShowPrices == true
+                    label.set_text(Weekly_openlbl," W.O.   |  " + str.tostring(WeeklyOpen))
+                else
+                    label.set_text(Weekly_openlbl," W.O. ")
+                label.set_tooltip(Weekly_openlbl, " Weekly Opening Price ")
+            else
+                if ShowPrices == true
+                    label.set_text(Weekly_openlbl," Weekly Open  |  " + str.tostring(WeeklyOpen))
+                else
+                    label.set_text(Weekly_openlbl," Weekly Open ")
+                label.set_tooltip(Weekly_openlbl, "") 
+            label.set_textcolor(Weekly_openlbl, LabelTextColor)
+            label.set_size(Weekly_openlbl, LabelSize)
+if timeframe.multiplier > 60
+    line.set_x2(Weekly_open, AsianEndTime + 232000000)
+    label.set_x(Weekly_openlbl, AsianEndTime + 232000000)
+if timeframe.period == "D"
+    line.set_x2(Weekly_open, AsianEndTime + 832000000)
+    label.set_x(Weekly_openlbl, AsianEndTime + 832000000)
+if timeframe.period == "M"
+    line.delete(Weekly_open)
+    label.delete(Weekly_openlbl)
+if Terminusinp != "Terminus @ Next Midnight" and DOM
+    line.set_x2(Weekly_open, Terminus(Terminusinp))
+    label.set_x(Weekly_openlbl, Terminus(Terminusinp))
+
+// Monthly Open
+if newMonth
+    MonthlyOpenTime := time
+    
+if showMonthOpen and newDay
+    line.delete(Monthly_open[1])
+    label.delete(Monthly_openlbl[1])
+    Monthly_open:= line.new(x1=MonthlyOpenTime, y1=MonthlyOpen, x2=AsianEndTime, xloc=xloc.bar_time, y2=MonthlyOpen, color=i_MonthOpenCol, style=MonthOpenLS, width=MONTHOPPLW)
+    if dayofweek == dayofweek.friday and syminfo.type != "crypto"
+        line.set_x2(Monthly_open, EquitiesOpenTime+225000000)
+    if ShowLabel
+        Monthly_openlbl := label.new(x=AsianEndTime, y=MonthlyOpen, xloc=xloc.bar_time, color=LabelColor, textcolor=LabelTextColor, style=label.style_label_left, size=LabelSize, tooltip="Monthly Open: " + str.tostring(MonthlyOpen))  
+        if dayofweek == dayofweek.friday and syminfo.type != "crypto"
+            label.set_x(Monthly_openlbl, EquitiesOpenTime+225000000)
+        if ShowLabelText
+            if SFistrue
+                if ShowPrices == true
+                    label.set_text(Monthly_openlbl," M.O.   |  " + str.tostring(MonthlyOpen))
+                else
+                    label.set_text(Monthly_openlbl," M.O. ")
+                label.set_tooltip(Monthly_openlbl, " Monthly Opening Price ")
+            else
+                if ShowPrices == true
+                    label.set_text(Monthly_openlbl, " Monthly Open  |  " + str.tostring(MonthlyOpen))
+                else
+                    label.set_text(Monthly_openlbl, " Monthly Open ")
+                label.set_tooltip(Monthly_openlbl, "")
+            label.set_textcolor(Monthly_openlbl, LabelTextColor)
+            label.set_size(Monthly_openlbl, LabelSize)
+if timeframe.multiplier > 60
+    line.set_x2(Monthly_open, AsianEndTime + 232000000)
+    label.set_x(Monthly_openlbl, AsianEndTime + 232000000)
+if timeframe.period == "D"
+    line.set_x2(Monthly_open, AsianEndTime + 832000000)
+    label.set_x(Monthly_openlbl, AsianEndTime + 832000000)
+if timeframe.period == "W"
+    line.set_x2(Monthly_open, AsianEndTime + 2592000000)
+    label.set_x(Monthly_openlbl, AsianEndTime + 2592000000)
+if timeframe.period == "M"
+    line.delete(Monthly_open)
+    label.delete(Monthly_openlbl)
+if Terminusinp != "Terminus @ Next Midnight" and DOM
+    line.set_x2(Monthly_open, Terminus(Terminusinp))
+    label.set_x(Monthly_openlbl, Terminus(Terminusinp))
+            
+ // CBDR Stuff
+var float cbdr_hi                = na
+var float cbdr_lo                = na
+var float cbdr_diff              = na
+var box   cbdrbox                = na
+var line  cbdr_hi_line           = na
+var line  cbdr_lo_line           = na
+var line  dev01negline           = na
+var line  dev02negline           = na
+var line  dev03negline           = na
+var line  dev04negline           = na
+var line  dev01posline           = na
+var line  dev02posline           = na
+var line  dev03posline           = na
+var line  dev04posline           = na 
+
+if SessionBegins(CBDR) and DOM 
+    cbdr_hi                 := high
+    cbdr_lo                 := low
+    cbdr_diff           := cbdr_hi - cbdr_lo
+    if ShowTSO
+        box.delete(cbdrbox[1])
+        line.delete(dev01posline[1])
+        line.delete(dev01negline[1])
+        line.delete(dev02posline[1])
+        line.delete(dev02negline[1])
+        line.delete(dev03posline[1])
+        line.delete(dev03negline[1])
+        line.delete(dev04posline[1])
+        line.delete(dev04negline[1])
+    if ShowCBDR
+        cbdrbox := box.new(cbdrOpenTime, cbdr_hi, cbdrEndTime, cbdr_lo, color.new(CBDRBoxCol,90), 1, line.style_solid, extend.none, xloc.bar_time, color.new(CBDRBoxCol,90), txt0, size.auto, color.new(box_text_cbdr_col,80), text_wrap=text.wrap_auto)
+        if dayofweek == dayofweek.friday
+            box.set_right(cbdrbox, cbdrOpenTime+187200000)
+            line.set_x2(cbdr_hi_line, cbdrOpenTime+187200000)
+            line.set_x2(cbdr_lo_line, cbdrOpenTime+187200000)
+    if box_text_cbdr == false
+        box.set_text(cbdrbox, "")
+    if ShowDev and ShowCBDR and bool_cbdr_dev
+        for i = 1 to DevCount by 1
+            if i == 1
+                dev01posline := line.new(cbdrOpenTime, cbdr_hi + cbdr_diff * i, cbdrEndTime, cbdr_hi + cbdr_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                dev01negline := line.new(cbdrOpenTime, cbdr_hi - cbdr_diff * i, cbdrEndTime, cbdr_lo - cbdr_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                if dayofweek == dayofweek.friday
+                    line.set_x2(dev01posline, cbdrOpenTime+187200000)
+                    line.set_x2(dev01negline, cbdrOpenTime+187200000)
+            if i == 2
+                dev02posline := line.new(cbdrOpenTime, cbdr_hi + cbdr_diff * i, cbdrEndTime, cbdr_lo + cbdr_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                dev02negline := line.new(cbdrOpenTime, cbdr_hi - cbdr_diff * i, cbdrEndTime, cbdr_lo - cbdr_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                if dayofweek == dayofweek.friday
+                    line.set_x2(dev02posline, cbdrOpenTime+187200000)
+                    line.set_x2(dev02negline, cbdrOpenTime+187200000)
+            if i == 3
+                dev03posline := line.new(cbdrOpenTime, cbdr_hi + cbdr_diff * i, cbdrEndTime, cbdr_lo + cbdr_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                dev03negline := line.new(cbdrOpenTime, cbdr_hi - cbdr_diff * i, cbdrEndTime, cbdr_lo - cbdr_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                if dayofweek == dayofweek.friday
+                    line.set_x2(dev03posline, cbdrOpenTime+187200000)
+                    line.set_x2(dev03negline, cbdrOpenTime+187200000)
+            if i == 4
+                dev04posline := line.new(cbdrOpenTime, cbdr_hi + cbdr_diff * i, cbdrEndTime, cbdr_lo + cbdr_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                dev04negline := line.new(cbdrOpenTime, cbdr_hi - cbdr_diff * i, cbdrEndTime, cbdr_lo - cbdr_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                if dayofweek == dayofweek.friday
+                    line.set_x2(dev04posline, cbdrOpenTime+187200000)
+                    line.set_x2(dev04negline, cbdrOpenTime+187200000)
+else if CBDRTime
+    cbdr_hi             := math.max(high, cbdr_hi)
+    cbdr_lo             := math.min(low, cbdr_lo)
+    cbdr_diff           := cbdr_hi - cbdr_lo
+    for i = 1 to DevCount by 1
+        if i == 1 and ShowDev
+            line.set_y1(dev01posline, cbdr_hi + cbdr_diff * i)
+            line.set_y2(dev01posline, cbdr_hi + cbdr_diff * i)
+
+            line.set_y1(dev01negline, cbdr_lo - cbdr_diff * i)
+            line.set_y2(dev01negline, cbdr_lo - cbdr_diff * i)
+        if i == 2 and ShowDev
+            line.set_y1(dev02posline, cbdr_hi + cbdr_diff * i)
+            line.set_y2(dev02posline, cbdr_hi + cbdr_diff * i)
+
+            line.set_y1(dev02negline, cbdr_lo - cbdr_diff * i)
+            line.set_y2(dev02negline, cbdr_lo - cbdr_diff * i)
+        if i == 3 and ShowDev
+            line.set_y1(dev03posline, cbdr_hi + cbdr_diff * i)
+            line.set_y2(dev03posline, cbdr_hi + cbdr_diff * i)
+
+            line.set_y1(dev03negline, cbdr_lo - cbdr_diff * i)
+            line.set_y2(dev03negline, cbdr_lo - cbdr_diff * i)
+        if i == 4 and ShowDev
+            line.set_y1(dev04posline, cbdr_hi + cbdr_diff * i)
+            line.set_y2(dev04posline, cbdr_hi + cbdr_diff * i)
+
+            line.set_y1(dev04negline, cbdr_lo - cbdr_diff * i)
+            line.set_y2(dev04negline, cbdr_lo - cbdr_diff * i)
+    if (cbdr_hi > cbdr_hi[1])
+        if ShowCBDR
+            box.set_top(cbdrbox, cbdr_hi)
+    if (cbdr_lo < cbdr_lo[1])
+        if ShowCBDR
+            box.set_bottom(cbdrbox, cbdr_lo)
+
+if DevDirection == "Upside Only"
+    line.delete(dev01negline)
+    line.delete(dev02negline)
+    line.delete(dev03negline)
+    line.delete(dev04negline)
+else if DevDirection == "Downside Only"
+    line.delete(dev01posline)
+    line.delete(dev02posline)
+    line.delete(dev03posline)
+    line.delete(dev04posline)
+
+// ASIA Stuff
+var float asia_hi                   = na
+var float asia_lo                   = na
+var float asia_diff                 = na
+var box   asia_box                  = na
+var line  asia_hi_line              = na
+var line  asia_lo_line              = na
+var line  dev01negline_asia         = na
+var line  dev02negline_asia         = na
+var line  dev03negline_asia         = na
+var line  dev04negline_asia         = na
+var line  dev01posline_asia         = na
+var line  dev02posline_asia         = na
+var line  dev03posline_asia         = na
+var line  dev04posline_asia         = na 
+if SessionBegins(ASIA) and DOM 
+    asia_hi                 := high
+    asia_lo                 := low
+    asia_diff               := asia_hi - asia_lo
+    if ShowTSO
+        box.delete(asia_box[1])
+        line.delete(dev01posline_asia[1])
+        line.delete(dev01negline_asia[1])
+        line.delete(dev02posline_asia[1])
+        line.delete(dev02negline_asia[1])
+        line.delete(dev03posline_asia[1])
+        line.delete(dev03negline_asia[1])
+        line.delete(dev04posline_asia[1])
+        line.delete(dev04negline_asia[1])
+    if ShowASIA
+        asia_box := box.new(asiaOpenTime, asia_hi, asiaEndTime, asia_lo, color.new(ASIABoxCol,90), 1, line.style_solid, extend.none, xloc.bar_time, color.new(ASIABoxCol,90), txt1, size.auto, color.new(box_text_asia_col,80), text_wrap=text.wrap_auto)
+    if box_text_asia == false
+        box.set_text(asia_box, "")
+    if ShowDev and ShowASIA and bool_asia_dev
+        for i = 1 to DevCount by 1
+            if i == 1
+                dev01posline_asia := line.new(asiaOpenTime, asia_hi + asia_diff * i, asiaEndTime, asia_hi + asia_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                dev01negline_asia := line.new(asiaOpenTime, asia_hi - asia_diff * i, asiaEndTime, asia_lo - asia_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+            if i == 2
+                dev02posline_asia := line.new(asiaOpenTime, asia_hi + asia_diff * i, asiaEndTime, asia_lo + asia_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                dev02negline_asia := line.new(asiaOpenTime, asia_hi - asia_diff * i, asiaEndTime, asia_lo - asia_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+            if i == 3
+                dev03posline_asia := line.new(asiaOpenTime, asia_hi + asia_diff * i, asiaEndTime, asia_lo + asia_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                dev03negline_asia := line.new(asiaOpenTime, asia_hi - asia_diff * i, asiaEndTime, asia_lo - asia_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+            if i == 4
+                dev04posline_asia := line.new(asiaOpenTime, asia_hi + asia_diff * i, asiaEndTime, asia_lo + asia_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                dev04negline_asia := line.new(asiaOpenTime, asia_hi - asia_diff * i, asiaEndTime, asia_lo - asia_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+else if ASIATime
+    asia_hi             := math.max(high, asia_hi)
+    asia_lo             := math.min(low, asia_lo)
+    asia_diff           := asia_hi - asia_lo
+    for i = 1 to DevCount by 1
+        if i == 1 and ShowDev
+            line.set_y1(dev01posline_asia, asia_hi + asia_diff * i)
+            line.set_y2(dev01posline_asia, asia_hi + asia_diff * i)
+
+            line.set_y1(dev01negline_asia, asia_lo - asia_diff * i)
+            line.set_y2(dev01negline_asia, asia_lo - asia_diff * i)
+        if i == 2 and ShowDev
+            line.set_y1(dev02posline_asia, asia_hi + asia_diff * i)
+            line.set_y2(dev02posline_asia, asia_hi + asia_diff * i)
+
+            line.set_y1(dev02negline_asia, asia_lo - asia_diff * i)
+            line.set_y2(dev02negline_asia, asia_lo - asia_diff * i)
+        if i == 3 and ShowDev
+            line.set_y1(dev03posline_asia, asia_hi + asia_diff * i)
+            line.set_y2(dev03posline_asia, asia_hi + asia_diff * i)
+
+            line.set_y1(dev03negline_asia, asia_lo - asia_diff * i)
+            line.set_y2(dev03negline_asia, asia_lo - asia_diff * i)
+        if i == 4 and ShowDev
+            line.set_y1(dev04posline_asia, asia_hi + asia_diff * i)
+            line.set_y2(dev04posline_asia, asia_hi + asia_diff * i)
+
+            line.set_y1(dev04negline_asia, asia_lo - asia_diff * i)
+            line.set_y2(dev04negline_asia, asia_lo - asia_diff * i)
+    if (asia_hi > asia_hi[1])
+        box.set_top(asia_box, asia_hi)
+    if (asia_lo < asia_lo[1])
+        box.set_bottom(asia_box, asia_lo)
+
+if DevDirection == "Upside Only"
+    line.delete(dev01negline_asia)
+    line.delete(dev02negline_asia)
+    line.delete(dev03negline_asia)
+    line.delete(dev04negline_asia)
+else if DevDirection == "Downside Only"
+    line.delete(dev01posline_asia)
+    line.delete(dev02posline_asia)
+    line.delete(dev03posline_asia)
+    line.delete(dev04posline_asia)
+
+// FLOUT Stuff
+var float flout_hi                  = na
+var float flout_lo                  = na
+var float flout_diff                = na
+var box   floutbox                  = na
+var line  flout_hi_line             = na
+var line  flout_lo_line             = na
+var line  dev01negline_flout        = na
+var line  dev02negline_flout        = na
+var line  dev03negline_flout        = na
+var line  dev04negline_flout        = na
+var line  dev01posline_flout        = na
+var line  dev02posline_flout        = na
+var line  dev03posline_flout        = na
+var line  dev04posline_flout        = na 
+if SessionBegins(FLOUT) and DOM 
+    flout_hi            := high
+    flout_lo            := low
+    flout_diff          := flout_hi - flout_lo
+    if ShowTSO
+        box.delete(floutbox[1])
+        line.delete(dev01posline_flout[1])
+        line.delete(dev01negline_flout[1])
+        line.delete(dev02posline_flout[1])
+        line.delete(dev02negline_flout[1])
+        line.delete(dev03posline_flout[1])
+        line.delete(dev03negline_flout[1])
+        line.delete(dev04posline_flout[1])
+        line.delete(dev04negline_flout[1])
+    if ShowFLOUT
+        floutbox := box.new(floutOpenTime, flout_hi, floutEndTime, flout_lo, color.new(FLOUTBoxCol,90), 1, line.style_solid, extend.none, xloc.bar_time, color.new(FLOUTBoxCol,90), txt7, size.auto, color.new(box_text_flout_col,80), text_wrap=text.wrap_auto)
+        if dayofweek == dayofweek.friday
+            box.set_right(floutbox, floutOpenTime+201600000)
+            line.set_x2(flout_hi_line, floutOpenTime+201600000)
+            line.set_x2(flout_lo_line, floutOpenTime+201600000)
+    if box_text_cbdr == false
+        box.set_text(floutbox, "")
+    if ShowDev and ShowFLOUT and bool_flout_dev
+        for i = 0.5 to DevCount by 0.5
+            if i == 0.5
+                dev01posline_flout := line.new(floutOpenTime, flout_hi + flout_diff * i, floutEndTime, flout_hi + flout_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                dev01negline_flout := line.new(floutOpenTime, flout_hi - flout_diff * i, floutEndTime, flout_lo - flout_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                if dayofweek == dayofweek.friday
+                    line.set_x2(dev01posline_flout, floutOpenTime+201600000)
+                    line.set_x2(dev01negline_flout, floutOpenTime+201600000)
+            if i == 1
+                dev02posline_flout := line.new(floutOpenTime, flout_hi + flout_diff * i, floutEndTime, flout_lo + flout_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                dev02negline_flout := line.new(floutOpenTime, flout_hi - flout_diff * i, floutEndTime, flout_lo - flout_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                if dayofweek == dayofweek.friday
+                    line.set_x2(dev02posline_flout, floutOpenTime+201600000)
+                    line.set_x2(dev02negline_flout, floutOpenTime+201600000)
+            if i == 1.5
+                dev03posline_flout := line.new(floutOpenTime, flout_hi + flout_diff * i, floutEndTime, flout_lo + flout_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                dev03negline_flout := line.new(floutOpenTime, flout_hi - flout_diff * i, floutEndTime, flout_lo - flout_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                if dayofweek == dayofweek.friday
+                    line.set_x2(dev03posline_flout, floutOpenTime+201600000)
+                    line.set_x2(dev03negline_flout, floutOpenTime+201600000)
+            if i == 2
+                dev04posline_flout := line.new(floutOpenTime, flout_hi + flout_diff * i, floutEndTime, flout_lo + flout_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                dev04negline_flout := line.new(floutOpenTime, flout_hi - flout_diff * i, floutEndTime, flout_lo - flout_diff * i, xloc=xloc.bar_time, color=DevLNCol, style=DEVLSS, width=DEVLW)
+                if dayofweek == dayofweek.friday
+                    line.set_x2(dev04posline_flout, floutOpenTime+201600000)
+                    line.set_x2(dev04negline_flout, floutOpenTime+201600000)
+else if FLOUTTime
+    flout_hi             := math.max(high, flout_hi)
+    flout_lo             := math.min(low, flout_lo)
+    flout_diff           := flout_hi - flout_lo
+    for i = 0.5 to DevCount by 0.5
+        if i == 0.5 and ShowDev
+            line.set_y1(dev01posline_flout, flout_hi + flout_diff * i)
+            line.set_y2(dev01posline_flout, flout_hi + flout_diff * i)
+
+            line.set_y1(dev01negline_flout, flout_lo - flout_diff * i)
+            line.set_y2(dev01negline_flout, flout_lo - flout_diff * i)
+        if i == 1 and ShowDev
+            line.set_y1(dev02posline_flout, flout_hi + flout_diff * i)
+            line.set_y2(dev02posline_flout, flout_hi + flout_diff * i)
+
+            line.set_y1(dev02negline_flout, flout_lo - flout_diff * i)
+            line.set_y2(dev02negline_flout, flout_lo - flout_diff * i)
+        if i == 1.5 and ShowDev
+            line.set_y1(dev03posline_flout, flout_hi + flout_diff * i)
+            line.set_y2(dev03posline_flout, flout_hi + flout_diff * i)
+
+            line.set_y1(dev03negline_flout, flout_lo - flout_diff * i)
+            line.set_y2(dev03negline_flout, flout_lo - flout_diff * i)
+        if i == 2 and ShowDev
+            line.set_y1(dev04posline_flout, flout_hi + flout_diff * i)
+            line.set_y2(dev04posline_flout, flout_hi + flout_diff * i)
+
+            line.set_y1(dev04negline_flout, flout_lo - flout_diff * i)
+            line.set_y2(dev04negline_flout, flout_lo - flout_diff * i)
+    if (flout_hi > flout_hi[1])
+        box.set_top(floutbox, flout_hi)
+    if (flout_lo < flout_lo[1])
+        box.set_bottom(floutbox, flout_lo)
+
+if DevDirection == "Upside Only"
+    line.delete(dev01negline_flout)
+    line.delete(dev02negline_flout)
+    line.delete(dev03negline_flout)
+    line.delete(dev04negline_flout)
+else if DevDirection == "Downside Only"
+    line.delete(dev01posline_flout)
+    line.delete(dev02posline_flout)
+    line.delete(dev03posline_flout)
+    line.delete(dev04posline_flout)
+
+
+// Start of Table
+cbdrpipc                        = toWhole(cbdr_diff)
+asiapipc                        = toWhole(asia_diff)
+var color cbdr_cellt_col        = na
+var color asia_cellt_col        = na
+var color L_profile_col         = na
+
+var color comp_green            = color.new(#1cac78,0)
+var color comp_red              = color.new(#ff4040,0)
+var color comp_gray             = color.new(#808080,0)
+var L_Profile                   = ""
+
+if cbdrpipc > 15 and cbdrpipc < 40
+    cbdr_cellt_col  := color.new(#1cac78,0)     // Green
+else
+    cbdr_cellt_col  := color.new(#ff4040,0)     // Red
+
+if asiapipc >= 20 and asiapipc <= 40
+    asia_cellt_col  := color.new(#1cac78,0)     // Green
+else
+    asia_cellt_col  := color.new(#ff4040,0)     // Red
+ 
+if cbdrpipc > 15 and cbdrpipc < 40
+    L_Profile := "CBDR"
+    L_profile_col := Tab1txtCol
+else if asiapipc >= 20 and asiapipc <= 40
+    L_Profile := "ASIA"
+    L_profile_col := Tab1txtCol
+else
+    L_Profile := "FLOUT"
+    L_profile_col := Tab1txtCol
+
+if BarInSession(midsesh) and Auto_Select == true and syminfo.type == "forex"
+    if cbdrpipc > 15 and cbdrpipc < 40
+        // ASIA
+        box.delete(asia_box)
+        line.delete(dev01posline_asia)
+        line.delete(dev01negline_asia)
+        line.delete(dev02posline_asia)
+        line.delete(dev02negline_asia)
+        line.delete(dev03posline_asia)
+        line.delete(dev03negline_asia)
+        line.delete(dev04posline_asia)
+        line.delete(dev04negline_asia)
+        // FLOUT
+        box.delete(floutbox)
+        line.delete(dev01posline_flout)
+        line.delete(dev01negline_flout)
+        line.delete(dev02posline_flout)
+        line.delete(dev02negline_flout)
+        line.delete(dev03posline_flout)
+        line.delete(dev03negline_flout)
+        line.delete(dev04posline_flout)
+        line.delete(dev04negline_flout)
+    else if asiapipc >= 20 and asiapipc <= 40
+        // CBDR
+        box.delete(cbdrbox)
+        line.delete(dev01posline)
+        line.delete(dev01negline)
+        line.delete(dev02posline)
+        line.delete(dev02negline)
+        line.delete(dev03posline)
+        line.delete(dev03negline)
+        line.delete(dev04posline)
+        line.delete(dev04negline)
+        // FLOUT
+        box.delete(floutbox)
+        line.delete(dev01posline_flout)
+        line.delete(dev01negline_flout)
+        line.delete(dev02posline_flout)
+        line.delete(dev02negline_flout)
+        line.delete(dev03posline_flout)
+        line.delete(dev03negline_flout)
+        line.delete(dev04posline_flout)
+        line.delete(dev04negline_flout)
+    else
+        // CBDR
+        box.delete(cbdrbox)
+        line.delete(dev01posline)
+        line.delete(dev01negline)
+        line.delete(dev02posline)
+        line.delete(dev02negline)
+        line.delete(dev03posline)
+        line.delete(dev03negline)
+        line.delete(dev04posline)
+        line.delete(dev04negline)
+        // ASIA
+        box.delete(asia_box)
+        line.delete(dev01posline_asia)
+        line.delete(dev01negline_asia)
+        line.delete(dev02posline_asia)
+        line.delete(dev02negline_asia)
+        line.delete(dev03posline_asia)
+        line.delete(dev03negline_asia)
+        line.delete(dev04posline_asia)
+        line.delete(dev04negline_asia)
+
+
+
+// Table
+var table ICTInfo = table.new(tabinp1, 2, 3, border_width=1)
+
+if barstate.islast and syminfo.type == "forex" and Stats and DOM and (dayofweek != dayofweek.sunday)
+    CBDR_cell           = "CBDR "
+    Asia_cell           = "Asian Range "
+    CBDR_cell_pipc      = "     " + str.tostring(cbdrpipc) + " pips"
+    ASIA_cell_pipc      = "     " + str.tostring(asiapipc) + " pips"
+    
+    if L_Prof == true
+        table.cell(ICTInfo, 0, 0, text=" Suggested SD ", bgcolor=CellBG, text_color=Tab1txtCol, text_halign=text.align_left, text_size=size.auto)
+    table.cell(ICTInfo, 0, 1, text=" Asian Range ", bgcolor=CellBG, text_color=Tab1txtCol, text_halign=text.align_left, text_size=size.auto)
+    table.cell(ICTInfo, 0, 2, text=" CBDR ", bgcolor=CellBG, text_color=Tab1txtCol, text_halign=text.align_left, text_size=size.auto)
+    
+    if L_Prof == true
+        table.cell(ICTInfo, 1, 0, text=" "+ L_Profile + " ", bgcolor=CellBG, text_color=L_profile_col, text_halign=text.align_right, text_size=size.auto)
+    table.cell(ICTInfo, 1, 1, text=ASIA_cell_pipc, bgcolor=CellBG, text_color=asia_cellt_col, text_size=size.auto, text_halign=text.align_right)
+    table.cell(ICTInfo, 1, 2, text=CBDR_cell_pipc, bgcolor=CellBG, text_color=cbdr_cellt_col, text_size=size.auto, text_halign=text.align_right)
+
+// Color Coding
+var color Option1CC             = na
+var color Option2CC             = na
+var color Option3CC             = na
+var color Option4CC             = na
+
+if BIASOption1 == "Bullish"
+    Option1CC := comp_green
+else if BIASOption1 == "Bearish"
+    Option1CC := comp_red
+else
+    Option1CC := Tab2txtCol
+
+if BIASOption2 == "Bullish"
+    Option2CC := comp_green
+else if BIASOption2 == "Bearish"
+    Option2CC := comp_red
+else
+    Option2CC := Tab2txtCol
+
+if BIASOption3 == "Bullish"
+    Option3CC := comp_green
+else if BIASOption3 == "Bearish"
+    Option3CC := comp_red
+else
+    Option3CC := Tab2txtCol
+
+if BIASOption4 == "Bullish"
+    Option4CC := comp_green
+else if BIASOption4 == "Bearish"
+    Option4CC := comp_red
+else
+    Option4CC := Tab2txtCol
+
+var table BIAS_Table = table.new(tabinp2, 2, 20, bgcolor=TableBG2, border_width=1)
+if barstate.islast and BIAS_M_Bool
+	if BIASbool1
+    	table.cell(BIAS_Table, 0, 1, text = txt52, text_color = Tab2txtCol, text_halign=text.align_left)
+    	table.cell(BIAS_Table, 1, 1, text = BIASOption1, text_size = size.normal, text_color = Option1CC, text_halign=text.align_right)
+    if BIASbool2
+    	table.cell(BIAS_Table, 0, 2, text = txt53, text_color = Tab2txtCol, text_halign=text.align_left)
+    	table.cell(BIAS_Table, 1, 2, text = BIASOption2, text_size = size.normal, text_color = Option2CC, text_halign=text.align_right)
+	if BIASbool3
+    	table.cell(BIAS_Table, 0, 3, text = txt54, text_color = Tab2txtCol, text_halign=text.align_left)
+    	table.cell(BIAS_Table, 1, 3, text = BIASOption3, text_size = size.normal, text_color = Option3CC, text_halign=text.align_right)
+	if BIASbool4
+    	table.cell(BIAS_Table, 0, 4, text = txt55, text_color = Tab2txtCol, text_halign=text.align_left)
+    	table.cell(BIAS_Table, 1, 4, text = BIASOption4, text_size = size.normal, text_color = Option4CC, text_halign=text.align_right)
+
+var table NOTES_Table = table.new(tabinp3, 1, 20, bgcolor = TableBG2, border_width = 1)
+if barstate.islast and NOTES_M_Bool
+    table.cell(NOTES_Table, 0,0, text = notes, text_size = size.normal, text_color = Tab3txtCol, text_halign=text.align_center)
+
+// Day of the Week
+txtMon    = "M O N"
+txtTue    = "T U E"
+txtWed    = "W E D"
+txtThu    = "T H U"
+txtFri    = "F R I"
+txtSat    = "S A T"
+txtSun    = "S U N"
+ 
+plotchar(showDOW and DOM and SL4W and Last4Weeks and (not ShowTWO)? hour == DOWTime and minute == 0 and dayofweek == dayofweek.monday    : false, offset=0, char=" ", text=txtMon   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+plotchar(showDOW and DOM and SL4W and Last4Weeks and (not ShowTWO)? hour == DOWTime and minute == 0 and dayofweek == dayofweek.tuesday   : false, offset=0, char=" ", text=txtTue   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+plotchar(showDOW and DOM and SL4W and Last4Weeks and (not ShowTWO)? hour == DOWTime and minute == 0 and dayofweek == dayofweek.wednesday : false, offset=0, char=" ", text=txtWed   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+plotchar(showDOW and DOM and SL4W and Last4Weeks and (not ShowTWO)? hour == DOWTime and minute == 0 and dayofweek == dayofweek.thursday  : false, offset=0, char=" ", text=txtThu   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+plotchar(showDOW and DOM and SL4W and Last4Weeks and (not ShowTWO)? hour == DOWTime and minute == 0 and dayofweek == dayofweek.friday    : false, offset=0, char=" ", text=txtFri   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+
+plotchar(showDOW and DOM and ShowTWO and thisweek? hour == DOWTime and minute == 0 and dayofweek == dayofweek.monday    : false, offset=0, char=" ", text=txtMon   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+plotchar(showDOW and DOM and ShowTWO and thisweek? hour == DOWTime and minute == 0 and dayofweek == dayofweek.tuesday   : false, offset=0, char=" ", text=txtTue   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+plotchar(showDOW and DOM and ShowTWO and thisweek? hour == DOWTime and minute == 0 and dayofweek == dayofweek.wednesday : false, offset=0, char=" ", text=txtWed   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+plotchar(showDOW and DOM and ShowTWO and thisweek? hour == DOWTime and minute == 0 and dayofweek == dayofweek.thursday  : false, offset=0, char=" ", text=txtThu   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+plotchar(showDOW and DOM and ShowTWO and thisweek? hour == DOWTime and minute == 0 and dayofweek == dayofweek.friday    : false, offset=0, char=" ", text=txtFri   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+
+plotchar(showDOW and DOM and (not ShowTWO) and (not SL4W)? hour == DOWTime and minute == 0 and dayofweek == dayofweek.monday    : false, offset=0, char=" ", text=txtMon   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+plotchar(showDOW and DOM and (not ShowTWO) and (not SL4W)? hour == DOWTime and minute == 0 and dayofweek == dayofweek.tuesday   : false, offset=0, char=" ", text=txtTue   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+plotchar(showDOW and DOM and (not ShowTWO) and (not SL4W)? hour == DOWTime and minute == 0 and dayofweek == dayofweek.wednesday : false, offset=0, char=" ", text=txtWed   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+plotchar(showDOW and DOM and (not ShowTWO) and (not SL4W)? hour == DOWTime and minute == 0 and dayofweek == dayofweek.thursday  : false, offset=0, char=" ", text=txtThu   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+plotchar(showDOW and DOM and (not ShowTWO) and (not SL4W)? hour == DOWTime and minute == 0 and dayofweek == dayofweek.friday    : false, offset=0, char=" ", text=txtFri   , color=color.new(i_DOWCol,100), location = DOWLoc, textcolor=i_DOWCol, editable=false)
+
+
+// plotshape(ShowLondon? BarInSession(LDNsesh) : false, style = shape.square, size=size.auto, location =location.bottom, color = LSFC)
+
+var int daycount    =   0
+var int SL4WC       =   0
+if SL4W == true
+    if dayofweek == dayofweek.monday
+        SL4WC := 0 + 28
+    if dayofweek == dayofweek.tuesday
+        SL4WC := 1 + 28
+    if dayofweek == dayofweek.wednesday
+        SL4WC := 2 + 28
+    if dayofweek == dayofweek.thursday
+        SL4WC := 3 + 28
+    if dayofweek == dayofweek.friday
+        SL4WC := 4 + 28
+    if dayofweek == dayofweek.saturday
+        SL4WC := 5 + 28
+    if dayofweek == dayofweek.sunday
+        SL4WC := 6 + 28
+
+if SL4W
+    Cleanup(SL4WC)
+
+
+
+if ShowTWO
+    if dayofweek == dayofweek.monday
+        daycount := 0
+    if dayofweek == dayofweek.tuesday
+        daycount := 1
+    if dayofweek == dayofweek.wednesday
+        daycount := 2
+    if dayofweek == dayofweek.thursday
+        daycount := 3
+    if dayofweek == dayofweek.friday
+        daycount := 4
+    if dayofweek == dayofweek.saturday
+        daycount := 5
+    if dayofweek == dayofweek.sunday
+        daycount := 6
+
+if ShowTWO
+    Cleanup(daycount)

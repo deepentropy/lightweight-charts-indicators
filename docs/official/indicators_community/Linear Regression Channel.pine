@@ -1,0 +1,13 @@
+//@version=2
+study("Linear Regression Channel",shorttitle="LRC_SH",overlay=true)
+len = input(300,title="Length")
+
+a = linreg(high,len,0)
+b = linreg(low,len,0)
+c = -dev(low,len)+b
+d = dev(high,len)+a
+
+plot(a)
+plot(b)
+plot(c,color=c>c[1]?green:red)
+plot(d,color=d>d[1]?green:red)

@@ -1,0 +1,6 @@
+//@version=6
+indicator(title="Mass Index", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+length = input.int(10, minval=1)
+span = high - low
+mi = math.sum(ta.ema(span, 9) / ta.ema(ta.ema(span, 9), 9), length)
+plot(mi, "Mass Index")

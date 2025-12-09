@@ -1,0 +1,205 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=5
+indicator("Liquidations Zones [ChartPrime]", overlay = true, max_bars_back = 1000, max_boxes_count = 500)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+int  len             = input(10, "Length")
+int  extend          = input(40, "Extend")
+
+bool X_10            = input.bool(true, "10X", group = "Liquidation Zones")
+bool X_25            = input.bool(true, "25X", group = "Liquidation Zones")
+bool X_50            = input.bool(true, "50X", group = "Liquidation Zones")
+bool X_100           = input.bool(true, "100X",group = "Liquidation Zones")
+
+bool display_heatmap = input.bool(false, "Display HeatMap")
+
+int tranp_val1 = 80
+int tranp_val2 = 85
+int tranp_val3 = 90
+int tranp_val4 = 95
+
+float ph = ta.pivothigh(len, len)
+float pl = ta.pivotlow(len, len)
+
+var array<box> top_zones = array.new<box>()
+var array<box> bot_zones = array.new<box>()
+
+var line_1  = line(na)
+var line_2  = line(na)
+var label_1 = label(na)
+var label_2 = label(na)
+
+var int n1            = na
+var int n2            = na
+int     volume_index1 = 0
+int     volume_index2 = 0
+int     index         = 0
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+int amount = (X_10 ? 1 : 0) + (X_25 ? 1 : 0) + (X_50 ? 1 : 0) + (X_100 ? 1 : 0) 
+
+if display_heatmap
+    tranp_val1 := 85
+    tranp_val2 := 90
+    tranp_val3 := 95
+    tranp_val4 := 99
+
+method draw_boxes(array<box> boxes, int x1, float top, int x2, float bottom, color color, string txt)=>
+    
+    t = display_heatmap ? "" : txt
+    box b = box.new(
+             x1, top, x2, bottom, 
+             border_color   = color.new(color, 100), 
+             bgcolor        = color, 
+             text           = t, 
+             text_halign    = text.align_left, 
+             text_color     = chart.fg_color, 
+             text_size      = size.normal
+             )
+
+    boxes.push(b)
+
+volume_detect(top_bot, index)=>
+    float vol = 0.
+    if last_bar_index - bar_index < 100 
+        for i = 0 to index
+            vol += top_bot ? (close[i] < open[i] ? -volume[i] : 0) : (close[i] > open[i] ? volume[i] : 0)
+    vol
+
+del_zones(array<box> zones, bool top_bot = true, vol_index)=>
+
+    if zones.size() > 0
+        
+        label l        = label(na)
+        box   last_box = zones.get(0)
+        float x1       = bar_index - last_box.get_left()
+
+        float volu     = top_bot ? -volume-volume[1] : volume+volume[1]
+
+        for box_id in zones
+            box_id.set_right(bar_index+extend)
+
+            float top   = box_id.get_top()
+            float bot   = box_id.get_bottom()
+            bool  cross = top_bot ? high > top : low < bot
+
+            if cross
+                l := label.new(
+                           x            = bar_index
+                         , y            = math.avg(last_box.get_top(), last_box.get_bottom())
+                         , text         = str.tostring(volu, format.volume)
+                         , color        = color(na)
+                         , style        = label.style_label_right
+                         , textcolor    = top_bot ? color.red : color.green
+                         ) 
+         
+                box_id.set_right(bar_index-1)
+                box_id.set_bgcolor(color.new(chart.fg_color, display_heatmap ? 100 : 95))
+                box_id.set_border_style(line.style_dotted)
+                box_id.set_text_color(color.gray)
+     
+    
+                zones.remove(zones.indexof(box_id))
+
+
+
+            if display_heatmap
+
+                l.delete()
+
+        float vol = volume_detect(top_bot, vol_index)
+        if not display_heatmap
+            label l1 = label.new(
+                     x              = bar_index+extend
+                     , y            = math.avg(last_box.get_top(), last_box.get_bottom())
+                     , text         = (top_bot ? "Sell Volume: " : "Buy Volume: ") + str.tostring(vol, format.volume)
+                     , color        = color(na)
+                     , style        = label.style_label_right
+                     , textcolor    = chart.fg_color
+                     ) 
+
+            label.delete(l1[1])
+
+        for box_id in zones
+            if zones.size() > 4 * (display_heatmap ? 200 : 1)
+                box.delete(array.shift(zones))
+
+// ---
+if not na(ph)
+    n2 := bar_index[len]
+    float one_percent  = high[len] *1.01
+    float two_percent  = high[len] *1.02
+    float four_percent = high[len] *1.04
+    float ten_percent  = high[len] *1.1
+
+    if X_100
+        top_zones.draw_boxes(bar_index[len], one_percent, last_bar_index, high[len], color.new(color.maroon, tranp_val1), "100X")
+    if X_50
+        top_zones.draw_boxes(bar_index[len], two_percent, last_bar_index, one_percent, color.new(color.maroon, tranp_val2), "50X")
+    if X_25
+        top_zones.draw_boxes(bar_index[len], four_percent, last_bar_index, two_percent, color.new(color.maroon, tranp_val3), "25X")
+    if X_10
+        top_zones.draw_boxes(bar_index[len], ten_percent, last_bar_index, four_percent, color.new(color.maroon, tranp_val4), "10X")
+
+if not na(pl)
+    n1 := bar_index[len]
+    float one_percent  = low[len] /1.01
+    float two_percent  = low[len] /1.02
+    float four_percent = low[len] /1.04
+    float ten_percent  = low[len] /1.1
+
+    if X_100
+        bot_zones.draw_boxes(bar_index[len], low[len], last_bar_index, one_percent, color.new(color.lime, tranp_val1), "100X")
+    if X_50
+        bot_zones.draw_boxes(bar_index[len], one_percent, last_bar_index, two_percent, color.new(color.lime, tranp_val2), "50X")
+    if X_25
+        bot_zones.draw_boxes(bar_index[len], two_percent, last_bar_index, four_percent, color.new(color.lime, tranp_val3), "25X")
+    if X_10
+        bot_zones.draw_boxes(bar_index[len], four_percent, last_bar_index, ten_percent, color.new(color.lime, tranp_val4), "10X")
+
+// ---
+volume_index1 := last_bar_index - n1
+volume_index2 := last_bar_index - n2
+index         := volume_index2 > volume_index1 ? volume_index2 : volume_index1
+
+if display_heatmap 
+    int   length  = 100
+    float highest = ta.highest(length)
+    float lowest  = ta.lowest(length)
+
+    label_1 := label.new(last_bar_index+extend, highest, "", style = label.style_label_left, color = color.new(color.maroon, 20), textcolor = chart.fg_color)
+    line_1  := line.new(last_bar_index - length, highest, last_bar_index+extend, highest, color = color.new(color.maroon, 20))
+
+    line.delete(line_1[1])
+    label.delete(label_1[1])
+
+    label_2 := label.new(last_bar_index+extend, lowest, "", style = label.style_label_left, color = color.new(color.lime, 40), textcolor = chart.fg_color)
+    line_2  := line.new(last_bar_index - length, lowest, last_bar_index+extend, lowest, color = color.new(color.lime, 20))
+
+    line.delete(line_2[1])
+    label.delete(label_2[1])
+
+    float vol1 = volume_detect(true, length)
+    float vol2 = volume_detect(false,length)
+
+    label_1.set_text(str.tostring(vol1, format.volume))
+    label_1.set_x(last_bar_index+extend)
+    label_2.set_text(str.tostring(vol2, format.volume))
+    label_2.set_x(last_bar_index+extend)
+
+    line_1.set_x2(last_bar_index+extend)
+    line_2.set_x2(last_bar_index+extend)
+
+// ---
+del_zones(top_zones, vol_index = index)
+del_zones(bot_zones, false, vol_index = index)
+// --------------------------------------------------------------------------------------------------------------------}

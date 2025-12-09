@@ -1,0 +1,59 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © bharatTrader
+
+//@version=6
+indicator('Relative Strength', shorttitle='Relative Strength')
+
+//Input
+source = input(title='Source', defval=close)
+comparativeTickerId = input.symbol('NSE:NIFTY', title='Comparative Symbol')
+length = input.int(123, minval=1, title='Period')
+showZeroLine = input(defval=true, title='Show Zero Line')
+showRefDateLbl = input(defval=true, title='Show Reference Label')
+toggleRSColor = input(defval=true, title='Toggle RS color on crossovers')
+showRSTrend = input.bool(defval=false, title='RS Trend,', group='RS Trend', inline='RS Trend')
+base = input.int(title='Range', minval=1, defval=5, group='RS Trend', inline='RS Trend')
+showMA = input.bool(defval=false, title='', group='RS Mean', inline='RS Mean')
+lengthRSMA = input.int(50, minval=1, title='Period', group='RS Mean', inline='RS Mean')
+showMAColor = input.bool(defval=true, title='Trend Color', group='RS Mean', inline='RS Mean')
+showBubbles = input.bool(defval=true, title='', group='Price Confirmation', inline='Color')
+lengthPriceSMA = input.int(50, minval=1, title='Period', group='Price Confirmation', inline='Color')
+bullishColor = input.color(color.new(color.green, 85), title='+ve', group='Price Confirmation', inline='Color')
+bearishColor = input.color(color.new(color.red, 85), title='-ve', group='Price Confirmation', inline='Color')
+
+//Set up
+baseSymbol = request.security(syminfo.tickerid, timeframe.period, source)
+comparativeSymbol = request.security(comparativeTickerId, timeframe.period, source)
+
+//Calculations
+res = baseSymbol / baseSymbol[length] / (comparativeSymbol / comparativeSymbol[length]) - 1
+resColor = toggleRSColor ? res > 0 ? color.green : color.red : color.blue
+refDay = showRefDateLbl and barstate.islast ? dayofmonth(time[length]) : na
+refMonth = showRefDateLbl and barstate.islast ? month(time[length]) : na
+refYear = showRefDateLbl and barstate.islast ? year(time[length]) : na
+refLabelStyle = res[length] > 0 ? label.style_label_up : label.style_label_down
+refDateLabel = showRefDateLbl and barstate.islast ? label.new(bar_index - length, 0, text='RS-' + str.tostring(length) + ' reference, ' + str.tostring(refDay) + '-' + str.tostring(refMonth) + '-' + str.tostring(refYear), color=color.blue, style=refLabelStyle, yloc=yloc.price) : na
+y0 = res - res[base]
+angle0 = math.atan(y0 / base)  // radians
+zeroLineColor = showRSTrend ? angle0 > 0.0 ? color.green : color.maroon : color.maroon
+sma_res = ta.sma(res, lengthRSMA)
+//Confirm symbol trend with a simple logic
+sma_symb = ta.sma(baseSymbol, lengthPriceSMA)
+pos_div = ta.rising(sma_symb, 3) and baseSymbol >= sma_symb
+neg_div = ta.falling(sma_symb, 3) and baseSymbol < sma_symb
+div_started = pos_div or neg_div
+div_color = div_started ? pos_div ? bullishColor: neg_div ? bearishColor : na : na
+ma_rising = ta.rising(sma_res, 3)
+ma_falling = ta.falling(sma_res, 3)
+ma_color = showMAColor and ma_rising ? color.green : showMAColor and ma_falling ? color.red : color.gray
+
+//Plot
+plot(showZeroLine ? 0 : na, linewidth=2, color=zeroLineColor, title='Zero Line / RS Trend')
+plot(res, title='RS', linewidth=3, color=resColor)
+plot(showMA ? sma_res : na, color=ma_color, title='MA', linewidth = 2)
+plot(showBubbles and div_started ? res : na, "Confirmation Bubbles", div_color, 10, plot.style_circles)
+//alertconditions
+alertcondition(ma_rising, "Rising Strength", "Rising Strength")
+alertcondition(ma_falling, "Declining Strength", "Declining Strength")
+
+

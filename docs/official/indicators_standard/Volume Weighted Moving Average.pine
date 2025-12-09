@@ -1,0 +1,7 @@
+//@version=6
+indicator(title="Volume Weighted Moving Average", shorttitle="VWMA", overlay=true, timeframe="", timeframe_gaps=true)
+len = input.int(20, "Length", minval=1)
+src = input(close, "Source")
+ma = ta.vwma(src, len)
+offset = input.int(0, "Offset", minval = -500, maxval = 500)
+plot(ma, title="VWMA", color=#2962FF, offset = offset)

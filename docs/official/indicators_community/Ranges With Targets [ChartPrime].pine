@@ -1,0 +1,228 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=5
+indicator("Ranges with Targets [ChartPrime]",overlay = true,max_lines_count = 500,max_labels_count = 500)
+var float SCR = 0.
+var ATR = 0.
+var TradeOn = false
+Shape = false 
+
+
+color GREEN           = color.rgb(4, 191, 101)
+color TAIL            = color.rgb(20, 141, 154)
+color RED             = color.rgb(246, 7, 7)
+color _Green          = color.rgb(2, 106, 89)
+color OFF             = color.new(color.red,100)
+string DYNAMICSLG     =  "➞ Risk To Reward Settings 🔸" 
+string CORE           =  "➞ Core Settings 🔸"
+var array<int> score  = array.new_int(2,0)
+
+
+
+var bool ShortTrade   = false
+var bool TradeisON    = false
+var bool LongTrade    = false
+var line res          = na
+var line sup          = na
+var line tpLine       = na
+var line SLLine       = na
+var label LAB         = na
+var float TP          = 0.0
+var float SL          = 0.0
+var float Res         = 0.
+
+bool BUY              = false
+bool SELL             = false
+bool Filter           = input.bool(false,"ATR Body Filter",group = CORE)
+float Target          = input.float(1.3,"Target",step = 0.1 , tooltip = "Target And stop Multiplyer",group = CORE)
+bool SLType           = input.string('Close',
+     'SL Type', ['Close', 'High/Low'],
+     group=CORE,tooltip = "Activate SL on candle close or high/low") == 'Close'
+
+float Risk            = input.float(100,"Risk Per Trade (USD)",group=CORE)    
+
+bool ShowSL = input.bool(false,"Show SL",group = CORE)
+string Linestyle      = input.string('Dashed',
+     'Line Style', ['Solid', 'Dashed', 'Dotted'], group=CORE,inline= "Line")
+
+color Bull = input.color(GREEN,"",group=CORE,inline= "Line")
+color Bear = input.color(RED,"",group=CORE,inline= "Line")    
+
+
+method volAdj(int len)=>
+    math.min(ta.atr(len) * 0.3, close * (0.3/100)) [20] /2
+
+PF = volAdj(30)
+
+
+BodyRange() =>
+	math.abs(close - open) 
+
+BodyCon = bar_index > 100
+BodyCon1 = (Filter ? BodyRange() < ta.atr(5) * 1 : true)
+
+
+if timeframe.change("1D") and not TradeisON 
+
+    ATR := volAdj(30)
+    SCR:=hl2 - (ATR* 15)
+    TradeOn:= true
+    Res:= SCR + (ATR* 25)
+    res:=line.new(bar_index, Res,bar_index, Res,color = #5c439a,style = line.style_solid)
+    sup:=line.new(bar_index, SCR,bar_index, SCR,color = #5c439a,style = line.style_solid)
+
+
+
+if TradeOn
+    res.set_x2(bar_index)
+    sup.set_x2(bar_index)
+
+if ta.crossover(close[1],Res) and BodyCon and BodyCon1
+    BUY:=true
+if ta.crossunder(close[1],SCR) and BodyCon and BodyCon1
+    SELL:=true
+                
+linefill.new(res,sup,color = color.new(color.from_gradient(close,ta.lowest(5),ta.highest(10), #3a6186,#89253e),80))
+
+
+
+//----- { SL Calculation
+
+x2 = low - ta.rma(ta.tr(true), 14) * 1.5
+xz = ta.rma(ta.tr(true), 14) * 1.5 + high
+longDiffSL2 = math.abs(close - Res)
+longDiffSL = math.abs(close - SCR)
+// }
+  
+Long = BUY and not TradeisON     
+Short = SELL and not TradeisON
+TradeFire = Long or Short
+
+if Long and not TradeisON
+    LongTrade:= true
+    ShortTrade:= false
+
+if Short and not TradeisON
+    LongTrade:= false
+    ShortTrade:= true
+
+
+if true 
+    if TradeFire and not TradeisON
+        TP := switch
+            Long  => close + (Target * longDiffSL)
+            Short => close - (Target * longDiffSL2)
+
+        SL := switch
+            Long  => close  - longDiffSL
+            Short => close  + longDiffSL2
+
+        TradeisON:= true
+        if true
+            line.new(bar_index,
+                 Long ? high : low,
+                 bar_index,
+                 TP,
+                 width=2,
+                 color = TAIL,
+                 style= line.style_dashed)
+
+            tpLine:= line.new(bar_index,
+                 TP,
+                 bar_index+2,
+                 TP,
+                 style= line.style_dashed,
+                 color = TAIL
+                 )
+            if ShowSL     
+                SLLine:= line.new(bar_index,
+                     SL,
+                     bar_index+2,
+                     SL,
+                     style= line.style_dashed,
+                     color = RED
+                     )     
+            LAB:=label.new(bar_index,
+                 TP,
+                 "Target",
+                 color = TAIL,
+                 style= label.style_label_left,
+                 size=size.small,
+                 textcolor = color.white
+                 )
+    if TradeisON
+        line.set_x2(tpLine,bar_index)
+        label.set_x(LAB,bar_index+1)
+        if ShowSL
+            line.set_x2(SLLine,bar_index)
+        
+
+    if LongTrade and TradeisON
+        if high >= TP
+            label.set_color(LAB,GREEN)
+            score.set(0,score.get(0)+1)
+            TradeisON:=false
+        if  (SLType ? close : low)  <= SL
+            score.set(1,score.get(1)+1)
+            label.set_color(LAB,color.new(RED,70))
+            label.set_tooltip(LAB,"Stoploss Hit : "+ str.tostring(math.round_to_mintick(SL)))
+            TradeisON:=false
+
+    else if ShortTrade and TradeisON
+        if low <= TP 
+            label.set_color(LAB,GREEN)
+            score.set(0,score.get(0)+1)
+            TradeisON:=false
+            
+        if (SLType ? close : high) >= SL 
+            score.set(1,score.get(1)+1)
+            label.set_color(LAB,color.new(RED,70))
+            label.set_tooltip(LAB,"Stoploss Hit : "+ str.tostring(math.round_to_mintick(SL)))
+            TradeisON:=false
+
+BearCon = TradeisON and ShortTrade
+BullCon = TradeisON and LongTrade
+
+barcolor(BearCon ? RED : BullCon ? _Green : color.rgb(52, 52, 54) )
+
+plotcandle(open, high, low, close, color = BearCon ? RED : BullCon ? _Green : color.rgb(52, 52, 54),
+     wickcolor = color.rgb(103, 99, 99),bordercolor = BearCon ? RED : BullCon ? _Green : color.rgb(52, 52, 54))
+
+bgcolor(BearCon ? color.rgb(136, 4, 15, 90) : BullCon ? color.rgb(8, 191, 158,90) : na )
+
+// where is my table ?!
+var tb = table.new(position.top_right, 6, 6,
+  bgcolor= color.new(color.gray,80))
+if barstate.islast
+    GrossP = score.get(0) * (Risk * Target)
+    GrossL =  score.get(1) * Risk
+    PNL = GrossP - GrossL
+    table.cell(tb, 0, 0, "Winning Trades"
+      , text_color = #a3a3b1)
+    table.cell(tb, 1, 0, str.tostring(score.get(0))
+      , text_color = #08c09b)
+
+    table.cell(tb, 0, 1, "Losing Trades"
+      , text_color = #a3a3b1)
+    table.cell(tb, 1, 1, str.tostring(score.get(1))
+      , text_color = #cd0202)
+
+
+    table.cell(tb, 0, 2, "Gross Profit"
+      , text_color = #a3a3b1)
+    table.cell(tb, 1, 2, str.tostring(GrossP)
+      , text_color = GrossP > 0 ? #1eddd4:#cd0202 )
+
+    table.cell(tb, 0, 3, "Gross Loss"
+      , text_color = #a3a3b1)
+    table.cell(tb, 1, 3, str.tostring(-GrossL)
+      , text_color = #cd0202 )
+
+    table.cell(tb, 0, 4, "Final PNL"
+      , text_color = #a3a3b1)
+    table.cell(tb, 1, 4, str.tostring(PNL)
+      , text_color = #ba7726 )
+
+alertcondition(Long,"BUY")
+alertcondition(Short,"Sell")

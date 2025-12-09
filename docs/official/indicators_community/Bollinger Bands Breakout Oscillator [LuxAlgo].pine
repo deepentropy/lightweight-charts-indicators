@@ -1,0 +1,73 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Bollinger Bands Breakout Oscillator [LUX]", "BBands BO [LuxAlgo]")
+//------------------------------------------------------------------------------
+//Settings
+//------------------------------------------------------------------------------
+length = input(14)
+
+mult   = input(1.)
+
+src    = input(close)
+
+//Style
+bull_css = input(#089981, 'Bullish Color'
+  , group = 'Style')
+
+bear_css = input(#f23645, 'Bearish Color'
+  , group = 'Style')
+
+//------------------------------------------------------------------------------
+//Calculation
+//------------------------------------------------------------------------------
+stdev = ta.stdev(src, length) * mult
+ema   = ta.ema(src, length)
+
+upper = ema + stdev
+lower = ema - stdev
+
+bull = 0.
+bear = 0.
+bull_den = 0.
+bear_den = 0.
+
+for i = 0 to length-1
+    bull += math.max(src[i] - upper[i], 0)
+    bear += math.max(lower[i] - src[i], 0)
+    
+    bull_den += math.abs(src[i] - upper[i])
+    bear_den += math.abs(lower[i] - src[i])
+    
+bull := bull/bull_den*100
+bear := bear/bear_den*100
+
+//------------------------------------------------------------------------------
+//Plots
+//------------------------------------------------------------------------------
+bull_grad = color.from_gradient(bull, 0, 100
+  , color.new(bull_css, 100)
+  , color.new(bull_css, 50))
+
+bear_grad = color.from_gradient(bear, 0, 100
+  , color.new(bear_css, 100)
+  , color.new(bear_css, 50))
+
+plot0 = plot(bull
+  , color = bull == 0 ? na : bull_css)
+
+plot1 = plot(bear
+  , color = bear == 0 ? na : bear_css)
+
+plot2 = plot(0
+  , color    = na
+  , editable = false)
+
+hline(50, 'Midline')
+
+fill(plot0, plot2
+  , color = bull_grad)
+
+fill(plot1, plot2
+  , color = bear_grad)

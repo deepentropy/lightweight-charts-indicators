@@ -1,0 +1,133 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("NR4 & NR7 with Breakouts [LuxAlgo]",shorttitle = "LuxAlgo - NR4/NR7 w/ Breakouts", overlay = true, max_lines_count = 500, max_labels_count = 500, max_polylines_count = 100, max_boxes_count = 500)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//inputs
+//---------------------------------------------------------------------------------------------------------------------{
+
+tf = input.timeframe("D", title = "Timeframe", group = "Patterns", tooltip = "Sets the HTF to identify NR4 and NR7 on.") 
+ptype = input.string("NR4/NR7", title = "Pattern Type", options = ["NR4/NR7","NR4","NR7"], group = "Patterns")
+
+sigTog = input.bool(true, title = "Show Breakout Signals", group = "Breakout Signals")
+sigSize = str.lower(input.string("Small", title = "Signal Size", options = ["Tiny","Small","Normal","Large","Huge"], group = "Breakout Signals"))
+upSigColor = input.color(#089981, title = "Up Color", group = "Breakout Signals", inline = "Colors")
+downSigColor = input.color(#f23645, title = "Down Color", group = "Breakout Signals", inline = "Colors")
+
+nr4_color = input.color(color.new(#66bb6a,70), title = "NR4 Pattern", group = "Style")
+nr7_color = input.color(color.new(#ffee58,70), title = "NR7 Pattern", group = "Style")
+rngColor = input.color(#787b86, title = "Range Color", group = "Style")
+
+invis = color.rgb(0,0,0,100)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Variables
+//---------------------------------------------------------------------------------------------------------------------{
+
+var signals = array.new_label()
+down_signal = false
+up_signal = false
+
+var down_check = false
+var up_check = false
+
+var up_fired = false
+var down_fired = false
+
+var box bx = na
+var line h_ln = na
+var line l_ln = na
+var line m_ln = na
+
+var float rh = na
+var float rl = na
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Calculations
+//---------------------------------------------------------------------------------------------------------------------{
+rng = (high-low)
+
+lst_4 = ta.lowest(rng,4)
+lst_7 = ta.lowest(rng,7)
+
+nr7_pattern = ptype != "NR4" and (rng == lst_7)
+nr4_pattern = ptype != "NR7" and (rng == lst_4) and (not nr7_pattern)
+
+[nr4,nr7,ph,pl] = request.security("",tf,[nr4_pattern[1],nr7_pattern[1],high[1],low[1]], lookahead = barmerge.lookahead_on)
+
+NR = nr4 or nr7
+
+if NR
+    rh := ph
+    rl := pl
+
+mid = math.avg(rh,rl)
+
+new_tf = timeframe.change(tf)
+new_NR = new_tf and NR
+
+//On New TF w/ NR Detected
+if new_NR
+    bx.set_top(rh)
+    bx.set_bottom(rl)
+    bx.set_right(bar_index)
+    bx.set_bgcolor(nr4?nr4_color:nr7_color)
+
+    up_check := true
+    down_check := true
+
+    h_ln := line.new(bar_index,rh,bar_index+1,rh, color = rngColor)
+    l_ln := line.new(bar_index,rl,bar_index+1,rl, color = rngColor)
+    m_ln := line.new(bar_index,mid,bar_index+1,mid, style = line.style_dashed, color = rngColor)
+//On Every New TF
+if new_tf
+    up_fired := false
+    down_fired := false
+    bx := box.new(bar_index,high,bar_index,low, bgcolor = invis, border_width = 0)
+
+
+
+//Signal Calcs
+
+//Down Signal
+if  (close > mid and down_check == false)
+    down_check := true
+if ta.crossunder(close,rl) and down_check 
+    down_signal := true
+    down_check := false
+    down_fired := true
+//Up Signal
+if (close < mid and up_check == false)
+    up_check := true
+if ta.crossover(close,rh) and up_check 
+    up_signal := true
+    up_check := false
+    up_fired := true
+
+if NR or up_fired or down_fired
+    h_ln.set_x2(bar_index)
+    l_ln.set_x2(bar_index)
+    m_ln.set_x2(bar_index)
+//---------------------------------------------------------------------------------------------------------------------}
+//Signal Display
+//---------------------------------------------------------------------------------------------------------------------{
+
+if up_signal and sigTog
+    signals.push(label.new(bar_index, rl,
+      style = label.style_label_center, 
+      text = "\n▲", 
+      color = invis, 
+      textcolor = upSigColor, 
+      size = sigSize))
+
+if down_signal and sigTog
+    signals.push(label.new(bar_index, rh,
+      style = label.style_label_center, 
+      text = "▼\n",
+      color = invis, 
+      textcolor = downSigColor, 
+      size = sigSize))
+
+//---------------------------------------------------------------------------------------------------------------------}

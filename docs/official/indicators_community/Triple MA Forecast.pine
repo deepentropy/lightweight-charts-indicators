@@ -1,0 +1,77 @@
+//@version=3
+study("Triple MA Forecast", overlay=true)
+// A tool to show you what MA's will look like in future periods.
+// By yatrader2 for Tone Vays so he doesn't have to use the ruler and guess any more :)
+// Bug fix on forecasts
+// Removed alternate MAs types until I can support properly
+// allowed options for live candles (or not)
+// Made LR period user setable.
+
+src_in=input(close, title="Source")
+incompletecandles=input(true, title="Include current unclosed current candle")
+//type=input(defval="SMA", options=["SMA"],title="MA Type")
+type="SMA"
+forecasttype=input(defval="flat", options=["flat", "linreg"], title="MA Forecast Type (flat assumes prices stay the same / linreg does n period LR forecast)")
+linreglen=input(3,title="# of candles to use in linear regression")
+showshort=input(true, title="Plot Short MA")
+len=input(7, title="Short MA Len")
+showmid=input(true, title="Plot Mid MA")
+lenmid=input(30, title="Mid MA Len")
+showlong=input(true, title="Plot Long MA")
+lenlong=input(50, title="Long MA Len")
+
+// Need to rework ma forecasts to support alternate MA types
+matype(_type,_src,_len)=>
+    _len==0 ? _src :
+     _type=="SMA"?sma(_src,_len):
+    //  _type=="EMA"?ema(_src,_len):
+    //  _type=="WMA"?wma(_src,_len):
+     na
+
+forecast(_type,_src,_flen,_lrlen)=>
+    _type=="flat" ? _src :
+     _type=="linreg" ? linreg(_src,_lrlen,_flen) : na
+
+
+shortcol=orange
+midcol=purple
+longcol=blue
+
+bar = incompletecandles ? 0 : 1
+src=src_in[bar]
+
+shortma=matype(type,src,len)
+midma=matype(type,src,lenmid)
+longma=matype(type,src,lenlong)
+
+forecast1=forecast(forecasttype,src,1,linreglen)
+forecast2=forecast(forecasttype,src,2,linreglen)
+forecast3=forecast(forecasttype,src,3,linreglen)
+
+shortmaforecast1=showshort ? ((matype(type,src,len-1)*(len-1))+forecast1)/len : na
+shortmaforecast2=showshort ? ((matype(type,src,len-2)*(len-2))+forecast1+forecast2)/len : na
+shortmaforecast3=showshort ? ((matype(type,src,len-3)*(len-3))+forecast1+forecast2+forecast3)/len : na
+
+midmaforecast1=showmid ? ((matype(type,src,lenmid-1)*(lenmid-1))+forecast1)/lenmid : na
+midmaforecast2=showmid ? ((matype(type,src,lenmid-2)*(lenmid-2))+forecast1+forecast2)/lenmid : na
+midmaforecast3=showmid ? ((matype(type,src,lenmid-3)*(lenmid-3))+forecast1+forecast2+forecast3)/lenmid : na
+
+longmaforecast1=showlong ? ((matype(type,src,lenlong-1)*(lenlong-1))+forecast1)/lenlong : na
+longmaforecast2=showlong ? ((matype(type,src,lenlong-2)*(lenlong-2))+forecast1+forecast2)/lenlong : na
+longmaforecast3=showlong ? ((matype(type,src,lenlong-3)*(lenlong-3))+forecast1+forecast2+forecast3)/lenlong : na
+
+plot(showshort ? shortma : na,color=shortcol, linewidth=3, offset=(-1*bar), title="Short MA")
+plot(showmid ? midma : na,color=midcol,linewidth=3, offset=(-1*bar), title="Mid MA")
+plot(showlong ? longma : na,color=longcol,linewidth=3, offset=(-1*bar), title="Long MA")
+
+plot(showshort ? shortmaforecast1 : na,color=shortcol, linewidth=2, style=circles, title="Short MA Forecast 1", offset=1-bar, show_last=1)
+plot(showshort ? shortmaforecast2 : na,color=shortcol, linewidth=2, style=circles, title="Short MA Forecast 2", offset=2-bar, show_last=1)
+plot(showshort ? shortmaforecast3 : na,color=shortcol, linewidth=2, style=circles, title="Short MA Forecast 3", offset=3-bar, show_last=1)
+
+plot(showmid ? midmaforecast1 : na,color=midcol, linewidth=2, style=circles, title="Mid MA Forecast 1", offset=1-bar, show_last=1)
+plot(showmid ? midmaforecast2 : na,color=midcol, linewidth=2, style=circles, title="Mid MA Forecast 2", offset=2-bar, show_last=1)
+plot(showmid ? midmaforecast3 : na,color=midcol, linewidth=2, style=circles, title="Mid MA Forecast 3", offset=3-bar, show_last=1)
+
+plot(showlong ? longmaforecast1 : na,color=longcol, linewidth=2, style=circles, title="Long MA Forecast 1", offset=1-bar, show_last=1)
+plot(showlong ? longmaforecast2 : na,color=longcol, linewidth=2, style=circles, title="Long MA Forecast 2", offset=2-bar, show_last=1)
+plot(showlong ? longmaforecast3 : na,color=longcol, linewidth=2, style=circles, title="Long MA Forecast 3", offset=3-bar, show_last=1)

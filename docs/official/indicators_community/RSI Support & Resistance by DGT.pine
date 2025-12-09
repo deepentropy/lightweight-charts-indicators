@@ -1,0 +1,135 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : RSI Support & Resistance Zones
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Mar 09, 2021
+//# *  Update     : Mar 13, 2021 : Alert functionality added 
+//# *  Update     : Mar 22, 2021 : Source selection extended by adding On Balance Volume (OBV) option
+//# *  Update     : Mar 08, 2022 : added RSI oscillator overlay display 
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+// ---------------------------------------------------------------------------------------------- //
+// Functions  ----------------------------------------------------------------------------------- //
+
+f_getPrice(_osc, _thresh, _cross) =>
+    avgHigh = math.avg(high, close)
+    avgLow  = math.avg(low , close)
+
+    var return_1 = 0.
+
+    if _cross == 'over' or _cross == 'both'
+        if ta.crossover(_osc, _thresh)
+            return_1 := avgHigh
+            return_1
+    if _cross == 'under' or _cross == 'both'
+        if ta.crossunder(_osc, _thresh)
+            return_1 := avgLow
+            return_1
+    return_1
+
+// Functions  ----------------------------------------------------------------------------------- //
+// ---------------------------------------------------------------------------------------------- //
+    
+indicator('RSI Support & Resistance by DGT', 'RSI S&R ʙʏ DGT ☼☾', true, max_lines_count = 500, max_bars_back = 500)
+
+i_source      = input.string('Price (close)', 'Source', options=['Price (close)', 'On Balance Volume (OBV)'], inline='RSI', group='RSI Settings')
+i_length      = input.int(14, '  Length'  , minval=1             , inline='RSI'    , group='RSI Settings')
+i_obThreshold = input.int(70, 'Overbought', minval=50, maxval=100, inline='Thresh1', group='Threshold Settings')
+i_bullZone    = input.int(60, 'Bull Zone' , minval=50, maxval=65 , inline='Thresh1', group='Threshold Settings')
+i_bearZone    = input.int(40, 'Bear Zone' , minval=35, maxval=50 , inline='Thresh2', group='Threshold Settings')
+i_osThreshold = input.int(30, ' Oversold' , minval=1 , maxval=50 , inline='Thresh2', group='Threshold Settings')
+
+i_obos = input.bool(false, 'RSI Overbought/Oversold Marks', group='Optional')
+i_fill = input.bool(true , 'Backgroud of Bull/Bear Zones'  , group='Optional')
+
+
+// -Calculations ════════════════════════════════════════════════════════════════════════════════ //
+
+oscillator = ta.rsi(i_source == 'Price (close)' ? close : ta.obv, i_length)
+
+crossover_overbought  = f_getPrice(oscillator, i_obThreshold, 'over' )
+crossunder_overbought = f_getPrice(oscillator, i_obThreshold, 'under')
+bullZone              = f_getPrice(oscillator, i_bullZone   , 'both' )
+bearZone              = f_getPrice(oscillator, i_bearZone   , 'both' )
+crossover_oversold    = f_getPrice(oscillator, i_osThreshold, 'over' )
+crossunder_oversold   = f_getPrice(oscillator, i_osThreshold, 'under')
+
+// -Plotting ════════════════════════════════════════════════════════════════════════════════════ //
+
+plot_crossover_overbought  = plot(crossover_overbought  > 0 ? crossover_overbought  : na, 'Crossover Overbought' , crossover_overbought  == crossover_overbought[1]  ? color.green : na, 2)
+plot_crossunder_overbought = plot(crossunder_overbought > 0 ? crossunder_overbought : na, 'Crossunder Overbought', crossunder_overbought == crossunder_overbought[1] ? color.green : na, 1, plot.style_cross)
+plot_bullZone = plot(bullZone > 0 ? bullZone : na, 'Cross Bull Zone', bullZone == bullZone[1] ? color.green : na, 1)
+
+fill(plot_crossover_overbought, plot_bullZone, i_fill ? color.new(color.green, 90) : na)
+plotshape(i_obos and oscillator > i_obThreshold, 'Price Bars in Overbought Zone', shape.triangledown, location.abovebar, color.new(color.red, 25), size=size.tiny)
+
+plot_bearZone = plot(bearZone > 0 ? bearZone : na, 'Cross Bear Zone', bearZone == bearZone[1] ? color.red : na, 1)
+plot_crossover_oversold  = plot(crossover_oversold  > 0 ? crossover_oversold  : na, 'Crossover Oversold' , crossover_oversold  == crossover_oversold[1]  ? color.red : na, 1, plot.style_cross)
+plot_crossunder_oversold = plot(crossunder_oversold > 0 ? crossunder_oversold : na, 'Crossunder Oversold', crossunder_oversold == crossunder_oversold[1] ? color.red : na, 2)
+
+fill(plot_crossunder_oversold, plot_bearZone, i_fill ? color.new(color.red, 90) : na)
+plotshape(i_obos and oscillator < i_osThreshold, 'Price Bars in Oversold Zone', shape.triangleup, location.belowbar, color.new(color.green, 25), size=size.tiny)
+
+// -Alerts   ════════════════════════════════════════════════════════════════════════════════════ //
+
+alertcondition(ta.crossover (close, crossover_overbought), 'Crossover Previous Overbought', 'Crossover Previous Overbought\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+alertcondition(ta.crossunder(close, crossunder_oversold ), 'Crossunder Previous Oversold' , 'Crossunder Previous Oversold\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+
+// ---------------------------------------------------------------------------------------------- //
+// RSI OSC  ------------------------------------------------------------------------------------- //
+
+group_rsi_osc   = 'RSI Oscillator Overlay Display Settings'
+rsi_osc         = input.bool(true, 'Enable RSI Overlay Display'                               , group = group_rsi_osc)
+oscPlacement    = input.string('Top', 'Placment', options = ['Top', 'Bottom'], inline='VOL'   , group = group_rsi_osc)
+oscHight        = 11 - input.int(7, ' Hight' , minval = 3, maxval = 10        , inline='VOL'  , group = group_rsi_osc)
+lookbackLength  = input.int(200, 'Overlay Indicator Display Length', minval = 10, maxval = 495, group = group_rsi_osc) // max lines allowed is 500, where 5 of them to be used for zone definitions 
+
+var a_lines     = array.new_line()
+var a_fill      = array.new_linefill()
+
+priceHighest    = ta.highest(high, lookbackLength)
+priceLowest     = ta.lowest (low , lookbackLength)
+    
+if barstate.islast and rsi_osc
+    if array.size(a_lines) > 0
+        for i = 1 to array.size(a_lines)
+            line.delete(array.shift(a_lines))
+
+    if array.size(a_fill) > 0
+        for i = 1 to array.size(a_fill)
+            linefill.delete(array.shift(a_fill))
+
+    priceChangeRate = (priceHighest - priceLowest) / priceHighest / oscHight / 100
+    
+    obLevel   = (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + (oscPlacement == 'Top' ? i_obThreshold : -1 * (100 - i_obThreshold))  * priceChangeRate)
+    bullLevel = (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + (oscPlacement == 'Top' ? i_bullZone    : -1 * (100 - i_bullZone))     * priceChangeRate)
+    midLevel  = (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + (oscPlacement == 'Top' ? 50            : -1 * (100 - 50))             * priceChangeRate)
+    bearLevel = (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + (oscPlacement == 'Top' ? i_bearZone    : -1 * (100 - i_bearZone))     * priceChangeRate)
+    osLevel   = (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + (oscPlacement == 'Top' ? i_osThreshold : -1 * (100 - i_osThreshold))  * priceChangeRate)
+    
+    array.push(a_lines, line.new(bar_index[lookbackLength], obLevel  , bar_index, obLevel  , xloc.bar_index, extend.none, color.green, line.style_dotted, 2))
+    array.push(a_lines, line.new(bar_index[lookbackLength], bullLevel, bar_index, bullLevel, xloc.bar_index, extend.none, color.green, line.style_dotted, 1))
+    array.push(a_fill, linefill.new(array.get(a_lines, 0), array.get(a_lines, 1), color.new(color.green, 90)))
+    
+    array.push(a_lines, line.new(bar_index[lookbackLength], bearLevel, bar_index, bearLevel, xloc.bar_index, extend.none, color.red  , line.style_dotted, 1))
+    array.push(a_lines, line.new(bar_index[lookbackLength], osLevel  , bar_index, osLevel  , xloc.bar_index, extend.none, color.red  , line.style_dotted, 2))
+    array.push(a_fill, linefill.new(array.get(a_lines, 2), array.get(a_lines, 3), color.new(color.red, 90)))
+
+    array.push(a_lines, line.new(bar_index[lookbackLength], midLevel , bar_index, midLevel , xloc.bar_index, extend.none, color.gray , line.style_dotted, 1))
+ 
+    for barIndex = 0 to lookbackLength - 1
+        array.push(a_lines, line.new(bar_index[barIndex]    , (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + (oscPlacement == 'Top' ? oscillator[barIndex]     : -1 * (100 - oscillator[barIndex]    ) ) * priceChangeRate ), 
+                                     bar_index[barIndex + 1], (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + (oscPlacement == 'Top' ? oscillator[barIndex + 1] : -1 * (100 - oscillator[barIndex + 1]) ) * priceChangeRate ), xloc.bar_index, extend.none, #7e57c2, line.style_solid, 2))
+
+// RSI OSC  ------------------------------------------------------------------------------------- //
+// ---------------------------------------------------------------------------------------------- //
+
+var table logo = table.new(position.bottom_right, 1, 1)
+if barstate.islast
+    table.cell(logo, 0, 0, '☼☾  ', text_size=size.normal, text_color=color.teal)

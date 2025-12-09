@@ -1,0 +1,36 @@
+//@version=2
+// created by KIVANC using EHLERS' SUPER SMOOTHER FILTER
+// @fr3762 on twitter 
+
+
+
+study("SuperSmoothed MACD for CRYPTO",shorttitle="SSMACDc")
+
+p = close
+len = input(8,minval=1,title="Length")
+f = (1.414*3.14159)/len
+a = exp(-f)
+c2 = 2*a*cos(f)
+c3 = -a*a
+c1 = 1-c2-c3
+ssmooth = c1*(p+p[1])*0.5+c2*nz(ssmooth[1])+c3*nz(ssmooth[2])
+
+len2 = input(13,minval=1,title="Length")
+f2 = (1.414*3.14159)/len2
+a2 = exp(-f2)
+c22 = 2*a2*cos(f2)
+c32 = -a2*a2
+c12 = 1-c22-c32
+ssmooth2 = c12*(p+p[1])*0.5+c22*nz(ssmooth2[1])+c32*nz(ssmooth2[2])
+
+macd = (ssmooth - ssmooth2)*10000000
+len3 = input(3,minval=1,title="Length")
+f3 = (1.414*3.14159)/len3
+a3 = exp(-f3)
+c23 = 2*a3*cos(f3)
+c33 = -a3*a3
+c13 = 1-c23-c33
+ssmooth3 = c13*(macd+macd[1])*0.5+c23*nz(ssmooth3[1])+c33*nz(ssmooth3[2])
+
+plot(macd, color=red, linewidth=2)
+plot(ssmooth3, color=blue, linewidth=2)

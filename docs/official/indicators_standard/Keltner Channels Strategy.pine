@@ -1,0 +1,36 @@
+//@version=6
+strategy(title="Keltner Channels Strategy", overlay=true)
+length = input.int(20, minval=1)
+mult = input.float(2.0, "Multiplier")
+src = input(close, title="Source")
+exp = input(true, "Use Exponential MA", display = display.data_window)
+BandsStyle = input.string("Average True Range", options = ["Average True Range", "True Range", "Range"], title="Bands Style", display = display.data_window)
+atrlength = input(10, "ATR Length", display = display.data_window)
+esma(source, length)=>
+	s = ta.sma(source, length)
+	e = ta.ema(source, length)
+	exp ? e : s
+ma = esma(src, length)
+rangema = BandsStyle == "True Range" ? ta.tr(true) : BandsStyle == "Average True Range" ? ta.atr(atrlength) : ta.rma(high - low, length)
+upper = ma + rangema * mult
+lower = ma - rangema * mult
+crossUpper = ta.crossover(src, upper)
+crossLower = ta.crossunder(src, lower)
+bprice = 0.0
+bprice := crossUpper ? high+syminfo.mintick : nz(bprice[1])
+sprice = 0.0
+sprice := crossLower ? low -syminfo.mintick : nz(sprice[1])
+crossBcond = false
+crossBcond := crossUpper ? true : crossBcond[1]
+crossScond = false
+crossScond := crossLower ? true : crossScond[1]
+cancelBcond = crossBcond and (src < ma or high >= bprice )
+cancelScond = crossScond and (src > ma or low <= sprice )
+if (cancelBcond)
+	strategy.cancel("KltChLE")
+if (crossUpper)
+	strategy.entry("KltChLE", strategy.long, stop=bprice, comment="KltChLE")
+if (cancelScond)
+	strategy.cancel("KltChSE")
+if (crossLower)
+	strategy.entry("KltChSE", strategy.short, stop=sprice, comment="KltChSE")

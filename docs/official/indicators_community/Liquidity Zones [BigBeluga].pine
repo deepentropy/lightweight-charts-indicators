@@ -1,0 +1,189 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Liquidity Zones [BigBeluga]", overlay = true, max_lines_count = 500)
+
+// ---------------------------------------------------------------------------------------------------------------------}
+// INPUTS --------------------------------------------------------------------------------------------------------------{
+
+int leftBars         = input.int(10, "Length")
+int rightBars        = leftBars -2
+int qty_pivots       = input.int(10, "Zones Amount", minval = 1, maxval = 50)
+string flt           = input.string("Mid", "Volume Strength Filter", options = ["Low", "Mid", "High"],
+                         tooltip = "Filtering Pivots By Volume Strength")
+bool dynamic         = input.bool(false, "Dynamic Distance", group = "Mode", 
+                         tooltip = "Dynamic Distance from Pivots based on Volume Strength")
+bool hidePivot       = input.bool(true, "Filtered Pivots")
+
+// Color definitions
+color upper_col      = input.color(#2370a3, "Upper", group = "Liquidity Color", inline = "L")  // Blue
+color lower_col      = input.color(#23a372, "Lower", group = "Liquidity Color", inline = "L")   // Green
+
+// Arrays to store lines and boxes
+var line[] lines     = array.new<line>()  
+var box [] boxes     = array.new<box>()   
+
+
+
+// ---------------------------------------------------------------------------------------------------------------------}
+// CALCULATIONS --------------------------------------------------------------------------------------------------------{
+// Volume Filter 
+filter = (flt == "Low" ? 1 : flt == "Mid" ? 2 : flt == "High" ? 3 : 0)
+// Calculate pivot high and low
+series float ph      = ta.pivothigh(leftBars, rightBars)
+series float pl      = ta.pivotlow(leftBars, rightBars)
+
+// Calculate average volume and normalize it
+float avg_vol        = ta.sma(volume, rightBars) // avg volume on 5 bars
+float normalized_vol = (avg_vol-0) / ta.stdev(avg_vol, 500)
+
+// Calculate color intensity based on normalized volume
+int color_intense    = math.round(normalized_vol)*15
+color_intense       := color_intense > 100 ? 100 : color_intense
+
+// Calculate Average True Range
+float aTR            = ta.atr(200)
+
+// Function to extend lines and update boxes
+extend_line(lineArray, boxes) =>
+    if lineArray.size() > 0 and last_bar_index-bar_index < 1500
+        for i = lineArray.size() - 1 to 0 by 1
+            x2     = line.get_x2(array.get(lineArray, i))
+            yValue = line.get_y1(array.get(lineArray, i))
+
+            if bar_index == x2 and not(high > yValue and low < yValue)
+                line.set_x2(lineArray.get(i), bar_index+1)
+            
+            if (high > yValue and low < yValue)
+                line.set_style(lineArray.get(i), line.style_dashed)
+                line.set_width(lineArray.get(i), 1)
+                box.set_text(boxes.get(i), "Liquidity\nGrabbed") 
+                box.set_border_width(boxes.get(i), 1) 
+                box.set_bgcolor(boxes.get(i), na) 
+                lineArray.set(i, line(na))
+                label.new(
+                          bar_index, yValue, 
+                          "〇", 
+                          color     = color(na), 
+                          style     = label.style_label_center, 
+                          textcolor = #df1c1c, tooltip = "Claim Liquidity Point"
+                          )
+
+// Main logic for creating boxes and lines
+if normalized_vol[rightBars] > filter
+    switch
+        not na(ph) =>
+            distance = dynamic ? (normalized_vol[rightBars] * aTR[rightBars])/2 : aTR
+            color    = color.from_gradient(color_intense[rightBars], 0, 100, 
+                       color.new(upper_col, 60), color.new(upper_col, 0))
+
+            // Create and push new box for pivot high
+            boxes.push(box.new(
+                                 left           = bar_index - rightBars, 
+                                 top            = high[rightBars] + distance, 
+                                 right          = bar_index - rightBars + 8, 
+                                 bottom         = high[rightBars], 
+                                 border_width   = 2, 
+                                 border_color   = color,
+                                 bgcolor        = color,
+                                 text           = "Volume:\n" + str.tostring(math.round(avg_vol[rightBars], 2)),
+                                 text_color     = chart.fg_color, text_size = size.small
+                                 )
+                                 )
+
+            // Create and push new line for pivot high
+            lines.push(line.new(
+                                 x1    = bar_index - rightBars, 
+                                 y1    = high[rightBars] + distance, 
+                                 x2    = bar_index, 
+                                 y2    = high[rightBars] + distance, 
+                                 color = color, 
+                                 width = 2)
+                                 )
+
+        not na(pl) =>
+            distance = dynamic ? (normalized_vol[rightBars] * aTR[rightBars])/2 : aTR
+            color    = color.from_gradient(color_intense[rightBars], 0, 100, 
+                       color.new(lower_col, 80), color.new(lower_col, 0))
+
+            // Create and push new box for pivot low
+            boxes.push(box.new(
+                                 left         = bar_index - rightBars, top = low[rightBars] - distance, 
+                                 right        = bar_index - rightBars + 8, 
+                                 bottom       = low[rightBars],
+                                 border_width = 2, 
+                                 border_color = color,
+                                 bgcolor      = color,
+                                 text         = "Volume:\n" + str.tostring(math.round(avg_vol[rightBars], 2)),
+                                 text_color   = chart.fg_color, text_size = size.small
+                                 )
+                                 )
+ 
+            // Create and push new line for pivot low
+            lines.push(line.new(
+                                 x1    = bar_index - rightBars,
+                                 y1    = low[rightBars]- distance,
+                                 x2    = bar_index, 
+                                 y2    = low[rightBars]- distance, 
+                                 color = color, 
+                                 width = 2)
+                                 )
+
+// Extend lines and update boxes
+extend_line(lines, boxes)
+
+// Manage the number of boxes and lines
+a_allBoxes = box.all
+if array.size(a_allBoxes) > qty_pivots
+    box.delete(array.shift(a_allBoxes))
+
+a_allLines = line.all
+if array.size(a_allLines) > qty_pivots
+    line.delete(array.shift(a_allLines))
+
+// Create dashboard
+var tbl = table.new(position.top_right, 10, 10,
+                     frame_color = color.gray,
+                     frame_width = 1, 
+                     border_color = color.black,
+                     border_width = 1
+                     )
+tbl.cell(0, 0, "Qty", text_color = chart.fg_color)
+tbl.cell(1, 0, str.tostring(qty_pivots), 
+         text_color = chart.fg_color, 
+         bgcolor = color.from_gradient(qty_pivots, 1, 50, na, color.new(lower_col, 50))
+         )
+tbl.cell(0, 1, "Mode:", text_color = chart.fg_color)
+tbl.cell(1, 1, dynamic ? "Dynamic Mode" : "Simple Mode", 
+         text_color = chart.fg_color, 
+         bgcolor = dynamic ? color.new(upper_col, 50) : na
+         )
+
+// Filtered Pivots
+plotshape(not na(ph) and normalized_vol[rightBars] > filter and hidePivot ? high[rightBars] : na, 
+             "",
+             shape.circle, 
+             location.absolute, 
+             color = color.new(upper_col,60), size = size.small, offset = -rightBars, editable = false)
+
+plotshape(not na(ph) and normalized_vol[rightBars] > filter and hidePivot ? high[rightBars] : na, 
+             "", 
+             shape.circle, 
+             location.absolute, 
+             color = upper_col, size = size.tiny, offset = -rightBars, editable = false)
+
+plotshape(not na(pl) and normalized_vol[rightBars] > filter and hidePivot ? low[rightBars] : na,
+             "", 
+             shape.circle, 
+             location.absolute, 
+             color = color.new(lower_col,60), size = size.small, offset = -rightBars, editable = false)
+
+plotshape(not na(pl) and normalized_vol[rightBars] > filter and hidePivot ? low[rightBars] : na, 
+             "", 
+             shape.circle, 
+             location.absolute, 
+             color = lower_col, size = size.tiny, offset = -rightBars, editable = false)
+
+// ---------------------------------------------------------------------------------------------------------------------}

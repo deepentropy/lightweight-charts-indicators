@@ -1,0 +1,45 @@
+//@version=3
+study(" RSI + BB (EMA) + Dispersion (2.0)", overlay=false)
+
+// Инициализация параметров
+src = input(title="Source", type=source, defval=close) // Устанавливаем тип цены для расчетов
+for_rsi = input(title="RSI_period", type=integer, defval=14) // Период для RSI
+for_ma = input(title="Basis_BB", type=integer, defval=20) // Период для MA внутри BB
+for_mult = input(title="Stdev", type=integer, defval=2, minval=1, maxval=5) // Число стандартных отклонений для BB
+for_sigma = input(title="Dispersion", type=float, defval=0.1, minval=0.01, maxval=1) // Дисперсия вокруг MA
+
+// Условия работы скрипта
+current_rsi = rsi(src, for_rsi) // Текущее положение индикатора RSI
+basis = ema(current_rsi, for_ma)
+dev = for_mult * stdev(current_rsi, for_ma)
+upper = basis + dev
+lower = basis - dev
+disp_up = basis + ((upper - lower) * for_sigma) // Минимально-допустимый порог в области мувинга, который должен преодолеть RSI (сверху)
+disp_down = basis - ((upper - lower) * for_sigma) // Минимально-допустимый порог в области мувинга, который должен преодолеть RSI (снизу)
+color_rsi = current_rsi >= disp_up ? lime : current_rsi <= disp_down ? red : #ffea00 // Текущий цвет RSI, в зависимости от его местоположения внутри BB
+
+// Дополнительные линии и заливка для областей для RSI
+h1 = hline(70, color=#d4d4d4, linestyle=dotted, linewidth=1)
+h2 = hline(30, color=#d4d4d4, linestyle=dotted, linewidth=1)
+fill (h1, h2, transp=95)
+
+// Алерты и условия срабатывания
+rsi_Green = crossover(current_rsi, disp_up)
+rsi_Red = crossunder(current_rsi, disp_down)
+
+alertcondition(condition=rsi_Green, 
+     title="RSI cross Above Dispersion Area",
+     message="The RSI line closing crossed above the Dispersion area.")
+
+alertcondition(condition=rsi_Red,
+     title="RSI cross Under Dispersion Area",
+     message="The RSI line closing crossed below the Dispersion area")
+
+// Результаты и покраска
+plot(basis, color=black)
+plot(upper, color=#00fff0, linewidth=2)
+plot(lower, color=#00fff0, linewidth=2)
+s1 = plot(disp_up, color=white)
+s2 = plot(disp_down, color=white)
+fill(s1, s2, color=white, transp=80)
+plot(current_rsi, color=color_rsi, linewidth=2)

@@ -1,0 +1,333 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Trendoscope Pty Ltd
+//                                       ░▒             
+//                                  ▒▒▒   ▒▒      
+//                              ▒▒▒▒▒     ▒▒      
+//                      ▒▒▒▒▒▒▒░     ▒     ▒▒          
+//                  ▒▒▒▒▒▒           ▒     ▒▒          
+//             ▓▒▒▒       ▒        ▒▒▒▒▒▒▒▒▒▒▒  
+//   ▒▒▒▒▒▒▒▒▒▒▒ ▒        ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒         
+//   ▒  ▒       ░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░        
+//   ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░▒▒▒▒▒▒▒▒         
+//   ▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ ▒▒                       
+//    ▒▒▒▒▒         ▒▒▒▒▒▒▒                            
+//                 ▒▒▒▒▒▒▒▒▒                           
+//                ▒▒▒▒▒ ▒▒▒▒▒                          
+//               ░▒▒▒▒   ▒▒▒▒▓      ████████╗██████╗ ███████╗███╗   ██╗██████╗  ██████╗ ███████╗ ██████╗ ██████╗ ██████╗ ███████╗
+//              ▓▒▒▒▒     ▒▒▒▒      ╚══██╔══╝██╔══██╗██╔════╝████╗  ██║██╔══██╗██╔═══██╗██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔════╝
+//              ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒        ██║   ██████╔╝█████╗  ██╔██╗ ██║██║  ██║██║   ██║███████╗██║     ██║   ██║██████╔╝█████╗ 
+//             ▒▒▒▒▒       ▒▒▒▒▒       ██║   ██╔══██╗██╔══╝  ██║╚██╗██║██║  ██║██║   ██║╚════██║██║     ██║   ██║██╔═══╝ ██╔══╝  
+//            ▒▒▒▒▒         ▒▒▒▒▒      ██║   ██║  ██║███████╗██║ ╚████║██████╔╝╚██████╔╝███████║╚██████╗╚██████╔╝██║     ███████╗
+//             ▒▒             ▒                        
+//@version=5
+indicator("Wedge and Flag Finder (Multi - zigzag)", max_lines_count=500, max_labels_count=500, overlay=true, max_bars_back = 5000)
+import HeWhoMustNotBeNamed/zigzag/14 as zg
+import HeWhoMustNotBeNamed/arrays/1 as pa
+import HeWhoMustNotBeNamed/utils/1 as utils
+
+maxBarsBack = 2000
+max_bars_back(open, maxBarsBack)
+max_bars_back(high, maxBarsBack)
+max_bars_back(low, maxBarsBack)
+max_bars_back(close, maxBarsBack)
+
+wedgeSize = input.int(5, 'Wedge Length', options=[5,6], group='Generic',
+         tooltip='Defines how many pivots a wedge should comply. Options are 5 and 6 with 5 being default', display = display.none)
+theme = input.string('Dark', title='Theme', options=['Light', 'Dark'], group='Generic',
+         tooltip='Chart theme settings. Line and label colors are generted based on the theme settings. If dark theme is selected, '+
+         'lighter colors are used and if light theme is selected, darker colors are used.', display = display.none)
+avoidOverlap = input.bool(true, 'Suppress Overlap', group='Generic',
+         tooltip='Avoids plotting wedge if there is an existing wedge at starting point. This does not avoid nesting wedges (Wedge within wedge)', display = display.none)
+drawZigzag = input.bool(true, 'Draw Zigzag', group='Generic', tooltip='Draw zigzag lines and mark pivots within wedge', display = display.none)
+
+showZigZag1 = input.bool(true, title='L1', group='Zigzag', inline='z1', display = display.none)
+zigzag1Length = input.int(5, step=5, minval=3, title='', group='Zigzag', inline='z1', display = display.none)
+
+showZigZag2 = input.bool(true, title='L2', group='Zigzag', inline='z1', display = display.none)
+zigzag2Length = input.int(8, step=5, minval=3, title='', group='Zigzag', inline='z1', display = display.none)
+
+showZigZag3 = input.bool(true, title='L3', group='Zigzag', inline='z2', display = display.none)
+zigzag3Length = input.int(13, step=5, minval=3, title='', group='Zigzag', inline='z2', display = display.none)
+
+showZigZag4 = input.bool(true, title='L4', group='Zigzag', inline='z2', display = display.none)
+zigzag4Length = input.int(21, step=5, minval=3, title='', group='Zigzag', inline='z2', display = display.none)
+
+allowFlag = input.bool(true, 'Flag', group = 'Patterns', inline='p', display = display.none)
+allowWedge= input.bool(true, 'Wedge', group = 'Patterns', inline='p', display = display.none)
+
+applyAngleDiff = input.bool(false, 'Angle Difference', inline='ad', group='Angles', display = display.none)
+minAngleDiff = input.int(5, '', minval=0, maxval=10, inline='ad', step=5, group='Angles', display = display.none)
+maxAngleDiff = input.int(20, '', minval=10, maxval=90, inline='ad', step=5, group='Angles', tooltip='Show patterns where angle between trend lines falls under the selected range', display = display.none)
+
+applyAngleLimit = input.bool(false, 'Angle Range    ', inline='ar', group='Angles', display = display.none)
+minAngleRange = input.int(10, '', minval=0, maxval=20, inline='ar', step=5, group='Angles', display = display.none)
+maxAngleRange = input.int(60, '', minval=20, maxval=90, inline='ar', step=5, group='Angles', tooltip='Show patterns where at least one of the trend line is within the given angle range', display = display.none)
+
+alertOnBarCompletion = input.bool(true, 'Alert only after the confirmation of the bar', 'Avoids repainting due to real time bar updates', group='Alert', display = display.none)
+var themeColors = theme=="Dark"? array.from(
+         color.rgb(251, 244, 109),
+         color.rgb(141, 186, 81),
+         color.rgb(74, 159, 245),
+         color.rgb(255, 153, 140),
+         color.rgb(255, 149, 0),
+         color.rgb(0, 234, 211),
+         color.rgb(167, 153, 183),
+         color.rgb(255, 210, 113),
+         color.rgb(119, 217, 112),
+         color.rgb(95, 129, 228),
+         color.rgb(235, 146, 190),
+         color.rgb(198, 139, 89),
+         color.rgb(200, 149, 149),
+         color.rgb(196, 182, 182),
+         color.rgb(255, 190, 15),
+         color.rgb(192, 226, 24),
+         color.rgb(153, 140, 235),
+         color.rgb(206, 31, 107),
+         color.rgb(251, 54, 64),
+         color.rgb(194, 255, 217),
+         color.rgb(255, 219, 197),
+         color.rgb(121, 180, 183)
+         ) : array.from(
+         color.rgb(61, 86, 178),
+         color.rgb(57, 163, 136),
+         color.rgb(250, 30, 14),
+         color.rgb(169, 51, 58),
+         color.rgb(225, 87, 138),
+         color.rgb(62, 124, 23),
+         color.rgb(244, 164, 66),
+         color.rgb(134, 72, 121),
+         color.rgb(113, 159, 176),
+         color.rgb(170, 46, 230),
+         color.rgb(161, 37, 104),
+         color.rgb(189, 32, 0),
+         color.rgb(16, 86, 82),
+         color.rgb(200, 92, 92),
+         color.rgb(63, 51, 81),
+         color.rgb(114, 106, 149),
+         color.rgb(171, 109, 35),
+         color.rgb(247, 136, 18),
+         color.rgb(51, 71, 86),
+         color.rgb(12, 123, 147),
+         color.rgb(195, 43, 173)
+         )
+
+
+maxPatternsReference = 10
+
+var aBarArray = array.new_int()
+var bBarArray = array.new_int()
+var cBarArray = array.new_int()
+var dBarArray = array.new_int()
+var eBarArray = array.new_int()
+var fBarArray = array.new_int()
+var xBarArray = array.new_int()
+
+f_angle(a, b, loopback) =>
+    rad2degree = 180 / math.pi
+    ang = rad2degree * math.atan((a - b)/(2*math.sum(ta.tr, loopback+1)/(loopback+1)))
+    ang
+    
+
+add_new_wedge(a,b,c,d,e,f,aBar,bBar,cBar,dBar,eBar,fBar,l1Angle, l2Angle, zgColor, wedgeSize=5)=>
+    dir = a>b? 1: -1
+
+    pa.unshift(fBarArray, fBar, maxPatternsReference)
+    pa.unshift(aBarArray, aBar, maxPatternsReference)
+    pa.unshift(bBarArray, bBar, maxPatternsReference)
+    pa.unshift(cBarArray, cBar, maxPatternsReference)
+    pa.unshift(dBarArray, dBar, maxPatternsReference)
+    pa.unshift(eBarArray, eBar, maxPatternsReference)
+    array<line> wedgeLines = array.new<line>()
+    array<label> wedgeLabels = array.new<label>()
+
+    if(drawZigzag)
+        wedgeLines.push(line.new(bBar, b, aBar, a))
+        wedgeLines.push(line.new(cBar, c, bBar, b))
+        wedgeLines.push(line.new(dBar, d, cBar, c))
+        wedgeLines.push(line.new(eBar, e, dBar, d))
+        
+        wedgeLabels.push(label.new(aBar, a, '5', style=label.style_none, yloc=dir>0?yloc.abovebar:yloc.belowbar, textcolor=zgColor))
+        wedgeLabels.push(label.new(bBar, b, '4', style=label.style_none, yloc=dir<0?yloc.abovebar:yloc.belowbar, textcolor=zgColor))
+        wedgeLabels.push(label.new(cBar, c, '3', style=label.style_none, yloc=dir>0?yloc.abovebar:yloc.belowbar, textcolor=zgColor))
+        wedgeLabels.push(label.new(dBar, d, '2', style=label.style_none, yloc=dir<0?yloc.abovebar:yloc.belowbar, textcolor=zgColor))
+        wedgeLabels.push(label.new(eBar, e, '1', style=label.style_none, yloc=dir>0?yloc.abovebar:yloc.belowbar, textcolor=zgColor))
+        if(wedgeSize == 6)
+            wedgeLines.push(line.new(fBar, f, eBar, e))
+            wedgeLabels.push(label.new(fBar, f, '0', style=label.style_none, yloc=dir<0?yloc.abovebar:yloc.belowbar, textcolor=zgColor))
+    [wedgeLines, wedgeLabels]
+    
+
+wedgeLine(l1StartX, l1StartY, l1EndX, l1EndY, l2StartX, l2StartY, l2EndX, l2EndY, zgColor)=>
+    l1t = line.new(l1StartX, l1StartY, l1EndX, l1EndY, color=zgColor, extend=extend.both)
+    l2t = line.new(l2StartX, l2StartY, l2EndX, l2EndY, color=zgColor, extend=extend.both)
+    
+    startBar = math.min(l2StartX, l1StartX)
+    endBar = l1EndX
+    l1Start = line.get_price(l1t, startBar)
+    l1End = line.get_price(l1t, endBar)
+    l2Start = line.get_price(l2t,startBar)
+    l2End = line.get_price(l2t, endBar)
+
+    line.set_extend(l1t, extend.none)
+    line.set_extend(l2t, extend.none)
+    line.set_x1(l1t, startBar)
+    line.set_y1(l1t, l1Start)
+    line.set_x2(l1t, endBar)
+    line.set_y2(l1t, l1End)
+    
+    line.set_x1(l2t, startBar)
+    line.set_y1(l2t, l2Start)
+    line.set_x2(l2t, endBar)
+    line.set_y2(l2t, l2End)
+    
+    l1Angle = f_angle(l1End, l1Start, endBar-startBar)
+    l2Angle = f_angle(l2End, l2Start, endBar-startBar)
+    
+    l1Diff = math.abs(l1Start-l1End)
+    l2Diff = math.abs(l2Start-l2End)
+        
+    [l1t, l2t, l1Angle, l2Angle, l1Diff, l2Diff]
+    
+find_wedge(a,b,c,d,e,f,aBar,bBar,cBar,dBar,eBar,fBar,zigzagpivots, zigzagpivotbars, fIndex, wedgeSize=6)=>
+    existingPattern = false
+    lastPivot = wedgeSize == 6? f : e
+    lastPivotBar = wedgeSize == 6? fBar : eBar
+    llastPivot = wedgeSize == 6? e : d
+    for i=0 to array.size(aBarArray)==0? na: array.size(aBarArray)-1
+        commonPivots = (array.get(aBarArray, i) == aBar ? 1 : 0) +
+                         (array.get(bBarArray, i) == bBar ? 1 : 0) +
+                         (array.get(cBarArray, i) == cBar ? 1 : 0) +
+                         (array.get(dBarArray, i) == dBar ? 1 : 0) +
+                         (array.get(eBarArray, i) == eBar ? 1 : 0) +
+                         (wedgeSize == 6 and array.get(fBarArray, i) == fBar ? 1 : 0)
+        
+        if(commonPivots >=2) or (avoidOverlap and lastPivotBar < array.get(aBarArray,i) and lastPivotBar > array.get(fBarArray, i))
+            existingPattern := true
+            break
+    
+    if(not existingPattern)
+        aRatio = math.abs(a-b)/math.abs(b-c)
+        bRatio = math.abs(b-c)/math.abs(c-d)
+        cRatio = math.abs(c-d)/math.abs(d-e)
+        dRatio = math.abs(d-e)/math.abs(e-f)
+
+        zgColor = array.pop(themeColors)
+        [l1t, l2t, l1Angle, l2Angle, l1Diff, l2Diff] = wedgeLine(eBar, e, aBar, a, wedgeSize == 6?fBar:dBar, wedgeSize == 6?f:d, bBar, b, zgColor)
+        
+        isType1Wedge = aRatio >=1 and bRatio < 1 and cRatio >= 1 and (dRatio < 1 or wedgeSize==5) and l1Diff < l2Diff
+        isType2Wedge = aRatio <1 and bRatio >= 1 and cRatio < 1 and (dRatio >=1 or wedgeSize==5) and l1Diff > l2Diff
+        
+        angleDiff = math.abs(l1Angle-l2Angle)
+        angleDiffInRange = (angleDiff >= minAngleDiff and angleDiff <= maxAngleDiff) or not applyAngleDiff
+        angleInRange = (math.max(math.abs(l1Angle), math.abs(l2Angle)) >= minAngleRange and math.min(math.abs(l1Angle), math.abs(l2Angle)) <= maxAngleRange) or not applyAngleLimit
+        isWedge = (isType1Wedge or isType2Wedge) and angleDiffInRange and angleInRange
+        
+        deleteDrawing = true
+        if(isWedge)
+            for i = aBar to lastPivotBar
+                l = low[bar_index-i]
+                h = high[bar_index-i]
+                l1Price = line.get_price(l1t, i)
+                l2Price = line.get_price(l2t, i)
+                if(h < math.min(l1Price, l2Price) or l > math.max(l1Price, l2Price))
+                    isWedge := false
+                    break
+                if(i == cBar and (l1Price > h or l1Price < l))
+                    isWedge := false
+                    break
+                if(i == dBar and (l2Price > h or l2Price < l))
+                    isWedge := false
+                    break
+
+        if isWedge
+            wedgeType = isType1Wedge? 1 : 2
+            
+            length = array.size(zigzagpivots)
+            xIndexes = utils.get_trend_series(zigzagpivots, fIndex, length)
+            isFlag = false
+            for i=array.size(xIndexes)-1 to 0
+                xIndex = array.get(xIndexes, i)
+                x = array.get(zigzagpivots, xIndex)
+                xBar = array.get(zigzagpivotbars, xIndex)
+            
+                flagRatio = math.abs(lastPivot-line.get_price(wedgeSize == 6?l1t:l2t, lastPivotBar))/math.abs(x-lastPivot)
+                
+                isFlag := flagRatio < 0.618 and (lastPivot-x)/math.abs(lastPivot-x) == (lastPivot-(wedgeSize == 6?b:a))/math.abs(lastPivot-(wedgeSize == 6?b:a))
+                if(isFlag and allowFlag)
+                    lFlag = line.new(xBar, x, lastPivotBar, lastPivot, color=zgColor, extend=extend.none)
+                    dir = x > lastPivot? 1 : -1
+                    label.new(xBar, x, 'Flag', style=dir>0?label.style_label_down:label.style_label_up, yloc=yloc.price, color=zgColor, textcolor=color.black)
+                    break
+            if(not isFlag and allowWedge)
+                dir = lastPivot > llastPivot? 1 : -1
+                label.new(fBar, f, 'Wedge', style=dir>0?label.style_label_down:label.style_label_up, yloc=yloc.price, color=zgColor, textcolor=color.black)
+            
+            deleteDrawing := not ((isFlag and allowFlag) or (not isFlag and allowWedge))
+            if(not deleteDrawing)
+                [wedgeLines, wedgeLabels] = add_new_wedge(a,b,c,d,e,f,aBar,bBar,cBar,dBar,eBar,fBar,l1Angle, l2Angle, zgColor, wedgeSize)
+                alert('New '+(isFlag?'Flag':'Wedge')+' pattern found', alertOnBarCompletion? alert.freq_once_per_bar_close: alert.freq_once_per_bar)
+            
+            array.unshift(themeColors, zgColor)
+            true
+        
+        if(deleteDrawing)
+            line.delete(l1t)
+            line.delete(l2t)
+            array.push(themeColors, zgColor)
+            false
+            
+scan_patterns(startIndex, newPivot, zigzagpivots, zigzagpivotbars, zigzagpivotratios, zigzagpivotdirs, lastABar)=>
+    length = array.size(zigzagpivots)
+    numberOfPivots=5
+    newLastABar = lastABar
+    if(length >= startIndex+numberOfPivots+1 and newPivot)
+        a = array.get(zigzagpivots, startIndex)
+        aBar = array.get(zigzagpivotbars, startIndex)
+        aIndex = startIndex
+        lastDir = array.get(zigzagpivotdirs, startIndex)
+        if(aBar!=lastABar)
+            newLastABar := aBar
+            b = array.get(zigzagpivots, startIndex+1)
+            bBar = array.get(zigzagpivotbars, startIndex+1)
+            c = array.get(zigzagpivots, startIndex+2)
+            cBar = array.get(zigzagpivotbars, startIndex+2)
+            d = array.get(zigzagpivots, startIndex+3)
+            dBar = array.get(zigzagpivotbars, startIndex+3)
+            e = array.get(zigzagpivots, startIndex+4)
+            eBar = array.get(zigzagpivotbars, startIndex+4)
+            f = e
+            fBar = eBar
+            if(wedgeSize == 6)
+                f := array.get(zigzagpivots, startIndex+5)
+                fBar := array.get(zigzagpivotbars, startIndex+5)
+            find_wedge(a,b,c,d,e,f,aBar,bBar,cBar,dBar,eBar,fBar,zigzagpivots, zigzagpivotbars, startIndex+wedgeSize-1,wedgeSize)
+    newLastABar
+
+startIndex = 0
+if(showZigZag1)
+    [zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagpivotratios, _, _, _, _, _, newPivot, doublePivot] = zg.czigzag(zigzag1Length)
+
+    var lastABar = 0
+    lastABar := scan_patterns(startIndex+1, doublePivot, zigzagpivots, zigzagpivotbars, zigzagpivotratios, zigzagpivotdirs, lastABar)
+    lastABar := scan_patterns(startIndex, newPivot, zigzagpivots, zigzagpivotbars, zigzagpivotratios, zigzagpivotdirs, lastABar)
+
+if(showZigZag2)
+    [zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagpivotratios, _, _, _, _, _, newPivot, doublePivot] = zg.czigzag(zigzag2Length)
+
+    var lastABar = 0
+    lastABar := scan_patterns(startIndex+1, doublePivot, zigzagpivots, zigzagpivotbars, zigzagpivotratios, zigzagpivotdirs, lastABar)
+    lastABar := scan_patterns(startIndex, newPivot, zigzagpivots, zigzagpivotbars, zigzagpivotratios, zigzagpivotdirs, lastABar)
+
+if(showZigZag3)
+    [zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagpivotratios, _, _, _, _, _, newPivot, doublePivot] = zg.czigzag(zigzag3Length)
+
+    var lastABar = 0
+    lastABar := scan_patterns(startIndex+1, doublePivot, zigzagpivots, zigzagpivotbars, zigzagpivotratios, zigzagpivotdirs, lastABar)
+    lastABar := scan_patterns(startIndex, newPivot, zigzagpivots, zigzagpivotbars, zigzagpivotratios, zigzagpivotdirs, lastABar)
+
+if(showZigZag4)
+    [zigzagpivots, zigzagpivotbars, zigzagpivotdirs, zigzagpivotratios, _, _, _, _, _, newPivot, doublePivot] = zg.czigzag(zigzag4Length)
+
+    var lastABar = 0
+    lastABar := scan_patterns(startIndex+1, doublePivot, zigzagpivots, zigzagpivotbars, zigzagpivotratios, zigzagpivotdirs, lastABar)
+    lastABar := scan_patterns(startIndex, newPivot, zigzagpivots, zigzagpivotbars, zigzagpivotratios, zigzagpivotdirs, lastABar)

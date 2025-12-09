@@ -1,0 +1,81 @@
+//@version=4
+//@author=Daveatt
+StudyName        = "BEST Supertrend CCI"
+ShortStudyName   = "BEST Supertrend CCI" 
+study(StudyName, shorttitle=ShortStudyName, overlay=true, precision=6)
+
+
+//////////////////////////
+//* COLOR CONSTANTS *//
+//////////////////////////
+
+AQUA = #00FFFFFF
+BLUE = #0000FFFF
+RED  = #FF0000FF
+LIME = #00FF00FF
+GRAY = #808080FF
+DARKRED   = #8B0000FF
+DARKGREEN = #006400FF
+GOLD = #FFD700
+WHITE = color.white
+
+// Plots
+GREEN_LIGHT     = color.new(color.green, 40)
+RED_LIGHT       = color.new(color.red, 40) 
+BLUE_LIGHT      = color.new(color.aqua, 40)
+PURPLE_LIGHT    = color.new(color.purple, 40) 
+
+source = input(close)
+
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////// CCI /////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+cci_period = input(28, "CCI Period")
+cci = cci(source, cci_period)
+//UL = input(80, "Upper level")
+//LL = input(20, "Lower Level")
+ML = input(0, "CCI Mid Line pivot")
+
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////// SUPERTREND /////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+Factor=input(3,title="[ST] Factor", minval=1,maxval = 100, type=input.float)
+Pd=input(3, title="[ST] PD", minval=1,maxval = 100)
+
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+/////////////////////// SUPERTREND DETECTION //////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+f_supertrend(Factor, Pd) =>
+
+    Up=hl2-(Factor*atr(Pd))
+    Dn=hl2+(Factor*atr(Pd))
+    
+    TrendUp = 0.0
+    TrendUp := cci[1] > ML ? max(Up,TrendUp[1]) : Up
+    TrendDown = 0.0
+    TrendDown := cci[1]< ML ? min(Dn,TrendDown[1]) : Dn
+    Trend = 0.0
+    Trend := cci > ML ? 1: cci < ML ? -1: nz(Trend[1],1)
+    Tsl = Trend==1? TrendUp: TrendDown
+
+    Tsl
+
+st_tsl = f_supertrend(Factor, Pd)
+
+// Plot the ST
+linecolor = close >= st_tsl ? color.green : color.red
+plot(st_tsl, color = linecolor , linewidth = 4,title = "SuperTrend", transp=0)
+
+
+//hline(UL, title="Upper Line", linestyle=hline.style_solid, linewidth=1, color=color.red)
+//hline(LL, title="Lower Line", linestyle=hline.style_solid, linewidth=1, color=color.lime)
+//hline(ML, title="Mid Line", linestyle=hline.style_solid, linewidth=2, color=color.gray)

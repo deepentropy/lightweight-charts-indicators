@@ -1,0 +1,120 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=5
+indicator("Fibonacci levels MTF", overlay = true)
+timeframe = input.timeframe(defval = "D", title = "Higher Time Frame")
+currentlast = input.string(defval = "Last", title = "Current or Last HTF Candle", options = ["Current", "Last"])
+
+showfibolabels = input.bool(defval = true, title = "Price Labels")
+
+showhtfcandle = input.bool(defval = false, title = "Show HTF Candles", inline ="candle")
+upcol = input.color(defval = color.rgb(0, 255, 0, 75), title = "", inline ="candle")
+downcol = input.color(defval = color.rgb(255, 0, 0, 75), title = "", inline ="candle")
+wickcol = input.color(defval = color.new(color.gray, 75), title = "", inline ="candle")
+enable0 = input.bool(defval = true, title = "Level 0", inline = "0", group = "Fibonacci Levels")
+level0 = input.float(defval = 0.000, title = "", inline = "0", group = "Fibonacci Levels")
+color0 = input.color(defval = color.blue, title = "", inline = "0", group = "Fibonacci Levels")
+enable1 = input.bool(defval = true, title = "Level 1", inline = "1", group = "Fibonacci Levels")
+level1 = input.float(defval = 0.236, title = "", inline = "1", group = "Fibonacci Levels")
+color1 = input.color(defval = color.lime, title = "", inline = "1", group = "Fibonacci Levels")
+enable2 = input.bool(defval = true, title = "Level 2", inline = "2", group = "Fibonacci Levels")
+level2 = input.float(defval = 0.382, title = "", inline = "2", group = "Fibonacci Levels")
+color2 = input.color(defval = color.red, title = "", inline = "2", group = "Fibonacci Levels")
+enable3 = input.bool(defval = true, title = "Level 3", inline = "3", group = "Fibonacci Levels")
+level3 = input.float(defval = 0.500, title = "", inline = "3", group = "Fibonacci Levels")
+color3 = input.color(defval = color.orange, title = "", inline = "3", group = "Fibonacci Levels")
+enable4 = input.bool(defval = true, title = "Level 4", inline = "4", group = "Fibonacci Levels")
+level4 = input.float(defval = 0.618, title = "", inline = "4", group = "Fibonacci Levels")
+color4 = input.color(defval = color.teal, title = "", inline = "4", group = "Fibonacci Levels")
+enable5 = input.bool(defval = true, title = "Level 5", inline = "5", group = "Fibonacci Levels")
+level5 = input.float(defval = 0.786, title = "", inline = "5", group = "Fibonacci Levels")
+color5 = input.color(defval = color.navy, title = "", inline = "5", group = "Fibonacci Levels")
+
+enable100 = input.bool(defval = true, title = "Level 6", inline = "100", group = "Fibonacci Levels")
+level100 = input.float(defval = 1, title = "", inline = "100", group = "Fibonacci Levels")
+color100 = input.color(defval = color.blue, title = "", inline = "100", group = "Fibonacci Levels")
+
+enable6 = input.bool(defval = false, title = "Level 7", inline = "6", group = "Fibonacci Levels")
+level6 = input.float(defval = -0.382, title = "", inline = "6", group = "Fibonacci Levels")
+color6 = input.color(defval = color.gray, title = "", inline = "6", group = "Fibonacci Levels")
+
+enable7 = input.bool(defval = false, title = "Level 8", inline = "7", group = "Fibonacci Levels")
+level7 = input.float(defval = 1.236, title = "", inline = "7", group = "Fibonacci Levels")
+color7 = input.color(defval = color.gray, title = "", inline = "7", group = "Fibonacci Levels")
+
+
+
+// htf candle
+newbar = ta.change(time(timeframe)) != 0 
+var float htfhigh = high
+var float htflow = low
+var float htfopen = open
+float htfclose = close
+var counter = 0
+if newbar
+    htfhigh := high
+    htflow := low
+    htfopen := open
+    counter := 0
+else
+    htfhigh := math.max(htfhigh, high)
+    htflow := math.min(htflow, low)
+    counter += 1
+if showhtfcandle
+    var candle = array.new_box(3, na)
+    if not newbar
+        for x = 0 to 2
+            box.delete(array.get(candle, x))
+    array.set(candle, 0, box.new(bar_index - counter, math.max(htfopen, htfclose), bar_index, math.min(htfopen, htfclose), border_width = 0, bgcolor = htfclose >= htfopen ? upcol : downcol))
+    array.set(candle, 1, box.new(bar_index - counter, htfhigh, bar_index, math.max(htfopen, htfclose), border_width = 0, bgcolor = wickcol))
+    array.set(candle, 2, box.new(bar_index - counter, math.min(htfopen, htfclose), bar_index, htflow, border_width = 0, bgcolor = wickcol))
+
+var float open_ = na
+var float high_ = na
+var float low_ = na
+var float close_ = na
+if currentlast == "Last" and newbar
+    open_ := htfopen[1]
+    high_ := htfhigh[1]
+    low_ := htflow[1]
+    close_ := htfclose[1]
+else if currentlast == "Current"
+    open_ := htfopen
+    high_ := htfhigh
+    low_ := htflow
+    close_ := htfclose
+    
+var enabled = array.from(enable100, enable7, enable6, enable5, enable4, enable3, enable2, enable1, enable0)
+var levels = array.from(level100, level7, level6, level5, level4, level3, level2, level1, level0)
+var colors = array.from(color100, color7, color7, color5, color4, color3, color2, color1, color0)
+mlevels = array.new_float(9, na)
+if not newbar 
+    for x = 0 to array.size(levels) - 1
+        array.set(mlevels, x, array.get(enabled, x) ? (close_ >= open_ ? high_ - (high_ - low_) * array.get(levels, x) : low_ + (high_ - low_) * array.get(levels, x)) : na)
+
+// fibonacci levels
+plot(array.get(mlevels, 0), color = array.get(colors, 0), style=plot.style_linebr)
+plot(array.get(mlevels, 1), color = array.get(colors, 1), style=plot.style_linebr)
+plot(array.get(mlevels, 2), color = array.get(colors, 2), style=plot.style_linebr)
+plot(array.get(mlevels, 3), color = array.get(colors, 3), style=plot.style_linebr)
+plot(array.get(mlevels, 4), color = array.get(colors, 4), style=plot.style_linebr)
+plot(array.get(mlevels, 5), color = array.get(colors, 5), style=plot.style_linebr)
+plot(array.get(mlevels, 6), color = array.get(colors, 6), style=plot.style_linebr)
+plot(array.get(mlevels, 7), color = array.get(colors, 7), style=plot.style_linebr)
+plot(array.get(mlevels, 8), color = array.get(colors, 8), style=plot.style_linebr)
+
+if barstate.islast and showfibolabels
+    var flabels = array.new_label(0)
+    for x = 0 to (array.size(flabels) > 0 ? array.size(flabels) - 1 : na)
+        label.delete(array.pop(flabels))
+    float mid = (high_ + low_) / 2
+    for x = 0 to (array.size(enabled) > 0 ? array.size(enabled) - 1 : na)
+        if array.get(enabled, x)
+            level = array.get(mlevels, x)
+            stl = level > mid ? label.style_label_lower_left : level < mid ? label.style_label_upper_left : label.style_label_left
+            array.push(flabels, label.new(bar_index + 1, level, 
+                                          text = str.tostring(math.round(array.get(levels, x), 3)) + " (" + str.tostring(math.round_to_mintick(level)) + ")", 
+                                          color = array.get(colors, x), 
+                                          textcolor = color.white, 
+                                          style = stl))

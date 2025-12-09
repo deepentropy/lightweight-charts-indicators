@@ -1,0 +1,7 @@
+//@version=6
+indicator(title="Rate Of Change", shorttitle="ROC", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+length = input.int(9, minval=1)
+source = input(close, "Source")
+roc = 100 * (source - source[length])/source[length]
+plot(roc, color=#2962FF, title="ROC")
+hline(0, color=#787B86, title="Zero Line")

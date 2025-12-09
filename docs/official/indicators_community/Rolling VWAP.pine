@@ -1,0 +1,178 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TradingView
+
+//@version=6
+indicator("Rolling VWAP", "RVWAP", true)
+
+// Rolling VWAP
+// v4, 2025.04.22
+
+// This code's style is based on the recommendations from the Pine Script User Manual's Style guide:
+//    https://www.tradingview.com/pine-script-docs/writing/style-guide/
+
+
+
+import PineCoders/ConditionalAverages/2 as pc
+
+
+
+//#region ———————————————————— Constants and inputs
+
+
+// Time constants
+int MS_IN_MIN  = 60 * 1000
+int MS_IN_HOUR = MS_IN_MIN  * 60
+int MS_IN_DAY  = MS_IN_HOUR * 24
+
+
+// Tooltips
+string TT_SRC = "The source series for which to calculate the RVWAP. The default is the average of the high, low, and
+     close prices."
+string TT_WIN = "By default, the indicator selects the rolling period for the RVWAP automatically based on the chart's 
+     timeframe. When this checkbox is selected, the rolling period's is the total span from the days, hours, and minutes 
+     specified in the fields below."
+string TT_MB  = "The minimum number of recent values to preserve in the moving window, even if they are outside the
+     specified time window. Keeping a minimum number of bars in the calculation helps avoid situations where a
+     large time gap between bars causes an empty period."
+string TT_STD = "Sets the multiplier for standard deviation bands offset above and below the RVWAP, and their color.
+     For example, with a multiplier of 1, the distance from the RVWAP to the bands is 100% of the standard deviation.
+     \n\nNote that the bands are hidden if the input's value is 0."
+
+
+// Inputs
+float  srcInput             = input.source(hlc3, "Source", tooltip = TT_SRC)
+
+string GRP2                 = "Time period"
+bool   fixedTfInput         = input.bool(false,      "Use a fixed time period", group = GRP2, tooltip = TT_WIN)
+int    daysInput            = input.int(1,           "Days",                    group = GRP2, minval = 0) * MS_IN_DAY
+int    hoursInput           = input.int(0,           "Hours",                   group = GRP2, minval = 0, maxval = 23) * MS_IN_HOUR
+int    minsInput            = input.int(0,           "Minutes",                 group = GRP2, minval = 0, maxval = 59) * MS_IN_MIN
+bool   showInfoBoxInput     = input.bool(true,       "Show time period",        group = GRP2)
+string infoBoxSizeInput     = input.string("small",  "Size ",    inline = "21", group = GRP2, options = ["tiny", "small", "normal", "large", "huge", "auto"])
+string infoBoxYPosInput     = input.string("bottom", "↕",        inline = "21", group = GRP2, options = ["top", "middle", "bottom"])
+string infoBoxXPosInput     = input.string("left",   "↔",        inline = "21", group = GRP2, options = ["left", "center", "right"])
+color  infoBoxColorInput    = input.color(#787b86, "",         inline = "21", group = GRP2)
+color  infoBoxTxtColorInput = input.color(#ffffff, "T",        inline = "21", group = GRP2)
+
+string GRP3                 = "Deviation bands"
+float  stdevMult1           = input.float(0.0,       "Bands Multiplier 1", inline = "31", group = GRP3, minval = 0.0, step = 0.5, tooltip = TT_STD)
+float  stdevMult2           = input.float(0.0,       "Bands Multiplier 2", inline = "32", group = GRP3, minval = 0.0, step = 0.5, tooltip = TT_STD)
+float  stdevMult3           = input.float(0.0,       "Bands Multiplier 3", inline = "33", group = GRP3, minval = 0.0, step = 0.5, tooltip = TT_STD)
+color  stdevColor1          = input.color(#4caf50, "",                   inline = "31", group = GRP3)
+color  stdevColor2          = input.color(#ffeb3b, "",                   inline = "32", group = GRP3)
+color  stdevColor3          = input.color(#ff5252, "",                   inline = "33", group = GRP3)
+
+string GRP4                 = "Minimum Window Size"
+int    minBarsInput         = input.int(10, "Bars", group = GRP4, tooltip = TT_MB) 
+//#endregion
+
+
+
+//#region ———————————————————— Functions
+
+
+// @function            Calculates a scaled time period, in milliseconds, based on the chart's timeframe.
+// @returns             (int) A millisecond time difference for use as the period in the RVWAP calculation.
+timeStep() =>
+    int tfInMs = timeframe.in_seconds() * 1000
+    float step =
+      switch
+        tfInMs <= MS_IN_MIN        => MS_IN_HOUR
+        tfInMs <= MS_IN_MIN  * 5   => MS_IN_HOUR * 4
+        tfInMs <= MS_IN_HOUR       => MS_IN_DAY  * 1
+        tfInMs <= MS_IN_HOUR * 4   => MS_IN_DAY  * 3
+        tfInMs <= MS_IN_HOUR * 12  => MS_IN_DAY  * 7
+        tfInMs <= MS_IN_DAY        => MS_IN_DAY  * 30.4375
+        tfInMs <= MS_IN_DAY  * 7   => MS_IN_DAY  * 90
+        => MS_IN_DAY * 365
+    int result = int(step)
+
+
+// @function            Creates a string representing a specified time period as a number of days, hours, and minutes, 
+//                      or as a week or month. 
+// @param timeInMs      (series int) A millisecond time difference to express in other units.
+// @returns             (string) A "string" representation of the time difference in mixed calendar units. 
+tfString(series int timeInMs) =>
+    int s  = timeInMs / 1000
+    int m  = s / 60
+    int h  = m / 60
+    int tm = math.floor(m % 60)
+    int th = math.floor(h % 24)
+    int d  = math.floor(h / 24)
+    string result = 
+      switch
+        d == 30 and th == 10 and tm == 30 => "1M"
+        d == 7  and th == 0  and tm == 0  => "1W"
+        =>
+            string dStr = d  > 0 ? str.tostring(d)  + "D"  : ""
+            string hStr = th > 0 ? str.tostring(th) + "H"  : ""
+            string mStr = tm > 0 ? str.tostring(tm) + "min" : ""
+            bool hasHours = hStr != ""
+            bool hasMins  = mStr != "" 
+            dStr + (hasHours or hasMins ? " " : "") + hStr + (hasMins ? " " : "") + mStr
+//#endregion
+
+
+
+//#region ———————————————————— Calculations and display
+
+
+// Stop the indicator and raise an error if no volume data is available by the last bar. 
+if ta.cum(nz(volume)) == 0 and barstate.islast 
+    runtime.error("No volume is provided by the data vendor.")
+
+// @variable The number of milliseconds to use as the period in RVWAP calculations.
+//           Represents the total milliseconds from the "Time period" inputs if `fixedTfInput` is `true`.
+//           Otherwise, it is an automatic number of milliseconds based on the chart's timeframe. 
+int timeInMs = fixedTfInput ? minsInput + hoursInput + daysInput : timeStep()
+
+// Calculate the sum of volume values and the volume-weighted sums of the `srcInput` and its squared value over the 
+// specified time window. 
+float sumSrcVol    = pc.totalForTimeWhen(srcInput * volume, timeInMs, true, minBarsInput)
+float sumVol       = pc.totalForTimeWhen(volume, timeInMs, true, minBarsInput)
+float sumSrcSrcVol = pc.totalForTimeWhen(volume * math.pow(srcInput, 2), timeInMs, true, minBarsInput)
+
+// @variable The RVWAP value. Represents the volume-weighted sum of `srcInput` values divided by the volume sum. 
+float rollingVWAP = sumSrcVol / sumVol
+
+// @variable An estimate of local variance using `rollingVWAP` as the expected value.
+//           The approximation relies on the following formula: variance = E[x*x] - E[x]*E[x]
+//           In the rare case where very small values cause a negative approximation, the result is 0.
+float variance = math.max(sumSrcSrcVol / sumVol - math.pow(rollingVWAP, 2), 0.0)
+// @variable An estimate of the local standard deviation based on the `rollingVWAP`. 
+float stDev = math.sqrt(variance)
+
+// Calculate three sets of standard deviation bands with user-specified multipliers. 
+float upperBand1   = rollingVWAP + stDev * stdevMult1
+float lowerBand1   = rollingVWAP - stDev * stdevMult1
+float upperBand2   = rollingVWAP + stDev * stdevMult2
+float lowerBand2   = rollingVWAP - stDev * stdevMult2
+float upperBand3   = rollingVWAP + stDev * stdevMult3
+float lowerBand3   = rollingVWAP - stDev * stdevMult3
+
+// Plot the `rollingVWAP` value. 
+plot(rollingVWAP, "Rolling VWAP", color.orange)
+
+// Plot each set of standard deviation bands whose corresponding `stdevMult*` value is nonzero. 
+p1 = plot(stdevMult1 != 0 ? upperBand1 : na, "Upper Band 1", stdevColor1)
+p2 = plot(stdevMult1 != 0 ? lowerBand1 : na, "Lower Band 1", stdevColor1)
+p3 = plot(stdevMult2 != 0 ? upperBand2 : na, "Upper Band 2", stdevColor2)
+p4 = plot(stdevMult2 != 0 ? lowerBand2 : na, "Lower Band 2", stdevColor2)
+p5 = plot(stdevMult3 != 0 ? upperBand3 : na, "Upper Band 3", stdevColor3)
+p6 = plot(stdevMult3 != 0 ? lowerBand3 : na, "Lower Band 3", stdevColor3)
+
+// Fill the space between plotted bands. 
+fill(p1, p2, color.new(color.green, 95), "Bands Fill")
+fill(p3, p4, color.new(color.green, 95), "Bands Fill")
+fill(p5, p6, color.new(color.green, 95), "Bands Fill")
+
+// Logic to display the RVWAP's time period on the last historical bar. 
+if showInfoBoxInput and barstate.islastconfirmedhistory
+    //@variable A single-cell table positioned at a user-specified location.
+    table tfDisplay = table.new(infoBoxYPosInput + "_" + infoBoxXPosInput, 1, 1)
+    // Initialize the table's cell to display the timeframe string for the `timeInMs` value. 
+    table.cell(
+         tfDisplay, 0, 0, tfString(timeInMs), bgcolor = infoBoxColorInput, text_color = infoBoxTxtColorInput, 
+         text_size = infoBoxSizeInput
+     )
+//#endregion

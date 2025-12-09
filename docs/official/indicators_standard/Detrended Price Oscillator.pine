@@ -1,0 +1,13 @@
+//@version=6
+indicator(title="Detrended Price Oscillator", shorttitle="DPO", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+
+TT_CENTERED = "When the DPO is centered, the DPO line stays offset towards the left. When it is not centered, it shifts back to the right to match current price."
+
+period_    = input.int(21,      "Length",   minval = 1)
+isCentered = input(false,       "Centered", tooltip = TT_CENTERED)
+
+barsback = period_/2 + 1
+ma = ta.sma(close, period_)
+dpo = isCentered ? close[barsback] - ma : close - ma[barsback]
+plot(dpo, "DPO", offset = isCentered ? -barsback : 0, color = #43A047)
+hline(0, title="Zero Line", color = #787B86)

@@ -1,0 +1,77 @@
+//This is slightly modified SuperTrend Script.
+//For more trading strategy visit my profile page and contact me pvt
+
+//1.Buy when all three lines are Green and cover the position even one green become Red line 
+//2.Sell when all the three line are red and cove the position even one become Green. 
+//@version=2
+//Test
+//
+study("ST", shorttitle="Candle", overlay=true)
+// --------------- Calculating HA Candle's values
+ 
+plotcandle(open, high, low, close, title='candle', color=(open < close) ? green : red, wickcolor=gray)
+// END
+ 
+//The below is Super Trend Strategy
+Factor1=input(1,type =float, minval=1,maxval = 100)
+Factor2=input(2,type =float, minval=1,maxval = 100)
+Factor3=input(3,type =float, minval=1,maxval = 100)
+Pd1=input(10,minval=1,maxval = 100)
+Pd2=input(10,minval=1,maxval = 100)
+Pd3=input(10,minval=1,maxval = 100)
+//ST 1
+Up1=hl2-(Factor1*atr(Pd1))
+Up2=hl2-(Factor2*atr(Pd2))
+Up3=hl2-(Factor3*atr(Pd3))
+Dn1=hl2+(Factor1*atr(Pd1))
+Dn2=hl2+(Factor2*atr(Pd2))
+Dn3=hl2+(Factor3*atr(Pd3))
+//ST1
+TrendUp1=close[1]>TrendUp1[1]? max(Up1,TrendUp1[1]) : Up1
+TrendUp2=close[1]>TrendUp2[1]? max(Up2,TrendUp2[1]) : Up2
+TrendUp3=close[1]>TrendUp3[1]? max(Up3,TrendUp3[1]) : Up3
+ 
+TrendDown1=close[1]<TrendDown1[1]? min(Dn1,TrendDown1[1]) : Dn1
+TrendDown2=close[1]<TrendDown2[1]? min(Dn2,TrendDown2[1]) : Dn2
+TrendDown3=close[1]<TrendDown3[1]? min(Dn3,TrendDown3[1]) : Dn3
+ 
+Trend1 = close > TrendDown1[1] ? 1: close< TrendUp1[1]? -1: nz(Trend1[1],1)
+Tsl1 = Trend1==1? TrendUp1: TrendDown1
+Trend2 = close > TrendDown2[1] ? 1: close< TrendUp2[1]? -1: nz(Trend2[1],1)
+Tsl2 = Trend2==1? TrendUp2: TrendDown2
+Trend3 = close > TrendDown3[1] ? 1: close< TrendUp3[1]? -1: nz(Trend3[1],1)
+Tsl3 = Trend3==1? TrendUp3: TrendDown3
+ 
+linecolor1 = Trend1 == 1 ? yellow : red
+linecolor2 = Trend2 == 1 ? green : red
+linecolor3 = Trend3 == 1 ? #7FFF00 : red
+ 
+plot(Tsl1, color = linecolor1 , style = line , linewidth = 2,title = "SuperTrend1")
+plot(Tsl2, color = linecolor2 , style = line , linewidth = 2,title = "SuperTrend2")
+plot(Tsl3, color = linecolor3 , style = line , linewidth = 2,title = "SuperTrend3")
+ 
+plotshape(cross(close,Tsl1) and close>Tsl1 , "UpShape1", shape.flag,location.bottom,yellow,0,0)
+plotshape(cross(Tsl1,close) and close<Tsl1 , "DownShape1", shape.triangledown , location.bottom, red,0,0)
+//plot(Trend==1 and Trend[1]==-1,color = linecolor, style = circles, linewidth = 3,title="Trend")
+ 
+plotshape(cross(close,Tsl2) and close>Tsl2 , "UpShape2", shape.triangleup,location.bottom,green,0,0)
+plotshape(cross(Tsl2,close) and close<Tsl2 , "DownShape2", shape.triangledown , location.bottom, red,0,0)
+//plot(Trend==1 and Trend[1]==-1,color = linecolor, style = circles, linewidth = 3,title="Trend")
+ 
+plotshape(cross(close,Tsl3) and close>Tsl3 , "UpShape1", shape.triangleup,location.bottom,green,0,0)
+plotshape(cross(Tsl3,close) and close<Tsl3 , "DownShape2", shape.triangledown , location.bottom, red,0,0)
+//plot(Trend==1 and Trend[1]==-1,color = linecolor, style = circles, linewidth = 3,title="Trend")
+ 
+plotarrow(Trend1 == 1 and Trend1[1] == -1 ? Trend1 : na, title="UpSTArrow1", colorup=lime, maxheight=60, minheight=50, transp=0)
+plotarrow(Trend1 == -1 and Trend1[1] == 1 ? Trend1 : na, title="DnSTArrow1", colordown=red, maxheight=60, minheight=50, transp=0)
+//ST2
+plotarrow(Trend2 == 1 and Trend2[1] == -1 ? Trend2 : na, title="UpSTArrow2", colorup=lime, maxheight=60, minheight=50, transp=0)
+plotarrow(Trend2 == -1 and Trend2[1] == 1 ? Trend2 : na, title="DnSTArrow2", colordown=red, maxheight=60, minheight=50, transp=0)
+//ST3
+plotarrow(Trend3 == 1 and Trend3[1] == -1 ? Trend3 : na, title="UpSTArrow3", colorup=lime, maxheight=60, minheight=50, transp=0)
+plotarrow(Trend3 == -1 and Trend3[1] == 1 ? Trend3 : na, title="DnSTArrow3", colordown=red, maxheight=60, minheight=50, transp=0)
+ 
+ 
+//Alert code :
+alertcondition(Tsl1 == TrendUp1 and Tsl1[1] == TrendDown1 ? true : na, title='Up Entry Arrow', message='Up Entry Arrow!')
+alertcondition(Tsl1 == TrendDown1 and Tsl1[1] == TrendUp1 ? true : na, title='Down Entry Arrow', message='Down Entry Arrow!')

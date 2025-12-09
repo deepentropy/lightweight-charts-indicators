@@ -1,0 +1,26 @@
+//@version=6
+//Creator: Rob Booker.
+plot(close, "Close Price", color = #00BCD4)
+indicator(title="Rob Booker - Ziv Ghost Pivots", shorttitle="Ghost Pivots", overlay=true)
+s4 = input(true, title="Show Next 4 HR Pivot") 
+sd = input(true, title="Show Next Day (8 HR) Pivot")
+sw = input(true, title="Show Next Week Pivot")
+sm = input(true, title="Show Next Month Pivot")
+//TODO: Need to change offsets so pivot is drawn ahead of last bar. The offset
+// changes depending on the current time frame being displayed.
+fourHR_offset = 0
+day_offset = 0
+week_offset = 0
+month_offset = 0
+// 8 HR pivot
+etime_pivot = sd == true? request.security(syminfo.tickerid, "240", hlc3[0], barmerge.gaps_off, barmerge.lookahead_on): na
+//tomorrows pivot
+dtime_pivot = sd == true? request.security(syminfo.tickerid, "D", hlc3[0], barmerge.gaps_off, barmerge.lookahead_on): na
+//Next Weeks pivot
+wtime_pivot = sw == true? request.security(syminfo.tickerid, "W", hlc3[0], barmerge.gaps_off, barmerge.lookahead_on): na
+//Next Months pivot
+mtime_pivot = sm == true? request.security(syminfo.tickerid, "M", hlc3[0], barmerge.gaps_off, barmerge.lookahead_on): na
+plotchar(etime_pivot, color=#00BCD4, char="8",text="", location = location.absolute, offset=fourHR_offset)
+plotchar(dtime_pivot, color=#2962FF, char="d",text="", location = location.absolute, offset=day_offset)
+plotchar(wtime_pivot, color=#673AB7, char="w",text="", location = location.absolute, offset=week_offset)
+plotchar(mtime_pivot, color=#E91E63, char="m",text="", location = location.absolute, offset=month_offset)

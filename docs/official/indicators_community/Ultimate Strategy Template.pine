@@ -1,0 +1,389 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Daveatt
+
+// @version=4
+
+// https://www.tradingview.com/blog/en/use-an-input-from-another-indicator-with-your-strategy-19584/
+
+SystemName = "BEST Strategy Template"
+TradeId = "DAVE"
+// These values are used both in the strategy() header and in the script's relevant inputs as default values so they match.
+// Unless these values match in the script's Inputs and the TV backtesting Properties, results between them cannot be compared.
+InitCapital = 1000000
+InitPosition = 10.0
+InitCommission = 0.075
+InitPyramidMax = 3
+CalcOnorderFills = true
+
+strategy(title=SystemName, shorttitle=SystemName, 
+ overlay=true, pyramiding=InitPyramidMax, initial_capital=InitCapital, default_qty_type=strategy.percent_of_equity, 
+ default_qty_value=InitPosition, commission_type=strategy.commission.percent, commission_value=InitCommission, calc_on_order_fills=CalcOnorderFills, 
+ precision=6, max_lines_count=500, max_labels_count=500)
+
+// ————— You capture the Source of your indicator here
+ext_source_ = input(close, type=input.source, title="Data source")
+
+// Custom close signal
+custom_close = input(false, title="Use Custom Close?")
+
+// ————— Bar Coloring
+clrBars = input(true,title="Colour Candles to Trade Order state")
+
+CloseSession = input(false, title="Close positions at market at the end of each session ?")
+Session = input(title="Trading Session", type=input.session, defval="0000-2345")
+
+OpenDirection  = input(defval="ALL", title="Open  Trading Direction", options=["ALL", "LONG", "SHORT"])
+CloseDirection = input(defval="ALL", title="Close Trading Direction", options=["ALL", "LONG", "SHORT"])
+
+closeOnOpposite = input(true, title="Close on Opposite Signal")
+
+// ————— Date range filtering
+DateFilter = input(false, "═════════════ Date Range Filtering")
+
+// ————— Syntax coming from https://www.tradingview.com/blog/en/new-parameter-for-date-input-added-to-pine-21812/
+i_startTime = input(defval = timestamp("01 Jan 2019 13:30 +0000"), title = "Start Time", type = input.time)
+i_endTime = input(defval = timestamp("30 Dec 2021 23:30 +0000"), title = "End Time", type = input.time)
+
+TradeDateIsAllowed() => DateFilter ? time >= i_startTime and time <= i_endTime : true
+
+// ————— Set the max losing streak length with an input
+setmaxLosingStreak = input(title="═════════════ Set Max number of consecutive loss trades", type=input.bool, defval=false)
+maxLosingStreak = input(title="Max of consecutive loss trades", type=input.integer, defval=15, minval=1)
+
+setmaxWinStreak = input(title="═════════════ Set Max number of consecutive won trades", type=input.bool, defval=false)
+maxWinStreak = input(title="Max Winning Streak Length", type=input.integer, defval=15, minval=1)
+
+// ————— Set the max consecutive days with a loss
+setmaxLosingDaysStreak = input(title="═════════════ Set MAX consecutive days with a loss in a row", type=input.bool, defval=false)
+maxLosingDaysStreak = input(title="Max of consecutive days with a loss in a row", type=input.integer, defval=3, minval=1)
+
+setMaxDrawdown = input(title="═════════════ Set Max Total DrawDown", type=input.bool, defval=false)
+// ————— Input for the strategy's maximum drawdown (in % of strategy equity)
+maxPercDd = input(title="Max Drawdown (%)", type=input.integer, defval=10, minval=1, maxval=100)
+
+setMaxIntradayLoss = input(title="═════════════ Set Max Intraday Loss", type=input.bool, defval=false)
+// ————— Input for the strategy's maximum intraday loss (in % of strategy equity)
+maxIntradayLoss = input(title="Max Intraday Loss (%)", type=input.integer, defval=3, minval=1, maxval=100)
+
+
+setNumberDailyTrades = input(title="═════════════ Limit the number of trades per day", type=input.bool, defval=false)
+maxDailyTrades = input(title="Number MAX of daily trades", type=input.integer, defval=10, minval=1, maxval=100)
+
+setNumberWeeklyTrades = input(title="═════════════ Limit the number of trades per week", type=input.bool, defval=false)
+maxWeeklyTrades = input(title="Number MAX of weekly trades", type=input.integer, defval=50, minval=1, maxval=100)
+
+// ————— Stop loss management
+StopType        = input(title="═════════════ Stop Type Selection", defval="None", options=["None", "Percent", "Trailing", "ATR"])
+// ————— Percent
+LossPerc        = input(title="Stop Loss (%)", type=input.float, minval=0.0, step=0.5, defval=1) * 0.01
+TrailPerc       = input(title="Trail Stop Loss (%)", type=input.float, minval=0.0, step=0.5, defval=3) * 0.01
+// ————— ATR
+atrStopLength   = input(title="═════════════ ATR Stop Length", type=input.integer, defval=14)
+riskRatioATR    = input(defval=1, title="[ATR ONLY] Risk Ratio",   type=input.float,step=0.10)
+
+// ————— Take Profit
+TakeProfitType = input(title="════ Take Profit Type Selection", defval="None", options=["None", "Percent", "ATR"])
+// ————— Percent
+ProfitPerc = input(title="Take Profit (%)", type=input.float, minval=0.0, step=0.5, defval=3) * 0.01
+// ————— ATR
+atrTakeProfitLength   = input(title="══════ ATR Take Profit Length", type=input.integer, defval=14)
+rewardRatioATR        = input(defval=2, title="[ATR ONLY] Reward Ratio", type=input.float,step=0.10)
+
+
+// global variables from PineCoders
+// ————— Colors
+
+MyGreenRaw = color.new(color.lime,0),             MyGreenMedium = color.new(#00b300,0),       MyGreenSemiDark = color.new(#009900,0),     MyGreenDark = color.new(#006600,0),         MyGreenDarkDark = color.new(#003300,0)
+MyRedRaw = color.new(color.red,0),                MyRedMedium = color.new(#cc0000,0),         MyRedSemiDark = color.new(#990000,0),       MyRedDark = color.new(#330000,0),           MyRedDarkDark = color.new(#330000,0)
+MyFuchsiaRaw = color.new(color.fuchsia,0),        MyFuchsiaMedium = color.new(#c000c0,0),     MyFuchsiaDark = color.new(#800080,0),       MyFuchsiaDarkDark = color.new(#400040,0)
+MyYellowRaw  = color.new(color.yellow,0),         MyYellowMedium  = color.new(#c0c000,0),     MyYellowDark  = color.new(#808000,0),       MyYellowDarkDark  = color.new(#404000,0)
+MyOrangeRaw = color.new(#ffa500,0),               MyOrangeMedium = color.new(#cc8400,0),      MyOrangeDark = color.new(#996300,0)
+MyBlueRaw   = color.new(#4985E7,0),               MyBlueMedium   = color.new(#4985E7,0)
+MyGreenBackGround = color.new(#00FF00,93),        MyRedBackGround = color.new(#FF0000,90)
+
+
+BIG_NUMBER_COUNT = 1000
+        
+
+// variables initialisation
+ext_source = nz(ext_source_)
+
+// 1 is bull signal
+bull = (ext_source == 1)
+// -1 is bear signal
+bear = (ext_source == -1)
+
+// 2 exit custom close long
+exit_bull = custom_close and (ext_source == 2)
+// -2 exit custom close short
+exit_bear = custom_close and (ext_source == -2)
+
+// Entry Price
+entry_price = valuewhen(condition=bear or bull, source=close, occurrence=0)
+
+// ————— RISK MANAGEMENT
+
+condintradayloss = (setMaxIntradayLoss) ? maxIntradayLoss : 100
+strategy.risk.max_intraday_loss(value=condintradayloss, type=strategy.percent_of_equity)
+
+condmaxdrawdown = (setMaxDrawdown) ? maxPercDd : 100
+strategy.risk.max_drawdown(value=condmaxdrawdown, type=strategy.percent_of_equity)
+
+// daily trades calculation
+
+oktoTradeDaily = true
+
+tradesIntradayCount = (setNumberDailyTrades) ? maxDailyTrades : BIG_NUMBER_COUNT
+strategy.risk.max_intraday_filled_orders(count=tradesIntradayCount)
+
+// weekly trades calculation
+tradesLastWeek = 0
+
+tradesLastWeek := if (dayofweek == dayofweek.monday) and (dayofweek != dayofweek[1])
+    strategy.closedtrades[1] + strategy.opentrades[1]
+else
+    tradesLastWeek[1]
+
+// Calculate number of trades this week
+weeklyTrades = (strategy.closedtrades + strategy.opentrades) - tradesLastWeek
+okToTradeWeekly = (setNumberWeeklyTrades) ? (weeklyTrades < maxWeeklyTrades) : true
+
+
+// consecutive loss days in a row
+countConsLossDays = (setmaxLosingDaysStreak) ? maxLosingDaysStreak : BIG_NUMBER_COUNT
+strategy.risk.max_cons_loss_days(countConsLossDays)
+
+
+// Calculate the total losing streaks
+// Check if there's a new losing trade that increased the streak
+newLoss = (strategy.losstrades > strategy.losstrades[1]) and
+     (strategy.wintrades == strategy.wintrades[1]) and
+     (strategy.eventrades == strategy.eventrades[1])
+     
+// Determine current losing streak length
+streakLossLen = 0
+
+streakLossLen := if (newLoss)
+    nz(streakLossLen[1]) + 1
+else
+    if (strategy.wintrades > strategy.wintrades[1]) or
+         (strategy.eventrades > strategy.eventrades[1])
+        0
+    else
+        nz(streakLossLen[1])
+
+// Check if losing streak is under max allowed
+okToTradeLossStreak = (setmaxLosingStreak) ? streakLossLen < maxLosingStreak : true
+
+// Calculate the total winning streaks
+// See if there's a new winner that increased the streak
+newWin = (strategy.wintrades > strategy.wintrades[1]) and
+     (strategy.losstrades == strategy.losstrades[1]) and
+     (strategy.eventrades == strategy.eventrades[1])
+
+// Figure out current winning streak length
+streakWinLen = 0
+
+streakWinLen := if (newWin)
+    nz(streakWinLen[1]) + 1
+else
+    if (strategy.losstrades > strategy.losstrades[1]) or
+         (strategy.eventrades > strategy.eventrades[1])
+        0
+    else
+        nz(streakWinLen[1])
+
+// Check if winning streak is under max allowed
+okToTradeWinStreak = (setmaxWinStreak) ? streakWinLen < maxWinStreak : true
+
+// Stop loss management
+longPercStopPrice  = strategy.position_avg_price * (1 - LossPerc)
+shortPercStopPrice = strategy.position_avg_price * (1 + LossPerc)
+
+// trailing
+// Determine trail stop loss prices
+longTrailStopPrice = 0.0, shortTrailStopPrice = 0.0
+final_SL_Long = 0.0, final_SL_Short = 0.0
+
+longTrailStopPrice := if (strategy.position_size > 0)
+    stopValue = close * (1 - TrailPerc)
+    max(stopValue, longTrailStopPrice[1])
+else
+    0
+
+shortTrailStopPrice := if (strategy.position_size < 0)
+    stopValue = close * (1 + TrailPerc)
+    min(stopValue, shortTrailStopPrice[1])
+else
+    999999
+
+useSL = StopType != "None"
+use_SL_Percent = StopType == "Percent"
+use_SL_Trail = StopType == "Trailing"
+use_SL_ATR = StopType == "ATR"
+
+// Use this function to return the correct pip value for pips on Forex symbols
+pip() => syminfo.mintick * (syminfo.type == "forex" ? 10 : 1)
+
+// ATR
+// Function atr (average true range) returns the RMA of true range. 
+// True range is max(high - low, abs(high - close[1]), abs(low - close[1]))
+atr_stop                     = atr(atrStopLength)
+atr_tp                       = atr(atrTakeProfitLength)
+// ATR used for Risk:Reward
+RR_STOP_ATR                  = 0.0, RR_STOP_ATR := nz(RR_STOP_ATR[1])
+RR_TP_ATR                    = 0.0, RR_TP_ATR := nz(RR_TP_ATR[1])
+
+// Capturig the atr value at signal time only
+if bull or bear
+    RR_STOP_ATR := atr_stop
+    RR_TP_ATR   := atr_tp
+
+final_SL_Long := if use_SL_Percent
+    longPercStopPrice
+else if use_SL_Trail
+    longTrailStopPrice
+else if use_SL_ATR
+    entry_price - (RR_STOP_ATR * riskRatioATR)
+
+final_SL_Short := if use_SL_Percent
+    shortPercStopPrice
+else if use_SL_Trail
+    shortTrailStopPrice
+else if use_SL_ATR
+    entry_price + (RR_STOP_ATR * riskRatioATR)
+
+// Plot stop loss values for confirmation
+plot(series=(strategy.position_size > 0 and useSL) ? final_SL_Long : na,
+     color=color.red, style=plot.style_cross,
+     linewidth=2, title="Long Stop Loss")
+
+plot(series=(strategy.position_size < 0 and useSL) ? final_SL_Short : na,
+     color=color.red, style=plot.style_cross,
+     linewidth=2, title="Short Stop Loss")
+
+// Used for debug and check the ATR SL value
+plot(use_SL_ATR and strategy.position_size != 0 ? RR_STOP_ATR * riskRatioATR : na,
+     color=color.red, transp=100, title="ATR Stop Value")
+
+// Take Profit Manangement
+
+useTakeProfit = TakeProfitType != "None"
+use_TP_Percent = TakeProfitType == "Percent"
+use_TP_ATR = TakeProfitType == "ATR"
+
+TPlongPrice  = use_TP_Percent 
+ ? strategy.position_avg_price * (1 + ProfitPerc) 
+ : strategy.position_avg_price + (RR_TP_ATR * rewardRatioATR)
+
+TPshortPrice = use_TP_Percent ? 
+ strategy.position_avg_price * (1 - ProfitPerc) 
+ : strategy.position_avg_price - (RR_TP_ATR * rewardRatioATR)
+
+// Plot take profit values for confirmation
+plot(series=(strategy.position_size > 0 and useTakeProfit) ? TPlongPrice : na,
+     color=color.green, style=plot.style_circles,
+     linewidth=3, title="Long Take Profit")
+
+plot(series=(strategy.position_size < 0 and useTakeProfit) ? TPshortPrice : na,
+     color=color.red, style=plot.style_circles,
+     linewidth=3, title="Short Take Profit")
+
+// Used for debug and check the ATR TP value
+plot(use_TP_ATR and strategy.position_size != 0 ? RR_TP_ATR * rewardRatioATR : na,
+     color=color.green, transp=100, title="ATR TP Value")
+
+// Session calculations
+// The BarInSession function returns true when
+// the current bar is inside the session parameter
+BarInSession(sess) => time(timeframe.period, sess) != 0
+in_session = BarInSession(Session)
+okToTradeInSession = CloseSession ? in_session : true
+new_session = in_session and not in_session[1]
+
+bgcolor(color=(CloseSession and BarInSession(Session)[1]) ? color.green : na,
+ title="Trading Session", transp=85)
+
+// consolidation of the conditions
+okToTrade = okToTradeWeekly and okToTradeLossStreak and okToTradeWinStreak 
+ and TradeDateIsAllowed() and okToTradeInSession// and TradeHourlyIsAllowed()
+
+// Orders part
+longs_opened = strategy.position_size > 0 
+shorts_opened = strategy.position_size < 0
+trades_opened = strategy.position_size != 0
+longs_opened_in_session = CloseSession and longs_opened
+shorts_opened_in_session = CloseSession and shorts_opened
+// trades_opened_in_session = CloseSession and trades_opened
+
+open_all        = OpenDirection == "ALL"
+open_all_longs  = OpenDirection != "SHORT"
+open_all_shorts = OpenDirection != "LONG"
+
+// Go long
+longCondition = bull
+if (longCondition and okToTrade and okToTradeInSession and open_all_longs)
+    strategy.entry("Long", strategy.long, alert_message="{{ticker}} Long Signal - Entry Price: " + tostring(close) + " Timeframe: {{interval}}")
+    alert(syminfo.tickerid + " Long Signal - Entry Price: " + tostring(close) + " Timeframe: " + timeframe.period, alert.freq_once_per_bar_close)
+        
+// Go Short
+shortCondition = bear
+if (shortCondition and okToTrade and okToTradeInSession and open_all_shorts)
+    strategy.entry("Short", strategy.short, alert_message="{{ticker}} Short Signal - Entry Price: " + tostring(close) + " Timeframe: {{interval}}")
+    alert(syminfo.tickerid + " Short Signal - Entry Price: " + tostring(close) + " Timeframe: " + timeframe.period, alert.freq_once_per_bar_close)
+
+// Execute Exits
+
+if closeOnOpposite and strategy.position_size > 0 and shortCondition// and open_all_shorts
+    strategy.close(id="Long", alert_message="{{ticker}} Short Signal - Close Long Signal - Timeframe: {{interval}}", comment="Short Signal\nClose Long")
+
+if closeOnOpposite and strategy.position_size < 0 and longCondition// and open_all_longs
+    strategy.close(id="Short", alert_message="{{ticker}} Long Signal - Close Short Signal - Timeframe: {{interval}}", comment="Long Signal\nClose Short")
+
+// Custom close
+
+if (strategy.position_size > 0 and exit_bull)
+    strategy.close(id="Long", alert_message="{{ticker}} Custom Close Long Signal - Timeframe: {{interval}}", comment="Custom Close Signal\nClose Long")
+    alert(syminfo.tickerid + " Custom Close Long Signal - Entry Price: " + tostring(close) + " Timeframe: " + timeframe.period, alert.freq_once_per_bar_close)
+
+if (strategy.position_size < 0 and exit_bear)
+    strategy.close(id="Short", alert_message="{{ticker}} Custom Close Short Signal - Timeframe: {{interval}}", comment="Custom Close Signal\nClose Short")
+    alert(syminfo.tickerid + " Custom Close Short Signal  - Entry Price: " + tostring(close) + " Timeframe: " + timeframe.period, alert.freq_once_per_bar_close)
+
+close_all = CloseDirection == "ALL"
+close_all_longs = CloseDirection != "SHORT"
+close_all_shorts = CloseDirection != "LONG"
+
+if (strategy.position_size > 0 and close_all_longs)
+    strategy.exit(id="Exit Long", from_entry="Long", stop=(useSL) ? final_SL_Long : na, limit=(useTakeProfit) ? TPlongPrice : na, alert_message="{{ticker}} Close Long Signal - Timeframe: {{interval}}")
+    alert(syminfo.tickerid + " Exit Long Signal - Exit Price: " + tostring(close) + " Timeframe: " + timeframe.period, alert.freq_once_per_bar_close)
+
+if (strategy.position_size < 0 and close_all_shorts)
+    strategy.exit(id="Exit Short", from_entry="Short", stop=(useSL) ? final_SL_Short : na, limit=(useTakeProfit) ? TPshortPrice : na, alert_message="{{ticker}} Close Short Signal - Timeframe: {{interval}}")
+    alert(syminfo.tickerid + " Exit Short Signal - Exit Price: " + tostring(close) + "Timeframe: " + timeframe.period, alert.freq_once_per_bar_close)
+
+// // Close all Longs only
+// if not okToTradeInSession and close_all_longs and longs_opened_in_session
+//     strategy.close(id="Long")
+
+// // Close all Shorts only
+// if not okToTradeInSession and close_all_shorts and shorts_opened_in_session
+//     strategy.close(id="Short")
+
+// Close all positions at the end of each session regardeless of their profit/loss
+if not okToTradeInSession and close_all and trades_opened
+    strategy.close_all()
+
+// Flatten strategy when max losing streak is reached
+close_strat = not okToTradeWeekly or not okToTradeLossStreak or not okToTradeWinStreak or not TradeDateIsAllowed()
+
+if (close_strat)
+    // close all existing orders
+    strategy.close_all()
+
+// Colour code the candles
+bclr = not clrBars ? na : strategy.position_size == 0 ? color.gray : 
+ longs_opened  ? color.lime :
+ shorts_opened ? color.red : color.gray
+
+barcolor(bclr, title="Trade State Bar Colouring")

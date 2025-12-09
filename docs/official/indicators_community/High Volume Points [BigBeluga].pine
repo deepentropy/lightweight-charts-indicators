@@ -1,0 +1,175 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('High Volume Points [BigBeluga]', overlay = true, max_polylines_count = 100, max_lines_count = 17, max_labels_count = 500, max_bars_back = 1000)
+
+
+// =====================================================================================================================}
+// ＩＮＰＵＴＳ
+// ====================================================================================================================={
+
+
+//@variable Diameter of the circles
+step = input.float(1, 'Diameter Of Circles', step = 0.1, group = 'Settings')
+
+//@variable Volume threshold to filter points
+filter_vol = input.float(2, 'Filter Points by Volume', step = 0.1, group = 'Settings', minval = 0, maxval = 6)
+
+//@variable Number of bars to the left of the pivot
+int leftBars = input(15, "Left Bars", group = "Points")
+int rightBars = input(15, "Right Bars", group = "Points")
+
+//@variable Option to show levels
+show_lvl = input.bool(true, 'Show Levels', group = 'Visual')
+
+// Define scaling factors
+float xScale = 2.0
+float yScale = 0.5 * ta.atr(500)
+
+// Define colors
+color upper_col = input.color(#fda05e, "", inline = "1")
+color lower_col = input.color(#2fd68e, "", inline = "1")
+
+// Dynamic width levels
+int width1 = 0
+int width2 = 0
+
+// Initialize arrays for storing points and levels
+var points = array.new<chart.point>()
+var levels = array.new<line>()
+
+
+// =====================================================================================================================}
+// ＣＡＬＣＵＬＡＴＩＯＮＳ
+// ====================================================================================================================={
+
+// Calculate pivot high and pivot low
+ph = ta.pivothigh(leftBars, rightBars)
+pl = ta.pivotlow(leftBars, rightBars)
+
+volume_ = math.sum(volume, leftBars * 2)
+
+// Calculate normalized volume delta
+float vol = volume_
+
+
+// Get min and max volume within the lookback period
+min_vol = ta.lowest(volume_, 300)
+max_vol = ta.highest(volume_, 300)
+
+// // Normalize the volume between 0 and 6
+// norm_vol = ((volume_ - min_vol) / (max_vol - min_vol)) * 6
+
+reference_vol = ta.percentile_nearest_rank(volume_, 1000, 95)
+norm_vol = volume_ / reference_vol * 5
+
+check_cross(arrayOfLines) =>
+    int qtyOfLines = array.size(arrayOfLines)
+
+    for lineNo = 0 to qtyOfLines > 0 ? qtyOfLines - 1 : na by 1
+
+        if lineNo < array.size(arrayOfLines)
+            line currentLine = array.get(arrayOfLines, lineNo)
+            float lineLevel = line.get_price(currentLine, bar_index)
+            bool lineWasCrossed = math.sign(close[1] - lineLevel) != math.sign(close - lineLevel)
+
+            if lineWasCrossed
+                line.set_style(currentLine, line.style_dotted)
+                array.remove(arrayOfLines, lineNo)
+                int(na)
+            else
+                line.set_x2(currentLine, bar_index)
+                int(na)
+
+method draw_circle(bool src, int mult_x, int mult_y) =>
+    points.clear()
+
+    float angle = 0
+    var float source = 0.
+    var color color = na
+
+    switch 
+        src => 
+    	    source := high[rightBars]
+    	    color := upper_col
+    	    color
+        => 
+    	    source := low[rightBars]
+    	    color := lower_col
+    	    color
+
+    for i = 1 to 11 by 1
+        int xValue = int(math.round(xScale * mult_x * math.sin(angle))) + bar_index - rightBars
+        float yValue = yScale * mult_y * math.cos(angle) + source
+        angle := angle + math.pi / 5
+
+        points.push(chart.point.from_index(xValue, yValue))
+
+    polyline.new(points, curved = false, line_color = color, fill_color = color.new(color, 90), line_width = 1)
+
+//@function draw level.
+method draw_level(float src, int n, width, color) =>
+    line.new(x1 = n, y1 = src, x2 = n, y2 = src, style = line.style_solid, width = math.round(width / 3), color = color)
+
+
+// =====================================================================================================================}
+// ＰＬＯＴ
+// ====================================================================================================================={
+
+if last_bar_index - bar_index < 300
+
+    // ————— Plotting logic for high pivots
+    for i = 0 to 10 by 1
+        condition = not na(ph) and norm_vol > i and norm_vol > filter_vol
+
+        if condition and barstate.isconfirmed
+            true.draw_circle(math.round(i * step), math.round(i * step))
+
+            width1 := width1 + 1
+            width1
+
+    if not na(ph) and norm_vol > filter_vol and barstate.isconfirmed
+        int n = bar_index - rightBars
+        float src = high[rightBars]
+        chart.point cp = chart.point.from_index(n, src)
+
+        levels.push(src.draw_level(n, width1, upper_col))
+
+        label.new(cp, textcolor = chart.fg_color, color = color.new(upper_col, 30), style = label.style_circle, size = size.tiny)
+
+        label.new(cp, text = str.tostring(vol, format.volume), textcolor = chart.fg_color, color = color(na), style = label.style_label_down)
+
+    // ————— Plotting logic for low pivots
+    for i = 10 to 0 by 1
+        condition = not na(pl) and norm_vol > i and norm_vol > filter_vol
+
+        if condition and norm_vol > filter_vol and barstate.isconfirmed
+            false.draw_circle(math.round(i * step), math.round(i * step))
+
+            width2 := width2 + 1
+            width2
+
+    if not na(pl) and norm_vol > filter_vol and barstate.isconfirmed
+        int n = bar_index - rightBars
+        float src = low[rightBars]
+        chart.point cp = chart.point.from_index(n, src)
+
+        levels.push(src.draw_level(n, width2, lower_col))
+
+        label.new(cp, textcolor = chart.fg_color, color = color.new(lower_col, 30), style = label.style_circle, size = size.tiny)
+
+        label.new(cp, text = str.tostring(vol, format.volume), textcolor = chart.fg_color, color = color(na), style = label.style_label_up)
+
+
+// Check and update crosses
+check_cross(levels)
+
+// Clean up lines if levels are not shown
+a_allLines = line.all
+if array.size(a_allLines) > 0 and not show_lvl
+    for i = 0 to array.size(a_allLines) - 1 by 1
+        line.delete(array.get(a_allLines, i))
+
+// =====================================================================================================================}

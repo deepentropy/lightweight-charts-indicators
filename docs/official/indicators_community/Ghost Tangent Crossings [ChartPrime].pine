@@ -1,0 +1,307 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=5
+indicator("Ghost Tangent Crossings [ChartPrime]", overlay = true, max_lines_count = 100, max_polylines_count = 100, max_labels_count = 500, max_bars_back = 1000)
+
+type pivot
+    float current = na
+    int current_idx = na
+    float previous = na
+    int previous_idx = na
+
+pivothigh(float source, int back, int forward)=>
+    var pivot pivot_high = pivot.new(na, na, na, na)
+    bool ph = not na(ta.pivothigh(source, back, forward))
+    if ph
+        pivot_high := pivot.new(source[forward], bar_index - forward, pivot_high.current, pivot_high.current_idx)
+    [pivot_high, ph]
+
+pivotlow(float source, int back, int forward)=>
+    var pivot pivot_low = pivot.new(na, na, na, na)
+    bool pl = not na(ta.pivotlow(source, back, forward))
+    if pl
+        pivot_low := pivot.new(source[forward], bar_index - forward, pivot_low.current, pivot_low.current_idx)
+    [pivot_low, pl]
+
+generate_ellipse(int start_x, int end_x, float start_y, float end_y)=>
+    chart.point[] points = array.new<chart.point>()
+    float a = end_x - start_x
+    float b = end_y - start_y
+
+    int x = na
+
+    if a > 1
+        for i = 0 to 90
+            int new_x = int(a * math.cos(math.toradians(i)))
+            float y = b * math.sin(math.toradians(i))
+            if x != new_x
+                points.push(chart.point.new(na, start_x + x, start_y + y))
+            x := new_x
+
+        points.push(chart.point.new(na, start_x, end_y))
+
+    else
+        points.unshift(chart.point.new(na, end_x, start_y))
+        points.push(chart.point.new(na, start_x, end_y))
+
+    points
+
+ellipse_slope(int start_x, int end_x, float start_y, float end_y, chart.point[] ellipse_points)=>
+    if ellipse_points.size() > 2
+        float[] dy = array.new<float>()
+        float[] centers = array.new<float>()
+        int[] idx = array.new<int>()
+        
+        for i = 0 to ellipse_points.size() - 2
+            float delta = math.abs(ellipse_points.get(i + 1).price - ellipse_points.get(i).price)
+            dy.push(delta)
+
+        for i = 1 to dy.size() - 1
+            idx.push(i)
+            float left = dy.copy().slice(0, i + 1).sum()
+            float right = dy.copy().slice(i - 1, dy.size()).sum()
+            centers.push(math.abs(left - right))
+
+        int mid = idx.get(centers.indexof(centers.min()))
+        chart.point tangent = ellipse_points.get(mid)
+
+        float a = end_x - start_x
+        float b = end_y - start_y
+        float x = tangent.index - start_x
+        float y =  tangent.price - start_y
+        float slope = -(math.pow(b, 2) * x) / (math.pow(a, 2) * y)
+
+        [tangent, slope]
+
+    else
+        [ellipse_points.first(), -(ellipse_points.last().price - ellipse_points.first().price)]
+
+check_b(int start_x, float start_y, int forward_length, float slope, bool polarity)=>
+    int i = forward_length - 1
+    bool found = false
+
+    int start_idx = bar_index - start_x
+    int current_idx = start_idx
+    float end_price = na
+
+    while not found and current_idx >= 0
+        i += 1
+
+        float check_price = start_y + slope * i
+        current_idx := start_idx - i
+
+        if current_idx < 0
+            break
+
+        if polarity
+            end_price := high[current_idx]
+            if end_price < check_price
+                found := true
+        else
+            end_price := low[current_idx]
+            if end_price > check_price
+                found := true
+    
+    if found
+        [found, end_price, bar_index - current_idx]
+    else
+        [found, float(na), int(na)]
+
+generate_zig_zag(
+ int start_x
+ , int end_x
+ , float start_y
+ , float end_y
+ , bool show_elliptical_zig
+ , string equipoint_style
+ , bool show_break
+ , bool extend_line
+ , color up_color
+ , color down_color
+ , color text_color
+ , label[] zig_zag_points
+ , polyline[] zig_zags
+ , line[] equipoints
+ , label[] break_labels
+ , bool polarity
+ , bool ghost = false)=>
+
+    color bullish_color = polarity ? up_color : down_color
+    color bearish_color = polarity ? down_color : up_color
+
+    chart.point[] ellipse_points = generate_ellipse(start_x, end_x, start_y, end_y)
+    [tangent, slope] = ellipse_slope(start_x, end_x, start_y, end_y, ellipse_points)
+
+    int length = end_x - start_x
+    int back_length = tangent.index - start_x
+    int forward_length = length - back_length
+
+    if show_elliptical_zig
+        zig_zag_points.push(label.new(ellipse_points.last(), na, color = bullish_color, style = label.style_circle, size = size.auto))
+        zig_zags.push(polyline.new(ellipse_points, false, false, xloc.bar_index, bullish_color, line_width = 2))
+
+    if equipoint_style == "Directional"
+        if extend_line
+            equipoints.push(line.new(tangent.index, tangent.price, tangent.index + 1, tangent.price + slope, xloc.bar_index, extend.both, bullish_color, line.style_dashed))
+        else
+            equipoints.push(line.new(tangent.index - back_length, tangent.price - slope * back_length, tangent.index + back_length, tangent.price + slope * back_length, xloc.bar_index, extend.none, bullish_color, line.style_dashed))
+
+    if equipoint_style == "Horizontal"
+        if extend_line
+            equipoints.push(line.new(tangent.index, tangent.price, tangent.index + 1, tangent.price, xloc.bar_index, extend.right, bullish_color, line.style_dashed))
+        else
+            equipoints.push(line.new(tangent.index, tangent.price, tangent.index + length * 2, tangent.price, xloc.bar_index, extend.none, bullish_color, line.style_dashed))
+
+    if show_break and not ghost
+        [found, found_price, found_idx] = check_b(tangent.index, tangent.price, forward_length, slope, polarity)
+        if found
+            break_labels.push(label.new(found_idx, found_price, "B",  xloc.bar_index, polarity ? yloc.abovebar : yloc.belowbar, polarity ? down_color :up_color, polarity ? label.style_label_down : label.style_label_up, text_color))
+        else
+            break_labels.push(label.new(na, na, na))
+
+dump_ghost(polyline[] ghost_zig_zags, label[] ghost_zig_zag_points, line[] ghost_equipoints)=>
+    if ghost_zig_zags.size() > 0
+        for i = ghost_zig_zags.size() - 1 to 0
+            ghost_zig_zags.pop().delete()
+    if ghost_zig_zag_points.size() > 0
+        for i = ghost_zig_zag_points.size() - 1 to 0
+            ghost_zig_zag_points.pop().delete()
+    if ghost_equipoints.size() > 0
+        for i = ghost_equipoints.size() - 1 to 0
+            ghost_equipoints.pop().delete()
+
+const string settings = "Settings"
+string pivot_type = input.string("Wick", "Pivot Style", ["Wick", "Body"], group = settings)
+int pivot_forward = input.int(25, "Pivot Lookforward", minval = 1, group = settings)
+const string visual = "Visuals"
+bool show_elliptical_zig = input.bool(true, "Show Elliptical Zig-Zag", group = visual)
+bool show_ghosts = input.bool(true, "Show Ghost Elliptical Zig-Zag", group = visual)
+bool show_break = input.bool(true, "Show Break", group = visual)
+int max_zig = input.int(10, "Max Zig-Zags", minval = 0, maxval = 100, group = visual)
+string equipoint_style = input.string("Directional", "Equipoint Style", ["Directional", "Horizontal", "None"], group = visual)
+bool extend_line = input.bool(false, "Extend Lines", group = visual)
+color up_color = input.color(#1bcf66, "Up Color", group = visual)
+color down_color = input.color(#ee2d2d, "Down Color", group = visual)
+color ghost_up_color = input.color(#1bcf663a, "Ghost Up Color", group = visual)
+color ghost_down_color = input.color(#ee2d2d3a, "Ghost Down Color", group = visual)
+color text_color = input.color(#EEEEEE, "Text Color", group = visual)
+
+var polyline[] zig_zags = array.new<polyline>()
+var label[] zig_zag_points = array.new<label>()
+var line[] equipoints = array.new<line>()
+var label[] break_labels = array.new<label>()
+var polyline[] ghost_zig_zags = array.new<polyline>()
+var label[] ghost_zig_zag_points = array.new<label>()
+var line[] ghost_equipoints = array.new<line>()
+
+float high_source = pivot_type == "Wick" ? high : math.max(open, close)
+float low_source = pivot_type == "Wick" ? low : math.min(open, close)
+
+var int ph_back = pivot_forward
+var int pl_back = pivot_forward
+
+[ph, new_ph] = pivothigh(high_source, ph_back, pivot_forward)
+[pl, new_pl] = pivotlow(low_source, pl_back, pivot_forward)
+
+bool polarity_up = ph.current_idx > pl.current_idx
+bool polarity_down = ph.current_idx < pl.current_idx
+
+var int last_up_start = na
+var int last_up_end = na
+var int last_down_start = na
+var int last_down_end = na
+var float last_high = na
+var float last_low = na
+var bool polarity = na
+
+bool up_wait = not polarity
+bool down_wait = polarity
+
+if new_ph and polarity_up and (last_up_start < pl.current_idx or na(last_up_start)) and up_wait and barstate.isconfirmed
+    dump_ghost(ghost_zig_zags, ghost_zig_zag_points, ghost_equipoints)
+
+    bool connect = not na(last_down_end) ? pl.current_idx == last_down_end : true
+    int start_x = connect ? pl.current_idx : last_down_end
+    int end_x = ph.current_idx
+    float start_y = ph.current
+    float end_y = connect ? pl.current : last_low
+
+    last_up_start := start_x
+    last_up_end := end_x
+    last_high := start_y
+    polarity := true
+
+    generate_zig_zag(start_x, end_x, start_y, end_y, show_elliptical_zig, equipoint_style, show_break, extend_line, up_color, down_color, text_color, zig_zag_points, zig_zags, equipoints, break_labels, true)
+
+if new_pl and polarity_down and (last_down_start < ph.current_idx or na(last_down_start)) and down_wait and barstate.isconfirmed
+    dump_ghost(ghost_zig_zags, ghost_zig_zag_points, ghost_equipoints)
+
+    bool connect = not na(last_up_end) ? ph.current_idx == last_up_end : true
+    int start_x = connect ? ph.current_idx : last_up_end
+    int end_x = pl.current_idx
+    float start_y = pl.current
+    float end_y = connect ? ph.current : last_high
+
+    last_down_start := start_x
+    last_down_end := end_x
+    last_low := start_y
+    polarity := false
+
+    generate_zig_zag(start_x, end_x, start_y, end_y, show_elliptical_zig, equipoint_style, show_break, extend_line, up_color, down_color, text_color, zig_zag_points, zig_zags, equipoints, break_labels, false)
+
+
+bool ghost_up_connect = not na(last_down_end) ? pl.current_idx == last_down_end : true
+int ghost_up_start_x = ghost_up_connect ? pl.current_idx : last_down_end
+
+int since_pl = ta.barssince(new_pl)
+int ghost_up_range = bar_index - ghost_up_start_x
+
+float[] ghost_max = array.new<float>()
+if ghost_up_range >= 0
+    for i = 0 to ghost_up_range - since_pl
+        ghost_max.push(high_source[i])
+
+float ghost_up_start_y = ghost_max.max()
+float ghost_up_end_y = ghost_up_connect ? pl.current : last_low
+
+int ghost_up_since = ghost_max.size() > 0 ? ghost_max.indexof(ghost_up_start_y) : 0
+int ghost_up_end_x = bar_index - ghost_up_since
+
+if up_wait and not new_ph and show_ghosts
+    dump_ghost(ghost_zig_zags, ghost_zig_zag_points, ghost_equipoints)
+    generate_zig_zag(ghost_up_start_x, ghost_up_end_x, ghost_up_start_y, ghost_up_end_y, show_elliptical_zig, equipoint_style, show_break, extend_line, ghost_up_color, ghost_down_color, text_color, ghost_zig_zag_points, ghost_zig_zags, ghost_equipoints, break_labels, true, true)
+
+bool ghost_down_connect = not na(last_up_end) ? ph.current_idx == last_up_end : true
+int ghost_down_start_x = ghost_down_connect ? ph.current_idx : last_up_end
+
+int since_ph = ta.barssince(new_ph)
+int ghost_down_range = bar_index - ghost_down_start_x
+
+float[] ghost_min = array.new<float>()
+if ghost_down_range >= 0
+    for i = 0 to ghost_down_range - since_ph
+        ghost_min.push(low_source[i])
+
+float ghost_down_start_y = ghost_min.min()
+float ghost_down_end_y = ghost_down_connect ? ph.current : last_high
+
+int ghost_down_since = ghost_min.size() > 0 ? ghost_min.indexof(ghost_down_start_y) : 0 
+int ghost_down_end_x = bar_index - ghost_down_since 
+
+if down_wait and not new_pl and show_ghosts
+    dump_ghost(ghost_zig_zags, ghost_zig_zag_points, ghost_equipoints)
+    generate_zig_zag(ghost_down_start_x, ghost_down_end_x, ghost_down_start_y, ghost_down_end_y, show_elliptical_zig, equipoint_style, show_break, extend_line, ghost_up_color, ghost_down_color, text_color, ghost_zig_zag_points, ghost_zig_zags, ghost_equipoints, break_labels, false, true)
+
+if zig_zags.size() > max_zig
+    zig_zags.shift().delete()
+    zig_zag_points.shift().delete()
+
+if equipoints.size() > max_zig
+    equipoints.shift().delete()
+
+if break_labels.size() > max_zig
+    break_labels.shift().delete()
+
+ph_back := math.min(math.max(nz(bar_index - last_down_end - pl_back + 1, 5), 0), 500)
+pl_back := math.min(math.max(nz(bar_index - last_up_end - ph_back + 1, 5), 0), 500)

@@ -1,0 +1,626 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+enum locChoice
+    absolute = "Absolute"
+    zeroline = "Zero Line"
+
+// headers
+setupheader     = "            SETUP"
+volheader       = "            VOLUME"
+profileheader   = "          VOLUME PROFILE"
+extrasheader    = "            EXTRAS"
+panelheader     = "          INFO PANEL"
+bglheader       = "         BACKGROUND"
+
+//@version=5
+indicator("Volume Analysis - Heatmap and Volume Profile", "VA", max_boxes_count = 500, max_lines_count = 500)
+plan = input.string(defval = "Lower Tier", title = "Plan", options = ["Lower Tier", "Premium or Higher"], group = setupheader)
+cwidthi = input.int(defval = 7, title = "Number of Columns", minval = 2, maxval = 20, group = setupheader)
+cheight = input.int(defval = 5, title = "Number of Rows", minval = 2, maxval = 20, group = setupheader)
+location = input.enum(locChoice.absolute, title = "Location of Candles", group = setupheader)
+icolorup = input.color(color.yellow, title = "Colors", inline = 'Colors', group = setupheader)
+icolordn = input.color(color.blue, title = "",  inline = 'Colors', group = setupheader)
+
+showprofile = input.bool(defval = true, title = "Volume Profile", group = profileheader)
+vahrate = input.int(defval = 70, title = "Value Area Volume", minval = 0, maxval = 100, group = profileheader)
+Vforceoverlay = input.bool(defval = false, title = "Show Volume Profile in Main Chart", group = profileheader)
+showPOC = input.bool(defval = true, title = "Show POC", group = profileheader)
+showPOCoMC = input.bool(defval = true, title = "Show POC in Main Chart", group = profileheader)
+colorPOC = input.color(defval = color.red, title = " POC Line", inline = "pocline", group = profileheader)
+poclwidth = input.int(defval = 2, title = "", minval = 1, maxval = 4, inline = "pocline", group = profileheader)
+profilerow = input.int(defval = 16, title = " Number of Rows", minval = 1, maxval = 25, group = profileheader)
+profilelen = input.int(defval = 12, title = " Maximum Length", minval = 5, maxval = 50, group = profileheader)
+volcolorup = input.color(defval = color.new(color.blue, 30), title = "Value Area Colors", inline = "volcol", group = profileheader)
+volcolordn = input.color(defval = color.new(color.yellow, 30), title = "", inline = "volcol", group = profileheader)
+volcoloruphl = input.color(defval = color.new(color.blue, 70), title = "VAH/VAL Colors", inline = "volcolhl", group = profileheader)
+volcolordnhl = input.color(defval = color.new(color.yellow, 70), title = "", inline = "volcolhl", group = profileheader)
+
+showvolume = input.bool(defval = true, title = "Show Volume",  group = volheader)
+showcumvolume = input.bool(defval = false, title = "Cumulative", group = volheader)
+showdiffvolume = input.bool(defval = false, title = "Difference", group = volheader)
+transpvolume = input.int(defval = 70, title = "Volume Transparency", minval = 0, maxval = 100, step = 5, group = volheader)
+
+showclose = input.bool(defval = true, title = "Closing Price", inline = "cprice", tooltip = "Shows if Location is Absolute", group = extrasheader)
+cpricecolor = input.color(defval = color.gray, title = "", inline = "cprice", group = extrasheader)
+cpricewidth = input.int(defval = 1, title = "", minval = 1, maxval = 4, inline = "cprice", group = extrasheader)
+showbody = input.bool(defval = false, title = "Show Candle Body", tooltip = "Shows if Location is Absolute", group = extrasheader)
+showinchart = input.bool(defval = true, title = "Show Area In The Main Chart", group =extrasheader)
+
+showinfo = input.bool(defval=true, title='Info Panel', group = panelheader)
+infotextsize = input.string(defval = size.small, title = " Panel Size", options = [size.tiny, size.small, size.normal, size.large], group = panelheader)
+tableposy = input.string(defval='middle', title=' Position', options=['bottom', 'middle', 'top'], inline='infopos', group = panelheader)
+tableposx = input.string(defval='left', title='', options=['left', 'center', 'right'], inline='infopos', group = panelheader)
+
+transpempty = input.int(defval = 80, title = "Empty Box Transparency", minval = 0, maxval = 100, step = 5, group = bglheader)
+transpborder = input.int(defval = 95, title = "Border Transparency", minval = 40, maxval = 100, step = 5, group = bglheader)
+
+// check if the user can get data from seconds time frame or 1min or higher (according to plan), user needs to choose the plan accordingly 
+// and check if Chart Type is standard 
+var int tfis = timeframe.in_seconds(timeframe.period) / 60
+var cwidth = plan == "Lower Tier" and tfis < cwidthi ? tfis : cwidthi
+var bool charttimeframeandtypeisok = chart.is_standard and ((plan == "Lower Tier" and tfis > 1) or (plan == "Premium or Higher" and timeframe.in_seconds(timeframe.period) >= 30))
+
+// calculate max candles to show
+maxcandles = math.floor((500 - (showprofile ? profilerow * 2 : 0)) / ((cheight + (showvolume ? (showdiffvolume ? 3 : 2) : 0)) * cwidth))
+// check if there is not enough candle on the chart (less than maxcandles)
+maxcandles := maxcandles >= bar_index ? bar_index + 1 : maxcandles
+hlLength = bar_index + 1 < maxcandles ? bar_index + 1 : maxcandles
+highest = ta.highest(hlLength)
+lowest = ta.lowest(hlLength)
+bar_index_is_OK = bar_index > last_bar_index - maxcandles 
+
+// multiple vol profile definitions, we need this to keep more than 100K data  
+// we make sure we have place for all new volume data
+// they keep bar_index, closing price and volume info for each move
+varip volprofile1 = array.new_float(0)
+varip volprofile2 = array.new_float(0)
+varip volprofile3 = array.new_float(0)
+varip volprofile4 = array.new_float(0)
+varip volprofile5 = array.new_float(0)
+
+// color adjustment
+getColor(float bgcolint, bool body)=>
+    transp = 80 - (math.abs(bgcolint) * 0.80)
+    retrn =  bgcolint > 0 ? color.new(icolorup, transp) : 
+             bgcolint < 0 ? color.new(icolordn, transp) : 
+             showbody ? body ? color.new(chart.fg_color, 70) : color.new(chart.fg_color, 90)  : color.new(chart.fg_color, transpempty)
+
+// calculate minimum lower time frame and get data 
+getData()=>
+    candletime = timeframe.in_seconds(timeframe.period)
+    tfs = ''
+    var stf = ''
+    tf = math.max(int(candletime/1000), 1)
+    // if plan is Premium or higher than can get data from 1sec time frame, other wise min timeframe is 1min
+    if plan == "Premium or Higher"
+        if candletime < 86400
+            tf := tf <= 1 ? 1:
+                 tf > 1 and tf < 6 ? 5 :
+                 tf > 5 and tf < 11 ? 10 : 
+                 tf > 10 and tf < 21 ? 15 : 
+                 tf > 20  and tf < 45 ? 30 : 
+                 tf
+            tfs := str.tostring(tf) + 'S'
+            stf := str.tostring(tf) + ' Seconds'
+        else
+            tf := math.max(int(tf / 60), 1)
+            tfs := str.tostring(tf)
+            stf := tfs + ' Minutes'
+    else
+        tf := math.max(int(tf / 60), 1)
+        tfs := str.tostring(tf)
+        stf := tfs + ' Minutes'
+
+    [arrClose, arrOpen, arrVolume, arrTime]= request.security_lower_tf(syminfo.tickerid, tfs, [close, open, volume, time], ignore_invalid_timeframe = true)
+    
+    [arrClose, arrOpen, arrVolume, arrTime, stf]
+
+[arrClose, arrOpen, arrVolume, arrTime, stf] = getData()
+
+// get the end of the column in the box
+//binary search faster than sequential search
+getEnd(int cclose, int start, int step)=>
+    l = start
+    h = arrTime.size() - 1
+    ret = -1
+    while l <= h
+        int mid = int(l + (h - l) / 2)
+        if arrTime.get(mid) >= cclose + step 
+            if mid == 0
+                ret := mid
+                break
+            else if arrTime.get(mid - 1) < cclose + step 
+                ret := mid
+                break
+            
+        if arrTime.get(mid) < cclose + step 
+            l := mid + 1
+        else 
+            h := mid - 1
+    if ret == -1
+        ret := arrTime.size()
+    ret
+
+// for each candle in the main chart get the lower time frame Open, Close, Volume and time datas for each column in the box
+getTheCandle(int cclose, int step, int cc) =>
+    arrCclose = array.new_float()
+    arrCopen = array.new_float()
+    arrCvol = array.new_float()
+    var start = 0
+    var end = -1
+    if cc == 0
+        start := 0
+        end := getEnd(cclose, 0, step)
+    else
+        end := getEnd(cclose, start, step)
+ 
+    if start < arrClose.size()
+        //extra check
+        endd =math.min(end, arrVolume.size())
+        arrCclose := arrClose.slice(start, endd)
+        arrCopen := arrOpen.slice(start, endd)
+        arrCvol := arrVolume.slice(start, endd)
+    start := end
+    
+    [arrCclose, arrCopen, arrCvol] 
+
+// Methods
+
+// remove empty parts (hours in that there is no candle) for the market that is not open 7/24, also remove weekends, holidays etc
+// From abc---gth-----35d---------fjy To // abcgth35dfjy
+method removeEmtpytimes(float [] this, int [] start, int [] end, int maxcandles)=>
+    // don't do this if chart timeframe is lower than 1Day or if the array is empty
+    if not na(start) and this.size() > 0 and bar_index_is_OK
+        // find the end time of previous candle 
+        i = this.size() - 1
+        while this.get(i) >= start.last()
+            i -= 1
+            if i < 0
+                break
+                
+        // add the time to the the parts in time array, so it will be From abc---gth-----35d---------fjy To // abcgth35dfjy
+        ind = start.size() - 1
+        addition = 0
+        while ind > 0
+            ind -= 1 
+            ctime = start.get(ind)
+            addition += start.get(ind + 1) - end.get(ind) 
+            
+            while i >= 0
+                if this.get(i) >= ctime
+                    this.set(i, this.get(i) + addition)
+                    i -= 1
+                    i
+                else
+                    break
+                    i
+
+// clear oldest data until there is none
+method removeolddata(float [] this, int age)=>
+    goon = true
+    while goon
+        index = this.indexof(age)
+        if index == -1
+            break
+        for x = 1 to 3
+            this.remove(index)
+
+// clear old vol data from array and add new one  
+method removeOldAddNewVol(float [] volprofilelast)=>
+    oldone = last_bar_index -maxcandles //+ 1
+    volprofile1.removeolddata(oldone)
+    volprofile1.removeolddata(oldone)
+    volprofile1.removeolddata(oldone)
+    volprofile1.removeolddata(oldone)
+    volprofile1.removeolddata(oldone)
+    // find suitable array
+    volprofile = array.size(volprofile1) < 90000 ? volprofile1 : 
+                 array.size(volprofile2) < 90000 ? volprofile2 : 
+                 array.size(volprofile3) < 90000 ? volprofile3 :
+                 array.size(volprofile4) < 90000 ? volprofile4 :
+                 volprofile5
+    //for x = 0 to (array.size(volprofilelast) > 0 ? array.size(volprofilelast) - 1 : na)
+    //    volprofile.push(volprofilelast.shift())
+    if array.size(volprofilelast) > 0
+        array.concat(volprofile, array.copy(volprofilelast))
+
+// get the index for volume profile
+getIndex(Cls, val, profilestep)=>
+    diff = Cls - lowest
+    index = math.max(math.min(int(diff / profilestep), profilerow - 1), 0)
+    index := index * 2  + (val < 0 ? 1 : 0)
+    index
+
+// set volume profile by each array
+method getprofile(float [] this, float [] volprofile, float profilestep)=>
+    for x = 0 to (array.size(volprofile) > 0 ? array.size(volprofile) - 1 : na) by 3
+        val = volprofile.get(x + 2)
+        index = getIndex(volprofile.get(x + 1), val, profilestep)
+        array.set(this, index, array.get(this, index) + val)
+
+// call methods according to the types
+method deleteit(box this)=> box.delete(this)
+method deleteit(line this)=> line.delete(this)
+
+method deleteall(array <box> this)=>
+    for element in this
+        deleteit(element)
+    this.clear()
+
+method deleteall(array <line> this)=>
+    for element in this
+        deleteit(element)
+    this.clear()
+
+method setcell(table this, int column, int row, string txt, int bg, int align) =>
+    this.cell(column = column, row = row, text = txt, 
+              bgcolor=color.new(chart.fg_color, 70 - bg * 10), text_color =chart.fg_color, text_size=infotextsize,
+              text_halign = align == 0 ? text.align_left : text.align_right)
+
+// finds maximum positive/negative volumes in a matrix row
+method maxposnegvolumes(matrix<float> this, matrix<float> signmatrix) =>
+    float posvol = 0
+    float negvol = 0
+    for r = 0 to this.rows() - 1
+        volarr = this.row(r)
+        signarr = signmatrix.row(r)
+        for x = 0 to (array.size(volarr) > 0 ? array.size(volarr) - 1 : na) 
+            if math.sign(signarr.get(x)) > 0
+                posvol := math.max(posvol, volarr.get(x))
+            else
+                negvol := math.max(negvol, volarr.get(x))
+
+    [posvol, -negvol]
+
+method setcolor(matrix<float> this, int row, int column, float maxvolume, float vol)=>
+    this.set(row, column, int(100 * vol / maxvolume))
+
+// calculate Value Area
+method getvalarea(float [] this)=>
+    int index = 0
+    float max = 0
+    float totalval = 0
+    for x = 0 to profilerow - 1
+        v = this.get(x * 2) - this.get(x * 2 + 1)
+        totalval += v
+        if v > max
+            max := v
+            index := x
+    int upi = math.min(index + 1, profilerow - 1) 
+    int dni = math.max(index - 1, 0) 
+    thiss = this.copy()
+    float total = max
+    thiss.set(index * 2, 0), thiss.set(index * 2 + 1, 0)
+    ret = array.new_int(1, index)
+    while total < totalval * vahrate / 100
+        if (thiss.get(upi * 2) - thiss.get(upi * 2 + 1)) > (thiss.get(dni * 2) - thiss.get(dni * 2 + 1))
+            total += (thiss.get(upi * 2) - thiss.get(upi * 2 + 1))
+            thiss.set(upi * 2, 0), thiss.set(upi * 2 + 1, 0)
+            ret.push(upi)
+            upi := math.min(upi + 1, profilerow - 1) 
+        else
+            total += (thiss.get(dni * 2) - thiss.get(dni * 2 + 1))
+            thiss.set(dni * 2, 0), thiss.set(dni * 2 + 1, 0)
+            ret.push(dni)
+            dni := math.max(dni - 1, 0) 
+
+    ret.sort(order.ascending)
+    ret
+
+method showVprofile(array <box> this, bool force, int x1coord, float y1coord,int x2coord, float y2coord, color bgcol, color bdcol)=>
+    if force
+        this.push(box.new(x1coord, y1coord, 
+                      x2coord, y2coord,
+                      bgcolor = bgcol, border_width = 1, border_color = bdcol, force_overlay = true))
+
+    else
+        this.push(box.new(x1coord, y1coord, 
+                      x2coord, y2coord,
+                      bgcolor = bgcol, border_width = 1, border_color = bdcol))
+
+// show included candles in the main chart
+if bar_index_is_OK and showinchart and charttimeframeandtypeisok
+    var mainclines = array.new_line(3)
+    for x in mainclines
+        line.delete(x)
+    heigth = (highest - lowest) / 5
+    if maxcandles == 1
+        mainclines.set(0, line.new(x1 = bar_index, y1 = lowest - heigth / 2, 
+                                   x2 = bar_index, y2 = lowest - heigth * 2, color =  chart.fg_color, 
+                                   style = line.style_arrow_left, force_overlay = true))
+    else
+        loc = array.from(bar_index - maxcandles + 1, bar_index)
+        mainclines.set(0, line.new(x1 = bar_index - maxcandles + 1, y1 = lowest - heigth * 2, 
+                                   x2 = bar_index, y2 = lowest - heigth * 2, color =  chart.fg_color, 
+                                   width = 2, force_overlay = true))
+        for x = 0 to 1
+            mainclines.set(x + 1, line.new(x1 = loc.get(x), y1 = lowest - heigth, 
+                                           x2 = loc.get(x), y2 = lowest - heigth * 2, color =  chart.fg_color, 
+                                           force_overlay = true))
+
+// show message if time frame is not ok or if chart type is not ok 
+if not charttimeframeandtypeisok and barstate.islast
+    var label lab = na
+    label.delete(lab)
+    txt = ""
+    if chart.is_standard
+        lowert = plan == "Lower Tier" ? '2 Minutes' : '30 Seconds'
+        txt := 'Please Set The Chart Timeframe ' + str.tostring(lowert) + ' or higher' + '\n' + 'Or Change the Plan as Premium or Higher'
+    else
+        txt := 'Chart Type is not valid!' + '\n' + 'Please change Chart Type as bars, candles, hollow candles, line, area or baseline'
+    lab := label.new(bar_index - 40, close, text = txt)
+
+// Matrix & array definitions
+varip arrBoxes = matrix.new<float>(0, cwidth * cheight * 3, na)
+varip volBoxes = matrix.new<float>(0, cwidth * 2, 0.)
+varip closeLines = matrix.new<float>(0, cwidth)
+varip closeindex = matrix.new<int>(0, 2, na) // 0 = row, 1 = column
+varip signmatrix = matrix.new<float>(0, cwidth * cheight)
+varip volmatrix = matrix.new<float>(0, cwidth * cheight , 0)
+float profilestep = (highest - lowest) / profilerow
+varip volprofilelast = array.new_float(0)
+
+// get the arrays that include start and end times
+[startt, endt] = request.security_lower_tf(syminfo.tickerid, 'D', [time, time_close], ignore_invalid_timeframe = true)
+
+// for the market that is not open 7/24
+// Convert the time array from abc---gth-----35d---------fjy To // abcgth35dfjy
+arrTime.removeEmtpytimes(startt, endt, maxcandles)
+
+// analyze the candles and show data
+float maxboxheight = 0
+if bar_index_is_OK and charttimeframeandtypeisok
+    // add new row and limit the number matrix rows
+    if barstate.isnew
+        // add new row for new candle
+        arrBoxes.add_row(0) //arrBoxes, 0)
+        volBoxes.add_row(0)
+        closeindex.add_row(0)
+        closeLines.add_row(0)
+        signmatrix.add_row(0)
+        volmatrix.add_row(0)
+        volprofilelast.removeOldAddNewVol()
+        // remove old rows from matrixes
+        if arrBoxes.rows() > maxcandles
+            arrBoxes.remove_row(maxcandles)
+            volBoxes.remove_row(maxcandles)
+            closeindex.remove_row(maxcandles)
+            closeLines.remove_row(maxcandles)
+            signmatrix.remove_row(maxcandles)
+            volmatrix.remove_row(maxcandles)
+        
+    // clear boxes and lines
+    var allBoxes = array.new_box()
+    var allLines = array.new_line() 
+    //delete the boxes & lines
+    allBoxes.deleteall()
+    allLines.deleteall()
+    
+    // fill the first rows with 0
+    volBoxes.fill(0, 0, 1, 0, cwidth * 2)
+    volmatrix.fill(0, 0, 1, 0, cwidth * cheight)
+    signmatrix.fill(0, 0, 1, 0, cwidth * cheight)
+ 
+    // choose suitable/empty array and clear last volume profile array
+    volprofilelast.clear()
+    volprofile = barstate.islast ? volprofilelast :
+                 array.size(volprofile1) < 80000 ? volprofile1 : 
+                 array.size(volprofile2) < 80000 ? volprofile2 : 
+                 array.size(volprofile3) < 80000 ? volprofile3 :
+                 array.size(volprofile4) < 80000 ? volprofile4 :
+                 volprofile5
+
+    // bar/box size adjustments
+    maxvolbarsize = (highest - lowest) / 3
+    var float maxboxsize = 0
+
+    int nettime = 0
+    // if there is data, process & calculate volume, box 
+    if arrTime.size() > 0 
+        // calculate the time step for each column
+        nettime := time_close - arrTime.get(0)
+        int step = int(nettime / cwidth)
+        cclose = arrTime.get(0)
+        float lastclose = close[1]
+        // keep last closing price
+        float lastsign = close[1] >= open[1] ? 1 : -1
+        age = bar_index
+        // get & analyze & process data for each column
+        for cc = 0 to cwidth - 1
+            [arrCclose, arrCopen, arrCvol] = getTheCandle(cclose, step, cc)
+            
+            cclose += step
+            stp = arrClose.range() / cheight
+            maxboxsize := math.max(maxboxsize, stp)
+            if arrCclose.size() > 0
+                arrmin = arrClose.min()
+                for [x, cls] in arrCclose 
+                    index = math.min(int((cls - arrmin) / stp), cheight - 1)
+                    if cclose >= arrTime.last()
+                        closeindex.set(0, 0, index)
+                        closeindex.set(0, 1, cc)
+                    sgn = math.sign(cls - (x == 0 ? lastclose : (cls == arrCopen.get(x) ? arrCclose.get(x - 1) : arrCopen.get(x))))
+                    sgn := sgn == 0 ? lastsign : sgn
+                    lastsign := sgn
+                    signmatrix.set(0, index + cc * cheight, signmatrix.get(0, index + cc * cheight) + sgn * arrCvol.get(x))
+                    volmatrix.set(0, index + cc * cheight, volmatrix.get(0, index + cc * cheight) + arrCvol.get(x))
+                    volprofile.push(age) 
+                    volprofile.push(cls) 
+                    volprofile.push(sgn * arrCvol.get(x))
+                    if sgn < 0
+                        volBoxes.set(0, cc * 2, volBoxes.get(0, cc * 2) - arrCvol.get(x))
+                    else
+                        volBoxes.set(0, cc * 2 + 1, volBoxes.get(0, cc * 2 + 1) + arrCvol.get(x))
+
+                lastclose := arrCclose.get(arrCclose.size() - 1)
+                closeLines.set(0, cc, arrCclose.last())
+
+            candloc = location == locChoice.absolute ? arrClose.min() : 0
+            for rr = 0 to cheight - 1
+                arrBoxes.set(0, cc * cheight * 3 + rr * 3    , candloc + rr * stp + stp)
+                arrBoxes.set(0, cc * cheight * 3 + rr * 3 + 1, candloc + rr * stp)
+
+        // calculate volume colors for all boxes
+        // get highest positive/negative volumes
+        [maxposvolume, maxnegvolume] = volmatrix.maxposnegvolumes(signmatrix)
+        for row = 0 to volmatrix.rows() - 1
+            vols = volmatrix.row(row)
+            sgn = signmatrix.row(row)
+            for col = 0 to vols.size() - 1
+                arrBoxes.setcolor(row, col * 3 + 2, (math.sign(sgn.get(col)) > 0 ? maxposvolume : maxnegvolume), vols.get(col))
+       
+    // draw candles boxes and volume boxes
+    float labelincrease = 0
+    float maxvolumebar = volBoxes.max() - volBoxes.min()
+    maxvolumebar *=(showcumvolume ? 3 : 1)
+    maxboxsize /= 3
+    // pine may not get data from lower timeframe from historical bars, so we should count it 
+    totalshowncandles = 0
+    for row = 0 to arrBoxes.rows() - 1
+        if na(matrix.get(arrBoxes, row, 0))
+            continue
+        totalshowncandles += 1
+        candle = arrBoxes.row(row)
+        // break if it will draw before the first available bar 
+        if bar_index - (cwidth + 1 ) * row - cwidth < 1
+            break
+        float totalpositive = 0
+        float totalnegative = 0
+        float currentbodyhigh = math.max(close[row], open[row])
+        float currentbodylow  = math.min(close[row], open[row])
+        float totalvol = 0.
+        for cc = 0 to cwidth - 1
+            for rr = 0 to cheight - 1
+                // get the color according to the volume
+                bgcolint = int(candle.get(cc * cheight * 3 + rr * 3 + 2)) 
+                // back color for empty boxes
+                bdcolor = bgcolint == 0 ? color.new(chart.fg_color, transpborder) : color.new(chart.fg_color, 80)
+                // candle positions
+                top = candle.get(cc * cheight * 3 + rr * 3)
+                bottom = candle.get(cc * cheight * 3 + rr * 3 + 1)
+                body = location == locChoice.absolute and bgcolint == 0 and currentbodyhigh >= bottom and currentbodylow <= top
+
+                currentone = rr == closeindex.get(row, 0) and cc ==  closeindex.get(row, 1) 
+                maxboxheight := math.max(maxboxheight, top - bottom)
+                allBoxes.push(box.new(bar_index - row * (cwidth + 1) - (cwidth - (cc - 1)) + 1,top, 
+                                             bar_index - row * (cwidth + 1) - (cwidth - cc) + 1, bottom, 
+                                             bgcolor = getColor(bgcolint, body), border_width = 1, border_color = currentone ? color.new(chart.fg_color, 40) : bdcolor))
+            
+            // show volume (total volums, cumulative, difference)
+            if showvolume
+                negvol = maxvolbarsize * math.abs(volBoxes.get(row, cc * 2)) / maxvolumebar
+                posvol = maxvolbarsize * volBoxes.get(row, cc * 2 + 1) / maxvolumebar
+                totalvol += (posvol - negvol)
+                totalpositive += posvol
+                totalnegative += negvol
+                posone = showcumvolume ? totalpositive : posvol
+                negone = showcumvolume ? totalnegative : negvol
+                allBoxes.push(box.new(bar_index - row * (cwidth + 1) - (cwidth - cc),     candle.get(1) - maxboxsize, 
+                                      bar_index - row * (cwidth + 1) - (cwidth - cc) + 1, candle.get(1) - maxboxsize - posone,
+                                      bgcolor = getColor(100 - transpvolume, false), border_width = 1, border_color = chart.bg_color))
+                allBoxes.push(box.new(bar_index - row * (cwidth + 1) - (cwidth - cc),     candle.get(1) - maxboxsize- posone, 
+                                      bar_index - row * (cwidth + 1) - (cwidth - cc) + 1, candle.get(1) - maxboxsize - posone - negone,
+                                      bgcolor = getColor(-(100 - transpvolume), false), border_width = 1, border_color = chart.bg_color))
+                
+                //difference in the buy/sell volume 
+                if showdiffvolume
+                    labelincrease := math.max(labelincrease, math.abs(totalvol))
+                    allBoxes.push(box.new(bar_index - row * (cwidth + 1) - (cwidth - cc),     candle.get(cheight * 3 - 3) + maxboxsize, 
+                                          bar_index - row * (cwidth + 1) - (cwidth - cc) + 1, candle.get(cheight * 3 - 3) + maxboxsize + math.abs(totalvol),
+                                          bgcolor = getColor(math.sign(totalvol) * (100 - transpvolume), false), border_width = 1, border_color = chart.bg_color))
+
+        // show closing price (if only location is absolute)
+        if showclose and location == locChoice.absolute and cwidth > 1
+            lines = closeLines.row(row)
+            for x = 0 to cwidth - 2
+                if na(lines.get(x + 1))
+                    break
+                allLines.push(line.new(x1 = bar_index - row * (cwidth + 1) -(cwidth - x), y1 = lines.get(x), 
+                                              x2 = bar_index - row * (cwidth + 1)  -(cwidth - x)+ 1, y2 = lines.get(x + 1), 
+                                              width = cpricewidth, color = cpricecolor))
+            if row > 0
+                allLines.push(line.new(x1 = bar_index - row * (cwidth + 1), y1 = closeLines.get(row , cwidth - 1), 
+                                              x2 = bar_index - row * (cwidth + 1) + 1, y2 = closeLines.get(row - 1, 0), 
+                                              width = cpricewidth, color = cpricecolor))
+
+    // show volume profile if enabled and if Location is absolute
+    float poclevel = 0
+    volumeprofile = array.new_float(profilerow * 2, 0)
+    if barstate.islast and showprofile and totalshowncandles > 0 and (location == locChoice.absolute or Vforceoverlay)
+        // find lowest because we may not get all candles
+        lowest := close
+        for x = 0 to totalshowncandles - 1
+            lowest := math.min(lowest, low[x])
+        
+        // get data from all volume profile arrays, create volume profile matrix
+        volumeprofile.getprofile(volprofile1, profilestep)
+        volumeprofile.getprofile(volprofile2, profilestep)
+        volumeprofile.getprofile(volprofile3, profilestep)
+        volumeprofile.getprofile(volprofile4, profilestep)
+        volumeprofile.getprofile(volprofile5, profilestep)
+        volumeprofile.getprofile(volprofilelast, profilestep)
+
+        // calculate Value Area
+        varea = volumeprofile.getvalarea()
+
+        // get maximum value
+        max = math.max(math.abs(array.max(volumeprofile)), math.abs(array.min(volumeprofile)))
+        float pocmax = 0 
+        // calculate & draw volume profile
+        for x = 0 to profilerow - 1
+            colup = varea.includes(x) ? volcolorup : volcoloruphl
+            coldn = varea.includes(x) ? volcolordn : volcolordnhl
+            v1 = volumeprofile.get(x * 2)
+            boxw = int(profilelen * float(v1 / max))
+            v2 = math.abs(volumeprofile.get(x * 2 + 1))
+            boxw1 = boxw + int(profilelen * float(v2 / max))
+            if boxw1 == 0 
+                if v1 >= v2
+                    boxw := 1
+                else
+                    boxw1 := 1
+            allBoxes.showVprofile(Vforceoverlay and totalshowncandles > 1, bar_index + 2,  lowest + profilestep * (x + 1), 
+                                  bar_index + 2 + boxw, lowest + profilestep * x,
+                                  colup, chart.bg_color)
+            
+            
+            allBoxes.showVprofile(Vforceoverlay and totalshowncandles > 1, bar_index + 2 + boxw,        lowest + profilestep * (x + 1), 
+                                  bar_index + 2 + boxw1, lowest + profilestep * x,
+                                  coldn, chart.bg_color)
+            
+            if boxw1 > pocmax
+                pocmax := boxw1
+                poclevel := lowest + profilestep * (x + 0.5)
+        
+        // if there is volume available
+        if poclevel > 0 and location == locChoice.absolute
+            if showPOC
+                allLines.push(line.new(x1 = bar_index - totalshowncandles * (cwidth + 1) + 1, y1 = poclevel,
+                                       x2 = bar_index,     y2 = poclevel, 
+                                       width = poclwidth, color = colorPOC, extend = extend.right))
+        
+            if showPOCoMC 
+                allLines.push(line.new(x1 = bar_index - totalshowncandles + 1, y1 = poclevel,
+                                       x2 = bar_index + 1,     y2 = poclevel, 
+                                       width = poclwidth, color = colorPOC, extend = extend.right, force_overlay = true))
+    
+    // show info panel
+    if barstate.islast and showinfo
+        var infotable = table.new(position=tableposy + '_' + tableposx, columns=2, rows=6, frame_color=color.gray, frame_width=2, border_width=1, border_color=chart.bg_color)
+        
+        // table header
+        table.merge_cells(infotable, 0, 0, 1, 0)
+        table.cell(table_id=infotable, column=0, row=0, text='I N F O   P A N E L', bgcolor = color.new(chart.fg_color, 25), text_color = chart.bg_color, text_size=infotextsize)
+
+        // get the data
+        dataToShow =  array.from('The number of analyzed candles', str.tostring(totalshowncandles) + '/' + str.tostring(maxcandles), 
+                                 'Lower Time Frame', stf, 
+                                 'Number of Columns', str.tostring(cwidth), 
+                                 'Number of Rows', str.tostring(cheight), 
+                                 'POC Level', str.tostring(poclevel, format.mintick))
+        
+        // fill the table cells
+        for y = 0 to (showprofile and poclevel > 0 ? 4 : 3)
+            for x = 0 to 1
+                infotable.setcell(x, y + 1, dataToShow.get(y * 2 + x), y % 2, x)

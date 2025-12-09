@@ -1,0 +1,44 @@
+//@version=5
+// author @KivancOzbilgic
+// creator John EHLERS
+// 
+indicator('Inverse Fisher Transform COMBO', shorttitle='IFTCOMBO', timeframe = '')
+STO = input(false, title='Show INVERSE FISHER TRANSFORM on STOCHASTIC Line?')
+RSI = input(false, title='Show INVERSE FISHER TRANSFORM on RSI Line?')
+CCI = input(true, title='Show INVERSE FISHER TRANSFORM on CCI Line?')
+MFI = input(false, title='Show INVERSE FISHER TRANSFORM on MFI Line?')
+//Average means: average value of all 4 inverse fisher trasformed indicators
+AVERAGE = input(false, title='Show INVERSE FISHER TRANSFORM AVERAGE Line?')
+
+ccilength = input(5, 'CCI Length')
+wmalength = input(9, title='Smoothing Length')
+v11 = 0.1 * (ta.cci(close, ccilength) / 4)
+v21 = ta.wma(v11, wmalength)
+INV1 = (math.exp(2 * v21) - 1) / (math.exp(2 * v21) + 1)
+rsilength = input(5, 'RSI Length')
+v12 = 0.1 * (ta.rsi(close, rsilength) - 50)
+v22 = ta.wma(v12, wmalength)
+INV2 = (math.exp(2 * v22) - 1) / (math.exp(2 * v22) + 1)
+stochlength = input(5, 'STOCH Length')
+v1 = 0.1 * (ta.stoch(close, high, low, stochlength) - 50)
+v2 = ta.wma(v1, wmalength)
+INVLine = (math.exp(2 * v2) - 1) / (math.exp(2 * v2) + 1)
+//MFI
+mfilength = input(5, 'MFI Length')
+source = hlc3
+up = math.sum(volume * (ta.change(source) <= 0 ? 0 : source), mfilength)
+lo = math.sum(volume * (ta.change(source) >= 0 ? 0 : source), mfilength)
+mfi = 100.0 - 100.0 / (1.0 + up / lo)
+v13 = 0.1 * (mfi - 50)
+v23 = ta.wma(v13, wmalength)
+INV3 = (math.exp(2 * v23) - 1) / (math.exp(2 * v23) + 1)
+AVINV = (INV1 + INV2 + INVLine + INV3) / 4
+
+plot(AVERAGE and AVINV ? AVINV : na, color=color.new(color.purple, 0), linewidth=3, title='AVERAGE')
+plot(STO and INVLine ? INVLine : na, color=color.new(color.blue, 0), linewidth=1, title='STOCH')
+plot(CCI and INV1 ? INV1 : na, color=color.new(color.red, 0), linewidth=3, title='CCIv2')
+plot(RSI and INV2 ? INV2 : na, color=color.new(color.black, 0), linewidth=2, title='RSI')
+plot(MFI and INV3 ? INV3 : na, color=color.new(color.purple, 0), linewidth=2, title='MFI')
+hline(0.5, color=color.red)
+hline(-0.5, color=color.green)
+

@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Enable debug logging'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 8
+          
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          
+      - name: Install dependencies
+        run: pnpm install
+        
+      - name: Build all packages
+        run: pnpm build
+        
+      - name: Run unit tests (excluding regression)
+        run: pnpm test
+        env:
+          PINESUITE_TOKEN: ${{ secrets.PINESUITE_TOKEN }}
+        
+      - name: Type check
+        run: pnpm typecheck
+
+  regression-tests:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 8
+          
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          
+      - name: Install dependencies
+        run: pnpm install
+        
+      - name: Build all packages
+        run: pnpm build
+        
+      - name: Run regression tests
+        run: pnpm test:regression
+        env:
+          PINESUITE_TOKEN: ${{ secrets.PINESUITE_TOKEN }}

@@ -1,0 +1,69 @@
+//@version=5
+indicator(title="MF Global Money Supply M2 by MigueFinance", shorttitle="MF Global M2 by MigueFinance") //, format=format.percent, precision=2, timeframe="", timeframe_gaps=true)
+
+// Includes the most rich and most populated countries that have data till at least 2008 and with lest abrupt currency exchang anomalies
+// it is possible to chart directly most of the global m2 also directly by typting: ECONOMICS:USM2+ECONOMICS:CNM2*FX_IDC:CNYUSD+ECONOMICS:INM2*FX_IDC:INRUSD+ECONOMICS:EUM2*FX:EURUSD+ECONOMICS:JPM2*FX_IDC:JPYUSD
+
+labels_condition = input (true, "Label")
+_offset = input.int(0,"Offset (move the chart horizontally in time -time shift-)", tooltip="For BTC as of 2025 the best correlation is on 107 days of offset ")
+
+
+
+//EUROZONE
+EUM2D=request.security("ECONOMICS:EUM2*FX:EURUSD", timeframe.period, close)
+//north america
+USM2D=request.security("ECONOMICS:USM2", timeframe.period, close)
+CAM2D=request.security("ECONOMICS:CAM2*FX_IDC:CADUSD", timeframe.period, close)
+// non EU europe
+CHM2D=request.security("ECONOMICS:CHM2*FX_IDC:CHFUSD", timeframe.period, close)
+GBM2D=request.security("ECONOMICS:GBM2*FX:GBPUSD", timeframe.period, close)
+FIPOP=request.security("ECONOMICS:FIM2/FX_IDC:USDFIM", timeframe.period, close)
+//SEM2D=request.security("ECONOMICS:SEM2*FX_IDC:SEKUSD", timeframe.period, close)  //2006 too recent
+RUM2D=request.security("ECONOMICS:RUM2*FX_IDC:RUBUSD", timeframe.period, close)
+//pacific
+//AUM2D=request.security("ECONOMICS:AUM2*FX_IDC:AUDUSD", timeframe.period, close)  // there is no chart for australia m2
+NZM2D=request.security("ECONOMICS:NZM2*FX_IDC:NZDUSD", timeframe.period, close) 
+//Asia
+//BDM2D=request.security("ECONOMICS:BDM2*FX_IDC:BDTUSD", timeframe.period, close)   //bangladesh exchange data chart has problems
+CNM2D=request.security("ECONOMICS:CNM2*FX_IDC:CNYUSD", timeframe.period, close)     
+TWM2D=request.security("ECONOMICS:TWM2*FX_IDC:TWDUSD", timeframe.period, close)    //2008  taiwan 
+HKM2D=request.security("ECONOMICS:HKM2*FX_IDC:HKDUSD", timeframe.period, close)     // 2008  hk 
+//IDM2D=request.security("ECONOMICS:IDM2*FX_IDC:", timeframe.period, close)   // indonesia exchange data has problems
+INM2D=request.security("ECONOMICS:INM2*FX_IDC:INRUSD", timeframe.period, close) //2008 india  
+JPM2D=request.security("ECONOMICS:JPM2*FX_IDC:JPYUSD", timeframe.period, close)
+//KRM2D=request.security("ECONOMICS:KRM2*FX_IDC:KRWUSD", timeframe.period, close)     //2008 korea 
+//MMM2D=request.security("ECONOMICS:MMM2*FX_IDC:", timeframe.period, close) //myanmar m2 not available
+PHM2D=request.security("ECONOMICS:PHM2*FX_IDC:PHPUSD", timeframe.period, close)        //2008 philippines
+//PKM2D=request.security("ECONOMICS:PKM2*FX_IDC:PKRUSD", timeframe.period, close)       // pakistan exchange data has problems
+//VNM2D=request.security("ECONOMICS:VNM2*FX_IDC:VNDUSD", timeframe.period, close)       //vietnam exchange data has problems
+SGM2D=request.security("ECONOMICS:SGM2*FX_IDC:SGDUSD", timeframe.period, close)         //2006 Singapore
+//latin america
+//ARM2D=request.security("ECONOMICS:ARM2*FX_IDC:ARSUSD", timeframe.period, close)       //2014 too recent argetina
+BRM2D=request.security("ECONOMICS:BRM2*FX_IDC:BRLUSD", timeframe.period, close)         //2004
+//CLM2D=request.security("ECONOMICS:CLM2*FX_IDC:CLPUSD", timeframe.period, close)         // 2014 too recent chile
+COM2D=request.security("ECONOMICS:COM2*FX_IDC:COPUSD", timeframe.period, close)         // 2008 colombia
+MXM2D=request.security("ECONOMICS:MXM2*FX_IDC:MXNUSD", timeframe.period, close)     //2004
+//PEM2D=request.security("ECONOMICS:PEM2*FX_IDC:PENUSD", timeframe.period, close)     //2014 too recent
+//VEM2D=request.security("ECONOMICS:VEM2/FX_IDC:USDVES", timeframe.period, close)   //venezuela chart has problems and is too recent
+//middle east
+AEM2D=request.security("ECONOMICS:AEM2*FX_IDC:AEDUSD", timeframe.period, close)   //2008
+//ILM2D=request.security("ECONOMICS:ILM2*FX_IDC:ILSUSD", timeframe.period, close)   //2013 too recent israel
+TRM2D=request.security("ECONOMICS:TRM2*FX_IDC:TRYUSD", timeframe.period, close)   //2006 turkey
+//IRM2D=request.security("ECONOMICS:IRM2*FX_IDC:IRRUSD", timeframe.period, close)   //there is no chart for iran m2 atm
+//africa 
+//CDM2D=request.security("ECONOMICS:CDM2/FX_IDC:USDCDF", timeframe.period, close)   //2013 too recent democratic congo
+//EGM2D=request.security("ECONOMICS:EGM2*FX_IDC:EGPUSD", timeframe.period, close)   //2010 too recent egypt
+//ETM2D=request.security("ECONOMICS:ETM2*FX_IDC:ETBUSD", timeframe.period, close)   //ethipia money supply chat not found    
+//KEM2D=request.security("ECONOMICS:KEM2*FX_IDC:KESUSD", timeframe.period, close)   //kenya exchange chart has problems
+//NGM2D=request.security("ECONOMICS:NGM2*FX_IDC:NGNUSD", timeframe.period, close)   //2014 too recent nigeria
+//TZM2D=request.security("ECONOMICS:TZM2*FX_IDC:TZSUSD", timeframe.period, close)   //tanzania exchange chart has problems
+ZAM2D=request.security("ECONOMICS:ZAM2*FX_IDC:ZARUSD", timeframe.period, close)   //2007 south africa
+
+GLM2= EUM2D+USM2D+CAM2D+CHM2D+GBM2D+FIPOP+RUM2D+NZM2D+CNM2D+TWM2D+HKM2D+INM2D+JPM2D+PHM2D+SGM2D+BRM2D+COM2D+MXM2D+AEM2D+TRM2D+ZAM2D
+
+plot(GLM2 , color=color.blue, title="Global (World) Money Supply M2", linewidth=2, offset=_offset)
+
+
+if labels_condition and barstate.islast
+    _text = "Global M2: "+str.tostring(math.round(GLM2/1000000000000,2))+"T" +  ( _offset !=0 ? ", Offset= "+ str.tostring(_offset) : "")
+    label.new(bar_index+10+_offset,GLM2,text=_text ,color=color.blue,textcolor= color.white, style = label.style_label_left)

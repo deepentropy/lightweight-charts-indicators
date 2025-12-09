@@ -1,0 +1,203 @@
+//@version=2
+study(title="Laguerre Multi-Filter [DW]", shorttitle="LMF [DW]", overlay=true)
+//by Donovan Wall
+
+//This is an experimental study designed to identify underlying price activity using a series of Laguerre Filters.
+
+//Two different modes are included within this script:
+// -Ribbon Mode - A ribbon of 18 Laguerre Filters with separate Gamma values is calculated.
+// -Band Mode - An average of the 18 filters generates the basis line. Then, Golden Mean ATR over the specified sampling period multiplied by 1 and 2 are added and subtracted to the basis line to generate the bands.
+
+//Multi-Timeframe functionality is included. You can choose any timeframe that TradingView supports as the basis resolution for the script.
+
+//Custom bar colors are included. Bar colors are based on the direction of any of the 18 filters, or the average filter's direction in Ribbon Mode. In Band Mode, the colors are based solely on the average filter's direction. 
+
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//Updates:
+//I've refined the script structure to improve efficiency and reduce runtime.
+
+//ATR is now eliminated within this script and has been replaced with Average Laguerre True Range, which is calculated by applying the average Laguerre filter to True Range. This eliminates the need to choose an arbitrary sampling period and delivers more effective results.
+
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//Inputs
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 
+//Source
+src = input(defval=hlc3, title="Source")
+
+//Mode Selection
+mode = input(defval=1, minval=1, maxval=2, title="Mode Selection (1 = Ribbon Mode, 2 = Band Mode)")
+
+//Ribbon Based Bar Color
+rbc = input(defval=19, minval=1, maxval=19, title="Ribbon Mode Bar Color (1-18 = Corresponding Filter Color, 19 = Average Filter Based Color)")
+
+//Alternate Resolution
+eares   = input(defval=false, title="Enable Alternate Resolution")
+altres  = input(defval="D",   title="Alternate Resolution")
+
+//Gamma Inputs
+gamma1  = input(defval=0.1,  step=0.001, title="Gamma 1")
+gamma2  = input(defval=0.15, step=0.001, title="Gamma 2")
+gamma3  = input(defval=0.2,  step=0.001, title="Gamma 3")
+gamma4  = input(defval=0.25, step=0.001, title="Gamma 4")
+gamma5  = input(defval=0.3,  step=0.001, title="Gamma 5")
+gamma6  = input(defval=0.35, step=0.001, title="Gamma 6")
+gamma7  = input(defval=0.4,  step=0.001, title="Gamma 7")
+gamma8  = input(defval=0.45, step=0.001, title="Gamma 8")
+gamma9  = input(defval=0.5,  step=0.001, title="Gamma 9")
+gamma10 = input(defval=0.55, step=0.001, title="Gamma 10")
+gamma11 = input(defval=0.6,  step=0.001, title="Gamma 11")
+gamma12 = input(defval=0.65, step=0.001, title="Gamma 12")
+gamma13 = input(defval=0.7,  step=0.001, title="Gamma 13")
+gamma14 = input(defval=0.75, step=0.001, title="Gamma 14")
+gamma15 = input(defval=0.8,  step=0.001, title="Gamma 15")
+gamma16 = input(defval=0.85, step=0.001, title="Gamma 16")
+gamma17 = input(defval=0.9,  step=0.001, title="Gamma 17")
+gamma18 = input(defval=0.95, step=0.001, title="Gamma 18")
+
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//Definitions
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+//Laguerre Filter
+laguerre(a, b) =>
+    l0       = (1 - b)*a+b*nz(l0[1])
+    l1       = -b*l0+nz(l0[1])+b*nz(l1[1])
+    l2       = -b*l1+nz(l1[1])+b*nz(l2[1])
+    l3       = -b*l2+nz(l2[1])+b*nz(l3[1])
+    laguerre = (l0 + 2*l1 + 2*l2 + l3)/6
+
+//Filter Values
+lag1  = laguerre(src, gamma1)
+lag2  = laguerre(src, gamma2)
+lag3  = laguerre(src, gamma3)
+lag4  = laguerre(src, gamma4)
+lag5  = laguerre(src, gamma5)
+lag6  = laguerre(src, gamma6)
+lag7  = laguerre(src, gamma7)
+lag8  = laguerre(src, gamma8)
+lag9  = laguerre(src, gamma9)
+lag10 = laguerre(src, gamma10)
+lag11 = laguerre(src, gamma11)
+lag12 = laguerre(src, gamma12)
+lag13 = laguerre(src, gamma13)
+lag14 = laguerre(src, gamma14)
+lag15 = laguerre(src, gamma15)
+lag16 = laguerre(src, gamma16)
+lag17 = laguerre(src, gamma17)
+lag18 = laguerre(src, gamma18)
+
+//Multi-Resolution Filter Values
+mlag1   = eares ? security(tickerid, altres, lag1) : lag1
+mlag2   = eares ? security(tickerid, altres, lag2) : lag2
+mlag3   = eares ? security(tickerid, altres, lag3) : lag3
+mlag4   = eares ? security(tickerid, altres, lag4) : lag4
+mlag5   = eares ? security(tickerid, altres, lag5) : lag5
+mlag6   = eares ? security(tickerid, altres, lag6) : lag6
+mlag7   = eares ? security(tickerid, altres, lag7) : lag7
+mlag8   = eares ? security(tickerid, altres, lag8) : lag8
+mlag9   = eares ? security(tickerid, altres, lag9) : lag9
+mlag10  = eares ? security(tickerid, altres, lag10) : lag10
+mlag11  = eares ? security(tickerid, altres, lag11) : lag11
+mlag12  = eares ? security(tickerid, altres, lag12) : lag12
+mlag13  = eares ? security(tickerid, altres, lag13) : lag13
+mlag14  = eares ? security(tickerid, altres, lag14) : lag14
+mlag15  = eares ? security(tickerid, altres, lag15) : lag15
+mlag16  = eares ? security(tickerid, altres, lag16) : lag16
+mlag17  = eares ? security(tickerid, altres, lag17) : lag17
+mlag18  = eares ? security(tickerid, altres, lag18) : lag18
+
+//Multi-Resolution Previous Filter Values
+mlag1prev   = eares ? security(tickerid, altres, lag1[1]) : lag1[1]
+mlag2prev   = eares ? security(tickerid, altres, lag2[1]) : lag2[1]
+mlag3prev   = eares ? security(tickerid, altres, lag3[1]) : lag3[1]
+mlag4prev   = eares ? security(tickerid, altres, lag4[1]) : lag4[1]
+mlag5prev   = eares ? security(tickerid, altres, lag5[1]) : lag5[1]
+mlag6prev   = eares ? security(tickerid, altres, lag6[1]) : lag6[1]
+mlag7prev   = eares ? security(tickerid, altres, lag7[1]) : lag7[1]
+mlag8prev   = eares ? security(tickerid, altres, lag8[1]) : lag8[1]
+mlag9prev   = eares ? security(tickerid, altres, lag9[1]) : lag9[1]
+mlag10prev  = eares ? security(tickerid, altres, lag10[1]) : lag10[1]
+mlag11prev  = eares ? security(tickerid, altres, lag11[1]) : lag11[1]
+mlag12prev  = eares ? security(tickerid, altres, lag12[1]) : lag12[1]
+mlag13prev  = eares ? security(tickerid, altres, lag13[1]) : lag13[1]
+mlag14prev  = eares ? security(tickerid, altres, lag14[1]) : lag14[1]
+mlag15prev  = eares ? security(tickerid, altres, lag15[1]) : lag15[1]
+mlag16prev  = eares ? security(tickerid, altres, lag16[1]) : lag16[1]
+mlag17prev  = eares ? security(tickerid, altres, lag17[1]) : lag17[1]
+mlag18prev  = eares ? security(tickerid, altres, lag18[1]) : lag18[1]
+
+//Multi-Resolution Average Laguerre Filter
+amlag     = (mlag1 + mlag2 + mlag3 + mlag4 + mlag5 + mlag6 + mlag7 + mlag8 + mlag9 + mlag10 + mlag11 + mlag12 + mlag13 + mlag14 + mlag15 + mlag16 + mlag17 + mlag18)/18
+amlagprev = (mlag1prev + mlag2prev + mlag3prev + mlag4prev + mlag5prev + mlag6prev + mlag7prev + mlag8prev + mlag9prev + mlag10prev + mlag11prev + mlag12prev + mlag13prev + mlag14prev + mlag15prev + mlag16prev + mlag17prev + mlag18prev)/18
+
+//Average Laguerre True Range
+altr      = (laguerre(tr, gamma1) + laguerre(tr, gamma2) + laguerre(tr, gamma3) + laguerre(tr, gamma4) + laguerre(tr, gamma5) + laguerre(tr, gamma6) + laguerre(tr, gamma7) + laguerre(tr, gamma8) + laguerre(tr, gamma9) + laguerre(tr, gamma10) + laguerre(tr, gamma11) + laguerre(tr, gamma12) + laguerre(tr, gamma13) + laguerre(tr, gamma14) + laguerre(tr, gamma15) + laguerre(tr, gamma16) + laguerre(tr, gamma17) + laguerre(tr, gamma18))/18
+maltr     = eares ? security(tickerid, altres, altr) : altr
+
+//Bands
+hb1 = amlag + maltr*1.618
+hb2 = amlag + 2*maltr*1.618
+lb1 = amlag - maltr*1.618
+lb2 = amlag - 2*maltr*1.618
+
+//Colors
+rcolor1   = mlag1 > mlag1prev ? lime : mlag1 < mlag1prev ? red : orange
+rcolor2   = mlag2 > mlag2prev ? lime : mlag2 < mlag2prev ? red : orange
+rcolor3   = mlag3 > mlag3prev ? lime : mlag3 < mlag3prev ? red : orange
+rcolor4   = mlag4 > mlag4prev ? lime : mlag4 < mlag4prev ? red : orange
+rcolor5   = mlag5 > mlag5prev ? lime : mlag5 < mlag5prev ? red : orange
+rcolor6   = mlag6 > mlag6prev ? lime : mlag6 < mlag6prev ? red : orange
+rcolor7   = mlag7 > mlag7prev ? lime : mlag7 < mlag7prev ? red : orange
+rcolor8   = mlag8 > mlag8prev ? lime : mlag8 < mlag8prev ? red : orange
+rcolor9   = mlag9 > mlag9prev ? lime : mlag9 < mlag9prev ? red : orange
+rcolor10  = mlag10 > mlag10prev ? lime : mlag10 < mlag10prev ? red : orange
+rcolor11  = mlag11 > mlag11prev ? lime : mlag11 < mlag11prev ? red : orange
+rcolor12  = mlag12 > mlag12prev ? lime : mlag12 < mlag12prev ? red : orange
+rcolor13  = mlag13 > mlag13prev ? lime : mlag13 < mlag13prev ? red : orange
+rcolor14  = mlag14 > mlag14prev ? lime : mlag14 < mlag14prev ? red : orange
+rcolor15  = mlag15 > mlag15prev ? lime : mlag15 < mlag15prev ? red : orange
+rcolor16  = mlag16 > mlag16prev ? lime : mlag16 < mlag16prev ? red : orange
+rcolor17  = mlag17 > mlag17prev ? lime : mlag17 < mlag17prev ? red : orange
+rcolor18  = mlag18 > mlag18prev ? lime : mlag18 < mlag18prev ? red : orange
+bcolor    = amlag > amlagprev ? lime : amlag < amlagprev ? red : orange
+rbarcolor = rbc==1 ? rcolor1 : rbc==2 ? rcolor2 : rbc==3 ? rcolor3 : rbc==4 ? rcolor4 : rbc==5 ? rcolor5 : rbc==6 ? rcolor6 : rbc==7 ? rcolor7 : rbc==8 ? rcolor8 : rbc==9 ? rcolor9 : rbc==10 ? rcolor10 : rbc==11 ? rcolor11 : rbc==12 ? rcolor12 : rbc==13 ? rcolor13 : rbc==14 ? rcolor14 : rbc==15 ? rcolor15 : rbc==16 ? rcolor16 : rbc==17 ? rcolor17 : rbc==18 ? rcolor18 : bcolor
+barcolor  = mode==1 ? rbarcolor : bcolor
+
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//Plots
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+//Ribbon Plots
+plot(mode==1 ? mlag18 : na, color=rcolor18, linewidth=1, title="Laguerre Filter 18")
+plot(mode==1 ? mlag17 : na, color=rcolor17, linewidth=1, title="Laguerre Filter 17")
+plot(mode==1 ? mlag16 : na, color=rcolor16, linewidth=1, title="Laguerre Filter 16")
+plot(mode==1 ? mlag15 : na, color=rcolor15, linewidth=1, title="Laguerre Filter 15")
+plot(mode==1 ? mlag14 : na, color=rcolor14, linewidth=1, title="Laguerre Filter 14")
+plot(mode==1 ? mlag13 : na, color=rcolor13, linewidth=1, title="Laguerre Filter 13")
+plot(mode==1 ? mlag12 : na, color=rcolor12, linewidth=1, title="Laguerre Filter 12")
+plot(mode==1 ? mlag11 : na, color=rcolor11, linewidth=1, title="Laguerre Filter 11")
+plot(mode==1 ? mlag10 : na, color=rcolor10, linewidth=1, title="Laguerre Filter 10")
+plot(mode==1 ? mlag9 : na,  color=rcolor9,  linewidth=1, title="Laguerre Filter 9")
+plot(mode==1 ? mlag8 : na,  color=rcolor8,  linewidth=1, title="Laguerre Filter 8")
+plot(mode==1 ? mlag7 : na,  color=rcolor7,  linewidth=1, title="Laguerre Filter 7")
+plot(mode==1 ? mlag6 : na,  color=rcolor6,  linewidth=1, title="Laguerre Filter 6")
+plot(mode==1 ? mlag5 : na,  color=rcolor5,  linewidth=1, title="Laguerre Filter 5")
+plot(mode==1 ? mlag4 : na,  color=rcolor4,  linewidth=1, title="Laguerre Filter 4")
+plot(mode==1 ? mlag3 : na,  color=rcolor3,  linewidth=1, title="Laguerre Filter 3")
+plot(mode==1 ? mlag2 : na,  color=rcolor2,  linewidth=1, title="Laguerre Filter 2")
+plot(mode==1 ? mlag1 : na,  color=rcolor1,  linewidth=1, title="Laguerre Filter 1")
+
+//Band Plots
+hplot2 = plot(mode==2 ? hb2 : na,   color=bcolor, linewidth=1, title="High Band 2")
+hplot1 = plot(mode==2 ? hb1 : na,   color=bcolor, linewidth=1, title="High Band 1")
+alplot = plot(mode==2 ? amlag : na, color=bcolor, linewidth=2, title="Average Laguerre Filter")
+lplot1 = plot(mode==2 ? lb1 : na,   color=bcolor, linewidth=1, title="Low Band 1")
+lplot2 = plot(mode==2 ? lb2 : na,   color=bcolor, linewidth=1, title="Low Band 2")
+
+//Band Fills
+fill(hplot1, hplot2, color=bcolor, title="High Band Fill")
+fill(lplot1, lplot2, color=bcolor, title="Low Band Fill")
+
+//Bar Color
+barcolor(barcolor)

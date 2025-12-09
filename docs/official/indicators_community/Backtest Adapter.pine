@@ -1,0 +1,28 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © jdehorty
+//@version=5
+strategy("Backtest Adapter", overlay=true)
+useDateFilter = input.bool(true, title="Begin Backtest at Start Date", group="Backtest Time Period")
+backtestStartDate = input.time(timestamp("11 May 2022"), title="Start Date", group="Backtest Time Period")
+inTradeWindow = not useDateFilter or time >= backtestStartDate
+
+src = input.source(title="Source", defval=close, tooltip="Source of the input data", group="General Settings")
+
+// Set up your entry and exit conditions for positions based on the indicator stream. 
+// The values here must correspond to the values in the Source indicator.
+startLongTrade = src == 1
+endLongTrade = src == 2
+startShortTrade = src == -1
+endShortTrade = src == -2
+
+if startLongTrade and inTradeWindow
+    strategy.order("Enter Long", strategy.long) 
+    
+if endLongTrade and strategy.position_size > 0 and inTradeWindow
+    strategy.order("Exit Long", strategy.short)
+
+if startShortTrade and inTradeWindow
+    strategy.order("Enter Short", strategy.short)
+
+if endShortTrade and strategy.position_size < 0 and inTradeWindow
+    strategy.order("Exit Short", strategy.long)

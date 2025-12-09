@@ -1,0 +1,83 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+//@version=6
+indicator("HEMA Trend Levels [AlgoAlpha]", "AlgoAlpha - HEMA Trend ", overlay=true, max_boxes_count = 500, explicit_plot_zorder = true)
+
+// Inputs
+hemaLength1 = input.int(20, title="HEMA Length Fast", group="HEMA Settings", tooltip="First HEMA period length (20 by default)")
+hemaLength2 = input.int(40, title="HEMA Length Slow", group="HEMA Settings", tooltip="Second HEMA period length (40 by default)")
+
+bullColor = input.color(#00ffbb, title="Bullish Color", tooltip="Color used for bullishness", group="Appearance")
+bearColor = input.color(#ff1100, title="Bearish Color", tooltip="Color used for bearishness", group="Appearance")
+
+// HEMA Function
+f_hema(_src, _length) =>
+    halfLength = math.max(1, math.round(_length / 2))
+    sqrtLength = math.max(1, math.round(math.sqrt(_length)))
+    ema_half = ta.ema(_src, halfLength)
+    ema_full = ta.ema(_src, _length)
+    diff = 2 * ema_half - ema_full
+    ta.ema(diff, sqrtLength)
+
+// Calculate HEMA values
+hema1 = f_hema(close, hemaLength1)
+hema2 = f_hema(close, hemaLength2)
+
+// Create hidden plots for gradient fill
+hemaTop = plot(hema1 > hema2 ? hema1 : hema2, "Top HEMA", display=display.none)
+hemaBottom = plot(hema1 > hema2 ? hema2 : hema1, "Bottom HEMA", display=display.none)
+
+// Determine fill color based on trend direction
+fillColor = hema1 > hema2 ? bullColor : bearColor
+
+fill(hemaTop, hemaBottom, hema1, hema2, color.new(chart.bg_color, 100), color.new(fillColor, 70), "HEMA Gradient")
+
+// Plotting with dynamic colors
+plot(hema1, title="HEMA 20", color=color.new(fillColor, 70))
+plot(hema2, title="HEMA 40", color=color.new(fillColor, 70))
+
+// Define conditions
+bullishCondition = close > hema1 and hema1 > hema2
+bearishCondition = close < hema1 and hema1 < hema2
+grayCondition = (close < hema1 and hema1 > hema2) or (close > hema1 and hema1 < hema2)
+
+// Apply bar coloring
+barcolor(bullishCondition ? color.new(bullColor, 50) : bearishCondition ? color.new(bearColor, 50) : grayCondition ? color.new(color.gray, 50) : na)
+
+vola = ta.atr(14)/2
+
+var bull_box = array.new_box()
+var bear_box = array.new_box()
+
+if ta.crossover(hema1, hema2)
+    bull_box.unshift(box.new(bar_index, low + vola, bar_index+5, low, bgcolor = color.new(bullColor, 70), border_color = color.new(color.black, 100)))
+else if ta.crossunder(hema1, hema2)
+    bear_box.unshift(box.new(bar_index, high - vola, bar_index+5, high, bgcolor = color.new(bearColor, 70), border_color = color.new(color.black, 100)))
+
+low_test = 0.0
+high_test = 0.0
+
+if bull_box.size() > 0
+    Q = bull_box.first()
+    if low < Q.get_top() and high > Q.get_top() and open > Q.get_top() and close > Q.get_top()
+        low_test := Q.get_bottom()
+    Q.set_right(bar_index)
+
+if bear_box.size() > 0
+    Q = bear_box.first()
+    if high > Q.get_top() and low < Q.get_top() and open < Q.get_top() and close < Q.get_top()
+        high_test := Q.get_bottom()
+    Q.set_right(bar_index)
+
+plotchar(low_test != 0.0 ? low_test - vola : na, "low_test", '▲', location.absolute, bullColor, size = size.tiny)
+plotchar(high_test != 0.0 ? high_test + vola : na, "high_test", '▼', location.absolute, bearColor, size = size.tiny)
+plotshape(ta.crossover(hema1, hema2) ? low - vola * 3 : na, "Bullish Trend", shape.labelup, location.absolute, color.new(bullColor, 50), text = "▲", textcolor = chart.fg_color, size = size.small)
+plotshape(ta.crossunder(hema1, hema2) ? high + vola * 3 : na, "Bearish Trend", shape.labeldown, location.absolute, color.new(bearColor, 50), text = "▼", textcolor = chart.fg_color, size = size.small)
+
+// Alert conditions for trend changes
+alertcondition(ta.crossover(hema1, hema2), title="Bullish Crossover", message="HEMA 20 crossed above HEMA 40 - Bullish Trend")
+alertcondition(ta.crossunder(hema1, hema2), title="Bearish Crossunder", message="HEMA 20 crossed below HEMA 40 - Bearish Trend")
+
+// Alert conditions for price tests
+alertcondition(low_test != 0.0, title="Bullish Test", message="Price tested bullish box support")
+alertcondition(high_test != 0.0, title="Bearish Test", message="Price tested bearish box resistance")

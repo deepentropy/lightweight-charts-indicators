@@ -1,0 +1,228 @@
+
+// © juliangonzaconde
+
+//@version=4
+study("VP-Period", overlay=true,  max_bars_back = 1000, max_lines_count=500)
+
+var bool is_first_candle= true
+var diff = 0.0
+float maxV = 0.0
+int maxV_index = 0
+int last_time = 0
+margin=0.0
+ys=0.0
+int bar_offset=0
+var is_first_inRange=false
+
+
+                     
+period_time   = input(defval = 10, 
+                     title   = "Number of days (Min: 3, Max: 500)",
+                     type    = input.integer, 
+                     minval  = 3, 
+                     maxval  = 500)
+
+resolution   = input(defval = 500, 
+                     title   = "calculation resolution (Min: 400, Max: 700)",
+                     type    = input.integer, 
+                     minval  = 400, 
+                     maxval  = 700)
+
+show_from   = input(defval = 3, 
+                     title   = "show support/resistance since (Min: 2, Max: 45)",
+                     type    = input.integer, 
+                     minval  = 2, 
+                     maxval  = 45)
+                     
+
+show_volume_bars   = input(defval = true, 
+                     title   = "Show volume bars (If selected, maximum days are 17)",
+                     type    = input.bool
+                     )
+                     
+show_vpoc_line   = input(defval = true, 
+                     title   = "Show VPOC line",
+                     type    = input.bool
+                     )
+                     
+show_support_line   = input(defval = true, 
+                     title   = "Show support line",
+                     type    = input.bool
+                     )
+
+show_res_line   = input(defval = true, 
+                     title   = "Show resistance line",
+                     type    = input.bool
+                     )
+                     
+show_H_line   = input(defval = true, 
+                     title   = "Show high line",
+                     type    = input.bool
+                     )
+                     
+show_L_line   = input(defval = true, 
+                     title   = "Show low line",
+                     type    = input.bool
+                     )
+                     
+show_labels   = input(defval = true, 
+                     title   = "Show from days label",
+                     type    = input.bool
+                     )
+
+vpoc_color   = input(defval = color.new(color.yellow, 10), 
+                     title   = "VPOC color",
+                     type    = input.color
+                     )
+                     
+high_low_color = input(defval = color.new(color.blue, 50), 
+                     title   = "High-low lines color",
+                     type    = input.color
+                     )
+                     
+volume_bars_color   = input(defval = color.new(color.green, 70), 
+                     title   = "Volume bars color",
+                     type    = input.color
+                     )
+                     
+sup_color = input(defval = color.new(color.red, 10), 
+                     title   = "Support line color",
+                     type    = input.color
+                     )
+                     
+res_color = input(defval = color.new(color.green, 10), 
+                     title   = "Resistance line color",
+                     type    = input.color
+                     )
+                     
+
+range_prices = array.new_float((resolution + 1), 0.0)
+partial_vol = array.new_float(resolution, 0.0)
+total_vol = array.new_float(resolution, 0.0)
+var all_ys = array.new_float(show_from, 0.0)
+var ys_time = array.new_float(show_from, 0.0)
+var is_support = array.new_bool(show_from, true)
+                     
+t = time("1440", session.regular)
+var int startTime =time
+int ncandles =0
+
+if barstate.isfirst
+    startTime := timenow - period_time*86400000
+
+
+bar_offset:= barssince(is_first_inRange)
+is_first = na(t[1]) and not na(t) or t[1] < t
+is_first_inRange:=is_first and t>startTime
+high_price=0.0
+low_price=0.0
+price_level=0.0
+
+if is_first_inRange or barstate.islast
+    
+    last_time:= t[1]
+    ncandles := bar_offset
+    current_low_price=0.0
+    for i = 1 to (ncandles)
+        current_low_price:=low[i]
+        if current_low_price < low_price or low_price==0.0
+            low_price:=current_low_price
+            
+    current_high_price=0.0
+    for i = 1 to (ncandles)
+        current_high_price:=high[i]
+        if current_high_price >high_price or high_price==0.0
+            high_price:=current_high_price
+    diff := (high_price-low_price)/resolution
+    
+    for j = 0 to (resolution)
+        array.set(range_prices, (j), (low_price + (diff * (j+1))))
+    
+    for i = 0 to (ncandles)
+        int w_candle = 0
+		array.fill(partial_vol, 0.0)
+        
+        for j=0 to (resolution-1)
+            float current_price = array.get(range_prices, j)
+            if high[i] > current_price and low[i] < current_price
+                float j_partial_vol = array.get(partial_vol, j)
+				float sum_vol = j_partial_vol + nz(volume[i])
+				array.set(partial_vol, j, sum_vol)
+				w_candle := w_candle + 1
+		
+		for j = 0 to (resolution - 1)
+			float j_total_vol = array.get(total_vol, j)
+			float j_partial_vol = array.get(partial_vol, j)
+			float sum_partial_total=0.0
+			if w_candle > 0
+			    sum_partial_total := j_total_vol + j_partial_vol/w_candle
+			else 
+			    sum_partial_total := j_total_vol
+			array.set(total_vol, j, sum_partial_total)
+    maxV := array.max(total_vol)
+    maxV_index := array.indexof(total_vol, maxV)
+    
+    if is_first_inRange
+        price_level:=diff*maxV_index+low_price
+        if high_price - price_level > price_level - low_price
+            margin:=high_price - price_level
+            ys:=price_level - margin
+        else
+            margin:=price_level - low_price
+            ys:=price_level + margin
+        if ys > high_price
+            array.shift(is_support)
+            array.push(is_support, false)
+        else
+            array.shift(is_support)
+            array.push(is_support, true)
+        array.shift(all_ys)
+        array.push(all_ys, ys)
+        array.shift(ys_time)
+        array.push(ys_time, t) 
+
+if barstate.islast
+    for i=0 to (show_from - 1)
+        ys := array.get(all_ys, i)
+        time_back = array.get(ys_time, i)
+        if array.get(is_support, i)
+            if show_support_line
+                line.new(x1=int(time_back), y1=ys, x2=time + 86400000, y2=ys, color=sup_color ,xloc= xloc.bar_time, extend = extend.none, width=2, style=line.style_dashed)
+        else
+            if show_res_line
+                line.new(x1=int(time_back), y1=ys, x2=time + 86400000, y2=ys, color=res_color ,xloc= xloc.bar_time, extend = extend.none, width=2, style=line.style_dashed)
+            
+        if show_labels    
+            label.new(int(time + 86400000), ys, text ="From days: " + tostring(show_from - i), xloc=xloc.bar_time)
+    
+dif_time=0.0
+
+
+if is_first_inRange or barstate.islast
+      
+    last_time:= int(t[1])
+    dif_time:= (time-last_time)
+    if dif_time/86400000 > 1.5
+        dif_time:=(dif_time)/9
+    else
+        dif_time:=(dif_time)/3
+    diff_t=0
+    x1=0.0
+    norm_vol=0.0
+    proportion=resolution/40
+    for i = 0 to (resolution - 1)
+        y=array.get(range_prices,i)
+        current_vol= array.get(total_vol,i)
+        norm_vol :=current_vol/maxV
+        x1 :=dif_time*norm_vol
+        diff_t := last_time + int(x1)
+        if (i % int(proportion) == 0 or int(proportion) == 0) and show_volume_bars
+            line.new(x1=t[1], y1=y, x2=diff_t, y2=y, color=volume_bars_color ,xloc= xloc.bar_time, extend = extend.none, width=2)
+
+    if show_L_line    
+        line.new(x1=t[1], y1=low_price, x2=time, y2=low_price,xloc= xloc.bar_time, color=high_low_color)
+    if show_vpoc_line
+        line.new(x1=t[1], y1=diff*maxV_index+low_price, x2=time, y2=diff*maxV_index+low_price, color=vpoc_color, width=2,xloc= xloc.bar_time)
+    if show_H_line 
+        line.new(x1=t[1], y1=high_price, x2=time, y2=high_price,xloc= xloc.bar_time, color=high_low_color)
+

@@ -1,0 +1,249 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Momentum Acceleration (SpeedyGonzales) 
+//# *                - with Backtest Framework Adaptation
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Jul 08, 2020
+//# *  Update     : Sep 05, 2020  : On Balance Volume addition
+//# *  Update     : Nov 25, 2020  : Backtest framework adaptation
+//# *  Update     : Apr 09, 2021  : Enchanced Backtest Framework
+//# *                               - long/short/stoploss conditions enchaced
+//# *                               - early warning ability added (label + alert)
+//# *  Update     : Apr 21, 2022  : Price and On Balance Volume Momentum Acceleration Oscillator View Option
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+indicator('Momentum Acceleration by DGT', 'SpeedyGonzales ʙʏ DGT ☼☾', true, max_lines_count = 500)
+s = input.string('Price', 'Source', options=['Price', 'On Balance Volume'], inline = 'SG')
+t = input(13, 'Length', inline = 'SG')
+colorup   = input.color(color.new(color.aqua, 80), '', inline='SG')
+colordown = input.color(color.new(color.orange, 80), '', inline='SG')
+
+p = input.int(233, 'Plotting Length', minval = 1, step = 10)
+
+f_speedy(_d, _t) =>
+    v = ta.sma(ta.change(_d, _t) / _t, 3)
+    a = ta.change(v, _t) / _t
+    v - a
+
+// Plotting  ------------------------------------------------------------------------------------ //
+// ---------------------------------------------------------------------------------------------- //
+
+source = s == 'Price' ? close : ta.obv
+psgval = f_speedy(source, t)
+plotarrow(psgval, title='Momentum Acceleration', colorup=colorup, colordown=colordown, show_last=p, editable = false)
+
+
+// -Alerts ══════════════════════════════════════════════════════════════════════════════════════ //
+bothAlertCondition = ta.cross(psgval, 0)
+alertcondition(bothAlertCondition, 'Early Warning', 'SpeedyGonzales : Probable Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+alertcondition(bothAlertCondition[1], 'Trading Opportunity', 'SpeedyGonzales : Probable Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+
+longAlertCondition = ta.crossover(psgval, 0)
+alertcondition(longAlertCondition, 'Long : Early Warning', 'SpeedyGonzales - Not Confirmed Probable Long Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+alertcondition(longAlertCondition[1], 'Long : Trading Opportunity', 'SpeedyGonzales - Probable Long Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+
+shortAlertCondition = ta.crossunder(psgval, 0)
+alertcondition(shortAlertCondition, 'Short : Early Warning', 'SpeedyGonzales - Not Confirmed Probable Short Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+alertcondition(shortAlertCondition[1], 'Short : Trading Opportunity', 'SpeedyGonzales - Probable Short Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}')
+
+// -OCS View ════════════════════════════════════════════════════════════════════════════════════ //
+
+group_ocs         = 'Momentum Acceleration - Oscillator View'
+price             = input(false, 'Price Momentum Acceleration Oscillator', inline='price', group=group_ocs)
+oscColor          = input.color(color.aqua, '', inline='price',  group=group_ocs)
+obv               = input(false, 'OBV Momentum Acceleration Oscillator ', inline='obv', group=group_ocs)
+oscColor2         = input.color(color.orange, '', inline='obv',  group=group_ocs)
+
+oscLookbackLength = last_bar_index < p ? last_bar_index : p
+oscHight          = 11 - input.int(7, 'Hight' , minval = 1, maxval = 10 , inline = 'AA', group=group_ocs )
+oscVerticalOffset = input.int(3, "Vertical Offset", minval = -3, maxval = 10, inline = 'AA', group=group_ocs) / 10
+oscPlacement      = input.string('Bottom', 'Placement', options = ['Top', 'Bottom'], group=group_ocs)
+
+var a_lines       = array.new_line()
+
+oscPrice          = f_speedy(close , t)
+oscObv            = f_speedy(ta.obv, t)
+priceHighest      = ta.highest(high, oscLookbackLength)
+priceLowest       = ta.lowest (low , oscLookbackLength)
+priceChangeRate   = (priceHighest - priceLowest) / priceHighest
+priceLowest      := priceLowest  * (1 - priceChangeRate * oscVerticalOffset)
+priceHighest     := priceHighest * (1 + priceChangeRate * oscVerticalOffset)
+oscHighest        = ta.highest(oscPrice, oscLookbackLength)
+oscHighest2       = ta.highest(oscObv, oscLookbackLength)
+
+if barstate.islast
+    if array.size(a_lines) > 0
+        for i = 1 to array.size(a_lines)
+            line.delete(array.shift(a_lines))
+
+    hight = priceChangeRate / oscHight
+
+    if price or obv
+        midLine   = 0
+        midLevel  = (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 +     midLine / oscHighest * hight)
+        array.push(a_lines, line.new(bar_index[oscLookbackLength], midLevel , bar_index, midLevel , xloc.bar_index, extend.none, color.new(color.gray, 25) ,line.style_dashed, 1))
+
+    for barIndex = 0 to oscLookbackLength - 1
+        if array.size(a_lines) < 498
+            if price
+                array.push(a_lines, line.new(bar_index[barIndex], (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + oscPrice[barIndex]     / oscHighest * hight), 
+                                         bar_index[barIndex + 1], (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + oscPrice[barIndex + 1] / oscHighest * hight), xloc.bar_index, extend.none, oscColor, line.style_solid, 1))
+            if obv
+                array.push(a_lines, line.new(bar_index[barIndex], (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + oscObv[barIndex]     / oscHighest2 * hight), 
+                                         bar_index[barIndex + 1], (oscPlacement == 'Top' ? priceHighest : priceLowest) * (1 + oscObv[barIndex + 1] / oscHighest2 * hight), xloc.bar_index, extend.none, oscColor2, line.style_solid, 1))
+
+// -OCS View ════════════════════════════════════════════════════════════════════════════════════ //
+
+var table logo = table.new(position.bottom_right, 1, 1)
+if barstate.islast
+    table.cell(logo, 0, 0, '☼☾  ' , text_size = size.normal, text_color = color.teal)
+    
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Backtest Framework
+//# * Author      : © dgtrd
+//# * Purpose     : Ability to optimize a study and observe trade simulation statistics accordingly  
+//# *
+//# * Revision History
+//# *  Release    : Nov 21, 2020  : Initial Release
+//# *  Update     : Mar 13, 2021  : Enchanced Backtest Framework
+//# *                               - long/short/stoploss conditions enchaced
+//# *                               - early warning ability added (label + alert)
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+// -Inputs ══════════════════════════════════════════════════════════════════════════════════════════ //
+
+isBackTest = input.bool(false, 'Backtest On/Off', group='Backtest Framework')
+dasCapital = input.float(1000., 'Initial Capital', inline='BT1', group='Backtest Framework')
+lenBckTst = input.float(1, 'Period (Year)', minval=0, step=.1, inline='BT1', group='Backtest Framework')
+isStopLoss = input.bool(false, 'Apply Stop Loss, with Stop Loss Set To %', inline='BT2', group='Backtest Framework')
+stopLoss = input.float(1., '', step=.1, minval=0, inline='BT2', group='Backtest Framework') / 100
+isBull = input.bool(false, 'Long : Candle Direction as Confirmation : Short', inline='BT3', group='Backtest Framework')
+isBear = input.bool(false, '', inline='BT3', group='Backtest Framework')
+isSudden = input.bool(true, 'Avoid Sudden Price Changes', group='Backtest Framework')
+isTest = input.bool(false, '❗❗❗ Simulate Trade on Next Bar : Only For Test Purpose (REPAINTS)', group='Backtest Framework')
+lblInOutSL = input.bool(true, 'Trade Entry/Exit Labels  Trade Statistics Label', inline='BT4', group='Backtest Framework')
+lblTrdStat = input.bool(true, '', inline='BT4', group='Backtest Framework')
+
+// -Calculations ════════════════════════════════════════════════════════════════════════════════════ //
+
+startBckTst = time > timenow - lenBckTst * 31556952000
+
+var inTrade = false
+var entryPrice = 0.
+var exitPrice = 0.
+
+if isBackTest
+
+    var capital = dasCapital
+    var trades = 0
+    var win = 0
+    var loss = 0
+
+    bullCandle = close > open
+    bearCandle = close < open
+    stopLossTrigger = ta.crossunder(close, entryPrice * (1 - stopLoss))
+
+    longCondition = isTest ? isBull ? isSudden ? longAlertCondition[1] and not shortAlertCondition and bullCandle : longAlertCondition[1] and bullCandle : isSudden ? longAlertCondition[1] and not shortAlertCondition : longAlertCondition[1] : isBull ? isSudden ? longAlertCondition[2] and not shortAlertCondition[1] and bullCandle[1] : longAlertCondition[2] and bullCandle[1] : isSudden ? longAlertCondition[2] and not shortAlertCondition[1] : longAlertCondition[1]
+
+    shortCondition = isTest ? isBear ? isSudden ? shortAlertCondition[1] and not longAlertCondition and bearCandle : shortAlertCondition[1] and bearCandle : isSudden ? shortAlertCondition[1] and not longAlertCondition : shortAlertCondition[1] : isBear ? isSudden ? shortAlertCondition[2] and not longAlertCondition[1] and bearCandle[1] : shortAlertCondition[2] and bearCandle[1] : isSudden ? shortAlertCondition[2] and not longAlertCondition[1] : shortAlertCondition[1]
+
+    stopLossCondition = isStopLoss ? inTrade and not shortCondition ? stopLossTrigger : 0 : 0
+
+    if startBckTst and longCondition and not inTrade
+        entryPrice := open
+        inTrade := true
+        trades += 1
+
+        if lblInOutSL
+            label longLabel = label.new(bar_index, low, text='L', tooltip='entry price  : ' + str.tostring(entryPrice) + '\nentry value : ' + str.tostring(capital, '#.##'), color=color.green, style=label.style_label_up, textcolor=color.white, textalign=text.align_center, size=size.tiny)
+            longLabel
+
+        alert('long : probable trading opportunity, price ' + str.tostring(close), alert.freq_once_per_bar)
+
+
+    if (shortCondition or stopLossCondition) and inTrade
+        exitPrice := stopLossCondition ? close : open
+        inTrade := false
+        capital *= (exitPrice / entryPrice)
+
+        if exitPrice > entryPrice
+            win += 1
+            win
+        else
+            loss += 1
+            loss
+
+        if lblInOutSL
+            text_1 = stopLossCondition ? 'SL' : 'TP'
+            label shortLabel = label.new(bar_index, high, text=text_1, tooltip='change .......... : ' + str.tostring((exitPrice / entryPrice - 1) * 100, '#.##') + '%\nentry/exit price : ' + str.tostring(entryPrice) + ' / ' + str.tostring(exitPrice) + '\nnew capital ..... : ' + str.tostring(capital, '#.##'), color=color.red, style=label.style_label_down, textcolor=color.white, textalign=text.align_center, size=size.tiny)
+            shortLabel
+
+        alert('short : probable trading opportunity, price ' + str.tostring(close), alert.freq_once_per_bar)
+
+
+    var label wLabel = na
+
+    if not inTrade and longAlertCondition[1] and not shortAlertCondition
+        wLabel := label.new(bar_index, low, text='⚠️', tooltip='probable long trading opportunity \nawaiting confirmation (next candle)\nif confirmed, backtest tool will execute trade with open price of the canlde', color=color.green, style=label.style_none, textcolor=color.white, textalign=text.align_center, size=size.huge)
+        label.delete(wLabel[1])
+
+        alert('long : early warning : probable trading opportunity, awaiting confirmation (next candle), price ' + str.tostring(close), alert.freq_once_per_bar)
+
+    if inTrade and shortAlertCondition[1] and not longAlertCondition
+        wLabel := label.new(bar_index, high, text='⚠️', tooltip='probable short/take profit trading opportunity \nawaiting confirmation (next candle)\nif confirmed, backtest tool will execute trade with open price of the canlde', color=color.green, style=label.style_none, textcolor=color.white, textalign=text.align_center, size=size.huge)
+        label.delete(wLabel[1])
+
+        alert('short : early warning : probable trading opportunity, awaiting confirmation (next candle), price ' + str.tostring(close), alert.freq_once_per_bar)
+
+    if ta.change(time)
+        label.delete(wLabel[1])
+
+    if stopLossCondition
+        alert('stop loss condition, price ' + str.tostring(close), alert.freq_once_per_bar)
+
+
+    if lblTrdStat
+        var years = (timenow - time) / 31556952000
+
+        var yearsTxt = ''
+        var remarks = ''
+
+        if years < lenBckTst
+            lenBckTst := years
+            yearsTxt := str.tostring(lenBckTst, '#.##') + ' Years***'
+            remarks := '\n\n*longs only\n**final value, if trade active displays estimated final value\n***max available data for selected timeframe : # of bars - ' + str.tostring(bar_index)
+            remarks
+        else
+            yearsTxt := str.tostring(lenBckTst, '#.##') + ' Year(s)'
+            remarks := '\n\n*longs only\n**final value - if in trade, displays estimated final value'
+            remarks
+
+        inTradeTxt = inTrade ? 'inTrade' : 'not inTrade'
+        estimated = inTrade ? capital * (close / entryPrice) : capital
+        entryTxt = inTrade ? str.tostring(entryPrice) : 'not inTrade'
+        lastTrdTxt = inTrade ? ', Gain/Loss ' + str.tostring((estimated / capital - 1) * 100, '#.##') + '%, Stop Loss ' + str.tostring(isStopLoss ? entryPrice * (1 - stopLoss) : na) : ''
+        stopLossTxt = isStopLoss ? 'if last value falls by ' + str.tostring(stopLoss * 100) + '% of entry price' : 'not applied'
+
+        tooltipTxt = 'entires/exit caclulations\n' + '-long entry , on next bar when arrows below bar pointing up\n' + '-take profit, on next bar when arrows above bar pointing down\n' + '-stop loss ' + stopLossTxt + remarks
+
+        label indiLabel = label.new(time, close, text='☼☾ Trade Statistics*, Trade Period - ' + yearsTxt + '\n═════════════════════════════════════' + '\nSuccess Ratio ...... : ' + str.tostring(win / trades * 100, '#') + '%' + ', # of Trades - ' + str.tostring(trades) + ', Win/Loss - ' + str.tostring(win) + '/' + str.tostring(loss) + '\nGain/Loss % ........ : ' + str.tostring((estimated / dasCapital - 1) * 100, '#') + '%' + ', Initial/Final Value** - ' + str.tostring(dasCapital) + ' / ' + str.tostring(estimated, '#') + '\n\nCurrent TradeStatus - ' + inTradeTxt + lastTrdTxt + '\n═════════════════════════════════════' + '\nEntry Price/Value . : ' + entryTxt + ' / ' + str.tostring(capital, '#.##') + ' ' + inTradeTxt + '\nLast Price/Value ... : ' + str.tostring(close) + ' / ' + str.tostring(estimated, '#.##') + ' ' + inTradeTxt, tooltip=tooltipTxt, color=inTrade ? estimated / dasCapital > 1 ? color.teal : color.maroon : color.gray, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.white, textalign=text.align_left)
+
+        label.set_x(indiLabel, label.get_x(indiLabel) + math.round(ta.change(time) * 5))
+        label.delete(indiLabel[1])
+
+// -Plotting ════════════════════════════════════════════════════════════════════════════════════ //
+
+bgcolor(isBackTest and startBckTst and startBckTst != startBckTst[1] ? color.new(color.blue, 90) : na, editable = false)
+plot(inTrade ? entryPrice : exitPrice > 0 ? exitPrice : na, title='Entry/Exit Price Line', color=inTrade ? color.green : color.red, style=plot.style_circles)
+

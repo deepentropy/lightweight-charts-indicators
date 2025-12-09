@@ -1,0 +1,322 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © HeWhoMustNotBeNamed
+
+//   __    __            __       __  __                  __       __                        __      __    __              __      _______             __    __                                          __ 
+//  /  |  /  |          /  |  _  /  |/  |                /  \     /  |                      /  |    /  \  /  |            /  |    /       \           /  \  /  |                                        /  |
+//  $$ |  $$ |  ______  $$ | / \ $$ |$$ |____    ______  $$  \   /$$ | __    __   _______  _$$ |_   $$  \ $$ |  ______   _$$ |_   $$$$$$$  |  ______  $$  \ $$ |  ______   _____  ____    ______    ____$$ |
+//  $$ |__$$ | /      \ $$ |/$  \$$ |$$      \  /      \ $$$  \ /$$$ |/  |  /  | /       |/ $$   |  $$$  \$$ | /      \ / $$   |  $$ |__$$ | /      \ $$$  \$$ | /      \ /     \/    \  /      \  /    $$ |
+//  $$    $$ |/$$$$$$  |$$ /$$$  $$ |$$$$$$$  |/$$$$$$  |$$$$  /$$$$ |$$ |  $$ |/$$$$$$$/ $$$$$$/   $$$$  $$ |/$$$$$$  |$$$$$$/   $$    $$< /$$$$$$  |$$$$  $$ | $$$$$$  |$$$$$$ $$$$  |/$$$$$$  |/$$$$$$$ |
+//  $$$$$$$$ |$$    $$ |$$ $$/$$ $$ |$$ |  $$ |$$ |  $$ |$$ $$ $$/$$ |$$ |  $$ |$$      \   $$ | __ $$ $$ $$ |$$ |  $$ |  $$ | __ $$$$$$$  |$$    $$ |$$ $$ $$ | /    $$ |$$ | $$ | $$ |$$    $$ |$$ |  $$ |
+//  $$ |  $$ |$$$$$$$$/ $$$$/  $$$$ |$$ |  $$ |$$ \__$$ |$$ |$$$/ $$ |$$ \__$$ | $$$$$$  |  $$ |/  |$$ |$$$$ |$$ \__$$ |  $$ |/  |$$ |__$$ |$$$$$$$$/ $$ |$$$$ |/$$$$$$$ |$$ | $$ | $$ |$$$$$$$$/ $$ \__$$ |
+//  $$ |  $$ |$$       |$$$/    $$$ |$$ |  $$ |$$    $$/ $$ | $/  $$ |$$    $$/ /     $$/   $$  $$/ $$ | $$$ |$$    $$/   $$  $$/ $$    $$/ $$       |$$ | $$$ |$$    $$ |$$ | $$ | $$ |$$       |$$    $$ |
+//  $$/   $$/  $$$$$$$/ $$/      $$/ $$/   $$/  $$$$$$/  $$/      $$/  $$$$$$/  $$$$$$$/     $$$$/  $$/   $$/  $$$$$$/     $$$$/  $$$$$$$/   $$$$$$$/ $$/   $$/  $$$$$$$/ $$/  $$/  $$/  $$$$$$$/  $$$$$$$/ 
+//                                                                                                                                                                                                          
+//                                                                                                                                                                                                          
+//
+//@version=4
+study("Double Top/Bottom - Ultimate (OS)", shorttitle="W/M - Ultimate(OS)", overlay=true, max_lines_count=500, max_labels_count=500, max_bars_back=1000)
+length = input(10, step=5, minval=5)
+showZigzag = input(false)
+showPivots = input(true)
+showStats = input(true)
+bullishColor = input(color.green)
+bullTrapColor = input(color.orange)
+bearishColor = input(color.red)
+bearTrapColor = input(color.lime)
+textColor = input(color.black)
+
+MaxRiskPerReward = input(30, step=5, minval=5, maxval=100)
+DisplayRiskPerReward = input(true)
+var zigzagvalues = array.new_float(0)
+var zigzagindexes = array.new_int(0)
+var zigzagdir = array.new_int(0)
+
+var doubleTopBottomValues = array.new_float(3)
+var doubleTopBottomIndexes = array.new_int(3)
+var doubleTopBottomDir = array.new_int(3)
+
+int max_array_size = 10
+max_bars_back(high, 1000)
+max_bars_back(low, 1000)
+
+var lineArray = array.new_line(0)
+var labelArray = array.new_label(0)
+pivots(length)=>
+    float ph = highestbars(high, length) == 0 ? high : na
+    float pl = lowestbars(low, length) == 0 ? low : na
+    dir = 0
+    dir := iff(ph and na(pl), 1, iff(pl and na(ph), -1, dir[1]))
+    [dir, ph, pl]
+
+add_to_array(value, index, dir)=>
+    mult = array.size(zigzagvalues) < 2? 1 : 
+                 (dir*value > dir*array.get(zigzagvalues,1))? 2 : 1
+    array.unshift(zigzagindexes, index)
+    array.unshift(zigzagvalues, value)
+    array.unshift(zigzagdir, dir*mult)
+    if array.size(zigzagindexes) > max_array_size
+        array.pop(zigzagindexes)
+        array.pop(zigzagvalues)
+        array.pop(zigzagdir)
+
+add_to_zigzag(dir, dirchanged, ph, pl, index)=>
+    value = (dir == 1? ph : pl)
+    if array.size(zigzagvalues) == 0 or dirchanged
+        add_to_array(value, index, dir)
+    else if(dir == 1 and value > array.get(zigzagvalues, 0)) or (dir == -1 and value < array.get(zigzagvalues, 0))
+        array.shift(zigzagvalues)
+        array.shift(zigzagindexes)
+        array.shift(zigzagdir)
+        add_to_array(value, index, dir)
+
+zigzag(length)=>
+    [dir, ph, pl] = pivots(length)
+    dirchanged = change(dir)
+    if(ph or pl)
+        add_to_zigzag(dir, dirchanged, ph, pl, bar_index)
+
+calculate_double_pattern()=>
+    doubleTop = false
+    doubleTopConfirmation = 0
+    doubleBottom = false
+    doubleBottomConfirmation = 0
+    if(array.size(zigzagvalues) >= 4) 
+        index = array.get(zigzagindexes, 1)
+        value = array.get(zigzagvalues, 1)
+        highLow = array.get(zigzagdir, 1)
+        
+        lindex = array.get(zigzagindexes, 2)
+        lvalue = array.get(zigzagvalues, 2)
+        lhighLow = array.get(zigzagdir, 2)
+        
+        llindex = array.get(zigzagindexes, 3)
+        llvalue = array.get(zigzagvalues, 3)
+        llhighLow = array.get(zigzagdir, 3)
+        risk = abs(value-llvalue)
+        reward = abs(value-lvalue)
+        riskPerReward = risk*100/(risk+reward)
+        
+        if(highLow == 1 and llhighLow == 2 and lhighLow < 0  and riskPerReward < MaxRiskPerReward)
+            doubleTop := true
+        if(highLow == -1 and llhighLow == -2 and lhighLow > 0 and riskPerReward < MaxRiskPerReward)
+            doubleBottom := true
+
+        if(doubleTop or doubleBottom)
+            array.set(doubleTopBottomValues, 0, value)
+            array.set(doubleTopBottomValues, 1, lvalue)
+            array.set(doubleTopBottomValues, 2, llvalue)
+            
+            array.set(doubleTopBottomIndexes, 0, index)
+            array.set(doubleTopBottomIndexes, 1, lindex)
+            array.set(doubleTopBottomIndexes, 2, llindex)
+            
+            array.set(doubleTopBottomDir, 0, highLow)
+            array.set(doubleTopBottomDir, 1, lhighLow)
+            array.set(doubleTopBottomDir, 2, llhighLow)
+    
+    [doubleTop, doubleBottom]
+
+get_crossover_info(doubleTop, doubleBottom)=>
+    index = array.get(doubleTopBottomIndexes, 0)
+    value = array.get(doubleTopBottomValues, 0)
+    highLow = array.get(doubleTopBottomDir, 0)
+    
+    lindex = array.get(doubleTopBottomIndexes, 1)
+    lvalue = array.get(doubleTopBottomValues, 1)
+    lhighLow = array.get(doubleTopBottomDir, 1)
+    
+    llindex = array.get(doubleTopBottomIndexes, 2)
+    llvalue = array.get(doubleTopBottomValues, 2)
+    llhighLow = array.get(doubleTopBottomDir, 2)
+    
+    latestDoubleTop = false
+    latestDoubleBottom = false
+    latestDoubleTop := doubleTop ? true : doubleBottom? false : latestDoubleTop[1]
+    latestDoubleBottom := doubleBottom? true : doubleTop? false : latestDoubleBottom[1]
+    
+    doubleTopConfirmation = 0
+    doubleBottomConfirmation = 0
+    doubleTopConfirmation := latestDoubleTop? (crossunder(low, lvalue) ? 1 : crossover(high, llvalue) ? -1 : 0) : 0
+    doubleBottomConfirmation := latestDoubleBottom? (crossover(high, lvalue) ? 1 : crossunder(low, llvalue) ? -1 : 0) : 0
+    [doubleTopConfirmation, doubleBottomConfirmation]
+
+draw_double_pattern(doubleTop,doubleBottom,doubleTopConfirmation,doubleBottomConfirmation)=>
+    index = array.get(doubleTopBottomIndexes, 0)
+    value = array.get(doubleTopBottomValues, 0)
+    highLow = array.get(doubleTopBottomDir, 0)
+    
+    lindex = array.get(doubleTopBottomIndexes, 1)
+    lvalue = array.get(doubleTopBottomValues, 1)
+    lhighLow = array.get(doubleTopBottomDir, 1)
+    
+    llindex = array.get(doubleTopBottomIndexes, 2)
+    llvalue = array.get(doubleTopBottomValues, 2)
+    llhighLow = array.get(doubleTopBottomDir, 2)
+    
+    isBullish = true
+    isBullish := (doubleTop or doubleBottom)? doubleTop : isBullish[1]
+    
+    risk = abs(value-llvalue)
+    reward = abs(value-lvalue)
+    riskPerReward = risk*100/(risk+reward)
+    
+    base = line.new(x1=index, y1=value, 
+                 x2 = llindex, y2=llvalue,
+                 color=doubleTop? bearishColor : bullishColor, width=2, style=line.style_solid)
+    l1 = line.new(x1=index, y1=value, 
+                 x2 = lindex, y2=lvalue,
+                 color=doubleTop? bearishColor : bullishColor, width=2, style=line.style_dotted)
+    l2 = line.new(x1=lindex, y1=lvalue, 
+                 x2 = llindex, y2=llvalue,
+                 color=doubleTop? bearishColor : bullishColor, width=2, style=line.style_dotted)
+    labelText = (doubleTop? "Double Top" : "Double Bottom") + (DisplayRiskPerReward ? " RR - "+tostring(riskPerReward) : "")
+    
+    baseLabel = label.new(x=index, y=value, text=labelText, yloc=doubleTop?yloc.abovebar:yloc.belowbar,
+                             color=doubleTop?bearishColor:bullishColor, 
+                             style=doubleTop?label.style_label_down:label.style_label_up,
+                             textcolor=textColor, size=size.normal)
+    
+    if not (doubleTop or doubleBottom) 
+        line.delete(base)
+        line.delete(l1)
+        line.delete(l2)
+        label.delete(baseLabel)
+        
+    var doubleTopCount = 0
+    var doubleBottomCount = 0
+    doubleTopCount := doubleTop? nz(doubleTopCount[1],0) + 1 : nz(doubleTopCount[1],0)
+    doubleBottomCount := doubleBottom? nz(doubleBottomCount[1],0) + 1 : nz(doubleBottomCount[1],0)
+        
+    if(line.get_x2(base) == line.get_x2(base[1]))
+        line.delete(base[1])
+        line.delete(l1[1])
+        line.delete(l2[1])
+        label.delete(baseLabel[1])
+        doubleTopCount := doubleTop? doubleTopCount -1 : doubleTopCount
+        doubleBottomCount := doubleBottom? doubleBottomCount -1 : doubleBottomCount
+    
+    
+    if(barstate.islast)
+        lres = line.new(x1=bar_index, y1=lvalue, 
+                     x2 = lindex, y2=lvalue,
+                     color=isBullish? bearishColor : bullishColor, width=2, style=line.style_dashed, extend=extend.left)
+        lsup = line.new(x1=bar_index, y1=llvalue, 
+                     x2 = llindex, y2=llvalue,
+                     color=isBullish? bullishColor : bearishColor , width=2, style=line.style_dashed, extend=extend.left)
+
+    
+    doubleTopConfirmationCount = doubleTopConfirmation>0? 1 : 0
+    doubleBottomConfirmationCount = doubleBottomConfirmation>0? 1:0
+    doubleTopInvalidationCount = doubleTopConfirmation<0? 1 : 0
+    doubleBottomInvalidationCount = doubleBottomConfirmation<0? 1:0
+    
+    if(doubleTopConfirmation != 0 or doubleBottomConfirmation !=0)
+        if(doubleTopConfirmation>0 or doubleBottomConfirmation > 0)
+            lresbreak = line.new(x1=lindex, y1=lvalue, 
+                     x2 = bar_index, y2=lvalue,
+                     color=isBullish? bearishColor : bullishColor, width=2, style=line.style_dashed)
+            if(line.get_x1(lresbreak[1]) == line.get_x1(lresbreak))
+                doubleTopConfirmationCount := 0
+                doubleBottomConfirmationCount := 0
+                doubleTopInvalidationCount := 0
+                doubleBottomInvalidationCount := 0
+                line.delete(lresbreak)
+                lresbreak := lresbreak[1]
+        else if(doubleTopConfirmation<0 or doubleBottomConfirmation < 0)
+            lsupbreak = line.new(x1=llindex, y1=llvalue, 
+                     x2 = bar_index, y2=llvalue,
+                     color=isBullish? bullishColor : bearishColor , width=2, style=line.style_dashed)
+            if(line.get_x1(lsupbreak[1]) == line.get_x1(lsupbreak))
+                doubleTopInvalidationCount := 0
+                doubleBottomInvalidationCount := 0
+                doubleTopConfirmationCount := 0
+                doubleBottomConfirmationCount := 0
+                line.delete(lsupbreak)
+                lsupbreak := lsupbreak[1]
+    doubleTopConfirmationCount := nz(doubleTopConfirmationCount[1],0)+doubleTopConfirmationCount
+    doubleBottomConfirmationCount := nz(doubleBottomConfirmationCount[1],0)+doubleBottomConfirmationCount
+    doubleTopInvalidationCount := nz(doubleTopInvalidationCount[1],0)+doubleTopInvalidationCount
+    doubleBottomInvalidationCount := nz(doubleBottomInvalidationCount[1],0)+doubleBottomInvalidationCount
+    [doubleTopCount, doubleBottomCount, doubleTopConfirmationCount, doubleBottomConfirmationCount, doubleTopInvalidationCount, doubleBottomInvalidationCount]
+
+zigzag(length)
+
+[doubleTop, doubleBottom] = calculate_double_pattern()
+[doubleTopConfirmation, doubleBottomConfirmation] = get_crossover_info(doubleTop, doubleBottom)
+[doubleTopCount, doubleBottomCount, 
+                 doubleTopConfirmationCount, doubleBottomConfirmationCount,
+                 doubleTopInvalidationCount, doubleBottomInvalidationCount] = draw_double_pattern(doubleTop,doubleBottom,doubleTopConfirmation,doubleBottomConfirmation)
+
+var stats = table.new(position = position.top_right, columns = 5, rows = 5, border_width = 1)
+if(barstate.islast and showStats)
+    colorWorst = color.rgb(255, 153, 51)
+    colorBest = color.rgb(51, 204, 51)
+    colorBad = color.rgb(255, 204, 153)
+    colorGood = color.rgb(204, 255, 204)
+    colorNeutral = color.rgb(255, 255, 204)
+    
+    dtConfirmationPercent = doubleTopConfirmationCount+doubleTopInvalidationCount == 0? 0.5 : doubleTopConfirmationCount/(doubleTopConfirmationCount+doubleTopInvalidationCount)
+    dbConfirmationPercent = (doubleBottomConfirmationCount+doubleBottomInvalidationCount) == 0? 0.5 : doubleBottomConfirmationCount/(doubleBottomConfirmationCount+doubleBottomInvalidationCount)
+    
+    dtColor = dtConfirmationPercent >= 0.8? colorBest :
+                 dtConfirmationPercent >= 0.6? colorGood :
+                 dtConfirmationPercent >= 0.4? colorNeutral :
+                 dtConfirmationPercent >= 0.2? colorBad : colorWorst
+    dbColor = dbConfirmationPercent >= 0.8? colorBest :
+                 dbConfirmationPercent >= 0.6? colorGood :
+                 dbConfirmationPercent >= 0.4? colorNeutral :
+                 dbConfirmationPercent >= 0.2? colorBad : colorWorst
+    table.cell(table_id = stats, column = 0, row = 0 , text = "", bgcolor=color.black, text_color=color.white)
+    table.cell(table_id = stats, column = 0, row = 1 , text = "Double Top", bgcolor=color.black, text_color=color.white)
+    table.cell(table_id = stats, column = 0, row = 2 , text = "Double Bottom", bgcolor=color.black, text_color=color.white)
+    
+    table.cell(table_id = stats, column = 1, row = 0 , text = "Count", bgcolor=color.black, text_color=color.white)
+    table.cell(table_id = stats, column = 2, row = 0 , text = "Confirmation", bgcolor=color.black, text_color=color.white)
+    table.cell(table_id = stats, column = 3, row = 0 , text = "Invalidation", bgcolor=color.black, text_color=color.white)
+    
+    table.cell(table_id = stats, column = 1, row = 1, text = tostring(doubleTopCount), bgcolor=dtColor)
+    table.cell(table_id = stats, column = 1, row = 2, text = tostring(doubleBottomCount), bgcolor=dbColor)
+    
+    table.cell(table_id = stats, column = 2, row = 1, text = tostring(doubleTopConfirmationCount), bgcolor=dtColor)
+    table.cell(table_id = stats, column = 3, row = 1, text = tostring(doubleTopInvalidationCount), bgcolor=dtColor)
+    
+    table.cell(table_id = stats, column = 2, row = 2, text = tostring(doubleBottomConfirmationCount), bgcolor=dbColor)
+    table.cell(table_id = stats, column = 3, row = 2, text = tostring(doubleBottomInvalidationCount), bgcolor=dbColor)
+
+if(barstate.islast and array.size(zigzagindexes) > 1)
+    lastHigh = 0.0
+    lastLow = 0.0
+    for x = 0 to array.size(zigzagindexes)-1
+        i = array.size(zigzagindexes)-1-x
+        index = array.get(zigzagindexes, i)
+        value = array.get(zigzagvalues, i)
+        highLow = array.get(zigzagdir, i)
+        index_offset = bar_index-index
+        
+        labelText = highLow ==2 ? "HH" : highLow == 1? "LH" : highLow == -1? "HL" : "LL"
+        labelColor = highLow ==2 ? bullishColor : highLow == 1? bullTrapColor : highLow == -1? bearTrapColor : bearishColor
+        labelStyle = highLow > 0? label.style_label_down : label.style_label_up
+        // labelLocation = highLow > 0? yloc.abovebar : yloc.belowbar
+        labelLocation = yloc.price
+        if(showPivots)
+            l = label.new(x=index, y = value, text=labelText, xloc=xloc.bar_index, yloc=labelLocation, style=labelStyle, size=size.tiny, 
+                                 color=labelColor, textcolor=textColor)
+            array.unshift(labelArray, l)
+            if(array.size(labelArray) > 100)
+                label.delete(array.pop(labelArray))
+        if(i < array.size(zigzagindexes)-1 and showZigzag)
+            indexLast = array.get(zigzagindexes, i+1)
+            valueLast = array.get(zigzagvalues, i+1)
+            l = line.new(x1=index, y1=value, 
+                         x2 = indexLast, y2=valueLast,
+                         color=labelColor, width=2, style=line.style_solid)
+                         
+            array.unshift(lineArray, l)
+            if(array.size(lineArray) > 100)
+                line.delete(array.pop(lineArray))
+alertcondition(doubleBottom, "Double Bottom", "Probable double bottom observed for {{ticker}} on {{interval}} timeframe")
+alertcondition(doubleBottomConfirmation > 0, "Double Bottom Confirmation", "Double bottom confirmation observed for {{ticker}} on {{interval}} timeframe")
+alertcondition(doubleBottomConfirmation < 0, "Double Bottom Invalidation", "Double bottom invalidation observed for {{ticker}} on {{interval}} timeframe")
+alertcondition(doubleTop, "Double Top", "Probable double top observed for {{ticker}} on {{interval}} timeframe")
+alertcondition(doubleTopConfirmation > 0, "Double Top Confirmation", "Double top confirmation observed for {{ticker}} on {{interval}} timeframe")
+alertcondition(doubleTopConfirmation < 0, "Double Top Invalidation", "Double top invalidation observed for {{ticker}} on {{interval}} timeframe")

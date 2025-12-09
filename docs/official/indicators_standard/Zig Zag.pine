@@ -1,0 +1,23 @@
+//@version=6
+indicator("Zig Zag", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+import TradingView/ZigZag/7 as ZigZagLib 
+
+deviationInput = input.float(5.0, "Price deviation for reversals (%)", 0.00001, 100.0, 0.5, "0.00001 - 100"),
+depthInput     = input.int(10, "Pivot legs", 2),
+lineColorInput = input(#2962FF, "Line color", display = display.data_window),
+extendInput    = input(true, "Extend to last bar", display = display.data_window),
+showPriceInput = input(true, "Display reversal price", display = display.data_window),
+showVolInput   = input(true, "Display cumulative volume", display = display.data_window),
+showChgInput   = input(true, "Display reversal price change", inline = "priceRev", display = display.data_window),
+priceDiffInput = input.string("Absolute", "", ["Absolute", "Percent"], inline = "priceRev", display = display.data_window, active = showChgInput)
+
+// Create Zig Zag instance from user settings.
+var zigZag = ZigZagLib.newInstance(
+  	 ZigZagLib.Settings.new(
+	 	 deviationInput, depthInput, lineColorInput, extendInput, showPriceInput, showVolInput, showChgInput, 
+	 	 priceDiffInput, true)
+ )
+
+// Update 'zigZag' object on each bar with new ​pivots, ​volume, lines, labels.
+zigZag.update()

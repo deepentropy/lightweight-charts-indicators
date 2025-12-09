@@ -1,0 +1,295 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © KivancOzbilgic
+//derived the screener logic from @ zzzcrypto123
+//@version=4
+
+
+study("Supertrend Explorer", shorttitle="StEx", overlay=true)
+Periods = input(title="ATR Period", type=input.integer, defval=10)
+src = input(hl2, title="Source")
+Multiplier = input(title="ATR Multiplier", type=input.float, step=0.1, defval=3.0)
+changeATR= input(title="Change ATR Calculation Method ?", type=input.bool, defval=true)
+showsignals = input(title="Show Buy/Sell Signals ?", type=input.bool, defval=true)
+highlighting = input(title="Highlighter On/Off ?", type=input.bool, defval=true)
+t1 = input('BINANCE:BTCUSDT', title=input.symbol)
+t2 = input('BINANCE:ADABTC', title=input.symbol)
+t3 = input('BINANCE:BCHBTC', title=input.symbol)
+t4 = input('BINANCE:EOSBTC', title=input.symbol)
+t5 = input('BINANCE:ETHBTC', title=input.symbol)
+t6 = input('BINANCE:LTCBTC', title=input.symbol)
+t7 = input('BINANCE:TRXBTC', title=input.symbol)
+t8 = input('BINANCE:XRPBTC', title=input.symbol)
+t9 = input('BINANCE:LINKBTC', title=input.symbol)
+t10 = input('XBTUSD', title=input.symbol)
+t11 = input('AAPL', title=input.symbol)
+t12 = input('MSFT', title=input.symbol)
+t13 = input('AMZN', title=input.symbol)
+t14 = input('TSLA', title=input.symbol)
+t15 = input('NFLX', title=input.symbol)
+t16 = input('GOOGL', title=input.symbol)
+t17 = input('EURUSD', title=input.symbol)
+t18 = input('GBPUSD', title=input.symbol)
+t19 = input('USDJPY', title=input.symbol)
+t20 = input('XAUUSD', title=input.symbol)
+t21 = input('DXY', title=input.symbol)
+t22 = input('NIFTY', title=input.symbol)
+t23 = input('GOLD', title=input.symbol)
+t24 = input('UKOIL', title=input.symbol)
+t25 = input('BIST:ASELS', title=input.symbol)
+t26 = input('BIST:AKBNK', title=input.symbol)
+t27 = input('BIST:HALKB', title=input.symbol)
+t28 = input(title="Ticker28", title=input.symbol, defval="BIST:KRDMD" )
+t29 = input(title="Ticker29", title=input.symbol, defval="BIST:SISE" )
+t30 = input(title="Ticker30", title=input.symbol, defval="BIST:TTKOM" )
+t31 = input(title="Ticker31", title=input.symbol, defval="BIST:VAKBN" )
+t32 = input(title="Ticker32", title=input.symbol, defval="BIST:YKBNK" )
+t33 = input(title="Ticker33", title=input.symbol, defval="BIST:KOZAL" )
+t34 = input(title="Ticker34", title=input.symbol, defval="BIST:PGSUS" )
+t35 = input(title="Ticker35", title=input.symbol, defval="BIST:PETKM" )
+t36 = input(title="Ticker36", title=input.symbol, defval="BIST:TUPRS" )
+t37 = input(title="Ticker37", title=input.symbol, defval="BIST:GARAN" )
+t38 = input(title="Ticker38", title=input.symbol, defval="BIST:THYAO" )
+atr2 = sma(tr, Periods)
+atr= changeATR ? atr(Periods) : atr2
+up=src-(Multiplier*atr)
+up1 = nz(up[1],up)
+up := close[1] > up1 ? max(up,up1) : up
+dn=src+(Multiplier*atr)
+dn1 = nz(dn[1], dn)
+dn := close[1] < dn1 ? min(dn, dn1) : dn
+trend = 1
+trend := nz(trend[1], trend)
+trend := trend == -1 and close > dn1 ? 1 : trend == 1 and close < up1 ? -1 : trend
+upPlot = plot(trend == 1 ? up : na, title="Up Trend", style=plot.style_linebr, linewidth=2, color=color.green)
+buySignal = trend == 1 and trend[1] == -1
+plotshape(buySignal ? up : na, title="UpTrend Begins", location=location.absolute, style=shape.circle, size=size.tiny, color=color.green, transp=0)
+plotshape(buySignal and showsignals ? up : na, title="Buy", text="Buy", location=location.absolute, style=shape.labelup, size=size.tiny, color=color.green, textcolor=color.white, transp=0)
+dnPlot = plot(trend == 1 ? na : dn, title="Down Trend", style=plot.style_linebr, linewidth=2, color=color.red)
+sellSignal = trend == -1 and trend[1] == 1
+plotshape(sellSignal ? dn : na, title="DownTrend Begins", location=location.absolute, style=shape.circle, size=size.tiny, color=color.red, transp=0)
+plotshape(sellSignal and showsignals ? dn : na, title="Sell", text="Sell", location=location.absolute, style=shape.labeldown, size=size.tiny, color=color.red, textcolor=color.white, transp=0)
+mPlot = plot(ohlc4, title="", style=plot.style_circles, linewidth=0)
+longFillColor = highlighting ? (trend == 1 ? color.green : color.white) : color.white
+shortFillColor = highlighting ? (trend == -1 ? color.red : color.white) : color.white
+fill(mPlot, upPlot, title="UpTrend Highligter", color=longFillColor)
+fill(mPlot, dnPlot, title="DownTrend Highligter", color=shortFillColor)
+alertcondition(buySignal, title="SuperTrend Buy", message="SuperTrend Buy!")
+alertcondition(sellSignal, title="SuperTrend Sell", message="SuperTrend Sell!")
+changeCond = trend != trend[1]
+alertcondition(changeCond, title="SuperTrend Direction Change", message="SuperTrend has changed direction!")
+showscr = input(true, title="Show Screener Label")
+posX_scr = input(20, title="Pos. Label x-axis")
+posY_scr = input(1, title="Pos. Size Label y-axis")
+colinput = input(title="Label Color", defval="Blue", options=["White", "Black", "Red", "Green", "Yellow", "Blue"])
+col = color.gray
+if colinput=="White"
+    col:=color.white
+if colinput=="Black"
+    col:=color.black
+if colinput=="Red"
+    col:=color.red
+if colinput=="Green"
+    col:=color.green
+if colinput=="Yellow"
+    col:=color.yellow
+if colinput=="Blue"
+    col:=color.blue
+    
+Supertrend(Multiplier, Periods) =>
+    Up=hl2-(Multiplier*atr)
+    Dn=hl2+(Multiplier*atr)
+    
+    TrendUp = 0.0
+    TrendUp := close[1]>TrendUp[1] ? max(Up,TrendUp[1]) : Up
+    TrendDown = 0.0
+    TrendDown := close[1]<TrendDown[1]? min(Dn,TrendDown[1]) : Dn
+    Trend = 0.0
+    Trend := close > TrendDown[1] ? 1: close< TrendUp[1]? -1: nz(Trend[1],1)
+    Tsl = Trend==1? TrendUp: TrendDown
+    
+    S_Buy = Trend == 1 ? 1 : 0
+    S_Sell = Trend != 1 ? 1 : 0
+    
+    [Trend, Tsl]
+
+[Trend, Tsl] = Supertrend(Multiplier, Periods)
+TrendReversal = Trend != Trend[1]
+
+[t01, s01] = security(t1, timeframe.period, Supertrend(Multiplier, Periods))
+[t02, s02] = security(t2, timeframe.period, Supertrend(Multiplier, Periods))
+[t03, s03] = security(t3, timeframe.period, Supertrend(Multiplier, Periods))
+[t04, s04] = security(t4, timeframe.period, Supertrend(Multiplier, Periods))
+[t05, s05] = security(t5, timeframe.period, Supertrend(Multiplier, Periods))
+[t06, s06] = security(t6, timeframe.period, Supertrend(Multiplier, Periods))
+[t07, s07] = security(t7, timeframe.period, Supertrend(Multiplier, Periods))
+[t08, s08] = security(t8, timeframe.period, Supertrend(Multiplier, Periods))
+[t09, s09] = security(t9, timeframe.period, Supertrend(Multiplier, Periods))
+[t010, s010] = security(t10, timeframe.period, Supertrend(Multiplier, Periods))
+[t011, s011] = security(t11, timeframe.period, Supertrend(Multiplier, Periods))
+[t012, s012] = security(t12, timeframe.period, Supertrend(Multiplier, Periods))
+[t013, s013] = security(t13, timeframe.period, Supertrend(Multiplier, Periods))
+[t014, s014] = security(t14, timeframe.period, Supertrend(Multiplier, Periods))
+[t015, s015] = security(t15, timeframe.period, Supertrend(Multiplier, Periods))
+[t016, s016] = security(t16, timeframe.period, Supertrend(Multiplier, Periods))
+[t017, s017] = security(t17, timeframe.period, Supertrend(Multiplier, Periods))
+[t018, s018] = security(t18, timeframe.period, Supertrend(Multiplier, Periods))
+[t019, s019] = security(t19, timeframe.period, Supertrend(Multiplier, Periods))
+[t020, s020] = security(t20, timeframe.period, Supertrend(Multiplier, Periods))
+[t021, s021] = security(t21, timeframe.period, Supertrend(Multiplier, Periods))
+[t022, s022] = security(t22, timeframe.period, Supertrend(Multiplier, Periods))
+[t023, s023] = security(t23, timeframe.period, Supertrend(Multiplier, Periods))
+[t024, s024] = security(t24, timeframe.period, Supertrend(Multiplier, Periods))
+[t025, s025] = security(t25, timeframe.period, Supertrend(Multiplier, Periods))
+[t026, s026] = security(t26, timeframe.period, Supertrend(Multiplier, Periods))
+[t027, s027] = security(t27, timeframe.period, Supertrend(Multiplier, Periods))
+[t028, s028] = security(t28, timeframe.period, Supertrend(Multiplier, Periods))
+[t029, s029] = security(t29, timeframe.period, Supertrend(Multiplier, Periods))
+[t030, s030] = security(t30, timeframe.period, Supertrend(Multiplier, Periods))
+[t031, s031] = security(t31, timeframe.period, Supertrend(Multiplier, Periods))
+[t032, s032] = security(t32, timeframe.period, Supertrend(Multiplier, Periods))
+[t033, s033] = security(t33, timeframe.period, Supertrend(Multiplier, Periods))
+[t034, s034] = security(t34, timeframe.period, Supertrend(Multiplier, Periods))
+[t035, s035] = security(t35, timeframe.period, Supertrend(Multiplier, Periods))
+[t036, s036] = security(t36, timeframe.period, Supertrend(Multiplier, Periods))
+[t037, s037] = security(t37, timeframe.period, Supertrend(Multiplier, Periods))
+[t038, s038] = security(t38, timeframe.period, Supertrend(Multiplier, Periods))
+tr01 = t01 != t01[1], up01 = t01 == 1, dn01 = t01 == -1
+tr02 = t02 != t02[1], up02 = t02 == 1, dn02 = t02 == -1
+tr03 = t03 != t03[1], up03 = t03 == 1, dn03 = t03 == -1
+tr04 = t04 != t04[1], up04 = t04 == 1, dn04 = t04 == -1
+tr05 = t05 != t05[1], up05 = t05 == 1, dn05 = t05 == -1
+tr06 = t06 != t06[1], up06 = t06 == 1, dn06 = t06 == -1
+tr07 = t07 != t07[1], up07 = t07 == 1, dn07 = t07 == -1
+tr08 = t08 != t08[1], up08 = t08 == 1, dn08 = t08 == -1
+tr09 = t09 != t09[1], up09 = t09 == 1, dn09 = t09 == -1
+tr010 = t010 != t010[1], up010 = t010 == 1, dn010 = t010 == -1
+tr011 = t011 != t011[1], up011 = t011 == 1, dn011 = t011 == -1
+tr012 = t012 != t012[1], up012 = t012 == 1, dn012 = t012 == -1
+tr013 = t013 != t013[1], up013 = t013 == 1, dn013 = t013 == -1
+tr014 = t014 != t014[1], up014 = t014 == 1, dn014 = t014 == -1
+tr015 = t015 != t015[1], up015 = t015 == 1, dn015 = t015 == -1
+tr016 = t016 != t016[1], up016 = t016 == 1, dn016 = t016 == -1
+tr017 = t017 != t017[1], up017 = t017 == 1, dn017 = t017 == -1
+tr018 = t018 != t018[1], up018 = t018 == 1, dn018 = t018 == -1
+tr019 = t019 != t019[1], up019 = t019 == 1, dn019 = t019 == -1
+tr020 = t020 != t020[1], up020 = t020 == 1, dn020 = t020 == -1
+tr021 = t021 != t021[1], up021 = t021 == 1, dn021 = t021 == -1
+tr022 = t022 != t022[1], up022 = t022 == 1, dn022 = t022 == -1
+tr023 = t023 != t023[1], up023 = t023 == 1, dn023 = t023 == -1
+tr024 = t024 != t024[1], up024 = t024 == 1, dn024 = t024 == -1
+tr025 = t025 != t025[1], up025 = t025 == 1, dn025 = t025 == -1
+tr026 = t026 != t026[1], up026 = t026 == 1, dn026 = t026 == -1
+tr027 = t027 != t027[1], up027 = t027 == 1, dn027 = t027 == -1
+tr028 = t028 != t028[1], up028 = t028 == 1, dn028 = t028 == -1
+tr029 = t029 != t029[1], up029 = t029 == 1, dn029 = t029 == -1
+tr030 = t030 != t030[1], up030 = t030 == 1, dn030 = t030 == -1
+tr031 = t031 != t031[1], up031 = t031 == 1, dn031 = t031 == -1
+tr032 = t032 != t032[1], up032 = t032 == 1, dn032 = t032 == -1
+tr033 = t033 != t033[1], up033 = t033 == 1, dn033 = t033 == -1
+tr034 = t034 != t034[1], up034 = t034 == 1, dn034 = t034 == -1
+tr035 = t035 != t035[1], up035 = t035 == 1, dn035 = t035 == -1
+tr036 = t036 != t036[1], up036 = t036 == 1, dn036 = t036 == -1
+tr037 = t037 != t037[1], up037 = t037 == 1, dn037 = t037 == -1
+tr038 = t038 != t038[1], up038 = t038 == 1, dn038 = t038 == -1
+pot_label = 'Potential Reversal: \n'
+pot_label := tr01    ? pot_label + t1 + '\n'  : pot_label
+pot_label := tr02    ? pot_label + t2 + '\n'  : pot_label
+pot_label := tr03    ? pot_label + t3 + '\n'  : pot_label
+pot_label := tr04    ? pot_label + t4 + '\n'  : pot_label
+pot_label := tr05    ? pot_label + t5 + '\n'  : pot_label
+pot_label := tr06    ? pot_label + t6 + '\n'  : pot_label
+pot_label := tr07    ? pot_label + t7 + '\n'  : pot_label
+pot_label := tr08    ? pot_label + t8 + '\n'  : pot_label
+pot_label := tr09    ? pot_label + t9 + '\n'  : pot_label
+pot_label := tr010    ? pot_label + t10 + '\n'  : pot_label
+pot_label := tr011    ? pot_label + t11 + '\n'  : pot_label
+pot_label := tr012    ? pot_label + t12 + '\n'  : pot_label
+pot_label := tr013    ? pot_label + t13 + '\n'  : pot_label
+pot_label := tr014    ? pot_label + t14 + '\n'  : pot_label
+pot_label := tr015    ? pot_label + t15 + '\n'  : pot_label
+pot_label := tr016    ? pot_label + t16 + '\n'  : pot_label
+pot_label := tr017    ? pot_label + t17 + '\n'  : pot_label
+pot_label := tr018    ? pot_label + t18 + '\n'  : pot_label
+pot_label := tr019    ? pot_label + t19 + '\n'  : pot_label
+pot_label := tr020    ? pot_label + t20 + '\n'  : pot_label
+pot_label := tr021    ? pot_label + t21 + '\n'  : pot_label
+pot_label := tr022    ? pot_label + t22 + '\n'  : pot_label
+pot_label := tr023    ? pot_label + t23 + '\n'  : pot_label
+pot_label := tr024    ? pot_label + t24 + '\n'  : pot_label
+pot_label := tr025    ? pot_label + t25 + '\n'  : pot_label
+pot_label := tr026    ? pot_label + t26 + '\n'  : pot_label
+pot_label := tr027    ? pot_label + t27 + '\n'  : pot_label
+pot_label := tr028    ? pot_label + t28 + '\n'  : pot_label
+pot_label := tr029    ? pot_label + t29 + '\n'  : pot_label
+pot_label := tr030    ? pot_label + t30 + '\n'  : pot_label
+pot_label := tr031    ? pot_label + t31 + '\n'  : pot_label
+pot_label := tr032    ? pot_label + t32 + '\n'  : pot_label
+pot_label := tr033    ? pot_label + t33 + '\n'  : pot_label
+pot_label := tr034    ? pot_label + t34 + '\n'  : pot_label
+pot_label := tr035    ? pot_label + t35 + '\n'  : pot_label
+pot_label := tr036    ? pot_label + t36 + '\n'  : pot_label
+pot_label := tr037    ? pot_label + t37 + '\n'  : pot_label
+pot_label := tr038    ? pot_label + t38 + '\n'  : pot_label
+scr_label = 'Confirmed Reversal: \n'
+scr_label := tr01[1] ? scr_label + t1 + '\n'  : scr_label
+scr_label := tr02[1] ? scr_label + t2 + '\n'  : scr_label
+scr_label := tr03[1] ? scr_label + t3 + '\n'  : scr_label
+scr_label := tr04[1] ? scr_label + t4 + '\n'  : scr_label
+scr_label := tr05[1] ? scr_label + t5 + '\n'  : scr_label
+scr_label := tr06[1] ? scr_label + t6 + '\n'  : scr_label
+scr_label := tr07[1] ? scr_label + t7 + '\n'  : scr_label
+scr_label := tr08[1] ? scr_label + t8 + '\n'  : scr_label
+scr_label := tr09[1] ? scr_label + t9 + '\n'  : scr_label
+scr_label := tr010[1] ? scr_label + t10 + '\n'  : scr_label
+scr_label := tr011[1] ? scr_label + t11 + '\n'  : scr_label
+scr_label := tr012[1] ? scr_label + t12 + '\n'  : scr_label
+scr_label := tr013[1] ? scr_label + t13 + '\n'  : scr_label
+scr_label := tr014[1] ? scr_label + t14 + '\n'  : scr_label
+scr_label := tr015[1] ? scr_label + t15 + '\n'  : scr_label
+scr_label := tr016[1] ? scr_label + t16 + '\n'  : scr_label
+scr_label := tr017[1] ? scr_label + t17 + '\n'  : scr_label
+scr_label := tr018[1] ? scr_label + t18 + '\n'  : scr_label
+scr_label := tr019[1] ? scr_label + t19 + '\n'  : scr_label
+scr_label := tr020[1] ? scr_label + t20 + '\n'  : scr_label
+scr_label := tr021[1] ? scr_label + t21 + '\n'  : scr_label
+scr_label := tr022[1] ? scr_label + t22 + '\n'  : scr_label
+scr_label := tr023[1] ? scr_label + t23 + '\n'  : scr_label
+scr_label := tr024[1] ? scr_label + t24 + '\n'  : scr_label
+scr_label := tr025[1] ? scr_label + t25 + '\n'  : scr_label
+scr_label := tr026[1] ? scr_label + t26 + '\n'  : scr_label
+scr_label := tr027[1] ? scr_label + t27 + '\n'  : scr_label
+scr_label := tr028[1] ? scr_label + t28 + '\n'  : scr_label
+scr_label := tr029[1] ? scr_label + t29 + '\n'  : scr_label
+scr_label := tr030[1] ? scr_label + t30 + '\n'  : scr_label
+scr_label := tr031[1] ? scr_label + t31 + '\n'  : scr_label
+scr_label := tr032[1] ? scr_label + t32 + '\n'  : scr_label
+scr_label := tr033[1] ? scr_label + t33 + '\n'  : scr_label
+scr_label := tr034[1] ? scr_label + t34 + '\n'  : scr_label
+scr_label := tr035[1] ? scr_label + t35 + '\n'  : scr_label
+scr_label := tr036[1] ? scr_label + t36 + '\n'  : scr_label
+scr_label := tr037[1] ? scr_label + t37 + '\n'  : scr_label
+scr_label := tr038[1] ? scr_label + t38 + '\n'  : scr_label
+
+f_colorscr (_valscr ) => 
+     _valscr  ? #00000000 : na
+     
+f_printscr (_txtscr ) => 
+     var _lblscr  = label(na), 
+     label.delete(_lblscr ), 
+     _lblscr  := label.new(
+     time + (time-time[1])*posX_scr , 
+     ohlc4[posY_scr], 
+     _txtscr ,
+     xloc.bar_time, 
+     yloc.price, 
+     f_colorscr (  showscr ),
+     textcolor =  showscr ? col : na, 
+     size = size.normal, 
+     style=label.style_label_center
+     )
+f_printscr ( scr_label + '\n' + pot_label)
+
+st_security(_symbol, _res, _src) => security(_symbol, _res, _src[barstate.isrealtime ? 1 : 0])
+ST_Trend = st_security(syminfo.tickerid, timeframe.period, Trend)
+ST_Tsl = st_security(syminfo.tickerid, timeframe.period, Tsl)
+

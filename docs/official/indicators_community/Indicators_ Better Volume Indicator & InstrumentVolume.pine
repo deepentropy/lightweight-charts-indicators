@@ -1,0 +1,84 @@
+//
+// @author LazyBear
+//
+// If you use this code in its original/modified form, do drop me a note. 
+//
+study(title = "Better Volume Indicator [LazyBear]", shorttitle="BVI_LB")
+
+//
+// Configurable params
+//
+length=input(8, title="Lookback")
+enableBarColors=input(false, type=bool)
+use2Bars=input(true, type=bool)
+lowVol=input(true, type=bool)
+climaxUp=input(true, type=bool)
+climaxDown=input(true, type=bool)
+churn=input(true, type=bool)
+climaxChurn=input(true, type=bool)
+
+//
+// Tweak the colors
+//
+lowVolColor = yellow
+climaxUpColor = red
+climaxDownColor = white
+churnColor = green
+climaxChurnColor = #8B008B
+defColor = #00FFFF	 
+
+
+//
+// Don't change anything below this
+//
+range=tr
+v=volume
+v1 = close >= open ? (v * ((range) / ((2+(range*range)/10) * range + (open - close)))) : (v * (((range + close - open)) / (2+(range*range)/10) * range + (close - open)))
+v2 = v - v1
+v3 = v1 + v2
+v4 = v1 * range
+v5 = (v1 - v2) * range
+v6 = v2 * range
+v7 = (v2 - v1) * range
+v8 = (range != 0 ?  v1 / range : 1)
+v9 = (range != 0 ? (v1 - v2) / range : 1)
+v10 = (range != 0 ?  v2 / range : 1)
+v11 = (range != 0 ?  (v2 - v1) / range :  1)
+v12 = (range != 0 ?  v3 / range : 1)
+v13 = use2Bars ? v3 + v3[1] : 1
+v14 = (use2Bars ? (v1 + v1[1])*(highest(high,2)-lowest(low,2)) : 1)
+v15 = (use2Bars ? (v1 + v1[1]-v2-v2[1])*(highest(high,2)-lowest(low,2)) : 1)
+v16 = (use2Bars ? (v2 + v2[1])*(highest(high,2)-lowest(low,2)) : 1)
+v17 = (use2Bars ? (v2 + v2[1]-v1-v1[1])*(highest(high,2)-lowest(low,2)) : 1)
+v18 =  ((use2Bars and (highest(high,2)!=lowest(low,2))) ? (v1+v1[1])/(highest(high,2)-lowest(low,2)) : 1)
+v19 = ((use2Bars and (highest(high,2)!=lowest(low,2))) ? (v1+v1[1]-v2-v2[1])/(highest(high,2)-lowest(low,2)) : 1)
+v20 = ((use2Bars and (highest(high,2)!=lowest(low,2))) ? (v2+v2[1])/(highest(high,2)-lowest(low,2)) : 1)
+v21 = ((use2Bars and (highest(high,2)!=lowest(low,2))) ? (v2+v2[1]-v1-v1[1])/(highest(high,2)-lowest(low,2)) : 1)
+v22 = ((use2Bars and (highest(high,2)!=lowest(low,2))) ? v13/(highest(high,2)-lowest(low,2)) : 1)
+
+c1 = (v3 == lowest(v3, length) ?  1 : 0)
+c2 = ((v4 == highest(v4, length) and close > open) ? 1 : 0)
+c3 = ((v5 == highest(v5, length) and close > open) ? 1 : 0)
+c4 = ((v6 == highest(v6, length) and close < open) ? 1 : 0)
+c5 = ((v7 == highest(v7, length) and close < open) ? 1 : 0)
+c6 = ((v8 == lowest(v8, length) and close < open) ? 1 : 0)
+c7 = ((v9 == lowest(v9, length) and close < open) ? 1 : 0)
+c8 = ((v10 == lowest(v10, length) and close > open) ? 1 : 0)
+c9 = ((v11 == lowest(v11, length) and close > open) ? 1 :  0)
+c10 = (v12 == highest(v12, length) ? 1 : 0)
+c11 = (use2Bars and (v13==lowest(v13,length) and close > open and close[1] > open[1]) ? 1 : 0)
+c12 = (use2Bars and (v14==highest(v14,length) and close > open and close[1] > open[1]) ? 1 : 0)
+c13 = (use2Bars and (v15==highest(v15,length) and close > open and close[1] < open[1]) ? 1 : 0)
+c14 = (use2Bars and (v16==lowest(v16,length) and close < open and close[1] < open[1]) ? 1 : 0)
+c15 = (use2Bars and (v17==lowest(v17,length) and close < open and close[1] < open[1]) ? 1 : 0)
+c16 = (use2Bars and (v18==lowest(v18,length) and close < open and close[1] < open[1]) ? 1 : 0)
+c17 = (use2Bars and (v19==lowest(v19,length) and close > open and close[1] < open[1]) ? 1 : 0)
+c18 = (use2Bars and (v20==lowest(v20,length) and close > open and close[1] > open[1]) ? 1 : 0)
+c19 = (use2Bars and (v21==lowest(v21,length) and close > open and close[1] > open[1]) ? 1 : 0)
+c20 = (use2Bars and (v22==lowest(v22,length)) ? 1 : 0)
+
+c0=(climaxUp and (c2 or c3 or c8 or c9 or c12 or c13 or c18 or c19)) ? climaxUpColor : ((climaxDown and (c4 or c5 or c6 or c7 or c14 or c15 or c16 or c17)) ? climaxDownColor : ((churn and c10 or c20) ? churnColor : defColor))
+v_color=(climaxChurn and (c10 or c20)) and (c2 or c3 or c4 or c5 or c6 or c7 or c8 or c9) ? climaxChurnColor : ((lowVol and (c1 or c11)) ? lowVolColor : c0)
+plot(not enableBarColors ? volume : na, style=columns, linewidth=1, color = v_color)
+plot(not enableBarColors ? sma(volume, length) : na, color=orange, linewidth=2)
+barcolor(enableBarColors ? v_color : na)

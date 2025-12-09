@@ -1,0 +1,37 @@
+// Moving Average Deviation Rate by daisuke_gewinn
+// Modified by trendfirst Jan 23, 2023
+// Added color when rate goes above/below Hi/Lo lines
+// Changed Standard Deviations from fixed value to user input
+
+// Thunks update @trendfirst
+
+//@version=5
+indicator('MA Deviation', overlay=false)
+
+//input
+maPeriod = input(21, title='Moving average period')
+NoStdDev = input(2, title="Number of Std Deviations") //Number of standard deviations for plus and minus lines
+
+//deviation rate
+sma = ta.sma(close, maPeriod)
+rate = close / sma * 100 - 100
+
+//deviation rate std
+stdCenter = ta.sma(rate, maPeriod * NoStdDev)
+std = ta.stdev(rate, maPeriod * NoStdDev)
+plusDev = stdCenter + std * NoStdDev
+minusDev = stdCenter - std * NoStdDev
+
+//plot lines and add fill
+RateLine = plot(rate,"MA Dev Rate",color=color.red, linewidth=1, style=plot.style_line) // Rate of change Line
+CenterLine = plot(stdCenter, title="Center", color=color.gray) // Center Line
+HighLine = plot(plusDev, title="HiBound", color=color.rgb(255, 255, 255, 30), linewidth=1, style=plot.style_cross) // Upper Line
+LowLine = plot(minusDev, title="LoBound", color=color.rgb(255, 255, 255, 30), linewidth=1, style=plot.style_cross) // Lower Line
+fill(CenterLine, HighLine, color=color.new(color.gray, transp=90), title="CenterFill")
+fill(CenterLine, LowLine, color=color.new(color.gray,transp=90), title="CenterFill")
+
+color FillColor = rate > plusDev ? color.rgb(252, 3, 3) : color.new(color.gray, transp=100)
+fill(RateLine, HighLine, FillColor, title="HiColor")
+
+color FillColor_1 = rate < minusDev ? color.lime : color.new(color.gray, transp=100)
+fill(RateLine, LowLine, FillColor_1, title="LoColor")

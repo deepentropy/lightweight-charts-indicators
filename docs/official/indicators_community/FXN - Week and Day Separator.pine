@@ -1,0 +1,140 @@
+//@version=4
+study("FXN - Week and Day Separator", overlay=true, scale=scale.none)
+
+//*********************************************************************************************************************************
+//Discontinued Indicator - No Longer supported. Please update to by using the "Diddly - Charts (Asian, London & New York Session + Weekdays)"
+//*********************************************************************************************************************************
+
+// Get user Input
+user_week_start = input(title="Week Separator on Day", defval="Sunday", options=["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"])
+
+user_week_toggle = input(title="Show Week Separator Line", type=input.bool, defval=true)
+user_wlc = input(title="Week Line Colour", defval="default", options=["aqua", "black", "blue", "fuchsia", "gray", "green", "lime", "maroon", "navy", "olive", "orange", "purple", "red", "silver", "teal", "white", "yellow","default"])
+//user_wt = input(title="Week Separator Colour Transparency", defval="50", options=["0", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100"])
+weekLineWidth = input(title="Week Line Width", defval=4, minval=0, maxval=20, step=1)
+user_week_line_style = input(title="Week Line Style", defval="dashed", options=["solid", "dashed", "dotted"])
+
+user_day_toggle = input(title="Show Day Separator Line", type=input.bool, defval=false)
+user_dlc = input(title="Day Colour", defval="default", options=["aqua", "black", "blue", "fuchsia", "gray", "green", "lime", "maroon", "navy", "olive", "orange", "purple", "red", "silver", "teal", "white", "yellow","default"])
+//user_dt = input(title="Day Colour Transparency", defval="50", options=["0", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100"])
+dayLineWidth = input(title="Day Line Width", defval=1, minval=0, maxval=20, step=1)
+user_day_line_style = input(title="Day Line Style", defval="dashed", options=["solid", "dashed", "dotted"])
+dayTransparency = 20//input(title="Day Line Transparency (Any Value from 0 to 100) (0 = not transparent, 100 invisible)", defval=20, type=input.integer)
+
+user_show_on_1hour = input(title="Show Day Separator and Days of Week on 1 hour Chart", type=input.bool, defval=false)
+
+// Currently Does not support taking transparency from a dynamic variable
+//weekTransparency = user_wt == "0" ? 0 : user_wt == "10" ? 10 : user_wt == "20" ? 20 : user_wt == "30" ? 30 : user_wt == "40" ? 40 : user_wt == "50" ? 50 : user_wt == "60" ? 60 : user_wt == "70" ? 70 : user_wt == "80" ? 80 : user_wt == "90" ? 90 : user_wt == "100" ? 100 : 50
+weekTransparency = 50//int(input(title="Week Line Transparency (Any Value from 0 to 100) (0 = not transparent, 100 invisible)", defval=50, type=input.integer))
+
+
+// Alternative Lines using backcolours
+user_showas_background = input(title="Use Background Separator, rather than Lines (Please Note: The show day separator line option above, still needs to be checked to show either type of day separator)  - Using the background separator option may be preferred if you would prefer to see unlimited separators. This is especially useful when working with zoomed out charts. To change the color, transparency please use options that can be found on the style tab. The options above will have no impact on background separators.", type=input.bool, defval=false)
+
+
+showDOW = input(true, title="Show days of week")
+isShortDayLabel = input(false, title="Use short names for days of week (Mon, Tue...)")
+
+
+user_monday_color = input(title="Monday Text Color", defval="silver", options=["aqua", "black", "blue", "fuchsia", "gray", "green", "lime", "maroon", "navy", "olive", "orange", "purple", "red", "silver", "teal", "white", "yellow"])
+user_tuesday_color = input(title="Tuesday Text Color", defval="silver", options=["aqua", "black", "blue", "fuchsia", "gray", "green", "lime", "maroon", "navy", "olive", "orange", "purple", "red", "silver", "teal", "white", "yellow"])
+user_wednesday_color = input(title="Wednesday Text Color", defval="silver", options=["aqua", "black", "blue", "fuchsia", "gray", "green", "lime", "maroon", "navy", "olive", "orange", "purple", "red", "silver", "teal", "white", "yellow"])
+user_thursday_color = input(title="Thursday Text Color", defval="silver", options=["aqua", "black", "blue", "fuchsia", "gray", "green", "lime", "maroon", "navy", "olive", "orange", "purple", "red", "silver", "teal", "white", "yellow"])
+user_friday_color = input(title="Friday Text Color", defval="silver", options=["aqua", "black", "blue", "fuchsia", "gray", "green", "lime", "maroon", "navy", "olive", "orange", "purple", "red", "silver", "teal", "white", "yellow"])
+
+monday_color = user_monday_color == "aqua" ? color.aqua : user_monday_color == "black" ? color.black : user_monday_color == "blue" ? color.blue : user_monday_color == "fuchsia" ? color.fuchsia : user_monday_color == "gray" ? color.gray : user_monday_color == "green" ? color.green : user_monday_color == "lime" ? color.lime : user_monday_color == "maroon" ? color.maroon : user_monday_color == "navy" ? color.navy : user_monday_color == "olive" ? color.olive : user_monday_color == "orange" ? color.orange : user_monday_color == "purple" ? color.purple : user_monday_color == "red" ? color.red : user_monday_color == "silver" ? color.silver : user_monday_color == "teal" ? color.teal : user_monday_color == "white" ? color.white : user_monday_color == "yellow" ? color.yellow : color.green
+tuesday_color = user_tuesday_color == "aqua" ? color.aqua : user_tuesday_color == "black" ? color.black : user_tuesday_color == "blue" ? color.blue : user_tuesday_color == "fuchsia" ? color.fuchsia : user_tuesday_color == "gray" ? color.gray : user_tuesday_color == "green" ? color.green : user_tuesday_color == "lime" ? color.lime : user_tuesday_color == "maroon" ? color.maroon : user_tuesday_color == "navy" ? color.navy : user_tuesday_color == "olive" ? color.olive : user_tuesday_color == "orange" ? color.orange : user_tuesday_color == "purple" ? color.purple : user_tuesday_color == "red" ? color.red : user_tuesday_color == "silver" ? color.silver : user_tuesday_color == "teal" ? color.teal : user_tuesday_color == "white" ? color.white : user_tuesday_color == "yellow" ? color.yellow : color.red
+wednesday_color = user_wednesday_color == "aqua" ? color.aqua : user_wednesday_color == "black" ? color.black : user_wednesday_color == "blue" ? color.blue : user_wednesday_color == "fuchsia" ? color.fuchsia : user_wednesday_color == "gray" ? color.gray : user_wednesday_color == "green" ? color.green : user_wednesday_color == "lime" ? color.lime : user_wednesday_color == "maroon" ? color.maroon : user_wednesday_color == "navy" ? color.navy : user_wednesday_color == "olive" ? color.olive : user_wednesday_color == "orange" ? color.orange : user_wednesday_color == "purple" ? color.purple : user_wednesday_color == "red" ? color.red : user_wednesday_color == "silver" ? color.silver : user_wednesday_color == "teal" ? color.teal : user_wednesday_color == "white" ? color.white : user_wednesday_color == "yellow" ? color.yellow : color.red
+thursday_color = user_thursday_color == "aqua" ? color.aqua : user_thursday_color == "black" ? color.black : user_thursday_color == "blue" ? color.blue : user_thursday_color == "fuchsia" ? color.fuchsia : user_thursday_color == "gray" ? color.gray : user_thursday_color == "green" ? color.green : user_thursday_color == "lime" ? color.lime : user_thursday_color == "maroon" ? color.maroon : user_thursday_color == "navy" ? color.navy : user_thursday_color == "olive" ? color.olive : user_thursday_color == "orange" ? color.orange : user_thursday_color == "purple" ? color.purple : user_thursday_color == "red" ? color.red : user_thursday_color == "silver" ? color.silver : user_thursday_color == "teal" ? color.teal : user_thursday_color == "white" ? color.white : user_thursday_color == "yellow" ? color.yellow : color.red
+friday_color = user_friday_color == "aqua" ? color.aqua : user_friday_color == "black" ? color.black : user_friday_color == "blue" ? color.blue : user_friday_color == "fuchsia" ? color.fuchsia : user_friday_color == "gray" ? color.gray : user_friday_color == "green" ? color.green : user_friday_color == "lime" ? color.lime : user_friday_color == "maroon" ? color.maroon : user_friday_color == "navy" ? color.navy : user_friday_color == "olive" ? color.olive : user_friday_color == "orange" ? color.orange : user_friday_color == "purple" ? color.purple : user_friday_color == "red" ? color.red : user_friday_color == "silver" ? color.silver : user_friday_color == "teal" ? color.teal : user_friday_color == "white" ? color.white : user_friday_color == "yellow" ? color.yellow : color.red
+
+
+// End user input section
+
+// Variable Assigment
+week_line_color = user_wlc == "aqua" ? color.new(color.aqua,transp=weekTransparency) : user_wlc == "black" ? color.new(color.black,weekTransparency) : user_wlc == "blue" ? color.new(color.blue,weekTransparency) : user_wlc == "fuchsia" ? color.new(color.fuchsia,weekTransparency) : user_wlc == "gray" ? color.new(color.gray,weekTransparency) : user_wlc == "green" ? color.new(color.green,weekTransparency) : user_wlc == "lime" ? color.new(color.lime,weekTransparency) : user_wlc == "maroon" ? color.new(color.maroon,weekTransparency) : user_wlc == "navy" ? color.new(color.navy,weekTransparency) : user_wlc == "olive" ? color.new(color.olive,weekTransparency) : user_wlc == "orange" ? color.new(color.orange,weekTransparency) : user_wlc == "purple" ? color.new(color.purple,weekTransparency) : user_wlc == "red" ? color.new(color.red,weekTransparency) : user_wlc == "silver" ? color.new(color.silver,weekTransparency) : user_wlc == "teal" ? color.new(color.teal,weekTransparency) : user_wlc == "white" ? color.new(color.white,weekTransparency) : user_wlc == "yellow" ? color.new(color.yellow,weekTransparency) : user_wlc == "default" ? color.new(#F4D415,weekTransparency) : color.new(#F4D415,weekTransparency)
+day_line_color = user_dlc == "aqua" ?  color.new(color.aqua,dayTransparency) : user_dlc == "black" ?  color.new(color.black,dayTransparency) : user_dlc == "blue" ?  color.new(color.blue,dayTransparency) : user_dlc == "fuchsia" ?  color.new(color.fuchsia,dayTransparency) : user_dlc == "gray" ?  color.new(color.gray,dayTransparency) : user_dlc == "green" ?  color.new(color.green,dayTransparency) : user_dlc == "lime" ?  color.new(color.lime,dayTransparency) : user_dlc == "maroon" ?  color.new(color.maroon,dayTransparency) : user_dlc == "navy" ?  color.new(color.navy,dayTransparency) : user_dlc == "olive" ?  color.new(color.olive,dayTransparency) : user_dlc == "orange" ?  color.new(color.orange,dayTransparency) : user_dlc == "purple" ?  color.new(color.purple,dayTransparency) : user_dlc == "red" ?  color.new(color.red,dayTransparency) : user_dlc == "silver" ?  color.new(color.silver,dayTransparency) : user_dlc == "teal" ?  color.new(color.teal,dayTransparency) : user_dlc == "white" ?  color.new(color.white,dayTransparency) : user_dlc == "yellow" ?  color.new(color.yellow,dayTransparency) : user_dlc == "default" ?  color.new(#7497DF,dayTransparency) :  color.new(#7497DF,dayTransparency)
+
+week_line_style = user_week_line_style == "solid" ? line.style_solid : user_week_line_style == "dashed" ? line.style_dashed : user_week_line_style == "dotted" ? line.style_dotted : line.style_solid
+day_line_style = user_day_line_style == "solid" ? line.style_solid : user_day_line_style == "dashed" ? line.style_dashed : user_day_line_style == "dotted" ? line.style_dotted : line.style_solid
+
+week_start_day = user_week_start == "Sunday" ? dayofweek.sunday : user_week_start == "Monday" ? dayofweek.monday : user_week_start == "Tuesday" ? dayofweek.tuesday : user_week_start == "Wednesday" ? dayofweek.wednesday : user_week_start == "Thursday" ? dayofweek.thursday : user_week_start == "Friday" ? dayofweek.friday : user_week_start == "Saturday" ? dayofweek.saturday : dayofweek.sunday
+
+weekColour = week_line_color
+dayColour =  day_line_color
+// End Variable Assignment
+
+tickerExchangeOffset = 5
+int new_day_start_time = 17
+int dayLabelStartTime = 1
+
+
+// Forex.com use a different server time that other brokers
+// So need to adjust
+if (syminfo.timezone == "Etc/UTC")
+    new_day_start_time := new_day_start_time + tickerExchangeOffset
+    dayLabelStartTime := dayLabelStartTime + tickerExchangeOffset
+
+// End Condition    
+
+vline(BarIndex, Color, LineStyle, LineWidth) => // Verticle Line, 54 lines maximum allowable per indicator
+    return = line.new(BarIndex, 0, BarIndex, 1, extend=extend.both, color=Color, style=LineStyle, width=LineWidth)
+
+
+// Add the start of week line
+isNewWeek() => dayofweek == week_start_day ? 1 : 0
+isStartTime() => hour == new_day_start_time and minute == 0 ? 1 : 0
+
+isValidDaySeparatorResolution() => timeframe.isdwm == true or (timeframe.period == "60" and not user_show_on_1hour) or timeframe.period == "120" or timeframe.period == "240" or timeframe.period == "180" or timeframe.period == "360" ? 0 : 1
+isValidDayTextSeparatorResolution() => timeframe.isdwm == true or (timeframe.period == "60" and not user_show_on_1hour) or timeframe.period == "120" or timeframe.period == "240" or timeframe.period == "180" or timeframe.period == "360" ? 0 : 1
+isValidWeekSeparatorResolution() => timeframe.isdwm == true or timeframe.period == "120" or timeframe.period == "240" or timeframe.period == "180" or timeframe.period == "360" ? 0 : 1
+
+isValidDaySeparator = isValidDaySeparatorResolution()
+isValidDayTextSeparator = isValidDayTextSeparatorResolution()
+isValidWeekSeparator = isValidWeekSeparatorResolution()
+
+if(not user_showas_background and isValidWeekSeparator and user_week_toggle and isNewWeek()==1 and isStartTime()==1)
+    vline(bar_index, weekColour, week_line_style, weekLineWidth) 
+    
+    
+// Add daily separator
+isNewDay() => dayofweek != week_start_day ? 1 : 0
+isNewDayStartTime() => hour == new_day_start_time and minute == 0 ? 1 : 0
+
+if(not user_showas_background and isValidDaySeparator and user_day_toggle and isNewDay()==1 and isStartTime()==1)
+    vline(bar_index, dayColour, day_line_style, dayLineWidth) 
+// End Condition
+
+dot_color = color.new(color.silver,100)
+// Display the days of week
+plotshape((isShortDayLabel and showDOW or (showDOW and timeframe.period == "60" and user_show_on_1hour)) and isValidDayTextSeparator ? hour == dayLabelStartTime and minute == 0 and dayofweek == dayofweek.monday : false, text="Mon", color=dot_color, offset=0, style=shape.circle, location = location.bottom, textcolor=monday_color, size=size.tiny, transp=40, editable=false)
+plotshape((isShortDayLabel and showDOW or (showDOW and timeframe.period == "60" and user_show_on_1hour)) and isValidDayTextSeparator ? hour == dayLabelStartTime and minute == 0 and dayofweek == dayofweek.tuesday : false, text="Tues", color=dot_color, offset=0, style=shape.circle, location = location.bottom, textcolor=tuesday_color, size=size.tiny, transp=40, editable=false)
+plotshape((isShortDayLabel and showDOW or (showDOW and timeframe.period == "60" and user_show_on_1hour)) and isValidDayTextSeparator ? hour == dayLabelStartTime and minute == 0 and dayofweek == dayofweek.wednesday : false, text="Wed", color=dot_color, offset=0, style=shape.circle, location = location.bottom, textcolor=wednesday_color, size=size.tiny, transp=40, editable=false)
+plotshape((isShortDayLabel and showDOW or (showDOW and timeframe.period == "60" and user_show_on_1hour)) and isValidDayTextSeparator ? hour == dayLabelStartTime and minute == 0 and dayofweek == dayofweek.thursday : false, text="Thu", color=dot_color, offset=0, style=shape.circle, location = location.bottom, textcolor=thursday_color, size=size.tiny, transp=40, editable=false)
+plotshape((isShortDayLabel and showDOW or (showDOW and timeframe.period == "60" and user_show_on_1hour)) and isValidDayTextSeparator ? hour == dayLabelStartTime and minute == 0 and dayofweek == dayofweek.friday : false, text="Fri", color=dot_color, offset=0, style=shape.circle, location = location.bottom, textcolor=friday_color, size=size.tiny, transp=40, editable=false)
+
+// Short Days
+plotshape(not isShortDayLabel and isValidDayTextSeparator and showDOW and not user_show_on_1hour ? hour == dayLabelStartTime and minute == 0 and dayofweek == dayofweek.monday : false, text="Monday", color=dot_color, offset=0, style=shape.circle, location = location.bottom, textcolor=monday_color, size=size.tiny, transp=40, editable=false)
+plotshape(not isShortDayLabel and isValidDayTextSeparator and showDOW and not user_show_on_1hour ? hour == dayLabelStartTime and minute == 0 and dayofweek == dayofweek.tuesday : false, text="Tuesday", color=dot_color, offset=0, style=shape.circle, location = location.bottom, textcolor=tuesday_color, size=size.tiny, transp=40, editable=false)
+plotshape(not isShortDayLabel and isValidDayTextSeparator and showDOW and not user_show_on_1hour ? hour == dayLabelStartTime and minute == 0 and dayofweek == dayofweek.wednesday : false, text="Wednesday", color=dot_color, offset=0, style=shape.circle, location = location.bottom, textcolor=wednesday_color, size=size.tiny, transp=40, editable=false)
+plotshape(not isShortDayLabel and isValidDayTextSeparator and showDOW and not user_show_on_1hour ? hour == dayLabelStartTime and minute == 0 and dayofweek == dayofweek.thursday : false, text="Thursday", color=dot_color, offset=0, style=shape.circle, location = location.bottom, textcolor=thursday_color, size=size.tiny, transp=40, editable=false)
+plotshape(not isShortDayLabel and isValidDayTextSeparator and showDOW and not user_show_on_1hour ? hour == dayLabelStartTime and minute == 0 and dayofweek == dayofweek.friday : false, text="Friday", color=dot_color, offset=0, style=shape.circle, location = location.bottom, textcolor=friday_color, size=size.tiny, transp=40, editable=false)
+
+// Add background vertical lines
+
+bgcolor(color=user_showas_background and isValidWeekSeparator and user_week_toggle and isNewWeek()==1 and isStartTime()==1 ? #F4D415 : na, transp=60, title="Weekend Separator")
+//Mon-Thu
+bgcolor(color=user_showas_background and isValidDaySeparator and user_day_toggle and isNewDay()==1 and isStartTime()==1 ? #7497DF : na, transp=90, title="Monday Separator")
+bgcolor(color=user_showas_background and isValidDaySeparator and user_day_toggle and isNewDay()==1 and isStartTime()==1 ? #7497DF : na, transp=90, title="Tuesday Separator")
+bgcolor(color=user_showas_background and isValidDaySeparator and user_day_toggle and isNewDay()==1 and isStartTime()==1 ? #7497DF : na, transp=90, title="Wednesday Separator")
+bgcolor(color=user_showas_background and isValidDaySeparator and user_day_toggle and isNewDay()==1 and isStartTime()==1 ? #7497DF : na, transp=90, title="Thursday Separator")
+//End Section
+
+
+//
+// Debugger Section
+//
+//f_print(_txt) => var _lbl = label(na), label.delete(_lbl), _lbl := label.new(time + (time-time[1])*3, high, _txt, xloc.bar_time, yloc.price, size = size.large)
+//f_print("previous = " + tostring(dayofweek) + "\ndayofweek=" + tostring(week_start_day)) 
+
+

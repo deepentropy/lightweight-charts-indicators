@@ -1,0 +1,95 @@
+
+//Daryl Guppy Super EMA's
+study(title="CM Super Guppy", shorttitle="CM SuperGuppy", overlay=true)
+src = close, 
+len1 = input(3, minval=1, title="Fast EMA 1")
+len2 = input(6, minval=1, title="Fast EMA 2")
+len3 = input(9, minval=1, title="Fast EMA 3")
+len4 = input(12, minval=1, title="Fast EMA 4")
+len5 = input(15, minval=1, title="Fast EMA 5")
+len6 = input(18, minval=1, title="Fast EMA 6")
+len7 = input(21, minval=1, title="Fast EMA 7")
+//Slow EMA
+len8 = input(24, minval=1, title="Slow EMA 8")
+len9 = input(27, minval=1, title="Slow EMA 9")
+len10 = input(30, minval=1, title="Slow EMA 10")
+len11 = input(33, minval=1, title="Slow EMA 11")
+len12 = input(36, minval=1, title="Slow EMA 12")
+len13 = input(39, minval=1, title="Slow EMA 13")
+len14 = input(42, minval=1, title="Slow EMA 14")
+len15 = input(45, minval=1, title="Slow EMA 15")
+len16 = input(48, minval=1, title="Slow EMA 16")
+len17 = input(51, minval=1, title="Slow EMA 17")
+len18 = input(54, minval=1, title="Slow EMA 18")
+len19 = input(57, minval=1, title="Slow EMA 19")
+len20 = input(60, minval=1, title="Slow EMA 20")
+len21 = input(63, minval=1, title="Slow EMA 21")
+len22 = input(66, minval=1, title="Slow EMA 22")
+len23 = input(200, minval=1, title="EMA 200")
+
+//Fast EMA
+ema1 = ema(src, len1)
+ema2 = ema(src, len2)
+ema3 = ema(src, len3)
+ema4 = ema(src, len4)
+ema5 = ema(src, len5)
+ema6 = ema(src, len6)
+ema7 = ema(src, len7)
+
+//Slow EMA
+ema8 = ema(src, len8)
+ema9 = ema(src, len9)
+ema10 = ema(src, len10)
+ema11 = ema(src, len11)
+ema12 = ema(src, len12)
+ema13 = ema(src, len13)
+ema14 = ema(src, len14)
+ema15 = ema(src, len15)
+ema16 = ema(src, len16)
+ema17 = ema(src, len17)
+ema18 = ema(src, len18)
+ema19 = ema(src, len19)
+ema20 = ema(src, len20)
+ema21 = ema(src, len21)
+ema22 = ema(src, len22)
+
+//EMA 200
+ema23 = ema(src, len23)
+
+//Fast EMA Color Rules
+colfastL = (ema1 > ema2 and ema2 > ema3 and ema3 > ema4 and ema4 > ema5 and ema5 > ema6 and ema6 > ema7)
+colfastS = (ema1 < ema2 and ema2 < ema3 and ema3 < ema4 and ema4 < ema5 and ema5 < ema6 and ema6 < ema7)
+//Slow EMA Color Rules
+colslowL = ema8 > ema9 and ema9 > ema10 and ema10 > ema11 and ema11 > ema12 and ema12 > ema13 and ema13 > ema14 and ema14 > ema15 and ema15 > ema16 and ema16 > ema17 and ema17 > ema18 and ema18 > ema19 and ema19 > ema20 and ema20 > ema21 and ema21 > ema22
+colslowS = ema8 < ema9 and ema9 < ema10 and ema10 < ema11 and ema11 < ema12 and ema12 < ema13 and ema13 < ema14 and ema14 < ema15 and ema15 < ema16 and ema16 < ema17 and ema17 < ema18 and ema18 < ema19 and ema19 < ema20 and ema20 < ema21 and ema21 < ema22 
+//Fast EMA Final Color Rules
+colFinal = colfastL and colslowL? aqua : colfastS and colslowS? orange : gray
+//Slow EMA Final Color Rules
+colFinal2 = colslowL  ? lime : colslowS ? red : gray
+//Fast EMA Plots
+p1=plot(ema1, title="Fast EMA 1", style=line, linewidth=2, color=colFinal)
+plot(ema2, title="Fast EMA 2", style=line, linewidth=1, color=colFinal)
+plot(ema3, title="Fast EMA 3", style=line, linewidth=1, color=colFinal)
+plot(ema4, title="Fast EMA 4", style=line, linewidth=1, color=colFinal)
+plot(ema5, title="Fast EMA 5", style=line, linewidth=1, color=colFinal)
+plot(ema6, title="Fast EMA 6", style=line, linewidth=1, color=colFinal)
+p2=plot(ema7, title="Fast EMA 7", style=line, linewidth=2, color=colFinal)
+
+//Slow EMA Plots
+p3=plot(ema8, title="Slow EMA 8", style=line, linewidth=1, color=colFinal2)
+plot(ema9, title="Slow EMA 9", style=line, linewidth=1, color=colFinal2)
+plot(ema10, title="Slow EMA 10", style=line, linewidth=1, color=colFinal2)
+plot(ema11, title="Slow EMA 11", style=line, linewidth=1, color=colFinal2)
+plot(ema12, title="Slow EMA 12", style=line, linewidth=1, color=colFinal2)
+plot(ema13, title="Slow EMA 13", style=line, linewidth=1, color=colFinal2)
+plot(ema14, title="Slow EMA 14", style=line, linewidth=1, color=colFinal2)
+plot(ema15, title="Slow EMA 15", style=line, linewidth=1, color=colFinal2)
+plot(ema16, title="Slow EMA 16", style=line, linewidth=1, color=colFinal2)
+plot(ema17, title="Slow EMA 17", style=line, linewidth=1, color=colFinal2)
+plot(ema18, title="Slow EMA 18", style=line, linewidth=1, color=colFinal2)
+plot(ema19, title="Slow EMA 19", style=line, linewidth=1, color=colFinal2)
+plot(ema20, title="Slow EMA 20", style=line, linewidth=1, color=colFinal2)
+plot(ema21, title="Slow EMA 21", style=line, linewidth=1, color=colFinal2)
+plot(ema22, title="Slow EMA 22", style=line, linewidth=2, color=colFinal2)
+p4=plot(ema23, title="EMA 200", style=line, linewidth=2)
+

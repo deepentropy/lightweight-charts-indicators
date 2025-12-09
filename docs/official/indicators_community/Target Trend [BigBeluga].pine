@@ -1,0 +1,205 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Target Trend [BigBeluga]", overlay = true, max_lines_count = 40)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+length = input.int(10, "Trend Length")
+target = input.int(0, "Set Targets")
+// }
+
+
+// ＶＡＲＩＡＢＬＥＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+var bool trend    = na
+float trend_value = na
+
+// Colors
+color up_color = #06b690
+color dn_color = color.rgb(182, 112, 6)
+
+// ATR for calculating stop loss and target levels
+series float atr_value = ta.sma(ta.atr(200), 200) * 0.8
+
+// Moving averages for trend detection
+series float sma_high  = ta.sma(high, length) + atr_value
+series float sma_low   = ta.sma(low, length) - atr_value
+color       plot_color = color.new(chart.fg_color, 80)
+
+// UDT for managing lines and labels
+type TrendTargets
+    line[] lines
+    label[] labels
+
+// Initialize UDT
+var TrendTargets targets_up   = TrendTargets.new(array.new_line(), array.new_label())
+var TrendTargets targets_down = TrendTargets.new(array.new_line(), array.new_label())
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+  
+// Determine trend based on crossovers
+if ta.crossover(close, sma_high) and barstate.isconfirmed
+    trend := true
+if ta.crossunder(close, sma_low) and barstate.isconfirmed
+    trend := false
+
+trend_value := switch
+    trend     => sma_low
+    not trend => sma_high
+
+trend_color = trend ? up_color : not trend ? dn_color : na
+
+
+// Signal detection for trend changes
+bool signal_up   = ta.change(trend) and not trend[1]
+bool signal_down = ta.change(trend) and trend[1]
+
+
+// Method to draw trend targets and manage lines/labels
+method draw_targets(TrendTargets targets, bool signal1, bool signal2, bool direction)=>
+    float base           = direction ? sma_low : sma_high
+    float atr_multiplier = atr_value * (direction ? 1 : -1)
+
+    // Reset counters for up and down targets
+    var int count_up   = 0
+    var int count_down = 0
+
+    if trend 
+        count_down := 0
+        count_up += 1
+    if not trend 
+        count_down += 1
+        count_up := 0
+
+    int count = direction ? count_up : count_down
+
+    if signal1
+        float target_len1 = atr_multiplier * (5+target)
+        float target_len2 = atr_multiplier * (10+target*2)
+        float target_len3 = atr_multiplier * (15+target*3)
+                
+        // Clear existing lines and labels
+        for line_i in targets.lines
+            int i = targets.lines.indexof(line_i)
+            label.delete(targets.labels.get(i))
+            line.delete(line_i)
+
+        array.clear(targets.lines)
+        array.clear(targets.labels)
+
+        // Draw new lines for trend targets
+        line stop_loss_line = line.new(bar_index, base, bar_index + 20, base)
+        line entry_line     = line.new(bar_index, close, bar_index + 20, close)
+        line target1_line   = line.new(bar_index, close + target_len1, bar_index + 20, close + target_len1)
+        line target2_line   = line.new(bar_index, close + target_len2, bar_index + 20, close + target_len2)
+        line target3_line   = line.new(bar_index, close + target_len3, bar_index + 20, close + target_len3)
+
+        // Fill between stop loss and entry line
+        linefill.new(stop_loss_line, entry_line, color.new(dn_color, 95))
+        linefill.new(entry_line, target3_line, color.new(up_color, 95))
+
+        // Draw new labels for trend targets
+        label stop_loss_label = label.new(bar_index + 20, base, str.tostring(math.round(base, 2)))
+        label entry_label     = label.new(bar_index + 20, close, str.tostring(math.round(close, 2)))
+        label target1_label   = label.new(bar_index + 20, close + target_len1, "１ - " + str.tostring(math.round(close + target_len1, 2)))
+        label target2_label   = label.new(bar_index + 20, close + target_len2, "２ - " + str.tostring(math.round(close + target_len2, 2)))
+        label target3_label   = label.new(bar_index + 20, close + target_len3, "３ - " + str.tostring(math.round(close + target_len3, 2)))
+
+        // Push lines and labels to the UDT
+        targets.lines.push(stop_loss_line)
+        targets.lines.push(entry_line)
+        targets.lines.push(target1_line)
+        targets.lines.push(target2_line)
+        targets.lines.push(target3_line)
+
+        targets.labels.push(stop_loss_label)
+        targets.labels.push(entry_label)
+        targets.labels.push(target1_label)
+        targets.labels.push(target2_label)
+        targets.labels.push(target3_label)
+
+        // Update styles for labels and lines
+        for lbl in targets.labels
+            int  idx      = targets.labels.indexof(lbl)
+            line line_ref = targets.lines.get(idx)
+            lbl.set_style(label.style_label_left)
+            lbl.set_color(chart.fg_color)
+            lbl.set_textcolor(chart.bg_color)
+            line_ref.set_color(chart.fg_color)
+
+    if signal2
+        // Clear existing lines and labels
+        for line_i in targets.lines
+            int i = targets.lines.indexof(line_i)
+            label.delete(targets.labels.get(i))
+            line.delete(line_i)
+
+        array.clear(targets.lines)
+        array.clear(targets.labels)
+
+    for line_i in targets.lines
+        int   idx           = targets.lines.indexof(line_i)
+        label lbl_ref       = targets.labels.get(idx)
+        label first_label   = targets.labels.first()
+        line  entry_line    = targets.lines.get(1)
+        label entry_label   = targets.labels.get(1)
+
+        // Targets
+        if high >= line.get_y2(line_i) and low <= line.get_y2(line_i) and count > 1
+            lbl_ref.set_style(label.style_label_left)
+            lbl_ref.set_color(chart.fg_color)
+            lbl_ref.set_text("   ✔   ")
+            lbl_ref.set_textcolor(#16ac09)
+            line_i.set_style(line.style_dashed)
+            line_i.set_color(plot_color)
+
+        // Stop Loss
+        if high >= line.get_y2(targets.lines.first()) and low <= line.get_y2(targets.lines.first()) and count > 1
+            first_label.set_text("  ✖  ")
+
+        if direction ? trend : not trend
+            first_label.set_textcolor(#db1e1e)
+            line_i.set_x2(bar_index + 20)
+            targets.lines.first().set_color(#db1e1e)
+            
+            label.set_x(targets.labels.get(idx), bar_index + 20)
+
+            entry_line.set_style(line.style_solid)
+            entry_line.set_color(up_color)
+            entry_label.set_text("◉ " + str.tostring(math.round(line.get_y2(entry_line), 2)))
+            entry_label.set_textcolor(#1d80dd)
+// }
+
+// ＰＬＯＴ―――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Call the draw_targets method for both upward and downward trends
+targets_down.draw_targets(signal_down, signal_up, false)
+targets_up.draw_targets(signal_up, signal_down, true)
+
+// Plot candlesticks with trend color
+plotcandle(open, high, low, close,
+           title = 'Title', 
+           color = trend_color,
+           wickcolor = trend_color, 
+           bordercolor = trend_color)
+
+// Plot trailing stops
+p1 = plot(trend ? trend_value : na, style = plot.style_linebr, color = plot_color)
+p2 = plot(not trend ? trend_value : na, style = plot.style_linebr, color = plot_color)
+p0 = plot(hl2, display = display.none, editable = false)
+fill(p1, p0, trend_value, hl2, color.new(chart.fg_color, 90), na)
+fill(p2, p0, trend_value, hl2, color.new(chart.fg_color, 90), na)
+
+// Plot signals on the chart
+float sigUp = signal_up ? low - atr_value*2 : na
+float sigDn = signal_down ? high + atr_value*2 : na
+
+plotshape(sigUp,   "", shape.triangleup, location.absolute, up_color, size = size.tiny)
+plotshape(sigUp,   "", shape.triangleup, location.absolute, color.new(up_color, 80), size = size.small)
+
+plotshape(sigDn, "", shape.triangledown, location.absolute, dn_color, size = size.tiny)
+plotshape(sigDn, "", shape.triangledown, location.absolute, color.new(dn_color, 80), size = size.small)
+
+// }

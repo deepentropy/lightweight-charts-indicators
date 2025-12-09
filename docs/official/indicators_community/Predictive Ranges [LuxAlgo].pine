@@ -1,0 +1,53 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Predictive Ranges [LuxAlgo]", "LuxAlgo - Predictive Ranges", overlay = true)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+length = input.int(200, 'Length', minval = 2)
+mult   = input.float(6., 'Factor', minval = 0, step = .5)
+tf     = input.timeframe('', 'Timeframe')
+src    = input(close, 'Source')
+
+//-----------------------------------------------------------------------------}
+//Function
+//-----------------------------------------------------------------------------{
+pred_ranges(length, mult)=>
+    var avg = src
+    var hold_atr = 0.
+
+    atr = nz(ta.atr(length)) * mult
+        
+    avg := src - avg > atr ? avg + atr : 
+      avg - src > atr ? avg - atr : 
+      avg
+        
+    hold_atr := avg != avg[1] ? atr / 2 : hold_atr
+        
+    [avg + hold_atr * 2, avg + hold_atr, avg, avg - hold_atr, avg - hold_atr * 2]
+
+//-----------------------------------------------------------------------------}
+//Calculation
+//-----------------------------------------------------------------------------{
+[prR2
+  , prR1
+  , avg
+  , prS1
+  , prS2] = request.security(syminfo.tickerid, tf, pred_ranges(length, mult))
+
+//-----------------------------------------------------------------------------}
+//Plots
+//-----------------------------------------------------------------------------{
+plot_pru2  = plot(prR2, 'PR Upper 2', avg != avg[1] ? na : #f23645)
+plot_pru1  = plot(prR1, 'PR Upper 1', avg != avg[1] ? na : #f23645)
+plot_pravg = plot(avg , 'PR Average', avg != avg[1] ? na : #5b9cf6)
+plot_prl1  = plot(prS1, 'PR Lower 1', avg != avg[1] ? na : #089981)
+plot_prl2  = plot(prS2, 'PR Lower 2', avg != avg[1] ? na : #089981)
+
+//Fills
+fill(plot_pru2, plot_pru1, avg != avg[1] ? na : color.new(#f23645, 95))
+fill(plot_prl1, plot_prl2, avg != avg[1] ? na : color.new(#089981, 95))
+
+//-----------------------------------------------------------------------------}

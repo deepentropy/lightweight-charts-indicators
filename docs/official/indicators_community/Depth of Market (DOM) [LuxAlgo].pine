@@ -1,0 +1,748 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator('Depth of Market (DOM) [LuxAlgo]','LuxAlgo - Depth of Market (DOM)',overlay = true)
+//---------------------------------------------------------------------------------------------------------------------}
+//CONSTANTS & STRINGS & INPUTS
+//---------------------------------------------------------------------------------------------------------------------{
+EN_SPACE                    = ' '
+EM_SPACE                    = ' '
+HAIR_SPACE                  = ' '
+
+RED                         = #F23645
+GREEN                       = #089981
+BLACK                       = #000000
+WHITE                       = #FFFFFF
+BLUE                        = color.blue
+YELLOW                      = color.yellow
+
+PDS                         = 'PDS'
+PDH                         = 'PDH'
+PDL                         = 'PDL'
+PDM                         = 'PDM'
+
+PWS                         = 'PWS'
+PWH                         = 'PWH'
+PWL                         = 'PWL'
+PWM                         = 'PWM'
+
+OPEN                        = 'OPEN'
+HOD                         = 'HOD'
+MOD                         = 'MOD'
+LOD                         = 'LOD'
+
+ORH                         = 'ORH'
+ORL                         = 'ORL'
+
+IBH                         = 'IBH'
+IBL                         = 'IBL'
+
+VWAP_PLUS_3SD               = '+3SD'
+VWAP_PLUS_2SD               = '+2SD'
+VWAP_PLUS_1SD               = '+1SD'
+VWAP                        = 'WVAP'
+VWAP_MINUS_1SD              = '-1SD'
+VWAP_MINUS_2SD              = '-2SD'
+VWAP_MINUS_3SD              = '-3SD'
+
+POC_CONSTANT                = 'POC'
+
+SESSIONS                    = 'SESSIONS'
+DAILY                       = 'DAILY'
+
+AUTO                        = 'AUTO'
+MANUAL                      = 'MANUAL'
+
+TICKS                       = 'TICKS'
+POINTS                      = 'POINTS'
+
+DOM_GROUP                   = 'DOM'
+TIMESALES_GROUP             = 'Time & Sales'
+KEYLEVELS_GROUP             = 'Key Levels'
+
+tickModeTitle               = 'Mode'+EN_SPACE+EN_SPACE
+imbalanceThresholdTitle     = 'Imbalance Threshold %'+EM_SPACE+EN_SPACE+HAIR_SPACE
+
+periodTooltip               = 'Select the anchoring period to start data collection, DAILY will anchor at the start of the trading day, SESSIONS will start as DAILY and 15.5 hours later (RTH for US tickers).'
+tickModeTooltip             = 'Select between AUTO and MANUAL modes for displaying TICKS or POINTS, in AUTO mode the tool will automatically select TICKS for tickers with a daily average volatility below 5000 ticks and POINTS for the rest of the tickers.'
+sizeTooltip                 = 'Select the number of price levels to display'
+textSizeTooltip             = 'Select the text size'
+
+domTooltip                  = 'Enable/Disable DOM display'
+realtimeOnlyTooltip         = 'Enable/Disable real-time data only, historical data will be collected if disabled'
+topPriceTooltip             = 'Specify the price to be displayed on the top row, set to 0 to enable dynamic DOM'
+maxIterationsTooltip        = 'Specify how many times the values on the SELL and BUY columns are accumulated until reset.'
+profileSizeTooltip          = 'Maximum size of the histograms on the PROFILE and DEPTH columns.'
+
+profileTooltip              = 'Enable/Disable Profile column. High impact on performance.'
+volumeTooltip               = 'Enable/Disable Volume column. Total volume traded at price level.'
+interLevelImbalanceTooltip  = 'Enable/Disable Interlevel Imbalance column. Total volume delta between the current price level and the price level above. High impact on performance.'
+depthTooltip                = 'Enable/Disable Depth, showing the cumulative supply above the current price and the cumulative demand below. Impact on performance.'
+intraLevelImbalanceTooltip  = 'Enable/Disable Intralevel Imbalance column. Delta between total buy volume and total sell volume. High impact on performance.'
+buyingPressurePercentTooltip= 'Enable/Disable Buy Percent column. Percentage of total buy volume compared to total volume.'
+imbalanceThresholdTooltip   = 'Threshold for highlighting imbalances. Set to 90 to highlight the top 10% of interlevel imbalances and the top and bottom 10% of intralevel imbalances.'
+cryptoPrecisionTooltip      = 'Specify the number of decimals to display on the volume of crypto assets'
+
+keyLevelsTooltip            = 'Enable/Disable KEY column. Very high performance impact.'
+previousWeekKeyLevelsTooltip= 'Enable/Disable High, Low, Middle and Close of the previous trading week.'
+previousDayKeyLevelsTooltip = 'Enable/Disable High, Low, Middle and Settlement of the previous trading day.'
+rangeKeyLevelsTooltip       = 'Enable/Disable Open, High, Low and Middle of the current period.'
+openRangeKeyLevelsTooltip   = 'Enable/Disable High and Low of the first candle of the period.'
+initialBalanceKeyLevelsTooltip = 'Enable/Disable High and Low of the first hour of the period.'
+vwapKeyLevelsTooltip        = 'Enable/Disable Volume-weighted average price of the period with 1, 2 and 3 standard deviations.'
+profileKeyLevelsTooltip     = 'Enable/Disable Point of Control (price level with the highest volume traded) of the period.'
+
+timeAndSalesTooltip         = 'Enable/Disable time and sales panel.'
+hoursOffsetTooltip          = 'Enter your time zone\'s offset (+ or −), including a decimal fraction if needed.'
+orderSizeTooltip            = 'Set order size filter. Orders smaller than the value are not displayed.'
+
+periodInput                 = input.string( SESSIONS,   'Period',                   group = '',             tooltip = periodTooltip,    options=[DAILY,SESSIONS])
+tickModeInput               = input.string( AUTO,       tickModeTitle,              group = '',             tooltip = '',               options=[AUTO,MANUAL],  inline = 'mode')
+manualModeInput             = input.string( TICKS,      '',                         group = '',             tooltip = tickModeTooltip,  options=[TICKS,POINTS], inline = 'mode')
+sizeInput                   = input.int(    30,         'Rows',                     group = '',             tooltip = sizeTooltip,      minval=10)
+textSizeInput               = input.string( size.tiny,  'Text Size',                group = '',             tooltip = textSizeTooltip,  options=[size.auto,size.tiny,size.small,size.normal,size.large])
+
+domInput                    = input.bool(   true,       'DOM',                      group = DOM_GROUP,      tooltip = domTooltip)
+realtimeOnlyInput           = input.bool(   false,      'Realtime only',            group = DOM_GROUP,      tooltip = realtimeOnlyTooltip)
+topPriceInput               = input.float(  0,          'Top Price',                group = DOM_GROUP,      tooltip = topPriceTooltip)
+maxIterationsInput          = input.int(    10,         'Max updates',              group = DOM_GROUP,      tooltip = maxIterationsTooltip)
+profileSizeInput            = input.int(    25,         'Profile/Depth size',       group = DOM_GROUP,      tooltip = profileSizeTooltip,   minval=5,   maxval=1366)
+
+profileInput                = input.bool(   true,       'Profile',                  group = DOM_GROUP,      tooltip = '',                   inline = 'profile')
+profileColorInput           = input.color(  color.new(color.white,75),'',       group = DOM_GROUP,      tooltip = profileTooltip,       inline = 'profile')
+volumeInput                 = input.bool(   true,       'Volume',                   group = DOM_GROUP,      tooltip = volumeTooltip)
+interLevelImbalanceInput    = input.bool(   true,       'Interlevel Imbalance',     group = DOM_GROUP,      tooltip = interLevelImbalanceTooltip)
+depthInput                  = input.bool(   true,       'Depth',                    group = DOM_GROUP,      tooltip = '',                   inline = 'depth')
+depthDemandColorInput       = input.color(  color.new(GREEN,75),'',                 group = DOM_GROUP,      tooltip = '',                   inline = 'depth')
+depthSupplyColorInput       = input.color(  color.new(RED,75),'',                   group = DOM_GROUP,      tooltip = depthTooltip,         inline = 'depth')
+intraLevelImbalanceInput    = input.bool(   true,       'Intralevel Imbalance',     group = DOM_GROUP,      tooltip = intraLevelImbalanceTooltip)
+buyingPressurePercentInput  = input.bool(   true,       'Buying Pressure Percent',  group = DOM_GROUP,      tooltip = buyingPressurePercentTooltip)
+imbalanceThresholdInput     = input.int(    90,         imbalanceThresholdTitle,    group = DOM_GROUP,      tooltip = '',                   inline = 'imbalance')
+imbalanceColorInput         = input.color(  color.new(YELLOW,50),'',                group = DOM_GROUP,      tooltip = imbalanceThresholdTooltip,inline = 'imbalance')
+cryptoPrecisionInput        = input.int(    4,          'Crypto volume precision',  group = DOM_GROUP,      tooltip = cryptoPrecisionTooltip,   minval = 4, maxval = 12)
+
+keyLevelsInput              = input.bool(   true,       'Key Levels',               group = KEYLEVELS_GROUP,tooltip = keyLevelsTooltip)
+previousWeekKeyLevelsInput  = input.bool(   true,       'Previous Week',            group = KEYLEVELS_GROUP,tooltip = previousWeekKeyLevelsTooltip)
+previousDayKeyLevelsInput   = input.bool(   true,       'Previous Day',             group = KEYLEVELS_GROUP,tooltip = previousDayKeyLevelsTooltip)
+rangeKeyLevelsInput         = input.bool(   true,       'Current Day/Session',      group = KEYLEVELS_GROUP,tooltip = rangeKeyLevelsTooltip)
+openRangeKeyLevelsInput     = input.bool(   true,       'Open Range',               group = KEYLEVELS_GROUP,tooltip = openRangeKeyLevelsTooltip)
+initialBalanceKeyLevelsInput= input.bool(   true,       'Initial Balance',          group = KEYLEVELS_GROUP,tooltip = initialBalanceKeyLevelsTooltip)
+vwapKeyLevelsInput          = input.bool(   true,       'VWAP',                     group = KEYLEVELS_GROUP,tooltip = vwapKeyLevelsTooltip)
+profileKeyLevelsInput       = input.bool(   true,       'POC',                      group = KEYLEVELS_GROUP,tooltip = profileKeyLevelsTooltip)
+
+timeAndSalesInput           = input.bool(   true,       'Time & Sales',             group = TIMESALES_GROUP,tooltip = timeAndSalesTooltip)
+hoursOffsetInput            = input.float(  0,          'Timezone offset (hours)',  group = TIMESALES_GROUP,tooltip = hoursOffsetTooltip,   minval = -12.0, maxval = 14.0, step = 0.5)
+orderSizeInput              = input.float(  0,          'Order Size',               group = TIMESALES_GROUP,tooltip = orderSizeTooltip,     minval = 0)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//DATA STRUCTURES & VARIABLES
+//---------------------------------------------------------------------------------------------------------------------{
+// @type                                wrapper for the 10 maps that conform a DOM
+// @field totalVolume                   total volume per price level    
+// @field sellVolume                    sell volume per price level
+// @field buyVolume                     buy volume per price level
+// @field currentSellVolume             sell volume per price level, resets volume after `maxIterationsInput` updates
+// @field currentBuyVolume              buy volume per price level, resets volume after `maxIterationsInput` updates
+// @field currentSellVolumeIterations   number of iterations per price level for currentSellVolume map
+// @field currentBuyVolumeIterations    number of iterations per price level for currentBuyVolume map
+// @field interLevelImbalance           total volume delta between each level and level above
+// @field intraLevelImbalance           delta between buy and sell volume per level
+// @field keyLevels                     store a tag at each key level price
+type Dom
+    varip map<float,float> totalVolume
+    varip map<float,float> sellVolume
+    varip map<float,float> buyVolume
+    varip map<float,float> currentSellVolume
+    varip map<float,float> currentBuyVolume
+    varip map<float,float> currentSellVolumeIterations
+    varip map<float,float> currentBuyVolumeIterations
+    varip map<float,float> interLevelImbalance
+    varip map<float,float> intraLevelImbalance    
+    varip map<float,string> keyLevels    
+
+// @type                wrapper for each element of the Time & Sales panel
+// @field timeNow       current execution time
+// @field price         current execution price   
+// @field size          current volume delta
+// @field colorNow      current display color
+type timeAndSales
+    varip int timeNow
+    varip float price
+    varip float size
+    varip color colorNow
+
+// @function            helper function to create a Dom object
+// @returns             Dom ID
+newDom() => Dom.new(map.new<float,float>(),
+                 map.new<float,float>(),
+                 map.new<float,float>(),
+                 map.new<float,float>(),
+                 map.new<float,float>(),
+                 map.new<float,float>(),
+                 map.new<float,float>(),
+                 map.new<float,float>(),
+                 map.new<float,float>(),
+                 map.new<float,string>())
+
+// @variable                        storage for Dom UDT
+varip Dom dom                       = newDom()
+// @variable                        storage for timeAndSales UDTs
+varip array<timeAndSales> timeSales = array.new<timeAndSales>()
+// @variable                        current DOM top price level
+varip float domTopLevel             = 0
+// @variable                        current DOM bottom price level
+varip float domBottomLevel          = 0
+// @variable                        check if current market price is out of current DOM bounds
+varip bool domExtremeLevel          = false
+// @variable                        current market price at current iteration
+varip float currentPrice            = 0
+// @variable                        current market price one iteration ago
+varip float lastPrice               = 0
+// @variable                        check to execute code only once per period
+varip bool notExecutedOnCurrentPeriod = true
+// @variable                        check if current bar is a new period
+var newPeriod                       = false
+// @variable                        check if script is in tick or point mode
+var tickMode                        = true
+// @variable                        minimum tick to use
+var parsedMintick                   = 1.
+// @variable                        fixed max map size
+var maxLimitMap                     = 50000
+// @variable                        mask for crypto volume format            
+var cryptoPrecision                 = '0.'
+// @variable                        milliseconds in one hour
+var hourMilliseconds                = 1000 * 60 * 60 
+// @variable                        milliseconds in 24 hours
+var dayMilliseconds                 = hourMilliseconds * 24
+// @variable                        milliseconds offset from `hoursOffsetInput`
+var offsetMilliseconds              = int(hoursOffsetInput * hourMilliseconds)
+// @variable                        table to display the DOM
+var table domTable                  = table.new(position.top_right, 17, sizeInput + 1)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//USER-DEFINED FUNCTIONS
+//---------------------------------------------------------------------------------------------------------------------{
+// @function            helper function to clear all storages (DOM maps & time&sales array)
+// @returns             void
+clearDom() =>
+    dom.totalVolume.clear()
+    dom.sellVolume.clear()
+    dom.buyVolume.clear()
+    dom.currentSellVolume.clear()
+    dom.currentBuyVolume.clear()
+    dom.currentSellVolumeIterations.clear()
+    dom.currentBuyVolumeIterations.clear()
+    dom.interLevelImbalance.clear()
+    dom.intraLevelImbalance.clear()
+    dom.keyLevels.clear()
+    timeSales.clear()
+
+// @function            helper function to remove first element from storage if maps reach their max limit
+// @returns             void
+checkDom() =>    
+    if dom.totalVolume.size() == maxLimitMap
+        key = dom.totalVolume.keys().first()
+        dom.totalVolume.remove(key)
+        dom.sellVolume.remove(key)
+        dom.buyVolume.remove(key)
+        dom.currentSellVolume.remove(key)
+        dom.currentBuyVolume.remove(key)
+        dom.currentSellVolumeIterations.remove(key)
+        dom.currentBuyVolumeIterations.remove(key)
+        dom.interLevelImbalance.remove(key)
+        dom.intraLevelImbalance.remove(key)
+        dom.keyLevels.remove(key)
+
+// @function            helper function to remove first element of a map if it reaches max limit
+// @param m_ap          map to check
+// @returns             void
+checkMapLimit(m_ap) =>    
+    if m_ap.size() == maxLimitMap
+        key = m_ap.keys().first()
+        m_ap.remove(key)
+
+// @function            helper function to round float values per `tickMode` variable
+// @param value         value to be rounded
+// @returns             float
+round(float value) => tickMode ? math.round_to_mintick(value) : int(value)
+
+// @function            get open, high, low and middle resetting calculations when the parameter is true
+// @param resetPeriod   condition to reset calculations
+// @returns             tuple (4 floats)
+getRangeLevels(bool resetPeriod) =>
+    var periodOpen      = 0.
+    var periodHigh      = low
+    var periodLow       = high
+    var periodMiddle    = 0.
+
+    if resetPeriod
+        periodOpen      := open
+        periodHigh      := high
+        periodLow       := low
+
+    periodHigh          := high > periodHigh    ? high  : periodHigh
+    periodLow           := low  < periodLow     ? low   : periodLow
+    periodMiddle        := round(0.5*(periodHigh+periodLow))
+
+    [periodOpen,periodHigh,periodMiddle,periodLow]
+
+// @function                get high and low at `resetPeriod` or up to one hour after that
+// @param resetPeriod       condition to reset calculations
+// @param initialBalance    condition to get values from first hour after `resetPeriod`
+// @returns                 tuple (2 floats)
+getHighLowLevels(bool resetPeriod,bool initialBalance) =>    
+    var periodHigh      = high
+    var periodLow       = low
+    var periodOpenTime  = time
+
+    if resetPeriod
+        periodOpenTime  := time
+        periodHigh      := high
+        periodLow       := low
+            
+    if initialBalance and time < (periodOpenTime + hourMilliseconds)
+        periodHigh  := high > periodHigh    ? high  : periodHigh
+        periodLow   := low  < periodLow     ? low   : periodLow
+
+    [periodHigh,periodLow]    
+
+// @function            get vwap levels (vwap and bands at 1, 2 & 3 standard deviations) from `resetPeriod`
+// @param resetPeriod   condition to reset the calculations
+// @returns             tuple (7 floats)
+getVWAPLevels(bool resetPeriod) =>
+    [vwap,plus1SD,minus1SD]         = ta.vwap(hlc3,resetPeriod,1)
+    [vwapNoUse1,plus2SD,minus2SD]   = ta.vwap(hlc3,resetPeriod,2)
+    [vwapNoUse2,plus3SD,minus3SD]   = ta.vwap(hlc3,resetPeriod,3)
+
+    [round(plus3SD),round(plus2SD),round(plus1SD),round(vwap),round(minus1SD),round(minus2SD),round(minus3SD)]
+    
+// @function            get point of control (price level with max volume traded)
+// @returns             float
+getPOC() => dom.totalVolume.size() > 0  ? dom.totalVolume.keys().get(dom.totalVolume.values().indexof(dom.totalVolume.values().max())) : 0.
+
+// @function            check if script must enable tick mode in auto mode
+// @returns             bool
+enableTickMode() =>             
+    ticks           = int(ta.atr(10) / syminfo.mintick) + 1
+    averageTicks    = request.security(syminfo.tickerid,'1D',ticks,lookahead = barmerge.lookahead_on)
+    averageTicks    <= 5000
+
+// @function            get close, high and low from last week
+// @returns             tuple (3 floats)
+getPreviousWeekLevels() => request.security(syminfo.tickerid,'1W',[close[1],high[1],low[1]],lookahead = barmerge.lookahead_on)
+
+// @function            get close, high and low from last day
+// @returns             tuple (3 floats)
+getPreviousDayLevels() => request.security(syminfo.tickerid,'1D',[close[1],high[1],low[1]],lookahead = barmerge.lookahead_on)
+
+// @function            adds `tag` to the current data at the key `level` on the keyLevels map
+// @param level         price level (map key)
+// @param tag           string (map value)          
+// @returns             void
+addKeyLevel(float level,string tag) =>
+    parsedTag = ''
+
+    if not na(dom.keyLevels.get(level))
+        parsedTag := dom.keyLevels.get(level) + EN_SPACE
+        
+    parsedTag := parsedTag + tag
+    dom.keyLevels.put(level,parsedTag)
+    
+// @function            gather and store all enabled key levels
+// @returns             void
+gatherKeyLevels() =>
+    dom.keyLevels.clear()    
+
+    var previousWeekSettlement  = 0.
+    var previousWeekHigh        = 0.
+    var previousWeekLow         = 0.
+    var previousWeekMid         = 0.
+
+    if previousWeekKeyLevelsInput
+        if barstate.islastconfirmedhistory
+            [lastSettlement, lastHigh, lastLow] = getPreviousWeekLevels()
+            previousWeekSettlement  := round(lastSettlement)
+            previousWeekHigh        := round(lastHigh)
+            previousWeekLow         := round(lastLow)
+            previousWeekMid         := round(0.5*(previousWeekHigh+previousWeekLow))
+
+        addKeyLevel(previousWeekSettlement,PWS)
+        addKeyLevel(previousWeekHigh,PWH)
+        addKeyLevel(previousWeekLow,PWL)
+        addKeyLevel(previousWeekMid,PWM)
+
+    var settlement      = 0.
+    var previousDayHigh = 0.
+    var previousDayLow  = 0.
+    var previousDayMid  = 0.
+
+    if previousDayKeyLevelsInput
+        if barstate.islastconfirmedhistory
+            [lastSettlement, lastHigh, lastLow] = getPreviousDayLevels()
+            settlement      := round(lastSettlement)
+            previousDayHigh := round(lastHigh)
+            previousDayLow  := round(lastLow)
+            previousDayMid  := round(0.5*(previousDayHigh+previousDayLow))
+
+        addKeyLevel(settlement,PDS)
+        addKeyLevel(previousDayHigh,PDH)
+        addKeyLevel(previousDayLow,PDL)
+        addKeyLevel(previousDayMid,PDM)
+    
+    if rangeKeyLevelsInput
+        [periodOpen,periodHigh,periodMiddle,periodLow] = getRangeLevels(newPeriod)
+        addKeyLevel(round(periodOpen),OPEN)
+        addKeyLevel(round(periodHigh),HOD)
+        addKeyLevel(round(periodMiddle),MOD)
+        addKeyLevel(round(periodLow),LOD)
+
+    if openRangeKeyLevelsInput
+        [periodHigh,periodLow] = getHighLowLevels(newPeriod,false)
+        addKeyLevel(round(periodHigh),ORH)
+        addKeyLevel(round(periodLow),ORL)
+
+    if initialBalanceKeyLevelsInput
+        [periodHigh,periodLow] = getHighLowLevels(newPeriod,true)
+        addKeyLevel(round(periodHigh),IBH)
+        addKeyLevel(round(periodLow),IBL)
+
+    if vwapKeyLevelsInput
+        [plus3SD,plus2SD,plus1SD,vwap,minus1SD,minus2SD,minus3SD] = getVWAPLevels(newPeriod)
+        addKeyLevel(plus3SD,VWAP_PLUS_3SD)
+        addKeyLevel(plus2SD,VWAP_PLUS_2SD)
+        addKeyLevel(plus1SD,VWAP_PLUS_1SD)
+        addKeyLevel(vwap,VWAP)
+        addKeyLevel(minus1SD,VWAP_MINUS_1SD)
+        addKeyLevel(minus2SD,VWAP_MINUS_2SD)
+        addKeyLevel(minus3SD,VWAP_MINUS_3SD)
+
+    if profileKeyLevelsInput
+        POC = getPOC()
+        addKeyLevel(POC,POC_CONSTANT)
+       
+// @function            get volume delta between script iterations
+// @returns             float
+getVolumeDelta() =>
+    varip delta         =   0.
+    varip lastVolume    =   volume
+    delta               :=  volume - lastVolume
+    lastVolume          :=  volume
+
+    barstate.isnew      ?   volume : delta
+
+// @function            get price delta (ticks) between script iterations
+// @returns             float
+getTickDelta() => (currentPrice - lastPrice) / parsedMintick
+
+// @function            get price direction (+1 bullish / -1 bearish)
+// @returns             float
+getPriceDirection() =>
+    varip priceDirection    = 0.
+    tickDelta               = getTickDelta()
+
+    if tickDelta            != 0
+        priceDirection      := math.sign(tickDelta)
+
+    priceDirection
+
+// @function            calculate and storage total volume delta between price level and level above, for current level and the level below
+// @param level         level to do the calculations
+// @returns             void
+getInterLevelImbalance(float level) =>
+    interLevelImbalanceAbove = math.abs(dom.totalVolume.get(level) - nz(dom.totalVolume.get(level + parsedMintick)))    
+    checkMapLimit(dom.interLevelImbalance)
+    dom.interLevelImbalance.put(level,interLevelImbalanceAbove)
+
+    interLevelImbalanceBelow = math.abs(nz(dom.totalVolume.get(level - parsedMintick) - dom.totalVolume.get(level)))
+    checkMapLimit(dom.interLevelImbalance)
+    dom.interLevelImbalance.put(level - parsedMintick,interLevelImbalanceBelow)
+
+// @function            calculate and storage delta between buy and sell volume
+// @param name          level to do the calculations
+// @returns             void
+getIntraLevelImbalance(float level) =>
+    intraLevelImbalance = dom.buyVolume.get(level) - dom.sellVolume.get(level)
+    dom.intraLevelImbalance.put(level,intraLevelImbalance)
+
+// @function            gather and store data from historical bars
+// @returns             void
+gatherHistoricalData() =>
+    size            = int((high - low) / parsedMintick) + 1
+    volumePerLevel  = syminfo.type == 'crypto' ? (volume / size) : int(volume / size)
+    bullBar         = close >= open    
+    volumeMap       = bullBar ? dom.buyVolume : dom.sellVolume    
+    parsedHigh      = round(high)     
+    parsedLow       = round(low)
+    reParsedMintick = round(parsedMintick)
+    for price0 = parsedHigh to parsedLow by reParsedMintick
+        price = round(price0)
+        checkDom()
+        dom.totalVolume.put(price,nz(dom.totalVolume.get(price))+volumePerLevel)
+        volumeMap.put(price,nz(volumeMap.get(price))+volumePerLevel)
+
+        if interLevelImbalanceInput            
+            getInterLevelImbalance(price)
+
+        if intraLevelImbalanceInput            
+            getIntraLevelImbalance(price)
+            
+// @function            gather and store data from historical bars
+// @returns             void
+gatherRealTimeData() =>    
+    delta = getVolumeDelta()
+    
+    if delta > 0
+        direction = getPriceDirection()
+        if domInput
+            checkDom()        
+            volumeMap                   = direction < 0 ? dom.sellVolume                    : dom.buyVolume 
+            currentVolumeMap            = direction < 0 ? dom.currentSellVolume             : dom.currentBuyVolume
+            currentVolumeIterationsMap  = direction < 0 ? dom.currentSellVolumeIterations   : dom.currentBuyVolumeIterations
+
+            volumeMap.put(currentPrice,nz(volumeMap.get(currentPrice)) + delta)
+            dom.totalVolume.put(currentPrice,nz(dom.totalVolume.get(currentPrice)) + delta)
+
+            currentIteration    = nz(currentVolumeIterationsMap.get(currentPrice))
+            currentVolume       = currentIteration <= maxIterationsInput ? nz(currentVolumeMap.get(currentPrice)) : 0
+            baseIteration       = currentIteration <= maxIterationsInput ? currentIteration : 0
+            currentVolumeMap.put(currentPrice,currentVolume + delta)
+            currentVolumeIterationsMap.put(currentPrice,baseIteration + 1)            
+
+            if interLevelImbalanceInput
+                getInterLevelImbalance(currentPrice)
+
+            if intraLevelImbalanceInput
+                getIntraLevelImbalance(currentPrice)
+        
+        if timeAndSalesInput and delta >= orderSizeInput
+            if timeSales.size() >= sizeInput
+                timeSales.pop()
+            timeSales.unshift(timeAndSales.new(timenow + offsetMilliseconds,currentPrice,delta,direction < 0 ? RED : GREEN))
+
+// @function            helper function to plot table headers (cells)
+// @param column        table column  
+// @param row           table row
+// @param data          data to display
+// @param background    cell background      
+// @returns             void
+headerCell(column,row,data,background = #000000) => table.cell(domTable,column,row,data,text_color=color.white,text_halign=text.align_center,text_size = textSizeInput,bgcolor = background)
+
+// @function            helper function to plot table data (cells) in monospace text
+// @param column        table column  
+// @param row           table row
+// @param data          data to display
+// @param textColor     text color
+// @param background    cell background      
+// @param align         text align
+// @returns             void
+monospaceCell(column,row,data,textColor = color.white,backgroundColor = #000000, align = text.align_right) => domTable.cell(column,row,data,text_color = textColor, bgcolor = backgroundColor, text_halign = align, text_font_family = font.family_monospace, text_size = textSizeInput)
+
+// @function            helper function to plot table data (cells)
+// @param column        table column  
+// @param row           table row
+// @param data          data to display
+// @param textColor     text color
+defaultCell(column,row,data,textColor = color.white) => domTable.cell(column,row,data,text_color = textColor, text_halign = text.align_center, text_size = textSizeInput)
+
+// @function            draw all enabled header cells        
+// @returns             void
+drawHeaders() =>
+    domTable.set_bgcolor(#000000)
+    domTable.set_frame_color(color.silver)
+    domTable.set_frame_width(3)
+
+    if domInput
+        if profileInput
+            headerCell(0,0,'PROFILE')
+        if volumeInput
+            headerCell(1,0,'VOL')
+        if interLevelImbalanceInput
+            headerCell(2,0,'I Δ')
+        if depthInput
+            headerCell(3,0,'DEPTH')
+        if keyLevelsInput
+            headerCell(4,0,'KEY')
+        headerCell(5,0,'PRICE')
+        headerCell(6,0,'BID')
+        headerCell(7,0,EM_SPACE+'SELL')
+        headerCell(8,0,'BUY'+EM_SPACE)
+        headerCell(9,0,'ASK')
+        if intraLevelImbalanceInput
+            headerCell(10,0,'L Δ')
+        if buyingPressurePercentInput
+            headerCell(11,0,'B %')
+        defaultCell(5,1,'Waiting for realtime data...')
+
+    if timeAndSalesInput
+        if domInput
+            headerCell(13,0,HAIR_SPACE,color.silver)
+            headerCell(13,1,'',color.silver)
+        headerCell(14,0,'TIME')
+        headerCell(15,0,'PRICE')
+        headerCell(16,0,'SIZE')
+        defaultCell(14,1,'Waiting for realtime data...')
+    
+// @function            get a string from a repeated `character` `size` times
+// @param size          size of the string
+// @param character     character forming the string     
+// @returns             string
+profile(size, string character = '█') =>     
+    baseString = str.tostring(array.new<string>(math.round(math.max(1,size)),character))
+    str.replace_all(str.substring(baseString,1,str.length(baseString)-1),', ','')
+
+// @function            helper function to obtain the table row from a price level
+// @param price         price level
+// @returns             int
+domRow(price) => math.round((domTopLevel - price)/parsedMintick)
+
+// @function            parse data to string with format
+// @param data          data to parse
+// @param format        format to use
+// @returns             string
+parseData(data,format = format.volume) => na(data) or data == 0 ? EM_SPACE : syminfo.type == 'crypto' and format != format.mintick ? str.tostring(data,cryptoPrecision) : str.tostring(data,format)
+
+// @function            draw all enabled data (cells) into the table
+// @returns             void
+drawTable() =>    
+    // prepare arrays for drawing depth histogram
+    sellVolumeDepth = array.new<float>()
+    buyVolumeDepth  = array.new<float>()
+
+    if depthInput
+        for level0 = domTopLevel to domBottomLevel by parsedMintick
+            level = round(level0)
+            sellVolumeDepth.push(nz(dom.sellVolume.get(level)))
+            buyVolumeDepth.push(nz(dom.buyVolume.get(level)))
+
+    maxDepth = math.max(sellVolumeDepth.sum(),buyVolumeDepth.sum())    
+
+    // main loop
+    for level0 = domTopLevel to domBottomLevel by parsedMintick
+        level = round(level0)
+        row = domRow(level) + 1
+
+        // only execute if dom is enabled
+        if domInput
+            if profileInput
+                profile = profile(dom.totalVolume.get(level)*profileSizeInput/dom.totalVolume.values().max())
+                monospaceCell(0,row,profile,profileColorInput)
+
+            if volumeInput
+                monospaceCell(1,row,parseData(dom.totalVolume.get(level)))
+
+            if interLevelImbalanceInput
+                interLevelImbalance = dom.interLevelImbalance.get(level)
+                interLevelImbalanceColor = interLevelImbalance > dom.interLevelImbalance.values().percentile_nearest_rank(imbalanceThresholdInput) ? imbalanceColorInput : BLACK
+                monospaceCell(2,row,parseData(interLevelImbalance),backgroundColor = interLevelImbalanceColor)
+
+            if depthInput and currentPrice <= domTopLevel and currentPrice >= domBottomLevel
+                currentPriceIndex = domRow(currentPrice)
+                value = .0
+                if level < currentPrice
+                    value := sellVolumeDepth.slice(currentPriceIndex,row).sum()
+                if level > currentPrice
+                    value := buyVolumeDepth.slice(row - 1,currentPriceIndex + 1).sum()                
+                depth = level != currentPrice ? profile(value*profileSizeInput/maxDepth) : ''
+                monospaceCell(3,row,depth,textColor = level < currentPrice ? depthDemandColorInput : depthSupplyColorInput)                
+
+            if keyLevelsInput            
+                monospaceCell(4,row,dom.keyLevels.get(level))
+
+            // always execute
+            monospaceCell(5,row,parseData(level,format.mintick), backgroundColor = level == currentPrice ? getPriceDirection() < 0 ? RED : GREEN : BLACK)
+            monospaceCell(6,row,parseData(dom.sellVolume.get(level)),backgroundColor = BLUE)         
+            monospaceCell(9,row,parseData(dom.buyVolume.get(level)),backgroundColor = RED)
+
+            if level == currentPrice                
+                monospaceCell(7,row,parseData(dom.currentSellVolume.get(level)),getPriceDirection() < 0 ? WHITE : RED, getPriceDirection() < 0 ? RED : BLACK, text.align_center)
+                monospaceCell(8,row,parseData(dom.currentBuyVolume.get(level)), getPriceDirection() < 0 ? BLUE : WHITE, getPriceDirection() < 0 ? BLACK : GREEN, text.align_center)
+            else                
+                defaultCell(7,row,parseData(dom.currentSellVolume.get(level)),RED)
+                defaultCell(8,row,parseData(dom.currentBuyVolume.get(level)),BLUE)
+
+            if intraLevelImbalanceInput                
+                intraLevelImbalance = dom.intraLevelImbalance.get(level)
+                imbalanceBeyondThreshold = false
+                if intraLevelImbalance > 0
+                    imbalanceBeyondThreshold := intraLevelImbalance > dom.intraLevelImbalance.values().percentile_nearest_rank(imbalanceThresholdInput)
+                if intraLevelImbalance < 0
+                    imbalanceBeyondThreshold := intraLevelImbalance < dom.intraLevelImbalance.values().percentile_nearest_rank(100 - imbalanceThresholdInput)                
+                intraLevelImbalanceColor = imbalanceBeyondThreshold ? imbalanceColorInput : BLACK
+                monospaceCell(10,row,parseData(intraLevelImbalance),backgroundColor = intraLevelImbalanceColor)
+
+            if buyingPressurePercentInput
+                defaultCell(11,row,parseData(math.round(dom.buyVolume.get(level)*100/dom.totalVolume.get(level))))
+
+        // only execute if time & sales is enabled
+        if timeAndSalesInput
+            if domInput
+                monospaceCell(13,row,'',backgroundColor = color.silver)
+            index = domRow(level)
+            
+            if index < timeSales.size()                                
+                monospaceCell(14,row,str.format('{0,time,HH:mm:ss SSS}',timeSales.get(index).timeNow),color.new(WHITE,50))
+                monospaceCell(15,row,EM_SPACE+parseData(timeSales.get(index).price,format.mintick),timeSales.get(index).colorNow)                
+                monospaceCell(16,row,parseData(timeSales.get(index).size))
+            
+//---------------------------------------------------------------------------------------------------------------------}
+//MUTABLE VARIABLES & EXECUTION
+//---------------------------------------------------------------------------------------------------------------------{
+// @variable            define execution window on the last 24 hours
+executionWindow         = timenow   - dayMilliseconds * 1
+// @variable            check if current bar is inside the execution window
+insideExecutionWindow   = time      >= executionWindow
+
+if insideExecutionWindow
+
+    // execute on the first bar of the execution window
+    if not insideExecutionWindow[1]
+        tickMode        := tickModeInput == AUTO    ? enableTickMode()  : manualModeInput == TICKS ? true : false
+        parsedMintick   := tickMode                 ? syminfo.mintick   : 1
+
+    lastPrice       := currentPrice
+    currentPrice    := tickMode ? close :  math.round(close)
+    newPeriod       := switch periodInput
+        SESSIONS    => timeframe.change('930')
+        DAILY       => timeframe.change('D')    
+
+    // execute only on the first iteration of the new period
+    if newPeriod and notExecutedOnCurrentPeriod
+        clearDom()
+        notExecutedOnCurrentPeriod := false
+
+    // execute once at the next bar after the new period bar
+    if barstate.isconfirmed and newPeriod[1]
+        notExecutedOnCurrentPeriod := true
+
+    // execute once per bar if don and key levels are enabled
+    if barstate.isconfirmed and domInput and keyLevelsInput        
+        gatherKeyLevels()
+    
+    // execute only on historical bars if dom is enabled and real time only is not enabled
+    if barstate.ishistory and domInput and not realtimeOnlyInput
+        gatherHistoricalData()
+
+    // execute only once before the first real time bar
+    if barstate.islastconfirmedhistory
+        drawHeaders()
+
+        if domInput
+            domTopLevel     := topPriceInput == 0 ? currentPrice + int(sizeInput/2)*parsedMintick : round(topPriceInput)
+            domBottomLevel  := domTopLevel - sizeInput*parsedMintick + parsedMintick        
+
+        if syminfo.type == 'crypto'
+            cryptoPrecision := cryptoPrecision + profile(cryptoPrecisionInput,'0')
+    
+    // execute only on real time bars
+    if barstate.isrealtime
+        gatherRealTimeData()        
+        domExtremeLevel := currentPrice >= domTopLevel or currentPrice <= domBottomLevel
+
+        if domExtremeLevel
+            domTopLevel := topPriceInput == 0 ? currentPrice + int(sizeInput/2)*parsedMintick : round(topPriceInput)
+            domBottomLevel := domTopLevel - sizeInput*parsedMintick + parsedMintick                        
+
+        // draw all enabled info on the table
+        drawTable()        
+//---------------------------------------------------------------------------------------------------------------------}        

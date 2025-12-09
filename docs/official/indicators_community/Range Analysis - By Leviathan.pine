@@ -1,0 +1,533 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LeviathanCapital
+
+//@version=5
+indicator("Range Analysis - By Leviathan", shorttitle='Range Analysis - By Leviathan', overlay=true, max_boxes_count=500, max_bars_back = 500)
+
+timeGroup      = 'Time Interval'
+vpGroup        = 'Volume Profile / Open Interest Profile / Heatmap'
+rangeGroup     = 'Range Levels'
+nstip          = 'Node Size inputs controls the scaling of volume profile nodes in relation to the range size. Example: The value of 1 will proportionally extend the nodes to right max of the range, whereas the value of 0.5 will extend the nodes to the middle of the range.'
+rstip          = 'Increasing the resolution input will improve the volume profile but will also limit the script from generating profiles on longer ranges. Play around and find the higest resolution value that works on your selected range.'
+vapcttip       = 'Value Area is the area where the most volume occurred. The input is usually 70% or 68%, but you can adjust it to any percentage you want.'
+svtip          = 'Useful for assets that have very large spikes in volume over large bars. It uses ema of volume instead of just volume and helps create better profiles when needed.'
+dirtip         = 'Specify the direction of your range (eg. from low to high = UP and high to low = DOWN). This is only significant for level labels and fibbonacci levels'
+ndtytip        = 'Type 1 means that one node consists of both UP and DOWN data. Type 2 means that UP node will be on the right side of y axis and DOWN node will be on the left side of y axis.'
+prfdirtip      = 'Choose whether the nodes of the profile are facing left or right.'
+prfpostip      = 'Choose whether the profile is positioned on the left side of the range or on the right side of the range.'
+volndtip       = 'Up/Down shows the proportion of UP data and DOWN data in a node. Total shows the net value of UP data + DOWN data. Delta shows the net difference between UP Data and DOWN data.'
+dtatyptip      = 'Choose the data source used for generating the profile and the heatmaps'
+
+// Range levels inputs
+dir            = input.string('UP', 'Direction', options = ['UP', 'DOWN'], group = rangeGroup, tooltip = dirtip)
+showHL         = input.bool(true, '', inline='rm', group = rangeGroup)
+rangemax       = input.string('Range Max: Close', '', options = ['Range Max: Wick', 'Range Max: Close', 'Range Max: HLC3', 'Range Max:OHLC4'], inline='rm', group = rangeGroup)
+rangemaxStyle  = input.string('────', '', options=['────', '--------', '┈┈┈┈'], inline='rm', group = rangeGroup)
+hlCol          = input.color(color.silver, '', inline='rm', group = rangeGroup)
+lvl05          = input.bool(true, 'Half      ', inline='2', group = rangeGroup)
+lvl05Col       = input.color(color.rgb(178, 181, 190, 20), '', inline='2', group = rangeGroup)
+lvl05Style     = input.string('────', '', options=['────', '--------', '┈┈┈┈'], inline='2', group = rangeGroup)
+quarters       = input.bool(true, 'Quarters    ', inline='4', group = rangeGroup)
+quartersCol    = input.color(color.rgb(178, 181, 190, 70), '', inline='4', group = rangeGroup)
+quartersStyle  = input.string('────', '', options=['────', '--------', '┈┈┈┈'], inline='4', group = rangeGroup)
+eighths        = input.bool(false, 'Eighths       ', inline='8', group = rangeGroup)
+eighthsCol     = input.color(color.rgb(178, 181, 190, 80), '', inline='8', group = rangeGroup)
+eighthsStyle   = input.string('────', '', options=['────', '--------', '┈┈┈┈'], inline='8', group = rangeGroup)
+fib            = input.bool(false, 'Fibonacci  ', inline='F', group = rangeGroup)
+fibCol         = input.color(color.rgb(178, 181, 190, 80), '', inline='F', group = rangeGroup)
+fibStyle       = input.string('────', '', options=['────', '--------', '┈┈┈┈'], inline='F', group = rangeGroup)
+showvwap       = input.bool(false, 'VWAP    ', group = rangeGroup, inline='vwap')
+vwapCol        = input.color(color.silver, '', group = rangeGroup, inline='vwap')
+vwapStyle      = input.string('•••••••••', '', options=['•••••••••', '────'], inline='vwap', group = rangeGroup)
+outer          = input.bool(false, 'Outer     ', inline='out', group = rangeGroup)
+outerCol       = input.color(color.rgb(178, 181, 190, 80), '', group = rangeGroup, inline='out')
+outerStyle     = input.string('────', '', options=['────', '--------', '┈┈┈┈'], inline='out', group = rangeGroup)
+extendb        = input.bool(false, 'Extend (+Bars)', group = rangeGroup, inline='ex')
+extnmb         = input.int(50, '', group = rangeGroup, inline='ex')
+extend         = input.bool(false, 'Extend Right', group = rangeGroup, inline='opt')
+labels         = input.bool(true, 'Show Labels', group = rangeGroup, inline='opt')
+dirline        = input.bool(false, 'Diagonal Line', group = rangeGroup, inline='dd')
+stats          = input.bool(false, 'Stats (Soon)', group = rangeGroup, inline='dd')
+
+// Volume Profile inputs
+voltype        = input.string('Volume', 'Data Type:         ', options=['Volume', 'Open Interest'], group=vpGroup, inline='vp1', tooltip = dtatyptip)
+res            = input.int(30, 'Resolution', minval=5, tooltip=rstip, group=vpGroup)
+showProf       = input.bool(false, 'Volume/OI Profile    ', group=vpGroup, inline = 'vpm')
+bullCol        = input.color(color.rgb(76, 175, 79, 50), '', group=vpGroup, inline='vpm')
+bearCol        = input.color(color.rgb(255, 82, 82, 50), '', group=vpGroup, inline='vpm')
+volhm          = input.bool(false, 'Vertical Heatmap    ', group = vpGroup, inline = 'vhm')
+hvolhm         = input.bool(false, 'Horizontal Heatmap ', group = vpGroup, inline = 'hhm')
+vhmcol1        = input.color(color.rgb(33, 149, 243, 100), '', group=vpGroup, inline='vhm')
+vhmcol2        = input.color(color.rgb(20, 94, 255, 63), '', group=vpGroup, inline='vhm')
+hhmcol1        = input.color(color.rgb(33, 149, 243, 100), '', group=vpGroup, inline='hhm')
+hhmcol2        = input.color(color.rgb(20, 94, 255, 63), '', group=vpGroup, inline='hhm')
+volnodes       = input.string('Up/Down', 'Node Type', options = ['Up/Down', 'Total', 'Delta'], group=vpGroup, tooltip = volndtip)
+profilepos     = input.string('Left', 'Profile Position', options=['Left', 'Right'], group=vpGroup, tooltip = prfpostip)
+profiledir     = input.string('Right', 'Profile Direction', options=['Left', 'Right'], group=vpGroup, tooltip = prfdirtip)
+profiletype    = input.string('Type 1', 'Profile Type', options=['Type 1', 'Type 2'], group=vpGroup, tooltip = ndtytip)
+nodesize       = input.float(30, 'Node Size (%)', minval=1, maxval = 600, step = 5, group=vpGroup, tooltip = nstip)
+VApct          = input.float(70.0, 'Value Area (%)', minval=1, maxval = 100, step=1, group=vpGroup, tooltip = vapcttip)
+volval         = input.bool(false, 'Profile Node Values', group=vpGroup, inline = 'vl')
+hmval          = input.bool(false, 'Heatmap Node Values', group=vpGroup, inline='vl')
+showPoc        = input.bool(false, 'POC      ', group=vpGroup, inline='poc')
+pocCol         = input.color(color.maroon, '', inline='poc', group=vpGroup)
+pocStyle       = input.string('────', '', options=['────', '--------', '┈┈┈┈'], inline='poc', group = vpGroup)
+showVAH        = input.bool(false, 'VAH      ', group=vpGroup, inline='vah')
+vahCol         = input.color(color.rgb(255, 153, 0, 36), '', inline='vah', group=vpGroup)
+vahStyle       = input.string('────', '', options=['────', '--------', '┈┈┈┈'], inline='vah', group = vpGroup)
+showVAL        = input.bool(false, 'VAL        ', group=vpGroup, inline='val')
+valCol         = input.color(color.rgb(255, 153, 0, 36), '', inline='val', group=vpGroup)
+valStyle       = input.string('────', '', options=['────', '--------', '┈┈┈┈'], inline='val', group = vpGroup)
+showVAbox      = input.bool(false, 'VA        ', group=vpGroup, inline='vb')
+VAboxCol       = input.color(color.rgb(2, 68, 122, 85), '', group=vpGroup, inline='vb')
+netcol1        = input.color(color.blue, 'Total Volume', group=vpGroup, inline='ttv')
+netcol2        = input.color(color.red, '', group=vpGroup, inline='ttv')
+smoothVol      = input.bool(false, 'Smooth Volume Data', tooltip=svtip, group=vpGroup)
+ndsize         = input.string('Auto', 'Node Text Style     ', options = ['Tiny', 'Small', 'Normal', 'Large', 'Auto'], group= 'Additional Settings', inline = 'nds')
+ndpos          = input.string('Center', '', options = ['Left', 'Right', 'Center'], group= 'Additional Settings', inline = 'nds')
+lblsize        = input.string('Small', 'Label Text Style     ', options = ['Tiny', 'Small', 'Normal', 'Large', 'Auto'], group= 'Additional Settings', inline = 'lbls')
+lblpos         = input.string('Right', '', options=['Right', 'Left'], group= 'Additional Settings', inline = 'lbls')
+hmsize         = input.string('Auto', 'Heatmap Text Style ', options = ['Tiny', 'Small', 'Normal', 'Large', 'Auto'], group= 'Additional Settings', inline = 'hms')
+hmpos          = input.string('Left', '', options = ['Left', 'Right', 'Center'], group= 'Additional Settings', inline = 'hms')
+profbuff       = input.int(10, 'Profile Node Buffer',minval = 3,maxval = 12, group= 'Additional Settings')
+hmbuff         = input.int(1, 'Heatmap Node Buffer', minval = 1,maxval = 10, group= 'Additional Settings')
+showRB         = input.bool(false, 'Range Box', inline='rb', group= 'Additional Settings')
+rangebCol      = input.color(color.rgb(178, 181, 190, 98), '', inline='rb', group= 'Additional Settings')
+
+startTime      = input.time(defval=0, title='Start Time', confirm=true, group=timeGroup)
+endTime        = input.time(defval=0, title='End Time', confirm=true, group=timeGroup)
+
+//
+bool inZone           = time >= startTime and time <= endTime
+bool newSession       = inZone and not inZone[1]
+bool endSession       = not inZone and inZone[1]
+
+var int barsInSession   = 0
+var int zoneStartIndex  = 0
+var int zoneEndIndex    = 0
+var int zoneStart       = 0
+barsInSession        := inZone ? barsInSession + 1 : barsInSession
+
+if newSession
+    zoneStartIndex := bar_index 
+if endSession
+    zoneEndIndex   := bar_index
+int lookback   = bar_index - zoneStart
+var activeZone = false
+
+//
+highest    = rangemax=='Range Max: Wick' ? high : rangemax=='Range Max: Close' ? close : rangemax=='Range Max: HLC3' ? hlc3 : ohlc4
+lowest     = rangemax=='Range Max: Wick' ? low : rangemax=='Range Max: Close' ? close : rangemax=='Range Max: HLC3' ? hlc3 : ohlc4
+profHigh   = ta.highest(highest, barsInSession+1)[1]
+profLow    = ta.lowest(lowest, barsInSession+1)[1]
+resolution = res
+
+// 
+var vpGreen    = array.new_float(resolution, 0) 
+var vpRed      = array.new_float(resolution, 0) 
+var zoneBounds = array.new_float(resolution, 0) 
+
+//
+var float[] ltfOpen   =  array.new_float(0)
+var float[] ltfClose  =  array.new_float(0)
+var float[] ltfHigh   =  array.new_float(0)
+var float[] ltfLow    =  array.new_float(0)
+var float[] ltfVolume =  array.new_float(0)
+
+//
+string userSymbol         = 'BINANCE' + ":" + string(syminfo.basecurrency) + 'USDT.P'
+string openInterestTicker = str.format("{0}_OI", userSymbol)
+string timeframe          = syminfo.type == "futures" and timeframe.isintraday ? "1D" : timeframe.period
+deltaOi                   = request.security(openInterestTicker, timeframe, close-close[1], ignore_invalid_symbol = true)
+oi                        = request.security(openInterestTicker, timeframe.period, close, ignore_invalid_symbol = true)
+pldeltaoi                 = deltaOi
+
+//
+vol() =>
+    out = smoothVol ? ta.ema(volume, 5) : volume
+    if voltype == 'Open Interest'
+        out := deltaOi
+    out
+
+//
+float dO = open
+float dC = close
+float dH = high
+float dL = low 
+float dV = vol()
+
+//
+switchLineStyle(x) =>
+    switch x
+        '────'        => line.style_solid
+        '--------'    => line.style_dashed
+        '┈┈┈┈'        => line.style_dotted
+
+switchPos(x) =>
+    switch x
+        'Left'        => text.align_left
+        'Right'       => text.align_right
+        'Center'      => text.align_center
+
+switchPlotStyle(x) =>
+    switch x
+        '•••••••••'   => plot.style_circles
+        '────'        => plot.style_linebr
+
+switchsize(x) =>
+    switch x
+        'Tiny'   => size.tiny
+        'Small'  => size.small
+        'Normal' => size.normal
+        'Large'  => size.large
+        'Auto'   => size.auto
+
+//
+resetProfile(enable) =>
+    if enable
+        array.fill(vpGreen, 0)
+        array.fill(vpRed, 0)
+        array.clear(ltfOpen)
+        array.clear(ltfHigh)
+        array.clear(ltfLow)
+        array.clear(ltfClose)
+        array.clear(ltfVolume)
+
+
+tr = ta.atr(1)
+atr = ta.atr(14)
+
+get_vol(y11, y12, y21, y22, height, vol) =>
+    nz(math.max(math.min(math.max(y11, y12), math.max(y21, y22)) - math.max(math.min(y11, y12), math.min(y21, y22)), 0) * vol / height)
+    
+profileAdd(o, h, l, c, v, g, w) =>
+    for i = 0 to array.size(vpGreen) - 1
+        zoneTop  = array.get(zoneBounds, i)
+        zoneBot  = zoneTop - g
+
+        body_top = math.max(c, o)
+        body_bot = math.min(c, o)
+        itsgreen = c >= o
+
+        topwick       = h - body_top
+        bottomwick    = body_bot - l
+        body          = body_top - body_bot
+        bodyvol       = body * v / (2 * topwick + 2 * bottomwick + body)
+        topwickvol    = 2 * topwick * v / (2 * topwick + 2 * bottomwick + body)
+        bottomwickvol = 2 * bottomwick * v / (2 * topwick + 2 * bottomwick + body)
+
+        if voltype == 'Volume'
+            array.set(vpGreen, i, array.get(vpGreen, i) + (itsgreen ? get_vol(zoneBot, zoneTop, body_bot, body_top, body, bodyvol) : 0) + get_vol(zoneBot, zoneTop, body_top, h, topwick, topwickvol) / 2 + get_vol(zoneBot, zoneTop, body_bot, l, bottomwick, bottomwickvol) / 2)
+            array.set(vpRed, i, array.get(vpRed, i) + (itsgreen ? 0 : get_vol(zoneBot, zoneTop, body_bot, body_top, body, bodyvol)) + get_vol(zoneBot, zoneTop, body_top, h, topwick, topwickvol) / 2 + get_vol(zoneBot, zoneTop, body_bot, l, bottomwick, bottomwickvol) / 2)
+        else if voltype == 'Open Interest'
+            if v > 0    
+                array.set(vpGreen, i, array.get(vpGreen, i) + get_vol(zoneBot, zoneTop, body_bot, body_top, body, v))// + get_vol(zoneBot, zoneTop, body_top, h, topwick, topwickvol) / 2 + get_vol(zoneBot, zoneTop, body_bot, l, bottomwick, bottomwickvol) / 2)
+            if v < 0
+                array.set(vpRed, i, array.get(vpRed, i) + get_vol(zoneBot, zoneTop, body_bot, body_top, body, -v))// + get_vol(zoneBot, zoneTop, body_top, h, topwick, topwickvol) / 2 + get_vol(zoneBot, zoneTop, body_bot, l, bottomwick, bottomwickvol) / 2)
+calcSession(update) =>
+    array.fill(vpGreen, 0)
+    array.fill(vpRed, 0)
+    if bar_index > lookback and update and (showPoc or showProf or showVAbox or showVAH or showVAL or hvolhm)
+        gap = (profHigh - profLow) / resolution
+
+        for i = 0 to resolution - 1
+            array.set(zoneBounds, i, profHigh - gap * i)
+
+        if array.size(ltfOpen) > 0
+            for j = 0 to array.size(ltfOpen) - 1    
+                profileAdd(array.get(ltfOpen, j), array.get(ltfHigh, j), array.get(ltfLow, j), array.get(ltfClose, j), array.get(ltfVolume, j), gap, 1)
+
+pocLevel() =>
+    float maxVol = 0
+    int levelInd = 0
+    for i = 0 to array.size(vpRed) - 1
+        if array.get(vpRed, i) + array.get(vpGreen, i) > maxVol
+            maxVol   := array.get(vpRed, i) + array.get(vpGreen, i)
+            levelInd := i
+    
+    float outLevel = na
+    if levelInd != array.size(vpRed) - 1
+        outLevel := array.get(zoneBounds, levelInd) - (array.get(zoneBounds, levelInd) - array.get(zoneBounds, levelInd+1)) / 2
+    outLevel
+
+valueLevels(poc) =>
+    float gap    = (profHigh - profLow) / resolution
+    float volSum = array.sum(vpRed) + array.sum(vpGreen)
+    float volCnt = 0
+    
+    float vah = profHigh
+    float val = profLow
+
+    int pocInd = 0
+    for i = 0 to array.size(zoneBounds)-2
+        if array.get(zoneBounds, i) >= poc and array.get(zoneBounds, i + 1) < poc
+            pocInd := i
+    
+    volCnt += (array.get(vpRed, pocInd) + array.get(vpGreen, pocInd))
+    for i = 1 to array.size(vpRed)
+        if pocInd + i >= 0 and pocInd + i < array.size(vpRed)    
+            volCnt += (array.get(vpRed, pocInd + i) + array.get(vpGreen, pocInd + i))
+            if volCnt >= volSum * (VApct/100)    
+                break 
+            else
+                val := array.get(zoneBounds, pocInd + i) - gap
+        if pocInd - i >= 0 and pocInd - i < array.size(vpRed)    
+            volCnt += (array.get(vpRed, pocInd - i) + array.get(vpGreen, pocInd - i))
+            if volCnt >= volSum * (VApct/100)   
+                break 
+            else
+                vah := array.get(zoneBounds, pocInd - i)
+
+    [val, vah]
+
+// 
+half = (profHigh+profLow) / 2
+l75  = (half + profHigh) / 2
+l25  = (half + profLow) / 2
+l125 = (profLow+l25) / 2
+l375 = (half + l25)  / 2
+l625 = (half + l75) / 2
+l875 = (l75 + profHigh) / 2
+
+f618 = dir=='UP' ? (profHigh - ((profHigh-profLow) * 0.618)) : (profLow + ((profHigh-profLow) * 0.618))
+f236 = dir=='UP' ? (profHigh - ((profHigh-profLow) * 0.236)) : (profLow + ((profHigh-profLow) * 0.236))
+f382 = dir=='UP' ? (profHigh - ((profHigh-profLow) * 0.382)) : (profLow + ((profHigh-profLow) * 0.382))
+f786 = dir=='UP' ? (profHigh - ((profHigh-profLow) * 0.786)) : (profLow + ((profHigh-profLow) * 0.786))
+f161 = dir=='UP' ? (profHigh - ((profHigh-profLow) * 1.618)) : (profLow + ((profHigh-profLow) * 1.618))
+f261 = dir=='UP' ? (profHigh - ((profHigh-profLow) * 2.618)) : (profLow + ((profHigh-profLow) * 2.618))
+
+//
+f_newLine(condition,x, y, c, w, s) =>
+    condition ? line.new(x, y,  extendb ? bar_index+extnmb : bar_index, y, color=c, width=w, style=switchLineStyle(s), extend = extend ? extend.right : extend.none) : na
+f_newLabel(condition, x, y, txt, txtcl) =>
+    condition ? label.new(extend ? x : (lblpos=='Right' ? (extendb ? bar_index+extnmb+1 : bar_index+1) : x), y, text=txt, color=color.rgb(255, 255, 255, 100), textcolor = txtcl, style = extend or lblpos=='Left' ? label.style_label_right : label.style_label_left, size=switchsize(lblsize)) : na
+f_newNode(condition, x, top, right, bott, col, txt) =>
+    condition ? box.new(x, top, right, bott, bgcolor=col, border_width=0, text= volval ? txt : na,xloc=xloc.bar_index, text_size = switchsize(ndsize), text_color = chart.fg_color, text_halign = switchPos(ndpos)) : na
+f_newHeatmap(condition, x, top, right, bott, col, txt) =>
+    condition ? box.new(x, top, right, bott, bgcolor=col, border_width=0, text= hmval ? txt : na,xloc=xloc.bar_index, text_size = switchsize(hmsize), text_color = chart.fg_color, text_halign = switchPos(hmpos)) : na
+
+drawNewZone(update) =>
+    var box  [] profileBoxesArray  = array.new_box(0)
+    var line [] levelsLinesArray   = array.new_line(0)
+    var box  [] boxes              = array.new_box(0)
+    var line [] RangeLinesArray    = array.new_line(0)
+    var label[] levelLabels        = array.new_label(0)
+
+    float leftMax = zoneStartIndex
+    float rightMax = (((barstate.islast and inZone) ? bar_index : zoneEndIndex) - zoneStartIndex) * (nodesize/100) + zoneStartIndex
+    
+    if update and array.sum(vpGreen) + array.sum(vpRed) > 0
+        gap  = (profHigh - profLow) / resolution
+        gap2 = (profHigh - profLow) / 10
+        float rightMaxVol = array.max(vpGreen)+array.max(vpRed)
+        float buffer = gap / profbuff
+        float buffer2 = gap / hmbuff
+        if showProf or hvolhm
+            size = array.size(profileBoxesArray)
+            if size > 0    
+                for j = 0 to size - 1
+                    box.delete(array.get(profileBoxesArray, size - 1 - j))
+                    array.remove(profileBoxesArray, size - 1 - j)
+            
+            for i = 0 to array.size(vpRed) - 1
+                vpct      = array.percentrank(vpGreen, i)/100
+                netcol    = color.from_gradient(vpct, 0, 1, netcol1, netcol2)
+                hmcol     = color.from_gradient(vpct, 0, 1, hhmcol1, hhmcol2)
+                gleft     = profilepos=='Left' ? leftMax : bar_index[0]
+                greenEnd  = int(leftMax + (rightMax - leftMax) * (array.get(vpGreen, i) / rightMaxVol))
+                greenEndD = int(gleft - (rightMax - leftMax) * (array.get(vpGreen, i) / rightMaxVol))
+                greenEnd2 = int(bar_index[0] + (rightMax - leftMax) * (array.get(vpGreen, i) / rightMaxVol))
+                redEnd    = int(greenEnd + (rightMax - leftMax) * (array.get(vpRed, i) / rightMaxVol))
+                redEndD   = int(greenEndD - (rightMax - leftMax) * (array.get(vpRed, i) / rightMaxVol))
+                redEnd2   = int(greenEnd2 + (rightMax - leftMax) * (array.get(vpRed, i) / rightMaxVol))
+                redEnd3   = int(int(leftMax) - (rightMax - leftMax) * (array.get(vpRed, i) / rightMaxVol))
+                redEnd4   = int(bar_index[0] - (rightMax - leftMax) * (array.get(vpRed, i) / rightMaxVol)) 
+                total     = int(leftMax + ((rightMax - leftMax) * (array.get(vpGreen, i) / rightMaxVol)) + (rightMax - leftMax) * (array.get(vpRed, i) / rightMaxVol))
+                totalD    = int(gleft - ((rightMax - leftMax) * (array.get(vpGreen, i) / rightMaxVol)) - (rightMax - leftMax) * (array.get(vpRed, i) / rightMaxVol))
+                total2    = int(bar_index[0] + ((rightMax - leftMax) * (array.get(vpGreen, i) / rightMaxVol)) + (rightMax - leftMax) * (array.get(vpRed, i) / rightMaxVol))
+                delta     = array.get(vpGreen, i)-array.get(vpRed, i)
+                deltap    = (int(gleft + (rightMax - leftMax) * (math.abs(array.get(vpGreen, i)-array.get(vpRed, i)) / rightMaxVol)))
+                deltap2   = (int(gleft - (rightMax - leftMax) * (math.abs(array.get(vpGreen, i)-array.get(vpRed, i)) / rightMaxVol)))
+                totvol    = str.tostring(array.get(vpGreen, i) + (voltype=='Volume' ? array.get(vpRed, i) : 0), format.volume)
+                hmvoloi   = str.tostring(array.get(vpGreen, i) - array.get(vpRed, i) , format.volume)
+                gvol      = str.tostring(array.get(vpGreen, i), format.volume)
+                rvol      = str.tostring(array.get(vpRed, i), format.volume)
+                dvol      = str.tostring(delta, format.volume)
+                if profilepos=='Left' and showProf
+                    array.push(profileBoxesArray, f_newNode(volnodes=='Up/Down', int(leftMax), array.get(zoneBounds, i) - buffer, profiledir=='Right' ? greenEnd : greenEndD, array.get(zoneBounds, i) - gap + buffer, bullCol, gvol))
+                    array.push(profileBoxesArray, f_newNode(volnodes=='Up/Down' and profiletype=='Type 1', profiledir=='Right' ? greenEnd : greenEndD, array.get(zoneBounds, i) - buffer, profiledir=='Right' ? redEnd : redEndD, array.get(zoneBounds, i) - gap + buffer, bearCol, rvol))
+                    array.push(profileBoxesArray, f_newNode(volnodes=='Up/Down' and profiletype=='Type 2', int(leftMax), array.get(zoneBounds, i) - buffer, redEnd3, array.get(zoneBounds, i) - gap + buffer, bearCol, rvol))
+                    array.push(profileBoxesArray, f_newNode(volnodes=='Total', int(leftMax), array.get(zoneBounds, i) - buffer, profiledir=='Right' ? total : totalD, array.get(zoneBounds, i) - gap + buffer, netcol, totvol))
+                    array.push(profileBoxesArray, f_newNode(volnodes=='Delta' and profiletype=='Type 1', int(leftMax), array.get(zoneBounds, i) - buffer, deltap, array.get(zoneBounds, i) - gap + buffer, delta>0 ? bullCol : bearCol, dvol))
+                    array.push(profileBoxesArray, f_newNode(volnodes=='Delta' and profiletype=='Type 2', int(leftMax), array.get(zoneBounds, i) - buffer, delta>0 ? deltap : deltap2, array.get(zoneBounds, i) - gap + buffer, delta>0 ? bullCol : bearCol, dvol))
+
+
+                if profilepos=='Right' and showProf
+                    array.push(profileBoxesArray, f_newNode(volnodes=='Up/Down', bar_index[0], array.get(zoneBounds, i) - buffer, profiledir=='Right' ? greenEnd2 : greenEndD, array.get(zoneBounds, i) - gap + buffer, bullCol, gvol))
+                    array.push(profileBoxesArray, f_newNode(volnodes=='Up/Down' and profiletype=='Type 1', profiledir=='Right' ? greenEnd2 : greenEndD , array.get(zoneBounds, i) - buffer, profiledir=='Right' ? redEnd2 : redEndD, array.get(zoneBounds, i) - gap + buffer, bearCol, rvol))
+                    array.push(profileBoxesArray, f_newNode(volnodes=='Up/Down' and profiletype=='Type 2', bar_index[0], array.get(zoneBounds, i) - buffer, redEnd4, array.get(zoneBounds, i) - gap + buffer, bearCol, rvol))                
+                    array.push(profileBoxesArray, f_newNode(volnodes=='Total', bar_index[0], array.get(zoneBounds, i) - buffer, profiledir=='Right' ? total2 : totalD, array.get(zoneBounds, i) - gap + buffer, netcol, totvol))
+                    array.push(profileBoxesArray, f_newNode(volnodes=='Delta' and profiletype=='Type 1', int(gleft), array.get(zoneBounds, i) - buffer, deltap, array.get(zoneBounds, i) - gap + buffer, delta>0 ? bullCol : bearCol, dvol))
+                    array.push(profileBoxesArray, f_newNode(volnodes=='Delta' and profiletype=='Type 2', int(gleft), array.get(zoneBounds, i) - buffer, delta>0 ? deltap : deltap2, array.get(zoneBounds, i) - gap + buffer, delta>0 ? bullCol : bearCol, dvol))
+                if hvolhm
+                    array.push(profileBoxesArray, f_newHeatmap(true, int(leftMax), array.get(zoneBounds, i) - buffer2, bar_index, array.get(zoneBounds, i) - gap + buffer2, hmcol, voltype=='Volume' ? totvol : hmvoloi))
+
+
+        if showHL
+            line.new(int(leftMax),  profHigh, extendb ? bar_index+extnmb : bar_index, profHigh, color=hlCol, width=1, style=line.style_solid, extend = extend ? extend.right : extend.none)
+            line.new(int(leftMax),  profLow,  extendb ? bar_index+extnmb : bar_index, profLow, color=hlCol, width=1, style=line.style_solid, extend = extend ? extend.right : extend.none)
+        if lvl05 or quarters or eighths
+            f_newLine(true,int(leftMax), half, lvl05Col, 1, lvl05Style)
+        if quarters or eighths
+            f_newLine(true,int(leftMax), l75, quartersCol, 1, quartersStyle)
+            f_newLine(true,int(leftMax), l25, quartersCol, 1, quartersStyle)
+        if eighths
+            f_newLine(true,int(leftMax), l125, eighthsCol, 1, eighthsStyle)
+            f_newLine(true,int(leftMax), l375, eighthsCol, 1, eighthsStyle)
+            f_newLine(true,int(leftMax), l625, eighthsCol, 1, eighthsStyle)
+            f_newLine(true,int(leftMax), l875, eighthsCol, 1, eighthsStyle)
+        if outer
+            f_newLine(quarters or eighths,int(leftMax), profLow - (l25-profLow), outerCol, 1, outerStyle)
+            f_newLine(quarters or eighths,int(leftMax), profLow - (half-profLow), outerCol, 1, outerStyle)
+            f_newLine(quarters or eighths,int(leftMax), profHigh + (l25-profLow), outerCol, 1, outerStyle)
+            f_newLine(quarters or eighths,int(leftMax), profHigh + (half-profLow), outerCol, 1, outerStyle)
+            f_newLine(eighths,int(leftMax), profHigh + (l125-profLow), outerCol, 1, outerStyle)
+            f_newLine(eighths,int(leftMax), profHigh + (l375-profLow), outerCol, 1, outerStyle)
+            f_newLine(eighths,int(leftMax), profLow - (l125-profLow), outerCol, 1, outerStyle)
+            f_newLine(eighths,int(leftMax), profLow - (l375-profLow), outerCol, 1, outerStyle)
+            f_newLine(fib,int(leftMax), f161, fibCol, 1, fibStyle)
+            f_newLine(fib,int(leftMax), f261, fibCol, 1, fibStyle)
+        if fib
+            f_newLine(true,int(leftMax), f618, fibCol, 1, fibStyle)
+            f_newLine(true,int(leftMax), f236, fibCol, 1, fibStyle)
+            f_newLine(true,int(leftMax), f382, fibCol, 1, fibStyle)
+            f_newLine(true,int(leftMax), f786, fibCol, 1, fibStyle)
+        if dirline
+            line.new(int(leftMax), dir=='UP' ? profLow : profHigh, bar_index,  dir=='UP' ? profHigh : profLow, color=fibCol, width = 1, style=switchLineStyle(fibStyle), extend = extend ? extend.right : extend.none)
+        if labels
+            f_newLabel(lvl05,    int(leftMax), half, '0.5', hlCol)
+            f_newLabel(fib,      int(leftMax), f618, '0.618', fibCol)
+            f_newLabel(fib,      int(leftMax), f236, '0.236', fibCol)
+            f_newLabel(fib,      int(leftMax), f382, '0.382', fibCol)
+            f_newLabel(fib,      int(leftMax), f786, '0.786', fibCol)
+            f_newLabel(showHL,   int(leftMax), profHigh, dir=='UP' ? '0' : '1', hlCol)
+            f_newLabel(showHL,   int(leftMax), profLow, dir=='UP' ? '1' : '0', hlCol)
+            f_newLabel(quarters, int(leftMax), l75, dir=='UP' ? '0.25' : '0.75', hlCol)
+            f_newLabel(quarters, int(leftMax), l25, dir=='UP' ? '0.75' : '0.25', hlCol)
+
+        poc = pocLevel()
+        [val, vah] = valueLevels(poc)
+        if showPoc or showVAbox or showVAL or showVAH
+            size = array.size(levelsLinesArray)
+            if size > 0    
+                for j = 0 to size - 1
+                    line.delete(array.get(levelsLinesArray, size - 1 - j))
+                    array.remove(levelsLinesArray, size - 1 - j)
+        if showPoc    
+            array.push(levelsLinesArray, line.new(int(leftMax), poc, extendb ? bar_index+extnmb : bar_index, poc, color=pocCol, width=1, xloc=xloc.bar_index, extend = extend ? extend.right : extend.none, style = switchLineStyle(pocStyle)))
+        if showVAH
+            array.push(levelsLinesArray, line.new(int(leftMax), vah, extendb ? bar_index+extnmb : bar_index, vah, color=vahCol, width=1, xloc=xloc.bar_index, extend = extend ? extend.right : extend.none, style = switchLineStyle(vahStyle)))
+        if showVAL
+            array.push(levelsLinesArray, line.new(int(leftMax), val, extendb ? bar_index+extnmb : bar_index, val, color=valCol, width=1, xloc=xloc.bar_index, extend = extend ? extend.right : extend.none, style = switchLineStyle(valStyle)))
+        if showVAbox
+            array.push(boxes, box.new(int(leftMax), vah, extendb ? bar_index+extnmb : bar_index, val, bgcolor=VAboxCol,border_color = na, xloc=xloc.bar_index, extend = extend ? extend.right : extend.none))
+ 
+    if update and (showHL or dirline or lvl05 or quarters or eighths or outer or fib or labels)
+        size = array.size(RangeLinesArray)
+        if size > 0    
+            for j = 0 to size - 1
+                line.delete(array.get(RangeLinesArray, size - 1 - j))
+                label.delete(array.get(levelLabels, size - 1 - j))
+                array.remove(RangeLinesArray, size - 1 - j)
+                array.remove(RangeLinesArray, size - 1 - j)
+        array.push(RangeLinesArray, showHL                          ? line.new(int(leftMax), profHigh, extendb ? bar_index+extnmb : bar_index, profHigh, color=hlCol, width=1, style=line.style_solid, extend = extend ? extend.right : extend.none) : na)
+        array.push(RangeLinesArray, showHL                          ? line.new(int(leftMax), profLow, extendb ? bar_index+extnmb : bar_index, profLow, color=hlCol, width=1, style=line.style_solid, extend = extend ? extend.right : extend.none) : na)
+        array.push(RangeLinesArray, dirline                         ? line.new(int(leftMax), dir=='UP' ? profLow : profHigh, bar_index,  dir=='UP' ? profHigh : profLow, color=fibCol, width = 1, style=switchLineStyle(fibStyle), extend = extend ? extend.right : extend.none) : na)
+        array.push(RangeLinesArray, lvl05 or quarters or eighths    ? f_newLine(true,int(leftMax), half, lvl05Col, 1, lvl05Style) : na)
+        array.push(RangeLinesArray, quarters or eighths             ? f_newLine(true,int(leftMax), l75, quartersCol, 1, quartersStyle) : na)
+        array.push(RangeLinesArray, quarters or eighths             ? f_newLine(true,int(leftMax), l25, quartersCol, 1, quartersStyle) : na)
+        array.push(RangeLinesArray, eighths                         ? f_newLine(true,int(leftMax), l125, eighthsCol, 1, eighthsStyle) : na)
+        array.push(RangeLinesArray, eighths                         ? f_newLine(true,int(leftMax), l375, eighthsCol, 1, eighthsStyle) : na)
+        array.push(RangeLinesArray, eighths                         ? f_newLine(true,int(leftMax), l625, eighthsCol, 1, eighthsStyle) : na)
+        array.push(RangeLinesArray, eighths                         ? f_newLine(true,int(leftMax), l875, eighthsCol, 1, eighthsStyle) : na)
+        array.push(RangeLinesArray, outer and (quarters or eighths) ? f_newLine(true,int(leftMax), profLow - (l25-profLow), outerCol, 1, outerStyle) : na)
+        array.push(RangeLinesArray, outer and (quarters or eighths) ? f_newLine(true,int(leftMax), profLow - (half-profLow), outerCol, 1, outerStyle) : na)
+        array.push(RangeLinesArray, outer and (quarters or eighths) ? f_newLine(true,int(leftMax), profHigh + (l25-profLow), outerCol, 1, outerStyle) : na)
+        array.push(RangeLinesArray, outer and eighths               ? f_newLine(true,int(leftMax), profLow - (l375-profLow), outerCol, 1, outerStyle) : na)
+        array.push(RangeLinesArray, outer and eighths               ? f_newLine(true,int(leftMax), profLow - (l125-profLow), outerCol, 1, outerStyle) : na)
+        array.push(RangeLinesArray, outer and (quarters or eighths) ? f_newLine(true,int(leftMax), profHigh + (half-profLow), outerCol, 1, outerStyle) : na)
+        array.push(RangeLinesArray, outer and eighths               ? f_newLine(true,int(leftMax), profHigh + (l125-profLow), outerCol, 1, outerStyle) : na)
+        array.push(RangeLinesArray, outer and eighths               ? f_newLine(true,int(leftMax), profHigh + (l375-profLow), outerCol, 1, outerStyle) : na)
+        array.push(RangeLinesArray, outer and fib                   ? f_newLine(true,int(leftMax), f161, fibCol, 1, fibStyle) : na)
+        array.push(RangeLinesArray, outer and fib                   ? f_newLine(true,int(leftMax), f261, fibCol, 1, fibStyle) : na)
+        array.push(RangeLinesArray, fib                             ? f_newLine(true,int(leftMax), f618, fibCol, 1, fibStyle) : na)
+        array.push(RangeLinesArray, fib                             ? f_newLine(true,int(leftMax), f236, fibCol, 1, fibStyle) : na)
+        array.push(RangeLinesArray, fib                             ? f_newLine(true,int(leftMax), f382, fibCol, 1, fibStyle) : na)
+        array.push(RangeLinesArray, fib                             ? f_newLine(true,int(leftMax), f786, fibCol, 1, fibStyle) : na)
+        array.push(levelLabels,     labels and fib                  ? f_newLabel(true,int(leftMax), f618, '0.618', hlCol) : na)
+        array.push(levelLabels,     labels and fib                  ? f_newLabel(true,int(leftMax), f236, '0.236', hlCol) : na)
+        array.push(levelLabels,     labels and fib                  ? f_newLabel(true,int(leftMax), f382, '0.382', hlCol) : na)
+        array.push(levelLabels,     labels and fib                  ? f_newLabel(true,int(leftMax), f786, '0.786', hlCol) : na)
+        array.push(levelLabels,     labels and lvl05                ? f_newLabel(true,int(leftMax), half, '0.5', hlCol) : na)
+        array.push(levelLabels,     labels and showHL               ? f_newLabel(true,int(leftMax), profHigh, dir=='UP' ? '0' : '1', hlCol) : na)
+        array.push(levelLabels,     labels and showHL               ? f_newLabel(true,int(leftMax), profLow, dir=='UP' ? '1' : '0', hlCol) : na)
+        array.push(levelLabels,     labels and quarters             ? f_newLabel(true,int(leftMax), l25, dir=='UP' ? '0.75' : '0.25', hlCol) : na)
+        array.push(levelLabels,     labels and quarters             ? f_newLabel(true,int(leftMax), l75, dir=='UP' ? '0.25' : '0.75', hlCol) : na)
+        array.push(boxes,           showRB                          ? box.new(zoneStartIndex, profHigh, bar_index, profLow, border_color=na, bgcolor = rangebCol) : na)
+
+//
+combArray(arr1, arr2) =>
+    out = array.copy(arr1)
+    if array.size(arr2) > 0
+        for i = 0 to array.size(arr2) - 1
+            array.push(out, array.get(arr2, i))
+    out
+
+//
+updateIntra(o, h, l, c, v) =>
+    array.push(ltfOpen,  o)
+    array.push(ltfHigh, h) 
+    array.push(ltfLow, l) 
+    array.push(ltfClose, c) 
+    array.push(ltfVolume, v)
+    
+//
+calcSession(endSession or (barstate.islast and inZone))
+drawNewZone(endSession or (barstate.islast and inZone))
+resetProfile(newSession)
+
+//
+if inZone
+    updateIntra(dO, dH, dL, dC, dV)
+if endSession 
+    activeZone := false
+if newSession
+    zoneStart  := bar_index
+    activeZone := true
+
+//
+startCalculationDate = startTime
+vwap_calc() =>
+    var srcVolArray  = array.new_float(na)
+    var volArray     = array.new_float(na)
+    if startCalculationDate <= time
+        array.push(srcVolArray, hlc3*volume)
+        array.push(volArray, volume)
+    else
+        array.clear(srcVolArray), array.clear(volArray)
+    array.sum(srcVolArray)/array.sum(volArray)
+anchoredVwap = vwap_calc()
+
+plot((extend ? true : inZone) and showvwap ? anchoredVwap : na, "VWAP", linewidth=1, color=vwapCol, style = switchPlotStyle(vwapStyle), editable=false)
+
+//
+vhmsrc = voltype=='Volume' ? volume : deltaOi
+hvol   = ta.highest(vhmsrc, 50)
+lvol   = ta.lowest(vhmsrc, 50)
+color1 = color.from_gradient(vhmsrc, 0, hvol, vhmcol1, vhmcol2)
+ph     = plot((extend ? true : inZone) and volhm ? profHigh : na, color= color.rgb(54, 58, 69, 100), style=plot.style_linebr)
+pl     = plot((extend ? true : inZone) and volhm ? profLow : na, color= color.rgb(54, 58, 69, 100), style=plot.style_linebr)
+fill(ph, pl, color1)
+
+
+

@@ -1,0 +1,97 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator("Volume Orderbook (Expo)",overlay=true,max_boxes_count=500,max_lines_count=500)
+//~~}
+
+// ~~ Inputs {
+src   = input.source(close,"Source")
+rows  = input.int(10,"Rows",0,20,inline="rows")
+mult  = input.float(.5,"Width",.1,2,step=.05,inline="rows")
+poc   = input.bool(false,"POC",inline="rows")
+tbl   = input.bool(false,"Table",inline="table")
+left  = input.int(5,"Left",0,50,5,inline="table")
+tbli  = input.bool(false,"Grid",inline="table")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables & Array's {
+b = bar_index
+var step = 0.0
+
+type Table
+    array<box> boxes
+    array<line> lines
+    array<label> lab
+
+var levels  = array.new<float>()
+var volumes = array.new<float>()
+var vols    = array.new<float>(rows*2+1)
+var tab     = Table.new(array.new<box>(rows*2+2),array.new<line>(rows*2+1),array.new<label>(rows*2+1))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Code {
+//Save first candle size
+if barstate.isfirst
+    step := (high-low)*mult
+
+//Stores each candle volume in levels
+if levels.size()<=0
+    levels.push(src+step)
+    levels.push(src-step)
+    volumes.push(volume)
+else
+    found = false
+    for i=0 to levels.size()-2
+        lvl1 = levels.get(i)
+        lvl2 = levels.get(i+1)
+        if src<lvl1 and src>lvl2
+            volumes.set(i,volumes.get(i)+volume)
+            found := true
+            break
+    if not found
+        if src>levels.get(0)
+            lvl = levels.get(0)
+            while src>lvl
+                levels.unshift(lvl+step)
+                volumes.unshift(0)
+                lvl := lvl+step
+            levels.unshift(lvl+step)
+            volumes.unshift(volume)
+        else if src<levels.get(levels.size()-1)
+            lvl = levels.get(levels.size()-1)
+            while src<lvl
+                levels.push(lvl-step)
+                volumes.push(0)
+                lvl := lvl-step
+            levels.push(lvl-step)
+            volumes.push(volume)
+
+//Plots the orderbook
+if barstate.islast
+    for i=0 to levels.size()-2
+        if src<levels.get(i) and src>levels.get(i+1)
+            for x=0 to (rows*2)
+                vols.set(x,volumes.get(math.max(0,i-rows+x)))
+            vol = vols.copy()
+            vols.sort()
+            for x=0 to (rows*2)
+                tab.boxes.get(x).delete()
+                col = x<rows?color.red:x>rows?color.lime:color.gray
+                colgrade = color.from_gradient(vols.indexof(vol.get(x)),0,vols.size(),color.new(col,80),color.new(col,40))
+                tab.boxes.set(x,box.new((b+left+rows*2)-vols.indexof(vol.get(x)),levels.get(math.max(0,i-rows+x)),
+                 (b+left+rows*2)+vols.indexof(vol.get(x)),levels.get(math.max(1,i-rows+x+1)),
+                 colgrade,bgcolor=colgrade,border_style=line.style_dotted,
+                 text=str.tostring(vol.get(x),format.volume),text_color=chart.fg_color,
+                 extend=poc and vols.indexof(vol.get(x))==rows*2?extend.left:extend.none))
+                if tbli
+                    tab.lines.get(x).delete()
+                    tab.lines.set(x,line.new(b+left,levels.get(i-rows+x),b+left+rows*2+vols.size()-1,levels.get(i-rows+x),
+                     color=color.gray))
+            if tbl
+                tab.boxes.get(rows*2+1).delete()
+                tab.boxes.set(rows*2+1,box.new(b+left,box.get_top(tab.boxes.get(0)),
+                 b+left+rows*2+vols.size()-1,box.get_bottom(tab.boxes.get(rows*2)),
+                 color.gray,border_width=2,bgcolor=color(na)))
+            break
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

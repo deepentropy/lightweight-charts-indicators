@@ -1,0 +1,69 @@
+//@version=4
+strategy(title="Trailing SL Strategy [QuantNomad]", shorttitle = "TrailingSL [QN]", overlay = true, default_qty_type = strategy.percent_of_equity, default_qty_value = 50)
+
+////////////
+// Inputs //
+
+sl_type    = input("%", options = ["%", "ATR", "Absolute"])
+
+sl_perc    = input(4,     title = "% SL",        type = input.float)
+atr_length = input(10,    title = "ATR Length")
+atr_mult   = input(2,     title = "ATR Mult",    type = input.float)
+sl_absol   = input(10,    title = "Absolute SL", type = input.float)
+
+// BACKTESTING RANGE
+// From Date Inputs
+fromDay   = input(defval = 1,    title = "From Day",   minval = 1, maxval = 31)
+fromMonth = input(defval = 1,    title = "From Month", minval = 1, maxval = 12)
+fromYear  = input(defval = 2016, title = "From Year",  minval = 1970)
+ 
+// To Date Inputs
+toDay   = input(defval = 1,    title = "To Day",   minval = 1, maxval = 31)
+toMonth = input(defval = 1,    title = "To Month", minval = 1, maxval = 12)
+toYear  = input(defval = 2100, title = "To Year",  minval = 1970)
+ 
+// Calculate start/end date and time condition
+startDate  = timestamp(fromYear, fromMonth, fromDay, 00, 00)
+finishDate = timestamp(toYear,   toMonth,   toDay,   00, 00)
+
+time_cond = time >= startDate and time <= finishDate
+
+//////////////////
+// CALCULATIONS //
+
+// SL values
+sl_val = sl_type == "ATR"      ? atr_mult * atr(atr_length) : 
+         sl_type == "Absolute" ? sl_absol : 
+         close * sl_perc / 100
+         
+// Init Variables
+pos         = 0
+trailing_sl = 0.0
+
+// Signals
+long_signal  = nz(pos[1]) !=  1 and high > nz(trailing_sl[1])
+short_signal = nz(pos[1]) != -1 and low  < nz(trailing_sl[1]) 
+
+// Calculate SL
+trailing_sl := short_signal     ? high + sl_val : 
+               long_signal      ? low  - sl_val : 
+               nz(pos[1]) ==  1 ? max(low  - sl_val, nz(trailing_sl[1])) :  
+               nz(pos[1]) == -1 ? min(high + sl_val, nz(trailing_sl[1])) : 
+               nz(trailing_sl[1])
+               
+// Position var               
+pos := long_signal  ? 1 : short_signal ? -1 : nz(pos[1]) 
+
+//////////////
+// PLOTINGS //
+
+plot(trailing_sl, linewidth = 2, color = pos == 1 ? color.green : color.red)
+
+//////////////
+// STRATEGY //
+
+if (time_cond and pos != 1)
+    strategy.entry("long",  true, stop = trailing_sl)
+  
+if (time_cond and pos != -1) 
+    strategy.entry("short", false, stop = trailing_sl)

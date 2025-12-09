@@ -1,0 +1,94 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Kalman Trend Levels [BigBeluga]", overlay = true, max_labels_count = 500, max_boxes_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int short_len     = input.int(50)
+int long_len      = input.int(150)
+bool retest_sig   = input.bool(false, "Retest Signals")
+bool candle_color = input.bool(true, "Candle Color")
+
+color upper_col = input.color(#13bd6e, "up", inline = "colors")
+color lower_col = input.color(#af0d4b, "dn", inline = "colors")
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+float atr = ta.atr(200) *0.5
+
+var lower_box = box(na)
+var upper_box = box(na)
+
+
+// Kalman filter function
+kalman_filter(src, length, R = 0.01, Q = 0.1) =>
+    // Initialize variables
+    var float estimate = na
+    var float error_est = 1.0
+    var float error_meas = R * (length)
+    var float kalman_gain = 0.0
+    var float prediction = na
+    
+    // Initialize the estimate with the first value of the source
+    if na(estimate)
+        estimate := src[1]
+
+    // Prediction step
+    prediction := estimate
+    
+    // Update Kalman gain
+    kalman_gain := error_est / (error_est + error_meas)
+
+    // Update estimate with measurement correction
+    estimate := prediction + kalman_gain * (src - prediction)
+
+    // Update error estimates
+    error_est := (1 - kalman_gain) * error_est  + Q / (length) // Adjust process noise based on length
+
+    estimate
+
+float short_kalman = kalman_filter(close, short_len)
+float long_kalman = kalman_filter(close, long_len)
+
+bool trend_up = short_kalman > long_kalman
+
+color trend_col  = trend_up ? upper_col : lower_col
+color trend_col1 = short_kalman > short_kalman[2] ? upper_col : lower_col
+color candle_col = candle_color ? (trend_up and short_kalman > short_kalman[2] ? upper_col : not trend_up and short_kalman < short_kalman[2] ? lower_col : color.gray) : na
+
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+if trend_up and not trend_up[1]
+    label.new(bar_index, short_kalman, "🡹\n" + str.tostring(math.round(close,1)), color = color(na), textcolor = upper_col, style = label.style_label_up, size = size.normal)
+    lower_box := box.new(bar_index, low+atr, bar_index, low, border_color = na, bgcolor = color.new(upper_col, 60))
+
+if not ta.change(trend_up)
+    lower_box.set_right(bar_index)
+
+if trend_up[1] and not trend_up
+    label.new(bar_index, short_kalman, str.tostring(math.round(close,1))+"\n🢃", color = color(na), textcolor = lower_col, style = label.style_label_down, size = size.normal)
+    upper_box := box.new(bar_index, high, bar_index, high-atr, border_color = na, bgcolor = color.new(lower_col, 60))
+
+if not ta.change(trend_up)
+    upper_box.set_right(bar_index)
+
+if retest_sig
+    if high < upper_box.get_bottom() and high[1]>= upper_box.get_bottom() //or high < lower_box.get_bottom() and high[1]>= lower_box.get_bottom()
+        label.new(bar_index-1, high[1], "x", color = color(na), textcolor = lower_col, style = label.style_label_down, size = size.normal)
+
+    if low > lower_box.get_top() and low[1]<= lower_box.get_top()
+        label.new(bar_index-1, low[1], "+", color = color(na), textcolor = upper_col, style = label.style_label_up, size = size.normal)
+
+p1 = plot(short_kalman, "Short Kalman", color = trend_col1)
+p2 = plot(long_kalman, "Long Kalman", linewidth = 2, color = trend_col)
+
+fill(p1, p2, short_kalman, long_kalman, na, color.new(trend_col, 80))
+
+plotcandle(open, high, low, close, title='Title', color = candle_col, wickcolor=candle_col, bordercolor = candle_col)
+// }

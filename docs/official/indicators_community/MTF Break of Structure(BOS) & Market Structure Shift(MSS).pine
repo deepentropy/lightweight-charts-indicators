@@ -1,0 +1,405 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Lenny_Kiruthu
+
+//@version=5
+indicator(title = "Multi Timeframe Break of Structure(BOS) & Market Structure Shift(MSS)", shorttitle = "MTF BOS & MSS", overlay = true, max_labels_count=500, max_lines_count = 500, max_bars_back = 500)
+
+// Constants
+Transparent_Color = color.new(color.white, 100)
+
+// Groups
+General_Settings_group = "-------General Settings-------"
+Timeframe_1_Group  = "-------Timeframe 1 Settings--------"
+Timeframe_2_Group  = "-------Timeframe 2 Settings--------"
+Timeframe_3_Group  = "-------Timeframe 3 Settings--------"
+
+// Tooltips
+Hide_MS_Tooltip = "If true will hide all MS plots such as \"HH 2H\" or \"HH 15min\""
+Hide_Breaks_Tooltip = "If true will hide all MS breaks such as \"BOS 1H\" or \"MSS 15min\""
+Timeframe_Tooltip = "If set to chart is true no need to alter these two inputs."
+Set_To_Chart_Tooltip = "If set to chart is set to true, there is no need to alter the Timeframe inputs, it will automatically configure itself to the charts timeframe."
+Lower_Timeframe_Tooltip = "If set to true and chart timeframe is higher than the choosen timeframe, structure will not display. Note plotting ltf structure on a htf will provide inaccurate plots."
+Use_High_Low_Tooltip = "If set to true high and low values will be used to confirm market structure else if set to false close will be used."
+Display_TF_Pivots = "If true the script will display the timeframe declared in the TF inputs"
+Display_TF_MS = "If true the script will display the timeframe's market structure declared in the TF inputs if Hide all Market Structure is false in general settings."
+BOS_Alert_Tooltip = "Set to true to activate BOS alerts then proceed to set the any alert function specifically on this script."
+MSS_Alert_Tooltip = "Set to true to activate MSS alerts then proceed to set the any alert function specifically on this script."
+BOS_Plot_Tooltip = "If set to true the TF BOS plots will be plotted else if false they will be hidden."
+MSS_Plot_Tooltip = "If set to true the TF MSS plots will be plotted else if false they will be hidden."
+
+// General Settings
+Hide_All_MS = input.bool(defval = true, title = "Hide all Market Structure", group = General_Settings_group, tooltip = Hide_MS_Tooltip)
+Hide_All_Breaks = input.bool(defval = false, title = "Hide all Structure Breaks", group = General_Settings_group, tooltip = Hide_Breaks_Tooltip)
+Show_Only_On_Lower_Timeframes = input.bool(defval = true, title = "Show Structure only on a lower Timeframe", group = General_Settings_group, tooltip = Lower_Timeframe_Tooltip)
+
+// User Inputs
+// Timeframe 1 Settings
+TF_1_Use_Bos_Plot = input.bool(defval = true, title = "Show TF 1 BOS Plots", group = Timeframe_1_Group, tooltip = BOS_Plot_Tooltip)
+TF_1_Use_MSS_Plot = input.bool(defval = true, title = "Show TF 1 MSS Plots", group = Timeframe_1_Group, tooltip = MSS_Plot_Tooltip)
+TF_1_Chart_Feature = input.bool(defval = false, title = "Set Timeframe to Chart", group = Timeframe_1_Group, tooltip = Set_To_Chart_Tooltip)
+TF_1_Use_High_Low = input.bool(defval = false, title = "Use High/Low for Bos & Mss", group = Timeframe_1_Group, tooltip = Use_High_Low_Tooltip)
+TF_1_Display_Pivots = input.bool(defval = true, title = "Display Market Structure", group = Timeframe_1_Group, tooltip = Display_TF_MS)
+TF_1_Display_Timeframe = input.bool(defval = true, title = "Display Timeframe", group = Timeframe_1_Group, tooltip = Display_TF_Pivots)
+TF_1_BOS_Alert = input.bool(defval = true, title = "Use TF 1 BOS Alert", group = Timeframe_1_Group, tooltip = BOS_Alert_Tooltip)
+TF_1_MSS_Alert = input.bool(defval = true, title = "Use TF 1 MSS Alert", group = Timeframe_1_Group, tooltip = MSS_Alert_Tooltip)
+TF_1_Multip = input.int(defval=2, minval=1, maxval=1440, title="Timeframe 1", group=Timeframe_1_Group, inline="T1")
+TF_1_Period = input.string(defval="Hour", title="", options=["Minute", "Hour", "Day", "Week", "Month"], group=Timeframe_1_Group, inline="T1", tooltip=Timeframe_Tooltip)
+TF_1_Swing_Length = input.int(defval = 7, title = "Swing Length", minval = 1, group = Timeframe_1_Group)
+TF_1_Line_Type = input.string(defval = "Solid", title = "Border Type", options = ["Solid", "Dashed", "Dotted"], group = Timeframe_1_Group)
+TF_1_Line_Width = input.int(defval = 2, title = "Line Width", group = Timeframe_1_Group)
+TF_1_Text_Size = input.string(defval = "Small", title = "Text Size", options = ["Normal", "Tiny", "Small", "Large", "Huge", "Auto"], group = Timeframe_1_Group)
+TF_1_Bul_Bos_Col = input.color(defval = color.green, title = "Bullish Bos/Mss Color", group = Timeframe_1_Group, inline = "TF 1 Color")
+TF_1_Bear_Bos_Col = input.color(defval = color.red, title = "Bearish Bos/Mss Color", group = Timeframe_1_Group, inline = "TF 1 Color")
+TF_1_Bul_MS_Col = input.color(defval = color.white, title = "Bullish Text MS Color", group = Timeframe_1_Group, inline = "TF 1 Ms Color")
+TF_1_Bear_MS_Col = input.color(defval = color.white, title = "Bearish Text MS Color", group = Timeframe_1_Group, inline = "TF 1 Ms Color")
+
+
+// Timeframe 2 Settings
+TF_2_Use_Bos_Plot = input.bool(defval = true, title = "Show TF 2 BOS Plots", group = Timeframe_2_Group, tooltip = BOS_Plot_Tooltip)
+TF_2_Use_MSS_Plot = input.bool(defval = true, title = "Show TF 2 MSS Plots", group = Timeframe_2_Group, tooltip = MSS_Plot_Tooltip)
+TF_2_Chart_Feature = input.bool(defval = true, title = "Set Timeframe to Chart", group = Timeframe_2_Group, tooltip = Set_To_Chart_Tooltip)
+TF_2_Use_High_Low = input.bool(defval = false, title = "Use High/Low for Bos & Mss", group = Timeframe_2_Group, tooltip = Use_High_Low_Tooltip)
+TF_2_Display_Pivots = input.bool(defval = true, title = "Display Market Structure", group = Timeframe_2_Group, tooltip = Display_TF_MS)
+TF_2_Display_Timeframe = input.bool(defval = true, title = "Display Timeframe", group = Timeframe_2_Group, tooltip = Display_TF_Pivots)
+TF_2_BOS_Alert = input.bool(defval = true, title = "Use TF 2 BOS Alert", group = Timeframe_2_Group, tooltip = BOS_Alert_Tooltip)
+TF_2_MSS_Alert = input.bool(defval = true, title = "Use TF 2 MSS Alert", group = Timeframe_2_Group, tooltip = MSS_Alert_Tooltip)
+TF_2_Multip = input.int(defval=2, minval=1, maxval=1440, title="Timeframe 2", group=Timeframe_2_Group, inline="T2")
+TF_2_Period = input.string(defval="Hour", title="", options=["Minute", "Hour", "Day", "Week", "Month"], group=Timeframe_2_Group, inline="T2", tooltip=Timeframe_Tooltip)
+TF_2_Swing_Length = input.int(defval = 7, title = "Swing Length", minval = 1, group = Timeframe_2_Group)
+TF_2_Line_Type = input.string(defval = "Dashed", title = "Border Type", options = ["Solid", "Dashed", "Dotted"], group = Timeframe_2_Group)
+TF_2_Line_Width = input.int(defval = 1, title = "Line Width", group = Timeframe_2_Group)
+TF_2_Text_Size = input.string(defval = "Small", title = "Text Size", options = ["Normal", "Tiny", "Small", "Large", "Huge", "Auto"], group = Timeframe_2_Group)
+TF_2_Bul_Bos_Col = input.color(defval = color.green, title = "Bullish Bos/Mss Color", group = Timeframe_2_Group, inline = "TF 2 Color")
+TF_2_Bear_Bos_Col = input.color(defval = color.red, title = "Bearish Bos/Mss Color", group = Timeframe_2_Group, inline = "TF 2 Color")
+TF_2_Bul_MS_Col = input.color(defval = color.white, title = "Bullish MS Color", group = Timeframe_2_Group, inline = "TF 2 Ms Color")
+TF_2_Bear_MS_Col = input.color(defval = color.white, title = "Bearish MS Color", group = Timeframe_2_Group, inline = "TF 2 Ms Color")
+
+
+// Timeframe 3 Settings
+TF_3_Use_Bos_Plot = input.bool(defval = true, title = "Show TF 3 BOS Plots", group = Timeframe_3_Group, tooltip = BOS_Plot_Tooltip)
+TF_3_Use_MSS_Plot = input.bool(defval = true, title = "Show TF 3 MSS Plots", group = Timeframe_3_Group, tooltip = MSS_Plot_Tooltip)
+TF_3_Chart_Feature = input.bool(defval = false, title = "Set Timeframe to Chart", group = Timeframe_3_Group, tooltip = Set_To_Chart_Tooltip)
+TF_3_Use_High_Low = input.bool(defval = false, title = "Use High/Low for Bos & Mss", group = Timeframe_3_Group, tooltip = Use_High_Low_Tooltip)
+TF_3_Display_Pivots = input.bool(defval = false, title = "Display Market Structure", group = Timeframe_3_Group, tooltip = Display_TF_MS)
+TF_3_Display_Timeframe = input.bool(defval = false, title = "Display Timeframe", group = Timeframe_3_Group, tooltip = Display_TF_Pivots)
+TF_3_BOS_Alert = input.bool(defval = true, title = "Use TF 3 BOS Alert", group = Timeframe_3_Group, tooltip = BOS_Alert_Tooltip)
+TF_3_MSS_Alert = input.bool(defval = true, title = "Use TF 3 MSS Alert", group = Timeframe_3_Group, tooltip = MSS_Alert_Tooltip)
+TF_3_Multip = input.int(defval=1, minval=1, maxval=1440, title="Timeframe 3", group=Timeframe_3_Group, inline="T3")
+TF_3_Period = input.string(defval="Hour", title="", options=["Minute", "Hour", "Day", "Week", "Month"], group=Timeframe_3_Group, inline="T3", tooltip=Timeframe_Tooltip)
+TF_3_Swing_Length = input.int(defval = 7, title = "Swing Length", minval = 1, group = Timeframe_3_Group)
+TF_3_Line_Type = input.string(defval = "Dotted", title = "Border Type", options = ["Solid", "Dashed", "Dotted"], group = Timeframe_3_Group)
+TF_3_Line_Width = input.int(defval = 1, title = "Line Width", group = Timeframe_3_Group)
+TF_3_Text_Size = input.string(defval = "Small", title = "Text Size", options = ["Normal", "Tiny", "Small", "Large", "Huge", "Auto"], group = Timeframe_3_Group)
+TF_3_Bul_Bos_Col = input.color(defval = color.green, title = "Bullish Bos/Mss Color", group = Timeframe_3_Group, inline = "TF 3 Color")
+TF_3_Bear_Bos_Col = input.color(defval = color.red, title = "Bearish Bos/Mss Color", group = Timeframe_3_Group, inline = "TF 3 Color")
+TF_3_Bul_MS_Col = input.color(defval = color.white, title = "Bullish MS Color", group = Timeframe_3_Group, inline = "TF 3 Ms Color")
+TF_3_Bear_MS_Col = input.color(defval = color.white, title = "Bearish MS Color", group = Timeframe_3_Group, inline = "TF 3 Ms Color")
+
+
+// General functions
+// Getting the line type from the user.
+Line_Type_Control(Type) =>
+    Line_Functionality = switch Type
+        "Solid" => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+    
+    Line_Functionality
+
+// Text size from the user
+Text_Size_Switch(Text_Size) =>
+    Text_Type = switch Text_Size
+        "Normal" => size.normal
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Large" => size.large
+        "Huge" => size.huge
+        "Auto" => size.auto
+    Text_Type
+
+// Timeframe functionality
+// Timeframe for security functions
+TF(TF_Period, TF_Multip) => 
+    switch TF_Period 
+        "Minute" => str.tostring(TF_Multip)
+        "Hour"   => str.tostring(TF_Multip*60)
+        "Day"    => str.tostring(TF_Multip) + "D"
+        "Week"   => str.tostring(TF_Multip) + "W"
+        "Month"  => str.tostring(TF_Multip) + "M"
+        => timeframe.period
+
+// Timeframe shortcut form
+TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip) =>
+    if Chart_as_Timeframe == false
+        switch TF_Period
+            "Minute" => str.tostring(TF_Multip)  + "Min"
+            "Hour"   => str.tostring(TF_Multip)  + "H"
+            "Day"    => str.tostring(TF_Multip)  + "D"
+            "Week"   => str.tostring(TF_Multip)  + "W"
+            "Month"  => str.tostring(TF_Multip)  + "M"
+    
+    else if Chart_as_Timeframe == true
+        switch 
+            timeframe.isminutes and  timeframe.multiplier % 60 != 0 
+                                 => str.tostring(timeframe.multiplier)    + "Min"
+                                 
+            timeframe.isminutes and  timeframe.multiplier % 60 == 0 
+                                 => str.tostring(timeframe.multiplier/60) + "H"
+                                 
+            timeframe.isdaily    => str.tostring(timeframe.multiplier)    + "D"
+            timeframe.isweekly   => str.tostring(timeframe.multiplier)    + "W"
+            timeframe.ismonthly  => str.tostring(timeframe.multiplier)    + "M"
+
+MTF_MS_Display(Chart_as_Timeframe, TF_Period, TF_Multip, Swing_Length) =>
+    if Chart_as_Timeframe == true
+        Swing_Length
+    else
+        switch
+            TF_Period == "Month" and timeframe.isminutes and timeframe.multiplier % 60 == 0 and 
+              (24*5*5/((TF_Multip * 1440*5*5)/timeframe.multiplier)) * 60 == timeframe.multiplier => ((TF_Multip * 1440)*5*5/ timeframe.multiplier)*Swing_Length
+
+            TF_Period == "Month" and timeframe.isweekly and 
+              (5/((TF_Multip * 1440 * 5)/timeframe.multiplier)) * 1440 == timeframe.multiplier => ((TF_Multip * 1440)*5/ 1440)*Swing_Length
+
+            TF_Period == "Month" and timeframe.isdaily and 
+              (5*5/((TF_Multip * 1440 * 5*5)/timeframe.multiplier)) * 1440 == timeframe.multiplier => ((TF_Multip * 1440)*5*5/ 1440)*Swing_Length
+            
+            timeframe.ismonthly  and timeframe.multiplier == TF_Multip and 
+              TF_Period == "Month" => Swing_Length
+
+            TF_Period == "Week" and timeframe.isminutes and timeframe.multiplier % 60 == 0 and 
+              (24*5/((TF_Multip * 1440*5)/timeframe.multiplier)) * 60 == timeframe.multiplier => ((TF_Multip * 1440)*5/ timeframe.multiplier)*Swing_Length
+
+            TF_Period == "Week" and timeframe.isdaily and 
+              (5/((TF_Multip * 1440 * 5)/timeframe.multiplier)) * 1440 == timeframe.multiplier => ((TF_Multip * 1440)*5/ 1440)*Swing_Length
+            
+            timeframe.isweekly  and timeframe.multiplier == TF_Multip and 
+              TF_Period == "Week" => Swing_Length
+
+            TF_Period == "Day" and timeframe.isminutes and timeframe.multiplier % 60 == 0 and 
+              (24/((TF_Multip * 1440)/timeframe.multiplier)) * 60 == timeframe.multiplier => (TF_Multip * 1440/ timeframe.multiplier)*Swing_Length
+
+            timeframe.isdaily  and timeframe.multiplier == TF_Multip and 
+              TF_Period == "Day" => Swing_Length
+            
+            timeframe.isminutes and timeframe.multiplier % 60 != 0 and 
+              TF_Period == "Minute" and TF_Multip == timeframe.multiplier => Swing_Length
+            
+            timeframe.isminutes and timeframe.multiplier % 60 != 0 and 
+              TF_Period == "Minute" and TF_Multip != timeframe.multiplier => ((TF_Multip/60) * 60/timeframe.multiplier)*Swing_Length
+
+            timeframe.isminutes and timeframe.multiplier % 60 != 0 and 
+              TF_Period == "Hour" and TF_Multip != timeframe.multiplier => ((TF_Multip * 60 /60) * 60/timeframe.multiplier)*Swing_Length
+
+            timeframe.isminutes and timeframe.multiplier % 60 != 0 and 
+              TF_Period == "Hour" and TF_Multip == timeframe.multiplier and timeframe.multiplier * 60 == 60 => ((TF_Multip * 60 /60) * 60/timeframe.multiplier)*Swing_Length
+
+            timeframe.isminutes and timeframe.multiplier % 60 != 0 and 
+              TF_Period == "Day" and TF_Multip != timeframe.multiplier => ((TF_Multip * 1440 /60) * 60/timeframe.multiplier)*Swing_Length
+            
+            timeframe.isminutes and timeframe.multiplier % 60 == 0 and 
+              TF_Period == "Hour" and TF_Multip * 60 == timeframe.multiplier => Swing_Length
+
+            timeframe.isminutes and timeframe.multiplier % 60 == 0 and 
+              TF_Period == "Hour" and TF_Multip * 60 != timeframe.multiplier => (TF_Multip * 60/timeframe.multiplier)*Swing_Length
+
+HTF_Structure_Control(Chart_as_Timeframe, TF_Period, TF_Multip) =>
+    if Chart_as_Timeframe == true
+        true
+    else if Show_Only_On_Lower_Timeframes == false
+        true
+    else 
+        switch
+            TF_Period == "Minute" and TF_Multip < timeframe.multiplier and timeframe.isminutes
+              => false
+            TF_Period == "Minute" and TF_Multip >= timeframe.multiplier and timeframe.isminutes
+              => true
+            TF_Period == "Minute" and timeframe.isdaily 
+              => false
+            TF_Period == "Minute" and timeframe.isweekly 
+              => false
+            TF_Period == "Minute" and timeframe.ismonthly 
+              => false
+            TF_Period == "Hour" and TF_Multip * 60 < timeframe.multiplier and timeframe.isminutes 
+              => false
+            TF_Period == "Hour" and TF_Multip * 60 >= timeframe.multiplier and timeframe.isminutes
+              => true
+            TF_Period == "Hour" and timeframe.isdaily 
+              => false
+            TF_Period == "Hour" and timeframe.isweekly 
+              => false
+            TF_Period == "Hour" and timeframe.ismonthly 
+              => false
+            TF_Period == "Day" and timeframe.isdaily or timeframe.isminutes 
+              => true
+            TF_Period == "Week" and timeframe.isweekly or timeframe.isdaily or timeframe.isminutes 
+              => true
+            TF_Period == "Month" and timeframe.ismonthly or timeframe.isweekly or timeframe.isdaily or timeframe.isminutes 
+              => true
+    
+// Calculating the Mtf BOS and MSS
+// Getting the high and low values
+[TF_1_SH, TF_1_SL] = request.security(symbol = syminfo.tickerid, timeframe = (TF_1_Chart_Feature ? timeframe.period : TF(TF_1_Period, TF_1_Multip))
+  , expression = [ta.pivothigh(high, TF_1_Swing_Length, TF_1_Swing_Length), ta.pivotlow(low, TF_1_Swing_Length, TF_1_Swing_Length)], gaps = barmerge.gaps_on)
+[TF_2_SH, TF_2_SL] = request.security(symbol = syminfo.tickerid, timeframe = (TF_2_Chart_Feature ? timeframe.period : TF(TF_2_Period, TF_2_Multip))
+  , expression = [ta.pivothigh(high, TF_2_Swing_Length, TF_2_Swing_Length), ta.pivotlow(low, TF_2_Swing_Length, TF_2_Swing_Length)], gaps = barmerge.gaps_on)
+[TF_3_SH, TF_3_SL] = request.security(symbol = syminfo.tickerid, timeframe = (TF_3_Chart_Feature ? timeframe.period : TF(TF_3_Period, TF_3_Multip))
+  , expression = [ta.pivothigh(high, TF_3_Swing_Length, TF_3_Swing_Length), ta.pivotlow(low, TF_3_Swing_Length, TF_3_Swing_Length)], gaps = barmerge.gaps_on)
+
+
+Count_Candles_For_Structure(Direction, Condition) =>
+    var int High_Count = 0
+    var int Low_Count = 0
+
+    if Direction == "Bullish"
+        for i = 0 to Condition
+            High_Count := i                 
+        High_Count
+    else if Direction == "Bearish"
+        for i = 0 to Condition
+            Low_Count := i 
+        Low_Count
+
+
+Market_Structure(TF_SH, TF_SL, Swing_Length, Chart_as_Timeframe, TF_Period, TF_Multip
+  , Line_Type, Line_Width, Display_Timeframe, Display_Structure, Bul_Bos_Col, Bear_Bos_Col
+  , Bul_Ms_Col, Bear_Ms_Col, TF_Text_Size, Use_High_Low, Use_BOS_Alert, Use_MSS_Alert
+  , Use_Bos_Plot, Use_MSS_Plot) => 
+    // Variables to identify HH, HL, LH, LL
+    var float TF_Prev_High = na
+    var float TF_Prev_Low = na
+    TF_Prev_High_Time = 0
+    TF_Prev_Low_Time = 0
+    High_Count = 0
+    Low_Count = 0
+
+    //Tracking whether previous levels have been broken
+    var bool TF_High_Present = false
+    var bool TF_Low_Present = false
+    
+    //Tracking prev breakout
+    var int Prev_Breakout_Type = 0
+
+    //Varibales for generating BOS and CHOCH
+    bool High_Broken = false
+    bool Low_Broken = false
+    End_High_Time = 0
+    End_Low_Time = 0
+    
+    // Variables for Market Structure
+    bool HH = false
+    bool LH = false
+    bool HL = false
+    bool LL = false
+
+    TF_High_Close_Price = request.security(symbol = syminfo.tickerid, timeframe = (Chart_as_Timeframe ? timeframe.period : TF(TF_Period, TF_Multip)), expression = (Use_High_Low ? high : close))
+    TF_Low_Close_Price = request.security(symbol = syminfo.tickerid, timeframe = (Chart_as_Timeframe ? timeframe.period : TF(TF_Period, TF_Multip)), expression = (Use_High_Low ? low : close)) 
+
+    if not na(TF_SH)
+        if TF_SH >= TF_Prev_High
+            HH := true 
+        else
+            LH := true
+        TF_Prev_High := TF_SH
+        TF_Prev_High_Time := TF_Prev_High != TF_Prev_High[1] ? time[MTF_MS_Display(Chart_as_Timeframe, TF_Period, TF_Multip, Swing_Length)] : TF_Prev_High_Time[1]
+        TF_High_Present := true
+
+    if not na(TF_SL)
+        if TF_SL >= TF_Prev_Low
+            HL := true
+        else
+            LL := true
+        TF_Prev_Low := TF_SL
+        TF_Prev_Low_Time := TF_Prev_Low != TF_Prev_Low[1] ? time[MTF_MS_Display(Chart_as_Timeframe, TF_Period, TF_Multip, Swing_Length)] : TF_Prev_Low_Time[1]
+        TF_Low_Present := true
+
+
+    if TF_High_Close_Price > TF_Prev_High and TF_High_Present
+        High_Broken := true
+        TF_High_Present := false
+        End_High_Time := time
+        
+    if TF_Low_Close_Price < TF_Prev_Low and TF_Low_Present
+        Low_Broken := true
+        TF_Low_Present := false
+        End_Low_Time := time
+
+    // Displaying Swing Levels
+    if HH and Display_Timeframe and Display_Structure and not Hide_All_MS
+        label.new(TF_Prev_High_Time, TF_Prev_High, "HH \n" + TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip)
+          , xloc = xloc.bar_time, color=Transparent_Color, style=label.style_label_down, textcolor=Bul_Ms_Col, size = Text_Size_Switch(TF_Text_Size))
+    if HL and Display_Timeframe and Display_Structure and not Hide_All_MS
+        label.new(TF_Prev_Low_Time, TF_Prev_Low, "HL \n" + TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip)
+          , xloc = xloc.bar_time, color=Transparent_Color, style=label.style_label_up, textcolor=Bul_Ms_Col, size = Text_Size_Switch(TF_Text_Size))
+    if LH and Display_Timeframe and Display_Structure and not Hide_All_MS
+        label.new(TF_Prev_High_Time, TF_Prev_High, "LH \n" + TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip)
+          , xloc = xloc.bar_time, color=Transparent_Color, style=label.style_label_down, textcolor=Bear_Ms_Col, size = Text_Size_Switch(TF_Text_Size))
+    if LL and Display_Timeframe and Display_Structure and not Hide_All_MS
+        label.new(TF_Prev_Low_Time, TF_Prev_Low, "LL \n" + TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip)
+          , xloc = xloc.bar_time, color=Transparent_Color, style=label.style_label_up, textcolor=Bear_Ms_Col, size = Text_Size_Switch(TF_Text_Size)) 
+
+    High_Count := ta.barssince(HH == true or LH == true) + MTF_MS_Display(Chart_as_Timeframe, TF_Period, TF_Multip, Swing_Length)
+    Low_Count := ta.barssince(HL == true or LL == true) + MTF_MS_Display(Chart_as_Timeframe, TF_Period, TF_Multip, Swing_Length)
+
+    High_Count_Function = Count_Candles_For_Structure("Bullish", High_Count)
+    Low_Count_Function = Count_Candles_For_Structure("Bearish", Low_Count)
+
+    //Generating the BOS Lines
+    if High_Broken and Display_Timeframe and not Hide_All_Breaks and HTF_Structure_Control(Chart_as_Timeframe, TF_Period, TF_Multip)
+        if Prev_Breakout_Type == 1 and Use_Bos_Plot
+            line.new(x1 = time[High_Count_Function] , y1 = TF_Prev_High, x2 =End_High_Time , y2 = TF_Prev_High
+              , xloc = xloc.bar_time, color = Bul_Bos_Col, style=Line_Type_Control(Line_Type), width= Line_Width)
+            label.new(x = time[High_Count_Function/2], y = TF_Prev_High
+              , xloc = xloc.bar_time, text = 'BOS \n' + TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip)
+              , color=Transparent_Color, style=label.style_label_down, textcolor=Bul_Bos_Col, size = Text_Size_Switch(TF_Text_Size))
+        else if Prev_Breakout_Type == -1 and Use_MSS_Plot
+            line.new(x1 = time[High_Count_Function] , y1 = TF_Prev_High, x2 =End_High_Time , y2 = TF_Prev_High
+              , xloc = xloc.bar_time, color = Bul_Bos_Col, style=Line_Type_Control(Line_Type), width= Line_Width)
+            label.new(x = time[High_Count_Function/2], y = TF_Prev_High
+              , xloc = xloc.bar_time, text = 'MSS \n' + TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip)
+              , color=Transparent_Color, style=label.style_label_down, textcolor=Bul_Bos_Col, size = Text_Size_Switch(TF_Text_Size))
+
+        if Prev_Breakout_Type == -1 and Use_MSS_Alert
+            alert(message = "New bullish MSS formed on " + TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip), freq = alert.freq_once_per_bar_close)
+        else if Prev_Breakout_Type == 1 and Use_BOS_Alert
+            alert(message = "New bullish BOS formed on " + TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip), freq = alert.freq_once_per_bar_close)
+
+        Prev_Breakout_Type := 1
+       
+    if Low_Broken and Display_Timeframe and not Hide_All_Breaks and HTF_Structure_Control(Chart_as_Timeframe, TF_Period, TF_Multip)
+        if Prev_Breakout_Type == -1 and Use_Bos_Plot
+            line.new(x1 = time[Low_Count_Function] , y1 = TF_Prev_Low, x2 = End_Low_Time, y2 = TF_Prev_Low
+              , xloc = xloc.bar_time, color= Bear_Bos_Col, style=Line_Type_Control(Line_Type), width= Line_Width)
+            label.new(x = time[Low_Count_Function/2], y = TF_Prev_Low
+              , xloc = xloc.bar_time, text = 'BOS \n' + TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip)
+              , color=Transparent_Color, textcolor=Bear_Bos_Col, style=label.style_label_up, size = Text_Size_Switch(TF_Text_Size))
+        else if Prev_Breakout_Type == 1 and Use_MSS_Plot
+            line.new(x1 = time[Low_Count_Function] , y1 = TF_Prev_Low, x2 = End_Low_Time, y2 = TF_Prev_Low
+              , xloc = xloc.bar_time, color= Bear_Bos_Col, style=Line_Type_Control(Line_Type), width= Line_Width)
+            label.new(x = time[Low_Count_Function/2], y = TF_Prev_Low
+              , xloc = xloc.bar_time, text = 'MSS \n' + TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip)
+              , color=Transparent_Color, textcolor=Bear_Bos_Col, style=label.style_label_up, size = Text_Size_Switch(TF_Text_Size))          
+
+        if Prev_Breakout_Type == 1 and Use_MSS_Alert
+            alert(message = "New bearish MSS formed on " + TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip), freq = alert.freq_once_per_bar_close)
+        else if Prev_Breakout_Type == -1 and Use_BOS_Alert
+            alert(message = "New bearish BOS formed on " + TF_Display(Chart_as_Timeframe, TF_Period, TF_Multip), freq = alert.freq_once_per_bar_close)
+        
+        Prev_Breakout_Type := -1
+
+// Calling functions
+Market_Structure(TF_1_SH, TF_1_SL, TF_1_Swing_Length, TF_1_Chart_Feature, TF_1_Period, TF_1_Multip, TF_1_Line_Type, TF_1_Line_Width
+  , TF_1_Display_Timeframe, TF_1_Display_Pivots, TF_1_Bul_Bos_Col, TF_1_Bear_Bos_Col, TF_1_Bul_MS_Col, TF_1_Bear_MS_Col, TF_1_Text_Size
+  , TF_1_Use_High_Low, TF_1_BOS_Alert, TF_1_MSS_Alert
+  , TF_1_Use_Bos_Plot, TF_1_Use_MSS_Plot)
+Market_Structure(TF_2_SH, TF_2_SL, TF_2_Swing_Length, TF_2_Chart_Feature, TF_2_Period, TF_2_Multip, TF_2_Line_Type, TF_2_Line_Width
+  , TF_2_Display_Timeframe, TF_2_Display_Pivots, TF_2_Bul_Bos_Col, TF_2_Bear_Bos_Col, TF_2_Bul_MS_Col, TF_2_Bear_MS_Col, TF_2_Text_Size
+  , TF_2_Use_High_Low, TF_2_BOS_Alert, TF_2_MSS_Alert
+  , TF_2_Use_Bos_Plot, TF_2_Use_MSS_Plot)
+Market_Structure(TF_3_SH, TF_3_SL, TF_3_Swing_Length, TF_3_Chart_Feature, TF_3_Period, TF_3_Multip, TF_3_Line_Type, TF_3_Line_Width
+  , TF_3_Display_Timeframe, TF_3_Display_Pivots, TF_3_Bul_Bos_Col, TF_3_Bear_Bos_Col, TF_3_Bul_MS_Col, TF_3_Bear_MS_Col, TF_3_Text_Size
+  , TF_3_Use_High_Low, TF_3_BOS_Alert, TF_3_MSS_Alert
+  , TF_3_Use_Bos_Plot, TF_3_Use_MSS_Plot)
+
+
+ 

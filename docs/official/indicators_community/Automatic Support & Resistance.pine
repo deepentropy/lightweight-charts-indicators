@@ -1,0 +1,43 @@
+//@version=3
+// study version 0.2
+
+study("Automatic Support & Resistance by getmohsin.py", shorttitle = "Auto S/R by getmohsin.py", overlay=true)
+
+left = input(defval=50, title="Left Bars", type=integer)
+right = input(defval=25, title="Right Bars", type=integer)
+quick_right = input(defval=5, title="Quick Right", type=integer)
+src = input(defval="Close",options = ["Close","High/Low"], title = "Source")
+
+
+pivot_high = iff(src=="Close",pivothigh(close,left,right),pivothigh(high,left,right))
+pivot_lows = iff(src=="Close",pivotlow(close, left,right),pivotlow(low,left,right))
+
+quick_pivot_high = iff(src=="Close",pivothigh(close,left,quick_right),pivothigh(high,left,quick_right))
+quick_pivot_lows = iff(src=="Close",pivotlow(close, left,quick_right),pivotlow(low, left,quick_right))
+
+level1 = iff(src=="Close",valuewhen(quick_pivot_high, close[quick_right], 0),valuewhen(quick_pivot_high, high[quick_right], 0))
+level2 = iff(src=="Close",valuewhen(quick_pivot_lows, close[quick_right], 0),valuewhen(quick_pivot_lows, low[quick_right], 0))
+level3 = iff(src=="Close",valuewhen(pivot_high, close[right], 0),valuewhen(pivot_high, high[right], 0))
+level4 = iff(src=="Close",valuewhen(pivot_lows, close[right], 0),valuewhen(pivot_lows, low[right], 0))
+level5 = iff(src=="Close",valuewhen(pivot_high, close[right], 1),valuewhen(pivot_high, high[right], 1))
+level6 = iff(src=="Close",valuewhen(pivot_lows, close[right], 1),valuewhen(pivot_lows, low[right], 1))
+level7 = iff(src=="Close",valuewhen(pivot_high, close[right], 2),valuewhen(pivot_high, high[right], 2))
+level8 = iff(src=="Close",valuewhen(pivot_lows, close[right], 2),valuewhen(pivot_lows, low[right], 2))
+
+level1_col = close >= level1 ? green : red
+level2_col = close >= level2 ? green : red
+level3_col = close >= level3 ? green : red
+level4_col = close >= level4 ? green : red
+level5_col = close >= level5 ? green : red
+level6_col = close >= level6 ? green : red
+level7_col = close >= level7 ? green : red
+level8_col = close >= level8 ? green : red
+
+plot(level1, style=line, color=level1_col, show_last=1, linewidth=1, trackprice=true)
+plot(level2, style=line, color=level2_col, show_last=1, linewidth=1, trackprice=true)
+plot(level3, style=line, color=level3_col, show_last=1, linewidth=1, trackprice=true)
+plot(level4, style=line, color=level4_col, show_last=1, linewidth=1, trackprice=true)
+plot(level5, style=line, color=level5_col, show_last=1, linewidth=1, trackprice=true)
+plot(level6, style=line, color=level6_col, show_last=1, linewidth=1, trackprice=true)
+plot(level7, style=line, color=level7_col, show_last=1, linewidth=1, trackprice=true)
+plot(level8, style=line, color=level8_col, show_last=1, linewidth=1, trackprice=true)

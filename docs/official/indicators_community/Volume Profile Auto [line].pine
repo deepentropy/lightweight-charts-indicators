@@ -1,0 +1,155 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fikira
+//@version=5
+indicator('Volume Profile Auto [line] v2', shorttitle='VPa [line] v2', overlay=true, max_lines_count=500, max_boxes_count=500)
+
+i_size = input.int(25, 'parts', minval=5, maxval=50)
+i_width = input(15, 'max width')
+aMax = input.int(500, 'max lines', maxval=500)
+c_volH = input(color.new(color.orange, 40), title='color vol max')
+c_vol = input(color.new(color.blue, 65), title='color vol')
+c_POC = input(color.new(#ff0000, 40), title='color POC')
+
+maxVol = ta.highest(volume, aMax)
+
+i_auto = input.bool(true, title='Automatic Settings', tooltip='Lower Timeframe = Monthly -> Higher Timeframe = 1 Year \nLower Timeframe = Weekly -> Higher Timeframe = 1 Month \nLower Timeframe = Daily -> Higher Timeframe = 1 Week \nLower Timeframe = Hourly -> Higher Timeframe = 1 Day \nLower Timeframe = Minutes -> Higher Timeframe = 1 Hour \nLower Timeframe = Seconds -> Higher Timeframe = 1 Minute')
+
+periodL1 = input.timeframe('60', title='Lower Timeframe')
+periodH1 = input.timeframe('D', title='Higher Timeframe')
+
+periodH2 = '1'
+
+if timeframe.ismonthly
+    periodH2 := '12M'
+    periodH2
+else
+    if timeframe.isweekly
+        periodH2 := '1M'
+        periodH2
+    else
+        if timeframe.isdaily
+            periodH2 := '1W'
+            periodH2
+        else
+            if timeframe.period == '60' or timeframe.period == '120' or timeframe.period == '180' or timeframe.period == '240' or timeframe.period == '360' or timeframe.period == '480' or timeframe.period == '720'
+                periodH2 := '1D'
+                periodH2
+            else
+                if timeframe.isminutes
+                    periodH2 := '60'
+                    periodH2
+                else
+                    if timeframe.isseconds
+                        periodH2 := '1'
+                        periodH2
+
+periodL = i_auto ? timeframe.period : periodL1
+periodH = i_auto ? periodH2 : periodH1
+
+chT_H  = ta.change(time(periodH)) != 0
+
+var t_H = 0
+var t_L = 0
+t_H  := periodH == '1'  ? 1000 * 60           : periodH == '3'   ? 1000 * 60 * 3           : periodH == '5'   ? 1000 * 60 * 5 
+     : periodH == '10'  ? 1000 * 60 * 10      : periodH == '15'  ? 1000 * 60 * 15          : periodH == '30'  ? 1000 * 60 * 30 
+     : periodH == '60'  ? 1000 * 60 * 60      : periodH == '120' ? 1000 * 60 * 60 * 2      : periodH == '180' ? 1000 * 60 * 60 * 3 
+     : periodH == '240' ? 1000 * 60 * 60 * 4  : periodH == '360' ? 1000 * 60 * 60 * 6      : periodH == '720' ? 1000 * 60 * 60 * 12 
+     : periodH == '1D'  ? 1000 * 60 * 60 * 24 : periodH == '3D'  ? 1000 * 60 * 60 * 24 * 3 : periodH == '1W'  ? 1000 * 60 * 60 * 24 * 7 
+     : periodH == '1M'  ? 1000 * 60 * 60 * 24 * 30 : 1000 * 60 * 60 * 24 * 365
+
+t_L  := not i_auto ? 
+       periodL == '1'   ? 1000 * 60           : periodL == '3'   ? 1000 * 60 * 3           : periodL == '5'   ? 1000 * 60 * 5
+     : periodL == '10'  ? 1000 * 60 * 10      : periodL == '15'  ? 1000 * 60 * 15          : periodL == '30'  ? 1000 * 60 * 30 
+     : periodL == '60'  ? 1000 * 60 * 60      : periodL == '120' ? 1000 * 60 * 60 * 2      : periodL == '180' ? 1000 * 60 * 60 * 3 
+     : periodL == '240' ? 1000 * 60 * 60 * 4  : periodL == '360' ? 1000 * 60 * 60 * 6      : periodL == '720' ? 1000 * 60 * 60 * 12 
+     : periodL == '1D'  ? 1000 * 60 * 60 * 24 : periodL == '3D'  ? 1000 * 60 * 60 * 24 * 3 : periodL == '1W'  ? 1000 * 60 * 60 * 24 * 7 
+     : 1000 * 60 * 60 * 24 * 30 : timeframe.isseconds ? 1000 * timeframe.multiplier : timeframe.isminutes ? 1000 * 60 * timeframe.multiplier 
+     : periodL == '60'  ? 1000 * 60 * 60      : periodL == '120' ? 1000 * 60 * 60 * 2      : periodL == '180' ? 1000 * 60 * 60 * 3 
+     : periodL == '240' ? 1000 * 60 * 60 * 4  : periodL == '360' ? 1000 * 60 * 60 * 6      : periodL == '720' ? 1000 * 60 * 60 * 12 
+     : timeframe.isdaily ? 1000 * 60 * 60 * 24 * timeframe.multiplier : timeframe.isweekly ? 1000 * 60 * 60 * 24 * 7 * timeframe.multiplier 
+     : 1000 * 60 * 60 * 24 * 30 * timeframe.multiplier
+
+mult = t_H / t_L
+
+var a_lines = array.new_line(i_size, na)
+var a_vol = array.new_float(i_size, 0)
+var a_box = array.new_box(i_size, na)
+var tempArray = array.new_float(i_size, 0)
+var tmpAmax = 0.
+var index = 0
+
+var line l_POC = na
+line.delete(l_POC)
+
+// if change new period  
+if chT_H
+    // before adding a new series of lines -> wrap up
+
+    // Draw POC
+    l_POC := line.new(line.get_x1(array.get(a_lines, index)), math.avg(line.get_y1(array.get(a_lines, index)), line.get_y1(array.get(a_lines, index + 1))), line.get_x2(array.get(a_lines, index)) + 100, math.avg(line.get_y1(array.get(a_lines, index)), line.get_y1(array.get(a_lines, index + 1))), color=c_POC)
+    // place box just 1 bar further  
+    if array.size(a_box) > 0
+        box.set_right(array.get(a_box, 0), bar_index)  // move latest box (right size) 1 bar_index further when new period
+    // create new box
+    array.unshift(a_box, box.new(bar_index, high, bar_index, low, border_color=na, bgcolor=color.new(c_vol, 95)))
+    // clean-up if max is reached
+    if array.size(a_box) > math.ceil(aMax / i_size)
+        box.delete(array.get(a_box, array.size(a_box) - 1))
+        array.pop(a_box)
+    // adding a new series of lines
+    for i = 0 to i_size - 1 by 1
+        // create x amount of memory space for volume (lines)
+        array.unshift(a_lines, line.new(bar_index, high - (high - low) / i_size * i, bar_index, high - (high - low) / i_size * (i + 1), width=1, color=c_vol))  // create new x amount of lines (parts)
+        array.unshift(a_vol, 0)
+        // clean-up if max is reached
+        if array.size(a_lines) > aMax
+            line.delete(array.get(a_lines, array.size(a_lines) - 1))
+            array.pop(a_lines)
+            array.pop(a_vol)
+
+if array.size(a_lines) > 0
+    //if not chT_H 
+    box.set_right(array.get(a_box, 0), bar_index)  // make existing box 1 bar larger to the right
+    line.set_x2(l_POC, bar_index)  // make existing POC 1 bar larger to the right
+    hi = line.get_y1(array.get(a_lines, 0))  // highest high of HTF 
+    lo = line.get_y2(array.get(a_lines, i_size - 1))  // lowest low of HTF 
+
+    if high > hi
+        for i = 0 to i_size - 1 by 1
+            line.set_y1(array.get(a_lines, 0), high)
+            hi := line.get_y1(array.get(a_lines, 0))
+            line.set_y1(array.get(a_lines, i), hi - (hi - lo) / i_size * i)
+            line.set_y2(array.get(a_lines, i), hi - (hi - lo) / i_size * (i + 1))
+            box.set_top(array.get(a_box, 0), hi)
+    if low < lo
+        for i = 0 to i_size - 1 by 1
+            line.set_y2(array.get(a_lines, i_size - 1), low)
+            lo := line.get_y2(array.get(a_lines, i_size - 1))
+            line.set_y1(array.get(a_lines, i), hi - (hi - lo) / i_size * i)
+            line.set_y2(array.get(a_lines, i), hi - (hi - lo) / i_size * (i + 1))
+            box.set_bottom(array.get(a_box, 0), lo)
+
+    for i = 0 to i_size - 1 by 1
+        if high >= line.get_y1(array.get(a_lines, i)) and low <= line.get_y2(array.get(a_lines, i))
+            array.set(a_vol, i, array.get(a_vol, i) + volume)
+            line.set_width(array.get(a_lines, i), math.round(array.get(a_vol, i)))
+
+if array.size(a_vol) > 0
+    for i = 0 to array.size(tempArray) - 1 by 1
+        line.set_color(array.get(a_lines, i), c_vol)
+        array.set(tempArray, i, array.get(a_vol, i))
+    tmpAmax := array.max(tempArray)
+    index := array.indexof(tempArray, tmpAmax)
+    line.set_color(array.get(a_lines, index), c_volH)
+    l_POC := line.new(line.get_x1(array.get(a_lines, index)), math.avg(line.get_y1(array.get(a_lines, index)), line.get_y1(array.get(a_lines, index + 1))), line.get_x2(array.get(a_lines, index)) + 100, math.avg(line.get_y1(array.get(a_lines, index)), line.get_y1(array.get(a_lines, index + 1))), color=c_POC)
+    l_POC
+
+if barstate.islast
+    for i = 0 to array.size(a_lines) - 1 by 1
+        boxL = box.get_left(array.get(a_box, 0))
+        boxR = box.get_right(array.get(a_box, 0))
+        width = boxR - boxL
+        line.set_width(array.get(a_lines, i), math.round(i_width / maxVol * array.get(a_vol, i)))  // at the last bar, adjust all line width's (to get a uniform comparison between lines)
+        line.set_x2(l_POC, bar_index + 200)
+
+barcolor(input.bool(false, 'Visible Barcolor') ? na : color.new(color.black, 100))               // make candles transparent

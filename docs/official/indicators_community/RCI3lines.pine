@@ -1,0 +1,19 @@
+//@version=6
+//
+// @author Jadbrother modified by gero
+//
+indicator(title = 'RCI3lines', shorttitle = 'RCI3lines')
+
+itvs = input(9, 'short interval')
+itvm = input(36, 'middle interval')
+itvl = input(52, 'long interval')
+src = input(close, 'source')
+upperband = input(title = 'High line[%]', defval = 80)
+lowerband = input(title = 'Low line[%]', defval = -80)
+
+hline(upperband, color = color.gray, linestyle = hline.style_dashed)
+hline(lowerband, color = color.gray, linestyle = hline.style_dashed)
+
+plot(ta.rci(src, itvs), title = 'RCI short',  color = color.new(color.red, 0))
+plot(ta.rci(src, itvm), title = 'RCI middle', color = color.new(color.blue, 0))
+plot(ta.rci(src, itvl), title = 'RCI long',   color = color.new(color.green, 0))

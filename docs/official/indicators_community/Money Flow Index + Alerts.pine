@@ -1,0 +1,89 @@
+//@version=3
+
+study("Money Flow Index MTF + Alerts", overlay = false)
+
+////////////////////////////
+// This study is based on the work of TV user Beasley Savage (https://www.tradingview.com/script/g58H59ub-Money-Flow-Index-Beasley-Savage/)
+// and all credit goes to them. 
+//
+// Changes I've made:
+//
+// 1. Added a visual symbol of an overbought/oversold threshold cross in the form of a red/green circle, respectively.
+//    Sometimes it can be hard to see when a cross actually occurs, and if your scaling isn't set up properly you can get
+//    misleading visuals. This way removes all doubt. Bear in mind they aren't meant as trading signals, so DO NOT use them as such.
+//    Research the MFI if you're unsure, but I use them as an early warning and that particular market/stock is added to my watchlist.
+//
+// 2. Added 60/40 lines as the MFI respects these incredibly well in trends. E.g. in a solid uptrend the MFI won't go below 40,
+//    and vice versa. Use the idea of support and resistance levels on the indicator and it'll be a great help.
+//    I've coloured the zones. Strong uptrends should stay above 60, strong downtrends should stay below
+//    40. The zone in between 40-60 I've called the transition zone. MFI often stays here in consolidation periods, and 
+//    in the last leg of a cycle/trend the MFI will often drop into this zone after being above 60 or below 40. This is a great
+//    sign that you should get out and start looking to reverse your position.  Hopefully it helps to spot divergences as well.
+//
+// 3. Added alerts based on an overbought/oversold cross. Also added an alert for when either condition is triggered, so hopefully
+//    that's useful for those struggling with low alert limits. Feel free to change the overbought/oversold levels, the alerts +
+//    crossover visual are set to adapt.
+//
+// Any queries please comment or PM me.
+//
+// Cheers,
+// RJR
+//
+////////////////////////////
+// Version control
+// ========================
+// 1.0
+//     Initial Release
+// 1.1
+//     Added support for multiple time frames
+//     Cleaned up code
+// 1.1.1
+//     Minor error fix
+////////////////////////////
+
+//Inputs
+length = input(title="Length", defval=14)
+os = input(20, title="Oversold")
+ob = input(80, title="Overbought")
+CurrentRes = input(true, title="Use Current Chart Resolution?")
+CustomRes = input("240", title="Custom Timeframe? Uncheck Box Above (E.g. 1M, 5D, 240 = 4Hours)")
+
+//MFI Calc
+res = CurrentRes ? period : CustomRes
+rawMoneyFlow = hlc3 * volume
+
+positiveMoneyFlow() =>
+    a = 0.0
+    a := hlc3 > hlc3[1] ? a + rawMoneyFlow : a
+negativeMoneyFlow() =>
+    b = 0.0
+    b := hlc3 < hlc3[1] ? b + rawMoneyFlow : b
+
+moneyFlowRatio = sma(positiveMoneyFlow(), length) / sma(negativeMoneyFlow(), length)
+
+moneyFlowIndex = security(tickerid, res, 100 - 100 / (1 + moneyFlowRatio))
+
+//OB/OS Identification
+oversold = moneyFlowIndex[1] > os[1] and moneyFlowIndex < os
+overbought = moneyFlowIndex[1] < ob[1] and moneyFlowIndex > ob
+
+//Plotting
+col = oversold ? green : red
+
+plot(moneyFlowIndex, color=black, linewidth=2)
+plot(oversold ? moneyFlowIndex : overbought ? moneyFlowIndex : na, title="Oversold/Overbought Cross", color=col, style=circles, linewidth=6)
+
+h1 = hline(80, "Overbought")
+h2 = hline(20, "Oversold")
+h3 = hline(40, "Bears")
+h4 = hline(60, "Bulls")
+fill(h4, h1, color=green, title="Uptrend")
+fill(h3, h2, color=red, title="Downtrend")
+fill (h3, h4, color=gray, title="Transition Zone")
+
+//Alerts
+alert = oversold or overbought
+
+alertcondition(oversold, title="MFI Oversold", message="MFI Crossed Oversold" )
+alertcondition(overbought, title="MFI Overbought", message="MFI Crossed Overbought" )
+alertcondition(alert, title="MFI Alert Both", message="MFI Alert Generated OB/OS" )

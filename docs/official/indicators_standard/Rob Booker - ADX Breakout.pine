@@ -1,0 +1,78 @@
+strategy("Rob Booker - ADX Breakout", shorttitle="ADX Breakout", overlay=true)
+//Developer: Andrew Palladino. 
+//Creator: Rob Booker.
+//Date: 9/29/2017
+
+
+adxSmoothPeriod = input(14, title="ADX Smoothing Period")
+adxPeriod = input(14, title="ADX Period")
+adxLowerLevel = input(18, title="ADX Lower Level")
+profitTargetMultiple = input(1, title="Profit Target Box Width Multiple")
+stopLossMultiple = input(0.5, title="Stop Loss Box Width Multiple")
+boxLookBack = input(20, title="BreakoutBox Lookback Period")
+enableDirection = input(0, title="Both(0), Long(1), Short(-1)")
+
+
+
+// When the ADX drops below threshold limit, then we consider the pair in consolidation. 
+// Set Box around highs and lows of the last 20 candles. with upper and lower boundaries. 
+// When price breaks outside of box, a trade is taken. (on close or on touch?)
+// Stop is placed, default 50%, of the size of the box. So if box is 200 pips, stop is at 100 pips. 
+// Profit target is 100% of the size of the box. Default. User can set a profit target of 0.5, 1 full size, 2 or 3. 
+
+
+dirmov(len) =>
+	up = change(high)
+	down = -change(low)
+	truerange = rma(tr, len)
+	plus = fixnan(100 * rma(up > down and up > 0 ? up : 0, len) / truerange)
+	minus = fixnan(100 * rma(down > up and down > 0 ? down : 0, len) / truerange)
+	[plus, minus]
+
+adx(dilen, adxlen) => 
+	[plus, minus] = dirmov(dilen)
+	sum = plus + minus
+	adx = 100 * rma(abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen)
+
+adxHigh(dilen, adxlen) => 
+	[plus, minus] = dirmov(dilen)
+	plus
+	
+adxLow(dilen, adxlen) => 
+	[plus, minus] = dirmov(dilen)
+	minus
+	
+sig = adx(adxSmoothPeriod, adxPeriod)
+//sigHigh = adxHigh(dilen, adxlen)
+//sigLow = adxLow(dilen, adxlen)
+
+isADXLow = sig < adxLowerLevel
+
+
+boxUpperLevel = strategy.position_size == 0 ? highest(high, boxLookBack)[1] : boxUpperLevel[1]
+boxLowerLevel = strategy.position_size == 0 ? lowest(low, boxLookBack)[1] : boxLowerLevel[1]
+boxWidth = boxUpperLevel - boxLowerLevel
+
+profitTarget = strategy.position_size > 0  ? strategy.position_avg_price + profitTargetMultiple*boxWidth : strategy.position_size < 0 ?  strategy.position_avg_price - profitTargetMultiple*boxWidth : na
+stopLoss = strategy.position_size > 0 ? strategy.position_avg_price - stopLossMultiple*boxWidth : strategy.position_size < 0 ? strategy.position_avg_price + stopLossMultiple*boxWidth : na
+
+
+plot(boxUpperLevel, "Box Upper Level", color = black)
+plot(boxLowerLevel, "Box Lower Level", color = black)
+
+bgcolor(isADXLow ? purple : na)
+plot(stopLoss, color=red, linewidth=2, title="StopLossLine")
+plot(profitTarget, color=blue, linewidth=2, title="ProfitTargetLine")
+
+isBuyValid = strategy.position_size == 0 and cross(close, boxUpperLevel) and isADXLow
+isSellValid = strategy.position_size == 0 and cross(close, boxLowerLevel) and isADXLow
+
+//Long Entry Condition
+entry_long = isBuyValid and strategy.opentrades == 0 and (enableDirection == 1 or enableDirection == 0)
+strategy.order("open_long", true, when=entry_long)
+strategy.exit(id="close_long", from_entry="open_long", stop=stopLoss, limit=profitTarget)
+
+//Short Entry condition
+entryShort = isSellValid and strategy.opentrades == 0 and (enableDirection == -1 or enableDirection == 0)
+strategy.order("open_short", false, when=entryShort)
+strategy.exit(id="close_short", from_entry="open_short", stop=stopLoss, limit=profitTarget)

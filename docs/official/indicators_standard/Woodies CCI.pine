@@ -1,0 +1,16 @@
+//@version=6
+indicator(title="Woodies CCI", timeframe="", timeframe_gaps=true)
+cciTurboLength = input.int(title="CCI Turbo Length", defval=6, minval=3, maxval=14)
+cci14Length = input.int(title="CCI 14 Length", defval=14, minval=7, maxval=20)
+source = close
+cciTurbo = ta.cci(source, cciTurboLength)
+cci14 = ta.cci(source, cci14Length)
+last5IsDown = cci14[5] < 0 and cci14[4] < 0 and cci14[3] < 0 and cci14[2] < 0 and cci14[1] < 0
+last5IsUp = cci14[5] > 0 and cci14[4] > 0 and cci14[3] > 0 and cci14[2] > 0 and cci14[1] > 0
+histogramColor = last5IsUp ? #009688 : last5IsDown ? #F44336 : cci14 < 0 ? #009688 : #F44336
+plot(cci14, title="CCI Turbo Histogram", color=histogramColor, style=plot.style_histogram)
+plot(cciTurbo, title="CCI Turbo", color=#009688 , style=plot.style_line)
+plot(cci14, title="CCI 14", color= #F44336, style=plot.style_line)
+hline(0, title="Zero Line", color=#787B86, linestyle=hline.style_solid)
+hline(100, title="Hundred Line", color=#787B86, linestyle=hline.style_dotted)
+hline(-100, title="Minus Line", color=#787B86, linestyle=hline.style_dotted)

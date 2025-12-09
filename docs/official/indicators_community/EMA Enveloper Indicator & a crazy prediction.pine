@@ -1,0 +1,30 @@
+//
+// @author LazyBear
+// v01 - initial release
+//
+study(title = "EMAEnvelope [LazyBear]", shorttitle="EMAEnvelope[LB]", overlay=true)
+src = close
+length=input(20)
+HighlightColors = input(true, title="Bull/Bear highlights?", type=bool)
+
+e=ema(close, length)
+eu = ema(high, length)
+el = ema(low, length)
+
+plot(e, style=cross, color=aqua)
+plot(eu, color=red, linewidth=2)
+plot(el, color=lime, linewidth=2)
+
+bull_color_normal = green
+bull_color_strong = lime
+bear_color_normal = orange
+bear_color_strong = red
+sidewise_color = blue
+
+bull_f = (high > eu and low > el)
+bear_f = (high < eu and low < el)
+sidewise_f = (not bull_f) and (not bear_f)
+b_color = bull_f ? bull_color_normal : (bear_f ? bear_color_normal : (sidewise_f ? sidewise_color : na))
+d_color = (bull_f ? (low > eu ? bull_color_strong : b_color) : bear_f ? ( high < el ? bear_color_strong : b_color) : b_color)
+bgcolor(HighlightColors ? d_color : na)
+

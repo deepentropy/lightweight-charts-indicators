@@ -1,0 +1,151 @@
+//@version=4
+
+// Thanks Dynausmaux for the code
+// Based on Cipher_A from falconCoin https://www.tradingview.com/script/cAw5GEAB-Market-Cipher-A-free-version-1-1/
+// Thanks to LazyBear foor WaveTrend Oscillator https://www.tradingview.com/script/2KE8wTuF-Indicator-WaveTrend-Oscillator-WT/
+// I just added the red diamond, blood diamond and yellowX pattern, i dont know if is exact but seems to be.
+// Still need a lot of visual adjustments to look like market cipher A but it's an attempt
+study(title="VuManChu Cipher A", shorttitle="VMC Cipher_A", overlay=true)
+
+// FUNCTIONS {
+
+// WaveTrend
+f_wavetrend(_src, _chlen, _avg, _malen) =>
+    _esa = ema(_src, _chlen)
+    _de = ema(abs(_src - _esa), _chlen)
+    _ci = (_src - _esa) / (0.015 * _de)
+    _tci = ema(_ci, _avg)
+    _wt1 = _tci
+    _wt2 = sma(_wt1, _malen)
+    [_wt1, _wt2]
+
+// 8 EMA Ribbon
+f_emaRibbon(_src, _e1, _e2, _e3, _e4, _e5, _e6, _e7, _e8) =>
+    _ema1 = ema(_src, _e1)
+    _ema2 = ema(_src, _e2)
+    _ema3 = ema(_src, _e3)
+    _ema4 = ema(_src, _e4)
+    _ema5 = ema(_src, _e5)
+    _ema6 = ema(_src, _e6)
+    _ema7 = ema(_src, _e7)
+    _ema8 = ema(_src, _e8)
+    [_ema1, _ema2, _ema3, _ema4, _ema5, _ema6, _ema7, _ema8]
+    
+f_rsimfi(_period, _multiplier, _tf) => security(syminfo.tickerid, _tf, sma(((close - open) / (high - low)) * _multiplier, _period))
+ 
+// } FUNCTIONS  
+
+
+// PARAMETERS {
+
+// WaveTrend
+wtChannelLen = input(9, title = 'WT Channel Length')
+wtAverageLen = input(13, title = 'WT Average Length')
+wtMASource = input(hlc3, title = 'WT MA Source')
+wtMALen = input(3, title = 'WT MA Length')
+
+// WaveTrend Overbought & Oversold lines
+obLevel = input(53, title = 'WT Overbought Level 1')
+obLevel2 = input(60, title = 'WT Overbought Level 2')
+obLevel3 = input(100, title = 'WT Overbought Level 3')
+osLevel = input(-53, title = 'WT Oversold Level 1')
+osLevel2 = input(-60, title = 'WT Oversold Level 2')
+osLevel3 = input(-80, title = 'WT Oversold Level 3')
+
+// EMA Ribbon
+showRibbon = input(true, "Show Ribbon")
+ema1Len = input(5, title = "EMA 1 Length")
+ema2Len = input(11, title = "EMA 2 Length")
+ema3Len = input(15, title = "EMA 3 Length")
+ema4Len = input(18, title = "EMA 4 Length")
+ema5Len = input(21, title = "EMA 5 Length")
+ema6Len = input(24, title = "EMA 6 Length")
+ema7Len = input(28, title = "EMA 7 Length")
+ema8Len = input(34, title = "EMA 8 Length")
+
+// RSI
+rsiSRC = input(close, title = "RSI Source")
+rsiLen = input(14, title = "RSI Length")
+rsiOversold = input(30, title = 'RSI Oversold', minval = 50, maxval = 100)
+rsiOverbought = input(60, title = 'RSI Overbought', minval = 0, maxval = 50)
+
+// RSI+MFI
+rsiMFIShow = input(true, title = "Show RSI+MFI")
+rsiMFIperiod = input(60, title = 'RSI+MFI Period')
+rsiMFIMultiplier = input(150, title = 'RSI+MFI Area multiplier')
+
+// }
+
+
+// CALCULATE INDICATORS {
+
+// EMA Ribbon
+[ema1, ema2, ema3, ema4, ema5, ema6, ema7, ema8] = f_emaRibbon(close, ema1Len, ema2Len, ema3Len, ema4Len, ema5Len, ema6Len, ema7Len, ema8Len)
+
+// RSI 
+rsi = rsi(rsiSRC, rsiLen)
+
+// Calculates WaveTrend
+[wt1, wt2] = f_wavetrend(wtMASource, wtChannelLen, wtAverageLen, wtMALen)
+
+// WaveTrend Conditions
+wtOverSold = wt2 <= osLevel
+wtOverBought = wt2 >= obLevel
+wtCross = cross(wt1, wt2)
+wtCrossUp = wt2 - wt1 <= 0
+wtCrossDown = wt2 - wt1 >= 0
+
+// RSI + MFI
+rsiMFI = f_rsimfi(rsiMFIperiod, rsiMFIMultiplier, timeframe.period)
+
+// Signals
+longEma = crossover(ema2, ema8)
+redCross = crossunder(ema1, ema2)
+blueTriangle = crossover(ema2, ema3)
+redDiamond = wtCross and wtCrossDown
+yellowCross = redDiamond and wt2 < 45 and wt2 > osLevel3 and rsi < 30 and rsi > 15 and rsiMFI < -5
+bloodDiamond = redDiamond and redCross
+bullCandle = open > ema2 and open > ema8 and (close[1] > open[1]) and (close > open) and not redDiamond and not redCross
+shortEma = crossover(ema8, ema2)
+
+// } CALCULATE INDICATORS
+
+
+// DRAW {
+
+// EMA Ribbon
+ribbonDir = ema8 < ema2
+colorEma = ribbonDir ? color.green : color.red
+p1 = plot(ema1, color=showRibbon ? ribbonDir ? #1573d4 : color.gray : na, linewidth=2, transp=15, title="EMA 1")
+p2 = plot(ema2, color=showRibbon ? ribbonDir ? #3096ff : color.gray : na, linewidth=2, transp=15, title="EMA 2")
+plot(ema3, color=showRibbon ? ribbonDir ? #57abff : color.gray : na, linewidth=2, transp=15, title="EMA 3")
+plot(ema4, color=showRibbon ? ribbonDir ? #85c2ff : color.gray : na, linewidth=2, transp=15, title="EMA 4")
+plot(ema5, color=showRibbon ? ribbonDir ? #9bcdff : color.gray : na, linewidth=2, transp=15, title="EMA 5")
+plot(ema6, color=showRibbon ? ribbonDir ? #b3d9ff : color.gray : na, linewidth=2, transp=15, title="EMA 6")
+plot(ema7, color=showRibbon ? ribbonDir ? #c9e5ff : color.gray : na, linewidth=2, transp=15, title="EMA 7")
+plot(ema8, color=showRibbon ? ribbonDir ? #dfecfb : color.gray : na, linewidth=2, transp=15, title="EMA 8")
+p8 = plot(ema8, color=showRibbon ? na : colorEma, linewidth=2, transp=0, title="EMA 8")
+fill(p1, p2, color = #1573d4, transp = 85)
+fill(p2, p8, color = #363a45, transp = 85)
+
+// SHAPES
+
+plotshape(longEma, style=shape.circle, color=#00ff00, location=location.abovebar, size=size.tiny, title="Long EMA Signal", transp=50)
+plotshape(shortEma, style=shape.circle, color=#ff0000, location=location.abovebar, size=size.tiny, title="Short EMA Signal", transp=50)
+plotshape(redCross, style=shape.xcross, color=#ff0000, location=location.abovebar, size=size.tiny, title="Red cross", transp=50)
+plotshape(blueTriangle, style=shape.triangleup, color=#0064ff, location=location.abovebar, size=size.small, title="Blue Triangle", transp=50)
+plotshape(redDiamond, style=shape.diamond, color=#ff0000, location=location.abovebar, size=size.tiny, title="Red Diamond", transp=25)
+plotshape(bullCandle, style=shape.diamond, color=color.yellow, location=location.abovebar, size=size.tiny, title="Bull candle", transp=75)
+plotshape(bloodDiamond, style=shape.diamond, color=#ff0000, location=location.abovebar, size=size.small, title="Blood Diamond", transp=15)
+plotshape(yellowCross, style=shape.xcross, color=color.yellow, location=location.abovebar, size=size.small, title="Yellow Cross", transp=25)
+// } DRAW
+  
+  
+// ALERTS {
+alertcondition(redDiamond != 0, "Red Diamond", "Red Diamond")
+alertcondition(bloodDiamond != 0, "Blood Diamond", "Blood Diamond")
+alertcondition(yellowCross != 0, "YellowX", "YellowX")
+alertcondition(redCross != 0, "RedX", "RedX")
+alertcondition(longEma != 0, "Longema", "Longema")
+alertcondition(blueTriangle != 0, "Bluetriangle", "Bluetriangle")
+// } ALERTS

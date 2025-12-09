@@ -1,0 +1,251 @@
+//@version=3
+//
+
+study(title="QQE Cross Indicator Alert v4 by JustUncleL", shorttitle="QQEX v4", overlay=true,max_bars_back=2000)
+
+//
+// Author:  JustUncleL
+// Date:    10-July-2016
+// Version: v3
+//
+// Description:
+//  A trend following indicator alert that uses fast QQE crosses with Moving Averages
+//  for trend direction filtering. QQE or Qualitative Quantitative Estimation is based 
+//  on the relative strength index, but uses a smoothing technique as an additional 
+//  transformation. Three crosses can be selected (all selected by default): 
+//    - RSI signal crossing ZERO (XZERO)
+//    - RSI signal crossing Fast RSIatr line (XQQE)
+//    - RSI signal exiting the RSI Threshhold Channel (XCHL)
+//  The (BUY/SELL) alerts can be optionally filtered by the Moving averages:
+//    - For BUY alert the Close must be above the fast MA and 
+//        fast MA (Hull8) > medium MA (Hull21) > slow MA (Hull34).
+//    - For SELL alert the Close must be below the fast MA and
+//        fast MA (Hull8) < medium MA (Hull21) < slow MA (Hull34).
+//  and/or directional filter:
+//    - For BUY alert the Close must be above the slow MA (Hull34) and the
+//      directional MA (Hull21) must be green.
+//    - For SELL alert the Close must be below the slow MA (Hull34) and the
+//      directional MA (Hull21) must be red.
+//. The XZERO and XQQE are not included in the filtering, but they are used to indicate
+//  pending BUY/SELL alerts, particularly the XZERO. 
+//  Note: I have found the XQQE cross can also be quite good alert for BUY/SELL as well,
+//  particularly in direction of current trend. The XZERO I have found 
+//  to be totally unreliable for BUY/SELL alerts.
+//
+//  This indicator should work on any currency pair, most chart timeframes and
+//  expiry in:
+//    - 1 to 3 candles for 1min and 5min charts
+//    - 4 to 8 candles for 15min or longer charts.
+//    - or use alerts for Scalping in FOREX.
+//  Don't trade every alert, look for the best set ups.
+//
+// Mofidifications:
+//  4.0 - Added implied GPL copyright notice.
+//      - Changed defaults to use HullMAs instead of EMAs.
+//  3.0 - No repaint on BUY/SELL alert, however, now trades should be taken when the BUY/SELL
+//        Alert is displayed. The alarm is still generated on the previous candle so you can
+//        still get a pre-warning, this enables you time to analyse the pending alert.
+//      - Added option to test success of alerted trades, highlight successful and failed trade bars
+//        and show simple stats: success rate and number of trades (out of 5000), this will help
+//        tune the settings for timeframe and currency PAIR.
+//  2.0 - Added code to use the medium moving average (EMA20) rising/falling for additional
+//        trend direction filter.
+//      - Remove Moving Average cross over signals and other options not used in this indicator.
+//      - Added code to distinguish between the crosses, now only show Thresh Hold crosses as BUY/SELL
+//        alerts.
+//      - Modidied default settings to more well known MA's and slightly different QQE settings, these
+//        work well at lower timeframes.
+//      - Added circle plots at bottom of chart to show when actual BUY/SELL alerts occur.
+//  1.0 - original
+//
+// References:
+//  Some Code borrowed from:
+//  - "Scalp Jockey - MTF MA Cross Visual Strategizer by JayRogers"
+//  - "QQE MT4 by glaz"
+//  Inspiration from:
+//  - http://www.forexstrategiesresources.com/binary-options-strategies-ii/189-aurora-binary-trading/
+//  - http://www.forexstrategiesresources.com/metatrader-4-trading-systems-v/652-qqe-smoothed-trading/
+//  - http://dewinforex.com/forex-indicators/qqe-indicator-not-quite-grail-but-accurately-defines-trend-and-flat.html
+//  - "Binary option trading by two previous bars" by radixvinni
+//
+//
+// -----------------------------------------------------------------------------
+// Copyright 2015 Glaz,JayRogers
+//
+// Copyright 2016,2017,2018 JustUncleL
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+// 
+// The GNU General Public License can be found here
+// <http://www.gnu.org/licenses/>.
+//
+// -----------------------------------------------------------------------------
+//
+
+//
+// - INPUTS START
+// Fast MA - type, source, length
+type1   = input(defval="HullMA", title="Fast MA Type: ", options=["SMA", "EMA", "WMA", "VWMA", "SMMA", "DEMA", "TEMA", "HullMA", "ZEMA", "TMA", "SSMA"], type=string)
+len1    = input(defval=8, title="Fast - Length", minval=1)
+// Medium Fast MA - type, source, length
+type2   = input(defval="HullMA", title="Medium MA Type: ", options=["SMA", "EMA", "WMA", "VWMA", "SMMA", "DEMA", "TEMA", "HullMA", "ZEMA", "TMA", "SSMA"], type=string)
+len2    = input(defval=21, title="Medium - Length", minval=1)
+// Slow MA - type, source, length
+type3   = input(defval="HullMA", title="Slow MA Type: ", options=["SMA", "EMA", "WMA", "VWMA", "SMMA", "DEMA", "TEMA", "HullMA", "ZEMA", "TMA", "SSMA"], type=string)
+len3    = input(defval=34, title="Slow Length", minval=1)
+//
+// QQE rsi Length, Smoothing, fast ATR factor, source
+RSILen  = input(6,title='RSI Length')
+SF      = input(3,title='RSI Smoothing Factor')
+QQE     = input(2.618,title='Fast QQE Factor')
+threshhold = input(10, title="RSI Threshhold")
+//
+sQQEx   = input(true,title="Show QQE Signal crosses")
+sQQEz   = input(true,title="Show QQE Zero crosses")
+sQQEc   = input(true,title="Show QQE Thresh Hold Channel Exits")
+//
+filter  = input(false,title="Use Moving Average Filter")
+dfilter = input(false, title="Use Trend Directional Filter" )
+sall    = input(false, title="Use All Crosses in Alert Alarm")
+ushunt  = input(false, title="Use Shunt Alerts to prevent Repaint")
+RSIsrc  = input(close,title="Source")
+srcclose= RSIsrc
+shunt  = ushunt ? (RSIsrc==open? 0 : 1) : 0
+// - INPUTS END
+
+// - FUNCTIONS
+
+// Returns MA input selection variant, default to SMA if blank or typo.
+variant(type, src, len) =>
+    v1 = sma(src, len)                                                  // Simple
+    v2 = ema(src, len)                                                  // Exponential
+    v3 = wma(src, len)                                                  // Weighted
+    v4 = vwma(src, len)                                                 // Volume Weighted
+    v5 = 0.0
+    v5 := na(v5[1]) ? sma(src, len) : (v5[1] * (len - 1) + src) / len    // Smoothed
+    v6 = 2 * v2 - ema(v2, len)                                          // Double Exponential
+    v7 = 3 * (v2 - ema(v2, len)) + ema(ema(v2, len), len)               // Triple Exponential
+    v8 = wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len)))   // Hull
+    v11 = sma(sma(src,len),len)                                         // Triangular
+    // SuperSmoother filter
+    // © 2013  John F. Ehlers
+    a1 = exp(-1.414*3.14159 / len)
+    b1 = 2*a1*cos(1.414*3.14159 / len)
+    c2 = b1
+    c3 = (-a1)*a1
+    c1 = 1 - c2 - c3
+    v9 = 0.0
+    v9 := c1*(src + nz(src[1])) / 2 + c2*nz(v9[1]) + c3*nz(v9[2])
+    // Zero Lag Exponential
+    e = ema(v1, len)
+    v10 = v1+(v1-e)
+    // return variant, defaults to SMA if input invalid.
+    type=="EMA"?v2 : type=="WMA"?v3 : type=="VWMA"?v4 : type=="SMMA"?v5 : type=="DEMA"?v6 : type=="TEMA"?v7 : type=="HullMA"?v8 : type=="SSMA"?v9 : type=="ZEMA"?v10 : type=="TMA"? v11: v1
+
+// - FUNCTIONS END
+
+// - Fast ATR QQE
+//
+Wilders_Period = RSILen * 2 - 1
+//
+Rsi = rsi(RSIsrc,RSILen)
+RSIndex = ema(Rsi, SF)
+AtrRsi = abs(RSIndex[1] - RSIndex)
+MaAtrRsi = ema(AtrRsi, Wilders_Period)
+DeltaFastAtrRsi = ema(MaAtrRsi,Wilders_Period) * QQE
+//
+newshortband=  RSIndex + DeltaFastAtrRsi
+newlongband= RSIndex - DeltaFastAtrRsi
+longband = 0.0
+shortband=0.0
+trend = 0
+longband:=RSIndex[1] > longband[1] and RSIndex > longband[1] ? max(longband[1],newlongband) : newlongband
+shortband:=RSIndex[1] < shortband[1] and  RSIndex < shortband[1] ? min(shortband[1],newshortband) : newshortband
+trend:=cross(RSIndex, shortband[1])? 1 : cross(longband[1], RSIndex) ? -1 : nz(trend[1],1)
+FastAtrRsiTL = trend==1 ? longband : shortband
+
+
+// - SERIES VARIABLES
+// MA's
+ma_fast    = variant(type1, srcclose, len1)
+ma_medium  = variant(type2, srcclose, len2)
+ma_slow    = variant(type3, srcclose, len3)
+// Get Direction From Medium Moving Average
+direction = rising(ma_medium,3) ? 1 : falling(ma_medium,3) ? -1 : 0
+//
+// Find all the QQE Crosses
+QQExshort = crossover(FastAtrRsiTL, RSIndex)
+QQExlong  = crossunder(FastAtrRsiTL, RSIndex)
+// Zero cross
+QQEzlong = crossover(RSIndex,50)
+QQEzshort = crossunder(RSIndex,50)
+//  
+// Thresh Hold channel Crosses give the BUY/SELL alerts.
+QQEclong = 0
+QQEcshort=0
+QQEclong := RSIndex>(50+threshhold) ? na(QQEclong[1]) ? 1 : QQEclong[1]+1 : 0
+QQEcshort := RSIndex<(50-threshhold) ? na(QQEcshort[1]) ? 1 : QQEcshort[1]+1 : 0
+
+//
+// Check Filtering.
+QQEflong = (not filter or (srcclose>ma_medium and ma_medium>ma_slow and ma_fast>ma_medium)) and 
+  (not dfilter or (direction>0 ))
+QQEfshort = (not filter or (srcclose<ma_medium and ma_medium<ma_slow and ma_fast<ma_medium)) and
+  (not dfilter or (direction<0 ))
+//
+// Get final BUY / SELL alert determination
+buy = 0
+sell = 0
+buy := QQEclong>0 and QQEflong ? na(buy[1]) ? 1 : buy[1]+1 : 0
+sell := QQEcshort>0 and QQEfshort ? na(sell[1]) ? 1 : sell[1]+1 : 0
+
+// - SERIES VARIABLES END
+
+// - PLOTTING
+// Ma's
+plot(ma_fast, title="MA Fast", color=black, linewidth=2, transp=0)
+plot(ma_medium, title="MA Medium Fast", color=direction<0?red:green, linewidth=3, transp=0)
+plot(ma_slow, title="MA Slow", color=blue, linewidth=2, transp=0)
+// QQE exit from Thresh Hold Channel
+plotshape(sQQEc and QQEclong==1 and buy[shunt]!=1, title="QQE X Over Channel", style=shape.triangleup, location=location.belowbar, text="XC", color=olive, transp=20, size=size.tiny)
+plotshape(sQQEc and QQEcshort==1 and sell[shunt]!=1, title="QQE X Under Channel", style=shape.triangledown, location=location.abovebar, text="XC", color=red, transp=20, size=size.tiny)
+// QQE crosses
+plotshape(sQQEx and QQExlong and QQEclong!=1 and buy[shunt]!=1, title="QQE Cross Over", style=shape.triangleup, location=location.belowbar, text="XQ", color=blue, transp=20, size=size.tiny)
+plotshape(sQQEx and QQExshort and QQEcshort!=1 and sell[shunt]!=1, title="QQE Cross Under", style=shape.triangledown, location=location.abovebar, text="XQ", color=black, transp=20, size=size.tiny)
+// Signal crosses zero line
+plotshape(sQQEz and QQEzlong and QQEclong!=1 and buy[shunt]!=1 and not QQExlong, title="QQE Zero Cross Over", style=shape.triangleup, location=location.belowbar, text="XZ", color=aqua, transp=20, size=size.tiny)
+plotshape(sQQEz and QQEzshort and QQEcshort!=1 and sell[shunt]!=1 and not QQExshort, title="QQE Zero Cross Under", style=shape.triangledown, location=location.abovebar, text="XZ", color=fuchsia, transp=20, size=size.tiny)
+// Exit ThreshHold Channel
+plotshape(buy[shunt]==1, title="QQE BUY", style=shape.arrowup, location=location.belowbar, text="BUY", color=lime, textcolor=green, transp=0, size=size.small)
+plotshape(sell[shunt]==1, title="QQE SELL", style=shape.arrowdown, location=location.abovebar, text="SELL", color=red, textcolor=maroon, transp=0, size=size.small)
+
+// - PLOTTING END
+
+// - ALERTING
+
+// can alert just BUY/SELL or all crosses
+c_alert = (buy==1 or sell==1) or (sall and (QQExshort or QQExlong or QQEzshort or QQEzlong)) 
+alertcondition(c_alert, title="QQEX Alert", message="QQEX Alert")
+alertcondition((QQEclong==1 or QQEcshort==1), title="QQEX XC Alert", message="QQEX XC Alert")
+alertcondition((QQExlong or QQExshort), title="QQEX XQ Alert", message="QQEX XQ Alert")
+alertcondition((QQEzlong or QQEzshort), title="QQEX XZ Alert", message="QQEX XZ Alert")
+//
+// show only when alert condition is met and bar closed.
+plotshape((buy[1]==1 or sell[1]==1),title= "Cross Alert Completed", location=location.bottom, color=sell[1]==1?red:green, transp=0, style=shape.circle,size=size.auto,offset=-1)
+
+//t_alert = direction>0 and (direction[1]<0 or (direction[1]==0 and direction[2]<0))? 1 : direction<0 and (direction[1]>0 or (direction[1]==0 and direction[2]>0))? -1 : na
+//alertcondition(t_alert, title="[UL]QQEX Trend Alert", message="[UL]QQEX Trend Alert")
+//plotshape(t_alert[1],title= "Trend Alert Completed", location=location.bottom, color=blue, transp=0, style=shape.circle,size=size.auto,offset=-1)
+
+// - ALERTING END
+
+
+//EOF

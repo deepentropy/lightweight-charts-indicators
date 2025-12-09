@@ -1,0 +1,148 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Deviation Trend Profile [BigBeluga]", overlay = true, max_boxes_count = 500, max_bars_back = 5000)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+grp = "Standart Deviation Levels"
+length = input.int(50, "SMA Length", group = "SMA")
+mult1 = input.int(1, "Standart Deviation 1", group = grp)
+mult2 = input.int(2, "Standart Deviation 2", group = grp)
+mult3 = input.int(3, "Standart Deviation 3", group = grp)
+
+show_tp = input.bool(true, "Show", group = "Trend Distribution Profile")
+bins = input.int(50, "Bins Amount", group = "Trend Distribution Profile")
+offset = input.int(30, "Offset", group = "Trend Distribution Profile")
+
+col_up = input.color(color.rgb(18, 209, 235), "", group = "Theme", inline = "c")
+col_dn = input.color(color.rgb(250, 40, 86), "", group = "Theme", inline = "c")
+
+
+var start_index = int(na)
+var trend = bool(na)
+
+// }
+
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+avg = ta.sma(close, length)
+atr = ta.atr(200)
+
+stdv1 = avg + atr * mult1
+stdv2 = avg + atr * mult2
+stdv3 = avg + atr * mult3
+
+stdv_1 = avg - atr * mult1
+stdv_2 = avg - atr * mult2
+stdv_3 = avg - atr * mult3
+
+max = stdv3
+min = stdv_3
+
+avg_diff = avg - avg[5]
+
+avg_col = avg_diff / ta.percentile_linear_interpolation(avg_diff, 500, 100)
+
+avg_color = color.from_gradient(avg_col, -0.3, 0.3, col_dn, col_up)
+
+
+if ta.crossover(avg_col, 0.1) and not trend
+    trend := true
+    start_index := bar_index
+
+if ta.crossunder(avg_col, -0.1) and trend
+    trend := false
+    start_index := bar_index
+
+loockback = bar_index - start_index
+
+profile(min, max)=>
+
+    var boxes = array.new<box>()
+    var bin = array.new<int>(bins)
+
+    step = (max - min) / bins
+
+    start = bar_index + offset
+
+    if barstate.islast
+
+        if boxes.size() >=0 
+            for b in boxes
+                box.delete(b)
+
+
+        for g = 0 to bins-1
+            bin.set(g, 0)
+
+
+        for l = 0 to loockback
+            c = close[l]
+            a = avg[l]
+
+            mi = min[l]
+
+            s = step[l]
+
+            for i = 0 to bin.size()-1
+
+                lower = mi + s * i
+                upper = lower + s 
+
+                if c >= lower-s and c <= upper+s
+                    bin.set(i, bin.get(i) + 1)
+
+
+        for j = 0 to bin.size()-1
+
+            val = bin.get(j)
+
+            lower = min + step * j
+            upper = lower + step 
+        
+            col = color.from_gradient(val, 0, bin.max(), color.new(chart.fg_color, 80), avg_color)
+
+            boxes.push(box.new(start-val, upper, start, lower, bgcolor = col, border_color = val == 0 ? chart.fg_color : chart.bg_color))
+
+        label.delete(label.new(start, max, str.tostring(loockback), textcolor = chart.fg_color, color = color.new(avg_color, 80), tooltip = str.tostring(loockback) + " bars back beginnig of the trend")[1])
+
+
+draw_stdv(src, mult, mid = false)=>
+    if barstate.islast
+        if mid
+            line.delete(line.new(bar_index, avg, bar_index+5, avg, color = avg_color, width = 2)[1])
+
+        line.delete(line.new(bar_index, src, bar_index+5, src, color = chart.fg_color, width = 2)[1])
+        label.delete(label.new(bar_index+5, src, color = color.new(chart.fg_color, 100), textcolor = chart.fg_color, text = mult, style = label.style_label_left)[1])
+// }
+
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+draw_stdv(stdv1, "+1", true)
+draw_stdv(stdv2, "+2")
+draw_stdv(stdv3, "+3")
+
+draw_stdv(stdv_1, "-1")
+draw_stdv(stdv_2, "-2")
+draw_stdv(stdv_3, "-3")
+
+if show_tp
+    profile(min, max)
+
+plot(avg, color = avg_color, linewidth = 3)
+
+plotshape(trend != trend[1] and trend ? avg : na, "Up", shape.circle, location.absolute, size = size.tiny, color = col_up)
+plotshape(trend != trend[1] and trend ? avg : na, "Up", shape.circle, location.absolute, size = size.small, color = color.new(col_up, 50))
+
+plotshape(trend != trend[1] and not trend ? avg : na, "Down", shape.circle, location.absolute, size = size.tiny, color = col_dn)
+plotshape(trend != trend[1] and not trend ? avg : na, "Down", shape.circle, location.absolute, size = size.small, color = color.new(col_dn, 50))
+
+// }

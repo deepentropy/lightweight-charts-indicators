@@ -1,0 +1,345 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fluxchart
+
+//@version=5
+const bool DEBUG = false
+const int maxBoxesCount = 500
+const int showLastXFVGs = 125
+const int extendLastXFVGsCount = 3
+const int minimumFVGSize = 3
+const float overlapThresholdPercentage = 0
+const int maxDistanceToLastBar = 10000
+const int atrLen = 10
+
+indicator(title = 'Volumized Fair Value Gaps | Flux Charts', shorttitle = "Volumized FVGs | Flux Charts", overlay = true, max_boxes_count = maxBoxesCount, max_labels_count = maxBoxesCount, max_lines_count = maxBoxesCount, max_bars_back = 5000)
+
+volCheck = (ta.cum(volume) > 0)
+
+//if not volCheck
+    //runtime.error("No volume info available.")
+
+fvgEndMethod = input.string("Close", "Zone Invalidation", options = ["Wick", "Close"],  group = "General Configuration")
+fvgFilterMethod = input.string("Average Range", "Zone Filtering", options = ["Average Range", "Volume Threshold"],  group = "General Configuration")
+volumeThresholdPercent = input.int(50, "Volume Threshold %", group = "General Configuration", tooltip = "Only taken into calculation when filter method is Volume Threshold.", minval = 1, maxval = 200)
+fvgBars = input.string("Same Type", "FVG Detection", options = ["Same Type", "All"], tooltip = "Same Type -> All 3 bars that formed the FVG should be the same type. (Bullish / Bearish) \n\nAll -> Bar types may vary between bullish / bearish.", group = "General Configuration")
+fvgSensEnabled = input.bool(true, "", inline = "sens", group = "General Configuration")
+fvgSensitivityText = input.string("Extreme", "Detection Sensitivity", options = ["Extreme", "High", "Normal", "Low"], inline = "sens", group = "General Configuration")
+combineFVGs = DEBUG ? input.bool(true, "Combine Zones", group = "General Configuration") : true
+allowGaps = input.bool(false, "Allow Gaps Between Bars", group = "General Configuration", tooltip = "On tickers that can have a different opening price than the previous bar's closing price, the indicator will not analyze those bars for FVGs if disabled.\n\nFor Example, if the today's opening price is different from the yesterday's closing price in a stock ticker.")
+deleteUntouched = DEBUG ? input.bool(true, "", group = "General Configuration", inline = "deleteUntouched") : true
+deleteUntouchedAfterXBars = DEBUG ? input.int(200, "Delete Untouched Zones After", group = "General Configuration", minval = 5, maxval = 500, inline = "deleteUntouched") : 200
+showInvalidated = input.bool(true, "Show Historic Zones", group = "General Configuration")
+
+bullColor = input.color(#08998180, "Bull Color", group = "Style", inline = "BBcolors")
+bearColor = input.color(#f2364580, "Bear Color", group = "Style", inline = "BBcolors")
+textColor = input.color(#ffffff80, "Text Color", group = "Style", inline = "BBcolors")
+extendZonesBy = DEBUG ? input.int(15, "Extend Zones", group = "Style", minval = 1, maxval = 30, inline = "ExtendZones") : 15
+extendZonesDynamic = DEBUG ? input.bool(true, "Dynamic", group = "Style", inline = "ExtendZones") : true
+extendLastFVGs = DEBUG ? input.bool(true, "Extend Last Zones", group = "Style") : true
+changeCombinedFVGsColor = DEBUG ? input.bool(true, "Change Combined Zones Color", group = "Style", inline = "CombinedColor") : false
+combinedText = DEBUG ? input.bool(true, "Combined Text", group = "Style", inline = "CombinedColor") : true
+combinedColor = DEBUG ? input.color(#fff70080, DEBUG ? "" : "Combined Zone Color", group = "Style", inline = "CombinedColor") : #fff70080
+startZoneFrom = input.string("Last Bar", "Start Zones From", options = ["First Bar", "Last Bar"], group = "Style")
+
+volumeBarsPlace = DEBUG ? input.string("Left", "Show Volume Bars At", options = ["Left", "Right"], group = "Style", inline = "volumebars") : "Left"
+mirrorVolumeBars = DEBUG ? input.bool(true, "Mirror Volume Bars", group = "Style", inline = "volumebars") : true
+volumeBarsLeftSide = (volumeBarsPlace == "Left")
+fvgSensitivity = fvgSensitivityText == "Extreme" ? 6 : fvgSensitivityText == "High" ? 2 : fvgSensitivityText == "Normal" ? 1.5 : 1
+
+atr = ta.atr(atrLen)
+
+type FVG
+    float max = na
+    float min = na
+    bool isBull = na
+    int t = na
+    float totalVolume = na
+    int startTime = na
+    int endTime = na
+    bool extendInfinite = false
+    bool combined = false
+    bool disabled = false
+    bool isRendered = false
+
+    float lowVolume = na
+    float highVolume = na
+    int lastTouched = na
+
+    box fvgBox = na
+    box fvgBoxText = na
+    box fvgBoxPositive = na
+    box fvgBoxNegative = na
+
+    line fvgSeperator = na
+    line fvgTextSeperator = na
+
+createFVG (h,l,bull,t,tv) =>
+    FVG newFVG = FVG.new(h, l, bull, t, tv)
+    newFVG
+
+safeDeleteFVG (FVG fvg) =>
+    fvg.isRendered := false
+
+    box.delete(fvg.fvgBox)
+    box.delete(fvg.fvgBoxText)
+    box.delete(fvg.fvgBoxPositive)
+    box.delete(fvg.fvgBoxNegative)
+
+    line.delete(fvg.fvgSeperator)
+    line.delete(fvg.fvgTextSeperator)
+
+var FVG[] fvgList = array.new<FVG>()
+var int totalFVGIndex = 0
+
+moveLine(_line, _x, _y, _x2) =>
+    line.set_xy1(_line, _x,  _y)
+    line.set_xy2(_line, _x2, _y)
+
+moveBox (_box, _topLeftX, _topLeftY, _bottomRightX, _bottomRightY) =>
+    box.set_lefttop(_box, _topLeftX, _topLeftY)
+    box.set_rightbottom(_box, _bottomRightX, _bottomRightY)
+
+colorWithTransparency (colorF, transparencyX) =>
+    color.new(colorF, color.t(colorF) * transparencyX)
+
+createFVGBox (boxColor, transparencyX = 1.0, xlocType = xloc.bar_time) =>
+    box.new(na, na, na, na, text_size = size.normal, xloc = xlocType, extend = extend.none, bgcolor = colorWithTransparency(boxColor, transparencyX), text_color = textColor, text_halign = text.align_center, border_color = #00000000)
+
+renderFVG (FVG fvg) =>
+    fvg.isRendered := true
+    fvg.fvgBox := createFVGBox((fvg.combined and changeCombinedFVGsColor) ? combinedColor : fvg.isBull ? bullColor : bearColor, 1.5)
+    fvg.fvgBoxPositive := createFVGBox(bullColor)
+    fvg.fvgBoxNegative := createFVGBox(bearColor)
+    fvg.fvgBoxText := createFVGBox(color.new(color.white, 100))
+    fvg.fvgSeperator := line.new(na,na,na,na,xloc.bar_time,extend.none,textColor,line.style_dashed,1)
+    fvg.fvgTextSeperator := line.new(na,na,na,na,xloc.bar_time,extend.none,textColor,line.style_solid,1)
+
+    zoneSize = extendZonesDynamic ? na(fvg.endTime) ? extendZonesBy : (fvg.endTime - fvg.startTime) : extendZonesBy
+    if na(fvg.endTime) and fvg.extendInfinite
+        zoneSize := time - fvg.startTime
+
+    startX = volumeBarsLeftSide ? fvg.startTime : fvg.startTime + zoneSize - zoneSize / 3
+    maxEndX = volumeBarsLeftSide ? fvg.startTime + zoneSize / 3 : fvg.startTime + zoneSize
+
+    moveBox(fvg.fvgBox, fvg.startTime, fvg.max, fvg.startTime + zoneSize, fvg.min)
+    moveBox(fvg.fvgBoxText, volumeBarsLeftSide ? maxEndX : fvg.startTime, fvg.max, volumeBarsLeftSide ? fvg.startTime + zoneSize : startX, fvg.min)
+
+    percentage = nz(int((math.min(fvg.highVolume, fvg.lowVolume) / math.max(fvg.highVolume, fvg.lowVolume)) * 100.0))
+    fvgText = fvg.totalVolume == 0 ? "FVG" : str.tostring(fvg.totalVolume, format.volume) + " (" + str.tostring(percentage) + "%)" + (combinedText and fvg.combined ? "\n[Combined]" : "")
+    box.set_text(fvg.fvgBoxText, fvgText)
+    
+    if fvg.combined and not changeCombinedFVGsColor
+        fvg.fvgBox.set_bgcolor(colorWithTransparency(fvg.isBull ? bullColor : bearColor, 1.1))
+
+    showHighLowBoxText = false
+
+    if fvg.totalVolume != 0
+        curEndXHigh = int(math.ceil((fvg.highVolume / fvg.totalVolume) * (maxEndX - startX) + startX))
+        curEndXLow = int(math.ceil((fvg.lowVolume / fvg.totalVolume) * (maxEndX - startX) + startX))
+
+        moveBox(fvg.fvgBoxPositive, mirrorVolumeBars ? startX : curEndXLow, fvg.max, mirrorVolumeBars ? curEndXHigh : maxEndX, (fvg.min + fvg.max) / 2)
+        box.set_text(fvg.fvgBoxPositive, showHighLowBoxText ? str.tostring(fvg.highVolume, format.volume) : "")
+
+        moveBox(fvg.fvgBoxNegative, mirrorVolumeBars ? startX : curEndXHigh, fvg.min, mirrorVolumeBars ? curEndXLow : maxEndX, (fvg.min + fvg.max) / 2)
+        box.set_text(fvg.fvgBoxNegative, showHighLowBoxText ? str.tostring(fvg.lowVolume, format.volume) : "")
+
+        moveLine(fvg.fvgSeperator, volumeBarsLeftSide ? startX : maxEndX, (fvg.min + fvg.max) / 2, volumeBarsLeftSide ? maxEndX : startX)
+
+        line.set_xy1(fvg.fvgTextSeperator, volumeBarsLeftSide ? maxEndX : startX, fvg.max)
+        line.set_xy2(fvg.fvgTextSeperator, volumeBarsLeftSide ? maxEndX : startX, fvg.min)
+
+areaOfFVG (FVG fvg) =>
+    XA1 = fvg.startTime
+    XA2 = na(fvg.endTime) ? fvg.startTime + extendZonesBy : fvg.endTime
+    YA1 = fvg.max
+    YA2 = fvg.min
+    edge1 = math.sqrt((XA2 - XA1) * (XA2 - XA1) + (YA2 - YA2) * (YA2 - YA2))
+    edge2 = math.sqrt((XA2 - XA2) * (XA2 - XA2) + (YA2 - YA1) * (YA2 - YA1))
+    totalArea = edge1 * edge2
+    totalArea
+
+doFVGsTouch (FVG fvg1, FVG fvg2) =>
+    XA1 = fvg1.startTime
+    XA2 = na(fvg1.endTime) ? fvg1.startTime + extendZonesBy : fvg1.endTime
+    YA1 = fvg1.max
+    YA2 = fvg1.min
+
+    XB1 = fvg2.startTime
+    XB2 = na(fvg2.endTime) ? fvg2.startTime + extendZonesBy : fvg2.endTime
+    YB1 = fvg2.max
+    YB2 = fvg2.min
+    intersectionArea = math.max(0, math.min(XA2, XB2) - math.max(XA1, XB1)) * math.max(0, math.min(YA1, YB1) - math.max(YA2, YB2))
+    unionArea = areaOfFVG(fvg1) + areaOfFVG(fvg2) - intersectionArea
+    
+    float overlapPercentage = (intersectionArea / unionArea) * 100.0
+    if intersectionArea > 0.0
+        //log.info(str.tostring(intersectionArea) + " | " + str.tostring(unionArea))
+        log.info(str.tostring(overlapPercentage))
+    
+    if overlapPercentage > overlapThresholdPercentage
+        true
+    else
+        false
+
+isFVGValid (FVG fvg) =>
+    valid = true
+    if not showInvalidated and not na(fvg.endTime)
+        valid := false
+    else if fvg.disabled
+        valid := false
+    else if not na(fvg.endTime) and (fvg.endTime - fvg.startTime) < minimumFVGSize
+        valid := false
+    else if na(fvg.endTime) and deleteUntouched and (bar_index - fvg.lastTouched) > deleteUntouchedAfterXBars
+        valid := false
+    valid
+
+combineFVGsFunc () =>
+    if fvgList.size() > 0
+        lastCombinations = 999
+        while lastCombinations > 0
+            lastCombinations := 0
+            for i = 0 to fvgList.size() - 1
+                curFVG1 = fvgList.get(i)
+                for j = 0 to fvgList.size() - 1
+                    curFVG2 = fvgList.get(j)
+                    if i == j
+                        continue
+                    if not isFVGValid(curFVG1) or not isFVGValid(curFVG2)
+                        continue
+                    if curFVG1.isBull != curFVG2.isBull
+                        continue
+                    if doFVGsTouch(curFVG1, curFVG2)
+                        curFVG1.disabled := true
+                        curFVG2.disabled := true
+                        FVG newFVG = createFVG(math.max(curFVG1.max, curFVG2.max), math.min(curFVG1.min, curFVG2.min), curFVG1.isBull, math.min(curFVG1.t, curFVG2.t), 0)
+                        newFVG.startTime := math.min(curFVG1.startTime, curFVG2.startTime)
+                        newFVG.endTime := math.max(nz(curFVG1.endTime), nz(curFVG2.endTime))
+                        newFVG.endTime := newFVG.endTime == 0 ? na : newFVG.endTime
+
+                        newFVG.totalVolume := curFVG1.totalVolume + curFVG2.totalVolume
+                        newFVG.lowVolume := curFVG1.lowVolume + curFVG2.lowVolume
+                        newFVG.highVolume := curFVG1.highVolume + curFVG2.highVolume
+                        newFVG.lastTouched := math.max(curFVG1.lastTouched, curFVG2.lastTouched)
+
+                        newFVG.combined := true
+                        fvgList.unshift(newFVG)
+                        lastCombinations += 1
+
+//if barstate.islast and barstate.isnew and totalFVGIndex > totalFVGIndex[2]
+//    log.info("NEW FVG!")
+alertcondition(barstate.islast and barstate.isnew and totalFVGIndex > totalFVGIndex[2], "New FVG @ {{ticker}}", "")
+
+if bar_index > last_bar_index - maxDistanceToLastBar and barstate.isconfirmed
+    // Add Found FVG
+    bearCondition = false
+    bullCondition = false
+    shortVol = ta.sma(volume, 5)
+    longVol = ta.sma(volume, 15)
+    shortTerm = volCheck ? shortVol : 1
+    longTerm = volCheck ? longVol : 0
+
+    firstBarSize = math.max(open, close) - math.min(open, close)
+    secondBarSize = math.max(open[1], close[1]) - math.min(open[1], close[1])
+    thirdBarSize = math.max(open[2], close[2]) - math.min(open[2], close[2])
+    barSizeSum = firstBarSize + secondBarSize + thirdBarSize
+
+    barSizeCheck = true
+    //if (secondBarSize * fvgSensitivity < (firstBarSize + thirdBarSize) * 1.5)
+        //barSizeCheck := false
+
+    fvgBarsCheck = false
+    if fvgBars == "Same Type"
+        if (open > close and open[1] > close[1] and open[2] > close[2]) or (open <= close and open[1] <= close[1] and open[2] <= close[2])
+            fvgBarsCheck := true
+    else
+        fvgBarsCheck := true
+
+    if fvgBarsCheck and barSizeCheck
+        maxCODiff = math.max(math.abs(close[2] - open[1]), math.abs(close[1] - open))
+        if fvgFilterMethod == "Average Range"
+            bearCondition := ((barSizeSum * fvgSensitivity > atr / 1.5) or not fvgSensEnabled) and (allowGaps or (maxCODiff <= atr))
+            bullCondition := ((barSizeSum * fvgSensitivity > atr / 1.5) or not fvgSensEnabled) and (allowGaps or (maxCODiff <= atr))
+        else if fvgFilterMethod == "Volume Threshold"
+            thresholdMultiplier = (volumeThresholdPercent / 100.0)
+            bearCondition := shortTerm > longTerm * thresholdMultiplier and (allowGaps or (maxCODiff <= atr))
+            bullCondition := shortTerm > longTerm * thresholdMultiplier and (allowGaps or (maxCODiff <= atr))
+
+    bearFVG = high < low[2] and close[1] < low[2] and bearCondition
+    bullFVG = low > high[2] and close[1] > high[2] and bullCondition
+
+    volSum3 = math.sum(volume, 3)
+    float totalVolume = volCheck ? volSum3 : 0
+    FVG newFVG = bearFVG ? createFVG(low[2], high, false, time, totalVolume) : bullFVG ? createFVG(low, high[2], true, time, totalVolume) : na
+    FVGSize = bearFVG ? math.abs(low[2] - high) : bullFVG ? math.abs(low - high[2]) : 0
+
+    FVGSizeEnough = (FVGSize * fvgSensitivity > atr)
+    if FVGSizeEnough or not fvgSensEnabled
+        if not na(newFVG)
+            newFVG.startTime := time
+            if startZoneFrom == "First Bar"
+                newFVG.startTime := time[2]
+            newFVG.lastTouched := time
+            if bearFVG
+                newFVG.lowVolume := volCheck ? (volume + volume[1]) : 0
+                newFVG.highVolume := volCheck ? volume[2] : 0
+            else
+                newFVG.lowVolume := volCheck ? volume[2] : 0
+                newFVG.highVolume := volCheck ? (volume + volume[1]) : 0
+
+        if not na(newFVG)
+            totalFVGIndex += 1
+            fvgList.unshift(newFVG)
+            while fvgList.size() > showLastXFVGs
+                fvgList.pop()
+
+    // Find Closed FVGs
+    if fvgList.size () > 0
+        for i = 0 to fvgList.size() - 1
+            curFVG = fvgList.get(i)
+            if na(curFVG.endTime)
+                // Is Touched
+                if ((curFVG.isBull) and low <= curFVG.max) or ((not curFVG.isBull) and high >= curFVG.min)
+                    curFVG.lastTouched := bar_index
+                if curFVG.isBull and (fvgEndMethod == "Wick" ? low < curFVG.min : close < curFVG.min)
+                    curFVG.endTime := time
+                if not curFVG.isBull and (fvgEndMethod == "Wick" ? high > curFVG.max : close > curFVG.max)
+                    curFVG.endTime := time
+
+    // Remove Old FVGs
+    FVGstoRemove = array.new<int>(0)
+
+    if fvgList.size() > 0
+        for i = 0 to fvgList.size() - 1
+            curIndex = fvgList.size() - 1 - i
+            curFVG = fvgList.get(curIndex)
+            if not isFVGValid(curFVG)
+                FVGstoRemove.push(curIndex)
+                safeDeleteFVG(curFVG)
+
+    if FVGstoRemove.size () > 0
+        for i = 0 to FVGstoRemove.size() - 1
+            deleteIndex = FVGstoRemove.get(i)
+            fvgList.remove(deleteIndex)
+
+if barstate.islast
+    log.info("Found " + str.tostring(fvgList.size()) + " FVGs.")
+
+    // Combine FVGs
+    if combineFVGs
+        combineFVGsFunc()
+
+    // Render FVGs
+    extendedLastXFVGsCount = 0
+    if fvgList.size() > 0
+        for i = fvgList.size() - 1 to 0
+            curFVG = fvgList.get(i)
+            if not isFVGValid (curFVG)
+                continue
+            if extendLastFVGs and na(curFVG.endTime) and extendedLastXFVGsCount < extendLastXFVGsCount
+                extendedLastXFVGsCount += 1
+                curFVG.extendInfinite := true
+            if curFVG.isRendered
+                safeDeleteFVG(curFVG)
+            renderFVG(curFVG)
+
+//plotchar(fvgList.size(), "FVG Count", na, location.top)

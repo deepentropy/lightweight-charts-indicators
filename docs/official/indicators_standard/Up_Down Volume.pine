@@ -1,0 +1,27 @@
+//@version=6
+indicator("Up/Down Volume", "Up/Dn Vol", format = format.volume)
+
+import TradingView/ta/8
+
+lowerTimeframeTooltip = "The indicator scans lower timeframe data to approximate Up/Down volume. 
+ By default, the timeframe is chosen automatically. These inputs override this with a custom timeframe.
+ \n\nHigher timeframes provide more historical data, but the data will be less precise."
+useCustomTimeframeInput = input.bool(false, "Use custom timeframe", tooltip = lowerTimeframeTooltip)
+lowerTimeframeInput     = input.timeframe("1", "Timeframe", active = useCustomTimeframeInput)
+
+lowerTimeframe = switch
+    useCustomTimeframeInput => lowerTimeframeInput
+    timeframe.isseconds     => "1S"
+    timeframe.isintraday    => "1"
+    timeframe.isdaily       => "5"
+    => "60"
+
+[upVolume, downVolume, delta] = ta.requestUpAndDownVolume(lowerTimeframe)
+plot(upVolume, "Up Volume", style = plot.style_columns, color=color.new(color.green, 60))
+plot(downVolume, "Down Volume", style = plot.style_columns, color=color.new(color.red, 60))
+plotchar(delta, "delta", "—", location.absolute, color = delta > 0 ? color.green : color.red, size = size.tiny)
+
+var cumVol = 0.
+cumVol += nz(volume)
+if barstate.islast and cumVol == 0
+    runtime.error("The data vendor doesn't provide volume data for this symbol.")

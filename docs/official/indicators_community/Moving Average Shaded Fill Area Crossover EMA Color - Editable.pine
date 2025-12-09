@@ -1,0 +1,22 @@
+//@version=2
+study(title="Moving Average Shaded Fill Area Crossover EMA", shorttitle="EMA Fill", overlay=true)
+
+// === INPUTS ===
+src = input(close)
+
+ema1 = input(21,title='EMA-1')
+ema2 = input(55,title='EMA-2')
+
+
+pema1 = ema(src, ema1)
+pema2 = ema(src, ema2)
+
+
+//fil
+
+
+ema1plot = plot(pema1, color=#2ecc71, style=line, linewidth=1, title='EMA-1')
+ema2plot = plot(pema2, color=#f00b0b, style=line, linewidth=1, title='EMA 2')
+
+fill(ema1plot, ema2plot, color=pema1>pema2? green:red, transp=85, editable=true)
+

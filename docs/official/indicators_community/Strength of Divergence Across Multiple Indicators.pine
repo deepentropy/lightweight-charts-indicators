@@ -1,0 +1,386 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © reees
+//@version=5
+
+//inds
+// Ultimate indicator and Constance brown composite index
+//
+// color and shape of labels, lines
+
+indicator("Strength of Divergence Across Multiple Indicators","DivStr",overlay=true,max_lines_count=500,max_labels_count=500,max_bars_back=500)
+
+import reees/TA/11 as t
+import reees/Algebra/3 as alg
+//import reees/Trig/2 as trig
+//import reees/Utilities/2 as u
+
+//----------------------------------------- 
+// inputs
+//-----------------------------------------
+
+var bullSwitch = input.bool(true, "Bullish", inline="dswitch", group="Divergence Params")
+var bearSwitch = input.bool(true, "Bearish", inline="dswitch", group="Divergence Params")
+var showHidden = input.bool(true, "Hidden", inline="dswitch", group="Divergence Params")
+var noBroken = input.bool(true,"Exclude if broken trendline",group="Divergence Params",tooltip="If set, divergence is not considered valid if an intermediate pivot high/low breaks the divergence trendline (on a linear scale). If using a logarithmic scale, you may want to turn this switch off as some trendlines that are broken on a linear scale may not be broken on a log scale. Only relevant if Lookback Pivots > 1.")
+var ppLength = input.int(4,"Previous pivot bars before/after",minval=1,group="Divergence Params",tooltip="Min # bars before and after a previous pivot high/low to consider it valid for divergence check")
+var cpLengthBefore = input.int(4,"Next (divergent) pivot bars before",minval=1,group="Divergence Params",tooltip="Min # leading bars before the next (divergent) pivot high/low to consider it valid for divergence check")
+var cpLengthAfter = input.int(2,"Next (divergent) pivot bars after",minval=1,group="Divergence Params",tooltip="# trailing bars after the next (divergent) pivot high/low to consider it valid for divergence check. Decreasing this value may detect divergence sooner, but with less confidence.")
+var lbBars = input.int(50,"Lookback bars",minval=1,maxval=100,group="Divergence Params",inline="lb")
+var lbPivs = input.int(2,"Lookback pivots",minval=1,group="Divergence Params",inline="lb",tooltip="# of bars or # of pivot highs/lows to look back across, whichever comes first")
+var w_reg = input.float(1.0,"Regular divergence weight",step=.1,minval=0.0,group="Divergence Params",inline="degreg")
+var w_hid = input.float(1.0,"Hidden divergence weight",step=.1,minval=0.0,group="Divergence Params",inline="degreg",tooltip="Value/weight of regular divergence versus hidden divergence (applies to all indicators)")
+var w_p = input.float(0.5,"Δ price weight",step=.1,minval=0.0,group="Divergence Params",inline="degprice")
+var w_i = input.float(1.5,"Δ indicator weight",step=.1,minval=0.0,group="Divergence Params",inline="degprice",tooltip="Value/weight of change in price versus change in indicator value (applies to all indicators)")
+bullPsource = input.source(low,"Bullish divergence price source",group="Divergence Params",tooltip="Used for indicators only when appropriate. If the selected source is not technically feasible or otherwise offends the spirit of an indicator, the indicator's natural source will be used instead.")
+bearPsource = input.source(high,"Bearish divergence price source",group="Divergence Params",tooltip="Used for indicators only when appropriate. If the selected source is not technically feasible or otherwise offends the spirit of an indicator, the indicator's natural source will be used instead.")
+//
+var iRsi = input.bool(true,"RSI", group="Indicator", inline="ind_rsi")
+var w_rsi = input.float(1.1,"Weight",step=.1,minval=0.0,group="Indicator",inline="ind_rsi")
+var e_rsi = input.float(1.0,"Extreme value",step=.1,minval=0.0,group="Indicator",inline="ind_rsi",tooltip="Relative Strength Index (RSI)\n\nWeight: Weight of RSI divergence in total divergence strength calculation.\n\nExtreme divergence value: value above which RSI divergence is considered extreme.")
+var iObv = input.bool(true,"OBV", group="Indicator", inline="ind_obv")
+var w_obv = input.float(0.8,"Weight",step=.1,minval=0.0,group="Indicator",inline="ind_obv")
+var e_obv = input.float(1.0,"Extreme value",step=.1,minval=0.0,group="Indicator",inline="ind_obv",tooltip="On Balance Volume (OBV)\n\nWeight: Weight of OBV divergence in total divergence strength calculation.\n\nExtreme divergence value: value above which OBV divergence is considered extreme.")
+var iMacd = input.bool(true,"MACD", group="Indicator", inline="ind_macd")
+var w_macd = input.float(.9,"Weight",step=.1,minval=0.0,group="Indicator",inline="ind_macd")
+var e_macd = input.float(1.0,"Extreme value",step=.1,minval=0.0,group="Indicator",inline="ind_macd",tooltip="Moving Average Convergence/Divergence (MACD)\n\nWeight: Weight of MACD divergence in total divergence strength calculation.\n\nExtreme divergence value: value above which MACD divergence is considered extreme.")
+var iStoch = input.bool(true,"STOCH", group="Indicator", inline="ind_stoch")
+var w_stoch = input.float(0.9,"Weight",step=.1,minval=0.0,group="Indicator",inline="ind_stoch")
+var e_stoch = input.float(1.0,"Extreme value",step=.1,minval=0.0,group="Indicator",inline="ind_stoch",tooltip="Stochastic (STOCH)\n\nWeight: Weight of STOCH divergence in total divergence strength calculation.\n\nExtreme divergence value: value above which STOCH divergence is considered extreme.")
+var iCci = input.bool(true,"CCI", group="Indicator", inline="ind_cci")
+var w_cci = input.float(1.0,"Weight",step=.1,minval=0.0,group="Indicator",inline="ind_cci")
+var e_cci = input.float(1.0,"Extreme value",step=.1,minval=0.0,group="Indicator",inline="ind_cci",tooltip="Commodity Channel Index (CCI)\n\nWeight: Weight of CCI divergence in total divergence strength calculation.\n\nExtreme divergence value: value above which CCI divergence is considered extreme.")
+var iMfi = input.bool(true,"MFI", group="Indicator", inline="ind_mfi")
+var w_mfi = input.float(1.0,"Weight",step=.1,minval=0.0,group="Indicator",inline="ind_mfi")
+var e_mfi = input.float(1.0,"Extreme value",step=.1,minval=0.0,group="Indicator",inline="ind_mfi",tooltip="Money Flow Index (MFI)\n\nWeight: Weight of MFI divergence in total divergence strength calculation.\n\nExtreme divergence value: value above which MFI divergence is considered extreme.")
+var iAo = input.bool(true,"AO", group="Indicator", inline="ind_ao")
+var w_ao = input.float(1.0,"Weight",step=.1,minval=0.0,group="Indicator",inline="ind_ao")
+var e_ao = input.float(1.0,"Extreme value",step=.1,minval=0.0,group="Indicator",inline="ind_ao",tooltip="Awesome Oscillator (AO)\n\nWeight: Weight of AO divergence in total divergence strength calculation.\n\nExtreme divergence value: value above which AO divergence is considered extreme.")
+//
+var a_on = input.bool(true, "Alert", inline="alert", group="Alerts")
+var a_above = input.float(5.0, "for values above", step=.1, inline="alert", group="Alerts")
+//
+var noLine = input.bool(true,"Show lines",group="Display Settings")==false
+var noLab = input.bool(true,"Show labels",group="Display Settings")==false
+var extrDiv = input.float(5.0,"Show largest labels for values above: ",minval=0.0,group="Display Settings",tooltip="Total divergence strength greater than this value will show the largest label (extreme divergence). A good rule of thumb is to keep this value slightly less than the number of selected indicators.")
+var noLabB = input.float(0.5,"Don't show labels for values below: ",minval=0.0,group="Display Settings",tooltip="Total divergence strength less than this value will not show any label.")
+var lTransp = input.int(80,"Line transparency",minval=0,maxval=100)
+
+//-----------------------------------------
+// functions
+//-----------------------------------------
+
+strengthMap(d,e) =>
+    if d >= e
+        5
+    else if d > e*.8
+        4
+    else if d > e*.6
+        3
+    else if d > e*.4
+        2
+    else if d > e*.2
+        1
+    else
+        0
+    
+strengthMapI(d,i="") =>
+    e = if i=="RSI"
+        e_rsi
+    else if i=="OBV"
+        e_obv
+    else if i=="MACD"
+        e_macd
+    else if i=="STOCH"
+        e_stoch
+    else if i=="CCI"
+        e_cci
+    else if i=="MFI"
+        e_mfi
+    else if i=="AO"
+        e_ao
+    else
+        0
+    strengthMap(d,e)
+
+strengthDesc(d,i="") =>
+    s = i!= "" ? strengthMapI(d,i) : strengthMap(d,extrDiv)
+    if s == 5
+        "Extreme"
+    else if s == 4
+        "Very strong"
+    else if s == 3
+        "Strong"
+    else if s == 2
+        "Moderate"
+    else if s == 1
+        "Weak"
+    else
+        "Very weak"
+
+drawLine(x1,y1,x2,y2,dt,h) =>
+    c = dt==true?color.new(color.red,lTransp):color.new(color.green,lTransp)
+    if noLine==false and (h==false or showHidden==true)
+        line.new(x1,y1,x2,y2,color=c,width=1,style=h==true?line.style_dashed:line.style_solid)
+
+drawLabel(bear,c,d,l) =>
+    if c > 0 and d >= noLabB and noLab==false
+        labX = bar_index-cpLengthAfter
+        labY = bear == true ? bearPsource[cpLengthAfter] : bullPsource[cpLengthAfter]
+        s = strengthMap(d,extrDiv)
+        dtxt = strengthDesc(d) + " divergence (" + str.tostring(math.round(d,3)) + ")\n"
+        ttxt = dtxt + " Indicator breakdown (" + str.tostring(c) + "):\n" + l
+        txt = if s < 3
+            ""
+        else
+            str.tostring(math.round(d,2)) + " (" + str.tostring(c) + ")"
+        transp = s < 4 ? 50 : 10
+        size = if s == 5 
+            size.normal
+        else if s == 4
+            size.small
+        else
+            size.tiny
+        clr = bear == true ? color.new(color.red,transp) : color.new(color.green,transp)
+        style = bear == true ? label.style_label_down : label.style_label_up
+        label.new(labX,labY,text=txt,tooltip=ttxt,textalign=text.align_center,style=style,size=size,color=clr,textcolor=color.white)
+
+detail(t,d) =>
+    "   " + t +":  " + strengthDesc(d,t) + " (" + str.tostring(math.round(d,3)) + ")\n"
+
+//-----------------------------------------
+// test for divergence
+//-----------------------------------------
+
+// RSI
+bearRsi = false
+bullRsi = false
+bearRsiDeg = 0.0
+bullRsiDeg = 0.0
+if iRsi==true
+    if bearSwitch==true
+        i_bear = ta.rsi(bearPsource, 14)
+        [f,d,t,x1,y1,x2,y2] = t.div_bear(bearPsource,i_bear,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_rsi
+        if f==true
+            bearRsi := t==1 or showHidden==true ? true : false
+            bearRsiDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,true,t==2)
+    if bullSwitch==true
+        i_bull = ta.rsi(bullPsource, 14)
+        [f,d,t,x1,y1,x2,y2] = t.div_bull(bullPsource,i_bull,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_rsi
+        if f==true
+            bullRsi := t==1 or showHidden==true ? true : false
+            bullRsiDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,false,t==2)
+// OBV
+bearObv = false
+bullObv = false
+bearObvDeg = 0.0
+bullObvDeg = 0.0
+if iObv==true
+    if bearSwitch==true
+        i_bear = ta.obv
+        [f,d,t,x1,y1,x2,y2] = t.div_bear(bearPsource,i_bear,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_obv
+        if f==true
+            bearObv := t==1 or showHidden==true ? true : false
+            bearObvDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,true,t==2)
+    if bullSwitch==true
+        i_bull = ta.obv
+        [f,d,t,x1,y1,x2,y2] = t.div_bull(bullPsource,i_bull,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_obv
+        if f==true
+            bullObv := t==1 or showHidden==true ? true : false
+            bullObvDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,false,t==2)
+// MACD
+bearMacd = false
+bullMacd = false
+bearMacdDeg = 0.0
+bullMacdDeg = 0.0
+if iMacd==true
+    if bearSwitch==true
+        [_,_,i_bear] = ta.macd(bearPsource,12,26,9)
+        [f,d,t,x1,y1,x2,y2] = t.div_bear(bearPsource,i_bear,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_macd
+        if f==true
+            bearMacd := t==1 or showHidden==true ? true : false
+            bearMacdDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,true,t==2)
+    if bullSwitch==true
+        [_,_,i_bull] = ta.macd(bullPsource,12,26,9)
+        [f,d,t,x1,y1,x2,y2] = t.div_bull(bullPsource,i_bull,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_macd
+        if f==true
+            bullMacd := t==1 or showHidden==true ? true : false
+            bullMacdDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,false,t==2)
+// STOCH
+bearStoch = false
+bullStoch = false
+bearStochDeg = 0.0
+bullStochDeg = 0.0
+if iStoch==true
+    if bearSwitch==true
+        i_bear = ta.stoch(close, high, low, 14)
+        [f,d,t,x1,y1,x2,y2] = t.div_bear(bearPsource,i_bear,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_stoch
+        if f==true
+            bearStoch := t==1 or showHidden==true ? true : false
+            bearStochDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,true,t==2)
+    if bullSwitch==true
+        i_bull = ta.stoch(close, high, low, 14)
+        [f,d,t,x1,y1,x2,y2] = t.div_bull(bullPsource,i_bull,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_stoch
+        if f==true
+            bullStoch := t==1 or showHidden==true ? true : false
+            bullStochDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,false,t==2)
+// CCI
+bearCci = false
+bullCci = false
+bearCciDeg = 0.0
+bullCciDeg = 0.0
+if iCci==true
+    if bearSwitch==true
+        i_bear = ta.cci(bearPsource,20)
+        [f,d,t,x1,y1,x2,y2] = t.div_bear(bearPsource,i_bear,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_cci
+        if f==true
+            bearCci := t==1 or showHidden==true ? true : false
+            bearCciDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,true,t==2)
+    if bullSwitch==true
+        i_bull = ta.cci(bullPsource,20)
+        [f,d,t,x1,y1,x2,y2] = t.div_bull(bullPsource,i_bull,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_cci
+        if f==true
+            bullCci := t==1 or showHidden==true ? true : false
+            bullCciDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,false,t==2)
+// MFI
+bearMfi = false
+bullMfi = false
+bearMfiDeg = 0.0
+bullMfiDeg = 0.0
+if iMfi==true
+    if bearSwitch==true
+        i_bear = ta.mfi(bearPsource,14)
+        [f,d,t,x1,y1,x2,y2] = t.div_bear(bearPsource,i_bear,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_mfi
+        if f==true
+            bearMfi := t==1 or showHidden==true ? true : false
+            bearMfiDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,true,t==2)
+    if bullSwitch==true
+        i_bull = ta.mfi(bullPsource,14)
+        [f,d,t,x1,y1,x2,y2] = t.div_bull(bullPsource,i_bull,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_mfi
+        if f==true
+            bullMfi := t==1 or showHidden==true ? true : false
+            bullMfiDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,false,t==2)
+// AO
+bearAo = false
+bullAo = false
+bearAoDeg = 0.0
+bullAoDeg = 0.0
+if iAo==true
+    if bearSwitch==true
+        i_bear = ta.sma(hl2,5) - ta.sma(hl2,34)
+        [f,d,t,x1,y1,x2,y2] = t.div_bear(bearPsource,i_bear,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_ao
+        if f==true
+            bearAo := t==1 or showHidden==true ? true : false
+            bearAoDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,true,t==2)
+    if bullSwitch==true
+        i_bull = ta.sma(hl2,5) - ta.sma(hl2,34)
+        [f,d,t,x1,y1,x2,y2] = t.div_bull(bullPsource,i_bull,cpLengthAfter,cpLengthBefore,ppLength,lbBars,lbPivs,noBroken,w_p,w_i,w_hid,w_reg)
+        d := d*w_ao
+        if f==true
+            bullAo := t==1 or showHidden==true ? true : false
+            bullAoDeg := t==1 or showHidden==true ? d : 0.0
+            drawLine(x1,y1,x2,y2,false,t==2)
+
+// Calculate degree of divergence and add labels.
+bearCount = 0           // total number of divergent indicators
+bearTotalDeg = 0.0      // total degree of divergence across all indicators
+bearIndList = ""        // list of indicators for tooltip display
+bullCount = 0
+bullTotalDeg = 0.0
+bullIndList = ""
+
+// RSI
+if bearRsi==true
+    bearIndList := bearIndList + detail("RSI",bearRsiDeg)
+    bearCount+=1
+    bearTotalDeg += bearRsiDeg
+if bullRsi==true
+    bullIndList := bullIndList + detail("RSI",bullRsiDeg)
+    bullCount+=1
+    bullTotalDeg += bullRsiDeg
+// OBV
+if bearObv==true
+    bearIndList := bearIndList + detail("OBV",bearObvDeg)
+    bearCount+=1
+    bearTotalDeg += bearObvDeg
+if bullObv==true
+    bullIndList := bullIndList + detail("OBV",bullObvDeg)
+    bullCount+=1
+    bullTotalDeg += bullObvDeg
+// MACD
+if bearMacd==true
+    bearIndList := bearIndList + detail("MACD",bearMacdDeg)
+    bearCount+=1
+    bearTotalDeg += bearMacdDeg
+if bullMacd==true
+    bullIndList := bullIndList + detail("MACD",bullMacdDeg)
+    bullCount+=1
+    bullTotalDeg += bullMacdDeg
+// STOCH
+if bearStoch==true
+    bearIndList := bearIndList + detail("STOCH",bearStochDeg)
+    bearCount+=1
+    bearTotalDeg += bearStochDeg
+if bullStoch==true
+    bullIndList := bullIndList + detail("STOCH",bullStochDeg)
+    bullCount+=1
+    bullTotalDeg += bullStochDeg
+// CCI
+if bearCci==true
+    bearIndList := bearIndList + detail("CCI",bearCciDeg)
+    bearCount+=1
+    bearTotalDeg += bearCciDeg
+if bullCci==true
+    bullIndList := bullIndList + detail("CCI",bullCciDeg)
+    bullCount+=1
+    bullTotalDeg += bullCciDeg
+// MFI
+if bearMfi==true
+    bearIndList := bearIndList + detail("MFI",bearMfiDeg)
+    bearCount+=1
+    bearTotalDeg += bearMfiDeg
+if bullMfi==true
+    bullIndList := bullIndList + detail("MFI",bullMfiDeg)
+    bullCount+=1
+    bullTotalDeg += bullMfiDeg
+// AO
+if bearAo==true
+    bearIndList := bearIndList + detail("AO",bearAoDeg)
+    bearCount+=1
+    bearTotalDeg += bearAoDeg
+if bullAo==true
+    bullIndList := bullIndList + detail("AO",bullAoDeg)
+    bullCount+=1
+    bullTotalDeg += bullAoDeg
+
+// Draw label(s)
+drawLabel(true,bearCount,bearTotalDeg,bearIndList)
+drawLabel(false,bullCount,bullTotalDeg,bullIndList)
+// Alerts
+if a_on and (bullTotalDeg > a_above or bearTotalDeg > a_above)
+    alert("Divergence strength of " +str.tostring(math.max(bullTotalDeg,bearTotalDeg),"#.##") + " has formed.")

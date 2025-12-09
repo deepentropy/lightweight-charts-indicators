@@ -1,0 +1,214 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TradingView
+
+//@version=6
+library("TechnicalRating")
+
+// TechnicalRating Library
+// v3, 2024.11.29
+
+// This code was written using the recommendations from the Pine Script™ User Manual's Style Guide:
+//   https://www.tradingview.com/pine-script-docs/en/v5/writing/Style_guide.html
+
+
+
+import TradingView/ta/9 as ta
+
+
+
+//#region ———————————————————— Library functions
+
+
+// @function            Calculates a rating value (+1/0/-1) based on the location of a `src` value relative to the `ma`.
+// @param ma            (series int/float) The moving average to compare against the `src` value.
+// @param src           (series int/float) The source value to compare against the `ma`.
+// @returns             (float) `na` if the `src` is `na`. Otherwise, 1 if the `src` is above the `ma`, -1 if the `src`
+//                      is below the `ma`, or 0 if the `src` equals the `ma`.
+calcRatingMA(series float ma, series float src) =>
+    float result = math.sign(src - ma)
+
+
+// @function            Calculates a rating value (+1/0/-1) based on two "bool" values representing bullish (upward)
+//                      and bearish (downward) conditions, filtering its result based on whether the `src` value exists.
+// @param src           (<type>) The source to check for `na` conditions. This value must not be `na` to calculate a
+//                      rating value.
+// @param bullCond      (series bool) The `true` or `false` state of the bullish (upward) condition.
+// @param bearCond      (series bool) The `true` or `false` state of the bearish (downward) condition.
+// @returns             (int) `na` if the `src` is `na`. Otherwise, 1 if the `bullCond` is `true`, -1 if the `bearCond`
+//                      is `true`, or 0 if both are `false`.
+calcRating(src, series bool bullCond, series bool bearCond) =>
+    int result = na(src) ? na : bullCond ? 1 : bearCond ? -1 : 0
+
+
+// @function            Calculates three rating values (total rating, indicator rating, and MA rating), using
+//                      aggregate conditions from 26 technical indicators.
+// @returns             ([float, float, float]) A tuple containing the following, each with a value between -1 and +1,
+//                      or `na` if the information is not available:
+//                          - The total rating
+//                          - The oscillator and other indicator rating
+//                          - The moving average rating
+export calcRatingAll() =>
+    [con, base, lead1, lead2, _] = ta.ichimoku()
+    [kStoch, dStoch]             = ta.stochFull(14, 3, 3)
+    [kStochRsi, dStochRsi]       = ta.stochRsi(14, 14, 3, 3)
+    [diP, diN, adx]              = ta.dmi(14, 14)
+    [macd, signal, _]            = ta.macd(close, 12, 26, 9)
+    float bullPower              = high - ta.ema(close, 13)
+    float bearPower              = low  - ta.ema(close, 13)
+    float rsi                    = ta.rsi(close, 14)
+    float cci                    = ta.cci(close, 20)
+    float mom                    = ta.mom(close, 10)
+    float priceAvg               = ta.ema(close, 50)
+    bool  downTrend              = close < priceAvg
+    bool  upTrend                = close > priceAvg
+    float uo                     = ta.uo(7, 14, 28)
+    float wr                     = ta.wpr(14)
+    float ao                     = ta.ao()
+
+    var array<float> indRatings = array.new<float>()
+    array.clear(indRatings)
+    array.push(indRatings, calcRatingMA(ta.sma(close ,  10), close))
+    array.push(indRatings, calcRatingMA(ta.sma(close ,  20), close))
+    array.push(indRatings, calcRatingMA(ta.sma(close ,  30), close))
+    array.push(indRatings, calcRatingMA(ta.sma(close ,  50), close))
+    array.push(indRatings, calcRatingMA(ta.sma(close , 100), close))
+    array.push(indRatings, calcRatingMA(ta.sma(close , 200), close))
+    array.push(indRatings, calcRatingMA(ta.ema(close ,  10), close))
+    array.push(indRatings, calcRatingMA(ta.ema(close ,  20), close))
+    array.push(indRatings, calcRatingMA(ta.ema(close ,  30), close))
+    array.push(indRatings, calcRatingMA(ta.ema(close ,  50), close))
+    array.push(indRatings, calcRatingMA(ta.ema(close , 100), close))
+    array.push(indRatings, calcRatingMA(ta.ema(close , 200), close))
+    array.push(indRatings, calcRatingMA(ta.hma(close ,   9), close))
+    array.push(indRatings, calcRatingMA(ta.vwma(close,  20), close))
+    array.push(indRatings, calcRating(lead2,
+         lead1[26] > lead2[26] and base > lead1[26] and con > base and close > con,
+         lead1[26] < lead2[26] and base < lead1[26] and con < base and close < con))
+
+    float ratingMA = array.avg(indRatings)
+
+    array.clear(indRatings)
+    array.push(indRatings, calcRating(rsi[1],
+         rsi < 30 and rsi[1] < rsi,
+         rsi > 70 and rsi[1] > rsi))
+    array.push(indRatings, calcRating(dStoch[1],
+         kStoch < 20 and dStoch < 20 and kStoch > dStoch,
+         kStoch > 80 and dStoch > 80 and kStoch < dStoch))
+    array.push(indRatings, calcRating(cci[1],
+         cci < -100 and cci > cci[1],
+         cci >  100 and cci < cci[1]))
+    array.push(indRatings, calcRating(adx,
+         adx > 20 and adx > adx[1] and diP > diN,
+         adx > 20 and adx > adx[1] and diP < diN))
+    array.push(indRatings, calcRating(ao[1],
+         ta.crossover(ao, 0) or (ao > 0 and ao[1] > 0 and ao > ao[1] and ao[2] > ao[1]),
+         ta.crossunder(ao,0) or (ao < 0 and ao[1] < 0 and ao < ao[1] and ao[2] < ao[1])))
+    array.push(indRatings, calcRating(mom[1], mom > mom[1], mom < mom[1]))
+    array.push(indRatings, calcRating(signal,
+         macd > signal,
+         macd < signal))
+    array.push(indRatings, calcRating(priceAvg,
+         downTrend and kStochRsi < 20 and dStochRsi < 20 and kStochRsi > dStochRsi,
+         upTrend   and kStochRsi > 80 and dStochRsi > 80 and kStochRsi < dStochRsi))
+    array.push(indRatings, calcRating(wr[1],
+         wr < -80 and wr > wr[1],
+         wr > -20 and wr < wr[1]))
+    array.push(indRatings, calcRating(priceAvg,
+         upTrend   and bearPower < 0 and bearPower > bearPower[1],
+         downTrend and bullPower > 0 and bullPower < bullPower[1]))
+    array.push(indRatings, calcRating(uo, uo > 70, uo < 30))
+    float ratingOther = array.avg(indRatings)
+
+    float total = nz(ratingMA, 0) + nz(ratingOther, 0)
+    float ratingTotal = switch
+        not na(ratingMA) and not na(ratingOther) => total / 2
+        not na(ratingMA) or  not na(ratingOther) => total
+        => na
+
+    [ratingTotal, ratingOther, ratingMA]
+
+
+// @function            Tracks the rising and falling absolute values in a `plot` series over five bars using a counter.
+//                      It adds 1 to the count when the absolute value rises and subtracts 1 when the value falls. The
+//                      count is limited to a maximum of 5 and minimum of 1. If the `plot` is 0, the counter resets to
+//                      0 until the next nonzero value is available.
+// @returns             (int) A value between 1 and 5 when the `plot` is nonzero, 0 otherwise. A value of 5 means the
+//                      absolute series rose or remained consistent consecutively over the latest five bars since the
+//                      last 0 value.
+export countRising(series float plot) =>
+    float vPlot = math.abs(plot)
+    var int result = 0
+    result := switch
+        vPlot == 0        => 0
+        vPlot >= vPlot[1] => math.min(5, result + 1)
+        vPlot <  vPlot[1] => math.max(1, result - 1)
+    result
+
+
+// @function            Determines the rating status of a given `ratingValue` based on its defined boundaries.
+// @param ratingValue   (series float) The rating value to process.
+// @param strongBound   (series float) The threshold for a "strong" rating. The `ratingValue` has a "strong" status
+//                      only if its absolute value is above this threshold.
+// @param weakBound     (series float) The threshold for a non-neutral rating. The `ratingValue` has a "Buy" or "Sell"
+//                      status only if its absolute value is above this threshold. Otherwise, the status is "Neutral".
+// @returns             (string) A "string" representing the rating status assigned to the `ratingValue`
+//                      ("Strong\nSell", "Sell", "Neutral", "Buy", or "Strong\nBuy"). If the `ratingValue` is `na`,
+//                      the returned "string" is "-".
+export ratingStatus(series float ratingValue, series float strongBound = 0.5, series float weakBound = 0.1) =>
+    string result = switch
+        na(ratingValue)            => "-"
+        ratingValue < -strongBound => "Strong\nSell"
+        ratingValue < -weakBound   => "Sell"
+        ratingValue >  strongBound => "Strong\nBuy "
+        ratingValue >  weakBound   => "Buy"
+        =>                            "Neutral"
+//#endregion
+
+
+
+//#region ———————————————————— Example code
+
+
+// Color constants
+color SOFT    = #5b9cf6
+color ROYAL   = #2962ff
+color MISCHKA = #a8adbc
+color PINK    = #ef9a9a
+color RED     = #f44336
+
+// Numeric constants
+float STRONG_BOUND = 0.5
+float WEAK_BOUND   = 0.1
+float BAND         = 0.2
+float ZERO         = 0.0
+
+// Calculate overall ratings.
+[ratingTotal, _, _]  = calcRatingAll()
+
+// Calculate a color gradient for the plot and label based on the `ratingTotal` value.
+color buyColor  = color.from_gradient(ratingTotal,  ZERO, BAND, MISCHKA,   ROYAL)
+color sellColor = color.from_gradient(ratingTotal, -BAND, ZERO, RED,       MISCHKA)
+color gradColor = color.from_gradient(ratingTotal, -BAND, BAND, sellColor, buyColor)
+
+// Determine values and conditions for the positive and negative ratings series.
+bool  posCond   = ratingTotal >  WEAK_BOUND
+bool  negCond   = ratingTotal < -WEAK_BOUND
+float posSeries = posCond ? ratingTotal : ZERO
+float negSeries = negCond ? ratingTotal : ZERO
+
+// Count bars with increasing positive or negative ratings to determine the transparency of the `gradColor`.
+int   posCount  = countRising(posSeries)
+int   negCount  = countRising(negSeries)
+int   perc      = posCond ? posCount : negCond ? negCount : 0
+color curColor  = color.new(gradColor, 50 - perc * 10)
+
+// Plot the total rating as columns.
+plot(ratingTotal, "Rating", curColor, 1, plot.style_columns)
+
+// On the last bar, draw a label displaying the ratings status.
+if barstate.islast
+	var label signal = label.new(bar_index, 0, "", textcolor = chart.fg_color, style = label.style_label_left)
+	label.set_xy(signal, bar_index + 1, ratingTotal)
+	label.set_text(signal, ratingStatus(ratingTotal, STRONG_BOUND, WEAK_BOUND))
+	label.set_color(signal, curColor)
+//#endregion

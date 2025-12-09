@@ -1,0 +1,290 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+//@version=6
+indicator("Smart Money Breakout Signals [AlgoAlpha]", shorttitle="AlgoAlpha - Smart Money Breakout", overlay=true)
+
+swingSize = input.int(25, "Market Structure Time-Horizon", tooltip='Defines the number of candles used to determine market structure. Larger values smooth out market structure changes but may delay signals.', group="Inputs")
+bosConfType = input.string('Candle Close', 'BOS Confirmation Type', ['Candle Close', 'Wicks'], tooltip='Specifies whether a candle close or a wick surpassing the previous swing point is used to confirm a Break of Structure (BOS).', group="Inputs")
+choch = input.bool(true, 'Show CHoCH', tooltip='Enables or disables the display of Change of Character (CHoCH) labels, highlighting the first structural break against the trend.', group="Inputs")
+color BULL = input.color(#00ffbb, "Bullish Color", group="Visualization", tooltip='Sets the color used to represent bullish signals and breakout lines.')
+color BEAR = input.color(#ff1100, "Bearish Color", group="Visualization", tooltip='Sets the color used to represent bearish signals and breakout lines.')
+
+MS(int swingSize, int src_BI, string bosConfType, bool enms, float src_close, float src_high, float src_low) =>
+    pivHi = ta.pivothigh(src_high, swingSize, swingSize)
+    pivLo = ta.pivotlow(src_low, swingSize, swingSize)
+    var float prevHigh = na
+    var float prevLow = na
+    var int prevHighIndex = na
+    var int prevLowIndex = na
+    var bool highActive = false
+    var bool lowActive = false
+    bool hh = false
+    bool lh = false
+    bool hl = false
+    bool ll = false
+    var int prevSwing = 0
+    if not na(pivHi) and enms
+        if pivHi >= prevHigh
+            hh := true
+            prevSwing := 2
+        else
+            lh := true
+            prevSwing := 1
+        prevHigh := pivHi
+        highActive := true
+        prevHighIndex := src_BI - swingSize
+    if not na(pivLo) and enms
+        if pivLo >= prevLow
+            hl := true
+            prevSwing := -1
+        else
+            ll := true
+            prevSwing := -2
+        prevLow := pivLo
+        lowActive := true
+        prevLowIndex := src_BI - swingSize
+    bool highBroken = false
+    bool lowBroken = false
+    float highSrc = bosConfType == 'Candle Close' ? src_close : src_high
+    float lowSrc = bosConfType == 'Candle Close' ? src_close : src_low
+    if highSrc > prevHigh and highActive and enms
+        highBroken := true
+        highActive := false
+    if lowSrc < prevLow and lowActive and enms
+        lowBroken := true
+        lowActive := false
+    [hh,ll,lh,hl,highBroken,lowBroken,prevHighIndex,prevLowIndex,pivHi,pivLo,prevHigh,prevLow]
+
+[hh, ll, lh, hl, highBroken, lowBroken, prevHighIndex, prevLowIndex, pivHi, pivLo, prevHigh, prevLow] = MS(swingSize, bar_index, bosConfType, true, close, high, low)
+
+var int prevBreakoutDir = 0
+length = 0
+
+if highBroken
+    line.new(prevHighIndex, prevHigh, bar_index, prevHigh, color=BULL, width=1, force_overlay=true)
+    label.new(math.floor(bar_index - (bar_index - prevHighIndex) / 2), prevHigh, prevBreakoutDir == -1 and choch ? 'CHoCH' : 'BOS', color=color.rgb(0, 0, 0, 100), textcolor=BULL, size=size.tiny, force_overlay=true)
+    alert("Bullish Breakout Detected", alert.freq_once_per_bar)
+    prevBreakoutDir := 1
+    length := bar_index - prevHighIndex
+if lowBroken
+    line.new(prevLowIndex, prevLow, bar_index, prevLow, color=BEAR, width=1, force_overlay=true)
+    label.new(math.floor(bar_index - (bar_index - prevLowIndex) / 2), prevLow, prevBreakoutDir == 1 and choch ? 'CHoCH' : 'BOS', color=color.rgb(0, 0, 0, 100), textcolor=BEAR, style=label.style_label_up, size=size.tiny, force_overlay=true)
+    alert("Bearish Breakout Detected", alert.freq_once_per_bar)
+    prevBreakoutDir := -1
+    length := bar_index - prevLowIndex
+
+x = math.max(1, nz(length))
+v = ta.highest(x) - ta.lowest(x)
+dist = v / 3
+trigger = 0
+RR = 1
+var active = 0
+var active1 = 0
+var active2 = 0
+var TP = 0.0
+var TP1 = 0.0
+var TP2 = 0.0
+var SL = 0.0
+var TPs = array.new_line()
+var TPs1 = array.new_line()
+var TPs2 = array.new_line()
+
+var total = 0
+var tp1s = 0
+var tp2s = 0
+var tp3s = 0
+
+if highBroken
+    active := 1
+    active1 := 1
+    active2 := 1
+    trigger := 1
+    total += 1
+    TP := prevHigh + dist
+    TP1 := prevHigh + dist * 2 / 3
+    TP2 := prevHigh + dist * 1 / 3
+    SL := prevHigh - dist / RR
+    TPs.unshift(line.new(prevHighIndex, TP, bar_index, TP, color=color.new(BULL, 70), width=1, force_overlay=true, style=line.style_dashed))
+    TPs1.unshift(line.new(prevHighIndex, TP1, bar_index, TP1, color=color.new(BULL, 50), width=1, force_overlay=true, style=line.style_dashed))
+    TPs2.unshift(line.new(prevHighIndex, TP2, bar_index, TP2, color=color.new(BULL, 30), width=1, force_overlay=true, style=line.style_dashed))
+    linefill.new(TPs.first(), TPs1.first(), color.new(BULL, 90))
+
+if lowBroken
+    active := -1
+    active1 := -1
+    active2 := -1
+    trigger := 1
+    total += 1
+    TP := prevLow - dist
+    TP1 := prevLow - dist * 2 / 3
+    TP2 := prevLow - dist * 1 / 3
+    SL := prevLow + dist / RR
+    TPs.unshift(line.new(prevLowIndex, TP, bar_index, TP, color=color.new(BEAR, 70), width=1, force_overlay=true, style=line.style_dashed))
+    TPs1.unshift(line.new(prevLowIndex, TP1, bar_index, TP1, color=color.new(BEAR, 50), width=1, force_overlay=true, style=line.style_dashed))
+    TPs2.unshift(line.new(prevLowIndex, TP2, bar_index, TP2, color=color.new(BEAR, 30), width=1, force_overlay=true, style=line.style_dashed))
+    linefill.new(TPs.first(), TPs1.first(), color.new(BEAR, 90))
+
+if active == 1 and high > TP
+    tp1s += 1
+if active1 == 1 and high > TP1
+    tp2s += 1
+    active1 := 0
+if active2 == 1 and high > TP2
+    tp3s += 1
+    active2 := 0
+
+if active == -1 and low < TP
+    tp1s += 1
+if active1 == -1 and low < TP1
+    tp2s += 1
+    active1 := 0
+if active2 == -1 and low < TP2
+    tp3s += 1
+    active2 := 0
+
+
+
+if ((active == 1 and high > TP) or (active == 1 and low < SL) or (active == -1 and low < TP) or (active == -1 and high > SL)) and not (trigger != 0 and trigger[1] == 0)
+    active := 0
+
+if TPs.size() > 0
+    if active == 0 or (active != 0 and active[1] != 0 and trigger == 1)
+        TPs.remove(math.min(1, TPs.size() - 1))
+    else 
+        TPs.first().set_x2(bar_index)
+
+if TPs1.size() > 0
+    if active == 0 or (active != 0 and active[1] != 0 and trigger == 1)
+        TPs1.remove(math.min(1, TPs1.size() - 1))
+    else 
+        TPs1.first().set_x2(bar_index)
+
+if TPs2.size() > 0
+    if active == 0 or (active != 0 and active[1] != 0 and trigger == 1)
+        TPs2.remove(math.min(1, TPs2.size() - 1))
+    else 
+        TPs2.first().set_x2(bar_index)
+
+barcolor(active[0] == 0 ? color.new(color.gray, 40) : active[0] == 1 ? color.new(BULL[1], 40) : color.new(BEAR[1], 40))
+
+plotshape(highBroken, "Bullish Signal", shape.labelup, location.belowbar, BULL, size=size.small)
+plotshape(lowBroken, "Bearish Signal", shape.labeldown, location.abovebar, BEAR, size=size.small)
+
+// plot(total)
+// plot(tp1s, color = color.white)
+// plot(tp2s, color = color.red)
+// plot(tp3s, color = color.yellow)
+
+
+if barstate.islast
+    var table data_table = table.new(
+         position=position.top_right,
+         columns=2,
+         rows=5,
+         bgcolor=chart.bg_color,
+         border_width=1,
+         border_color=chart.fg_color,
+         frame_color=chart.fg_color,
+         frame_width=1
+     )
+
+    t1_rate = total > 0 ? (tp1s / total) * 100.0 : na
+    t2_rate = total > 0 ? (tp2s / total) * 100.0 : na
+    t3_rate = total > 0 ? (tp3s / total) * 100.0 : na
+
+    table.cell(
+         data_table,
+         column   = 0,
+         row      = 0,
+         text     = "Smart Money Breakout Stats",
+         text_size= size.tiny,
+         text_color = chart.fg_color,
+         text_halign= text.align_center
+     )
+    table.cell(
+         data_table,
+         column   = 1,
+         row      = 0,
+         text     = "Value",
+         text_size= size.tiny,
+         text_color = chart.fg_color,
+         text_halign= text.align_center
+     )
+
+    table.cell(
+         data_table,
+         column   = 0,
+         row      = 1,
+         text     = "Total Signals",
+         text_size= size.tiny,
+         text_color = chart.fg_color
+     )
+    table.cell(
+         data_table,
+         column   = 1,
+         row      = 1,
+         text     = str.tostring(total),
+         text_size= size.tiny,
+         text_color = chart.fg_color,
+         text_halign= text.align_center
+     )
+
+    table.cell(
+         data_table,
+         column   = 0,
+         row      = 2,
+         text     = "TP1 Win Rate",
+         text_size= size.tiny,
+         text_color = chart.fg_color
+     )
+    table.cell(
+         data_table,
+         column   = 1,
+         row      = 2,
+         text     = total > 0 ? str.format("{0,number,#.##}%", t3_rate) : "No Trades",
+         text_size= size.tiny,
+         text_color = chart.fg_color,
+         text_halign= text.align_center
+     )
+
+    table.cell(
+         data_table,
+         column   = 0,
+         row      = 3,
+         text     = "TP2 Win Rate",
+         text_size= size.tiny,
+         text_color = chart.fg_color
+     )
+    table.cell(
+         data_table,
+         column   = 1,
+         row      = 3,
+         text     = total > 0 ? str.format("{0,number,#.##}%", t2_rate) : "No Trades",
+         text_size= size.tiny,
+         text_color = chart.fg_color,
+         text_halign= text.align_center
+     )
+
+
+    table.cell(
+         data_table,
+         column   = 0,
+         row      = 4,
+         text     = "TP3 Win Rate",
+         text_size= size.tiny,
+         text_color = chart.fg_color
+     )
+    table.cell(
+         data_table,
+         column   = 1,
+         row      = 4,
+         text     = total > 0 ? str.format("{0,number,#.##}%", t1_rate) : "No Trades",
+         text_size= size.tiny,
+         text_color = chart.fg_color,
+         text_halign= text.align_center
+     )
+
+
+//////Alerts
+alertcondition(highBroken, "Bullish Signal")
+alertcondition(lowBroken, "Bearish Signal")

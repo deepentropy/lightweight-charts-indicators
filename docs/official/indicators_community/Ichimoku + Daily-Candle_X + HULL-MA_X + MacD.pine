@@ -1,0 +1,80 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © SeaSide420
+
+//@version=4
+// Any timeFrame/pair , Ichimoku + Daily-Candle_cross + HULL-MA_cross + custom Hull/MacD combination 420 special blend
+strategy("Ichimoku + Daily-Candle_X + HULL-MA_X + MacD", shorttitle="٩(̾●̮̮̃̾•̃̾)۶", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, max_bars_back=2999, default_qty_value=100, commission_type=strategy.commission.percent,commission_value=0.25,slippage=1)
+Period=input(title="Double HullMA X Period",type=input.integer,defval=14, minval=1)
+//SL = input(defval=-1000, title="Stop Loss in $", type=input.float, step=0.001)
+//TP = input(defval=1000, title="Target Point in $", type=input.float, step=0.001)
+res = input(title="Candle X Resolution", type=input.resolution, defval="D")
+price=input(title="Source of Price",type=input.source,defval=open)
+hma1=hma(price, Period)
+hma2=hma(price[1], Period)
+b=hma1>hma2?color.lime:color.red
+c=hma1>hma2?color.green:color.red
+d=hma1>hma2?color.red:color.green
+D1=security(syminfo.tickerid,  res, price, barmerge.gaps_off, barmerge.lookahead_off)
+D2=security(syminfo.tickerid,  res, price[1], barmerge.gaps_off, barmerge.lookahead_off)
+conversionPeriod = input(9, minval=1, title="Conversion Line Period")
+basePeriod = input(26, minval=1, title="Base Line Period")
+laggingSpanPeriod = input(52, minval=1, title="Lagging Span 2 Period")
+displacement = input(26, minval=1, title="Displacement")
+donchian(len) => avg(lowest(len), highest(len))
+conversionLine = donchian(conversionPeriod)
+baseLine = donchian(basePeriod)
+leadLine1 = avg(conversionLine, baseLine)
+leadLine2 = donchian(laggingSpanPeriod)
+LS=price, offset = -displacement
+MACD_Length = input(9)
+MACD_fastLength = input(12)
+MACD_slowLength = input(26)
+MACD = hma(price, MACD_fastLength) - hma(price, MACD_slowLength)
+aMACD = hma(MACD, MACD_Length)
+//if (strategy.openprofit>TP)
+//    strategy.close_all(comment="close all")
+//closelong = strategy.position_size>0 and strategy.openprofit<SL and hma1>hma2 and price>hma2 or strategy.position_size>0 and strategy.openprofit>TP// or hma1<hma2 and price<hma2
+//if (closelong)
+//    strategy.close("Long",comment="close long")
+//closeshort = strategy.position_size<0 and strategy.openprofit<SL and hma1<hma2 and price<hma2 or strategy.position_size<0 and strategy.openprofit>TP// or hma1>hma2 and price>hma2
+//if (closeshort)
+//    strategy.close("Short",comment="close short")
+longCondition = hma1>hma2 and  D1>D2 and price>hma2 and leadLine1>leadLine2 and MACD>aMACD
+if (longCondition)
+    strategy.entry("Long",strategy.long)
+shortCondition = hma1<hma2 and D1<D2 and price<hma2 and leadLine1<leadLine2 and MACD<aMACD
+if (shortCondition)
+    strategy.entry("Short",strategy.short)//                         /L'-, 
+//                               ,'-.           /MM . .             /  L '-, 
+//     .                    _,--dMMMM\         /MMM  `..           /       '-, 
+//     :             _,--,  )MMMMMMMMM),.      `QMM   ,<>         /_      '-,' 
+//     ;     ___,--. \MM(    `-'   )M//MM\       `  ,',.;      .-'* ;     .' 
+//     |     \MMMMMM) \MM\       ,dM//MMM/     ___ < ,; `.      )`--'    / 
+//     |      \MM()M   MMM)__   /MM(/MP'  ___, \  \ `  `. `.   /__,    ,' 
+//     |       MMMM/   MMMMMM( /MMMMP'__, \     | /      `. `-,_\     / 
+//     |       MM     /MMM---' `--'_ \     |-'  |/         `./ .\----.___ 
+//     |      /MM'   `--' __,-  \""   |-'  |_,               `.__) . .F. )-. 
+//     |     `--'       \   \    |-'  |_,     _,-/            J . . . J-'-. `-., 
+//     |         __  \`. |   |   |         \    / _           |. . . . \   `-.  F 
+//     |   ___  /  \  | `|   '      __  \   |  /-'            F . . . . \     '` 
+//     |   \  \ \  /  |        __  /  \  |  |,-'        __,- J . . . . . \ 
+//     |    | /  |/     __,-  \  ) \  /  |_,-     __,--'     |. .__.----,' 
+//     |    |/    ___     \    |'.  |/      __,--'           `.-;;;;;;;;;\ 
+//     |     ___  \  \     |   |  `   __,--'                  /;;;;;;;;;;;;. 
+//     |     \  \  |-'\    '    __,--'                       /;;;;;;;;;;;;;;\ 
+// \   |      | /  |      __,--'                             `--;;/     \;-'\ 
+//  \  |      |/    __,--'                                   /  /         \  \ 
+//   \ |      __,--'                                        /  /           \  \ 
+//    \|__,--'                                          _,-;M-K,           ,;-;\ 
+//                                                     <;;;;;;;;           '-;;;; 
+//a1=plot(hma1,color=c)// remove the "//" from before the plot script if want to see the indicators on chart
+//a2=plot(hma2,color=c)// remove the "//" from before the plot script if want to see the indicators on chart
+//plot(cross(hma1, hma2) ? hma1 : na, style = circles, color=b, linewidth = 4)// remove the "//" from before the plot script if want to see the indicators on chart
+//plot(cross(hma1, hma2) ? hma1 : na, style = line, color=d, linewidth = 4)// remove the "//" from before the plot script if want to see the indicators on chart
+//plot(conversionLine, color=#0496ff, title="Conversion Line")// remove the "//" from before the plot script if want to see the indicators on chart
+//plot(baseLine, color=#991515, title="Base Line")// remove the "//" from before the plot script if want to see the indicators on chart
+//plot(price, offset = -displacement, color=color.black, title="Lagging Span")// remove the "//" from before the plot script if want to see the indicators on chart
+//p1=plot (leadLine1, offset = displacement, color=color.green,  title="Lead 1")// remove the "//" from before the plot script if want to see the indicators on chart
+//p2=plot (leadLine2, offset = displacement, color=color.red,  title="Lead 2")// remove the "//" from before the plot script if want to see the indicators on chart
+//fill(p1, p2, color = leadLine1 > leadLine2 ? color.green : color.red)// remove the "//" from before the plot script if want to see the indicators on chart
+// remove the "//" from before the plot script if want to see the indicators on chart

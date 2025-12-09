@@ -1,0 +1,114 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Complector
+//@version=4
+////////////////////////////////////////////////////////////////////////////////////////////
+// *** ITG Scalper by Complector ***                                                   ***//
+// ***                                                                                 ***//
+// ***                                                                                 ***//
+// *** Thanks to Iain M. Banks for making my life richer :-)                           ***//
+////////////////////////////////////////////////////////////////////////////////////////////
+//
+study(shorttitle="ITG_Scalper", title="ITG Scalper Buy/Sell [Complector]", overlay=true)
+//
+//General inputs
+//
+shc = input(true, title="Plot TEMA?")  // Plot Triple EMA
+cc = input(true, title="Green/redshift on/off?")  // Trend color change?
+showtext = input(true, title="Show buy/sell?")  // Show buy & sell signals?
+uselabel = input(true, title="Use labels? (max 50)") // Use labels or plotshape?
+showperc = input(false, title="Show % change since last buy/sell")
+nfilter = input(true, title="Noise filter on/off?")
+useCurrentRes = input(true, title="Use Current Chart Resolution for filter?")
+resCustom = input(title="Use Different Timeframe for filter? Uncheck Box Above", type=input.resolution, defval="60")
+len = input(14, title="TEMA period")
+FfastLength = input(12, minval=1, title="Filter fast length")
+FslowLength=input(26,minval=1, title="Filter slow length")
+FsignalLength=input(9,minval=1, title="Filter signal length")
+//
+//Get real close price
+t_id = tickerid(syminfo.prefix, syminfo.ticker)
+realC = security(t_id, timeframe.period, close)
+//
+//Set persistent variables (buy price, sell price, last transaction type)
+buyprice = 0.0
+buyprice := nz(buyprice[1])
+sellprice = 0.0
+sellprice := nz(sellprice[1])
+last_tran = false
+last_tran := nz(last_tran[1])
+//
+//Truncate function used for rounding variables
+truncate(number, decimals) =>
+    factor = pow(10, decimals)
+    int(number * factor) / factor
+//
+//Triple EMA definition
+ema1 = ema(realC, len)
+ema2 = ema(ema1, len)
+ema3 = ema(ema2, len)
+//
+//Triple EMA trend calculation
+avg = 3 * (ema1 - ema2) + ema3
+out = avg
+out1 = security(t_id, timeframe.period, out)
+ma_up = out1 >= out1[1]
+ma_down = out1 < out1[1]
+col = cc ? ma_up ? color.lime : ma_down ? color.red : color.lime : color.aqua
+t_UP = ma_up
+t_DOWN = ma_down
+t_NON = t_UP == t_DOWN
+//
+//Filter formula
+Fsource = close
+macd_colorChange = true
+Fres = useCurrentRes ? timeframe.period : resCustom
+FfastMA = ema(Fsource, FfastLength)
+FslowMA = ema(Fsource, FslowLength)
+Fmacd = FfastMA - FslowMA
+Fsignal = sma(Fmacd, FsignalLength)
+outMacD = security(syminfo.tickerid, Fres, Fmacd)
+outSignal = security(syminfo.tickerid, Fres, Fsignal)
+Fbuy = (outMacD >= outSignal) or not nfilter
+Fsell = (outMacD < outSignal) or not nfilter
+//
+//Triple EMA plot
+plot(out1, title="TEMA", style=plot.style_line, linewidth=2, color=col, transp=iff(shc, 0, 100))
+//
+//Entry & exit conditions
+long = t_UP and not last_tran and not t_NON and Fbuy and barstate.isconfirmed
+short = t_DOWN and last_tran and not t_NON and Fsell and barstate.isconfirmed
+//
+if long
+    buyprice := realC  //Set buyprice
+    last_tran := true  //Set long condition
+if short
+    sellprice := realC  //Set sellprice
+    last_tran := false  //Set short condition
+//
+PercVal = iff(last_tran, 100*(realC - buyprice)/buyprice, 100*(realC - sellprice)/sellprice) //Percent change since last buy/sell
+PercCol = iff(PercVal >= 0, color.lime, color.orange) //Color of percent text
+//
+//Plot percent label
+if showperc
+    var label percLab = na
+    label.delete(percLab)
+    percLab := label.new(x=bar_index, y=high, yloc = yloc.abovebar, color=color.black, textcolor=PercCol, style = label.style_none)
+    label.set_text(id=percLab, text=tostring(truncate(PercVal,2))+" %")
+//
+goodlong = long and buyprice <= sellprice // Buying with a profit?
+goodshort = short and sellprice > buyprice // Selling with a profit?
+txtlight_b = color.lime// Buy signal set to always green.
+txtlight_s = iff(goodshort, color.red, color.yellow) // Sell signal change color depending on profitable or not.
+buytxt = tostring(truncate(buyprice,8))
+selltxt = tostring(truncate(sellprice,8))
+alertcondition(long, title='Buy alert', message='Buy alert')
+alertcondition(short, title='Sell alert', message='Sell alert')
+// Alternative 1: Plot buy/sell signals as labels with price indication. Max 50 labels visible.
+if uselabel and long and showtext
+    label.new(bar_index, high, buytxt, yloc = yloc.belowbar, color = txtlight_b, textcolor=color.white, style = label.style_triangleup, size=size.small)
+if uselabel and short and showtext
+    label.new(bar_index, high, selltxt, yloc = yloc.abovebar, color = txtlight_s, textcolor=color.white, style = label.style_triangledown, size=size.small)
+// Alternative 2: Plot buy/sell signals as plotshape without price indication. No max.
+plotshape(not uselabel and long and showtext, title="Buy alert", color=txtlight_b, transp=0, style=shape.triangleup, size=size.small, location=location.belowbar)
+plotshape(not uselabel and short and showtext, title="Sell alert", color=txtlight_s, transp=0, style=shape.triangledown, size=size.small, location=location.abovebar)
+

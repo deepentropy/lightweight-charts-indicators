@@ -1,0 +1,171 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=5
+indicator("Trend Levels [ChartPrime]", overlay = true, max_labels_count = 500)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+// Length input to determine the range of bars to calculate the highest and lowest values
+int length = input.int(30)
+
+// New color inputs for up (lime) and down (fuchsia)
+color up_col = input.color(color.lime, "Up Color")
+color dn_col = input.color(color.fuchsia, "Down Color")
+
+// Initialize variables for tracking bars, trend, counts for up/down trends
+var int  bars = 0
+var bool trend = na
+var int  count_up = int(na)
+var int  count_dn = int(na)
+
+// Initialize variables for highest, lowest, and mid-level values
+var float l1 = float(na)
+var float h1 = float(na)
+var float m1 = float(na)
+
+// Initialize label and line variables for visual representation
+var label label_upper = label(na)
+var label label_lower = label(na) 
+var label label_mid   = label(na)
+
+var line line_upper = line(na)
+var line line_lower = line(na) 
+var line line_mid   = line(na)
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+// Calculate highest and lowest over the specified length
+h = ta.highest(length)
+l = ta.lowest(length)
+
+// Determine trend direction: if the current high is the highest value, set trend to true
+if h == high 
+    trend := true
+
+// If the current low is the lowest value, set trend to false
+if l == low
+    trend := false
+
+// If in an uptrend, increment bars and create labels and lines for visualization
+if trend
+    bars += 1
+    label_lower := label.new(bar_index+10, l1, str.tostring(l1, "#.#"), color = dn_col, style = label.style_label_left)
+    label_upper := label.new(bar_index+10, h1, str.tostring(h1, "#.#"), color = up_col, style = label.style_label_left)
+    label_mid   := label.new(bar_index+10, m1, str.tostring(m1, "#.#"), color = color.gray, style = label.style_label_left)
+
+    // Delete the previous labels before drawing new ones
+    label.delete(label_mid[1])
+    label.delete(label_upper[1])
+    label.delete(label_lower[1])
+
+    // Create lines to represent high, mid, and low levels
+    line_upper := line.new(bar_index, h1, bar_index+10, h1, color = up_col)
+    line_mid   := line.new(bar_index, m1, bar_index+10, m1, color = color.gray, style = line.style_dashed)
+    line_lower := line.new(bar_index, l1, bar_index+10, l1, color = dn_col)
+
+    // Delete the previous lines before drawing new ones
+    line.delete(line_upper[1])
+    line.delete(line_lower[1])
+    line.delete(line_mid[1])
+
+// If in a downtrend, increment bars and create labels and lines similarly to the uptrend case
+if not trend
+    bars += 1
+    label_lower := label.new(bar_index+10, l1, str.tostring(l1, "#.#"), color = dn_col, style = label.style_label_left)
+    label_upper := label.new(bar_index+10, h1, str.tostring(h1, "#.#"), color = up_col, style = label.style_label_left)
+    label_mid   := label.new(bar_index+10, m1, str.tostring(m1, "#.#"), color = color.gray, style = label.style_label_left)
+
+    // Delete the previous labels before drawing new ones
+    label.delete(label_mid[1])
+    label.delete(label_upper[1])
+    label.delete(label_lower[1])
+
+    // Create lines to represent high, mid, and low levels
+    line_upper := line.new(bar_index, h1, bar_index+10, h1, color = up_col)
+    line_mid   := line.new(bar_index, m1, bar_index+10, m1, color = color.gray, style = line.style_dashed)
+    line_lower := line.new(bar_index, l1, bar_index+10, l1, color = dn_col)
+
+    // Delete the previous lines before drawing new ones
+    line.delete(line_upper[1])
+    line.delete(line_lower[1])
+    line.delete(line_mid[1])
+
+// If there is a change in the trend, reset and delete all labels and lines
+if ta.change(trend)
+    label.delete(label_lower)
+    label.delete(label_mid)
+    label.delete(label_upper)
+
+    line.delete(line_upper)
+    line.delete(line_lower)
+    line.delete(line_mid)
+
+    // Reset the bars and counts for the new trend
+    bars := 1
+    count_up := 0
+    count_dn := 0
+
+// Calculate highest, lowest, and mid-level values based on the number of bars
+h1 := ta.highest(bars)
+l1 := ta.lowest(bars)
+m1 := math.avg(h1, l1)
+
+// Handle the case when bars are just starting (bars == 1), set values to na
+if bars == 1 
+    h1 := na
+    l1 := na
+    m1 := na
+
+// Update counters for up and down closes based on the mid-level value
+if close > m1 
+    count_up += 1
+if close < m1 
+    count_dn += 1
+
+// Calculate the delta percentage between up and down counts
+total         = count_up + count_dn
+delta_percent = (count_up - count_dn) / total * 100 
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// --------------------------------------------------------------------------------------------------------------------{
+
+// Display arrows for trend change (uptrend and downtrend signals)
+if (trend and not trend[1]) 
+    label.new(bar_index, low, "⇗", color = up_col, style = label.style_label_upper_right)
+
+if (trend[1] and not trend)
+    label.new(bar_index, high, "⇘", color = dn_col, style = label.style_label_lower_right)
+
+// Gradient color based on the delta percentage for the candles
+color = color.from_gradient(delta_percent, -50, 50, dn_col, up_col)
+
+// Plot candles using the calculated color for the trend
+plotcandle(open, high, low, close, title='Candles', color = color, wickcolor=color, bordercolor = color)
+
+// Plot the high, low, and mid levels as lines
+pl = plot(l1, color = dn_col, style = plot.style_linebr)
+ph = plot(h1, color = up_col, style = plot.style_linebr)
+pm = plot(m1, color = bar_index % 3 == 0 ? color.gray : na , style = plot.style_linebr)
+
+// Fill the areas between high/mid and mid/low with gradients
+fill(pm, ph, h1, m1, color.new(up_col, 90), na)
+fill(pm, pl, m1, l1, na, color.new(dn_col, 90))
+
+// Display a table with symbol and trend information
+if barstate.islast
+    var tbl = table.new(position.top_right, 10, 10)
+    tbl.cell(0, 0, "Symbol: ", text_color = chart.fg_color)
+    tbl.cell(1, 0, syminfo.basecurrency, text_color = color)
+    
+    tbl.cell(0, 1, "Trend: ", text_color = chart.fg_color)
+    tbl.cell(1, 1, str.tostring(delta_percent, format.percent), text_color = color)
+
+// --------------------------------------------------------------------------------------------------------------------}

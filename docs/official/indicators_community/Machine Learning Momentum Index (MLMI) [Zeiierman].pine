@@ -1,0 +1,125 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator(title='Machine Learning Momentum Index (MLMI) [Zeiierman]', shorttitle='Machine Learning Momentum Index (MLMI)', overlay=false, precision=1)
+
+// ~~ ToolTips {
+t1 ="This parameter controls the number of neighbors to consider while making a prediction using the k-Nearest Neighbors (k-NN) algorithm. By modifying the value of k, you can change how sensitive the prediction is to local fluctuations in the data. \n\nA smaller value of k will make the prediction more sensitive to local variations and can lead to a more erratic prediction line. \n\nA larger value of k will consider more neighbors, thus making the prediction more stable but potentially less responsive to sudden changes."
+t2 ="The parameter controls the length of the trend used in computing the momentum. This length refers to the number of periods over which the momentum is calculated, affecting how quickly the indicator reacts to changes in the underlying price movements. \n\nA shorter trend length (smaller momentumWindow) will make the indicator more responsive to short-term price changes, potentially generating more signals but at the risk of more false alarms. \n\nA longer trend length (larger momentumWindow) will make the indicator smoother and less responsive to short-term noise, but it may lag in reacting to significant price changes."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Input Parameters {
+numNeighbors   = input(200, title='Prediction Data (k)', tooltip=t1)
+momentumWindow = input.int(20, step=2, minval=10, maxval=200, title='Trend Length', tooltip=t2)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Moving Averages & RSI {
+MA_quick    = ta.wma(close, 5)
+MA_slow     = ta.wma(close, 20)
+rsi_quick   = ta.wma(ta.rsi(close, 5),momentumWindow)
+rsi_slow    = ta.wma(ta.rsi(close, 20),momentumWindow)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Crossover Conditions {
+pos  = ta.crossover(MA_quick, MA_slow)
+neg  = ta.crossunder(MA_quick, MA_slow)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Type Definition {
+type Data
+    array<float> parameter1
+    array<float> parameter2
+    array<float> priceArray
+    array<float> resultArray
+
+// Create a Data object
+var data = Data.new(array.new_float(1, 0), array.new_float(1, 0), array.new_float(1, 0), array.new_float(1, 0))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Method that saves the last trade and temporarily holds the current one. {
+method storePreviousTrade(Data d, p1, p2) =>
+    d.parameter1.push(d.parameter1.get(d.parameter1.size() - 1))
+    d.parameter2.push(d.parameter2.get(d.parameter2.size() - 1))
+    d.priceArray.push(d.priceArray.get(d.priceArray.size() - 1))
+    d.resultArray.push(close >= d.priceArray.get(d.priceArray.size() - 1) ? 1 : -1)
+
+    d.parameter1.set(d.parameter1.size() - 1, p1)
+    d.parameter2.set(d.parameter2.size() - 1, p2)
+    d.priceArray.set(d.priceArray.size() - 1, close)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Method to Make Prediction {
+method knnPredict(Data d, p1, p2, k) =>
+    // Create a Distance Array
+    distances = array.new_float(0)
+    n = d.parameter1.size() - 1
+    for i = 0 to n
+        distance = math.sqrt(math.pow(p1 - d.parameter1.get(i), 2) + math.pow(p2 - d.parameter2.get(i), 2))
+        distances.push(distance)
+
+    // Get Neighbors
+    sortedDistances = distances.copy()
+    sortedDistances.sort()
+    selectedDistances = sortedDistances.slice( 0, math.min(k, sortedDistances.size()))
+    maxDist  = selectedDistances.max()
+    neighbors = array.new_float(0)
+    for i = 0 to distances.size() - 1
+        if distances.get(i) <= maxDist
+            neighbors.push(d.resultArray.get(i))
+
+    // Return Prediction
+    prediction = neighbors.sum()
+    prediction
+
+if pos or neg
+    data.storePreviousTrade(rsi_slow, rsi_quick)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~} 
+
+// ~~ Plots {
+prediction    = data.knnPredict(rsi_slow, rsi_quick, numNeighbors)
+prediction_   = plot(prediction, color=color.new(#426eff, 0), title="MLMI Prediction")
+prediction_ma = ta.wma(prediction, 20)
+plot(prediction_ma, color=color.new(#31ffc8, 0), title="WMA of MLMI Prediction")
+hline(0, title="Mid Level")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Gradient Fill {
+upper         = ta.highest(prediction,2000)
+lower         = ta.lowest(prediction,2000) 
+upper_        = upper - ta.ema(ta.stdev(prediction,20),20)
+lower_        = lower + ta.ema(ta.stdev(prediction,20),20)
+channel_upper = plot(upper, color = na, editable = false, display = display.none)
+channel_lower = plot(lower, color = na, editable = false, display = display.none)
+channel_mid   = plot(0, color = na, editable = false, display = display.none)
+
+// ~~ Channel Gradient Fill {
+fill(channel_mid, channel_upper, top_value =  upper, bottom_value = 0, bottom_color = na, top_color = color.new(color.lime,75),title = "Channel Gradient Fill")
+fill(channel_mid, channel_lower, top_value =  0, bottom_value = lower, bottom_color = color.new(color.red,75) , top_color = na,title = "Channel Gradient Fill")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Overbought/Oversold Gradient Fill {
+fill(prediction_, channel_mid, upper, upper_, top_color = color.new(color.lime, 0), bottom_color = color.new(color.green, 100),title = "Overbought Gradient Fill")
+fill(prediction_, channel_mid, lower_,  lower,  top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0),title = "Oversold Gradient Fill")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+P_OB_Over   = ta.crossover(prediction,upper_)
+P_OB_Under  = ta.crossunder(prediction,upper_)
+P_OS_Over   = ta.crossover(prediction,lower_)
+P_OS_Under  = ta.crossunder(prediction,lower_)
+P_Mid_Over  = ta.crossover(prediction,0)
+P_Mid_Under = ta.crossunder(prediction,0)
+P_MA_Over   = ta.crossover(prediction,prediction_ma)
+P_MA_Under  = ta.crossunder(prediction,prediction_ma)
+
+alertcondition(P_OB_Over,  title = "MLMI Crossover OB",  message = "MLMI Crossover OB")
+alertcondition(P_OB_Under, title = "MLMI Crossunder OB", message = "MLMI Crossunder OB")
+alertcondition(P_OS_Over,  title = "MLMI Crossover OS",  message = "MLMI Crossover OS")
+alertcondition(P_OS_Under, title = "MLMI Crossunder OS", message = "MLMI Crossunder OS")
+alertcondition(P_Mid_Over, title = "MLMI Crossover 50",  message = "MLMI Crossover 50")
+alertcondition(P_Mid_Under,title = "MLMI Crossunder 50", message = "MLMI Crossunder 50")
+alertcondition(P_MA_Over,  title = "MLMI Crossover Ma",  message = "MLMI Crossover Ma")
+alertcondition(P_MA_Under, title = "MLMI Crossunder Ma", message = "MLMI Crossunder Ma")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

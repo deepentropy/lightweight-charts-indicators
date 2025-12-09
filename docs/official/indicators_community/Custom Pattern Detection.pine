@@ -1,0 +1,450 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Sharad_Gaikwad
+
+
+
+var tab = table.new(position=position.top_right, columns=7, rows=30,frame_color = na, frame_width = 1)
+msg(int row, int col, string msg_str, clr=color.blue) =>
+    // if(barstate.islast)
+    table.cell(table_id=tab, column=col, row=row, text=msg_str, text_color=clr)
+
+t(val) => str.tostring(val)
+r(val) => math.round_to_mintick(val)
+method f(float f) => str.tostring(f)
+method f(int i) => str.tostring(i)
+method f(bool b) => str.tostring(b)
+method f(string s) => str.tostring(s)
+method fd(int t, string format = "dd-MM-yy HH:mm") => str.format_time(t, format, syminfo.timezone)
+
+dt(val, format = "dd-MM-yy HH:mm:ss:S", tz = syminfo.timezone) => str.format_time(val, format, tz)
+var debug = array.new<string>(1, "")
+method clear_log(string [] s) =>
+    s.clear()
+    s.unshift("")
+method log(string [] s, string msg, bool on_last_bar = false) =>
+    if((not on_last_bar) or (on_last_bar and barstate.islast))
+        if(str.length(s.get(0)) + str.length(msg) < 4095)
+            s.set(0, s.get(0) + msg + "\n")
+
+method display(string [] s, where = 'B', clr = color.blue) =>
+    if(not na(s.get(0)))
+        if(where == 'B')
+            label.new(bar_index, low, yloc = yloc.belowbar, style = label.style_diamond, tooltip = s.get(0), size = size.tiny, color = clr)
+        else
+            label.new(bar_index, high, yloc = yloc.abovebar, style = label.style_diamond, tooltip = s.get(0), size = size.tiny, color = clr)
+        debug.clear_log()
+method lastr(string [] s, where = 'B') =>
+    var lbl = label.new(na, na, style = label.style_diamond)
+    if(not na(s.get(0)))
+        lbl.set_xy(bar_index + 10, close)
+        lbl.set_tooltip(s.get(0))
+        debug.clear_log()        
+
+var CTF_SEC = timeframe.in_seconds(timeframe.period)
+var CTF_MSEC = timeframe.in_seconds(timeframe.period) * 1000
+var int DAY = 1 * 60 * 60 * 24 * 1000
+const color dark_green = #00FF00
+const color dark_red =#FF0000
+
+////
+//@version=5
+indicator(title="Custom Pattern Detection", overlay=true, max_lines_count = 500, max_polylines_count = 100)
+
+g01 = "Trend Lines"
+pivot_lb = input.int(title = "Pivot lookback", defval = 5, group = g01)
+plot_zigzag = input.bool(title = "Plot Zigzag lines", defval = true, group = g01, inline = "zz")
+zigzg_color = input.color(title = "", defval = color.new(color.yellow, 90), group = g01, inline = "zz")
+
+
+g02 = "Pattern Indetifiation"
+detect_pattern = input.bool(title = "Detect Patterns", defval = true, group = g02, tooltip = "Enable Pattern identification. This can be switched of while creating custom pattern") 
+
+poly_line_color = input.color(title = "Pattern Line Color", defval = color.new(dark_green, 0), group = g02, inline = "pat")
+poly_line_width = input.int(title = "Pattern Line width", defval = 2, group = g02)
+fill_color = input.color(title = "Pattern Fill Color", defval = color.new(dark_green, 90), group = g02)
+
+
+
+
+g03 = "Create Custom PAttern"
+create_pattern = input.bool(title = "Show Custom Pattern", defval = true, group = g03, tooltip = "Custom Patern lines are show after the last candle on the chart")
+pattern_line_color = input.color(title = "Custom Pattern Line color", defval = dark_red, group = g03)
+offset = input.int(title = "Custom Pattern Offset", defval = 5, group = g03, tooltip = "Offset is horizonal distance between 2 lines.")
+xa_points = input.float(title = "XA Points", defval = -20.5, group = g03, tooltip = "Used to draw XA line when sample custom pattern is drawn. XA points can be a negative or position number.")
+
+// g10 = "     Line              Source                         From%                      To%"
+g10 = "     Line              Source                     From Fib%                To Fib%"
+use_ab = input.bool(title = "AB", defval = true, group = g10, inline = "10")
+ab_source = input.string(title = "", defval = "XA", options = ["XA"], group = g10, inline = "10")
+ab_fp = input.float(title = "", defval = 0.5, group = g10, inline = "10")
+ab_tp = input.float(title = "", defval = 1.0, group = g10, inline = "10")
+
+use_bc = input.bool(title = "BC", defval = true, group = g10, inline = "20")
+bc_source = input.string(title = "", defval = "AB", options = ["AB"], group = g10, inline = "20")
+bc_fp = input.float(title = "", defval = 0.8, group = g10, inline = "20")
+bc_tp = input.float(title = "", defval = 1.0, group = g10, inline = "20")
+
+use_cd = input.bool(title = "CD", defval = true, group = g10, inline = "30")
+cd_source = input.string(title = "", defval = "BC", options = ["BC"], group = g10, inline = "30")
+cd_fp = input.float(title = "", defval = 1.0, group = g10, inline = "30")
+cd_tp = input.float(title = "", defval = 1.5, group = g10, inline = "30")
+
+use_de = input.bool(title = "DE", defval = true, group = g10, inline = "40")
+de_source = input.string(title = "", defval = "CD", options = ["CD"], group = g10, inline = "40")
+de_fp = input.float(title = "", defval = 1.0, group = g10, inline = "40")
+de_tp = input.float(title = "", defval = 3.0, group = g10, inline = "40")
+
+use_ef = input.bool(title = "EF", defval = false, group = g10, inline = "50")
+ef_source = input.string(title = "", defval = "DE", options = ["DE"], group = g10, inline = "50")
+ef_fp = input.float(title = "", defval = 1.0, group = g10, inline = "50")
+ef_tp = input.float(title = "", defval = 3.0, group = g10, inline = "50")
+
+//------------------ Pivots 
+//
+
+t = time[pivot_lb]
+b = bar_index[pivot_lb]
+h = high[pivot_lb]
+l = low[pivot_lb]
+ph = ta.pivothigh(high, pivot_lb, pivot_lb)
+pl = ta.pivotlow(low, pivot_lb, pivot_lb)
+
+type ZIGZAG 
+    int ptype //1=UP, -1 = DOWN 
+    int ptime 
+    int pbar 
+    float ppp //pivot price point
+    line ln = na
+    int x1t 
+    float y1 
+    int x2t 
+    float y2
+var zz = array.new<ZIGZAG>()
+
+swing_cnt = zz.size()
+
+last_pivot() => zz.size() == 0 ? 0 : zz.get(0).ptype
+    
+method get_x1y1(array<ZIGZAG> z, up_low) =>
+    x = 0, y = 0.
+    if(z.size() == 0)
+        x := t 
+        y := up_low == 1 ? h : l
+    else
+        rec = z.get(0)
+        x := rec.ptime
+        y := rec.ppp
+    [x, y]
+
+var latest_pivot = 0 
+new_ph = ph != 0 and bar_index > pivot_lb 
+new_pl = pl != 0 and bar_index > pivot_lb
+latest_pivot := new_ph ? 1 : new_pl ? -1 : latest_pivot
+
+if((new_ph and last_pivot() != 1) or (new_ph and zz.size() == 0))
+    line ln = na
+    clr = plot_zigzag ? zigzg_color : color.new(zigzg_color, 100)
+    [x1, y1] = zz.get_x1y1(1)
+    if(plot_zigzag)
+        ln := line.new(x1 = x1, y1 = y1, x2 = t, y2 = h, xloc = xloc.bar_time, color =clr)  
+    
+    zz.unshift(ZIGZAG.new(1, t, b, h, ln, x1, y1, t, h))
+    // zz.unshift(ZIGZAG.new(1, t, b, h, ln))
+else if(new_ph and last_pivot() == 1 and zz.size() > 0)
+    rec0 = zz.get(0)
+    if(h > rec0.ppp)
+        rec1 = zz.get(1)
+
+        rec0.pbar := b 
+        rec0.ptime := t
+        rec0.ppp := h 
+        rec0.x2t := t 
+        rec0.y2 := h
+        if(plot_zigzag)
+            rec0.ln.set_xy2(t, h)
+if((new_pl and last_pivot() != -1) or (new_pl and zz.size() == 0))
+    line ln = na
+    clr = plot_zigzag ? zigzg_color : color.new(zigzg_color, 100)
+    [x1, y1] = zz.get_x1y1(-1)
+    if(plot_zigzag)
+        ln := line.new(x1 = x1, y1 = y1, x2 = t, y2 = l, xloc = xloc.bar_time, color = clr)
+    zz.unshift(ZIGZAG.new(-1, t, b, l, ln, x1, y1, t, l))
+    // zz.unshift(ZIGZAG.new(-1, t, b, l, ln))
+else if(new_pl and last_pivot() == -1 and zz.size() > 0)
+    rec0 = zz.get(0)
+    if(l < rec0.ppp)
+        rec1 = zz.get(1)
+
+        rec0.pbar := b 
+        rec0.ptime := t
+        rec0.ppp := l 
+        rec0.x2t := t 
+        rec0.y2 := l        
+        if(plot_zigzag)
+            rec0.ln.set_xy2(t, l)
+//---------------------------------- Pivots    
+
+//---------------------------------- Create Pattern
+type PATTERN 
+    string id //A, AB....
+    float fp  //from fib 
+    float tp //to fib
+    int ptype //1=UP, -1 = DOWN 
+    int x1 //bar index
+    float y1 
+    int x2 // bar index
+    float y2
+    string l1 
+    string l2
+    int x1t
+    int x2t
+    line ln = na
+    label lbl1 = na
+    label lbl2 = na
+var template = array.new<PATTERN>()
+var pattern = array.new<PATTERN>()
+
+
+if(bar_index == 0 and detect_pattern)
+    stop = false
+    x1 = int(na)
+    y1 = float(na)
+    x2 = int(na)
+    y2 = float(na)
+    ptype = xa_points < 0 ? 1 : -1
+    template.unshift(PATTERN.new(id = "XA", fp = -1, tp = -1
+         , ptype = ptype
+         , x1 = x1
+         , y1 = y1
+         , x2 = x2
+         , y2 = y2
+         , l1 = "X", l2 = "A"))
+
+    ptype := ptype == 1 ? -1 : 1
+    if(use_ab)
+        template.unshift(PATTERN.new(id = "AB", fp = ab_fp, tp = ab_tp
+             , ptype = ptype
+             , x1 = x1
+             , y1 = y1
+             , x2 = x2
+             , y2 = y2
+             , l1 = "A", l2 = "B"))
+    else
+        stop := true
+    ptype := ptype == 1 ? -1 : 1
+    if(use_bc and not stop)
+        template.unshift(PATTERN.new(id = "BC", fp = bc_fp, tp = bc_tp
+             , ptype = ptype
+             , x1 = x1
+             , y1 = y1
+             , x2 = x2
+             , y2 = y2
+             , l1 = "B", l2 = "C"))
+    else
+        stop := true
+    ptype := ptype == 1 ? -1 : 1
+    if(use_cd and not stop)
+        template.unshift(PATTERN.new(id = "CD", fp = cd_fp, tp = cd_tp
+             , ptype = ptype
+             , x1 = x1
+             , y1 = x2
+             , x2 = x2
+             , y2 = y2
+             , l1 = "C", l2 = "D"))
+    else
+        stop := true
+    ptype := ptype == 1 ? -1 : 1
+    if(use_de and not stop)
+        template.unshift(PATTERN.new(id = "DE", fp = de_fp, tp = de_tp
+             , ptype = ptype
+             , x1 = x1
+             , y1 = y1
+             , x2 = x2
+             , y2 = y2
+             , l1 = "D", l2 = "E"))
+    else
+        stop := true
+    ptype := ptype == 1 ? -1 : 1
+    if(use_ef and not stop)
+        template.unshift(PATTERN.new(id = "EF", fp = ef_fp, tp = ef_tp
+             , ptype = ptype
+             , x1 = x1
+             , y1 = y1
+             , x2 = x2
+             , y2 = y2
+             , l1 = "E", l2 = "F"))
+
+
+if(create_pattern and barstate.islast)
+    for rec in pattern
+        rec.ln.delete()
+        rec.lbl1.delete()
+        rec.lbl2.delete()
+    pattern.clear()
+    x1 = bar_index + offset
+    y1 = high
+    x2 = x1 + offset
+    y2 = y1 + xa_points
+    ptype = xa_points < 0 ? 1 : -1
+    pattern.unshift(PATTERN.new(id = "XA", fp = -1, tp = -1
+         , ptype = ptype
+         , x1 = x1
+         , y1 = y1
+         , x2 = x2
+         , y2 = y2
+         , l1 = "X", l2 = "A"))
+
+    diff = y1 - y2
+    ab_pivot = (ab_fp + ab_tp) / 2
+    ab_pp = diff * ab_pivot
+    ab_x2 = x2 + offset
+    ab_y2 = y2 + ab_pp
+    ptype := ptype == 1 ? -1 : 1
+
+    if(use_ab)
+        pattern.unshift(PATTERN.new(id = "AB", fp = ab_fp, tp = ab_tp
+             , ptype = ptype
+             , x1 = x2
+             , y1 = y2
+             , x2 = ab_x2
+             , y2 = ab_y2
+             , l1 = "A", l2 = "B"))
+    
+
+    diff_ab = y2 - ab_y2
+    bc_pivot = (bc_fp + bc_tp) / 2
+    bc_pp = diff_ab * bc_pivot
+    bc_x2 = ab_x2 + offset
+    bc_y2 = ab_y2 + bc_pp
+    ptype := ptype == 1 ? -1 : 1
+    if(use_bc)
+        pattern.unshift(PATTERN.new(id = "BC", fp = bc_fp, tp = bc_tp
+             , ptype = ptype
+             , x1 = ab_x2
+             , y1 = ab_y2
+             , x2 = bc_x2
+             , y2 = bc_y2
+             , l1 = "B", l2 = "C"))
+    
+    diff_bc = ab_y2 - bc_y2
+    cd_pivot = (cd_fp + cd_tp) / 2
+    cd_pp = diff_bc * cd_pivot
+    cd_x2 = bc_x2 + offset
+    cd_y2 = bc_y2 + cd_pp
+    ptype := ptype == 1 ? -1 : 1
+    if(use_cd)
+        pattern.unshift(PATTERN.new(id = "CD", fp = cd_fp, tp = cd_tp
+             , ptype = ptype
+             , x1 = bc_x2
+             , y1 = bc_y2
+             , x2 = cd_x2
+             , y2 = cd_y2
+             , l1 = "C", l2 = "D"))
+            
+    diff_cd = bc_y2 - cd_y2
+    de_pivot = (de_fp + de_tp) / 2
+    de_pp = diff_cd * de_pivot
+    de_x2 = cd_x2 + offset
+    de_y2 = cd_y2 + de_pp
+    ptype := ptype == 1 ? -1 : 1
+    if(use_de)
+        pattern.unshift(PATTERN.new(id = "DE", fp = de_fp, tp = de_tp
+             , ptype = ptype
+             , x1 = cd_x2
+             , y1 = cd_y2
+             , x2 = de_x2
+             , y2 = de_y2
+             , l1 = "D", l2 = "E"))
+
+    diff_de = cd_y2 - de_y2
+    ef_pivot = (ef_fp + ef_tp) / 2
+    ef_pp = diff_de * ef_pivot
+    ef_x2 = de_x2 + offset
+    ef_y2 = de_y2 + ef_pp
+    ptype := ptype == 1 ? -1 : 1
+    if(use_ef)
+        pattern.unshift(PATTERN.new(id = "EF", fp = ef_fp, tp = ef_tp
+             , ptype = ptype
+             , x1 = de_x2
+             , y1 = de_y2
+             , x2 = ef_x2
+             , y2 = ef_y2
+             , l1 = "E", l2 = "F"))
+    
+    for rec in pattern
+        rec.ln := line.new(rec.x1, rec.y1, rec.x2, rec.y2, color = pattern_line_color)
+        if(not na(rec.l1))
+            loc = rec.ptype == 1 ? yloc.abovebar : yloc.belowbar 
+            rec.lbl1 := label.new(rec.x1, rec.y1, text = rec.l1, style = label.style_none, textcolor = pattern_line_color) 
+        if(not na(rec.l2))
+            rec.lbl2 := label.new(rec.x2, rec.y2, text = rec.l2, style = label.style_none, textcolor = pattern_line_color)
+
+//---------------------------------- Create Pattern
+//------------------------------------------- Detect Pattern
+
+var pat_time = array.new<int>()
+
+method detect(array<ZIGZAG> z, array<PATTERN> pat, int lb, array<int> pt) => 
+    invalidated = false
+    for i = 0 to pat.size() - 1
+        zz_rec = z.get(i)
+        pat_rec = pat.get(i)
+        if(pat_rec.ptype == zz_rec.ptype)
+            invalidated := true
+            break
+
+        pat_rec.x1t := zz_rec.x1t
+        pat_rec.y1 := zz_rec.y1
+        pat_rec.x2t := zz_rec.x2t
+        pat_rec.y2 := zz_rec.y2
+
+    if(not invalidated) 
+        pattern_confirmed = false
+        for i = 0 to pat.size() - 2
+            pat_rec = pat.get(i)
+            prev_pat_rec = pat.get(i+1)
+            fp_pp = pat_rec.y1 + ((prev_pat_rec.y1 - prev_pat_rec.y2) * pat_rec.fp)
+            tp_pp = pat_rec.y1 + ((prev_pat_rec.y1 - prev_pat_rec.y2) * pat_rec.tp)
+            
+            if(math.min(fp_pp, tp_pp) <= pat_rec.y2 and math.max(fp_pp, tp_pp) >= pat_rec.y2)
+                pattern_confirmed := true
+            else
+                pattern_confirmed := false 
+                break
+
+        // if(pattern_confirmed)
+        //     for i = 0 to pat.size() - 1
+        //         pat_rec = pat.get(i)
+        //         if(i == pat.size() - 1)
+        //             pat_time.push(pat_rec.x1t)
+        //         line.new(pat_rec.x1t, pat_rec.y1, pat_rec.x2t, pat_rec.y2, color = color.yellow, width = 2, xloc = xloc.bar_time) 
+        if(pattern_confirmed)
+            points = array.new<chart.point>()
+            // for i = 0 to pat.size() - 1
+            for i = pat.size() - 1 to 0
+                pat_rec = pat.get(i)
+
+                if(i == pat.size() - 1)
+                    pat_time.push(pat_rec.x1t)
+
+                points.push(chart.point.from_time(pat_rec.x1t, pat_rec.y1))
+
+                if(i ==0)
+                    points.push(chart.point.from_time(pat_rec.x2t, pat_rec.y2))
+            polyline.new(points, curved = false, closed = false, line_color = poly_line_color, line_width = poly_line_width, fill_color = fill_color, xloc = xloc.bar_time)
+
+pat = template.copy()
+if(zz.size() > swing_cnt and zz.size() > pat.size() and pat.size() > 0)
+    zz.detect(pat, pat.size(), pat_time)
+
+rw = 0
+msg(rw, 0, "No of Patterns")
+msg(rw, 1, t(pat_time.size()))
+
+if(pat_time.size() > 0)
+    for i = pat_time.size() - 1 to 0
+        rw += 1
+        msg(rw, 0, dt(pat_time.get(i)))
+        if(rw >= 10)
+            break
+

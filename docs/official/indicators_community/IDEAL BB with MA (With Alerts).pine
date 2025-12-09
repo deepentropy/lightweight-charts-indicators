@@ -1,0 +1,106 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Adarsh
+
+//@version=4
+// Moving Average 3.0 (3rd Generation) script may be freely distributed under the MIT license. Copyright (c) 2018-present, Alex Orekhov (everget)
+study("IDEAL BB with MA (With Alerts) by Adarsh", overlay=true)
+
+length1 = input(title="1st Length", type=input.integer, minval=1, defval=120)
+length2 = input(title="2nd Length", type=input.integer, minval=1, defval=12)
+maInput = input(title="MA Type", defval="EMA", options=["EMA", "SMA", "VWMA", "WMA"])
+src = input(title="Source", type=input.source, defval=hl2)
+
+getMA(src, length) =>
+    ma = 0.0
+
+    if maInput == "EMA"
+        ma := ema(src, length)
+
+    if maInput == "SMA"
+        ma := sma(src, length)
+
+    if maInput == "VWMA"
+        ma := vwma(src, length)
+
+    if maInput == "WMA"
+        ma := wma(src, length)
+    ma
+
+getNMA(src, length1, length2) =>
+    lambda = length1 / length2
+	alpha = lambda * (length1 - 1) / (length1 - lambda)
+	
+	ma1 = getMA(src, length1)
+	ma2 = getMA(ma1, length2)
+
+	nma = (1 + alpha) * ma1 - alpha * ma2
+
+nma = getNMA(src, length1, length2)
+//emaLength = input(90, minval=1, title="EMA Length")
+//emaSource = input(close, title="EMA Source")
+//ema = ema(emaSource, emaLength)
+
+plot(nma, title="NMA Black Line", linewidth=2, style=plot.style_stepline, color=color.black, transp=0)
+//plot(ema, title="EMA", linewidth=1, color=color.red, transp=0)
+
+//VWAP BANDS
+lenvwap = input(1, minval=1, title="VWAP Length")
+src1a = input(close, title="VWAP Source")
+offsetvwap = input(title="VWAP Offset", type=input.integer, defval=0, minval=-500, maxval=500)
+srcvwap = hlc3
+vvwap = vwap(srcvwap)
+line1 = sma(src1a, lenvwap)
+plot(vvwap, color=#e91e63, linewidth=2, style=plot.style_line, title="VWAP MIDDLE")
+
+
+// Boll Bands
+emaSource = close
+emaPeriod = 20
+devMultiple = 2
+baseline = sma(emaSource, emaPeriod)
+plot(baseline, title = "BB Red Line", color = color.red)
+stdDeviation = devMultiple * (stdev(emaSource, emaPeriod))
+upperBand = (baseline + stdDeviation)
+lowerBand = (baseline - stdDeviation)
+p1 = plot(upperBand, title = "BB Top", color = color.blue)
+p2 = plot(lowerBand, title = "BB Bottom", color = #311b92)
+fill(p1, p2, color = color.blue)
+
+//HULL TREND WITH KAHLMAN
+srchull       = input(hl2,   "Price Data")
+lengthhull    = input(24,    "Lookback")
+showcross = input(true,  "Show cross over/under")
+gain      = input(10000, "Gain")
+k         = input(true,  "Use Kahlman")
+
+hma(_srchull, _lengthhull) =>
+    wma((2 * wma(_srchull, _lengthhull / 2)) - wma(_srchull, _lengthhull), round(sqrt(_lengthhull)))
+    
+hma3(_srchull, _lengthhull) =>
+    p = lengthhull/2
+    wma(wma(close,p/3)*3 - wma(close,p/2) - wma(close,p),p)
+
+kahlman(x, g) =>
+    kf = 0.0
+    dk = x - nz(kf[1], x)
+    smooth = nz(kf[1],x)+dk*sqrt((g/10000)*2)
+    velo = 0.0
+    velo := nz(velo[1],0) + ((g/10000)*dk)
+    kf := smooth+velo
+  
+a = k ? kahlman(hma(srchull, lengthhull), gain) : hma(srchull, lengthhull)
+b = k ? kahlman(hma3(srchull, lengthhull), gain) : hma3(srchull, lengthhull)
+c = b > a ? color.lime : color.red
+crossdn = a > b and a[1] < b[1]
+crossup = b > a and b[1] < a[1]
+
+p1hma = plot(a,color=c,linewidth=1,transp=75, title="Long Plot")
+p2hma = plot(b,color=c,linewidth=1,transp=75, title="Short Plot")
+fill(p1hma,p2hma,color=c,transp=55,title="Fill")
+plotshape(showcross and crossdn ? a : na, location=location.abovebar, style=shape.labeldown, color=color.red, size=size.tiny, text="Sell", textcolor=color.white, transp=0, offset=-1)
+plotshape(showcross and crossup ? a : na, location=location.belowbar, style=shape.labelup, color=color.green, size=size.tiny, text="Buy", textcolor=color.white, transp=0, offset=-1)
+
+//ALERTS
+alertcondition(crossup, title='Buy', message='Go Long')
+alertcondition(crossdn, title='Sell', message='Go Short')
+

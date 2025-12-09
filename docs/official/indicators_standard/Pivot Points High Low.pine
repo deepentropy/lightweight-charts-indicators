@@ -1,0 +1,24 @@
+//@version=6
+indicator("Pivot Points High Low", shorttitle="Pivots HL", overlay=true, max_labels_count=500)
+
+lengthGroupTitle = "LENGTH LEFT / RIGHT"
+colorGroupTitle = "Text Color / Label Color"
+leftLenH = input.int(title="Pivot High", defval=10, minval=1, inline="Pivot High", group=lengthGroupTitle)
+rightLenH = input.int(title="/", defval=10, minval=1, inline="Pivot High", group=lengthGroupTitle)
+textColorH = input(title="Pivot High", defval=color.black, inline="Pivot High", group=colorGroupTitle)
+labelColorH = input(title="", defval=color.white, inline="Pivot High", group=colorGroupTitle)
+
+leftLenL = input.int(title="Pivot Low", defval=10, minval=1, inline="Pivot Low", group=lengthGroupTitle)
+rightLenL = input.int(title="/", defval=10, minval=1, inline="Pivot Low", group=lengthGroupTitle)
+textColorL = input(title="Pivot Low", defval=color.black, inline="Pivot Low", group=colorGroupTitle)
+labelColorL = input(title="", defval=color.white, inline="Pivot Low", group=colorGroupTitle)
+
+ph = ta.pivothigh(leftLenH, rightLenH)
+pl = ta.pivotlow(leftLenL, rightLenL)
+
+drawLabel(_offset, _pivot, _style, _color, _textColor) =>
+    if not na(_pivot)
+        label.new(bar_index[_offset], _pivot, str.tostring(_pivot, format.mintick), style=_style, color=_color, textcolor=_textColor)
+
+drawLabel(rightLenH, ph, label.style_label_down, labelColorH, textColorH)
+drawLabel(rightLenL, pl, label.style_label_up, labelColorL, textColorL)

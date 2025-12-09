@@ -1,0 +1,366 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © RedKTrader - March 2023
+
+//@version=5
+
+// ******************************
+// EVEREX v2.0 adds markers for key patterns based on nPrice:nVol ratios
+// starting with EoM and Compression - maybe add "Balanced" and "Mega" ??
+
+// to-do list
+
+
+
+// inspecting the effort vs result concept by plotting volume vs. price change
+// this is like looking at distance versus fuel consumption - but comparing a normalized average of each
+// to help reveal areas of volume & price action anomalies, contraction & expansion
+
+
+indicator('RedK Effort Versus Results Explorer v2.0', 'RedK EVEREX v2.0', precision = 0, 
+  timeframe = '', timeframe_gaps = false, explicit_plot_zorder = true)
+
+// ***********************************************************************************************************
+// This function calcualtes a selectable average type
+GetAverage(_data, _len, MAOption) =>
+    value = switch MAOption
+        'SMA' => ta.sma(_data, _len) 
+        'EMA' => ta.ema(_data, _len) 
+        'HMA' => ta.hma(_data, _len) 
+        'RMA' => ta.rma(_data, _len) 
+        => 
+            ta.wma(_data, _len)
+// ***********************************************************************************************************
+
+// ========================================================================================
+// Normalization function - Normalizes values that are not restricted within a zero to 100 range
+// This technique provides a scale that is closer to a "human" estimation of value in "bands" 
+// as in: low, below average, average, above average, high, super high  
+// this also avoids the issue of extreme values when using the stoch() -based technique
+// these values are subjective, and can be changed - but slight changes here won't lead to major changes in outcome
+// since all is relative to the same data series. 
+//
+Normalize(_Value, _Avg) =>
+
+    _X = _Value / _Avg
+    
+    _Nor = 
+      _X > 1.50 ? 1.00 :
+      _X > 1.20 ? 0.90 :
+      _X > 1.00 ? 0.80 :
+      _X > 0.80 ? 0.70 :
+      _X > 0.60 ? 0.60 :
+      _X > 0.40 ? 0.50 :
+      _X > 0.20 ? 0.25 :
+      0.1
+// ===================================================================================
+
+
+// ===========================================================================================================
+//      Inputs
+// ===========================================================================================================
+grp_1   = 'Rate of FLow (RoF)'
+grp_2   = 'Lookback Parameters'
+grp_3   = 'Bias / Sentiment'
+grp_4   = 'EVEREX Bands'
+
+length    = input.int(10, minval = 1, inline = 'ROF', group = grp_1)
+MA_Type   = input.string(defval = 'WMA', title = 'MA type', 
+  options = ['WMA', 'EMA', 'SMA', 'HMA', 'RMA'], inline = 'ROF', group = grp_1) 
+smooth    = input.int(defval = 3, title = 'Smooth', minval = 1,  inline = 'ROF', group = grp_1)
+
+//src       = input.source(close, title = "Source (for 2-Bar Shift)", group = grp_1)
+
+sig_length  = input.int(5, 'Signal Length', minval = 1, inline = 'Signal', group = grp_1)
+S_Type      = input.string(defval = 'WMA', title = 'Signal Type', 
+  options = ['WMA', 'EMA', 'SMA', 'HMA', 'RMA'], inline = 'Signal', group = grp_1)
+
+lookback    = input.int(defval = 20, title = 'Length', minval = 1, inline = 'Lookback', group = grp_2)
+lkbk_Calc   = input.string(defval = 'Simple', title = 'Averaging', 
+  options = ['Simple', 'Same as RRoF'], inline='Lookback', group = grp_2 )
+
+showBias    = input.bool(defval = false, title = 'Bias Plot ? -- ', inline = 'Bias', group = grp_3)
+B_Length    = input.int(defval = 30, title = 'Length', minval = 1, inline = 'Bias', group = grp_3)
+B_Type      = input.string(defval = 'WMA', title = 'MA type', 
+  options = ['WMA', 'EMA', 'SMA', 'HMA', 'RMA'], inline = 'Bias', group = grp_3)
+
+showEVEREX  = input.bool(true, 'Show EVEREX Bands ? -- ', inline = 'EVEREX', group = grp_4)
+// a simple mechanism to control/change the strength band scale for improving visualization
+// applies only to the "bands" and the level hlines
+bandscale   = str.tonumber(input.string("100", title = "Band Scale", 
+  options = ['100', '200', '400'], inline = 'EVEREX', group = grp_4))
+
+DispBias    = showBias ? display.pane : display.none 
+DispBands   = showEVEREX ? display.pane : display.none 
+showhlines  = showEVEREX ? display.all : display.none 
+
+Disp_vals   = display.status_line + display.data_window
+
+
+// ===========================================================================================================
+//          Calculations
+// ===========================================================================================================
+
+// Volume "effort" Calculation  -- will revert to no volume acceleration for instruments with no volume data
+
+v   = na(volume) ? 1 : volume                     // this part ensures we're not hit with calc issues due to NaN's
+NoVol_Flag = na(volume) ? true : false          // this is a flag to use later 
+
+lkbk_MA_Type = lkbk_Calc == 'Simple' ? 'SMA' : MA_Type
+
+Vola  = GetAverage(v, lookback, lkbk_MA_Type)
+Vola_n_pre = Normalize(v, Vola) * 100
+
+//Now trap the case of no volume data - ensure final calculation not impacted 
+Vola_n = NoVol_Flag ? 100 : Vola_n_pre
+//plot(Vola_n , "Volume Normalized", color = color.white, display = display.none)
+
+// ===============================================================================================================
+// Price "result" calculation
+// we'll consider "result" (strength or weakness) to be the outcome (average) of 6 elements: 
+// Same (in-)Bar strength elements:
+// 1 - Bar Closing: the closing within the bar  --> this will be a direct +100 / -100 value
+// 2 - Spread to range: the spread to range ratio (that's BoP formula) --> direct +100 / -100 value
+// 3 - Relative Spread: spread relative to average spread during lookback period --> normalized
+// 2-bar strength elements:
+// 4 - 2-bar closing: the closing within 2-bar range (that accomodates open gap effect)
+// 5 - 2-bar Closing Shift to Range: Change in close relative to the 2-bar range     
+// 6 - 2-bar Relative Shift: the 2-bar Close (or source price) shift - relative to the average 2-bar shift during lookback period --> normalized
+
+
+BarSpread = close - open 
+BarRange  = high - low
+R2        = ta.highest(2) - ta.lowest(2)
+SrcShift  = ta.change(close)
+//TR = ta.tr(true)
+
+sign_shift = math.sign(SrcShift) 
+sign_spread = math.sign(BarSpread) 
+// =========================================================================================================
+//    in-bar assessments
+// =========================================================================================================
+// 1. Calculate closing within bar - should be max value at either ends of the bar range 
+barclosing  = 2 * (close - low) / BarRange * 100 - 100
+//plot(barclosing, "Bar Closing %" , color=color.fuchsia, display = display.none)
+
+// 2. caluclate spread to range ratio
+s2r = BarSpread / BarRange * 100
+//plot(s2r, "Spread:Range", color = color.lime, display = display.none)
+
+// 3. Calculate relative spread compared to average spread during lookback
+BarSpread_abs   = math.abs(BarSpread)
+BarSpread_avg   = GetAverage(BarSpread_abs, lookback, lkbk_MA_Type)
+BarSpread_ratio_n = Normalize(BarSpread_abs, BarSpread_avg) * 100 * sign_spread  
+//plot(BarSpread_ratio_n, "Bar Spread Ratio", color=color.orange, display=display.none)
+// =========================================================================================================
+//    2-bar assessments
+// =========================================================================================================
+// 4. Calculate closing within 2 bar range - should be max value at either ends of the 2-bar range 
+barclosing_2  = 2 * (close - ta.lowest(2)) / R2 * 100 - 100
+//plot(barclosing_2, "2-Bar Closing %" , color=color.navy, display = display.none)
+
+// 5. calculate 2-bar shift to range ratio
+Shift2Bar_toR2 = SrcShift / R2 * 100 
+//plot(Shift2Bar_toR2, "2-bar Shift vs 2R", color=color.yellow, display = display.none)
+
+
+// 6. Calculate 2-bar Relative Shift 
+SrcShift_abs    = math.abs(SrcShift)
+srcshift_avg    = GetAverage(SrcShift_abs, lookback, lkbk_MA_Type) 
+srcshift_ratio_n   = Normalize(SrcShift_abs, srcshift_avg) * 100 * sign_shift
+//plot(srcshift_ratio_n, "2-bar Shift vs Avg", color=color.white, display = display.none)
+// ===============================================================================
+
+// =========================================================================================
+// Relative Price Strength combining all strength elements
+
+Pricea_n = (barclosing + s2r + BarSpread_ratio_n + barclosing_2 + Shift2Bar_toR2 + srcshift_ratio_n) / 6
+//plot(Pricea_n, "Price Normalized", color=color.orange, display = display.none)
+
+
+//Let's take Bar Flow as the combined price strength * the volume:avg ratio
+// this works in a similar way to a volume-weighted RSI
+bar_flow  =   Pricea_n * Vola_n / 100 
+//plot(bar_flow, 'bar_flow', color=color.green, display = display.none)
+
+// calc avergae relative rate of flow, then smooth the resulting average
+// classic formula would be this
+//RROF    = f_ma(bar_flow, length, MA_Type)  
+//
+// or we can create a relative index by separating bulls from bears, like in an RSI - my preferred method
+// here we have an added benefit of plotting the (average) bulls vs bears separately - as an option 
+bulls = math.max(bar_flow, 0)
+bears = -1 * math.min(bar_flow, 0)
+
+bulls_avg = GetAverage(bulls, length, MA_Type)
+bears_avg = GetAverage(bears, length, MA_Type)
+
+dx          = bulls_avg / bears_avg
+RROF         = 2 * (100 - 100 / (1 + dx)) - 100
+RROF_s      = ta.wma(RROF, smooth)
+
+Signal = GetAverage(RROF_s, sig_length, S_Type)
+
+// Calculate Bias / sentiment on longer length
+dx_b          = GetAverage(bulls, B_Length, B_Type) / GetAverage(bears, B_Length, B_Type)
+RROF_b       = 2 * (100 - 100 / (1 + dx_b)) - 100
+RROF_bs      = ta.wma(RROF_b, smooth)
+
+// ===========================================================================================================
+//      Colors & plots
+// ===========================================================================================================
+
+c_zero  = color.new(#1163f6, 25)
+c_band  = color.new(color.yellow, 40)
+
+c_up    = color.aqua
+c_dn    = color.orange
+
+c_sup   = color.new(#00aa00, 70)
+c_sdn   = color.new(#ff180b, 70)
+
+up      = RROF_s >= 0
+s_up    = RROF_bs >=0 
+
+// ==================================== Plots ==========================================================
+
+// // Display the ATR & VOl Ratio values only on the indicator status line & in the Data Window
+// plotchar(shift, title = "Shift", char = "", color = color.white, editable=false, display=display.status_line + display.data_window)
+// plotchar(lbk_tr, title = "Avg Shift", char = "", color = color.aqua, editable=false, display=display.status_line + display.data_window)
+// plotchar(vola/lbk_vola, title = "Vol Ratio", char = "", color = color.yellow, editable=false, display=display.status_line + display.data_window)
+
+
+hline(0, 'Zero Line', c_zero, linestyle = hline.style_solid)
+// plot the band scale guide lines -- these lines will show/hide along with the EVEREX "Equalizer Bands Plot"
+hline(0.25 * bandscale, title = '1/4 Level', color=c_band, linestyle = hline.style_dotted, display = showhlines)
+hline(0.50 * bandscale, title = '2/4 Level', color=c_band, linestyle = hline.style_dotted, display = showhlines)
+hline(0.75 * bandscale, title = '3/4 Level', color=c_band, linestyle = hline.style_dotted, display = showhlines)
+hline(bandscale, title = '4/4 Level', color=c_band, linestyle = hline.style_dotted, display = showhlines)
+
+// Plot Bulls & Bears - these are optional plots and hidden by default  - adjust this section later 
+plot(ta.wma(bulls_avg, smooth), "Bulls", color = #11ff20, linewidth = 2, display = display.none)
+plot(ta.wma(bears_avg, smooth), "Bears", color = #d5180b, linewidth = 2, display = display.none)
+// =============================================================================
+// Plot Bias / Sentiment
+
+plot (RROF_bs, "Bias / Sentiment", style=plot.style_area, 
+  color = s_up ? c_sup : c_sdn, linewidth = 4, display = DispBias ) 
+
+// =============================================================================
+// Plot Price Strength & Relative Volume as stacked "equalizer bands" 
+// adding visualization option to make the bands joint or separate at the mid-scale mark 
+Eq_band_option = input.string("Joint", title = 'Band Option', options = ["Joint", "Separate"], group = grp_4)
+
+nPrice  = math.max(math.min(Pricea_n, 100), -100)
+nVol    = math.max(math.min(Vola_n, 100), -100)
+
+bar = bar_flow
+
+c_vol_grn   = color.new(#26a69a, 75)
+c_vol_red   = color.new(#ef5350, 75)
+
+cb_vol_grn  = color.new(#26a69a, 20)
+cb_vol_red  = color.new(#ef5350, 20)
+
+c_vol       = bar > 0 ? c_vol_grn : c_vol_red
+cb_vol      = bar > 0 ? cb_vol_grn : cb_vol_red
+
+vc_lo       = 0
+vc_hi       = nVol * bandscale / 100 / 2
+
+plotcandle(vc_lo, vc_hi, vc_lo, vc_hi , "Volume Band", c_vol, c_vol, bordercolor = cb_vol, display = DispBands)
+
+c_pri_grn   = color.new(#3ed73e, 75)
+c_pri_red   = color.new(#ff870a, 75)
+
+cb_pri_grn  = color.new(#3ed73e, 20)
+cb_pri_red  = color.new(#ff870a, 20)
+
+c_pri       = bar > 0 ? c_pri_grn : c_pri_red
+cb_pri      = bar > 0 ? cb_pri_grn : cb_pri_red
+
+pc_lo_base  = Eq_band_option == "Joint" ? vc_hi : 0.50 * bandscale
+
+
+pc_lo       = pc_lo_base
+pc_hi       = pc_lo_base + math.abs(nPrice) * bandscale / 100 / 2
+
+plotcandle(pc_lo, pc_hi, pc_lo ,pc_hi , "Price Band", c_pri, c_pri, bordercolor = cb_pri, display = DispBands)
+
+// print the normalized volume and price values - only on statys line and in the data window
+// these values are independant of the band scale or visualization options
+plotchar(nVol,    "Normalized Vol",   char = "", color = c_vol, editable = false, display = Disp_vals)
+plotchar(nPrice,  "Normalized Price", char = "", color = c_pri, editable = false, display = Disp_vals)
+
+
+// =============================================================================
+
+// =============================================================================
+// Plot main plot, smoothed plot and signal line
+
+plot(RROF, 'RROF Raw', color.new(#2470f0, 9), display=display.none)
+plot(RROF_s, 'RROF Smooth', color = color.new(#b2b5be,40), linewidth = 2)
+plot(Signal, "Signal Line", up ? c_up : c_dn, 3)
+
+// ===========================================================================================================
+//      basic alerts 
+// ===========================================================================================================
+
+Alert_up    = ta.crossover(RROF_s,0)
+Alert_dn    = ta.crossunder(RROF_s,0)
+Alert_swing = ta.cross(RROF_s,0)
+
+// "." in alert title for the alerts to show in the right order up/down/swing 
+alertcondition(Alert_up,    ".   RROF Crossing 0 Up",      "RROF Up - Buying Action Detected!")
+alertcondition(Alert_dn,    "..  RROF Crossing 0 Down",    "RROF Down - Selling Action Detected!")
+alertcondition(Alert_swing, "... RROF Crossing 0",         "RROF Swing - Possible Reversal")
+
+// ===========================================================================================================
+//      v2.0 Adding Markers for Key Patterns  
+// ===========================================================================================================
+
+// we can re-utilize the Normailize() function here too - but it's cleaner to have a separate ratio calc
+
+nPrice_abs = math.abs(nPrice)
+
+//EV_Ratio = 100 * Normalize(nPrice_abs, nVol)
+
+EV_Ratio = 100 * nPrice_abs / nVol
+
+// initial mapping of return ratios (to be revised)
+// -------------------------------------------------------
+// Case (1): Price > Vol => ratio > 120  =   Ease of Move (EoM)
+// Case (2): Price close to Vol  => ratio between 80 - 120  = Reasonable Balance
+// Case (3): Price less than Vol but reasonable => ratio between 80 - 50  = Drift / "nothing much to see here" bar 
+// Case (4): Price a lot less than Vol  => 50 or less  = Compression / Squat 
+// we're most interested in cases 1 & 4
+
+//plot (EV_Ratio)   // for validation only 
+
+is_positive     = nPrice > 0
+
+is_Compression  = EV_Ratio <= 50
+is_EoM          = EV_Ratio >= 120
+
+//Provide option to show/hide those EVEREX Markers - and an option for Compression bar 
+// - some folks would prefer a cross, others may prefer a circle - can adjust based on feedback
+// no option for Ease of Move, guessing the triangle has the right significance 
+
+var showMarkers = input.bool(true, 'Show EVEREX Markers ?')
+var Mshape  = input.string("Circles", "Compression Marker", options = ['Circles','Crosses'])
+
+SetShape(_x) =>
+    switch _x
+        'Circles'    => shape.circle
+        'Crosses'    => shape.cross 
+
+
+// Plot markers
+plotshape(showMarkers and is_EoM and is_positive ? 0 : na,      "EoM +ve", shape.triangleup,    color=color.green,  
+  location=location.absolute, size=size.auto, editable = false, display = display.pane)
+plotshape(showMarkers and is_EoM and not(is_positive) ? 0 : na, "EoM -ve", shape.triangledown,  color=color.red,    
+  location=location.absolute, size=size.auto, editable = false, display = display.pane)
+
+plotshape(showMarkers and is_Compression and is_positive ? 0 : na,        "Compression +ve", style = SetShape(Mshape), 
+  color=color.green, location=location.absolute, size = size.auto, editable = false, display = display.pane)
+plotshape(showMarkers and is_Compression and not(is_positive) ? 0 : na,   "Compression -ve", style = SetShape(Mshape), 
+  color=color.red, location=location.absolute, size=size.auto, editable = false, display = display.pane)

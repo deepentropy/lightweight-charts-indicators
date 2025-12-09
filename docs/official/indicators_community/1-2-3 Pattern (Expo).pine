@@ -1,0 +1,90 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator("1-2-3 Pattern (Expo)",overlay=true,max_bars_back=5000,max_labels_count=500,max_lines_count=500)
+
+// ~~ ToolTips {
+t1 = "Pivot period"
+t2 = "Show pattern break, set the size, and coloring"
+t3 = "Show the 1-2-3 Pattern"
+t4 = "Enable the HH/HL/LL/LH labels"
+// ~~}
+// ~~ Inputs {
+prd = input.int(10,title="Period",tooltip=t1)
+
+showBreak   = input.bool(true,"Show Break", inline="break")
+showPattern = input.bool(true,"Show Pattern",tooltip=t3)
+showPvts    = input.bool(false,"Show Pivots",tooltip=t4)
+
+visuell = input.string("Diamond","",options=["Diamond","XCross","Cross","Flag","Square"],inline="break")
+colBull = input.color(color.new(#31be0c,0),"",inline="break")
+colBear = input.color(color.new(#df3d3d,0),"",inline="break")
+size    = input.string(size.tiny,"",options=[size.tiny,size.small,size.normal,size.large,size.huge],inline="break",tooltip=t2)
+
+shape = switch visuell
+    "Diamond" => label.style_diamond
+    "XCross"  => label.style_xcross
+    "Cross"   => label.style_cross
+    "Flag"    => label.style_flag
+    "Square"  => label.style_square
+// ~~ }
+// ~~ Arrays {
+var pvts = array.new<float>(3,0.0)
+var idx  = array.new<int>(3,0)
+// ~~ }
+// ~~ Pivots {
+pvtHi = ta.pivothigh(high,prd,prd)
+pvtLo = ta.pivotlow(low,prd,prd)
+var pos = 0
+
+if not na(pvtHi) and pos<=0
+    if showPvts
+        label.new(bar_index-prd,high[prd],text=pvtHi>array.get(pvts,1)?"HH":"LH",style=label.style_label_down,color=color(na),textcolor=chart.fg_color)
+    array.pop(pvts)
+    array.pop(idx)
+    array.unshift(pvts,high[prd])
+    array.unshift(idx,bar_index-prd)
+    pos := 1
+if not na(pvtLo) and pos>=0
+    if showPvts
+        label.new(bar_index-prd,low[prd],text=pvtLo>array.get(pvts,1)?"HL":"LL",style=label.style_label_up,color=color(na),textcolor=chart.fg_color)
+    array.pop(pvts)
+    array.pop(idx)
+    array.unshift(pvts,low[prd])
+    array.unshift(idx,bar_index-prd)
+    pos := -1
+// ~~ }
+// ~~ Identify 1-2-3 Pattern & Alerts {
+var pattern = true
+if ta.crossover(high,array.get(pvts,1)) and pattern
+    if array.get(pvts,0)>array.get(pvts,2) and array.get(pvts,0)<array.get(pvts,1)
+        if showBreak
+            label.new(bar_index,high,style=shape,color=colBull,size=size)
+            line.new(array.get(idx,1),array.get(pvts,1),bar_index,array.get(pvts,1),color=chart.fg_color,style=line.style_dashed)
+        if showPattern
+            label.new(array.get(idx,2),array.get(pvts,2),text="1",color=color(na),textcolor=chart.fg_color,style=label.style_label_up)
+            label.new(array.get(idx,1),array.get(pvts,1),text="2",color=color(na),textcolor=chart.fg_color,style=label.style_label_down)
+            label.new(array.get(idx,0),array.get(pvts,0),text="3",color=color(na),textcolor=chart.fg_color,style=label.style_label_up)
+            line.new(array.get(idx,2),array.get(pvts,2),array.get(idx,1),array.get(pvts,1),color=chart.fg_color)
+            line.new(array.get(idx,1),array.get(pvts,1),array.get(idx,0),array.get(pvts,0),color=chart.fg_color)
+        alert("Bullish 1-2-3 Pattern Identified on: "+syminfo.ticker,alert.freq_once_per_bar_close)
+        pattern := false
+if ta.crossunder(low,array.get(pvts,1)) and pattern
+    if array.get(pvts,0)<array.get(pvts,2) and array.get(pvts,0)>array.get(pvts,1)     
+        if showBreak
+            label.new(bar_index,low,style=shape,color=colBear,size=size)
+            line.new(array.get(idx,1),array.get(pvts,1),bar_index,array.get(pvts,1),color=chart.fg_color,style=line.style_dashed)
+        if showPattern
+            label.new(array.get(idx,2),array.get(pvts,2),text="1",color=color(na),textcolor=chart.fg_color,style=label.style_label_down)
+            label.new(array.get(idx,1),array.get(pvts,1),text="2",color=color(na),textcolor=chart.fg_color,style=label.style_label_up)
+            label.new(array.get(idx,0),array.get(pvts,0),text="3",color=color(na),textcolor=chart.fg_color,style=label.style_label_down)
+            line.new(array.get(idx,2),array.get(pvts,2),array.get(idx,1),array.get(pvts,1),color=chart.fg_color)
+            line.new(array.get(idx,1),array.get(pvts,1),array.get(idx,0),array.get(pvts,0),color=chart.fg_color)
+        alert("Bearish 1-2-3 Pattern Identified on: "+syminfo.ticker,alert.freq_once_per_bar_close)
+        pattern := false
+// ~~ }
+// ~~ Debugger only check break once {
+if ta.change(array.get(pvts,1))
+    pattern := true
+// ~~ }

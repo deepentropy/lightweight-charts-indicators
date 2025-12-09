@@ -1,0 +1,63 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Predictive Channels [LuxAlgo]", "LuxAlgo - Predictive Channels", overlay = true)
+//-----------------------------------------------------------------------------}
+//Settings
+//-----------------------------------------------------------------------------{
+mult  = input.float(5, 'Factor', minval = 0)
+slope = input.float(50, minval = 0) * mult
+
+//Style
+r2Css = input(#f23645, 'Upper Resistance', inline = 'resistance', group = 'Colors')
+r1Css = input(color.new(#f23645, 50), 'Lower', inline = 'resistance', group = 'Colors')
+
+s1Css = input(color.new(#089981, 50), 'Upper Support    ', inline = 'support', group = 'Colors')
+s2Css = input(#089981, 'Lower', inline = 'support', group = 'Colors')
+
+avgCss = input(#787b86, 'Average', group = 'Colors')
+
+areaBull = input(color.new(#089981, 80), 'Fill', inline = 'area', group = 'Colors')
+areaBear = input(color.new(#f23645, 80), '', inline = 'area', group = 'Colors')
+
+//-----------------------------------------------------------------------------}
+//Calculation
+//-----------------------------------------------------------------------------{
+var pc_avg = close
+var os = 1
+var hold_atr = 0.
+
+atr = nz(ta.atr(200)) * mult
+
+pc_avg := math.abs(close - pc_avg) > atr ? close 
+  : pc_avg + os * hold_atr / slope
+
+hold_atr := pc_avg == close ? atr / 2 : hold_atr
+os := pc_avg > pc_avg[1] ? 1 : pc_avg < pc_avg[1] ? -1 : os
+
+pc_R2 = pc_avg + hold_atr
+pc_R1 = pc_avg + hold_atr/2
+pc_S1 = pc_avg - hold_atr/2
+pc_S2 = pc_avg - hold_atr
+
+//-----------------------------------------------------------------------------}
+//Plot
+//-----------------------------------------------------------------------------{
+plot_0 = plot(close, color = na, display = display.none, editable = false)
+
+//SR PLots
+plot(pc_R2, 'Upper Resistance', close == pc_avg ? na : r2Css)
+plot(pc_R1, 'Lower Resistance', close == pc_avg ? na : r1Css)
+
+plot_avg = plot(pc_avg, 'Average', close == pc_avg ? na : avgCss)
+
+plot(pc_S1, 'Upper Support', close == pc_avg ? na : s1Css)
+plot(pc_S2, 'Lower Support', close == pc_avg ? na : s2Css)
+
+//Fill
+topcss = close > pc_avg ? areaBull : color.new(chart.bg_color, 100)
+btmcss = close < pc_avg ? areaBear : color.new(chart.bg_color, 100)
+fill(plot_0, plot_avg, pc_R2, pc_S2, topcss, btmcss)
+
+//-----------------------------------------------------------------------------}

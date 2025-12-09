@@ -1,0 +1,70 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Saleh_Toodarvari
+
+//@version=5
+indicator(title="Parabolic SAR + EMA 200 + MACD Signals", shorttitle="SAR EMA MACD", overlay=true, timeframe="", timeframe_gaps=true)
+// Inputs
+sar_start = input(0.02)
+sar_increment = input(0.02)
+sar_maximum = input(0.2, "Max Value")
+ema_len = input.int(200, minval=1, title="Length")
+ema_src = input(close, title="Source")
+ema_offset = input.int(title="Offset", defval=0, minval=-500, maxval=500)
+macd_fast_length = input(title="Fast Length", defval=12)
+macd_slow_length = input(title="Slow Length", defval=26)
+macd_src = input(title="Source", defval=close)
+signal_length = input.int(title="Signal Smoothing",  minval = 1, maxval = 50, defval = 9)
+sma_source = input.string(title="Oscillator MA Type",  defval="EMA", options=["SMA", "EMA"])
+sma_signal = input.string(title="Signal Line MA Type", defval="EMA", options=["SMA", "EMA"])
+// Colors
+col_macd = input(#2962FF, "MACD Line  ", group="Color Settings", inline="MACD")
+col_signal = input(#FF6D00, "Signal Line  ", group="Color Settings", inline="Signal")
+col_grow_above = input(#26A69A, "Above   Grow", group="Histogram", inline="Above")
+col_fall_above = input(#B2DFDB, "Fall", group="Histogram", inline="Above")
+col_grow_below = input(#FFCDD2, "Below Grow", group="Histogram", inline="Below")
+col_fall_below = input(#FF5252, "Fall", group="Histogram", inline="Below")
+// Parabolic SAR
+SAR = ta.sar(sar_start, sar_increment, sar_maximum)
+plot(SAR, "ParabolicSAR", style=plot.style_circles, color=#2962FF)
+// EMA 200
+EMA_200 = ta.ema(ema_src, ema_len)
+plot(EMA_200, title="EMA", color=color.blue, offset=ema_offset)
+// MACD
+fast_ma = sma_source == "SMA" ? ta.sma(macd_src, macd_fast_length) : ta.ema(macd_src, macd_fast_length)
+slow_ma = sma_source == "SMA" ? ta.sma(macd_src, macd_slow_length) : ta.ema(macd_src, macd_slow_length)
+macd = fast_ma - slow_ma
+signal = sma_signal == "SMA" ? ta.sma(macd, signal_length) : ta.ema(macd, signal_length)
+delta = macd - signal
+// Conditions
+main_trend=if ohlc4<EMA_200
+    "Bearish"
+else
+    "Bullish"
+
+sar_long = if SAR<low
+    true
+else
+    false
+sar_short = if SAR>high
+    true
+else
+    false
+
+macd_long = if (ta.crossover(delta, 0))
+    true
+else
+    false
+macd_short = if (ta.crossunder(delta, 0))
+    true
+else
+    false
+// Long
+buy_signal= sar_long and macd_long and (main_trend=="Bullish")
+// Short
+sell_signal= sar_short and macd_short and (main_trend=="Bearish")
+// Plots
+plotshape(buy_signal, title="Buy Label", text="Buy", location=location.belowbar, style=shape.labelup, size=size.tiny, color=color.green, textcolor=color.white)
+plotshape(sell_signal, title="Sell Label", text="Sell", location=location.abovebar, style=shape.labeldown, size=size.tiny, color=color.red, textcolor=color.white)
+//_________________alerts_________________
+alertcondition(buy_signal, title='SAR EMA200 MACD Buy signal!', message='Buy signal')
+alertcondition(sell_signal, title='SAR EMA200 MACD Sell signal!', message='Sell signal')

@@ -1,0 +1,131 @@
+//@version=6
+indicator("Trading Sessions", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+bool showSessionNames     = input.bool(true, "Show session names")
+bool showSessionOC        = input.bool(true, "Draw session open and close lines")
+bool showSessionTickRange = input.bool(true, "Show tick range for each session")
+bool showSessionAverage   = input.bool(true, "Show average price per session")
+
+const string TZ_TOOLTIP_TEXT = "The session's time zone, specified in either GMT notation (e.g., 'GMT-5') or as an IANA time zone database name (e.g., 'America/New_York')."
+ + " We recommend the latter since it includes other time-related changes, such as daylight savings."
+
+const string FIRST_SESSION_GROUP = "First Session"
+showFirst         = input.bool(true, "Show session", group = FIRST_SESSION_GROUP, display = display.none)
+firstSessionName  = input.string("Tokyo", "Displayed name", group = FIRST_SESSION_GROUP, display = display.none, active = showFirst)
+firstSessionTime  = input.session("0900-1500", "Session time", group = FIRST_SESSION_GROUP, display = display.none, active = showFirst)
+firstSessionTZ    = input.string("Asia/Tokyo", "Session timezone", group = FIRST_SESSION_GROUP, display = display.none, tooltip = TZ_TOOLTIP_TEXT, active = showFirst)
+firstSessionColor = input.color(color.new(#2962FF, 85), "Session color", group = FIRST_SESSION_GROUP, active = showFirst)
+
+const string SECOND_SESSION_GROUP = "Second session"
+showSecond         = input.bool(true, "Show session", group = SECOND_SESSION_GROUP, display = display.none)
+secondSessionName  = input.string("London", "Displayed name", group = SECOND_SESSION_GROUP, display = display.none, active = showSecond)
+secondSessionTime  = input.session("0830-1630", "Session time", group = SECOND_SESSION_GROUP, display = display.none, active = showSecond)
+secondSessionTZ    = input.string("Europe/London", "Session timezone", group = SECOND_SESSION_GROUP, display = display.none, tooltip = TZ_TOOLTIP_TEXT, active = showSecond)
+secondSessionColor = input.color(color.new(#FF9800, 85), "Session color", group = SECOND_SESSION_GROUP, active = showSecond)
+
+const string THIRD_SESSION_GROUP = "Third session"
+showThird         = input.bool(true, "Show session", group = THIRD_SESSION_GROUP, display = display.none)
+thirdSessionName  = input.string("New York", "Displayed name", group = THIRD_SESSION_GROUP, display = display.none, active = showThird)
+thirdSessionTime  = input.session("0930-1600", "Session time", group = THIRD_SESSION_GROUP, display = display.none, active = showThird)
+thirdSessionTZ    = input.string("America/New_York", "Session timezone", group = THIRD_SESSION_GROUP, display = display.none, tooltip = TZ_TOOLTIP_TEXT, active = showThird)
+thirdSessionColor = input.color(color.new(#089981, 85), "Session color", group = THIRD_SESSION_GROUP, active = showThird)
+
+type SessionDisplay
+    box   sessionBox
+    label sessionLabel
+    line  openLine
+    line  avgLine
+    line  closeLine
+    float sumClose
+    int   numOfBars
+
+type SessionInfo
+    color  color
+    string name
+    string session
+    string timezone
+    SessionDisplay active = na
+
+method setName(SessionDisplay this, string name) =>
+    sessionLabel = this.sessionLabel
+    sessionBox = this.sessionBox
+    boxText = array.new<string>()
+    if showSessionTickRange
+        boxText.push("Range: " + str.tostring((sessionBox.get_top() - sessionBox.get_bottom()) / syminfo.mintick, format.mintick))
+    if showSessionAverage
+        boxText.push("Avg: " + str.tostring(this.sumClose / this.numOfBars, format.mintick))
+    if showSessionNames
+        boxText.push(name)
+    
+    sessionLabel.set_y(sessionBox.get_bottom())
+    sessionLabel.set_text(array.join(boxText, "\n"))
+
+method createSessionDisplay(SessionInfo this) =>
+    boxColor = this.color
+    opaqueColor = color.new(boxColor, 0)
+    dis = SessionDisplay.new(
+      sessionBox = box.new(bar_index, high, bar_index, low, bgcolor = boxColor, border_color = na),
+      sessionLabel = label.new(bar_index, low, "", style = label.style_label_upper_left, textalign = text.align_left, textcolor = opaqueColor, color = color(na)),
+      openLine   = showSessionOC ? line.new(bar_index, open, bar_index, open, color = opaqueColor, style = line.style_dashed, width = 1) : na,
+      closeLine  = showSessionOC ? line.new(bar_index, close, bar_index, close, color = opaqueColor, style = line.style_dashed, width = 1) : na,
+      avgLine    = showSessionAverage ? line.new(bar_index, close, bar_index, close, style = line.style_dotted, width = 2, color = opaqueColor) : na,
+      sumClose   = close,
+      numOfBars  = 1
+      )
+    linefill.new(dis.openLine, dis.closeLine, boxColor)
+    dis.setName(this.name)
+    this.active := dis
+    
+method updateSessionDisplay(SessionInfo this) =>
+    sessionDisp = this.active
+    sessionBox = sessionDisp.sessionBox
+    openLine = sessionDisp.openLine
+    closeLine = sessionDisp.closeLine
+    avgLine = sessionDisp.avgLine
+    sessionDisp.sumClose += close
+    sessionDisp.numOfBars += 1
+
+    sessionBox.set_top(math.max(sessionBox.get_top(), high))
+    sessionBox.set_bottom(math.min(sessionBox.get_bottom(), low))
+    sessionBox.set_right(bar_index)
+    sessionDisp.setName(this.name)
+
+    if showSessionOC
+        openLine.set_x2(bar_index)
+        closeLine.set_x2(bar_index)
+        closeLine.set_y1(close)
+        closeLine.set_y2(close)
+
+    if showSessionAverage
+        avgLine.set_x2(bar_index)
+        avg = sessionDisp.sumClose / sessionDisp.numOfBars
+        avgLine.set_y1(avg)
+        avgLine.set_y2(avg)
+    sessionDisp
+
+method update(SessionInfo this) =>
+	bool isChange = timeframe.change("1D")
+    if (not na(time("", this.session, this.timezone))) // inSession
+        if na(this.active) or isChange
+            this.createSessionDisplay()
+        else 
+            this.updateSessionDisplay()
+    else if not na(this.active)
+        this.active := na
+
+getSessionInfos()=>
+    array<SessionInfo> sessionInfos = array.new<SessionInfo>()
+    if showFirst
+        sessionInfos.push(SessionInfo.new(firstSessionColor, firstSessionName, firstSessionTime, firstSessionTZ))
+    if showSecond
+        sessionInfos.push(SessionInfo.new(secondSessionColor, secondSessionName, secondSessionTime, secondSessionTZ))
+    if showThird
+        sessionInfos.push(SessionInfo.new(thirdSessionColor, thirdSessionName, thirdSessionTime, thirdSessionTZ))
+    sessionInfos
+
+var array<SessionInfo> sessionInfos = getSessionInfos()
+if timeframe.isdwm
+    runtime.error("This indicator can only be used on intraday timeframes.")
+
+for info in sessionInfos
+    info.update()

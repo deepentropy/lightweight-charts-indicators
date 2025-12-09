@@ -1,0 +1,419 @@
+{
+  "_comment": "Mapping of indicator IDs to PineSuite reference data files. Indicators without implementations will be skipped during testing.",
+
+  "24h-volume": {
+    "dataFile": "data/20251207/24-hour Volume.csv",
+    "exportName": "Volume24h"
+  },
+  "accumulation-distribution": {
+    "dataFile": "data/20251207/AccumulationDistribution.csv",
+    "exportName": "AccumulationDistribution"
+  },
+  "ad-line": {
+    "dataFile": "data/20251207/Advance Decline Line.csv",
+    "exportName": "AdvanceDeclineLine"
+  },
+  "ad-ratio": {
+    "dataFile": "data/20251207/Advance Decline Ratio.csv",
+    "exportName": "AdvanceDeclineRatio"
+  },
+  "ad-ratio-bars": {
+    "dataFile": "data/20251207/AdvanceDecline Ratio Bars.csv",
+    "exportName": "AdvanceDeclineRatioBars"
+  },
+  "adr": {
+    "dataFile": "data/20251207/Average Daily Range.csv",
+    "exportName": "ADR"
+  },
+  "adx": {
+    "dataFile": "data/20251207/Average Directional Index.csv",
+    "exportName": "ADX",
+    "skipInitial": 260
+  },
+  "alma": {
+    "dataFile": "data/20251207/Arnaud Legoux Moving Average.csv",
+    "exportName": "ALMA"
+  },
+  "aroon": {
+    "dataFile": "data/20251207/Aroon.csv",
+    "exportName": "Aroon"
+  },
+  "atr": {
+    "dataFile": "data/20251207/Average True Range.csv",
+    "exportName": "ATR",
+    "skipInitial": 250
+  },
+  "awesome-oscillator": {
+    "dataFile": "data/20251207/Awesome Oscillator.csv",
+    "exportName": "AwesomeOscillator"
+  },
+  "bb": {
+    "dataFile": "data/20251207/Bollinger Bands.csv",
+    "exportName": "BollingerBands"
+  },
+  "bb-bandwidth": {
+    "dataFile": "data/20251207/Bollinger BandWidth.csv",
+    "exportName": "BollingerBandWidth"
+  },
+  "bb-percent-b": {
+    "dataFile": "data/20251207/Bollinger Bands b.csv",
+    "exportName": "BollingerBandsB"
+  },
+  "bb-bars": {
+    "dataFile": "data/20251207/Bollinger Bars.csv",
+    "exportName": "BollingerBars"
+  },
+  "bb-trend": {
+    "dataFile": "data/20251207/BBTrend.csv",
+    "exportName": "BBTrend"
+  },
+  "bop": {
+    "dataFile": "data/20251207/Balance of Power.csv",
+    "exportName": "BOP"
+  },
+  "bull-bear-power": {
+    "dataFile": "data/20251207/Bull Bear Power.csv",
+    "exportName": "BullBearPower"
+  },
+  "cci": {
+    "dataFile": "data/20251207/Commodity Channel Index.csv",
+    "exportName": "CCI"
+  },
+  "chaikin-mf": {
+    "dataFile": "data/20251207/Chaikin Money Flow.csv",
+    "exportName": "ChaikinMoneyFlow"
+  },
+  "chaikin-osc": {
+    "dataFile": "data/20251207/Chaikin Oscillator.csv",
+    "exportName": "ChaikinOscillator",
+    "normalize": "pctChange",
+    "skipInitial": 150,
+    "tolerance": 0.05
+  },
+  "chande-kroll-stop": {
+    "dataFile": "data/20251207/Chande Kroll Stop.csv",
+    "exportName": "ChandeKrollStop",
+    "tolerance": 2e-4
+  },
+  "chande-mo": {
+    "dataFile": "data/20251207/Chande Momentum Oscillator.csv",
+    "exportName": "ChandeMO"
+  },
+  "chop-zone": {
+    "dataFile": "data/20251207/Chop Zone.csv",
+    "exportName": "ChopZone"
+  },
+  "choppiness": {
+    "dataFile": "data/20251207/Choppiness Index.csv",
+    "exportName": "ChoppinessIndex"
+  },
+  "connors-rsi": {
+    "dataFile": "data/20251207/Connors RSI.csv",
+    "exportName": "ConnorsRSI"
+  },
+  "coppock": {
+    "dataFile": "data/20251207/Coppock Curve.csv",
+    "exportName": "CoppockCurve"
+  },
+  "cvd": {
+    "dataFile": "data/20251207/Cumulative Volume Delta.csv",
+    "exportName": "CumulativeVolumeDelta"
+  },
+  "cvi": {
+    "dataFile": "data/20251207/Cumulative Volume Index.csv",
+    "exportName": "CumulativeVolumeIndex"
+  },
+  "dema": {
+    "dataFile": "data/20251207/Double EMA.csv",
+    "exportName": "DEMA"
+  },
+  "dmi": {
+    "dataFile": "data/20251207/Directional Movement Index.csv",
+    "exportName": "DMI",
+    "skipInitial": 200,
+    "tolerance": 2e-4
+  },
+  "donchian": {
+    "dataFile": "data/20251207/Donchian Channels.csv",
+    "exportName": "DonchianChannels"
+  },
+  "dpo": {
+    "dataFile": "data/20251207/Detrended Price Oscillator.csv",
+    "exportName": "DPO"
+  },
+  "ease-of-movement": {
+    "dataFile": "data/20251207/Ease of Movement.csv",
+    "exportName": "EaseOfMovement"
+  },
+  "elder-force": {
+    "dataFile": "data/20251207/Elder Force Index.csv",
+    "exportName": "ElderForceIndex"
+  },
+  "ema": {
+    "dataFile": "data/20251207/Moving Average Exponential.csv",
+    "exportName": "EMA"
+  },
+  "envelope": {
+    "dataFile": "data/20251207/Envelope.csv",
+    "exportName": "Envelope"
+  },
+  "fisher": {
+    "dataFile": "data/20251207/Fisher Transform.csv",
+    "exportName": "FisherTransform"
+  },
+  "hist-volatility": {
+    "dataFile": "data/20251207/Historical Volatility.csv",
+    "exportName": "HistoricalVolatility"
+  },
+  "hma": {
+    "dataFile": "data/20251207/Hull Moving Average.csv",
+    "exportName": "HMA"
+  },
+  "ichimoku": {
+    "dataFile": "data/20251207/Ichimoku Cloud.csv",
+    "exportName": "IchimokuCloud"
+  },
+  "keltner": {
+    "dataFile": "data/20251207/Keltner Channels.csv",
+    "exportName": "KeltnerChannels",
+    "skipInitial": 160
+  },
+  "klinger": {
+    "dataFile": "data/20251207/Klinger Oscillator.csv",
+    "exportName": "KlingerOscillator",
+    "normalize": "pctChange",
+    "skipInitial": 200,
+    "tolerance": 5
+  },
+  "kst": {
+    "dataFile": "data/20251207/Know Sure Thing.csv",
+    "exportName": "KnowSureThing"
+  },
+  "lsma": {
+    "dataFile": "data/20251207/Least Squares Moving Average.csv",
+    "exportName": "LSMA"
+  },
+  "ma-cross": {
+    "dataFile": "data/20251207/MA Cross.csv",
+    "exportName": "MACross"
+  },
+  "ma-ribbon": {
+    "dataFile": "data/20251207/Moving Average Ribbon.csv",
+    "exportName": "MARibbon"
+  },
+  "macd": {
+    "dataFile": "data/20251207/Moving Average Convergence Divergence.csv",
+    "exportName": "MACD",
+    "skipInitial": 250
+  },
+  "mass-index": {
+    "dataFile": "data/20251207/Mass Index.csv",
+    "exportName": "MassIndex"
+  },
+  "mc-ginley-dynamic": {
+    "dataFile": "data/20251207/McGinley Dynamic.csv",
+    "exportName": "McGinleyDynamic",
+    "skipInitial": 200
+  },
+  "median": {
+    "dataFile": "data/20251207/Median.csv",
+    "exportName": "Median",
+    "skipInitial": 210
+  },
+  "mfi": {
+    "dataFile": "data/20251207/Money Flow Index.csv",
+    "exportName": "MFI"
+  },
+  "momentum": {
+    "dataFile": "data/20251207/Momentum.csv",
+    "exportName": "Momentum"
+  },
+  "moon-phases": {
+    "dataFile": "data/20251207/Moon Phases.csv",
+    "exportName": "MoonPhases"
+  },
+  "net-volume": {
+    "dataFile": "data/20251207/Net Volume.csv",
+    "exportName": "NetVolume"
+  },
+  "obv": {
+    "dataFile": "data/20251207/On Balance Volume.csv",
+    "exportName": "OBV",
+    "normalize": true
+  },
+  "parabolic-sar": {
+    "dataFile": "data/20251207/Parabolic SAR.csv",
+    "exportName": "ParabolicSAR"
+  },
+  "price-osc": {
+    "dataFile": "data/20251207/Price Oscillator.csv",
+    "exportName": "PriceOscillator",
+    "tolerance": 2e-3
+  },
+  "price-target": {
+    "dataFile": "data/20251207/Price Target.csv",
+    "exportName": "PriceTarget"
+  },
+  "pvt": {
+    "dataFile": "data/20251207/Price Volume Trend.csv",
+    "exportName": "PVT",
+    "normalize": true,
+    "tolerance": 1e-4
+  },
+  "rci": {
+    "dataFile": "data/20251207/Rank Correlation Index.csv",
+    "exportName": "RankCorrelationIndex"
+  },
+  "rci-ribbon": {
+    "dataFile": "data/20251207/RCI Ribbon.csv",
+    "exportName": "RCIRibbon"
+  },
+  "rma": {
+    "dataFile": "data/20251207/Smoothed Moving Average.csv",
+    "exportName": "RMA"
+  },
+  "roc": {
+    "dataFile": "data/20251207/Rate Of Change.csv",
+    "exportName": "ROC"
+  },
+  "rsi": {
+    "dataFile": "data/20251207/Relative Strength Index.csv",
+    "exportName": "RSI",
+    "skipInitial": 210
+  },
+  "rsi-divergence": {
+    "dataFile": "data/20251207/RSI Divergence Indicator.csv",
+    "exportName": "RSIDivergence"
+  },
+  "rvi": {
+    "dataFile": "data/20251207/Relative Vigor Index.csv",
+    "exportName": "RVI"
+  },
+  "rvol": {
+    "dataFile": "data/20251207/Relative Volatility Index.csv",
+    "exportName": "RelativeVolatilityIndex"
+  },
+  "rvol-at-time": {
+    "dataFile": "data/20251207/Relative Volume at Time.csv",
+    "exportName": "RelativeVolumeAtTime"
+  },
+  "seasonality": {
+    "dataFile": "data/20251207/Seasonality.csv",
+    "exportName": "Seasonality"
+  },
+  "sma": {
+    "dataFile": "data/20251207/Simple Moving Average.csv",
+    "exportName": "SMA"
+  },
+  "smi": {
+    "dataFile": "data/20251207/Stochastic Momentum Index.csv",
+    "exportName": "StochasticMomentumIndex"
+  },
+  "smi-ergodic": {
+    "dataFile": "data/20251207/SMI Ergodic Indicator.csv",
+    "exportName": "SMIErgodic"
+  },
+  "smi-ergodic-osc": {
+    "dataFile": "data/20251207/SMI Ergodic Oscillator.csv",
+    "exportName": "SMIErgodicOscillator"
+  },
+  "stoch": {
+    "dataFile": "data/20251207/Stochastic.csv",
+    "exportName": "Stochastic"
+  },
+  "stoch-rsi": {
+    "dataFile": "data/20251207/Stochastic RSI.csv",
+    "exportName": "StochRSI",
+    "skipInitial": 150,
+    "tolerance": 1e-3
+  },
+  "supertrend": {
+    "dataFile": "data/20251207/Supertrend.csv",
+    "exportName": "Supertrend",
+    "skipInitial": 200
+  },
+  "tech-ratings": {
+    "dataFile": "data/20251207/Technical Ratings.csv",
+    "exportName": "TechnicalRatings"
+  },
+  "tema": {
+    "dataFile": "data/20251207/Triple EMA.csv",
+    "exportName": "TEMA"
+  },
+  "trend-strength": {
+    "dataFile": "data/20251207/Trend Strength Index.csv",
+    "exportName": "TrendStrengthIndex",
+    "skipInitial": 150
+  },
+  "trix": {
+    "dataFile": "data/20251207/TRIX.csv",
+    "exportName": "TRIX",
+    "skipInitial": 200
+  },
+  "tsi": {
+    "dataFile": "data/20251207/True Strength Index.csv",
+    "exportName": "TSI"
+  },
+  "twap": {
+    "dataFile": "data/20251207/Time Weighted Average Price.csv",
+    "exportName": "TWAP"
+  },
+  "ultimate-osc": {
+    "dataFile": "data/20251207/Ultimate Oscillator.csv",
+    "exportName": "UltimateOscillator"
+  },
+  "updown-volume": {
+    "dataFile": "data/20251207/UpDown Volume.csv",
+    "exportName": "UpDownVolume"
+  },
+  "volatility-stop": {
+    "dataFile": "data/20251207/Volatility Stop.csv",
+    "exportName": "VolatilityStop"
+  },
+  "volume-delta": {
+    "dataFile": "data/20251207/Volume Delta.csv",
+    "exportName": "VolumeDelta"
+  },
+  "volume-osc": {
+    "dataFile": "data/20251207/Volume Oscillator.csv",
+    "exportName": "VolumeOscillator"
+  },
+  "vortex": {
+    "dataFile": "data/20251207/Vortex Indicator.csv",
+    "exportName": "VortexIndicator"
+  },
+  "vwap": {
+    "dataFile": "data/20251207/Volume Weighted Average Price.csv",
+    "exportName": "VWAP"
+  },
+  "vwma": {
+    "dataFile": "data/20251207/Volume Weighted Moving Average.csv",
+    "exportName": "VWMA"
+  },
+  "williams-alligator": {
+    "dataFile": "data/20251207/Williams Alligator.csv",
+    "exportName": "WilliamsAlligator",
+    "skipInitial": 200
+  },
+  "williams-fractals": {
+    "dataFile": "data/20251207/Williams Fractals.csv",
+    "exportName": "WilliamsFractals"
+  },
+  "williams-r": {
+    "dataFile": "data/20251207/Williams Percent Range.csv",
+    "exportName": "WilliamsPercentRange"
+  },
+  "wma": {
+    "dataFile": "data/20251207/Moving Average Weighted.csv",
+    "exportName": "WMA"
+  },
+  "woodies-cci": {
+    "dataFile": "data/20251207/Woodies CCI.csv",
+    "exportName": "WoodiesCCI",
+    "skipInitial": 100
+  },
+  "ziv-ghost-pivots": {
+    "dataFile": "data/20251207/Rob Booker - Ziv Ghost Pivots.csv",
+    "exportName": "ZivGhostPivots"
+  }
+}

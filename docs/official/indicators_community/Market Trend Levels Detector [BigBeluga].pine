@@ -1,0 +1,91 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Market Trend Levels Detector [BigBeluga]", overlay = true, max_lines_count = 500)
+
+var lines_up = array.new<line>()
+var lines_dn = array.new<line>()
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+int  length1 = input.int(12, "Fast", group = "Trend")
+int  length2 = input.int(25, "Slow", group = "Trend")
+bool extend  = input.bool(false, "Extend Lines", group = "Levels")
+int  qty    = input.int(50, "Display Last", group = "Levels")
+color col1   = input.color(#26ba9f, "", inline = "col", group = "Color")
+color col2   = input.color(#6626ba, "", inline = "col", group = "Color")
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+float ema1     = ta.ema(close, length1)
+float ema2     = ta.ema(close, length2)
+float diff     = ema1 - ema2 
+bool  cross_up = ta.crossover(ema1, ema2) and barstate.isconfirmed
+bool  cross_dn = ta.crossunder(ema1, ema2) and barstate.isconfirmed
+float lowest   = ta.lowest(length2) 
+float highest  = ta.highest(length2)
+
+if cross_up
+    for i = 0 to length2
+        if low[i] == lowest
+            index = bar_index-i
+            lines_dn.push(line.new(index, lowest, index+25, lowest, color = col1))
+            label.new(index
+                     , lowest
+                     , "●"
+                     , color = col1
+                     , style = label.style_label_up
+                     , textcolor = color.white
+                     , size = size.tiny)
+
+if cross_dn
+    for i = 0 to length2
+        if high[i] == highest
+            index = bar_index-i
+            lines_up.push(line.new(index, highest, index+25, highest, color = col2))
+            label.new(index
+                     , highest
+                     , "●"
+                     , color = col2
+                     , style = label.style_label_down
+                     , textcolor = color.white
+                     , size = size.tiny)
+
+if extend
+    if lines_up.size() > 0
+        for i = lines_up.size() - 1 to 0 
+            line_id = lines_up.get(i)
+            line_id.set_x2(bar_index)
+
+            if high > line_id.get_y2()
+                line_id.set_style(line.style_dotted)
+                lines_up.set(i, line(na))
+
+    if lines_dn.size() > 0
+        for i = lines_dn.size() - 1 to 0 
+            line_id = lines_dn.get(i)
+            line_id.set_x2(bar_index)
+
+            if low < line_id.get_y2()
+                line_id.set_style(line.style_dotted)
+                lines_dn.set(i, line(na))
+
+a_allLines = line.all
+if array.size(a_allLines) > qty
+    line.delete(array.shift(a_allLines))
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+p1 = plot(ema1, "Fast EMA", display = display.none, color = col1)
+p2 = plot(ema2, "Slow EMA", display = display.none, color = col2)
+
+color color1 = color.from_gradient(diff, 0, ta.highest(diff, 100), color.new(col1, 70), col1)
+color color2 = color.from_gradient(diff, ta.lowest(diff, 100), 0, col2, color.new(col2, 70))
+
+fill(p1, p2, ema1 > ema2 ? color1 : color2)
+plotshape(cross_up or cross_dn ? ema1[1] : na, "Signal", shape.xcross, location.absolute, offset = -1, color = chart.fg_color)
+// }

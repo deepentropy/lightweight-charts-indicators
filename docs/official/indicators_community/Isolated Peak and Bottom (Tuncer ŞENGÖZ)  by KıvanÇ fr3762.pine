@@ -1,0 +1,43 @@
+//@version=6
+//created by Tuncer Şengöz @TuncerSengoz
+//author @KivancOzbilgic
+
+
+indicator('Isolated Peak and Bottom', overlay = true, shorttitle = 'ISOPB')
+
+//izole dip - Isolated Bottom
+d02 = low
+d12 = low[1]
+izdip2 = low[2]
+d32 = low[3]
+d42 = low[4]
+h32 = high[3]
+h22 = high[2]
+
+//izole tepe - Isolated Peak
+t02 = high
+t12 = high[1]
+iztepe2 = high[2]
+t32 = high[3]
+t42 = high[4]
+L32 = low[3]
+L22 = low[2]
+
+
+
+izotepe1 = iztepe2 > t02 and iztepe2 >= t12 and iztepe2 > t32 and iztepe2 > t42 and low[1] > math.min(L32, L22) and low < math.min(L32, L22) ? -1 : na
+izotepe2 = t12 > t02 and t12 > iztepe2 and t12 > t32 and low < math.min(L22, low[1]) ? -2 : na
+
+izodip1 = izdip2 < d02 and izdip2 < d12 and izdip2 < d32 and izdip2 < d42 and high[1] < math.max(h32, h22) and high > math.max(h32, h22) ? 1 : na
+izodip2 = d12 < d02 and d12 < izdip2 and d12 < d32 and high > math.max(h22, high[1]) ? 1 : na
+
+alertcondition(bool(izotepe1), title = 'SELL Alarm', message = 'ISOPEAK 1!')
+alertcondition(bool(izotepe2), title = 'SELL Alarm', message = 'ISOPEAK 2!')
+
+alertcondition(bool(izodip1), title = 'BUY Alarm', message = 'ISOBOTTOM 1!')
+alertcondition(bool(izodip1), title = 'BUY Alarm', message = 'ISOBOTTOM 2!')
+
+plotshape(izodip1, title = 'BOT2', text = 'BOT2', location = location.belowbar, style = shape.labelup, size = size.tiny, color = color.new(color.green, 0), offset = -2, textcolor = color.new(color.white, 0))
+plotshape(izodip2, title = 'BOT1', text = 'BOT1', location = location.belowbar, style = shape.labelup, size = size.tiny, color = color.new(color.green, 0), offset = -1, textcolor = color.new(color.white, 0))
+plotshape(izotepe1, title = 'PEAK2', text = 'PEAK2', location = location.abovebar, style = shape.labeldown, size = size.tiny, color = color.new(color.red, 0), offset = -2, textcolor = color.new(color.white, 0))
+plotshape(izotepe2, title = 'PEAK1', text = 'PEAK1', location = location.abovebar, style = shape.labeldown, size = size.tiny, color = color.new(color.red, 0), offset = -1, textcolor = color.new(color.white, 0))

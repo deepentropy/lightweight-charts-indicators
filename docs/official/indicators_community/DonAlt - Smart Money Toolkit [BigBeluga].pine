@@ -1,0 +1,229 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('DonAlt Toolkit [BigBeluga]', overlay = true, max_labels_count = 75, max_bars_back = 1000, max_lines_count = 500, max_boxes_count = 100)
+
+bool allow = last_bar_index - bar_index < 400
+
+// LEVELS {
+bool display_lvl = input.bool(true, '', group = 'Levels', inline = '1')
+int length = input(20, 'Period', group = 'Levels', inline = '1')
+string style1 = input.string('Solid', '', options = ['Solid', 'Dashed'], group = 'Levels', inline = '1')
+float filter = 20
+
+color up = input.color(color.rgb(35, 184, 80, 30), '', group = 'Levels', inline = '1')
+color dn = input.color(color.rgb(255, 82, 82, 30), '', group = 'Levels', inline = '1')
+
+series float ph = ta.pivothigh(open, length, length)
+series float pl = ta.pivotlow(close, length, length)
+
+array<float> vol1 = array.new<float>()
+var array<line> lines = array.new<line>(10)
+
+array<box> boxes = array.new<box>()
+
+// Method to normalize values between 0 and 100
+method normalize(float src) =>
+    int coef = 100
+    float value = (src - ta.lowest(src, 200)) / (ta.highest(src, 200) - ta.lowest(src, 200)) * coef
+    value
+
+// Calculating normalized volatility       
+series float volatility = ta.sma(high - low, 200)
+series float n_volatility = (high - low).normalize()
+
+high_ = close > open ? close : open
+low_ = close > open ? open : close
+
+if allow and display_lvl
+
+    style = switch style1
+        'Solid' => line.style_solid
+        'Dashed' => line.style_dashed
+        => line.style_solid
+
+
+    if not na(ph)
+
+        int x1 = bar_index[length]
+        int x2 = bar_index[length]
+        float y1 = high_[length] + volatility * 2.5
+        float y2 = high_[length] - volatility * 2.5
+        float y = high_[length]
+
+        if n_volatility[length] > filter
+            lines.push(line.new(x1, y, x2, y, color = up, width = 1, style = style, force_overlay = true))
+            boxes.push(box.new(x1, y1, x2, y2, border_width = 0, bgcolor = color(na)))
+
+    if not na(pl)
+
+        int x1 = bar_index[length]
+        int x2 = bar_index[length]
+        float y1 = low_[length] + volatility * 1.5
+        float y2 = low_[length] - volatility * 1.5
+        float y = low_[length]
+
+        if n_volatility[length] > filter
+            lines.push(line.new(x1, y, x2, y, color = dn, width = 1, style = style))
+            boxes.push(box.new(x1, y1, x2, y2, border_width = 0, bgcolor = color(na)))
+
+
+
+for i = 0 to lines.size() - 1 by 1
+    for line_id in lines
+        float line_y = line_id.get_y1()
+
+        if close > line_y
+            line_id.set_color(up)
+        else
+            line_id.set_color(dn)
+
+        if line_id.get_x1() != line_id.get_x2()
+            line_id.set_extend(extend.right)
+
+
+for box_id in boxes
+    float top = box_id.get_top()
+    float bottom = box_id.get_bottom()
+
+    for line_id in lines
+        float line_y = line_id.get_y2()
+
+
+        if line_y > bottom and line_y < top
+            line_id.set_x2(bar_index + 500)
+
+
+if lines.size() >= 15
+    line.delete(lines.shift())
+
+line.new(na, na, na, na)
+// }
+
+
+// ORDER BLOCKS -- {
+int box_amount = 20
+bool display_ob = input.bool(false, '', inline = '2', group = 'OrderBlocks')
+color col_bull = input.color(color.rgb(20, 190, 147, 70), '', inline = '2', group = 'OrderBlocks')
+color col_bear = input.color(color.rgb(194, 25, 25, 70), '', inline = '2', group = 'OrderBlocks')
+
+series float atr = ta.atr(200) * 0.5
+
+bool bear_candle = close < open
+bool bear_candles = bear_candle or bear_candle[1] or bear_candle[2] or bear_candle[3] or bear_candle[4]
+bool bull_candle = close > open
+bool bull_candles = bull_candle or bull_candle[1] or bull_candle[2] or bull_candle[3] or bull_candle[4]
+
+bool isBull_gap = high[2] < low and high[2] < high[1] and low[2] < low and low - high[2] > atr * 0.5 and bear_candles
+bool isBear_gap = low[2] > high and low[2] > low[1] and high[2] > high and low[2] - high > atr * 0.5 and bull_candles
+
+// Logic for Bullish Imbalance
+method draw_ob(bool gap, candle_type) =>
+
+    var boxes1 = array.new<box>(box_amount, box(na))
+    var candle_ = bool(na)
+    src_l = close
+    src_h = open
+
+    if candle_type
+        candle_ := close < open
+        src_l := close
+        src_h := open
+        src_h
+    else
+        candle_ := close > open
+        src_l := open
+        src_h := close
+        src_h
+
+
+    if gap
+        low_1 = candle_[1] ? src_l[1] : candle_[2] ? src_l[2] : candle_[3] ? src_l[3] : candle_[4] ? src_l[4] : src_l[2]
+        high_1 = candle_[1] ? src_h[1] : candle_[2] ? src_h[2] : candle_[3] ? src_h[3] : candle_[4] ? src_h[4] : src_h[2]
+
+        index = candle_[1] ? 1 : candle_[2] ? 2 : candle_[3] ? 3 : candle_[4] ? 4 : 2
+        box1 = box.new(bar_index - index, high_1, last_bar_index, low_1, chart.fg_color, 1, bgcolor = candle_type ? col_bull : col_bear, text_size = size.small, text_color = chart.fg_color, text_halign = text.align_right)
+        boxes1.push(box1)
+
+    for box_id in boxes1
+        box.set_right(box_id, bar_index + 25)
+
+        if candle_type ? high < box.get_bottom(box_id) : low > box.get_top(box_id)
+            box.delete(box_id)
+            boxes1.set(boxes1.indexof(box_id), box(na))
+
+        for box_id1 in boxes1
+            top1 = box_id1.get_top()
+            top = box_id.get_top()
+            bottom1 = box_id1.get_bottom()
+            bottom = box_id.get_bottom()
+
+            if top1 < top and top1 > bottom
+                box.delete(box_id)
+                boxes1.set(boxes1.indexof(box_id), box(na))
+
+            if top - bottom < atr * 0.5
+                box.delete(box_id)
+                boxes1.set(boxes1.indexof(box_id), box(na))
+
+    if boxes1.size() >= box_amount
+        box.delete(boxes1.shift())
+
+if display_ob and allow
+    isBull_gap.draw_ob(true)
+    isBear_gap.draw_ob(false)
+    // }
+
+
+// TrendLines {
+bool display_tren = input.bool(false, '', group = 'TrendLine', inline = '3')
+int Period = input.int(10, 'Period', group = 'TrendLine', inline = '3')
+string style2 = input.string('Solid', '', options = ['Solid', 'Dashed'], group = 'TrendLine', inline = '3')
+int extend_ = input.int(10, 'Extend', group = 'TrendLine', inline = '3')
+
+color LineCol1 = input.color(#1bd663, '', group = 'TrendLine', inline = '4')
+color LineCol2 = input.color(#d61b7f, '', group = 'TrendLine', inline = '4')
+
+var array<line> Lines = array.new<line>(5)
+
+PH = ta.pivothigh(source = high, leftbars = Period, rightbars = Period)
+PL = ta.pivotlow(source = low, leftbars = Period, rightbars = Period)
+
+method draw_trendLine(float pivot, bool line_slope) =>
+    var int Start = 0
+    var int end = 0
+    var int TIME = 1
+    var float YEnd = 0
+    var float YStart = 0
+    var float Slope = 0
+    var float src = 0
+
+    style = switch style2
+        'Solid' => line.style_solid
+        'Dashed' => line.style_dashed
+        => line.style_solid
+
+    if not na(pivot)
+        BarTIME = time - time[1]
+        src := pivot
+        TIME := time[Period]
+        YStart := src[1]
+        Start := TIME[1]
+        Slope := (src - YStart) / (TIME - Start)
+
+        extend = BarTIME * extend_ * 2
+        end := TIME + extend
+        YEnd := src + extend * Slope
+        LineCond = Slope * time < 0 ? line_slope ? na : LineCol1 : line_slope ? LineCol2 : na
+
+        if not na(LineCond)
+            Lines.push(line.new(x1 = Start, y1 = YStart, x2 = end, y2 = YEnd, xloc = xloc.bar_time, color = LineCond, width = 1, style = style))
+
+if display_tren and allow
+    PH.draw_trendLine(false)
+    PL.draw_trendLine(true)
+
+if Lines.size() > 1
+    line.delete(Lines.shift())
+// }

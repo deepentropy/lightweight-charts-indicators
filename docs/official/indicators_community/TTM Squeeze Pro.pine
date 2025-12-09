@@ -1,0 +1,58 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Beardy_Fred
+
+//@version=5
+indicator('Beardy Squeeze Pro', shorttitle='Squeeze', overlay=false, precision=2)
+
+length = input.int(20, "TTM Squeeze Length")
+
+//BOLLINGER BANDS
+BB_mult = input.float(2.0, "Bollinger Band STD Multiplier")
+BB_basis = ta.sma(close, length)
+dev = BB_mult * ta.stdev(close, length)
+BB_upper = BB_basis + dev
+BB_lower = BB_basis - dev
+
+//KELTNER CHANNELS
+KC_mult_high = input.float(1.0, "Keltner Channel #1")
+KC_mult_mid = input.float(1.5, "Keltner Channel #2")
+KC_mult_low = input.float(2.0, "Keltner Channel #3")
+KC_basis = ta.sma(close, length)
+devKC = ta.sma(ta.tr, length)
+KC_upper_high = KC_basis + devKC * KC_mult_high
+KC_lower_high = KC_basis - devKC * KC_mult_high
+KC_upper_mid = KC_basis + devKC * KC_mult_mid
+KC_lower_mid = KC_basis - devKC * KC_mult_mid
+KC_upper_low = KC_basis + devKC * KC_mult_low
+KC_lower_low = KC_basis - devKC * KC_mult_low
+
+//SQUEEZE CONDITIONS
+NoSqz = BB_lower < KC_lower_low or BB_upper > KC_upper_low //NO SQUEEZE: GREEN
+LowSqz = BB_lower >= KC_lower_low or BB_upper <= KC_upper_low //LOW COMPRESSION: BLACK
+MidSqz = BB_lower >= KC_lower_mid or BB_upper <= KC_upper_mid //MID COMPRESSION: RED
+HighSqz = BB_lower >= KC_lower_high or BB_upper <= KC_upper_high //HIGH COMPRESSION: ORANGE
+
+//MOMENTUM OSCILLATOR
+mom = ta.linreg(close - math.avg(math.avg(ta.highest(high, length), ta.lowest(low, length)), ta.sma(close, length)), length, 0)
+
+//MOMENTUM HISTOGRAM COLOR
+iff_1 = mom > nz(mom[1]) ? color.new(color.aqua, 0) : color.new(#2962ff, 0)
+iff_2 = mom < nz(mom[1]) ? color.new(color.red, 0) : color.new(color.yellow, 0)
+mom_color = mom > 0 ? iff_1 : iff_2
+
+//SQUEEZE DOTS COLOR
+sq_color = HighSqz ? color.new(color.orange, 0) : MidSqz ? color.new(color.red, 0) : LowSqz ? color.new(color.black, 0) : color.new(color.green, 0)
+
+//ALERTS
+Detect_Sqz_Start = input.bool(true, "Alert Price Action Squeeze")
+Detect_Sqz_Fire = input.bool(true, "Alert Squeeze Firing")
+
+if Detect_Sqz_Start and NoSqz[1] and not NoSqz
+    alert("Squeeze Started")
+else if Detect_Sqz_Fire and NoSqz and not NoSqz[1]
+    alert("Squeeze Fired")
+
+//PLOTS
+plot(mom, title='MOM', color=mom_color, style=plot.style_columns, linewidth=2)
+plot(0, title='SQZ', color=sq_color, style=plot.style_circles, linewidth=3)
+

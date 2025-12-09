@@ -1,0 +1,290 @@
+//@version=4
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Logistic Map Application on RSI, STOCH, ROC, AO, and Custom Logistic Interpretation
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Nov 5 , 2020  : Initial Release
+//# *  Update     : Nov 21, 2020  : Backtest Framework Adaptation
+//# *  Update     : Mar 13, 2021  : Enchanced Backtest Framework
+//# *                               - long/short/stoploss conditions enchaced
+//# *                               - early warning ability added (label + alert)
+//# *  Update     : Mar 16, 2021  : Alert additions to Logistic and Backtest Framework
+//# *
+//# * Reference   : https://www.tradingview.com/script/jUuBT0bO-Logistic-EMA-w-Signals-by-DGT/
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+study("Logistic RSI, STOCH, ROC, AO, ... by DGT", "LOGISTIC ʙʏ DGT ☼☾", max_labels_count = 500)//, resolution="")
+
+// -Inputs ══════════════════════════════════════════════════════════════════════════════════════ //
+
+ti         = input("Logistic Dominance", "Select Indicator", options = ["Awesome Oscillator (AO)", "Logistic Dominance", "Rate of Change (ROC)", "Relative Strength Index (RSI)", "Stochastic (STOCH)"])
+source     = input(close,       "Source", input.source                           , inline = "LOG" , group = "Logistic Settings")
+length     = input(13,          "Logistic Map Length", minval = 1                , inline = "LOG" , group = "Logistic Settings")
+
+lenLD      = input(5,           "Length : Logistic Dominance"           , minval = 1              , group = "Optimization / Customization Metrics")
+lenROC     = input(9,           "Length : Rate of Change (ROC)"         , minval = 1              , group = "Optimization / Customization Metrics")
+lenRSI     = input(14,          "Length : Relative Strength Index (RSI)", minval = 1              , group = "Optimization / Customization Metrics")
+lenSTO     = input(14,          "Length : Stochastic (STOCH)"           , minval = 1              , group = "Optimization / Customization Metrics")
+
+style      = input("Cross",     "Style", options = ["Cross", "Line", "StepLine"] , inline = "PLOT", group = "Display Settings")
+uC         = input(color.green, "Colors : Bullish", input.color                  , inline = "PLOT", group = "Display Settings")
+dC         = input(color.red  , "Bearish", input.color                           , inline = "PLOT", group = "Display Settings")
+d          = input(false,       "Standart Deviation Line Alone"                                   , group = "Display Settings")
+
+// -Calculations ════════════════════════════════════════════════════════════════════════════════ //
+
+f_logmap(_s, _r, _l) => _r * _s / highest(_l) * (1 - _s / highest(_l))
+
+f_map(_s, _r, _v) =>
+    mapeq = f_logmap(_s, _r, length)
+    lmap = mapeq
+    for i = 0 to 29
+        array.push(_v,lmap)
+        lmap := _r * abs(mapeq[i]) * (1 - mapeq[i])
+    lmap
+
+r = if ti == "Awesome Oscillator (AO)"
+    sma(hl2, 5) / sma(hl2, 34) - 1
+else if ti == "Logistic Dominance"
+    -f_logmap(-source, change(source, lenLD) / source[lenLD], lenLD) - f_logmap(source, change(source, lenLD) / source[lenLD], lenLD)
+else if ti == "Rate of Change (ROC)"
+    change(source, lenROC) / source[lenROC]
+else if ti == "Relative Strength Index (RSI)"
+    rsi(source, lenRSI) / 100 - .5
+else if ti == "Stochastic (STOCH)"
+    stoch(source, high, low, lenSTO) / 100 - .5
+
+var v = array.new_float(0)
+
+val   = f_map(source, r, v)
+s     = style == "Cross" ? plot.style_cross : style == "Line" ? plot.style_line : plot.style_stepline
+
+// -Plotting ════════════════════════════════════════════════════════════════════════════════════ //
+
+plot(d ? na : val            , "Last Iteration", val >= 0             ? uC : dC, 1, s)
+plot(d ? na : array.get(v,1 ), "2nd Iteration" , array.get(v,1 ) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,2 ), "3rd Iteration" , array.get(v,2 ) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,3 ), "4th Iteration" , array.get(v,3 ) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,4 ), "5th Iteration" , array.get(v,4 ) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,5 ), "6th Iteration" , array.get(v,5 ) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,6 ), "7th Iteration" , array.get(v,6 ) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,7 ), "8th Iteration" , array.get(v,7 ) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,8 ), "9th Iteration" , array.get(v,8 ) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,9 ), "10th Iteration", array.get(v,9 ) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,10), "11th Iteration", array.get(v,10) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,11), "12th Iteration", array.get(v,11) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,12), "13th Iteration", array.get(v,12) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,13), "14th Iteration", array.get(v,13) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,14), "15th Iteration", array.get(v,14) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,15), "16th Iteration", array.get(v,15) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,16), "17th Iteration", array.get(v,16) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,17), "18th Iteration", array.get(v,17) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,18), "19th Iteration", array.get(v,18) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,19), "20th Iteration", array.get(v,19) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,20), "21st Iteration", array.get(v,20) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,21), "22nd Iteration", array.get(v,21) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,22), "23rd Iteration", array.get(v,22) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,23), "24th Iteration", array.get(v,23) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,24), "25th Iteration", array.get(v,24) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,25), "26th Iteration", array.get(v,25) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,26), "27th Iteration", array.get(v,26) >= 0 ? uC : dC, 1, s)
+//plot(d ? na : array.get(v,27), "28th Iteration", array.get(v,27) >= 0 ? uC : dC, 1, s)
+plot(d ? na : array.get(v,28), "29th Iteration", array.get(v,28) >= 0 ? uC : dC, 1, s)
+//plot(d ? na : array.get(v,29), "30th Iteration", array.get(v,29) >= 0 ? uC : dC, 1, s)
+
+array.remove(v, 0)
+aStDev = sign(array.avg(v)) * array.stdev(v)
+plot(aStDev, "Standard Deviation of Array's Elements", array.avg(v) >= 0 ? #006400 : #910000, 2)
+array.clear(v)
+
+// -Alerts ══════════════════════════════════════════════════════════════════════════════════════ //
+
+longAlertCondition  = crossover(aStDev, 0)
+alertcondition(longAlertCondition   , "Long : Early Warning"        , "LOGISTIC - Not Confirmed Probable Long Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+alertcondition(longAlertCondition[1], "Long : Trading Opportunity"  , "LOGISTIC - Probable Long Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+
+shortAlertCondition = crossunder(aStDev, 0)
+alertcondition(shortAlertCondition   , "Short : Early Warning"      , "LOGISTIC - Not Confirmed Probable Short Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+alertcondition(shortAlertCondition[1], "Short : Trading Opportunity", "LOGISTIC - Probable Short Trade Opportunity\n{{exchange}}:{{ticker}}->\nPrice = {{close}},\nTime = {{time}}")
+
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Backtest Framework
+//# * Author      : © dgtrd
+//# * Purpose     : Ability to optimize a study and observe trade simulation statistics accordingly  
+//# *
+//# * Revision History
+//# *  Release    : Nov 21, 2020  : Initial Release
+//# *  Update     : Mar 13, 2021  : Enchanced Backtest Framework
+//# *                               - long/short/stoploss conditions enchaced
+//# *                               - early warning ability added (label + alert)
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+isBackTest = input(false,       "Backtest On/Off"                                                  , group = "Backtest Framework")
+dasCapital = input(1000.,       "Initial Capital"                                 , inline = "BT1" , group = "Backtest Framework")
+lenBckTst  = input(1,           "Period (Year)", minval=0, step = .1              , inline = "BT1" , group = "Backtest Framework")
+isStopLoss = input(false,       "Apply Stop Loss, with Stop Loss Set To %"        , inline = "BT2" , group = "Backtest Framework")
+stopLoss   = input(1.,          "", step=.1, minval = 0                           , inline = "BT2" , group = "Backtest Framework") / 100
+isBull     = input(false,       "Long : Candle Direction as Confirmation : Short" , inline = "BT3" , group = "Backtest Framework")
+isBear     = input(false,       ""                                                , inline = "BT3" , group = "Backtest Framework")
+isSudden   = input(true,        "Avoid Sudden Price Changes"                                       , group = "Backtest Framework")
+isTest     = input(false,       "❗❗❗ Simulate Trade on Next Bar : Only For Test Purpose (REPAINTS)", group = "Backtest Framework")
+lblInOutSL = input(true,        "Trade Entry/Exit Labels  Trade Statistics Label" , inline = "BT4" , group = "Backtest Framework")
+lblTrdStat = input(true,        ""                                                , inline = "BT4" , group = "Backtest Framework")
+
+startBckTst  = time > timenow - lenBckTst * 31556952000 
+
+var inTrade  = false
+
+if isBackTest
+
+    var capital       = dasCapital
+    var entryPrice    = 0. 
+    var exitPrice     = 0. 
+    var trades        = 0
+    var win           = 0
+    var loss          = 0
+
+    bullCandle        = close > open
+    bearCandle        = close < open
+    stopLossTrigger   = crossunder(close, entryPrice * (1 - stopLoss))
+    
+    longCondition     = isTest ?
+                          isBull ? 
+                             isSudden ? 
+                               longAlertCondition [1] and not shortAlertCondition    and bullCandle    : 
+                               longAlertCondition [1] and bullCandle                                   : 
+                             isSudden ? 
+                               longAlertCondition [1] and not shortAlertCondition                      : 
+                               longAlertCondition [1]                                                  :
+                          isBull ? 
+                             isSudden ? 
+                               longAlertCondition [2] and not shortAlertCondition[1] and bullCandle[1] : 
+                               longAlertCondition [2] and bullCandle[1]                                : 
+                             isSudden ? 
+                               longAlertCondition [2] and not shortAlertCondition[1]                   : 
+                               longAlertCondition [1]
+
+    shortCondition    = isTest ?
+                          isBear ? 
+                             isSudden ? 
+                               shortAlertCondition[1] and not longAlertCondition     and bearCandle    : 
+                               shortAlertCondition[1] and bearCandle                                   : 
+                             isSudden ? 
+                               shortAlertCondition[1] and not longAlertCondition                       : 
+                               shortAlertCondition[1]                                                  :
+                          isBear ? 
+                             isSudden ? 
+                               shortAlertCondition[2] and not longAlertCondition [1] and bearCandle[1] : 
+                               shortAlertCondition[2] and bearCandle[1]                                : 
+                             isSudden ? 
+                               shortAlertCondition[2] and not longAlertCondition [1]                   : 
+                               shortAlertCondition[1]
+    
+    stopLossCondition = isStopLoss ? inTrade and not shortCondition ? stopLossTrigger : 0 : 0
+
+    if startBckTst and longCondition and not inTrade
+        entryPrice   := open
+        inTrade      := true
+        trades       := trades + 1
+    
+        if lblInOutSL
+            label longLabel = label.new(bar_index, aStDev, text="L"
+             ,tooltip="entry price  : " + tostring(entryPrice) + "\nentry value : " + tostring(capital, "#.##")
+             ,color=color.green, style=label.style_label_up, textcolor=color.white, textalign=text.align_center, size=size.tiny)
+        
+        alert("long : probable trading opportunity, price " + tostring(close), alert.freq_once_per_bar)
+
+    if (shortCondition or stopLossCondition) and inTrade
+        exitPrice    := stopLossCondition ? close : open
+        inTrade      := false
+        capital      := capital * (exitPrice / entryPrice)
+
+        if exitPrice > entryPrice
+            win      := win  + 1
+        else
+            loss     := loss + 1
+    
+        if lblInOutSL
+            text = stopLossCondition ? "SL" : "TP"
+            label shortLabel = label.new(bar_index, aStDev, text = text
+                 ,tooltip="change .......... : " + tostring((exitPrice / entryPrice - 1) * 100, "#.##") + "%\nentry/exit price : " + tostring(entryPrice) + " / " + tostring(exitPrice) + "\nnew capital ..... : " + tostring(capital, "#.##")
+                 ,color=color.red, style=label.style_label_down, textcolor=color.white, textalign=text.align_center, size=size.tiny)
+        
+        alert("short : probable trading opportunity, price " + tostring(close), alert.freq_once_per_bar)
+
+    var label wLabel = na
+    
+    if not inTrade and longAlertCondition[1] and not shortAlertCondition
+        wLabel := label.new(bar_index, aStDev, text="⚠️"
+         ,tooltip="probable long trading opportunity \nawaiting confirmation (next candle)\nif confirmed, backtest tool will execute trade with open price of the canlde"
+         ,color=color.green, style=label.style_none, textcolor=color.white, textalign=text.align_center, size=size.huge)
+        label.delete(wLabel[1])
+        
+        alert("long : early warning : probable trading opportunity, awaiting confirmation (next candle), price " + tostring(close), alert.freq_once_per_bar)
+
+    if inTrade and shortAlertCondition[1] and not longAlertCondition
+        wLabel := label.new(bar_index, aStDev, text="⚠️"
+         ,tooltip="probable short/take profit trading opportunity \nawaiting confirmation (next candle)\nif confirmed, backtest tool will execute trade with open price of the canlde"
+         ,color=color.green, style=label.style_none, textcolor=color.white, textalign=text.align_center, size=size.huge)
+        label.delete(wLabel[1])
+        
+        alert("short : early warning : probable trading opportunity, awaiting confirmation (next candle), price " + tostring(close), alert.freq_once_per_bar)
+
+    if change(time)
+        label.delete(wLabel[1])
+        
+    if stopLossCondition
+        alert("stop loss condition, price " + tostring(close), alert.freq_once_per_bar)
+    
+    if lblTrdStat
+        var years         = (timenow - time) / 31556952000
+
+        var yearsTxt      = ""
+        var remarks       = ""
+
+        if years < lenBckTst
+            lenBckTst    := years
+            yearsTxt     := tostring(lenBckTst, "#.##") + " Years***"
+            remarks      := "\n\n*longs only\n**final value, if trade active displays estimated final value\n***max available data for selected timeframe : # of bars - " + tostring(bar_index)
+        else
+            yearsTxt     := tostring(lenBckTst, "#.##") + " Year(s)"
+            remarks      := "\n\n*longs only\n**final value - if in trade, displays estimated final value"
+
+        inTradeTxt        = inTrade ? "inTrade" : "not inTrade"
+        estimated         = inTrade ? capital * (close / entryPrice) : capital
+        entryTxt          = inTrade ? tostring(entryPrice) : "not inTrade"
+        lastTrdTxt        = inTrade ? ", Gain/Loss " + tostring((estimated/capital - 1) * 100, "#.##") + "%, Stop Loss " + tostring(isStopLoss ? entryPrice * (1 - stopLoss) : na) : ""
+        stopLossTxt       = isStopLoss ? "if last value falls by " + tostring(stopLoss * 100) + "% of entry price" : "not applied"
+
+        tooltipTxt        = "entires/exits are calculated based on standard deviation value of array's elements (aStDev)\n" +
+                             "-long entry on the next bar, when aStDev > 0\n" +
+                             "-take profit on the next bar, when aStDev < 0\n" +
+                             "-stop loss " + stopLossTxt + remarks
+
+        label indiLabel   = label.new(time, aStDev 
+             ,text="☼☾ Trade Statistics*, Trade Period - " + yearsTxt +
+              "\nSelected Indicator -> " + ti +
+              "\n═════════════════════════════════════" +
+              "\nSuccess Ratio ...... : " + tostring((win/trades)*100, "#") + "%" + ", # of Trades - " + tostring(trades) + ", Win/Loss - " + tostring(win) + "/" + tostring(loss) +
+              "\nGain/Loss % ........ : " + tostring((estimated/dasCapital - 1) * 100, "#") + "%" + ", Initial/Final Value** - " + tostring(dasCapital) + " / " + tostring(estimated, "#") +
+              "\n\nCurrent TradeStatus - " + inTradeTxt + lastTrdTxt +
+              "\n═════════════════════════════════════" +
+              "\nEntry Price/Value . : " + entryTxt + " / " + tostring(capital, "#.##") + " " + inTradeTxt +
+              "\nLast Price/Value ... : " + tostring(close) + " / " + tostring(estimated , "#.##") + " " + inTradeTxt
+             ,tooltip=tooltipTxt
+             ,color=inTrade ? estimated/dasCapital > 1 ? color.teal : color.maroon : color.gray, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.white, textalign=text.align_left)
+
+        label.set_x(indiLabel, label.get_x(indiLabel) + round(change(time)*5))
+        label.delete(indiLabel[1])
+
+bgcolor(isBackTest and startBckTst ? startBckTst != startBckTst[1] ? color.blue : inTrade ? color.green : color.red : na, 91)

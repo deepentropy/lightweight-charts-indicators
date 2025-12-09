@@ -1,0 +1,155 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("FVG Order Blocks [BigBeluga]", overlay=true, max_boxes_count=500, max_lines_count=500, max_bars_back=2000)
+
+// ＩＮＰＵＴＳ ========================================================================================================{
+
+//@variable: Lookback period for detecting imbalances
+int loockback    = 2000
+//@variable: Filter to determine significant imbalances as a percentage
+float filter       = input.float(0.5, "Filter Gaps by %", minval=0, maxval=100, step=0.1)
+//@variable: Toggle to show/hide Order Blocks
+bool show_imb    = input.bool(true, "Fair Value Gaps", inline="1")
+//@variable: Maximum number of levels to display
+int box_amount   = input.int(6, "Blocks Amount")
+//@variable: Toggle to show/hide broken Order Blocks
+bool show_broken = input.bool(false, "Broken Blocks")
+bool show_signal = input.bool(false, "Order Blocks Signals")
+
+//@variable: Color for bullish Order Blocks
+color col_bull   = input.color(#14be94, "Color +/-", inline="2")
+//@variable: Color for bearish Order Blocks
+color col_bear   = input.color(color.rgb(194, 25, 25), "", inline="2")
+
+// Arrays to store boxes
+var boxes1 = array.new<box>(10, box(na))  // Bullish boxes
+var boxes2 = array.new<box>(10, box(na))  // Bearish boxes
+
+// Boolean variables to identify bullish and bearish gaps
+var bool isBull_gap = na  
+var bool isBear_gap = na  
+
+// Box variables for the current bullish and bearish levels
+var box1 = box(na)
+var box2 = box(na)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ ============================================================================================={
+
+// Normalized ATR (Average True Range)
+series float atr = ta.atr(200)
+
+// Imbalance Filters
+float filt_up      = (low-high[2])/low*100  // Filter for bullish Imbalance
+float filt_dn      = (low[2]-high) / low[2] *100   // Filter for bearish Imbalance
+
+max_up = ta.highest(filt_up, 200)
+max_dn = ta.highest(filt_dn, 200)
+
+// Detect gaps and create boxes for bullish and bearish imbalances
+if barstate.isconfirmed and last_bar_index - bar_index < loockback
+    isBull_gap := high[2] < low and high[2] < high[1] and low[2] < low and filt_up > filter
+    isBear_gap := low[2] > high and low[2] > low[1] and high[2] > high and filt_dn > filter
+
+// Logic for Bullish Imbalance
+if isBull_gap
+    if show_imb
+        // Create a temporary box representing the gap
+        box.new(bar_index-1, low, bar_index + 5, high[2], na, 0, 
+             bgcolor    = color.from_gradient(filt_up, 0, max_up, color.new(chart.fg_color, 90), color.new(chart.fg_color, 70)),
+             text       = str.tostring(filt_up, format.percent),
+             text_color = chart.fg_color
+             )
+
+    box1 := box.new(bar_index-1, high[2], last_bar_index, high[2] - atr, col_bull, 1, 
+                 bgcolor     = color.from_gradient(filt_up, 0, max_up, na, color.new(col_bull, 70)), 
+                 text        = str.tostring(filt_up, format.percent), 
+                 text_size   = size.small,
+                 text_color  = chart.fg_color, 
+                 text_halign = text.align_right)
+    boxes1.push(box1)
+
+// Logic for Bearish Imbalance
+if isBear_gap
+    if show_imb
+        // Create a temporary box representing the gap
+        box.new(bar_index-1, low[2], bar_index + 5, high, na, 0,
+             bgcolor    = color.from_gradient(filt_dn, 0, max_dn, color.new(chart.fg_color, 90), color.new(chart.fg_color, 70)),
+             text       = "-"+str.tostring(filt_dn, format.percent),
+             text_color = chart.fg_color
+             )
+
+    box2 := box.new(bar_index-1, low[2] + atr, last_bar_index, low[2], col_bear, 1,
+                 bgcolor     = color.from_gradient(filt_dn, 0, max_dn, na, color.new(col_bear, 70)),
+                 text        =str.tostring(filt_dn, format.percent),
+                 text_size   =size.small,
+                 text_color  = chart.fg_color, 
+                 text_halign = text.align_right)
+    boxes2.push(box2)
+
+// Adjust the position of the boxes as new bars are added
+if barstate.islast
+    for box_id in boxes1
+        box.set_right(box_id, bar_index + 15)
+    for box_id in boxes2
+        box.set_right(box_id, bar_index + 15)
+
+// Logic to handle broken levels
+for box_id in boxes1
+    if high < box.get_bottom(box_id)
+        box.set_border_width(box_id, 0)
+        box.set_bgcolor(box_id, color.new(chart.fg_color, 85))
+
+        if not show_broken
+            box.delete(box_id)
+            boxes1.remove(boxes1.indexof(box_id))
+
+    if low > box.get_top(box_id) and low[1] <= box.get_top(box_id) and not isBull_gap and show_signal
+        label.new(bar_index-1, low[1], "︽", color = color(na), textcolor = col_bull, style = label.style_label_up)
+
+    for box_id1 in boxes1
+        top1 = box_id1.get_top()
+        top  = box_id.get_top()
+        bottom1 = box_id1.get_bottom()
+        bottom  = box_id.get_bottom()
+
+        if top1 < top and top1 > bottom
+            box.delete(box_id)
+            boxes1.remove(boxes1.indexof(box_id))
+
+
+for box_id in boxes2
+    if low > box.get_top(box_id)
+        box.set_border_width(box_id, 0)
+        box.set_bgcolor(box_id, color.new(chart.fg_color, 85))
+
+        if not show_broken
+            box.delete(box_id)
+            boxes2.remove(boxes2.indexof(box_id))
+
+
+    if high < box.get_bottom(box_id) and high[1] >= box.get_bottom(box_id) and not isBear_gap and show_signal
+        label.new(bar_index-1, high[1], "﹀", color = color(na), textcolor = col_bear, style = label.style_label_down)
+
+    for box_id1 in boxes2
+        top1 = box_id1.get_top()
+        top  = box_id.get_top()
+        bottom1 = box_id1.get_bottom()
+        bottom  = box_id.get_bottom()
+
+        if top1 < top and top1 > bottom
+            box.delete(box_id)
+            boxes2.remove(boxes2.indexof(box_id))
+
+// Limit the number of displayed boxes to the specified amount
+if boxes1.size() >= box_amount
+    box.delete(boxes1.shift())
+if boxes2.size() >= box_amount
+    box.delete(boxes2.shift())
+
+
+// }

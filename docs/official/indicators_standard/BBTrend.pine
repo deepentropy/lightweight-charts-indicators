@@ -1,0 +1,26 @@
+//@version=6
+indicator("BBTrend", timeframe="", timeframe_gaps=true)
+
+shortLengthInput = input.int(20,    "Short BB Length", minval = 1)
+longLengthInput  = input.int(50,    "Long BB Length",  minval = 1)
+stdDevMultInput  = input.float(2.0, "StdDev",          minval = 0.001)
+
+[shortMiddle, shortUpper, shortLower] = ta.bb(close, shortLengthInput, stdDevMultInput)
+[longMiddle,  longUpper,  longLower]  = ta.bb(close, longLengthInput,  stdDevMultInput)
+
+BBTrend = (math.abs(shortLower - longLower) - math.abs(shortUpper - longUpper)) / shortMiddle * 100
+
+posColorStrong = color.new(#089981, 25)
+negColorStrong = color.new(#F23645, 25)
+posColorWeak   = color.new(#089981, 50)
+negColorWeak   = color.new(#F23645, 50)
+
+histColor = switch
+    BBTrend > 0 and BBTrend >= BBTrend[1] => posColorStrong
+    BBTrend > 0 and BBTrend <  BBTrend[1] => posColorWeak
+    BBTrend < 0 and BBTrend >  BBTrend[1] => negColorWeak
+    BBTrend < 0 and BBTrend <= BBTrend[1] => negColorStrong
+    => posColorWeak
+
+plot(BBTrend, "BBTrend", style = plot.style_columns, color = histColor)
+hline(0, "Zero line")

@@ -1,0 +1,85 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("HyperTrend [LuxAlgo]", "LuxAlgo - HyperTrend", overlay = true)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+mult = input.float(5, 'Multiplicative Factor', minval = 0)
+
+slope = input.float(14, 'Slope', minval = 0)
+
+width = input.float(80, 'Width %', minval = 0, maxval = 100) / 100
+
+//Style
+bullCss = input.color(color.teal, 'Average Color', inline = 'avg', group = 'Style')
+bearCss = input.color(color.red, ''              , inline = 'avg', group = 'Style')
+
+area = input.string('Gradient', 'Area', options = ['Gradient', 'Solid'], group = 'Style')
+upperCss = input.color(color.new(color.red, 70), 'Upper Area', group = 'Style')
+lowerCss = input.color(color.new(color.teal, 70)   , 'Lower Area', group = 'Style')
+
+//-----------------------------------------------------------------------------}
+//Calculation
+//-----------------------------------------------------------------------------{
+var float upper = na
+var float lower = na
+var float avg   = close
+
+var hold = 0.
+var os = 1.
+    
+atr = nz(ta.atr(200)) * mult
+
+avg := math.abs(close - avg) > atr ? 
+  math.avg(close, avg)
+  : avg + os * (hold / mult / slope)
+
+os := math.sign(avg - avg[1])
+hold := os != os[1] ? atr : hold
+
+upper := avg + width * hold
+lower := avg - width * hold
+
+//-----------------------------------------------------------------------------}
+//Plots
+//-----------------------------------------------------------------------------{
+css = os == 1 ? bullCss : bearCss
+
+plot_upper = plot(upper, 'Upper', na)
+plot_avg = plot(avg, 'Average', os != os[1] ? na : css)
+plot_lower = plot(lower, 'Lower', na)
+
+var color upper_topcol = na
+var color upper_btmcol = na
+var color lower_topcol = na
+var color lower_btmcol = na
+
+//Fill
+if area == 'Gradient'
+    upper_topcol := upperCss
+    upper_btmcol := color.new(chart.bg_color, 100)
+    lower_topcol := color.new(chart.bg_color, 100)
+    lower_btmcol := lowerCss
+else
+    upper_topcol := upperCss
+    upper_btmcol := upperCss
+    lower_topcol := lowerCss
+    lower_btmcol := lowerCss
+
+//Upper Area
+fill(plot_upper, plot_avg
+  , top_color = os != os[1] ? na : upper_topcol
+  , bottom_color = os != os[1] ? na : upper_btmcol
+  , top_value = upper
+  , bottom_value = avg)
+
+//Lower Area
+fill(plot_avg, plot_lower
+  , top_color = os != os[1] ? na : lower_topcol
+  , bottom_color = os != os[1] ? na : lower_btmcol
+  , top_value = avg
+  , bottom_value = lower)
+
+//-----------------------------------------------------------------------------}

@@ -1,0 +1,173 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Supply and Demand Daily [LuxAlgo]", "LuxAlgo - Supply and Demand Daily", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_bars_back = 500)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+per = input.float(10., 'Threshold %', minval = 0, maxval = 100)
+div = input.int(50, 'Resolution'    , minval = 2, maxval = 500)
+tf  = input.timeframe('', 'Intrabar TF')
+
+//Colors
+showSupply = input(true ,'Supply        ', inline = 'supply', group = 'Style')
+supplyCss  = input(#2157f3, ''         , inline = 'supply', group = 'Style')
+supplyArea = input(true ,'Area'          , inline = 'supply', group = 'Style')
+supplyAvg  = input(true ,'Average'       , inline = 'supply', group = 'Style')
+supplyWavg = input(true ,'Weighted'      , inline = 'supply', group = 'Style')
+
+showEqui   = input(true ,'Equilibrium'   , inline = 'equi'  , group = 'Style')
+equiCss    = input(color.gray, ''      , inline = 'equi'  , group = 'Style')
+equiAvg    = input(true ,'Average'       , inline = 'equi'  , group = 'Style')
+equiWavg   = input(true ,'Weighted'      , inline = 'equi'  , group = 'Style')
+
+showDemand = input(true ,'Demand    '    , inline = 'demand', group = 'Style')
+demandCss  = input(#ff5d00, ''         , inline = 'demand', group = 'Style')
+demandArea = input(true ,'Area'          , inline = 'demand', group = 'Style')
+demandAvg  = input(true ,'Average'       , inline = 'demand', group = 'Style')
+demandWavg = input(true ,'Weighted'      , inline = 'demand', group = 'Style')
+
+//-----------------------------------------------------------------------------}
+//UDT's
+//-----------------------------------------------------------------------------{
+type bin
+    float lvl
+    float prev
+    float sum
+    float prev_sum
+    float csum
+    float avg
+    bool isreached
+
+type area
+    box  bx
+    line avg 
+    line wavg 
+
+//-----------------------------------------------------------------------------}
+//Functions
+//-----------------------------------------------------------------------------{
+n = bar_index
+
+get_hlv()=> [high, low, volume]
+
+method set_area(area id, x1, top, btm, avg, wavg, showArea, showAvg, showWavg)=>
+    if showArea
+        id.bx.set_lefttop(x1, top)
+        id.bx.set_rightbottom(n, btm)    
+    
+    if showAvg
+        id.avg.set_xy1(x1, avg)
+        id.avg.set_xy2(n, avg)
+    
+    if showWavg
+        id.wavg.set_xy1(x1, wavg)
+        id.wavg.set_xy2(n, wavg)
+
+//-----------------------------------------------------------------------------}
+//Main variables
+//-----------------------------------------------------------------------------{
+var max  = 0. 
+var min  = 0.
+var x1   = 0
+var csum = 0.
+
+var area supply_area = na 
+var area demand_area = na 
+
+//Intrabar data
+[h, l, v] = request.security_lower_tf(syminfo.tickerid, tf, get_hlv())
+
+//Accumulate
+max := math.max(high[1], max)
+min := math.min(low[1], min)
+csum += volume[1]
+
+//-----------------------------------------------------------------------------}
+//Set zones
+//-----------------------------------------------------------------------------{
+var float supply_wavg = na
+var float demand_wavg = na
+
+if dayofmonth != dayofmonth[1]
+    r = (max - min) / div
+    supply = bin.new(max, max, 0, 0, 0, 0, false)
+    demand = bin.new(min, min, 0, 0, 0, 0, false)
+
+    //Loop trough intervals
+    for i = 0 to div-1
+        supply.lvl -= r
+        demand.lvl += r
+        
+        //Loop trough bars
+        for j = 1 to (n - x1)-1
+            //Loop trough intrabars
+            for k = 0 to (v[j]).size()-1
+                //Accumulate if within upper internal
+                supply.sum      += (h[j]).get(k) > supply.lvl and (h[j]).get(k) < supply.prev ? (v[j]).get(k) : 0
+                supply.avg      += supply.lvl * (supply.sum - supply.prev_sum)
+                supply.csum     += supply.sum - supply.prev_sum
+                supply.prev_sum := supply.sum
+
+                //Accumulate if within lower interval
+                demand.sum      += (l[j]).get(k) < demand.lvl and (l[j]).get(k) > demand.prev ? (v[j]).get(k) : 0
+                demand.avg      += demand.lvl * (demand.sum - demand.prev_sum)
+                demand.csum     += demand.sum - demand.prev_sum
+                demand.prev_sum := demand.sum
+                
+            //Test if supply accumulated volume exceed threshold and set box
+            if supply.sum / csum * 100 > per and not supply.isreached
+                avg = math.avg(max, supply.lvl)
+                supply_wavg := supply.avg / supply.csum
+
+                //Set Box/Level coordinates
+                if showSupply
+                    supply_area := area.new(
+                      box.new(na, na, na, na, na, bgcolor = color.new(supplyCss, 80))
+                      , line.new(na, na, na, na, color = supplyCss)
+                      , line.new(na, na, na, na, color = supplyCss, style = line.style_dashed))
+
+                    supply_area.set_area(x1, max, supply.lvl, avg, supply_wavg, supplyArea, supplyAvg, supplyWavg)
+
+                supply.isreached := true
+            
+            //Test if demand accumulated volume exceed threshold and set box
+            if demand.sum / csum * 100 > per and not demand.isreached and showDemand
+                avg = math.avg(min, demand.lvl)
+                demand_wavg := demand.avg / demand.csum
+                
+                //Set Box/Level coordinates
+                if showDemand
+                    demand_area := area.new(
+                      box.new(na, na, na, na, na, bgcolor = color.new(demandCss, 80))
+                      , line.new(na, na, na, na, color = demandCss)
+                      , line.new(na, na, na, na, color = demandCss, style = line.style_dashed))
+                    
+                    demand_area.set_area(x1, demand.lvl, min, avg, demand_wavg, demandArea, demandAvg, demandWavg)
+
+                demand.isreached := true
+            
+            if supply.isreached and demand.isreached
+                break
+        
+        supply.prev := supply.lvl
+        demand.prev := demand.lvl
+    
+    max := high
+    min := low
+    csum := volume
+    x1 := n
+
+if barstate.islast
+    if showSupply
+        supply_area.bx.set_right(n)
+        supply_area.avg.set_x2(n)
+        supply_area.wavg.set_x2(n)
+    
+    if showDemand
+        demand_area.bx.set_right(n)
+        demand_area.avg.set_x2(n)
+        demand_area.wavg.set_x2(n)
+
+//-----------------------------------------------------------------------------}

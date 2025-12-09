@@ -1,0 +1,8 @@
+//@version=6
+indicator(title="Accumulation/Distribution", shorttitle="Accum/Dist", format=format.volume, overlay=false, timeframe="", timeframe_gaps=true)
+var cumVol = 0.
+cumVol += nz(volume)
+if barstate.islast and cumVol == 0
+    runtime.error("No volume is provided by the data vendor.")
+ad = ta.cum(close==high and close==low or high==low ? 0 : ((2*close-low-high)/(high-low))*volume)
+plot(ad, title = "Accumulation/Distribution", color=#999915)

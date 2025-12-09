@@ -1,0 +1,8 @@
+//@version=6
+indicator(title="Double EMA", shorttitle="DEMA", overlay=true, timeframe="", timeframe_gaps=true)
+length = input.int(9, minval=1)
+src = input(close, title="Source")
+e1 = ta.ema(src, length)
+e2 = ta.ema(e1, length)
+dema = 2 * e1 - e2
+plot(dema, "DEMA", color=#43A047)

@@ -1,0 +1,29 @@
+//@version=2
+study("Trend Magic",overlay=true)
+CCI = input(20)
+ATR = input(5)
+Multiplier=input(1,title='ATR Multiplier')
+original=input(true,title='original coloring')
+thisCCI = cci(close, CCI)
+lastCCI = nz(thisCCI[1])
+bufferDn= high + Multiplier * sma(tr,ATR)
+bufferUp= low - Multiplier * sma(tr,ATR)
+if (thisCCI >= 0 and lastCCI < 0) 
+    bufferUp := bufferDn[1]
+if (thisCCI <= 0 and lastCCI > 0) 
+    bufferDn := bufferUp[1]
+
+if (thisCCI >= 0)
+    if (bufferUp < bufferUp[1])
+        bufferUp := bufferUp[1]
+else
+    if (thisCCI <= 0)
+        if (bufferDn > bufferDn[1])
+            bufferDn := bufferDn[1]
+
+x=thisCCI >= 0 ?bufferUp:thisCCI <= 0 ?bufferDn:x[1]
+swap=x>x[1]?1:x<x[1]?-1:swap[1]
+swap2=swap==1?lime:red
+swap3=thisCCI >=0 ?lime:red
+swap4=original?swap3:swap2
+plot(x,color=swap4,transp=0,linewidth=3)

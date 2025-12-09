@@ -1,0 +1,368 @@
+// © Julien_Eche
+// Copyright (c) 2023-present, Julien Eche
+// Adaptive Trend Finder script may be freely distributed under the terms of the GPL-3.0 license.
+// Created in December 2023 by Julien Eche
+
+//@version=6
+indicator('Adaptive Trend Finder (log)', shorttitle = 'Adaptive Trend Finder', overlay = true, max_bars_back = 1200)
+
+confidence(pearsonR) =>
+    switch 
+        pearsonR < 0.2 => 'Extremely Weak'
+        pearsonR < 0.3 => 'Very Weak'
+        pearsonR < 0.4 => 'Weak'
+        pearsonR < 0.5 => 'Mostly Weak'
+        pearsonR < 0.6 => 'Somewhat Weak'
+        pearsonR < 0.7 => 'Moderately Weak'
+        pearsonR < 0.8 => 'Moderate'
+        pearsonR < 0.9 => 'Moderately Strong'
+        pearsonR < 0.92 => 'Mostly Strong'
+        pearsonR < 0.94 => 'Strong'
+        pearsonR < 0.96 => 'Very Strong'
+        pearsonR < 0.98 => 'Exceptionally Strong'
+        => 'Ultra Strong'
+
+getTablePosition(string pos) =>
+    switch pos
+        'Bottom Right' => position.bottom_right
+        'Bottom Center' => position.bottom_center
+        'Bottom Left' => position.bottom_left
+        'Top Right' => position.top_right
+        'Top Left' => position.top_left
+        'Top Center' => position.top_center
+        'Middle Right' => position.middle_right
+        => position.middle_left // "Middle Left" - default
+
+// Calculate deviations for given length
+calcDev(float source, int length) =>
+    float logSource = math.log(source)
+    var int period_1 = length - 1
+    if barstate.islast
+        float sumX = 0.0
+        float sumXX = 0.0
+        float sumYX = 0.0
+        float sumY = 0.0
+        for int i = 1 to length by 1
+            float lSrc = logSource[i - 1]
+            sumX := sumX + i
+            sumXX := sumXX + i * i
+            sumYX := sumYX + i * lSrc
+            sumY := sumY + lSrc
+            sumY
+        float slope = nz((length * sumYX - sumX * sumY) / (length * sumXX - sumX * sumX))
+        float average = sumY / length
+        float intercept = average - slope * sumX / length + slope
+        float sumDev = 0.0
+        float sumDxx = 0.0
+        float sumDyy = 0.0
+        float sumDyx = 0.0
+        float regres = intercept + slope * period_1 * 0.5
+        float sumSlp = intercept
+        for int i = 0 to period_1 by 1
+            float lSrc = logSource[i]
+            float dxt = lSrc - average
+            float dyt = sumSlp - regres
+            lSrc := lSrc - sumSlp
+            sumSlp := sumSlp + slope
+            sumDxx := sumDxx + dxt * dxt
+            sumDyy := sumDyy + dyt * dyt
+            sumDyx := sumDyx + dxt * dyt
+            sumDev := sumDev + lSrc * lSrc
+            sumDev
+        float unStdDev = math.sqrt(sumDev / period_1) // unbiased
+        float divisor = sumDxx * sumDyy
+        float pearsonR = nz(sumDyx / math.sqrt(divisor))
+        [unStdDev, pearsonR, slope, intercept]
+    else
+        [na, na, na, na]
+
+string t1 = 'In Long-Term Channel mode, if the channel is not visible, scroll back on the chart for additional historical data. To view both Short-Term and Long-Term channels simultaneously, load this indicator twice on your chart.'
+string t2 = 'Displays the length of the period automatically selected by the indicator that shows the strongest trend. This period is determined by identifying the highest correlation between price movements and trend direction.'
+string t3 = 'Pearson\'s R is a statistical measure that evaluates the linear relationship between price movements and trend projection. A value closer to 1 indicates a strong positive correlation, increasing confidence in the trend direction based on historical data.'
+string t4 = 'Displays the annualized return (CAGR) of the trend over the auto-selected period. This feature is available only for daily (D) and weekly (W) timeframes, providing insight into the expected yearly growth rate if the trend continues.'
+
+sourceInput = input.source(close, title = 'Source')
+
+string group0 = 'CHANNEL SETTINGS'
+bool periodMode = input.bool(false, 'Use Long-Term Channel', group = group0, tooltip = t1)
+float devMultiplier = input.float(2.0, 'Deviation Multiplier:', group = group0, step = 0.1)
+color colorInput = input.color(color.gray, '', group = group0, inline = group0)
+string lineStyle1 = input.string('Solid', '', group = group0, inline = group0, options = ['Solid', 'Dotted', 'Dashed'])
+string extendStyle = input.string('Extend Right', '', group = group0, inline = group0, options = ['Extend Right', 'Extend Both', 'Extend None', 'Extend Left'])
+int fillTransparency = input.int(93, 'Fill Transp:', group = group0, inline = 'mid', minval = 0, maxval = 100, step = 1)
+int channelTransparency = input.int(40, 'Line Transp:', group = group0, inline = 'mid', minval = 0, maxval = 100, step = 1)
+
+string group1 = 'MIDLINE SETTINGS'
+color colorInputMidline = input.color(color.blue, '', group = group1, inline = group1)
+int transpInput = input.int(100, 'Transp:', group = group1, inline = group1, minval = 0, maxval = 100, step = 10)
+int lineWidth = input.int(1, 'Line Width:', group = group1, inline = group1)
+string midLineStyle = input.string('Dashed', '', group = group1, inline = group1, options = ['Dotted', 'Solid', 'Dashed'])
+
+string group2 = 'TABLE SETTINGS'
+bool showAutoSelectedPeriod = input(true, 'Show Auto-Selected Period', group = group2, tooltip = t2)
+bool showTrendStrength = input(true, 'Show Trend Strength', group = group2, inline = 'secondLine')
+bool showPearsonInput = input.bool(false, 'Show Pearson\'s R', group = group2, inline = 'secondLine', tooltip = t3)
+bool showTrendAnnualizedReturn = input(true, 'Show Trend Annualized Return', group = group2, tooltip = t4)
+string tablePositionInput = input.string('Bottom Right', 'Table Position', options = ['Bottom Right', 'Bottom Left', 'Middle Right', 'Middle Left', 'Top Right', 'Top Left', 'Top Center', 'Bottom Center'], group = group2, inline = 'fourthLine')
+string textSizeInput = input.string('Normal', 'Text Size', options = ['Normal', 'Large', 'Small'], group = group2, inline = 'fourthLine')
+
+// Helper function to get the multiplier based on timeframe
+get_tf_multiplier() =>
+    var float multiplier = 1.0
+    if syminfo.type == 'crypto'
+        if timeframe.isdaily
+            multiplier := 365 // ~365 trading days per year
+            multiplier
+        else if timeframe.isweekly
+            multiplier := 52 // 52 weeks per year
+            multiplier
+        multiplier
+    else // Default for stocks and other asset types
+        if timeframe.isdaily
+            multiplier := 252 // ~252 trading days per year
+            multiplier
+        else if timeframe.isweekly
+            multiplier := 52 // 52 weeks per year
+            multiplier
+        multiplier
+
+// Helper function to check if the timeframe is daily or weekly
+is_valid_timeframe() =>
+    timeframe.isdaily or timeframe.isweekly
+
+var string EXTEND_STYLE = switch extendStyle
+    'Extend Right' => extend.right
+    'Extend Both' => extend.both
+    'Extend None' => extend.none
+    => extend.left
+
+// Length Inputs
+var array<int> Periods = periodMode ? array.from(na, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1050, 1100, 1150, 1200) : array.from(na, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200)
+
+// Calculate deviations, correlation, slope, and intercepts for different lengths
+[stdDev01, pearsonR01, slope01, intercept01] = calcDev(sourceInput, Periods.get(1))
+[stdDev02, pearsonR02, slope02, intercept02] = calcDev(sourceInput, Periods.get(2))
+[stdDev03, pearsonR03, slope03, intercept03] = calcDev(sourceInput, Periods.get(3))
+[stdDev04, pearsonR04, slope04, intercept04] = calcDev(sourceInput, Periods.get(4))
+[stdDev05, pearsonR05, slope05, intercept05] = calcDev(sourceInput, Periods.get(5))
+[stdDev06, pearsonR06, slope06, intercept06] = calcDev(sourceInput, Periods.get(6))
+[stdDev07, pearsonR07, slope07, intercept07] = calcDev(sourceInput, Periods.get(7))
+[stdDev08, pearsonR08, slope08, intercept08] = calcDev(sourceInput, Periods.get(8))
+[stdDev09, pearsonR09, slope09, intercept09] = calcDev(sourceInput, Periods.get(9))
+[stdDev10, pearsonR10, slope10, intercept10] = calcDev(sourceInput, Periods.get(10))
+[stdDev11, pearsonR11, slope11, intercept11] = calcDev(sourceInput, Periods.get(11))
+[stdDev12, pearsonR12, slope12, intercept12] = calcDev(sourceInput, Periods.get(12))
+[stdDev13, pearsonR13, slope13, intercept13] = calcDev(sourceInput, Periods.get(13))
+[stdDev14, pearsonR14, slope14, intercept14] = calcDev(sourceInput, Periods.get(14))
+[stdDev15, pearsonR15, slope15, intercept15] = calcDev(sourceInput, Periods.get(15))
+[stdDev16, pearsonR16, slope16, intercept16] = calcDev(sourceInput, Periods.get(16))
+[stdDev17, pearsonR17, slope17, intercept17] = calcDev(sourceInput, Periods.get(17))
+[stdDev18, pearsonR18, slope18, intercept18] = calcDev(sourceInput, Periods.get(18))
+[stdDev19, pearsonR19, slope19, intercept19] = calcDev(sourceInput, Periods.get(19))
+
+if barstate.islast
+    // Find the highest Pearson's R
+    float highestPearsonR = math.max(pearsonR01, pearsonR02, pearsonR03, pearsonR04, pearsonR05, pearsonR06, pearsonR07, pearsonR08, pearsonR09, pearsonR10, pearsonR11, pearsonR12, pearsonR13, pearsonR14, pearsonR15, pearsonR16, pearsonR17, pearsonR18, pearsonR19)
+
+    // Determine selected length, slope, intercept, and deviations
+    int detectedPeriod = na
+    float detectedSlope = na
+    float detectedIntrcpt = na
+    float detectedStdDev = na
+    switch highestPearsonR 
+        pearsonR01 => 
+    	    detectedPeriod := Periods.get(1)
+    	    detectedSlope := slope01
+    	    detectedIntrcpt := intercept01
+    	    detectedStdDev := stdDev01
+    	    detectedStdDev
+        pearsonR02 => 
+    	    detectedPeriod := Periods.get(2)
+    	    detectedSlope := slope02
+    	    detectedIntrcpt := intercept02
+    	    detectedStdDev := stdDev02
+    	    detectedStdDev
+        pearsonR03 => 
+    	    detectedPeriod := Periods.get(3)
+    	    detectedSlope := slope03
+    	    detectedIntrcpt := intercept03
+    	    detectedStdDev := stdDev03
+    	    detectedStdDev
+        pearsonR04 => 
+    	    detectedPeriod := Periods.get(4)
+    	    detectedSlope := slope04
+    	    detectedIntrcpt := intercept04
+    	    detectedStdDev := stdDev04
+    	    detectedStdDev
+        pearsonR05 => 
+    	    detectedPeriod := Periods.get(5)
+    	    detectedSlope := slope05
+    	    detectedIntrcpt := intercept05
+    	    detectedStdDev := stdDev05
+    	    detectedStdDev
+        pearsonR06 => 
+    	    detectedPeriod := Periods.get(6)
+    	    detectedSlope := slope06
+    	    detectedIntrcpt := intercept06
+    	    detectedStdDev := stdDev06
+    	    detectedStdDev
+        pearsonR07 => 
+    	    detectedPeriod := Periods.get(7)
+    	    detectedSlope := slope07
+    	    detectedIntrcpt := intercept07
+    	    detectedStdDev := stdDev07
+    	    detectedStdDev
+        pearsonR08 => 
+    	    detectedPeriod := Periods.get(8)
+    	    detectedSlope := slope08
+    	    detectedIntrcpt := intercept08
+    	    detectedStdDev := stdDev08
+    	    detectedStdDev
+        pearsonR09 => 
+    	    detectedPeriod := Periods.get(9)
+    	    detectedSlope := slope09
+    	    detectedIntrcpt := intercept09
+    	    detectedStdDev := stdDev09
+    	    detectedStdDev
+        pearsonR10 => 
+    	    detectedPeriod := Periods.get(10)
+    	    detectedSlope := slope10
+    	    detectedIntrcpt := intercept10
+    	    detectedStdDev := stdDev10
+    	    detectedStdDev
+        pearsonR11 => 
+    	    detectedPeriod := Periods.get(11)
+    	    detectedSlope := slope11
+    	    detectedIntrcpt := intercept11
+    	    detectedStdDev := stdDev11
+    	    detectedStdDev
+        pearsonR12 => 
+    	    detectedPeriod := Periods.get(12)
+    	    detectedSlope := slope12
+    	    detectedIntrcpt := intercept12
+    	    detectedStdDev := stdDev12
+    	    detectedStdDev
+        pearsonR13 => 
+    	    detectedPeriod := Periods.get(13)
+    	    detectedSlope := slope13
+    	    detectedIntrcpt := intercept13
+    	    detectedStdDev := stdDev13
+    	    detectedStdDev
+        pearsonR14 => 
+    	    detectedPeriod := Periods.get(14)
+    	    detectedSlope := slope14
+    	    detectedIntrcpt := intercept14
+    	    detectedStdDev := stdDev14
+    	    detectedStdDev
+        pearsonR15 => 
+    	    detectedPeriod := Periods.get(15)
+    	    detectedSlope := slope15
+    	    detectedIntrcpt := intercept15
+    	    detectedStdDev := stdDev15
+    	    detectedStdDev
+        pearsonR16 => 
+    	    detectedPeriod := Periods.get(16)
+    	    detectedSlope := slope16
+    	    detectedIntrcpt := intercept16
+    	    detectedStdDev := stdDev16
+    	    detectedStdDev
+        pearsonR17 => 
+    	    detectedPeriod := Periods.get(17)
+    	    detectedSlope := slope17
+    	    detectedIntrcpt := intercept17
+    	    detectedStdDev := stdDev17
+    	    detectedStdDev
+        pearsonR18 => 
+    	    detectedPeriod := Periods.get(18)
+    	    detectedSlope := slope18
+    	    detectedIntrcpt := intercept18
+    	    detectedStdDev := stdDev18
+    	    detectedStdDev
+        =>  // pearsonR19
+    	    detectedPeriod := Periods.get(19)
+    	    detectedSlope := slope19
+    	    detectedIntrcpt := intercept19
+    	    detectedStdDev := stdDev19
+    	    detectedStdDev
+
+    var line upperLine = na
+    var linefill upperFill = na
+    var line baseLine = na
+    var line lowerLine = na
+    var linefill lowerFill = na
+
+    // Calculate start and end price based on detected slope and intercept
+    float startPrice = math.exp(detectedIntrcpt + detectedSlope * (detectedPeriod - 1))
+    float endPrice = math.exp(detectedIntrcpt)
+
+    int startAtBar = bar_index - detectedPeriod + 1
+    var color ChannelColor = color.new(colorInput, channelTransparency)
+
+    if na(baseLine)
+        baseLine := line.new(startAtBar, startPrice, bar_index, endPrice, width = lineWidth, extend = EXTEND_STYLE, color = color.new(colorInputMidline, transpInput), style = midLineStyle == 'Dotted' ? line.style_dotted : midLineStyle == 'Dashed' ? line.style_dashed : line.style_solid)
+        baseLine
+    else
+        line.set_xy1(baseLine, startAtBar, startPrice)
+        line.set_xy2(baseLine, bar_index, endPrice)
+
+    float upperStartPrice = startPrice * math.exp(devMultiplier * detectedStdDev)
+    float upperEndPrice = endPrice * math.exp(devMultiplier * detectedStdDev)
+    if na(upperLine)
+        upperLine := line.new(startAtBar, upperStartPrice, bar_index, upperEndPrice, width = 1, extend = EXTEND_STYLE, color = ChannelColor, style = lineStyle1 == 'Dotted' ? line.style_dotted : lineStyle1 == 'Dashed' ? line.style_dashed : line.style_solid)
+        upperLine
+    else
+        line.set_xy1(upperLine, startAtBar, upperStartPrice)
+        line.set_xy2(upperLine, bar_index, upperEndPrice)
+        line.set_color(upperLine, colorInput)
+
+    float lowerStartPrice = startPrice / math.exp(devMultiplier * detectedStdDev)
+    float lowerEndPrice = endPrice / math.exp(devMultiplier * detectedStdDev)
+    if na(lowerLine)
+        lowerLine := line.new(startAtBar, lowerStartPrice, bar_index, lowerEndPrice, width = 1, extend = EXTEND_STYLE, color = ChannelColor, style = lineStyle1 == 'Dotted' ? line.style_dotted : lineStyle1 == 'Dashed' ? line.style_dashed : line.style_solid)
+        lowerLine
+    else
+        line.set_xy1(lowerLine, startAtBar, lowerStartPrice)
+        line.set_xy2(lowerLine, bar_index, lowerEndPrice)
+        line.set_color(lowerLine, colorInput)
+
+    if na(upperFill)
+        upperFill := linefill.new(upperLine, baseLine, color = color.new(colorInput, fillTransparency))
+        upperFill
+    if na(lowerFill)
+        lowerFill := linefill.new(baseLine, lowerLine, color = color.new(colorInput, fillTransparency))
+        lowerFill
+
+    var table t = na
+    if periodMode
+        t := table.new(position.bottom_center, 2, 3)
+        t
+    else
+        t := table.new(getTablePosition(tablePositionInput), 2, 3)
+        t
+
+    string text1 = periodMode ? 'Auto-Selected Period (Long Term): ' + str.tostring(detectedPeriod) : 'Auto-Selected Period: ' + str.tostring(detectedPeriod)
+    var colorInputLight = color.new(colorInput, 0)
+
+    // Display or hide the "Auto-Selected Period" cell
+    if showAutoSelectedPeriod
+        table.cell(t, 0, 0, text1, text_color = colorInputLight, text_size = textSizeInput == 'Large' ? size.large : textSizeInput == 'Small' ? size.small : size.normal)
+
+    // Display or hide the "Trend Strength" or "Pearson's R" cell
+    if showTrendStrength
+        if showPearsonInput
+            table.cell(t, 0, 1, 'Pearson\'s R: ' + str.tostring(detectedSlope > 0.0 ? -highestPearsonR : highestPearsonR, '#.###'), text_color = colorInput, text_size = textSizeInput == 'Large' ? size.large : textSizeInput == 'Small' ? size.small : size.normal)
+        else
+            table.cell(t, 0, 1, 'Trend Strength: ' + confidence(highestPearsonR), text_color = colorInput, text_size = textSizeInput == 'Large' ? size.large : textSizeInput == 'Small' ? size.small : size.normal)
+
+    // Calculate CAGR
+    float cagr = na
+    if not na(detectedPeriod) and bar_index >= detectedPeriod and is_valid_timeframe()
+        float num_of_periods = detectedPeriod
+        float multiplier = get_tf_multiplier()
+        float startClosePrice = close[detectedPeriod - 1]
+        cagr := math.pow(close / startClosePrice, multiplier / num_of_periods) - 1
+        cagr
+
+    // Display or hide the "Trend Annualized Return" cell
+    if showTrendAnnualizedReturn and is_valid_timeframe()
+        table.cell(t, 0, 2, 'Trend Annualized Return: ' + (not na(cagr) ? str.tostring(cagr * 100, '#.#') + '%' : 'N/A'), text_color = colorInput, text_size = textSizeInput == 'Large' ? size.large : textSizeInput == 'Small' ? size.small : size.normal)

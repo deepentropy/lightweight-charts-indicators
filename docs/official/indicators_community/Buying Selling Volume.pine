@@ -1,0 +1,56 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ceyhun
+
+//@version=4
+study("Buying Selling Volume",format=format.volume, precision=0,overlay=false)
+
+barColorsOnPrevClose = input(title="Color bars based on previous close", type=input.bool, defval=false)
+Barcolor= input(false,title="Buy Sell Volume Barcolor")
+vi = input(false, title="Volume Index",type=input.bool)
+VNBarcolor=input(false,title="Volume Index Barcolor")
+Vnlen=input(1,title="Volume Index length")
+
+// BUYING VOLUME AND SELLING VOLUME //
+BV = iff( (high==low), 0, volume*(close-low)/(high-low))
+SV = iff( (high==low), 0, volume*(high-close)/(high-low))
+
+vol = iff(volume > 0, volume, 1)
+
+TP = BV + SV
+// RAW Pressure Volume Calculations
+BPV = BV / TP * vol
+SPV = SV / TP * vol
+TPV = BPV + SPV
+
+// Karthik Marar's Pressure Volume Normalized Version (XeL-MOD.)
+VN = vol / ema(vol,20)
+BPN = BV / ema(BV,20) * VN * 100
+SPN = SV / ema(SV,20) * VN * 100
+TPN = BPN + SPN
+
+// Conditional Selectors for RAW/Norm
+BPc1 = BPV > SPV ? BPV : -abs(BPV)
+BPc2 = BPN > SPN ? BPN : -abs(BPN)
+SPc1 = SPV > BPV ? SPV : -abs(SPV)
+SPc2 = SPN > BPN ? SPN : -abs(SPN)
+BPcon = vi ? BPc2 : BPc1
+SPcon = vi ? SPc2 : SPc1
+
+palette = barColorsOnPrevClose ? close[1] > close ? color.new(color.red,70) : color.new(color.green,70) : open > close ? color.new(color.red,70) : color.new(color.green,70)
+plot(vi ? na : volume, color = palette, style=plot.style_columns, linewidth=3,title="Volume")
+
+plot(vi ? na : BPcon,title="BuyVolume",color=color.new(color.green,10),style=plot.style_columns)
+plot(vi ? na : SPcon,title="SellVolume",color=color.new(color.red,10),style=plot.style_columns)
+
+colors=(BPcon>SPcon ? color.blue : BPcon<SPcon ? color.purple:color.gray)
+barcolor(Barcolor ? colors : na)
+
+BuyVolumePercent=100*BV/(BV+SV)
+SellVolumePercent=100*SV/(BV+SV)
+
+plot(vi ? na : BuyVolumePercent,title="BuyVolume%",color=color.green,style=plot.style_circles)
+plot(vi ? na : SellVolumePercent,title="SellVolume%",color=color.red,style=plot.style_circles)
+
+VNcolors=(VN>Vnlen and close > open ? #00ffff : VN>Vnlen and close < open ?  color.new(color.gray,10) : color.new(color.yellow,10))
+plot(VN,title="VolumeIndex",color=VNcolors,style=plot.style_columns)
+barcolor(VNBarcolor ? VNcolors :na)

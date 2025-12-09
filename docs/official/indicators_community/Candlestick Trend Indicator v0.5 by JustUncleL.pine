@@ -1,0 +1,257 @@
+//@version2
+// Name: Candlestick Trend Indicator v0.5 by JustUncleL
+// By: JustUncleL
+// Date: 12-Aug-2016
+// Version: v0.5
+//
+// Description:
+//   This is a trend following indicator+stategy for Binary Options
+//   based on Candlestick patterns and trend line - 
+//   NOTE: original system was a forex trading system.
+//   This code combines a number of indicators to create an overall
+//   trading strategy.
+//   The indicator recognises and displays some useful candle named 
+//   defined patterns that are used to support trend continuation:
+//   - Bearish + Bullish PinBars
+//   - Dark Cloud Cover
+//   - Piecing Line
+//   - Bullish + Bearish Harami
+//   - Bullish + Bearish Engulfing Candle
+//   - Bullish + Bearish Fractal S/R break
+//   Also recognises price action candles from ChrisMoody (CM),
+//   Four(4) price action patterns colored bars:
+//   Yellow = Inside Bar - breakout/continuance 
+//   Orange = Outside Bar - breakout/continuance
+//   Aqua/Fuschia = Up/Down Shaved Bars - Buying/Selling pressure
+//   Red/Green = Possible reversal PinBars - Reverse Down / reverse Up.
+//
+//   The highlighted candles (maroon and darker green) are the
+//   other patterns that are confirmed bars following the current 
+//   trend direction that is indicated by the Hull MA(20) line
+//   (can select a different type of MA) and confirmed by MACD direction.
+//   An alert generated for the alert condition of the alarming system.
+//   The fractal upper/lower break lines are also draw, if the last
+//   fractal break line is broken by a highlighted bar then this
+//   indicates a stronger trend conformation.
+//   The MACD indicator MACD DEUTER 2 colour(12,26,9) you can visually see the MACD histogram
+//   colours with MACD direction - needs "MACD DEUTER 2 colour" indicator.
+//
+//   This multi-indicator set up is suitable for 1hr, 4hr and daily charts 
+//   with 1-4 candle expiry.
+//   
+// references:
+//   - [RS]Fractal Levels  by RicardoSantos
+//   - Almost Zero Lag EMA [LazyBear]
+//   - Candlestick Patterns With EMA by rmwaddelljr
+//   - CM_Price-Action-Bars by ChrisMoody
+//   - http://www.forexstrategiesresources.com/candlestick-forex-strategies/1-candlestick-trend/
+//  - "Scalp Jockey - MTF MA Cross Visual Strategizer by JayRogers"
+//
+// Modifications:
+//  0.5   Added Option to select what pattern types will be displayed
+//        and used in setting the confirmed alert condition. 
+//        Added option to select a different moving average type. (31-Oct-16)
+//        Modified some default settings, using HullMA instead of Zero Lag MA
+//        and standard MACD settings(12,26,9).
+//  0.4.1 Added fractal break as a named Price Action bar. (21-Oct-16)
+//  0.4 - Corrected input double up on Reversal Pin Bars.
+//        Added optional coloured Circle dots at bottom of screen to indicate when
+//        alert condition is set, only after bar closed.
+//        Added optional MACD filtering on alert condition, saves checking alert against
+//        MACD histogram.
+//  0.3 - Corrected PinBar calculation for trend direction support.
+//        Modified Engulfing and Harami candles calculatios to be more accurately identified.
+//        Added optional reversal pin bars (red/green bars), so possible change in 
+//        direction can be identified, this not part of the original alert though.
+//        Added option to show only bar patterns that are supporting current trend.
+//        Added option to enable Price action bars individually.
+//        Returned Dark Cloud Cover, Piecing Line and Pin Bars back into the named
+//        candle patterns.
+//  0.2 - Removed all candle patterns except Harami and Engulfing candle patterns.
+//        Added and highlighted price action candles from CM for extra indication.
+//        Changed default ZEMA length from 15 to 20.
+//        Bug fixes. (14-Aug-2016)
+//  0.1 - original beta release.
+//
+study(title="Candlestick Trend Indicator v0.5 by JustUncleL", shorttitle="CDLTRD v0.5 by JustUncleL", overlay=true, scale=scale.right)
+//
+// this section based on Almost Zero Lag EMA [LazyBear]
+// Fast MA - type, length
+matype   = input(defval="HullMA", title="Fast MA Type: SMA, EMA, WMA, VWMA, SMMA, DEMA, TEMA, HullMA, TMA, ZEMA ( case sensitive )", type=string)
+malength = input(defval=20, title="Moving Average Length", minval=1)
+src      = input(close,title="Moving average Source")
+
+// Returns MA input selection variant, default to SMA if blank or typo.
+variant(type, src, len) =>
+    v1 = sma(src, len)                                                  // Simple
+    v2 = ema(src, len)                                                  // Exponential
+    v3 = wma(src, len)                                                  // Weighted
+    v4 = vwma(src, len)                                                 // Volume Weighted
+    v5 = na(v5[1]) ? sma(src, len) : (v5[1] * (len - 1) + src) / len    // Smoothed
+    v6 = 2 * v2 - ema(v2, len)                                          // Double Exponential
+    v7 = 3 * (v2 - ema(v2, len)) + ema(ema(v2, len), len)               // Triple Exponential
+    v8 = wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len)))   // Hull
+    ema1 = ema(src, len)
+    ema2 = ema(ema1, len)
+    v10 = ema1+(ema1-ema2)                                              // Zero Lag Exponential
+    v11 = sma(sma(src,len),len)                                         // Trianglular
+    // return variant, defaults to SMA if input invalid.
+    type=="EMA"?v2 : type=="WMA"?v3 : type=="VWMA"?v4 : type=="SMMA"?v5 : type=="DEMA"?v6 : type=="TEMA"?v7 : type=="HullMA"?v8 : type=="ZEMA"?v10 : type=="TMA"?v11 : v1
+
+// Calculate selected MA and get direction of trend from it.
+zlema= variant(matype,src,malength)
+col =  zlema > zlema[1] ? green : red
+up = zlema > zlema[1] ? 1 : 0
+down = zlema < zlema[1] ? 1 : 0
+plot(zlema,color=col, style=line, linewidth=4, transp=0)
+
+// Find all Fractals.
+// This section based on [RS]Fractal Levels  by RicardoSantos
+hidefractals = input(false)
+hidelevels = input(false)
+topfractal = high[2] > high[1] and high[2] > high and high[2] > high[3] and high[2] > high[4]
+botfractal = low[2] < low[1] and low[2] < low and low[2] < low[3] and low[2] < low[4]
+
+plotshape(hidefractals ? na : topfractal, color=green, transp=0, style=shape.triangleup, location=location.abovebar, offset=-2, size=size.tiny)
+plotshape(hidefractals ? na : botfractal, color=red, transp=0, style=shape.triangledown, location=location.belowbar, offset=-2, size=size.tiny)
+
+topfractals = topfractal ? high[2] : topfractals[1]
+botfractals = botfractal ? low[2] : botfractals[1]
+
+topfcolor = topfractals != topfractals[1] ? na : green
+botfcolor = botfractals != botfractals[1] ? na : red
+
+plot(hidelevels ? na : topfractals, color=topfcolor, transp=0, linewidth=2)
+plot(hidelevels ? na : botfractals, color=botfcolor, transp=0, linewidth=2)
+
+//
+// This section based on Candlestick Patterns With EMA by rmwaddelljr
+//
+ufb  = input(false, title="Use Fractal S/R Cross Patterns")
+udc  = input(true, title="Use Dark Cloud Cover Patterns" )
+upl  = input(true, title="Use Piecing Line Patterns" )
+ube  = input(true, title="Use Engulfing Candle Patterns" )
+ubh  = input(true, title="Use Harami Candle Patterns" )
+upb  = input(true,  title="Use Defined PinBar Patterns")
+pctP = input(66, minval=1, maxval=99, title="Directional PBars, % of Range of Candle the Long Wick Has To Be")
+// This section based on CM_Price-Action-Bars by ChrisMoody
+// Change the pin bar calculation, so can be used for market direction.
+urpb= input(false, title="Use CM Price Action Reversal Pin Bars")
+usb = input(false, title="Use CM Price Action Shaved Bars")
+uob = input(false, title="Use CM Price Action Outside Bars")
+uib = input(false, title="Use CM Price Action Inside Bars")
+pctRP = input(72, minval=1, maxval=99, title="CM Reversal PBars, % of Range of Candle the Long Wick Has To Be")
+pctS = input(5, minval=1, maxval=99, title="CM Shaved Bars, % of Range it Has To Close On The Lows or Highs")
+pblb =input(6,minval=1,title="CM Reversal Pin Bar Lookback Length")
+//
+stnd = input(true, title="Alert Only Patterns Following Trend")
+//
+// Get MACD for Alert Filtering
+umacd  = input(true,title="Alert Only Patterns Confirmed by MACD")
+fastMA = input(title="MACD Fast MA Length", type = integer, defval = 12, minval = 2)
+slowMA = input(title="MACD Slow MA Length", type = integer, defval = 26, minval = 7)
+signal = input(title="MACD Signal Length",type=integer,defval=9,minval=1)
+
+//
+sgb = input(false, title="Check Box To Turn Bars Gray")
+salc = input(true, title="Show Alert condition Dot")
+//
+[currMacd,_,_] = macd(close[0], fastMA, slowMA, signal)
+[prevMacd,_,_] = macd(close[1], fastMA, slowMA, signal)
+plotColor = currMacd > 0 
+    ? currMacd > prevMacd ? green : red
+    : currMacd < prevMacd ? red : green
+
+// Show alert on this bar?
+sbarUp = (not umacd or plotColor==green) and (not stnd or up)
+sbarDn = (not umacd or plotColor==red) and (not stnd or down)
+
+//PBar Percentages
+pctCp = pctP * .01
+
+//Shaved Bars Percentages
+pctCs = pctS * .01
+pctSPO = pctCs
+//ma50 = sma(close,50)
+
+range = high - low
+
+///Reversal PinBars
+pctCRp = pctRP * .01
+pctCRPO = 1 - pctCRp
+//
+//pBarRUp= upb and open<close and open > high - (range * pctCRPO) and close > high - (range * pctCRPO) and low <= lowest(pblb) ? 1 : 0
+//pBarRDn = upb and open>close and open < high - (range *  pctCRp) and close < high-(range * pctCRp) and high >= highest(pblb) ? 1 : 0
+pBarRUp = urpb and  open > high - (range * pctCRPO) and close > high - (range * pctCRPO) and low <= lowest(pblb) ? 1 : 0
+pBarRDn = urpb and  open < high - (range *  pctCRp) and close < high-(range * pctCRp) and high >= highest(pblb) ? 1 : 0
+
+//Shaved Bars filter to the MA50 line
+sBarUp   = usb and (close >= (high - (range * pctCs))) // and close>ma50 
+sBarDown = usb and (close <= (low + (range * pctCs)))  // and close<ma50
+
+//Inside Bars
+insideBarUp = uib and (high < high[1] and low > low[1])
+insideBarDn = uib and (high < high[1] and low > low[1])
+outsideBarUp= uob and (high > high[1] and low < low[1])
+outsideBarDn= uob and (high > high[1] and low < low[1])
+
+// PinBars representing possible change in trend direction
+barcolor(pBarRUp ? green : na)
+barcolor(pBarRDn ? red : na)
+
+//Shaved Bars
+barcolor(sBarDown ? fuchsia : na)
+barcolor(sBarUp   ? aqua : na)
+
+//Inside and Outside Bars
+barcolor((insideBarUp or insideBarDn)? yellow : na )
+barcolor((outsideBarUp or outsideBarDn) ? orange : na )
+
+
+//Long shadow PinBars supporting market direction
+///PinBars Long Upper Shadow represent selling pressure
+pBarDn = upb and open < high - (range * pctCp) and close < high - (range * pctCp)
+plotshape(pBarDn and (not pBarRUp and not pBarRDn), title= "Bearish Pin Bar",  color=red, style=shape.arrowdown, text="Bearish\nPinBar")
+///PinBars with Long Lower Shadow represent buying pressure
+pBarUp = upb and open > low + (range * pctCp) and close > low + (range * pctCp)
+plotshape(pBarUp and (not pBarRUp and not pBarRDn),  title= "Bullish Pin Bar", location=location.belowbar, color=green, style=shape.arrowup, text="Bullish\nPinBar")
+
+dcc = udc and (close[1]>open[1] and abs(close[1]-open[1])/range[1]>=0.7 and close<open and abs(close-open)/range>=0.7 and open>=close[1] and close>open[1] and close<((open[1]+close[1])/2))
+plotshape(dcc, title="Dark Cloud Cover",text='DarkCloud\nCover',color=red, style=shape.arrowdown,location=location.abovebar)
+
+pln= upl and (close[1]<open[1] and abs(open[1]-close[1])/range[1]>=0.7 and close>open and abs(close-open)/range>=0.7 and open<=close[1] and close<open[1] and close>((open[1]+close[1])/2))
+plotshape(pln, title="Piercieng Line",text="Piercing\nLine",color=green, style=shape.arrowup,location=location.belowbar)
+
+beh = ubh and (close[1] > open[1] and open > close and open <= close[1] and low >= open[1] and open - close < close[1] - open[1] and (high < high[1] and low > low[1]))
+plotshape(beh and not dcc, title= "Bearish Harami",  color=red, style=shape.arrowdown, text="Bear\nHarami")
+
+blh = ubh and (open[1] > close[1] and close > open and close <= open[1] and high <= open[1] and close - open < open[1] - close[1] and (high < high[1] and low > low[1]))
+plotshape(blh and not pln,  title= "Bullish Harami", location=location.belowbar, color=green, style=shape.arrowup, text="Bull\nHarami")
+
+bee = ube and (close[1] > open[1] and close < open and close<=low[1] and open>= close[1])
+plotshape(bee,  title= "Bearish Engulfing", color=red, style=shape.arrowdown, text="Bearish\nEngulf")
+
+ble = ube and (close[1] < open[1] and close > open and close >= high[1] and open<=close[1])
+plotshape(ble, title= "Bullish Engulfing", location=location.belowbar, color=green, style=shape.arrowup, text="Bullish\nEngulf")
+
+blfr = ufb and crossover(close,topfractals)
+plotshape(blfr and not ble and not blh and not sBarUp, title= "Bullish Fractal Cross", location=location.belowbar, color=green, style=shape.arrowup, text="Fractal\nCross")
+befr = ufb and crossunder(close,botfractals) 
+plotshape(befr and not bee and not beh and not sBarDown,  title= "Bearish Fractal Cross", color=red, style=shape.arrowdown, text="Fractal\nCross")
+
+//
+bcolorDn = sbarDn and not(pBarRDn or pBarRUp or sBarDown or insideBarDn or outsideBarDn) and (beh or bee or dcc or befr or pBarDn)
+bcolorUp = sbarUp and not(pBarRDn or pBarRUp or sBarUp or insideBarUp or outsideBarUp) and (blh or ble or pln or blfr or pBarUp)
+barcolor(bcolorDn ? maroon : na)
+barcolor(bcolorUp ? lime : na)
+//
+barcolor(sgb and close ? gray : na)
+
+//
+barAlertDn = (sbarDn and (befr or bee or beh or pBarDn  or dcc)) or (sbarDn and (insideBarDn or outsideBarDn or sBarDown)) or pBarRDn
+barAlertUp = (sbarUp and (blfr or ble or blh or pBarUp  or pln)) or (sbarUp and (insideBarUp or outsideBarUp or sBarUp))  or pBarRUp
+barAlert = barAlertDn or barAlertUp
+alertcondition(barAlert,title="CDLTRD Alert", message="CDLTRD Bar Alert")
+// show only when alert condition is met and bar closed.
+plotshape(salc and barAlert[1],title= "Alert Indicator Closed", location=location.bottom, color=barAlertDn[1]?red:green, transp=0, style=shape.circle,offset=-1)
+//EOF

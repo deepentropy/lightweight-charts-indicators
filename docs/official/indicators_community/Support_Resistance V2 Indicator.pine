@@ -1,0 +1,86 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BarsStallone
+// Code update provided by @christofferka
+//@version=5
+ 
+indicator("Support/Resistance", shorttitle="S/R", overlay=true, max_lines_count = 500)
+//Support and Resistance
+line_width = 3
+sr_tf = input.timeframe('', title='S/R Timeframe')
+ 
+//Legacy RSI calc
+rsi_src = close
+len = 9
+up1 = ta.rma(math.max(ta.change(rsi_src), 0), len)
+down1 = ta.rma(-math.min(ta.change(rsi_src), 0), len)
+legacy_rsi = down1 == 0 ? 100 : up1 == 0 ? 0 : 100 - 100 / (1 + up1 / down1)
+ 
+//CMO based on HMA
+length1 = 1
+src1 = ta.hma(open, 5)[1]  // legacy hma(5) calculation gives a resul with one candle shift, thus use hma()[1]
+src2 = ta.hma(close, 12)
+momm1 = ta.change(src1)
+momm2 = ta.change(src2)
+f1(m, n) =>
+    m >= n ? m : 0.0
+f2(m, n) =>
+    m >= n ? 0.0 : -m
+m1 = f1(momm1, momm2)
+m2 = f2(momm1, momm2)
+sm1 = math.sum(m1, length1)
+sm2 = math.sum(m2, length1)
+percent(nom, div) =>
+    100 * nom / div
+cmo_new = percent(sm1 - sm2, sm1 + sm2)
+ 
+//Legacy Close Pivots calcs.
+len5 = 2
+h = ta.highest(len5)
+h1 = ta.dev(h, len5) ? na : h
+hpivot = fixnan(h1)
+l = ta.lowest(len5)
+l1 = ta.dev(l, len5) ? na : l
+lpivot = fixnan(l1)
+ 
+//Calc Values
+rsi_new = ta.rsi(close, 9)
+lpivot_new = lpivot 
+hpivot_new = hpivot
+ 
+sup = rsi_new < 25 and cmo_new > 50 and lpivot_new
+res = rsi_new > 75 and cmo_new < -50 and hpivot_new
+calcXup() =>
+    var xup = 0.0
+    xup := sup ? low : xup[1]
+    xup
+calcXdown() =>
+    var xdown = 0.0
+    xdown := res ? high : xdown[1]
+    xdown
+ 
+//Lines drawing variables
+tf1 = request.security(syminfo.tickerid, sr_tf, calcXup(), lookahead=barmerge.lookahead_on)
+tf2 = request.security(syminfo.tickerid, sr_tf, calcXdown(), lookahead=barmerge.lookahead_on)
+ 
+//SR Line plotting
+var tf1_line = line.new(0, 0, 0, 0)
+var tf1_bi_start = 0
+var tf1_bi_end = 0
+tf1_bi_start := ta.change(tf1) ? bar_index : tf1_bi_start[1]
+tf1_bi_end := ta.change(tf1) ? tf1_bi_start : bar_index
+if ta.change(tf1)
+    tf1_line := line.new(tf1_bi_start, tf1, tf1_bi_end, tf1, color=color.green, width=line_width)
+    tf1_line
+line.set_x2(tf1_line, tf1_bi_end)
+ 
+var tf2_line = line.new(0, 0, 0, 0)
+var tf2_bi_start = 0
+var tf2_bi_end = 0
+tf2_bi_start := ta.change(tf2) ? bar_index : tf2_bi_start[1]
+tf2_bi_end := ta.change(tf2) ? tf2_bi_start : bar_index
+if ta.change(tf2)
+    tf2_line := line.new(tf2_bi_start, tf2, tf2_bi_end, tf2, color=color.orange, width=line_width)
+    tf2_line
+line.set_x2(tf2_line, tf2_bi_end)
+ 
+alertcondition(ta.change(tf1) != 0 or ta.change(tf2) != 0 ,title="New S/R line", message = "New S/R line" )

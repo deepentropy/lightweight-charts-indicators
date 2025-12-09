@@ -1,0 +1,13 @@
+//@version=3
+study("Fibonacci Zone", overlay=true)
+per=input(21, "calculate for last ## bars")
+hl=highest(high,per) //High Line (Border)
+ll=lowest(low,per)   //Low Line  (Border)
+dist=hl-ll          //range of the channel    
+hf=hl-dist*0.236    //Highest Fibonacci line
+cfh=hl-dist*0.382    //Center High Fibonacci line
+cfl=hl-dist*0.618    //Center Low Fibonacci line
+lf=hl-dist*0.764     //Lowest Fibonacci line
+fill(plot(hl, title="high border"), plot(hf), color = #00FFFF) //up trend zone
+fill(plot(cfh), plot(cfl), color = gray)   // ranging zone
+fill(plot(ll, title="low border"), plot(lf), color=orange)   //down trend zone

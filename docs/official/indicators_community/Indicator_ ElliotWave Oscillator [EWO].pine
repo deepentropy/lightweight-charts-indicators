@@ -1,0 +1,7 @@
+//
+// @author LazyBear
+//
+study(title = "Elliot Wave Oscillator [LazyBear]", shorttitle="EWO_LB")
+s2=ema(close, 5) - ema(close, 35)
+c_color=s2 <= 0 ? red : lime
+plot(s2, color=c_color, style=histogram, linewidth=2)

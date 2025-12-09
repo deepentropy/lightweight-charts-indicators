@@ -1,0 +1,53 @@
+// © Dreadblitz
+//@version=4
+//
+study("BULL BEAR POWER TREND", shorttitle = "BBPT", overlay=false)
+//
+reg_trend_on = input(false, "Activate Reg Trend Line")
+length       = input(defval=8, title="🔹 Length Reg Trend line=", minval=1)
+//
+BullTrend_hist = 0.0
+BearTrend_hist = 0.0
+
+BullTrend = (close - lowest(low, 50)) / atr(5)
+BearTrend = (highest(high, 50) - close) / atr(5)
+BearTrend2= -1*BearTrend
+
+Trend = BullTrend - BearTrend
+
+hline(0, title='Nivel 0', color=#000000, linestyle=hline.style_solid, linewidth=1)
+niv_0=plot(0, title='Nivel 0"', color=#000000, linewidth=1, style=plot.style_line, transp=100)
+hline(2, title='Nivel 2', color=#008000, linestyle=hline.style_solid, linewidth=1)
+niv_2=plot(2, title='Nivel 2', color=#008000, linewidth=1, style=plot.style_line, transp=100)
+hline(-2, title='Nivel -2', color=#FF0000, linestyle=hline.style_solid, linewidth=1)
+niv_22=plot(-2, title='Nivel -2"', color=#FF0000, linewidth=1, style=plot.style_line, transp=100)
+
+a=plot(BullTrend, title='Bull Trend"', color=#008000, linewidth=2, style=plot.style_line, transp=0)
+b=plot(BearTrend2, title='Bear Trend"', color=#FF0000, linewidth=2, style=plot.style_line, transp=0)
+
+fill(a,niv_2, color=#008000, transp=50)
+fill(b,niv_22, color=#FF0000, transp=50)
+fill(niv_22,niv_2, color=color.white, transp=60)
+
+plot(reg_trend_on == false?Trend:na, title='Trend', color=#000000, linewidth=1, style=plot.style_line, transp=0)
+
+if BullTrend < 2
+    BullTrend_hist := BullTrend -2
+plot(BullTrend_hist, title='Bull Trend Hist', color=#FF0000, linewidth=1, style=plot.style_columns, transp=0)
+
+if BearTrend2 > -2
+    BearTrend_hist := BearTrend2 +2
+plot(BearTrend_hist, title='Bull Trend Hist', color=#008000, linewidth=1, style=plot.style_columns, transp=0)
+//alexgrover-Regression Line Formula
+x = bar_index
+y = Trend
+x_ = sma(x, length)
+y_ = sma(y, length)
+mx = stdev(x, length)
+my = stdev(y, length)
+c = correlation(x, y, length)
+slope = c * (my / mx)
+inter = y_ - slope * x_
+reg_trend = x * slope + inter
+//
+plot(reg_trend_on == true?reg_trend:na, title='Trend', color=#000000, linewidth=1, style=plot.style_line, transp=0)

@@ -1,0 +1,552 @@
+//@version=4
+//© shtcoinr, updated to v4 wijth additional zones and settings by Lij_MC
+study(title="RSI Supply/Demand", shorttitle="RSI S/D", overlay=true)
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+ShowSD1    = input(false, "Supply Demand Zone", group = "Supply Demand 1", inline = "Supply Demand 1")
+ShowSZ1    = input(false, "Support Zone",       group = "Supply Demand 1", inline = "Supply Demand 1")
+ShowRZ1    = input(false, "Resistance Zone",    group = "Supply Demand 1", inline = "Supply Demand 1")
+
+RSI1Length = input(7, minval=1, title="RSI 1 Length",                                                                            group="Supply Demand 1")
+RSI1OBOSIn = input(defval="70 / 30", title="OB / OS", options=["70 / 30", "75 / 25", "80 / 20", "85 / 15", "90 / 10", "95 / 5"], group="Supply Demand 1")
+NumberOfConfirmationBarsRSI1 = input(3, title="Confirmation Bars",                                                               group="Supply Demand 1")
+
+RSI1SDColorIn          = input(color.new(color.blue, 85), "Fill Colors - Supply Demand", type = input.color, group="Supply Demand 1", inline = "Fill 1")
+RSI1SupportColorIn     = input(color.new(color.lime, 92), "Support",                     type = input.color, group="Supply Demand 1", inline = "Fill 1")
+RSI1ResistanceColorIn  = input(color.new(color.red,  92), "Resistance",                  type = input.color, group="Supply Demand 1", inline = "Fill 1")
+
+
+RSI1       = rsi(close, RSI1Length)
+
+RSI1OB = RSI1OBOSIn == "70 / 30" ? 70 : 
+   RSI1OBOSIn == "75 / 25" ? 75 : RSI1OBOSIn == "80 / 20" ? 80 : 
+   RSI1OBOSIn == "90 / 10" ? 90 : RSI1OBOSIn == "95 / 5" ? 95 : 100
+RSI1OS = RSI1OBOSIn == "70 / 30" ? 30 : 
+   RSI1OBOSIn == "75 / 25" ? 25 : RSI1OBOSIn == "80 / 20" ? 20 : 
+   RSI1OBOSIn == "90 / 10" ? 10 : RSI1OBOSIn == "95 / 5" ? 5 : 0
+
+
+
+RSI1incrementer_up   = RSI1 > RSI1OB ? 1 : 0
+RSI1incrementer_down = RSI1 < RSI1OS ? 1 : 0
+RSI1incrementer_both = RSI1 > RSI1OB or RSI1 < RSI1OS ? 1 : 0
+
+
+RSI1rsx = 0
+
+
+if RSI1incrementer_both
+    RSI1rsx := nz(RSI1rsx[1], 0) + RSI1incrementer_both
+    RSI1rsx
+else
+    RSI1rsx = 0
+    RSI1rsx
+
+RSI1rxH = if RSI1rsx >= NumberOfConfirmationBarsRSI1
+    RSI1x = high
+    RSI1x
+RSI1rxL = if RSI1rsx >= NumberOfConfirmationBarsRSI1
+    RSI1y = low
+    RSI1y
+
+RSI1rH = fixnan(RSI1rxH)
+RSI1rL = fixnan(RSI1rxL)
+
+
+///////////////////////////////////////////////////////
+
+
+RSI1rsu = 0
+
+
+if RSI1incrementer_up
+    RSI1rsu := nz(RSI1rsu[1], 0) + RSI1incrementer_up
+    RSI1rsu
+else
+    RSI1rsu = 0
+    RSI1rsu
+
+
+RSI1rssH = if RSI1rsu >= NumberOfConfirmationBarsRSI1
+    RSI1x = high
+    RSI1x
+
+
+RSI1rssL = if RSI1rsu >= NumberOfConfirmationBarsRSI1
+    RSI1y = low
+    RSI1y
+
+RSI1ResistanceZoneHigh = fixnan(RSI1rssH)
+RSI1ResistanceZoneLow  = fixnan(RSI1rssL)
+
+
+////////////////////////////////////////////////////////
+
+
+RSI1rsd = 0
+
+
+if RSI1incrementer_down
+    RSI1rsd := nz(RSI1rsd[1], 0) + RSI1incrementer_down
+    RSI1rsd
+else
+    RSI1rsd = 0
+    RSI1rsd
+
+RSI1rsrH = if RSI1rsd >= NumberOfConfirmationBarsRSI1
+    RSI1x = high
+    RSI1x
+
+RSI1rsrL = if RSI1rsd >= NumberOfConfirmationBarsRSI1
+    RSI1y = low
+    RSI1y
+
+
+RSI1SupportZoneHigh = fixnan(RSI1rsrH)
+RSI1SupportZoneLow  = fixnan(RSI1rsrL)
+
+
+////////////////////////////////////////////////////////
+
+RSI1_ResZoneColor = RSI1ResistanceZoneHigh !=  RSI1ResistanceZoneHigh[1] ?  na : RSI1ResistanceColorIn
+RSI1_SupZoneColor = RSI1SupportZoneLow     !=  RSI1SupportZoneLow[1]     ?  na : RSI1SupportColorIn
+
+RSI1SDColor       = RSI1rH != RSI1rH[1]?                                    na : RSI1SDColorIn
+
+////////////////////////////////////////////////////////
+
+RSI1RZHigh = plot(ShowRZ1 ? RSI1ResistanceZoneHigh : na, style=plot.style_cross, title="Resistance Zone - 1 - High", color=RSI1_ResZoneColor, transp=1)
+RSI1RZLow  = plot(ShowRZ1 ? RSI1ResistanceZoneLow  : na, style=plot.style_cross, title="Resistance Zone - 1 - Low",  transp=100)
+fill(RSI1RZHigh, RSI1RZLow, color=RSI1_ResZoneColor, title="Support Zone - 1 - Fill")
+
+RSI1SZHigh = plot(ShowSZ1 ? RSI1SupportZoneHigh    : na, style=plot.style_cross,    title="Support Zone - 1 - High", transp=100)
+RSI1SZLow  = plot(ShowSZ1 ? RSI1SupportZoneLow     : na, style=plot.style_cross,    title="Support Zone - 1 - Low",  transp=100)
+fill(RSI1SZHigh, RSI1SZLow, color=RSI1_SupZoneColor, title="Support Zone - 1 - Fill")
+
+
+PlotRSI1rH = plot(ShowSD1 ? RSI1rH : na,  style=plot.style_cross, linewidth=1, title="Supply Demand - 1 - High")
+PlotRSI1rL = plot(ShowSD1 ? RSI1rL : na,  style=plot.style_cross, linewidth=1, title="Supply Demand - 1 - Low")
+fill(PlotRSI1rH, PlotRSI1rL, color=RSI1SDColor, title="Supply Demand - 1 - Fill")
+
+////////////////////////////////////////////////////////
+
+PriceInRSI1SDZone     = (close <= RSI1rH) and (close >= RSI1rL) and (RSI1rH == RSI1rH[1])
+PriceEntersRSI1SDZone = (PriceInRSI1SDZone and not PriceInRSI1SDZone[1])
+
+alertcondition(PriceEntersRSI1SDZone,   title='Alert - Price Enters S/D Zone 1',    message='Price Enters S/D Zone 1 - RSI S/D')
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+ShowSD2    = input(true,  "Supply Demand Zone", group = "Supply Demand 2", inline = "Supply Demand 2")
+ShowSZ2    = input(false, "Support Zone",       group = "Supply Demand 2", inline = "Supply Demand 2")
+ShowRZ2    = input(false, "Resistance Zone",    group = "Supply Demand 2", inline = "Supply Demand 2")
+
+RSI2Length  = input(14, minval=1, title="RSI 2 Length",                                                                            group="Supply Demand 2")
+RSI2OBOSIn  = input(defval="70 / 30", title="OB / OS", options=["70 / 30", "75 / 25", "80 / 20", "85 / 15", "90 / 10", "95 / 5"], group="Supply Demand 2")
+NumberOfConfirmationBarsRSI2 = input(3, title="Confirmation Bars",                                                                group="Supply Demand 2")
+
+RSI2SDColorIn          = input(color.new(color.blue, 85), "Fill Colors - Supply Demand", type = input.color, group="Supply Demand 2", inline = "Fill 2")
+RSI2SupportColorIn     = input(color.new(color.lime, 92), "Support",                     type = input.color, group="Supply Demand 2", inline = "Fill 2")
+RSI2ResistanceColorIn  = input(color.new(color.red,  92), "Resistance",                  type = input.color, group="Supply Demand 2", inline = "Fill 2")
+
+
+RSI2       = rsi(close, RSI2Length)
+
+RSI2OB = RSI2OBOSIn == "70 / 30" ? 70 : 
+   RSI2OBOSIn == "75 / 25" ? 75 : RSI2OBOSIn == "80 / 20" ? 80 : 
+   RSI2OBOSIn == "90 / 10" ? 90 : RSI2OBOSIn == "95 / 5" ? 95 : 100
+RSI2OS = RSI2OBOSIn == "70 / 30" ? 30 : 
+   RSI2OBOSIn == "75 / 25" ? 25 : RSI2OBOSIn == "80 / 20" ? 20 : 
+   RSI2OBOSIn == "90 / 10" ? 10 : RSI2OBOSIn == "95 / 5" ? 5 : 0
+
+
+RSI2incrementer_up   = RSI2 > RSI2OB ? 1 : 0
+RSI2incrementer_down = RSI2 < RSI2OS ? 1 : 0
+RSI2incrementer_both = RSI2 > RSI2OB or RSI2 < RSI2OS ? 1 : 0
+
+
+RSI2rsx = 0
+
+
+if RSI2incrementer_both
+    RSI2rsx := nz(RSI2rsx[1], 0) + RSI2incrementer_both
+    RSI2rsx
+else
+    RSI2rsx = 0
+    RSI2rsx
+
+RSI2rxH = if RSI2rsx >= NumberOfConfirmationBarsRSI2
+    RSI2x = high
+    RSI2x
+RSI2rxL = if RSI2rsx >= NumberOfConfirmationBarsRSI2
+    RSI2y = low
+    RSI2y
+
+RSI2rH = fixnan(RSI2rxH)
+RSI2rL = fixnan(RSI2rxL)
+
+
+
+///////////////////////////////////////////////////////
+
+
+RSI2rsu = 0
+
+
+if RSI2incrementer_up
+    RSI2rsu := nz(RSI2rsu[1], 0) + RSI2incrementer_up
+    RSI2rsu
+else
+    RSI2rsu = 0
+    RSI2rsu
+
+
+RSI2rssH = if RSI2rsu >= NumberOfConfirmationBarsRSI2
+    RSI2x = high
+    RSI2x
+
+
+RSI2rssL = if RSI2rsu >= NumberOfConfirmationBarsRSI2
+    RSI2y = low
+    RSI2y
+
+RSI2ResistanceZoneHigh = fixnan(RSI2rssH)
+RSI2ResistanceZoneLow  = fixnan(RSI2rssL)
+
+
+////////////////////////////////////////////////////////
+
+
+RSI2rsd = 0
+
+
+if RSI2incrementer_down
+    RSI2rsd := nz(RSI2rsd[1], 0) + RSI2incrementer_down
+    RSI2rsd
+else
+    RSI2rsd = 0
+    RSI2rsd
+
+RSI2rsrH = if RSI2rsd >= NumberOfConfirmationBarsRSI2
+    RSI2x = high
+    RSI2x
+
+RSI2rsrL = if RSI2rsd >= NumberOfConfirmationBarsRSI2
+    RSI2y = low
+    RSI2y
+
+
+RSI2SupportZoneHigh = fixnan(RSI2rsrH)
+RSI2SupportZoneLow  = fixnan(RSI2rsrL)
+
+
+////////////////////////////////////////////////////////
+
+RSI2_ResZoneColor = RSI2ResistanceZoneHigh !=  RSI2ResistanceZoneHigh[1] ?  na : RSI2ResistanceColorIn
+RSI2_SupZoneColor = RSI2SupportZoneLow     !=  RSI2SupportZoneLow[1]     ?  na : RSI2SupportColorIn
+
+RSI2SDColor       = RSI2rH != RSI2rH[1]?                                    na : RSI2SDColorIn
+
+////////////////////////////////////////////////////////
+
+
+RSI2RZHigh = plot(ShowRZ2 ? RSI2ResistanceZoneHigh : na, style=plot.style_cross, title="Resistance Zone - 2 - High", transp=100)
+RSI2RZLow  = plot(ShowRZ2 ? RSI2ResistanceZoneLow  : na, style=plot.style_cross, title="Resistance Zone - 2 - Low",  transp=100)
+fill(RSI2RZHigh, RSI2RZLow, color=RSI2_ResZoneColor, title="Support Zone - 2 - Fill")
+
+RSI2SZHigh = plot(ShowSZ2 ? RSI2SupportZoneHigh    : na, style=plot.style_cross,    title="Support Zone - 2 - High", transp=100)
+RSI2SZLow  = plot(ShowSZ2 ? RSI2SupportZoneLow     : na, style=plot.style_cross,    title="Support Zone - 2 - Low",  transp=100)
+fill(RSI2SZHigh, RSI2SZLow, color=RSI2_SupZoneColor, title="Support Zone - 2 - Fill")
+
+
+PlotRSI2rH = plot(ShowSD2 ? RSI2rH : na,  style=plot.style_cross, linewidth=1, title="Supply Demand - 2 - High")
+PlotRSI2rL = plot(ShowSD2 ? RSI2rL : na,  style=plot.style_cross, linewidth=1, title="Supply Demand - 2 - Low")
+fill(PlotRSI2rH, PlotRSI2rL, color=RSI2SDColor, title="Supply Demand - 2 - Fill")
+
+////////////////////////////////////////////////////////
+
+PriceInRSI2SDZone     = (close <= RSI2rH) and (close >= RSI2rL) and (RSI2rH == RSI2rH[1])
+PriceEntersRSI2SDZone = (PriceInRSI2SDZone and not PriceInRSI2SDZone[1])
+
+alertcondition(PriceEntersRSI2SDZone,   title='Alert - Price Enters S/D Zone 2',    message='Price Enters S/D Zone 2 - RSI S/D')
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+ShowSD3    = input(false,  "Supply Demand Zone", group = "Supply Demand 3", inline = "Supply Demand 3")
+ShowSZ3    = input(false, "Support Zone",       group = "Supply Demand 3", inline = "Supply Demand 3")
+ShowRZ3    = input(false, "Resistance Zone",    group = "Supply Demand 3", inline = "Supply Demand 3")
+
+RSI3Length  = input(21,  minval=1, title="RSI 3 Length",                                                                          group="Supply Demand 3")
+RSI3OBOSIn  = input(defval="70 / 30", title="OB / OS", options=["70 / 30", "75 / 25", "80 / 20", "85 / 15", "90 / 10", "95 / 5"], group="Supply Demand 3")
+NumberOfConfirmationBarsRSI3 = input(3, title="Confirmation Bars",                                                                group="Supply Demand 3")
+
+RSI3SDColorIn          = input(color.new(color.blue, 85), "Fill Colors - Supply Demand", type = input.color, group="Supply Demand 3", inline = "Fill 3")
+RSI3SupportColorIn     = input(color.new(color.lime, 92), "Support",                     type = input.color, group="Supply Demand 3", inline = "Fill 3")
+RSI3ResistanceColorIn  = input(color.new(color.red,  92), "Resistance",                  type = input.color, group="Supply Demand 3", inline = "Fill 3")
+
+
+RSI3       = rsi(close, RSI3Length)
+
+RSI3OB = RSI3OBOSIn == "70 / 30" ? 70 : 
+   RSI3OBOSIn == "75 / 25" ? 75 : RSI3OBOSIn == "80 / 20" ? 80 : 
+   RSI3OBOSIn == "90 / 10" ? 90 : RSI3OBOSIn == "95 / 5" ? 95 : 100
+RSI3OS = RSI3OBOSIn == "70 / 30" ? 30 : 
+   RSI3OBOSIn == "75 / 25" ? 25 : RSI3OBOSIn == "80 / 20" ? 20 : 
+   RSI3OBOSIn == "90 / 10" ? 10 : RSI3OBOSIn == "95 / 5" ? 5 : 0
+
+
+RSI3incrementer_up   = RSI3 > RSI3OB ? 1 : 0
+RSI3incrementer_down = RSI3 < RSI3OS ? 1 : 0
+RSI3incrementer_both = RSI3 > RSI3OB or RSI3 < RSI3OS ? 1 : 0
+
+
+RSI3rsx = 0
+
+
+if RSI3incrementer_both
+    RSI3rsx := nz(RSI3rsx[1], 0) + RSI3incrementer_both
+    RSI3rsx
+else
+    RSI3rsx = 0
+    RSI3rsx
+
+RSI3rxH = if RSI3rsx >= NumberOfConfirmationBarsRSI3
+    RSI3x = high
+    RSI3x
+RSI3rxL = if RSI3rsx >= NumberOfConfirmationBarsRSI3
+    RSI3y = low
+    RSI3y
+
+RSI3rH = fixnan(RSI3rxH)
+RSI3rL = fixnan(RSI3rxL)
+
+
+
+///////////////////////////////////////////////////////
+
+
+RSI3rsu = 0
+
+
+if RSI3incrementer_up
+    RSI3rsu := nz(RSI3rsu[1], 0) + RSI3incrementer_up
+    RSI3rsu
+else
+    RSI3rsu = 0
+    RSI3rsu
+
+
+RSI3rssH = if RSI3rsu >= NumberOfConfirmationBarsRSI3
+    RSI3x = high
+    RSI3x
+
+
+RSI3rssL = if RSI3rsu >= NumberOfConfirmationBarsRSI3
+    RSI3y = low
+    RSI3y
+
+RSI3ResistanceZoneHigh = fixnan(RSI3rssH)
+RSI3ResistanceZoneLow  = fixnan(RSI3rssL)
+
+
+////////////////////////////////////////////////////////
+
+
+RSI3rsd = 0
+
+
+if RSI3incrementer_down
+    RSI3rsd := nz(RSI3rsd[1], 0) + RSI3incrementer_down
+    RSI3rsd
+else
+    RSI3rsd = 0
+    RSI3rsd
+
+RSI3rsrH = if RSI3rsd >= NumberOfConfirmationBarsRSI3
+    RSI3x = high
+    RSI3x
+
+RSI3rsrL = if RSI3rsd >= NumberOfConfirmationBarsRSI3
+    RSI3y = low
+    RSI3y
+
+
+RSI3SupportZoneHigh = fixnan(RSI3rsrH)
+RSI3SupportZoneLow  = fixnan(RSI3rsrL)
+
+
+////////////////////////////////////////////////////////
+
+RSI3_ResZoneColor = RSI3ResistanceZoneHigh !=  RSI3ResistanceZoneHigh[1] ?  na : RSI3ResistanceColorIn
+RSI3_SupZoneColor = RSI3SupportZoneLow     !=  RSI3SupportZoneLow[1]     ?  na : RSI3SupportColorIn
+
+RSI3SDColor       = RSI3rH != RSI3rH[1]?                                    na : RSI3SDColorIn
+
+////////////////////////////////////////////////////////
+
+
+RSI3RZHigh = plot(ShowRZ3 ? RSI3ResistanceZoneHigh : na, style=plot.style_cross, title="Resistance Zone - 3 - High", transp=100)
+RSI3RZLow  = plot(ShowRZ3 ? RSI3ResistanceZoneLow  : na, style=plot.style_cross, title="Resistance Zone - 3 - Low",  transp=100)
+fill(RSI3RZHigh, RSI3RZLow, color=RSI3_ResZoneColor, title="Support Zone - 3 - Fill")
+
+RSI3SZHigh = plot(ShowSZ3 ? RSI3SupportZoneHigh    : na, style=plot.style_cross,    title="Support Zone - 3 - High", transp=100)
+RSI3SZLow  = plot(ShowSZ3 ? RSI3SupportZoneLow     : na, style=plot.style_cross,    title="Support Zone - 3 - Low",  transp=100)
+fill(RSI3SZHigh, RSI3SZLow, color=RSI3_SupZoneColor, title="Support Zone - 3 - Fill")
+
+
+PlotRSI3rH = plot(ShowSD3 ? RSI3rH : na,  style=plot.style_cross, linewidth=1, title="Supply Demand - 3 - High")
+PlotRSI3rL = plot(ShowSD3 ? RSI3rL : na,  style=plot.style_cross, linewidth=1, title="Supply Demand - 3 - Low")
+fill(PlotRSI3rH, PlotRSI3rL, color=RSI3SDColor, title="Supply Demand - 3 - Fill")
+
+////////////////////////////////////////////////////////
+
+PriceInRSI3SDZone     = (close <= RSI3rH) and (close >= RSI3rL) and (RSI3rH == RSI3rH[1])
+PriceEntersRSI3SDZone = (PriceInRSI3SDZone and not PriceInRSI3SDZone[1])
+
+alertcondition(PriceEntersRSI3SDZone,   title='Alert - Price Enters S/D Zone 3',    message='Price Enters S/D Zone 3 - RSI S/D')
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+ShowSD4    = input(false,  "Supply Demand Zone", group = "Supply Demand 4", inline = "Supply Demand 4")
+ShowSZ4    = input(false, "Support Zone",       group = "Supply Demand 4", inline = "Supply Demand 4")
+ShowRZ4    = input(false, "Resistance Zone",    group = "Supply Demand 4", inline = "Supply Demand 4")
+
+RSI4Length  = input(28,  minval=1, title="RSI 4 Length",                                                                          group="Supply Demand 4")
+RSI4OBOSIn  = input(defval="70 / 30", title="OB / OS", options=["70 / 30", "75 / 25", "80 / 20", "85 / 15", "90 / 10", "95 / 5"], group="Supply Demand 4")
+NumberOfConfirmationBarsRSI4 = input(3, title="Confirmation Bars",                                                                group="Supply Demand 4")
+
+RSI4SDColorIn          = input(color.new(color.blue, 85), "Fill Colors - Supply Demand", type = input.color, group="Supply Demand 4", inline = "Fill 4")
+RSI4SupportColorIn     = input(color.new(color.lime, 92), "Support",                     type = input.color, group="Supply Demand 4", inline = "Fill 4")
+RSI4ResistanceColorIn  = input(color.new(color.red,  92), "Resistance",                  type = input.color, group="Supply Demand 4", inline = "Fill 4")
+
+
+RSI4       = rsi(close, RSI4Length)
+
+RSI4OB = RSI4OBOSIn == "70 / 30" ? 70 : 
+   RSI4OBOSIn == "75 / 25" ? 75 : RSI4OBOSIn == "80 / 20" ? 80 : 
+   RSI4OBOSIn == "90 / 10" ? 90 : RSI4OBOSIn == "95 / 5" ? 95 : 100
+RSI4OS = RSI4OBOSIn == "70 / 30" ? 30 : 
+   RSI4OBOSIn == "75 / 25" ? 25 : RSI4OBOSIn == "80 / 20" ? 20 : 
+   RSI4OBOSIn == "90 / 10" ? 10 : RSI4OBOSIn == "95 / 5" ? 5 : 0
+
+
+RSI4incrementer_up   = RSI4 > RSI4OB ? 1 : 0
+RSI4incrementer_down = RSI4 < RSI4OS ? 1 : 0
+RSI4incrementer_both = RSI4 > RSI4OB or RSI4 < RSI4OS ? 1 : 0
+
+
+RSI4rsx = 0
+
+
+if RSI4incrementer_both
+    RSI4rsx := nz(RSI4rsx[1], 0) + RSI4incrementer_both
+    RSI4rsx
+else
+    RSI4rsx = 0
+    RSI4rsx
+
+RSI4rxH = if RSI4rsx >= NumberOfConfirmationBarsRSI4
+    RSI4x = high
+    RSI4x
+RSI4rxL = if RSI4rsx >= NumberOfConfirmationBarsRSI4
+    RSI4y = low
+    RSI4y
+
+RSI4rH = fixnan(RSI4rxH)
+RSI4rL = fixnan(RSI4rxL)
+
+
+
+///////////////////////////////////////////////////////
+
+
+RSI4rsu = 0
+
+
+if RSI4incrementer_up
+    RSI4rsu := nz(RSI4rsu[1], 0) + RSI4incrementer_up
+    RSI4rsu
+else
+    RSI4rsu = 0
+    RSI4rsu
+
+
+RSI4rssH = if RSI4rsu >= NumberOfConfirmationBarsRSI4
+    RSI4x = high
+    RSI4x
+
+
+RSI4rssL = if RSI4rsu >= NumberOfConfirmationBarsRSI4
+    RSI4y = low
+    RSI4y
+
+RSI4ResistanceZoneHigh = fixnan(RSI4rssH)
+RSI4ResistanceZoneLow  = fixnan(RSI4rssL)
+
+
+////////////////////////////////////////////////////////
+
+
+RSI4rsd = 0
+
+
+if RSI4incrementer_down
+    RSI4rsd := nz(RSI4rsd[1], 0) + RSI4incrementer_down
+    RSI4rsd
+else
+    RSI4rsd = 0
+    RSI4rsd
+
+RSI4rsrH = if RSI4rsd >= NumberOfConfirmationBarsRSI4
+    RSI4x = high
+    RSI4x
+
+RSI4rsrL = if RSI4rsd >= NumberOfConfirmationBarsRSI4
+    RSI4y = low
+    RSI4y
+
+
+RSI4SupportZoneHigh = fixnan(RSI4rsrH)
+RSI4SupportZoneLow  = fixnan(RSI4rsrL)
+
+
+////////////////////////////////////////////////////////
+
+RSI4_ResZoneColor = RSI4ResistanceZoneHigh !=  RSI4ResistanceZoneHigh[1] ?  na : RSI4ResistanceColorIn
+RSI4_SupZoneColor = RSI4SupportZoneLow     !=  RSI4SupportZoneLow[1]     ?  na : RSI4SupportColorIn
+
+RSI4SDColor       = RSI4rH != RSI4rH[1]?                                    na : RSI4SDColorIn
+
+////////////////////////////////////////////////////////
+
+RSI4RZHigh = plot(ShowRZ4 ? RSI4ResistanceZoneHigh : na, style=plot.style_cross, title="Resistance Zone - 4 - High", transp=100)
+RSI4RZLow  = plot(ShowRZ4 ? RSI4ResistanceZoneLow  : na, style=plot.style_cross, title="Resistance Zone - 4 - Low",  transp=100)
+fill(RSI4RZHigh, RSI4RZLow, color=RSI4_ResZoneColor, title="Support Zone - 4 - Fill")
+
+RSI4SZHigh = plot(ShowSZ4 ? RSI4SupportZoneHigh    : na, style=plot.style_cross,    title="Support Zone - 4 - High", transp=100)
+RSI4SZLow  = plot(ShowSZ4 ? RSI4SupportZoneLow     : na, style=plot.style_cross,    title="Support Zone - 4 - Low",  transp=100)
+fill(RSI4SZHigh, RSI4SZLow, color=RSI4_SupZoneColor, title="Support Zone - 4 - Fill")
+
+
+PlotRSI4rH = plot(ShowSD4 ? RSI4rH : na,  style=plot.style_cross, linewidth=1, title="Supply Demand - 4 - High")
+PlotRSI4rL = plot(ShowSD4 ? RSI4rL : na,  style=plot.style_cross, linewidth=1, title="Supply Demand - 4 - Low")
+fill(PlotRSI4rH, PlotRSI4rL, color=RSI4SDColor, title="Supply Demand - 4 - Fill")
+
+////////////////////////////////////////////////////////
+
+PriceInRSI4SDZone     = (close <= RSI4rH) and (close >= RSI4rL) and (RSI4rH == RSI4rH[1])
+PriceEntersRSI4SDZone = (PriceInRSI4SDZone and not PriceInRSI4SDZone[1])
+
+alertcondition(PriceEntersRSI4SDZone,   title='Alert - Price Enters S/D Zone 4',    message='Price Enters S/D Zone 4 - RSI S/D')
+
+
+alertcondition(PriceEntersRSI1SDZone or PriceEntersRSI2SDZone or PriceEntersRSI3SDZone or PriceEntersRSI4SDZone,   title='Alert - Price Enters Any S/D Zone',    message='Price Enters Any S/D Zone - RSI S/D')
+

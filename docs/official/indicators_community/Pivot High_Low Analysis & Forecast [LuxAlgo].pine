@@ -1,0 +1,121 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+//@version=4
+study("Pivots High/Low Analysis & Forecast [LuxAlgo]",overlay=true,max_lines_count=500,max_labels_count=500)
+length     = input(50)
+show_fcast = input(true,'Show Forecasted Pivots')
+
+dash_loc = input("Bottom Right","Dashboard Location"
+  ,options=["Top Right","Bottom Right","Top Left","Bottom Left"]
+  ,group='Dashboard')
+
+text_size = input('Normal',"Dashboard Size"
+  ,options=["Tiny","Small","Normal","Large"]
+  ,group='Dashboard')
+
+txt_col = input(color.gray,'Text/Frame Color'
+  ,group='Dashboard')
+//----
+barssince_ph = 0
+barssince_pl = 0
+rchange_ph = 0.
+rchange_pl = 0.
+
+//Get Current/Previous Pivots and their occurences
+n = bar_index
+dt = round(time-time[1])
+
+ph = pivothigh(length,length)
+pl = pivotlow(length,length)
+
+ph_x2 = valuewhen(ph,n-length,1)
+pl_x2 = valuewhen(pl,n-length,1)
+
+ph_y2 = valuewhen(ph,ph,1)
+pl_y2 = valuewhen(pl,pl,1)
+
+//Display Lines/Labels
+if ph
+    barssince_ph := (n-length)-ph_x2
+    rchange_ph := (ph - ph_y2)/ph_y2*100
+    txt = str.format("Δ% : {0,number,#.##}\nΔt : {1}",rchange_ph, barssince_ph)
+    
+    css = ph > ph_y2 ? #2157f3 : #ff1100
+    line.new(n-length,ph_y2,ph_x2,ph_y2,color=#ff1100,style=line.style_dotted)
+    line.new(n-length,ph,n-length,ph_y2,color=css,style=line.style_arrow_both)
+    
+    label.new(n-length,max(ph,ph_y2),txt,
+      color=#00000000,
+      style=label.style_label_down,
+      textcolor=color.gray,
+      textalign=text.align_left,
+      size=size.small)
+
+if pl
+    barssince_pl := (n-length)-pl_x2
+    rchange_pl := (pl - pl_y2)/pl_y2*100
+    txt = str.format("Δ% : {0,number,#.##}\nΔt : {1}",rchange_pl, barssince_pl)
+    
+    css = pl > pl_y2 ? #2157f3 : #ff1100
+    line.new(n-length,pl_y2,pl_x2,pl_y2,color=#0cb51a,style=line.style_dotted)
+    line.new(n-length,pl,n-length,pl_y2,color=css,style=line.style_arrow_both)
+    
+    label.new(n-length,min(pl,pl_y2),txt,
+      color=#00000000,
+      style=label.style_label_up,
+      textcolor=color.gray,
+      textalign=text.align_left,
+      size=size.small)
+
+//Stats
+avg_barssince_ph = cum(barssince_ph)/cum(sign(barssince_ph))
+avg_barssince_pl = cum(barssince_pl)/cum(sign(barssince_pl))
+
+avg_rchange_ph = cum(rchange_ph)/cum(abs(sign(rchange_ph)))
+avg_rchange_pl = cum(rchange_pl)/cum(abs(sign(rchange_pl)))
+
+//Estimate future pivots positions
+if show_fcast
+    if ph
+        x12 = n+min(int(avg_barssince_ph - length),500)
+        line.delete(line.new(x12,high,x12,low
+          ,extend=extend.both,color=#ff1100,style=line.style_dashed)[1])
+        line.delete(line.new(n-length,ph,n,ph
+          ,extend=extend.right,color=#ff1100,style=line.style_dotted)[1])
+
+if pl
+    x12 = n+min(int(avg_barssince_pl - length),500)
+    line.delete(line.new(x12,high,x12,low
+      ,extend=extend.both,color=#0cb51a,style=line.style_dashed)[1])
+    line.delete(line.new(n-length,pl,n,pl
+      ,extend=extend.right,color=#0cb51a,style=line.style_dotted)[1])
+
+//Table
+var table_position = dash_loc == 'Top Left' ? position.top_left :
+  dash_loc == 'Bottom Left' ? position.bottom_left :
+  dash_loc == 'Top Right' ? position.top_right : position.bottom_right
+
+var table_text_size = text_size == 'Tiny' ? size.tiny :
+  text_size == 'Small' ? size.small :
+  text_size == 'Normal' ? size.normal : size.large
+
+new_table = table.new(table_position,3,3
+  ,border_color=txt_col,border_width=1
+  ,frame_color=txt_col,frame_width=1)
+
+if barstate.islast
+    table.cell(new_table,0,1,'Pivot High',text_color=txt_col,text_size=table_text_size)
+    table.cell(new_table,0,2,'Pivot Low',text_color=txt_col,text_size=table_text_size)
+    
+    table.cell(new_table,1,0,'E[Δt]',text_color=txt_col,text_size=table_text_size)
+    table.cell(new_table,2,0,'E[Δ%]',text_color=txt_col,text_size=table_text_size)
+    
+    table.cell(new_table,1,1,tostring(avg_barssince_ph,'#.##'),text_color=txt_col,text_size=table_text_size)
+    table.cell(new_table,1,2,tostring(avg_barssince_pl,'#.##'),text_color=txt_col,text_size=table_text_size)
+    
+    table.cell(new_table,2,1,tostring(avg_rchange_ph,'#.##'),text_color=txt_col,text_size=table_text_size)
+    table.cell(new_table,2,2,tostring(avg_rchange_pl,'#.##'),text_color=txt_col,text_size=table_text_size)
+
+//Plot
+plot(ph,"Pivot High",#ff1100,2,plot.style_circles,offset=-length)
+plot(pl,"Pivot Low",#0cb51a,2,plot.style_circles,offset=-length)

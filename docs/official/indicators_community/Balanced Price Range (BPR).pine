@@ -1,0 +1,92 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © tradeforopp
+
+//@version=5
+indicator("Balanced Price Range - BPR [TFO]", "BPR [TFO]", overlay = true, max_bars_back = 500, max_boxes_count = 500)
+
+bpr_threshold = input.float(0, step = 0.25, title = "BPR Threshold", tooltip = "Valid BPR's must have a range greater than this number")
+bars_since = input(10, "Bars to Look Back for BPR", tooltip = "Only look for BPR's when a sequence of bearish and bullish FVG's are within this many bars of each other")
+only_clean_bpr = input(false, "Only Clean BPR", tooltip = "Only show BPR's when price does not interfere with the range prior to its completion")
+delete_old_bpr = input(false, "Delete Old BPR", tooltip = "Delete all BPR's that have been invalidated or overwritten. Only show current/active BPR's")
+bearish_bpr_color = input.color(color.new(color.red, 70))
+bullish_bpr_color = input.color(color.new(color.green, 70))
+
+float box_high = na
+float box_low = na
+int box_left = 0
+int box_right = 0
+var box box_bearish = na
+var box box_bullish = na
+
+new_fvg_bearish = low[2] - high > 0
+new_fvg_bullish = low - high[2] > 0
+
+valid_high = high[1] > high[2] and high[1] > high[0]
+valid_low = low[1] < low[2] and low[1] < low[0]
+
+midline = (high - low) / 2 + low
+valid_hammer = open > midline and close > midline
+valid_shooter = open < midline and close < midline
+
+// Bullish BPR
+bull_num_since = ta.barssince(new_fvg_bearish)
+bull_bpr_cond_1 = new_fvg_bullish and bull_num_since <= bars_since 
+bull_bpr_cond_2 = bull_bpr_cond_1 ? high[bull_num_since] + low[bull_num_since + 2] + high[2] + low > math.max(low[bull_num_since + 2], low) - math.min(high[bull_num_since], high[2]) : na
+
+bull_combined_low = bull_bpr_cond_2 ? math.max(high[bull_num_since], high[2]) : na
+bull_combined_high = bull_bpr_cond_2 ? math.min(low[bull_num_since + 2], low) : na
+
+bull_bpr_cond_3 = true
+
+if only_clean_bpr 
+    for h = 2 to (bull_num_since)
+        if high[h] > bull_combined_low
+            bull_bpr_cond_3 := false
+
+bull_result = bull_bpr_cond_1 and bull_bpr_cond_2 and bull_bpr_cond_3 and (bull_combined_high - bull_combined_low >= bpr_threshold)
+
+if bull_result[1]
+    if delete_old_bpr and not na(box_bullish)
+        box.delete(box_bullish)
+    box_bullish := box.new(bar_index - bull_num_since - 1, bull_combined_high[1], bar_index + 1, bull_combined_low[1], border_color = bullish_bpr_color, border_width = 1, bgcolor = bullish_bpr_color)
+alertcondition(bull_result[1], "Bullish Alert", "New Bullish BPR")
+
+if not na(box_bullish) and low > box.get_bottom(box_bullish)
+    box.set_right(box_bullish, bar_index + 1)
+else if not na(box_bullish) and low < box.get_bottom(box_bullish)
+    if delete_old_bpr
+        box.delete(box_bullish)
+    else
+        box_bullish := na 
+
+
+// Bearish BPR
+bear_num_since = ta.barssince(new_fvg_bullish)
+bear_bpr_cond_1 = new_fvg_bearish and bear_num_since <= bars_since 
+bear_bpr_cond_2 = bear_bpr_cond_1 ? high[bear_num_since] + low[bear_num_since + 2] + high[2] + low > math.max(low[bear_num_since + 2], low) - math.min(high[bear_num_since], high[2]) : na
+
+bear_combined_low = bear_bpr_cond_2 ? math.max(high[bear_num_since + 2], high) : na
+bear_combined_high = bear_bpr_cond_2 ? math.min(low[bear_num_since], low[2]) : na
+
+bear_bpr_cond_3 = true
+
+if only_clean_bpr 
+    for h = 2 to (bear_num_since)
+        if low[h] < bear_combined_high
+            bear_bpr_cond_3 := false
+
+bear_result = bear_bpr_cond_1 and bear_bpr_cond_2 and bear_bpr_cond_3 and (bear_combined_high - bear_combined_low >= bpr_threshold)
+
+if bear_result[1]
+    if delete_old_bpr and not na(box_bearish)
+        box.delete(box_bearish)
+    box_bearish := box.new(bar_index - bear_num_since - 1, bear_combined_high[1], bar_index + 1, bear_combined_low[1], border_color = bearish_bpr_color, border_width = 1, bgcolor = bearish_bpr_color)
+alertcondition(bear_result[1], "Bearish Alert", "New Bearish BPR")
+
+if not na(box_bearish) and high < box.get_top(box_bearish)
+    box.set_right(box_bearish, bar_index + 1)
+else if not na(box_bearish) and high > box.get_top(box_bearish)
+    if delete_old_bpr
+        box.delete(box_bearish)
+    else
+        box_bearish := na

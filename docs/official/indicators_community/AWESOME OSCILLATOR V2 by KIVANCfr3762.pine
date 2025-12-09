@@ -1,0 +1,13 @@
+//@version=3
+//AUTHOR: KIVANC @fr3762 twitter
+study("AWESOME OSCILLATOR VERSION 2 by KIVANC @fr3762", shorttitle="AOv2KIVANC")
+fastperiod = input(5,title="fastperiod",type=integer,minval=1,maxval=500)
+slowperiod = input(34,title="slowperiod",type=integer,minval=1,maxval=500)
+signalperiod = input(7,title="signalperiod",type=integer,minval=1,maxval=500)
+fastMA = sma(hl2, fastperiod)
+slowMA = sma(hl2, slowperiod)
+AO = fastMA - slowMA
+signal = sma(AO, signalperiod)
+plot(signal, color=blue, linewidth=2)
+plot(AO, color=red, linewidth=2)
+plot(0, color=black)

@@ -1,0 +1,185 @@
+//@version=6
+indicator('Open Interest Stochastic Money Flow Index')
+src = close
+reverse = false
+lights = input.string(title = 'Barcolor I / 0 ? ', options = ['ON', 'OFF'], defval = 'OFF')
+adaptive = input.string(title = 'Market Type ', options = ['FUTURES', 'OTHERS'], defval = 'FUTURES')
+
+// Importing TradingView COT Library
+import TradingView/LibraryCOT/3 as cot
+
+//***** CFTC COT TV Codes *****
+
+var string Root_Symbol = syminfo.root
+var string CFTC_Code_fixed = cot.convertRootToCOTCode("Auto")
+if Root_Symbol == "HG"
+    CFTC_Code_fixed := "085692"
+else if Root_Symbol == "LBR"
+    CFTC_Code_fixed := "058644"
+
+// Request COT data
+dataRequest(metricName, direction) =>
+    tickerId = cot.COTTickerid('Legacy', CFTC_Code_fixed, false, metricName, direction, "All")
+    value = request.security(tickerId, "1D", close, ignore_invalid_symbol = true)
+    if barstate.islastconfirmedhistory and na(value)
+        runtime.error("Could not find relevant COT data based on the current symbol.")
+    value
+
+// 1 - Futures
+
+// Futures Open Interest 
+
+// Gets open interest to normalise data over time
+getOpenInterest() =>
+    openInterest = dataRequest("Open Interest", "No direction")
+
+openInterest = getOpenInterest()
+
+_oi_futures = openInterest
+
+_vol_others = volume
+
+
+// Switchable Weiss Wave Open Interest (Futures) / Weiss Wave Volume (Others)
+
+float _switchable = na
+
+if adaptive == 'FUTURES'
+
+    _switchable := _oi_futures
+    _switchable
+
+if adaptive == 'OTHERS'
+
+    _switchable := volume
+    _switchable
+
+
+// Open Interest Money Flow Index (OIMFI)
+
+
+// Essential Functions : 
+
+f_ema(_src, _length) =>
+    _length_adjusted = _length < 1 ? 1 : _length
+    _multiplier = 2 / (_length_adjusted + 1)
+    _return = 0.00
+    _return := na(_return[1]) ? _src : (_src - _return[1]) * _multiplier + _return[1]
+    _return
+
+
+f_sum(_src, _length) =>
+
+    _output = 0.00
+
+    _length_adjusted = _length < 1 ? 1 : _length
+
+    for i = 0 to _length_adjusted - 1 by 1
+        _output := _output + _src[i]
+        _output
+
+
+// FUNCTION HIGHEST AND LOWEST  ( All Efforts goes to RicardoSantos )
+
+f_highest(_src, _length) =>
+    _adjusted_length = _length < 1 ? 1 : _length
+    _value = _src
+    for _i = 0 to _adjusted_length - 1 by 1
+        _value := _src[_i] >= _value ? _src[_i] : _value
+        _value
+    _return = _value
+    _return
+
+f_lowest(_src, _length) =>
+    _adjusted_length = _length < 1 ? 1 : _length
+    _value = _src
+    for _i = 0 to _adjusted_length - 1 by 1
+        _value := _src[_i] <= _value ? _src[_i] : _value
+        _value
+    _return = _value
+    _return
+
+
+t_mfi = input(14, title = 'MFI Period') // You can use non integer or mutable variables too !!
+
+OverSold = input(20, title = 'Oversold') // You can use non integer or mutable variables too !!
+OverBought = input(80, title = 'Overbought') // You can use non integer or mutable variables too !!
+
+zero = 0
+hundred = 100
+
+limit = 50
+
+
+upper_s = f_sum(_switchable * (ta.change(src) <= 0 ? 0 : src), t_mfi)
+lower_s = f_sum(_switchable * (ta.change(src) >= 0 ? 0 : src), t_mfi)
+
+
+_mfi = 100.0 - 100.0 / (1.0 + upper_s / lower_s)
+
+// Open Interest Stochastic Money Flow Index 
+
+lengthMFI = 14
+lengthStoch = 14
+
+smoothK = int(lengthMFI / 3)
+smoothD = int(lengthStoch / 3)
+
+
+f_stoch(_src, _length) =>
+
+    100 * (_src - f_lowest(f_lowest(_src, 1), _length)) / (f_highest(f_highest(_src, 1), _length) - f_lowest(f_lowest(_src, 1), _length))
+
+
+// Definition : Variables K3 and D
+
+k3 = f_ema(f_stoch(_mfi, lengthStoch), smoothK)
+d = f_ema(k3, smoothD)
+
+pos_moment = ta.crossover(k3, d)
+neg_moment = ta.crossunder(k3, d)
+
+col_bg = pos_moment ? color.teal : neg_moment ? color.maroon : na
+
+
+// Plot data
+
+h1 = hline(OverSold, color = #C0C0C0, title = 'Oversold Level')
+h2 = hline(OverBought, color = #C0C0C0, title = 'Overbought Level')
+plot(k3, color = color.new(#0070FF, 0), title = 'K-line', linewidth = 1)
+plot(d, color = color.new(#FF8C00, 0), title = 'D-line', linewidth = 1)
+fill(h1, h2, color = color.new(#66023C, 90), title = 'Border')
+bgcolor(col_bg, title = 'Background Color')
+plot(pos_moment ? zero : na, style = plot.style_cross, color = color.new(color.green, 0), linewidth = 3, title = 'Crossover')
+plot(neg_moment ? zero : na, style = plot.style_cross, color = color.new(color.red, 0), linewidth = 3, title = 'Crossunder')
+
+// Barcolor (All efforts goes to Hpotter)
+
+pos = k3 > d ? 1 : -1
+iff_1 = reverse and pos == -1 ? 1 : pos
+possig = reverse and pos == 1 ? -1 : iff_1
+
+
+// Switchable Barcolor Preference 
+
+_lights = 0.00
+if lights == 'ON'
+
+    _lights := 1.00
+    _lights
+
+if lights == 'OFF'
+
+    _lights := -1.00
+    _lights
+
+
+bcolor_on = _lights == 1.00
+bcolor_off = _lights == -1.00
+
+barcolor(possig == -1 and bcolor_on ? color.red : possig == 1 and bcolor_on ? color.green : na)
+
+// Alerts 
+
+alertcondition(possig == 1, title = 'Buy Signal', message = 'Buy Signal ')
+alertcondition(possig == -1, title = 'Sell Signal', message = 'Sell Signal ')

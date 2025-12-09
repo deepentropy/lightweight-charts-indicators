@@ -1,0 +1,313 @@
+// This Pine Script™ code is subject to the terms of the Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © UAlgo
+//@version=6
+indicator('Price Action Toolkit Lite [UAlgo]', 'PA Toolkit Lite [UAlgo]', overlay = true, max_lines_count = 500, max_bars_back = 4900, max_boxes_count = 1500)
+
+zigzagBool = input.bool(false, 'Show Market Structure', group = 'Price Action Toolkit Settings')
+zigzagLen = input.int(9, 'ZigZag Length', group = 'Price Action Toolkit Settings')
+liquidityBool = input.bool(true, 'Show Liquidity Sweeps', group = 'Liquidity Settings')
+liquidity_len = input.int(30, 'Liquidity Length', minval = 5, group = 'Liquidity Settings')
+orderblockBool = input.bool(true, 'Show Order Blocks', group = 'Order Block Settings')
+numberObShow = input.int(2, 'Number of Order Blocks to Show', group = 'Order Block Settings', minval = 1, maxval = 10)
+showTrendLines = input.bool(true, 'Show Trend Lines', group = 'Misc')
+trendLineLength = input.int(20, 'Trend Line Detection Sensitivity', group = 'Misc', minval = 10)
+upTlColor = input.color(color.new(color.teal, 15), title = 'Trend Line Colors', group = 'Misc', inline = 'tl')
+downTlColor = input.color(color.new(color.red, 15), title = ' ', group = 'Misc', inline = 'tl')
+upColor = input.color(color.new(color.teal, 15), title = 'Market/Liquidity Colors', group = 'Visual Settings', inline = '1')
+downColor = input.color(color.new(color.red, 15), title = ' ', group = 'Visual Settings', inline = '1')
+bearishOrderblockColor = input.color(color.new(color.red, 80), title = 'Order Block Colors ', group = 'Visual Settings', inline = '2')
+bullishOrderblockColor = input.color(color.new(color.teal, 80), title = ' ', group = 'Visual Settings', inline = '2')
+hideWatermark = input.bool(false, title = 'Hide Watermark', group = 'Visual Settings')
+
+type orderblock
+	float value
+	int barStart
+	int barEnd
+	box block
+	bool broken
+
+type liquidity
+	float value
+	int barStart
+	int barEnd
+	line liquidityLine
+	bool broken
+	label sweep
+
+type zone
+	float value
+	int barStart
+	int barEnd
+	box block
+	string zoneType
+
+
+
+var array<orderblock> bullishOrderblock = array.new<orderblock>()
+var array<orderblock> bearishOrderblock = array.new<orderblock>()
+var array<liquidity> bullishLiquidity = array.new<liquidity>()
+var array<liquidity> bearishLiquidity = array.new<liquidity>()
+var array<int> highValIndex = array.new<int>()
+var array<int> lowValIndex = array.new<int>()
+var array<float> highVal = array.new_float()
+var array<float> lowVal = array.new_float()
+
+var bool drawUp = false
+var bool drawDown = false
+var string lastState = na
+var bool to_up = false
+var bool to_down = false
+var int trend = 1
+var float fibTopVal = na
+var int fibTopIndex = na
+var float fibBotVal = na
+var int fibBotIndex = na
+var float premiumVal = na
+var float discountVal = na
+var int premiumValIndex = na
+var int discountValIndex = na
+var box premiumBox = na
+var box discountBox = na
+var label premiumLabel = na
+var label discountLabel = na
+var string textOfPremium = na
+var string textOfDiscount = na
+var line newBearishTrendline = na
+var line newBullishTrendline = na
+
+atr = ta.atr(14)
+
+to_up := high[zigzagLen] >= ta.highest(high, zigzagLen)
+to_down := low[zigzagLen] <= ta.lowest(low, zigzagLen)
+
+trend := trend == 1 and to_down ? -1 : trend == -1 and to_up ? 1 : trend
+
+drawZigzag(x1, y1, x2, y2) =>
+    line.new(x1 = x1, y1 = y1, x2 = x2, y2 = y2, xloc = xloc.bar_time, width = 1)
+
+if ta.change(trend) != 0 and trend == 1
+    array.push(highValIndex, time[zigzagLen])
+    array.push(highVal, high[zigzagLen])
+    if array.size(lowVal) > 1
+        lastLowVal = array.get(lowVal, array.size(lowVal) - 1)
+        lastLowIndex = array.get(lowValIndex, array.size(lowValIndex) - 1)
+        lastHighIndex = array.get(highValIndex, array.size(highValIndex) - 1)
+        lastHighVal = array.get(highVal, array.size(highVal) - 1)
+        if zigzagBool
+            drawZigzag(x1 = lastLowIndex, y1 = lastLowVal, x2 = lastHighIndex, y2 = lastHighVal)
+        drawUp := false
+        drawUp
+    fibTopIndex := time[zigzagLen]
+    fibTopVal := high[zigzagLen]
+    fibTopVal
+
+if ta.change(trend) != 0 and trend == -1
+    array.push(lowValIndex, time[zigzagLen])
+    array.push(lowVal, low[zigzagLen])
+    if array.size(highVal) > 1
+        lastHighVal = array.get(highVal, array.size(highVal) - 1)
+        lastHighIndex = array.get(highValIndex, array.size(highValIndex) - 1)
+        lastLowIndex = array.get(lowValIndex, array.size(lowValIndex) - 1)
+        lastLowVal = array.get(lowVal, array.size(lowVal) - 1)
+        if zigzagBool
+            drawZigzag(x1 = lastHighIndex, y1 = lastHighVal, x2 = lastLowIndex, y2 = lastLowVal)
+        drawDown := false
+        drawDown
+    fibBotIndex := time[zigzagLen]
+    fibBotVal := low[zigzagLen]
+    fibBotVal
+
+if array.size(lowVal) > 1 and drawDown == false
+    if close < array.get(lowVal, array.size(lowVal) - 1)
+
+        line.new(x1 = array.get(lowValIndex, array.size(lowValIndex) - 1), y1 = array.get(lowVal, array.size(lowVal) - 1), x2 = time, y2 = array.get(lowVal, array.size(lowVal) - 1), width = 1, xloc = xloc.bar_time)
+        label.new(x = (array.get(lowValIndex, array.size(lowValIndex) - 1) + time) / 2, y = array.get(lowVal, array.size(lowVal) - 1), text = na(lastState) or lastState == 'up' ? 'CHoCH' : 'BoS', xloc = xloc.bar_time, style = label.style_label_up, textcolor = downColor, color = color.new(color.white, 100))
+        drawDown := true
+        lastState := 'down'
+        if orderblockBool
+            orderblock newOrderblock = orderblock.new()
+            float max = 0
+            int bar = na
+            for i = (time - array.get(lowValIndex, array.size(lowValIndex) - 1) - (time - time[1])) / (time - time[1]) to 0 by 1
+                if high[i] > max
+                    max := high[i]
+                    bar := time[i]
+                    bar
+            newOrderblock.barStart := bar
+            newOrderblock.barEnd := time
+            newOrderblock.broken := false
+            newOrderblock.value := max
+            newOrderblock.block := box.new(left = newOrderblock.barStart, top = newOrderblock.value - atr, right = newOrderblock.barEnd, bottom = newOrderblock.value, xloc = xloc.bar_time, bgcolor = bearishOrderblockColor, border_width = 1, border_color = bearishOrderblockColor)
+            array.push(bearishOrderblock, newOrderblock)
+            if array.size(bearishOrderblock) > 20
+                array.shift(bearishOrderblock)
+
+if array.size(highVal) > 1 and drawUp == false
+    if close > array.get(highVal, array.size(highVal) - 1)
+
+        line.new(x1 = array.get(highValIndex, array.size(highValIndex) - 1), y1 = array.get(highVal, array.size(highVal) - 1), x2 = time, y2 = array.get(highVal, array.size(highVal) - 1), width = 1, xloc = xloc.bar_time)
+        label.new(x = (array.get(highValIndex, array.size(highValIndex) - 1) + time) / 2, y = array.get(highVal, array.size(highVal) - 1), text = na(lastState) or lastState == 'down' ? 'CHoCH' : 'BoS', xloc = xloc.bar_time, style = label.style_label_down, textcolor = upColor, color = color.new(color.white, 100))
+        drawUp := true
+        lastState := 'up'
+        if orderblockBool
+            orderblock newOrderblock = orderblock.new()
+            float min = 999999999
+            int bar = na
+            for i = (time - array.get(highValIndex, array.size(highValIndex) - 1) - (time - time[1])) / (time - time[1]) to 0 by 1
+                if low[i] < min
+                    min := low[i]
+                    bar := time[i]
+                    bar
+
+            newOrderblock.barStart := bar
+            newOrderblock.barEnd := time
+            newOrderblock.broken := false
+            newOrderblock.value := min
+            newOrderblock.block := box.new(left = newOrderblock.barStart, top = newOrderblock.value + atr, right = newOrderblock.barEnd, bottom = newOrderblock.value, xloc = xloc.bar_time, bgcolor = bullishOrderblockColor, border_width = 1, border_color = bullishOrderblockColor)
+            array.push(bullishOrderblock, newOrderblock)
+            if array.size(bullishOrderblock) > 20
+                array.shift(bullishOrderblock)
+
+// Order block
+
+//update orderblock
+if array.size(bullishOrderblock) > 0
+    orderblock testOrderblock = na
+    int counter = 0
+    for i = array.size(bullishOrderblock) - 1 to 0 by 1
+        testOrderblock := array.get(bullishOrderblock, i)
+        if counter < numberObShow
+            testOrderblock.block.set_right(time)
+            if close < testOrderblock.value
+                testOrderblock.block.delete()
+                array.remove(bullishOrderblock, i)
+            counter := counter + 1
+            counter
+        else
+            testOrderblock.block.set_right(testOrderblock.barStart)
+
+if array.size(bearishOrderblock) > 0
+    orderblock testOrderblock = na
+    int counter = 0
+    for i = array.size(bearishOrderblock) - 1 to 0 by 1
+        testOrderblock := array.get(bearishOrderblock, i)
+        if counter < numberObShow
+            testOrderblock.block.set_right(time)
+            if close > testOrderblock.value
+                testOrderblock.block.delete()
+                array.remove(bearishOrderblock, i)
+            counter := counter + 1
+            counter
+        else
+            testOrderblock.block.set_right(testOrderblock.barStart)
+
+// Liquidity
+
+phLiquidity = ta.pivothigh(high, liquidity_len, liquidity_len)
+plLiquidity = ta.pivotlow(low, liquidity_len, liquidity_len)
+
+if not na(phLiquidity) and liquidityBool
+    liquidity newLiquidity = liquidity.new()
+    newLiquidity.value := high[liquidity_len]
+    newLiquidity.barStart := time[liquidity_len]
+    newLiquidity.barEnd := time
+    newLiquidity.broken := false
+    newLiquidity.liquidityLine := line.new(x1 = newLiquidity.barStart, y1 = newLiquidity.value, x2 = newLiquidity.barEnd, y2 = newLiquidity.value, xloc = xloc.bar_time, color = downColor, width = 1)
+    array.push(bearishLiquidity, newLiquidity)
+    if array.size(bearishLiquidity) > 7
+        deletedLiquidity = array.shift(bearishLiquidity)
+        deletedLiquidity.liquidityLine.delete()
+
+if not na(plLiquidity) and liquidityBool
+    liquidity newLiquidity = liquidity.new()
+    newLiquidity.value := low[liquidity_len]
+    newLiquidity.barStart := time[liquidity_len]
+    newLiquidity.barEnd := time
+    newLiquidity.broken := false
+    newLiquidity.liquidityLine := line.new(x1 = newLiquidity.barStart, y1 = newLiquidity.value, x2 = newLiquidity.barEnd, y2 = newLiquidity.value, xloc = xloc.bar_time, color = upColor, width = 1)
+    array.push(bullishLiquidity, newLiquidity)
+    if array.size(bullishLiquidity) > 7
+        deletedLiquidity = array.shift(bullishLiquidity)
+        deletedLiquidity.liquidityLine.delete()
+
+// Update liquidity
+if array.size(bearishLiquidity) > 0
+    liquidity testLiquidity = na
+    for i = array.size(bearishLiquidity) - 1 to 0 by 1
+        testLiquidity := array.get(bearishLiquidity, i)
+        if high > testLiquidity.value
+            testLiquidity.liquidityLine.set_x2(time)
+            testLiquidity.liquidityLine.set_style(line.style_dashed)
+            array.remove(bearishLiquidity, i)
+            if close < testLiquidity.value
+                testLiquidity.sweep := label.new(x = time, y = high, text = 'x', xloc = xloc.bar_time, style = label.style_label_down, size = size.normal, textcolor = color.new(color.purple, 0), color = color.new(color.white, 100))
+                testLiquidity.sweep
+
+        else
+            testLiquidity.liquidityLine.set_x2(time)
+
+if array.size(bullishLiquidity) > 0
+    liquidity testLiquidity = na
+    for i = array.size(bullishLiquidity) - 1 to 0 by 1
+        testLiquidity := array.get(bullishLiquidity, i)
+        if low < testLiquidity.value
+            testLiquidity.liquidityLine.set_x2(time)
+            testLiquidity.liquidityLine.set_style(line.style_dashed)
+            array.remove(bullishLiquidity, i)
+            if close > testLiquidity.value
+                testLiquidity.sweep := label.new(x = time, y = low, text = 'x', xloc = xloc.bar_time, style = label.style_label_up, size = size.normal, textcolor = color.new(color.teal, 0), color = color.new(color.white, 100))
+                testLiquidity.sweep
+
+        else
+            testLiquidity.liquidityLine.set_x2(time)
+
+//Watermark
+if not hideWatermark
+    var tableData = table.new(position = position.top_right, columns = 1, rows = 1, frame_color = color.orange, frame_width = 0)
+    table.cell(tableData, 0, 0, 'UAlgo', text_color = color.new(color.orange, 0), text_size = size.large)
+
+// Trendlines
+
+extendTrendline(lineId, startIndex, startValue, endIndex, endValue) =>
+    slope = (endValue - startValue) / (endIndex - startIndex)
+    newEndIndex = bar_index
+    newEndValue = startValue + slope * (newEndIndex - startIndex)
+    line.set_x2(lineId, newEndIndex)
+    line.set_y2(lineId, newEndValue)
+
+getSlope(startIndex, startValue, endIndex, endValue) =>
+    slope = (endValue - startValue) / (endIndex - startIndex)
+    slope
+if showTrendLines
+    phTrend = ta.pivothigh(high, trendLineLength, trendLineLength)
+    plTrend = ta.pivotlow(low, trendLineLength, trendLineLength)
+
+    bullishTrendLineStart = ta.valuewhen(not na(plTrend), bar_index[trendLineLength], 1)
+    bullishTrendLineEnd = ta.valuewhen(not na(plTrend), bar_index[trendLineLength], 0)
+    bearishTrendLineStart = ta.valuewhen(not na(phTrend), bar_index[trendLineLength], 1)
+    bearishTrendLineEnd = ta.valuewhen(not na(phTrend), bar_index[trendLineLength], 0)
+
+    bullishTrendLineStartVal = ta.valuewhen(not na(plTrend), low[trendLineLength], 1)
+    bullishTrendLineEndVal = ta.valuewhen(not na(plTrend), low[trendLineLength], 0)
+    bearishTrendLineStartVal = ta.valuewhen(not na(phTrend), high[trendLineLength], 1)
+    bearishTrendLineEndVal = ta.valuewhen(not na(phTrend), high[trendLineLength], 0)
+
+    line.delete(newBearishTrendline)
+    line.delete(newBullishTrendline)
+
+    slopeBearish = getSlope(bearishTrendLineStart, bearishTrendLineStartVal, bearishTrendLineEnd, bearishTrendLineEndVal)
+    slopeBullish = getSlope(bullishTrendLineStart, bullishTrendLineStartVal, bullishTrendLineEnd, bullishTrendLineEndVal)
+
+    if slopeBearish < 0
+        newBearishTrendline := line.new(x1 = bearishTrendLineStart, y1 = bearishTrendLineStartVal, x2 = bar_index, y2 = bearishTrendLineEndVal, xloc = xloc.bar_index, color = downTlColor, width = 2)
+        newBearishTrendline
+    if slopeBullish > 0
+        newBullishTrendline := line.new(x1 = bullishTrendLineStart, y1 = bullishTrendLineStartVal, x2 = bar_index, y2 = bullishTrendLineEndVal, xloc = xloc.bar_index, color = upTlColor, width = 2)
+        newBullishTrendline
+
+    // Extend the trendlines
+    if not na(newBearishTrendline)
+        extendTrendline(newBearishTrendline, bearishTrendLineStart, bearishTrendLineStartVal, bearishTrendLineEnd, bearishTrendLineEndVal)
+
+    if not na(newBullishTrendline)
+        extendTrendline(newBullishTrendline, bullishTrendLineStart, bullishTrendLineStartVal, bullishTrendLineEnd, bullishTrendLineEndVal)

@@ -1,0 +1,112 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+//@version=5
+
+indicator("Liquidity Voids (FVG) [LuxAlgo]", "LuxAlgo - Liquidity Voids (FVG)", overlay = true, max_boxes_count = 500)
+
+//------------------------------------------------------------------------------
+// Settings
+//-----------------------------------------------------------------------------{
+
+mdTT = 'The mode option controls the number of visual objects presented, where\n\n- Historical, takes into account all data available to the user\n- Present, takes into account only the last X bars specified in the \'# Bars\' option'
+mode = input.string('Historical', title = 'Mode', options =['Present', 'Historical'], inline = 'MOD')
+back = input.int   (360, ' # Bars', minval = 100, maxval = 5000, step = 10, inline = 'MOD', tooltip = mdTT)
+
+lqGR = 'Liquidity Detection'
+lqTT = 'Act as a filter while detecting the Liquidity Voids. When set to 0 means no filtering is applied, increasing the value causes the script to check the width of the void compared to a fixed-length ATR value'
+lqTH = input.float(.5, 'Liquidity Voids Threshold', minval = 0, step = .1, group = lqGR, tooltip = lqTT)
+lqBC = input.color(color.new(#089981, 73), 'Bullish', inline = 'VD', group = lqGR)
+lqSC = input.color(color.new(#f23645, 73), 'Bearish', inline = 'VD', group = lqGR)
+lqTX = input.bool (false, 'Label', inline = 'VD', group = lqGR)
+
+lqFT = 'Toggles the visibility of the Filled Liquidity Voids'
+lqVF = input.bool (true, 'Filled Liquidity Voids', inline = 'FL', group = lqGR, tooltip = lqFT)
+lqFC = input.color(color.new(#787b86, 73), '', inline = 'FL', group = lqGR)
+
+//-----------------------------------------------------------------------------}
+// User Defined Types
+//-----------------------------------------------------------------------------{
+
+// @type        bar properties with their values 
+//
+// @field h     (float) high price of the bar
+// @field l     (float) low price of the bar
+// @field c     (float) close price of the bar
+// @field i     (int) index of the bar
+
+type bar
+    float h = high
+    float l = low
+    float c = close
+    int   i = bar_index
+
+//-----------------------------------------------------------------------------}
+// Variables
+//-----------------------------------------------------------------------------{
+
+bar b = bar.new()
+var lqV = array.new_box()
+
+//-----------------------------------------------------------------------------}
+// Calculations
+//-----------------------------------------------------------------------------{
+
+per = mode == 'Present' ? last_bar_index - b.i <= back : true
+atr = ta.atr(144) * lqTH
+
+if per
+    bull = (b.l - b.h[2]) > atr and b.l > b.h[2] and b.c[1] > b.h[2]
+
+    if bull 
+        l = 13
+        if bull[1] 
+            st = math.abs(b.l - b.l[1]) / l
+            for i = 0 to l - 1
+                array.push(lqV, box.new(b.i - 2, b.l[1] + (i + 1) * st, b.i, b.l[1] + i * st, na, bgcolor = lqBC ))
+        else   
+            st = math.abs(b.l - b.h[2]) / l
+            for i = 0 to l - 1
+                if lqTX and i == 0
+                    array.push(lqV, box.new(b.i - 2, b.h[2] + (i + 1) * st, b.i, b.h[2] + i * st, na, text = 'Liquidity Void   ', text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_bottom, text_color = na, bgcolor = lqBC ))
+                else
+                    array.push(lqV, box.new(b.i - 2, b.h[2] + (i + 1) * st, b.i, b.h[2] + i * st, na, bgcolor = lqBC ))
+
+    bear = (b.l[2] - b.h) > atr and b.h < b.l[2] and b.c[1] < b.l[2]
+
+    if bear
+        l = 13
+        if bear[1]
+            st = math.abs(b.h[1] - b.h) / l
+            for i = 0 to l - 1
+                array.push(lqV, box.new(b.i - 2, b.h + (i + 1) * st, b.i, b.h + i * st, na, bgcolor = lqSC ))
+        else
+            st = math.abs(b.l[2] - b.h) / l
+            for i = 0 to l - 1
+                if lqTX and i == l - 1
+                    array.push(lqV, box.new(b.i - 2, b.h + (i + 1) * st, b.i, b.h + i * st, na, text = 'Liquidity Void   ', text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_top, text_color = na, bgcolor = lqSC ))
+                else
+                    array.push(lqV, box.new(b.i - 2, b.h + (i + 1) * st, b.i, b.h + i * st, na, bgcolor = lqSC ))
+
+if lqV.size() > 0
+    qt = lqV.size()
+
+    for bn = qt - 1 to 0
+        if bn < lqV.size()
+            cb = lqV.get(bn)
+            tBX = cb.get_top()
+            bBX = cb.get_bottom()
+            if b.h > bBX and b.l < tBX
+                if lqVF
+                    cb.set_bgcolor(lqFC)
+                else
+                    cb.delete()
+                lqV.remove(bn)
+            else
+                cb.set_right(b.i + 1)
+
+                if b.i - cb.get_left() > 21
+                    cb.set_text_color(chart.fg_color)
+
+    if lqV.size() > 500
+        lqV.shift()
+//-----------------------------------------------------------------------------}

@@ -1,0 +1,57 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Xaviz
+
+//#####©ÉÉÉÉ¶N###############################################
+//####*..´´´´´´,,,»ëN########################################
+//###ë..´´´´´´,,,,,,''%©#####################################
+//###'´´´´´´,,,,,,,'''''?¶###################################
+//##o´´´´´´,,,,,,,''''''''*©#################################
+//##'´´´´´,,,,,,,'''''''^^^~±################################
+//#±´´´´´,,,,,,,''''''''^í/;~*©####æ%;í»~~~~;==I±N###########
+//#»´´´´,,,,,,'''''''''^;////;»¶X/í~~/~~~;=~~~~~~~~*¶########
+//#'´´´,,,,,,''''''''^^;////;%I^~/~~/~~~=~~~;=?;~~~~;?ë######
+//©´´,,,,,,,''''''''^^~/////X~/~~/~~/~~»í~~=~~~~~~~~~~^;É####
+//¶´,,,,,,,''''''''^^^;///;%;~/~~;í~~»~í?~?~~~?I/~~~~?*=íÑ###
+//N,,,,,,,'''''''^^^^^///;;o/~~;;~~;£=»í»;IX/=~~~~~~^^^^'*æ##
+//#í,,,,,''''''''^^^^^;;;;;o~»~~~~íX//~/»~;í?IíI»~~^/*?'''=N#
+//#%,,,'''''''''^^^^^^í;;;;£;~~~//»I»/£X/X/»í*&~~~^^^^'^*~'É#
+//#©,,''''''''^^^^^^^^~;;;;&/~/////*X;í;o*í»~=*?*===^'''''*£#
+//##&''''''''^^^^^^^^^^~;;;;X=í~~~»;;;/~;í»~»±;^^^^^';=''''É#
+//##N^''''''^^^^^^^^^^~~~;;;;/£;~~/»~~»~~///o~~^^^^''''?^',æ#
+//###Ñ''''^^^^^^^^^^^~~~~~;;;;;í*X*í»;~~IX?~~^^^^/?'''''=,=##
+//####X'''^^^^^^^^^^~~~~~~~~;;íííííí~~í*=~~~~Ií^'''=''''^»©##
+//#####£^^^^^^^^^^^~~~~~~~~~~~íííííí~~~~~*~^^^;/''''='',,N###
+//######æ~^^^^^^^^~~~~~~~~~~~~~~íííí~~~~~^*^^^'=''''?',,§####
+//########&^^^^^^~~~~~~~~~~~~~~~~~~~~~~~^^=^^''=''''?,íN#####
+//#########N?^^~~~~~~~~~~~~~~~~~~~~~~~~^^^=^''^?''';í@#######
+//###########N*~~~~~~~~~~~~~~~~~~~~~~~^^^*'''^='''/É#########
+//##############@;~~~~~~~~~~~~~~~~~~~^^~='''~?'';É###########
+//#################É=~~~~~~~~~~~~~~^^^*~'''*~?§##############
+//#####################N§£I/~~~~~~»*?~»o§æN##################
+
+//@version=4
+strategy("RSI-VWAP INDICATOR", overlay=false, initial_capital = 1000, currency = "USD", pyramiding = 5, default_qty_type = strategy.cash, default_qty_value = 1000, commission_value = 0.04)
+
+// ================================================================================================================================================================================
+// RSI VWAP INDICATOR
+// ================================================================================================================================================================================
+
+// Initial inputs
+Act_RSI_VWAP = input(true, "RSI VOLUME WEIGHTED AVERAGE PRICE")
+RSI_VWAP_length = input(17, "RSI-VWAP LENGTH")
+RSI_VWAP_overSold = input(19, "RSI-VWAP OVERSOLD", type=input.float)
+RSI_VWAP_overBought = input(80, "RSI-VWAP OVERBOUGHT", type=input.float)
+
+// RSI with VWAP as source
+RSI_VWAP = rsi(vwap(close), RSI_VWAP_length)
+
+// Plotting, overlay=false
+r=plot(RSI_VWAP, color = RSI_VWAP > RSI_VWAP_overBought ? color.red : RSI_VWAP < RSI_VWAP_overSold ? color.lime : color.blue, title="rsi", linewidth=2, style=plot.style_line)
+h1=plot(RSI_VWAP_overBought, color = color.gray, style=plot.style_stepline)
+h2=plot(RSI_VWAP_overSold, color = color.gray, style=plot.style_stepline)
+fill(r,h1, color = RSI_VWAP > RSI_VWAP_overBought ? color.red : na, transp = 60)
+fill(r,h2, color = RSI_VWAP < RSI_VWAP_overSold ? color.lime : na, transp = 60)
+
+// Long only Backtest
+strategy.entry("Long", strategy.long, when = (crossover(RSI_VWAP, RSI_VWAP_overSold)))
+strategy.close("Long", when = (crossunder(RSI_VWAP, RSI_VWAP_overBought)))

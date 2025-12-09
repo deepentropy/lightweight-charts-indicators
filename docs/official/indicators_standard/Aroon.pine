@@ -1,0 +1,7 @@
+//@version=6
+indicator(title="Aroon", shorttitle="Aroon", overlay=false, format=format.percent, precision=2, timeframe="", timeframe_gaps=true)
+length = input.int(14, minval=1)
+upper = 100 * (ta.highestbars(high, length + 1) + length)/length
+lower = 100 * (ta.lowestbars(low, length + 1) + length)/length
+plot(upper, "Aroon Up", color=#FB8C00)
+plot(lower, "Aroon Down", color=#2962FF)

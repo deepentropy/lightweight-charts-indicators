@@ -1,0 +1,219 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Violent
+//@version=4
+
+study("Stochastic Heat Map", shorttitle="SHM", overlay=false)
+
+_source = close
+
+MA =        input(title="MA", options=["SMA", "EMA", "WMA"], defval="EMA")
+Theme =     input(title="Theme", options=["Theme 1", "Theme 2", "Theme 3"], defval="Theme 3")
+inc =       input(title="Increment", defval=10)
+smooth =    input(title="Smooth Fast", defval=2, type=input.integer)
+smoothSlow= input(title="Smooth Slow", defval=21, type=input.integer)
+plotNumber= input(title="Plot Number", defval=28, minval=1, maxval=28, type=input.integer)
+PaintBars = input(title="Paint Bars", defval=true, type=input.bool)
+IncType =   input(title="Waves", defval=false, type=input.bool)
+
+trans = 0
+
+cp1 = color.new(#01ff00, trans)
+cp2 = color.new(#05d904, trans)
+cp3 = color.new(#04b504, trans)
+cp4 = color.new(#039103, trans)
+cp5 = color.new(#027502, trans)
+
+cn1 = color.new(#ff0505, trans)
+cn2 = color.new(#d60606, trans)
+cn3 = color.new(#b80606, trans)
+cn4 = color.new(#910303, trans)
+cn5 = color.new(#750202, trans)
+
+cp6 =  color.new(#00ddff, trans)
+cp7 =  color.new(#04bcd9, trans)
+cp8 =  color.new(#049cb3, trans)
+cp9 =  color.new(#047f91, trans)
+cp10 = color.new(#046775, trans)
+
+cn6 =  color.new(#d800ff, trans)
+cn7 =  color.new(#bb04db, trans)
+cn8 =  color.new(#9b05b5, trans)
+cn9 =  color.new(#7b038f, trans)
+cn10 = color.new(#640275, trans)
+
+cp11 = color.new(#cf0000, trans)
+cp12 = color.new(#f25811, trans)
+cp13 = color.new(#f29811, trans)
+cp14 = color.new(#eef211, trans)
+cp15 = color.new(#3af211, trans)
+
+cn11 = color.new(#02269e, trans)
+cn12 = color.new(#0f44f5, trans)
+cn13 = color.new(#1176f2, trans)
+cn14 = color.new(#0093c9, trans)
+cn15 = color.new(#11e7f2, trans)
+
+fc1 = color.new(color.white, 0)
+sc1 = color.new(color.silver, 0)
+fc2 = color.new(color.white, 0)
+sc2 = color.new(color.blue, 0)
+fc3 = color.new(color.white, 0)
+sc3 = color.new(color.orange, 0)
+
+fastColour = Theme == "Theme 1" ? fc1 : Theme == "Theme 2" ? fc2  : fc3
+slowColour = Theme == "Theme 1" ? sc1 : Theme == "Theme 2" ? sc2  : sc3
+
+pColour1 = Theme == "Theme 1" ? cp1 : Theme == "Theme 2" ? cp6  : cp11
+pColour2 = Theme == "Theme 1" ? cp2 : Theme == "Theme 2" ? cp7  : cp12
+pColour3 = Theme == "Theme 1" ? cp3 : Theme == "Theme 2" ? cp8  : cp13
+pColour4 = Theme == "Theme 1" ? cp4 : Theme == "Theme 2" ? cp9  : cp14
+pColour5 = Theme == "Theme 1" ? cp5 : Theme == "Theme 2" ? cp10 : cp15
+
+nColour1 = Theme == "Theme 1" ? cn1 : Theme == "Theme 2" ? cn6  : cn11
+nColour2 = Theme == "Theme 1" ? cn2 : Theme == "Theme 2" ? cn7  : cn12
+nColour3 = Theme == "Theme 1" ? cn3 : Theme == "Theme 2" ? cn8  : cn13
+nColour4 = Theme == "Theme 1" ? cn4 : Theme == "Theme 2" ? cn9  : cn14
+nColour5 = Theme == "Theme 1" ? cn5 : Theme == "Theme 2" ? cn10 : cn15
+
+getColour(a) =>
+    if(a >= 90)
+        pColour1
+    else
+        if(a >= 80)
+            pColour2
+        else
+            if(a >= 70)
+                pColour3
+            else
+                if(a >= 60)
+                    pColour4
+                else
+                    if(a >= 50)
+                        pColour5
+                    else
+                        if(a >= 40)
+                            nColour5
+                        else
+                            if(a >= 30)
+                                nColour4
+                            else
+                                if(a >= 20)
+                                    nColour3
+                                else
+                                    if(a >= 10)
+                                        nColour2
+                                    else
+                                        if(a >= 0)
+                                            nColour1
+                                            
+getStoch(i, incr) =>
+    c = (i * inc)
+    s = smooth + incr
+    if MA == "SMA"
+        sma(stoch(_source, high, low, c), s)
+    else
+        if MA == "EMA"
+            ema(stoch(_source, high, low, c), s)
+        else
+            if MA == "WMA"
+                wma(stoch(_source, high, low, c), s)
+
+stoch1 =  plotNumber > 0  ? getStoch(IncType ? 1   : 1 , IncType ? 1  : 0) : 0
+stoch2 =  plotNumber > 1  ? getStoch(IncType ? 2   : 2 , IncType ? 2  : 0) : 0
+stoch3 =  plotNumber > 2  ? getStoch(IncType ? 3   : 3 , IncType ? 3  : 0) : 0
+stoch4 =  plotNumber > 3  ? getStoch(IncType ? 4   : 4 , IncType ? 4  : 0) : 0
+stoch5 =  plotNumber > 4  ? getStoch(IncType ? 5   : 5 , IncType ? 5  : 0) : 0
+stoch6 =  plotNumber > 5  ? getStoch(IncType ? 6   : 6 , IncType ? 6  : 0) : 0
+stoch7 =  plotNumber > 6  ? getStoch(IncType ? 7   : 7 , IncType ? 7  : 0) : 0
+stoch8 =  plotNumber > 7  ? getStoch(IncType ? 8   : 8 , IncType ? 8  : 0) : 0
+stoch9 =  plotNumber > 8  ? getStoch(IncType ? 9   : 9 , IncType ? 9  : 0) : 0
+stoch10 = plotNumber > 9  ? getStoch(IncType ? 10  : 10, IncType ? 10 : 0) : 0
+stoch11 = plotNumber > 10 ? getStoch(IncType ? 15  : 11, IncType ? 11 : 0) : 0
+stoch12 = plotNumber > 11 ? getStoch(IncType ? 20  : 12, IncType ? 12 : 0) : 0
+stoch13 = plotNumber > 12 ? getStoch(IncType ? 25  : 13, IncType ? 13 : 0) : 0
+stoch14 = plotNumber > 13 ? getStoch(IncType ? 30  : 14, IncType ? 14 : 0) : 0
+stoch15 = plotNumber > 14 ? getStoch(IncType ? 35  : 15, IncType ? 15 : 0) : 0
+stoch16 = plotNumber > 15 ? getStoch(IncType ? 40  : 16, IncType ? 16 : 0) : 0
+stoch17 = plotNumber > 16 ? getStoch(IncType ? 45  : 17, IncType ? 17 : 0) : 0
+stoch18 = plotNumber > 17 ? getStoch(IncType ? 50  : 18, IncType ? 18 : 0) : 0
+stoch19 = plotNumber > 18 ? getStoch(IncType ? 55  : 19, IncType ? 19 : 0) : 0
+stoch20 = plotNumber > 19 ? getStoch(IncType ? 60  : 20, IncType ? 20 : 0) : 0
+stoch21 = plotNumber > 20 ? getStoch(IncType ? 70  : 21, IncType ? 21 : 0) : 0
+stoch22 = plotNumber > 21 ? getStoch(IncType ? 80  : 22, IncType ? 22 : 0) : 0
+stoch23 = plotNumber > 22 ? getStoch(IncType ? 90  : 23, IncType ? 23 : 0) : 0
+stoch24 = plotNumber > 23 ? getStoch(IncType ? 100 : 24, IncType ? 24 : 0) : 0
+stoch25 = plotNumber > 24 ? getStoch(IncType ? 110 : 25, IncType ? 25 : 0) : 0
+stoch26 = plotNumber > 25 ? getStoch(IncType ? 120 : 26, IncType ? 26 : 0) : 0
+stoch27 = plotNumber > 26 ? getStoch(IncType ? 140 : 27, IncType ? 27 : 0) : 0
+stoch28 = plotNumber > 27 ? getStoch(IncType ? 160 : 28, IncType ? 28 : 0) : 0
+
+colour1 =  getColour(stoch1) 
+colour2 =  getColour(stoch2) 
+colour3 =  getColour(stoch3) 
+colour4 =  getColour(stoch4) 
+colour5 =  getColour(stoch5) 
+colour6 =  getColour(stoch6) 
+colour7 =  getColour(stoch7) 
+colour8 =  getColour(stoch8) 
+colour9 =  getColour(stoch9) 
+colour10 = getColour(stoch10)
+colour11 = getColour(stoch11)
+colour12 = getColour(stoch12)
+colour13 = getColour(stoch13)
+colour14 = getColour(stoch14)
+colour15 = getColour(stoch15)
+colour16 = getColour(stoch16)
+colour17 = getColour(stoch17)
+colour18 = getColour(stoch18)
+colour19 = getColour(stoch19)
+colour20 = getColour(stoch20)
+colour21 = getColour(stoch21)
+colour22 = getColour(stoch22)
+colour23 = getColour(stoch23)
+colour24 = getColour(stoch24)
+colour25 = getColour(stoch25)
+colour26 = getColour(stoch26)
+colour27 = getColour(stoch27)
+colour28 = getColour(stoch28)
+
+getAverage = (stoch1 + stoch2 + stoch3 + stoch4 + stoch5 + stoch6 + stoch7 + stoch8 + stoch9 + stoch10 + stoch11 + stoch12 + stoch13 + stoch14 + stoch15 + stoch16 + stoch17 + stoch18 + stoch19 + stoch20 + stoch21 + stoch22 + stoch23 + stoch24 + stoch25 + stoch26 + stoch27 + stoch28) / plotNumber
+fast = ((getAverage / 100) * plotNumber)
+slow = MA == "SMA" ? sma(fast, smoothSlow) : MA == "EMA" ? ema(fast, smoothSlow) : wma(fast, smoothSlow)
+barColour = getColour(getAverage)
+
+plot1 =  plot(plotNumber > 0  ? 0 : na, color=colour1, linewidth=1)
+plot2 =  plot(plotNumber > 1  ? 1 : na, color=colour2, linewidth=1)
+plot3 =  plot(plotNumber > 2  ? 2 : na, color=colour3, linewidth=1)
+plot4 =  plot(plotNumber > 3  ? 3 : na, color=colour4, linewidth=1)
+plot5 =  plot(plotNumber > 4  ? 4 : na, color=colour5, linewidth=1)
+plot6 =  plot(plotNumber > 5  ? 5 : na, color=colour6, linewidth=1)
+plot7 =  plot(plotNumber > 6  ? 6 : na, color=colour7, linewidth=1)
+plot8 =  plot(plotNumber > 7  ? 7 : na, color=colour8, linewidth=1)
+plot9 =  plot(plotNumber > 8  ? 8 : na, color=colour9, linewidth=1)
+plot10 = plot(plotNumber > 9  ? 9 : na, color=colour10, linewidth=1)
+plot11 = plot(plotNumber > 10 ? 10 : na, color=colour11, linewidth=1)
+plot12 = plot(plotNumber > 11 ? 11 : na, color=colour12, linewidth=1)
+plot13 = plot(plotNumber > 12 ? 12 : na, color=colour13, linewidth=1)
+plot14 = plot(plotNumber > 13 ? 13 : na, color=colour14, linewidth=1)
+plot15 = plot(plotNumber > 14 ? 14 : na, color=colour15, linewidth=1)
+plot16 = plot(plotNumber > 15 ? 15 : na, color=colour16, linewidth=1)
+plot17 = plot(plotNumber > 16 ? 16 : na, color=colour17, linewidth=1)
+plot18 = plot(plotNumber > 17 ? 17 : na, color=colour18, linewidth=1)
+plot19 = plot(plotNumber > 18 ? 18 : na, color=colour19, linewidth=1)
+plot20 = plot(plotNumber > 19 ? 19 : na, color=colour20, linewidth=1)
+plot21 = plot(plotNumber > 20 ? 20 : na, color=colour21, linewidth=1)
+plot22 = plot(plotNumber > 21 ? 21 : na, color=colour22, linewidth=1)
+plot23 = plot(plotNumber > 22 ? 22 : na, color=colour23, linewidth=1)
+plot24 = plot(plotNumber > 23 ? 23 : na, color=colour24, linewidth=1)
+plot25 = plot(plotNumber > 24 ? 24 : na, color=colour25, linewidth=1)
+plot26 = plot(plotNumber > 25 ? 25 : na, color=colour26, linewidth=1)
+plot27 = plot(plotNumber > 26 ? 26 : na, color=colour27, linewidth=1)
+plot28 = plot(plotNumber > 27 ? 27 : na, color=colour28, linewidth=1)
+plot29 = plot(plotNumber, color=colour28, linewidth=1)
+
+plot(slow, color=slowColour, linewidth=1, style=plot.style_line)
+plot(fast, color=fastColour, linewidth=1, style=plot.style_line)
+
+barcolor(PaintBars ? barColour : na)
+
+// -->

@@ -1,0 +1,172 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Harmonic Pattern Detection [LuxAlgo]",overlay=true)
+precision = input.float(.01,'XA Precision',step=0.01,group='Precision')
+bullish = input(#0cb51a,'Bullish',group='style')
+bearish = input(#ff1100,'Bullish',group='style')
+
+x = input.time(0,'X',confirm=true,group='Anchor Points')
+a = input.time(0,'A',confirm=true,group='Anchor Points')
+b = input.time(0,'B',confirm=true,group='Anchor Points')
+c = input.time(0,'C',confirm=true,group='Anchor Points')
+d = input.time(0,'D',confirm=true,group='Anchor Points')
+//----
+x_y = ta.valuewhen(time==x,close,0)
+a_y = ta.valuewhen(time==a,close,0)
+b_y = ta.valuewhen(time==b,close,0)
+c_y = ta.valuewhen(time==c,close,0)
+//----
+dist(fib)=>
+    d_y = a_y + fib*(x_y - a_y) 
+    cd = math.abs(d_y-c_y)/math.abs(c_y-b_y)
+    
+ab = math.abs(a_y-b_y)/math.abs(a_y-x_y)
+bc = math.abs(c_y-b_y)/math.abs(a_y-b_y)
+//----
+var tb = table.new(position.top_right,2,4,bgcolor=color.gray)
+
+var float upper_prz = na
+var float lower_prz = na
+var float d_y = na
+
+if time == math.max(x,a,b,c)
+    css = x_y > a_y ? bearish : bullish
+    
+    line.new(x,x_y,a,a_y,xloc=xloc.bar_time,color=css,width=2)
+    line.new(a,a_y,b,b_y,xloc=xloc.bar_time,color=css,width=2)
+    line.new(b,b_y,c,c_y,xloc=xloc.bar_time,color=css,width=2)
+    
+    line.new(x,x_y,b,b_y,xloc=xloc.bar_time,color=css,style=line.style_dotted)
+    line.new(x,x_y,b,b_y,xloc=xloc.bar_time,color=css,style=line.style_dotted)
+    line.new(a,a_y,c,c_y,xloc=xloc.bar_time,color=css,style=line.style_dotted)
+    
+    //----
+    
+    label.new(x,x_y,'X',xloc=xloc.bar_time,color=css,style=x_y > a_y ? label.style_label_down : label.style_label_up
+      ,textcolor=color.white,size=size.small)
+    label.new(a,a_y,'A',xloc=xloc.bar_time,color=css,style=x_y > a_y ? label.style_label_up : label.style_label_down
+      ,textcolor=color.white,size=size.small)
+    label.new(b,b_y,'B',xloc=xloc.bar_time,color=css,style=x_y > a_y ? label.style_label_down : label.style_label_up
+      ,textcolor=color.white,size=size.small)
+    label.new(c,c_y,'C',xloc=xloc.bar_time,color=css,style=x_y > a_y ? label.style_label_up : label.style_label_down
+      ,textcolor=color.white,size=size.small)
+      
+    AB_tooltip = '🦇 0.382-0.5 \n📏 ≈ 0.618 \n🦋 ≈ 0.786 \n🦀 0.382-0.618'
+    BC_tooltip = '🦇 0.382-0.886 \n📏 0.382-0.886 \n🦋 0.382-0.886 \n🦀 0.382-0.886'
+    CD_tooltip = '🦇 1.618-2.618 \n📏 1.130-1.618 \n🦋 1.618-2.240 \n🦀 2.618-3.618'
+    
+    label.new(int(math.avg(x,b)),math.avg(x_y,b_y),str.tostring(ab,'#.###'),xloc=xloc.bar_time,color=css,style=label.style_label_center
+      ,textcolor=color.white,size=size.small,tooltip=AB_tooltip)
+    label.new(int(math.avg(a,c)),math.avg(a_y,c_y),str.tostring(bc,'#.###'),xloc=xloc.bar_time,color=css,style=label.style_label_center
+      ,textcolor=color.white,size=size.small,tooltip=BC_tooltip)
+      
+    //----
+    
+    table.cell(tb,0,0,'🦇 Bat',text_color=color.white,text_halign=text.align_left)
+    table.cell(tb,0,1,'📏 Gartley',text_color=color.white,text_halign=text.align_left)
+    table.cell(tb,0,2,'🦋 Butterfly',text_color=color.white,text_halign=text.align_left)
+    table.cell(tb,0,3,'🦀 Crab',text_color=color.white,text_halign=text.align_left)
+    
+    //Bat
+    if ab > 0.382 and ab < .5 and bc > 0.382 and bc < 0.886 and dist(0.886) > 1.618 and dist(0.886) < 2.618
+        table.cell(tb,1,0,'✔️')
+        table.cell(tb,1,1,'❌')
+        table.cell(tb,1,2,'❌')
+        table.cell(tb,1,3,'❌')
+        
+        d_y := a_y + 0.886*(x_y - a_y) 
+        cd = math.abs(d_y-c_y)/math.abs(c_y-b_y)
+        
+        line.new(c,c_y,d,d_y,xloc=xloc.bar_time,color=css,width=2)
+        line.new(b,b_y,d,d_y,xloc=xloc.bar_time,color=css,style=line.style_dotted)
+    
+        label.new(d,d_y,'D',xloc=xloc.bar_time,color=css,style=x_y > a_y ? label.style_label_down : label.style_label_up
+          ,textcolor=color.white,size=size.small)
+        label.new(int(math.avg(d,b)),math.avg(d_y,b_y),str.tostring(cd,'#.###'),xloc=xloc.bar_time,color=css,style=label.style_label_center
+          ,textcolor=color.white,size=size.small,tooltip=CD_tooltip)
+
+    //Gartley
+    else if ab > 0.618-precision and ab < 0.618+precision and bc > 0.382 and bc < 0.886 and dist(0.786) > 1.13 and dist(0.786) < 1.618
+        table.cell(tb,1,0,'❌')
+        table.cell(tb,1,1,'✔️')
+        table.cell(tb,1,2,'❌')
+        table.cell(tb,1,3,'❌')
+        
+        d_y := a_y + 0.786*(x_y - a_y)
+        cd = math.abs(d_y-c_y)/math.abs(c_y-b_y)
+        
+        line.new(c,c_y,d,d_y,xloc=xloc.bar_time,color=css,width=2)
+        line.new(b,b_y,d,d_y,xloc=xloc.bar_time,color=css,style=line.style_dotted)
+    
+        label.new(d,d_y,'D',xloc=xloc.bar_time,color=css,style=x_y > a_y ? label.style_label_down : label.style_label_up
+          ,textcolor=color.white,size=size.small)
+        label.new(int(math.avg(d,b)),math.avg(d_y,b_y),str.tostring(cd,'#.###'),xloc=xloc.bar_time,color=css,style=label.style_label_center
+          ,textcolor=color.white,size=size.small,tooltip=CD_tooltip)
+    
+    //Butterfly
+    else if ab > 0.786-precision and ab < 0.786+precision and bc > 0.382 and bc < 0.886 and dist(1.27) > 1.618 and dist(1.27) < 2.24
+        table.cell(tb,1,0,'❌')
+        table.cell(tb,1,1,'❌')
+        table.cell(tb,1,2,'✔️')
+        table.cell(tb,1,3,'❌')
+        
+        d_y := a_y + 1.27*(x_y - a_y)
+        cd = math.abs(d_y-c_y)/math.abs(c_y-b_y)
+        
+        line.new(c,c_y,d,d_y,xloc=xloc.bar_time,color=css,width=2)
+        line.new(b,b_y,d,d_y,xloc=xloc.bar_time,color=css,style=line.style_dotted)
+    
+        label.new(d,d_y,'D',xloc=xloc.bar_time,color=css,style=x_y > a_y ? label.style_label_down : label.style_label_up
+          ,textcolor=color.white,size=size.small)
+        label.new(int(math.avg(d,b)),math.avg(d_y,b_y),str.tostring(cd,'#.###'),xloc=xloc.bar_time,color=css,style=label.style_label_center
+          ,textcolor=color.white,size=size.small,tooltip=CD_tooltip)
+    
+    //Crab
+    else if ab > 0.382 and ab < .618 and bc > 0.382 and bc < 0.886 and dist(1.618) > 2.224 and dist(1.618) < 3.618
+        table.cell(tb,1,0,'❌')
+        table.cell(tb,1,1,'❌')
+        table.cell(tb,1,2,'❌')
+        table.cell(tb,1,3,'✔️')
+        
+        d_y := a_y + 1.618*(x_y - a_y)
+        cd = math.abs(d_y-c_y)/math.abs(c_y-b_y)
+        
+        line.new(c,c_y,d,d_y,xloc=xloc.bar_time,color=css,width=2)
+        line.new(b,b_y,d,d_y,xloc=xloc.bar_time,color=css,style=line.style_dotted)
+    
+        label.new(d,d_y,'D',xloc=xloc.bar_time,color=css,style=x_y > a_y ? label.style_label_down : label.style_label_up
+          ,textcolor=color.white,size=size.small)
+        label.new(int(math.avg(d,b)),math.avg(d_y,b_y),str.tostring(cd,'#.###'),xloc=xloc.bar_time,color=css,style=label.style_label_center
+          ,textcolor=color.white,size=size.small,tooltip=CD_tooltip)
+    else    
+        table.cell(tb,1,0,'❌')
+        table.cell(tb,1,1,'❌')
+        table.cell(tb,1,2,'❌')
+        table.cell(tb,1,3,'❌')
+        
+        d_y := a_y + 0.886*(x_y - a_y)
+        cd = math.abs(d_y-c_y)/math.abs(c_y-b_y)
+        
+        line.new(c,c_y,d,d_y,xloc=xloc.bar_time,color=css,width=2)
+        line.new(b,b_y,d,d_y,xloc=xloc.bar_time,color=css,style=line.style_dotted)
+    
+        label.new(d,d_y,'D',xloc=xloc.bar_time,color=css,style=x_y > a_y ? label.style_label_down : label.style_label_up
+          ,textcolor=color.white,size=size.small)
+        label.new(int(math.avg(d,b)),math.avg(d_y,b_y),str.tostring(cd,'#.###'),xloc=xloc.bar_time,color=css,style=label.style_label_center
+          ,textcolor=color.white,size=size.small,tooltip=CD_tooltip)
+    
+    upper_prz := d_y + 0.382*math.abs(d_y - x_y)
+    lower_prz := d_y - 0.382*math.abs(d_y - x_y)
+    box.new(x,upper_prz,d,lower_prz,border_color=na,xloc=xloc.bar_time,bgcolor=color.new(css,80),extend=extend.both)
+    
+    line.new(x,x_y,d,d_y,xloc=xloc.bar_time,color=css,style=line.style_dotted)
+
+//Alerts
+alertcondition(ta.crossover(close,lower_prz) or ta.crossunder(close,upper_prz),'Price Enter PRZ','Price entered the PRZ')
+alertcondition(ta.cross(close,d_y),'Price Cross D','Price crossed point D')
+
+//PRZ Plots
+plot(upper_prz,'Upper PRZ',na)
+plot(lower_prz,'Lower PRZ',na)

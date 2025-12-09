@@ -1,0 +1,7 @@
+//@version=4
+//trailing Stop Loss Indicator by KıvancOzbilgic
+study("Trailing Stop Loss", "TSL", overlay=true)
+res = input(title="Time Frame", type=input.resolution, defval="D")
+K1 = valuewhen(low > low[1], low[1], 1)
+TSL = security(syminfo.tickerid, res, K1)
+plot(TSL, linewidth=2, color=color.purple, title="TSL")

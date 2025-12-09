@@ -1,0 +1,403 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+//# *
+//# * Study       : Auto Fibonacci Speed Resistance Fan
+//# *                - Auto Fibonacci Speed Resistance Fan, derived from build-in Auto Fib Retracement
+//# *                - Zig Zag, derived from build-in Auto Fib Retracement 
+//# * Author      : © dgtrd
+//# *
+//# * Revision History
+//# *  Release    : Apr 04, 2021
+//# *  Update     : Apr 11, 2021 : added Experimental Alternative of second Fib Fans
+//# *  Update     : Jul 13, 2021 : Thanks to New Pine Feature, removed Time Level Setting Limitation
+//# *  Update     : Feb 08, 2022 : Thanks to New Pine Feature, aadded backgroud coloring option
+//# *                              Additionally, imporved label customizations and converted to Pine v5
+//# *
+//# * ══════════════════════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+
+indicator('Auto Fib Speed Resistance Fans by DGT', 'FibFans ʙʏ DGT ☼☾', true, max_bars_back = 5000, max_lines_count = 500)
+
+// -Inputs ══════════════════════════════════════════════════════════════════════════════════════ //
+tooltip_threshold = 'Deviation is a multiplier that affects how much the price should deviate from the previous pivot in order for the bar to become a new pivot' + 
+                     '\n\nDepth affects the minimum number of bars that will be taken into account when building'
+
+// ---------------------------------------------------------------------------------------- //
+// pivots threshold
+
+threshold_multiplier = input.float (3, 'Deviation', minval=0, inline='Pivots', tooltip=tooltip_threshold)
+dev_threshold        = ta.atr(10) / close * 100 * threshold_multiplier
+depth                = input.int   (11, 'Depth', minval=1   , inline='Pivots')
+
+secondFans           = input.bool  (false, 'Second Fib Speed Resistance Fan (Experimental Alternative)')
+
+histPivot            = input.int   (0    , 'Historical Fans', minval=0)
+reverse              = input.bool  (false, 'Reverse Fan Levels')
+
+uniColor             = input.bool  (false  , 'UniColor'           , inline='uni')
+uniColor1            = input.color (#0ac9f0, 'First | Second Fans', inline='uni')
+uniColor2            = input.color (#ffa726, ''                   , inline='uni')
+
+lSize                = input.string('Normal', 'Label Size', options=['Small', 'Normal', 'Large'])
+lsize                = lSize == 'Normal' ? size.normal : lSize == 'Small' ? size.small : size.large
+
+show_grid            = input.bool  (true     , 'Grid'                                   , inline='grid')
+color_grid           = input.color (#153899ce, '  '                                     , inline='grid')
+width_grid           = input.int   (1        , '', minval=1                             , inline='grid')
+style_grid           = input.string('Solid'  , '', options=['Dashed', 'Dotted', 'Solid'], inline='grid')
+
+ZigZag               = input.bool  (false  , 'Zig Zag'                                       , inline='ZZ')
+zzColor              = input.color (#c77a08, ''                                              , inline='ZZ')
+zzWidth              = input.int   (1      , ''       , minval=1                             , inline='ZZ')
+zzStyle              = input.string('Solid', ''       , options=['Dashed', 'Dotted', 'Solid'], inline='ZZ')
+
+group_price_levels   = 'Price Levels'
+extendPGrid          = input.bool  (false, 'Price Grid Lines : Extend  |  Apply Level Colors'                                  , inline='EL', group=group_price_levels)
+pGridColor           = input.bool  (false, ''                                                                                  , inline='EL', group=group_price_levels)
+var lbLeft           = input.string('Levels (Prices)' , 'Left Labels' , options=['Levels', 'Prices', 'Levels (Prices)', 'None'], inline='PD', group=group_price_levels)
+var lbRight          = input.string('Levels'          , 'Right Labels', options=['Levels', 'Prices', 'Levels (Prices)', 'None'], inline='PD', group=group_price_levels)
+priceBg              = input.bool  (true , 'Background'                                                                                     , group=group_price_levels)
+
+group_time_levels    = 'Time Levels'
+var tpLabel          = input.bool  (true , 'Top Labels   |   Bottom Lables'                  , inline='TL', group=group_time_levels)
+var btLabel          = input.bool  (true , ''                                                , inline='TL', group=group_time_levels)
+timeBg               = input.bool  (true , 'Background'                                                   , group=group_time_levels)
+
+// -Calculations ════════════════════════════════════════════════════════════════════════════════ //
+
+var line lineLast = na
+var int iLast     = 0
+var int iPrev     = 0
+var float pLast   = 0
+var isHighLast    = false  // otherwise the last pivot is a low pivot
+
+var iPrevPivot    = 0
+var pPrevPivot    = 0.
+var iLastPivot    = 0
+var pLastPivot    = 0.
+
+pivots(src, length, isHigh) =>
+    l2 = length * 2
+    c = nz(src[length])
+    ok = true
+
+    for i = 0 to l2 by 1
+        if isHigh and src[i] > c
+            ok := false
+            ok
+
+        if not isHigh and src[i] < c
+            ok := false
+            ok
+    if ok
+        [bar_index[length], c]
+    else
+        [int(na), float(na)]
+
+[iH, pH] = pivots(high, depth / 2, true )
+[iL, pL] = pivots(low , depth / 2, false)
+
+calc_dev(base_price, price) =>
+    100 * (price - base_price) / price
+
+pivotFound(dev, isHigh, index, price) =>
+    if isHighLast == isHigh and not na(lineLast)
+        // same direction
+        if isHighLast ? price > pLast : price < pLast
+            line.set_xy2(lineLast, index, price)
+            [lineLast, isHighLast]
+        else
+            [line(na), bool(na)]
+    else
+        // reverse the direction (or create the very first line)
+        if math.abs(dev) > dev_threshold
+            // price move is significant
+
+            // ---------------------------------------------------------------------------------------- //
+            [zzCol, zzWid, zzSty] = if not ZigZag
+                [#00000000, 1, line.style_dashed]
+            else
+                [zzColor, zzWidth, zzStyle == 'Solid' ? line.style_solid : zzStyle == 'Dotted' ? line.style_dotted : line.style_dashed]
+            // ---------------------------------------------------------------------------------------- //
+
+            id = line.new(iLast, pLast, index, price, color=zzCol, width=zzWid, style=zzSty)
+            [id, isHigh]
+        else
+            [line(na), bool(na)]
+
+iStartM  = histPivot > 0 ? ta.valuewhen(ta.change(iPrevPivot), iPrevPivot, histPivot - 1) : iLastPivot
+pStartM  = histPivot > 0 ? ta.valuewhen(ta.change(pPrevPivot), pPrevPivot, histPivot - 1) : pLastPivot
+iEndM    = histPivot > 0 ? ta.valuewhen(ta.change(iLastPivot), iLastPivot, histPivot - 1) : line.get_x2(lineLast)
+pEndM    = histPivot > 0 ? ta.valuewhen(ta.change(pLastPivot), pLastPivot, histPivot - 1) : line.get_y2(lineLast)
+
+iPvtDiff = math.abs(iStartM - iEndM)
+pPvtDiff = math.abs(pStartM - pEndM)
+
+var a_lb   = array.new_label()
+var a_lnp1 = array.new_line()
+var a_lnt1 = array.new_line()
+var a_lnp2 = array.new_line()
+var a_lnt2 = array.new_line()
+var a_lf   = array.new_linefill()
+
+if ta.change(time) and array.size(a_lb)   > 0
+    for i = 1 to array.size(a_lb) by 1
+        label.delete(array.shift(a_lb))
+
+if ta.change(time) and array.size(a_lnp1) > 0
+    for i = 1 to array.size(a_lnp1) by 1
+        line.delete(array.shift(a_lnp1))
+
+if ta.change(time) and array.size(a_lnt1) > 0
+    for i = 1 to array.size(a_lnt1) by 1
+        line.delete(array.shift(a_lnt1))
+
+if ta.change(time) and array.size(a_lnp2) > 0
+    for i = 1 to array.size(a_lnp2) by 1
+        line.delete(array.shift(a_lnp2))
+
+if ta.change(time) and array.size(a_lnt2) > 0
+    for i = 1 to array.size(a_lnt2) by 1
+        line.delete(array.shift(a_lnt2))
+
+if ta.change(time) and array.size(a_lf)   > 0
+    for i = 1 to array.size(a_lf) by 1
+        linefill.delete(array.shift(a_lf))
+
+f_crossingLevelX(sr, r) =>
+    r > sr and r < sr[1] or r < sr and r > sr[1]
+
+f_drawLabelX(_x1, _y1, _x2, _y2, _c, _lb, _st) =>
+    if _st
+        if lbRight != 'None'
+            txt = lbRight == 'Levels' ? str.tostring(_lb) : lbRight == 'Prices' ? str.tostring(_y2, format.mintick) : str.tostring(_lb) + ' (' + str.tostring(_y2, format.mintick) + ')'
+            array.push(a_lb, label.new(_x2, _y2, txt, xloc.bar_index, yloc.price, #00000000, extendPGrid ? label.style_label_lower_left  : label.style_label_left , _c, lsize, tooltip=str.tostring(_y2, format.mintick)))
+        if lbLeft != 'None'
+            txt = lbLeft == 'Levels' ? str.tostring(_lb) : lbLeft == 'Prices' ? str.tostring(_y2, format.mintick) : str.tostring(_lb) + ' (' + str.tostring(_y2, format.mintick) + ')'
+            array.push(a_lb, label.new(_x1, _y2, txt, xloc.bar_index, yloc.price, #00000000,                                               label.style_label_right, _c, lsize, tooltip=str.tostring(_y2, format.mintick)))
+    else
+        if tpLabel
+            array.push(a_lb, label.new(_x1, math.max(_y1, _y2), str.tostring(_lb), xloc.bar_index, yloc.price, #00000000, label.style_label_down, _c, lsize))
+        if btLabel
+            array.push(a_lb, label.new(_x1, math.min(_y1, _y2), str.tostring(_lb), xloc.bar_index, yloc.price, #00000000, label.style_label_up  , _c, lsize))
+
+f_drawLineX(_x1, _y1, _x2, _y2, _c, _w, _style, _extend, _level, _ptl, _was) =>
+    style = _style == 'Solid' ? line.style_solid : _style == 'Dotted' ? line.style_dotted : line.style_dashed
+
+    var fibfan = line.new(_x1, _y1, _x2, _y2, xloc.bar_index, _extend ? extend.right : extend.none, _c, style, _w)
+    line.set_xy1(fibfan, _x1, _y1)
+    line.set_xy2(fibfan, _x2, _y2)
+
+    if f_crossingLevelX(close, line.get_price(fibfan, bar_index))
+        alert('AutoFibFan: ' + syminfo.ticker + ' crossing ' + _ptl + ' level ' + str.tostring(_level))
+    
+    // folowing lines will duplicate the lines added to get line fill functionality
+    if _ptl == 'price'
+        if _was == 'first'
+            array.push(a_lnp1, line.new(_x1, _y1, _x2, _y2, xloc.bar_index, _extend ? extend.right : extend.none, _c, style, _w))
+        else
+            array.push(a_lnp2, line.new(_x1, _y1, _x2, _y2, xloc.bar_index, _extend ? extend.right : extend.none, _c, style, _w))
+
+    if _ptl == 'time'
+        if _was == 'first'
+            array.push(a_lnt1, line.new(_x1, _y1, _x2, _y2, xloc.bar_index, _extend ? extend.right : extend.none, _c, style, _w))
+        else
+            array.push(a_lnt2, line.new(_x1, _y1, _x2, _y2, xloc.bar_index, _extend ? extend.right : extend.none, _c, style, _w))
+
+processPriceLevels(show, level, colorL, widthL, styleL) =>
+    pEndY  = pStartM > pEndM ? pEndM   + pPvtDiff * (reverse ? 1 - level : level) : pEndM   - pPvtDiff * (reverse ? 1 - level : level)
+    pEndY2 = pStartM > pEndM ? pStartM - pPvtDiff * (reverse ? 1 - level : level) : pStartM + pPvtDiff * (reverse ? 1 - level : level)
+
+    if show
+        f_drawLineX    (iStartM, pStartM, int(math.round(iEndM)), pEndY , uniColor ? uniColor1 : colorL, widthL, styleL, true, level, 'price', 'first' )
+
+        lines1 = array.size(a_lnp1)
+        if lines1 > 1 and priceBg
+            array.push(a_lf, linefill.new(array.get(a_lnp1, lines1 - 2), array.get(a_lnp1, lines1 - 1), color.new(colorL, 89)))
+
+        if secondFans
+            f_drawLineX(iStartM, pEndM  , int(math.round(iEndM)), pEndY2, uniColor ? uniColor2 : colorL, widthL, styleL, true, level, 'price', 'second')
+            
+            lines2 = array.size(a_lnp2)
+            if lines2 > 1 and priceBg
+                array.push(a_lf, linefill.new(array.get(a_lnp2, lines2 - 2), array.get(a_lnp2, lines2 - 1), color.new(colorL, 89)))
+
+        if show_grid or extendPGrid
+            f_drawLineX(iStartM, pEndY, int(math.round(iEndM)), pEndY, uniColor ? uniColor1 : pGridColor ? colorL : color_grid, width_grid, style_grid, extendPGrid, level, 'grid', 'grid')
+
+        f_drawLabelX(iStartM, pStartM, int(math.round(iEndM)), pEndY, uniColor ? uniColor1 : colorL, level, true)
+
+processTimeLevels(show, level, colorL, widthL, styleL) =>
+    iEndX = iEndM - iPvtDiff * (reverse ? 1 - level : level)
+
+    if show
+        f_drawLineX    (iStartM, pStartM, int(math.round(iEndX)), pEndM  , uniColor ? uniColor1 : colorL, widthL, styleL, true, level, 'time', 'first' )
+
+        lines1 = array.size(a_lnt1)
+        if lines1 > 1 and timeBg
+            array.push(a_lf, linefill.new(array.get(a_lnt1, lines1 - 2), array.get(a_lnt1, lines1 - 1), color.new(colorL, 89)))
+
+        if secondFans
+            f_drawLineX(iStartM, pEndM  , int(math.round(iEndX)), pStartM, uniColor ? uniColor2 : colorL, widthL, styleL, true, level, 'time', 'second')
+        
+            lines2 = array.size(a_lnt2)
+            if lines2 > 1 and timeBg
+                array.push(a_lf, linefill.new(array.get(a_lnt2, lines2 - 2), array.get(a_lnt2, lines2 - 1), color.new(colorL, 89)))
+
+        if show_grid
+            f_drawLineX(int(math.round(iEndX)), pStartM, int(math.round(iEndX)), pEndM, uniColor ? uniColor1 : color_grid, width_grid, style_grid, false, level, 'grid', 'grid')
+
+        f_drawLabelX(int(math.round(iEndX)), pStartM, int(math.round(iEndX)), pEndM, uniColor ? uniColor1 : colorL, level, false)
+
+if not na(iH)
+    dev = calc_dev(pLast, pH)
+    [id, isHigh] = pivotFound(dev, true, iH, pH)
+
+    if not na(id)
+        if id != lineLast
+            // ---------------------------------------------------------------------------------------- //
+            iPrevPivot := line.get_x1(lineLast)
+            pPrevPivot := line.get_y1(lineLast)
+            iLastPivot := line.get_x2(lineLast)
+            pLastPivot := line.get_y2(lineLast)
+
+            if not ZigZag
+            // ---------------------------------------------------------------------------------------- //
+
+                line.delete(lineLast)
+
+        lineLast := id
+        isHighLast := isHigh
+        iPrev := iLast
+        iLast := iH
+        pLast := pH
+        pLast
+else
+    if not na(iL)
+        dev = calc_dev(pLast, pL)
+        [id, isHigh] = pivotFound(dev, false, iL, pL)
+
+        if not na(id)
+            if id != lineLast
+                // ---------------------------------------------------------------------------------------- //
+                iPrevPivot := line.get_x1(lineLast)
+                pPrevPivot := line.get_y1(lineLast)
+                iLastPivot := line.get_x2(lineLast)
+                pLastPivot := line.get_y2(lineLast)
+
+                if not ZigZag
+                // ---------------------------------------------------------------------------------------- //
+
+                    line.delete(lineLast)
+
+            lineLast := id
+            isHighLast := isHigh
+            iPrev := iLast
+            iLast := iL
+            pLast := pL
+            pLast
+
+if ta.change(iLastPivot)
+    alert("AutoFibFan: new zigzag")
+
+pshow_0      = input.bool  (true   , ''                                       , inline='pLevel_0'    , group=group_price_levels)
+pvalue_0     = input.float (0.     , '', step=.1                              , inline='pLevel_0'    , group=group_price_levels)
+pcolor_0     = input.color (#787b86, ''                                       , inline='pLevel_0'    , group=group_price_levels)
+pwidth_0     = input.int   (1      , '', minval=1                             , inline='pLevel_0'    , group=group_price_levels)
+pstyle_0     = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0'    , group=group_price_levels)
+processPriceLevels(pshow_0, pvalue_0, pcolor_0, pwidth_0, pstyle_0)
+
+pshow_0_25   = input.bool  (true   , ''                                       , inline='pLevel_0_25' , group=group_price_levels)
+pvalue_0_25  = input.float (.25    , '', step=.1                              , inline='pLevel_0_25' , group=group_price_levels)
+pcolor_0_25  = input.color (#f57c00, ''                                       , inline='pLevel_0_25' , group=group_price_levels)
+pwidth_0_25  = input.int   (1      , '', minval=1                             , inline='pLevel_0_25' , group=group_price_levels)
+pstyle_0_25  = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_25' , group=group_price_levels)
+processPriceLevels(pshow_0_25, pvalue_0_25, pcolor_0_25, pwidth_0_25, pstyle_0_25)
+
+pshow_0_382  = input.bool  (true   , ''                                       , inline='pLevel_0_382', group=group_price_levels)
+pvalue_0_382 = input.float (.382   , '', step=.1                              , inline='pLevel_0_382', group=group_price_levels)
+pcolor_0_382 = input.color (#81c784, ''                                       , inline='pLevel_0_382', group=group_price_levels)
+pwidth_0_382 = input.int   (1      , '', minval=1                             , inline='pLevel_0_382', group=group_price_levels)
+pstyle_0_382 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_382', group=group_price_levels)
+processPriceLevels(pshow_0_382, pvalue_0_382, pcolor_0_382, pwidth_0_382, pstyle_0_382)
+
+pshow_0_50   = input.bool  (true   , ''                                       , inline='pLevel_0_50' , group=group_price_levels)
+pvalue_0_50  = input.float (.5     , '', step=.1                              , inline='pLevel_0_50' , group=group_price_levels)
+pcolor_0_50  = input.color (#4caf50, ''                                       , inline='pLevel_0_50' , group=group_price_levels)
+pwidth_0_50  = input.int   (1      , '', minval=1                             , inline='pLevel_0_50' , group=group_price_levels)
+pstyle_0_50  = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_50' , group=group_price_levels)
+processPriceLevels(pshow_0_50, pvalue_0_50, pcolor_0_50, pwidth_0_50, pstyle_0_50)
+
+pshow_0_618  = input.bool  (true   , ''                                       , inline='pLevel_0_618', group=group_price_levels)
+pvalue_0_618 = input.float (.618   , '', step=.1                              , inline='pLevel_0_618', group=group_price_levels)
+pcolor_0_618 = input.color (#009688, ''                                       , inline='pLevel_0_618', group=group_price_levels)
+pwidth_0_618 = input.int   (1      , '', minval=1                             , inline='pLevel_0_618', group=group_price_levels)
+pstyle_0_618 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_618', group=group_price_levels)
+processPriceLevels(pshow_0_618, pvalue_0_618, pcolor_0_618, pwidth_0_618, pstyle_0_618)
+
+pshow_0_75   = input.bool  (true   , ''                                       , inline='pLevel_0_75' , group=group_price_levels)
+pvalue_0_75  = input.float (.75    , '', step=.1                              , inline='pLevel_0_75' , group=group_price_levels)
+pcolor_0_75  = input.color (#2196f3, ''                                       , inline='pLevel_0_75' , group=group_price_levels)
+pwidth_0_75  = input.int   (1      , '', minval=1                             , inline='pLevel_0_75' , group=group_price_levels)
+pstyle_0_75  = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_0_75' , group=group_price_levels)
+processPriceLevels(pshow_0_75, pvalue_0_75, pcolor_0_75, pwidth_0_75, pstyle_0_75)
+
+pshow_1      = input.bool  (true   , ''                                       , inline='pLevel_1'    , group=group_price_levels)
+pvalue_1     = input.float (1.     , '', step=.1                              , inline='pLevel_1'    , group=group_price_levels)
+pcolor_1     = input.color (#787b86, ''                                       , inline='pLevel_1'    , group=group_price_levels)
+pwidth_1     = input.int   (1      , '', minval=1                             , inline='pLevel_1'    , group=group_price_levels)
+pstyle_1     = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='pLevel_1'    , group=group_price_levels)
+processPriceLevels(pshow_1, pvalue_1, pcolor_1, pwidth_1, pstyle_1)
+
+tshow_0      = input.bool  (true   , ''                                       , inline='tLevel_0'    , group=group_time_levels)
+tvalue_0     = input.float (0.     , '', step=.1                              , inline='tLevel_0'    , group=group_time_levels)
+tcolor_0     = input.color (#787b86, ''                                       , inline='tLevel_0'    , group=group_time_levels)
+twidth_0     = input.int   (1      , '', minval=1                             , inline='tLevel_0'    , group=group_time_levels)
+tstyle_0     = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='tLevel_0'    , group=group_time_levels)
+processTimeLevels(tshow_0, tvalue_0, tcolor_0, twidth_0, tstyle_0)
+
+tshow_0_25   = input.bool  (true   , ''                                       , inline='tLevel_0_25' , group=group_time_levels)
+tvalue_0_25  = input.float (.25    , '', step=.1                              , inline='tLevel_0_25' , group=group_time_levels)
+tcolor_0_25  = input.color (#f57c00, ''                                       , inline='tLevel_0_25' , group=group_time_levels)
+twidth_0_25  = input.int   (1      , '', minval=1                             , inline='tLevel_0_25' , group=group_time_levels)
+tstyle_0_25  = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='tLevel_0_25' , group=group_time_levels)
+processTimeLevels(tshow_0_25, tvalue_0_25, tcolor_0_25, twidth_0_25, tstyle_0_25)
+
+tshow_0_382  = input.bool  (true   , ''                                       , inline='tLevel_0_382', group=group_time_levels)
+tvalue_0_382 = input.float (.382   , '', step=.1                              , inline='tLevel_0_382', group=group_time_levels)
+tcolor_0_382 = input.color (#81c784, ''                                       , inline='tLevel_0_382', group=group_time_levels)
+twidth_0_382 = input.int   (1      , '', minval=1                             , inline='tLevel_0_382', group=group_time_levels)
+tstyle_0_382 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='tLevel_0_382', group=group_time_levels)
+processTimeLevels(tshow_0_382, tvalue_0_382, tcolor_0_382, twidth_0_382, tstyle_0_382)
+
+tshow_0_50   = input.bool  (true   , ''                                       , inline='tLevel_0_50' , group=group_time_levels)
+tvalue_0_50  = input.float (.5     , '', step=.1                              , inline='tLevel_0_50' , group=group_time_levels)
+tcolor_0_50  = input.color (#4caf50, ''                                       , inline='tLevel_0_50' , group=group_time_levels)
+twidth_0_50  = input.int   (1      , '', minval=1                             , inline='tLevel_0_50' , group=group_time_levels)
+tstyle_0_50  = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='tLevel_0_50' , group=group_time_levels)
+processTimeLevels(tshow_0_50, tvalue_0_50, tcolor_0_50, twidth_0_50, tstyle_0_50)
+
+tshow_0_618  = input.bool  (true   , ''                                       , inline='tLevel_0_618', group=group_time_levels)
+tvalue_0_618 = input.float (.618   , '', step=.1                              , inline='tLevel_0_618', group=group_time_levels)
+tcolor_0_618 = input.color (#009688, ''                                       , inline='tLevel_0_618', group=group_time_levels)
+twidth_0_618 = input.int   (1      , '', minval=1                             , inline='tLevel_0_618', group=group_time_levels)
+tstyle_0_618 = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='tLevel_0_618', group=group_time_levels)
+processTimeLevels(tshow_0_618, tvalue_0_618, tcolor_0_618, twidth_0_618, tstyle_0_618)
+
+tshow_0_75   = input.bool  (true   , ''                                       , inline='tLevel_0_75' , group=group_time_levels)
+tvalue_0_75  = input.float (.75    , '', step=.1                              , inline='tLevel_0_75' , group=group_time_levels)
+tcolor_0_75  = input.color (#2196f3, ''                                       , inline='tLevel_0_75' , group=group_time_levels)
+twidth_0_75  = input.int   (1      , '', minval=1                             , inline='tLevel_0_75' , group=group_time_levels)
+tstyle_0_75  = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='tLevel_0_75' , group=group_time_levels)
+processTimeLevels(tshow_0_75, tvalue_0_75, tcolor_0_75, twidth_0_75, tstyle_0_75)
+
+tshow_1      = input.bool  (true   , ''                                       , inline='tLevel_1'    , group=group_time_levels)
+tvalue_1     = input.float (1.     , '', step=.1                              , inline='tLevel_1'    , group=group_time_levels)
+tcolor_1     = input.color (#787b86, ''                                       , inline='tLevel_1'    , group=group_time_levels)
+twidth_1     = input.int   (1      , '', minval=1                             , inline='tLevel_1'    , group=group_time_levels)
+tstyle_1     = input.string('Solid', '', options=['Dashed', 'Dotted', 'Solid'], inline='tLevel_1'    , group=group_time_levels)
+processTimeLevels(tshow_1, tvalue_1, tcolor_1, twidth_1, tstyle_1)
+
+var table logo = table.new(position.bottom_right, 1, 1)
+table.cell(logo, 0, 0, '☼☾  ', text_size=size.normal, text_color=color.teal)

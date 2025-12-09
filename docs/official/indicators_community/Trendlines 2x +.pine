@@ -1,0 +1,948 @@
+//@version=4
+// // Lij_MC
+//
+// Copy of "Trendlines - JD" script by Duyck, which draws trendlines from the pivot points in the price chart.
+//
+// I have simply Doubled the amount of Trendlines, so now there are;
+//
+// A Primary set of Trendlines at a higher lookback length and Thicker Line Width
+//
+// and
+//
+// A Secondary set of Trendlines at a Lower lookback length and Thinner Line Width
+// 
+// The default values work well when comparing multiple time frames at 3x time difference, play around with these values for other x time variations 
+//
+// I have also simplyfied the Trendline Extension Function to make it more user friendly
+//
+// Please use the Alerts with caution as the Trendline Break function still needs to be optimised
+//
+// Also included are;
+//
+//   Trend Candles to color the bars according to momentum, Trencandles script is a copy of UCS_Trend by ucsgears
+//   &
+//   Support / Resistance Zones
+
+
+study( title="Trendlines 2x +", overlay=true)
+
+// Input variables
+
+ShowTrendCandles  = input(false,title = "Trend Candles")
+
+
+// Support / Resistance Zones Inputs
+// Timeframe 1
+
+ShowTF1SR       = input(false, "Support / Resistance Zones - Timeframe 1")
+TF1             = input(title="----- Support / Resistance Zones - Timeframe 1",                                                                                    type=input.resolution, defval="")
+
+// Timeframe 2  
+
+ShowTF2SR       = input(false, "Support / Resistance Zones - Timeframe 2")
+TF2             = input(title="----- Support / Resistance Zones - Timeframe 2",                                                                                    type=input.resolution, defval="360")
+
+InvertColors      = input(true, title = "Support / Resistance Zones - Invert Colors")
+
+
+a_Color_Type      = input(      title = "---------------------Trendlines - 1 & 2 - Color Scheme-------------",         defval="Colored", options=["Colored", "Monochrome"])
+
+
+a_Show_Primary    = input(true, title = "1 - Primary - Trendlines ---------------------------------------------------------------")
+
+a_Rising_Upper_Falling_Lower = input(false,  "1 - Primary - Rising Upper and Falling Lower Trendlines")
+
+
+a_len             = input(20,   title = "1 - Primary - Lookback Length")
+
+a_Wicks           = input(      title = "1 - Primary - Draw lines from",      defval="Wicks",   options=["Wicks", "Real Bodies"])
+
+a_Extensions      = input(      title = "1 - Primary - Trendline Extensions", defval=" 150",    options=["Infinate", "  25", "  50", "  75", " 100", " 150", " 200", " 300", " 400", " 500", " 750", "1000"])
+
+a_width           = input(1,    title = "1 - Primary - Line Width", minval = 0, maxval = 10)
+
+
+a_Line_Type_In    = input(      title = "1 - Primary - Line Type",      defval="Dashed",   options=["Dashed", "Dotted", "Solid"])
+
+a_Line_Type       = a_Line_Type_In == "Dashed" ? line.style_dashed : a_Line_Type_In == "Dotted" ? line.style_dotted : line.style_solid
+
+
+a_Show_Breaks     = input(      title = "1 - Primary - Trendline Breaks;",      defval="n/a",   options=["Barcolor", "Triangles + Barcolor", "Triangles" , "n/a"])
+
+a_trendline_nr    = input(3,    title = "1 - Primary - Trendline Breaks - Number of Past Trendlines to Check for Breaks",minval=0,maxval=10)
+
+a_select_breaks   = input(true, title = "1 - Primary - Trendline Breaks - Display Only - 'Long' Breaks on Trendlines Connecting 'Highs' and 'Short' for 'Lows'")
+
+
+b_Show_Secondary  = input(true, title = "2 - Secondary - Trendlines ------------------------------------------------------------")
+
+b_Rising_Upper_Falling_Lower = input(false,  "2 - Secondary - Rising Upper and Falling Lower Trendlines")
+
+
+b_len             = input(7,    title = "2 - Secondary - Lookback Length")
+
+b_Wicks           = input(      title = "2 - Secondary - Draw lines from",      defval="Wicks",   options=["Wicks", "Real Bodies"])
+
+b_Extensions      = input(      title = "2 - Secondary - Trendline Extensions", defval="  25",    options=["Infinate", "  25", "  50", "  75", " 100", " 150", " 200", " 300", " 400", " 500", " 750", "1000"])
+
+b_width           = input(1,    title = "2 - Secondary - Line Width", minval = 0, maxval = 10)
+
+
+b_Line_Type_In    = input(      title = "2 - Secondary - Line Type",      defval="Dotted",   options=["Dashed", "Dotted", "Solid"])
+
+b_Line_Type       = b_Line_Type_In == "Dashed" ? line.style_dashed : b_Line_Type_In == "Dotted" ? line.style_dotted : line.style_solid
+
+
+b_Show_Breaks     = input(      title = "2 - Secondary - Trendline Breaks;",      defval="n/a",   options=["Barcolor", "Triangles + Barcolor", "Triangles" , "n/a"])
+
+b_trendline_nr    = input(5,    title = "2 - Secondary - Trendline Breaks - Number of Past Trendlines to Check for Breaks",minval=0,maxval=10)
+
+b_select_breaks   = input(true, title = "2 - Secondary - Trendline Breaks - Display Only - 'Long' Breaks on Trendlines Connecting 'Highs' and 'Short' for 'Lows'")
+
+
+log_chart         = input(false,title = "Log Chart?")
+
+a_bar_time = time - time[1]
+
+b_bar_time = time - time[1]
+
+
+///// Primary Trendlines /////
+
+// Trendline Extensions
+
+a_Extension_Multiplier=
+ a_Extensions=="  25"?  1 :
+ a_Extensions=="  50"?  2 :
+ a_Extensions=="  75"?  3 :
+ a_Extensions==" 100"?  4 :
+ a_Extensions==" 150"?  6 :
+ a_Extensions==" 200"?  8 :
+ a_Extensions==" 300"? 12 :
+ a_Extensions==" 400"? 16 :
+ a_Extensions==" 500"? 20 :
+ a_Extensions==" 750"? 30 :
+ a_Extensions=="1000"? 40 :
+ a_Extensions=="Infinate"? 0 : na
+
+
+// Declaration of trendline function
+a_f_trendline(a__input_function, a__delay, a__only_up, a__extend) =>
+    // Calculate line coordinates (Ax,Ay) - (Bx,By)
+    var int   a_Ax    = 1
+    var int   a_Bx    = 1
+    var float a_By    = 0
+    var float a_slope = 0
+    a_Ay = fixnan(a__input_function)
+    if change(a_Ay)!=0
+        a_Ax := time[a__delay]
+        a_By := a_Ay[1]
+        a_Bx := a_Ax[1]
+        a_slope:= log_chart? ((log(a_Ay) - log(a_By)) / (a_Ax - a_Bx)) : ((a_Ay - a_By) / (a_Ax - a_Bx))
+    else
+        a_Ax := a_Ax[1]
+        a_Bx := a_Bx[1]
+        a_By := a_By[1]
+    // Draw trendlines
+    var line  a_trendline = na
+    var int   a_Axbis  = 0
+    var float a_Aybis  = 0
+    var bool  a__xtend = true
+    a_extension_time   = a_Extension_Multiplier * a_bar_time * 25
+    a_Axbis := a_Ax + a_extension_time
+    a_Aybis := log_chart? (a_Ay * exp(a_extension_time * a_slope)) : (a_Ay + a_extension_time * a_slope)
+    if a_Extension_Multiplier != 0
+        a__xtend := false
+    if change(a_Ay) != 0
+        
+        a_line_color_Rising_Falling      = a_slope * time < 0? (a__only_up ? a_Rising_Upper_Falling_Lower ? (a_Color_Type=="Colored" ? color.gray : color.teal) : na : (a_Color_Type=="Colored" ? color.green : color.teal)) : (a__only_up? (a_Color_Type=="Colored"? color.red : color.teal) : a_Rising_Upper_Falling_Lower ? (a_Color_Type=="Colored"? color.gray : color.teal) : na)
+        a_line_color_Not_Rising_Falling  = a_slope * time < 0? (a__only_up ? na :(a_Color_Type=="Colored" ? color.green : color.teal)) : (a__only_up? (a_Color_Type=="Colored"? color.red : color.teal) : na)
+        
+        a_line_color = a_Show_Primary and not a_Rising_Upper_Falling_Lower ? a_line_color_Not_Rising_Falling : a_Show_Primary and a_Rising_Upper_Falling_Lower ? a_line_color_Rising_Falling : na
+        
+        if not na(a_line_color)
+            a_trendline := line.new(a_Bx, a_By, a_Axbis, a_Aybis, xloc.bar_time, extend = a__xtend? extend.right : extend.none, color = a_line_color, style = a_Line_Type, width = a_width)
+    [a_Bx, a_By, a_Axbis, a_Aybis, a_slope]
+
+
+// Function to get trendline price for X bars ago ("0" = current value)
+a_line_get_price(a__start_time,a__start_price,a__slope,a__lookback_period,a__log_chart) =>
+    var float a_current_price = 0.0
+    a_elapsed_time            = (time-a__start_time)    
+    a_current_price           := a__log_chart?(a__start_price*exp((a_elapsed_time-(a__lookback_period * a_bar_time)) * a__slope)):(a__start_price + (a_elapsed_time - (a__lookback_period * a_bar_time)) * a__slope)
+
+   
+// Function to check for trendline crosses
+a_line_cross(a__check_value, a__start_time, a__start_price, a__slope, a__log_chart) =>
+    var float a_current_value=0.0
+    var float a_previous_value=0.0
+    // Get current and previous price for the trendline
+    a_current_value  := a_line_get_price(a__start_time, a__start_price, a__slope, 0, a__log_chart) // 0, a__log_chart)
+    a_previous_value := a_line_get_price(a__start_time, a__start_price, a__slope, 1, a__log_chart)  //1, a__log_chart)
+    // Return 1 for crossover, -1 for crossunder and 0 for no cross detected
+    a_cross =
+     a__check_value[1] < a_previous_value and a__check_value > a_current_value?  1:
+     a__check_value[1] > a_previous_value and a__check_value < a_current_value? -1:0
+
+
+// Calculate pivot points    
+a_high_point = pivothigh(a_Wicks=="Wicks" ? high : (close > open? close : open),  a_len, a_len / 2)
+a_low_point  = pivotlow( a_Wicks=="Wicks" ? low  : (close > open? open  : close), a_len, a_len / 2)
+
+// Call trendline function for high and low pivot points
+[a_phx1, a_phy1, a_phx2, a_phy2, a_slope_high] = a_f_trendline(a_high_point, a_len / 2, false, true)
+[a_plx1, a_ply1, a_plx2, a_ply2, a_slope_low]  = a_f_trendline(a_low_point,  a_len / 2, true,  true)
+
+
+// Initialition of pseudo array to keep track of last 10 high and 10 low trendline values
+var int a_high_x0=0, var float a_high_y0=0.0, var float a_high_sl0=0.0
+var int a_high_x1=0, var float a_high_y1=0.0, var float a_high_sl1=0.0 
+var int a_high_x2=0, var float a_high_y2=0.0, var float a_high_sl2=0.0 
+var int a_high_x3=0, var float a_high_y3=0.0, var float a_high_sl3=0.0 
+var int a_high_x4=0, var float a_high_y4=0.0, var float a_high_sl4=0.0
+var int a_high_x5=0, var float a_high_y5=0.0, var float a_high_sl5=0.0
+var int a_high_x6=0, var float a_high_y6=0.0, var float a_high_sl6=0.0
+var int a_high_x7=0, var float a_high_y7=0.0, var float a_high_sl7=0.0
+var int a_high_x8=0, var float a_high_y8=0.0, var float a_high_sl8=0.0
+var int a_high_x9=0, var float a_high_y9=0.0, var float a_high_sl9=0.0
+
+var int a_low_x0=0,  var float a_low_y0=0.0,  var float a_low_sl0=0.0
+var int a_low_x1=0,  var float a_low_y1=0.0,  var float a_low_sl1=0.0 
+var int a_low_x2=0,  var float a_low_y2=0.0,  var float a_low_sl2=0.0 
+var int a_low_x3=0,  var float a_low_y3=0.0,  var float a_low_sl3=0.0 
+var int a_low_x4=0,  var float a_low_y4=0.0,  var float a_low_sl4=0.0
+var int a_low_x5=0,  var float a_low_y5=0.0,  var float a_low_sl5=0.0
+var int a_low_x6=0,  var float a_low_y6=0.0,  var float a_low_sl6=0.0
+var int a_low_x7=0,  var float a_low_y7=0.0,  var float a_low_sl7=0.0
+var int a_low_x8=0,  var float a_low_y8=0.0,  var float a_low_sl8=0.0
+var int a_low_x9=0,  var float a_low_y9=0.0,  var float a_low_sl9=0.0
+
+
+// If a new trendline is formed, shift all values in the array one place up and forget the last values
+if change(fixnan(a_high_point))!=0
+    a_high_x9:=a_high_x8, a_high_y9:=a_high_y8, a_high_sl9:=a_high_sl8
+    a_high_x8:=a_high_x7, a_high_y8:=a_high_y7, a_high_sl8:=a_high_sl7
+    a_high_x7:=a_high_x6, a_high_y7:=a_high_y6, a_high_sl7:=a_high_sl6
+    a_high_x6:=a_high_x5, a_high_y6:=a_high_y5, a_high_sl6:=a_high_sl5
+    a_high_x5:=a_high_x4, a_high_y5:=a_high_y4, a_high_sl5:=a_high_sl4
+    a_high_x4:=a_high_x3, a_high_y4:=a_high_y3, a_high_sl4:=a_high_sl3
+    a_high_x3:=a_high_x2, a_high_y3:=a_high_y2, a_high_sl3:=a_high_sl2
+    a_high_x2:=a_high_x1, a_high_y2:=a_high_y1, a_high_sl2:=a_high_sl1
+    a_high_x1:=a_high_x0, a_high_y1:=a_high_y0, a_high_sl1:=a_high_sl0
+    a_high_x0:=a_phx1, a_high_y0:=a_phy1, a_high_sl0:=a_slope_high
+
+if change(fixnan(a_low_point))!=0
+    a_low_x9:=a_low_x8, a_low_y9:=a_low_y8, a_low_sl9:=a_low_sl8
+    a_low_x8:=a_low_x7, a_low_y8:=a_low_y7, a_low_sl8:=a_low_sl7
+    a_low_x7:=a_low_x6, a_low_y7:=a_low_y6, a_low_sl7:=a_low_sl6
+    a_low_x6:=a_low_x5, a_low_y6:=a_low_y5, a_low_sl6:=a_low_sl5
+    a_low_x5:=a_low_x4, a_low_y5:=a_low_y4, a_low_sl5:=a_low_sl4
+    a_low_x4:=a_low_x3, a_low_y4:=a_low_y3, a_low_sl4:=a_low_sl3
+    a_low_x3:=a_low_x2, a_low_y3:=a_low_y2, a_low_sl3:=a_low_sl2
+    a_low_x2:=a_low_x1, a_low_y2:=a_low_y1, a_low_sl2:=a_low_sl1
+    a_low_x1:=a_low_x0, a_low_y1:=a_low_y0, a_low_sl1:=a_low_sl0
+    a_low_x0:=a_plx1,   a_low_y0:=a_ply1,   a_low_sl0:=a_slope_low
+
+
+// Check Trendline crosses for last X nr. of trendlines
+a_cross_high0=
+  not a_Rising_Upper_Falling_Lower and a_high_sl0 * time > 0 ? 0 :
+  a_line_cross(close, a_high_x0, a_high_y0, a_high_sl0,log_chart)
+a_cross_low0=
+  not a_Rising_Upper_Falling_Lower and a_low_sl0 * time < 0 ? 0 :
+  a_line_cross(close, a_low_x0, a_low_y0, a_low_sl0, log_chart)
+
+a_cross_high1=
+  not a_Rising_Upper_Falling_Lower and a_high_sl1 * time > 0 ? 0 :
+  a_line_cross(close, a_high_x1, a_high_y1, a_high_sl1, log_chart)
+a_cross_low1=
+  not a_Rising_Upper_Falling_Lower and a_low_sl1 * time < 0 ? 0 :
+  a_line_cross(close, a_low_x1, a_low_y1, a_low_sl1, log_chart)
+
+a_cross_high2=
+  not a_Rising_Upper_Falling_Lower and a_high_sl2 * time > 0 ? 0 :
+  a_line_cross(close, a_high_x2, a_high_y2, a_high_sl2, log_chart)
+a_cross_low2=
+  not a_Rising_Upper_Falling_Lower and a_low_sl2 * time < 0 ? 0 :
+  a_line_cross(close, a_low_x2, a_low_y2, a_low_sl2, log_chart)
+
+a_cross_high3=
+  not a_Rising_Upper_Falling_Lower and a_high_sl3 * time > 0 ? 0 :
+  a_line_cross(close, a_high_x3, a_high_y3, a_high_sl3, log_chart)
+a_cross_low3=
+  not a_Rising_Upper_Falling_Lower and a_low_sl3 * time < 0 ? 0 :
+  a_line_cross(close, a_low_x3, a_low_y3, a_low_sl3, log_chart)
+
+a_cross_high4=
+  not a_Rising_Upper_Falling_Lower and a_high_sl4 * time > 0 ? 0 :
+  a_line_cross(close, a_high_x4, a_high_y4, a_high_sl4, log_chart)
+a_cross_low4=
+  not a_Rising_Upper_Falling_Lower and a_low_sl4 * time < 0 ? 0 :
+  a_line_cross(close, a_low_x4, a_low_y4, a_low_sl4, log_chart)
+
+a_cross_high5=
+  not a_Rising_Upper_Falling_Lower and a_high_sl5 * time > 0 ? 0 :
+  a_line_cross(close, a_high_x5, a_high_y5, a_high_sl5, log_chart)
+a_cross_low5=
+  not a_Rising_Upper_Falling_Lower and a_low_sl5 * time < 0 ? 0 :
+  a_line_cross(close, a_low_x5, a_low_y5, a_low_sl5, log_chart)
+
+a_cross_high6=
+  not a_Rising_Upper_Falling_Lower and a_high_sl6 * time > 0 ? 0 :
+  a_line_cross(close, a_high_x6, a_high_y6, a_high_sl6, log_chart)
+a_cross_low6=
+  not a_Rising_Upper_Falling_Lower and a_low_sl6 * time < 0 ? 0 :
+  a_line_cross(close, a_low_x6, a_low_y6, a_low_sl6, log_chart)
+
+a_cross_high7=
+  not a_Rising_Upper_Falling_Lower and a_high_sl7 * time > 0 ? 0 :
+  a_line_cross(close, a_high_x7, a_high_y7, a_high_sl7, log_chart)
+a_cross_low7=
+  not a_Rising_Upper_Falling_Lower and a_low_sl7 * time < 0 ? 0 :
+  a_line_cross(close, a_low_x7, a_low_y7, a_low_sl7, log_chart)
+
+a_cross_high8=
+  not a_Rising_Upper_Falling_Lower and a_high_sl8 * time > 0 ? 0 :
+  a_line_cross(close, a_high_x8, a_high_y8, a_high_sl8, log_chart)
+a_cross_low8=
+  not a_Rising_Upper_Falling_Lower and a_low_sl8 * time < 0 ? 0 :
+  a_line_cross(close, a_low_x8, a_low_y8, a_low_sl8, log_chart)
+
+a_cross_high9=
+  not a_Rising_Upper_Falling_Lower and a_high_sl9 * time > 0 ? 0 :
+  a_line_cross(close, a_high_x9, a_high_y9, a_high_sl9, log_chart)
+a_cross_low9=
+  not a_Rising_Upper_Falling_Lower and a_low_sl9 * time < 0 ? 0 :
+  a_line_cross(close, a_low_x9, a_low_y9, a_low_sl9, log_chart)
+  
+
+a_long_break=
+ (a_trendline_nr > 9 ?  a_cross_high9==1 or (a_select_breaks ? false :  a_cross_low9==1) : false) or
+ (a_trendline_nr > 8 ?  a_cross_high8==1 or (a_select_breaks ? false :  a_cross_low8==1) : false) or
+ (a_trendline_nr > 7 ?  a_cross_high7==1 or (a_select_breaks ? false :  a_cross_low7==1) : false) or
+ (a_trendline_nr > 6 ?  a_cross_high6==1 or (a_select_breaks ? false :  a_cross_low6==1) : false) or
+ (a_trendline_nr > 5 ?  a_cross_high5==1 or (a_select_breaks ? false :  a_cross_low5==1) : false) or
+ (a_trendline_nr > 4 ?  a_cross_high4==1 or (a_select_breaks ? false :  a_cross_low4==1) : false) or
+ (a_trendline_nr > 3 ?  a_cross_high3==1 or (a_select_breaks ? false :  a_cross_low3==1) : false) or
+ (a_trendline_nr > 2 ?  a_cross_high2==1 or (a_select_breaks ? false :  a_cross_low2==1) : false) or
+ (a_trendline_nr > 1 ?  a_cross_high1==1 or (a_select_breaks ? false :  a_cross_low1==1) : false) or
+   a_cross_high0==1 or (a_select_breaks ? false :  a_cross_low0==1)
+
+
+a_short_break=
+ (a_trendline_nr>9  ? (a_select_breaks  ? false : a_cross_high9==-1) or a_cross_low9==-1 : false) or
+ (a_trendline_nr>8  ? (a_select_breaks  ? false : a_cross_high8==-1) or a_cross_low8==-1 : false) or
+ (a_trendline_nr>7  ? (a_select_breaks  ? false : a_cross_high7==-1) or a_cross_low7==-1 : false) or
+ (a_trendline_nr>6  ? (a_select_breaks  ? false : a_cross_high6==-1) or a_cross_low6==-1 : false) or
+ (a_trendline_nr>5  ? (a_select_breaks  ? false : a_cross_high5==-1) or a_cross_low5==-1 : false) or
+ (a_trendline_nr>4  ? (a_select_breaks  ? false : a_cross_high4==-1) or a_cross_low4==-1 : false) or
+ (a_trendline_nr>3  ? (a_select_breaks  ? false : a_cross_high3==-1) or a_cross_low3==-1 : false) or
+ (a_trendline_nr>2  ? (a_select_breaks  ? false : a_cross_high2==-1) or a_cross_low2==-1 : false) or
+ (a_trendline_nr>1  ? (a_select_breaks  ? false : a_cross_high1==-1) or a_cross_low1==-1 : false) or
+ (a_select_breaks  ? false : a_cross_high0==-1) or a_cross_low0==-1
+
+
+// // Plot and connect pivot points
+a_color_high = a_slope_high * time < 0 ? (a_Color_Type=="Colored" ? color.green : color.teal) : na
+a_color_low  = a_slope_low  * time > 0 ? (a_Color_Type=="Colored" ? color.red   : color.teal) : na
+
+
+// plot(a_Show_Primary? a_high_point : na, title = "Primary - Upper Trendline", color = a_color_high, offset = -a_len / 2)
+// plot(a_Show_Primary? a_low_point  : na, title = "Primary - Lower Trendline", color = a_color_low,  offset = -a_len / 2)
+
+
+// Signal Triangles Trendline breaks 
+plotshape(a_Show_Breaks=="Triangles" or a_Show_Breaks=="Triangles + Barcolor" ? (a_long_break  ? close : na) : na, title = "cross_high", style = shape.triangleup,   size = size.small, location = location.belowbar, color = #c6e163)
+plotshape(a_Show_Breaks=="Triangles" or a_Show_Breaks=="Triangles + Barcolor" ? (a_short_break ? close : na) : na, title = "cross_low",  style = shape.triangledown, size = size.small, location = location.abovebar, color = color.fuchsia)
+
+// Color bars on breaks
+barcolor(a_Show_Breaks=="Barcolor" or a_Show_Breaks=="Triangles + Barcolor" ? (a_long_break ? (ShowTrendCandles ? #c6e163 : #c6e163) : a_short_break ? color.fuchsia : na) : na, title = "Primary")
+
+
+/////// Alerts ///////
+
+alertcondition(a_long_break or a_short_break,title = "Alert - Primary Trendline - Break")
+
+alertcondition(a_long_break,                 title = "Alert - Primary Trendline - Break Up")
+
+alertcondition(a_short_break,                title = "Alert - Primary Trendline - Break Down")
+
+
+// ///// Secondary Trendlines /////
+
+// // Trendline Extensions
+
+b_Extension_Multiplier=
+ b_Extensions=="  25"?  1 :
+ b_Extensions=="  50"?  2 :
+ b_Extensions=="  75"?  3 :
+ b_Extensions==" 100"?  4 :
+ b_Extensions==" 150"?  6 :
+ b_Extensions==" 200"?  8 :
+ b_Extensions==" 300"? 12 :
+ b_Extensions==" 400"? 16 :
+ b_Extensions==" 500"? 20 :
+ b_Extensions==" 750"? 30 :
+ b_Extensions=="1000"? 40 :
+ b_Extensions=="Infinate"? 0 : na
+
+
+// Declaration of trendline function
+b_f_trendline(b__input_function, b__delay, b__only_up, b__extend) =>
+    // Calculate line coordinates (Ax,Ay) - (Bx,By)
+    var int   b_Ax    = 1
+    var int   b_Bx    = 1
+    var float b_By    = 0
+    var float b_slope = 0
+    b_Ay = fixnan(b__input_function)
+    if change(b_Ay)!=0
+        b_Ax := time[b__delay]
+        b_By := b_Ay[1]
+        b_Bx := b_Ax[1]
+        b_slope:= log_chart? ((log(b_Ay) - log(b_By)) / (b_Ax - b_Bx)) : ((b_Ay - b_By) / (b_Ax - b_Bx))
+    else
+        b_Ax := b_Ax[1]
+        b_Bx := b_Bx[1]
+        b_By := b_By[1]
+    // Draw trendlines
+    var line  b_trendline = na
+    var int   b_Axbis  = 0
+    var float b_Aybis  = 0
+    var bool  b__xtend = true
+    b_extension_time   = b_Extension_Multiplier * b_bar_time * 25
+    b_Axbis := b_Ax + b_extension_time
+    b_Aybis := log_chart? (b_Ay * exp(b_extension_time * b_slope)) : (b_Ay + b_extension_time * b_slope)
+    if b_Extension_Multiplier != 0
+        b__xtend := false
+    if change(b_Ay) != 0
+        
+        b_line_color_Rising_Falling      = b_slope * time < 0? (b__only_up ? b_Rising_Upper_Falling_Lower ? (a_Color_Type=="Colored" ? color.gray : color.teal) : na : (a_Color_Type=="Colored" ? color.green : color.teal)) : (b__only_up? (a_Color_Type=="Colored"? color.red : color.teal) : b_Rising_Upper_Falling_Lower ? (a_Color_Type=="Colored"? color.gray : color.teal) : na)
+        b_line_color_Not_Rising_Falling  = b_slope * time < 0? (b__only_up ? na :(a_Color_Type=="Colored" ? color.green : color.teal)) : (b__only_up? (a_Color_Type=="Colored"? color.red : color.teal) : na)
+        
+        b_line_color = b_Show_Secondary and not b_Rising_Upper_Falling_Lower ? b_line_color_Not_Rising_Falling : b_Show_Secondary and b_Rising_Upper_Falling_Lower ? b_line_color_Rising_Falling : na
+        
+        if not na(b_line_color)
+            b_trendline := line.new(b_Bx, b_By, b_Axbis, b_Aybis, xloc.bar_time, extend = b__xtend? extend.right : extend.none, color = b_line_color, style = b_Line_Type, width = b_width)
+    [b_Bx, b_By, b_Axbis, b_Aybis, b_slope]
+
+
+// Function to get trendline price for X bars ago ("0" = current value)
+b_line_get_price(b__start_time,b__start_price,b__slope,b__lookback_period,b__log_chart) =>
+    var float b_current_price = 0.0
+    b_elapsed_time            = (time-b__start_time)    // (time-b__start_time) // Original v312 
+    b_current_price           := b__log_chart?(b__start_price*exp((b_elapsed_time-(b__lookback_period * b_bar_time)) * b__slope)):(b__start_price + (b_elapsed_time - (b__lookback_period * b_bar_time)) * b__slope)
+
+
+// Function to check for trendline crosses
+b_line_cross(b__check_value, b__start_time, b__start_price, b__slope, b__log_chart) =>
+    var float b_current_value=0.0
+    var float b_previous_value=0.0
+    // Get current and previous price for the trendline
+    b_current_value  := b_line_get_price(b__start_time, b__start_price, b__slope, 0, b__log_chart) // 0, b__log_chart)
+    b_previous_value := b_line_get_price(b__start_time, b__start_price, b__slope, 1, b__log_chart)  //1, b__log_chart)
+    // Return 1 for crossover, -1 for crossunder and 0 for no cross detected
+    b_cross =
+     b__check_value[1] < b_previous_value and b__check_value > b_current_value?  1:
+     b__check_value[1] > b_previous_value and b__check_value < b_current_value? -1:0
+
+// Calculate pivot points    
+b_high_point = pivothigh(b_Wicks=="Wicks" ? high : (close > open? close : open),  b_len, b_len / 2)
+b_low_point  = pivotlow( b_Wicks=="Wicks" ? low  : (close > open? open  : close), b_len, b_len / 2)
+
+// Call trendline function for high and low pivot points
+[b_phx1, b_phy1, b_phx2, b_phy2, b_slope_high] = b_f_trendline(b_high_point, b_len / 2, false, true)
+[b_plx1, b_ply1, b_plx2, b_ply2, b_slope_low]  = b_f_trendline(b_low_point,  b_len / 2, true,  true)
+
+// Plot and connect pivot points
+b_color_high = b_slope_high * time < 0 ? color.green : na
+b_color_low  = b_slope_low  * time > 0 ? color.red   : na
+
+// plot(b_Show_Secondary? b_high_point : na, title = "Secondary - Upper Trendline", color = b_color_high, offset = -b_len / 2)
+// plot(b_Show_Secondary? b_low_point  : na, title = "Secondary - Lower Trendline", color = b_color_low,  offset = -b_len / 2)
+
+
+// Initialition of pseudo array to keep track of last 10 high and 10 low trendline values
+var int b_high_x0=0, var float b_high_y0=0.0, var float b_high_sl0=0.0
+var int b_high_x1=0, var float b_high_y1=0.0, var float b_high_sl1=0.0 
+var int b_high_x2=0, var float b_high_y2=0.0, var float b_high_sl2=0.0 
+var int b_high_x3=0, var float b_high_y3=0.0, var float b_high_sl3=0.0 
+var int b_high_x4=0, var float b_high_y4=0.0, var float b_high_sl4=0.0
+var int b_high_x5=0, var float b_high_y5=0.0, var float b_high_sl5=0.0
+var int b_high_x6=0, var float b_high_y6=0.0, var float b_high_sl6=0.0
+var int b_high_x7=0, var float b_high_y7=0.0, var float b_high_sl7=0.0
+var int b_high_x8=0, var float b_high_y8=0.0, var float b_high_sl8=0.0
+var int b_high_x9=0, var float b_high_y9=0.0, var float b_high_sl9=0.0
+
+var int b_low_x0=0,  var float b_low_y0=0.0,  var float b_low_sl0=0.0
+var int b_low_x1=0,  var float b_low_y1=0.0,  var float b_low_sl1=0.0 
+var int b_low_x2=0,  var float b_low_y2=0.0,  var float b_low_sl2=0.0 
+var int b_low_x3=0,  var float b_low_y3=0.0,  var float b_low_sl3=0.0 
+var int b_low_x4=0,  var float b_low_y4=0.0,  var float b_low_sl4=0.0
+var int b_low_x5=0,  var float b_low_y5=0.0,  var float b_low_sl5=0.0
+var int b_low_x6=0,  var float b_low_y6=0.0,  var float b_low_sl6=0.0
+var int b_low_x7=0,  var float b_low_y7=0.0,  var float b_low_sl7=0.0
+var int b_low_x8=0,  var float b_low_y8=0.0,  var float b_low_sl8=0.0
+var int b_low_x9=0,  var float b_low_y9=0.0,  var float b_low_sl9=0.0
+
+
+// If a new trendline is formed, shift all values in the array one place up and forget the last values
+if change(fixnan(b_high_point))!=0
+    b_high_x9:=b_high_x8, b_high_y9:=b_high_y8, b_high_sl9:=b_high_sl8
+    b_high_x8:=b_high_x7, b_high_y8:=b_high_y7, b_high_sl8:=b_high_sl7
+    b_high_x7:=b_high_x6, b_high_y7:=b_high_y6, b_high_sl7:=b_high_sl6
+    b_high_x6:=b_high_x5, b_high_y6:=b_high_y5, b_high_sl6:=b_high_sl5
+    b_high_x5:=b_high_x4, b_high_y5:=b_high_y4, b_high_sl5:=b_high_sl4
+    b_high_x4:=b_high_x3, b_high_y4:=b_high_y3, b_high_sl4:=b_high_sl3
+    b_high_x3:=b_high_x2, b_high_y3:=b_high_y2, b_high_sl3:=b_high_sl2
+    b_high_x2:=b_high_x1, b_high_y2:=b_high_y1, b_high_sl2:=b_high_sl1
+    b_high_x1:=b_high_x0, b_high_y1:=b_high_y0, b_high_sl1:=b_high_sl0
+    b_high_x0:=b_phx1, b_high_y0:=b_phy1, b_high_sl0:=b_slope_high
+
+if change(fixnan(b_low_point))!=0
+    b_low_x9:=b_low_x8, b_low_y9:=b_low_y8, b_low_sl9:=b_low_sl8
+    b_low_x8:=b_low_x7, b_low_y8:=b_low_y7, b_low_sl8:=b_low_sl7
+    b_low_x7:=b_low_x6, b_low_y7:=b_low_y6, b_low_sl7:=b_low_sl6
+    b_low_x6:=b_low_x5, b_low_y6:=b_low_y5, b_low_sl6:=b_low_sl5
+    b_low_x5:=b_low_x4, b_low_y5:=b_low_y4, b_low_sl5:=b_low_sl4
+    b_low_x4:=b_low_x3, b_low_y4:=b_low_y3, b_low_sl4:=b_low_sl3
+    b_low_x3:=b_low_x2, b_low_y3:=b_low_y2, b_low_sl3:=b_low_sl2
+    b_low_x2:=b_low_x1, b_low_y2:=b_low_y1, b_low_sl2:=b_low_sl1
+    b_low_x1:=b_low_x0, b_low_y1:=b_low_y0, b_low_sl1:=b_low_sl0
+    b_low_x0:=b_plx1,   b_low_y0:=b_ply1,   b_low_sl0:=b_slope_low
+
+
+// Check Trendline crosses for last X nr. of trendlines
+b_cross_high0=
+  not b_Rising_Upper_Falling_Lower and b_high_sl0 * time > 0 ? 0 :
+  b_line_cross(close, b_high_x0, b_high_y0, b_high_sl0,log_chart)
+b_cross_low0=
+  not b_Rising_Upper_Falling_Lower and b_low_sl0 * time < 0 ? 0 :
+  b_line_cross(close, b_low_x0, b_low_y0, b_low_sl0, log_chart)
+
+b_cross_high1=
+  not b_Rising_Upper_Falling_Lower and b_high_sl1 * time > 0 ? 0 :
+  b_line_cross(close, b_high_x1, b_high_y1, b_high_sl1, log_chart)
+b_cross_low1=
+  not b_Rising_Upper_Falling_Lower and b_low_sl1 * time < 0 ? 0 :
+  b_line_cross(close, b_low_x1, b_low_y1, b_low_sl1, log_chart)
+
+b_cross_high2=
+  not b_Rising_Upper_Falling_Lower and b_high_sl2 * time > 0 ? 0 :
+  b_line_cross(close, b_high_x2, b_high_y2, b_high_sl2, log_chart)
+b_cross_low2=
+  not b_Rising_Upper_Falling_Lower and b_low_sl2 * time < 0 ? 0 :
+  b_line_cross(close, b_low_x2, b_low_y2, b_low_sl2, log_chart)
+
+b_cross_high3=
+  not b_Rising_Upper_Falling_Lower and b_high_sl3 * time > 0 ? 0 :
+  b_line_cross(close, b_high_x3, b_high_y3, b_high_sl3, log_chart)
+b_cross_low3=
+  not b_Rising_Upper_Falling_Lower and b_low_sl3 * time < 0 ? 0 :
+  b_line_cross(close, b_low_x3, b_low_y3, b_low_sl3, log_chart)
+
+b_cross_high4=
+  not b_Rising_Upper_Falling_Lower and b_high_sl4 * time > 0 ? 0 :
+  b_line_cross(close, b_high_x4, b_high_y4, b_high_sl4, log_chart)
+b_cross_low4=
+  not b_Rising_Upper_Falling_Lower and b_low_sl4 * time < 0 ? 0 :
+  b_line_cross(close, b_low_x4, b_low_y4, b_low_sl4, log_chart)
+
+b_cross_high5=
+  not b_Rising_Upper_Falling_Lower and b_high_sl5 * time > 0 ? 0 :
+  b_line_cross(close, b_high_x5, b_high_y5, b_high_sl5, log_chart)
+b_cross_low5=
+  not b_Rising_Upper_Falling_Lower and b_low_sl5 * time < 0 ? 0 :
+  b_line_cross(close, b_low_x5, b_low_y5, b_low_sl5, log_chart)
+
+b_cross_high6=
+  not b_Rising_Upper_Falling_Lower and b_high_sl6 * time > 0 ? 0 :
+  b_line_cross(close, b_high_x6, b_high_y6, b_high_sl6, log_chart)
+b_cross_low6=
+  not b_Rising_Upper_Falling_Lower and b_low_sl6 * time < 0 ? 0 :
+  b_line_cross(close, b_low_x6, b_low_y6, b_low_sl6, log_chart)
+
+b_cross_high7=
+  not b_Rising_Upper_Falling_Lower and b_high_sl7 * time > 0 ? 0 :
+  b_line_cross(close, b_high_x7, b_high_y7, b_high_sl7, log_chart)
+b_cross_low7=
+  not b_Rising_Upper_Falling_Lower and b_low_sl7 * time < 0 ? 0 :
+  b_line_cross(close, b_low_x7, b_low_y7, b_low_sl7, log_chart)
+
+b_cross_high8=
+  not b_Rising_Upper_Falling_Lower and b_high_sl8 * time > 0 ? 0 :
+  b_line_cross(close, b_high_x8, b_high_y8, b_high_sl8, log_chart)
+b_cross_low8=
+  not b_Rising_Upper_Falling_Lower and b_low_sl8 * time < 0 ? 0 :
+  b_line_cross(close, b_low_x8, b_low_y8, b_low_sl8, log_chart)
+
+b_cross_high9=
+  not b_Rising_Upper_Falling_Lower and b_high_sl9 * time > 0 ? 0 :
+  b_line_cross(close, b_high_x9, b_high_y9, b_high_sl9, log_chart)
+b_cross_low9=
+  not b_Rising_Upper_Falling_Lower and b_low_sl9 * time < 0 ? 0 :
+  b_line_cross(close, b_low_x9, b_low_y9, b_low_sl9, log_chart)
+  
+
+b_long_break=
+ (b_trendline_nr > 9 ?  b_cross_high9==1 or (b_select_breaks ? false :  b_cross_low9==1) : false) or
+ (b_trendline_nr > 8 ?  b_cross_high8==1 or (b_select_breaks ? false :  b_cross_low8==1) : false) or
+ (b_trendline_nr > 7 ?  b_cross_high7==1 or (b_select_breaks ? false :  b_cross_low7==1) : false) or
+ (b_trendline_nr > 6 ?  b_cross_high6==1 or (b_select_breaks ? false :  b_cross_low6==1) : false) or
+ (b_trendline_nr > 5 ?  b_cross_high5==1 or (b_select_breaks ? false :  b_cross_low5==1) : false) or
+ (b_trendline_nr > 4 ?  b_cross_high4==1 or (b_select_breaks ? false :  b_cross_low4==1) : false) or
+ (b_trendline_nr > 3 ?  b_cross_high3==1 or (b_select_breaks ? false :  b_cross_low3==1) : false) or
+ (b_trendline_nr > 2 ?  b_cross_high2==1 or (b_select_breaks ? false :  b_cross_low2==1) : false) or
+ (b_trendline_nr > 1 ?  b_cross_high1==1 or (b_select_breaks ? false :  b_cross_low1==1) : false) or
+   b_cross_high0==1 or (b_select_breaks ? false :  b_cross_low0==1)
+
+
+b_short_break=
+ (b_trendline_nr>9  ? (b_select_breaks  ? false : b_cross_high9==-1) or b_cross_low9==-1 : false) or
+ (b_trendline_nr>8  ? (b_select_breaks  ? false : b_cross_high8==-1) or b_cross_low8==-1 : false) or
+ (b_trendline_nr>7  ? (b_select_breaks  ? false : b_cross_high7==-1) or b_cross_low7==-1 : false) or
+ (b_trendline_nr>6  ? (b_select_breaks  ? false : b_cross_high6==-1) or b_cross_low6==-1 : false) or
+ (b_trendline_nr>5  ? (b_select_breaks  ? false : b_cross_high5==-1) or b_cross_low5==-1 : false) or
+ (b_trendline_nr>4  ? (b_select_breaks  ? false : b_cross_high4==-1) or b_cross_low4==-1 : false) or
+ (b_trendline_nr>3  ? (b_select_breaks  ? false : b_cross_high3==-1) or b_cross_low3==-1 : false) or
+ (b_trendline_nr>2  ? (b_select_breaks  ? false : b_cross_high2==-1) or b_cross_low2==-1 : false) or
+ (b_trendline_nr>1  ? (b_select_breaks  ? false : b_cross_high1==-1) or b_cross_low1==-1 : false) or
+ (b_select_breaks  ? false : b_cross_high0==-1) or b_cross_low0==-1
+
+
+// Signal Triangles Trendline breaks 
+plotshape(b_Show_Breaks=="Triangles" or b_Show_Breaks=="Triangles + Barcolor" ? (b_long_break  ? close : na) : na, title = "cross_high", style = shape.triangleup,   size = size.small, location = location.belowbar, color = #c6e163)
+plotshape(b_Show_Breaks=="Triangles" or b_Show_Breaks=="Triangles + Barcolor" ? (b_short_break ? close : na) : na, title = "cross_low",  style = shape.triangledown, size = size.small, location = location.abovebar, color = color.fuchsia)
+
+// Color bars on breaks
+barcolor(b_Show_Breaks=="Barcolor" or b_Show_Breaks=="Triangles + Barcolor" ? (b_long_break ? (ShowTrendCandles ? #c6e163 : #c6e163) : b_short_break ? color.fuchsia : na) : na, title = "Secondary")
+
+
+/////// Alerts ///////
+
+alertcondition(b_long_break or b_short_break,title = "Alert - Secondary Trendline - Break")
+
+alertcondition(b_long_break,                 title = "Alert - Secondary Trendline - Break Up")
+
+alertcondition(b_short_break,                title = "Alert - Secondary Trendline - Break Down")
+
+
+// Trend Candles //
+//UCS_Trend by ucsgears copy Trend Candles
+//Interpretation of TTM Trend bars. It is really close to the actual. 
+
+haclose = ohlc4
+haopen = 0.0
+haopen := na(haopen[1]) ? (open + close) / 2 : (haopen[1] + haclose[1]) / 2
+//hahigh = max(high, max(haopen, haclose))
+//halow = min(low, min(haopen, haclose))
+
+ccolor = haclose - haopen > 0 ? 1 : 0
+
+inside6 = haopen <= max(haopen[6],haclose[6]) and haopen>=min(haopen[6],haclose[6]) and haclose <= max(haopen[6],haclose[6]) and haclose >= min(haopen[6],haclose[6]) ? 1 : 0
+
+inside5 = haopen <= max(haopen[5],haclose[5]) and haopen>=min(haopen[5],haclose[5]) and haclose <= max(haopen[5],haclose[5]) and haclose >= min(haopen[5],haclose[5]) ? 1 : 0
+
+inside4 = haopen <= max(haopen[4],haclose[4]) and haopen>=min(haopen[4],haclose[4]) and haclose <= max(haopen[4],haclose[4]) and haclose >= min(haopen[4],haclose[4]) ? 1 : 0
+
+inside3 = haopen <= max(haopen[3],haclose[3]) and haopen>=min(haopen[3],haclose[3]) and haclose <= max(haopen[3],haclose[3]) and haclose >= min(haopen[3],haclose[3]) ? 1 : 0
+
+inside2 = haopen <= max(haopen[2],haclose[2]) and haopen>=min(haopen[2],haclose[2]) and haclose <= max(haopen[2],haclose[2]) and haclose >= min(haopen[2],haclose[2]) ? 1 : 0
+
+inside1 = haopen <= max(haopen[1],haclose[1]) and haopen>=min(haopen[1],haclose[1]) and haclose <= max(haopen[1],haclose[1]) and haclose >= min(haopen[1],haclose[1]) ? 1 : 0
+
+
+colorvalue = inside6 ? ccolor[6] : inside5 ? ccolor[5] : inside4 ? ccolor[4] : inside3 ? ccolor[3] : inside2 ? ccolor[2] : inside1 ? ccolor[1] : ccolor
+
+Trend_Candle_Color = colorvalue ?  color.lime : color.red
+
+
+// Bar Color according to Trend Candles
+
+barcolor(ShowTrendCandles? Trend_Candle_Color : na, title = "Trend Candles")
+
+
+// Alerts for Trend Candle Color Changes 
+
+Trend_Candle_Change_Green = colorvalue ? 1 : 0
+
+Trend_Candle_Change_Red   = colorvalue ? 0 : 1
+
+
+alertcondition(Trend_Candle_Change_Green, title = "Alert - Trend Candle Color Change - GREEN", message = "GREEN Trend Candles - Color Change")
+
+alertcondition(Trend_Candle_Change_Red,   title = "Alert - Trend Candle Color Change - RED",   message = "RED Trend Candles - Color Change")
+
+
+/////////
+
+TF1_Menu        = "S/R Zones"
+TF1_VolMA1Input = 6
+
+
+// S/R - Timeframe 1 = TF1
+
+TF1_Vol   = security(syminfo.tickerid, TF1, volume)
+TF1_VolMA = sma(TF1_Vol, TF1_VolMA1Input)
+TF1_High  = security(syminfo.tickerid, TF1, high)
+TF1_Low   = security(syminfo.tickerid, TF1, low)
+TF1_Open  = security(syminfo.tickerid, TF1, open)
+TF1_Close = security(syminfo.tickerid, TF1, close)
+
+TF1_Up = TF1_High[3] > TF1_High[4] and TF1_High[4] > TF1_High[5] and 
+   TF1_High[2] < TF1_High[3] and TF1_High[1] < TF1_High[2] and 
+   TF1_Vol[3] > TF1_VolMA[3]  // or volume[3] > VolMA2Current[3])
+TF1_Down = TF1_Low[3] < TF1_Low[4] and TF1_Low[4] < TF1_Low[5] and TF1_Low[2] > TF1_Low[3] and 
+   TF1_Low[1] > TF1_Low[2] and TF1_Vol[3] > TF1_VolMA[3]  // or volume[3] > VolMA2Current[3])
+
+
+TF1_CalcFractalUp() =>
+    TF1_FractalUp = 0.0
+    TF1_FractalUp := TF1_Up ? TF1_High[3]    : TF1_FractalUp[1]
+    TF1_FractalUp
+
+TF1_CalcFractalDown() =>
+    TF1_FractalDown = 0.0
+    TF1_FractalDown := TF1_Down ? TF1_Low[3] : TF1_FractalDown[1]
+    TF1_FractalDown
+
+
+TF1_FractalUp   = security(syminfo.tickerid, TF1, TF1_CalcFractalUp())
+TF1_FractalDown = security(syminfo.tickerid, TF1, TF1_CalcFractalDown())
+
+
+// Zones - Timeframe 1 = TF1
+
+// Fractal Up Zones
+
+TF1_CalcFractalUpLowerZone() =>
+    TF1_FractalUpLowerZone = 0.0
+    TF1_FractalUpLowerZone := TF1_Up and TF1_Close[3] > TF1_Open[3] ? TF1_Close[3] : 
+       TF1_Up and TF1_Close[3] < TF1_Open[3] ? TF1_Open[3] : TF1_FractalUpLowerZone[1]
+    TF1_FractalUpLowerZone
+
+TF1_CalcFractalUpUpperZone() =>
+    TF1_FractalUpUpperZone = 0.0
+    TF1_FractalUpUpperZone := TF1_Up and TF1_Close[3] > TF1_Open[3] ? TF1_High[3] - TF1_Close[3] + TF1_High[3] : 
+       TF1_Up and TF1_Close[3] < TF1_Open[3] ? TF1_High[3] - TF1_Open[3] + TF1_High[3] : 
+       TF1_FractalUpUpperZone[1]
+    TF1_FractalUpUpperZone
+
+
+TF1_FractalUpLowerZone = security(syminfo.tickerid, TF1, TF1_CalcFractalUpLowerZone())
+TF1_FractalUpUpperZone = security(syminfo.tickerid, TF1, TF1_CalcFractalUpUpperZone())
+
+TF1_ResistanceUpperZone = TF1_Menu == 'Expanded S/R Zones' ? TF1_FractalUpUpperZone : TF1_FractalUp
+TF1_ResistanceLowerZone = TF1_FractalUpLowerZone
+
+
+// Fractal Down Zones
+
+
+TF1_CalcFractalDownUpperZone() =>
+    TF1_FractalDownUpperZone = 0.0
+    TF1_FractalDownUpperZone := TF1_Down and TF1_Close[3] > TF1_Open[3] ? TF1_Open[3] : 
+       TF1_Down and TF1_Close[3] < TF1_Open[3] ? TF1_Close[3] : 
+       TF1_FractalDownUpperZone[1]
+    TF1_FractalDownUpperZone
+
+
+TF1_CalcFractalDownLowerZone() =>
+    TF1_FractalDownLowerZone = 0.0
+    TF1_FractalDownLowerZone := TF1_Down and TF1_Close[3] > TF1_Open[3] ? TF1_Low[3] + TF1_Low[3] - TF1_Open[3] : 
+       TF1_Down and TF1_Close[3] < TF1_Open[3] ? TF1_Low[3] + TF1_Low[3] - TF1_Close[3] : 
+       TF1_FractalDownLowerZone[1]
+    TF1_FractalDownLowerZone
+
+
+TF1_FractalDownLowerZone = security(syminfo.tickerid, TF1, TF1_CalcFractalDownLowerZone())
+TF1_FractalDownUpperZone = security(syminfo.tickerid, TF1, TF1_CalcFractalDownUpperZone())
+
+
+TF1_SupportUpperZone = TF1_FractalDownUpperZone
+TF1_SupportLowerZone = TF1_Menu == 'Expanded S/R Zones' ? TF1_FractalDownLowerZone : TF1_FractalDown
+
+// Colors - Timeframe 1 = TF1
+
+
+TF1_ResistanceColor      = not InvertColors ?                   #FF00008C : #00FF00E6  // red  : lime
+TF1_SupportColor         = not InvertColors ?                   #00FF00E6 : #FF00008C  // lime : red
+
+
+TF1_ResZoneColor         = TF1_FractalUp != TF1_FractalUp[1] ?          na : color.red
+TF1_ResZoneColorInverted = TF1_FractalUp != TF1_FractalUp[1] ?          na : color.lime
+
+
+TF1_SupZoneColor         = TF1_FractalDown != TF1_FractalDown[1] ?      na : color.lime
+TF1_SupZoneColorInverted = TF1_FractalDown != TF1_FractalDown[1] ?      na : color.red
+
+
+TF1_ResistanceZonesColor = not InvertColors and 
+   (TF1_Menu == 'S/R Zones' or TF1_Menu == 'Expanded S/R Zones') ? TF1_ResZoneColor : 
+   InvertColors and (TF1_Menu == 'S/R Zones' or TF1_Menu == 'Expanded S/R Zones') ? 
+   TF1_ResZoneColorInverted : na  // red  : lime
+TF1_SupportZonesColor = not InvertColors and 
+   (TF1_Menu == 'S/R Zones' or TF1_Menu == 'Expanded S/R Zones') ? TF1_SupZoneColor : 
+   InvertColors and (TF1_Menu == 'S/R Zones' or TF1_Menu == 'Expanded S/R Zones') ? 
+   TF1_SupZoneColorInverted : na  // lime : red
+
+
+// S/R & S/R Zone Plots - Current Time Frame = Time Frame 1 = TF1
+
+
+TF1_ResistanceUpZone   = plot(ShowTF1SR and (TF1_Menu == 'S/R Zones' or TF1_Menu == 'Expanded S/R Zones') ? TF1_ResistanceUpperZone : na, "Timeframe 1 - Resistance - Upper Zone", color=TF1_ResistanceZonesColor, linewidth=1, style=plot.style_line, transp=45, offset=-3, join=false)  // offset=-2
+TF1_ResistanceDownZone = plot(ShowTF1SR and (TF1_Menu == 'S/R Zones' or TF1_Menu == 'Expanded S/R Zones') ? TF1_ResistanceLowerZone : na, "Timeframe 1 - Resistance - Lower Zone", color=TF1_ResistanceZonesColor, linewidth=1, style=plot.style_line, transp=45, offset=-3, join=false)  // offset=-2
+fill(TF1_ResistanceUpZone, TF1_ResistanceDownZone, color=TF1_ResistanceZonesColor, transp=93, title="Timeframe 1 - Resistance Zone Shading")
+
+
+// plot(ShowTF1SR and (TF1_Menu == 'S/R' or TF1_Menu == 'Expanded S/R Zones') ? TF1_FractalUp   : na, "Timeframe 1 - Resistance", color=TF1_ResistanceColor, linewidth=1, style=plot.style_circles, transp=5, offset=-3, join=false)
+// plot(ShowTF1SR and (TF1_Menu == 'S/R' or TF1_Menu == 'Expanded S/R Zones') ? TF1_FractalDown : na, "Timeframe 1 - Support",    color=TF1_SupportColor,    linewidth=1, style=plot.style_circles, transp=5, offset=-3, join=false)
+
+
+TF1_SupportUpZone      = plot(ShowTF1SR and (TF1_Menu == 'S/R Zones' or TF1_Menu == 'Expanded S/R Zones') ? TF1_SupportUpperZone : na, "Timeframe 1 - Support - Upper Zone", color=TF1_SupportZonesColor, linewidth=1, style=plot.style_line, transp=45, offset=-3, join=false)
+TF1_SupportDownZone    = plot(ShowTF1SR and (TF1_Menu == 'S/R Zones' or TF1_Menu == 'Expanded S/R Zones') ? TF1_SupportLowerZone : na, "Timeframe 1 - Support - Lower Zone", color=TF1_SupportZonesColor, linewidth=1, style=plot.style_line, transp=45, offset=-3, join=false)
+fill(TF1_SupportUpZone, TF1_SupportDownZone, color=TF1_SupportZonesColor, transp=93, title="Timeframe 1 - Support Zone Shading")
+
+
+// S/R - Timeframe 2 = TF2
+
+TF2_Menu        = "S/R Zones"
+TF2_VolMA1Input = 6
+
+
+TF2_Vol   = security(syminfo.tickerid, TF2, volume)
+TF2_VolMA = sma(TF2_Vol, TF2_VolMA1Input)
+TF2_High  = security(syminfo.tickerid, TF2, high)
+TF2_Low   = security(syminfo.tickerid, TF2, low)
+TF2_Open  = security(syminfo.tickerid, TF2, open)
+TF2_Close = security(syminfo.tickerid, TF2, close)
+
+TF2_Up = TF2_High[3] > TF2_High[4] and TF2_High[4] > TF2_High[5] and 
+   TF2_High[2] < TF2_High[3] and TF2_High[1] < TF2_High[2] and 
+   TF2_Vol[3] > TF2_VolMA[3]  // or volume[3] > VolMA2Custom 1[3])
+TF2_Down = TF2_Low[3] < TF2_Low[4] and TF2_Low[4] < TF2_Low[5] and TF2_Low[2] > TF2_Low[3] and 
+   TF2_Low[1] > TF2_Low[2] and TF2_Vol[3] > TF2_VolMA[3]  // or volume[3] > VolMA2Custom 1[3])
+
+
+TF2_CalcFractalUp() =>
+    TF2_FractalUp = 0.0
+    TF2_FractalUp := TF2_Up ? TF2_High[3] : TF2_FractalUp[1]
+    TF2_FractalUp
+
+TF2_CalcFractalDown() =>
+    TF2_FractalDown = 0.0
+    TF2_FractalDown := TF2_Down ? TF2_Low[3] : TF2_FractalDown[1]
+    TF2_FractalDown
+
+
+TF2_FractalUp   = security(syminfo.tickerid, TF2, TF2_CalcFractalUp())
+TF2_FractalDown = security(syminfo.tickerid, TF2, TF2_CalcFractalDown())
+
+
+// Zones - Timeframe 2 = TF2
+
+// Fractal Up Zones
+
+TF2_CalcFractalUpLowerZone() =>
+    TF2_FractalUpLowerZone = 0.0
+    TF2_FractalUpLowerZone := TF2_Up and TF2_Close[3] > TF2_Open[3] ? TF2_Close[3] : 
+       TF2_Up and TF2_Close[3] < TF2_Open[3] ? TF2_Open[3] : TF2_FractalUpLowerZone[1]
+    TF2_FractalUpLowerZone
+
+TF2_CalcFractalUpUpperZone() =>
+    TF2_FractalUpUpperZone = 0.0
+    TF2_FractalUpUpperZone := TF2_Up and TF2_Close[3] > TF2_Open[3] ? TF2_High[3] - TF2_Close[3] + TF2_High[3] : 
+       TF2_Up and TF2_Close[3] < TF2_Open[3] ? TF2_High[3] - TF2_Open[3] + TF2_High[3] : 
+       TF2_FractalUpUpperZone[1]
+    TF2_FractalUpUpperZone
+
+
+TF2_FractalUpLowerZone = security(syminfo.tickerid, TF2, TF2_CalcFractalUpLowerZone())
+TF2_FractalUpUpperZone = security(syminfo.tickerid, TF2, TF2_CalcFractalUpUpperZone())
+
+TF2_ResistanceUpperZone = TF2_Menu == 'Expanded S/R Zones' ? TF2_FractalUpUpperZone : TF2_FractalUp
+TF2_ResistanceLowerZone = TF2_FractalUpLowerZone
+
+
+// Fractal Down Zones
+
+
+TF2_CalcFractalDownUpperZone() =>
+    TF2_FractalDownUpperZone = 0.0
+    TF2_FractalDownUpperZone := TF2_Down and TF2_Close[3] > TF2_Open[3] ? TF2_Open[3] : 
+       TF2_Down and TF2_Close[3] < TF2_Open[3] ? TF2_Close[3] : 
+       TF2_FractalDownUpperZone[1]
+    TF2_FractalDownUpperZone
+
+
+TF2_CalcFractalDownLowerZone() =>
+    TF2_FractalDownLowerZone = 0.0
+    TF2_FractalDownLowerZone := TF2_Down and TF2_Close[3] > TF2_Open[3] ? TF2_Low[3] + TF2_Low[3] - TF2_Open[3] : 
+       TF2_Down and TF2_Close[3] < TF2_Open[3] ? TF2_Low[3] + TF2_Low[3] - TF2_Close[3] : 
+       TF2_FractalDownLowerZone[1]
+    TF2_FractalDownLowerZone
+
+
+TF2_FractalDownLowerZone = security(syminfo.tickerid, TF2, TF2_CalcFractalDownLowerZone())
+TF2_FractalDownUpperZone = security(syminfo.tickerid, TF2, TF2_CalcFractalDownUpperZone())
+
+
+TF2_SupportUpperZone     = TF2_FractalDownUpperZone
+TF2_SupportLowerZone     = TF2_Menu == 'Expanded S/R Zones' ? TF2_FractalDownLowerZone : TF2_FractalDown
+
+// Colors - Timeframe 2 = TF2
+
+
+TF2_ResistanceColor      = not InvertColors ?                   color.fuchsia : color.green
+TF2_SupportColor         = not InvertColors ?                     color.green : color.fuchsia
+
+
+TF2_ResZoneColor         = TF2_FractalUp != TF2_FractalUp[1] ?             na : color.fuchsia
+TF2_ResZoneColorInverted = TF2_FractalUp != TF2_FractalUp[1] ?             na : color.green
+
+
+TF2_SupZoneColor         = TF2_FractalDown != TF2_FractalDown[1] ?         na : color.green
+TF2_SupZoneColorInverted = TF2_FractalDown != TF2_FractalDown[1] ?         na : color.fuchsia
+
+
+TF2_ResistanceZonesColor = not InvertColors and 
+   (TF2_Menu == 'S/R Zones' or TF2_Menu == 'Expanded S/R Zones') ? TF2_ResZoneColor : 
+   InvertColors and (TF2_Menu == 'S/R Zones' or TF2_Menu == 'Expanded S/R Zones') ? 
+   TF2_ResZoneColorInverted : na  // fuchsia : green
+TF2_SupportZonesColor = not InvertColors and 
+   (TF2_Menu == 'S/R Zones' or TF2_Menu == 'Expanded S/R Zones') ? TF2_SupZoneColor : 
+   InvertColors and (TF2_Menu == 'S/R Zones' or TF2_Menu == 'Expanded S/R Zones') ? 
+   TF2_SupZoneColorInverted : na  // green   : fuchsia
+
+
+// S/R & S/R Zone Plots - Custom 1 Time Frame = Time Frame 2 = TF2
+
+
+TF2_ResistanceUpZone   = plot(ShowTF2SR and (TF2_Menu == 'S/R Zones' or TF2_Menu == 'Expanded S/R Zones') ? TF2_ResistanceUpperZone : na, "Timeframe 2 - Resistance - Upper Zone", color=TF2_ResistanceZonesColor, linewidth=1, style=plot.style_line, transp=45, offset=-3, join=false)  // offset=-2
+TF2_ResistanceDownZone = plot(ShowTF2SR and (TF2_Menu == 'S/R Zones' or TF2_Menu == 'Expanded S/R Zones') ? TF2_ResistanceLowerZone : na, "Timeframe 2 - Resistance - Lower Zone", color=TF2_ResistanceZonesColor, linewidth=1, style=plot.style_line, transp=45, offset=-3, join=false)  // offset=-2
+fill(TF2_ResistanceUpZone, TF2_ResistanceDownZone, color=TF2_ResistanceZonesColor, transp=93, title="Timeframe 2 - Resistance Zone Shading")
+
+
+// plot(ShowTF2SR and (TF2_Menu == 'S/R' or TF2_Menu == 'Expanded S/R Zones') ? TF2_FractalUp   : na, "Timeframe 2 - Resistance", color=TF2_ResistanceColor, linewidth=1, style=plot.style_circles, transp=5, offset=-3, join=false)
+// plot(ShowTF2SR and (TF2_Menu == 'S/R' or TF2_Menu == 'Expanded S/R Zones') ? TF2_FractalDown : na, "Timeframe 2 - Support",    color=TF2_SupportColor,    linewidth=1, style=plot.style_circles, transp=5, offset=-3, join=false)
+
+
+TF2_SupportUpZone      = plot(ShowTF2SR and (TF2_Menu == 'S/R Zones' or TF2_Menu == 'Expanded S/R Zones') ? TF2_SupportUpperZone    : na, "Timeframe 2 - Support - Upper Zone",    color=TF2_SupportZonesColor,    linewidth=1, style=plot.style_line, transp=45, offset=-3, join=false)
+TF2_SupportDownZone    = plot(ShowTF2SR and (TF2_Menu == 'S/R Zones' or TF2_Menu == 'Expanded S/R Zones') ? TF2_SupportLowerZone    : na, "Timeframe 2 - Support - Lower Zone",    color=TF2_SupportZonesColor,    linewidth=1, style=plot.style_line, transp=45, offset=-3, join=false)
+fill(TF2_SupportUpZone, TF2_SupportDownZone, color=TF2_SupportZonesColor, transp=93, title="Timeframe 2 - Support Zone Shading")
+
+
+// Alerts for Support / Resistance 
+
+TF1SellAtResistance = (low  < TF1_FractalUp)   and (open < TF1_FractalUp)   and (high >= TF1_FractalUp)   and (close < TF1_FractalUp)   ? 1 : 0
+TF1BuyAtSupport     = (high > TF1_FractalDown) and (open > TF1_FractalDown) and (low  <= TF1_FractalDown) and (close > TF1_FractalDown) ? 1 : 0
+
+alertcondition(TF1SellAtResistance, title = "Alert - TF1 Sell at Resistance", message = "Alert - TF1 Sell at Resistance")
+alertcondition(TF1BuyAtSupport,     title = "Alert - TF1 Buy at Support",     message = "Alert - TF1 Buy at Support")
+
+
+TF2SellAtResistance = (low  < TF2_FractalUp)   and (open < TF2_FractalUp)   and (high >= TF2_FractalUp)   and (close < TF2_FractalUp)   ? 1 : 0
+TF2BuyAtSupport     = (high > TF2_FractalDown) and (open > TF2_FractalDown) and (low  <= TF2_FractalDown) and (close > TF2_FractalDown) ? 1 : 0
+
+alertcondition(TF2SellAtResistance, title = "Alert - TF2 Sell at Resistance", message = "Alert - TF2 Sell at Resistance")
+alertcondition(TF2BuyAtSupport,     title = "Alert - TF2 Buy at Support",     message = "Alert - TF2 Buy at Support")
+

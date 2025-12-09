@@ -1,0 +1,276 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LonesomeTheBlue
+
+//@version=4
+study("Tick Data Detailed", max_labels_count = 300, max_lines_count = 150)
+vol1 = input(defval = 10000., title = "Volume Less Than")
+vol21 = input(defval = 10000., title = "Volume", inline = "v21")
+vol22 = input(defval = 20000., title = "", inline = "v21")
+vol31 = input(defval = 20000., title = "Volume", inline = "v31")
+vol32 = input(defval = 50000., title = "", inline = "v31")
+vol41 = input(defval = 50000., title = "Volume", inline = "v41")
+vol42 = input(defval = 100000., title = "", inline = "v41")
+vol51 = input(defval = 100000., title = "Volume", inline = "v51")
+vol52 = input(defval = 200000., title = "", inline = "v51")
+vol61 = input(defval = 200000., title = "Volume", inline = "v61")
+vol62 = input(defval = 400000., title = "", inline = "v61")
+vol7 = input(defval = 400000., title = "Volume Greater Than")
+buycol = input(defval = color.lime, title = "BUY Text Color")
+sellcol = input(defval = color.red, title = "SELL Text Color")
+levscol = input(defval = color.blue, title = "LEVELS Text Color")
+paintbg = input(defval = false, title = "Paint Background")
+topcol = input(defval = color.silver, title = "Header Background Color")
+midcol = input(defval = color.gray, title = "Middle Background Color")
+botcol = input(defval = color.silver, title = "Bottom Background Color")
+volcol = input(defval = color.gray, title = "Volume Background Color")
+
+var all_text = array.new_string(50) // 10 * 5 array
+var normal_chars = array.new_string(0)
+var bold_chars = array.new_string(0)
+if barstate.isfirst
+    array.set(all_text, 2 * 5, "0 - " + tostring(vol1))
+    array.set(all_text, 3 * 5, tostring(vol21) + " - " + tostring(vol22))
+    array.set(all_text, 4 * 5, tostring(vol31) + " - " + tostring(vol32))
+    array.set(all_text, 5 * 5, tostring(vol41) + " - " + tostring(vol42))
+    array.set(all_text, 6 * 5, tostring(vol51) + " - " + tostring(vol52))
+    array.set(all_text, 7 * 5, tostring(vol61) + " - " + tostring(vol62))
+    array.set(all_text, 8 * 5, "> " + tostring(vol7))
+    array.set(all_text, 9 * 5, "𝗧 𝗢 𝗧 𝗔 𝗟")
+    array.set(all_text, 0 * 5 + 1, "𝗕𝗨𝗬")
+    array.set(all_text, 0 * 5 + 3, "𝗦𝗘𝗟𝗟")
+    array.set(all_text, 1 * 5 + 1, "Tick")
+    array.set(all_text, 1 * 5 + 2, "Volume")
+    array.set(all_text, 1 * 5 + 3, "Tick")
+    array.set(all_text, 1 * 5 + 4, "Volume")
+    nc = array.copy(str.split("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ", ""))
+    bc = array.copy(str.split("𝟬,𝟭,𝟮,𝟯,𝟰,𝟱,𝟲,𝟳,𝟴,𝟵,𝗔,𝗕,𝗖,𝗗,𝗘,𝗙,𝗚,𝗛,𝗜,𝗝,𝗞,𝗟,𝗠,𝗡,𝗢,𝗣,𝗤,𝗥,𝗦,𝗧,𝗨,𝗩,𝗪,𝗫,𝗬,𝗭", ","))
+    for x = 0 to array.size(nc) - 1
+        array.push(normal_chars, array.get(nc, x))
+        array.push(bold_chars, array.get(bc, x))
+
+    
+varip float last_volume = 0.
+varip int move_count = 0
+varip float last_close_price = 0.
+varip global_vol_array = array.new_float(14, 0)
+varip global_num_array = array.new_float(14, 0)
+
+// after the script added to the chart at the first step it must get current volume info (not 0)
+if bar_index > 0
+    move_count := move_count + 1
+if move_count == bar_index or barstate.isnew
+    if move_count > bar_index
+        for x = 0 to 13
+            array.unshift(global_vol_array, 0)
+            //if array.size(global_vol_array) > 500
+            //    array.pop(global_vol_array)
+            array.unshift(global_num_array, 0)
+            //if array.size(global_num_array) > 500
+            //    array.pop(global_num_array)
+    last_volume := volume
+    last_close_price := close
+else
+    current_volume = (volume - last_volume) * close
+    ind = current_volume <= vol1 ? 0 :
+          current_volume > vol21 and current_volume <= vol22 ? 1 :
+          current_volume > vol31 and current_volume <= vol32 ? 2 :
+          current_volume > vol41 and current_volume <= vol42 ? 3 :
+          current_volume > vol51 and current_volume <= vol52 ? 4 :
+          current_volume > vol61 and current_volume <= vol62 ? 5 : 6
+    ind := ind + (close < last_close_price ? 7 : 0)
+    array.set(global_vol_array, ind, array.get(global_vol_array, ind) + current_volume)
+    array.set(global_num_array, ind, array.get(global_num_array, ind) + 1)
+    last_volume := volume
+    last_close_price := close
+
+get_dotted(val)=>
+    _v = round(val)
+    ret = ""
+    if _v < 10
+        ret := tostring(val, '#.##')
+    else if _v < 100
+        ret := tostring(val, '#.#')
+    else
+        ret := tostring(val, '#')
+    ret
+
+get_vol(vol)=>
+    rvol = 0.
+    rmul = ""
+    if vol >= 1000000000
+        rvol := vol / 1000000000
+        rmul := "B"
+    else if vol >= 1000000
+        rvol := vol / 1000000
+        rmul := "M"
+    else if vol >= 1000
+        rvol := vol / 1000
+        rmul := "K"
+    else
+        rvol := vol
+        rmul := ""
+    ret = get_dotted(rvol) + rmul
+
+get_bold_text(txt)=>
+    tarr = str.split(txt, "")
+    rtxt = ""
+    if array.size(tarr) > 0
+        for x = 0 to array.size(tarr) - 1
+            notfound = true
+            for y = 0 to array.size(normal_chars) - 1
+                if array.get(tarr, x) == array.get(normal_chars, y)
+                    rtxt := rtxt + array.get(bold_chars, y)
+                    notfound := false
+                    break
+            if notfound
+                rtxt := rtxt + array.get(tarr, x)
+    rtxt
+
+// paint background
+fill(plot(115, color = na, display = display.none, editable = false), plot(93, color = na, display = display.none, editable = false), color = paintbg ? topcol : na, show_last = 75, editable = false)
+fill(plot(115, color = na, display = display.none, offset = -80, editable = false), plot(93, color = na, display = display.none, offset = -80, editable = false), color = paintbg ? topcol : na, show_last = 155, editable = false)
+fill(plot(25, color = na, display = display.none, editable = false), plot(93, color = na, display = display.none, editable = false), color = paintbg ? midcol : na,  show_last = 75, editable = false)
+fill(plot(25, color = na, display = display.none, offset = -80, editable = false), plot(93, color = na, display = display.none, offset = -80, editable = false), color = paintbg ? midcol : na,  show_last = 155, editable = false)
+fill(plot(25, color = na, display = display.none, editable = false), plot(10, color = na, display = display.none, editable = false), color = paintbg ? botcol : na, show_last = 75, editable = false)
+fill(plot(25, color = na, display = display.none, offset = -80, editable = false), plot(10, color = na, display = display.none, offset = -80, editable = false), color = paintbg ? botcol : na, show_last = 155, editable = false)
+fill(plot(10, color = na, display = display.none, offset = -160, editable = false), plot(110, color = na, display = display.none, offset = -160, editable = false), color = paintbg ? volcol : na,  show_last = 260, editable = false)
+
+var line ln1 = na
+var line ln2 = na
+var line ln3 = na
+var line ln4 = na
+line.delete(ln1)
+line.delete(ln2)
+line.delete(ln3)
+line.delete(ln4)
+ln1 :=  line.new(x1 = bar_index - 30, y1 = 10, x2 = bar_index - 30, y2 = 115, color = color.new(color.maroon, 0), width = 4)
+ln2 :=  line.new(x1 = bar_index - 50, y1 = 10, x2 = bar_index - 50, y2 = 115, color = color.new(color.maroon, 0), width = 4)
+ln3 :=  line.new(x1 = bar_index - 110, y1 = 10, x2 = bar_index - 110, y2 = 115, color = color.new(color.maroon, 0), width = 4)
+ln4 :=  line.new(x1 = bar_index - 130, y1 = 10, x2 = bar_index - 130, y2 = 115, color = color.new(color.maroon, 0), width = 4)
+
+if barstate.isrealtime and array.size(global_vol_array) >= 14
+    bvol = 0.
+    svol = 0.
+    btick = 0.
+    stick = 0.
+    for y = 0 to 6
+        array.set(all_text, (y + 2) * 5 + 1, get_vol(array.get(global_num_array, y)))
+        array.set(all_text, (y + 2) * 5 + 2, get_vol(array.get(global_vol_array, y)))
+        array.set(all_text, (y + 2) * 5 + 3, get_vol(array.get(global_num_array, y + 7)))
+        array.set(all_text, (y + 2) * 5 + 4, get_vol(array.get(global_vol_array, y + 7)))
+        bvol := bvol + array.get(global_vol_array, y)
+        svol := svol + array.get(global_vol_array, y + 7)
+        btick := btick + array.get(global_num_array, y)
+        stick := stick + array.get(global_num_array, y + 7)
+            
+    array.set(all_text, 9 * 5 + 1, get_vol(btick))
+    array.set(all_text, 9 * 5 + 2, get_vol(bvol))
+    array.set(all_text, 9 * 5 + 3, get_vol(stick))
+    array.set(all_text, 9 * 5 + 4, get_vol(svol))
+
+    anomally = (close > open and bvol < svol) or (close < open and bvol > svol) ? "(!)" : ""
+    
+    var all_labels = array.new_label(50)
+    var xlocs = array.new_int(5)
+    array.set(xlocs, 0, bar_index - 50)
+    array.set(xlocs, 1, bar_index - 40)
+    array.set(xlocs, 2, bar_index - 30)
+    array.set(xlocs, 3, bar_index - 20)
+    array.set(xlocs, 4, bar_index - 10)
+    array.set(all_text, 0, "CURRENT BAR")
+    lind = 0
+    for y = 0 to 9
+        for x = 0 to 4
+            label.delete(array.get(all_labels, lind))
+            array.set(all_labels, lind, 
+                      label.new( x = y == 0 and x > 0 and x < 4 ? round((array.get(xlocs, x) + array.get(xlocs, x + 1)) / 2) : array.get(xlocs, x), 
+                                 y = 100 - (y * 10), 
+                                 text =  y == 9 and x == 0 ? array.get(all_text, y * 5 + x) + anomally : 
+                                         y == 9 and x > 0 ? get_bold_text(array.get(all_text, y * 5 + x)) : 
+                                         array.get(all_text, y * 5 + x), 
+                                 color = color.new(color.white, 100), 
+                                 textcolor = x == 1 or x == 2 ? buycol : x == 3 or x == 4 ? sellcol : (x == 0 and y== 9 ? bvol > svol ? buycol : bvol < svol ? sellcol : levscol : levscol),
+                                 style = label.style_label_lower_right))
+            lind := lind + 1
+            
+    //totals
+    total_vol_array = array.new_float(14, 0)
+    total_num_array = array.new_float(14, 0)
+    total_bar = 0
+    for x = 0 to array.size(global_vol_array) - 1 by 14
+        for y = 0 to 6
+            array.set(total_vol_array, y, array.get(total_vol_array, y) + array.get(global_vol_array, x + y))
+            array.set(total_vol_array, y + 7, array.get(total_vol_array, y + 7) + array.get(global_vol_array, x + y + 7))
+            array.set(total_num_array, y, array.get(total_num_array, y) + array.get(global_num_array, x + y))
+            array.set(total_num_array, y + 7, array.get(total_num_array, y + 7) + array.get(global_num_array, x + y + 7))
+        total_bar := total_bar + 1
+        
+    bvol := 0.
+    svol := 0.
+    btick := 0.
+    stick := 0.
+    for y = 0 to 6
+        array.set(all_text, (y + 2) * 5 + 1, get_vol(array.get(total_num_array, y)))
+        array.set(all_text, (y + 2) * 5 + 2, get_vol(array.get(total_vol_array, y)))
+        array.set(all_text, (y + 2) * 5 + 3, get_vol(array.get(total_num_array, y + 7)))
+        array.set(all_text, (y + 2) * 5 + 4, get_vol(array.get(total_vol_array, y + 7)))
+        bvol := bvol + array.get(total_vol_array, y)
+        svol := svol + array.get(total_vol_array, y + 7)
+        btick := btick + array.get(total_num_array, y)
+        stick := stick + array.get(total_num_array, y + 7)
+            
+    array.set(all_text, 9 * 5 + 1, get_vol(btick))
+    array.set(all_text, 9 * 5 + 2, get_vol(bvol))
+    array.set(all_text, 9 * 5 + 3, get_vol(stick))
+    array.set(all_text, 9 * 5 + 4, get_vol(svol))
+    
+    array.set(xlocs, 0, bar_index - 130)
+    array.set(xlocs, 1, bar_index - 120)
+    array.set(xlocs, 2, bar_index - 110)
+    array.set(xlocs, 3, bar_index - 100)
+    array.set(xlocs, 4, bar_index - 90)
+    var total_all_labels = array.new_label(50)
+    array.set(all_text, 0, "TOTAL " + tostring(total_bar) + " BARS")
+    lind := 0
+    for y = 0 to 9
+        for x = 0 to 4
+            label.delete(array.get(total_all_labels, lind))
+            array.set(total_all_labels, lind, 
+                      label.new( x = y == 0 and x > 0 and x < 4 ? round((array.get(xlocs, x) + array.get(xlocs, x + 1)) / 2) : array.get(xlocs, x), 
+                                 y = 100 - (y * 10), 
+                                 text = y == 9 and x > 0 ? get_bold_text(array.get(all_text, y * 5 + x)) : array.get(all_text, y * 5 + x), 
+                                 color = color.new(color.white, 100), 
+                                 textcolor = x == 1 or x == 2 ? buycol : x == 3 or x == 4 ? sellcol : (x == 0 and y== 9 ? bvol > svol ? buycol : bvol < svol ? sellcol : levscol : levscol),
+                                 style = label.style_label_lower_right))
+            lind := lind + 1
+    
+    // show volume bars
+    var vol_lines = array.new_line(100)
+    // volume zero line
+    var line vzline = na 
+    line.delete(vzline)
+    vzline := line.new(x1 = bar_index - 160, y1 = 60, x2 = bar_index - 260, y2 = 60, color = color.gray, style = line.style_dotted)
+    tot_vols = array.new_float(100, 0)
+    vcnt = 0
+    for x = 0 to array.size(global_vol_array) - 1 by 14
+        vol = 0.
+        for y = 0 to 6
+            vol := vol + array.get(global_vol_array, x + y) - array.get(global_vol_array, x + y + 7)
+        array.set(tot_vols, vcnt, vol)
+        vcnt := vcnt + 1
+        if vcnt == 100
+            break
+    
+    // normalize
+    mmax = max(array.max(tot_vols), -array.min(tot_vols))
+    for x = 0 to 99
+        val = abs(array.get(tot_vols, x))
+        val := val * 50 / mmax
+        val := val * sign(array.get(tot_vols, x))
+        array.set(tot_vols, x, val)
+    
+    // draw vol lines
+    for x = 0 to 99    
+        line.delete(array.get(vol_lines, x))
+        array.set(vol_lines, x, line.new(x1 = bar_index - 160 - x, y1 = 60, x2 = bar_index - 160 - x, y2 = 60 + array.get(tot_vols, x), width = 5, color = array.get(tot_vols, x) > 0 ? buycol : sellcol))
+        

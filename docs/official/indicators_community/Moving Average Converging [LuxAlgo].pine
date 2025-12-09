@@ -1,0 +1,58 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=5
+indicator("Moving Average Converging [LuxAlgo]", overlay = true)
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+length = input(100)
+
+incr   = input(10, "Increment")
+
+fast   = input(10)
+
+src    = input(close)
+
+//-----------------------------------------------------------------------------}
+//Calculations
+//-----------------------------------------------------------------------------{
+var ma    = 0.
+var fma   = 0.
+var alpha = 0.
+var k     = 1 / incr
+
+upper = ta.highest(length)
+lower = ta.lowest(length)
+init_ma = ta.sma(src, length)
+
+cross = ta.cross(src,ma)
+
+alpha := cross ? 2 / (length + 1)
+  : src > ma and upper > upper[1] ? alpha + k
+  : src < ma and lower < lower[1] ? alpha + k
+  : alpha
+
+ma := nz(ma[1] + alpha[1] * (src - ma[1]), init_ma)
+  
+fma := nz(cross ? math.avg(src, fma[1])
+  : src > ma ? math.max(src, fma[1]) + (src - fma[1]) / fast
+  : math.min(src, fma[1]) + (src - fma[1]) / fast,src)
+
+//-----------------------------------------------------------------------------}
+//Plots
+//-----------------------------------------------------------------------------{
+css = fma > ma ? color.teal : color.red
+
+plot0 = plot(fma, "Fast MA" 
+  , color = #ff5d00
+  , transp = 100)
+
+plot1 = plot(ma, "Converging MA"
+  , color = css)
+
+fill(plot0, plot1, css
+  , "Fill"
+  , transp = 80)
+  
+//-----------------------------------------------------------------------------}

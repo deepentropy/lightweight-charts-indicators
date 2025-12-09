@@ -1,0 +1,155 @@
+
+//@version=4
+
+study("AsiaSessionHighLowMidLines", overlay=true)
+
+// INPUT    {
+maType ="Static"
+tradeRange = input("1800-0200", "Session", input.session)
+rColor = input(color.aqua, title="Level Color")
+rStyle = input(line.style_solid, title="Level Style", options = [line.style_solid, line.style_dotted, line.style_dashed, line.style_arrow_both, line.style_arrow_left, line.style_arrow_right])
+rWidth = input(1, title="Level Width")
+mColor = input(color.orange, title="MA Level Color")
+mStyle = input(line.style_solid, title="MA Level Style", options = [line.style_solid, line.style_dotted, line.style_dashed, line.style_arrow_both, line.style_arrow_left, line.style_arrow_right])
+mWidth = input(1, title="MA Level Width")
+bgColor = input(color.new(color.aqua,70), title = "Background Color")
+//} INPUT
+
+// INIT     {
+timeIsAllowed = not na(time(timeframe.period, tradeRange))
+newSession = timeIsAllowed and not timeIsAllowed[1]
+
+var float refHigh = na, refHigh := timeIsAllowed and not timeIsAllowed[1] ? high : timeIsAllowed and timeIsAllowed[1] ? high > refHigh ? high : refHigh : refHigh
+var float refLow = na,  refLow  := timeIsAllowed and not timeIsAllowed[1] ? low : timeIsAllowed and timeIsAllowed[1] ? low < refLow ? low : refLow : refLow
+var int x = na, x := newSession ? time : x
+
+var int l01_x1_s1 = na, var int l01_x2_s1 = na, var float l01_y1_s1 = na, var float l01_y2_s1 = na
+var int l02_x1_s1 = na, var int l02_x2_s1 = na, var float l02_y1_s1 = na, var float l02_y2_s1 = na
+var int ma_x1 = na, var int ma_x2 = na, var float ma_y1 = na, var float ma_y2 = na
+
+
+var int l01_x1_v1 = na, var int l01_x2_v1 = na, var float l01_y1_v1 = na, var float l01_y2_v1 = na
+var int l02_x1_v1 = na, var int l02_x2_v1 = na, var float l02_y1_v1 = na, var float l02_y2_v1 = na
+
+var l01 = line(na), var l01_s1 = line(na),  var l01_v1 = line(na),
+var l02 = line(na), var l02_s1 = line(na),  var l02_v1 = line(na),
+var l03 = line(na),
+var l04 = line(na)
+var maLine = line(na)
+var box1 = box(na)
+var boxCur = box(na)
+
+var int counter = 0
+var float sum = na
+var float ma = na
+//} INIT
+
+// LOGIC    {
+
+// previous sessions
+if newSession
+    counter := 1
+    sum := close
+    ma := sum / counter
+    l01_s1 := 
+         line.new(
+          x1    = l01_x1_s1, 
+          y1    = l01_y1_s1, 
+          x2    = l01_x2_s1, 
+          y2    = l01_y2_s1, 
+          xloc  = xloc.bar_time, 
+          color = rColor, 
+          width = rWidth, 
+          style = rStyle
+          )
+    l02_s1 := 
+         line.new(
+          x1    = l02_x1_s1, 
+          y1    = l02_y1_s1, 
+          x2    = l02_x2_s1, 
+          y2    = l02_y2_s1, 
+          xloc  = xloc.bar_time, 
+          color = rColor, 
+          width = rWidth, 
+          style = rStyle
+          )
+     // Draw the box
+    boxCur := box.new(l01_x1_s1, l01_y1_s1, l01_x2_s1-8*60*60*1000, l02_y2_s1,color.white, 0 ,line.style_solid, extend.none,xloc.bar_time,bgColor)
+    
+    if maType == "Static"
+        maLine :=
+         line.new(
+          x1    = (l01_x1_s1+l02_x1_s1)/2, 
+          y1    = (l01_y1_s1+l02_y1_s1)/2, 
+          x2    = (l01_x2_s1+l02_x2_s1)/2, 
+          y2    = (l01_y2_s1+l02_y2_s1)/2, 
+          xloc  = xloc.bar_time, 
+          color = rColor, 
+          width = rWidth, 
+          style = rStyle
+          )        
+
+// current session
+if timeIsAllowed and not newSession
+    counter := counter + 1
+    sum := sum + close
+    ma := sum / counter
+    line.delete(l01)
+    line.delete(l02)
+    line.delete(l03)
+    line.delete(l04)
+    line.delete(maLine)
+    box.delete(box1)
+    l01 := 
+         line.new(
+          x1    = x, 
+          y1    = refHigh, 
+          x2    = time+8*60*60*1000, 
+          y2    = refHigh, 
+          xloc  = xloc.bar_time, 
+          color = rColor, 
+          width = rWidth, 
+          style = rStyle
+          )        
+    l02 :=
+         line.new(
+          x1    = x, 
+          y1    = refLow, 
+          x2    = time+8*60*60*1000, 
+          y2    = refLow, 
+          xloc  = xloc.bar_time, 
+          color = rColor, 
+          width = rWidth, 
+          style = rStyle
+          )
+    if maType == "Static"
+        maLine :=
+         line.new(
+          x1    = x, 
+          y1    = (refHigh+refLow)/2, 
+          x2    = time+8*60*60*1000, 
+          y2    = (refHigh+refLow)/2, 
+          xloc  = xloc.bar_time, 
+          color = mColor, 
+          width = mWidth, 
+          style = mStyle
+          )
+     // Draw the box
+    box1 := box.new(x, refHigh, time, refLow,color.white, 0 ,line.style_solid, extend.none,xloc.bar_time,bgColor)
+    
+// set previous values
+if not timeIsAllowed and timeIsAllowed[1] and not newSession
+    ma := na
+    l01_x1_s1 := valuewhen(not timeIsAllowed and timeIsAllowed[1] and not newSession, line.get_x1(l01), 0)
+    l01_x2_s1 := valuewhen(not timeIsAllowed and timeIsAllowed[1] and not newSession, line.get_x2(l01), 0)
+    l01_y1_s1 := valuewhen(not timeIsAllowed and timeIsAllowed[1] and not newSession, line.get_y1(l01), 0)
+    l01_y2_s1 := valuewhen(not timeIsAllowed and timeIsAllowed[1] and not newSession, line.get_y2(l01), 0)
+    l02_x1_s1 := valuewhen(not timeIsAllowed and timeIsAllowed[1] and not newSession, line.get_x1(l02), 0)
+    l02_x2_s1 := valuewhen(not timeIsAllowed and timeIsAllowed[1] and not newSession, line.get_x2(l02), 0)
+    l02_y1_s1 := valuewhen(not timeIsAllowed and timeIsAllowed[1] and not newSession, line.get_y1(l02), 0)
+    l02_y2_s1 := valuewhen(not timeIsAllowed and timeIsAllowed[1] and not newSession, line.get_y2(l02), 0)
+    ma_x1 := valuewhen(not timeIsAllowed and timeIsAllowed[1] and not newSession, line.get_x1(maLine), 0)
+    ma_y1 := valuewhen(not timeIsAllowed and timeIsAllowed[1] and not newSession, line.get_y1(maLine), 0)
+    ma_x2 := valuewhen(not timeIsAllowed and timeIsAllowed[1] and not newSession, line.get_x2(maLine), 0)
+    ma_y2 := valuewhen(not timeIsAllowed and timeIsAllowed[1] and not newSession, line.get_y2(maLine), 0)
+//} LOGIC

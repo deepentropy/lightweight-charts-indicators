@@ -1,0 +1,1777 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © sirkriz
+
+//@version=4
+study("Fibonacci Auto Trend Scouter", "FATS", true)
+// 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987
+
+// INPUTS {{{
+var max_array_size = 21 // [6, 3] matrix
+// TREND {{{
+src = input(hlc3, "Source data:", group="Trend", inline="period")
+trend_data = input("High/Low", "Trend Coords:", options=["Source", "High/Low"], group="Trend", inline="period2")
+medium_period = input(21, "Length: ‍‍Long", group="Trend", inline="period1")
+small_period = input(8, "Short", group="Trend", inline="period1")
+//
+show_sm_coord_labels = input(false, "Short HH/LL Labels", group="Trend")
+show_md_coord_labels = input(false, "Long HH/LL Labels", group="Trend")
+//
+
+// }}}
+// Trend Short {{{
+// Selection
+trend_s1_top_from = input("Back", "Top", options=["Front", "Mid", "Back"], group="Short Trend", inline="s1topsel")
+trend_s1_top_to = input("Mid", "--->", options=["Front", "Mid", "Back"], group="Short Trend", inline="s1topsel")
+trend_s1_bottom_from = input("Back", "Bottom", options=["Front", "Mid", "Back"], group="Short Trend", inline="s1btmsel")
+trend_s1_bottom_to = input("Mid", "--->", options=["Front", "Mid", "Back"], group="Short Trend", inline="s1btmsel")
+//
+trend_s1_line_styleI = input("Solid", "Lines", options=["Solid", "Dashed", "Dotted"], group="Short Trend", inline="ts1line")
+trend_s1_line_width = input(4, "", minval=1, group="Short Trend", inline="ts1line")
+trend_s1_line_style = 
+  trend_s1_line_styleI == "Solid" ? line.style_solid :
+  trend_s1_line_styleI == "Dashed" ? line.style_dashed : line.style_dotted
+//
+trend_s1_line_extend = input(true, "Extend", group="Short Trend", inline="extend1")
+trend_s1_xline_styleI = input("Dashed", "", options=["Solid", "Dashed", "Dotted"], group="Short Trend", inline="extend1")
+trend_s1_xline_width = input(1, "", minval=1, group="Short Trend", inline="extend1")
+trend_s1_xline_style = 
+  trend_s1_xline_styleI == "Solid" ? line.style_solid :
+  trend_s1_xline_styleI == "Dashed" ? line.style_dashed : line.style_dotted
+//
+show_sight_small = input(false, "Sight",  group="Short Trend", inline="sight1")
+sight_small_styleI = input("Solid", "", options=["Solid", "Dashed", "Dotted"],  group="Short Trend", inline="sight1")
+sight_small_width = input(2, "", minval=1,  group="Short Trend", inline="sight1")
+sight_small_style = 
+  sight_small_styleI == "Solid" ? line.style_solid :
+  sight_small_styleI == "Dashed" ? line.style_dashed : line.style_dotted
+//
+trend_s1_use_colors = input(true, "Colors: ", group="Short Trend", inline="TColor")
+trend_s1_line_color_up = input(color.new(color.blue, 10), "Up", group="Short Trend", inline="TColor")
+trend_s1_line_color_dn = input(color.new(color.orange, 10), "Down", group="Short Trend", inline="TColor")
+trend_s1_color_default = input(color.white, "Default", group="Short Trend", inline="TColor")
+// }}}
+// Trend Long {{{
+trend_s2_top_from = input("Back", "Top", options=["Front", "Mid", "Back"], group="Long Trend", inline="s2topsel")
+trend_s2_top_to = input("Mid", "--->", options=["Front", "Mid", "Back"], group="Long Trend", inline="s2topsel")
+trend_s2_bottom_from = input("Back", "Bottom", options=["Front", "Mid", "Back"], group="Long Trend", inline="s2btmsel")
+trend_s2_bottom_to = input("Mid", "--->", options=["Front", "Mid", "Back"], group="Long Trend", inline="s2btmsel")
+//
+trend_s2_line_styleI = input("Solid", "Lines", options=["Solid", "Dashed", "Dotted"], group="Long Trend", inline="ts2line")
+trend_s2_line_width = input(4, "", minval=1, group="Long Trend", inline="ts2line")
+trend_s2_line_style = 
+  trend_s2_line_styleI == "Solid" ? line.style_solid :
+  trend_s2_line_styleI == "Dashed" ? line.style_dashed : line.style_dotted
+//
+trend_s2_line_extend = input(true, "Extend", group="Long Trend", inline="extend2")
+trend_s2_xline_styleI = input("Dashed", "", options=["Solid", "Dashed", "Dotted"], group="Long Trend", inline="extend2")
+trend_s2_xline_width = input(1, "", minval=1, group="Long Trend", inline="extend2")
+trend_s2_xline_style = 
+  trend_s2_xline_styleI == "Solid" ? line.style_solid :
+  trend_s2_xline_styleI == "Dashed" ? line.style_dashed : line.style_dotted
+//
+show_sight_medium = input(false, "Sight", group="Long Trend", inline="sight2")
+sight_medium_styleI = input("Solid", "", options=["Solid", "Dashed", "Dotted"], group="Long Trend", inline="sight2")
+sight_medium_width = input(2, "", minval=1, group="Long Trend", inline="sight2")
+sight_medium_style = 
+  sight_medium_styleI == "Solid" ? line.style_solid :
+  sight_medium_styleI == "Dashed" ? line.style_dashed : line.style_dotted
+//
+trend_s2_use_colors = input(true, "Colors: ", group="Long Trend", inline="T2Color")
+trend_s2_line_color_up = input(color.new(color.green, 10), "Up", group="Long Trend", inline="T2Color")
+trend_s2_line_color_dn = input(color.new(color.red, 10), "Down", group="Long Trend", inline="T2Color")
+trend_s2_color_default = input(color.white, "Default", group="Long Trend", inline="T2Color")
+// }}}
+// Trend Custom 3 {{{
+trend_s3_show_top = input(false, "Top", group="Custom Trend", inline="s3topsel1")
+trend_s3_top_from_group = input("Long", "", options=["Long", "Short"], group="Custom Trend", inline="s3topsel1")
+trend_s3_top_from_pair = input("Mid", "", options=["Front", "Mid", "Back"], group="Custom Trend", inline="s3topsel1")
+trend_s3_top_to_group = input("Short", "--->", options=["Long", "Short"], group="Custom Trend", inline="s3topsel2")
+trend_s3_top_to_pair = input("Mid", "", options=["Front", "Mid", "Back"], group="Custom Trend", inline="s3topsel2")
+
+trend_s3_show_btm = input(false, "Bottom", group="Custom Trend", inline="s3btmsel1")
+trend_s3_bottom_from_group = input("Long", "", options=["Long", "Short"], group="Custom Trend", inline="s3btmsel1")
+trend_s3_bottom_from_pair = input("Mid", "", options=["Front", "Mid", "Back"], group="Custom Trend", inline="s3btmsel1")
+trend_s3_bottom_to_group = input("Short", "--->", options=["Long", "Short"], group="Custom Trend", inline="s3btmsel2")
+trend_s3_bottom_to_pair = input("Mid", "", options=["Front", "Mid", "Back"], group="Custom Trend", inline="s3btmsel2")
+//
+trend_s3_line_styleI = input("Solid", "Lines", options=["Solid", "Dashed", "Dotted"], group="Custom Trend", inline="ts3line")
+trend_s3_line_width = input(2, "", minval=1, group="Custom Trend", inline="ts3line")
+trend_s3_line_style = 
+  trend_s3_line_styleI == "Solid" ? line.style_solid :
+  trend_s3_line_styleI == "Dashed" ? line.style_dashed : line.style_dotted
+//
+trend_s3_line_extend = input(false, "Extend", group="Custom Trend", inline="extend2")
+trend_s3_xline_styleI = input("Dashed", "", options=["Solid", "Dashed", "Dotted"], group="Custom Trend", inline="extend2")
+trend_s3_xline_width = input(1, "", minval=1, group="Custom Trend", inline="extend2")
+trend_s3_xline_style = 
+  trend_s3_xline_styleI == "Solid" ? line.style_solid :
+  trend_s3_xline_styleI == "Dashed" ? line.style_dashed : line.style_dotted
+  //
+trend_s3_use_colors = input(false, "Colors: ", group="Custom Trend", inline="T2Color")
+trend_s3_line_color_up = input(color.new(#673ab7, 10), "Up", group="Custom Trend", inline="T2Color")
+trend_s3_line_color_dn = input(color.new(color.purple, 10), "Down", group="Custom Trend", inline="T2Color")
+trend_s3_color_default = input(color.white, "Default", group="Custom Trend", inline="T2Color")
+// }}}
+// HTF S/L {{{
+// 1
+htf1_show = input(true, "Show Plot", group="Higher TF Level 1", inline="htf1_0")
+htf1_label = input(true, "Show Label", group="Higher TF Level 1", inline="htf1_0")
+htf1_source = input(close, "", group="Higher TF Level 1", inline="htf1_1")
+htf1_timeframe = input("360", "", type = input.resolution, group="Higher TF Level 1", inline="htf1_1")
+htf1_length = input(13, "Length", group="Higher TF Level 1", inline="htf1_3")
+htf1_size= input(200, "Size", minval=1, group="Higher TF Level 1", inline="htf1_3")
+htf1_styleI = input("Line", "Style: ", options=["Line", "Cross", "Circle"], group="Higher TF Level 1", inline="htf1_2")
+htf1_style = (htf1_styleI == "Line") ? plot.style_line : (htf1_styleI == "Cross") ? plot.style_cross : plot.style_circles
+htf1_width= input(4, "", minval=0, group="Higher TF Level 1", inline="htf1_2")
+htf1_color= input(color.new(color.yellow, 50), "", group="Higher TF Level 1", inline="htf1_2")
+// 2
+htf2_show = input(true, "Show Plot", group="Higher TF Level 2", inline="htf2_0")
+htf2_label = input(true, "Show Label", group="Higher TF Level 2", inline="htf2_0")
+htf2_source = input(close, "", group="Higher TF Level 2", inline="htf2_1")
+htf2_timeframe = input("720", "", type = input.resolution, group="Higher TF Level 2", inline="htf2_1")
+htf2_length = input(13, "Length", group="Higher TF Level 2", inline="htf2_3")
+htf2_size= input(200, "Size", minval=1, group="Higher TF Level 2", inline="htf2_3")
+htf2_styleI = input("Line", "Style: ", options=["Line", "Cross", "Circle"], group="Higher TF Level 2", inline="htf2_2")
+htf2_style = (htf2_styleI == "Line") ? plot.style_line : (htf2_styleI == "Cross") ? plot.style_cross : plot.style_circles
+htf2_width= input(4, "", minval=0, group="Higher TF Level 2", inline="htf2_2")
+htf2_color= input(color.new(color.aqua, 50), "", group="Higher TF Level 2", inline="htf2_2")
+// 3
+htf3_show = input(true, "Show Plot", group="Higher TF Level 3", inline="htf3_0")
+htf3_label = input(true, "Show Label", group="Higher TF Level 3", inline="htf3_0")
+htf3_source = input(close, "", group="Higher TF Level 3", inline="htf3_1")
+htf3_timeframe = input("1D", "", type = input.resolution, group="Higher TF Level 3", inline="htf3_1")
+htf3_length = input(13, "Length", group="Higher TF Level 3", inline="htf3_3")
+htf3_size= input(200, "Size", minval=1, group="Higher TF Level 3", inline="htf3_3")
+htf3_styleI = input("Line", "Style: ", options=["Line", "Cross", "Circle"], group="Higher TF Level 3", inline="htf3_2")
+htf3_style = (htf3_styleI == "Line") ? plot.style_line : (htf3_styleI == "Cross") ? plot.style_cross : plot.style_circles
+htf3_width= input(4, "", minval=0, group="Higher TF Level 3", inline="htf3_2")
+htf3_color= input(color.new(#b2b5be, 50), "", group="Higher TF Level 3", inline="htf3_2")
+// }}}
+// FIBONACCI {{{
+show_fib_src_line = input(false, "Show source line           ​‌‍", group="Fibonacci", inline="fiblvlconf1")
+show_fib_labelsgroup = input(false, "Show TF on labels", group="Fibonacci", inline="fiblvlconf1")
+show_fib_src_label = input(false, "Show source labels         ", group="Fibonacci", inline="fiblvlconf2")
+show_fib_farlabels = input(false, "Show far labels", group="Fibonacci", inline="fiblvlconf2")
+show_fib_src_label_info = input("Order", "Show Info", options=["Ratio", "Order", "None"], group="Fibonacci", inline="fiblvlconf3")
+fib_color_style = input('Multi', "Coloring", options=["Multi", "Kind", "Default"], group="Fibonacci", inline="fiblvlconf3")
+fib_reverse = false // input(false, "Reverse Levels", group="Fibonacci")
+//
+// fib_use_colors = input(false, "Use Colors", group="Fibonacci")
+fib_color_resistance = input(#e91e63, "Resistance", group="Fibonacci", inline="fibrescol")
+fib_color_support = input(#2196f3, "           ​‌‍Support", group="Fibonacci", inline="fibrescol")
+//
+fib_color_0 = input(#d1d4dc, "Short 0 ", group="Fibonacci", inline="fibcol0")
+sm_fib_color_0 = input(#d1d4dc, "      Long 0 ", group="Fibonacci", inline="fibcol0")
+fib_color_236 = input(#81c784, "Short .236", group="Fibonacci", inline="fibcol236")
+sm_fib_color_236 = input(#81c784, "     Long .236", group="Fibonacci", inline="fibcol236")
+fib_color_382 = input(#4caf50, "Short .382", group="Fibonacci", inline="fibcol382")
+sm_fib_color_382 = input(#4caf50, "     Long .382", group="Fibonacci", inline="fibcol382")
+fib_color_50 = input(#f44336, "Short .50", group="Fibonacci", inline="fibcol50")
+sm_fib_color_50 = input(#f44336, "      Long .50", group="Fibonacci", inline="fibcol50")
+fib_color_618 = input(#fbc02d, "Short .618", group="Fibonacci", inline="fibcol618")
+sm_fib_color_618 = input(#fbc02d, "     Long .618", group="Fibonacci", inline="fibcol618")
+fib_color_786 = input(#64b5f6, "Short .786", group="Fibonacci", inline="fibcol786")
+sm_fib_color_786 = input(#64b5f6, "     Long .786", group="Fibonacci", inline="fibcol786")
+fib_color_1 = input(#d1d4dc, "Short 1 ", group="Fibonacci", inline="fibcol1")
+sm_fib_color_1 = input(#d1d4dc, "       Long 1 ", group="Fibonacci", inline="fibcol1")
+//
+fib_color_default_s = input(color.white, "Default Short", group="Fibonacci", inline="fibdefcol")
+fib_color_default = input(color.silver, "     Default Long", group="Fibonacci", inline="fibdefcol")
+//
+// -- FIB LONG
+show_fib_next_far_long = input(1, "Long TF far levels shown", minval=0, maxval=6, group="Fib Long TF")
+fib_lvl_line_style_activeI = input("Solid", "Active Line", options=["Solid", "Dashed", "Dotted"], group="Fib Long TF", inline="fibactive")
+fib_lvl_line_width = input(2, "", minval=1, group="Fib Long TF", inline="fibactive")
+fib_lvl_line_style_active = 
+  fib_lvl_line_style_activeI == "Solid" ? line.style_solid :
+  fib_lvl_line_style_activeI == "Dashed" ? line.style_dashed : line.style_dotted
+fib_lvl_line_style_inactiveI = input("Dotted", "Inactive Line", options=["Solid", "Dashed", "Dotted"], group="Fib Long TF", inline="fibinactive")
+fib_lvl_line_width_inactive = input(1, "", minval=1, group="Fib Long TF", inline="fibinactive")
+fib_lvl_line_style_inactive = 
+  fib_lvl_line_style_inactiveI == "Solid" ? line.style_solid :
+  fib_lvl_line_style_inactiveI == "Dashed" ? line.style_dashed : line.style_dotted
+fib_lvl_line_length_left = input(20, "Size: Left", minval=0, group="Fib Long TF", inline="fibsizerow1")
+fib_lvl_line_length_right = input(10, "Right", minval=0, group="Fib Long TF", inline="fibsizerow1")
+//
+// -- FIB SMALL
+show_fib_next_far_short = input(1, "Short TF far levels shown", minval=0, maxval=6, group="Fib Short TF")
+fib_lvl_line_style_activeI_sm = input("Solid", "Active Line", options=["Solid", "Dashed", "Dotted"], group="Fib Short TF", inline="fibactive")
+fib_lvl_line_width_sm = input(2, "", minval=1, group="Fib Short TF", inline="fibactive")
+fib_lvl_line_style_active_sm = 
+  fib_lvl_line_style_activeI_sm == "Solid" ? line.style_solid :
+  fib_lvl_line_style_activeI_sm == "Dashed" ? line.style_dashed : line.style_dotted
+fib_lvl_line_style_inactiveI_sm = input("Dotted", "Inactive Line", options=["Solid", "Dashed", "Dotted"], group="Fib Short TF", inline="fibinactive")
+fib_lvl_line_width_inactive_sm = input(1, "", minval=1, group="Fib Short TF", inline="fibinactive")
+fib_lvl_line_style_inactive_sm = 
+  fib_lvl_line_style_inactiveI_sm == "Solid" ? line.style_solid :
+  fib_lvl_line_style_inactiveI_sm == "Dashed" ? line.style_dashed : line.style_dotted
+fib_lvl_line_length_left_s = input(10, "Size: Left", minval=0, group="Fib Short TF", inline="fibsizerow2")
+fib_lvl_line_length_right_s = input(20, "Right", minval=0, group="Fib Short TF", inline="fibsizerow2")
+// }}}
+// }}}
+
+// FUNCTIONS {{{
+
+candle_size_ms = time - time[1] // milliseconds of a candle
+
+// -- COORDS {{{
+
+timetostring(tms) => // {{{
+    // / 100 = seconds
+    // / seconds * 60 minutes
+    d_ = floor(tms / 86400)
+    h_ = floor((tms - d_ * 86400) / 3600)
+    m_ = floor((tms - d_ * 86400 - h_ * 3600) / 60)
+    s_ = floor(tms - d_ * 86400 - h_ * 3600 - m_ * 60)
+    ret = (d_ > 0 ? tostring(d_) + " D " : "")
+    ret := ret + (h_ > 0 ? tostring(h_) + " H " : "") 
+    ret := ret + (m_ > 0 ? tostring(m_) + " m " : "") 
+    if d_ == 0
+        ret := ret + (s_ > 0 ? tostring(s_) + " s " : "") 
+    ret
+// }}}
+
+
+add_to_bag(bag_id, value, barTime, barPrice) => // {{{
+    array.unshift(bag_id, barPrice)
+    array.unshift(bag_id, barTime)
+    array.unshift(bag_id, value)
+    if (array.size(bag_id) > max_array_size) // {{{
+        array.pop(bag_id)
+        array.pop(bag_id)
+        array.pop(bag_id)
+    // }}}
+// }}}
+
+update_bag(bag_id, value, barTime, barPrice, direction) => // {{{
+    // if bag empty add first ball
+    if (array.size(bag_id) == 0) // {{{
+        add_to_bag(bag_id, value, barTime, barPrice)
+    // }}}
+    else // {{{ if new is higher or lower than previous in current direction, swap ball 1
+        if ((direction == 1 and (value > array.get(bag_id, 0))) or (direction == -1 and (value < array.get(bag_id, 0)))) // {{{
+            array.set(bag_id, 0, value)
+            array.set(bag_id, 1, barTime)
+            array.set(bag_id, 2, barPrice)
+        // }}}
+        0
+    // }}}
+// }}}
+ 
+calcMidpoint(x1, y1, x2, y2) => // [ x, y ] {{{
+    var int x = na
+    var float y = na
+    x := ((x1 + x2) / 2)
+    y := ((y1 + y2) / 2)
+    [x, y]
+// }}}
+
+getDirection(v1, v2) => // ( 1, 0, -1 ) {{{
+    (v1 < v2) ? 1 : (v1 > v2 ) ? -1 : 0
+// }}}
+
+coordLabelInfo(x, y, v, prex, prey, id, lgroup, pos, type) => // text {{{
+    // group,
+    // id
+    // --
+    // x time format
+    // x time to new coord
+    x_timeFormat = tostring(x)
+    x_barsAfterPrev = ((x - prex) / candle_size_ms)
+    x_barsAfterPrevString = tostring(x_barsAfterPrev)
+    x_barsAgoTimeFormat = timetostring((x - prex)/1000)
+    // --
+    // price
+    // price diff % with arrow up/down
+    y_priceFormat = tostring(y, "#.##")
+    y_priceDiff = tostring(abs(y - prey), "#.##")
+    // % increase = Increase ÷ Original Number × 100.
+    y_priceDiffPercent = tostring(abs((y - prey) / prey) * 100, "#.###") + " %"
+    y_diffSpeed = tostring(abs((y - prey) / x_barsAfterPrev), "#.##")
+    y_diffSpeedPercent = tostring(abs((((y - prey) / x_barsAfterPrev) / prey) * 100), "#.###") + " %"
+    diffSign = y > prey ? "+ " : "- "
+    // --
+    // % move per candle ( speed )
+      // "\n| (X)  Time: " + x_timeFormat +
+    text = 
+      " " + lgroup + " " + tostring(id) + " | $"+ y_priceFormat +
+      "\n x: " + tostring(x) +
+      "\n y: " + tostring(y) +
+      "\n v: " + tostring(v) +
+      "\n----------------------" +
+      "\n Time since last coord:" +
+      "\n " + x_barsAgoTimeFormat +
+      "\n " + x_barsAfterPrevString + " bars" +
+      "\n----------------------" +
+      "\n Value diff to last coord:" +
+      "\n " + diffSign + y_priceDiff +
+      "\n " + diffSign + y_priceDiffPercent +
+      "\n----------------------" +
+      "\n Change per bar: " + 
+      "\n " + diffSign + y_diffSpeed +
+      "\n " + diffSign + y_diffSpeedPercent +
+      "\n-------------------------" 
+    text
+// }}}
+
+coordLabel(show, x, y, v, id, lgroup, pos, type, prex, prey) => // {{{
+    
+    // pos ( top line / bottom line )
+    // type for color
+    // px, py for previous values
+
+    _yloc =  (pos == 1) ? yloc.abovebar : yloc.belowbar
+    _style = (type == 1) ? label.style_label_down : label.style_label_up
+    _dir = (pos == 1) ? '\n▼' : '▲\n'
+    _id = (pos == 1) ? tostring(id) + _dir : _dir + tostring(id)
+    txtinfo = coordLabelInfo(x, y, v, prex, prey, id, lgroup, pos, type)
+      
+    label.new( 
+      x = show ? x : na, 
+      y = show ? y : na, 
+      xloc = xloc.bar_time,
+      yloc = _yloc,
+      color = color.new(color.black, 100),
+      textcolor = (type > 1) ? (type == 2 ? color.blue : color.yellow) : color.white,
+      style = _style,
+      size = size.small,
+      text= _id,
+      tooltip=txtinfo )
+// }}}
+
+// }}}
+
+// -- FIBS {{{
+// states: ----------------------------------
+// 0 = resistance actively moving up
+// 1 = resistance far / crossed
+// 2 = resistance next
+// 3 = support next
+// 4 = support far
+// 5 = support actively moving down
+//-------------------------------------------
+buildArray(v1, v2, v3, v4, v5, v6, v7) => // [array] {{{
+    _arr = array.new_float(0)
+    array.push(_arr, v1)
+    array.push(_arr, v2)
+    array.push(_arr, v3)
+    array.push(_arr, v4)
+    array.push(_arr, v5)
+    array.push(_arr, v6)
+    array.push(_arr, v7)
+    _arr
+// }}}
+
+fibLevel(H, L, F) => // {{{
+    fib_reverse ? (( H - L ) * F + L) : (H - ( H - L ) * F)
+// }}}
+
+getFibRetracements(dir, L, H) => // [fib array] {{{
+    // 1, 23.6%, 38.2%, 50%, 61.8%, and 78.6%, 0
+    _fibs = array.new_float(0)
+    array.push(_fibs, H )
+    array.push(_fibs, fibLevel(H, L, 23.6/100))
+    array.push(_fibs, fibLevel(H, L, 38.2/100))
+    array.push(_fibs, fibLevel(H, L, 50.0/100))
+    array.push(_fibs, fibLevel(H, L, 61.8/100))
+    array.push(_fibs, fibLevel(H, L, 78.6/100))
+    array.push(_fibs, L )
+    _fibs
+// }}}
+
+getFibState(dir, prevlvl, thislvl, nextlvl) => // {{{
+    state = 
+      // source up top
+      (dir == 1 and prevlvl == -1) ? 
+      ((thislvl == high) ? 0 : ((close > thislvl) ? 3 : (close < nextlvl) ? 1 : 2)) :
+      // source up bottom
+      (dir == 1 and nextlvl == -1) ? 
+      ((close < thislvl) ? 2 : (close > nextlvl) ? 4 : 3) :
+      // source up non-edge ( towards next )
+      (dir == 1) ?
+      // next support    ( $ > T and $ < Prev ) 3
+      ((close >= thislvl) and (close <= prevlvl) ? 3 :
+      // far support     ( $ > T and $ > Prev ) 4
+      (close >= thislvl) and (close >= prevlvl) ? 4 :
+      // next resistance ( $ < T and $ > Next ) 2
+      (close <= thislvl) and (close >= nextlvl) ? 2 :
+      // far resistance  ( $ < T and $ < Next ) 1
+      (close <= thislvl) and (close <= nextlvl) ? 1 : -1) :
+      // source down top
+      (dir == -1 and nextlvl == -1) ? 
+      ((close > thislvl) ? 3 : (close < prevlvl) ? 1 : 2) :
+      // source down bottom
+      (dir == -1 and prevlvl == -1) ? 
+      ((thislvl == low) ? 5 : ((close < thislvl) ? 2 : (close > nextlvl) ? 4 : 3)) :
+      // source down non-edge ( towards prev )
+      (dir == -1) ?
+      // next support    ( $ > T and $ < Prev ) 3
+      ((close >= thislvl) and (close <= nextlvl) ? 3 :
+      // far support     ( $ > T and $ > Prev ) 4
+      (close >= thislvl) and (close >= nextlvl) ? 4 :
+      // next resistance ( $ < T and $ > Next ) 2
+      (close <= thislvl) and (close >= prevlvl) ? 2 :
+      // far resistance  ( $ < T and $ < Next ) 1
+      (close <= thislvl) and (close <= prevlvl) ? 1 : -1) :
+      -1
+// }}}
+
+drawFibLvLine(id, v, state, nxtup, nxtdn) => // {{{
+//
+// id, v, state + nxtup, nxtdn
+//
+// show_fib_next_far_long
+// show_fib_next_far_short
+//
+// pass in the id of the current next level up / next level down
+// so that if current id is within nextup + configNextLevels, we show it
+//
+    isLG = (id >= 1 and id <= 7)
+    isSM = (id >= 8 and id <= 14 )
+    // 
+    nxtupMax = isLG ? (nxtup + show_fib_next_far_long ) : (nxtup + show_fib_next_far_short)
+    nxtdnMax = isLG ? (nxtdn - show_fib_next_far_long ) : (nxtdn - show_fib_next_far_short)
+    drawFar = (id >= nxtup and id <= nxtupMax) or ( id >= nxtdnMax and id <= nxtdn)
+    drawlvl = drawFar or (state == 2 or state == 3) ? true : false
+    //
+    // drawlvl = show_fib_farlines or (state == 2 or state == 3) ? true : false
+    tfrom = ( id >= 1 and id <= 7 ) ? (time - (candle_size_ms * fib_lvl_line_length_left)) :  (time - (candle_size_ms * fib_lvl_line_length_left_s))
+    tto = ( id >= 1 and id <= 7 ) ? (time + (candle_size_ms * fib_lvl_line_length_right)) : (time + (candle_size_ms * fib_lvl_line_length_right_s))
+    state_width = isLG ?
+      ((state == 2 or state == 3 ) ? fib_lvl_line_width : fib_lvl_line_width_inactive) :
+      ((state == 2 or state == 3 ) ? fib_lvl_line_width_sm : fib_lvl_line_width_inactive_sm)
+    state_style = isLG ? 
+      ((state == 2 or state == 3 or state == 0) ? fib_lvl_line_style_active : fib_lvl_line_style_inactive) :
+      ((state == 2 or state == 3 or state == 0) ? fib_lvl_line_style_active_sm : fib_lvl_line_style_inactive_sm)
+    state_color = 
+      fib_color_style == "Multi" and id == 1 ? fib_color_0 :
+      fib_color_style == "Multi" and id == 2 ? fib_color_236 :
+      fib_color_style == "Multi" and id == 3 ? fib_color_382 :
+      fib_color_style == "Multi" and id == 4 ? fib_color_50 :
+      fib_color_style == "Multi" and id == 5 ? fib_color_618 :
+      fib_color_style == "Multi" and id == 6 ? fib_color_786 :
+      fib_color_style == "Multi" and id == 7 ? fib_color_1 :
+      fib_color_style == "Multi" and id == 8 ? sm_fib_color_0 :
+      fib_color_style == "Multi" and id == 9 ? sm_fib_color_236 :
+      fib_color_style == "Multi" and id == 10 ? sm_fib_color_382 :
+      fib_color_style == "Multi" and id == 11 ? sm_fib_color_50 :
+      fib_color_style == "Multi" and id == 12 ? sm_fib_color_618 :
+      fib_color_style == "Multi" and id == 13 ? sm_fib_color_786 :
+      fib_color_style == "Multi" and id == 14 ? sm_fib_color_1 :
+      fib_color_style == "Default" and (id >= 1 and id <= 7) ? fib_color_default : 
+      fib_color_style == "Default" and (id >= 8 and id <= 14 ) ? fib_color_default_s :
+      fib_color_style == "Kind" and state == 0 ? fib_color_default : 
+      fib_color_style == "Kind" and state == 1 ? fib_color_resistance :
+      fib_color_style == "Kind" and state == 2 ? fib_color_resistance :
+      fib_color_style == "Kind" and state == 3 ? fib_color_support :
+      fib_color_style == "Kind" and state == 4 ? fib_color_support : 
+      fib_color_style == "Kind" and state == 5 ? fib_color_default : 
+      fib_color_default 
+
+    line.new(
+      x1= drawlvl ? tfrom : na, 
+      y1= drawlvl ? v : na, 
+      x2= drawlvl ? tto : na, 
+      y2= drawlvl ? v : na, 
+      xloc=xloc.bar_time, 
+      style=state_style,
+      color=state_color,
+      width=state_width,
+      extend=extend.none)
+// }}}
+
+drawFibLvLabel(id, dir, pos, flvl, plvl, state, nxtup, nxtdn) => // {{{
+    isLG = (id >= 1 and id <= 7)
+    isSM = (id >= 8 and id <= 14 )
+    // 
+    nxtupMax = isLG ? (nxtup + show_fib_next_far_long ) : (nxtup + show_fib_next_far_short)
+    nxtdnMax = isLG ? (nxtdn - show_fib_next_far_long ) : (nxtdn - show_fib_next_far_short)
+    drawFar = (id >= nxtup and id <= nxtupMax) or ( id >= nxtdnMax and id <= nxtdn)
+    drawlvl = (show_fib_farlabels and drawFar) or (state == 2 or state == 3) ? true : false
+    // drawlvl = show_fib_farlabels or (state == 2 or state == 3) ? true : false
+    state_color = 
+      fib_color_style == "Multi" and id == 1 ? fib_color_0 :
+      fib_color_style == "Multi" and id == 2 ? fib_color_236 :
+      fib_color_style == "Multi" and id == 3 ? fib_color_382 :
+      fib_color_style == "Multi" and id == 4 ? fib_color_50 :
+      fib_color_style == "Multi" and id == 5 ? fib_color_618 :
+      fib_color_style == "Multi" and id == 6 ? fib_color_786 :
+      fib_color_style == "Multi" and id == 7 ? fib_color_1 :
+      fib_color_style == "Multi" and id == 8 ? sm_fib_color_0 :
+      fib_color_style == "Multi" and id == 9 ? sm_fib_color_236 :
+      fib_color_style == "Multi" and id == 10 ? sm_fib_color_382 :
+      fib_color_style == "Multi" and id == 11 ? sm_fib_color_50 :
+      fib_color_style == "Multi" and id == 12 ? sm_fib_color_618 :
+      fib_color_style == "Multi" and id == 13 ? sm_fib_color_786 :
+      fib_color_style == "Multi" and id == 14 ? sm_fib_color_1 :
+      fib_color_style == "Default" and isLG ? fib_color_default : 
+      fib_color_style == "Default" and isSM ? fib_color_default_s :
+      fib_color_style == "Kind" and state == 0 ? fib_color_default : 
+      fib_color_style == "Kind" and state == 1 ? fib_color_resistance :
+      fib_color_style == "Kind" and state == 2 ? fib_color_resistance :
+      fib_color_style == "Kind" and state == 3 ? fib_color_support :
+      fib_color_style == "Kind" and state == 4 ? fib_color_support : 
+      fib_color_style == "Kind" and state == 5 ? fib_color_default : 
+      fib_color_default 
+    txtdetails = (show_fib_src_label_info == "Ratio") ? flvl : 
+      (show_fib_src_label_info == "Order") ? (isLG ? tostring(id) : tostring(id - 7)) : ""
+    // "⁌ • ⚊ ⚟ ⚬ ❮ ↤ ⥰ "
+    group = isLG ? " L" : " S"
+    tri = dir == -1 ? "▲ " : "▼ " 
+    lblnext = tri + txtdetails + (show_fib_labelsgroup ? group : "")
+    lblfar = tri + txtdetails + (show_fib_labelsgroup ? group : "")
+    lbltxt = (state == 3 or state == 2) ? lblnext : lblfar
+    tx = ( id >= 1 and id <= 7 ) ? 
+      (time - (candle_size_ms * fib_lvl_line_length_left)) : 
+      (time + (candle_size_ms * fib_lvl_line_length_right_s))
+    tal = ( id >= 1 and id <= 7 ) ? text.align_right : text.align_left
+    lblstyle = ( id >= 1 and id <= 7 ) ? label.style_label_right : label.style_label_left
+
+    label.new(
+      x= drawlvl ? tx : na, 
+      y=plvl, 
+      text=lbltxt, 
+      xloc=xloc.bar_time, 
+      yloc=yloc.price, 
+      color=color.new(color.white, 100), 
+      style=lblstyle, 
+      textcolor=state_color, 
+      size=size.normal, 
+      textalign=tal,
+      tooltip= ( 
+      (isLG ? "Long TF [ " + tostring(id) + " ]" : "Short TF [ " + tostring(id - 7) + " ]") +
+      "\nRatio: " + flvl +
+      "\nPrice: $" + tostring(int(plvl)))
+      )
+// }}}
+
+drawFibSrcLine(dir, x1, y1, x2, y2) => // {{{
+    _H = (max(y1, y2) == y1) ? y1 : y2
+    _L = (min(y1, y2) == y1) ? y1 : y2
+    xH = (_H == y1) ? x1 : x2
+    yH = (_H == y1) ? y1 : y2
+    xL = (_L == y1) ? x1 : x2 
+    yL = (_L == y1) ? y1 : y2 
+    //
+    col = fib_color_style == "Kind" ? (dir == 1) ? fib_color_support : fib_color_resistance : fib_color_default
+    // 
+    line.new(
+      (dir == 1) ? xL : xH,
+      (dir == 1) ? yL : yH,
+      (dir == 1) ? xH : xL,
+      (dir == 1) ? yH : yL,
+      extend = extend.none,
+      xloc = xloc.bar_time,
+      color = col,
+      style = line.style_dotted,
+      width = 3)
+// }}}
+
+drawFibSrcLabel(tf, pos, x, y) => // {{{
+    _txtcol = fib_color_style == "Kind" ? ((pos == "H") ? fib_color_resistance : fib_color_support) : fib_color_default
+    _text  = (pos == "H") ? "H\n▼" : "▲\nL"
+    _yloc  = (pos == "H") ? yloc.abovebar : yloc.belowbar
+    _style = (pos == "H") ? label.style_label_down : label.style_label_up
+    _ttH = tf + " Fib High \n$( " + tostring(y) + " )"
+    _ttL = tf + " Fib Low \n$( " + tostring(y) + " )"
+    _tooltip = (pos == "H") ? _ttH : _ttL
+    _clear = color.new(color.black, 100)
+    //
+    label.new( 
+      x, y, 
+      xloc = xloc.bar_time,
+      yloc = _yloc,
+      color = _clear,
+      textcolor = _txtcol,
+      style = _style,
+      size = size.small,
+      text= _text,
+      tooltip=_tooltip)
+// }}}
+
+getFibNextId(nextdir, tfgroup, statesArr) => // id {{{
+    // LG = 1 - 7  matching i + 1 on long
+    // SM = 8 - 14 matching i + 8 on short
+    // 2 = resistance next / 3 = support next
+    match = nextdir == "UP" ? array.indexof(statesArr, 2) : array.indexof(statesArr, 3)
+    result = tfgroup == "SM" ? (match + 8) : (match + 1)
+    result
+// }}}
+
+// }}}
+
+// -- HTF {{{
+
+tftostring(tf) => /// {{{
+    tfa = str.split(tf, "")
+    tfalast = array.get(tfa, (array.size(tfa) - 1))
+    tfalastIsNum = na(tonumber(tfalast)) ? false : true
+    txt = tfalastIsNum ? timetostring(tonumber(tf) * 60) : tf
+// }}}
+
+htfLabel(htfy, tf, col) => // label {{{
+    txt =  tftostring(tf)
+    htftxt = "ᐊ " + txt
+    htftip = "HTF  [ " + txt + " ] " + tostring(htfy, "#.##")
+    label.new(
+      x = time + (candle_size_ms * 2), 
+      y = htfy, 
+      xloc = xloc.bar_time,
+      yloc = yloc.price,
+      color = color.new(color.black, 100),
+      textcolor = col,
+      style = label.style_label_left,
+      size = size.normal,
+      text= htftxt,
+      tooltip=htftip 
+      )
+// }}}
+
+// }}}
+
+// }}}
+
+// ----------------------------------------------- COORDENATES {{{
+
+// -----> FIND COORDS - MD {{{
+
+// MD - Declarations {{{
+md_coord_src = src
+md_coord_period = medium_period
+var float md_high_coord = na
+var float md_low_coord = na
+var bool md_is_new_md_high_coord = false
+var bool md_is_new_md_low_coord = false
+var md_coord_direction = 0
+var md_bag = array.new_float(0)
+var bool md_b1_changed = false
+// var bool md_b2_changed = false
+// var bool md_b3_changed = false
+// var bool md_b4_changed = false
+// var bool md_b5_changed = false
+// var bool md_b6_changed = false
+// var bool md_b7_changed = false
+var bool md_bag_ready = false
+var int md_now_x = na
+var float md_now_y = na
+var float md_b1_v = na
+var int md_b1_x = na
+var float md_b1_y = na
+var float md_b2_v = na
+var int md_b2_x = na
+var float md_b2_y = na
+var float md_b3_v = na
+var int md_b3_x = na
+var float md_b3_y = na
+var float md_b4_v = na
+var int md_b4_x = na
+var float md_b4_y = na
+var float md_b5_v = na
+var int md_b5_x = na
+var float md_b5_y = na
+var float md_b6_v = na
+var int md_b6_x = na
+var float md_b6_y = na
+var float md_b7_v = na
+var int md_b7_x = na
+var float md_b7_y = na
+// }}}
+
+// MD - Find new coord {{{
+md_now_x := time
+md_now_y := src
+hicsrc = trend_data == "Source" ? src : high
+locsrc = trend_data == "Source" ? src : low
+md_high_coord := highestbars( hicsrc, md_coord_period) == 0 ? hicsrc : na
+md_low_coord := lowestbars( locsrc, md_coord_period) == 0 ? locsrc : na
+
+md_is_new_md_high_coord := (not na(md_high_coord) and na(md_low_coord))
+md_is_new_md_low_coord := (not na(md_low_coord) and na(md_high_coord))
+md_coord_direction := (md_is_new_md_high_coord) ? 1 : (md_is_new_md_low_coord) ? -1 : md_coord_direction
+// }}}
+
+// MD - Update Bag {{{
+md_coord_direction_changed = change(md_coord_direction)
+if (md_coord_direction_changed)
+    add_to_bag(md_bag, md_coord_direction == 1 ? md_high_coord : md_low_coord, time, src) 
+else 
+    update_bag(md_bag, md_coord_direction == 1 ? md_high_coord : md_low_coord, time, src, md_coord_direction)
+// }}}
+
+// MD - Grab coords {{{
+md_bag_ready := (array.size(md_bag) > 18) ? true : false
+md_b1_v := md_bag_ready ? array.get(md_bag, 0) : na
+md_b1_x := md_bag_ready ? round(array.get(md_bag, 1)) : na
+md_b1_y := md_bag_ready ? array.get(md_bag, 2) : na
+md_b2_v := md_bag_ready ? array.get(md_bag, 3) : na
+md_b2_x := md_bag_ready ? round(array.get(md_bag, 4)) : na
+md_b2_y := md_bag_ready ? array.get(md_bag, 5) : na
+md_b3_v := md_bag_ready ? array.get(md_bag, 6) : na
+md_b3_x := md_bag_ready ? round(array.get(md_bag, 7)) : na
+md_b3_y := md_bag_ready ? array.get(md_bag, 8) : na
+md_b4_v := md_bag_ready ? array.get(md_bag, 9) : na
+md_b4_x := md_bag_ready ? round(array.get(md_bag, 10)) : na
+md_b4_y := md_bag_ready ? array.get(md_bag, 11) : na
+md_b5_v := md_bag_ready ? array.get(md_bag, 12) : na
+md_b5_x := md_bag_ready ? round(array.get(md_bag, 13)) : na
+md_b5_y := md_bag_ready ? array.get(md_bag, 14) : na
+md_b6_v := md_bag_ready ? array.get(md_bag, 15) : na
+md_b6_x := md_bag_ready ? round(array.get(md_bag, 16)) : na
+md_b6_y := md_bag_ready ? array.get(md_bag, 17) : na
+md_b7_v := md_bag_ready ? array.get(md_bag, 18) : na
+md_b7_x := md_bag_ready ? round(array.get(md_bag, 19)) : na
+md_b7_y := md_bag_ready ? array.get(md_bag, 20) : na
+// }}}
+
+// MD - Watch changes {{{
+md_b1_changed := (change(md_b1_y) or change(md_b1_x) or change(md_b1_v)) ? true : false
+// md_b2_changed := (change(md_b2_y) or change(md_b2_x) or change(md_b2_v)) ? true : false
+// md_b3_changed := (change(md_b3_y) or change(md_b3_x) or change(md_b3_v)) ? true : false
+// md_b4_changed := (change(md_b4_y) or change(md_b4_x) or change(md_b4_v)) ? true : false
+// md_b5_changed := (change(md_b5_y) or change(md_b5_x) or change(md_b5_v)) ? true : false
+// md_b6_changed := (change(md_b6_y) or change(md_b6_x) or change(md_b6_v)) ? true : false
+// md_b7_changed := (change(md_b7_y) or change(md_b7_x) or change(md_b7_v)) ? true : false
+// }}}
+
+// }}}
+
+// -----> FIND COORDS - SM {{{
+
+// SM - Declarations {{{
+sm_coord_src = src
+sm_coord_period = small_period
+var float sm_high_coord = na
+var float sm_low_coord = na
+var bool sm_is_new_sm_high_coord = false
+var bool sm_is_new_sm_low_coord = false
+var sm_coord_direction = 0
+var sm_bag = array.new_float(0)
+var bool sm_b1_changed = false
+// var bool sm_b2_changed = false
+// var bool sm_b3_changed = false
+// var bool sm_b4_changed = false
+// var bool sm_b5_changed = false
+// var bool sm_b6_changed = false
+// var bool sm_b7_changed = false
+var bool sm_bag_ready = false
+var float sm_b1_v = na
+var int sm_b1_x = na
+var float sm_b1_y = na
+var float sm_b2_v = na
+var int sm_b2_x = na
+var float sm_b2_y = na
+var float sm_b3_v = na
+var int sm_b3_x = na
+var float sm_b3_y = na
+var float sm_b4_v = na
+var int sm_b4_x = na
+var float sm_b4_y = na
+var float sm_b5_v = na
+var int sm_b5_x = na
+var float sm_b5_y = na
+var float sm_b6_v = na
+var int sm_b6_x = na
+var float sm_b6_y = na
+var float sm_b7_v = na
+var int sm_b7_x = na
+var float sm_b7_y = na
+var float sm_now_v = na
+var int sm_now_x = na
+var float sm_now_y = na
+// }}}
+
+// SM - Find New coords {{{
+// sm_now_v := sm_coord_src
+sm_now_x := time
+sm_now_y := close
+// sm_high_coord := highestbars(sm_now_v, sm_coord_period) == 0 ? sm_now_v : na
+// sm_low_coord := lowestbars(sm_now_v, sm_coord_period) == 0 ? sm_now_v : na
+sm_high_coord := highestbars((trend_data == "Source" ? src : high), sm_coord_period) == 0 ? 
+  (trend_data == "Source" ? src : high) : na
+sm_low_coord := lowestbars((trend_data == "Source" ? src : low), sm_coord_period) == 0 ? 
+  (trend_data == "Source" ? src : low) : na
+sm_is_new_sm_high_coord := (sm_high_coord and na(sm_low_coord))
+sm_is_new_sm_low_coord := (sm_low_coord and na(sm_high_coord))
+sm_coord_direction := (sm_is_new_sm_high_coord) ? 1 : (sm_is_new_sm_low_coord) ? -1 : sm_coord_direction
+// }}}
+
+// SM - Update bag {{{
+sm_coord_direction_changed = change(sm_coord_direction)
+if (sm_coord_direction_changed)
+    add_to_bag(sm_bag, sm_coord_direction == 1 ? sm_high_coord : sm_low_coord, time, src) 
+else 
+    update_bag(sm_bag, sm_coord_direction == 1 ? sm_high_coord : sm_low_coord, time, src, sm_coord_direction)
+// }}}
+
+// SM - Grab coords {{{
+sm_bag_ready := (array.size(sm_bag) > 18) ? true : false
+sm_b1_v := sm_bag_ready ? array.get(sm_bag, 0) : na
+sm_b1_x := sm_bag_ready ? round(array.get(sm_bag, 1)) : na
+sm_b1_y := sm_bag_ready ? array.get(sm_bag, 2) : na
+sm_b2_v := sm_bag_ready ? array.get(sm_bag, 3) : na
+sm_b2_x := sm_bag_ready ? round(array.get(sm_bag, 4)) : na
+sm_b2_y := sm_bag_ready ? array.get(sm_bag, 5) : na
+sm_b3_v := sm_bag_ready ? array.get(sm_bag, 6) : na
+sm_b3_x := sm_bag_ready ? round(array.get(sm_bag, 7)) : na
+sm_b3_y := sm_bag_ready ? array.get(sm_bag, 8) : na
+sm_b4_v := sm_bag_ready ? array.get(sm_bag, 9) : na
+sm_b4_x := sm_bag_ready ? round(array.get(sm_bag, 10)) : na
+sm_b4_y := sm_bag_ready ? array.get(sm_bag, 11) : na
+sm_b5_v := sm_bag_ready ? array.get(sm_bag, 12) : na
+sm_b5_x := sm_bag_ready ? round(array.get(sm_bag, 13)) : na
+sm_b5_y := sm_bag_ready ? array.get(sm_bag, 14) : na
+sm_b6_v := sm_bag_ready ? array.get(sm_bag, 15) : na
+sm_b6_x := sm_bag_ready ? round(array.get(sm_bag, 16)) : na
+sm_b6_y := sm_bag_ready ? array.get(sm_bag, 17) : na
+sm_b7_v := sm_bag_ready ? array.get(sm_bag, 18) : na
+sm_b7_x := sm_bag_ready ? round(array.get(sm_bag, 19)) : na
+sm_b7_y := sm_bag_ready ? array.get(sm_bag, 20) : na
+// }}}
+
+// SM - Watch changes {{{
+sm_b1_changed := (change(sm_b1_y) or change(sm_b1_x) or change(sm_b1_v)) ? true : false
+// sm_b2_changed := (change(sm_b2_y) or change(sm_b2_x) or change(sm_b2_v)) ? true : false
+// sm_b3_changed := (change(sm_b3_y) or change(sm_b3_x) or change(sm_b3_v)) ? true : false
+// sm_b4_changed := (change(sm_b4_y) or change(sm_b4_x) or change(sm_b4_v)) ? true : false
+// sm_b5_changed := (change(sm_b5_y) or change(sm_b5_x) or change(sm_b5_v)) ? true : false
+// sm_b6_changed := (change(sm_b6_y) or change(sm_b6_x) or change(sm_b6_v)) ? true : false
+// sm_b7_changed := (change(sm_b7_y) or change(sm_b7_x) or change(sm_b7_v)) ? true : false
+
+// }}}
+
+// }}}
+
+// =====> DRAW Coord Labels {{{
+
+// Declare {{{
+var int b_offset_main = 2
+var int b_offset_front = 3
+var label b1_label_sm = na
+var label b2_label_sm = na
+var label b3_label_sm = na
+var label b4_label_sm = na
+var label b5_label_sm = na
+var label b6_label_sm = na
+var label b7_label_sm = na
+var label b1_label_md = na
+var label b2_label_md = na
+var label b3_label_md = na
+var label b4_label_md = na
+var label b5_label_md = na
+var label b6_label_md = na
+var label b7_label_md = na
+// }}}
+// Delete {{{
+label.delete(b1_label_sm)
+label.delete(b2_label_sm)
+label.delete(b3_label_sm)
+label.delete(b4_label_sm)
+label.delete(b5_label_sm)
+label.delete(b6_label_sm)
+label.delete(b7_label_sm)
+label.delete(b1_label_md)
+label.delete(b2_label_md)
+label.delete(b3_label_md)
+label.delete(b4_label_md)
+label.delete(b5_label_md)
+label.delete(b6_label_md)
+label.delete(b7_label_md)
+// }}}
+// Print {{{
+
+// SM Labels
+smb1p = sm_b1_y > sm_b2_y ? 1 : 2
+smb2p = smb1p == 1 ? 2 : 1
+smb3p = smb2p == 1 ? 2 : 1
+smb4p = smb3p == 1 ? 2 : 1
+smb5p = smb4p == 1 ? 2 : 1
+smb6p = smb5p == 1 ? 2 : 1
+smb7p = smb6p == 1 ? 2 : 1
+b1_label_sm := coordLabel(show_sm_coord_labels, sm_b1_x, sm_b1_y, sm_b1_v, 1, "Short", smb1p, 1, sm_b2_x , sm_b2_y )
+b2_label_sm := coordLabel(show_sm_coord_labels, sm_b2_x, sm_b2_y, sm_b2_v, 2, "Short", smb2p, 1, sm_b3_x , sm_b3_y)
+b3_label_sm := coordLabel(show_sm_coord_labels, sm_b3_x, sm_b3_y, sm_b3_v, 3, "Short", smb3p, 1, sm_b4_x , sm_b4_y)
+b4_label_sm := coordLabel(show_sm_coord_labels, sm_b4_x, sm_b4_y, sm_b4_v, 4, "Short", smb4p, 1, sm_b5_x , sm_b5_y)
+b5_label_sm := coordLabel(show_sm_coord_labels, sm_b5_x, sm_b5_y, sm_b5_v, 5, "Short", smb5p, 1, sm_b6_x , sm_b6_y)
+b6_label_sm := coordLabel(show_sm_coord_labels, sm_b6_x, sm_b6_y, sm_b6_v, 6, "Short", smb6p, 1, sm_b7_x , sm_b7_y)
+b7_label_sm := coordLabel(show_sm_coord_labels, sm_b7_x, sm_b7_y, sm_b7_v, 7, "Short", smb7p, 1, -1 , -1)
+// MD Labels
+mdb1p = md_b1_y > md_b2_y ? 1 : 2
+mdb2p = mdb1p == 1 ? 2 : 1
+mdb3p = mdb2p == 1 ? 2 : 1
+mdb4p = mdb3p == 1 ? 2 : 1
+mdb5p = mdb4p == 1 ? 2 : 1
+mdb6p = mdb5p == 1 ? 2 : 1
+mdb7p = mdb6p == 1 ? 2 : 1
+b1_label_md := coordLabel(show_md_coord_labels, md_b1_x, md_b1_y, md_b1_v, 1, "Long", mdb1p, 3, md_b2_x , md_b2_y )
+b2_label_md := coordLabel(show_md_coord_labels, md_b2_x, md_b2_y, md_b2_v, 2, "Long", mdb2p, 3, md_b3_x , md_b3_y )
+b3_label_md := coordLabel(show_md_coord_labels, md_b3_x, md_b3_y, md_b3_v, 3, "Long", mdb3p, 3, md_b4_x , md_b4_y )
+b4_label_md := coordLabel(show_md_coord_labels, md_b4_x, md_b4_y, md_b4_v, 4, "Long", mdb4p, 3, md_b5_x , md_b5_y )
+b5_label_md := coordLabel(show_md_coord_labels, md_b5_x, md_b5_y, md_b5_v, 5, "Long", mdb5p, 3, md_b6_x , md_b6_y )
+b6_label_md := coordLabel(show_md_coord_labels, md_b6_x, md_b6_y, md_b6_v, 6, "Long", mdb6p, 3, md_b7_x , md_b7_y )
+b7_label_md := coordLabel(show_md_coord_labels, md_b7_x, md_b7_y, md_b7_v, 7, "Long", mdb7p, 3, -1 , -1 )
+
+// }}}
+
+// }}}
+
+// =====> DRAW Trend Lines {{{
+
+// Declare {{{
+var line s1_second_line = na
+var line s1_second_line2 = na
+var line s1_first_line = na
+var line s2_first_line = na
+var line s1_first_line2 = na
+var line s2_first_line2 = na
+var line s2_second_line = na
+var line s2_second_line2 = na
+var line head_eyesight_line = na
+var line head_eyesight_line2 = na
+var line s3_second_line = na
+var line s3_second_line2 = na
+var line s3_first_line = na
+var line s3_first_line2 = na
+
+// }}}
+// Delete {{{
+line.delete(s1_first_line)
+line.delete(s2_first_line)
+line.delete(s1_second_line)
+line.delete(s1_first_line2)
+line.delete(s2_first_line2)
+line.delete(s1_second_line2)
+line.delete(s2_second_line)
+line.delete(s2_second_line2)
+line.delete(head_eyesight_line)
+line.delete(head_eyesight_line2)
+line.delete(s3_second_line)
+line.delete(s3_second_line2)
+line.delete(s3_first_line)
+line.delete(s3_first_line2)
+// }}}
+
+getCoordSelection(trend, pos, sel) => // [x, y] {{{
+    x1 = 
+      (sel == "Front") ? ((trend == "SM") ? sm_b1_x : md_b1_x) :
+      (sel == "Mid") ? ((trend == "SM") ? sm_b3_x : md_b3_x) : 
+      ((trend == "SM") ? sm_b5_x : md_b5_x) // "Back"
+
+    x2 = 
+      (sel == "Front") ? ((trend == "SM") ? sm_b2_x : md_b2_x) :
+      (sel == "Mid") ? ((trend == "SM") ? sm_b4_x : md_b4_x) : 
+      ((trend == "SM") ? sm_b6_x : md_b6_x) // "Back"
+    
+    y1 = (trend_data == "Source") ?
+      ((sel == "Front") ? ((trend == "SM") ? sm_b1_y : md_b1_y) :
+      (sel == "Mid") ? ((trend == "SM") ? sm_b3_y : md_b3_y) : 
+      ((trend == "SM") ? sm_b5_y : md_b5_y)) 
+      :
+      ((sel == "Front") ? ((trend == "SM") ? sm_b1_v : md_b1_v) :
+      (sel == "Mid") ? ((trend == "SM") ? sm_b3_v : md_b3_v) : 
+      ((trend == "SM") ? sm_b5_v : md_b5_v))
+
+    y2 = (trend_data == "Source") ?
+      ((sel == "Front") ? ((trend == "SM") ? sm_b2_y : md_b2_y) :
+      (sel == "Mid") ? ((trend == "SM") ? sm_b4_y : md_b4_y) : 
+      ((trend == "SM") ? sm_b6_y : md_b6_y))
+      :
+      ((sel == "Front") ? ((trend == "SM") ? sm_b2_v : md_b2_v) :
+      (sel == "Mid") ? ((trend == "SM") ? sm_b4_v : md_b4_v) : 
+      ((trend == "SM") ? sm_b6_v : md_b6_v))
+
+    sely = (pos == "top") ? max(y1, y2) : min(y1, y2)
+    selx = (sely == y1) ? x1 : x2
+    //
+    [ selx, sely ]
+// }}}
+
+
+// -----------------------------------------------------> SECTION 1 {{{
+
+// get trend coords
+
+// top
+[s1T_fx, s1T_fy] = getCoordSelection("SM", "top", trend_s1_top_from)
+[s1T_tx, s1T_ty] = getCoordSelection("SM", "top", trend_s1_top_to)
+
+// bottom
+[s1B_fx, s1B_fy] = getCoordSelection("SM", "bottom", trend_s1_bottom_from)
+[s1B_tx, s1B_ty] = getCoordSelection("SM", "bottom", trend_s1_bottom_to)
+
+// get middles
+[ s1Mid_fx, s1Mid_fy ] = calcMidpoint(s1T_fx, s1T_fy, s1B_fx, s1B_fy)
+[ s1Mid_tx, s1Mid_ty ] = calcMidpoint(s1T_tx, s1T_ty, s1B_tx, s1B_ty)
+
+// triangle dir
+sTriDir = (s1Mid_ty > s1Mid_fy) ? 1 : -1 
+
+// -- s1 line top {{{
+
+s1_first_line := line.new(
+  sm_bag_ready ? s1T_fx : na,
+  sm_bag_ready ? s1T_fy : na,
+  sm_bag_ready ? s1T_tx : na,
+  sm_bag_ready ? s1T_ty : na,
+  extend = extend.none,
+  xloc = xloc.bar_time,
+  color = trend_s1_use_colors == false ? trend_s1_color_default : 
+  (sTriDir == 1) ? trend_s1_line_color_up : trend_s1_line_color_dn,
+  style = trend_s1_line_style,
+  width = trend_s1_line_width)
+  // (s1T_ty > s1T_fy) ? trend_s1_line_color_up : trend_s1_line_color_dn,
+  
+s1_first_line2 := trend_s1_line_extend ? line.new(
+  sm_bag_ready ? s1T_fx : na,
+  sm_bag_ready ? s1T_fy : na,
+  sm_bag_ready ? s1T_tx : na,
+  sm_bag_ready ? s1T_ty : na,
+  extend = extend.right,
+  xloc = xloc.bar_time,
+  color = trend_s1_use_colors == false ? trend_s1_color_default : 
+  (sTriDir == 1) ? trend_s1_line_color_up : trend_s1_line_color_dn,
+  style = trend_s1_xline_style,
+  width = trend_s1_xline_width) : na
+//  }}}
+
+// -- s1 line bottom {{{
+
+s1_second_line := line.new(
+  sm_bag_ready ? s1B_fx : na,
+  sm_bag_ready ? s1B_fy : na,
+  sm_bag_ready ? s1B_tx : na,
+  sm_bag_ready ? s1B_ty : na,
+  extend = extend.none,
+  xloc = xloc.bar_time,
+  color = trend_s1_use_colors == false ? trend_s1_color_default : 
+  (sTriDir == 1) ? trend_s1_line_color_up : trend_s1_line_color_dn,
+  style = trend_s1_line_style,
+  width = trend_s1_line_width)
+
+s1_second_line2 := trend_s1_line_extend ? line.new(
+  md_bag_ready ? s1B_fx : na,
+  md_bag_ready ? s1B_fy : na,
+  sm_bag_ready ? s1B_tx : na,
+  sm_bag_ready ? s1B_ty : na,
+  extend = extend.right,
+  xloc = xloc.bar_time,
+  color = trend_s1_use_colors == false ? trend_s1_color_default : 
+  (sTriDir == 1) ? trend_s1_line_color_up : trend_s1_line_color_dn,
+  style = trend_s1_xline_style,
+  width = trend_s1_xline_width) : na
+// }}}
+
+// EYE 1 {{{
+[ head_eye_x, head_eye_y ] = calcMidpoint(sm_b3_x, sm_b3_y, sm_b4_x, sm_b4_y)
+eye_direction = getDirection(head_eye_y, sm_now_y)
+
+// s1B_ty / bottom to y
+// sm_now_y / sight to
+// if lower, red regardless, if higher then green
+// sm_now_y < s1B_ty ? down
+// ** need to get future cross y for this, next update
+
+head_eyesight_line := line.new(
+  show_sight_small ? head_eye_x : na, 
+  show_sight_small ? head_eye_y : na, 
+  sm_now_x, sm_now_y, 
+  xloc=xloc.bar_time, 
+  extend=extend.right,
+  color= (trend_s1_use_colors == false) ? trend_s1_color_default : eye_direction == 1 ? trend_s1_line_color_up : trend_s1_line_color_dn,
+  style=sight_small_style,
+  width=sight_small_width)
+// }}}
+
+// }}}
+
+// -----------------------------------------------------> SECTION 2 {{{
+
+// get trend coords
+
+// top
+[s2T_fx, s2T_fy] = getCoordSelection("MD", "top", trend_s2_top_from)
+[s2T_tx, s2T_ty] = getCoordSelection("MD", "top", trend_s2_top_to)
+
+// bottom
+[s2B_fx, s2B_fy] = getCoordSelection("MD", "bottom", trend_s2_bottom_from)
+[s2B_tx, s2B_ty] = getCoordSelection("MD", "bottom", trend_s2_bottom_to)
+
+// get middles
+[ s2Mid_fx, s2Mid_fy ] = calcMidpoint(s2T_fx, s2T_fy, s2B_fx, s2B_fy)
+[ s2Mid_tx, s2Mid_ty ] = calcMidpoint(s2T_tx, s2T_ty, s2B_tx, s2B_ty)
+
+// triangle dir
+mTriDir = (s2Mid_ty > s2Mid_fy) ? 1 : -1
+
+// -- s2 line 1 {{{
+
+s2_first_line := line.new(
+  md_bag_ready ? s2T_fx : na,
+  md_bag_ready ? s2T_fy : na,
+  md_bag_ready ? s2T_tx : na,
+  md_bag_ready ? s2T_ty : na,
+  extend = extend.none,
+  xloc = xloc.bar_time,
+  color =  trend_s2_use_colors == false ? trend_s2_color_default : 
+  (mTriDir == 1) ? trend_s2_line_color_up : trend_s2_line_color_dn,
+  style = trend_s2_line_style,
+  width = trend_s2_line_width)
+
+// line extension
+s2_first_line2 := trend_s2_line_extend ? line.new(
+  md_bag_ready ? s2T_fx : na,
+  md_bag_ready ? s2T_fy : na,
+  md_bag_ready ? s2T_tx : na,
+  md_bag_ready ? s2T_ty : na,
+  extend = extend.right,
+  xloc = xloc.bar_time,
+  color =  trend_s2_use_colors == false ? trend_s2_color_default : 
+  (mTriDir == 1) ? trend_s2_line_color_up : trend_s2_line_color_dn,
+  style = trend_s2_xline_style,
+  width = trend_s2_xline_width) : na
+//  }}}
+
+// -- s2 line 2 {{{
+
+s2_second_line := line.new(
+  md_bag_ready ? s2B_fx : na,
+  md_bag_ready ? s2B_fy : na,
+  md_bag_ready ? s2B_tx : na,
+  md_bag_ready ? s2B_ty : na,
+  extend = extend.none,
+  xloc = xloc.bar_time,
+  color = trend_s2_use_colors == false ? trend_s2_color_default : 
+  (mTriDir == 1) ? trend_s2_line_color_up : trend_s2_line_color_dn,
+  style = trend_s2_line_style,
+  width = trend_s2_line_width)
+
+// extension
+s2_second_line2 := trend_s2_line_extend ? line.new(
+  md_bag_ready ? s2B_fx : na,
+  md_bag_ready ? s2B_fy : na,
+  md_bag_ready ? s2B_tx : na,
+  md_bag_ready ? s2B_ty : na,
+  extend = extend.right,
+  xloc = xloc.bar_time,
+  color = trend_s2_use_colors == false ? trend_s2_color_default :
+  (mTriDir == 1) ? trend_s2_line_color_up : trend_s2_line_color_dn,
+  style = trend_s2_xline_style,
+  width = trend_s2_xline_width) : na
+// }}}
+
+// EYE 2 {{{
+[ head_eye_x2, head_eye_y2 ] = calcMidpoint(md_b6_x, md_b6_y, md_b5_x, md_b5_y)
+eye_direction2 = getDirection(head_eye_y2, sm_now_y)
+
+head_eyesight_line2 := line.new(
+  show_sight_medium ? head_eye_x2 : na, 
+  show_sight_medium ? head_eye_y2 : na, 
+  sm_now_x, sm_now_y, 
+  xloc=xloc.bar_time, 
+  extend=extend.right,
+  color= trend_s2_use_colors == false ? trend_s2_color_default : eye_direction2 == 1 ? trend_s2_line_color_up : trend_s2_line_color_dn,
+  style=sight_medium_style,
+  width=sight_medium_width)
+// }}}
+
+// }}}
+
+// -----------------------------------------------------> SECTION 3 {{{
+
+// -- s3 line 1 {{{
+
+// top
+topFrom = trend_s3_top_from_group == "Long" ? "MD" : "SM"
+topTo = trend_s3_top_to_group == "Long" ? "MD" : "SM"
+[s3T_fx, s3T_fy] = getCoordSelection(topFrom, "top", trend_s3_top_from_pair)
+[s3T_tx, s3T_ty] = getCoordSelection(topTo, "top", trend_s3_top_to_pair)
+
+s3_first_line := line.new(
+  trend_s3_show_top and md_bag_ready ? s3T_fx : na,
+  trend_s3_show_top and md_bag_ready ? s3T_fy : na,
+  trend_s3_show_top and md_bag_ready ? s3T_tx : na,
+  trend_s3_show_top and md_bag_ready ? s3T_ty : na,
+  extend = extend.none,
+  xloc = xloc.bar_time,
+  color =  trend_s3_use_colors == false ? trend_s3_color_default : 
+  (s3T_ty > s3T_fy) ? trend_s3_line_color_up : trend_s3_line_color_dn,
+  style = trend_s3_line_style,
+  width = trend_s3_line_width)
+
+// line extension
+s3_first_line2 := trend_s3_line_extend ? line.new(
+  trend_s3_show_top and md_bag_ready ? s3T_fx : na,
+  trend_s3_show_top and md_bag_ready ? s3T_fy : na,
+  trend_s3_show_top and md_bag_ready ? s3T_tx : na,
+  trend_s3_show_top and md_bag_ready ? s3T_ty : na,
+  extend = extend.right,
+  xloc = xloc.bar_time,
+  color =  trend_s3_use_colors == false ? trend_s3_color_default : 
+  (s3T_ty > s3T_fy) ? trend_s3_line_color_up : trend_s3_line_color_dn,
+  style = trend_s3_xline_style,
+  width = trend_s3_xline_width) : na
+//  }}}
+
+// -- s3 line 2 {{{
+
+// bottom
+bottomFrom = trend_s3_bottom_from_group == "Long" ? "MD" : "SM"
+bottomTo = trend_s3_bottom_to_group == "Long" ? "MD" : "SM"
+[s3B_fx, s3B_fy] = getCoordSelection(bottomFrom, "bottom", trend_s3_bottom_from_pair)
+[s3B_tx, s3B_ty] = getCoordSelection(bottomTo, "bottom", trend_s3_bottom_to_pair)
+
+s3_second_line := line.new(
+  trend_s3_show_btm and md_bag_ready ? s3B_fx : na,
+  trend_s3_show_btm and md_bag_ready ? s3B_fy : na,
+  trend_s3_show_btm and md_bag_ready ? s3B_tx : na,
+  trend_s3_show_btm and md_bag_ready ? s3B_ty : na,
+  extend = extend.none,
+  xloc = xloc.bar_time,
+  color = trend_s3_use_colors == false ? trend_s3_color_default : 
+  (s3B_ty > s3B_fy) ? trend_s3_line_color_up : trend_s3_line_color_dn,
+  style = trend_s3_line_style,
+  width = trend_s3_line_width)
+
+// extension
+s3_second_line2 := trend_s3_line_extend ? line.new(
+  trend_s3_show_btm and md_bag_ready ? s3B_fx : na,
+  trend_s3_show_btm and md_bag_ready ? s3B_fy : na,
+  trend_s3_show_btm and md_bag_ready ? s3B_tx : na,
+  trend_s3_show_btm and md_bag_ready ? s3B_ty : na,
+  extend = extend.right,
+  xloc = xloc.bar_time,
+  color = trend_s3_use_colors == false ? trend_s3_color_default :
+  (s3B_ty > s3B_fy) ? trend_s3_line_color_up : trend_s3_line_color_dn,
+  style = trend_s3_xline_style,
+  width = trend_s3_xline_width) : na
+// }}}
+
+// }}}
+
+// }}}
+
+// }}}
+
+// ----------------------------------------------- FIBONACCIS {{{
+
+// MD
+
+// -- GET FIB SOURCE - MD {{{
+md_values = buildArray(md_b1_y, md_b2_y, md_b3_y, md_b4_y, md_b5_y, md_b6_y, md_b7_y)
+// md max
+md_max_y = array.max(md_values)
+md_max_idx = array.indexof(md_values, md_max_y) + 1
+md_max_x = md_max_idx == 1 ? md_b1_x : md_max_idx == 2 ? md_b2_x : md_max_idx == 3 ? md_b3_x : 
+  md_max_idx == 4 ? md_b4_x : md_max_idx == 5 ? md_b5_x : md_max_idx == 6 ? md_b6_x : md_max_idx == 7 ? md_b7_x : na
+// md min
+md_min_y = array.min(md_values)
+md_min_idx = array.indexof(md_values, md_min_y) + 1
+md_min_x = md_min_idx == 1 ? md_b1_x : md_min_idx == 2 ? md_b2_x : md_min_idx == 3 ? md_b3_x : 
+  md_min_idx == 4 ? md_b4_x : md_min_idx == 5 ? md_b5_x : md_min_idx == 6 ? md_b6_x : md_min_idx == 7 ? md_b7_x : na
+// md fib config dir
+md_fib_dir = md_min_x < md_max_x ? 1 : md_min_x > md_max_x ? -1 : 0
+// }}}
+
+// -- DRAW FIB SOURCE - MD {{{
+var line mdfibconfig_line = na
+line.delete(mdfibconfig_line)
+mdfibconfig_line := show_fib_src_line ? drawFibSrcLine(md_fib_dir, md_min_x, md_min_y, md_max_x, md_max_y ) : na
+
+var label mdfibconfig_label_low = na
+label.delete(mdfibconfig_label_low)
+mdfibconfig_label_low := show_fib_src_label ? drawFibSrcLabel("MD", "L", md_min_x, md_min_y) : na
+
+var label mdfibconfig_label_high = na
+label.delete(mdfibconfig_label_high)
+mdfibconfig_label_high := show_fib_src_label ? drawFibSrcLabel("MD", "H", md_max_x, md_max_y) : na
+// }}}
+
+// -- GET FIB LEVEL VALUES - MD {{{
+
+var fibs_md_values = array.new_float(0)
+if (md_bag_ready and md_b1_changed) // {{{
+    array.clear(fibs_md_values)
+    fibs_md_values := getFibRetracements(
+      md_fib_dir, 
+      (md_fib_dir == 1) ? md_min_y : md_max_y, 
+      (md_fib_dir == 1) ? md_max_y : md_min_y )
+// }}}
+
+// }}}
+
+// -- GET FIB LEVEL STATES - MD {{{
+
+fib0_state   = (array.size(fibs_md_values) >= 1) ? 
+  getFibState(
+  md_fib_dir, 
+  -1, 
+  array.get(fibs_md_values, 0), 
+  array.get(fibs_md_values, 1)) : 0
+
+fib236_state = (array.size(fibs_md_values) >= 2) ? 
+  getFibState(
+  md_fib_dir, 
+  array.get(fibs_md_values, 0), 
+  array.get(fibs_md_values, 1), 
+  array.get(fibs_md_values, 2)) : 0
+
+fib382_state = (array.size(fibs_md_values) >= 3) ? 
+  getFibState(
+  md_fib_dir, 
+  array.get(fibs_md_values, 1), 
+  array.get(fibs_md_values, 2), 
+  array.get(fibs_md_values, 3)) : 0
+
+fib50_state  = (array.size(fibs_md_values) >= 4) ? 
+  getFibState(
+  md_fib_dir, 
+  array.get(fibs_md_values, 2), 
+  array.get(fibs_md_values, 3), 
+  array.get(fibs_md_values, 4)) : 0
+
+fib618_state = (array.size(fibs_md_values) >= 5) ? 
+  getFibState(
+  md_fib_dir, 
+  array.get(fibs_md_values, 3), 
+  array.get(fibs_md_values, 4), 
+  array.get(fibs_md_values, 5)) : 0
+
+fib786_state = (array.size(fibs_md_values) >= 6) ? 
+  getFibState(
+  md_fib_dir, 
+  array.get(fibs_md_values, 4), 
+  array.get(fibs_md_values, 5), 
+  array.get(fibs_md_values, 6)) : 0
+
+fib1_state   = (array.size(fibs_md_values) >= 7) ? 
+  getFibState(
+  md_fib_dir, 
+  array.get(fibs_md_values, 5), 
+  array.get(fibs_md_values, 6), 
+  -1) : 0
+
+// }}}
+
+// SM
+
+// -- GET FIB SOURCE - sm {{{
+sm_values = buildArray(sm_b1_y, sm_b2_y, sm_b3_y, sm_b4_y, sm_b5_y, sm_b6_y, sm_b7_y)
+// sm max
+sm_max_y = array.max(sm_values)
+sm_max_idx = array.indexof(sm_values, sm_max_y) + 1
+sm_max_x = sm_max_idx == 1 ? sm_b1_x : sm_max_idx == 2 ? sm_b2_x : sm_max_idx == 3 ? sm_b3_x : 
+  sm_max_idx == 4 ? sm_b4_x : sm_max_idx == 5 ? sm_b5_x : sm_max_idx == 6 ? sm_b6_x : sm_max_idx == 7 ? sm_b7_x : na
+// sm min
+sm_min_y = array.min(sm_values)
+sm_min_idx = array.indexof(sm_values, sm_min_y) + 1
+sm_min_x = sm_min_idx == 1 ? sm_b1_x : sm_min_idx == 2 ? sm_b2_x : sm_min_idx == 3 ? sm_b3_x : 
+  sm_min_idx == 4 ? sm_b4_x : sm_min_idx == 5 ? sm_b5_x : sm_min_idx == 6 ? sm_b6_x : sm_min_idx == 7 ? sm_b7_x : na
+// sm fib config dir
+sm_fib_dir = sm_min_x < sm_max_x ? 1 : sm_min_x > sm_max_x ? -1 : 0
+// }}}
+
+// -- DRAW FIB SOURCE - sm {{{
+var line smfibconfig_line = na
+line.delete(smfibconfig_line)
+smfibconfig_line := show_fib_src_line ? drawFibSrcLine(sm_fib_dir, sm_min_x, sm_min_y, sm_max_x, sm_max_y ) : na
+
+var label smfibconfig_label_low = na
+label.delete(smfibconfig_label_low)
+smfibconfig_label_low := show_fib_src_label ? drawFibSrcLabel("SM", "L", sm_min_x, sm_min_y) : na
+
+var label smfibconfig_label_high = na
+label.delete(smfibconfig_label_high)
+smfibconfig_label_high := show_fib_src_label ? drawFibSrcLabel("SM", "H", sm_max_x, sm_max_y) : na
+// }}}
+
+// -- GET FIB LEVEL VALUES - sm {{{
+
+var fibs_sm_values = array.new_float(0)
+if (sm_bag_ready and sm_b1_changed) // {{{
+    array.clear(fibs_sm_values)
+    fibs_sm_values := getFibRetracements(
+      sm_fib_dir, 
+      (sm_fib_dir == 1) ? sm_min_y : sm_max_y, 
+      (sm_fib_dir == 1) ? sm_max_y : sm_min_y )
+// }}}
+
+// }}}
+
+// -- GET FIB LEVEL STATES - sm {{{
+
+sm_fib0_state   = (array.size(fibs_sm_values) >= 1) ? 
+  getFibState(
+  sm_fib_dir, 
+  -1, 
+  array.get(fibs_sm_values, 0), 
+  array.get(fibs_sm_values, 1)) : 0
+
+sm_fib236_state = (array.size(fibs_sm_values) >= 2) ? 
+  getFibState(
+  sm_fib_dir, 
+  array.get(fibs_sm_values, 0), 
+  array.get(fibs_sm_values, 1), 
+  array.get(fibs_sm_values, 2)) : 0
+
+sm_fib382_state = (array.size(fibs_sm_values) >= 3) ? 
+  getFibState(
+  sm_fib_dir, 
+  array.get(fibs_sm_values, 1), 
+  array.get(fibs_sm_values, 2), 
+  array.get(fibs_sm_values, 3)) : 0
+
+sm_fib50_state  = (array.size(fibs_sm_values) >= 4) ? 
+  getFibState(
+  sm_fib_dir, 
+  array.get(fibs_sm_values, 2), 
+  array.get(fibs_sm_values, 3), 
+  array.get(fibs_sm_values, 4)) : 0
+
+sm_fib618_state = (array.size(fibs_sm_values) >= 5) ? 
+  getFibState(
+  sm_fib_dir, 
+  array.get(fibs_sm_values, 3), 
+  array.get(fibs_sm_values, 4), 
+  array.get(fibs_sm_values, 5)) : 0
+
+sm_fib786_state = (array.size(fibs_sm_values) >= 6) ? 
+  getFibState(
+  sm_fib_dir, 
+  array.get(fibs_sm_values, 4), 
+  array.get(fibs_sm_values, 5), 
+  array.get(fibs_sm_values, 6)) : 0
+
+sm_fib1_state   = (array.size(fibs_sm_values) >= 7) ? 
+  getFibState(
+  sm_fib_dir, 
+  array.get(fibs_sm_values, 5), 
+  array.get(fibs_sm_values, 6), 
+  -1) : 0
+
+// }}}
+
+//
+// Get next states {{{
+fibStatesLG = buildArray( fib0_state, fib236_state, fib382_state, 
+  fib50_state, fib618_state, fib786_state, fib1_state)
+
+nextUpLG = getFibNextId("UP", "LG", fibStatesLG)
+nextDownLG = getFibNextId("DN", "LG", fibStatesLG)
+
+fibStatesSM = buildArray( sm_fib0_state, sm_fib236_state, sm_fib382_state, 
+  sm_fib50_state, sm_fib618_state, sm_fib786_state, sm_fib1_state)
+
+nextUpSM = getFibNextId("UP", "SM", fibStatesSM)
+nextDownSM = getFibNextId("DN", "SM", fibStatesSM)
+// }}}
+// 
+
+// == DRAW FIB LEVEL LINES / LABELS - MD {{{
+
+// declare {{{
+var line fib0 = na
+var line fib236 = na
+var line fib382 = na
+var line fib50 = na
+var line fib618 = na
+var line fib786 = na
+var line fib1 = na
+var label fib0_label = na
+var label fib236_label = na
+var label fib382_label = na
+var label fib50_label = na
+var label fib618_label = na
+var label fib786_label = na
+var label fib1_label = na
+// }}}
+
+// delete {{{
+line.delete(fib0)
+line.delete(fib236)
+line.delete(fib382)
+line.delete(fib50)
+line.delete(fib618)
+line.delete(fib786)
+line.delete(fib1)
+label.delete(fib0_label)
+label.delete(fib236_label)
+label.delete(fib382_label)
+label.delete(fib50_label)
+label.delete(fib618_label)
+label.delete(fib786_label)
+label.delete(fib1_label)
+// }}}
+
+// draw lines {{{
+fib0   :=  (array.size(fibs_md_values) >= 1) ? 
+  drawFibLvLine(1, array.get(fibs_md_values, 0), fib0_state, nextUpLG, nextDownLG) : na
+
+fib236 :=  (array.size(fibs_md_values) >= 2) ? 
+  drawFibLvLine(2, array.get(fibs_md_values, 1), fib236_state, nextUpLG, nextDownLG) : na
+
+fib382 :=  (array.size(fibs_md_values) >= 3) ? 
+  drawFibLvLine(3, array.get(fibs_md_values, 2), fib382_state, nextUpLG, nextDownLG) : na
+
+fib50  :=  (array.size(fibs_md_values) >= 4) ? 
+  drawFibLvLine(4, array.get(fibs_md_values, 3), fib50_state, nextUpLG, nextDownLG) : na
+
+fib618 :=  (array.size(fibs_md_values) >= 5) ? 
+  drawFibLvLine(5, array.get(fibs_md_values, 4), fib618_state, nextUpLG, nextDownLG) : na
+
+fib786 :=  (array.size(fibs_md_values) >= 6) ? 
+  drawFibLvLine(6, array.get(fibs_md_values, 5), fib786_state, nextUpLG, nextDownLG) : na
+
+fib1   :=  (array.size(fibs_md_values) >= 7) ? 
+  drawFibLvLine(7, array.get(fibs_md_values, 6), fib1_state, nextUpLG, nextDownLG) : na
+
+// }}}
+
+// draw labels {{{
+
+fib0_label := (array.size(fibs_md_values) >= 1) ? 
+  drawFibLvLabel( 1,
+  md_fib_dir, 
+  (md_fib_dir == 1) ? 0 : 6,
+  "0", 
+  array.get(fibs_md_values, 0), 
+  fib0_state, nextUpLG, nextDownLG) : na
+
+fib236_label := (array.size(fibs_md_values) >= 2) ? 
+  drawFibLvLabel( 2,
+  md_fib_dir, 
+  (md_fib_dir == 1) ? 1 : 5,
+  ".236", 
+  array.get(fibs_md_values, 1), 
+  fib236_state, nextUpLG, nextDownLG) : na
+
+fib382_label := (array.size(fibs_md_values) >= 3) ? 
+  drawFibLvLabel( 3,
+  md_fib_dir, 
+  (md_fib_dir == 1) ? 2 : 4,
+  ".382", 
+  array.get(fibs_md_values, 2), 
+  fib382_state, nextUpLG, nextDownLG) : na
+
+fib50_label  := (array.size(fibs_md_values) >= 4) ? 
+  drawFibLvLabel( 4,
+  md_fib_dir, 
+  3,
+  ".5", 
+  array.get(fibs_md_values, 3), 
+  fib50_state, nextUpLG, nextDownLG) : na
+
+fib618_label := (array.size(fibs_md_values) >= 5) ? 
+  drawFibLvLabel( 5,
+  md_fib_dir, 
+  (md_fib_dir == 1) ? 4 : 3,
+  ".618", 
+  array.get(fibs_md_values, 4), 
+  fib618_state, nextUpLG, nextDownLG) : na
+
+fib786_label := (array.size(fibs_md_values) >= 6) ? 
+  drawFibLvLabel( 6,
+  md_fib_dir, 
+  (md_fib_dir == 1) ? 5 : 2,
+  ".768", 
+  array.get(fibs_md_values, 5), 
+  fib786_state, nextUpLG, nextDownLG) : na
+  
+fib1_label := (array.size(fibs_md_values) >= 7) ? 
+  drawFibLvLabel( 7,
+  md_fib_dir, 
+  (md_fib_dir == 1) ? 6 : 0,
+  "1", 
+  array.get(fibs_md_values, 6), 
+  fib1_state, nextUpLG, nextDownLG) : na
+// }}}
+
+// }}}
+
+// == DRAW FIB LEVEL LINES / LABELS - SM {{{
+
+// declare {{{
+var line sm_fib0 = na
+var line sm_fib236 = na
+var line sm_fib382 = na
+var line sm_fib50 = na
+var line sm_fib618 = na
+var line sm_fib786 = na
+var line sm_fib1 = na
+var label sm_fib0_label = na
+var label sm_fib236_label = na
+var label sm_fib382_label = na
+var label sm_fib50_label = na
+var label sm_fib618_label = na
+var label sm_fib786_label = na
+var label sm_fib1_label = na
+// }}}
+
+// delete {{{
+line.delete(sm_fib0)
+line.delete(sm_fib236)
+line.delete(sm_fib382)
+line.delete(sm_fib50)
+line.delete(sm_fib618)
+line.delete(sm_fib786)
+line.delete(sm_fib1)
+label.delete(sm_fib0_label)
+label.delete(sm_fib236_label)
+label.delete(sm_fib382_label)
+label.delete(sm_fib50_label)
+label.delete(sm_fib618_label)
+label.delete(sm_fib786_label)
+label.delete(sm_fib1_label)
+// }}}
+
+// draw lines {{{
+sm_fib0   :=  (array.size(fibs_sm_values) >= 1) ? 
+  drawFibLvLine(8, array.get(fibs_sm_values, 0), sm_fib0_state, nextUpSM, nextDownSM) : na
+
+sm_fib236 :=  (array.size(fibs_sm_values) >= 2) ? 
+  drawFibLvLine(9, array.get(fibs_sm_values, 1), sm_fib236_state, nextUpSM, nextDownSM) : na
+
+sm_fib382 :=  (array.size(fibs_sm_values) >= 3) ? 
+  drawFibLvLine(10, array.get(fibs_sm_values, 2), sm_fib382_state, nextUpSM, nextDownSM) : na
+
+sm_fib50  :=  (array.size(fibs_sm_values) >= 4) ? 
+  drawFibLvLine(11, array.get(fibs_sm_values, 3), sm_fib50_state, nextUpSM, nextDownSM) : na
+
+sm_fib618 :=  (array.size(fibs_sm_values) >= 5) ? 
+  drawFibLvLine(12, array.get(fibs_sm_values, 4), sm_fib618_state, nextUpSM, nextDownSM) : na
+
+sm_fib786 :=  (array.size(fibs_sm_values) >= 6) ? 
+  drawFibLvLine(13, array.get(fibs_sm_values, 5), sm_fib786_state, nextUpSM, nextDownSM) : na
+
+sm_fib1   :=  (array.size(fibs_sm_values) >= 7) ? 
+  drawFibLvLine(14, array.get(fibs_sm_values, 6), sm_fib1_state, nextUpSM, nextDownSM) : na
+
+// }}}
+
+// draw labels {{{
+
+sm_fib0_label := (array.size(fibs_sm_values) >= 1) ? 
+  drawFibLvLabel( 8,
+  sm_fib_dir, 
+  (sm_fib_dir == 1) ? 0 : 6,
+  "0", 
+  array.get(fibs_sm_values, 0), 
+  sm_fib0_state, nextUpSM, nextDownSM) : na
+
+sm_fib236_label := (array.size(fibs_sm_values) >= 2) ? 
+  drawFibLvLabel( 9,
+  sm_fib_dir, 
+  (sm_fib_dir == 1) ? 1 : 5,
+  ".236", 
+  array.get(fibs_sm_values, 1), 
+  sm_fib236_state, nextUpSM, nextDownSM) : na
+
+sm_fib382_label := (array.size(fibs_sm_values) >= 3) ? 
+  drawFibLvLabel( 10,
+  sm_fib_dir, 
+  (sm_fib_dir == 1) ? 2 : 4,
+  ".382", 
+  array.get(fibs_sm_values, 2), 
+  sm_fib382_state, nextUpSM, nextDownSM) : na
+
+sm_fib50_label  := (array.size(fibs_sm_values) >= 4) ? 
+  drawFibLvLabel( 11,
+  sm_fib_dir, 
+  3,
+  ".5", 
+  array.get(fibs_sm_values, 3), 
+  sm_fib50_state, nextUpSM, nextDownSM) : na
+
+sm_fib618_label := (array.size(fibs_sm_values) >= 5) ? 
+  drawFibLvLabel( 12,
+  sm_fib_dir, 
+  (sm_fib_dir == 1) ? 4 : 3,
+  ".618", 
+  array.get(fibs_sm_values, 4), 
+  sm_fib618_state, nextUpSM, nextDownSM) : na
+
+sm_fib786_label := (array.size(fibs_sm_values) >= 6) ? 
+  drawFibLvLabel( 13,
+  sm_fib_dir, 
+  (sm_fib_dir == 1) ? 5 : 2,
+  ".768", 
+  array.get(fibs_sm_values, 5), 
+  sm_fib786_state, nextUpSM, nextDownSM) : na
+  
+sm_fib1_label := (array.size(fibs_sm_values) >= 7) ? 
+  drawFibLvLabel( 14,
+  sm_fib_dir, 
+  (sm_fib_dir == 1) ? 6 : 0,
+  "1", 
+  array.get(fibs_sm_values, 6), 
+  sm_fib1_state, nextUpSM, nextDownSM) : na
+// }}}
+
+// }}}
+
+// }}}
+
+// ----------------------------------------------- HTF Levels {{{
+
+// HTF1 {{{
+htf1 = security(
+  syminfo.tickerid, 
+  htf1_timeframe, 
+  ema(htf1_source, htf1_length), 
+  gaps = barmerge.gaps_off, 
+  lookahead = barmerge.lookahead_on)
+
+plot(htf1_show ? htf1 : na, 
+  "HTF 1",
+  color= htf1_color,
+  linewidth= htf1_width,
+  style= htf1_style,
+  show_last= htf1_size )
+
+var label htf1lbl = na 
+label.delete(htf1lbl)
+htf1lbl := htf1_label ? htfLabel(htf1, htf1_timeframe, htf1_color) : na
+// }}}
+
+// HTF2 {{{
+
+htf2 = security(
+  syminfo.tickerid, 
+  htf2_timeframe, 
+  ema(htf2_source, htf2_length), 
+  gaps = barmerge.gaps_off, 
+  lookahead = barmerge.lookahead_on)
+
+plot(htf2_show ? htf2 : na, 
+  "HTF 1",
+  color= htf2_color,
+  linewidth= htf2_width,
+  style= htf2_style,
+  show_last= htf2_size )
+
+var label htf2lbl = na 
+label.delete(htf2lbl)
+htf2lbl := htf2_label ? htfLabel(htf2, htf2_timeframe, htf2_color) : na
+
+// }}}
+
+// HTF3 {{{
+htf3 = security(
+  syminfo.tickerid, 
+  htf3_timeframe, 
+  ema(htf3_source, htf3_length), 
+  gaps = barmerge.gaps_off, 
+  lookahead = barmerge.lookahead_on)
+
+plot(htf3_show ? htf3 : na, 
+  "HTF 1",
+  color= htf3_color,
+  linewidth= htf3_width,
+  style= htf3_style,
+  show_last= htf3_size )
+
+var label htf3lbl = na 
+label.delete(htf3lbl)
+htf3lbl := htf3_label ? htfLabel(htf3, htf3_timeframe, htf3_color) : na
+
+// }}}
+
+// }}}

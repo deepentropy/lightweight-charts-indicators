@@ -1,0 +1,24 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © KivancOzbilgic
+
+//@version=4
+study("Average Sentiment Oscillator", shorttitle="ASO")
+length=input(10,"Period?",minval=1,maxval=100)
+mode=input(0,"Calculation Method:",minval=0,maxval=2)
+intrarange=high-low
+grouplow=lowest(low,length)
+grouphigh=highest(high,length)
+groupopen=open[length-1]
+grouprange=grouphigh-grouplow
+K1=intrarange==0 ? 1 : intrarange
+K2=grouprange==0 ? 1 : grouprange
+intrabarbulls=((((close-low)+(high-open))/2)*100)/K1
+groupbulls=((((close-grouplow)+(grouphigh-groupopen))/2)*100)/K2
+intrabarbears=((((high-close)+(open-low))/2)*100)/K1
+groupbears=((((grouphigh-close)+(groupopen-grouplow))/2)*100)/K2
+TempBufferBulls= mode==0 ? (intrabarbulls+groupbulls)/2 : mode==1 ? intrabarbulls : groupbulls
+TempBufferBears= mode==0 ? (intrabarbears+groupbears)/2 : mode==1 ? intrabarbears : groupbears
+ASOBulls=sma(TempBufferBulls,length)
+ASOBears=sma(TempBufferBears,length)
+plot(ASOBulls,color=color.blue,linewidth=2)
+plot(ASOBears,color=color.red,linewidth=2)
