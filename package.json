@@ -24,7 +24,9 @@
     "build:esm": "esbuild src/index.ts --bundle --format=esm --outfile=dist/index.mjs --platform=neutral --external:oakscriptjs --external:@types/*",
     "build:cjs": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.cjs --platform=neutral --external:oakscriptjs --external:@types/*",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
-    "clean": "rimraf dist",
+    "build:example": "vite build",
+    "dev:example": "vite",
+    "clean": "rimraf dist dist-example",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -57,9 +59,11 @@
   "devDependencies": {
     "@types/node": "^20.10.6",
     "esbuild": "^0.19.11",
+    "lightweight-charts": "^5.0.0",
     "oakscriptjs": "^0.1.7",
     "rimraf": "^6.1.0",
     "typescript": "^5.3.3",
+    "vite": "^5.4.0",
     "vitest": "^1.6.0"
   }
 }
