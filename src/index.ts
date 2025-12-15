@@ -354,6 +354,11 @@ import * as chandeKrollStopIndicator from './chande-kroll-stop';
 export { ChandeKrollStop, calculate as calculateChandeKrollStop } from './chande-kroll-stop';
 export type { ChandeKrollStopInputs } from './chande-kroll-stop';
 
+// Relative Volume at Time
+import * as relativeVolumeAtTimeIndicator from './relative-volume-at-time';
+export { RelativeVolumeAtTime, calculate as calculateRelativeVolumeAtTime } from './relative-volume-at-time';
+export type { RelativeVolumeAtTimeInputs } from './relative-volume-at-time';
+
 // VWMA - Volume Weighted Moving Average
 import * as vwmaIndicator from './vwma';
 export { VWMA, calculate as calculateVWMA } from './vwma';
@@ -1351,6 +1356,19 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: chandeKrollStopIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...chandeKrollStopIndicator.defaultInputs },
     calculate: chandeKrollStopIndicator.calculate,
+  },
+  {
+    id: 'relative-volume-at-time',
+    name: 'Relative Volume at Time',
+    shortName: 'RelVol',
+    description: 'Compares current volume to historical average at the same time of day.',
+    category: 'Volume',
+    overlay: false,
+    metadata: relativeVolumeAtTimeIndicator.metadata,
+    inputConfig: relativeVolumeAtTimeIndicator.inputConfig as InputConfig[],
+    plotConfig: relativeVolumeAtTimeIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...relativeVolumeAtTimeIndicator.defaultInputs },
+    calculate: relativeVolumeAtTimeIndicator.calculate,
   },
 ];
 
