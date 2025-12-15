@@ -28,12 +28,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
+      - name: Build library
         run: npm run build
+
+      - name: Build example site
+        run: npm run build:example
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: dist-example
 
   deploy:
     environment:
