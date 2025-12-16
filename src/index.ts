@@ -359,6 +359,26 @@ import * as relativeVolumeAtTimeIndicator from './relative-volume-at-time';
 export { RelativeVolumeAtTime, calculate as calculateRelativeVolumeAtTime } from './relative-volume-at-time';
 export type { RelativeVolumeAtTimeInputs } from './relative-volume-at-time';
 
+// RCI Ribbon
+import * as rciRibbonIndicator from './rci-ribbon';
+export { RCIRibbon, calculate as calculateRCIRibbon } from './rci-ribbon';
+export type { RCIRibbonInputs } from './rci-ribbon';
+
+// Volume Delta
+import * as volumeDeltaIndicator from './volume-delta';
+export { VolumeDelta, calculate as calculateVolumeDelta } from './volume-delta';
+export type { VolumeDeltaInputs } from './volume-delta';
+
+// Cumulative Volume Delta
+import * as cumulativeVolumeDeltaIndicator from './cumulative-volume-delta';
+export { CumulativeVolumeDelta, calculate as calculateCVD } from './cumulative-volume-delta';
+export type { CumulativeVolumeDeltaInputs } from './cumulative-volume-delta';
+
+// Net Volume
+import * as netVolumeIndicator from './net-volume';
+export { NetVolume, calculate as calculateNetVolume } from './net-volume';
+export type { NetVolumeInputs } from './net-volume';
+
 // VWMA - Volume Weighted Moving Average
 import * as vwmaIndicator from './vwma';
 export { VWMA, calculate as calculateVWMA } from './vwma';
@@ -1369,6 +1389,58 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: relativeVolumeAtTimeIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...relativeVolumeAtTimeIndicator.defaultInputs },
     calculate: relativeVolumeAtTimeIndicator.calculate,
+  },
+  {
+    id: 'rci-ribbon',
+    name: 'RCI Ribbon',
+    shortName: 'RCI',
+    description: 'Three Rank Correlation Index lines measuring directional consistency.',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: rciRibbonIndicator.metadata,
+    inputConfig: rciRibbonIndicator.inputConfig as InputConfig[],
+    plotConfig: rciRibbonIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rciRibbonIndicator.defaultInputs },
+    calculate: rciRibbonIndicator.calculate,
+  },
+  {
+    id: 'volume-delta',
+    name: 'Volume Delta',
+    shortName: 'Vol Δ',
+    description: 'Shows buying vs selling pressure based on close-open comparison.',
+    category: 'Volume',
+    overlay: false,
+    metadata: volumeDeltaIndicator.metadata,
+    inputConfig: volumeDeltaIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeDeltaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...volumeDeltaIndicator.defaultInputs },
+    calculate: volumeDeltaIndicator.calculate,
+  },
+  {
+    id: 'cvd',
+    name: 'Cumulative Volume Delta',
+    shortName: 'CVD',
+    description: 'Cumulative volume delta within anchor periods.',
+    category: 'Volume',
+    overlay: false,
+    metadata: cumulativeVolumeDeltaIndicator.metadata,
+    inputConfig: cumulativeVolumeDeltaIndicator.inputConfig as InputConfig[],
+    plotConfig: cumulativeVolumeDeltaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cumulativeVolumeDeltaIndicator.defaultInputs },
+    calculate: cumulativeVolumeDeltaIndicator.calculate,
+  },
+  {
+    id: 'net-volume',
+    name: 'Net Volume',
+    shortName: 'Net Vol',
+    description: 'Net volume (up - down) per bar.',
+    category: 'Volume',
+    overlay: false,
+    metadata: netVolumeIndicator.metadata,
+    inputConfig: netVolumeIndicator.inputConfig as InputConfig[],
+    plotConfig: netVolumeIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...netVolumeIndicator.defaultInputs },
+    calculate: netVolumeIndicator.calculate,
   },
 ];
 
