@@ -8,8 +8,8 @@ ranked by complexity. It tracks implementation status in OakScriptJS.
 | Category               | Count |
 |------------------------|-------|
 | **Total Indicators**   | 134   |
-| **Implemented**        | 74    |
-| **Pending**            | 60    |
+| **Implemented**        | 75    |
+| **Pending**            | 59    |
 | **Very Complex (25+)** | 3     |
 | **Complex (15-24)**    | 29    |
 | **Medium (5-14)**      | 43    |
@@ -75,7 +75,7 @@ Complexity is calculated based on:
 | Commodity Channel Index | 7 | 7 | - | **Implemented** | Yes | ✅ Pass |
 | Moving Average Simple | 6 | 6 | - | **Implemented** | Yes | ✅ Pass |
 | Moving Average Exponential | 6 | 6 | - | **Implemented** | Yes | ✅ Pass |
-| Moon Phases | 6 | 1 | Arrays | Pending | No | - |
+| Moon Phases | 6 | 1 | Arrays | **Implemented** | Yes | ✅ Pass |
 | Cumulative Volume Index | 6 | 1 | ReqSec | Pending | No | - |
 | Correlation Coefficient | 6 | 1 | ReqSec | Pending | No | - |
 | Bollinger Bands | 6 | 6 | - | **Implemented** | Yes | ✅ Pass |
@@ -226,4 +226,4 @@ Failed:           0
 
 ---
 
-*Last updated: February 25, 2026 - Added KST, Connors RSI, Chop Zone, RCI, RVI, Williams Fractals, TWAP, Bollinger Bars*
+*Last updated: February 25, 2026 - Added KST, Connors RSI, Chop Zone, RCI, RVI, Williams Fractals, TWAP, Bollinger Bars, Moon Phases*

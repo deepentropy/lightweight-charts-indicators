@@ -429,6 +429,11 @@ import * as bollingerBarsIndicator from './bollinger-bars';
 export { BollingerBars, calculate as calculateBollingerBars } from './bollinger-bars';
 export type { BollingerBarsInputs } from './bollinger-bars';
 
+// Moon Phases
+import * as moonPhasesIndicator from './moon-phases';
+export { MoonPhases, calculate as calculateMoonPhases } from './moon-phases';
+export type { MoonPhasesInputs } from './moon-phases';
+
 /**
  * Input configuration type
  */
@@ -1585,6 +1590,19 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: bollingerBarsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...bollingerBarsIndicator.defaultInputs },
     calculate: bollingerBarsIndicator.calculate,
+  },
+  {
+    id: 'moon-phases',
+    name: 'Moon Phases',
+    shortName: 'Moon',
+    description: 'Displays new moon and full moon phases using astronomical calculations.',
+    category: 'Trend',
+    overlay: true,
+    metadata: moonPhasesIndicator.metadata,
+    inputConfig: moonPhasesIndicator.inputConfig as InputConfig[],
+    plotConfig: moonPhasesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...moonPhasesIndicator.defaultInputs },
+    calculate: moonPhasesIndicator.calculate,
   },
 ];
 
