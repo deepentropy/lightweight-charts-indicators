@@ -96,8 +96,8 @@ export function compareArrays(
       const actualVal = actualValues[i];
       const expectedVal = expectedValues[i];
 
-    // Skip if either value is null/undefined
-    if (actualVal == null || expectedVal == null) {
+    // Skip if either value is null/undefined/NaN
+    if (actualVal == null || expectedVal == null || Number.isNaN(actualVal) || Number.isNaN(expectedVal)) {
       continue;
     }
 

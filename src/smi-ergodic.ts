@@ -2,7 +2,7 @@
  * SMI Ergodic Indicator
  *
  * A momentum oscillator based on True Strength Index.
- * SMI = EMA(EMA(pc, shortLen), longLen) / EMA(EMA(|pc|, shortLen), longLen) * 100
+ * SMI = EMA(EMA(pc, longLen), shortLen) / EMA(EMA(|pc|, longLen), shortLen) * 100
  * Signal = EMA(SMI, signalLen)
  */
 
@@ -52,15 +52,15 @@ export function calculate(bars: Bar[], inputs: Partial<SMIErgodicInputs> = {}): 
   // Absolute price change
   const absPC = pc.map(v => isNaN(v) ? NaN : Math.abs(v));
 
-  // Double smooth: EMA(EMA(src, shortLen), longLen)
+  // Double smooth: EMA(EMA(src, longLen), shortLen) — per PineScript ta.tsi()
   const pcSeries = new Series(bars, (_, i) => pc[i]);
-  const firstSmoothPC = ta.ema(pcSeries, shortLength);
-  const doubleSmoothPC = ta.ema(firstSmoothPC, longLength);
+  const firstSmoothPC = ta.ema(pcSeries, longLength);
+  const doubleSmoothPC = ta.ema(firstSmoothPC, shortLength);
   const doubleSmoothPCArr = doubleSmoothPC.toArray();
 
   const absPCSeries = new Series(bars, (_, i) => absPC[i]);
-  const firstSmoothAbsPC = ta.ema(absPCSeries, shortLength);
-  const doubleSmoothAbsPC = ta.ema(firstSmoothAbsPC, longLength);
+  const firstSmoothAbsPC = ta.ema(absPCSeries, longLength);
+  const doubleSmoothAbsPC = ta.ema(firstSmoothAbsPC, shortLength);
   const doubleSmoothAbsPCArr = doubleSmoothAbsPC.toArray();
 
   // SMI = 100 * doubleSmoothPC / doubleSmoothAbsPC
