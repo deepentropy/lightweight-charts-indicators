@@ -30,10 +30,8 @@ jobs:
       - name: Build all packages
         run: npm run build
 
-      - name: Run unit tests (excluding regression)
+      - name: Run unit tests
         run: npm test
-        env:
-          PINESUITE_TOKEN: ${{ secrets.PINESUITE_TOKEN }}
 
       - name: Type check
         run: npm run typecheck
