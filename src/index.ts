@@ -504,6 +504,96 @@ import * as obvMacdIndicator from './obv-macd';
 export { OBVMACD, calculate as calculateOBVMACD } from './obv-macd';
 export type { OBVMACDInputs } from './obv-macd';
 
+// AlphaTrend
+import * as alphaTrendIndicator from './alpha-trend';
+export { AlphaTrend, calculate as calculateAlphaTrend } from './alpha-trend';
+export type { AlphaTrendInputs } from './alpha-trend';
+
+// HalfTrend
+import * as halfTrendIndicator from './half-trend';
+export { HalfTrend, calculate as calculateHalfTrend } from './half-trend';
+export type { HalfTrendInputs } from './half-trend';
+
+// QQE MOD
+import * as qqeModIndicator from './qqe-mod';
+export { QQEMod, calculate as calculateQQEMod } from './qqe-mod';
+export type { QQEModInputs } from './qqe-mod';
+
+// Follow Line
+import * as followLineIndicator from './follow-line';
+export { FollowLine, calculate as calculateFollowLine } from './follow-line';
+export type { FollowLineInputs } from './follow-line';
+
+// UT Bot
+import * as utBotIndicator from './ut-bot';
+export { UTBot, calculate as calculateUTBot } from './ut-bot';
+export type { UTBotInputs } from './ut-bot';
+
+// Hull Suite
+import * as hullSuiteIndicator from './hull-suite';
+export { HullSuite, calculate as calculateHullSuite } from './hull-suite';
+export type { HullSuiteInputs } from './hull-suite';
+
+// Optimized Trend Tracker
+import * as ottIndicator from './optimized-trend-tracker';
+export { OptimizedTrendTracker, calculate as calculateOTT } from './optimized-trend-tracker';
+export type { OTTInputs } from './optimized-trend-tracker';
+
+// Trend Magic
+import * as trendMagicIndicator from './trend-magic';
+export { TrendMagic, calculate as calculateTrendMagic } from './trend-magic';
+export type { TrendMagicInputs } from './trend-magic';
+
+// SSL Channel
+import * as sslChannelIndicator from './ssl-channel';
+export { SSLChannel, calculate as calculateSSLChannel } from './ssl-channel';
+export type { SSLChannelInputs } from './ssl-channel';
+
+// MavilimW
+import * as mavilimWIndicator from './mavilimw';
+export { MavilimW, calculate as calculateMavilimW } from './mavilimw';
+export type { MavilimWInputs } from './mavilimw';
+
+// CDC Action Zone
+import * as cdcActionZoneIndicator from './cdc-action-zone';
+export { CDCActionZone, calculate as calculateCDCActionZone } from './cdc-action-zone';
+export type { CDCActionZoneInputs } from './cdc-action-zone';
+
+// Tillson T3
+import * as tillsonT3Indicator from './tillson-t3';
+export { TillsonT3, calculate as calculateTillsonT3 } from './tillson-t3';
+export type { TillsonT3Inputs } from './tillson-t3';
+
+// Waddah Attar Explosion
+import * as waddahAttarExplosionIndicator from './waddah-attar-explosion';
+export { WaddahAttarExplosion, calculate as calculateWaddahAttarExplosion } from './waddah-attar-explosion';
+export type { WaddahAttarExplosionInputs } from './waddah-attar-explosion';
+
+// Ripster EMA Clouds
+import * as ripsterEMACloudsIndicator from './ripster-ema-clouds';
+export { RipsterEMAClouds, calculate as calculateRipsterEMAClouds } from './ripster-ema-clouds';
+export type { RipsterEMACloudsInputs } from './ripster-ema-clouds';
+
+// Premier RSI Oscillator
+import * as premierRsiIndicator from './premier-rsi';
+export { PremierRSI, calculate as calculatePremierRSI } from './premier-rsi';
+export type { PremierRSIInputs } from './premier-rsi';
+
+// Laguerre RSI
+import * as laguerreRsiIndicator from './laguerre-rsi';
+export { LaguerreRSI, calculate as calculateLaguerreRSI } from './laguerre-rsi';
+export type { LaguerreRSIInputs } from './laguerre-rsi';
+
+// RSI Candles
+import * as rsiCandlesIndicator from './rsi-candles';
+export { RSICandles, calculate as calculateRSICandles } from './rsi-candles';
+export type { RSICandlesInputs } from './rsi-candles';
+
+// Zero Lag MACD
+import * as zeroLagMacdIndicator from './zero-lag-macd';
+export { ZeroLagMACD, calculate as calculateZeroLagMACD } from './zero-lag-macd';
+export type { ZeroLagMACDInputs } from './zero-lag-macd';
+
 // Candlestick Patterns
 import * as hammerIndicator from './hammer';
 import * as shootingStarIndicator from './shooting-star';
@@ -1966,6 +2056,222 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     defaultInputs: { ...obvMacdIndicator.defaultInputs },
     calculate: obvMacdIndicator.calculate,
   },
+  {
+    id: 'alpha-trend',
+    name: 'AlphaTrend',
+    shortName: 'AT',
+    category: 'Trend',
+    overlay: true,
+    metadata: alphaTrendIndicator.metadata,
+    inputConfig: alphaTrendIndicator.inputConfig as InputConfig[],
+    plotConfig: alphaTrendIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...alphaTrendIndicator.defaultInputs },
+    calculate: alphaTrendIndicator.calculate,
+  },
+  {
+    id: 'half-trend',
+    name: 'HalfTrend',
+    shortName: 'HT',
+    category: 'Trend',
+    overlay: true,
+    metadata: halfTrendIndicator.metadata,
+    inputConfig: halfTrendIndicator.inputConfig as InputConfig[],
+    plotConfig: halfTrendIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...halfTrendIndicator.defaultInputs },
+    calculate: halfTrendIndicator.calculate,
+  },
+  {
+    id: 'qqe-mod',
+    name: 'QQE MOD',
+    shortName: 'QQEM',
+    category: 'Momentum',
+    overlay: false,
+    metadata: qqeModIndicator.metadata,
+    inputConfig: qqeModIndicator.inputConfig as InputConfig[],
+    plotConfig: qqeModIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...qqeModIndicator.defaultInputs },
+    calculate: qqeModIndicator.calculate,
+  },
+  {
+    id: 'follow-line',
+    name: 'Follow Line',
+    shortName: 'FLI',
+    category: 'Trend',
+    overlay: true,
+    metadata: followLineIndicator.metadata,
+    inputConfig: followLineIndicator.inputConfig as InputConfig[],
+    plotConfig: followLineIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...followLineIndicator.defaultInputs },
+    calculate: followLineIndicator.calculate,
+  },
+  {
+    id: 'ut-bot',
+    name: 'UT Bot',
+    shortName: 'UTBot',
+    category: 'Trend',
+    overlay: true,
+    metadata: utBotIndicator.metadata,
+    inputConfig: utBotIndicator.inputConfig as InputConfig[],
+    plotConfig: utBotIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...utBotIndicator.defaultInputs },
+    calculate: utBotIndicator.calculate,
+  },
+  {
+    id: 'hull-suite',
+    name: 'Hull Suite',
+    shortName: 'HS',
+    category: 'Trend',
+    overlay: true,
+    metadata: hullSuiteIndicator.metadata,
+    inputConfig: hullSuiteIndicator.inputConfig as InputConfig[],
+    plotConfig: hullSuiteIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...hullSuiteIndicator.defaultInputs },
+    calculate: hullSuiteIndicator.calculate,
+  },
+  {
+    id: 'optimized-trend-tracker',
+    name: 'Optimized Trend Tracker',
+    shortName: 'OTT',
+    category: 'Trend',
+    overlay: true,
+    metadata: ottIndicator.metadata,
+    inputConfig: ottIndicator.inputConfig as InputConfig[],
+    plotConfig: ottIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ottIndicator.defaultInputs },
+    calculate: ottIndicator.calculate,
+  },
+  {
+    id: 'trend-magic',
+    name: 'Trend Magic',
+    shortName: 'TM',
+    category: 'Trend',
+    overlay: true,
+    metadata: trendMagicIndicator.metadata,
+    inputConfig: trendMagicIndicator.inputConfig as InputConfig[],
+    plotConfig: trendMagicIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...trendMagicIndicator.defaultInputs },
+    calculate: trendMagicIndicator.calculate,
+  },
+  {
+    id: 'ssl-channel',
+    name: 'SSL Channel',
+    shortName: 'SSL',
+    category: 'Trend',
+    overlay: true,
+    metadata: sslChannelIndicator.metadata,
+    inputConfig: sslChannelIndicator.inputConfig as InputConfig[],
+    plotConfig: sslChannelIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...sslChannelIndicator.defaultInputs },
+    calculate: sslChannelIndicator.calculate,
+  },
+  {
+    id: 'mavilimw',
+    name: 'MavilimW',
+    shortName: 'MAVW',
+    category: 'Trend',
+    overlay: true,
+    metadata: mavilimWIndicator.metadata,
+    inputConfig: mavilimWIndicator.inputConfig as InputConfig[],
+    plotConfig: mavilimWIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...mavilimWIndicator.defaultInputs },
+    calculate: mavilimWIndicator.calculate,
+  },
+  {
+    id: 'cdc-action-zone',
+    name: 'CDC Action Zone',
+    shortName: 'CDC',
+    category: 'Trend',
+    overlay: true,
+    metadata: cdcActionZoneIndicator.metadata,
+    inputConfig: cdcActionZoneIndicator.inputConfig as InputConfig[],
+    plotConfig: cdcActionZoneIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cdcActionZoneIndicator.defaultInputs },
+    calculate: cdcActionZoneIndicator.calculate,
+  },
+  {
+    id: 'tillson-t3',
+    name: 'Tillson T3',
+    shortName: 'T3',
+    category: 'Trend',
+    overlay: true,
+    metadata: tillsonT3Indicator.metadata,
+    inputConfig: tillsonT3Indicator.inputConfig as InputConfig[],
+    plotConfig: tillsonT3Indicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...tillsonT3Indicator.defaultInputs },
+    calculate: tillsonT3Indicator.calculate,
+  },
+  {
+    id: 'waddah-attar-explosion',
+    name: 'Waddah Attar Explosion',
+    shortName: 'WAE',
+    category: 'Momentum',
+    overlay: false,
+    metadata: waddahAttarExplosionIndicator.metadata,
+    inputConfig: waddahAttarExplosionIndicator.inputConfig as InputConfig[],
+    plotConfig: waddahAttarExplosionIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...waddahAttarExplosionIndicator.defaultInputs },
+    calculate: waddahAttarExplosionIndicator.calculate,
+  },
+  {
+    id: 'ripster-ema-clouds',
+    name: 'Ripster EMA Clouds',
+    shortName: 'REC',
+    category: 'Trend',
+    overlay: true,
+    metadata: ripsterEMACloudsIndicator.metadata,
+    inputConfig: ripsterEMACloudsIndicator.inputConfig as InputConfig[],
+    plotConfig: ripsterEMACloudsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ripsterEMACloudsIndicator.defaultInputs },
+    calculate: ripsterEMACloudsIndicator.calculate,
+  },
+  {
+    id: 'premier-rsi',
+    name: 'Premier RSI Oscillator',
+    shortName: 'PRO',
+    category: 'Momentum',
+    overlay: false,
+    metadata: premierRsiIndicator.metadata,
+    inputConfig: premierRsiIndicator.inputConfig as InputConfig[],
+    plotConfig: premierRsiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...premierRsiIndicator.defaultInputs },
+    calculate: premierRsiIndicator.calculate,
+  },
+  {
+    id: 'laguerre-rsi',
+    name: 'Laguerre RSI',
+    shortName: 'LRSI',
+    category: 'Momentum',
+    overlay: false,
+    metadata: laguerreRsiIndicator.metadata,
+    inputConfig: laguerreRsiIndicator.inputConfig as InputConfig[],
+    plotConfig: laguerreRsiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...laguerreRsiIndicator.defaultInputs },
+    calculate: laguerreRsiIndicator.calculate,
+  },
+  {
+    id: 'rsi-candles',
+    name: 'RSI Candles',
+    shortName: 'RSIC',
+    category: 'Momentum',
+    overlay: false,
+    metadata: rsiCandlesIndicator.metadata,
+    inputConfig: rsiCandlesIndicator.inputConfig as InputConfig[],
+    plotConfig: rsiCandlesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rsiCandlesIndicator.defaultInputs },
+    calculate: rsiCandlesIndicator.calculate,
+  },
+  {
+    id: 'zero-lag-macd',
+    name: 'Zero Lag MACD',
+    shortName: 'ZLMACD',
+    category: 'Momentum',
+    overlay: false,
+    metadata: zeroLagMacdIndicator.metadata,
+    inputConfig: zeroLagMacdIndicator.inputConfig as InputConfig[],
+    plotConfig: zeroLagMacdIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...zeroLagMacdIndicator.defaultInputs },
+    calculate: zeroLagMacdIndicator.calculate,
+  },
   // Candlestick Patterns
   ...candlestickEntries([
     ['abandoned-baby-bearish', abandonedBabyBearishIndicator],
@@ -2016,4 +2322,4 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
 ];
 
 // Package version
-export const version = '0.3.0';
+export const version = '0.4.0';

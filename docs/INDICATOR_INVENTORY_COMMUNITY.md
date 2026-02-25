@@ -959,30 +959,30 @@ These are popular, well-known indicators that port directly using existing oaksc
 | 482 | OBV MACD Indicator | obv, macd |
 | 245 | Forecast Oscillator | linreg |
 
-### Wave 2 — Medium Effort (popular trend/momentum indicators)
+### Wave 2 — Medium Effort (popular trend/momentum indicators) ✅ DONE
 
-| # | Indicator | Challenge |
-|---|-----------|-----------|
-| 41 | AlphaTrend | rsi/mfi + atr bands + state |
-| 272 | HalfTrend | atr + peak/trough state |
-| 557 | QQE MOD | dual QQE + BB overlay |
-| 243 | Follow Line Indicator | bb + atr + state |
-| 793 | UT Bot Alerts | atr trailing logic |
-| 296 | Hull Suite (single-TF only) | wma + sqrt |
-| 495 | Optimized Trend Tracker | atr-based trailing |
-| 761 | Trend Magic | cci + atr |
-| 653 | SSL channel | ma crossover state |
-| 779 | TTM Squeeze | bb + kc + momentum |
-| 439 | MavilimW | wma chain |
-| 120 | CDC Action Zone V.2 | ema cross + state |
-| 659 | STC Indicator | macd + stoch chain |
-| 736 | Tillson T3 Moving Average | 6-stage ema |
-| 850 | Waddah Attar Explosion V2 | macd + bb derivative |
-| 593 | Ripster EMA Clouds | multiple ema pairs |
-| 536 | Premier RSI Oscillator [LazyBear] | rsi + exp smoothing |
-| 249 | FREE INDICATOR_ Laguerre RSI | recursive filter |
-| 602 | RSI Candles | rsi ohlc |
-| 859 | Zero Lag MACD Enhanced | zlema + macd |
+| # | Indicator | Challenge | Status |
+|---|-----------|-----------|--------|
+| 41 | AlphaTrend | rsi/mfi + atr bands + state | ✅ `alpha-trend.ts` |
+| 272 | HalfTrend | atr + peak/trough state | ✅ `half-trend.ts` |
+| 557 | QQE MOD | dual QQE + BB overlay | ✅ `qqe-mod.ts` |
+| 243 | Follow Line Indicator | bb + atr + state | ✅ `follow-line.ts` |
+| 793 | UT Bot Alerts | atr trailing logic | ✅ `ut-bot.ts` |
+| 296 | Hull Suite (single-TF only) | wma + sqrt | ✅ `hull-suite.ts` |
+| 495 | Optimized Trend Tracker | atr-based trailing | ✅ `optimized-trend-tracker.ts` |
+| 761 | Trend Magic | cci + atr | ✅ `trend-magic.ts` |
+| 653 | SSL channel | ma crossover state | ✅ `ssl-channel.ts` |
+| 779 | TTM Squeeze | bb + kc + momentum | ⏭️ Already exists as `squeeze-momentum.ts` |
+| 439 | MavilimW | wma chain | ✅ `mavilimw.ts` |
+| 120 | CDC Action Zone V.2 | ema cross + state | ✅ `cdc-action-zone.ts` |
+| 659 | STC Indicator | macd + stoch chain | ⏭️ Already exists as `schaff-trend-cycle.ts` |
+| 736 | Tillson T3 Moving Average | 6-stage ema | ✅ `tillson-t3.ts` |
+| 850 | Waddah Attar Explosion V2 | macd + bb derivative | ✅ `waddah-attar-explosion.ts` |
+| 593 | Ripster EMA Clouds | multiple ema pairs | ✅ `ripster-ema-clouds.ts` |
+| 536 | Premier RSI Oscillator [LazyBear] | rsi + exp smoothing | ✅ `premier-rsi.ts` |
+| 249 | FREE INDICATOR_ Laguerre RSI | recursive filter | ✅ `laguerre-rsi.ts` |
+| 602 | RSI Candles | rsi ohlc | ✅ `rsi-candles.ts` |
+| 859 | Zero Lag MACD Enhanced | zlema + macd | ✅ `zero-lag-macd.ts` |
 
 ### Wave 3 — Hard But Valuable
 
