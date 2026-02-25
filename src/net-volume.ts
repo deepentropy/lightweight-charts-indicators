@@ -31,7 +31,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<NetVolumeInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], _inputs: Partial<NetVolumeInputs> = {}): IndicatorResult {
   const deltaValues: number[] = [];
 
   for (let i = 0; i < bars.length; i++) {

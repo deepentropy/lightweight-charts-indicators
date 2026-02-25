@@ -25,7 +25,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ChopZoneInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], _inputs: Partial<ChopZoneInputs> = {}): IndicatorResult {
   // The indicator outputs a constant 1 for every bar (colored by EMA angle)
   const plotData = bars.map(bar => ({
     time: bar.time,

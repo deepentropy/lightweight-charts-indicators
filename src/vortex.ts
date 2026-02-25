@@ -5,7 +5,7 @@
  * Consists of two oscillators: VI+ (positive) and VI- (negative).
  */
 
-import { ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
 export interface VortexInputs {
   /** Period length */

@@ -5,7 +5,7 @@
 
 import type {Bar} from 'oakscriptjs';
 import { ChartManager } from './chart';
-import { indicatorRegistry, type IndicatorRegistryEntry, type InputConfig, type IndicatorCategory } from '../../src/index';
+import { indicatorRegistry, type IndicatorRegistryEntry, type IndicatorCategory } from '../../src/index';
 
 /**
  * Use the indicator registry from indicators/index.ts

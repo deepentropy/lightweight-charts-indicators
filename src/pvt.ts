@@ -25,7 +25,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PVTInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], _inputs: Partial<PVTInputs> = {}): IndicatorResult {
   // PVT = cumulative(change(close) / close[1] * volume)
   const pvtValues: number[] = [];
   let cumulative = 0;

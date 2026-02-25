@@ -25,7 +25,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<OBVInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], _inputs: Partial<OBVInputs> = {}): IndicatorResult {
   const close = new Series(bars, (bar) => bar.close);
   const volume = new Series(bars, (bar) => bar.volume ?? 0);
 

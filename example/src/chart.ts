@@ -37,11 +37,7 @@ export class ChartManager {
   private candlestickSeries: ISeriesApi<'Candlestick'>;
   private indicatorSeries: Map<string, ISeriesApi<'Line'>> = new Map();
   private indicatorPanes: Map<string, number> = new Map(); // Track which pane each indicator is in
-  private container: HTMLElement;
-
   constructor(container: HTMLElement) {
-    this.container = container;
-
     // Create chart with dark theme
     this.chart = createChart(container, {
       layout: {
@@ -174,7 +170,7 @@ export class ChartManager {
    * Remove all indicator series
    */
   clearIndicators(): void {
-    for (const [id, series] of this.indicatorSeries) {
+    for (const [, series] of this.indicatorSeries) {
       this.chart.removeSeries(series);
     }
     this.indicatorSeries.clear();

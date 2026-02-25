@@ -49,7 +49,7 @@ export const metadata = {
  * @param inputs - Indicator parameters (optional, none for BOP)
  * @returns Indicator result with plot data
  */
-export function calculate(bars: Bar[], inputs: Partial<BOPInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], _inputs: Partial<BOPInputs> = {}): IndicatorResult {
   // Create OHLC series
   const open = new Series(bars, (bar) => bar.open);
   const high = new Series(bars, (bar) => bar.high);

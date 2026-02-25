@@ -35,7 +35,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeDeltaInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], _inputs: Partial<VolumeDeltaInputs> = {}): IndicatorResult {
   const openValues: number[] = [];
   const maxValues: number[] = [];
   const minValues: number[] = [];

@@ -25,7 +25,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TWAPInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], _inputs: Partial<TWAPInputs> = {}): IndicatorResult {
   // For daily data with 1D anchor: each bar resets, so TWAP = ohlc4
   const plotData = bars.map(bar => ({
     time: bar.time,

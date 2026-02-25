@@ -49,7 +49,6 @@ export function calculate(bars: Bar[], inputs: Partial<BBPercentBInputs> = {}): 
   const lower = basis.sub(dev);
 
   // %B = (src - lower) / (upper - lower)
-  const basisArr = basis.toArray();
   const upperArr = upper.toArray();
   const lowerArr = lower.toArray();
   const sourceArr = source.toArray();
