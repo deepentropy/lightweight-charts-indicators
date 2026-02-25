@@ -5,10 +5,13 @@
 
 import {
   createChart,
+  createSeriesMarkers,
   CandlestickSeries,
   LineSeries,
   type IChartApi,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
+  type SeriesMarker,
   type CandlestickData,
   type LineData,
   type Time,
@@ -37,6 +40,7 @@ export class ChartManager {
   private candlestickSeries: ISeriesApi<'Candlestick'>;
   private indicatorSeries: Map<string, ISeriesApi<'Line'>> = new Map();
   private indicatorPanes: Map<string, number> = new Map(); // Track which pane each indicator is in
+  private markerPlugin: ISeriesMarkersPluginApi<Time> | null = null;
   constructor(container: HTMLElement) {
     // Create chart with dark theme
     this.chart = createChart(container, {
@@ -167,6 +171,26 @@ export class ChartManager {
   }
 
   /**
+   * Set markers on the candlestick series
+   */
+  setMarkers(markers: SeriesMarker<Time>[]): void {
+    if (!this.markerPlugin) {
+      this.markerPlugin = createSeriesMarkers(this.candlestickSeries, markers);
+    } else {
+      this.markerPlugin.setMarkers(markers);
+    }
+  }
+
+  /**
+   * Clear all markers
+   */
+  clearMarkers(): void {
+    if (this.markerPlugin) {
+      this.markerPlugin.setMarkers([]);
+    }
+  }
+
+  /**
    * Remove all indicator series
    */
   clearIndicators(): void {
@@ -175,6 +199,7 @@ export class ChartManager {
     }
     this.indicatorSeries.clear();
     this.indicatorPanes.clear();
+    this.clearMarkers();
 
     // Remove empty panes (keep pane 0 which is the main price chart)
     this.removeEmptyPanes();

@@ -2,7 +2,7 @@
 
 **[Live Demo](https://deepentropy.github.io/lightweight-charts-indicators/)**
 
-70+ technical analysis indicators for TradingView's lightweight-charts library. PineScript v6 compatible and validated against TradingView's built-in indicators.
+129 technical analysis indicators for TradingView's lightweight-charts library, including 44 candlestick patterns. PineScript v6 compatible and validated against TradingView's built-in indicators.
 
 ## Installation
 
@@ -107,7 +107,7 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 });
 ```
 
-## Available Indicators (70+)
+## Available Indicators (129)
 
 ### Moving Averages
 
@@ -148,6 +148,10 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 | Bollinger Bands %B | `BBPercentB` | Price position relative to BB (0=lower, 1=upper) |
 | Fisher Transform | `FisherTransform` | Gaussian distribution for clearer turning points |
 | Ultimate Oscillator | `UltimateOscillator` | Multi-timeframe weighted momentum |
+| Rank Correlation Index | `RCI` | Correlation between price rank and time rank |
+| RCI Ribbon | `RCIRibbon` | Multiple RCI lines for trend visualization |
+| Relative Volatility Index | `RelativeVolatilityIndex` | Volatility-based oscillator |
+| Chop Zone | `ChopZone` | Colored zone indicator for market choppiness |
 
 ### Momentum
 
@@ -162,6 +166,8 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 | Price Oscillator (PPO) | `PriceOscillator` | MACD as percentage for comparison |
 | Coppock Curve | `CoppockCurve` | Long-term momentum using ROC and WMA |
 | TRIX | `TRIX` | Triple EMA rate of change, filters noise |
+| Connors RSI | `ConnorsRSI` | Composite of RSI, streak, and percentile rank |
+| KST | `KST` | Know Sure Thing - weighted ROC sum |
 
 ### Trend
 
@@ -181,6 +187,9 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 | Zig Zag | `ZigZag` | Connects pivot highs and lows |
 | Trend Strength Index | `TrendStrengthIndex` | Trend strength based on directional movement |
 | Chande Kroll Stop | `ChandeKrollStop` | ATR-based trailing stop system |
+| Williams Fractals | `WilliamsFractals` | Identifies reversal points in price |
+| Moon Phases | `MoonPhases` | New and full moon markers |
+| TWAP | `TWAP` | Time-weighted average price |
 
 ### Volatility
 
@@ -191,6 +200,7 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 | Standard Deviation | `StandardDeviation` | Measures price volatility |
 | Historical Volatility | `HistoricalVolatility` | Annualized standard deviation of log returns |
 | Bollinger BandWidth | `BBBandWidth` | Width of Bollinger Bands as percentage |
+| Bollinger Bars | `BollingerBars` | Colored candles based on BB position |
 
 ### Channels & Bands
 
@@ -214,6 +224,54 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 | Chaikin Oscillator | `ChaikinOscillator` | Momentum of Accumulation/Distribution line |
 | Ease of Movement | `EaseOfMovement` | Price change relative to volume |
 | Klinger Oscillator | `KlingerOscillator` | Volume-based long-term money flow |
+| Net Volume | `NetVolume` | Difference between up and down volume |
+| Volume Delta | `VolumeDelta` | Difference between buying and selling volume |
+| Cumulative Volume Delta | `CumulativeVolumeDelta` | Running total of volume delta |
+| Relative Volume at Time | `RelativeVolumeAtTime` | Current volume vs historical average |
+
+### Candlestick Patterns (44)
+
+All 44 patterns from TradingView's standard candlestick pattern library, rendered as chart markers.
+
+| Pattern | Signal | Candles |
+|---------|--------|---------|
+| Abandoned Baby | Bullish / Bearish | 3 |
+| Dark Cloud Cover | Bearish | 2 |
+| Doji | Neutral | 1 |
+| Doji Star | Bullish / Bearish | 2 |
+| Downside Tasuki Gap | Bearish | 3 |
+| Dragonfly Doji | Bullish | 1 |
+| Engulfing | Bullish / Bearish | 2 |
+| Evening Doji Star | Bearish | 3 |
+| Evening Star | Bearish | 3 |
+| Falling Three Methods | Bearish | 5 |
+| Falling Window | Bearish | 2 |
+| Gravestone Doji | Bearish | 1 |
+| Hammer | Bullish | 1 |
+| Hanging Man | Bearish | 1 |
+| Harami | Bullish / Bearish | 2 |
+| Harami Cross | Bullish / Bearish | 2 |
+| Inverted Hammer | Bullish | 1 |
+| Kicking | Bullish / Bearish | 2 |
+| Long Lower Shadow | Bullish | 1 |
+| Long Upper Shadow | Bearish | 1 |
+| Marubozu Black | Bearish | 1 |
+| Marubozu White | Bullish | 1 |
+| Morning Doji Star | Bullish | 3 |
+| Morning Star | Bullish | 3 |
+| On Neck | Bearish | 2 |
+| Piercing | Bullish | 2 |
+| Rising Three Methods | Bullish | 5 |
+| Rising Window | Bullish | 2 |
+| Shooting Star | Bearish | 1 |
+| Spinning Top Black | Neutral | 1 |
+| Spinning Top White | Neutral | 1 |
+| Three Black Crows | Bearish | 3 |
+| Three White Soldiers | Bullish | 3 |
+| Tri-Star | Bullish / Bearish | 3 |
+| Tweezer Bottom | Bullish | 2 |
+| Tweezer Top | Bearish | 2 |
+| Upside Tasuki Gap | Bullish | 3 |
 
 ## Output Format
 

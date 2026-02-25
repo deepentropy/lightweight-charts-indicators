@@ -4,8 +4,9 @@
  */
 
 import type {Bar} from 'oakscriptjs';
+import type { Time, SeriesMarker } from 'lightweight-charts';
 import { ChartManager } from './chart';
-import { indicatorRegistry, type IndicatorRegistryEntry, type IndicatorCategory } from '../../src/index';
+import { indicatorRegistry, type IndicatorRegistryEntry, type IndicatorCategory, type MarkerData } from '../../src/index';
 
 /**
  * Use the indicator registry from indicators/index.ts
@@ -24,6 +25,7 @@ const categoryOrder: IndicatorCategory[] = [
   'Volatility',
   'Volume',
   'Channels & Bands',
+  'Candlestick Patterns',
 ];
 
 /**
@@ -340,6 +342,21 @@ export class IndicatorUI {
             paneIndex: indicatorPaneIndex, // All plots of same indicator share the same pane
           });
         }
+      }
+
+      // Route marker data for candlestick pattern indicators
+      if (Array.isArray(result.markers) && result.markers.length > 0) {
+        const seriesMarkers: SeriesMarker<Time>[] = result.markers.map((m: MarkerData) => ({
+          time: m.time as unknown as Time,
+          position: m.position,
+          shape: m.shape,
+          color: m.color,
+          text: m.text ?? '',
+          size: m.size,
+        }));
+        this.chartManager.setMarkers(seriesMarkers);
+      } else {
+        this.chartManager.clearMarkers();
       }
     } catch (error) {
       console.error('Error calculating indicator:', error);
