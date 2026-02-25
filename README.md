@@ -2,7 +2,7 @@
 
 **[Live Demo](https://deepentropy.github.io/lightweight-charts-indicators/)**
 
-129 technical analysis indicators for TradingView's lightweight-charts library, including 44 candlestick patterns. PineScript v6 compatible and validated against TradingView's built-in indicators.
+143 technical analysis indicators for TradingView's lightweight-charts library, including 44 candlestick patterns and 14 community indicators. PineScript v6 compatible and validated against TradingView's built-in indicators.
 
 ## Installation
 
@@ -107,7 +107,7 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 });
 ```
 
-## Available Indicators (129)
+## Available Indicators (143)
 
 ### Moving Averages
 
@@ -127,6 +127,7 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 | McGinley Dynamic | `McGinleyDynamic` | Adaptive moving average that adjusts to market speed |
 | MA Cross | `MACross` | Two moving averages for crossover signals |
 | Moving Average Ribbon | `MARibbon` | Multiple MAs showing trend direction and momentum |
+| Zero Lag LSMA | `ZLSMA` | Double linreg to cancel LSMA lag |
 
 ### Oscillators
 
@@ -152,6 +153,11 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 | RCI Ribbon | `RCIRibbon` | Multiple RCI lines for trend visualization |
 | Relative Volatility Index | `RelativeVolatilityIndex` | Volatility-based oscillator |
 | Chop Zone | `ChopZone` | Colored zone indicator for market choppiness |
+| CCT Bollinger Band Oscillator | `CCTBBO` | Normalized BB position (0-100) with signal line |
+| KDJ | `KDJ` | Extended Stochastic with J line (3K - 2D) |
+| WaveTrend | `WaveTrend` | Channel index oscillator with cross signals |
+| Forecast Oscillator | `ForecastOscillator` | Percentage deviation from linear regression |
+| Schaff Trend Cycle | `SchaffTrendCycle` | Double stochastic smoothing of MACD |
 
 ### Momentum
 
@@ -168,6 +174,9 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 | TRIX | `TRIX` | Triple EMA rate of change, filters noise |
 | Connors RSI | `ConnorsRSI` | Composite of RSI, streak, and percentile rank |
 | KST | `KST` | Know Sure Thing - weighted ROC sum |
+| MACD 4C | `MACD4C` | MACD histogram with 4-color coding |
+| Squeeze Momentum | `SqueezeMomentum` | BB/KC squeeze with momentum oscillator |
+| Impulse MACD | `ImpulseMACD` | ZLEMA vs SMMA channel impulse |
 
 ### Trend
 
@@ -190,6 +199,9 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 | Williams Fractals | `WilliamsFractals` | Identifies reversal points in price |
 | Moon Phases | `MoonPhases` | New and full moon markers |
 | TWAP | `TWAP` | Time-weighted average price |
+| Coral Trend | `CoralTrend` | Cascaded EMA filter for smooth trend detection |
+| Chandelier Exit | `ChandelierExit` | ATR-based trailing stop system |
+| Donchian Trend Ribbon | `DonchianTrendRibbon` | Multi-layer Donchian breakout composite score |
 
 ### Volatility
 
@@ -228,6 +240,8 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 | Volume Delta | `VolumeDelta` | Difference between buying and selling volume |
 | Cumulative Volume Delta | `CumulativeVolumeDelta` | Running total of volume delta |
 | Relative Volume at Time | `RelativeVolumeAtTime` | Current volume vs historical average |
+| Colored Volume Bars | `ColoredVolume` | Volume colored by price/volume trend |
+| OBV MACD | `OBVMACD` | MACD applied to On Balance Volume |
 
 ### Candlestick Patterns (44)
 
