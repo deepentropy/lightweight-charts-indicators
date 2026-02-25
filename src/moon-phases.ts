@@ -161,8 +161,8 @@ export function calculate(bars: Bar[], _inputs: Partial<MoonPhasesInputs> = {}):
       moonType = NaN;
     }
 
-    newMoonData.push({ time: bar.time, value: moonType === 1 ? 1 : NaN });
-    fullMoonData.push({ time: bar.time, value: moonType === -1 ? 1 : NaN });
+    newMoonData.push({ time: bar.time, value: moonType === 1 ? bar.high : NaN });
+    fullMoonData.push({ time: bar.time, value: moonType === -1 ? bar.low : NaN });
 
     prevTimeLastMoonPhase = timeLastMoonPhase;
     prevMoonPhaseAdjusted = moonPhaseAdjusted;
