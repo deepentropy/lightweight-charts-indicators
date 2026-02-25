@@ -1,6 +1,6 @@
 {
   "name": "lightweight-charts-indicators",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Optimized technical indicators built with OakScriptJS for use with lightweight-charts",
   "main": "dist/index.cjs",

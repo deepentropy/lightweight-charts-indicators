@@ -434,6 +434,76 @@ import * as moonPhasesIndicator from './moon-phases';
 export { MoonPhases, calculate as calculateMoonPhases } from './moon-phases';
 export type { MoonPhasesInputs } from './moon-phases';
 
+// ZLSMA - Zero Lag LSMA
+import * as zlsmaIndicator from './zlsma';
+export { ZLSMA, calculate as calculateZLSMA } from './zlsma';
+export type { ZLSMAInputs } from './zlsma';
+
+// Forecast Oscillator
+import * as forecastOscillatorIndicator from './forecast-oscillator';
+export { ForecastOscillator, calculate as calculateForecastOscillator } from './forecast-oscillator';
+export type { ForecastOscillatorInputs } from './forecast-oscillator';
+
+// CCT Bollinger Band Oscillator
+import * as cctbboIndicator from './cct-bbo';
+export { CCTBBO, calculate as calculateCCTBBO } from './cct-bbo';
+export type { CCTBBOInputs } from './cct-bbo';
+
+// MACD 4C
+import * as macd4cIndicator from './macd-4c';
+export { MACD4C, calculate as calculateMACD4C } from './macd-4c';
+export type { MACD4CInputs } from './macd-4c';
+
+// Colored Volume Bars
+import * as coloredVolumeIndicator from './colored-volume';
+export { ColoredVolume, calculate as calculateColoredVolume } from './colored-volume';
+export type { ColoredVolumeInputs } from './colored-volume';
+
+// KDJ Indicator
+import * as kdjIndicator from './kdj';
+export { KDJ, calculate as calculateKDJ } from './kdj';
+export type { KDJInputs } from './kdj';
+
+// WaveTrend
+import * as waveTrendIndicator from './wavetrend';
+export { WaveTrend, calculate as calculateWaveTrend } from './wavetrend';
+export type { WaveTrendInputs } from './wavetrend';
+
+// Squeeze Momentum
+import * as squeezeMomentumIndicator from './squeeze-momentum';
+export { SqueezeMomentum, calculate as calculateSqueezeMomentum } from './squeeze-momentum';
+export type { SqueezeMomentumInputs } from './squeeze-momentum';
+
+// Coral Trend
+import * as coralTrendIndicator from './coral-trend';
+export { CoralTrend, calculate as calculateCoralTrend } from './coral-trend';
+export type { CoralTrendInputs } from './coral-trend';
+
+// Chandelier Exit
+import * as chandelierExitIndicator from './chandelier-exit';
+export { ChandelierExit, calculate as calculateChandelierExit } from './chandelier-exit';
+export type { ChandelierExitInputs } from './chandelier-exit';
+
+// Impulse MACD
+import * as impulseMacdIndicator from './impulse-macd';
+export { ImpulseMACD, calculate as calculateImpulseMACD } from './impulse-macd';
+export type { ImpulseMACDInputs } from './impulse-macd';
+
+// Schaff Trend Cycle
+import * as schaffTrendCycleIndicator from './schaff-trend-cycle';
+export { SchaffTrendCycle, calculate as calculateSchaffTrendCycle } from './schaff-trend-cycle';
+export type { SchaffTrendCycleInputs } from './schaff-trend-cycle';
+
+// Donchian Trend Ribbon
+import * as donchianTrendRibbonIndicator from './donchian-trend-ribbon';
+export { DonchianTrendRibbon, calculate as calculateDonchianTrendRibbon } from './donchian-trend-ribbon';
+export type { DonchianTrendRibbonInputs } from './donchian-trend-ribbon';
+
+// OBV MACD
+import * as obvMacdIndicator from './obv-macd';
+export { OBVMACD, calculate as calculateOBVMACD } from './obv-macd';
+export type { OBVMACDInputs } from './obv-macd';
+
 // Candlestick Patterns
 import * as hammerIndicator from './hammer';
 import * as shootingStarIndicator from './shooting-star';
@@ -1727,6 +1797,175 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     defaultInputs: { ...moonPhasesIndicator.defaultInputs },
     calculate: moonPhasesIndicator.calculate,
   },
+  // --- Wave 1 Community Indicators ---
+  {
+    id: 'zlsma',
+    name: 'Zero Lag LSMA (ZLSMA)',
+    shortName: 'ZLSMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: zlsmaIndicator.metadata,
+    inputConfig: zlsmaIndicator.inputConfig as InputConfig[],
+    plotConfig: zlsmaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...zlsmaIndicator.defaultInputs },
+    calculate: zlsmaIndicator.calculate,
+  },
+  {
+    id: 'forecast-oscillator',
+    name: 'Forecast Oscillator',
+    shortName: 'FOSC',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: forecastOscillatorIndicator.metadata,
+    inputConfig: forecastOscillatorIndicator.inputConfig as InputConfig[],
+    plotConfig: forecastOscillatorIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...forecastOscillatorIndicator.defaultInputs },
+    calculate: forecastOscillatorIndicator.calculate,
+  },
+  {
+    id: 'cct-bbo',
+    name: 'CCT Bollinger Band Oscillator',
+    shortName: 'CCTBBO',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: cctbboIndicator.metadata,
+    inputConfig: cctbboIndicator.inputConfig as InputConfig[],
+    plotConfig: cctbboIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cctbboIndicator.defaultInputs },
+    calculate: cctbboIndicator.calculate,
+  },
+  {
+    id: 'macd-4c',
+    name: 'MACD 4C',
+    shortName: 'MACD4C',
+    category: 'Momentum',
+    overlay: false,
+    metadata: macd4cIndicator.metadata,
+    inputConfig: macd4cIndicator.inputConfig as InputConfig[],
+    plotConfig: macd4cIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...macd4cIndicator.defaultInputs },
+    calculate: macd4cIndicator.calculate,
+  },
+  {
+    id: 'colored-volume',
+    name: 'Colored Volume Bars',
+    shortName: 'CVolBars',
+    category: 'Volume',
+    overlay: false,
+    metadata: coloredVolumeIndicator.metadata,
+    inputConfig: coloredVolumeIndicator.inputConfig as InputConfig[],
+    plotConfig: coloredVolumeIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...coloredVolumeIndicator.defaultInputs },
+    calculate: coloredVolumeIndicator.calculate,
+  },
+  {
+    id: 'kdj',
+    name: 'KDJ',
+    shortName: 'KDJ',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: kdjIndicator.metadata,
+    inputConfig: kdjIndicator.inputConfig as InputConfig[],
+    plotConfig: kdjIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...kdjIndicator.defaultInputs },
+    calculate: kdjIndicator.calculate,
+  },
+  {
+    id: 'wavetrend',
+    name: 'WaveTrend',
+    shortName: 'WT',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: waveTrendIndicator.metadata,
+    inputConfig: waveTrendIndicator.inputConfig as InputConfig[],
+    plotConfig: waveTrendIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...waveTrendIndicator.defaultInputs },
+    calculate: waveTrendIndicator.calculate,
+  },
+  {
+    id: 'squeeze-momentum',
+    name: 'Squeeze Momentum',
+    shortName: 'SQZMOM',
+    category: 'Momentum',
+    overlay: false,
+    metadata: squeezeMomentumIndicator.metadata,
+    inputConfig: squeezeMomentumIndicator.inputConfig as InputConfig[],
+    plotConfig: squeezeMomentumIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...squeezeMomentumIndicator.defaultInputs },
+    calculate: squeezeMomentumIndicator.calculate,
+  },
+  {
+    id: 'coral-trend',
+    name: 'Coral Trend',
+    shortName: 'Coral',
+    category: 'Trend',
+    overlay: true,
+    metadata: coralTrendIndicator.metadata,
+    inputConfig: coralTrendIndicator.inputConfig as InputConfig[],
+    plotConfig: coralTrendIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...coralTrendIndicator.defaultInputs },
+    calculate: coralTrendIndicator.calculate,
+  },
+  {
+    id: 'chandelier-exit',
+    name: 'Chandelier Exit',
+    shortName: 'CE',
+    category: 'Trend',
+    overlay: true,
+    metadata: chandelierExitIndicator.metadata,
+    inputConfig: chandelierExitIndicator.inputConfig as InputConfig[],
+    plotConfig: chandelierExitIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...chandelierExitIndicator.defaultInputs },
+    calculate: chandelierExitIndicator.calculate,
+  },
+  {
+    id: 'impulse-macd',
+    name: 'Impulse MACD',
+    shortName: 'IMACD',
+    category: 'Momentum',
+    overlay: false,
+    metadata: impulseMacdIndicator.metadata,
+    inputConfig: impulseMacdIndicator.inputConfig as InputConfig[],
+    plotConfig: impulseMacdIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...impulseMacdIndicator.defaultInputs },
+    calculate: impulseMacdIndicator.calculate,
+  },
+  {
+    id: 'schaff-trend-cycle',
+    name: 'Schaff Trend Cycle',
+    shortName: 'STC',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: schaffTrendCycleIndicator.metadata,
+    inputConfig: schaffTrendCycleIndicator.inputConfig as InputConfig[],
+    plotConfig: schaffTrendCycleIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...schaffTrendCycleIndicator.defaultInputs },
+    calculate: schaffTrendCycleIndicator.calculate,
+  },
+  {
+    id: 'donchian-trend-ribbon',
+    name: 'Donchian Trend Ribbon',
+    shortName: 'DTR',
+    category: 'Trend',
+    overlay: false,
+    metadata: donchianTrendRibbonIndicator.metadata,
+    inputConfig: donchianTrendRibbonIndicator.inputConfig as InputConfig[],
+    plotConfig: donchianTrendRibbonIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...donchianTrendRibbonIndicator.defaultInputs },
+    calculate: donchianTrendRibbonIndicator.calculate,
+  },
+  {
+    id: 'obv-macd',
+    name: 'OBV MACD',
+    shortName: 'OBVMACD',
+    category: 'Volume',
+    overlay: false,
+    metadata: obvMacdIndicator.metadata,
+    inputConfig: obvMacdIndicator.inputConfig as InputConfig[],
+    plotConfig: obvMacdIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...obvMacdIndicator.defaultInputs },
+    calculate: obvMacdIndicator.calculate,
+  },
   // Candlestick Patterns
   ...candlestickEntries([
     ['abandoned-baby-bearish', abandonedBabyBearishIndicator],
@@ -1777,4 +2016,4 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
 ];
 
 // Package version
-export const version = '0.2.0';
+export const version = '0.3.0';
