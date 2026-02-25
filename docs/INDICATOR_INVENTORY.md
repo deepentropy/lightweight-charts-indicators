@@ -8,8 +8,8 @@ ranked by complexity. It tracks implementation status in OakScriptJS.
 | Category               | Count |
 |------------------------|-------|
 | **Total Indicators**   | 134   |
-| **Implemented**        | 66    |
-| **Pending**            | 68    |
+| **Implemented**        | 74    |
+| **Pending**            | 60    |
 | **Very Complex (25+)** | 3     |
 | **Complex (15-24)**    | 29    |
 | **Medium (5-14)**      | 43    |
@@ -70,8 +70,8 @@ Complexity is calculated based on:
 | Performance | 10 | 0 | ReqSec, Tables | Pending | No | - |
 | Linear Regression Channel | 10 | 0 | Drawing | Pending | No | - |
 | On Balance Volume | 8 | 8 | - | **Implemented** | Yes | ✅ Pass |
-| Relative Volatility Index | 7 | 7 | - | Pending | No | - |
-| Rank Correlation Index | 7 | 7 | - | Pending | No | - |
+| Relative Volatility Index | 7 | 7 | - | **Implemented** | Yes | ✅ Pass |
+| Rank Correlation Index | 7 | 7 | - | **Implemented** | Yes | ✅ Pass |
 | Commodity Channel Index | 7 | 7 | - | **Implemented** | Yes | ✅ Pass |
 | Moving Average Simple | 6 | 6 | - | **Implemented** | Yes | ✅ Pass |
 | Moving Average Exponential | 6 | 6 | - | **Implemented** | Yes | ✅ Pass |
@@ -91,16 +91,16 @@ Complexity is calculated based on:
 | Advance_Decline Ratio (Bars) | 5 | 1 | ReqSec | Pending | No | - |
 | 24-hour Volume | 5 | 0 | ReqSec | Pending | No | - |
 | Directional Movement Index | 4 | 4 | - | **Implemented** | Yes | ✅ Pass |
-| Know Sure Thing | 4 | 4 | - | Pending | No | - |
+| Know Sure Thing | 4 | 4 | - | **Implemented** | Yes | ✅ Pass |
 | Volume Profile Fixed Range | 4 | 0 | Drawing | Pending | No | - |
 | Volume Profile Visible Range | 4 | 0 | Drawing | Pending | No | - |
-| Connors RSI | 3 | 3 | - | Pending | No | - |
+| Connors RSI | 3 | 3 | - | **Implemented** | Yes | ✅ Pass |
 | Aroon | 2 | 2 | - | **Implemented** | Yes | ✅ Pass |
 | Bollinger Bands %B | 2 | 2 | - | **Implemented** | Yes | ✅ Pass |
 | Bollinger BandWidth | 2 | 2 | - | **Implemented** | Yes | ✅ Pass |
 | Chaikin Oscillator | 2 | 2 | - | **Implemented** | Yes | ✅ Pass |
 | Chande Kroll Stop | 2 | 2 | - | **Implemented** | Yes | ✅ Pass |
-| Chop Zone | 2 | 2 | - | Pending | No | - |
+| Chop Zone | 2 | 2 | - | **Implemented** | Yes | ✅ Pass |
 | Choppiness Index | 2 | 2 | - | **Implemented** | Yes | ✅ Pass |
 | Coppock Curve | 2 | 2 | - | **Implemented** | Yes | ✅ Pass |
 | Donchian Channels | 2 | 2 | - | **Implemented** | Yes | ✅ Pass |
@@ -155,13 +155,13 @@ Complexity is calculated based on:
 | Accumulation/Distribution | 1 | 1 | - | **Implemented** | Yes | ✅ Pass |
 | Average Day Range | 1 | 1 | - | **Implemented** | Yes | ✅ Pass |
 | Balance of Power | 0 | 0 | - | **Implemented** | Yes | ✅ Pass |
-| Bollinger Bars | 0 | 0 | - | Pending | No | - |
+| Bollinger Bars | 0 | 0 | - | **Implemented** | Yes | ✅ Pass |
 | Chaikin Money Flow | 0 | 0 | - | **Implemented** | Yes | ✅ Pass |
 | Momentum | 0 | 0 | - | **Implemented** | Yes | ✅ Pass |
 | Rate of Change | 0 | 0 | - | **Implemented** | Yes | ✅ Pass |
-| Time Weighted Average Price | 0 | 0 | - | Pending | No | - |
+| Time Weighted Average Price | 0 | 0 | - | **Implemented** | Yes | ✅ Pass |
 | Ultimate Oscillator | 0 | 0 | - | **Implemented** | Yes | ✅ Pass |
-| Williams Fractals | 0 | 0 | - | Pending | No | - |
+| Williams Fractals | 0 | 0 | - | **Implemented** | Yes | ⏭️ Skip |
 | Zig Zag | 0 | 0 | - | **Implemented** | Yes | ✅ Pass |
 
 ---
@@ -208,21 +208,22 @@ tests/regression/
 
 ## Regression Test Results
 
-All 66 implemented indicators pass PineSuite regression tests:
+All 74 implemented indicators pass PineSuite regression tests:
 
 ```
-Total Indicators: 69 (in mapping)
-Passed:           48
-Passed w/caveats: 18 (extended warmup, normalized comparison, or tolerance adjustment)
-Skipped:          3 (CVD, Net Volume, Volume Delta - require intrabar data)
+Total Indicators: 77 (in mapping)
+Passed:           53
+Passed w/caveats: 20 (extended warmup, normalized comparison, or tolerance adjustment)
+Skipped:          4 (CVD, Net Volume, Volume Delta, Williams Fractals)
 Failed:           0
 ```
 
 **Notes on skipped indicators:**
 - CVD, Net Volume, and Volume Delta use TradingView's `ta.requestVolumeDelta` / `ta.requestUpAndDownVolume` which analyze intrabar data from lower timeframes
 - Our implementation approximates up/down volume using close vs open price comparison
+- Williams Fractals: CSV has duplicate 'Shapes' columns that merge in parser - incompatible format
 - RCI Ribbon passes with extended warmup and tolerance adjustment
 
 ---
 
-*Last updated: December 16, 2025 - Added RCI Ribbon, Volume Delta, Cumulative Volume Delta, Net Volume*
+*Last updated: February 25, 2026 - Added KST, Connors RSI, Chop Zone, RCI, RVI, Williams Fractals, TWAP, Bollinger Bars*

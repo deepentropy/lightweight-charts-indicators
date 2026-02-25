@@ -7,7 +7,7 @@
  * - Lips (Green): 5-period SMMA, shifted 3 bars
  */
 
-import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
 export interface WilliamsAlligatorInputs {
   /** Jaw period */
@@ -54,48 +54,14 @@ export const metadata = {
   overlay: true,
 };
 
-/**
- * SMMA (Smoothed Moving Average) - Wilder's smoothing
- * Same as RMA: smma[i] = (smma[i-1] * (length - 1) + src[i]) / length
- */
-function smma(values: number[], length: number): number[] {
-  const result: number[] = [];
-  let sum = 0;
-  let count = 0;
-
-  for (let i = 0; i < values.length; i++) {
-    if (i < length - 1) {
-      sum += values[i];
-      count++;
-      result.push(NaN);
-    } else if (i === length - 1) {
-      sum += values[i];
-      count++;
-      const smaVal = sum / count;
-      result.push(smaVal);
-    } else {
-      const prev = result[i - 1];
-      if (isNaN(prev)) {
-        result.push(NaN);
-      } else {
-        result.push((prev * (length - 1) + values[i]) / length);
-      }
-    }
-  }
-
-  return result;
-}
-
 export function calculate(bars: Bar[], inputs: Partial<WilliamsAlligatorInputs> = {}): IndicatorResult {
   const { jawLength, jawOffset, teethLength, teethOffset, lipsLength, lipsOffset } = { ...defaultInputs, ...inputs };
 
-  // Source is hl2 (high + low) / 2
-  const hl2 = bars.map(b => (b.high + b.low) / 2);
+  const hl2 = new Series(bars, b => (b.high + b.low) / 2);
 
-  // Calculate SMMAs
-  const jawSMMA = smma(hl2, jawLength);
-  const teethSMMA = smma(hl2, teethLength);
-  const lipsSMMA = smma(hl2, lipsLength);
+  const jawSMMA = ta.rma(hl2, jawLength).toArray();
+  const teethSMMA = ta.rma(hl2, teethLength).toArray();
+  const lipsSMMA = ta.rma(hl2, lipsLength).toArray();
 
   // Apply offsets by shifting values backward in the array
   // TradingView's offset shifts values forward on the chart (right)

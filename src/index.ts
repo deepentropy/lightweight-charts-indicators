@@ -389,6 +389,46 @@ import * as wmaIndicator from './wma';
 export { WMA, calculate as calculateWMA } from './wma';
 export type { WMAInputs } from './wma';
 
+// KST - Know Sure Thing
+import * as kstIndicator from './kst';
+export { KnowSureThing, calculate as calculateKST } from './kst';
+export type { KSTInputs } from './kst';
+
+// Connors RSI
+import * as connorsRsiIndicator from './connors-rsi';
+export { ConnorsRSI, calculate as calculateConnorsRSI } from './connors-rsi';
+export type { ConnorsRSIInputs } from './connors-rsi';
+
+// Chop Zone
+import * as chopZoneIndicator from './chop-zone';
+export { ChopZone, calculate as calculateChopZone } from './chop-zone';
+export type { ChopZoneInputs } from './chop-zone';
+
+// RCI - Rank Correlation Index
+import * as rciIndicator from './rank-correlation-index';
+export { RankCorrelationIndex, calculate as calculateRCI } from './rank-correlation-index';
+export type { RCIInputs } from './rank-correlation-index';
+
+// Relative Volatility Index
+import * as relativeVolatilityIndexIndicator from './relative-volatility-index';
+export { RelativeVolatilityIndex, calculate as calculateRelativeVolatilityIndex } from './relative-volatility-index';
+export type { RelativeVolatilityIndexInputs } from './relative-volatility-index';
+
+// Williams Fractals
+import * as williamsFractalsIndicator from './williams-fractals';
+export { WilliamsFractals, calculate as calculateWilliamsFractals } from './williams-fractals';
+export type { WilliamsFractalsInputs } from './williams-fractals';
+
+// TWAP - Time Weighted Average Price
+import * as twapIndicator from './twap';
+export { TWAP, calculate as calculateTWAP } from './twap';
+export type { TWAPInputs } from './twap';
+
+// Bollinger Bars
+import * as bollingerBarsIndicator from './bollinger-bars';
+export { BollingerBars, calculate as calculateBollingerBars } from './bollinger-bars';
+export type { BollingerBarsInputs } from './bollinger-bars';
+
 /**
  * Input configuration type
  */
@@ -1441,6 +1481,110 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: netVolumeIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...netVolumeIndicator.defaultInputs },
     calculate: netVolumeIndicator.calculate,
+  },
+  {
+    id: 'kst',
+    name: 'Know Sure Thing (KST)',
+    shortName: 'KST',
+    description: 'Momentum oscillator based on rate of change for four timeframes.',
+    category: 'Momentum',
+    overlay: false,
+    metadata: kstIndicator.metadata,
+    inputConfig: kstIndicator.inputConfig as InputConfig[],
+    plotConfig: kstIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...kstIndicator.defaultInputs },
+    calculate: kstIndicator.calculate,
+  },
+  {
+    id: 'connors-rsi',
+    name: 'Connors RSI',
+    shortName: 'CRSI',
+    description: 'Composite momentum oscillator combining RSI, streak RSI, and percent rank.',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: connorsRsiIndicator.metadata,
+    inputConfig: connorsRsiIndicator.inputConfig as InputConfig[],
+    plotConfig: connorsRsiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...connorsRsiIndicator.defaultInputs },
+    calculate: connorsRsiIndicator.calculate,
+  },
+  {
+    id: 'chop-zone',
+    name: 'Chop Zone',
+    shortName: 'ChopZ',
+    description: 'Uses EMA angle to determine trending vs choppy conditions.',
+    category: 'Trend',
+    overlay: false,
+    metadata: chopZoneIndicator.metadata,
+    inputConfig: chopZoneIndicator.inputConfig as InputConfig[],
+    plotConfig: chopZoneIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...chopZoneIndicator.defaultInputs },
+    calculate: chopZoneIndicator.calculate,
+  },
+  {
+    id: 'rci',
+    name: 'Rank Correlation Index (RCI)',
+    shortName: 'RCI',
+    description: 'Measures directional consistency using Spearman rank correlation.',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: rciIndicator.metadata,
+    inputConfig: rciIndicator.inputConfig as InputConfig[],
+    plotConfig: rciIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rciIndicator.defaultInputs },
+    calculate: rciIndicator.calculate,
+  },
+  {
+    id: 'rvol',
+    name: 'Relative Volatility Index',
+    shortName: 'RVol',
+    description: 'Measures volatility direction using standard deviation and EMA.',
+    category: 'Volatility',
+    overlay: false,
+    metadata: relativeVolatilityIndexIndicator.metadata,
+    inputConfig: relativeVolatilityIndexIndicator.inputConfig as InputConfig[],
+    plotConfig: relativeVolatilityIndexIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...relativeVolatilityIndexIndicator.defaultInputs },
+    calculate: relativeVolatilityIndexIndicator.calculate,
+  },
+  {
+    id: 'williams-fractals',
+    name: 'Williams Fractals',
+    shortName: 'Fractals',
+    description: 'Identifies fractal highs and lows in price action.',
+    category: 'Trend',
+    overlay: true,
+    metadata: williamsFractalsIndicator.metadata,
+    inputConfig: williamsFractalsIndicator.inputConfig as InputConfig[],
+    plotConfig: williamsFractalsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...williamsFractalsIndicator.defaultInputs },
+    calculate: williamsFractalsIndicator.calculate,
+  },
+  {
+    id: 'twap',
+    name: 'Time Weighted Average Price (TWAP)',
+    shortName: 'TWAP',
+    description: 'Cumulative average of ohlc4 within anchor period.',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: twapIndicator.metadata,
+    inputConfig: twapIndicator.inputConfig as InputConfig[],
+    plotConfig: twapIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...twapIndicator.defaultInputs },
+    calculate: twapIndicator.calculate,
+  },
+  {
+    id: 'bb-bars',
+    name: 'Bollinger Bars',
+    shortName: 'BB Bars',
+    description: 'Visual candle indicator with colored wick and body layers.',
+    category: 'Volatility',
+    overlay: true,
+    metadata: bollingerBarsIndicator.metadata,
+    inputConfig: bollingerBarsIndicator.inputConfig as InputConfig[],
+    plotConfig: bollingerBarsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...bollingerBarsIndicator.defaultInputs },
+    calculate: bollingerBarsIndicator.calculate,
   },
 ];
 

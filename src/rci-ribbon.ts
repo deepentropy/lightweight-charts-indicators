@@ -8,11 +8,11 @@
  * Based on TradingView's RCI Ribbon indicator.
  */
 
-import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface RCIRibbonInputs {
   /** Source for calculation */
-  source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4';
+  source: SourceType;
   /** Short RCI length */
   shortLength: number;
   /** Middle RCI length */
@@ -47,118 +47,18 @@ export const metadata = {
   overlay: false,
 };
 
-function getSourceValue(bar: Bar, source: string): number {
-  switch (source) {
-    case 'open': return bar.open;
-    case 'high': return bar.high;
-    case 'low': return bar.low;
-    case 'close': return bar.close;
-    case 'hl2': return (bar.high + bar.low) / 2;
-    case 'hlc3': return (bar.high + bar.low + bar.close) / 3;
-    case 'ohlc4': return (bar.open + bar.high + bar.low + bar.close) / 4;
-    default: return bar.close;
-  }
-}
-
-/**
- * Calculate RCI (Rank Correlation Index) for a single bar
- * Uses Spearman's rank correlation coefficient, scaled to -100 to 100
- *
- * @param values Array of source values (oldest to newest, ending at current bar)
- * @param length Number of bars to use
- * @returns RCI value between -100 and 100
- */
-function calculateRCI(values: number[], length: number): number {
-  if (values.length < length) {
-    return NaN;
-  }
-
-  // Get the last 'length' values
-  const window = values.slice(-length);
-
-  // Create an array of [value, originalIndex] pairs for ranking
-  const indexed = window.map((val, idx) => ({ value: val, originalIndex: idx }));
-
-  // Sort by value to assign price ranks
-  const sortedByValue = [...indexed].sort((a, b) => a.value - b.value);
-
-  // Assign ranks (handling ties with average rank)
-  const priceRanks = new Array(length).fill(0);
-  let i = 0;
-  while (i < length) {
-    let j = i;
-    // Find all tied values
-    while (j < length - 1 && sortedByValue[j].value === sortedByValue[j + 1].value) {
-      j++;
-    }
-    // Assign average rank to all tied values
-    const avgRank = (i + j) / 2 + 1; // +1 because ranks are 1-based
-    for (let k = i; k <= j; k++) {
-      priceRanks[sortedByValue[k].originalIndex] = avgRank;
-    }
-    i = j + 1;
-  }
-
-  // Time ranks are simply 1, 2, 3, ..., length (oldest to newest)
-  // Calculate sum of squared rank differences
-  let sumD2 = 0;
-  for (let idx = 0; idx < length; idx++) {
-    const timeRank = idx + 1;
-    const d = priceRanks[idx] - timeRank;
-    sumD2 += d * d;
-  }
-
-  // Spearman's formula: rho = 1 - (6 * sumD2) / (n * (n^2 - 1))
-  // Scaled to -100 to 100
-  const n = length;
-  const rci = (1 - (6 * sumD2) / (n * (n * n - 1))) * 100;
-
-  return rci;
-}
-
-/**
- * Calculate RCI for all bars in the series
- */
-function calculateRCISeries(sourceValues: number[], length: number): number[] {
-  const result: number[] = [];
-
-  for (let i = 0; i < sourceValues.length; i++) {
-    if (i < length - 1) {
-      result.push(NaN);
-    } else {
-      const window = sourceValues.slice(i - length + 1, i + 1);
-      result.push(calculateRCI(window, length));
-    }
-  }
-
-  return result;
-}
-
 export function calculate(bars: Bar[], inputs: Partial<RCIRibbonInputs> = {}): IndicatorResult {
   const { source, shortLength, middleLength, longLength } = { ...defaultInputs, ...inputs };
 
-  // Extract source values
-  const sourceValues = bars.map(b => getSourceValue(b, source));
+  const srcSeries = getSourceSeries(bars, source);
 
-  // Calculate three RCI lines
-  const shortArr = calculateRCISeries(sourceValues, shortLength);
-  const middleArr = calculateRCISeries(sourceValues, middleLength);
-  const longArr = calculateRCISeries(sourceValues, longLength);
+  const shortArr = ta.rci(srcSeries, shortLength).toArray();
+  const middleArr = ta.rci(srcSeries, middleLength).toArray();
+  const longArr = ta.rci(srcSeries, longLength).toArray();
 
-  const shortData = shortArr.map((value, i) => ({
-    time: bars[i].time,
-    value: value,
-  }));
-
-  const middleData = middleArr.map((value, i) => ({
-    time: bars[i].time,
-    value: value,
-  }));
-
-  const longData = longArr.map((value, i) => ({
-    time: bars[i].time,
-    value: value,
-  }));
+  const shortData = shortArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
+  const middleData = middleArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
+  const longData = longArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
 
   return {
     metadata: {

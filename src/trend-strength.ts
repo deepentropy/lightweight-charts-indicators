@@ -7,7 +7,7 @@
  * Formula: correlation(close, bar_index, length)
  */
 
-import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
 export interface TrendStrengthInputs {
   /** Period length */
@@ -32,71 +32,15 @@ export const metadata = {
   overlay: false,
 };
 
-/**
- * Calculate Pearson correlation coefficient between two arrays
- */
-function pearsonCorrelation(x: number[], y: number[]): number {
-  const n = x.length;
-  if (n === 0) return NaN;
-
-  // Calculate means
-  let sumX = 0, sumY = 0;
-  for (let i = 0; i < n; i++) {
-    sumX += x[i];
-    sumY += y[i];
-  }
-  const meanX = sumX / n;
-  const meanY = sumY / n;
-
-  // Calculate correlation
-  let numerator = 0;
-  let sumXSq = 0;
-  let sumYSq = 0;
-
-  for (let i = 0; i < n; i++) {
-    const dx = x[i] - meanX;
-    const dy = y[i] - meanY;
-    numerator += dx * dy;
-    sumXSq += dx * dx;
-    sumYSq += dy * dy;
-  }
-
-  const denominator = Math.sqrt(sumXSq * sumYSq);
-  if (denominator === 0) return 0;
-
-  return numerator / denominator;
-}
-
 export function calculate(bars: Bar[], inputs: Partial<TrendStrengthInputs> = {}): IndicatorResult {
   const { length } = { ...defaultInputs, ...inputs };
 
-  // Extract close prices
-  const closes = bars.map(b => b.close);
+  const close = new Series(bars, b => b.close);
+  const barIndex = new Series(bars, (_, i) => i);
 
-  // Calculate TSI = correlation(close, bar_index, length)
-  const tsValues: number[] = [];
+  const tsArr = ta.correlation(close, barIndex, length).toArray();
 
-  for (let i = 0; i < bars.length; i++) {
-    if (i < length - 1) {
-      tsValues.push(NaN);
-      continue;
-    }
-
-    // Get window of close prices
-    const closeWindow = closes.slice(i - length + 1, i + 1);
-
-    // Bar indices for the window (0, 1, 2, ..., length-1)
-    const indexWindow = Array.from({ length: length }, (_, j) => j);
-
-    // Calculate correlation
-    const corr = pearsonCorrelation(closeWindow, indexWindow);
-    tsValues.push(corr);
-  }
-
-  const tsData = tsValues.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
+  const tsData = tsArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
 
   return {
     metadata: {

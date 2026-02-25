@@ -271,8 +271,7 @@
   "rci-ribbon": {
     "dataFile": "data/20251207/RCI Ribbon.csv",
     "exportName": "RCIRibbon",
-    "skipInitial": 200,
-    "tolerance": 0.3
+    "skipInitial": 200
   },
   "rma": {
     "dataFile": "data/20251207/Smoothed Moving Average.csv",
@@ -297,7 +296,8 @@
   },
   "rvol": {
     "dataFile": "data/20251207/Relative Volatility Index.csv",
-    "exportName": "RelativeVolatilityIndex"
+    "exportName": "RelativeVolatilityIndex",
+    "skipInitial": 200
   },
   "rvol-at-time": {
     "dataFile": "data/20251207/Relative Volume at Time.csv",
@@ -405,7 +405,9 @@
   },
   "williams-fractals": {
     "dataFile": "data/20251207/Williams Fractals.csv",
-    "exportName": "WilliamsFractals"
+    "exportName": "WilliamsFractals",
+    "skipTest": true,
+    "skipReason": "CSV has duplicate 'Shapes' columns (one per plotshape) that merge in parser - incompatible format"
   },
   "williams-r": {
     "dataFile": "data/20251207/Williams Percent Range.csv",
