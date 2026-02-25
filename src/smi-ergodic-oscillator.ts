@@ -61,7 +61,7 @@ export function calculate(bars: Bar[], inputs: Partial<SMIErgodicOscInputs> = {}
   const doubleSmoothAbsPC = ta.ema(firstSmoothAbsPC, shortLength);
   const doubleSmoothAbsPCArr = doubleSmoothAbsPC.toArray();
 
-  // SMI = 100 * doubleSmoothPC / doubleSmoothAbsPC
+  // SMI = doubleSmoothPC / doubleSmoothAbsPC (ta.tsi returns raw ratio, no 100x)
   const smiValues: number[] = [];
   for (let i = 0; i < bars.length; i++) {
     const dsPC = doubleSmoothPCArr[i];
@@ -70,7 +70,7 @@ export function calculate(bars: Bar[], inputs: Partial<SMIErgodicOscInputs> = {}
     if (dsPC == null || dsAbsPC == null || dsAbsPC === 0) {
       smiValues.push(NaN);
     } else {
-      smiValues.push(100 * dsPC / dsAbsPC);
+      smiValues.push(dsPC / dsAbsPC);
     }
   }
 

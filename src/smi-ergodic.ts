@@ -2,7 +2,7 @@
  * SMI Ergodic Indicator
  *
  * A momentum oscillator based on True Strength Index.
- * SMI = EMA(EMA(pc, longLen), shortLen) / EMA(EMA(|pc|, longLen), shortLen) * 100
+ * SMI = EMA(EMA(pc, longLen), shortLen) / EMA(EMA(|pc|, longLen), shortLen)
  * Signal = EMA(SMI, signalLen)
  */
 
@@ -63,7 +63,7 @@ export function calculate(bars: Bar[], inputs: Partial<SMIErgodicInputs> = {}): 
   const doubleSmoothAbsPC = ta.ema(firstSmoothAbsPC, shortLength);
   const doubleSmoothAbsPCArr = doubleSmoothAbsPC.toArray();
 
-  // SMI = 100 * doubleSmoothPC / doubleSmoothAbsPC
+  // SMI = doubleSmoothPC / doubleSmoothAbsPC (ta.tsi returns raw ratio, no 100x)
   const smiValues: number[] = [];
   for (let i = 0; i < bars.length; i++) {
     const dsPC = doubleSmoothPCArr[i];
@@ -72,7 +72,7 @@ export function calculate(bars: Bar[], inputs: Partial<SMIErgodicInputs> = {}): 
     if (dsPC == null || dsAbsPC == null || dsAbsPC === 0) {
       smiValues.push(NaN);
     } else {
-      smiValues.push(100 * dsPC / dsAbsPC);
+      smiValues.push(dsPC / dsAbsPC);
     }
   }
 

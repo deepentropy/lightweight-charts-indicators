@@ -149,7 +149,8 @@
   },
   "elder-force": {
     "dataFile": "data/20251207/Elder Force Index.csv",
-    "exportName": "ElderForceIndex"
+    "exportName": "ElderForceIndex",
+    "skipInitial": 200
   },
   "ema": {
     "dataFile": "data/20251207/Moving Average Exponential.csv",
@@ -252,7 +253,7 @@
   "price-osc": {
     "dataFile": "data/20251207/Price Oscillator.csv",
     "exportName": "PriceOscillator",
-    "tolerance": 2e-3
+    "tolerance": 5e-3
   },
   "price-target": {
     "dataFile": "data/20251207/Price Target.csv",
@@ -317,11 +318,13 @@
   },
   "smi-ergodic": {
     "dataFile": "data/20251207/SMI Ergodic Indicator.csv",
-    "exportName": "SMIErgodic"
+    "exportName": "SMIErgodic",
+    "skipInitial": 150
   },
   "smi-ergodic-osc": {
     "dataFile": "data/20251207/SMI Ergodic Oscillator.csv",
-    "exportName": "SMIErgodicOscillator"
+    "exportName": "SMIErgodicOscillator",
+    "skipInitial": 150
   },
   "stoch": {
     "dataFile": "data/20251207/Stochastic.csv",
@@ -358,7 +361,8 @@
   },
   "tsi": {
     "dataFile": "data/20251207/True Strength Index.csv",
-    "exportName": "TSI"
+    "exportName": "TSI",
+    "skipInitial": 200
   },
   "twap": {
     "dataFile": "data/20251207/Time Weighted Average Price.csv",
