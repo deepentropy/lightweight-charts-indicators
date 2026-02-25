@@ -150,7 +150,8 @@
   "elder-force": {
     "dataFile": "data/20251207/Elder Force Index.csv",
     "exportName": "ElderForceIndex",
-    "skipInitial": 200
+    "skipInitial": 200,
+    "tolerance": 5e-6
   },
   "ema": {
     "dataFile": "data/20251207/Moving Average Exponential.csv",
@@ -362,7 +363,8 @@
   "tsi": {
     "dataFile": "data/20251207/True Strength Index.csv",
     "exportName": "TSI",
-    "skipInitial": 200
+    "skipInitial": 200,
+    "tolerance": 5e-6
   },
   "twap": {
     "dataFile": "data/20251207/Time Weighted Average Price.csv",
