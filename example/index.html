@@ -64,18 +64,7 @@
       margin-bottom: 16px;
     }
 
-    .indicator-select-container {
-      margin-bottom: 20px;
-    }
-
-    .indicator-select-container label {
-      display: block;
-      font-size: 12px;
-      color: #787b86;
-      margin-bottom: 6px;
-    }
-
-    .indicator-select-container select {
+    #indicator-search {
       width: 100%;
       padding: 8px 12px;
       background-color: #2a2e39;
@@ -83,16 +72,91 @@
       border-radius: 4px;
       color: #d1d4dc;
       font-size: 13px;
-      cursor: pointer;
+      margin-bottom: 12px;
     }
 
-    .indicator-select-container select:hover {
-      border-color: #4b5563;
-    }
-
-    .indicator-select-container select:focus {
+    #indicator-search:focus {
       outline: none;
       border-color: #2962FF;
+    }
+
+    #indicator-search::placeholder {
+      color: #787b86;
+    }
+
+    .category-group {
+      margin-bottom: 4px;
+    }
+
+    .category-header {
+      display: flex;
+      align-items: center;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #787b86;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      user-select: none;
+      border-radius: 4px;
+    }
+
+    .category-header:hover {
+      background-color: #2a2e39;
+    }
+
+    .category-header::before {
+      content: '';
+      display: inline-block;
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 5px solid #787b86;
+      margin-right: 8px;
+      transition: transform 0.15s;
+    }
+
+    .category-header.collapsed::before {
+      transform: rotate(-90deg);
+    }
+
+    .category-count {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 400;
+      color: #555;
+    }
+
+    .category-items.collapsed {
+      display: none;
+    }
+
+    .indicator-item {
+      padding: 5px 8px 5px 24px;
+      font-size: 13px;
+      cursor: pointer;
+      border-radius: 4px;
+      border-left: 3px solid transparent;
+    }
+
+    .indicator-item:hover {
+      background-color: #2a2e39;
+    }
+
+    .indicator-item.active {
+      border-left-color: #2962FF;
+      background-color: rgba(41, 98, 255, 0.1);
+      color: #f0f3fa;
+    }
+
+    .indicator-item.hidden {
+      display: none;
+    }
+
+    .category-group.hidden {
+      display: none;
     }
 
     .indicator-inputs h4 {

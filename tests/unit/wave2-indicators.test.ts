@@ -503,21 +503,23 @@ describe('LaguerreRSI', () => {
 });
 
 describe('RSICandles', () => {
-  const result = RSICandles.calculate(bars);
+  const result = RSICandles.calculate(bars) as any;
 
-  it('returns correct shape (Open, High, Low, Close)', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], false);
+  it('returns plotCandles with RSI OHLC data', () => {
+    expect(result.metadata.overlay).toBe(false);
+    expect(result.plotCandles).toHaveProperty('rsi');
+    expect(result.plotCandles.rsi).toHaveLength(bars.length);
   });
 
   it('RSI values are bounded [0, 100]', () => {
-    for (const key of ['plot0', 'plot1', 'plot2', 'plot3']) {
-      const vals = validValues(result, key);
-      expect(vals.length).toBeGreaterThan(0);
-      vals.forEach((v: number) => {
-        expect(v).toBeGreaterThanOrEqual(-0.01);
-        expect(v).toBeLessThanOrEqual(100.01);
-      });
-    }
+    const candles = result.plotCandles.rsi.filter((c: any) => !isNaN(c.close));
+    expect(candles.length).toBeGreaterThan(0);
+    candles.forEach((c: any) => {
+      for (const field of ['open', 'high', 'low', 'close']) {
+        expect(c[field]).toBeGreaterThanOrEqual(-0.01);
+        expect(c[field]).toBeLessThanOrEqual(100.01);
+      }
+    });
   });
 });
 

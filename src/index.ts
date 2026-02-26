@@ -7,721 +7,697 @@
  * library for better performance and more idiomatic TypeScript code.
  */
 
-import type { Bar } from 'oakscriptjs';
+import type { Bar, InputConfig, PlotConfig, HLineConfig, FillConfig } from 'oakscriptjs';
+export type { InputConfig, PlotConfig, HLineConfig, FillConfig } from 'oakscriptjs';
 
 // SMA - Simple Moving Average
-import * as smaIndicator from './sma';
-export { SMA, calculate as calculateSMA } from './sma';
-export type { SMAInputs } from './sma';
+import * as smaIndicator from './standard/sma';
+export { SMA, calculate as calculateSMA } from './standard/sma';
+export type { SMAInputs } from './standard/sma';
 
 // ADR - Average Day Range
-import * as adrIndicator from './adr';
-export { ADR, calculate as calculateADR } from './adr';
-export type { ADRInputs } from './adr';
+import * as adrIndicator from './standard/adr';
+export { ADR, calculate as calculateADR } from './standard/adr';
+export type { ADRInputs } from './standard/adr';
 
 // ALMA - Arnaud Legoux Moving Average
-import * as almaIndicator from './alma';
-export { ALMA, calculate as calculateALMA } from './alma';
-export type { ALMAInputs } from './alma';
+import * as almaIndicator from './standard/alma';
+export { ALMA, calculate as calculateALMA } from './standard/alma';
+export type { ALMAInputs } from './standard/alma';
 
 // ATR - Average True Range
-import * as atrIndicator from './atr';
-export { ATR, calculate as calculateATR } from './atr';
-export type { ATRInputs } from './atr';
+import * as atrIndicator from './standard/atr';
+export { ATR, calculate as calculateATR } from './standard/atr';
+export type { ATRInputs } from './standard/atr';
 
 // BB - Bollinger Bands
-import * as bbIndicator from './bb';
-export { BollingerBands, calculate as calculateBB } from './bb';
-export type { BBInputs } from './bb';
+import * as bbIndicator from './standard/bb';
+export { BollingerBands, calculate as calculateBB } from './standard/bb';
+export type { BBInputs } from './standard/bb';
 
 // BOP - Balance of Power
-import * as bopIndicator from './bop';
-export { BOP, calculate as calculateBOP } from './bop';
-export type { BOPInputs } from './bop';
+import * as bopIndicator from './standard/bop';
+export { BOP, calculate as calculateBOP } from './standard/bop';
+export type { BOPInputs } from './standard/bop';
 
 // CCI - Commodity Channel Index
-import * as cciIndicator from './cci';
-export { CCI, calculate as calculateCCI } from './cci';
-export type { CCIInputs } from './cci';
+import * as cciIndicator from './standard/cci';
+export { CCI, calculate as calculateCCI } from './standard/cci';
+export type { CCIInputs } from './standard/cci';
 
 // DEMA - Double Exponential Moving Average
-import * as demaIndicator from './dema';
-export { DEMA, calculate as calculateDEMA } from './dema';
-export type { DEMAInputs } from './dema';
+import * as demaIndicator from './standard/dema';
+export { DEMA, calculate as calculateDEMA } from './standard/dema';
+export type { DEMAInputs } from './standard/dema';
 
 // Donchian Channels
-import * as donchianIndicator from './donchian';
-export { DonchianChannels, calculate as calculateDonchian } from './donchian';
-export type { DonchianInputs } from './donchian';
+import * as donchianIndicator from './standard/donchian';
+export { DonchianChannels, calculate as calculateDonchian } from './standard/donchian';
+export type { DonchianInputs } from './standard/donchian';
 
 // EMA - Exponential Moving Average
-import * as emaIndicator from './ema';
-export { EMA, calculate as calculateEMA } from './ema';
-export type { EMAInputs } from './ema';
+import * as emaIndicator from './standard/ema';
+export { EMA, calculate as calculateEMA } from './standard/ema';
+export type { EMAInputs } from './standard/ema';
 
 // HMA - Hull Moving Average
-import * as hmaIndicator from './hma';
-export { HMA, calculate as calculateHMA } from './hma';
-export type { HMAInputs } from './hma';
+import * as hmaIndicator from './standard/hma';
+export { HMA, calculate as calculateHMA } from './standard/hma';
+export type { HMAInputs } from './standard/hma';
 
 // Ichimoku Cloud
-import * as ichimokuIndicator from './ichimoku';
-export { IchimokuCloud, calculate as calculateIchimoku } from './ichimoku';
-export type { IchimokuInputs } from './ichimoku';
+import * as ichimokuIndicator from './standard/ichimoku';
+export { IchimokuCloud, calculate as calculateIchimoku } from './standard/ichimoku';
+export type { IchimokuInputs } from './standard/ichimoku';
 
 // Keltner Channels
-import * as keltnerIndicator from './keltner';
-export { KeltnerChannels, calculate as calculateKeltner } from './keltner';
-export type { KeltnerInputs } from './keltner';
+import * as keltnerIndicator from './standard/keltner';
+export { KeltnerChannels, calculate as calculateKeltner } from './standard/keltner';
+export type { KeltnerInputs } from './standard/keltner';
 
 // LSMA - Least Squares Moving Average
-import * as lsmaIndicator from './lsma';
-export { LSMA, calculate as calculateLSMA } from './lsma';
-export type { LSMAInputs } from './lsma';
+import * as lsmaIndicator from './standard/lsma';
+export { LSMA, calculate as calculateLSMA } from './standard/lsma';
+export type { LSMAInputs } from './standard/lsma';
 
 // MACD - Moving Average Convergence Divergence
-import * as macdIndicator from './macd';
-export { MACD, calculate as calculateMACD } from './macd';
-export type { MACDInputs } from './macd';
+import * as macdIndicator from './standard/macd';
+export { MACD, calculate as calculateMACD } from './standard/macd';
+export type { MACDInputs } from './standard/macd';
 
 // MA Ribbon - Moving Average Ribbon
-import * as maRibbonIndicator from './ma-ribbon';
-export { MARibbon, calculate as calculateMARibbon } from './ma-ribbon';
-export type { MARibbonInputs } from './ma-ribbon';
+import * as maRibbonIndicator from './standard/ma-ribbon';
+export { MARibbon, calculate as calculateMARibbon } from './standard/ma-ribbon';
+export type { MARibbonInputs } from './standard/ma-ribbon';
 
 // Mass Index
-import * as massIndexIndicator from './mass-index';
-export { MassIndex, calculate as calculateMassIndex } from './mass-index';
-export type { MassIndexInputs } from './mass-index';
+import * as massIndexIndicator from './standard/mass-index';
+export { MassIndex, calculate as calculateMassIndex } from './standard/mass-index';
+export type { MassIndexInputs } from './standard/mass-index';
 
 // McGinley Dynamic
-import * as mcGinleyDynamicIndicator from './mcginley-dynamic';
-export { McGinleyDynamic, calculate as calculateMcGinleyDynamic } from './mcginley-dynamic';
-export type { McGinleyDynamicInputs } from './mcginley-dynamic';
+import * as mcGinleyDynamicIndicator from './standard/mcginley-dynamic';
+export { McGinleyDynamic, calculate as calculateMcGinleyDynamic } from './standard/mcginley-dynamic';
+export type { McGinleyDynamicInputs } from './standard/mcginley-dynamic';
 
 // Momentum
-import * as momentumIndicator from './momentum';
-export { Momentum, calculate as calculateMomentum } from './momentum';
-export type { MomentumInputs } from './momentum';
+import * as momentumIndicator from './standard/momentum';
+export { Momentum, calculate as calculateMomentum } from './standard/momentum';
+export type { MomentumInputs } from './standard/momentum';
 
 // OBV - On Balance Volume
-import * as obvIndicator from './obv';
-export { OBV, calculate as calculateOBV } from './obv';
-export type { OBVInputs } from './obv';
+import * as obvIndicator from './standard/obv';
+export { OBV, calculate as calculateOBV } from './standard/obv';
+export type { OBVInputs } from './standard/obv';
 
 // Parabolic SAR
-import * as parabolicSarIndicator from './parabolic-sar';
-export { ParabolicSAR, calculate as calculateParabolicSAR } from './parabolic-sar';
-export type { ParabolicSARInputs } from './parabolic-sar';
+import * as parabolicSarIndicator from './standard/parabolic-sar';
+export { ParabolicSAR, calculate as calculateParabolicSAR } from './standard/parabolic-sar';
+export type { ParabolicSARInputs } from './standard/parabolic-sar';
 
 // RMA - Smoothed Moving Average
-import * as rmaIndicator from './rma';
-export { RMA, calculate as calculateRMA } from './rma';
-export type { RMAInputs } from './rma';
+import * as rmaIndicator from './standard/rma';
+export { RMA, calculate as calculateRMA } from './standard/rma';
+export type { RMAInputs } from './standard/rma';
 
 // ROC - Rate of Change
-import * as rocIndicator from './roc';
-export { ROC, calculate as calculateROC } from './roc';
-export type { ROCInputs } from './roc';
+import * as rocIndicator from './standard/roc';
+export { ROC, calculate as calculateROC } from './standard/roc';
+export type { ROCInputs } from './standard/roc';
 
 // RSI - Relative Strength Index
-import * as rsiIndicator from './rsi';
-export { RSI, calculate as calculateRSI } from './rsi';
-export type { RSIInputs } from './rsi';
+import * as rsiIndicator from './standard/rsi';
+export { RSI, calculate as calculateRSI } from './standard/rsi';
+export type { RSIInputs } from './standard/rsi';
 
 // Stochastic
-import * as stochIndicator from './stoch';
-export { Stochastic, calculate as calculateStochastic } from './stoch';
-export type { StochasticInputs } from './stoch';
+import * as stochIndicator from './standard/stoch';
+export { Stochastic, calculate as calculateStochastic } from './standard/stoch';
+export type { StochasticInputs } from './standard/stoch';
 
 // Supertrend
-import * as supertrendIndicator from './supertrend';
-export { Supertrend, calculate as calculateSupertrend } from './supertrend';
-export type { SupertrendInputs } from './supertrend';
+import * as supertrendIndicator from './standard/supertrend';
+export { Supertrend, calculate as calculateSupertrend } from './standard/supertrend';
+export type { SupertrendInputs } from './standard/supertrend';
 
 // ADX - Average Directional Index
-import * as adxIndicator from './adx';
-export { ADX, calculate as calculateADX } from './adx';
-export type { ADXInputs } from './adx';
+import * as adxIndicator from './standard/adx';
+export { ADX, calculate as calculateADX } from './standard/adx';
+export type { ADXInputs } from './standard/adx';
 
 // Awesome Oscillator
-import * as awesomeOscIndicator from './awesome-oscillator';
-export { AwesomeOscillator, calculate as calculateAwesomeOscillator } from './awesome-oscillator';
-export type { AwesomeOscillatorInputs } from './awesome-oscillator';
+import * as awesomeOscIndicator from './standard/awesome-oscillator';
+export { AwesomeOscillator, calculate as calculateAwesomeOscillator } from './standard/awesome-oscillator';
+export type { AwesomeOscillatorInputs } from './standard/awesome-oscillator';
 
 // BBTrend
-import * as bbtrendIndicator from './bbtrend';
-export { BBTrend, calculate as calculateBBTrend } from './bbtrend';
-export type { BBTrendInputs } from './bbtrend';
+import * as bbtrendIndicator from './standard/bbtrend';
+export { BBTrend, calculate as calculateBBTrend } from './standard/bbtrend';
+export type { BBTrendInputs } from './standard/bbtrend';
 
 // Bull Bear Power
-import * as bullBearPowerIndicator from './bull-bear-power';
-export { BullBearPower, calculate as calculateBullBearPower } from './bull-bear-power';
-export type { BullBearPowerInputs } from './bull-bear-power';
+import * as bullBearPowerIndicator from './standard/bull-bear-power';
+export { BullBearPower, calculate as calculateBullBearPower } from './standard/bull-bear-power';
+export type { BullBearPowerInputs } from './standard/bull-bear-power';
 
 // Chande Momentum Oscillator
-import * as chandeMOIndicator from './chande-mo';
-export { ChandeMO, calculate as calculateChandeMO } from './chande-mo';
-export type { ChandeMOInputs } from './chande-mo';
+import * as chandeMOIndicator from './standard/chande-mo';
+export { ChandeMO, calculate as calculateChandeMO } from './standard/chande-mo';
+export type { ChandeMOInputs } from './standard/chande-mo';
 
 // DPO - Detrended Price Oscillator
-import * as dpoIndicator from './dpo';
-export { DPO, calculate as calculateDPO } from './dpo';
-export type { DPOInputs } from './dpo';
+import * as dpoIndicator from './standard/dpo';
+export { DPO, calculate as calculateDPO } from './standard/dpo';
+export type { DPOInputs } from './standard/dpo';
 
 // Elder Force Index
-import * as elderForceIndicator from './elder-force';
-export { ElderForceIndex, calculate as calculateElderForce } from './elder-force';
-export type { ElderForceInputs } from './elder-force';
+import * as elderForceIndicator from './standard/elder-force';
+export { ElderForceIndex, calculate as calculateElderForce } from './standard/elder-force';
+export type { ElderForceInputs } from './standard/elder-force';
 
 // Historical Volatility
-import * as histVolIndicator from './historical-volatility';
-export { HistoricalVolatility, calculate as calculateHistoricalVolatility } from './historical-volatility';
-export type { HistoricalVolatilityInputs } from './historical-volatility';
+import * as histVolIndicator from './standard/historical-volatility';
+export { HistoricalVolatility, calculate as calculateHistoricalVolatility } from './standard/historical-volatility';
+export type { HistoricalVolatilityInputs } from './standard/historical-volatility';
 
 // MA Cross
-import * as maCrossIndicator from './ma-cross';
-export { MACross, calculate as calculateMACross } from './ma-cross';
-export type { MACrossInputs } from './ma-cross';
+import * as maCrossIndicator from './standard/ma-cross';
+export { MACross, calculate as calculateMACross } from './standard/ma-cross';
+export type { MACrossInputs } from './standard/ma-cross';
 
 // Median
-import * as medianIndicator from './median';
-export { Median, calculate as calculateMedian } from './median';
-export type { MedianInputs } from './median';
+import * as medianIndicator from './standard/median';
+export { Median, calculate as calculateMedian } from './standard/median';
+export type { MedianInputs } from './standard/median';
 
 // MFI - Money Flow Index
-import * as mfiIndicator from './mfi';
-export { MFI, calculate as calculateMFI } from './mfi';
-export type { MFIInputs } from './mfi';
+import * as mfiIndicator from './standard/mfi';
+export { MFI, calculate as calculateMFI } from './standard/mfi';
+export type { MFIInputs } from './standard/mfi';
 
 // PVT - Price Volume Trend
-import * as pvtIndicator from './pvt';
-export { PVT, calculate as calculatePVT } from './pvt';
-export type { PVTInputs } from './pvt';
+import * as pvtIndicator from './standard/pvt';
+export { PVT, calculate as calculatePVT } from './standard/pvt';
+export type { PVTInputs } from './standard/pvt';
 
 // RVI - Relative Vigor Index
-import * as rviIndicator from './rvi';
-export { RVI, calculate as calculateRVI } from './rvi';
-export type { RVIInputs } from './rvi';
+import * as rviIndicator from './standard/rvi';
+export { RVI, calculate as calculateRVI } from './standard/rvi';
+export type { RVIInputs } from './standard/rvi';
 
 // SMI Ergodic
-import * as smiErgodicIndicator from './smi-ergodic';
-export { SMIErgodic, calculate as calculateSMIErgodic } from './smi-ergodic';
-export type { SMIErgodicInputs } from './smi-ergodic';
+import * as smiErgodicIndicator from './standard/smi-ergodic';
+export { SMIErgodic, calculate as calculateSMIErgodic } from './standard/smi-ergodic';
+export type { SMIErgodicInputs } from './standard/smi-ergodic';
 
 // SMI Ergodic Oscillator
-import * as smiErgodicOscIndicator from './smi-ergodic-oscillator';
-export { SMIErgodicOscillator, calculate as calculateSMIErgodicOsc } from './smi-ergodic-oscillator';
-export type { SMIErgodicOscInputs } from './smi-ergodic-oscillator';
+import * as smiErgodicOscIndicator from './standard/smi-ergodic-oscillator';
+export { SMIErgodicOscillator, calculate as calculateSMIErgodicOsc } from './standard/smi-ergodic-oscillator';
+export type { SMIErgodicOscInputs } from './standard/smi-ergodic-oscillator';
 
 // SMMA - Smoothed Moving Average
-import * as smmaIndicator from './smma';
-export { SMMA, calculate as calculateSMMA } from './smma';
-export type { SMMAInputs } from './smma';
+import * as smmaIndicator from './standard/smma';
+export { SMMA, calculate as calculateSMMA } from './standard/smma';
+export type { SMMAInputs } from './standard/smma';
 
 // Standard Deviation
-import * as stdevIndicator from './stdev';
-export { StandardDeviation, calculate as calculateStDev } from './stdev';
-export type { StDevInputs } from './stdev';
+import * as stdevIndicator from './standard/stdev';
+export { StandardDeviation, calculate as calculateStDev } from './standard/stdev';
+export type { StDevInputs } from './standard/stdev';
 
 // Stochastic RSI
-import * as stochRsiIndicator from './stoch-rsi';
-export { StochRSI, calculate as calculateStochRSI } from './stoch-rsi';
-export type { StochRSIInputs } from './stoch-rsi';
+import * as stochRsiIndicator from './standard/stoch-rsi';
+export { StochRSI, calculate as calculateStochRSI } from './standard/stoch-rsi';
+export type { StochRSIInputs } from './standard/stoch-rsi';
 
 // Trend Strength Index
-import * as trendStrengthIndicator from './trend-strength';
-export { TrendStrengthIndex, calculate as calculateTrendStrength } from './trend-strength';
-export type { TrendStrengthInputs } from './trend-strength';
+import * as trendStrengthIndicator from './standard/trend-strength';
+export { TrendStrengthIndex, calculate as calculateTrendStrength } from './standard/trend-strength';
+export type { TrendStrengthInputs } from './standard/trend-strength';
 
 // TSI - True Strength Index
-import * as tsiIndicator from './tsi';
-export { TSI, calculate as calculateTSI } from './tsi';
-export type { TSIInputs } from './tsi';
+import * as tsiIndicator from './standard/tsi';
+export { TSI, calculate as calculateTSI } from './standard/tsi';
+export type { TSIInputs } from './standard/tsi';
 
 // Volume Oscillator
-import * as volumeOscIndicator from './volume-oscillator';
-export { VolumeOscillator, calculate as calculateVolumeOsc } from './volume-oscillator';
-export type { VolumeOscillatorInputs } from './volume-oscillator';
+import * as volumeOscIndicator from './standard/volume-oscillator';
+export { VolumeOscillator, calculate as calculateVolumeOsc } from './standard/volume-oscillator';
+export type { VolumeOscillatorInputs } from './standard/volume-oscillator';
 
 // Vortex Indicator
-import * as vortexIndicator from './vortex';
-export { VortexIndicator, calculate as calculateVortex } from './vortex';
-export type { VortexInputs } from './vortex';
+import * as vortexIndicator from './standard/vortex';
+export { VortexIndicator, calculate as calculateVortex } from './standard/vortex';
+export type { VortexInputs } from './standard/vortex';
 
 // Williams Alligator
-import * as williamsAlligatorIndicator from './williams-alligator';
-export { WilliamsAlligator, calculate as calculateWilliamsAlligator } from './williams-alligator';
-export type { WilliamsAlligatorInputs } from './williams-alligator';
+import * as williamsAlligatorIndicator from './standard/williams-alligator';
+export { WilliamsAlligator, calculate as calculateWilliamsAlligator } from './standard/williams-alligator';
+export type { WilliamsAlligatorInputs } from './standard/williams-alligator';
 
 // Williams %R
-import * as williamsRIndicator from './williams-r';
-export { WilliamsPercentRange, calculate as calculateWilliamsR } from './williams-r';
-export type { WilliamsRInputs } from './williams-r';
+import * as williamsRIndicator from './standard/williams-r';
+export { WilliamsPercentRange, calculate as calculateWilliamsR } from './standard/williams-r';
+export type { WilliamsRInputs } from './standard/williams-r';
 
 // Woodies CCI
-import * as woodiesCCIIndicator from './woodies-cci';
-export { WoodiesCCI, calculate as calculateWoodiesCCI } from './woodies-cci';
-export type { WoodiesCCIInputs } from './woodies-cci';
+import * as woodiesCCIIndicator from './standard/woodies-cci';
+export { WoodiesCCI, calculate as calculateWoodiesCCI } from './standard/woodies-cci';
+export type { WoodiesCCIInputs } from './standard/woodies-cci';
 
 // BB %B - Bollinger Bands %B
-import * as bbPercentBIndicator from './bb-percent-b';
-export { BBPercentB, calculate as calculateBBPercentB } from './bb-percent-b';
-export type { BBPercentBInputs } from './bb-percent-b';
+import * as bbPercentBIndicator from './standard/bb-percent-b';
+export { BBPercentB, calculate as calculateBBPercentB } from './standard/bb-percent-b';
+export type { BBPercentBInputs } from './standard/bb-percent-b';
 
 // BB Width - Bollinger BandWidth
-import * as bbBandwidthIndicator from './bb-bandwidth';
-export { BBBandWidth, calculate as calculateBBBandwidth } from './bb-bandwidth';
-export type { BBBandWidthInputs } from './bb-bandwidth';
+import * as bbBandwidthIndicator from './standard/bb-bandwidth';
+export { BBBandWidth, calculate as calculateBBBandwidth } from './standard/bb-bandwidth';
+export type { BBBandWidthInputs } from './standard/bb-bandwidth';
 
 // Chaikin Money Flow
-import * as chaikinMFIndicator from './chaikin-mf';
-export { ChaikinMF, calculate as calculateChaikinMF } from './chaikin-mf';
-export type { ChaikinMFInputs } from './chaikin-mf';
+import * as chaikinMFIndicator from './standard/chaikin-mf';
+export { ChaikinMF, calculate as calculateChaikinMF } from './standard/chaikin-mf';
+export type { ChaikinMFInputs } from './standard/chaikin-mf';
 
 // Envelope
-import * as envelopeIndicator from './envelope';
-export { Envelope, calculate as calculateEnvelope } from './envelope';
-export type { EnvelopeInputs } from './envelope';
+import * as envelopeIndicator from './standard/envelope';
+export { Envelope, calculate as calculateEnvelope } from './standard/envelope';
+export type { EnvelopeInputs } from './standard/envelope';
 
 // Price Oscillator (PPO)
-import * as priceOscillatorIndicator from './price-oscillator';
-export { PriceOscillator, calculate as calculatePriceOscillator } from './price-oscillator';
-export type { PriceOscillatorInputs } from './price-oscillator';
+import * as priceOscillatorIndicator from './standard/price-oscillator';
+export { PriceOscillator, calculate as calculatePriceOscillator } from './standard/price-oscillator';
+export type { PriceOscillatorInputs } from './standard/price-oscillator';
 
 // Aroon
-import * as aroonIndicator from './aroon';
-export { Aroon, calculate as calculateAroon } from './aroon';
-export type { AroonInputs } from './aroon';
+import * as aroonIndicator from './standard/aroon';
+export { Aroon, calculate as calculateAroon } from './standard/aroon';
+export type { AroonInputs } from './standard/aroon';
 
 // Coppock Curve
-import * as coppockCurveIndicator from './coppock-curve';
-export { CoppockCurve, calculate as calculateCoppockCurve } from './coppock-curve';
-export type { CoppockCurveInputs } from './coppock-curve';
+import * as coppockCurveIndicator from './standard/coppock-curve';
+export { CoppockCurve, calculate as calculateCoppockCurve } from './standard/coppock-curve';
+export type { CoppockCurveInputs } from './standard/coppock-curve';
 
 // Choppiness Index
-import * as choppinessIndicator from './choppiness';
-export { Choppiness, calculate as calculateChoppiness } from './choppiness';
-export type { ChoppinessInputs } from './choppiness';
+import * as choppinessIndicator from './standard/choppiness';
+export { Choppiness, calculate as calculateChoppiness } from './standard/choppiness';
+export type { ChoppinessInputs } from './standard/choppiness';
 
 // Ease of Movement
-import * as eomIndicator from './ease-of-movement';
-export { EaseOfMovement, calculate as calculateEOM } from './ease-of-movement';
-export type { EaseOfMovementInputs } from './ease-of-movement';
+import * as eomIndicator from './standard/ease-of-movement';
+export { EaseOfMovement, calculate as calculateEOM } from './standard/ease-of-movement';
+export type { EaseOfMovementInputs } from './standard/ease-of-movement';
 
 // Chaikin Oscillator
-import * as chaikinOscIndicator from './chaikin-oscillator';
-export { ChaikinOscillator, calculate as calculateChaikinOsc } from './chaikin-oscillator';
-export type { ChaikinOscillatorInputs } from './chaikin-oscillator';
+import * as chaikinOscIndicator from './standard/chaikin-oscillator';
+export { ChaikinOscillator, calculate as calculateChaikinOsc } from './standard/chaikin-oscillator';
+export type { ChaikinOscillatorInputs } from './standard/chaikin-oscillator';
 
 // TEMA - Triple Exponential Moving Average
-import * as temaIndicator from './tema';
-export { TEMA, calculate as calculateTEMA } from './tema';
-export type { TEMAInputs } from './tema';
+import * as temaIndicator from './standard/tema';
+export { TEMA, calculate as calculateTEMA } from './standard/tema';
+export type { TEMAInputs } from './standard/tema';
 
 // ZigZag
-import * as zigzagIndicator from './zigzag';
-export { ZigZag, calculate as calculateZigZag } from './zigzag';
-export type { ZigZagInputs, ZigZagResult } from './zigzag';
+import * as zigzagIndicator from './standard/zigzag';
+export { ZigZag, calculate as calculateZigZag } from './standard/zigzag';
+export type { ZigZagInputs, ZigZagResult } from './standard/zigzag';
 
 // Fisher Transform
-import * as fisherTransformIndicator from './fisher-transform';
-export { FisherTransform, calculate as calculateFisherTransform } from './fisher-transform';
-export type { FisherTransformInputs } from './fisher-transform';
+import * as fisherTransformIndicator from './standard/fisher-transform';
+export { FisherTransform, calculate as calculateFisherTransform } from './standard/fisher-transform';
+export type { FisherTransformInputs } from './standard/fisher-transform';
 
 // TRIX
-import * as trixIndicator from './trix';
-export { TRIX, calculate as calculateTRIX } from './trix';
-export type { TRIXInputs } from './trix';
+import * as trixIndicator from './standard/trix';
+export { TRIX, calculate as calculateTRIX } from './standard/trix';
+export type { TRIXInputs } from './standard/trix';
 
 // DMI - Directional Movement Index
-import * as dmiIndicator from './dmi';
-export { DMI, calculate as calculateDMI } from './dmi';
-export type { DMIInputs } from './dmi';
+import * as dmiIndicator from './standard/dmi';
+export { DMI, calculate as calculateDMI } from './standard/dmi';
+export type { DMIInputs } from './standard/dmi';
 
 // Klinger Oscillator
-import * as klingerIndicator from './klinger';
-export { KlingerOscillator, calculate as calculateKlinger } from './klinger';
-export type { KlingerInputs } from './klinger';
+import * as klingerIndicator from './standard/klinger';
+export { KlingerOscillator, calculate as calculateKlinger } from './standard/klinger';
+export type { KlingerInputs } from './standard/klinger';
 
 // Ultimate Oscillator
-import * as ultimateOscIndicator from './ultimate-oscillator';
-export { UltimateOscillator, calculate as calculateUltimateOsc } from './ultimate-oscillator';
-export type { UltimateOscillatorInputs } from './ultimate-oscillator';
+import * as ultimateOscIndicator from './standard/ultimate-oscillator';
+export { UltimateOscillator, calculate as calculateUltimateOsc } from './standard/ultimate-oscillator';
+export type { UltimateOscillatorInputs } from './standard/ultimate-oscillator';
 
 // Chande Kroll Stop
-import * as chandeKrollStopIndicator from './chande-kroll-stop';
-export { ChandeKrollStop, calculate as calculateChandeKrollStop } from './chande-kroll-stop';
-export type { ChandeKrollStopInputs } from './chande-kroll-stop';
+import * as chandeKrollStopIndicator from './standard/chande-kroll-stop';
+export { ChandeKrollStop, calculate as calculateChandeKrollStop } from './standard/chande-kroll-stop';
+export type { ChandeKrollStopInputs } from './standard/chande-kroll-stop';
 
 // Relative Volume at Time
-import * as relativeVolumeAtTimeIndicator from './relative-volume-at-time';
-export { RelativeVolumeAtTime, calculate as calculateRelativeVolumeAtTime } from './relative-volume-at-time';
-export type { RelativeVolumeAtTimeInputs } from './relative-volume-at-time';
+import * as relativeVolumeAtTimeIndicator from './standard/relative-volume-at-time';
+export { RelativeVolumeAtTime, calculate as calculateRelativeVolumeAtTime } from './standard/relative-volume-at-time';
+export type { RelativeVolumeAtTimeInputs } from './standard/relative-volume-at-time';
 
 // RCI Ribbon
-import * as rciRibbonIndicator from './rci-ribbon';
-export { RCIRibbon, calculate as calculateRCIRibbon } from './rci-ribbon';
-export type { RCIRibbonInputs } from './rci-ribbon';
+import * as rciRibbonIndicator from './standard/rci-ribbon';
+export { RCIRibbon, calculate as calculateRCIRibbon } from './standard/rci-ribbon';
+export type { RCIRibbonInputs } from './standard/rci-ribbon';
 
 // Volume Delta
-import * as volumeDeltaIndicator from './volume-delta';
-export { VolumeDelta, calculate as calculateVolumeDelta } from './volume-delta';
-export type { VolumeDeltaInputs } from './volume-delta';
+import * as volumeDeltaIndicator from './standard/volume-delta';
+export { VolumeDelta, calculate as calculateVolumeDelta } from './standard/volume-delta';
+export type { VolumeDeltaInputs } from './standard/volume-delta';
 
 // Cumulative Volume Delta
-import * as cumulativeVolumeDeltaIndicator from './cumulative-volume-delta';
-export { CumulativeVolumeDelta, calculate as calculateCVD } from './cumulative-volume-delta';
-export type { CumulativeVolumeDeltaInputs } from './cumulative-volume-delta';
+import * as cumulativeVolumeDeltaIndicator from './standard/cumulative-volume-delta';
+export { CumulativeVolumeDelta, calculate as calculateCVD } from './standard/cumulative-volume-delta';
+export type { CumulativeVolumeDeltaInputs } from './standard/cumulative-volume-delta';
 
 // Net Volume
-import * as netVolumeIndicator from './net-volume';
-export { NetVolume, calculate as calculateNetVolume } from './net-volume';
-export type { NetVolumeInputs } from './net-volume';
+import * as netVolumeIndicator from './standard/net-volume';
+export { NetVolume, calculate as calculateNetVolume } from './standard/net-volume';
+export type { NetVolumeInputs } from './standard/net-volume';
 
 // VWMA - Volume Weighted Moving Average
-import * as vwmaIndicator from './vwma';
-export { VWMA, calculate as calculateVWMA } from './vwma';
-export type { VWMAInputs } from './vwma';
+import * as vwmaIndicator from './standard/vwma';
+export { VWMA, calculate as calculateVWMA } from './standard/vwma';
+export type { VWMAInputs } from './standard/vwma';
 
 // WMA - Weighted Moving Average
-import * as wmaIndicator from './wma';
-export { WMA, calculate as calculateWMA } from './wma';
-export type { WMAInputs } from './wma';
+import * as wmaIndicator from './standard/wma';
+export { WMA, calculate as calculateWMA } from './standard/wma';
+export type { WMAInputs } from './standard/wma';
 
 // KST - Know Sure Thing
-import * as kstIndicator from './kst';
-export { KnowSureThing, calculate as calculateKST } from './kst';
-export type { KSTInputs } from './kst';
+import * as kstIndicator from './standard/kst';
+export { KnowSureThing, calculate as calculateKST } from './standard/kst';
+export type { KSTInputs } from './standard/kst';
 
 // Connors RSI
-import * as connorsRsiIndicator from './connors-rsi';
-export { ConnorsRSI, calculate as calculateConnorsRSI } from './connors-rsi';
-export type { ConnorsRSIInputs } from './connors-rsi';
+import * as connorsRsiIndicator from './standard/connors-rsi';
+export { ConnorsRSI, calculate as calculateConnorsRSI } from './standard/connors-rsi';
+export type { ConnorsRSIInputs } from './standard/connors-rsi';
 
 // Chop Zone
-import * as chopZoneIndicator from './chop-zone';
-export { ChopZone, calculate as calculateChopZone } from './chop-zone';
-export type { ChopZoneInputs } from './chop-zone';
+import * as chopZoneIndicator from './standard/chop-zone';
+export { ChopZone, calculate as calculateChopZone } from './standard/chop-zone';
+export type { ChopZoneInputs } from './standard/chop-zone';
 
 // RCI - Rank Correlation Index
-import * as rciIndicator from './rank-correlation-index';
-export { RankCorrelationIndex, calculate as calculateRCI } from './rank-correlation-index';
-export type { RCIInputs } from './rank-correlation-index';
+import * as rciIndicator from './standard/rank-correlation-index';
+export { RankCorrelationIndex, calculate as calculateRCI } from './standard/rank-correlation-index';
+export type { RCIInputs } from './standard/rank-correlation-index';
 
 // Relative Volatility Index
-import * as relativeVolatilityIndexIndicator from './relative-volatility-index';
-export { RelativeVolatilityIndex, calculate as calculateRelativeVolatilityIndex } from './relative-volatility-index';
-export type { RelativeVolatilityIndexInputs } from './relative-volatility-index';
+import * as relativeVolatilityIndexIndicator from './standard/relative-volatility-index';
+export { RelativeVolatilityIndex, calculate as calculateRelativeVolatilityIndex } from './standard/relative-volatility-index';
+export type { RelativeVolatilityIndexInputs } from './standard/relative-volatility-index';
 
 // Williams Fractals
-import * as williamsFractalsIndicator from './williams-fractals';
-export { WilliamsFractals, calculate as calculateWilliamsFractals } from './williams-fractals';
-export type { WilliamsFractalsInputs } from './williams-fractals';
+import * as williamsFractalsIndicator from './standard/williams-fractals';
+export { WilliamsFractals, calculate as calculateWilliamsFractals } from './standard/williams-fractals';
+export type { WilliamsFractalsInputs } from './standard/williams-fractals';
 
 // TWAP - Time Weighted Average Price
-import * as twapIndicator from './twap';
-export { TWAP, calculate as calculateTWAP } from './twap';
-export type { TWAPInputs } from './twap';
+import * as twapIndicator from './standard/twap';
+export { TWAP, calculate as calculateTWAP } from './standard/twap';
+export type { TWAPInputs } from './standard/twap';
 
 // Bollinger Bars
-import * as bollingerBarsIndicator from './bollinger-bars';
-export { BollingerBars, calculate as calculateBollingerBars } from './bollinger-bars';
-export type { BollingerBarsInputs } from './bollinger-bars';
+import * as bollingerBarsIndicator from './standard/bollinger-bars';
+export { BollingerBars, calculate as calculateBollingerBars } from './standard/bollinger-bars';
+export type { BollingerBarsInputs } from './standard/bollinger-bars';
 
 // Moon Phases
-import * as moonPhasesIndicator from './moon-phases';
-export { MoonPhases, calculate as calculateMoonPhases } from './moon-phases';
-export type { MoonPhasesInputs } from './moon-phases';
+import * as moonPhasesIndicator from './standard/moon-phases';
+export { MoonPhases, calculate as calculateMoonPhases } from './standard/moon-phases';
+export type { MoonPhasesInputs } from './standard/moon-phases';
 
 // ZLSMA - Zero Lag LSMA
-import * as zlsmaIndicator from './zlsma';
-export { ZLSMA, calculate as calculateZLSMA } from './zlsma';
-export type { ZLSMAInputs } from './zlsma';
+import * as zlsmaIndicator from './community/zlsma';
+export { ZLSMA, calculate as calculateZLSMA } from './community/zlsma';
+export type { ZLSMAInputs } from './community/zlsma';
 
 // Forecast Oscillator
-import * as forecastOscillatorIndicator from './forecast-oscillator';
-export { ForecastOscillator, calculate as calculateForecastOscillator } from './forecast-oscillator';
-export type { ForecastOscillatorInputs } from './forecast-oscillator';
+import * as forecastOscillatorIndicator from './community/forecast-oscillator';
+export { ForecastOscillator, calculate as calculateForecastOscillator } from './community/forecast-oscillator';
+export type { ForecastOscillatorInputs } from './community/forecast-oscillator';
 
 // CCT Bollinger Band Oscillator
-import * as cctbboIndicator from './cct-bbo';
-export { CCTBBO, calculate as calculateCCTBBO } from './cct-bbo';
-export type { CCTBBOInputs } from './cct-bbo';
+import * as cctbboIndicator from './community/cct-bbo';
+export { CCTBBO, calculate as calculateCCTBBO } from './community/cct-bbo';
+export type { CCTBBOInputs } from './community/cct-bbo';
 
 // MACD 4C
-import * as macd4cIndicator from './macd-4c';
-export { MACD4C, calculate as calculateMACD4C } from './macd-4c';
-export type { MACD4CInputs } from './macd-4c';
+import * as macd4cIndicator from './community/macd-4c';
+export { MACD4C, calculate as calculateMACD4C } from './community/macd-4c';
+export type { MACD4CInputs } from './community/macd-4c';
 
 // Colored Volume Bars
-import * as coloredVolumeIndicator from './colored-volume';
-export { ColoredVolume, calculate as calculateColoredVolume } from './colored-volume';
-export type { ColoredVolumeInputs } from './colored-volume';
+import * as coloredVolumeIndicator from './community/colored-volume';
+export { ColoredVolume, calculate as calculateColoredVolume } from './community/colored-volume';
+export type { ColoredVolumeInputs } from './community/colored-volume';
 
 // KDJ Indicator
-import * as kdjIndicator from './kdj';
-export { KDJ, calculate as calculateKDJ } from './kdj';
-export type { KDJInputs } from './kdj';
+import * as kdjIndicator from './community/kdj';
+export { KDJ, calculate as calculateKDJ } from './community/kdj';
+export type { KDJInputs } from './community/kdj';
 
 // WaveTrend
-import * as waveTrendIndicator from './wavetrend';
-export { WaveTrend, calculate as calculateWaveTrend } from './wavetrend';
-export type { WaveTrendInputs } from './wavetrend';
+import * as waveTrendIndicator from './community/wavetrend';
+export { WaveTrend, calculate as calculateWaveTrend } from './community/wavetrend';
+export type { WaveTrendInputs } from './community/wavetrend';
 
 // Squeeze Momentum
-import * as squeezeMomentumIndicator from './squeeze-momentum';
-export { SqueezeMomentum, calculate as calculateSqueezeMomentum } from './squeeze-momentum';
-export type { SqueezeMomentumInputs } from './squeeze-momentum';
+import * as squeezeMomentumIndicator from './community/squeeze-momentum';
+export { SqueezeMomentum, calculate as calculateSqueezeMomentum } from './community/squeeze-momentum';
+export type { SqueezeMomentumInputs } from './community/squeeze-momentum';
 
 // Coral Trend
-import * as coralTrendIndicator from './coral-trend';
-export { CoralTrend, calculate as calculateCoralTrend } from './coral-trend';
-export type { CoralTrendInputs } from './coral-trend';
+import * as coralTrendIndicator from './community/coral-trend';
+export { CoralTrend, calculate as calculateCoralTrend } from './community/coral-trend';
+export type { CoralTrendInputs } from './community/coral-trend';
 
 // Chandelier Exit
-import * as chandelierExitIndicator from './chandelier-exit';
-export { ChandelierExit, calculate as calculateChandelierExit } from './chandelier-exit';
-export type { ChandelierExitInputs } from './chandelier-exit';
+import * as chandelierExitIndicator from './community/chandelier-exit';
+export { ChandelierExit, calculate as calculateChandelierExit } from './community/chandelier-exit';
+export type { ChandelierExitInputs } from './community/chandelier-exit';
 
 // Impulse MACD
-import * as impulseMacdIndicator from './impulse-macd';
-export { ImpulseMACD, calculate as calculateImpulseMACD } from './impulse-macd';
-export type { ImpulseMACDInputs } from './impulse-macd';
+import * as impulseMacdIndicator from './community/impulse-macd';
+export { ImpulseMACD, calculate as calculateImpulseMACD } from './community/impulse-macd';
+export type { ImpulseMACDInputs } from './community/impulse-macd';
 
 // Schaff Trend Cycle
-import * as schaffTrendCycleIndicator from './schaff-trend-cycle';
-export { SchaffTrendCycle, calculate as calculateSchaffTrendCycle } from './schaff-trend-cycle';
-export type { SchaffTrendCycleInputs } from './schaff-trend-cycle';
+import * as schaffTrendCycleIndicator from './community/schaff-trend-cycle';
+export { SchaffTrendCycle, calculate as calculateSchaffTrendCycle } from './community/schaff-trend-cycle';
+export type { SchaffTrendCycleInputs } from './community/schaff-trend-cycle';
 
 // Donchian Trend Ribbon
-import * as donchianTrendRibbonIndicator from './donchian-trend-ribbon';
-export { DonchianTrendRibbon, calculate as calculateDonchianTrendRibbon } from './donchian-trend-ribbon';
-export type { DonchianTrendRibbonInputs } from './donchian-trend-ribbon';
+import * as donchianTrendRibbonIndicator from './community/donchian-trend-ribbon';
+export { DonchianTrendRibbon, calculate as calculateDonchianTrendRibbon } from './community/donchian-trend-ribbon';
+export type { DonchianTrendRibbonInputs } from './community/donchian-trend-ribbon';
 
 // OBV MACD
-import * as obvMacdIndicator from './obv-macd';
-export { OBVMACD, calculate as calculateOBVMACD } from './obv-macd';
-export type { OBVMACDInputs } from './obv-macd';
+import * as obvMacdIndicator from './community/obv-macd';
+export { OBVMACD, calculate as calculateOBVMACD } from './community/obv-macd';
+export type { OBVMACDInputs } from './community/obv-macd';
 
 // AlphaTrend
-import * as alphaTrendIndicator from './alpha-trend';
-export { AlphaTrend, calculate as calculateAlphaTrend } from './alpha-trend';
-export type { AlphaTrendInputs } from './alpha-trend';
+import * as alphaTrendIndicator from './community/alpha-trend';
+export { AlphaTrend, calculate as calculateAlphaTrend } from './community/alpha-trend';
+export type { AlphaTrendInputs } from './community/alpha-trend';
 
 // HalfTrend
-import * as halfTrendIndicator from './half-trend';
-export { HalfTrend, calculate as calculateHalfTrend } from './half-trend';
-export type { HalfTrendInputs } from './half-trend';
+import * as halfTrendIndicator from './community/half-trend';
+export { HalfTrend, calculate as calculateHalfTrend } from './community/half-trend';
+export type { HalfTrendInputs } from './community/half-trend';
 
 // QQE MOD
-import * as qqeModIndicator from './qqe-mod';
-export { QQEMod, calculate as calculateQQEMod } from './qqe-mod';
-export type { QQEModInputs } from './qqe-mod';
+import * as qqeModIndicator from './community/qqe-mod';
+export { QQEMod, calculate as calculateQQEMod } from './community/qqe-mod';
+export type { QQEModInputs } from './community/qqe-mod';
 
 // Follow Line
-import * as followLineIndicator from './follow-line';
-export { FollowLine, calculate as calculateFollowLine } from './follow-line';
-export type { FollowLineInputs } from './follow-line';
+import * as followLineIndicator from './community/follow-line';
+export { FollowLine, calculate as calculateFollowLine } from './community/follow-line';
+export type { FollowLineInputs } from './community/follow-line';
 
 // UT Bot
-import * as utBotIndicator from './ut-bot';
-export { UTBot, calculate as calculateUTBot } from './ut-bot';
-export type { UTBotInputs } from './ut-bot';
+import * as utBotIndicator from './community/ut-bot';
+export { UTBot, calculate as calculateUTBot } from './community/ut-bot';
+export type { UTBotInputs } from './community/ut-bot';
 
 // Hull Suite
-import * as hullSuiteIndicator from './hull-suite';
-export { HullSuite, calculate as calculateHullSuite } from './hull-suite';
-export type { HullSuiteInputs } from './hull-suite';
+import * as hullSuiteIndicator from './community/hull-suite';
+export { HullSuite, calculate as calculateHullSuite } from './community/hull-suite';
+export type { HullSuiteInputs } from './community/hull-suite';
 
 // Optimized Trend Tracker
-import * as ottIndicator from './optimized-trend-tracker';
-export { OptimizedTrendTracker, calculate as calculateOTT } from './optimized-trend-tracker';
-export type { OTTInputs } from './optimized-trend-tracker';
+import * as ottIndicator from './community/optimized-trend-tracker';
+export { OptimizedTrendTracker, calculate as calculateOTT } from './community/optimized-trend-tracker';
+export type { OTTInputs } from './community/optimized-trend-tracker';
 
 // Trend Magic
-import * as trendMagicIndicator from './trend-magic';
-export { TrendMagic, calculate as calculateTrendMagic } from './trend-magic';
-export type { TrendMagicInputs } from './trend-magic';
+import * as trendMagicIndicator from './community/trend-magic';
+export { TrendMagic, calculate as calculateTrendMagic } from './community/trend-magic';
+export type { TrendMagicInputs } from './community/trend-magic';
 
 // SSL Channel
-import * as sslChannelIndicator from './ssl-channel';
-export { SSLChannel, calculate as calculateSSLChannel } from './ssl-channel';
-export type { SSLChannelInputs } from './ssl-channel';
+import * as sslChannelIndicator from './community/ssl-channel';
+export { SSLChannel, calculate as calculateSSLChannel } from './community/ssl-channel';
+export type { SSLChannelInputs } from './community/ssl-channel';
 
 // MavilimW
-import * as mavilimWIndicator from './mavilimw';
-export { MavilimW, calculate as calculateMavilimW } from './mavilimw';
-export type { MavilimWInputs } from './mavilimw';
+import * as mavilimWIndicator from './community/mavilimw';
+export { MavilimW, calculate as calculateMavilimW } from './community/mavilimw';
+export type { MavilimWInputs } from './community/mavilimw';
 
 // CDC Action Zone
-import * as cdcActionZoneIndicator from './cdc-action-zone';
-export { CDCActionZone, calculate as calculateCDCActionZone } from './cdc-action-zone';
-export type { CDCActionZoneInputs } from './cdc-action-zone';
+import * as cdcActionZoneIndicator from './community/cdc-action-zone';
+export { CDCActionZone, calculate as calculateCDCActionZone } from './community/cdc-action-zone';
+export type { CDCActionZoneInputs } from './community/cdc-action-zone';
 
 // Tillson T3
-import * as tillsonT3Indicator from './tillson-t3';
-export { TillsonT3, calculate as calculateTillsonT3 } from './tillson-t3';
-export type { TillsonT3Inputs } from './tillson-t3';
+import * as tillsonT3Indicator from './community/tillson-t3';
+export { TillsonT3, calculate as calculateTillsonT3 } from './community/tillson-t3';
+export type { TillsonT3Inputs } from './community/tillson-t3';
 
 // Waddah Attar Explosion
-import * as waddahAttarExplosionIndicator from './waddah-attar-explosion';
-export { WaddahAttarExplosion, calculate as calculateWaddahAttarExplosion } from './waddah-attar-explosion';
-export type { WaddahAttarExplosionInputs } from './waddah-attar-explosion';
+import * as waddahAttarExplosionIndicator from './community/waddah-attar-explosion';
+export { WaddahAttarExplosion, calculate as calculateWaddahAttarExplosion } from './community/waddah-attar-explosion';
+export type { WaddahAttarExplosionInputs } from './community/waddah-attar-explosion';
 
 // Ripster EMA Clouds
-import * as ripsterEMACloudsIndicator from './ripster-ema-clouds';
-export { RipsterEMAClouds, calculate as calculateRipsterEMAClouds } from './ripster-ema-clouds';
-export type { RipsterEMACloudsInputs } from './ripster-ema-clouds';
+import * as ripsterEMACloudsIndicator from './community/ripster-ema-clouds';
+export { RipsterEMAClouds, calculate as calculateRipsterEMAClouds } from './community/ripster-ema-clouds';
+export type { RipsterEMACloudsInputs } from './community/ripster-ema-clouds';
 
 // Premier RSI Oscillator
-import * as premierRsiIndicator from './premier-rsi';
-export { PremierRSI, calculate as calculatePremierRSI } from './premier-rsi';
-export type { PremierRSIInputs } from './premier-rsi';
+import * as premierRsiIndicator from './community/premier-rsi';
+export { PremierRSI, calculate as calculatePremierRSI } from './community/premier-rsi';
+export type { PremierRSIInputs } from './community/premier-rsi';
 
 // Laguerre RSI
-import * as laguerreRsiIndicator from './laguerre-rsi';
-export { LaguerreRSI, calculate as calculateLaguerreRSI } from './laguerre-rsi';
-export type { LaguerreRSIInputs } from './laguerre-rsi';
+import * as laguerreRsiIndicator from './community/laguerre-rsi';
+export { LaguerreRSI, calculate as calculateLaguerreRSI } from './community/laguerre-rsi';
+export type { LaguerreRSIInputs } from './community/laguerre-rsi';
 
 // RSI Candles
-import * as rsiCandlesIndicator from './rsi-candles';
-export { RSICandles, calculate as calculateRSICandles } from './rsi-candles';
-export type { RSICandlesInputs } from './rsi-candles';
+import * as rsiCandlesIndicator from './community/rsi-candles';
+export { RSICandles, calculate as calculateRSICandles } from './community/rsi-candles';
+export type { RSICandlesInputs } from './community/rsi-candles';
 
 // Zero Lag MACD
-import * as zeroLagMacdIndicator from './zero-lag-macd';
-export { ZeroLagMACD, calculate as calculateZeroLagMACD } from './zero-lag-macd';
-export type { ZeroLagMACDInputs } from './zero-lag-macd';
+import * as zeroLagMacdIndicator from './community/zero-lag-macd';
+export { ZeroLagMACD, calculate as calculateZeroLagMACD } from './community/zero-lag-macd';
+export type { ZeroLagMACDInputs } from './community/zero-lag-macd';
 
 // Candlestick Patterns
-import * as hammerIndicator from './hammer';
-import * as shootingStarIndicator from './shooting-star';
-import * as hangingManIndicator from './hanging-man';
-import * as invertedHammerIndicator from './inverted-hammer';
-import * as marubozuWhiteIndicator from './marubozu-white';
-import * as marubozuBlackIndicator from './marubozu-black';
-import * as dojiIndicator from './doji';
-import * as gravestoneDojiIndicator from './gravestone-doji';
-import * as dragonflyDojiIndicator from './dragonfly-doji';
-import * as longLowerShadowIndicator from './long-lower-shadow';
-import * as longUpperShadowIndicator from './long-upper-shadow';
-import * as spinningTopWhiteIndicator from './spinning-top-white';
-import * as spinningTopBlackIndicator from './spinning-top-black';
-import * as onNeckIndicator from './on-neck';
-import * as piercingIndicator from './piercing';
-import * as darkCloudCoverIndicator from './dark-cloud-cover';
-import * as tweezerTopIndicator from './tweezer-top';
-import * as tweezerBottomIndicator from './tweezer-bottom';
-import * as dojiStarBearishIndicator from './doji-star-bearish';
-import * as dojiStarBullishIndicator from './doji-star-bullish';
-import * as engulfingBullishIndicator from './engulfing-bullish';
-import * as engulfingBearishIndicator from './engulfing-bearish';
-import * as haramiBullishIndicator from './harami-bullish';
-import * as haramiBearishIndicator from './harami-bearish';
-import * as haramiCrossBullishIndicator from './harami-cross-bullish';
-import * as haramiCrossBearishIndicator from './harami-cross-bearish';
-import * as risingWindowIndicator from './rising-window';
-import * as fallingWindowIndicator from './falling-window';
-import * as kickingBullishIndicator from './kicking-bullish';
-import * as kickingBearishIndicator from './kicking-bearish';
-import * as morningStarIndicator from './morning-star';
-import * as eveningStarIndicator from './evening-star';
-import * as morningDojiStarIndicator from './morning-doji-star';
-import * as eveningDojiStarIndicator from './evening-doji-star';
-import * as threeWhiteSoldiersIndicator from './three-white-soldiers';
-import * as threeBlackCrowsIndicator from './three-black-crows';
-import * as abandonedBabyBullishIndicator from './abandoned-baby-bullish';
-import * as abandonedBabyBearishIndicator from './abandoned-baby-bearish';
-import * as triStarBullishIndicator from './tri-star-bullish';
-import * as triStarBearishIndicator from './tri-star-bearish';
-import * as downsideTasukiGapIndicator from './downside-tasuki-gap';
-import * as upsideTasukiGapIndicator from './upside-tasuki-gap';
-import * as fallingThreeMethodsIndicator from './falling-three-methods';
-import * as risingThreeMethodsIndicator from './rising-three-methods';
-export { Hammer } from './hammer';
-export { ShootingStar } from './shooting-star';
-export { HangingMan } from './hanging-man';
-export { InvertedHammer } from './inverted-hammer';
-export { MarubozuWhite } from './marubozu-white';
-export { MarubozuBlack } from './marubozu-black';
-export { Doji } from './doji';
-export { GravestoneDoji } from './gravestone-doji';
-export { DragonflyDoji } from './dragonfly-doji';
-export { LongLowerShadow } from './long-lower-shadow';
-export { LongUpperShadow } from './long-upper-shadow';
-export { SpinningTopWhite } from './spinning-top-white';
-export { SpinningTopBlack } from './spinning-top-black';
-export { OnNeck } from './on-neck';
-export { Piercing } from './piercing';
-export { DarkCloudCover } from './dark-cloud-cover';
-export { TweezerTop } from './tweezer-top';
-export { TweezerBottom } from './tweezer-bottom';
-export { DojiStarBearish } from './doji-star-bearish';
-export { DojiStarBullish } from './doji-star-bullish';
-export { EngulfingBullish } from './engulfing-bullish';
-export { EngulfingBearish } from './engulfing-bearish';
-export { HaramiBullish } from './harami-bullish';
-export { HaramiBearish } from './harami-bearish';
-export { HaramiCrossBullish } from './harami-cross-bullish';
-export { HaramiCrossBearish } from './harami-cross-bearish';
-export { RisingWindow } from './rising-window';
-export { FallingWindow } from './falling-window';
-export { KickingBullish } from './kicking-bullish';
-export { KickingBearish } from './kicking-bearish';
-export { MorningStar } from './morning-star';
-export { EveningStar } from './evening-star';
-export { MorningDojiStar } from './morning-doji-star';
-export { EveningDojiStar } from './evening-doji-star';
-export { ThreeWhiteSoldiers } from './three-white-soldiers';
-export { ThreeBlackCrows } from './three-black-crows';
-export { AbandonedBabyBullish } from './abandoned-baby-bullish';
-export { AbandonedBabyBearish } from './abandoned-baby-bearish';
-export { TriStarBullish } from './tri-star-bullish';
-export { TriStarBearish } from './tri-star-bearish';
-export { DownsideTasukiGap } from './downside-tasuki-gap';
-export { UpsideTasukiGap } from './upside-tasuki-gap';
-export { FallingThreeMethods } from './falling-three-methods';
-export { RisingThreeMethods } from './rising-three-methods';
+import * as hammerIndicator from './candlestick/hammer';
+import * as shootingStarIndicator from './candlestick/shooting-star';
+import * as hangingManIndicator from './candlestick/hanging-man';
+import * as invertedHammerIndicator from './candlestick/inverted-hammer';
+import * as marubozuWhiteIndicator from './candlestick/marubozu-white';
+import * as marubozuBlackIndicator from './candlestick/marubozu-black';
+import * as dojiIndicator from './candlestick/doji';
+import * as gravestoneDojiIndicator from './candlestick/gravestone-doji';
+import * as dragonflyDojiIndicator from './candlestick/dragonfly-doji';
+import * as longLowerShadowIndicator from './candlestick/long-lower-shadow';
+import * as longUpperShadowIndicator from './candlestick/long-upper-shadow';
+import * as spinningTopWhiteIndicator from './candlestick/spinning-top-white';
+import * as spinningTopBlackIndicator from './candlestick/spinning-top-black';
+import * as onNeckIndicator from './candlestick/on-neck';
+import * as piercingIndicator from './candlestick/piercing';
+import * as darkCloudCoverIndicator from './candlestick/dark-cloud-cover';
+import * as tweezerTopIndicator from './candlestick/tweezer-top';
+import * as tweezerBottomIndicator from './candlestick/tweezer-bottom';
+import * as dojiStarBearishIndicator from './candlestick/doji-star-bearish';
+import * as dojiStarBullishIndicator from './candlestick/doji-star-bullish';
+import * as engulfingBullishIndicator from './candlestick/engulfing-bullish';
+import * as engulfingBearishIndicator from './candlestick/engulfing-bearish';
+import * as haramiBullishIndicator from './candlestick/harami-bullish';
+import * as haramiBearishIndicator from './candlestick/harami-bearish';
+import * as haramiCrossBullishIndicator from './candlestick/harami-cross-bullish';
+import * as haramiCrossBearishIndicator from './candlestick/harami-cross-bearish';
+import * as risingWindowIndicator from './candlestick/rising-window';
+import * as fallingWindowIndicator from './candlestick/falling-window';
+import * as kickingBullishIndicator from './candlestick/kicking-bullish';
+import * as kickingBearishIndicator from './candlestick/kicking-bearish';
+import * as morningStarIndicator from './candlestick/morning-star';
+import * as eveningStarIndicator from './candlestick/evening-star';
+import * as morningDojiStarIndicator from './candlestick/morning-doji-star';
+import * as eveningDojiStarIndicator from './candlestick/evening-doji-star';
+import * as threeWhiteSoldiersIndicator from './candlestick/three-white-soldiers';
+import * as threeBlackCrowsIndicator from './candlestick/three-black-crows';
+import * as abandonedBabyBullishIndicator from './candlestick/abandoned-baby-bullish';
+import * as abandonedBabyBearishIndicator from './candlestick/abandoned-baby-bearish';
+import * as triStarBullishIndicator from './candlestick/tri-star-bullish';
+import * as triStarBearishIndicator from './candlestick/tri-star-bearish';
+import * as downsideTasukiGapIndicator from './candlestick/downside-tasuki-gap';
+import * as upsideTasukiGapIndicator from './candlestick/upside-tasuki-gap';
+import * as fallingThreeMethodsIndicator from './candlestick/falling-three-methods';
+import * as risingThreeMethodsIndicator from './candlestick/rising-three-methods';
+export { Hammer } from './candlestick/hammer';
+export { ShootingStar } from './candlestick/shooting-star';
+export { HangingMan } from './candlestick/hanging-man';
+export { InvertedHammer } from './candlestick/inverted-hammer';
+export { MarubozuWhite } from './candlestick/marubozu-white';
+export { MarubozuBlack } from './candlestick/marubozu-black';
+export { Doji } from './candlestick/doji';
+export { GravestoneDoji } from './candlestick/gravestone-doji';
+export { DragonflyDoji } from './candlestick/dragonfly-doji';
+export { LongLowerShadow } from './candlestick/long-lower-shadow';
+export { LongUpperShadow } from './candlestick/long-upper-shadow';
+export { SpinningTopWhite } from './candlestick/spinning-top-white';
+export { SpinningTopBlack } from './candlestick/spinning-top-black';
+export { OnNeck } from './candlestick/on-neck';
+export { Piercing } from './candlestick/piercing';
+export { DarkCloudCover } from './candlestick/dark-cloud-cover';
+export { TweezerTop } from './candlestick/tweezer-top';
+export { TweezerBottom } from './candlestick/tweezer-bottom';
+export { DojiStarBearish } from './candlestick/doji-star-bearish';
+export { DojiStarBullish } from './candlestick/doji-star-bullish';
+export { EngulfingBullish } from './candlestick/engulfing-bullish';
+export { EngulfingBearish } from './candlestick/engulfing-bearish';
+export { HaramiBullish } from './candlestick/harami-bullish';
+export { HaramiBearish } from './candlestick/harami-bearish';
+export { HaramiCrossBullish } from './candlestick/harami-cross-bullish';
+export { HaramiCrossBearish } from './candlestick/harami-cross-bearish';
+export { RisingWindow } from './candlestick/rising-window';
+export { FallingWindow } from './candlestick/falling-window';
+export { KickingBullish } from './candlestick/kicking-bullish';
+export { KickingBearish } from './candlestick/kicking-bearish';
+export { MorningStar } from './candlestick/morning-star';
+export { EveningStar } from './candlestick/evening-star';
+export { MorningDojiStar } from './candlestick/morning-doji-star';
+export { EveningDojiStar } from './candlestick/evening-doji-star';
+export { ThreeWhiteSoldiers } from './candlestick/three-white-soldiers';
+export { ThreeBlackCrows } from './candlestick/three-black-crows';
+export { AbandonedBabyBullish } from './candlestick/abandoned-baby-bullish';
+export { AbandonedBabyBearish } from './candlestick/abandoned-baby-bearish';
+export { TriStarBullish } from './candlestick/tri-star-bullish';
+export { TriStarBearish } from './candlestick/tri-star-bearish';
+export { DownsideTasukiGap } from './candlestick/downside-tasuki-gap';
+export { UpsideTasukiGap } from './candlestick/upside-tasuki-gap';
+export { FallingThreeMethods } from './candlestick/falling-three-methods';
+export { RisingThreeMethods } from './candlestick/rising-three-methods';
 
-/**
- * Input configuration type
- */
-export interface InputConfig {
-  id: string;
-  type: 'int' | 'float' | 'bool' | 'source' | 'string';
-  title?: string;
-  defval: unknown;
-  min?: number;
-  max?: number;
-  step?: number;
-  options?: string[];
-}
+// InputConfig, PlotConfig, HLineConfig, FillConfig re-exported from oakscriptjs above
 
-/**
- * Plot configuration type
- */
-export interface PlotConfig {
-  id: string;
-  title: string;
-  color: string;
-  lineWidth?: number;
-  visible?: boolean | string;
-  display?: 'all' | 'none' | 'data_window' | 'status_line' | 'pane';
-  offset?: number;
-}
-
-/**
- * Marker data for candlestick pattern indicators
- */
-export interface MarkerData {
-  time: number;
-  position: 'aboveBar' | 'belowBar';
-  shape: 'arrowUp' | 'arrowDown' | 'circle' | 'square';
-  color: string;
-  text?: string;
-  size?: number;
-}
+export type {
+  MarkerData,
+  BarColorData,
+  BgColorData,
+  PlotCandleData,
+  LabelData,
+  LineDrawingData,
+  BoxData,
+  TableData,
+  TableCell,
+} from './types';
 
 /**
  * Indicator category types
@@ -753,6 +729,9 @@ export interface IndicatorRegistryEntry {
   };
   inputConfig: InputConfig[];
   plotConfig: PlotConfig[];
+  hlineConfig?: HLineConfig[];
+  fillConfig?: FillConfig[];
+  plotCandleConfig?: { id: string; title: string }[];
   defaultInputs: Record<string, unknown>;
   calculate: (bars: Bar[], inputs?: any) => any;
 }
@@ -870,6 +849,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: cciIndicator.metadata,
     inputConfig: cciIndicator.inputConfig as InputConfig[],
     plotConfig: cciIndicator.plotConfig as PlotConfig[],
+    hlineConfig: cciIndicator.hlineConfig as HLineConfig[],
+    fillConfig: cciIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...cciIndicator.defaultInputs },
     calculate: cciIndicator.calculate,
   },
@@ -961,6 +942,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: macdIndicator.metadata,
     inputConfig: macdIndicator.inputConfig as InputConfig[],
     plotConfig: macdIndicator.plotConfig as PlotConfig[],
+    hlineConfig: macdIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...macdIndicator.defaultInputs },
     calculate: macdIndicator.calculate,
   },
@@ -1039,6 +1021,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: rocIndicator.metadata,
     inputConfig: rocIndicator.inputConfig as InputConfig[],
     plotConfig: rocIndicator.plotConfig as PlotConfig[],
+    hlineConfig: rocIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...rocIndicator.defaultInputs },
     calculate: rocIndicator.calculate,
   },
@@ -1052,6 +1035,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: rsiIndicator.metadata,
     inputConfig: rsiIndicator.inputConfig as InputConfig[],
     plotConfig: rsiIndicator.plotConfig as PlotConfig[],
+    hlineConfig: rsiIndicator.hlineConfig as HLineConfig[],
+    fillConfig: rsiIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...rsiIndicator.defaultInputs },
     calculate: rsiIndicator.calculate,
   },
@@ -1065,6 +1050,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: stochIndicator.metadata,
     inputConfig: stochIndicator.inputConfig as InputConfig[],
     plotConfig: stochIndicator.plotConfig as PlotConfig[],
+    hlineConfig: stochIndicator.hlineConfig as HLineConfig[],
+    fillConfig: stochIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...stochIndicator.defaultInputs },
     calculate: stochIndicator.calculate,
   },
@@ -1182,6 +1169,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: bbtrendIndicator.metadata,
     inputConfig: bbtrendIndicator.inputConfig as InputConfig[],
     plotConfig: bbtrendIndicator.plotConfig as PlotConfig[],
+    hlineConfig: bbtrendIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...bbtrendIndicator.defaultInputs },
     calculate: bbtrendIndicator.calculate,
   },
@@ -1195,6 +1183,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: bullBearPowerIndicator.metadata,
     inputConfig: bullBearPowerIndicator.inputConfig as InputConfig[],
     plotConfig: bullBearPowerIndicator.plotConfig as PlotConfig[],
+    hlineConfig: bullBearPowerIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...bullBearPowerIndicator.defaultInputs },
     calculate: bullBearPowerIndicator.calculate,
   },
@@ -1208,6 +1197,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: chandeMOIndicator.metadata,
     inputConfig: chandeMOIndicator.inputConfig as InputConfig[],
     plotConfig: chandeMOIndicator.plotConfig as PlotConfig[],
+    hlineConfig: chandeMOIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...chandeMOIndicator.defaultInputs },
     calculate: chandeMOIndicator.calculate,
   },
@@ -1221,6 +1211,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: dpoIndicator.metadata,
     inputConfig: dpoIndicator.inputConfig as InputConfig[],
     plotConfig: dpoIndicator.plotConfig as PlotConfig[],
+    hlineConfig: dpoIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...dpoIndicator.defaultInputs },
     calculate: dpoIndicator.calculate,
   },
@@ -1234,6 +1225,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: elderForceIndicator.metadata,
     inputConfig: elderForceIndicator.inputConfig as InputConfig[],
     plotConfig: elderForceIndicator.plotConfig as PlotConfig[],
+    hlineConfig: elderForceIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...elderForceIndicator.defaultInputs },
     calculate: elderForceIndicator.calculate,
   },
@@ -1299,6 +1291,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: mfiIndicator.metadata,
     inputConfig: mfiIndicator.inputConfig as InputConfig[],
     plotConfig: mfiIndicator.plotConfig as PlotConfig[],
+    hlineConfig: mfiIndicator.hlineConfig as HLineConfig[],
+    fillConfig: mfiIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...mfiIndicator.defaultInputs },
     calculate: mfiIndicator.calculate,
   },
@@ -1325,6 +1319,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: rviIndicator.metadata,
     inputConfig: rviIndicator.inputConfig as InputConfig[],
     plotConfig: rviIndicator.plotConfig as PlotConfig[],
+    hlineConfig: rviIndicator.hlineConfig as HLineConfig[],
+    fillConfig: rviIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...rviIndicator.defaultInputs },
     calculate: rviIndicator.calculate,
   },
@@ -1390,19 +1386,22 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: stochRsiIndicator.metadata,
     inputConfig: stochRsiIndicator.inputConfig as InputConfig[],
     plotConfig: stochRsiIndicator.plotConfig as PlotConfig[],
+    hlineConfig: stochRsiIndicator.hlineConfig as HLineConfig[],
+    fillConfig: stochRsiIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...stochRsiIndicator.defaultInputs },
     calculate: stochRsiIndicator.calculate,
   },
   {
     id: 'trend-strength',
     name: 'Trend Strength Index',
-    shortName: 'TSI',
+    shortName: 'TrStr',
     description: 'Measures trend strength based on directional movement.',
     category: 'Trend',
     overlay: false,
     metadata: trendStrengthIndicator.metadata,
     inputConfig: trendStrengthIndicator.inputConfig as InputConfig[],
     plotConfig: trendStrengthIndicator.plotConfig as PlotConfig[],
+    hlineConfig: trendStrengthIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...trendStrengthIndicator.defaultInputs },
     calculate: trendStrengthIndicator.calculate,
   },
@@ -1416,6 +1415,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: tsiIndicator.metadata,
     inputConfig: tsiIndicator.inputConfig as InputConfig[],
     plotConfig: tsiIndicator.plotConfig as PlotConfig[],
+    hlineConfig: tsiIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...tsiIndicator.defaultInputs },
     calculate: tsiIndicator.calculate,
   },
@@ -1429,6 +1429,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: volumeOscIndicator.metadata,
     inputConfig: volumeOscIndicator.inputConfig as InputConfig[],
     plotConfig: volumeOscIndicator.plotConfig as PlotConfig[],
+    hlineConfig: volumeOscIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...volumeOscIndicator.defaultInputs },
     calculate: volumeOscIndicator.calculate,
   },
@@ -1468,6 +1469,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: williamsRIndicator.metadata,
     inputConfig: williamsRIndicator.inputConfig as InputConfig[],
     plotConfig: williamsRIndicator.plotConfig as PlotConfig[],
+    hlineConfig: williamsRIndicator.hlineConfig as HLineConfig[],
+    fillConfig: williamsRIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...williamsRIndicator.defaultInputs },
     calculate: williamsRIndicator.calculate,
   },
@@ -1481,6 +1484,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: woodiesCCIIndicator.metadata,
     inputConfig: woodiesCCIIndicator.inputConfig as InputConfig[],
     plotConfig: woodiesCCIIndicator.plotConfig as PlotConfig[],
+    hlineConfig: woodiesCCIIndicator.hlineConfig as HLineConfig[],
+    fillConfig: woodiesCCIIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...woodiesCCIIndicator.defaultInputs },
     calculate: woodiesCCIIndicator.calculate,
   },
@@ -1494,6 +1499,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: bbPercentBIndicator.metadata,
     inputConfig: bbPercentBIndicator.inputConfig as InputConfig[],
     plotConfig: bbPercentBIndicator.plotConfig as PlotConfig[],
+    hlineConfig: bbPercentBIndicator.hlineConfig as HLineConfig[],
+    fillConfig: bbPercentBIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...bbPercentBIndicator.defaultInputs },
     calculate: bbPercentBIndicator.calculate,
   },
@@ -1520,6 +1527,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: chaikinMFIndicator.metadata,
     inputConfig: chaikinMFIndicator.inputConfig as InputConfig[],
     plotConfig: chaikinMFIndicator.plotConfig as PlotConfig[],
+    hlineConfig: chaikinMFIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...chaikinMFIndicator.defaultInputs },
     calculate: chaikinMFIndicator.calculate,
   },
@@ -1546,6 +1554,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: priceOscillatorIndicator.metadata,
     inputConfig: priceOscillatorIndicator.inputConfig as InputConfig[],
     plotConfig: priceOscillatorIndicator.plotConfig as PlotConfig[],
+    hlineConfig: priceOscillatorIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...priceOscillatorIndicator.defaultInputs },
     calculate: priceOscillatorIndicator.calculate,
   },
@@ -1585,6 +1594,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: choppinessIndicator.metadata,
     inputConfig: choppinessIndicator.inputConfig as InputConfig[],
     plotConfig: choppinessIndicator.plotConfig as PlotConfig[],
+    hlineConfig: choppinessIndicator.hlineConfig as HLineConfig[],
+    fillConfig: choppinessIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...choppinessIndicator.defaultInputs },
     calculate: choppinessIndicator.calculate,
   },
@@ -1611,6 +1622,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: chaikinOscIndicator.metadata,
     inputConfig: chaikinOscIndicator.inputConfig as InputConfig[],
     plotConfig: chaikinOscIndicator.plotConfig as PlotConfig[],
+    hlineConfig: chaikinOscIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...chaikinOscIndicator.defaultInputs },
     calculate: chaikinOscIndicator.calculate,
   },
@@ -1637,6 +1649,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: fisherTransformIndicator.metadata,
     inputConfig: fisherTransformIndicator.inputConfig as InputConfig[],
     plotConfig: fisherTransformIndicator.plotConfig as PlotConfig[],
+    hlineConfig: fisherTransformIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...fisherTransformIndicator.defaultInputs },
     calculate: fisherTransformIndicator.calculate,
   },
@@ -1650,6 +1663,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: trixIndicator.metadata,
     inputConfig: trixIndicator.inputConfig as InputConfig[],
     plotConfig: trixIndicator.plotConfig as PlotConfig[],
+    hlineConfig: trixIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...trixIndicator.defaultInputs },
     calculate: trixIndicator.calculate,
   },
@@ -1715,19 +1729,21 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: relativeVolumeAtTimeIndicator.metadata,
     inputConfig: relativeVolumeAtTimeIndicator.inputConfig as InputConfig[],
     plotConfig: relativeVolumeAtTimeIndicator.plotConfig as PlotConfig[],
+    hlineConfig: relativeVolumeAtTimeIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...relativeVolumeAtTimeIndicator.defaultInputs },
     calculate: relativeVolumeAtTimeIndicator.calculate,
   },
   {
     id: 'rci-ribbon',
     name: 'RCI Ribbon',
-    shortName: 'RCI',
+    shortName: 'RCIR',
     description: 'Three Rank Correlation Index lines measuring directional consistency.',
     category: 'Oscillators',
     overlay: false,
     metadata: rciRibbonIndicator.metadata,
     inputConfig: rciRibbonIndicator.inputConfig as InputConfig[],
     plotConfig: rciRibbonIndicator.plotConfig as PlotConfig[],
+    hlineConfig: rciRibbonIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...rciRibbonIndicator.defaultInputs },
     calculate: rciRibbonIndicator.calculate,
   },
@@ -1741,6 +1757,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: volumeDeltaIndicator.metadata,
     inputConfig: volumeDeltaIndicator.inputConfig as InputConfig[],
     plotConfig: volumeDeltaIndicator.plotConfig as PlotConfig[],
+    plotCandleConfig: volumeDeltaIndicator.plotCandleConfig,
+    hlineConfig: volumeDeltaIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...volumeDeltaIndicator.defaultInputs },
     calculate: volumeDeltaIndicator.calculate,
   },
@@ -1754,6 +1772,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: cumulativeVolumeDeltaIndicator.metadata,
     inputConfig: cumulativeVolumeDeltaIndicator.inputConfig as InputConfig[],
     plotConfig: cumulativeVolumeDeltaIndicator.plotConfig as PlotConfig[],
+    plotCandleConfig: cumulativeVolumeDeltaIndicator.plotCandleConfig,
+    hlineConfig: cumulativeVolumeDeltaIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...cumulativeVolumeDeltaIndicator.defaultInputs },
     calculate: cumulativeVolumeDeltaIndicator.calculate,
   },
@@ -1767,6 +1787,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: netVolumeIndicator.metadata,
     inputConfig: netVolumeIndicator.inputConfig as InputConfig[],
     plotConfig: netVolumeIndicator.plotConfig as PlotConfig[],
+    hlineConfig: netVolumeIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...netVolumeIndicator.defaultInputs },
     calculate: netVolumeIndicator.calculate,
   },
@@ -1780,6 +1801,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: kstIndicator.metadata,
     inputConfig: kstIndicator.inputConfig as InputConfig[],
     plotConfig: kstIndicator.plotConfig as PlotConfig[],
+    hlineConfig: kstIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...kstIndicator.defaultInputs },
     calculate: kstIndicator.calculate,
   },
@@ -1793,6 +1815,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: connorsRsiIndicator.metadata,
     inputConfig: connorsRsiIndicator.inputConfig as InputConfig[],
     plotConfig: connorsRsiIndicator.plotConfig as PlotConfig[],
+    hlineConfig: connorsRsiIndicator.hlineConfig as HLineConfig[],
+    fillConfig: connorsRsiIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...connorsRsiIndicator.defaultInputs },
     calculate: connorsRsiIndicator.calculate,
   },
@@ -1819,6 +1843,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: rciIndicator.metadata,
     inputConfig: rciIndicator.inputConfig as InputConfig[],
     plotConfig: rciIndicator.plotConfig as PlotConfig[],
+    hlineConfig: rciIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...rciIndicator.defaultInputs },
     calculate: rciIndicator.calculate,
   },
@@ -1871,6 +1896,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: bollingerBarsIndicator.metadata,
     inputConfig: bollingerBarsIndicator.inputConfig as InputConfig[],
     plotConfig: bollingerBarsIndicator.plotConfig as PlotConfig[],
+    plotCandleConfig: bollingerBarsIndicator.plotCandleConfig,
     defaultInputs: { ...bollingerBarsIndicator.defaultInputs },
     calculate: bollingerBarsIndicator.calculate,
   },
@@ -2257,6 +2283,8 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     metadata: rsiCandlesIndicator.metadata,
     inputConfig: rsiCandlesIndicator.inputConfig as InputConfig[],
     plotConfig: rsiCandlesIndicator.plotConfig as PlotConfig[],
+    plotCandleConfig: rsiCandlesIndicator.plotCandleConfig,
+    hlineConfig: rsiCandlesIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...rsiCandlesIndicator.defaultInputs },
     calculate: rsiCandlesIndicator.calculate,
   },

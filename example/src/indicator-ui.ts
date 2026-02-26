@@ -5,8 +5,12 @@
 
 import type {Bar} from 'oakscriptjs';
 import type { Time, SeriesMarker } from 'lightweight-charts';
+import { LineType } from 'lightweight-charts';
 import { ChartManager } from './chart';
 import { indicatorRegistry, type IndicatorRegistryEntry, type IndicatorCategory, type MarkerData } from '../../src/index';
+
+// Built-in marker shapes supported by lightweight-charts createSeriesMarkers
+const BUILTIN_MARKER_SHAPES = new Set(['arrowUp', 'arrowDown', 'circle', 'square']);
 
 /**
  * Use the indicator registry from indicators/index.ts
@@ -84,36 +88,107 @@ export class IndicatorUI {
    * Render the UI
    */
   private render(): void {
-    // Group and sort indicators by category
     const groupedIndicators = groupIndicatorsByCategory(indicators);
 
-    // Build optgroup HTML
-    const optgroupsHtml = Array.from(groupedIndicators.entries())
+    const categoriesHtml = Array.from(groupedIndicators.entries())
       .filter(([, group]) => group.length > 0)
       .map(([category, group]) => `
-        <optgroup label="${category}">
-          ${group.map(ind => `<option value="${ind.id}">${ind.name}</option>`).join('')}
-        </optgroup>
+        <div class="category-group" data-category="${category}">
+          <div class="category-header">
+            ${category} <span class="category-count">${group.length}</span>
+          </div>
+          <div class="category-items">
+            ${group.map(ind => `<div class="indicator-item" data-id="${ind.id}" data-name="${ind.name.toLowerCase()}" data-short="${(ind.shortName || ind.id).toLowerCase()}">${ind.name}</div>`).join('')}
+          </div>
+        </div>
       `).join('');
 
     this.container.innerHTML = `
       <div class="indicator-panel">
         <h3>Indicators</h3>
-        <div class="indicator-select-container">
-          <label for="indicator-select">Select Indicator:</label>
-          <select id="indicator-select">
-            <option value="">-- None --</option>
-            ${optgroupsHtml}
-          </select>
-        </div>
+        <input type="text" id="indicator-search" placeholder="Search indicators..." />
+        <div id="indicator-list">${categoriesHtml}</div>
         <div id="indicator-inputs" class="indicator-inputs"></div>
       </div>
     `;
 
-    // Add event listener for indicator selection
-    const select = this.container.querySelector('#indicator-select') as HTMLSelectElement;
-    select.addEventListener('change', () => {
-      this.selectIndicator(select.value || null);
+    this.setupSearch();
+    this.setupCategoryToggles();
+    this.setupItemClicks();
+  }
+
+  /**
+   * Filter indicators by search query
+   */
+  private setupSearch(): void {
+    const searchInput = this.container.querySelector('#indicator-search') as HTMLInputElement;
+    searchInput.addEventListener('input', () => {
+      const query = searchInput.value.toLowerCase().trim();
+      const groups = this.container.querySelectorAll('.category-group');
+
+      for (const group of groups) {
+        const items = group.querySelectorAll('.indicator-item');
+        let visibleCount = 0;
+
+        for (const item of items) {
+          const name = item.getAttribute('data-name') || '';
+          const short = item.getAttribute('data-short') || '';
+          const matches = !query || name.includes(query) || short.includes(query);
+          item.classList.toggle('hidden', !matches);
+          if (matches) visibleCount++;
+        }
+
+        group.classList.toggle('hidden', visibleCount === 0);
+
+        // Expand groups with matches when searching, restore when cleared
+        const categoryItems = group.querySelector('.category-items')!;
+        const header = group.querySelector('.category-header')!;
+        if (query && visibleCount > 0) {
+          categoryItems.classList.remove('collapsed');
+          header.classList.remove('collapsed');
+        }
+      }
+    });
+  }
+
+  /**
+   * Toggle category collapse on header click
+   */
+  private setupCategoryToggles(): void {
+    const headers = this.container.querySelectorAll('.category-header');
+    for (const header of headers) {
+      header.addEventListener('click', () => {
+        header.classList.toggle('collapsed');
+        const items = header.nextElementSibling as HTMLElement;
+        items.classList.toggle('collapsed');
+      });
+    }
+  }
+
+  /**
+   * Handle indicator item clicks
+   */
+  private setupItemClicks(): void {
+    const listContainer = this.container.querySelector('#indicator-list')!;
+    listContainer.addEventListener('click', (e) => {
+      const item = (e.target as HTMLElement).closest('.indicator-item') as HTMLElement | null;
+      if (!item) return;
+
+      const id = item.getAttribute('data-id')!;
+
+      // Toggle: clicking active indicator deselects
+      if (this.currentIndicatorId === id) {
+        this.selectIndicator(null);
+        item.classList.remove('active');
+        return;
+      }
+
+      // Remove previous active
+      const prev = this.container.querySelector('.indicator-item.active');
+      if (prev) prev.classList.remove('active');
+
+      item.classList.add('active');
+      this.selectIndicator(id);
     });
   }
 
@@ -121,10 +196,6 @@ export class IndicatorUI {
    * Select an indicator
    */
   private selectIndicator(indicatorId: string | null): void {
-    console.log('[IndicatorUI] selectIndicator:', indicatorId);
-    
-    // Clear previous indicator
-    this.chartManager.clearIndicators();
     this.currentIndicatorId = indicatorId;
     this.currentInputs = {};
 
@@ -136,10 +207,6 @@ export class IndicatorUI {
     }
 
     const indicator = indicators.find(ind => ind.id === indicatorId);
-    console.log('[IndicatorUI] indicator found:', indicator);
-    console.log('[IndicatorUI] inputConfig:', indicator?.inputConfig);
-    console.log('[IndicatorUI] defaultInputs:', indicator?.defaultInputs);
-    
     if (!indicator) {
       inputsContainer.innerHTML = '';
       return;
@@ -161,8 +228,7 @@ export class IndicatorUI {
   private renderInputs(indicator: IndicatorRegistryEntry, container: HTMLElement): void {
     // Handle inputConfig as either array or object
     const inputConfigArray = Array.isArray(indicator.inputConfig) ? indicator.inputConfig : [];
-    console.log('[IndicatorUI] renderInputs - inputConfigArray:', inputConfigArray);
-    
+
     const inputsHtml = inputConfigArray.map((input: any) => {
       const value = this.currentInputs[input.id] ?? input.defval;
 
@@ -187,7 +253,6 @@ export class IndicatorUI {
         case 'source':
           // Default source options if not provided
           const sourceOptions = input.options || ['open', 'high', 'low', 'close', 'hl2', 'hlc3', 'ohlc4', 'hlcc4'];
-          console.log('[IndicatorUI] source input options:', input.options);
           return `
             <div class="input-group">
               <label for="input-${input.id}">${input.title}:</label>
@@ -289,10 +354,8 @@ export class IndicatorUI {
    * Recalculate and update the indicator display
    */
   private recalculate(): void {
-    console.log('[IndicatorUI] recalculate - bars count:', this.bars.length);
-    console.log('[IndicatorUI] recalculate - currentInputs:', this.currentInputs);
-    
     if (!this.currentIndicatorId || this.bars.length === 0) {
+      this.chartManager.clearIndicators();
       return;
     }
 
@@ -304,124 +367,203 @@ export class IndicatorUI {
     try {
       // Calculate indicator
       const result = indicator.calculate(this.bars, this.currentInputs);
-      console.log('[IndicatorUI] recalculate - result:', result);
-      console.log('[IndicatorUI] recalculate - result.plots:', result?.plots);
-      console.log('[IndicatorUI] recalculate - plotConfig:', indicator?.plotConfig);
-      
-      // Log first few values of each plot for debugging
-      if (result?.plots) {
-        for (const [plotId, plotData] of Object.entries(result.plots)) {
-          if (Array.isArray(plotData) && plotData.length > 0) {
-            console.log(`[IndicatorUI] ${plotId} first 3 values:`, plotData.slice(0, 3));
-          }
-        }
-      }
 
       // Clear previous plots
       this.chartManager.clearIndicators();
 
-      // For non-overlay indicators, all plots should share the same pane
-      // Get a single pane index for this indicator
+      // For non-overlay indicators, all plots share the same pane
       const indicatorPaneIndex = indicator.overlay ? 0 : 1;
 
-      // Add new plots
+      // Route plots based on style
       for (const plotDef of indicator.plotConfig) {
         const plotData = result.plots[plotDef.id];
-        console.log('[IndicatorUI] plotDef:', plotDef);
-        console.log('[IndicatorUI] plotData:', plotData);
-        console.log('[IndicatorUI] plotData length:', plotData?.length);
+        const isVisible = this.evaluatePlotVisibility(plotDef, result);
 
-          // Check visibility - evaluate against current inputs or computed state
-          const isVisible = this.evaluatePlotVisibility(plotDef, result);
-
-          if (plotData && plotData.length > 0 && isVisible) {
-          this.chartManager.setIndicatorData(plotDef.id, plotData, {
+        if (plotData && plotData.length > 0 && isVisible) {
+          const seriesConfig = {
             color: plotDef.color,
             lineWidth: plotDef.lineWidth,
             overlay: indicator.overlay,
-            paneIndex: indicatorPaneIndex, // All plots of same indicator share the same pane
-          });
+            paneIndex: indicatorPaneIndex,
+          };
+
+          const style = plotDef.style ?? 'line';
+
+          switch (style) {
+            case 'histogram':
+            case 'columns':
+              this.chartManager.setHistogramData(plotDef.id, plotData, seriesConfig);
+              break;
+
+            case 'circles':
+              this.chartManager.setIndicatorData(plotDef.id, plotData, {
+                ...seriesConfig,
+                pointMarkersVisible: true,
+                lineVisible: false,
+              });
+              break;
+
+            case 'cross':
+              this.chartManager.setCrossPlotData(plotDef.id, plotData, seriesConfig);
+              break;
+
+            case 'stepline':
+              this.chartManager.setIndicatorData(plotDef.id, plotData, {
+                ...seriesConfig,
+                lineType: LineType.WithSteps,
+              });
+              break;
+
+            case 'steplinebr':
+              this.chartManager.setLineBrData(plotDef.id, plotData, {
+                ...seriesConfig,
+                lineType: LineType.WithSteps,
+              });
+              break;
+
+            case 'area':
+              this.chartManager.setAreaPlotData(plotDef.id, plotData, seriesConfig);
+              break;
+
+            case 'linebr':
+              this.chartManager.setLineBrData(plotDef.id, plotData, seriesConfig);
+              break;
+
+            case 'line':
+            default:
+              this.chartManager.setIndicatorData(plotDef.id, plotData, seriesConfig);
+              break;
+          }
         }
       }
 
-      // Route marker data for candlestick pattern indicators
+      // Render hlines if configured
+      if (indicator.hlineConfig && indicator.hlineConfig.length > 0) {
+        this.chartManager.setHLines(indicator.hlineConfig, indicatorPaneIndex, this.bars);
+      }
+
+      // Render fills between hlines if configured
+      if (indicator.fillConfig?.length && indicator.hlineConfig) {
+        this.chartManager.setFills(indicator.fillConfig, indicator.hlineConfig, indicatorPaneIndex, this.bars);
+      }
+
+      // Render plot-to-plot fills (cloud/band) if returned by calculate()
+      if (result.fills?.length) {
+        this.chartManager.setPlotFills(result.fills, result.plots, indicatorPaneIndex);
+      }
+
+      // Route markers — split built-in vs extended shapes
       if (Array.isArray(result.markers) && result.markers.length > 0) {
-        const seriesMarkers: SeriesMarker<Time>[] = result.markers.map((m: MarkerData) => ({
-          time: m.time as unknown as Time,
-          position: m.position,
-          shape: m.shape,
-          color: m.color,
-          text: m.text ?? '',
-          size: m.size,
-        }));
-        this.chartManager.setMarkers(seriesMarkers);
+        const builtinMarkers: SeriesMarker<Time>[] = [];
+        const extendedMarkers: MarkerData[] = [];
+
+        for (const m of result.markers as MarkerData[]) {
+          if (BUILTIN_MARKER_SHAPES.has(m.shape)) {
+            builtinMarkers.push({
+              time: m.time as unknown as Time,
+              position: m.position,
+              shape: m.shape as 'arrowUp' | 'arrowDown' | 'circle' | 'square',
+              color: m.color,
+              text: m.text ?? '',
+              size: m.size,
+            });
+          } else {
+            extendedMarkers.push(m);
+          }
+        }
+
+        this.chartManager.setMarkers(builtinMarkers, extendedMarkers);
       } else {
         this.chartManager.clearMarkers();
+      }
+
+      // Phase 2: barcolor
+      if (Array.isArray(result.barColors) && result.barColors.length > 0) {
+        this.chartManager.setBarColors(result.barColors);
+      }
+
+      // Phase 3: bgcolor
+      if (Array.isArray(result.bgColors) && result.bgColors.length > 0) {
+        this.chartManager.setBgColors(result.bgColors, indicatorPaneIndex);
+      }
+
+      // Phase 4: plotcandle
+      if (result.plotCandles) {
+        for (const [id, data] of Object.entries(result.plotCandles)) {
+          if (Array.isArray(data) && data.length > 0) {
+            this.chartManager.setCandlePlotData(id, data as any, indicatorPaneIndex);
+          }
+        }
+      }
+
+      // Phase 6: labels
+      if (Array.isArray(result.labels) && result.labels.length > 0) {
+        this.chartManager.setLabels(result.labels, indicatorPaneIndex);
+      }
+
+      // Phase 7: line drawings
+      if (Array.isArray(result.lines) && result.lines.length > 0) {
+        this.chartManager.setLineDrawings(result.lines, indicatorPaneIndex);
+      }
+
+      // Phase 8: boxes
+      if (Array.isArray(result.boxes) && result.boxes.length > 0) {
+        this.chartManager.setBoxes(result.boxes, indicatorPaneIndex);
+      }
+
+      // Phase 9: tables
+      if (Array.isArray(result.tables) && result.tables.length > 0) {
+        this.chartManager.setTable(result.tables[0]);
+      } else if (result.tables && !Array.isArray(result.tables)) {
+        this.chartManager.setTable(result.tables);
       }
     } catch (error) {
       console.error('Error calculating indicator:', error);
     }
   }
 
-    /**
-     * Evaluate plot visibility based on plotConfig.visible and plotConfig.display
-     *
-     * The `display` property can be:
-     * - 'none': never display
-     * - 'all', 'pane', etc.: display normally
-     *
-     * The `visible` property can be:
-     * - undefined: always visible
-     * - boolean: directly visible/hidden
-     * - string: variable name that needs evaluation
-     *
-     * For string visibility, we check:
-     * 1. If it's a direct input name, use that value
-     * 2. If it's a computed variable (like 'enableMA'), check if result has computed state
-     * 3. Check if plot data is all NaN (effectively hidden)
-     */
-    private evaluatePlotVisibility(plotDef: any, result: any): boolean {
-        // Check display property first - 'none' means hidden
-        if (plotDef.display === 'none') {
-            return false;
-        }
-
-        // No visibility constraint - always visible
-        if (plotDef.visible === undefined) {
-            return true;
-        }
-
-        // Direct boolean
-        if (typeof plotDef.visible === 'boolean') {
-            return plotDef.visible;
-        }
-
-        // String variable reference
-        if (typeof plotDef.visible === 'string') {
-            const visibleVar = plotDef.visible;
-
-            // Check if it's a direct input
-            if (this.currentInputs[visibleVar] !== undefined) {
-                return Boolean(this.currentInputs[visibleVar]);
-            }
-
-            // Check if result includes computed visibility state
-            if (result.visibility && result.visibility[visibleVar] !== undefined) {
-                return Boolean(result.visibility[visibleVar]);
-            }
-
-            // Fallback: check if plot data has any non-NaN values
-            // If all values are NaN, the plot is effectively invisible
-            const plotData = result.plots[plotDef.id];
-            if (plotData && Array.isArray(plotData)) {
-                const hasValidData = plotData.some((p: any) =>
-                    p.value !== undefined && p.value !== null && !Number.isNaN(p.value)
-                );
-                console.log(`[IndicatorUI] Plot ${plotDef.id} visibility fallback (hasValidData): ${hasValidData}`);
-                return hasValidData;
-            }
-        }
-
-        return true;
+  /**
+   * Evaluate plot visibility based on plotConfig.visible and plotConfig.display
+   */
+  private evaluatePlotVisibility(plotDef: any, result: any): boolean {
+    // Check display property first - 'none' means hidden
+    if (plotDef.display === 'none') {
+      return false;
     }
+
+    // No visibility constraint - always visible
+    if (plotDef.visible === undefined) {
+      return true;
+    }
+
+    // Direct boolean
+    if (typeof plotDef.visible === 'boolean') {
+      return plotDef.visible;
+    }
+
+    // String variable reference
+    if (typeof plotDef.visible === 'string') {
+      const visibleVar = plotDef.visible;
+
+      // Check if it's a direct input
+      if (this.currentInputs[visibleVar] !== undefined) {
+        return Boolean(this.currentInputs[visibleVar]);
+      }
+
+      // Check if result includes computed visibility state
+      if (result.visibility && result.visibility[visibleVar] !== undefined) {
+        return Boolean(result.visibility[visibleVar]);
+      }
+
+      // Fallback: check if plot data has any non-NaN values
+      const plotData = result.plots[plotDef.id];
+      if (plotData && Array.isArray(plotData)) {
+        return plotData.some((p: any) =>
+          p.value !== undefined && p.value !== null && !Number.isNaN(p.value)
+        );
+      }
+    }
+
+    return true;
+  }
 }
