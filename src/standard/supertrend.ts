@@ -45,8 +45,8 @@ export const inputConfig: InputConfig[] = [
  * plot2 (bodyMiddle) is invisible — used only as a fill anchor
  */
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Up Trend', color: '#26A69A', lineWidth: 2, style: 'linebr' },
-  { id: 'plot1', title: 'Down Trend', color: '#EF5350', lineWidth: 2, style: 'linebr' },
+  { id: 'plot0', title: 'Up Trend', color: '#089981', lineWidth: 1, style: 'linebr' },
+  { id: 'plot1', title: 'Down Trend', color: '#F23645', lineWidth: 1, style: 'linebr' },
   { id: 'plot2', title: 'Body Middle', color: '#00000000', lineWidth: 0, display: 'none' },
 ];
 
@@ -85,8 +85,8 @@ export function calculate(bars: Bar[], inputs: Partial<SupertrendInputs> = {}): 
   }));
 
   const fills: FillData[] = [
-    { plot1: 'plot2', plot2: 'plot0', options: { color: '#26A69A', transp: 90, title: 'Uptrend background', fillgaps: false } },
-    { plot1: 'plot2', plot2: 'plot1', options: { color: '#EF5350', transp: 90, title: 'Downtrend background', fillgaps: false } },
+    { plot1: 'plot2', plot2: 'plot0', options: { color: '#089981', transp: 90, title: 'Uptrend background', fillgaps: false } },
+    { plot1: 'plot2', plot2: 'plot1', options: { color: '#F23645', transp: 90, title: 'Downtrend background', fillgaps: false } },
   ];
 
   return {

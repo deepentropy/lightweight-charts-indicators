@@ -6,7 +6,7 @@
  * BB bands are excluded (display=none).
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface RCIInputs {
   source: SourceType;
@@ -33,7 +33,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'RCI', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot0', title: 'RCI', color: '#2962FF', lineWidth: 1 },
   { id: 'plot1', title: 'RCI-based MA', color: '#E2CC00', lineWidth: 1 },
   { id: 'plot2', title: 'Upper Bollinger Band', color: '#089981', lineWidth: 1, display: 'none' },
   { id: 'plot3', title: 'Lower Bollinger Band', color: '#089981', lineWidth: 1, display: 'none' },
@@ -96,6 +96,11 @@ export function calculate(bars: Bar[], inputs: Partial<RCIInputs> = {}): Indicat
   const bbUpperData = bbUpperArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
   const bbLowerData = bbLowerArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
 
+  const fills: FillData[] = [];
+  if (isBB) {
+    fills.push({ plot1: 'plot2', plot2: 'plot3', options: { color: '#089981', transp: 90, title: 'BB Background' } });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {
@@ -104,6 +109,7 @@ export function calculate(bars: Bar[], inputs: Partial<RCIInputs> = {}): Indicat
       'plot2': bbUpperData,
       'plot3': bbLowerData,
     },
+    fills,
   };
 }
 

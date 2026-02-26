@@ -37,9 +37,7 @@ export const hlineConfig: HLineConfig[] = [
   { id: 'hline_lower', price: -100, color: '#787B86', linestyle: 'dotted', title: 'Minus Line' },
 ];
 
-export const fillConfig: FillConfig[] = [
-  { id: 'fill_band', plot1: 'hline_upper', plot2: 'hline_lower', color: '#787B861A' },
-];
+export const fillConfig: FillConfig[] = [];
 
 export const metadata = {
   title: 'Woodies CCI',

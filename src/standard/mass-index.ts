@@ -20,7 +20,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Mass Index', color: '#E91E63', lineWidth: 2 },
+  { id: 'plot0', title: 'Mass Index', color: '#E91E63', lineWidth: 1 },
 ];
 
 export const metadata = {

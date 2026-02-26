@@ -33,7 +33,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'CCI', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot0', title: 'CCI', color: '#2962FF', lineWidth: 1 },
   { id: 'plot1', title: 'CCI-based MA', color: '#E2CC00', lineWidth: 1 },
   { id: 'plot2', title: 'Upper Bollinger Band', color: '#089981', lineWidth: 1 },
   { id: 'plot3', title: 'Lower Bollinger Band', color: '#089981', lineWidth: 1 },

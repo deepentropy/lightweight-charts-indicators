@@ -26,7 +26,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'TWAP', color: '#dd7a28', lineWidth: 2 },
+  { id: 'plot0', title: 'TWAP', color: '#dd7a28', lineWidth: 1 },
 ];
 
 export const metadata = {

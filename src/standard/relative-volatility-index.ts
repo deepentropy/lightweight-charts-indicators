@@ -34,7 +34,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'RVI', color: '#7E57C2', lineWidth: 2 },
+  { id: 'plot0', title: 'RVI', color: '#7E57C2', lineWidth: 1 },
   { id: 'plot1', title: 'RVI-based MA', color: '#E2CC00', lineWidth: 1 },
   { id: 'plot2', title: 'Upper Bollinger Band', color: '#089981', lineWidth: 1, display: 'none' },
   { id: 'plot3', title: 'Lower Bollinger Band', color: '#089981', lineWidth: 1, display: 'none' },

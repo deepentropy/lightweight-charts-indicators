@@ -41,7 +41,7 @@ export const inputConfig: InputConfig[] = [
  * Plot configuration
  */
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'MA', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot0', title: 'MA', color: '#2962FF', lineWidth: 1 },
   { id: 'plot1', title: 'SMA-based MA', color: '#E2CC00', lineWidth: 1 },
   { id: 'plot2', title: 'Upper Bollinger Band', color: '#089981', lineWidth: 1 },
   { id: 'plot3', title: 'Lower Bollinger Band', color: '#089981', lineWidth: 1 },

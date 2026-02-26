@@ -29,9 +29,9 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Histogram', color: '#26A69A', lineWidth: 2, style: 'columns' },
-  { id: 'plot1', title: 'MACD', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot2', title: 'Signal', color: '#FF6D00', lineWidth: 2 },
+  { id: 'plot0', title: 'Histogram', color: '#26A69A', lineWidth: 1, style: 'columns' },
+  { id: 'plot1', title: 'MACD', color: '#2962FF', lineWidth: 1 },
+  { id: 'plot2', title: 'Signal', color: '#FF6D00', lineWidth: 1 },
 ];
 
 export const hlineConfig: HLineConfig[] = [

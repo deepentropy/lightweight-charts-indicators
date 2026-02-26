@@ -26,8 +26,8 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: '%K', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot1', title: '%D', color: '#FF6D00', lineWidth: 2 },
+  { id: 'plot0', title: '%K', color: '#2962FF', lineWidth: 1 },
+  { id: 'plot1', title: '%D', color: '#FF6D00', lineWidth: 1 },
 ];
 
 export const hlineConfig: HLineConfig[] = [

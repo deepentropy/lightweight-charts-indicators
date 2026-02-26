@@ -44,7 +44,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'KST', color: '#009688', lineWidth: 2 },
+  { id: 'plot0', title: 'KST', color: '#009688', lineWidth: 1 },
   { id: 'plot1', title: 'Signal', color: '#F44336', lineWidth: 1 },
 ];
 

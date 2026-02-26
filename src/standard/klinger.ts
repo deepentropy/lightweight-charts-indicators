@@ -31,7 +31,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Klinger Oscillator', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot0', title: 'Klinger Oscillator', color: '#2962FF', lineWidth: 1 },
   { id: 'plot1', title: 'Signal', color: '#43A047', lineWidth: 1 },
 ];
 

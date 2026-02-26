@@ -31,7 +31,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'UO', color: '#F44336', lineWidth: 2 },
+  { id: 'plot0', title: 'Oscillator', color: '#F44336', lineWidth: 1 },
 ];
 
 export const metadata = {

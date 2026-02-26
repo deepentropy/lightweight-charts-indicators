@@ -53,6 +53,8 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot4', title: 'Leading Span B', color: '#EF9A9A', lineWidth: 1 },
   { id: 'plot5', title: 'Lead A Bullish', color: '#A5D6A7', lineWidth: 0, display: 'none' },
   { id: 'plot6', title: 'Lead A Bearish', color: '#EF9A9A', lineWidth: 0, display: 'none' },
+  { id: 'plot7', title: 'Kumo Cloud Upper Line', color: '#A5D6A7', lineWidth: 0, display: 'none' },
+  { id: 'plot8', title: 'Kumo Cloud Lower Line', color: '#EF9A9A', lineWidth: 0, display: 'none' },
 ];
 
 /**
@@ -163,6 +165,22 @@ export function calculate(bars: Bar[], inputs: Partial<IchimokuInputs> = {}): In
     value: d.value < leadingBData[i].value ? d.value : NaN,
   }));
 
+  // Kumo Cloud Upper Line = max(leadLine1, leadLine2) with displacement offset
+  const kumoUpperData = leadingAData.map((d, i) => ({
+    time: d.time,
+    value: (isNaN(d.value) || isNaN(leadingBData[i].value))
+      ? NaN
+      : Math.max(d.value, leadingBData[i].value),
+  }));
+
+  // Kumo Cloud Lower Line = min(leadLine1, leadLine2) with displacement offset
+  const kumoLowerData = leadingAData.map((d, i) => ({
+    time: d.time,
+    value: (isNaN(d.value) || isNaN(leadingBData[i].value))
+      ? NaN
+      : Math.min(d.value, leadingBData[i].value),
+  }));
+
   const fills: FillData[] = [
     { plot1: 'plot5', plot2: 'plot4', options: { color: '#43A047', transp: 90, title: 'Bullish Cloud' } },
     { plot1: 'plot6', plot2: 'plot4', options: { color: '#F44336', transp: 90, title: 'Bearish Cloud' } },
@@ -182,6 +200,8 @@ export function calculate(bars: Bar[], inputs: Partial<IchimokuInputs> = {}): In
       'plot4': leadingBData,
       'plot5': leadABullish,
       'plot6': leadABearish,
+      'plot7': kumoUpperData,
+      'plot8': kumoLowerData,
     },
     fills,
   };

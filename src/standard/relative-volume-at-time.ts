@@ -279,7 +279,7 @@ export function calculate(bars: Bar[], inputs: Partial<RelativeVolumeAtTimeInput
   const plotData = ratioValues.map((value, i) => ({
     time: bars[i].time,
     value: value,
-    color: value > 1 ? '#4CAF504D' : '#FF52524D',
+    color: value > 1 ? '#4CAF504D' : '#F443364D',
   }));
 
   return {

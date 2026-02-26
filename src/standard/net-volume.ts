@@ -22,7 +22,7 @@ export const defaultInputs: NetVolumeInputs = {};
 export const inputConfig: InputConfig[] = [];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Net Volume', color: '#2962FF', lineWidth: 1, style: 'columns' },
+  { id: 'plot0', title: 'Net Volume', color: '#2962FF', lineWidth: 1 },
 ];
 
 export const hlineConfig: HLineConfig[] = [

@@ -23,7 +23,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'HMA', color: '#00897B', lineWidth: 2 },
+  { id: 'plot0', title: 'HMA', color: '#00897B', lineWidth: 1 },
 ];
 
 export const metadata = {

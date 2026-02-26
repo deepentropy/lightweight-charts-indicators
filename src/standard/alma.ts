@@ -41,7 +41,7 @@ export const inputConfig: InputConfig[] = [
  * Plot configuration
  */
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'ALMA', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot0', title: 'ALMA', color: '#2962FF', lineWidth: 1 },
 ];
 
 /**

@@ -23,7 +23,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'TRIX', color: '#F44336', lineWidth: 2 },
+  { id: 'plot0', title: 'TRIX', color: '#F44336', lineWidth: 1 },
 ];
 
 export const hlineConfig: HLineConfig[] = [
