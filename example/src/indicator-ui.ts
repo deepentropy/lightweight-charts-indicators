@@ -94,10 +94,10 @@ export class IndicatorUI {
       .filter(([, group]) => group.length > 0)
       .map(([category, group]) => `
         <div class="category-group" data-category="${category}">
-          <div class="category-header">
+          <div class="category-header collapsed">
             ${category} <span class="category-count">${group.length}</span>
           </div>
-          <div class="category-items">
+          <div class="category-items collapsed">
             ${group.map(ind => `<div class="indicator-item" data-id="${ind.id}" data-name="${ind.name.toLowerCase()}" data-short="${(ind.shortName || ind.id).toLowerCase()}">${ind.name}</div>`).join('')}
           </div>
         </div>
