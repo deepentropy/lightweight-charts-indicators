@@ -27,9 +27,9 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'ImpulseMACD', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot1', title: 'Signal', color: '#FF6D00', lineWidth: 2 },
-  { id: 'plot2', title: 'Histogram', color: '#26A69A', lineWidth: 4 },
+  { id: 'plot0', title: 'ImpulseMACD', color: '#2962FF', lineWidth: 2, style: 'histogram' },
+  { id: 'plot1', title: 'Signal', color: '#800000', lineWidth: 2 },
+  { id: 'plot2', title: 'Histogram', color: '#0000FF', lineWidth: 2, style: 'histogram' },
 ];
 
 export const metadata = {
@@ -100,9 +100,31 @@ export function calculate(bars: Bar[], inputs: Partial<ImpulseMACDInputs> = {}):
   const toPlot = (arr: number[]) =>
     arr.map((value, i) => ({ time: bars[i].time, value: isNaN(value) ? NaN : value }));
 
+  // 4-color ImpulseMACD: lime (>hi, rising), green (>hi, falling), red (<lo, falling), orange (<lo, rising)
+  const hiArr2 = hi.toArray();
+  const loArr2 = lo.toArray();
+  const mdPlot = mdArr.map((value, i) => {
+    const v = isNaN(value) ? NaN : value;
+    const m = miArr[i] ?? NaN;
+    const h = hiArr2[i] ?? NaN;
+    const l = loArr2[i] ?? NaN;
+    let color: string;
+    if (m > h) {
+      const prev = i > 0 ? mdArr[i - 1] : NaN;
+      color = v >= prev ? '#00FF00' : '#008000'; // lime : green
+    } else if (m < l) {
+      const prev = i > 0 ? mdArr[i - 1] : NaN;
+      color = v <= prev ? '#FF0000' : '#FF8C00'; // red : orange
+    } else {
+      color = '#808080';
+    }
+    return { time: bars[i].time, value: v, color };
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(mdArr), 'plot1': toPlot(sbArr), 'plot2': toPlot(shArr) },
+    plots: { 'plot0': mdPlot, 'plot1': toPlot(sbArr), 'plot2': toPlot(shArr) },
+    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } }],
   };
 }
 

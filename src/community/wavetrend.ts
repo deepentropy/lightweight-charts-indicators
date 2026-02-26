@@ -9,6 +9,7 @@
  */
 
 import { Series, ta, getSourceSeries, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData, BarColorData } from '../types';
 
 export interface WaveTrendInputs {
   channelLength: number;
@@ -34,7 +35,7 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'WT1', color: '#26A69A', lineWidth: 2 },
   { id: 'plot1', title: 'WT2', color: '#EF5350', lineWidth: 1 },
-  { id: 'plot2', title: 'Diff', color: '#2962FF', lineWidth: 1 },
+  { id: 'plot2', title: 'Diff', color: '#2962FF', lineWidth: 1, style: 'area' },
 ];
 
 export const metadata = {
@@ -57,10 +58,45 @@ export function calculate(bars: Bar[], inputs: Partial<WaveTrendInputs> = {}): I
   const toPlot = (s: Series) =>
     s.toArray().map((value, i) => ({ time: bars[i].time, value: value ?? NaN }));
 
+  // Cross circles and barcolor at WT1/WT2 crossover points
+  const wt1Arr = wt1.toArray();
+  const wt2Arr = wt2.toArray();
+  const markers: MarkerData[] = [];
+  const barColors: BarColorData[] = [];
+  for (let i = 1; i < bars.length; i++) {
+    const w1 = wt1Arr[i]; const w2 = wt2Arr[i];
+    const pw1 = wt1Arr[i - 1]; const pw2 = wt2Arr[i - 1];
+    if (w1 == null || w2 == null || pw1 == null || pw2 == null) continue;
+    const cross = (pw1 <= pw2 && w1 > w2) || (pw1 >= pw2 && w1 < w2);
+    if (cross) {
+      const bearish = w2 > w1;
+      markers.push({
+        time: bars[i].time as number,
+        position: 'inBar',
+        shape: 'circle',
+        color: bearish ? '#FF0000' : '#00FF00',
+        size: 2,
+      });
+      barColors.push({
+        time: bars[i].time as number,
+        color: bearish ? '#00FFFF' : '#FFFF00',
+      });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': toPlot(wt1), 'plot1': toPlot(wt2), 'plot2': toPlot(diff) },
-  };
+    hlines: [
+      { value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } },
+      { value: 60, options: { color: '#EF5350', linestyle: 'dashed', title: 'OB1' } },
+      { value: -60, options: { color: '#26A69A', linestyle: 'dashed', title: 'OS1' } },
+      { value: 53, options: { color: '#EF5350', linestyle: 'dotted', title: 'OB2' } },
+      { value: -53, options: { color: '#26A69A', linestyle: 'dotted', title: 'OS2' } },
+    ],
+    markers,
+    barColors,
+  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] };
 }
 
 export const WaveTrend = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

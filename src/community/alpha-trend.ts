@@ -88,16 +88,22 @@ export function calculate(bars: Bar[], inputs: Partial<AlphaTrendInputs> = {}): 
     const prevCur = at[i - 1];
     const prevLag = at[i - 3];
     if (prevCur <= prevLag && cur > lag) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#2962FF', text: 'Buy' });
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'BUY' });
     } else if (prevCur >= prevLag && cur < lag) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#FF6D00', text: 'Sell' });
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'SELL' });
     }
   }
+
+  // Dynamic fill colors: green when AT > AT[2], red otherwise
+  const fillColors = at.map((v, i) => {
+    if (i < warmup + 2) return 'transparent';
+    return v > at[i - 2] ? 'rgba(38,166,154,0.25)' : 'rgba(239,83,80,0.25)';
+  });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: '#2962FF' } }],
+    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: '#2962FF' }, colors: fillColors }],
     markers,
   };
 }

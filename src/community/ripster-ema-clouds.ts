@@ -73,27 +73,47 @@ export function calculate(bars: Bar[], inputs: Partial<RipsterEMACloudsInputs> =
     [cfg.shortLen5, cfg.longLen5],
   ];
 
-  const plots: Record<string, Array<{ time: number; value: number }>> = {};
+  // Bullish/bearish fill colors per cloud pair
+  const bullishFillColors = ['#036103', '#4caf50', '#2196f3', '#009688', '#05bed5'];
+  const bearishFillColors = ['#880e4f', '#f44336', '#ffb74d', '#f06292', '#e65100'];
+  // Transparency: 45%, 65%, 70%, 65%, 65% mapped to hex alpha
+  const fillAlphas = ['73', 'A6', 'B3', 'A6', 'A6'];
+
+  const plots: Record<string, Array<{ time: number; value: number; color?: string }>> = {};
+  const fills: Array<{ plot1: string; plot2: string; colors: string[] }> = [];
 
   pairs.forEach(([sLen, lLen], idx) => {
     const shortEma = ta.ema(src, sLen).toArray();
     const longEma = ta.ema(src, lLen).toArray();
     const warmup = Math.max(sLen, lLen);
 
-    plots[`plot${idx * 2}`] = shortEma.map((v, i) => ({
-      time: bars[i].time,
-      value: i < warmup ? NaN : (v ?? NaN),
-    }));
-    plots[`plot${idx * 2 + 1}`] = longEma.map((v, i) => ({
-      time: bars[i].time,
-      value: i < warmup ? NaN : (v ?? NaN),
-    }));
-  });
+    // Short EMA: olive if rising, maroon if falling
+    plots[`plot${idx * 2}`] = shortEma.map((v, i) => {
+      if (i < warmup) return { time: bars[i].time, value: NaN };
+      const val = v ?? NaN;
+      const prev = i > 0 ? (shortEma[i - 1] ?? val) : val;
+      const color = val >= prev ? '#808000' : '#800000';
+      return { time: bars[i].time, value: val, color };
+    });
+    // Long EMA: green if rising, red if falling
+    plots[`plot${idx * 2 + 1}`] = longEma.map((v, i) => {
+      if (i < warmup) return { time: bars[i].time, value: NaN };
+      const val = v ?? NaN;
+      const prev = i > 0 ? (longEma[i - 1] ?? val) : val;
+      const color = val >= prev ? '#008000' : '#FF0000';
+      return { time: bars[i].time, value: val, color };
+    });
 
-  const fills = pairs.map((_, idx) => ({
-    plot1: `plot${idx * 2}`,
-    plot2: `plot${idx * 2 + 1}`,
-  }));
+    // Dynamic fill colors per bar
+    const cloudColors = shortEma.map((sv, i) => {
+      if (i < warmup) return 'transparent';
+      const s = sv ?? 0;
+      const l = longEma[i] ?? 0;
+      const baseColor = s >= l ? bullishFillColors[idx] : bearishFillColors[idx];
+      return baseColor + fillAlphas[idx];
+    });
+    fills.push({ plot1: `plot${idx * 2}`, plot2: `plot${idx * 2 + 1}`, colors: cloudColors });
+  });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },

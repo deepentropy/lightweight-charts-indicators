@@ -10,6 +10,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface ChandelierExitInputs {
   atrPeriod: number;
@@ -30,8 +31,9 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Long Stop', color: '#26A69A', lineWidth: 2 },
-  { id: 'plot1', title: 'Short Stop', color: '#EF5350', lineWidth: 2 },
+  { id: 'plot0', title: 'Long Stop', color: '#26A69A', lineWidth: 2, style: 'linebr' },
+  { id: 'plot1', title: 'Short Stop', color: '#EF5350', lineWidth: 2, style: 'linebr' },
+  { id: 'plot2', title: 'Mid Price', color: 'transparent', lineWidth: 0, display: 'none' },
 ];
 
 export const metadata = {
@@ -40,7 +42,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ChandelierExitInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<ChandelierExitInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { atrPeriod, atrMult, useClose } = { ...defaultInputs, ...inputs };
 
   const atrSeries = ta.atr(bars, atrPeriod);
@@ -106,9 +108,42 @@ export function calculate(bars: Bar[], inputs: Partial<ChandelierExitInputs> = {
     value: i < warmup ? NaN : (dirArr[i] === -1 ? value : NaN),
   }));
 
+  // Hidden ohlc4 plot for fills
+  const midData = bars.map((b, i) => ({
+    time: b.time,
+    value: i < warmup ? NaN : (b.open + b.high + b.low + b.close) / 4,
+  }));
+
+  // Markers: buy/sell on direction change
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < bars.length; i++) {
+    if (dirArr[i] !== dirArr[i - 1]) {
+      if (dirArr[i] === 1) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
+      } else {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+      }
+    }
+  }
+
+  // Dynamic fill colors: green when long (dir=1), red when short (dir=-1)
+  const longFillColors = bars.map((_b, i) => {
+    if (i < warmup) return 'transparent';
+    return dirArr[i] === 1 ? 'rgba(38,166,154,0.15)' : 'transparent';
+  });
+  const shortFillColors = bars.map((_b, i) => {
+    if (i < warmup) return 'transparent';
+    return dirArr[i] === -1 ? 'rgba(239,83,80,0.15)' : 'transparent';
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': longData, 'plot1': shortData },
+    plots: { 'plot0': longData, 'plot1': shortData, 'plot2': midData },
+    fills: [
+      { plot1: 'plot2', plot2: 'plot0', options: { color: 'rgba(38,166,154,0.15)' }, colors: longFillColors },
+      { plot1: 'plot2', plot2: 'plot1', options: { color: 'rgba(239,83,80,0.15)' }, colors: shortFillColors },
+    ],
+    markers,
   };
 }
 

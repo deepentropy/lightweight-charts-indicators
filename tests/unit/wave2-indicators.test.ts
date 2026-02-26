@@ -125,7 +125,7 @@ describe('AlphaTrend', () => {
     expect(result.markers.length).toBeGreaterThan(0);
     for (const m of result.markers) {
       expect(['aboveBar', 'belowBar']).toContain(m.position);
-      expect(['arrowUp', 'arrowDown']).toContain(m.shape);
+      expect(['arrowUp', 'arrowDown', 'labelUp', 'labelDown']).toContain(m.shape);
     }
   });
 
@@ -526,26 +526,12 @@ describe('RSICandles', () => {
 describe('ZeroLagMACD', () => {
   const result = ZeroLagMACD.calculate(bars);
 
-  it('returns correct shape (MACD, Signal, Histogram)', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
-  });
-
-  it('histogram = MACD - Signal', () => {
-    const macdPlot = result.plots['plot0'];
-    const sigPlot = result.plots['plot1'];
-    const histPlot = result.plots['plot2'];
-    for (let i = 60; i < bars.length; i++) {
-      const m = macdPlot[i].value;
-      const s = sigPlot[i].value;
-      const h = histPlot[i].value;
-      if (!isNaN(m) && !isNaN(s) && !isNaN(h)) {
-        expect(h).toBeCloseTo(m - s, 6);
-      }
-    }
+  it('returns correct shape (upHist, downHist, MACD, Signal, EMA, Dots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5'], false);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result, 'plot0');
+    const vals = validValues(result, 'plot2');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -553,7 +539,7 @@ describe('ZeroLagMACD', () => {
   it('has fill between MACD and Signal', () => {
     expect(result.fills).toBeDefined();
     expect(result.fills!.length).toBe(1);
-    expect(result.fills![0].plot1).toBe('plot0');
-    expect(result.fills![0].plot2).toBe('plot1');
+    expect(result.fills![0].plot1).toBe('plot2');
+    expect(result.fills![0].plot2).toBe('plot3');
   });
 });

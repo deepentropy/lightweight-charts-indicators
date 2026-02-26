@@ -14,24 +14,33 @@ export interface ZeroLagMACDInputs {
   fastLength: number;
   slowLength: number;
   signalLength: number;
+  macdEmaLength: number;
+  showDots: boolean;
 }
 
 export const defaultInputs: ZeroLagMACDInputs = {
   fastLength: 12,
   slowLength: 26,
   signalLength: 9,
+  macdEmaLength: 9,
+  showDots: true,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'fastLength', type: 'int', title: 'Fast Period', defval: 12, min: 1 },
   { id: 'slowLength', type: 'int', title: 'Slow Period', defval: 26, min: 1 },
   { id: 'signalLength', type: 'int', title: 'Signal Period', defval: 9, min: 1 },
+  { id: 'macdEmaLength', type: 'int', title: 'MACD EMA Length', defval: 9, min: 1 },
+  { id: 'showDots', type: 'bool', title: 'Show Crossing Dots', defval: true },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'MACD', color: '#000000', lineWidth: 2 },
-  { id: 'plot1', title: 'Signal', color: '#787B86', lineWidth: 2 },
-  { id: 'plot2', title: 'Histogram', color: '#26A69A', lineWidth: 1, style: 'columns' },
+  { id: 'plot0', title: 'Positive Histogram', color: '#008000', lineWidth: 1, style: 'columns' },
+  { id: 'plot1', title: 'Negative Histogram', color: '#800080', lineWidth: 1, style: 'columns' },
+  { id: 'plot2', title: 'MACD', color: '#000000', lineWidth: 2 },
+  { id: 'plot3', title: 'Signal', color: '#787B86', lineWidth: 2 },
+  { id: 'plot4', title: 'EMA on MACD', color: '#FF0000', lineWidth: 2 },
+  { id: 'plot5', title: 'Cross Dots', color: '#008000', lineWidth: 4, style: 'circles' },
 ];
 
 export const metadata = {
@@ -41,7 +50,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<ZeroLagMACDInputs> = {}): IndicatorResult {
-  const { fastLength, slowLength, signalLength } = { ...defaultInputs, ...inputs };
+  const { fastLength, slowLength, signalLength, macdEmaLength, showDots } = { ...defaultInputs, ...inputs };
 
   const src = getSourceSeries(bars, 'close');
 
@@ -64,15 +73,53 @@ export function calculate(bars: Bar[], inputs: Partial<ZeroLagMACDInputs> = {}):
   const signal = emasig1.mul(2).sub(emasig2);
 
   const hist = macdLine.sub(signal);
+  const macdEma = ta.ema(macdLine, macdEmaLength);
+
+  const histArr = hist.toArray();
+  const macdArr = macdLine.toArray();
+  const sigArr = signal.toArray();
+  const macdEmaArr = macdEma.toArray();
 
   const warmup = slowLength * 2;
-  const toPlot = (s: Series) =>
-    s.toArray().map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : (v ?? NaN) }));
+
+  // Separate positive and negative histograms
+  const upHist = histArr.map((v, i) => ({
+    time: bars[i].time,
+    value: i < warmup ? NaN : ((v ?? 0) > 0 ? (v ?? NaN) : NaN),
+  }));
+  const downHist = histArr.map((v, i) => ({
+    time: bars[i].time,
+    value: i < warmup ? NaN : ((v ?? 0) <= 0 ? (v ?? NaN) : NaN),
+  }));
+
+  const macdPlot = macdArr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : (v ?? NaN) }));
+  const sigPlot = sigArr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : (v ?? NaN) }));
+  const emaPlot = macdEmaArr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : (v ?? NaN) }));
+
+  // Cross dots at MACD/signal crossovers
+  const dotsPlot = macdArr.map((v, i) => {
+    if (!showDots || i < warmup + 1) return { time: bars[i].time, value: NaN };
+    const cur = v ?? 0;
+    const curSig = sigArr[i] ?? 0;
+    const prev = macdArr[i - 1] ?? 0;
+    const prevSig = sigArr[i - 1] ?? 0;
+    const cross = (prev <= prevSig && cur > curSig) || (prev >= prevSig && cur < curSig);
+    if (!cross) return { time: bars[i].time, value: NaN };
+    const h = histArr[i] ?? 0;
+    return { time: bars[i].time, value: cur, color: h > 0 ? '#008000' : '#800080' };
+  });
+
+  // Dynamic fill colors: green when MACD > signal, purple otherwise
+  const fillColors = histArr.map((v, i) => {
+    if (i < warmup) return 'transparent';
+    return (v ?? 0) > 0 ? 'rgba(0,128,0,0.25)' : 'rgba(128,0,128,0.25)';
+  });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(macdLine), 'plot1': toPlot(signal), 'plot2': toPlot(hist) },
-    fills: [{ plot1: 'plot0', plot2: 'plot1' }],
+    plots: { 'plot0': upHist, 'plot1': downHist, 'plot2': macdPlot, 'plot3': sigPlot, 'plot4': emaPlot, 'plot5': dotsPlot },
+    fills: [{ plot1: 'plot2', plot2: 'plot3', colors: fillColors }],
+    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dotted', title: 'Zero' } }],
   };
 }
 

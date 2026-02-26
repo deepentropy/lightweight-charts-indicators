@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface PremierRSIInputs {
   source: SourceType;
@@ -58,10 +59,19 @@ export function calculate(bars: Bar[], inputs: Partial<PremierRSIInputs> = {}): 
   const ssArr = ss.toArray();
   const warmup = rsiLength + stochLength + len * 2;
 
+  const barColors: BarColorData[] = [];
   const plot0 = ssArr.map((v, i) => {
     if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
     const expss = Math.exp(v);
-    return { time: bars[i].time, value: (expss - 1) / (expss + 1) };
+    const pro = (expss - 1) / (expss + 1);
+    // Histogram color: red when negative, green when positive
+    const color = pro < 0 ? '#FF0000' : '#00FF00';
+    // barcolor: red if < -0.9, orange if < -0.2, lime if > 0.9, green if > 0.2
+    if (pro < -0.9) barColors.push({ time: bars[i].time as number, color: '#FF0000' });
+    else if (pro < -0.2) barColors.push({ time: bars[i].time as number, color: '#FFA500' });
+    else if (pro > 0.9) barColors.push({ time: bars[i].time as number, color: '#00FF00' });
+    else if (pro > 0.2) barColors.push({ time: bars[i].time as number, color: '#008000' });
+    return { time: bars[i].time, value: pro, color };
   });
 
   return {
@@ -74,7 +84,8 @@ export function calculate(bars: Bar[], inputs: Partial<PremierRSIInputs> = {}): 
       { value: 0.2, options: { color: '#787B86', linestyle: 'dashed' } },
       { value: -0.2, options: { color: '#787B86', linestyle: 'dashed' } },
     ],
-  };
+    barColors,
+  } as IndicatorResult & { barColors: BarColorData[] };
 }
 
 export const PremierRSI = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

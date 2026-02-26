@@ -8,6 +8,7 @@
  */
 
 import { getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BarColorData, BgColorData } from '../types';
 
 export interface CoralTrendInputs {
   smoothingPeriod: number;
@@ -28,7 +29,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Coral Trend', color: '#2962FF', lineWidth: 3 },
+  { id: 'plot0', title: 'Coral Trend', color: '#2962FF', lineWidth: 3, style: 'circles' },
 ];
 
 export const metadata = {
@@ -67,15 +68,23 @@ export function calculate(bars: Bar[], inputs: Partial<CoralTrendInputs> = {}): 
 
   // Warm-up: roughly smoothingPeriod bars for the cascaded filters to settle
   const warmup = smoothingPeriod;
-  const data = bfrArr.map((value, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : value,
-  }));
+  const barColors: BarColorData[] = [];
+  const bgColors: BgColorData[] = [];
+  const data = bfrArr.map((value, i) => {
+    if (i < warmup) return { time: bars[i].time, value: NaN };
+    const prev = i > 0 ? bfrArr[i - 1] : value;
+    const color = value > prev ? '#26A69A' : value < prev ? '#EF5350' : '#2962FF';
+    barColors.push({ time: bars[i].time as number, color });
+    bgColors.push({ time: bars[i].time as number, color: value > prev ? 'rgba(38,166,154,0.15)' : value < prev ? 'rgba(239,83,80,0.15)' : 'rgba(41,98,255,0.15)' });
+    return { time: bars[i].time, value, color };
+  });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': data },
-  };
+    barColors,
+    bgColors,
+  } as IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] };
 }
 
 export const CoralTrend = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

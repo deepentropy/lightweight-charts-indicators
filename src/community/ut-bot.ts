@@ -8,7 +8,7 @@
  */
 
 import { ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, BarColorData } from '../types';
 
 export interface UTBotInputs {
   keyValue: number;
@@ -35,7 +35,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<UTBotInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<UTBotInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
   const { keyValue, atrPeriod } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -64,7 +64,15 @@ export function calculate(bars: Bar[], inputs: Partial<UTBotInputs> = {}): Indic
   }
 
   const warmup = atrPeriod;
-  const plot0 = trailStop.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : v }));
+  // Dynamic color: green when close > trailing stop, red otherwise
+  const barColors: BarColorData[] = [];
+  const plot0 = trailStop.map((v, i) => {
+    if (i < warmup) return { time: bars[i].time, value: NaN };
+    const above = bars[i].close > v;
+    const color = above ? '#26A69A' : '#EF5350';
+    barColors.push({ time: bars[i].time as number, color });
+    return { time: bars[i].time, value: v, color };
+  });
 
   // Markers: buy when close crosses above trailing stop, sell when crosses below
   const markers: MarkerData[] = [];
@@ -72,9 +80,9 @@ export function calculate(bars: Bar[], inputs: Partial<UTBotInputs> = {}): Indic
     const prevAbove = bars[i - 1].close > trailStop[i - 1];
     const curAbove = bars[i].close > trailStop[i];
     if (!prevAbove && curAbove) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#2962FF', text: 'Buy' });
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
     } else if (prevAbove && !curAbove) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#FF6D00', text: 'Sell' });
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
     }
   }
 
@@ -82,6 +90,7 @@ export function calculate(bars: Bar[], inputs: Partial<UTBotInputs> = {}): Indic
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
     markers,
+    barColors,
   };
 }
 

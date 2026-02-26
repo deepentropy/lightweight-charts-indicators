@@ -69,11 +69,12 @@ export function calculate(bars: Bar[], inputs: Partial<WaddahAttarExplosionInput
 
   const warmup = Math.max(slowLength, channelLength, deadZonePeriod);
 
-  const plot0: Array<{ time: number; value: number }> = [];
-  const plot1: Array<{ time: number; value: number }> = [];
+  const plot0: Array<{ time: number; value: number; color?: string }> = [];
+  const plot1: Array<{ time: number; value: number; color?: string }> = [];
   const plot2: Array<{ time: number; value: number }> = [];
   const plot3: Array<{ time: number; value: number }> = [];
 
+  let prevT1 = 0;
   for (let i = 0; i < n; i++) {
     const t = bars[i].time;
     const w = i < warmup;
@@ -84,10 +85,18 @@ export function calculate(bars: Bar[], inputs: Partial<WaddahAttarExplosionInput
     const e1 = (bbUpperArr[i] ?? 0) - (bbLowerArr[i] ?? 0);
     const dz = (deadZoneArr[i] ?? 0) * 3.7;
 
-    plot0.push({ time: t, value: w ? NaN : (t1 >= 0 ? t1 : 0) });
-    plot1.push({ time: t, value: w ? NaN : (t1 < 0 ? -t1 : 0) });
+    const upVal = w ? NaN : (t1 >= 0 ? t1 : 0);
+    const dnVal = w ? NaN : (t1 < 0 ? -t1 : 0);
+
+    // Dynamic colors: lime/green for up, orange/red for down (fading = decreasing)
+    const upColor = t1 < prevT1 ? '#00FF00' : '#008000';
+    const dnColor = -t1 < -prevT1 ? '#FFA500' : '#FF0000';
+
+    plot0.push({ time: t, value: upVal, color: w ? undefined : upColor });
+    plot1.push({ time: t, value: dnVal, color: w ? undefined : dnColor });
     plot2.push({ time: t, value: w ? NaN : e1 });
     plot3.push({ time: t, value: w ? NaN : dz });
+    prevT1 = t1;
   }
 
   return {

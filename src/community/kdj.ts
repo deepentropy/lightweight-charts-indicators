@@ -12,6 +12,7 @@
  */
 
 import type { Bar, IndicatorResult, InputConfig, PlotConfig } from 'oakscriptjs';
+import type { BgColorData } from '../types';
 
 export interface KDJInputs {
   period: number;
@@ -29,9 +30,9 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'K', color: '#1E88E5', lineWidth: 2 },
-  { id: 'plot1', title: 'D', color: '#FF6F00', lineWidth: 2 },
-  { id: 'plot2', title: 'J', color: '#000000', lineWidth: 1 },
+  { id: 'plot0', title: 'K', color: '#FF9800', lineWidth: 2 },
+  { id: 'plot1', title: 'D', color: '#00E676', lineWidth: 2 },
+  { id: 'plot2', title: 'J', color: '#FF00FF', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -80,10 +81,20 @@ export function calculate(bars: Bar[], inputs: Partial<KDJInputs> = {}): Indicat
   const toPlot = (arr: number[]) =>
     arr.map((value, i) => ({ time: bars[i].time, value: i < warmup ? NaN : value }));
 
+  // bgcolor: green when J > D, red otherwise, 70% transparency
+  const bgColors: BgColorData[] = [];
+  for (let i = warmup; i < bars.length; i++) {
+    bgColors.push({
+      time: bars[i].time as number,
+      color: jArr[i] > dArr[i] ? 'rgba(0,128,0,0.3)' : 'rgba(255,0,0,0.3)',
+    });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': toPlot(kArr), 'plot1': toPlot(dArr), 'plot2': toPlot(jArr) },
-  };
+    bgColors,
+  } as IndicatorResult & { bgColors: BgColorData[] };
 }
 
 export const KDJ = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

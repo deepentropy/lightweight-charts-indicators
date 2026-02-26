@@ -7,7 +7,7 @@
  * Reference: TradingView "CCT Bollinger Band Oscillator" by LazyBear
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface CCTBBOInputs {
   length: number;
@@ -30,6 +30,16 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'CCTBBO', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'EMA', color: '#FF6D00', lineWidth: 2 },
+];
+
+export const hlineConfig: HLineConfig[] = [
+  { id: 'hline_upper', price: 100, color: '#787B86', linestyle: 'solid' },
+  { id: 'hline_mid', price: 50, color: '#787B86', linestyle: 'dashed' },
+  { id: 'hline_lower', price: 0, color: '#787B86', linestyle: 'solid' },
+];
+
+export const fillConfig = [
+  { id: 'fill0', plot1: 'hline_upper', plot2: 'hline_lower', color: '#2962FF20' },
 ];
 
 export const metadata = {
@@ -64,4 +74,4 @@ export function calculate(bars: Bar[], inputs: Partial<CCTBBOInputs> = {}): Indi
   };
 }
 
-export const CCTBBO = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const CCTBBO = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig };

@@ -107,6 +107,13 @@ export function calculate(bars: Bar[], inputs: Partial<HalfTrendInputs> = {}): I
   const toPlot = (arr: number[]) =>
     arr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : v }));
 
+  // Dynamic HT line color: blue for uptrend (0), red for downtrend (1)
+  const htPlot = htArr.map((v, i) => {
+    if (i < warmup) return { time: bars[i].time, value: NaN };
+    const color = trendArr[i] === 0 ? '#2962FF' : '#EF5350';
+    return { time: bars[i].time, value: v, color };
+  });
+
   // Markers: buy when trend flips 1→0, sell when trend flips 0→1
   const markers: MarkerData[] = [];
   for (let i = warmup; i < n; i++) {
@@ -121,7 +128,7 @@ export function calculate(bars: Bar[], inputs: Partial<HalfTrendInputs> = {}): I
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(htArr), 'plot1': toPlot(atrHighArr), 'plot2': toPlot(atrLowArr) },
+    plots: { 'plot0': htPlot, 'plot1': toPlot(atrHighArr), 'plot2': toPlot(atrLowArr) },
     fills: [{ plot1: 'plot0', plot2: 'plot1' }, { plot1: 'plot0', plot2: 'plot2' }],
     markers,
   };

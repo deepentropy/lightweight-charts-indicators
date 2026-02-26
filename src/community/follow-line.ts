@@ -89,16 +89,20 @@ export function calculate(bars: Bar[], inputs: Partial<FollowLineInputs> = {}): 
   }
 
   const warmup = bbPeriod;
-  const plot0 = trendLine.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : v }));
+  const plot0 = trendLine.map((v, i) => {
+    if (i < warmup) return { time: bars[i].time, value: NaN };
+    const color = iTrend[i] > 0 ? '#2962FF' : '#FF6D00';
+    return { time: bars[i].time, value: v, color };
+  });
 
   // Markers: buy when iTrend flips -1→1, sell when iTrend flips 1→-1
   const markers: MarkerData[] = [];
   for (let i = warmup; i < n; i++) {
     if (i > 0 && iTrend[i] !== iTrend[i - 1]) {
       if (iTrend[i] === 1) {
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#2962FF', text: 'Buy' });
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#2962FF', text: 'BUY' });
       } else if (iTrend[i] === -1) {
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#FF6D00', text: 'Sell' });
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF6D00', text: 'SELL' });
       }
     }
   }

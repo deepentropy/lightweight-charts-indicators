@@ -58,7 +58,13 @@ export function calculate(bars: Bar[], inputs: Partial<TillsonT3Inputs> = {}): I
 
   const warmup = length * 6;
   const t3Arr = t3.toArray();
-  const plot0 = t3Arr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : (v ?? NaN) }));
+  const plot0 = t3Arr.map((v, i) => {
+    const val = i < warmup ? NaN : (v ?? NaN);
+    if (isNaN(val)) return { time: bars[i].time, value: NaN };
+    const prev = i > 0 ? (t3Arr[i - 1] ?? NaN) : NaN;
+    const color = val > prev ? '#26A69A' : val < prev ? '#EF5350' : '#FFEB3B';
+    return { time: bars[i].time, value: val, color };
+  });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },

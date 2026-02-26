@@ -403,26 +403,12 @@ describe('DonchianTrendRibbon', () => {
 describe('OBVMACD', () => {
   const result = OBVMACD.calculate(bars);
 
-  it('returns correct shape (Histogram, MACD, Signal)', () => {
+  it('returns correct shape (Trend, Up Signal, Down Signal)', () => {
     assertShape(result, ['plot0', 'plot1', 'plot2'], false);
   });
 
-  it('histogram = MACD - Signal', () => {
-    const histPlot = (result.plots as Record<string, Array<{ value: number }>>)['plot0'];
-    const macdPlot = (result.plots as Record<string, Array<{ value: number }>>)['plot1'];
-    const sigPlot = (result.plots as Record<string, Array<{ value: number }>>)['plot2'];
-    for (let i = 40; i < bars.length; i++) {
-      const h = histPlot[i].value;
-      const m = macdPlot[i].value;
-      const s = sigPlot[i].value;
-      if (!isNaN(h) && !isNaN(m) && !isNaN(s)) {
-        expect(h).toBeCloseTo(m - s, 6);
-      }
-    }
-  });
-
   it('produces finite values after warmup', () => {
-    const vals = validValues(result, 'plot1');
+    const vals = validValues(result, 'plot0');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v) => expect(isFinite(v)).toBe(true));
   });

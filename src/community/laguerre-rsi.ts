@@ -67,11 +67,20 @@ export function calculate(bars: Bar[], inputs: Partial<LaguerreRSIInputs> = {}):
   }
 
   const warmup = 4; // Minimal warmup for 4-stage Laguerre filter
-  const plot0 = finalArr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : v }));
+  const plot0 = finalArr.map((v, i) => {
+    if (i < warmup) return { time: bars[i].time, value: NaN };
+    const prev = i > 0 ? finalArr[i - 1] : v;
+    const color = v > prev ? '#26A69A' : v < prev ? '#EF5350' : '#26A69A';
+    return { time: bars[i].time, value: v, color };
+  });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
+    hlines: [
+      { value: 0.8, options: { color: '#800000', linestyle: 'solid', title: 'Overbought' } },
+      { value: 0.2, options: { color: '#800000', linestyle: 'solid', title: 'Oversold' } },
+    ],
   };
 }
 

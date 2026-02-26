@@ -34,7 +34,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'MACD 4C', color: '#26A69A', lineWidth: 4 },
+  { id: 'plot0', title: 'MACD 4C', color: '#26A69A', lineWidth: 3, style: 'histogram' },
 ];
 
 export const metadata = {
@@ -54,12 +54,20 @@ export function calculate(bars: Bar[], inputs: Partial<MACD4CInputs> = {}): Indi
 
   const data = macdArr.map((value, i) => {
     const v = value ?? NaN;
-    return { time: bars[i].time, value: v };
+    const prev = i > 0 ? (macdArr[i - 1] ?? NaN) : NaN;
+    let color: string;
+    if (v > 0) {
+      color = v > prev ? '#00FF00' : '#008000'; // lime : green
+    } else {
+      color = v < prev ? '#800000' : '#FF0000'; // maroon : red
+    }
+    return { time: bars[i].time, value: v, color };
   });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': data },
+    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } }],
   };
 }
 

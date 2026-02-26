@@ -15,18 +15,21 @@ export interface OTTInputs {
   source: SourceType;
   period: number;
   percent: number;
+  highlight: boolean;
 }
 
 export const defaultInputs: OTTInputs = {
   source: 'close',
   period: 2,
   percent: 1.4,
+  highlight: true,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'source', type: 'source', title: 'Source', defval: 'close' },
   { id: 'period', type: 'int', title: 'OTT Period', defval: 2, min: 1 },
   { id: 'percent', type: 'float', title: 'OTT Percent', defval: 1.4, min: 0, step: 0.1 },
+  { id: 'highlight', type: 'bool', title: 'Highlight OTT Color', defval: true },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -41,7 +44,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<OTTInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { source, period, percent } = { ...defaultInputs, ...inputs };
+  const { source, period, percent, highlight } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   // Default MA type is VAR (Variable Index Dynamic Average)
@@ -95,8 +98,26 @@ export function calculate(bars: Bar[], inputs: Partial<OTTInputs> = {}): Indicat
 
   const warmup = period + 9;
   const plot0 = mavg.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : v }));
-  // OTT is plotted with 2-bar offset like the original
-  const plot1 = ott.map((_v, i) => ({ time: bars[i].time, value: i < warmup + 2 ? NaN : ott[i - 2] }));
+  // OTT is plotted with 2-bar offset like the original, with dynamic color
+  const plot1 = ott.map((_v, i) => {
+    if (i < warmup + 2) return { time: bars[i].time, value: NaN };
+    const ottLag = ott[i - 2];
+    const ottLagPrev = i >= warmup + 3 ? ott[i - 3] : ottLag;
+    // Dynamic color: green when OTT rising, red when falling, default purple
+    const color = highlight
+      ? (ottLag > ottLagPrev ? '#008000' : '#FF0000')
+      : '#B800D9';
+    return { time: bars[i].time, value: ottLag, color };
+  });
+
+  // Dynamic fill colors: green when MAvg > OTT, red when MAvg < OTT
+  const fillColors = mavg.map((v, i) => {
+    if (i < warmup + 2) return 'transparent';
+    const ottLag = ott[i - 2];
+    if (v > ottLag) return 'rgba(0,128,0,0.15)';
+    if (v < ottLag) return 'rgba(255,0,0,0.15)';
+    return 'transparent';
+  });
 
   // Markers: buy when MAvg crosses above OTT[2], sell when crosses below
   const markers: MarkerData[] = [];
@@ -104,16 +125,16 @@ export function calculate(bars: Bar[], inputs: Partial<OTTInputs> = {}): Indicat
     const ottLag = ott[i - 2];
     const ottLagPrev = ott[i - 3];
     if (mavg[i - 1] <= ottLagPrev && mavg[i] > ottLag) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#2962FF', text: 'Buy' });
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#008000', text: 'Buy' });
     } else if (mavg[i - 1] >= ottLagPrev && mavg[i] < ottLag) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#FF6D00', text: 'Sell' });
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Sell' });
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: '#0585E1' } }],
+    fills: [{ plot1: 'plot0', plot2: 'plot1', colors: fillColors }],
     markers,
   };
 }

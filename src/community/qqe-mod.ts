@@ -50,8 +50,8 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Secondary QQE Trend Line', color: '#FFFFFF', lineWidth: 2 },
   { id: 'plot1', title: 'Secondary RSI Histogram', color: '#707070', lineWidth: 1, style: 'columns' },
-  { id: 'plot2', title: 'QQE Up Signal', color: '#00c3ff', lineWidth: 1 },
-  { id: 'plot3', title: 'QQE Down Signal', color: '#ff0062', lineWidth: 1 },
+  { id: 'plot2', title: 'QQE Up Signal', color: '#00c3ff', lineWidth: 1, style: 'columns' },
+  { id: 'plot3', title: 'QQE Down Signal', color: '#ff0062', lineWidth: 1, style: 'columns' },
 ];
 
 export const metadata = {
@@ -143,7 +143,7 @@ export function calculate(bars: Bar[], inputs: Partial<QQEModInputs> = {}): Indi
   const warmup = Math.max(cfg.rsiLengthPrimary * 2, cfg.rsiLengthSecondary * 2, cfg.bollingerLength);
 
   const plot0: Array<{ time: number; value: number }> = [];
-  const plot1: Array<{ time: number; value: number }> = [];
+  const plot1: Array<{ time: number; value: number; color?: string }> = [];
   const plot2: Array<{ time: number; value: number }> = [];
   const plot3: Array<{ time: number; value: number }> = [];
 
@@ -157,7 +157,18 @@ export function calculate(bars: Bar[], inputs: Partial<QQEModInputs> = {}): Indi
     const bbLo = (bbBasisArr[i] ?? 0) - (bbDevArr[i] ?? 0) * cfg.bollingerMultiplier;
 
     plot0.push({ time: t, value: w ? NaN : secTrend50 });
-    plot1.push({ time: t, value: w ? NaN : secRsi50 });
+
+    // Dynamic histogram color: gray at extremes, transparent in neutral
+    let histColor: string | undefined;
+    if (!w) {
+      if (secRsi50 > cfg.thresholdSecondary || secRsi50 < -cfg.thresholdSecondary) {
+        histColor = 'rgba(112,112,112,0.80)';
+      } else {
+        histColor = 'transparent';
+      }
+    }
+    plot1.push({ time: t, value: w ? NaN : secRsi50, color: histColor });
+
     plot2.push({ time: t, value: w ? NaN : (secRsi50 > cfg.thresholdSecondary && priRsi50 > bbUp ? secRsi50 : NaN) });
     plot3.push({ time: t, value: w ? NaN : (secRsi50 < -cfg.thresholdSecondary && priRsi50 < bbLo ? secRsi50 : NaN) });
   }

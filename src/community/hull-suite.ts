@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface HullSuiteInputs {
   source: SourceType;
@@ -66,14 +67,33 @@ export function calculate(bars: Bar[], inputs: Partial<HullSuiteInputs> = {}): I
   }
 
   const warmup = length;
-  const mhull = hullArr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : v }));
-  const shull = hullArr.map((_v, i) => ({ time: bars[i].time, value: i < warmup + 2 ? NaN : hullArr[i - 2] }));
+  const barColors: BarColorData[] = [];
+  const mhull = hullArr.map((v, i) => {
+    if (i < warmup) return { time: bars[i].time, value: NaN };
+    const shullVal = i >= warmup + 2 ? hullArr[i - 2] : NaN;
+    const color = !isNaN(shullVal) && v > shullVal ? '#00FF00' : '#FF0000';
+    barColors.push({ time: bars[i].time as number, color });
+    return { time: bars[i].time, value: v, color };
+  });
+  const shull = hullArr.map((_v, i) => {
+    if (i < warmup + 2) return { time: bars[i].time, value: NaN };
+    const shullVal = hullArr[i - 2];
+    const color = hullArr[i] > shullVal ? '#00FF00' : '#FF0000';
+    return { time: bars[i].time, value: shullVal, color };
+  });
+
+  // Dynamic fill colors
+  const fillColors = hullArr.map((v, i) => {
+    if (i < warmup + 2) return 'transparent';
+    return v > hullArr[i - 2] ? '#00FF0040' : '#FF000040';
+  });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': mhull, 'plot1': shull },
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: '#00ff00' } }],
-  };
+    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: '#00ff00' }, colors: fillColors }],
+    barColors,
+  } as IndicatorResult & { barColors: BarColorData[] };
 }
 
 export const HullSuite = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

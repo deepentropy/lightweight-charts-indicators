@@ -38,7 +38,7 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Momentum', color: '#26A69A', lineWidth: 4, style: 'histogram' },
-  { id: 'plot1', title: 'Squeeze', color: '#787B86', lineWidth: 2, style: 'columns' },
+  { id: 'plot1', title: 'Squeeze', color: '#787B86', lineWidth: 2, style: 'cross' },
 ];
 
 export const metadata = {

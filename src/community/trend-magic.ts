@@ -82,7 +82,11 @@ export function calculate(bars: Bar[], inputs: Partial<TrendMagicInputs> = {}): 
   }
 
   const warmup = Math.max(cciPeriod, atrPeriod);
-  const plot0 = tmArr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : v }));
+  const plot0 = tmArr.map((v, i) => {
+    if (i < warmup) return { time: bars[i].time, value: NaN };
+    const color = (cciArr[i] ?? 0) >= 0 ? '#00FF00' : '#FF0000';
+    return { time: bars[i].time, value: v, color };
+  });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },

@@ -10,6 +10,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface CDCActionZoneInputs {
   source: SourceType;
@@ -40,23 +41,43 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CDCActionZoneInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<CDCActionZoneInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { source, shortPeriod, longPeriod } = { ...defaultInputs, ...inputs };
 
   const src = getSourceSeries(bars, source);
   const ap = ta.ema(src, 2);
   const fast = ta.ema(ap, shortPeriod);
   const slow = ta.ema(ap, longPeriod);
+  const fastArr = fast.toArray();
+  const slowArr = slow.toArray();
+  const apArr = ap.toArray();
 
-  const toPlot = (s: ReturnType<typeof ta.ema>) => {
-    const arr = s.toArray();
-    return arr.map((v, i) => ({ time: bars[i].time, value: i < longPeriod ? NaN : (v ?? NaN) }));
-  };
+  const toPlot = (arr: (number | null)[]) =>
+    arr.map((v, i) => ({ time: bars[i].time, value: i < longPeriod ? NaN : (v ?? NaN) }));
+
+  // Zone coloring: Green (bull + AP>Fast), Yellow (bull + AP<Fast), Red (bear + AP<Fast), Blue (bear + AP>Fast)
+  const barColors: BarColorData[] = [];
+  const fillColors: string[] = [];
+  for (let i = 0; i < bars.length; i++) {
+    if (i < longPeriod) { fillColors.push('transparent'); continue; }
+    const f = fastArr[i] ?? 0;
+    const s2 = slowArr[i] ?? 0;
+    const a = apArr[i] ?? 0;
+    const bullish = f > s2;
+    let color: string;
+    if (bullish && a > f) color = '#00FF00';       // Green zone
+    else if (bullish && a <= f) color = '#FFFF00';  // Yellow zone
+    else if (!bullish && a < f) color = '#FF0000';  // Red zone
+    else color = '#0000FF';                          // Blue zone
+    barColors.push({ time: bars[i].time as number, color });
+    fillColors.push(color + '40'); // 25% alpha
+  }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(fast), 'plot1': toPlot(slow) },
-    fills: [{ plot1: 'plot0', plot2: 'plot1' }],
+    plots: { 'plot0': toPlot(fastArr), 'plot1': toPlot(slowArr) },
+    fills: [{ plot1: 'plot0', plot2: 'plot1', colors: fillColors }],
+    barColors,
   };
 }
 

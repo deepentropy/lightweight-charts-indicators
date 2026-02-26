@@ -12,7 +12,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
-import type { PlotCandleData } from '../types';
+import type { PlotCandleData, BarColorData } from '../types';
 
 export interface RSICandlesInputs {
   length: number;
@@ -45,7 +45,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RSICandlesInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<RSICandlesInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] } {
   const { length } = { ...defaultInputs, ...inputs };
 
   const rsiOpen = ta.rsi(new Series(bars, (b) => b.open), length).toArray();
@@ -79,10 +79,21 @@ export function calculate(bars: Bar[], inputs: Partial<RSICandlesInputs> = {}): 
     });
   }
 
+  // barcolor: green when RSI close > 70, red when < 30
+  const barColors: BarColorData[] = [];
+  for (let i = 0; i < bars.length; i++) {
+    const c = rsiClose[i];
+    if (c != null) {
+      if (c > 70) barColors.push({ time: bars[i].time as number, color: '#26A69A' });
+      else if (c < 30) barColors.push({ time: bars[i].time as number, color: '#EF5350' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {},
     plotCandles: { rsi: candles },
+    barColors,
   };
 }
 

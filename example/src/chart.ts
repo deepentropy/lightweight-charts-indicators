@@ -943,7 +943,7 @@ export class ChartManager {
    */
   setIndicatorData(
     id: string,
-    data: Array<{ time: number; value: number }>,
+    data: Array<{ time: number; value: number; color?: string }>,
     config: SeriesConfig = {}
   ): void {
     let series = this.indicatorSeries.get(id);
@@ -983,7 +983,9 @@ export class ChartManager {
         if (d.value == null || Number.isNaN(d.value)) {
           return { time: d.time as unknown as Time };
         }
-        return { time: d.time as unknown as Time, value: d.value };
+        const pt: LineData<Time> = { time: d.time as unknown as Time, value: d.value };
+        if (d.color) pt.color = d.color;
+        return pt;
       });
       series.setData(lineData);
     } else {
@@ -999,7 +1001,7 @@ export class ChartManager {
    */
   setAreaPlotData(
     id: string,
-    data: Array<{ time: number; value: number }>,
+    data: Array<{ time: number; value: number; color?: string }>,
     config: SeriesConfig = {}
   ): void {
     let series = this.areaSeries.get(id);
