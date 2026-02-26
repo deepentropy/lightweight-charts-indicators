@@ -41,6 +41,16 @@ import {
   MadridTrendSqueeze,
   KaufmanAdaptiveMA,
   WilliamsVixFix,
+  EhlersMESAMA,
+  GannHighLow,
+  MACDLeader,
+  CMSlingShot,
+  RangeIdentifier,
+  SlowStochastic,
+  IFTStochRSICCI,
+  VariableMA,
+  SmoothedHeikenAshi,
+  OBVOscillator,
 } from '../../src/index.js';
 
 // ---------------------------------------------------------------------------
@@ -760,5 +770,197 @@ describe('WilliamsVixFix', () => {
     const vals = validValues(result);
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
+  });
+});
+
+describe('EhlersMESAMA', () => {
+  const result = EhlersMESAMA.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0', 'plot1'], true);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+
+  it('tracks price level (overlay)', () => {
+    const vals = validValues(result);
+    const avgClose = bars.reduce((s, b) => s + b.close, 0) / bars.length;
+    const avgMama = vals.reduce((s, v) => s + v, 0) / vals.length;
+    expect(Math.abs(avgMama - avgClose)).toBeLessThan(avgClose * 0.3);
+  });
+});
+
+describe('GannHighLow', () => {
+  const result = GannHighLow.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], true);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+
+  it('tracks price level (overlay)', () => {
+    const vals = validValues(result);
+    const avgClose = bars.reduce((s, b) => s + b.close, 0) / bars.length;
+    const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
+    expect(Math.abs(avg - avgClose)).toBeLessThan(avgClose * 0.3);
+  });
+});
+
+describe('MACDLeader', () => {
+  const result = MACDLeader.calculate(bars);
+
+  it('returns correct shape (4 plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], false);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+
+  it('histogram crosses zero', () => {
+    const vals = validValues(result, 'plot3');
+    const hasPositive = vals.some((v) => v > 0);
+    const hasNegative = vals.some((v) => v < 0);
+    expect(hasPositive).toBe(true);
+    expect(hasNegative).toBe(true);
+  });
+});
+
+describe('CMSlingShot', () => {
+  const result = CMSlingShot.calculate(bars);
+
+  it('returns correct shape (2 EMA plots)', () => {
+    assertShape(result, ['plot0', 'plot1'], true);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+});
+
+describe('RangeIdentifier', () => {
+  const result = RangeIdentifier.calculate(bars);
+
+  it('returns correct shape (3 plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2'], true);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+
+  it('upper >= lower', () => {
+    const upper = validValues(result, 'plot0');
+    const lower = validValues(result, 'plot1');
+    const len = Math.min(upper.length, lower.length);
+    for (let i = 0; i < len; i++) {
+      expect(upper[i]).toBeGreaterThanOrEqual(lower[i]);
+    }
+  });
+});
+
+describe('SlowStochastic', () => {
+  const result = SlowStochastic.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0', 'plot1'], false);
+  });
+
+  it('values in 0-100 range', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(100);
+    });
+  });
+});
+
+describe('IFTStochRSICCI', () => {
+  const result = IFTStochRSICCI.calculate(bars);
+
+  it('returns correct shape (4 plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], false);
+  });
+
+  it('IFT values in -1 to 1 range', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => {
+      expect(v).toBeGreaterThanOrEqual(-1);
+      expect(v).toBeLessThanOrEqual(1);
+    });
+  });
+});
+
+describe('VariableMA', () => {
+  const result = VariableMA.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], true);
+  });
+
+  it('tracks price level (overlay)', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    const avgClose = bars.reduce((s, b) => s + b.close, 0) / bars.length;
+    const avgVma = vals.reduce((s, v) => s + v, 0) / vals.length;
+    expect(Math.abs(avgVma - avgClose)).toBeLessThan(avgClose * 0.3);
+  });
+});
+
+describe('SmoothedHeikenAshi', () => {
+  const result = SmoothedHeikenAshi.calculate(bars);
+
+  it('returns metadata', () => {
+    expect(result.metadata).toBeDefined();
+    expect(result.metadata.title).toBeTruthy();
+    expect(result.metadata.overlay).toBe(true);
+  });
+
+  it('returns plotCandles with valid OHLC after warmup', () => {
+    const candles = (result as any).plotCandles?.sha;
+    expect(candles).toBeDefined();
+    expect(candles.length).toBe(bars.length);
+    const valid = candles.filter((c: any) => !isNaN(c.close));
+    expect(valid.length).toBeGreaterThan(0);
+    valid.forEach((c: any) => {
+      expect(isFinite(c.open)).toBe(true);
+      expect(isFinite(c.high)).toBe(true);
+      expect(isFinite(c.low)).toBe(true);
+      expect(isFinite(c.close)).toBe(true);
+    });
+  });
+});
+
+describe('OBVOscillator', () => {
+  const result = OBVOscillator.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], false);
+  });
+
+  it('oscillates around zero', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    const hasPositive = vals.some((v) => v > 0);
+    const hasNegative = vals.some((v) => v < 0);
+    expect(hasPositive).toBe(true);
+    expect(hasNegative).toBe(true);
   });
 });

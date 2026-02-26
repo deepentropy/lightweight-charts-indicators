@@ -695,6 +695,56 @@ import * as williamsVixFixIndicator from './community/williams-vix-fix';
 export { WilliamsVixFix, calculate as calculateWilliamsVixFix } from './community/williams-vix-fix';
 export type { WilliamsVixFixInputs } from './community/williams-vix-fix';
 
+// Ehlers MESA Adaptive Moving Average
+import * as ehlersMESAMAIndicator from './community/ehlers-mesa-ma';
+export { EhlersMESAMA, calculate as calculateEhlersMESAMA } from './community/ehlers-mesa-ma';
+export type { EhlersMESAMAInputs } from './community/ehlers-mesa-ma';
+
+// Gann High Low
+import * as gannHighLowIndicator from './community/gann-high-low';
+export { GannHighLow, calculate as calculateGannHighLow } from './community/gann-high-low';
+export type { GannHighLowInputs } from './community/gann-high-low';
+
+// CM Sling Shot System
+import * as cmSlingShotIndicator from './community/cm-sling-shot';
+export { CMSlingShot, calculate as calculateCMSlingShot } from './community/cm-sling-shot';
+export type { CMSlingShotInputs } from './community/cm-sling-shot';
+
+// Range Identifier
+import * as rangeIdentifierIndicator from './community/range-identifier';
+export { RangeIdentifier, calculate as calculateRangeIdentifier } from './community/range-identifier';
+export type { RangeIdentifierInputs } from './community/range-identifier';
+
+// Smoothed Heiken Ashi
+import * as smoothedHeikenAshiIndicator from './community/smoothed-heiken-ashi';
+export { SmoothedHeikenAshi, calculate as calculateSmoothedHeikenAshi } from './community/smoothed-heiken-ashi';
+export type { SmoothedHeikenAshiInputs } from './community/smoothed-heiken-ashi';
+
+// MACD Leader
+import * as macdLeaderIndicator from './community/macd-leader';
+export { MACDLeader, calculate as calculateMACDLeader } from './community/macd-leader';
+export type { MACDLeaderInputs } from './community/macd-leader';
+
+// Slow Stochastic
+import * as slowStochasticIndicator from './community/slow-stochastic';
+export { SlowStochastic, calculate as calculateSlowStochastic } from './community/slow-stochastic';
+export type { SlowStochasticInputs } from './community/slow-stochastic';
+
+// IFT Stoch RSI CCI
+import * as iftStochRsiCciIndicator from './community/ift-stoch-rsi-cci';
+export { IFTStochRSICCI, calculate as calculateIFTStochRSICCI } from './community/ift-stoch-rsi-cci';
+export type { IFTStochRSICCIInputs } from './community/ift-stoch-rsi-cci';
+
+// Variable Moving Average
+import * as variableMAIndicator from './community/variable-ma';
+export { VariableMA, calculate as calculateVariableMA } from './community/variable-ma';
+export type { VariableMAInputs } from './community/variable-ma';
+
+// OBV Oscillator
+import * as obvOscillatorIndicator from './community/obv-oscillator';
+export { OBVOscillator, calculate as calculateOBVOscillator } from './community/obv-oscillator';
+export type { OBVOscillatorInputs } from './community/obv-oscillator';
+
 // Candlestick Patterns
 import * as hammerIndicator from './candlestick/hammer';
 import * as shootingStarIndicator from './candlestick/shooting-star';
@@ -2639,6 +2689,126 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: williamsVixFixIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...williamsVixFixIndicator.defaultInputs },
     calculate: williamsVixFixIndicator.calculate,
+  },
+  {
+    id: 'ehlers-mesa-ma',
+    name: 'Ehlers MESA Adaptive Moving Average',
+    shortName: 'MESA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: ehlersMESAMAIndicator.metadata,
+    inputConfig: ehlersMESAMAIndicator.inputConfig as InputConfig[],
+    plotConfig: ehlersMESAMAIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ehlersMESAMAIndicator.defaultInputs },
+    calculate: ehlersMESAMAIndicator.calculate,
+  },
+  {
+    id: 'gann-high-low',
+    name: 'Gann High Low',
+    shortName: 'GannHL',
+    category: 'Trend',
+    overlay: true,
+    metadata: gannHighLowIndicator.metadata,
+    inputConfig: gannHighLowIndicator.inputConfig as InputConfig[],
+    plotConfig: gannHighLowIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...gannHighLowIndicator.defaultInputs },
+    calculate: gannHighLowIndicator.calculate,
+  },
+  {
+    id: 'cm-sling-shot',
+    name: 'CM Sling Shot System',
+    shortName: 'CMSlShot',
+    category: 'Trend',
+    overlay: true,
+    metadata: cmSlingShotIndicator.metadata,
+    inputConfig: cmSlingShotIndicator.inputConfig as InputConfig[],
+    plotConfig: cmSlingShotIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmSlingShotIndicator.defaultInputs },
+    calculate: cmSlingShotIndicator.calculate,
+  },
+  {
+    id: 'range-identifier',
+    name: 'Range Identifier',
+    shortName: 'RangeID',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: rangeIdentifierIndicator.metadata,
+    inputConfig: rangeIdentifierIndicator.inputConfig as InputConfig[],
+    plotConfig: rangeIdentifierIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rangeIdentifierIndicator.defaultInputs },
+    calculate: rangeIdentifierIndicator.calculate,
+  },
+  {
+    id: 'smoothed-heiken-ashi',
+    name: 'Smoothed Heiken Ashi',
+    shortName: 'SmHA',
+    category: 'Trend',
+    overlay: true,
+    metadata: smoothedHeikenAshiIndicator.metadata,
+    inputConfig: smoothedHeikenAshiIndicator.inputConfig as InputConfig[],
+    plotConfig: smoothedHeikenAshiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...smoothedHeikenAshiIndicator.defaultInputs },
+    calculate: smoothedHeikenAshiIndicator.calculate,
+  },
+  {
+    id: 'macd-leader',
+    name: 'MACD Leader',
+    shortName: 'MACDLeader',
+    category: 'Momentum',
+    overlay: false,
+    metadata: macdLeaderIndicator.metadata,
+    inputConfig: macdLeaderIndicator.inputConfig as InputConfig[],
+    plotConfig: macdLeaderIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...macdLeaderIndicator.defaultInputs },
+    calculate: macdLeaderIndicator.calculate,
+  },
+  {
+    id: 'slow-stochastic',
+    name: 'Slow Stochastic',
+    shortName: 'SlowStoch',
+    category: 'Momentum',
+    overlay: false,
+    metadata: slowStochasticIndicator.metadata,
+    inputConfig: slowStochasticIndicator.inputConfig as InputConfig[],
+    plotConfig: slowStochasticIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...slowStochasticIndicator.defaultInputs },
+    calculate: slowStochasticIndicator.calculate,
+  },
+  {
+    id: 'ift-stoch-rsi-cci',
+    name: 'IFT Stoch RSI CCI',
+    shortName: 'IFTCombo',
+    category: 'Momentum',
+    overlay: false,
+    metadata: iftStochRsiCciIndicator.metadata,
+    inputConfig: iftStochRsiCciIndicator.inputConfig as InputConfig[],
+    plotConfig: iftStochRsiCciIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...iftStochRsiCciIndicator.defaultInputs },
+    calculate: iftStochRsiCciIndicator.calculate,
+  },
+  {
+    id: 'variable-ma',
+    name: 'Variable Moving Average',
+    shortName: 'VMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: variableMAIndicator.metadata,
+    inputConfig: variableMAIndicator.inputConfig as InputConfig[],
+    plotConfig: variableMAIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...variableMAIndicator.defaultInputs },
+    calculate: variableMAIndicator.calculate,
+  },
+  {
+    id: 'obv-oscillator',
+    name: 'OBV Oscillator',
+    shortName: 'OBVOsc',
+    category: 'Volume',
+    overlay: false,
+    metadata: obvOscillatorIndicator.metadata,
+    inputConfig: obvOscillatorIndicator.inputConfig as InputConfig[],
+    plotConfig: obvOscillatorIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...obvOscillatorIndicator.defaultInputs },
+    calculate: obvOscillatorIndicator.calculate,
   },
   // Candlestick Patterns
   ...candlestickEntries([
