@@ -45,7 +45,6 @@ export function calculate(bars: Bar[], _inputs: Partial<BollingerBarsInputs> = {
     close: b.low,
     color: '#0D349E',
     borderColor: '#0D349E',
-    wickColor: '#0D349E',
   }));
 
   // Body: plotcandle(open, high, low, close) — green if up, red if down

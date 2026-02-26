@@ -79,14 +79,14 @@ export function calculate(bars: Bar[], inputs: Partial<SupertrendInputs> = {}): 
     value: (directions[i] ?? 1) >= 0 ? (value ?? NaN) : NaN,
   }));
 
-  const bodyMiddleData = bars.map((bar) => ({
+  const bodyMiddleData = bars.map((bar, i) => ({
     time: bar.time,
-    value: (bar.open + bar.close) / 2,
+    value: i === 0 ? NaN : (bar.open + bar.close) / 2,
   }));
 
   const fills: FillData[] = [
-    { plot1: 'plot2', plot2: 'plot0', options: { color: '#26A69A', transp: 90, title: 'Uptrend background' } },
-    { plot1: 'plot2', plot2: 'plot1', options: { color: '#EF5350', transp: 90, title: 'Downtrend background' } },
+    { plot1: 'plot2', plot2: 'plot0', options: { color: '#26A69A', transp: 90, title: 'Uptrend background', fillgaps: false } },
+    { plot1: 'plot2', plot2: 'plot1', options: { color: '#EF5350', transp: 90, title: 'Downtrend background', fillgaps: false } },
   ];
 
   return {

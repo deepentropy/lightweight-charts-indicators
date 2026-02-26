@@ -12,14 +12,22 @@ import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, ty
 export interface TrendStrengthInputs {
   /** Period length */
   length: number;
+  /** Bullish fill color */
+  bullishColor: string;
+  /** Bearish fill color */
+  bearishColor: string;
 }
 
 export const defaultInputs: TrendStrengthInputs = {
   length: 14,
+  bullishColor: '#08998119',
+  bearishColor: '#F2364519',
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Length', defval: 14, min: 1 },
+  { id: 'bullishColor', type: 'color', title: 'Bullish Color', defval: '#08998119' },
+  { id: 'bearishColor', type: 'color', title: 'Bearish Color', defval: '#F2364519' },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -42,7 +50,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<TrendStrengthInputs> = {}): IndicatorResult {
-  const { length } = { ...defaultInputs, ...inputs };
+  const { length, bullishColor, bearishColor } = { ...defaultInputs, ...inputs };
 
   const close = new Series(bars, b => b.close);
   const barIndex = new Series(bars, (_, i) => i);
@@ -63,8 +71,8 @@ export function calculate(bars: Bar[], inputs: Partial<TrendStrengthInputs> = {}
   const midlineData = bars.map(b => ({ time: b.time, value: 0 }));
 
   const fills: FillData[] = [
-    { plot1: 'plot1', plot2: 'plot3', options: { color: '#089981', transp: 90, title: 'Bullish Gradient Fill' } },
-    { plot1: 'plot2', plot2: 'plot3', options: { color: '#F23645', transp: 90, title: 'Bearish Gradient Fill' } },
+    { plot1: 'plot1', plot2: 'plot3', options: { color: bullishColor, title: 'Bullish Gradient Fill' } },
+    { plot1: 'plot2', plot2: 'plot3', options: { color: bearishColor, title: 'Bearish Gradient Fill' } },
   ];
 
   return {

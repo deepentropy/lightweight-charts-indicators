@@ -36,7 +36,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Relative Volume Ratio', color: '#4CAF504D', lineWidth: 1, style: 'columns' },
+  { id: 'plot0', title: 'Relative Volume Ratio', color: '#4CAF504D', lineWidth: 1, style: 'columns', histbase: 1 },
 ];
 
 export const hlineConfig: HLineConfig[] = [

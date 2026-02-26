@@ -6,7 +6,6 @@
  */
 
 import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData } from '../types';
 
 export interface MACrossInputs {
   /** Short MA period */
@@ -28,6 +27,7 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Short MA', color: '#FF6D00', lineWidth: 1 },
   { id: 'plot1', title: 'Long MA', color: '#43A047', lineWidth: 1 },
+  { id: 'plot2', title: 'Cross', color: '#2962FF', lineWidth: 4, style: 'cross' },
 ];
 
 export const metadata = {
@@ -36,7 +36,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MACrossInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MACrossInputs> = {}): IndicatorResult {
   const { shortLength, longLength } = { ...defaultInputs, ...inputs };
 
   const close = new Series(bars, b => b.close);
@@ -58,24 +58,14 @@ export function calculate(bars: Bar[], inputs: Partial<MACrossInputs> = {}): Ind
     value: value ?? NaN,
   }));
 
-  // Detect crossover points (short crosses above or below long)
-  const markers: MarkerData[] = [];
-  for (let i = 1; i < bars.length; i++) {
-    const s = shortArr[i], sP = shortArr[i - 1];
-    const l = longArr[i], lP = longArr[i - 1];
-    if (s == null || sP == null || l == null || lP == null) continue;
-    const crossOver = sP <= lP && s > l;
-    const crossUnder = sP >= lP && s < l;
-    if (crossOver || crossUnder) {
-      markers.push({
-        time: bars[i].time,
-        position: 'inBar',
-        shape: 'cross',
-        color: '#2962FF',
-        size: 4,
-      });
-    }
-  }
+  // Cross plot: show short MA value at crossover points, NaN elsewhere
+  const crossData = shortArr.map((s: number | null, i: number) => {
+    if (i === 0) return { time: bars[i].time, value: NaN };
+    const sP = shortArr[i - 1], l = longArr[i], lP = longArr[i - 1];
+    if (s == null || sP == null || l == null || lP == null) return { time: bars[i].time, value: NaN };
+    const isCross = (sP <= lP && s > l) || (sP >= lP && s < l);
+    return { time: bars[i].time, value: isCross ? s : NaN };
+  });
 
   return {
     metadata: {
@@ -86,8 +76,8 @@ export function calculate(bars: Bar[], inputs: Partial<MACrossInputs> = {}): Ind
     plots: {
       'plot0': shortData,
       'plot1': longData,
+      'plot2': crossData,
     },
-    markers,
   };
 }
 

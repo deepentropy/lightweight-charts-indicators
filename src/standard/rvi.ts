@@ -10,14 +10,18 @@ import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } fro
 export interface RVIInputs {
   /** Period length */
   length: number;
+  /** Plot offset */
+  offset: number;
 }
 
 export const defaultInputs: RVIInputs = {
   length: 10,
+  offset: 0,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Length', defval: 10, min: 1 },
+  { id: 'offset', type: 'int', title: 'Offset', defval: 0, min: -500, max: 500 },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -50,7 +54,7 @@ function swma(values: number[]): number[] {
 }
 
 export function calculate(bars: Bar[], inputs: Partial<RVIInputs> = {}): IndicatorResult {
-  const { length } = { ...defaultInputs, ...inputs };
+  const { length, offset } = { ...defaultInputs, ...inputs };
 
   // close - open
   const closeMinusOpen = bars.map(b => b.close - b.open);
@@ -87,15 +91,13 @@ export function calculate(bars: Bar[], inputs: Partial<RVIInputs> = {}): Indicat
   // Signal = SWMA(RVI)
   const signalValues = swma(rviValues);
 
-  const rviData = rviValues.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
+  const applyOffset = (arr: number[]) => bars.map((bar, i) => {
+    const srcIdx = i - offset;
+    return { time: bar.time, value: (srcIdx >= 0 && srcIdx < bars.length) ? (arr[srcIdx] ?? NaN) : NaN };
+  });
 
-  const signalData = signalValues.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
+  const rviData = applyOffset(rviValues);
+  const signalData = applyOffset(signalValues);
 
   return {
     metadata: {

@@ -49,18 +49,18 @@ export function calculate(bars: Bar[], inputs: Partial<DPOInputs> = {}): Indicat
   const barsback = Math.floor(length / 2) + 1;
 
   // DPO = close - ma[barsback] (non-centered)
-  // For regression testing, we use non-centered mode
+  // Centered: visually equivalent to Pine's close[barsback] - ma with offset = -barsback
+  // Which means at display position i: close[i] - ma[i + barsback]
   const dpoData = bars.map((bar, i) => {
-    const maIndex = i - barsback;
     if (centered) {
-      // centered: close[barsback] - ma
-      const closeIndex = i + barsback;
-      if (closeIndex >= bars.length || maArr[i] == null) {
+      const maIndex = i + barsback;
+      if (maIndex >= bars.length || maArr[maIndex] == null) {
         return { time: bar.time, value: NaN };
       }
-      return { time: bar.time, value: closeArr[closeIndex]! - maArr[i]! };
+      return { time: bar.time, value: closeArr[i]! - maArr[maIndex]! };
     } else {
       // non-centered: close - ma[barsback]
+      const maIndex = i - barsback;
       if (maIndex < 0 || maArr[maIndex] == null) {
         return { time: bar.time, value: NaN };
       }
