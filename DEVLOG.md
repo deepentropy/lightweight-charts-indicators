@@ -1,5 +1,35 @@
 # DEVLOG
 
+## 2026-02-26 - Medium Community Indicators
+
+### Goal
+Implement feasible Medium-difficulty community indicators that use existing oakscriptjs ta.* functions.
+
+### Approach Taken
+- Filtered 74 unimplemented Medium indicators → 24 feasible (use existing ta.* functions), ~28 duplicates, ~22 skipped (MTF/AI/tick-data/interactive)
+- 3 parallel agent batches: trailing-stop/trend (8), oscillator/momentum (8), channels/MAs/trend (8)
+- Programmatic index.ts registration and test generation
+
+### What Worked
+- All 24 indicators implemented and registered
+- 96 new tests, 589 total passing
+- Fixed NaN propagation in NRTR and Range Filter DW (ATR/EMA warmup edge case)
+
+### What Failed
+- Script initially exported `metadata` instead of named exports (regex matched first `export const` in file)
+
+### Current State
+- 235 community indicator files total (211 + 24 medium)
+- All Easy indicators resolved (208 implemented, 10 duplicate, 1 N/A)
+- 24 Medium indicators implemented
+- 589 tests passing across 4 test files
+
+### Key Decisions
+- Skipped: MTF indicators, AI/ML indicators, tick-data indicators, interactive S/R
+- Implemented: trailing-stop variants (NRTR, PMax, OTT Bands, OTTO), oscillator combos (CCI Stoch, Double MACD, Ichimoku Osc), channel/MA types (Gaussian Channel, Madrid Ribbon, ZLMA Levels)
+
+---
+
 ## 2026-02-26 - Massive Community Indicator Batch Implementation
 
 ### Goal

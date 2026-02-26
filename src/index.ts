@@ -1489,8 +1489,84 @@ export type { WilliamsComboInputs } from './community/williams-combo';
 
 // ZeroLagEMA
 import * as zeroLagEmaIndicator from './community/zero-lag-ema';
+
+// Medium community indicators
+import * as bjorgumTripleEmaIndicator from './community/bjorgum-triple-ema';
+import * as bollingerAwesomeAlertIndicator from './community/bollinger-awesome-alert';
+import * as cciStochasticIndicator from './community/cci-stochastic';
+import * as doubleMacdIndicator from './community/double-macd';
+import * as gaussianChannelIndicator from './community/gaussian-channel';
+import * as ichimokuOscillatorIndicator from './community/ichimoku-oscillator';
+import * as idealBbMaIndicator from './community/ideal-bb-ma';
+import * as lucidSarIndicator from './community/lucid-sar';
+import * as madridMaRibbonIndicator from './community/madrid-ma-ribbon';
+import * as mostRsiIndicator from './community/most-rsi';
+import * as nrtrIndicator from './community/nrtr';
+import * as ottBandsIndicator from './community/ott-bands';
+import * as ottoIndicator from './community/otto';
+import * as parabolicRsiIndicator from './community/parabolic-rsi';
+import * as pivotHhHlLhLlIndicator from './community/pivot-hh-hl-lh-ll';
+import * as pmaxRsiT3Indicator from './community/pmax-rsi-t3';
+import * as profitMaximizerIndicator from './community/profit-maximizer';
+import * as rangeFilterDwIndicator from './community/range-filter-dw';
+import * as redkVaderIndicator from './community/redk-vader';
+import * as rmiTrendSniperIndicator from './community/rmi-trend-sniper';
+import * as rsiCyclicSmoothedIndicator from './community/rsi-cyclic-smoothed';
+import * as supertrendLadderIndicator from './community/supertrend-ladder';
+import * as t3PsarIndicator from './community/t3-psar';
+import * as zlmaTrendLevelsIndicator from './community/zlma-trend-levels';
 export { ZeroLagEMA, calculate as calculateZeroLagEMA } from './community/zero-lag-ema';
+
+export { BjorgumTripleEma } from './community/bjorgum-triple-ema';
+export { BollingerAwesomeAlert } from './community/bollinger-awesome-alert';
+export { CCIStochastic } from './community/cci-stochastic';
+export { DoubleMACD } from './community/double-macd';
+export { GaussianChannel } from './community/gaussian-channel';
+export { IchimokuOscillator } from './community/ichimoku-oscillator';
+export { IdealBbMa } from './community/ideal-bb-ma';
+export { LucidSar } from './community/lucid-sar';
+export { MadridMaRibbon } from './community/madrid-ma-ribbon';
+export { MOSTRSI } from './community/most-rsi';
+export { NRTR } from './community/nrtr';
+export { OTTBands } from './community/ott-bands';
+export { OTTO } from './community/otto';
+export { ParabolicRSI } from './community/parabolic-rsi';
+export { PivotHhHlLhLl } from './community/pivot-hh-hl-lh-ll';
+export { PMaxRSIT3 } from './community/pmax-rsi-t3';
+export { ProfitMaximizer } from './community/profit-maximizer';
+export { RangeFilterDW } from './community/range-filter-dw';
+export { RedKVADER } from './community/redk-vader';
+export { RMITrendSniper } from './community/rmi-trend-sniper';
+export { RSICyclicSmoothed } from './community/rsi-cyclic-smoothed';
+export { SupertrendLadder } from './community/supertrend-ladder';
+export { T3Psar } from './community/t3-psar';
+export { ZlmaTrendLevels } from './community/zlma-trend-levels';
 export type { ZeroLagEMAInputs } from './community/zero-lag-ema';
+
+export type { BjorgumTripleEmaInputs } from './community/bjorgum-triple-ema';
+export type { BollingerAwesomeAlertInputs } from './community/bollinger-awesome-alert';
+export type { CCIStochasticInputs } from './community/cci-stochastic';
+export type { DoubleMACDInputs } from './community/double-macd';
+export type { GaussianChannelInputs } from './community/gaussian-channel';
+export type { IchimokuOscillatorInputs } from './community/ichimoku-oscillator';
+export type { IdealBbMaInputs } from './community/ideal-bb-ma';
+export type { LucidSarInputs } from './community/lucid-sar';
+export type { MadridMaRibbonInputs } from './community/madrid-ma-ribbon';
+export type { MOSTRSIInputs } from './community/most-rsi';
+export type { NRTRInputs } from './community/nrtr';
+export type { OTTBandsInputs } from './community/ott-bands';
+export type { OTTOInputs } from './community/otto';
+export type { ParabolicRSIInputs } from './community/parabolic-rsi';
+export type { PivotHhHlLhLlInputs } from './community/pivot-hh-hl-lh-ll';
+export type { PMaxRSIT3Inputs } from './community/pmax-rsi-t3';
+export type { ProfitMaximizerInputs } from './community/profit-maximizer';
+export type { RangeFilterDWInputs } from './community/range-filter-dw';
+export type { RedKVADERInputs } from './community/redk-vader';
+export type { RMITrendSniperInputs } from './community/rmi-trend-sniper';
+export type { RSICyclicSmoothedInputs } from './community/rsi-cyclic-smoothed';
+export type { SupertrendLadderInputs } from './community/supertrend-ladder';
+export type { T3PsarInputs } from './community/t3-psar';
+export type { ZlmaTrendLevelsInputs } from './community/zlma-trend-levels';
 
 
 
@@ -5646,6 +5722,320 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     calculate: zeroLagEmaIndicator.calculate,
   },
   // Candlestick Patterns
+
+  // Medium community indicators
+  {
+    id: 'bjorgum-triple-ema',
+    group: 'community',
+    name: 'Fast Length',
+    shortName: 'BTEMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: bjorgumTripleEmaIndicator.metadata,
+    inputConfig: bjorgumTripleEmaIndicator.inputConfig as InputConfig[],
+    plotConfig: bjorgumTripleEmaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...bjorgumTripleEmaIndicator.defaultInputs },
+    calculate: bjorgumTripleEmaIndicator.calculate,
+  },
+  {
+    id: 'bollinger-awesome-alert',
+    group: 'community',
+    name: 'AO Fast',
+    shortName: 'BBAO',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: bollingerAwesomeAlertIndicator.metadata,
+    inputConfig: bollingerAwesomeAlertIndicator.inputConfig as InputConfig[],
+    plotConfig: bollingerAwesomeAlertIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...bollingerAwesomeAlertIndicator.defaultInputs },
+    calculate: bollingerAwesomeAlertIndicator.calculate,
+  },
+  {
+    id: 'cci-stochastic',
+    group: 'community',
+    name: 'CCI Length',
+    shortName: 'CCIStoch',
+    category: 'Momentum',
+    overlay: false,
+    metadata: cciStochasticIndicator.metadata,
+    inputConfig: cciStochasticIndicator.inputConfig as InputConfig[],
+    plotConfig: cciStochasticIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cciStochasticIndicator.defaultInputs },
+    calculate: cciStochasticIndicator.calculate,
+  },
+  {
+    id: 'double-macd',
+    group: 'community',
+    name: 'MACD1 Fast',
+    shortName: 'DMACD',
+    category: 'Momentum',
+    overlay: false,
+    metadata: doubleMacdIndicator.metadata,
+    inputConfig: doubleMacdIndicator.inputConfig as InputConfig[],
+    plotConfig: doubleMacdIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...doubleMacdIndicator.defaultInputs },
+    calculate: doubleMacdIndicator.calculate,
+  },
+  {
+    id: 'gaussian-channel',
+    group: 'community',
+    name: 'Length',
+    shortName: 'GC',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: gaussianChannelIndicator.metadata,
+    inputConfig: gaussianChannelIndicator.inputConfig as InputConfig[],
+    plotConfig: gaussianChannelIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...gaussianChannelIndicator.defaultInputs },
+    calculate: gaussianChannelIndicator.calculate,
+  },
+  {
+    id: 'ichimoku-oscillator',
+    group: 'community',
+    name: 'Conversion Periods',
+    shortName: 'IchiOsc',
+    category: 'Momentum',
+    overlay: false,
+    metadata: ichimokuOscillatorIndicator.metadata,
+    inputConfig: ichimokuOscillatorIndicator.inputConfig as InputConfig[],
+    plotConfig: ichimokuOscillatorIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ichimokuOscillatorIndicator.defaultInputs },
+    calculate: ichimokuOscillatorIndicator.calculate,
+  },
+  {
+    id: 'ideal-bb-ma',
+    group: 'community',
+    name: 'BB Length',
+    shortName: 'IBBMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: idealBbMaIndicator.metadata,
+    inputConfig: idealBbMaIndicator.inputConfig as InputConfig[],
+    plotConfig: idealBbMaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...idealBbMaIndicator.defaultInputs },
+    calculate: idealBbMaIndicator.calculate,
+  },
+  {
+    id: 'lucid-sar',
+    group: 'community',
+    name: 'Start',
+    shortName: 'LSAR',
+    category: 'Trend',
+    overlay: true,
+    metadata: lucidSarIndicator.metadata,
+    inputConfig: lucidSarIndicator.inputConfig as InputConfig[],
+    plotConfig: lucidSarIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...lucidSarIndicator.defaultInputs },
+    calculate: lucidSarIndicator.calculate,
+  },
+  {
+    id: 'madrid-ma-ribbon',
+    group: 'community',
+    name: 'MA Type',
+    shortName: 'MAR',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: madridMaRibbonIndicator.metadata,
+    inputConfig: madridMaRibbonIndicator.inputConfig as InputConfig[],
+    plotConfig: madridMaRibbonIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...madridMaRibbonIndicator.defaultInputs },
+    calculate: madridMaRibbonIndicator.calculate,
+  },
+  {
+    id: 'most-rsi',
+    group: 'community',
+    name: 'RSI Length',
+    shortName: 'MOST-RSI',
+    category: 'Momentum',
+    overlay: false,
+    metadata: mostRsiIndicator.metadata,
+    inputConfig: mostRsiIndicator.inputConfig as InputConfig[],
+    plotConfig: mostRsiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...mostRsiIndicator.defaultInputs },
+    calculate: mostRsiIndicator.calculate,
+  },
+  {
+    id: 'nrtr',
+    group: 'community',
+    name: 'ATR Period',
+    shortName: 'NRTR',
+    category: 'Trend',
+    overlay: true,
+    metadata: nrtrIndicator.metadata,
+    inputConfig: nrtrIndicator.inputConfig as InputConfig[],
+    plotConfig: nrtrIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...nrtrIndicator.defaultInputs },
+    calculate: nrtrIndicator.calculate,
+  },
+  {
+    id: 'ott-bands',
+    group: 'community',
+    name: 'Source',
+    shortName: 'OTTBands',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: ottBandsIndicator.metadata,
+    inputConfig: ottBandsIndicator.inputConfig as InputConfig[],
+    plotConfig: ottBandsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ottBandsIndicator.defaultInputs },
+    calculate: ottBandsIndicator.calculate,
+  },
+  {
+    id: 'otto',
+    group: 'community',
+    name: 'Source',
+    shortName: 'OTTO',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: ottoIndicator.metadata,
+    inputConfig: ottoIndicator.inputConfig as InputConfig[],
+    plotConfig: ottoIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ottoIndicator.defaultInputs },
+    calculate: ottoIndicator.calculate,
+  },
+  {
+    id: 'parabolic-rsi',
+    group: 'community',
+    name: 'RSI Length',
+    shortName: 'PRSI',
+    category: 'Momentum',
+    overlay: false,
+    metadata: parabolicRsiIndicator.metadata,
+    inputConfig: parabolicRsiIndicator.inputConfig as InputConfig[],
+    plotConfig: parabolicRsiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...parabolicRsiIndicator.defaultInputs },
+    calculate: parabolicRsiIndicator.calculate,
+  },
+  {
+    id: 'pivot-hh-hl-lh-ll',
+    group: 'community',
+    name: 'Left Bars',
+    shortName: 'PivotHHLL',
+    category: 'Trend',
+    overlay: true,
+    metadata: pivotHhHlLhLlIndicator.metadata,
+    inputConfig: pivotHhHlLhLlIndicator.inputConfig as InputConfig[],
+    plotConfig: pivotHhHlLhLlIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...pivotHhHlLhLlIndicator.defaultInputs },
+    calculate: pivotHhHlLhLlIndicator.calculate,
+  },
+  {
+    id: 'pmax-rsi-t3',
+    group: 'community',
+    name: 'RSI Length',
+    shortName: 'PMaxRSIT3',
+    category: 'Momentum',
+    overlay: false,
+    metadata: pmaxRsiT3Indicator.metadata,
+    inputConfig: pmaxRsiT3Indicator.inputConfig as InputConfig[],
+    plotConfig: pmaxRsiT3Indicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...pmaxRsiT3Indicator.defaultInputs },
+    calculate: pmaxRsiT3Indicator.calculate,
+  },
+  {
+    id: 'profit-maximizer',
+    group: 'community',
+    name: 'ATR Period',
+    shortName: 'PMax',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: profitMaximizerIndicator.metadata,
+    inputConfig: profitMaximizerIndicator.inputConfig as InputConfig[],
+    plotConfig: profitMaximizerIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...profitMaximizerIndicator.defaultInputs },
+    calculate: profitMaximizerIndicator.calculate,
+  },
+  {
+    id: 'range-filter-dw',
+    group: 'community',
+    name: 'Source',
+    shortName: 'RngFilt',
+    category: 'Trend',
+    overlay: true,
+    metadata: rangeFilterDwIndicator.metadata,
+    inputConfig: rangeFilterDwIndicator.inputConfig as InputConfig[],
+    plotConfig: rangeFilterDwIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rangeFilterDwIndicator.defaultInputs },
+    calculate: rangeFilterDwIndicator.calculate,
+  },
+  {
+    id: 'redk-vader',
+    group: 'community',
+    name: 'Length',
+    shortName: 'VADER',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: redkVaderIndicator.metadata,
+    inputConfig: redkVaderIndicator.inputConfig as InputConfig[],
+    plotConfig: redkVaderIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...redkVaderIndicator.defaultInputs },
+    calculate: redkVaderIndicator.calculate,
+  },
+  {
+    id: 'rmi-trend-sniper',
+    group: 'community',
+    name: 'RMI Length',
+    shortName: 'RMI',
+    category: 'Momentum',
+    overlay: false,
+    metadata: rmiTrendSniperIndicator.metadata,
+    inputConfig: rmiTrendSniperIndicator.inputConfig as InputConfig[],
+    plotConfig: rmiTrendSniperIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rmiTrendSniperIndicator.defaultInputs },
+    calculate: rmiTrendSniperIndicator.calculate,
+  },
+  {
+    id: 'rsi-cyclic-smoothed',
+    group: 'community',
+    name: 'RSI Length',
+    shortName: 'RSICS',
+    category: 'Momentum',
+    overlay: false,
+    metadata: rsiCyclicSmoothedIndicator.metadata,
+    inputConfig: rsiCyclicSmoothedIndicator.inputConfig as InputConfig[],
+    plotConfig: rsiCyclicSmoothedIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rsiCyclicSmoothedIndicator.defaultInputs },
+    calculate: rsiCyclicSmoothedIndicator.calculate,
+  },
+  {
+    id: 'supertrend-ladder',
+    group: 'community',
+    name: 'ATR Period',
+    shortName: 'STLadder',
+    category: 'Trend',
+    overlay: true,
+    metadata: supertrendLadderIndicator.metadata,
+    inputConfig: supertrendLadderIndicator.inputConfig as InputConfig[],
+    plotConfig: supertrendLadderIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...supertrendLadderIndicator.defaultInputs },
+    calculate: supertrendLadderIndicator.calculate,
+  },
+  {
+    id: 't3-psar',
+    group: 'community',
+    name: 'T3 Length',
+    shortName: 'T3+SAR',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: t3PsarIndicator.metadata,
+    inputConfig: t3PsarIndicator.inputConfig as InputConfig[],
+    plotConfig: t3PsarIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...t3PsarIndicator.defaultInputs },
+    calculate: t3PsarIndicator.calculate,
+  },
+  {
+    id: 'zlma-trend-levels',
+    group: 'community',
+    name: 'Length',
+    shortName: 'ZLMA-TL',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: zlmaTrendLevelsIndicator.metadata,
+    inputConfig: zlmaTrendLevelsIndicator.inputConfig as InputConfig[],
+    plotConfig: zlmaTrendLevelsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...zlmaTrendLevelsIndicator.defaultInputs },
+    calculate: zlmaTrendLevelsIndicator.calculate,
+  },
   ...candlestickEntries([
     ['abandoned-baby-bearish', abandonedBabyBearishIndicator],
     ['abandoned-baby-bullish', abandonedBabyBullishIndicator],
