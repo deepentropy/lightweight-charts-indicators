@@ -4,7 +4,7 @@
  */
 
 import type { Bar, IndicatorResult, InputConfig, PlotConfig } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { BgColorData, MarkerData } from '../types';
 import { computeCandles, type CandleContext } from './candlestick-helpers';
 
 export interface PatternConfig {
@@ -17,16 +17,20 @@ export interface PatternConfig {
 }
 
 const COLORS = { bullish: '#2196F3', bearish: '#e91e63', neutral: '#787b86' };
+const BG_COLORS = { bullish: 'rgba(33,150,243,0.1)', bearish: 'rgba(233,30,99,0.1)', neutral: 'rgba(120,123,134,0.1)' };
 
 export function createPattern(config: PatternConfig) {
   const metadata = { title: config.name, shortTitle: config.shortName, overlay: true as const };
   const inputConfig: InputConfig[] = [];
   const plotConfig: PlotConfig[] = [];
   const defaultInputs: Record<string, unknown> = {};
+  const numberOfCandles = config.startIndex + 1;
 
-  function calculate(bars: Bar[]): IndicatorResult & { markers: MarkerData[] } {
+  function calculate(bars: Bar[]): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
     const c = computeCandles(bars);
     const markers: MarkerData[] = [];
+    const bgColors: BgColorData[] = [];
+    const bgColor = BG_COLORS[config.signal];
     for (let i = config.startIndex; i < bars.length; i++) {
       if (config.detect(i, c, bars)) {
         markers.push({
@@ -40,12 +44,16 @@ export function createPattern(config: PatternConfig) {
           color: COLORS[config.signal],
           text: config.label,
         });
+        for (let j = i - numberOfCandles + 1; j <= i; j++) {
+          bgColors.push({ time: bars[j].time as number, color: bgColor });
+        }
       }
     }
     return {
       metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
       plots: {},
       markers,
+      bgColors,
     };
   }
 
