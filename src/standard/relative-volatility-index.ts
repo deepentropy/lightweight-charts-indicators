@@ -7,7 +7,7 @@
  * Includes SMA smoothing (enabled by default). BB bands excluded (display=none).
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar } from 'oakscriptjs';
+import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type FillData, type Bar } from 'oakscriptjs';
 
 export interface RelativeVolatilityIndexInputs {
   length: number;
@@ -35,6 +35,16 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot1', title: 'RVI-based MA', color: '#E2CC00', lineWidth: 1 },
   { id: 'plot2', title: 'Upper Bollinger Band', color: '#089981', lineWidth: 1, display: 'none' },
   { id: 'plot3', title: 'Lower Bollinger Band', color: '#089981', lineWidth: 1, display: 'none' },
+];
+
+export const hlineConfig: HLineConfig[] = [
+  { id: 'hline_upper', price: 80, color: '#787B86', linestyle: 'solid', title: 'Upper Band' },
+  { id: 'hline_mid',   price: 50, color: '#787B8680', linestyle: 'solid', title: 'Middle Band' },
+  { id: 'hline_lower', price: 20, color: '#787B86', linestyle: 'solid', title: 'Lower Band' },
+];
+
+export const fillConfig: FillConfig[] = [
+  { id: 'fill_band', plot1: 'hline_upper', plot2: 'hline_lower', color: '#7E57C219' },
 ];
 
 export const metadata = {
@@ -131,4 +141,4 @@ export function calculate(bars: Bar[], inputs: Partial<RelativeVolatilityIndexIn
   };
 }
 
-export const RelativeVolatilityIndex = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const RelativeVolatilityIndex = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig };
