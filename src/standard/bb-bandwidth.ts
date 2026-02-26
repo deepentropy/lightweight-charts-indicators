@@ -39,8 +39,8 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Bollinger BandWidth', color: '#2962FF', lineWidth: 1 },
-  { id: 'plot1', title: 'Highest Expansion', color: '#F23645', lineWidth: 1 },
-  { id: 'plot2', title: 'Lowest Contraction', color: '#089981', lineWidth: 1 },
+  { id: 'plot1', title: 'Highest Expansion', color: '#F2364580', lineWidth: 1 },
+  { id: 'plot2', title: 'Lowest Contraction', color: '#08998180', lineWidth: 1 },
 ];
 
 export const metadata = {

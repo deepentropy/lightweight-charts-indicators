@@ -82,10 +82,10 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'MA 1', color: '#FFEB3B', lineWidth: 1 }, // Yellow
-  { id: 'plot1', title: 'MA 2', color: '#FF9800', lineWidth: 1 }, // Orange
-  { id: 'plot2', title: 'MA 3', color: '#2196F3', lineWidth: 1 }, // Blue
-  { id: 'plot3', title: 'MA 4', color: '#9C27B0', lineWidth: 1 }, // Purple
+  { id: 'plot0', title: 'MA 1', color: '#f6c309', lineWidth: 1 },
+  { id: 'plot1', title: 'MA 2', color: '#fb9800', lineWidth: 1 },
+  { id: 'plot2', title: 'MA 3', color: '#fb6500', lineWidth: 1 },
+  { id: 'plot3', title: 'MA 4', color: '#f60c0c', lineWidth: 1 },
 ];
 
 export const metadata = {

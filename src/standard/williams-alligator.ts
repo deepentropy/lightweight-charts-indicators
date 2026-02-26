@@ -45,7 +45,7 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Jaw', color: '#2962FF', lineWidth: 1, offset: 8 },
   { id: 'plot1', title: 'Teeth', color: '#E91E63', lineWidth: 1, offset: 5 },
-  { id: 'plot2', title: 'Lips', color: '#4CAF50', lineWidth: 1, offset: 3 },
+  { id: 'plot2', title: 'Lips', color: '#66BB6A', lineWidth: 1, offset: 3 },
 ];
 
 export const metadata = {

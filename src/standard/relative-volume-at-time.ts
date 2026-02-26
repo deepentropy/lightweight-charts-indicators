@@ -36,7 +36,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Relative Volume Ratio', color: '#2962FF', lineWidth: 1 },
+  { id: 'plot0', title: 'Relative Volume Ratio', color: '#4CAF504D', lineWidth: 1, style: 'columns' },
 ];
 
 export const hlineConfig: HLineConfig[] = [
@@ -275,10 +275,11 @@ export function calculate(bars: Bar[], inputs: Partial<RelativeVolumeAtTimeInput
     prevTime = barTime;
   }
 
-  // Create plot data
+  // Create plot data with conditional green/red coloring at 70% transparency
   const plotData = ratioValues.map((value, i) => ({
     time: bars[i].time,
     value: value,
+    color: value > 1 ? '#4CAF504D' : '#FF52524D',
   }));
 
   return {

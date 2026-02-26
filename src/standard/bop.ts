@@ -28,7 +28,7 @@ export const inputConfig: InputConfig[] = [];
  * Plot configuration
  */
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'BOP', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot0', title: 'BOP', color: '#FF0000', lineWidth: 2 },
 ];
 
 /**

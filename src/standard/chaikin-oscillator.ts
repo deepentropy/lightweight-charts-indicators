@@ -28,7 +28,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Chaikin Osc', color: '#2962FF', lineWidth: 1 },
+  { id: 'plot0', title: 'Chaikin Osc', color: '#EC407A', lineWidth: 1 },
 ];
 
 export const hlineConfig: HLineConfig[] = [

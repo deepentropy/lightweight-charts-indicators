@@ -5,7 +5,7 @@
  * Based on the relationship between close-open and high-low.
  */
 
-import { type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
 export interface RVIInputs {
   /** Period length */
@@ -25,15 +25,6 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot1', title: 'Signal', color: '#FF0000', lineWidth: 1 },
 ];
 
-export const hlineConfig: HLineConfig[] = [
-  { id: 'hline_upper', price: 80, color: '#787B86', linestyle: 'solid', title: 'Upper Band' },
-  { id: 'hline_mid',   price: 50, color: '#787B8680', linestyle: 'solid', title: 'Middle Band' },
-  { id: 'hline_lower', price: 20, color: '#787B86', linestyle: 'solid', title: 'Lower Band' },
-];
-
-export const fillConfig: FillConfig[] = [
-  { id: 'fill_band', plot1: 'hline_upper', plot2: 'hline_lower', color: '#2962FF1A' },
-];
 
 export const metadata = {
   title: 'Relative Vigor Index',
@@ -125,6 +116,4 @@ export const RVI = {
   defaultInputs,
   inputConfig,
   plotConfig,
-  hlineConfig,
-  fillConfig,
 };

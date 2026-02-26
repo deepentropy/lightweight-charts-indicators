@@ -7,7 +7,7 @@
  * Formula: correlation(close, bar_index, length)
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillData, type Bar } from 'oakscriptjs';
 
 export interface TrendStrengthInputs {
   /** Period length */
@@ -23,7 +23,10 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Trend Strength Index', color: '#2962FF', lineWidth: 1 },
+  { id: 'plot0', title: 'Trend Strength Index', color: '#7E57C2', lineWidth: 1 },
+  { id: 'plot1', title: 'TSI Bullish', color: '#089981', lineWidth: 0, display: 'none' },
+  { id: 'plot2', title: 'TSI Bearish', color: '#F23645', lineWidth: 0, display: 'none' },
+  { id: 'plot3', title: 'Middle Line', color: 'transparent', lineWidth: 0, display: 'none' },
 ];
 
 export const hlineConfig: HLineConfig[] = [
@@ -48,6 +51,22 @@ export function calculate(bars: Bar[], inputs: Partial<TrendStrengthInputs> = {}
 
   const tsData = tsArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
 
+  // Split TSI into bullish (>0) and bearish (<0) for fill zones
+  const bullishData = tsArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (v != null && v > 0) ? v : NaN,
+  }));
+  const bearishData = tsArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (v != null && v < 0) ? v : NaN,
+  }));
+  const midlineData = bars.map(b => ({ time: b.time, value: 0 }));
+
+  const fills: FillData[] = [
+    { plot1: 'plot1', plot2: 'plot3', options: { color: '#089981', transp: 90, title: 'Bullish Gradient Fill' } },
+    { plot1: 'plot2', plot2: 'plot3', options: { color: '#F23645', transp: 90, title: 'Bearish Gradient Fill' } },
+  ];
+
   return {
     metadata: {
       title: metadata.title,
@@ -56,7 +75,11 @@ export function calculate(bars: Bar[], inputs: Partial<TrendStrengthInputs> = {}
     },
     plots: {
       'plot0': tsData,
+      'plot1': bullishData,
+      'plot2': bearishData,
+      'plot3': midlineData,
     },
+    fills,
   };
 }
 

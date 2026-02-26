@@ -6,7 +6,7 @@
  * BB bands are excluded (display=none).
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface RCIInputs {
   source: SourceType;
@@ -43,6 +43,11 @@ export const hlineConfig: HLineConfig[] = [
   { id: 'hline_upper', price: 80, color: '#787B86', linestyle: 'solid', title: 'Upper Band' },
   { id: 'hline_mid',   price: 0, color: '#787B86', linestyle: 'solid', title: 'Middle Band' },
   { id: 'hline_lower', price: -80, color: '#787B86', linestyle: 'solid', title: 'Lower Band' },
+];
+
+export const fillConfig: FillConfig[] = [
+  { id: 'fill_band', plot1: 'hline_upper', plot2: 'hline_lower', color: '#2962FF19' },
+  { id: 'fill_bb', plot1: 'plot2', plot2: 'plot3', color: '#08998119' },
 ];
 
 export const metadata = {
@@ -102,4 +107,4 @@ export function calculate(bars: Bar[], inputs: Partial<RCIInputs> = {}): Indicat
   };
 }
 
-export const RankCorrelationIndex = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };
+export const RankCorrelationIndex = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig };

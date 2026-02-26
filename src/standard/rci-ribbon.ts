@@ -8,7 +8,7 @@
  * Based on TradingView's RCI Ribbon indicator.
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface RCIRibbonInputs {
   /** Source for calculation */
@@ -45,6 +45,10 @@ export const hlineConfig: HLineConfig[] = [
   { id: 'hline_upper', price: 80, color: '#787B86', linestyle: 'solid', title: 'Upper Band' },
   { id: 'hline_mid',   price: 0, color: '#787B86', linestyle: 'solid', title: 'Middle Band' },
   { id: 'hline_lower', price: -80, color: '#787B86', linestyle: 'solid', title: 'Lower Band' },
+];
+
+export const fillConfig: FillConfig[] = [
+  { id: 'fill_band', plot1: 'hline_upper', plot2: 'hline_lower', color: '#2962FF19' },
 ];
 
 export const metadata = {
@@ -87,4 +91,5 @@ export const RCIRibbon = {
   inputConfig,
   plotConfig,
   hlineConfig,
+  fillConfig,
 };
