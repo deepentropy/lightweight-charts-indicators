@@ -18,9 +18,14 @@ const BUILTIN_MARKER_SHAPES = new Set(['arrowUp', 'arrowDown', 'circle', 'square
  */
 const indicators: IndicatorRegistryEntry[] = indicatorRegistry;
 
-/**
- * Category display order
- */
+type IndicatorGroup = 'standard' | 'candlestick' | 'community';
+
+const groupOrder: { key: IndicatorGroup; label: string }[] = [
+  { key: 'standard', label: 'Standard' },
+  { key: 'candlestick', label: 'Candlestick Patterns' },
+  { key: 'community', label: 'Community' },
+];
+
 const categoryOrder: IndicatorCategory[] = [
   'Moving Averages',
   'Momentum',
@@ -33,31 +38,34 @@ const categoryOrder: IndicatorCategory[] = [
 ];
 
 /**
- * Group indicators by category and sort alphabetically within each group
+ * Group indicators by top-level group, then by category within each group
  */
-function groupIndicatorsByCategory(indicators: IndicatorRegistryEntry[]): Map<IndicatorCategory, IndicatorRegistryEntry[]> {
-  const groups = new Map<IndicatorCategory, IndicatorRegistryEntry[]>();
+function groupIndicators(indicators: IndicatorRegistryEntry[]): Map<IndicatorGroup, Map<IndicatorCategory, IndicatorRegistryEntry[]>> {
+  const result = new Map<IndicatorGroup, Map<IndicatorCategory, IndicatorRegistryEntry[]>>();
 
-  // Initialize groups in order
-  for (const category of categoryOrder) {
-    groups.set(category, []);
+  for (const { key } of groupOrder) {
+    const categoryMap = new Map<IndicatorCategory, IndicatorRegistryEntry[]>();
+    for (const cat of categoryOrder) categoryMap.set(cat, []);
+    result.set(key, categoryMap);
   }
 
-  // Group indicators
-  for (const indicator of indicators) {
-    const category = indicator.category;
-    const group = groups.get(category);
-    if (group) {
-      group.push(indicator);
+  for (const ind of indicators) {
+    const groupKey = ind.group;
+    const categoryMap = result.get(groupKey);
+    if (categoryMap) {
+      const arr = categoryMap.get(ind.category);
+      if (arr) arr.push(ind);
     }
   }
 
-  // Sort each group alphabetically by name
-  for (const [, group] of groups) {
-    group.sort((a, b) => a.name.localeCompare(b.name));
+  // Sort alphabetically within each category
+  for (const [, categoryMap] of result) {
+    for (const [, arr] of categoryMap) {
+      arr.sort((a, b) => a.name.localeCompare(b.name));
+    }
   }
 
-  return groups;
+  return result;
 }
 
 /**
@@ -88,31 +96,50 @@ export class IndicatorUI {
    * Render the UI
    */
   private render(): void {
-    const groupedIndicators = groupIndicatorsByCategory(indicators);
+    const grouped = groupIndicators(indicators);
 
-    const categoriesHtml = Array.from(groupedIndicators.entries())
-      .filter(([, group]) => group.length > 0)
-      .map(([category, group]) => `
-        <div class="category-group" data-category="${category}">
-          <div class="category-header collapsed">
-            ${category} <span class="category-count">${group.length}</span>
+    const sectionsHtml = groupOrder.map(({ key, label }) => {
+      const categoryMap = grouped.get(key)!;
+      let totalCount = 0;
+      for (const [, arr] of categoryMap) totalCount += arr.length;
+      if (totalCount === 0) return '';
+
+      const categoriesHtml = Array.from(categoryMap.entries())
+        .filter(([, arr]) => arr.length > 0)
+        .map(([category, arr]) => `
+          <div class="category-group" data-category="${category}">
+            <div class="category-header collapsed">
+              ${category} <span class="category-count">${arr.length}</span>
+            </div>
+            <div class="category-items collapsed">
+              ${arr.map(ind => `<div class="indicator-item" data-id="${ind.id}" data-name="${ind.name.toLowerCase()}" data-short="${(ind.shortName || ind.id).toLowerCase()}">${ind.name}</div>`).join('')}
+            </div>
           </div>
-          <div class="category-items collapsed">
-            ${group.map(ind => `<div class="indicator-item" data-id="${ind.id}" data-name="${ind.name.toLowerCase()}" data-short="${(ind.shortName || ind.id).toLowerCase()}">${ind.name}</div>`).join('')}
+        `).join('');
+
+      return `
+        <div class="group-section" data-group="${key}">
+          <div class="group-header collapsed">
+            ${label} <span class="group-count">${totalCount}</span>
+          </div>
+          <div class="group-items collapsed">
+            ${categoriesHtml}
           </div>
         </div>
-      `).join('');
+      `;
+    }).join('');
 
     this.container.innerHTML = `
       <div class="indicator-panel">
         <h3>Indicators</h3>
         <input type="text" id="indicator-search" placeholder="Search indicators..." />
-        <div id="indicator-list">${categoriesHtml}</div>
+        <div id="indicator-list">${sectionsHtml}</div>
         <div id="indicator-inputs" class="indicator-inputs"></div>
       </div>
     `;
 
     this.setupSearch();
+    this.setupGroupToggles();
     this.setupCategoryToggles();
     this.setupItemClicks();
   }
@@ -124,31 +151,50 @@ export class IndicatorUI {
     const searchInput = this.container.querySelector('#indicator-search') as HTMLInputElement;
     searchInput.addEventListener('input', () => {
       const query = searchInput.value.toLowerCase().trim();
-      const groups = this.container.querySelectorAll('.category-group');
 
-      for (const group of groups) {
-        const items = group.querySelectorAll('.indicator-item');
-        let visibleCount = 0;
+      for (const section of this.container.querySelectorAll('.group-section')) {
+        let sectionVisible = 0;
 
-        for (const item of items) {
-          const name = item.getAttribute('data-name') || '';
-          const short = item.getAttribute('data-short') || '';
-          const matches = !query || name.includes(query) || short.includes(query);
-          item.classList.toggle('hidden', !matches);
-          if (matches) visibleCount++;
+        for (const catGroup of section.querySelectorAll('.category-group')) {
+          const items = catGroup.querySelectorAll('.indicator-item');
+          let visibleCount = 0;
+
+          for (const item of items) {
+            const name = item.getAttribute('data-name') || '';
+            const short = item.getAttribute('data-short') || '';
+            const matches = !query || name.includes(query) || short.includes(query);
+            item.classList.toggle('hidden', !matches);
+            if (matches) visibleCount++;
+          }
+
+          catGroup.classList.toggle('hidden', visibleCount === 0);
+
+          if (query && visibleCount > 0) {
+            catGroup.querySelector('.category-items')!.classList.remove('collapsed');
+            catGroup.querySelector('.category-header')!.classList.remove('collapsed');
+          }
+          sectionVisible += visibleCount;
         }
 
-        group.classList.toggle('hidden', visibleCount === 0);
-
-        // Expand groups with matches when searching, restore when cleared
-        const categoryItems = group.querySelector('.category-items')!;
-        const header = group.querySelector('.category-header')!;
-        if (query && visibleCount > 0) {
-          categoryItems.classList.remove('collapsed');
-          header.classList.remove('collapsed');
+        section.classList.toggle('hidden', sectionVisible === 0);
+        if (query && sectionVisible > 0) {
+          section.querySelector('.group-items')!.classList.remove('collapsed');
+          section.querySelector('.group-header')!.classList.remove('collapsed');
         }
       }
     });
+  }
+
+  /**
+   * Toggle group collapse on header click
+   */
+  private setupGroupToggles(): void {
+    for (const header of this.container.querySelectorAll('.group-header')) {
+      header.addEventListener('click', () => {
+        header.classList.toggle('collapsed');
+        (header.nextElementSibling as HTMLElement).classList.toggle('collapsed');
+      });
+    }
   }
 
   /**

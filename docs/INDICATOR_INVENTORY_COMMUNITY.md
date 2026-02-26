@@ -8,16 +8,16 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | Category | Count |
 |---|---|
 | **Total Indicators** | 867 |
-| **Implementable** | 304 |
-| **Blocked** | 511 |
-| **Implemented** | 72 |
+| **Implementable** | 140 |
+| **Blocked** | 512 |
+| **Implemented** | 215 |
 
 ### Implementable Breakdown
 
 | Difficulty | Count | Description |
 |---|---|---|
-| Easy | 177 | Direct TA port, all functions available, <80 lines |
-| Medium | 75 | Stateful logic or custom MAs, 80-200 lines |
+| Easy | 13 | Direct TA port, all functions available, <80 lines |
+| Medium | 74 | Stateful logic or custom MAs, 80-200 lines |
 | Hard | 53 | Complex logic, may need partial feature skip, 200+ lines |
 
 ### Blocker Breakdown
@@ -65,7 +65,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 4 | [imba]lance algo | Blocked | N/A | Table;Drawing |
 | 5 | [JRL] MM Fibonacci | Blocked | N/A | MTF |
 | 6 | [RS]Fractals V9 | Blocked | N/A | MTF |
-| 7 | [RS]Support and Resistance V0 | Implementable | Easy | |
+| 7 | [RS]Support and Resistance V0 | Implemented | Easy | `rs-support-resistance.ts` |
 | 8 | [RS]ZigZag Multiple Methods - Forecast - patterns - labels | Blocked | N/A | Drawing |
 | 9 | [RS]ZigZag Percent Reversal - Forecast - patterns - labels | Blocked | N/A | Drawing |
 | 10 | [SK] Fibonacci Auto Trend Scouter | Blocked | N/A | MTF;Drawing |
@@ -89,31 +89,31 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 28 | Adaptive Trend Flow [QuantAlgo] | Implementable | Medium | |
 | 29 | ADR% - Average Daily Range % by MikeC (AKA TheScrutiniser) | Blocked | N/A | MTF |
 | 30 | ADX and DI | Implemented | Easy | |
-| 31 | ADX by cobra | Implementable | Easy | |
+| 31 | ADX by cobra | Implemented | Easy | `adx-cobra.ts` |
 | 32 | ADX Di+ Di- [Gu5] | Implementable | Hard | |
 | 33 | AG FX - Watermark | Blocked | N/A | Table |
 | 34 | AI Trend Navigator [K-Neighbor] | Implementable | Medium | |
-| 35 | AI-EngulfingCandle | Implementable | Easy | |
-| 36 | AK  TREND ID v1.00 | Implementable | Easy | |
-| 37 | AK MACD BB INDICATOR V  1.00 | Implementable | Easy | |
-| 38 | All Candlestick Patterns Identifier | Implementable | Easy | |
+| 35 | AI-EngulfingCandle | Implemented | Easy | `ai-engulfing.ts` |
+| 36 | AK  TREND ID v1.00 | Implemented | Easy | `ak-trend-id.ts` |
+| 37 | AK MACD BB INDICATOR V  1.00 | Implemented | Easy | `macd-bb.ts` |
+| 38 | All Candlestick Patterns Identifier | Implemented | Easy | `all-candlestick-patterns.ts` |
 | 39 | AlphaTrend - Screener | Blocked | N/A | Screener;MTF |
 | 40 | AlphaTrend Strategy | Blocked | N/A | Strategy |
 | 41 | AlphaTrend | Implemented | Easy | `alpha-trend.ts` |
 | 42 | Angle Attack Follow Line Indicator | Blocked | N/A | MTF |
 | 43 | ANN Strategy v2 | Blocked | N/A | Strategy;MTF |
-| 44 | Anti-Volume Stop Loss | Implementable | Easy | |
+| 44 | Anti-Volume Stop Loss | Implemented | Easy | `anti-volume-stop.ts` |
 | 45 | AR Forecast Scatterplot [SS] | Blocked | N/A | Table;Drawing |
 | 46 | AsiaSessionHighLowMidLines | Blocked | N/A | Session;Drawing |
 | 47 | ATR Bands | Blocked | N/A | Table |
 | 48 | ATR Stop Loss Finder | Blocked | N/A | Table |
 | 49 | ATR Trailing Stoploss | Implemented | Easy | |
-| 50 | ATR+ (Stop Loss Indicator) | Implementable | Easy | |
+| 50 | ATR+ (Stop Loss Indicator) | Implemented | Easy | `atr-plus.ts` |
 | 51 | Auto Chart Patterns [Trendoscope®] | Implementable | Hard | |
 | 52 | Auto Fib Channels by DGT | Blocked | N/A | Table;Drawing |
 | 53 | Auto Fib Retracement Alerts | Blocked | N/A | Drawing |
 | 54 | Auto Fib Speed Resistance Fans by DGT | Blocked | N/A | Table;Drawing |
-| 55 | Auto Fib | Implementable | Easy | |
+| 55 | Auto Fib | Implemented | Easy | `auto-fib.ts` |
 | 56 | Auto Fibo on Indicators | Implementable | Medium | |
 | 57 | Auto Fibonacci and Gann Fan_Retracements Combo | Blocked | N/A | Drawing |
 | 58 | Auto PitchFan, Fib Extension_Retracement and ZigZag by DGT | Blocked | N/A | Table;Drawing |
@@ -121,10 +121,10 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 60 | Auto Trendline Indicator (based on fractals) | Implementable | Hard | |
 | 61 | Auto TrendLines [HeWhoMustNotBeNamed] | Blocked | N/A | Table;Drawing |
 | 62 | Automatic Daily Fibonacci v0.3 by JustUncleL | Blocked | N/A | MTF |
-| 63 | Automatic Support & Resistance | Implementable | Easy | |
-| 64 | Auto-Support | Implementable | Easy | |
+| 63 | Automatic Support & Resistance | Implemented | Easy | `auto-support-resistance.ts` |
+| 64 | Auto-Support | Implemented | Easy | `auto-support.ts` |
 | 65 | Average Sentiment Oscillator | Implemented | Easy | |
-| 66 | Average True Range Trailing Stops Colored | Implementable | Easy | |
+| 66 | Average True Range Trailing Stops Colored | Implemented | Easy | `atr-trailing-colored.ts` |
 | 67 | AWESOME OSCILLATOR V2 by KIVANCfr3762 | Implemented | Easy | |
 | 68 | Backtest Adapter | Blocked | N/A | Strategy |
 | 69 | Backtesting & Trading Engine [PineCoders] | Blocked | N/A | Strategy |
@@ -134,8 +134,8 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 73 | BEST Trend Direction Helper (Strategy Edition) | Blocked | N/A | Strategy;Drawing |
 | 74 | Big Snapper Alerts R2.0 by JustUncleL | Implementable | Hard | |
 | 75 | Bill Williams. Alligator, Fractals & Res_Sup combined (by vlkvr) | Implementable | Easy | |
-| 76 | Binary Option Arrows (example) [TheMightyChicken] | Implementable | Easy | |
-| 77 | BITCOIN KILL ZONES v2 | Implementable | Easy | |
+| 76 | Binary Option Arrows (example) [TheMightyChicken] | Implemented | Easy | `binary-option-arrows.ts` |
+| 77 | BITCOIN KILL ZONES v2 | Implemented | Easy | `bitcoin-kill-zones.ts` |
 | 78 | Bitcoin Logarithmic Growth Curves | Implementable | Medium | |
 | 79 | Bjorgum AutoTrail | Implementable | Hard | |
 | 80 | Bjorgum Double Tap | Blocked | N/A | Strategy;Table;Drawing |
@@ -151,7 +151,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 90 | Bollinger Band with RSI | Blocked | N/A | Strategy |
 | 91 | Bollinger Bands Breakout Oscillator [LuxAlgo] | Implemented | Easy | |
 | 92 | Bollinger Bands Fibonacci ratios | Implemented | Easy | |
-| 93 | Bollinger Bands Stochastic RSI Extreme Signal | Implementable | Easy | |
+| 93 | Bollinger Bands Stochastic RSI Extreme Signal | Implemented | Easy | `bb-stoch-rsi.ts` |
 | 94 | Boom Hunter Pro | Implementable | Hard | |
 | 95 | Breakaway Fair Value Gaps [LuxAlgo] | Blocked | N/A | Table;Drawing |
 | 96 | Breaker Blocks + Order Blocks confirm [TradingFinder] BBOB Alert | Implementable | Hard | |
@@ -162,15 +162,15 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 101 | BTCUSDSHORTS BTCUSDLONGS - Bitfinex BTC Shorts & Longs | Blocked | N/A | MTF |
 | 102 | Bull Bear Power Trend | Implemented | Easy | |
 | 103 | Bull Market Support Band (20w SMA, 21w EMA) | Blocked | N/A | MTF |
-| 104 | Bullish Engulfing automatic finding script | Implementable | Easy | |
-| 105 | BUY & SELL VOLUME TO PRICE PRESSURE by @XeL_Arjona | Implementable | Easy | |
+| 104 | Bullish Engulfing automatic finding script | Implemented | Easy | `bullish-engulfing-finder.ts` |
+| 105 | BUY & SELL VOLUME TO PRICE PRESSURE by @XeL_Arjona | Implemented | Easy | `buy-sell-pressure.ts` |
 | 106 | BUY and SELL -  Backtest single EMA cross By che_trader | Blocked | N/A | Strategy |
 | 107 | Buy&Sell Strategy depends on AO+Stoch+RSI+ATR by SerdarYILMAZ | Blocked | N/A | Strategy |
-| 108 | Buying Selling Volume | Implementable | Easy | |
+| 108 | Buying Selling Volume | Implemented | Easy | `buying-selling-volume.ts` |
 | 109 | buysellsignal-yashgode9 | Implementable | Medium | |
 | 110 | Buyside & Sellside Liquidity [LuxAlgo] | Blocked | N/A | Drawing |
 | 111 | Candlestick Patterns Identified (updated 3_11_15) | Implementable | Easy | |
-| 112 | Candlestick Reversal System | Implementable | Easy | |
+| 112 | Candlestick Reversal System | Implemented | Easy | `candlestick-reversal.ts` |
 | 113 | Candlestick Structure [LuxAlgo] | Blocked | N/A | Table;Drawing |
 | 114 | Candlestick Trend Indicator v0.5 by JustUncleL | Blocked | N/A | Strategy |
 | 115 | Candlesticks Patterns Identified | Implementable | Easy | |
@@ -184,38 +184,38 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 123 | Chandelier Stop | Implemented | Easy | |
 | 124 | Channels With Patterns [ChartPrime] | Blocked | N/A | Drawing |
 | 125 | CM EMA Trend Bars | Implemented | Easy | |
-| 126 | CM Enhanced Ichimoku Cloud V5 | Implementable | Easy | |
-| 127 | CM Gann Swing High Low V2 | Implementable | Easy | |
-| 128 | CM Heikin-Ashi Candlesticks_V1 | Implementable | Easy | |
+| 126 | CM Enhanced Ichimoku Cloud V5 | Implemented | Easy | `cm-enhanced-ichimoku.ts` |
+| 127 | CM Gann Swing High Low V2 | Implemented | Easy | `cm-gann-swing.ts` |
+| 128 | CM Heikin-Ashi Candlesticks_V1 | Implemented | Easy | `cm-heikin-ashi.ts` |
 | 129 | CM MACD Custom Indicator - Multiple Time Frame - V2 | Blocked | N/A | MTF |
 | 130 | CM Renko Overlay Bars | Blocked | N/A | MTF |
-| 131 | CM RSI-2 Strategy - Upper Indicators. | Implementable | Easy | |
-| 132 | CM RSI-2 Strategy Lower Indicator | Implementable | Easy | |
+| 131 | CM RSI-2 Strategy - Upper Indicators. | Implemented | Easy | `cm-rsi-2-upper.ts` |
+| 132 | CM RSI-2 Strategy Lower Indicator | Implemented | Easy | `cm-rsi-2-lower.ts` |
 | 133 | CM Sling Shot System | Implemented | Easy | `cm-sling-shot.ts` |
 | 134 | CM Stochastic Multi-TimeFrame | Blocked | N/A | MTF |
-| 135 | CM Stochastic POP Method 1 - Jake Bernstein_V1 | Implementable | Easy | |
-| 136 | CM Stochastic POP Method 2-Jake Bernstein_V1 | Implementable | Easy | |
+| 135 | CM Stochastic POP Method 1 - Jake Bernstein_V1 | Implemented | Easy | `stoch-pop-1.ts` |
+| 136 | CM Stochastic POP Method 2-Jake Bernstein_V1 | Implemented | Easy | `stoch-pop-2.ts` |
 | 137 | CM Super Guppy | Implementable | Medium | |
-| 138 | CM Time Based Vertical Lines | Implementable | Easy | |
-| 139 | CM_ADX_V1 | Implementable | Easy | |
+| 138 | CM Time Based Vertical Lines | Implemented | Easy | `cm-time-lines.ts` |
+| 139 | CM_ADX_V1 | Implemented | Easy | `cm-adx.ts` |
 | 140 | CM_Gap_Indicator_Intra-Day_V2.1 | Blocked | N/A | MTF |
-| 141 | CM_Guppy_EMA | Implementable | Easy | |
-| 142 | CM_Laguerre PPO PercentileRank Mkt Tops & Bottoms | Implementable | Easy | |
-| 143 | CM_Modified_Heikin-Ashi_TrendBars | Implementable | Easy | |
+| 141 | CM_Guppy_EMA | Implemented | Easy | `cm-guppy-ema.ts` |
+| 142 | CM_Laguerre PPO PercentileRank Mkt Tops & Bottoms | Implemented | Easy | `cm-laguerre-ppo.ts` |
+| 143 | CM_Modified_Heikin-Ashi_TrendBars | Implemented | Easy | `modified-heikin-ashi.ts` |
 | 144 | CM_OldSchool_Projected_high_Low | Blocked | N/A | MTF |
-| 145 | CM_Parabolic SAR | Implementable | Easy | |
+| 145 | CM_Parabolic SAR | Implemented | Easy | `cm-parabolic-sar.ts` |
 | 146 | CM_Pivot Points Daily To Intraday | Blocked | N/A | MTF |
 | 147 | CM_Pivot Points_Custom | Blocked | N/A | MTF |
 | 148 | CM_Pivot Points_M-W-D-4H-1H_Filtered | Blocked | N/A | MTF |
-| 149 | CM_Price-Action-Bars-Price Patterns That Work! | Implementable | Easy | |
-| 150 | CM_RSI Plus EMA | Implementable | Easy | |
-| 151 | CM_Stochastic Highlight Bars | Implementable | Easy | |
+| 149 | CM_Price-Action-Bars-Price Patterns That Work! | Implemented | Easy | `cm-price-action.ts` |
+| 150 | CM_RSI Plus EMA | Implemented | Easy | `cm-rsi-ema.ts` |
+| 151 | CM_Stochastic Highlight Bars | Implemented | Easy | `cm-stoch-highlight.ts` |
 | 152 | CM_Ultimate RSI Multi Time Frame | Blocked | N/A | MTF |
 | 153 | CM_Ultimate_MA_MTF_V2 | Blocked | N/A | MTF |
 | 154 | CM_Williams_Vix_Fix  Finds Market Bottoms | Implemented | Easy | |
-| 155 | CM_Williams_Vix_Fix_V3_Ultimate_Filtered_Alerts | Implementable | Easy | |
+| 155 | CM_Williams_Vix_Fix_V3_Ultimate_Filtered_Alerts | Implemented | Easy | `cm-vix-fix-v3.ts` |
 | 156 | CM_Williams_Vix_Fix_V3_Upper_Text Plots | Implementable | Easy | |
-| 157 | Code for All 4 Forex Sessions W_ Background Highlight!!! | Implementable | Easy | |
+| 157 | Code for All 4 Forex Sessions W_ Background Highlight!!! | Implemented | Easy | `forex-sessions.ts` |
 | 158 | Code Plots - High, Low, Open, Close—Daily, Weekly, & Monthly!!! | Blocked | N/A | Screener;MTF |
 | 159 | Colored Volume Bars [LazyBear] | Implemented | Easy | `colored-volume.ts` |
 | 160 | Comprehensive Trading Toolkit [BigBeluga] | Blocked | N/A | Drawing |
@@ -225,14 +225,14 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 164 | Cumulative Delta Volume | Implementable | Easy | |
 | 165 | Cumulative Volume Delta Strategy _ Flux Charts | Blocked | N/A | Table;Drawing |
 | 166 | Cup Finder | Blocked | N/A | Drawing |
-| 167 | Custom Indicator Clearly Shows If Bulls or Bears are in Control! | Implementable | Easy | |
-| 168 | Custom Indicator for Donchian Channels!!! System Rules Included! | Implementable | Easy | |
+| 167 | Custom Indicator Clearly Shows If Bulls or Bears are in Control! | Implemented | Easy | `bulls-bears-control.ts` |
+| 168 | Custom Indicator for Donchian Channels!!! System Rules Included! | Implemented | Easy | `donchian-custom.ts` |
 | 169 | Custom Pattern Detection | Blocked | N/A | Table;Drawing |
 | 170 | CVD - Cumulative Volume Delta (Chart) | Blocked | N/A | MTF;Session;Table;Drawing |
 | 171 | CVD - Cumulative Volume Delta Candles | Blocked | N/A | MTF;Session;Table |
 | 172 | Daily Close Comparison Strategy (by ChartArt via sirolf2009) | Blocked | N/A | Strategy;MTF |
 | 173 | Daily Weekly Monthly Yearly Opens | Blocked | N/A | MTF;Session;Drawing |
-| 174 | DARVAS BOX by KIVANÇ fr3762 | Implementable | Easy | |
+| 174 | DARVAS BOX by KIVANÇ fr3762 | Implemented | Easy | `darvas-box.ts` |
 | 175 | Day Trading Booster by DGT | Blocked | N/A | MTF;Table;Drawing |
 | 176 | DecisionPoint Price Momentum Oscillator [LazyBear] | Implemented | Easy | |
 | 177 | DecisionPoint Volume Swenlin Trading Oscillator [LazyBear] | Blocked | N/A | MTF |
@@ -242,7 +242,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 181 | Demand & Supply Zones [eyes20xx] | Blocked | N/A | Drawing |
 | 182 | Depth of Market (DOM) [LuxAlgo] | Blocked | N/A | MTF;Table |
 | 183 | Deviation Trend Profile [BigBeluga] | Blocked | N/A | Drawing |
-| 184 | Directional Movement Index + ADX & Keylevel Support | Implementable | Easy | |
+| 184 | Directional Movement Index + ADX & Keylevel Support | Implemented | Easy | `dmi-adx-levels.ts` |
 | 185 | Divergence for many indicator v3 | Blocked | N/A | Drawing |
 | 186 | Divergence for Many Indicators v4 | Implementable | Hard | |
 | 187 | Divergence Indicator (any oscillator) | Implementable | Medium | |
@@ -260,25 +260,25 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 199 | Dynamic Supply and Demand Zones [AlgoAlpha] | Blocked | N/A | Drawing |
 | 200 | Dynamic Support_Resistance Zones [ChartPrime] | Blocked | N/A | Drawing |
 | 201 | Dynamic Swing Anchored VWAP (Zeiierman) | Blocked | N/A | Drawing |
-| 202 | Easy Entry_Exit Trend Colors (With Alerts) | Implementable | Easy | |
+| 202 | Easy Entry_Exit Trend Colors (With Alerts) | Implemented | Easy | `easy-trend-colors.ts` |
 | 203 | Ehlers Instantaneous Trend [LazyBear] | Implemented | Easy | |
 | 204 | Ehlers MESA Adaptive Moving Average [LazyBear] | Implemented | Easy | `ehlers-mesa-ma.ts` |
 | 205 | Ehlers Stochastic CG Oscillator [LazyBear] | Implemented | Easy | `ehlers-stochastic-cg.ts` |
-| 206 | Elastic Volume Weighted Moving Average & Envelope [LazyBear] | Implementable | Easy | |
+| 206 | Elastic Volume Weighted Moving Average & Envelope [LazyBear] | Implemented | Easy | `evwma-envelope.ts` |
 | 207 | Elliot Wave - Impulse | Blocked | N/A | Table;Drawing |
 | 208 | Elliot Wave Oscillator | Implemented | Easy | |
 | 209 | Elliott Wave [LuxAlgo] | Blocked | N/A | Drawing |
 | 210 | Elliott Wave Oscillator Signals by DGT | Blocked | N/A | Table;Drawing |
-| 211 | EMA & MA Crossover | Implementable | Easy | |
-| 212 | EMA 20_50_100_200 | Implementable | Easy | |
-| 213 | EMA Enveloper Indicator & a crazy prediction | Implementable | Easy | |
-| 214 | EMA Ribbon [Krypt] | Implementable | Easy | |
+| 211 | EMA & MA Crossover | Implemented | Easy | `ema-ma-crossover.ts` |
+| 212 | EMA 20_50_100_200 | Implemented | Easy | `ema-multi.ts` |
+| 213 | EMA Enveloper Indicator & a crazy prediction | Implemented | Easy | `ema-enveloper.ts` |
+| 214 | EMA Ribbon [Krypt] | Implemented | Easy | `ema-ribbon.ts` |
 | 215 | EMA Slope + EMA Cross Strategy (by ChartArt) | Blocked | N/A | Strategy |
-| 216 | EMA Wave Indicator [LazyBear] | Implementable | Easy | |
-| 217 | EMA+Super | Implementable | Easy | |
+| 216 | EMA Wave Indicator [LazyBear] | Implemented | Easy | `ema-wave.ts` |
+| 217 | EMA+Super | Implemented | Easy | `ema-supertrend.ts` |
 | 218 | Engulfing Candle Indicator | Blocked | N/A | Strategy |
-| 219 | Entry points | Implementable | Easy | |
-| 220 | ENVELOPE RSI - Buy Sell Signals | Implementable | Easy | |
+| 219 | Entry points | Implemented | Easy | `entry-points.ts` |
+| 220 | ENVELOPE RSI - Buy Sell Signals | Implemented | Easy | `envelope-rsi.ts` |
 | 221 | Extrapolated Pivot Connector - Lets Make Support And Resistances | Blocked | N/A | Drawing |
 | 222 | Extreme Trend Reversal Points [HeWhoMustNotBeNamed] | Implementable | Hard | |
 | 223 | Fair value bands _ quantifytools | Blocked | N/A | Table |
@@ -286,19 +286,19 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 225 | Fair Value Gap Absorption Indicator [LuxAlgo] | Blocked | N/A | Drawing |
 | 226 | Fair Value Gap | Blocked | N/A | MTF;Drawing |
 | 227 | Fair Value Gaps (Volumetric) _ Flux Charts | Blocked | N/A | Drawing |
-| 228 | Faith Indicator | Implementable | Easy | |
+| 228 | Faith Indicator | Implemented | Easy | `faith-indicator.ts` |
 | 229 | False Breakout (Expo) | Implementable | Medium | |
 | 230 | Fibo Levels with Volume Profile and Targets [ChartPrime] | Blocked | N/A | MTF;Drawing |
 | 231 | Fibonacci Bollinger Bands | Implemented | Easy | |
 | 232 | Fibonacci Confluence Toolkit [LuxAlgo] | Blocked | N/A | Drawing |
 | 233 | Fibonacci Extension _ Retracement _ Pivot Points by DGT | Blocked | N/A | Table;Drawing |
 | 234 | Fibonacci levels MTF | Blocked | N/A | Drawing |
-| 235 | Fibonacci levels | Implementable | Easy | |
+| 235 | Fibonacci levels | Implemented | Easy | `fibonacci-levels.ts` |
 | 236 | Fibonacci Ranges (Real-Time) [LuxAlgo] | Blocked | N/A | Drawing |
 | 237 | Fibonacci Time-Price Zones | Blocked | N/A | Drawing |
 | 238 | Fibonacci Toolkit [LuxAlgo] | Blocked | N/A | Drawing |
 | 239 | Fibonacci Trend [ChartPrime] | Blocked | N/A | Drawing |
-| 240 | Fibonacci Zone | Implementable | Easy | |
+| 240 | Fibonacci Zone | Implemented | Easy | `fibonacci-zone.ts` |
 | 241 | Flawless Victory Strategy - 15min BTC Machine Learning Strategy | Blocked | N/A | Strategy |
 | 242 | FluidTrades - SMC Lite | Blocked | N/A | Drawing |
 | 243 | Follow Line Indicator | Blocked | N/A | MTF |
@@ -316,7 +316,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 255 | FVG Positioning Average [LuxAlgo] | Implementable | Medium | |
 | 256 | FVG Sessions [LuxAlgo] | Blocked | N/A | Drawing |
 | 257 | FX Market Sessions | Blocked | N/A | Session;Table;Drawing |
-| 258 | FX Sniper_ T3-CCI Copy Strategy | Implementable | Easy | |
+| 258 | FX Sniper_ T3-CCI Copy Strategy | Implemented | Easy | `fx-sniper-t3-cci.ts` |
 | 259 | FXN - Asian Session Range | Blocked | N/A | MTF;Drawing |
 | 260 | FXN - Week and Day Separator | Implementable | Medium | |
 | 261 | Gann High Low | Implemented | Easy | `gann-high-low.ts` |
@@ -357,7 +357,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 296 | Hull Suite | Implemented | Easy | `hull-suite.ts` |
 | 297 | HyperTrend [LuxAlgo] | Implementable | Hard | |
 | 298 | Ichimoku + Daily-Candle_X + HULL-MA_X + MacD | Blocked | N/A | Strategy;MTF |
-| 299 | Ichimoku EMA Bands | Implementable | Easy | |
+| 299 | Ichimoku EMA Bands | Implemented | Easy | `ichimoku-ema-bands.ts` |
 | 300 | ICHIMOKU Kinko Hyo by KIVANC fr3762 | Implementable | Easy | |
 | 301 | Ichimoku Kinkō hyō 目均衡表 | Blocked | N/A | Table;Drawing |
 | 302 | Ichimoku Oscillator | Implementable | Medium | |
@@ -384,42 +384,42 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 323 | Imbalance Detector [LuxAlgo] | Blocked | N/A | Table;Drawing |
 | 324 | Impulse MACD [LazyBear] | Implemented | Easy | `impulse-macd.ts` |
 | 325 | Indicator Panel | Blocked | N/A | Screener;MTF;Table |
-| 326 | Indicator_ CCI coded OBV | Implementable | Easy | |
-| 327 | Indicator_ Custom COG channel | Implementable | Easy | |
+| 326 | Indicator_ CCI coded OBV | Implemented | Easy | `cci-obv.ts` |
+| 327 | Indicator_ Custom COG channel | Implemented | Easy | `cog-channel.ts` |
 | 328 | Indicator_ Elder Impulse System | Blocked | N/A | MTF |
-| 329 | Indicator_ ElliotWave Oscillator [EWO] | Implementable | Easy | |
-| 330 | Indicator_ HawkEye Volume Indicator | Implementable | Easy | |
-| 331 | Indicator_ MFI or RSI enclosed by Bollinger Bands | Implementable | Easy | |
+| 329 | Indicator_ ElliotWave Oscillator [EWO] | Implemented | Easy | `elliott-wave-oscillator.ts` |
+| 330 | Indicator_ HawkEye Volume Indicator | Implemented | Easy | `hawkeye-volume.ts` |
+| 331 | Indicator_ MFI or RSI enclosed by Bollinger Bands | Implemented | Easy | `mfi-rsi-bb.ts` |
 | 332 | Indicator_ OBV Oscillator | Implemented | Easy | `obv-oscillator.ts` |
 | 333 | Indicator_ Premier Stochastic Oscillator | Implemented | Easy | `premier-stochastic.ts` |
 | 334 | Indicator_ Trend Trigger Factor | Implemented | Easy | |
 | 335 | Indicator_ Volume Price Confirmation Indicator (VPCI) | Implemented | Easy | `vpci.ts` |
-| 336 | Indicator_ WaveTrend Oscillator [WT] | Implementable | Easy | |
-| 337 | Indicator_ Weis Wave Volume [LazyBear] | Implementable | Easy | |
-| 338 | Indicator_ Zero Lag EMA & a simple trading strategy | Implementable | Easy | |
+| 336 | Indicator_ WaveTrend Oscillator [WT] | Implemented | Easy | `wavetrend.ts` |
+| 337 | Indicator_ Weis Wave Volume [LazyBear] | Implemented | Easy | `weis-wave-volume.ts` |
+| 338 | Indicator_ Zero Lag EMA & a simple trading strategy | Implemented | Easy | `zero-lag-ema.ts` |
 | 339 | Indicators Overlay | Implementable | Hard | |
 | 340 | Indicators_ Better Volume Indicator & InstrumentVolume | Implementable | Medium | |
-| 341 | Indicators_ Traders Dynamic Index, HLCTrends and Trix Ribbon | Implementable | Easy | |
-| 342 | Indicators_ Volume-Weighted MACD Histogram & Sentiment Zone Osc | Implementable | Easy | |
+| 341 | Indicators_ Traders Dynamic Index, HLCTrends and Trix Ribbon | Implemented | Easy | `tdi-hlc-trix.ts` |
+| 342 | Indicators_ Volume-Weighted MACD Histogram & Sentiment Zone Osc | Implemented | Easy | `vwmacd-szo.ts` |
 | 343 | Initial Balance Breakout Signals [LuxAlgo] | Blocked | N/A | Session;Drawing |
 | 344 | Institutional OrderBlock Pressure | Blocked | N/A | Drawing |
-| 345 | Intraday BUY_SELL | Implementable | Easy | |
-| 346 | Intraday TS ,BB + Buy_Sell +Squeeze Mom.+ adx-dmi | Implementable | Easy | |
+| 345 | Intraday BUY_SELL | Implemented | Easy | `intraday-buy-sell.ts` |
+| 346 | Intraday TS ,BB + Buy_Sell +Squeeze Mom.+ adx-dmi | Implemented | Easy | `intraday-ts-bb.ts` |
 | 347 | Intraday Volume Swings | Implementable | Medium | |
 | 348 | Inverse Fisher Transform COMBO STO+RSI+CCIv2  by KIVANÇ fr3762 | Implemented | Easy | `ift-stoch-rsi-cci.ts` |
 | 349 | Inverse FVG with Rejections [TFO] | Blocked | N/A | MTF;Session |
 | 350 | Inversion Fair Value Gaps (IFVG) [LuxAlgo] | Blocked | N/A | Drawing |
-| 351 | Isolated Peak and Bottom (Tuncer ŞENGÖZ)  by KıvanÇ fr3762 | Implementable | Easy | |
+| 351 | Isolated Peak and Bottom (Tuncer ŞENGÖZ)  by KıvanÇ fr3762 | Implemented | Easy | `isolated-peak-bottom.ts` |
 | 352 | ITG Scalper | Blocked | N/A | MTF;Drawing |
 | 353 | Kalman Trend Levels [BigBeluga] | Blocked | N/A | Drawing |
 | 354 | Kaufman Moving Average Adaptive (KAMA) | Implemented | Easy | |
 | 355 | KDJ Indicator - @iamaltcoin | Implemented | Easy | `kdj.ts` |
 | 356 | Key Levels SpacemanBTC IDWM | Blocked | N/A | Screener;MTF;Session;Drawing |
 | 357 | Laguerre Multi-Filter [DW] | Blocked | N/A | Screener;MTF |
-| 358 | Laguerre RSI | Implementable | Easy | |
-| 359 | Leledc levels (IS) | Implementable | Easy | |
+| 358 | Laguerre RSI | Implemented | Easy | `laguerre-rsi.ts` |
+| 359 | Leledc levels (IS) | Implemented | Easy | `leledc-levels.ts` |
 | 360 | Linear Regression ++ | Blocked | N/A | MTF |
-| 361 | Linear Regression Candles | Implementable | Easy | |
+| 361 | Linear Regression Candles | Implemented | Easy | `linear-regression-candles.ts` |
 | 362 | Linear Regression Channel _ Curve _ Slope by DGT | Blocked | N/A | Table;Drawing |
 | 363 | Linear Regression Channel | Implemented | Easy | `linear-regression-channel.ts` |
 | 364 | Linear Regression Oscillator [ChartPrime] | Blocked | N/A | Drawing |
@@ -454,17 +454,17 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 393 | MACD + Stochastic, Double Strategy (by ChartArt) | Blocked | N/A | Strategy |
 | 394 | MACD 4C | Implemented | Easy | `macd-4c.ts` |
 | 395 | MACD Based Price Forecasting [LuxAlgo] | Blocked | N/A | Drawing |
-| 396 | MACD Crossover | Implementable | Easy | |
+| 396 | MACD Crossover | Implemented | Easy | `macd-crossover.ts` |
 | 397 | MacD Custom Indicator-Multiple Time Frame+All Available Options! | Blocked | N/A | MTF |
-| 398 | MACD DEMA | Implementable | Easy | |
+| 398 | MACD DEMA | Implemented | Easy | `macd-dema.ts` |
 | 399 | MACD Divergence MultiTimeFrame [FantasticFox] | Implementable | Easy | |
-| 400 | MACD Divergences by @DaviddTech | Implementable | Medium | |
+| 400 | MACD Divergences by @DaviddTech | Implemented | Medium | `macd-divergence.ts` |
 | 401 | MACD Leader [LazyBear] | Implemented | Easy | `macd-leader.ts` |
 | 402 | MACD ReLoaded STRATEGY | Blocked | N/A | Strategy |
 | 403 | MACD ReLoaded | Implementable | Hard | |
 | 404 | MACD Support and Resistance [ChartPrime] | Implementable | Hard | |
-| 405 | MACD_VXI | Implementable | Easy | |
-| 406 | MACDAS | Implementable | Easy | |
+| 405 | MACD_VXI | Implemented | Easy | `macd-vxi.ts` |
+| 406 | MACDAS | Implemented | Easy | `macdas.ts` |
 | 407 | MACD-X, More Than MACD by DGT | Blocked | N/A | Drawing |
 | 408 | Machine Learning Adaptive SuperTrend [AlgoAlpha] | Blocked | N/A | Table |
 | 409 | Machine Learning Momentum Index (MLMI) [Zeiierman] | Implementable | Medium | |
@@ -477,14 +477,14 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 416 | Madrid MA Ribbon Bar v2 | Implementable | Medium | |
 | 417 | Madrid Moving Average Ribbon | Implementable | Medium | |
 | 418 | Madrid Trend Squeeze | Implemented | Easy | |
-| 419 | Market Cipher A free version 1.1 | Implementable | Easy | |
-| 420 | Market Cipher B  Free version with Buy and sell | Implementable | Easy | |
+| 419 | Market Cipher A free version 1.1 | Implemented | Easy | `market-cipher-a.ts` |
+| 420 | Market Cipher B  Free version with Buy and sell | Implemented | Easy | `market-cipher-b.ts` |
 | 421 | Market Profile with TPO | Blocked | N/A | Session;Table;Drawing |
 | 422 | Market Profile | Blocked | N/A | Drawing |
 | 423 | Market Sentiment Technicals [LuxAlgo] | Blocked | N/A | MTF;Drawing |
 | 424 | Market Sessions - By Leviathan | Blocked | N/A | Session;Drawing |
 | 425 | Market sessions and Volume profile - By Leviathan | Blocked | N/A | MTF;Drawing |
-| 426 | Market Shift Levels [ChartPrime] | Implementable | Easy | |
+| 426 | Market Shift Levels [ChartPrime] | Implemented | Easy | `market-shift-levels.ts` |
 | 427 | Market Structure - By Leviathan | Blocked | N/A | Drawing |
 | 428 | Market Structure (Breakers) [LuxAlgo] | Blocked | N/A | Drawing |
 | 429 | Market Structure (Intrabar) [LuxAlgo] | Blocked | N/A | MTF;Table;Drawing |
@@ -496,7 +496,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 435 | Market Structure with Inducements & Sweeps [LuxAlgo] | Blocked | N/A | Drawing |
 | 436 | Market Trend Levels Detector [BigBeluga] | Blocked | N/A | Drawing |
 | 437 | Master Pattern [LuxAlgo] | Blocked | N/A | Drawing |
-| 438 | Matrix Series | Implementable | Easy | |
+| 438 | Matrix Series | Implemented | Easy | `matrix-series.ts` |
 | 439 | MavilimW | Implemented | Easy | `mavilimw.ts` |
 | 440 | Mean Reversion Channel - (fareid's MRI Variant) | Blocked | N/A | MTF |
 | 441 | MFI [seiglerj] | Implementable | Easy | |
@@ -511,13 +511,13 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 450 | Moon Phases Strategy [LuxAlgo] | Blocked | N/A | Strategy |
 | 451 | MOST + Moving Average Screener | Blocked | N/A | Screener;MTF |
 | 452 | MOST on RSI | Implementable | Medium | |
-| 453 | Moving Average ADX | Implementable | Easy | |
-| 454 | Moving Average Colored EMA_SMA | Implementable | Easy | |
+| 453 | Moving Average ADX | Implemented | Easy | `ma-adx.ts` |
+| 454 | Moving Average Colored EMA_SMA | Implemented | Easy | `ma-colored.ts` |
 | 455 | Moving Average Converging [LuxAlgo] | Implementable | Medium | |
 | 456 | Moving Average Cross Alert, Multi-Timeframe (MTF) (by ChartArt) | Blocked | N/A | MTF |
-| 457 | Moving average deviation rate | Implementable | Easy | |
-| 458 | Moving Average Shaded Fill Area Crossover EMA Color - Editable | Implementable | Easy | |
-| 459 | Moving Average Shift [ChartPrime] | Implementable | Easy | |
+| 457 | Moving average deviation rate | Implemented | Easy | `ma-deviation-rate.ts` |
+| 458 | Moving Average Shaded Fill Area Crossover EMA Color - Editable | Implemented | Easy | `ma-shaded-fill.ts` |
+| 459 | Moving Average Shift [ChartPrime] | Implemented | Easy | `ma-shift.ts` |
 | 460 | Moving Averages as Support Resistance MTF | Blocked | N/A | MTF;Drawing |
 | 461 | MTF Break of Structure(BOS) & Market Structure Shift(MSS) | Blocked | N/A | MTF;Drawing |
 | 462 | MTF Order Block Finder | Blocked | N/A | Screener;MTF;Drawing |
@@ -527,7 +527,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 466 | Multi-Layer Volume Profile [BigBeluga] | Blocked | N/A | Drawing |
 | 467 | Multiple divergences NON-REPAINT by PeterO | Implementable | Hard | |
 | 468 | Multiple Indicators Screener | Blocked | N/A | Screener;MTF;Table |
-| 469 | Multiple Moving Averages using only 1 Indicator! | Implementable | Easy | |
+| 469 | Multiple Moving Averages using only 1 Indicator! | Implemented | Easy | `multiple-ma.ts` |
 | 470 | Multitimeframe Fair Value Gap – FVG (Zeiierman) | Blocked | N/A | MTF;Drawing |
 | 471 | Multi-Timeframe VWAP | Blocked | N/A | Drawing |
 | 472 | Multpile strategies [LUPOWN] | Blocked | N/A | MTF |
@@ -538,7 +538,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 477 | Neglected Volume by DGT | Blocked | N/A | Table |
 | 478 | Next Pivot Projection [Trendoscope] | Blocked | N/A | Table;Drawing |
 | 479 | Nick Rypock Trailing Reverse (NRTR) | Implementable | Medium | |
-| 480 | Normalized Quantitative Qualitative Estimation nQQE | Implementable | Easy | |
+| 480 | Normalized Quantitative Qualitative Estimation nQQE | Implemented | Easy | `normalized-qqe.ts` |
 | 481 | NR4 & NR7 with Breakouts [LuxAlgo] | Blocked | N/A | MTF;Drawing |
 | 482 | OBV MACD Indicator | Implemented | Hard | `obv-macd.ts` |
 | 483 | One Shot One Kill ICT [TradingFinder] Liquidity MMXM + CISD OTE | Blocked | N/A | MTF;Drawing |
@@ -566,18 +566,18 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 505 | Order Blocks with signals | Implementable | Hard | |
 | 506 | Orderblocks (Nephew_Sam_) - Open source | Blocked | N/A | Table;Drawing |
 | 507 | Parabolic RSI [ChartPrime] | Implementable | Medium | |
-| 508 | Parabolic SAR + EMA 200 + MACD Signals | Implementable | Easy | |
+| 508 | Parabolic SAR + EMA 200 + MACD Signals | Implemented | Easy | `sar-ema-macd.ts` |
 | 509 | Parabolic SAR | Implementable | Easy | |
-| 510 | Parallel Pivot Lines [LuxAlgo] | Implementable | Easy | |
-| 511 | Pekipek's PPO Divergence BETA | Implementable | Easy | |
+| 510 | Parallel Pivot Lines [LuxAlgo] | Implemented | Easy | `parallel-pivot-lines.ts` |
+| 511 | Pekipek's PPO Divergence BETA | Implemented | Easy | `ppo-divergence.ts` |
 | 512 | Periodic Linear Regressions [LuxAlgo] | Blocked | N/A | Table |
-| 513 | Philakone 55 EMA Swing Trading Strategy | Implementable | Easy | |
+| 513 | Philakone 55 EMA Swing Trading Strategy | Implemented | Easy | `philakone-ema-swing.ts` |
 | 514 | Pip collector [LazyBear] | Blocked | N/A | MTF |
 | 515 | Pivot Based Trailing Maxima & Minima [LuxAlgo] | Implementable | Medium | |
 | 516 | Pivot High_Low Analysis & Forecast [LuxAlgo] | Blocked | N/A | Table;Drawing |
 | 517 | Pivot Hilo Support n Resistance Levels R3-3 by JustUncleL | Blocked | N/A | Drawing |
 | 518 | Pivot Point SuperTrend [Backtest] | Blocked | N/A | Strategy |
-| 519 | Pivot Point Supertrend | Implementable | Easy | |
+| 519 | Pivot Point Supertrend | Implemented | Easy | `pivot-point-supertrend.ts` |
 | 520 | Pivot Point | Blocked | N/A | MTF |
 | 521 | Pivot Points High Low & Missed Reversal Levels [LuxAlgo] | Blocked | N/A | Drawing |
 | 522 | Pivot Points High Low (HH_HL_LH_LL) [Anan] | Implementable | Medium | |
@@ -591,7 +591,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 530 | Poor man's volume profile | Blocked | N/A | MTF;Drawing |
 | 531 | Position Size Calculator | Blocked | N/A | Drawing |
 | 532 | Power Of 3 ICT 01 [TradingFinder] AMD ICT & SMC Accumulations | Blocked | N/A | Session;Drawing |
-| 533 | PPO Divergence Alerts | Implementable | Easy | |
+| 533 | PPO Divergence Alerts | Implemented | Easy | `ppo-alerts.ts` |
 | 534 | Predictive Channels [LuxAlgo] | Implementable | Medium | |
 | 535 | Predictive Ranges [LuxAlgo] | Blocked | N/A | MTF |
 | 536 | Premier RSI Oscillator [LazyBear] | Implemented | Easy | `premier-rsi.ts` |
@@ -603,7 +603,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 542 | Price Action Doji Harami v0.2 by JustUncleL | Blocked | N/A | MTF |
 | 543 | Price Action Smart Money Concepts [BigBeluga] | Blocked | N/A | Drawing |
 | 544 | Price Action Toolkit Lite [UAlgo] | Blocked | N/A | Table;Drawing |
-| 545 | Price Action Trading System v0.3 by JustUncleL | Implementable | Easy | |
+| 545 | Price Action Trading System v0.3 by JustUncleL | Implemented | Easy | `price-action-system.ts` |
 | 546 | Price and Volume Breakout Buy Strategy [TradeDots] | Blocked | N/A | Strategy;Drawing |
 | 547 | Price Divergence Detector V3 revised by JustUncleL | Implementable | Hard | |
 | 548 | Profit Maximizer PMax | Implementable | Medium | |
@@ -616,8 +616,8 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 555 | QQE Cross Indicator Alert v2.0 by JustUncleL | Implementable | Hard | |
 | 556 | QQE MOD + SSL Hybrid + Waddah Attar Explosion | Blocked | N/A | Strategy;Drawing |
 | 557 | QQE MOD | Implemented | Medium | `qqe-mod.ts` |
-| 558 | QQE signals | Implementable | Easy | |
-| 559 | Quantitative Qualitative Estimation QQE | Implementable | Easy | |
+| 558 | QQE signals | Implemented | Easy | `qqe-signals.ts` |
+| 559 | Quantitative Qualitative Estimation QQE | Implemented | Easy | `qqe.ts` |
 | 560 | Quarterly Earnings | Blocked | N/A | Table;ExternalData |
 | 561 | R_R Trading System Framework | Blocked | N/A | Table;Drawing |
 | 562 | Radius Trend [ChartPrime] | Implementable | Medium | |
@@ -630,14 +630,14 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 569 | Range Identifier [LazyBear] | Implemented | Easy | `range-identifier.ts` |
 | 570 | Range Sentiment Profile [LuxAlgo] | Blocked | N/A | MTF;Drawing |
 | 571 | Ranges With Targets [ChartPrime] | Blocked | N/A | Table;Drawing |
-| 572 | RCI3lines | Implementable | Easy | |
+| 572 | RCI3lines | Implemented | Easy | `rci-3lines.ts` |
 | 573 | Realtime 5D Profile [LucF] | Blocked | N/A | Screener;MTF;Table;Drawing |
 | 574 | Realtime Delta Volume Action [LucF] | Blocked | N/A | Drawing |
 | 575 | Realtime Footprint | Blocked | N/A | Drawing |
 | 576 | Realtime Volume Bars w Market Buy_Sell_Neutral split & Mkt Delta | Implementable | Medium | |
 | 577 | RedK EVEREX - Effort Versus Results Explorer | Implementable | Hard | |
 | 578 | RedK Momentum Bars (RedK Mo_Bars) | Implementable | Medium | |
-| 579 | RedK Slow_Smooth Average (RSS_WMA) | Implementable | Easy | |
+| 579 | RedK Slow_Smooth Average (RSS_WMA) | Implemented | Easy | `redk-rss-wma.ts` |
 | 580 | RedK Trader Pressure Index (TPX v1.0) | Implementable | Medium | |
 | 581 | RedK Volume-Accelerated Directional Energy Ratio (RedK VADER) | Implementable | Medium | |
 | 582 | Relative Strength Index - Divergences - Libertus | Blocked | N/A | Drawing |
@@ -647,7 +647,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 586 | Renko Chart | Implementable | Hard | |
 | 587 | Renko+Moving Average+RMI Alert R3 by JustUncleL | Blocked | N/A | MTF |
 | 588 | Retest Support Resistance Signals [ChartPrime] | Blocked | N/A | Drawing |
-| 589 | Reversal Candle Pattern SetUp | Implementable | Easy | |
+| 589 | Reversal Candle Pattern SetUp | Implemented | Easy | `reversal-candle-setup.ts` |
 | 590 | Reversal Candlestick Structure [LuxAlgo] | Blocked | N/A | Table;Drawing |
 | 591 | Reversal Probability Zone & Levels [LuxAlgo] | Blocked | N/A | Drawing |
 | 592 | Reversal Signals [LuxAlgo] | Blocked | N/A | Drawing |
@@ -657,42 +657,42 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 596 | RMI Trend Sniper | Implementable | Medium | |
 | 597 | Rolling VWAP | Blocked | N/A | Table |
 | 598 | RSI (Kernel Optimized) _ Flux Charts | Blocked | N/A | Table;Drawing |
-| 599 | RSI + BB (EMA) + Dispersion (2.0) | Implementable | Easy | |
-| 600 | RSI Bands, RSI %B and RSI Bandwidth | Implementable | Easy | |
+| 599 | RSI + BB (EMA) + Dispersion (2.0) | Implemented | Easy | `rsi-bb-dispersion.ts` |
+| 600 | RSI Bands, RSI %B and RSI Bandwidth | Implemented | Easy | `rsi-bands.ts` |
 | 601 | RSI Based Automatic Supply and Demand | Implementable | Hard | |
 | 602 | RSI Candles | Implemented | Easy | `rsi-candles.ts` |
 | 603 | RSI cyclic smoothed v2 | Implementable | Medium | |
 | 604 | RSI Divergence Indicator strategy | Blocked | N/A | Strategy |
-| 605 | RSI Divergence | Implementable | Easy | |
-| 606 | RSI HistoAlert Strategy | Implementable | Easy | |
+| 605 | RSI Divergence | Implemented | Easy | `rsi-divergence.ts` |
+| 606 | RSI HistoAlert Strategy | Implemented | Easy | `rsi-histoalert.ts` |
 | 607 | RSI Momentum Divergence Zones [ChartPrime] | Implementable | Medium | |
 | 608 | RSI Multi Length [LuxAlgo] | Blocked | N/A | Table |
 | 609 | RSI Strategy | Blocked | N/A | Strategy |
 | 610 | RSI Support & Resistance by DGT | Blocked | N/A | Table;Drawing |
 | 611 | RSI Swing Indicator v2 | Blocked | N/A | Drawing |
-| 612 | RSI Swing Signal | Implementable | Easy | |
+| 612 | RSI Swing Signal | Implemented | Easy | `rsi-swing-signal.ts` |
 | 613 | RSI Tops and Bottoms | Implementable | Hard | |
-| 614 | Rsi_Snabbel | Implementable | Easy | |
+| 614 | Rsi_Snabbel | Implemented | Easy | `rsi-snabbel.ts` |
 | 615 | RSI-VWAP INDICATOR | Blocked | N/A | Strategy |
 | 616 | RVOL Relative Volume - Intraday | Blocked | N/A | MTF |
 | 617 | Saty ATR Levels | Blocked | N/A | MTF;Session;Table |
 | 618 | Saty Pivot Ribbon | Blocked | N/A | Screener;MTF;Session |
 | 619 | Scalp Pro | Blocked | N/A | Strategy |
-| 620 | Scalping Line Indicator | Implementable | Easy | |
+| 620 | Scalping Line Indicator | Implemented | Easy | `scalping-line.ts` |
 | 621 | Scalping PullBack Tool R1 by JustUncleL | Blocked | N/A | MTF |
 | 622 | Scalping Support Resistance Strategy | Blocked | N/A | Strategy |
 | 623 | Scalping Swing Trading Tool R1-4 by JustUncleL | Blocked | N/A | Screener;MTF |
 | 624 | Schaff Trend Cycle | Implemented | Easy | `schaff-trend-cycle.ts` |
 | 625 | Screener - Mean Reversion Channel | Blocked | N/A | Screener;MTF |
-| 626 | Sell _ Buy Rates | Implementable | Easy | |
+| 626 | Sell _ Buy Rates | Implemented | Easy | `sell-buy-rates.ts` |
 | 627 | Session Sweeps [LuxAlgo] | Blocked | N/A | Session;Table;Drawing |
 | 628 | Session TPO Market Profile | Blocked | N/A | Session;Drawing |
 | 629 | Sessions [LuxAlgo] | Blocked | N/A | Drawing |
 | 630 | Sessions on Chart | Blocked | N/A | Session |
-| 631 | Signal Moving Average [LuxAlgo] | Implementable | Easy | |
+| 631 | Signal Moving Average [LuxAlgo] | Implemented | Easy | `signal-ma.ts` |
 | 632 | Signal Table - AutoFib - SMA - EMA - RSI - ATR - Vol | Blocked | N/A | Table;Drawing |
-| 633 | Simple Moving Averages | Implementable | Easy | |
-| 634 | Slow Heiken Ashi | Implementable | Easy | |
+| 633 | Simple Moving Averages | Implemented | Easy | `simple-moving-averages.ts` |
+| 634 | Slow Heiken Ashi | Implemented | Easy | `slow-heiken-ashi.ts` |
 | 635 | Slow Stochastic | Implemented | Easy | `slow-stochastic.ts` |
 | 636 | Smart Money Breakout Channels [AlgoAlpha] | Blocked | N/A | Table;Drawing |
 | 637 | Smart Money Breakout Signals [AlgoAlpha] | Blocked | N/A | Table;Drawing |
@@ -709,23 +709,23 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 648 | SMC Structures and FVG | Blocked | N/A | Drawing |
 | 649 | Smoothed Heiken Ashi Candles v1 | Implemented | Easy | `smoothed-heiken-ashi.ts` |
 | 650 | SMT Divergences [LuxAlgo] | Blocked | N/A | MTF;Table |
-| 651 | Squeeze Momentum Indicator [LazyBear] Version2 by KıvanÇ fr3762 | Implementable | Easy | |
+| 651 | Squeeze Momentum Indicator [LazyBear] Version2 by KıvanÇ fr3762 | Implemented | Easy | `squeeze-momentum-v2.ts` |
 | 652 | Squeeze Momentum Indicator [LazyBear] | Implemented | Easy | `squeeze-momentum.ts` |
 | 653 | SSL channel | Implemented | Easy | `ssl-channel.ts` |
 | 654 | SSL HYBRID Advanced | Blocked | N/A | MTF;Table;Drawing |
 | 655 | SSL Hybrid | Blocked | N/A | Table |
-| 656 | ST0P | Implementable | Easy | |
+| 656 | ST0P | Implemented | Easy | `st0p.ts` |
 | 657 | Standardized MACD Heikin-Ashi Transformed | Implementable | Hard | |
 | 658 | Statistical Trailing Stop [LuxAlgo] | Blocked | N/A | Table |
 | 659 | STC Indicator - A Better MACD [SHK] | Implementable | Medium | |
 | 660 | STD-Filtered, N-Pole Gaussian Filter [Loxx] | Blocked | N/A | MTF |
-| 661 | Stoch_VX3 | Implementable | Easy | |
+| 661 | Stoch_VX3 | Implemented | Easy | `stoch-vx3.ts` |
 | 662 | Stochastic + RSI, Double Strategy (by ChartArt) | Blocked | N/A | Strategy |
 | 663 | Stochastic Heat Map | Implementable | Hard | |
 | 664 | Stochastic Momentum Index (SMI) of Money Flow Index (MFI) | Blocked | N/A | MTF;Drawing |
 | 665 | Stochastic Momentum Index (SMI) | Implemented | Easy | |
-| 666 | Stochastic Momentum Index _ UCSgears | Implementable | Easy | |
-| 667 | Stochastic OTT | Implementable | Easy | |
+| 666 | Stochastic Momentum Index _ UCSgears | Implemented | Easy | `smi-ucs.ts` |
+| 667 | Stochastic OTT | Implemented | Easy | `stochastic-ott.ts` |
 | 668 | Stop loss and Take Profit in $$ example | Blocked | N/A | Strategy |
 | 669 | Strat Assistant | Blocked | N/A | MTF;Drawing |
 | 670 | Strength of Divergence Across Multiple Indicators | Implementable | Hard | |
@@ -734,15 +734,15 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 673 | Super OrderBlock _ FVG _ BoS Tools by makuchaku & eFe | Blocked | N/A | Drawing |
 | 674 | Super Pivots | Blocked | N/A | MTF;Drawing |
 | 675 | Super Scalper - 5 Min 15 Min | Blocked | N/A | Strategy |
-| 676 | Super Smoothed MACD for CRYPTO by KIVANÇ fr3762 | Implementable | Easy | |
-| 677 | SUPER SUPERTREND THREE LINE PROFIT STRATEGY | Implementable | Easy | |
+| 676 | Super Smoothed MACD for CRYPTO by KIVANÇ fr3762 | Implemented | Easy | `super-smoothed-macd.ts` |
+| 677 | SUPER SUPERTREND THREE LINE PROFIT STRATEGY | Implemented | Easy | `super-supertrend.ts` |
 | 678 | Super Trend Daily 2.0 BF | Blocked | N/A | Strategy |
 | 679 | Super trend V | Implementable | Medium | |
 | 680 | SuperBollingerTrend (Expo) | Blocked | N/A | Table;Drawing |
 | 681 | Supertrend - Ladder ATR | Implementable | Medium | |
 | 682 | SuperTrend + Relative Volume (Kernel Optimized) | Blocked | N/A | Table |
 | 683 | SuperTrend AI (Clustering) [LuxAlgo] | Blocked | N/A | Table |
-| 684 | Supertrend Channels [LuxAlgo] | Implementable | Easy | |
+| 684 | Supertrend Channels [LuxAlgo] | Implemented | Easy | `supertrend-channels.ts` |
 | 685 | SuperTrend EXPLORER _ SCREENER | Blocked | N/A | Screener;MTF |
 | 686 | Supertrend MTF Heikin Ashi | Blocked | N/A | Screener;MTF |
 | 687 | SuperTrend Oscillator [LuxAlgo] | Blocked | N/A | Drawing |
@@ -758,7 +758,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 697 | Support & Resistance Dynamic [LuxAlgo] | Blocked | N/A | Drawing |
 | 698 | Support and Resistance (High Volume Boxes) [ChartPrime] | Blocked | N/A | Drawing |
 | 699 | Support and Resistance (MTF) _ Flux Charts | Blocked | N/A | MTF;Drawing |
-| 700 | Support and Resistance Levels with Breaks [LuxAlgo] | Implementable | Easy | |
+| 700 | Support and Resistance Levels with Breaks [LuxAlgo] | Implemented | Easy | `sr-levels-breaks.ts` |
 | 701 | Support and Resistance Logistic Regression _ Flux Charts | Blocked | N/A | Drawing |
 | 702 | Support and Resistance Power Channel [ChartPrime] | Blocked | N/A | Drawing |
 | 703 | Support and Resistance Signals MTF [LuxAlgo] | Blocked | N/A | Drawing |
@@ -777,28 +777,28 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 716 | Swing Failure Pattern (SFP) [LuxAlgo] | Blocked | N/A | MTF;Table;Drawing |
 | 717 | Swing Highs_Lows & Candle Patterns [LuxAlgo] | Implementable | Medium | |
 | 718 | Swing Levels and Liquidity - By Leviathan | Blocked | N/A | Screener;MTF;Drawing |
-| 719 | SWING TRADE SIGNALS | Implementable | Easy | |
+| 719 | SWING TRADE SIGNALS | Implemented | Easy | `swing-trade-signals.ts` |
 | 720 | Swing Volume Profiles [LuxAlgo] | Blocked | N/A | Drawing |
 | 721 | SwingArm ATR Trend Indicator | Blocked | N/A | MTF |
 | 722 | Target Trend [BigBeluga] | Blocked | N/A | Drawing |
 | 723 | Targets For Many Indicators [LuxAlgo] | Blocked | N/A | Table;Drawing |
 | 724 | Targets For Overlay Indicators [LuxAlgo] | Blocked | N/A | Table;Drawing |
 | 725 | TDI - Traders Dynamic Index + RSI Divergences + Buy_Sell Signals | Implementable | Hard | |
-| 726 | TDMacd | Implementable | Easy | |
+| 726 | TDMacd | Implemented | Easy | `td-macd.ts` |
 | 727 | Technical Ratings | Blocked | N/A | MTF;Drawing |
 | 728 | The Echo Forecast [LuxAlgo] | Blocked | N/A | Drawing |
 | 729 | The Next Pivot [Kioseff Trading] | Blocked | N/A | Table;Drawing |
 | 730 | The Ultimate Buy and Sell Indicator | Implementable | Hard | |
 | 731 | Three Bar Reversal Pattern [LuxAlgo] | Blocked | N/A | Drawing |
 | 732 | Three Drive Pattern Detector [LuxAlgo] | Blocked | N/A | Table;Drawing |
-| 733 | Three Moving Averages [AdventTrading] | Implementable | Easy | |
+| 733 | Three Moving Averages [AdventTrading] | Implemented | Easy | `three-moving-averages.ts` |
 | 734 | Tick Chart | Blocked | N/A | Drawing |
 | 735 | Tick Data Detailed | Blocked | N/A | Drawing |
 | 736 | Tillson T3 Moving Average by KIVANÇ fr3762 | Implemented | Easy | `tillson-t3.ts` |
 | 737 | TKP T3 Trend With Psar Barcolor | Implementable | Medium | |
 | 738 | TMA Overlay | Implementable | Medium | |
-| 739 | TonyUX EMA Scalper - Buy _ Sell | Implementable | Easy | |
-| 740 | Tops_Bottoms | Implementable | Easy | |
+| 739 | TonyUX EMA Scalper - Buy _ Sell | Implemented | Easy | `tonyux-ema-scalper.ts` |
+| 740 | Tops_Bottoms | Implemented | Easy | `tops-bottoms.ts` |
 | 741 | Traders Dynamic Index Indicator Alert v0.1 by JustUncleL | Blocked | N/A | MTF |
 | 742 | Traders Reality Main | Blocked | N/A | Screener;MTF;Session;Table |
 | 743 | Trading ABC | Blocked | N/A | Drawing |
@@ -807,10 +807,10 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 746 | TradingView Alerts to MT4 MT5 + dynamic variables NON-REPAINTING | Blocked | N/A | Strategy;Table |
 | 747 | Trailing SL Strategy [QuantNomad] | Blocked | N/A | Strategy |
 | 748 | Trailing Stop Loss Indicator by KıvanÇ fr3762 | Blocked | N/A | MTF |
-| 749 | Transient Zones v1.1 | Implementable | Easy | |
+| 749 | Transient Zones v1.1 | Implemented | Easy | `transient-zones.ts` |
 | 750 | Trend Channels With Liquidity Breaks [ChartPrime] | Blocked | N/A | Drawing |
 | 751 | Trend Direction Helper (ZigZag and S_R and HH_LL labels) | Blocked | N/A | Drawing |
-| 752 | Trend Following Moving Averages | Implementable | Easy | |
+| 752 | Trend Following Moving Averages | Implemented | Easy | `trend-following-ma.ts` |
 | 753 | Trend Impulse Channels (Zeiierman) | Implementable | Hard | |
 | 754 | Trend Indicator A-V2 (Smoothed Heikin Ashi Cloud) | Blocked | N/A | MTF |
 | 755 | Trend Levels [ChartPrime] | Blocked | N/A | Table;Drawing |
@@ -822,10 +822,10 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 761 | Trend Magic | Implemented | Easy | `trend-magic.ts` |
 | 762 | Trend Meter | Blocked | N/A | MTF |
 | 763 | Trend Range Detector (Zeiierman) | Blocked | N/A | Drawing |
-| 764 | Trend Regularity Adaptive Moving Average [LuxAlgo] | Implementable | Easy | |
+| 764 | Trend Regularity Adaptive Moving Average [LuxAlgo] | Implemented | Easy | `trama.ts` |
 | 765 | Trend Signals with TP & SL [UAlgo] | Blocked | N/A | Drawing |
 | 766 | Trend Targets [AlgoAlpha] | Blocked | N/A | Drawing |
-| 767 | Trend Trader Strategy | Implementable | Easy | |
+| 767 | Trend Trader Strategy | Implemented | Easy | `trend-trader.ts` |
 | 768 | Trend Type Indicator by BobRivera990 | Blocked | N/A | Drawing |
 | 769 | Trending Market Toolkit [LuxAlgo] | Blocked | N/A | MTF;Drawing |
 | 770 | Trendline Breakout Navigator [LuxAlgo] | Blocked | N/A | MTF;Drawing |
@@ -833,11 +833,11 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 772 | Trendlines - JD | Blocked | N/A | Drawing |
 | 773 | Trendlines 2x + | Blocked | N/A | Screener;MTF |
 | 774 | Trendlines with Breaks [LuxAlgo] | Implementable | Hard | |
-| 775 | Triangular Momentum Oscillator & Real Time Divergences [LuxAlgo] | Implementable | Easy | |
+| 775 | Triangular Momentum Oscillator & Real Time Divergences [LuxAlgo] | Implemented | Easy | `triangular-momentum-osc.ts` |
 | 776 | Triangular Moving Average (TMA) bands | Implemented | Easy | `tma-bands.ts` |
-| 777 | Triple MA Forecast | Implementable | Easy | |
-| 778 | True Williams Alligator (SMMA) | Implementable | Easy | |
-| 779 | TTM Squeeze Pro | Implementable | Easy | |
+| 777 | Triple MA Forecast | Implemented | Easy | `triple-ma-forecast.ts` |
+| 778 | True Williams Alligator (SMMA) | Implemented | Easy | `williams-combo.ts` |
+| 779 | TTM Squeeze Pro | Implemented | Easy | `ttm-squeeze-pro.ts` |
 | 780 | TTM Squeeze | Implementable | Easy | |
 | 781 | TTrades Daily Bias [TFO] | Blocked | N/A | Table;Drawing |
 | 782 | Turtle Trade Channels Indicator TUTCI | Implemented | Easy | `turtle-trade-channels.ts` |
@@ -846,8 +846,8 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 785 | Twin Optimized Trend Tracker Strategy TOTT | Blocked | N/A | Strategy |
 | 786 | Twin Range Filter Visualized | Implementable | Easy | |
 | 787 | Twin Range Filter | Implemented | Easy | `twin-range-filter.ts` |
-| 788 | UCS_Murrey's Math Oscillator_V2 | Implementable | Easy | |
-| 789 | UCS_Top & Bottom Candle | Implementable | Easy | |
+| 788 | UCS_Murrey's Math Oscillator_V2 | Implemented | Easy | `murreys-math-osc.ts` |
+| 789 | UCS_Top & Bottom Candle | Implemented | Easy | `top-bottom-candle.ts` |
 | 790 | Ultimate Moving Average-Multi-TimeFrame-7 MA Types | Blocked | N/A | MTF |
 | 791 | Ultimate RSI [LuxAlgo] | Implementable | Medium | |
 | 792 | Ultimate Strategy Template | Blocked | N/A | Strategy;Session |
@@ -856,10 +856,10 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 795 | UT Bot Strategy | Blocked | N/A | Strategy;MTF |
 | 796 | UT Bot | Implemented | Easy | `ut-bot.ts` |
 | 797 | Variable Moving Average [LazyBear] | Implemented | Easy | `variable-ma.ts` |
-| 798 | Vdub FX SniperVX2 Color v2 | Implementable | Easy | |
+| 798 | Vdub FX SniperVX2 Color v2 | Implemented | Easy | `vdub-sniper.ts` |
 | 799 | VDUB_BINARY_PRO_3_V2  FINAL + Strategy | Blocked | N/A | MTF |
 | 800 | vdub_Trend_Master_v  _  v1 _ v2 _ v3 | Blocked | N/A | MTF |
-| 801 | vdubus BinaryPro  - Indicators 1 & 2 | Implementable | Easy | |
+| 801 | vdubus BinaryPro  - Indicators 1 & 2 | Implemented | Easy | `vdubus-binarypro.ts` |
 | 802 | Vervoort Heiken-Ashi LongTerm Candlestick Oscillator [LazyBear] | Implemented | Easy | `vervoort-ha-oscillator.ts` |
 | 803 | Vix FIX _ StochRSI Strategy | Blocked | N/A | Strategy |
 | 804 | Volumatic Support_Resistance Levels [BigBeluga] | Implementable | Medium | |
@@ -868,13 +868,13 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 807 | Volume Accumulation Percentage Indicator [LazyBear] | Implemented | Easy | `volume-accumulation-pct.ts` |
 | 808 | Volume Analysis - Heatmap and Volume Profile | Blocked | N/A | MTF;Table;Drawing |
 | 809 | Volume Bar Breakout and Breakdown  Indicator | Implementable | Medium | |
-| 810 | Volume Based Coloured Bars | Implementable | Easy | |
+| 810 | Volume Based Coloured Bars | Implemented | Easy | `volume-colored-bars.ts` |
 | 811 | Volume composition _ quantifytools | Blocked | N/A | MTF;Table |
 | 812 | Volume Delta [hapharmonic] | Blocked | N/A | Table |
 | 813 | Volume Delta Candles [LuxAlgo] | Blocked | N/A | MTF;Table |
 | 814 | Volume Divergence by MM | Implementable | Medium | |
 | 815 | Volume Flow Indicator [LazyBear] | Implemented | Easy | |
-| 816 | Volume Flow v3 | Implementable | Easy | |
+| 816 | Volume Flow v3 | Implemented | Easy | `volume-flow-v3.ts` |
 | 817 | Volume Footprint [LuxAlgo] | Implementable | Medium | |
 | 818 | Volume Footprint Voids [BigBeluga] | Blocked | N/A | MTF |
 | 819 | Volume Order Blocks [BigBeluga] | Blocked | N/A | Drawing |
@@ -896,10 +896,10 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 835 | Volume Profile | Blocked | N/A | MTF;Table;Drawing |
 | 836 | Volume Suite - By Leviathan (CVD, Volume Delta, Relative Volume) | Blocked | N/A | MTF |
 | 837 | Volume SuperTrend AI (Expo) | Implementable | Medium | |
-| 838 | VOLUME WEIGHTED MACD V2 VWMACDV2 BY KIVANÇ fr3762 | Implementable | Easy | |
+| 838 | VOLUME WEIGHTED MACD V2 VWMACDV2 BY KIVANÇ fr3762 | Implemented | Easy | `vw-macd-v2.ts` |
 | 839 | Volume-based Support & Resistance Zones | Blocked | N/A | Screener;MTF;Table;Drawing |
 | 840 | VolumeHeatmap _ Experimental Version of Marketorders Matrix | Blocked | N/A | MTF;Drawing |
-| 841 | Volume-Supported Linear Regression Trend | Implementable | Easy | |
+| 841 | Volume-Supported Linear Regression Trend | Implemented | Easy | `volume-linreg-trend.ts` |
 | 842 | VuManChu Cipher A | Blocked | N/A | MTF |
 | 843 | VuManChu Cipher B + Divergences | Blocked | N/A | Screener;MTF |
 | 844 | VuManChu Swing Free | Implementable | Medium | |
@@ -914,8 +914,8 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 853 | WaveTrend Oscillator + Divergence  + Direction Detection +Alerts | Implementable | Hard | |
 | 854 | WaveTrend with Crosses [LazyBear] | Implemented | Easy | `wavetrend.ts` |
 | 855 | Wedge and Flag Finder (Multi - zigzag) | Blocked | N/A | Drawing |
-| 856 | Weis Wave Volume | Implementable | Easy | |
-| 857 | WICK.ED Fractals | Implementable | Easy | |
+| 856 | Weis Wave Volume | Implemented | Easy | `weis-wave-volume.ts` |
+| 857 | WICK.ED Fractals | Implemented | Easy | `wicked-fractals.ts` |
 | 858 | Wolfe Scanner (Multi - zigzag) [HeWhoMustNotBeNamed] | Blocked | N/A | Drawing |
 | 859 | Zero Lag MACD Enhanced - Version 1.2 | Implemented | Easy | `zero-lag-macd.ts` |
 | 860 | Zero Lag Trend Signals (MTF) [AlgoAlpha] | Blocked | N/A | MTF;Table |
@@ -1008,5 +1008,5 @@ docs/official/indicators_community/
 
 ---
 
-*Last updated: February 25, 2026*
+*Last updated: February 26, 2026*
 *Assessment based on oakscriptjs v0.2.4 capabilities*

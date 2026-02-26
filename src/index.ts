@@ -795,6 +795,705 @@ import * as vervoortHAOscillatorIndicator from './community/vervoort-ha-oscillat
 export { VervoortHAOscillator, calculate as calculateVervoortHAOscillator } from './community/vervoort-ha-oscillator';
 export type { VervoortHAOscillatorInputs } from './community/vervoort-ha-oscillator';
 
+// ===== NEW COMMUNITY INDICATORS =====
+
+// ADXCobra
+import * as adxCobraIndicator from './community/adx-cobra';
+export { ADXCobra, calculate as calculateADXCobra } from './community/adx-cobra';
+export type { ADXCobraInputs } from './community/adx-cobra';
+
+// AIEngulfing
+import * as aiEngulfingIndicator from './community/ai-engulfing';
+export { AIEngulfing, calculate as calculateAIEngulfing } from './community/ai-engulfing';
+export type { AIEngulfingInputs } from './community/ai-engulfing';
+
+// AKTrendID
+import * as akTrendIdIndicator from './community/ak-trend-id';
+export { AKTrendID, calculate as calculateAKTrendID } from './community/ak-trend-id';
+export type { AKTrendIDInputs } from './community/ak-trend-id';
+
+// AllCandlestickPatterns
+import * as allCandlestickPatternsIndicator from './community/all-candlestick-patterns';
+export { AllCandlestickPatterns, calculate as calculateAllCandlestickPatterns } from './community/all-candlestick-patterns';
+export type { AllCandlestickPatternsInputs } from './community/all-candlestick-patterns';
+
+// AntiVolumeStop
+import * as antiVolumeStopIndicator from './community/anti-volume-stop';
+export { AntiVolumeStop, calculate as calculateAntiVolumeStop } from './community/anti-volume-stop';
+export type { AntiVolumeStopInputs } from './community/anti-volume-stop';
+
+// ATRPlus
+import * as atrPlusIndicator from './community/atr-plus';
+export { ATRPlus, calculate as calculateATRPlus } from './community/atr-plus';
+export type { ATRPlusInputs } from './community/atr-plus';
+
+// ATRTrailingColored
+import * as atrTrailingColoredIndicator from './community/atr-trailing-colored';
+export { ATRTrailingColored, calculate as calculateATRTrailingColored } from './community/atr-trailing-colored';
+export type { ATRTrailingColoredInputs } from './community/atr-trailing-colored';
+
+// AutoFib
+import * as autoFibIndicator from './community/auto-fib';
+export { AutoFib, calculate as calculateAutoFib } from './community/auto-fib';
+export type { AutoFibInputs } from './community/auto-fib';
+
+// AutoSupport
+import * as autoSupportIndicator from './community/auto-support';
+export { AutoSupport, calculate as calculateAutoSupport } from './community/auto-support';
+export type { AutoSupportInputs } from './community/auto-support';
+
+// AutoSupportResistance
+import * as autoSupportResistanceIndicator from './community/auto-support-resistance';
+export { AutoSupportResistance, calculate as calculateAutoSupportResistance } from './community/auto-support-resistance';
+export type { AutoSupportResistanceInputs } from './community/auto-support-resistance';
+
+// BBStochRSI
+import * as bbStochRsiIndicator from './community/bb-stoch-rsi';
+export { BBStochRSI, calculate as calculateBBStochRSI } from './community/bb-stoch-rsi';
+export type { BBStochRSIInputs } from './community/bb-stoch-rsi';
+
+// BinaryOptionArrows
+import * as binaryOptionArrowsIndicator from './community/binary-option-arrows';
+export { BinaryOptionArrows, calculate as calculateBinaryOptionArrows } from './community/binary-option-arrows';
+export type { BinaryOptionArrowsInputs } from './community/binary-option-arrows';
+
+// BitcoinKillZones
+import * as bitcoinKillZonesIndicator from './community/bitcoin-kill-zones';
+export { BitcoinKillZones, calculate as calculateBitcoinKillZones } from './community/bitcoin-kill-zones';
+export type { BitcoinKillZonesInputs } from './community/bitcoin-kill-zones';
+
+// BullishEngulfingFinder
+import * as bullishEngulfingFinderIndicator from './community/bullish-engulfing-finder';
+export { BullishEngulfingFinder, calculate as calculateBullishEngulfingFinder } from './community/bullish-engulfing-finder';
+export type { BullishEngulfingFinderInputs } from './community/bullish-engulfing-finder';
+
+// BullsBears
+import * as bullsBearsControlIndicator from './community/bulls-bears-control';
+export { BullsBears, calculate as calculateBullsBears } from './community/bulls-bears-control';
+export type { BullsBearsInputs } from './community/bulls-bears-control';
+
+// BuyingSellVolume
+import * as buyingSellingVolumeIndicator from './community/buying-selling-volume';
+export { BuyingSellVolume, calculate as calculateBuyingSellVolume } from './community/buying-selling-volume';
+export type { BuyingSellVolumeInputs } from './community/buying-selling-volume';
+
+// BuySellPressure
+import * as buySellPressureIndicator from './community/buy-sell-pressure';
+export { BuySellPressure, calculate as calculateBuySellPressure } from './community/buy-sell-pressure';
+export type { BuySellPressureInputs } from './community/buy-sell-pressure';
+
+// CandlestickReversal
+import * as candlestickReversalIndicator from './community/candlestick-reversal';
+export { CandlestickReversal, calculate as calculateCandlestickReversal } from './community/candlestick-reversal';
+export type { CandlestickReversalInputs } from './community/candlestick-reversal';
+
+// CCIOBV
+import * as cciObvIndicator from './community/cci-obv';
+export { CCIOBV, calculate as calculateCCIOBV } from './community/cci-obv';
+export type { CCIOBVInputs } from './community/cci-obv';
+
+// CMADX
+import * as cmAdxIndicator from './community/cm-adx';
+export { CMADX, calculate as calculateCMADX } from './community/cm-adx';
+export type { CMADXInputs } from './community/cm-adx';
+
+// CMEnhancedIchimoku
+import * as cmEnhancedIchimokuIndicator from './community/cm-enhanced-ichimoku';
+export { CMEnhancedIchimoku, calculate as calculateCMEnhancedIchimoku } from './community/cm-enhanced-ichimoku';
+export type { CMEnhancedIchimokuInputs } from './community/cm-enhanced-ichimoku';
+
+// CMGannSwing
+import * as cmGannSwingIndicator from './community/cm-gann-swing';
+export { CMGannSwing, calculate as calculateCMGannSwing } from './community/cm-gann-swing';
+export type { CMGannSwingInputs } from './community/cm-gann-swing';
+
+// CMGuppyEMA
+import * as cmGuppyEmaIndicator from './community/cm-guppy-ema';
+export { CMGuppyEMA, calculate as calculateCMGuppyEMA } from './community/cm-guppy-ema';
+export type { CMGuppyEMAInputs } from './community/cm-guppy-ema';
+
+// CMHeikinAshi
+import * as cmHeikinAshiIndicator from './community/cm-heikin-ashi';
+export { CMHeikinAshi, calculate as calculateCMHeikinAshi } from './community/cm-heikin-ashi';
+export type { CMHeikinAshiInputs } from './community/cm-heikin-ashi';
+
+// CMLaguerrePPO
+import * as cmLaguerrePpoIndicator from './community/cm-laguerre-ppo';
+export { CMLaguerrePPO, calculate as calculateCMLaguerrePPO } from './community/cm-laguerre-ppo';
+export type { CMLaguerrePPOInputs } from './community/cm-laguerre-ppo';
+
+// CMParabolicSAR
+import * as cmParabolicSarIndicator from './community/cm-parabolic-sar';
+export { CMParabolicSAR, calculate as calculateCMParabolicSAR } from './community/cm-parabolic-sar';
+export type { CMParabolicSARInputs } from './community/cm-parabolic-sar';
+
+// CMPriceAction
+import * as cmPriceActionIndicator from './community/cm-price-action';
+export { CMPriceAction, calculate as calculateCMPriceAction } from './community/cm-price-action';
+export type { CMPriceActionInputs } from './community/cm-price-action';
+
+// CMRSI2Lower
+import * as cmRsi2LowerIndicator from './community/cm-rsi-2-lower';
+export { CMRSI2Lower, calculate as calculateCMRSI2Lower } from './community/cm-rsi-2-lower';
+export type { CMRSI2LowerInputs } from './community/cm-rsi-2-lower';
+
+// CMRSI2Upper
+import * as cmRsi2UpperIndicator from './community/cm-rsi-2-upper';
+export { CMRSI2Upper, calculate as calculateCMRSI2Upper } from './community/cm-rsi-2-upper';
+export type { CMRSI2UpperInputs } from './community/cm-rsi-2-upper';
+
+// CMRSIPlusEMA
+import * as cmRsiEmaIndicator from './community/cm-rsi-ema';
+export { CMRSIPlusEMA, calculate as calculateCMRSIPlusEMA } from './community/cm-rsi-ema';
+export type { CMRSIPlusEMAInputs } from './community/cm-rsi-ema';
+
+// CMStochHighlight
+import * as cmStochHighlightIndicator from './community/cm-stoch-highlight';
+export { CMStochHighlight, calculate as calculateCMStochHighlight } from './community/cm-stoch-highlight';
+export type { CMStochHighlightInputs } from './community/cm-stoch-highlight';
+
+// CMTimeLines
+import * as cmTimeLinesIndicator from './community/cm-time-lines';
+export { CMTimeLines, calculate as calculateCMTimeLines } from './community/cm-time-lines';
+export type { CMTimeLinesInputs } from './community/cm-time-lines';
+
+// CMVixFixV3
+import * as cmVixFixV3Indicator from './community/cm-vix-fix-v3';
+export { CMVixFixV3, calculate as calculateCMVixFixV3 } from './community/cm-vix-fix-v3';
+export type { CMVixFixV3Inputs } from './community/cm-vix-fix-v3';
+
+// COGChannel
+import * as cogChannelIndicator from './community/cog-channel';
+export { COGChannel, calculate as calculateCOGChannel } from './community/cog-channel';
+export type { COGChannelInputs } from './community/cog-channel';
+
+// DarvasBox
+import * as darvasBoxIndicator from './community/darvas-box';
+export { DarvasBox, calculate as calculateDarvasBox } from './community/darvas-box';
+export type { DarvasBoxInputs } from './community/darvas-box';
+
+// DMIADX
+import * as dmiAdxLevelsIndicator from './community/dmi-adx-levels';
+export { DMIADX, calculate as calculateDMIADX } from './community/dmi-adx-levels';
+export type { DMIADXInputs } from './community/dmi-adx-levels';
+
+// DonchianCustom
+import * as donchianCustomIndicator from './community/donchian-custom';
+export { DonchianCustom, calculate as calculateDonchianCustom } from './community/donchian-custom';
+export type { DonchianCustomInputs } from './community/donchian-custom';
+
+// EasyTrendColors
+import * as easyTrendColorsIndicator from './community/easy-trend-colors';
+export { EasyTrendColors, calculate as calculateEasyTrendColors } from './community/easy-trend-colors';
+export type { EasyTrendColorsInputs } from './community/easy-trend-colors';
+
+// EMAEnveloper
+import * as emaEnveloperIndicator from './community/ema-enveloper';
+export { EMAEnveloper, calculate as calculateEMAEnveloper } from './community/ema-enveloper';
+export type { EMAEnveloperInputs } from './community/ema-enveloper';
+
+// EMAMACross
+import * as emaMaCrossoverIndicator from './community/ema-ma-crossover';
+export { EMAMACross, calculate as calculateEMAMACross } from './community/ema-ma-crossover';
+export type { EMAMACrossInputs } from './community/ema-ma-crossover';
+
+// EMAMulti
+import * as emaMultiIndicator from './community/ema-multi';
+export { EMAMulti, calculate as calculateEMAMulti } from './community/ema-multi';
+export type { EMAMultiInputs } from './community/ema-multi';
+
+// EMARibbon
+import * as emaRibbonIndicator from './community/ema-ribbon';
+export { EMARibbon, calculate as calculateEMARibbon } from './community/ema-ribbon';
+export type { EMARibbonInputs } from './community/ema-ribbon';
+
+// EMASupertrend
+import * as emaSupertrendIndicator from './community/ema-supertrend';
+export { EMASupertrend, calculate as calculateEMASupertrend } from './community/ema-supertrend';
+export type { EMASuperTrendInputs } from './community/ema-supertrend';
+
+// EMAWave
+import * as emaWaveIndicator from './community/ema-wave';
+export { EMAWave, calculate as calculateEMAWave } from './community/ema-wave';
+export type { EMAWaveInputs } from './community/ema-wave';
+
+// EntryPoints
+import * as entryPointsIndicator from './community/entry-points';
+export { EntryPoints, calculate as calculateEntryPoints } from './community/entry-points';
+export type { EntryPointsInputs } from './community/entry-points';
+
+// EnvelopeRSI
+import * as envelopeRsiIndicator from './community/envelope-rsi';
+export { EnvelopeRSI, calculate as calculateEnvelopeRSI } from './community/envelope-rsi';
+export type { EnvelopeRSIInputs } from './community/envelope-rsi';
+
+// EVWMAEnvelope
+import * as evwmaEnvelopeIndicator from './community/evwma-envelope';
+export { EVWMAEnvelope, calculate as calculateEVWMAEnvelope } from './community/evwma-envelope';
+export type { EVWMAEnvelopeInputs } from './community/evwma-envelope';
+
+// FaithIndicator
+import * as faithIndicatorIndicator from './community/faith-indicator';
+export { FaithIndicator, calculate as calculateFaithIndicator } from './community/faith-indicator';
+export type { FaithIndicatorInputs } from './community/faith-indicator';
+
+// FibonacciLevels
+import * as fibonacciLevelsIndicator from './community/fibonacci-levels';
+export { FibonacciLevels, calculate as calculateFibonacciLevels } from './community/fibonacci-levels';
+export type { FibonacciLevelsInputs } from './community/fibonacci-levels';
+
+// FibonacciZone
+import * as fibonacciZoneIndicator from './community/fibonacci-zone';
+export { FibonacciZone, calculate as calculateFibonacciZone } from './community/fibonacci-zone';
+export type { FibonacciZoneInputs } from './community/fibonacci-zone';
+
+// ForexSessions
+import * as forexSessionsIndicator from './community/forex-sessions';
+export { ForexSessions, calculate as calculateForexSessions } from './community/forex-sessions';
+export type { ForexSessionsInputs } from './community/forex-sessions';
+
+// FXSniperT3CCI
+import * as fxSniperT3CciIndicator from './community/fx-sniper-t3-cci';
+export { FXSniperT3CCI, calculate as calculateFXSniperT3CCI } from './community/fx-sniper-t3-cci';
+export type { FXSniperT3CCIInputs } from './community/fx-sniper-t3-cci';
+
+// HawkEyeVolume
+import * as hawkeyeVolumeIndicator from './community/hawkeye-volume';
+export { HawkEyeVolume, calculate as calculateHawkEyeVolume } from './community/hawkeye-volume';
+export type { HawkEyeVolumeInputs } from './community/hawkeye-volume';
+
+// IchimokuEMABands
+import * as ichimokuEmaBandsIndicator from './community/ichimoku-ema-bands';
+export { IchimokuEMABands, calculate as calculateIchimokuEMABands } from './community/ichimoku-ema-bands';
+export type { IchimokuEMABandsInputs } from './community/ichimoku-ema-bands';
+
+// IntradayBuySell
+import * as intradayBuySellIndicator from './community/intraday-buy-sell';
+export { IntradayBuySell, calculate as calculateIntradayBuySell } from './community/intraday-buy-sell';
+export type { IntradayBuySellInputs } from './community/intraday-buy-sell';
+
+// IntradayTSBB
+import * as intradayTsBbIndicator from './community/intraday-ts-bb';
+export { IntradayTSBB, calculate as calculateIntradayTSBB } from './community/intraday-ts-bb';
+export type { IntradayTSBBInputs } from './community/intraday-ts-bb';
+
+// IsolatedPeakBottom
+import * as isolatedPeakBottomIndicator from './community/isolated-peak-bottom';
+export { IsolatedPeakBottom, calculate as calculateIsolatedPeakBottom } from './community/isolated-peak-bottom';
+export type { IsolatedPeakBottomInputs } from './community/isolated-peak-bottom';
+
+// LeledcLevels
+import * as leledcLevelsIndicator from './community/leledc-levels';
+export { LeledcLevels, calculate as calculateLeledcLevels } from './community/leledc-levels';
+export type { LeledcLevelsInputs } from './community/leledc-levels';
+
+// LinRegCandles
+import * as linearRegressionCandlesIndicator from './community/linear-regression-candles';
+export { LinRegCandles, calculate as calculateLinRegCandles } from './community/linear-regression-candles';
+export type { LinRegCandlesInputs } from './community/linear-regression-candles';
+
+// MAADX
+import * as maAdxIndicator from './community/ma-adx';
+export { MAADX, calculate as calculateMAADX } from './community/ma-adx';
+export type { MAADXInputs } from './community/ma-adx';
+
+// MACDAS
+import * as macdasIndicator from './community/macdas';
+export { MACDAS, calculate as calculateMACDAS } from './community/macdas';
+export type { MACDASInputs } from './community/macdas';
+
+// MACDBB
+import * as macdBbIndicator from './community/macd-bb';
+export { MACDBB, calculate as calculateMACDBB } from './community/macd-bb';
+export type { MACDBBInputs } from './community/macd-bb';
+
+// MACDCrossover
+import * as macdCrossoverIndicator from './community/macd-crossover';
+export { MACDCrossover, calculate as calculateMACDCrossover } from './community/macd-crossover';
+export type { MACDCrossoverInputs } from './community/macd-crossover';
+
+// MACDDEMA
+import * as macdDemaIndicator from './community/macd-dema';
+export { MACDDEMA, calculate as calculateMACDDEMA } from './community/macd-dema';
+export type { MACDDEMAInputs } from './community/macd-dema';
+
+// MACDDivergence
+import * as macdDivergenceIndicator from './community/macd-divergence';
+export { MACDDivergence, calculate as calculateMACDDivergence } from './community/macd-divergence';
+export type { MACDDivergenceInputs } from './community/macd-divergence';
+
+// MACDVXI
+import * as macdVxiIndicator from './community/macd-vxi';
+export { MACDVXI, calculate as calculateMACDVXI } from './community/macd-vxi';
+export type { MACDVXIInputs } from './community/macd-vxi';
+
+// MAColored
+import * as maColoredIndicator from './community/ma-colored';
+export { MAColored, calculate as calculateMAColored } from './community/ma-colored';
+export type { MAColoredInputs } from './community/ma-colored';
+
+// MADeviationRate
+import * as maDeviationRateIndicator from './community/ma-deviation-rate';
+export { MADeviationRate, calculate as calculateMADeviationRate } from './community/ma-deviation-rate';
+export type { MADeviationRateInputs } from './community/ma-deviation-rate';
+
+// MarketCipherA
+import * as marketCipherAIndicator from './community/market-cipher-a';
+export { MarketCipherA, calculate as calculateMarketCipherA } from './community/market-cipher-a';
+export type { MarketCipherAInputs } from './community/market-cipher-a';
+
+// MarketCipherB
+import * as marketCipherBIndicator from './community/market-cipher-b';
+export { MarketCipherB, calculate as calculateMarketCipherB } from './community/market-cipher-b';
+export type { MarketCipherBInputs } from './community/market-cipher-b';
+
+// MarketShiftLevels
+import * as marketShiftLevelsIndicator from './community/market-shift-levels';
+export { MarketShiftLevels, calculate as calculateMarketShiftLevels } from './community/market-shift-levels';
+export type { MarketShiftLevelsInputs } from './community/market-shift-levels';
+
+// MAShadedFill
+import * as maShadedFillIndicator from './community/ma-shaded-fill';
+export { MAShadedFill, calculate as calculateMAShadedFill } from './community/ma-shaded-fill';
+export type { MAShadedFillInputs } from './community/ma-shaded-fill';
+
+// MAShift
+import * as maShiftIndicator from './community/ma-shift';
+export { MAShift, calculate as calculateMAShift } from './community/ma-shift';
+export type { MAShiftInputs } from './community/ma-shift';
+
+// MatrixSeries
+import * as matrixSeriesIndicator from './community/matrix-series';
+export { MatrixSeries, calculate as calculateMatrixSeries } from './community/matrix-series';
+export type { MatrixSeriesInputs } from './community/matrix-series';
+
+// MFIRSIBollingerBands
+import * as mfiRsiBbIndicator from './community/mfi-rsi-bb';
+export { MFIRSIBollingerBands, calculate as calculateMFIRSIBollingerBands } from './community/mfi-rsi-bb';
+export type { MFIRSIBollingerBandsInputs } from './community/mfi-rsi-bb';
+
+// ModifiedHeikinAshi
+import * as modifiedHeikinAshiIndicator from './community/modified-heikin-ashi';
+export { ModifiedHeikinAshi, calculate as calculateModifiedHeikinAshi } from './community/modified-heikin-ashi';
+export type { ModifiedHeikinAshiInputs } from './community/modified-heikin-ashi';
+
+// MultipleMA
+import * as multipleMaIndicator from './community/multiple-ma';
+export { MultipleMA, calculate as calculateMultipleMA } from './community/multiple-ma';
+export type { MultipleMAInputs } from './community/multiple-ma';
+
+// MurreysOscillator
+import * as murreysMathOscIndicator from './community/murreys-math-osc';
+export { MurreysOscillator, calculate as calculateMurreysOscillator } from './community/murreys-math-osc';
+export type { MurreysOscillatorInputs } from './community/murreys-math-osc';
+
+// NormalizedQQE
+import * as normalizedQqeIndicator from './community/normalized-qqe';
+export { NormalizedQQE, calculate as calculateNormalizedQQE } from './community/normalized-qqe';
+export type { NormalizedQQEInputs } from './community/normalized-qqe';
+
+// ParallelPivotLines
+import * as parallelPivotLinesIndicator from './community/parallel-pivot-lines';
+export { ParallelPivotLines, calculate as calculateParallelPivotLines } from './community/parallel-pivot-lines';
+export type { ParallelPivotLinesInputs } from './community/parallel-pivot-lines';
+
+// PhilakoneEMASwing
+import * as philakoneEmaSwingIndicator from './community/philakone-ema-swing';
+export { PhilakoneEMASwing, calculate as calculatePhilakoneEMASwing } from './community/philakone-ema-swing';
+export type { PhilakoneEMASwingInputs } from './community/philakone-ema-swing';
+
+// PivotPointSupertrend
+import * as pivotPointSupertrendIndicator from './community/pivot-point-supertrend';
+export { PivotPointSupertrend, calculate as calculatePivotPointSupertrend } from './community/pivot-point-supertrend';
+export type { PivotPointSupertrendInputs } from './community/pivot-point-supertrend';
+
+// PPOAlerts
+import * as ppoAlertsIndicator from './community/ppo-alerts';
+export { PPOAlerts, calculate as calculatePPOAlerts } from './community/ppo-alerts';
+export type { PPOAlertsInputs } from './community/ppo-alerts';
+
+// PPODivergence
+import * as ppoDivergenceIndicator from './community/ppo-divergence';
+export { PPODivergence, calculate as calculatePPODivergence } from './community/ppo-divergence';
+export type { PPODivergenceInputs } from './community/ppo-divergence';
+
+// PriceActionSystem
+import * as priceActionSystemIndicator from './community/price-action-system';
+export { PriceActionSystem, calculate as calculatePriceActionSystem } from './community/price-action-system';
+export type { PriceActionSystemInputs } from './community/price-action-system';
+
+// QQE
+import * as qqeIndicator from './community/qqe';
+export { QQE, calculate as calculateQQE } from './community/qqe';
+export type { QQEInputs } from './community/qqe';
+
+// QQESignals
+import * as qqeSignalsIndicator from './community/qqe-signals';
+export { QQESignals, calculate as calculateQQESignals } from './community/qqe-signals';
+export type { QQESignalsInputs } from './community/qqe-signals';
+
+// RCI3Lines
+import * as rci3linesIndicator from './community/rci-3lines';
+export { RCI3Lines, calculate as calculateRCI3Lines } from './community/rci-3lines';
+export type { RCI3LinesInputs } from './community/rci-3lines';
+
+// RedKRSSWMA
+import * as redkRssWmaIndicator from './community/redk-rss-wma';
+export { RedKRSSWMA, calculate as calculateRedKRSSWMA } from './community/redk-rss-wma';
+export type { RedKRSSWMAInputs } from './community/redk-rss-wma';
+
+// ReversalCandleSetup
+import * as reversalCandleSetupIndicator from './community/reversal-candle-setup';
+export { ReversalCandleSetup, calculate as calculateReversalCandleSetup } from './community/reversal-candle-setup';
+export type { ReversalCandleSetupInputs } from './community/reversal-candle-setup';
+
+// RSIBands
+import * as rsiBandsIndicator from './community/rsi-bands';
+export { RSIBands, calculate as calculateRSIBands } from './community/rsi-bands';
+export type { RSIBandsInputs } from './community/rsi-bands';
+
+// RSIBBDispersion
+import * as rsiBbDispersionIndicator from './community/rsi-bb-dispersion';
+export { RSIBBDispersion, calculate as calculateRSIBBDispersion } from './community/rsi-bb-dispersion';
+export type { RSIBBDispersionInputs } from './community/rsi-bb-dispersion';
+
+// RSIDivergence
+import * as rsiDivergenceIndicator from './community/rsi-divergence';
+export { RSIDivergence, calculate as calculateRSIDivergence } from './community/rsi-divergence';
+export type { RSIDivergenceInputs } from './community/rsi-divergence';
+
+// RSIHistoAlert
+import * as rsiHistoalertIndicator from './community/rsi-histoalert';
+export { RSIHistoAlert, calculate as calculateRSIHistoAlert } from './community/rsi-histoalert';
+export type { RSIHistoAlertInputs } from './community/rsi-histoalert';
+
+// RSISnabbel
+import * as rsiSnabbelIndicator from './community/rsi-snabbel';
+export { RSISnabbel, calculate as calculateRSISnabbel } from './community/rsi-snabbel';
+export type { RSISnabbelInputs } from './community/rsi-snabbel';
+
+// RSISwingSignal
+import * as rsiSwingSignalIndicator from './community/rsi-swing-signal';
+export { RSISwingSignal, calculate as calculateRSISwingSignal } from './community/rsi-swing-signal';
+export type { RSISwingSignalInputs } from './community/rsi-swing-signal';
+
+// RSSupportResistance
+import * as rsSupportResistanceIndicator from './community/rs-support-resistance';
+export { RSSupportResistance, calculate as calculateRSSupportResistance } from './community/rs-support-resistance';
+export type { RSSupportResistanceInputs } from './community/rs-support-resistance';
+
+// SAREMAMACDSignals
+import * as sarEmaMacdIndicator from './community/sar-ema-macd';
+export { SAREMAMACDSignals, calculate as calculateSAREMAMACDSignals } from './community/sar-ema-macd';
+export type { SAREMAMACDInputs } from './community/sar-ema-macd';
+
+// ScalpingLine
+import * as scalpingLineIndicator from './community/scalping-line';
+export { ScalpingLine, calculate as calculateScalpingLine } from './community/scalping-line';
+export type { ScalpingLineInputs } from './community/scalping-line';
+
+// SellBuyRates
+import * as sellBuyRatesIndicator from './community/sell-buy-rates';
+export { SellBuyRates, calculate as calculateSellBuyRates } from './community/sell-buy-rates';
+export type { SellBuyRatesInputs } from './community/sell-buy-rates';
+
+// SignalMA
+import * as signalMaIndicator from './community/signal-ma';
+export { SignalMA, calculate as calculateSignalMA } from './community/signal-ma';
+export type { SignalMAInputs } from './community/signal-ma';
+
+// SimpleMovingAverages
+import * as simpleMovingAveragesIndicator from './community/simple-moving-averages';
+export { SimpleMovingAverages, calculate as calculateSimpleMovingAverages } from './community/simple-moving-averages';
+export type { SimpleMovingAveragesInputs } from './community/simple-moving-averages';
+
+// SlowHeikenAshi
+import * as slowHeikenAshiIndicator from './community/slow-heiken-ashi';
+export { SlowHeikenAshi, calculate as calculateSlowHeikenAshi } from './community/slow-heiken-ashi';
+export type { SlowHeikenAshiInputs } from './community/slow-heiken-ashi';
+
+// SMIUCS
+import * as smiUcsIndicator from './community/smi-ucs';
+export { SMIUCS, calculate as calculateSMIUCS } from './community/smi-ucs';
+export type { SMIUCSInputs } from './community/smi-ucs';
+
+// SqueezeMomentumV2
+import * as squeezeMomentumV2Indicator from './community/squeeze-momentum-v2';
+export { SqueezeMomentumV2, calculate as calculateSqueezeMomentumV2 } from './community/squeeze-momentum-v2';
+export type { SqueezeMomentumV2Inputs } from './community/squeeze-momentum-v2';
+
+// SRLevelsBreaks
+import * as srLevelsBreaksIndicator from './community/sr-levels-breaks';
+export { SRLevelsBreaks, calculate as calculateSRLevelsBreaks } from './community/sr-levels-breaks';
+export type { SRLevelsBreaksInputs } from './community/sr-levels-breaks';
+
+// ST0P
+import * as st0pIndicator from './community/st0p';
+export { ST0P, calculate as calculateST0P } from './community/st0p';
+export type { ST0PInputs } from './community/st0p';
+
+// StochasticOTT
+import * as stochasticOttIndicator from './community/stochastic-ott';
+export { StochasticOTT, calculate as calculateStochasticOTT } from './community/stochastic-ott';
+export type { StochasticOTTInputs } from './community/stochastic-ott';
+
+// StochPOP1
+import * as stochPop1Indicator from './community/stoch-pop-1';
+export { StochPOP1, calculate as calculateStochPOP1 } from './community/stoch-pop-1';
+export type { StochPOP1Inputs } from './community/stoch-pop-1';
+
+// StochPOP2
+import * as stochPop2Indicator from './community/stoch-pop-2';
+export { StochPOP2, calculate as calculateStochPOP2 } from './community/stoch-pop-2';
+export type { StochPOP2Inputs } from './community/stoch-pop-2';
+
+// StochVX3
+import * as stochVx3Indicator from './community/stoch-vx3';
+export { StochVX3, calculate as calculateStochVX3 } from './community/stoch-vx3';
+export type { StochVX3Inputs } from './community/stoch-vx3';
+
+// SuperSmoothedMACD
+import * as superSmoothedMacdIndicator from './community/super-smoothed-macd';
+export { SuperSmoothedMACD, calculate as calculateSuperSmoothedMACD } from './community/super-smoothed-macd';
+export type { SuperSmoothedMACDInputs } from './community/super-smoothed-macd';
+
+// SuperSupertrend
+import * as superSupertrendIndicator from './community/super-supertrend';
+export { SuperSupertrend, calculate as calculateSuperSupertrend } from './community/super-supertrend';
+export type { SuperSupertrendInputs } from './community/super-supertrend';
+
+// SupertrendChannels
+import * as supertrendChannelsIndicator from './community/supertrend-channels';
+export { SupertrendChannels, calculate as calculateSupertrendChannels } from './community/supertrend-channels';
+export type { SupertrendChannelsInputs } from './community/supertrend-channels';
+
+// SwingTradeSignals
+import * as swingTradeSignalsIndicator from './community/swing-trade-signals';
+export { SwingTradeSignals, calculate as calculateSwingTradeSignals } from './community/swing-trade-signals';
+export type { SwingTradeSignalsInputs } from './community/swing-trade-signals';
+
+// TDIHLCTrix
+import * as tdiHlcTrixIndicator from './community/tdi-hlc-trix';
+export { TDIHLCTrix, calculate as calculateTDIHLCTrix } from './community/tdi-hlc-trix';
+export type { TDIHLCTrixInputs } from './community/tdi-hlc-trix';
+
+// TDMacd
+import * as tdMacdIndicator from './community/td-macd';
+export { TDMacd, calculate as calculateTDMacd } from './community/td-macd';
+export type { TDMacdInputs } from './community/td-macd';
+
+// ThreeMovingAverages
+import * as threeMovingAveragesIndicator from './community/three-moving-averages';
+export { ThreeMovingAverages, calculate as calculateThreeMovingAverages } from './community/three-moving-averages';
+export type { ThreeMovingAveragesInputs } from './community/three-moving-averages';
+
+// TonyUXScalper
+import * as tonyuxEmaScalperIndicator from './community/tonyux-ema-scalper';
+export { TonyUXScalper, calculate as calculateTonyUXScalper } from './community/tonyux-ema-scalper';
+export type { TonyUXScalperInputs } from './community/tonyux-ema-scalper';
+
+// TopBottomCandle
+import * as topBottomCandleIndicator from './community/top-bottom-candle';
+export { TopBottomCandle, calculate as calculateTopBottomCandle } from './community/top-bottom-candle';
+export type { TopBottomCandleInputs } from './community/top-bottom-candle';
+
+// TopsBottoms
+import * as topsBottomsIndicator from './community/tops-bottoms';
+export { TopsBottoms, calculate as calculateTopsBottoms } from './community/tops-bottoms';
+export type { TopsBottomsInputs } from './community/tops-bottoms';
+
+// TRAMA
+import * as tramaIndicator from './community/trama';
+export { TRAMA, calculate as calculateTRAMA } from './community/trama';
+export type { TRAMAInputs } from './community/trama';
+
+// TransientZones
+import * as transientZonesIndicator from './community/transient-zones';
+export { TransientZones, calculate as calculateTransientZones } from './community/transient-zones';
+export type { TransientZonesInputs } from './community/transient-zones';
+
+// TrendFollowingMA
+import * as trendFollowingMaIndicator from './community/trend-following-ma';
+export { TrendFollowingMA, calculate as calculateTrendFollowingMA } from './community/trend-following-ma';
+export type { TrendFollowingMAInputs } from './community/trend-following-ma';
+
+// TrendTrader
+import * as trendTraderIndicator from './community/trend-trader';
+export { TrendTrader, calculate as calculateTrendTrader } from './community/trend-trader';
+export type { TrendTraderInputs } from './community/trend-trader';
+
+// TriangularMomentumOsc
+import * as triangularMomentumOscIndicator from './community/triangular-momentum-osc';
+export { TriangularMomentumOsc, calculate as calculateTriangularMomentumOsc } from './community/triangular-momentum-osc';
+export type { TriangularMomentumOscInputs } from './community/triangular-momentum-osc';
+
+// TripleMAForecast
+import * as tripleMaForecastIndicator from './community/triple-ma-forecast';
+export { TripleMAForecast, calculate as calculateTripleMAForecast } from './community/triple-ma-forecast';
+export type { TripleMAForecastInputs } from './community/triple-ma-forecast';
+
+// TTMSqueezePro
+import * as ttmSqueezeProIndicator from './community/ttm-squeeze-pro';
+export { TTMSqueezePro, calculate as calculateTTMSqueezePro } from './community/ttm-squeeze-pro';
+export type { TTMSqueezeProInputs } from './community/ttm-squeeze-pro';
+
+// VdubSniper
+import * as vdubSniperIndicator from './community/vdub-sniper';
+export { VdubSniper, calculate as calculateVdubSniper } from './community/vdub-sniper';
+export type { VdubSniperInputs } from './community/vdub-sniper';
+
+// VdubusBinaryPro
+import * as vdubusBinaryproIndicator from './community/vdubus-binarypro';
+export { VdubusBinaryPro, calculate as calculateVdubusBinaryPro } from './community/vdubus-binarypro';
+export type { VdubusBinaryProInputs } from './community/vdubus-binarypro';
+
+// VolumeColoredBars
+import * as volumeColoredBarsIndicator from './community/volume-colored-bars';
+export { VolumeColoredBars, calculate as calculateVolumeColoredBars } from './community/volume-colored-bars';
+export type { VolumeColoredBarsInputs } from './community/volume-colored-bars';
+
+// VolumeFlowV3
+import * as volumeFlowV3Indicator from './community/volume-flow-v3';
+export { VolumeFlowV3, calculate as calculateVolumeFlowV3 } from './community/volume-flow-v3';
+export type { VolumeFlowV3Inputs } from './community/volume-flow-v3';
+
+// VolumeLinRegTrend
+import * as volumeLinregTrendIndicator from './community/volume-linreg-trend';
+export { VolumeLinRegTrend, calculate as calculateVolumeLinRegTrend } from './community/volume-linreg-trend';
+export type { VolumeLinRegTrendInputs } from './community/volume-linreg-trend';
+
+// VWMACDSZO
+import * as vwmacdSzoIndicator from './community/vwmacd-szo';
+export { VWMACDSZO, calculate as calculateVWMACDSZO } from './community/vwmacd-szo';
+export type { VWMACDSZOInputs } from './community/vwmacd-szo';
+
+// VWMACDV2
+import * as vwMacdV2Indicator from './community/vw-macd-v2';
+export { VWMACDV2, calculate as calculateVWMACDV2 } from './community/vw-macd-v2';
+export type { VWMACDV2Inputs } from './community/vw-macd-v2';
+
+// WeisWaveVolume
+import * as weisWaveVolumeIndicator from './community/weis-wave-volume';
+export { WeisWaveVolume, calculate as calculateWeisWaveVolume } from './community/weis-wave-volume';
+export type { WeisWaveVolumeInputs } from './community/weis-wave-volume';
+
+// WickedFractals
+import * as wickedFractalsIndicator from './community/wicked-fractals';
+export { WickedFractals, calculate as calculateWickedFractals } from './community/wicked-fractals';
+export type { WickedFractalsInputs } from './community/wicked-fractals';
+
+// WilliamsCombo
+import * as williamsComboIndicator from './community/williams-combo';
+export { WilliamsCombo, calculate as calculateWilliamsCombo } from './community/williams-combo';
+export type { WilliamsComboInputs } from './community/williams-combo';
+
+// ZeroLagEMA
+import * as zeroLagEmaIndicator from './community/zero-lag-ema';
+export { ZeroLagEMA, calculate as calculateZeroLagEMA } from './community/zero-lag-ema';
+export type { ZeroLagEMAInputs } from './community/zero-lag-ema';
+
+
+
 // Candlestick Patterns
 import * as hammerIndicator from './candlestick/hammer';
 import * as shootingStarIndicator from './candlestick/shooting-star';
@@ -917,6 +1616,7 @@ export type IndicatorCategory =
  */
 export interface IndicatorRegistryEntry {
   id: string;
+  group: 'standard' | 'community' | 'candlestick';
   name: string;
   shortName: string;
   description?: string;
@@ -946,6 +1646,7 @@ function candlestickEntries(
     id,
     name: ind.metadata.title,
     shortName: ind.metadata.shortTitle,
+    group: 'candlestick',
     category: 'Candlestick Patterns' as IndicatorCategory,
     overlay: true,
     metadata: ind.metadata,
@@ -963,6 +1664,7 @@ function candlestickEntries(
 export const indicatorRegistry: IndicatorRegistryEntry[] = [
   {
     id: 'sma',
+    group: 'standard',
     name: 'Simple Moving Average (SMA)',
     shortName: 'SMA',
     description: 'A simple moving average that smooths price data by calculating the arithmetic mean over a specified period.',
@@ -976,6 +1678,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'adr',
+    group: 'standard',
     name: 'Average Day Range (ADR)',
     shortName: 'ADR',
     description: 'Calculates the average of the daily price range (high - low) over a specified period.',
@@ -989,6 +1692,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'alma',
+    group: 'standard',
     name: 'Arnaud Legoux Moving Average (ALMA)',
     shortName: 'ALMA',
     description: 'A moving average using a Gaussian distribution to reduce lag while maintaining smoothness.',
@@ -1002,6 +1706,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'atr',
+    group: 'standard',
     name: 'Average True Range (ATR)',
     shortName: 'ATR',
     description: 'Measures market volatility by calculating the average range between high and low prices.',
@@ -1015,6 +1720,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'bb',
+    group: 'standard',
     name: 'Bollinger Bands (BB)',
     shortName: 'BB',
     description: 'Volatility bands placed above and below a moving average, using standard deviation.',
@@ -1028,6 +1734,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'bop',
+    group: 'standard',
     name: 'Balance of Power (BOP)',
     shortName: 'BOP',
     description: 'Measures the strength of buyers vs sellers by comparing close-open to high-low range.',
@@ -1041,6 +1748,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'cci',
+    group: 'standard',
     name: 'Commodity Channel Index (CCI)',
     shortName: 'CCI',
     description: 'Measures the variation of a security\'s price from its statistical mean.',
@@ -1056,6 +1764,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'dema',
+    group: 'standard',
     name: 'Double EMA (DEMA)',
     shortName: 'DEMA',
     description: 'Reduces lag by applying EMA twice.',
@@ -1069,6 +1778,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'ema',
+    group: 'standard',
     name: 'Exponential Moving Average (EMA)',
     shortName: 'EMA',
     description: 'A weighted moving average giving more weight to recent prices.',
@@ -1082,6 +1792,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'hma',
+    group: 'standard',
     name: 'Hull Moving Average (HMA)',
     shortName: 'HMA',
     description: 'Reduces lag while maintaining smoothness using weighted moving averages.',
@@ -1095,6 +1806,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'ichimoku',
+    group: 'standard',
     name: 'Ichimoku Cloud',
     shortName: 'Ichimoku',
     description: 'Comprehensive trend system showing support/resistance and momentum.',
@@ -1108,6 +1820,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'keltner',
+    group: 'standard',
     name: 'Keltner Channels (KC)',
     shortName: 'KC',
     description: 'Volatility-based envelope using EMA and ATR.',
@@ -1121,6 +1834,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'lsma',
+    group: 'standard',
     name: 'Least Squares Moving Average (LSMA)',
     shortName: 'LSMA',
     description: 'Uses linear regression to fit a line through recent prices.',
@@ -1134,6 +1848,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'macd',
+    group: 'standard',
     name: 'MACD',
     shortName: 'MACD',
     description: 'Trend-following momentum indicator showing relationship between two EMAs.',
@@ -1148,6 +1863,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'mass-index',
+    group: 'standard',
     name: 'Mass Index',
     shortName: 'MI',
     description: 'Identifies trend reversals by examining range between high and low.',
@@ -1161,6 +1877,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'mc-ginley-dynamic',
+    group: 'standard',
     name: 'McGinley Dynamic',
     shortName: 'MD',
     description: 'An adaptive moving average that adjusts to market speed.',
@@ -1174,6 +1891,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'momentum',
+    group: 'standard',
     name: 'Momentum',
     shortName: 'Mom',
     description: 'Measures the rate of change of price over a specified period.',
@@ -1187,6 +1905,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'obv',
+    group: 'standard',
     name: 'On Balance Volume (OBV)',
     shortName: 'OBV',
     description: 'Cumulative volume indicator based on price direction.',
@@ -1200,6 +1919,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'rma',
+    group: 'standard',
     name: 'Smoothed Moving Average (RMA)',
     shortName: 'RMA',
     description: 'Wilder smoothing with alpha = 1/length.',
@@ -1213,6 +1933,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'roc',
+    group: 'standard',
     name: 'Rate of Change (ROC)',
     shortName: 'ROC',
     description: 'Measures percentage change in price over a specified period.',
@@ -1227,6 +1948,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'rsi',
+    group: 'standard',
     name: 'Relative Strength Index (RSI)',
     shortName: 'RSI',
     description: 'Momentum oscillator measuring speed and magnitude of price changes.',
@@ -1242,6 +1964,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'stoch',
+    group: 'standard',
     name: 'Stochastic',
     shortName: 'Stoch',
     description: 'Compares closing price to its price range over a given period.',
@@ -1257,6 +1980,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'tema',
+    group: 'standard',
     name: 'Triple EMA (TEMA)',
     shortName: 'TEMA',
     description: 'Further reduces lag with triple exponential smoothing.',
@@ -1270,6 +1994,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'vwma',
+    group: 'standard',
     name: 'Volume Weighted Moving Average (VWMA)',
     shortName: 'VWMA',
     description: 'A moving average weighted by volume.',
@@ -1283,6 +2008,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'wma',
+    group: 'standard',
     name: 'Weighted Moving Average (WMA)',
     shortName: 'WMA',
     description: 'A moving average with linearly increasing weights.',
@@ -1296,6 +2022,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'donchian',
+    group: 'standard',
     name: 'Donchian Channels (DC)',
     shortName: 'DC',
     description: 'Shows the highest high and lowest low over a period, used for breakout trading.',
@@ -1309,6 +2036,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'parabolic-sar',
+    group: 'standard',
     name: 'Parabolic SAR',
     shortName: 'SAR',
     description: 'A trend-following indicator that provides potential entry and exit points.',
@@ -1322,6 +2050,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'supertrend',
+    group: 'standard',
     name: 'Supertrend',
     shortName: 'ST',
     description: 'A trend-following overlay that uses ATR to calculate dynamic support/resistance.',
@@ -1335,6 +2064,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'adx',
+    group: 'standard',
     name: 'Average Directional Index (ADX)',
     shortName: 'ADX',
     description: 'Measures trend strength regardless of direction.',
@@ -1348,6 +2078,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'awesome-oscillator',
+    group: 'standard',
     name: 'Awesome Oscillator',
     shortName: 'AO',
     description: 'Shows market momentum using SMA difference.',
@@ -1361,6 +2092,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'bbtrend',
+    group: 'standard',
     name: 'BBTrend',
     shortName: 'BBT',
     description: 'Measures trend using Bollinger Bands.',
@@ -1375,6 +2107,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'bull-bear-power',
+    group: 'standard',
     name: 'Bull Bear Power',
     shortName: 'BBP',
     description: 'Measures buying/selling pressure relative to EMA.',
@@ -1389,6 +2122,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'chande-mo',
+    group: 'standard',
     name: 'Chande Momentum Oscillator',
     shortName: 'CMO',
     description: 'Measures momentum on a scale of -100 to +100.',
@@ -1403,6 +2137,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'dpo',
+    group: 'standard',
     name: 'Detrended Price Oscillator',
     shortName: 'DPO',
     description: 'Removes trend to identify cycles.',
@@ -1417,6 +2152,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'elder-force',
+    group: 'standard',
     name: 'Elder Force Index',
     shortName: 'EFI',
     description: 'Combines price and volume for force measurement.',
@@ -1431,6 +2167,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'hist-volatility',
+    group: 'standard',
     name: 'Historical Volatility',
     shortName: 'HV',
     description: 'Annualized standard deviation of log returns.',
@@ -1444,6 +2181,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'ma-cross',
+    group: 'standard',
     name: 'MA Cross',
     shortName: 'MAC',
     description: 'Two moving averages for crossover signals.',
@@ -1457,6 +2195,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'ma-ribbon',
+    group: 'standard',
     name: 'Moving Average Ribbon',
     shortName: 'MA Ribbon',
     description: 'Multiple moving averages showing trend direction and momentum.',
@@ -1470,6 +2209,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'median',
+    group: 'standard',
     name: 'Median',
     shortName: 'MED',
     description: 'Median price with ATR bands.',
@@ -1483,6 +2223,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'mfi',
+    group: 'standard',
     name: 'Money Flow Index',
     shortName: 'MFI',
     description: 'Volume-weighted RSI measuring buying/selling pressure.',
@@ -1498,6 +2239,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'pvt',
+    group: 'standard',
     name: 'Price Volume Trend',
     shortName: 'PVT',
     description: 'Cumulative volume weighted by price changes.',
@@ -1511,6 +2253,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'rvi',
+    group: 'standard',
     name: 'Relative Vigor Index',
     shortName: 'RVI',
     description: 'Measures conviction of price action.',
@@ -1524,6 +2267,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'smi-ergodic',
+    group: 'standard',
     name: 'SMI Ergodic Indicator',
     shortName: 'SMII',
     description: 'TSI-based momentum oscillator with signal line.',
@@ -1537,6 +2281,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'smi-ergodic-osc',
+    group: 'standard',
     name: 'SMI Ergodic Oscillator',
     shortName: 'SMIO',
     description: 'Difference between SMI and signal as histogram.',
@@ -1550,6 +2295,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'smma',
+    group: 'standard',
     name: 'Smoothed Moving Average',
     shortName: 'SMMA',
     description: 'Wilder smoothing moving average.',
@@ -1563,6 +2309,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'stdev',
+    group: 'standard',
     name: 'Standard Deviation',
     shortName: 'StDev',
     description: 'Measures price volatility.',
@@ -1576,6 +2323,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'stoch-rsi',
+    group: 'standard',
     name: 'Stochastic RSI',
     shortName: 'StochRSI',
     description: 'Stochastic applied to RSI values.',
@@ -1591,6 +2339,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'trend-strength',
+    group: 'standard',
     name: 'Trend Strength Index',
     shortName: 'TrStr',
     description: 'Measures trend strength based on directional movement.',
@@ -1605,6 +2354,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'tsi',
+    group: 'standard',
     name: 'True Strength Index',
     shortName: 'TSI',
     description: 'Double-smoothed momentum oscillator.',
@@ -1619,6 +2369,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'volume-osc',
+    group: 'standard',
     name: 'Volume Oscillator',
     shortName: 'VO',
     description: 'Percentage difference between volume EMAs.',
@@ -1633,6 +2384,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'vortex',
+    group: 'standard',
     name: 'Vortex Indicator',
     shortName: 'VI',
     description: 'Identifies trend start and direction.',
@@ -1646,6 +2398,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'williams-alligator',
+    group: 'standard',
     name: 'Williams Alligator',
     shortName: 'Alligator',
     description: 'Three smoothed moving averages for trend detection.',
@@ -1659,6 +2412,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'williams-r',
+    group: 'standard',
     name: 'Williams %R',
     shortName: '%R',
     description: 'Momentum indicator showing overbought/oversold levels.',
@@ -1674,6 +2428,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'woodies-cci',
+    group: 'standard',
     name: 'Woodies CCI',
     shortName: 'WCCI',
     description: 'CCI with turbo for faster signals.',
@@ -1689,6 +2444,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'bb-percent-b',
+    group: 'standard',
     name: 'Bollinger Bands %B',
     shortName: 'BB%B',
     description: 'Shows where price is relative to Bollinger Bands (0 = lower, 1 = upper).',
@@ -1704,6 +2460,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'bb-bandwidth',
+    group: 'standard',
     name: 'Bollinger BandWidth',
     shortName: 'BBW',
     description: 'Measures the width of Bollinger Bands as a percentage.',
@@ -1717,6 +2474,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'chaikin-mf',
+    group: 'standard',
     name: 'Chaikin Money Flow',
     shortName: 'CMF',
     description: 'Measures buying/selling pressure using price and volume.',
@@ -1731,6 +2489,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'envelope',
+    group: 'standard',
     name: 'Envelope',
     shortName: 'Env',
     description: 'Moving average with fixed percentage bands.',
@@ -1744,6 +2503,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'price-oscillator',
+    group: 'standard',
     name: 'Price Oscillator (PPO)',
     shortName: 'PPO',
     description: 'MACD expressed as a percentage for cross-security comparison.',
@@ -1758,6 +2518,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'aroon',
+    group: 'standard',
     name: 'Aroon',
     shortName: 'Aroon',
     description: 'Identifies trend strength by measuring time since highest/lowest.',
@@ -1771,6 +2532,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'coppock-curve',
+    group: 'standard',
     name: 'Coppock Curve',
     shortName: 'Coppock',
     description: 'Long-term momentum indicator using ROC and WMA.',
@@ -1784,6 +2546,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'choppiness',
+    group: 'standard',
     name: 'Choppiness Index',
     shortName: 'CHOP',
     description: 'Measures market choppiness vs trending (high = choppy).',
@@ -1799,6 +2562,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'eom',
+    group: 'standard',
     name: 'Ease of Movement',
     shortName: 'EOM',
     description: 'Relates price change to volume, showing ease of price movement.',
@@ -1812,6 +2576,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'chaikin-osc',
+    group: 'standard',
     name: 'Chaikin Oscillator',
     shortName: 'Chaikin',
     description: 'Momentum of the Accumulation/Distribution line.',
@@ -1826,6 +2591,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'zigzag',
+    group: 'standard',
     name: 'Zig Zag',
     shortName: 'ZigZag',
     description: 'Identifies trend reversals by connecting pivot highs and lows.',
@@ -1839,6 +2605,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'fisher-transform',
+    group: 'standard',
     name: 'Fisher Transform',
     shortName: 'Fisher',
     description: 'Converts prices into a Gaussian normal distribution for clearer turning points.',
@@ -1853,6 +2620,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'trix',
+    group: 'standard',
     name: 'TRIX',
     shortName: 'TRIX',
     description: 'Triple exponential average rate of change, filters out noise.',
@@ -1867,6 +2635,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'dmi',
+    group: 'standard',
     name: 'Directional Movement Index',
     shortName: 'DMI',
     description: 'Shows trend direction and strength with +DI, -DI, and ADX.',
@@ -1880,6 +2649,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'klinger',
+    group: 'standard',
     name: 'Klinger Oscillator',
     shortName: 'KVO',
     description: 'Volume-based oscillator measuring long-term money flow.',
@@ -1893,6 +2663,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'ultimate-osc',
+    group: 'standard',
     name: 'Ultimate Oscillator',
     shortName: 'UO',
     description: 'Multi-timeframe momentum oscillator using weighted averages.',
@@ -1906,6 +2677,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'chande-kroll-stop',
+    group: 'standard',
     name: 'Chande Kroll Stop',
     shortName: 'CKS',
     description: 'ATR-based trailing stop system for long and short positions.',
@@ -1919,6 +2691,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'relative-volume-at-time',
+    group: 'standard',
     name: 'Relative Volume at Time',
     shortName: 'RelVol',
     description: 'Compares current volume to historical average at the same time of day.',
@@ -1933,6 +2706,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'rci-ribbon',
+    group: 'standard',
     name: 'RCI Ribbon',
     shortName: 'RCIR',
     description: 'Three Rank Correlation Index lines measuring directional consistency.',
@@ -1948,6 +2722,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'volume-delta',
+    group: 'standard',
     name: 'Volume Delta',
     shortName: 'Vol Δ',
     description: 'Shows buying vs selling pressure based on close-open comparison.',
@@ -1963,6 +2738,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'cvd',
+    group: 'standard',
     name: 'Cumulative Volume Delta',
     shortName: 'CVD',
     description: 'Cumulative volume delta within anchor periods.',
@@ -1978,6 +2754,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'net-volume',
+    group: 'standard',
     name: 'Net Volume',
     shortName: 'Net Vol',
     description: 'Net volume (up - down) per bar.',
@@ -1992,6 +2769,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'kst',
+    group: 'standard',
     name: 'Know Sure Thing (KST)',
     shortName: 'KST',
     description: 'Momentum oscillator based on rate of change for four timeframes.',
@@ -2006,6 +2784,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'connors-rsi',
+    group: 'standard',
     name: 'Connors RSI',
     shortName: 'CRSI',
     description: 'Composite momentum oscillator combining RSI, streak RSI, and percent rank.',
@@ -2021,6 +2800,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'chop-zone',
+    group: 'standard',
     name: 'Chop Zone',
     shortName: 'ChopZ',
     description: 'Uses EMA angle to determine trending vs choppy conditions.',
@@ -2034,6 +2814,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'rci',
+    group: 'standard',
     name: 'Rank Correlation Index (RCI)',
     shortName: 'RCI',
     description: 'Measures directional consistency using Spearman rank correlation.',
@@ -2049,6 +2830,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'rvol',
+    group: 'standard',
     name: 'Relative Volatility Index',
     shortName: 'RVol',
     description: 'Measures volatility direction using standard deviation and EMA.',
@@ -2062,6 +2844,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'williams-fractals',
+    group: 'standard',
     name: 'Williams Fractals',
     shortName: 'Fractals',
     description: 'Identifies fractal highs and lows in price action.',
@@ -2075,6 +2858,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'twap',
+    group: 'standard',
     name: 'Time Weighted Average Price (TWAP)',
     shortName: 'TWAP',
     description: 'Cumulative average of ohlc4 within anchor period.',
@@ -2088,6 +2872,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'bb-bars',
+    group: 'standard',
     name: 'Bollinger Bars',
     shortName: 'BB Bars',
     description: 'Visual candle indicator with colored wick and body layers.',
@@ -2102,6 +2887,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'moon-phases',
+    group: 'standard',
     name: 'Moon Phases',
     shortName: 'Moon',
     description: 'Displays new moon and full moon phases using astronomical calculations.',
@@ -2116,6 +2902,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   // --- Wave 1 Community Indicators ---
   {
     id: 'zlsma',
+    group: 'community',
     name: 'Zero Lag LSMA (ZLSMA)',
     shortName: 'ZLSMA',
     category: 'Moving Averages',
@@ -2128,6 +2915,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'forecast-oscillator',
+    group: 'community',
     name: 'Forecast Oscillator',
     shortName: 'FOSC',
     category: 'Oscillators',
@@ -2140,6 +2928,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'cct-bbo',
+    group: 'community',
     name: 'CCT Bollinger Band Oscillator',
     shortName: 'CCTBBO',
     category: 'Oscillators',
@@ -2152,6 +2941,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'macd-4c',
+    group: 'community',
     name: 'MACD 4C',
     shortName: 'MACD4C',
     category: 'Momentum',
@@ -2164,6 +2954,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'colored-volume',
+    group: 'community',
     name: 'Colored Volume Bars',
     shortName: 'CVolBars',
     category: 'Volume',
@@ -2176,6 +2967,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'kdj',
+    group: 'community',
     name: 'KDJ',
     shortName: 'KDJ',
     category: 'Oscillators',
@@ -2188,6 +2980,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'wavetrend',
+    group: 'community',
     name: 'WaveTrend',
     shortName: 'WT',
     category: 'Oscillators',
@@ -2200,6 +2993,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'squeeze-momentum',
+    group: 'community',
     name: 'Squeeze Momentum',
     shortName: 'SQZMOM',
     category: 'Momentum',
@@ -2212,6 +3006,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'coral-trend',
+    group: 'community',
     name: 'Coral Trend',
     shortName: 'Coral',
     category: 'Trend',
@@ -2224,6 +3019,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'chandelier-exit',
+    group: 'community',
     name: 'Chandelier Exit',
     shortName: 'CE',
     category: 'Trend',
@@ -2236,6 +3032,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'impulse-macd',
+    group: 'community',
     name: 'Impulse MACD',
     shortName: 'IMACD',
     category: 'Momentum',
@@ -2248,6 +3045,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'schaff-trend-cycle',
+    group: 'community',
     name: 'Schaff Trend Cycle',
     shortName: 'STC',
     category: 'Oscillators',
@@ -2260,6 +3058,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'donchian-trend-ribbon',
+    group: 'community',
     name: 'Donchian Trend Ribbon',
     shortName: 'DTR',
     category: 'Trend',
@@ -2272,6 +3071,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'obv-macd',
+    group: 'community',
     name: 'OBV MACD',
     shortName: 'OBVMACD',
     category: 'Volume',
@@ -2284,6 +3084,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'alpha-trend',
+    group: 'community',
     name: 'AlphaTrend',
     shortName: 'AT',
     category: 'Trend',
@@ -2296,6 +3097,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'half-trend',
+    group: 'community',
     name: 'HalfTrend',
     shortName: 'HT',
     category: 'Trend',
@@ -2308,6 +3110,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'qqe-mod',
+    group: 'community',
     name: 'QQE MOD',
     shortName: 'QQEM',
     category: 'Momentum',
@@ -2320,6 +3123,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'follow-line',
+    group: 'community',
     name: 'Follow Line',
     shortName: 'FLI',
     category: 'Trend',
@@ -2332,6 +3136,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'ut-bot',
+    group: 'community',
     name: 'UT Bot',
     shortName: 'UTBot',
     category: 'Trend',
@@ -2344,6 +3149,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'hull-suite',
+    group: 'community',
     name: 'Hull Suite',
     shortName: 'HS',
     category: 'Trend',
@@ -2356,6 +3162,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'optimized-trend-tracker',
+    group: 'community',
     name: 'Optimized Trend Tracker',
     shortName: 'OTT',
     category: 'Trend',
@@ -2368,6 +3175,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'trend-magic',
+    group: 'community',
     name: 'Trend Magic',
     shortName: 'TM',
     category: 'Trend',
@@ -2380,6 +3188,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'ssl-channel',
+    group: 'community',
     name: 'SSL Channel',
     shortName: 'SSL',
     category: 'Trend',
@@ -2392,6 +3201,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'mavilimw',
+    group: 'community',
     name: 'MavilimW',
     shortName: 'MAVW',
     category: 'Trend',
@@ -2404,6 +3214,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'cdc-action-zone',
+    group: 'community',
     name: 'CDC Action Zone',
     shortName: 'CDC',
     category: 'Trend',
@@ -2416,6 +3227,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'tillson-t3',
+    group: 'community',
     name: 'Tillson T3',
     shortName: 'T3',
     category: 'Trend',
@@ -2428,6 +3240,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'waddah-attar-explosion',
+    group: 'community',
     name: 'Waddah Attar Explosion',
     shortName: 'WAE',
     category: 'Momentum',
@@ -2440,6 +3253,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'ripster-ema-clouds',
+    group: 'community',
     name: 'Ripster EMA Clouds',
     shortName: 'REC',
     category: 'Trend',
@@ -2452,6 +3266,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'premier-rsi',
+    group: 'community',
     name: 'Premier RSI Oscillator',
     shortName: 'PRO',
     category: 'Momentum',
@@ -2464,6 +3279,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'laguerre-rsi',
+    group: 'community',
     name: 'Laguerre RSI',
     shortName: 'LRSI',
     category: 'Momentum',
@@ -2476,6 +3292,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'rsi-candles',
+    group: 'community',
     name: 'RSI Candles',
     shortName: 'RSIC',
     category: 'Momentum',
@@ -2490,6 +3307,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'zero-lag-macd',
+    group: 'community',
     name: 'Zero Lag MACD',
     shortName: 'ZLMACD',
     category: 'Momentum',
@@ -2502,6 +3320,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'adx-di',
+    group: 'community',
     name: 'ADX and DI',
     shortName: 'ADX DI',
     category: 'Trend',
@@ -2514,6 +3333,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'awesome-oscillator-v2',
+    group: 'community',
     name: 'Awesome Oscillator V2',
     shortName: 'AOv2',
     category: 'Oscillators',
@@ -2526,6 +3346,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'cm-ema-trend-bars',
+    group: 'community',
     name: 'CM EMA Trend Bars',
     shortName: 'CM EMA',
     category: 'Trend',
@@ -2538,6 +3359,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'bb-fibonacci-ratios',
+    group: 'community',
     name: 'BB Fibonacci Ratios',
     shortName: 'BB Fib',
     category: 'Channels & Bands',
@@ -2550,6 +3372,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'average-sentiment-oscillator',
+    group: 'community',
     name: 'Average Sentiment Oscillator',
     shortName: 'ASO',
     category: 'Oscillators',
@@ -2562,6 +3385,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'atr-trailing-stops',
+    group: 'community',
     name: 'ATR Trailing Stops',
     shortName: 'ATRTS',
     category: 'Trend',
@@ -2574,6 +3398,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'accurate-swing-trading',
+    group: 'community',
     name: 'Accurate Swing Trading',
     shortName: 'AST',
     category: 'Trend',
@@ -2586,6 +3411,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'bull-bear-power-trend',
+    group: 'community',
     name: 'Bull Bear Power Trend',
     shortName: 'BBPT',
     category: 'Momentum',
@@ -2598,6 +3424,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'bb-breakout-oscillator',
+    group: 'community',
     name: 'BB Breakout Oscillator',
     shortName: 'BBBO',
     category: 'Oscillators',
@@ -2610,6 +3437,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'chandelier-stop',
+    group: 'community',
     name: 'Chandelier Stop',
     shortName: 'CStop',
     category: 'Trend',
@@ -2622,6 +3450,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'stochastic-momentum-index',
+    group: 'community',
     name: 'Stochastic Momentum Index',
     shortName: 'SMI',
     category: 'Oscillators',
@@ -2634,6 +3463,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'volume-flow-indicator',
+    group: 'community',
     name: 'Volume Flow Indicator',
     shortName: 'VFI',
     category: 'Volume',
@@ -2646,6 +3476,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'ehlers-instantaneous-trend',
+    group: 'community',
     name: 'Ehlers Instantaneous Trend',
     shortName: 'EIT',
     category: 'Trend',
@@ -2658,6 +3489,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'price-momentum-oscillator',
+    group: 'community',
     name: 'Price Momentum Oscillator',
     shortName: 'PMO',
     category: 'Momentum',
@@ -2670,6 +3502,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'fibonacci-bollinger-bands',
+    group: 'community',
     name: 'Fibonacci Bollinger Bands',
     shortName: 'FBB',
     category: 'Channels & Bands',
@@ -2682,6 +3515,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'trend-trigger-factor',
+    group: 'community',
     name: 'Trend Trigger Factor',
     shortName: 'TTF',
     category: 'Oscillators',
@@ -2694,6 +3528,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'elliott-wave-oscillator',
+    group: 'community',
     name: 'Elliott Wave Oscillator',
     shortName: 'EWO',
     category: 'Oscillators',
@@ -2706,6 +3541,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'madrid-trend-squeeze',
+    group: 'community',
     name: 'Madrid Trend Squeeze',
     shortName: 'MTS',
     category: 'Momentum',
@@ -2718,6 +3554,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'kaufman-adaptive-ma',
+    group: 'community',
     name: 'Kaufman Adaptive Moving Average',
     shortName: 'KAMA',
     category: 'Moving Averages',
@@ -2730,6 +3567,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'williams-vix-fix',
+    group: 'community',
     name: 'Williams Vix Fix',
     shortName: 'WVF',
     category: 'Volatility',
@@ -2742,6 +3580,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'ehlers-mesa-ma',
+    group: 'community',
     name: 'Ehlers MESA Adaptive Moving Average',
     shortName: 'MESA',
     category: 'Moving Averages',
@@ -2754,6 +3593,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'gann-high-low',
+    group: 'community',
     name: 'Gann High Low',
     shortName: 'GannHL',
     category: 'Trend',
@@ -2766,6 +3606,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'cm-sling-shot',
+    group: 'community',
     name: 'CM Sling Shot System',
     shortName: 'CMSlShot',
     category: 'Trend',
@@ -2778,6 +3619,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'range-identifier',
+    group: 'community',
     name: 'Range Identifier',
     shortName: 'RangeID',
     category: 'Channels & Bands',
@@ -2790,6 +3632,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'smoothed-heiken-ashi',
+    group: 'community',
     name: 'Smoothed Heiken Ashi',
     shortName: 'SmHA',
     category: 'Trend',
@@ -2802,6 +3645,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'macd-leader',
+    group: 'community',
     name: 'MACD Leader',
     shortName: 'MACDLeader',
     category: 'Momentum',
@@ -2814,6 +3658,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'slow-stochastic',
+    group: 'community',
     name: 'Slow Stochastic',
     shortName: 'SlowStoch',
     category: 'Momentum',
@@ -2826,6 +3671,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'ift-stoch-rsi-cci',
+    group: 'community',
     name: 'IFT Stoch RSI CCI',
     shortName: 'IFTCombo',
     category: 'Momentum',
@@ -2838,6 +3684,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'variable-ma',
+    group: 'community',
     name: 'Variable Moving Average',
     shortName: 'VMA',
     category: 'Moving Averages',
@@ -2850,6 +3697,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'obv-oscillator',
+    group: 'community',
     name: 'OBV Oscillator',
     shortName: 'OBVOsc',
     category: 'Volume',
@@ -2862,6 +3710,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'gmma',
+    group: 'community',
     name: 'Guppy Multiple Moving Average',
     shortName: 'GMMA',
     category: 'Moving Averages',
@@ -2874,6 +3723,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'turtle-trade-channels',
+    group: 'community',
     name: 'Turtle Trade Channels',
     shortName: 'TTC',
     category: 'Channels & Bands',
@@ -2886,6 +3736,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'linear-regression-channel',
+    group: 'community',
     name: 'Linear Regression Channel',
     shortName: 'LRC',
     category: 'Channels & Bands',
@@ -2898,6 +3749,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'twin-range-filter',
+    group: 'community',
     name: 'Twin Range Filter',
     shortName: 'TRF',
     category: 'Trend',
@@ -2910,6 +3762,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'tma-bands',
+    group: 'community',
     name: 'Triangular MA Bands',
     shortName: 'TMA',
     category: 'Channels & Bands',
@@ -2922,6 +3775,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'ehlers-stochastic-cg',
+    group: 'community',
     name: 'Ehlers Stochastic CG Oscillator',
     shortName: 'ESCG',
     category: 'Oscillators',
@@ -2934,6 +3788,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'vpci',
+    group: 'community',
     name: 'Volume Price Confirmation Indicator',
     shortName: 'VPCI',
     category: 'Volume',
@@ -2946,6 +3801,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'premier-stochastic',
+    group: 'community',
     name: 'Premier Stochastic Oscillator',
     shortName: 'PSO',
     category: 'Oscillators',
@@ -2958,6 +3814,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'volume-accumulation-pct',
+    group: 'community',
     name: 'Volume Accumulation Percentage',
     shortName: 'VA%',
     category: 'Volume',
@@ -2970,6 +3827,7 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
   },
   {
     id: 'vervoort-ha-oscillator',
+    group: 'community',
     name: 'Vervoort HA LT Candlestick Oscillator',
     shortName: 'VHO',
     category: 'Oscillators',
@@ -2979,6 +3837,1813 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: vervoortHAOscillatorIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...vervoortHAOscillatorIndicator.defaultInputs },
     calculate: vervoortHAOscillatorIndicator.calculate,
+  },
+  {
+    id: 'adx-cobra',
+    group: 'community',
+    name: 'ADX by cobra',
+    shortName: 'ADX Cobra',
+    category: 'Trend',
+    overlay: false,
+    metadata: adxCobraIndicator.metadata,
+    inputConfig: adxCobraIndicator.inputConfig as InputConfig[],
+    plotConfig: adxCobraIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...adxCobraIndicator.defaultInputs },
+    calculate: adxCobraIndicator.calculate,
+  },
+  {
+    id: 'ai-engulfing',
+    group: 'community',
+    name: 'AI Engulfing Candle',
+    shortName: 'AIEngulf',
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: aiEngulfingIndicator.metadata,
+    inputConfig: aiEngulfingIndicator.inputConfig as InputConfig[],
+    plotConfig: aiEngulfingIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...aiEngulfingIndicator.defaultInputs },
+    calculate: aiEngulfingIndicator.calculate,
+  },
+  {
+    id: 'ak-trend-id',
+    group: 'community',
+    name: 'AK TREND ID',
+    shortName: 'AKTID',
+    category: 'Trend',
+    overlay: true,
+    metadata: akTrendIdIndicator.metadata,
+    inputConfig: akTrendIdIndicator.inputConfig as InputConfig[],
+    plotConfig: akTrendIdIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...akTrendIdIndicator.defaultInputs },
+    calculate: akTrendIdIndicator.calculate,
+  },
+  {
+    id: 'all-candlestick-patterns',
+    group: 'community',
+    name: 'All Candlestick Patterns',
+    shortName: 'CdlPat',
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: allCandlestickPatternsIndicator.metadata,
+    inputConfig: allCandlestickPatternsIndicator.inputConfig as InputConfig[],
+    plotConfig: allCandlestickPatternsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...allCandlestickPatternsIndicator.defaultInputs },
+    calculate: allCandlestickPatternsIndicator.calculate,
+  },
+  {
+    id: 'anti-volume-stop',
+    group: 'community',
+    name: 'Anti-Volume Stop Loss',
+    shortName: 'AVStop',
+    category: 'Trend',
+    overlay: true,
+    metadata: antiVolumeStopIndicator.metadata,
+    inputConfig: antiVolumeStopIndicator.inputConfig as InputConfig[],
+    plotConfig: antiVolumeStopIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...antiVolumeStopIndicator.defaultInputs },
+    calculate: antiVolumeStopIndicator.calculate,
+  },
+  {
+    id: 'atr-plus',
+    group: 'community',
+    name: 'ATR+ Stop Loss Indicator',
+    shortName: 'ATR+',
+    category: 'Trend',
+    overlay: true,
+    metadata: atrPlusIndicator.metadata,
+    inputConfig: atrPlusIndicator.inputConfig as InputConfig[],
+    plotConfig: atrPlusIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...atrPlusIndicator.defaultInputs },
+    calculate: atrPlusIndicator.calculate,
+  },
+  {
+    id: 'atr-trailing-colored',
+    group: 'community',
+    name: 'Average True Range Trailing Stops Colored',
+    shortName: 'ATRTSC',
+    category: 'Trend',
+    overlay: true,
+    metadata: atrTrailingColoredIndicator.metadata,
+    inputConfig: atrTrailingColoredIndicator.inputConfig as InputConfig[],
+    plotConfig: atrTrailingColoredIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...atrTrailingColoredIndicator.defaultInputs },
+    calculate: atrTrailingColoredIndicator.calculate,
+  },
+  {
+    id: 'auto-fib',
+    group: 'community',
+    name: 'Auto Fibonacci',
+    shortName: 'AutoFib',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: autoFibIndicator.metadata,
+    inputConfig: autoFibIndicator.inputConfig as InputConfig[],
+    plotConfig: autoFibIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...autoFibIndicator.defaultInputs },
+    calculate: autoFibIndicator.calculate,
+  },
+  {
+    id: 'auto-support',
+    group: 'community',
+    name: 'Auto-Support',
+    shortName: 'AutoSup',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: autoSupportIndicator.metadata,
+    inputConfig: autoSupportIndicator.inputConfig as InputConfig[],
+    plotConfig: autoSupportIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...autoSupportIndicator.defaultInputs },
+    calculate: autoSupportIndicator.calculate,
+  },
+  {
+    id: 'auto-support-resistance',
+    group: 'community',
+    name: 'Automatic Support & Resistance',
+    shortName: 'Auto S/R',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: autoSupportResistanceIndicator.metadata,
+    inputConfig: autoSupportResistanceIndicator.inputConfig as InputConfig[],
+    plotConfig: autoSupportResistanceIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...autoSupportResistanceIndicator.defaultInputs },
+    calculate: autoSupportResistanceIndicator.calculate,
+  },
+  {
+    id: 'bb-stoch-rsi',
+    group: 'community',
+    name: 'BB Stochastic RSI Extreme Signal',
+    shortName: 'BBStochRSI',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: bbStochRsiIndicator.metadata,
+    inputConfig: bbStochRsiIndicator.inputConfig as InputConfig[],
+    plotConfig: bbStochRsiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...bbStochRsiIndicator.defaultInputs },
+    calculate: bbStochRsiIndicator.calculate,
+  },
+  {
+    id: 'binary-option-arrows',
+    group: 'community',
+    name: 'Binary Option Arrows',
+    shortName: 'BinArrows',
+    category: 'Trend',
+    overlay: true,
+    metadata: binaryOptionArrowsIndicator.metadata,
+    inputConfig: binaryOptionArrowsIndicator.inputConfig as InputConfig[],
+    plotConfig: binaryOptionArrowsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...binaryOptionArrowsIndicator.defaultInputs },
+    calculate: binaryOptionArrowsIndicator.calculate,
+  },
+  {
+    id: 'bitcoin-kill-zones',
+    group: 'community',
+    name: 'Bitcoin Kill Zones',
+    shortName: 'BKZ',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: bitcoinKillZonesIndicator.metadata,
+    inputConfig: bitcoinKillZonesIndicator.inputConfig as InputConfig[],
+    plotConfig: bitcoinKillZonesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...bitcoinKillZonesIndicator.defaultInputs },
+    calculate: bitcoinKillZonesIndicator.calculate,
+  },
+  {
+    id: 'bullish-engulfing-finder',
+    group: 'community',
+    name: 'Bullish Engulfing Finder',
+    shortName: 'BullEngulf',
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: bullishEngulfingFinderIndicator.metadata,
+    inputConfig: bullishEngulfingFinderIndicator.inputConfig as InputConfig[],
+    plotConfig: bullishEngulfingFinderIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...bullishEngulfingFinderIndicator.defaultInputs },
+    calculate: bullishEngulfingFinderIndicator.calculate,
+  },
+  {
+    id: 'bulls-bears-control',
+    group: 'community',
+    name: 'Bulls or Bears in Control',
+    shortName: 'BullBear',
+    category: 'Trend',
+    overlay: false,
+    metadata: bullsBearsControlIndicator.metadata,
+    inputConfig: bullsBearsControlIndicator.inputConfig as InputConfig[],
+    plotConfig: bullsBearsControlIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...bullsBearsControlIndicator.defaultInputs },
+    calculate: bullsBearsControlIndicator.calculate,
+  },
+  {
+    id: 'buying-selling-volume',
+    group: 'community',
+    name: 'Buying Selling Volume',
+    shortName: 'BSVol',
+    category: 'Volume',
+    overlay: false,
+    metadata: buyingSellingVolumeIndicator.metadata,
+    inputConfig: buyingSellingVolumeIndicator.inputConfig as InputConfig[],
+    plotConfig: buyingSellingVolumeIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...buyingSellingVolumeIndicator.defaultInputs },
+    calculate: buyingSellingVolumeIndicator.calculate,
+  },
+  {
+    id: 'buy-sell-pressure',
+    group: 'community',
+    name: 'Buy & Sell Pressure',
+    shortName: 'BSP',
+    category: 'Volume',
+    overlay: false,
+    metadata: buySellPressureIndicator.metadata,
+    inputConfig: buySellPressureIndicator.inputConfig as InputConfig[],
+    plotConfig: buySellPressureIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...buySellPressureIndicator.defaultInputs },
+    calculate: buySellPressureIndicator.calculate,
+  },
+  {
+    id: 'candlestick-reversal',
+    group: 'community',
+    name: 'Candlestick Reversal',
+    shortName: 'CdlRev',
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: candlestickReversalIndicator.metadata,
+    inputConfig: candlestickReversalIndicator.inputConfig as InputConfig[],
+    plotConfig: candlestickReversalIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...candlestickReversalIndicator.defaultInputs },
+    calculate: candlestickReversalIndicator.calculate,
+  },
+  {
+    id: 'cci-obv',
+    group: 'community',
+    name: 'CCI coded OBV',
+    shortName: 'CCIOBV',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: cciObvIndicator.metadata,
+    inputConfig: cciObvIndicator.inputConfig as InputConfig[],
+    plotConfig: cciObvIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cciObvIndicator.defaultInputs },
+    calculate: cciObvIndicator.calculate,
+  },
+  {
+    id: 'cm-adx',
+    group: 'community',
+    name: 'CM ADX V1',
+    shortName: 'CM ADX',
+    category: 'Trend',
+    overlay: false,
+    metadata: cmAdxIndicator.metadata,
+    inputConfig: cmAdxIndicator.inputConfig as InputConfig[],
+    plotConfig: cmAdxIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmAdxIndicator.defaultInputs },
+    calculate: cmAdxIndicator.calculate,
+  },
+  {
+    id: 'cm-enhanced-ichimoku',
+    group: 'community',
+    name: 'CM Enhanced Ichimoku Cloud V5',
+    shortName: 'CM Ichimoku',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: cmEnhancedIchimokuIndicator.metadata,
+    inputConfig: cmEnhancedIchimokuIndicator.inputConfig as InputConfig[],
+    plotConfig: cmEnhancedIchimokuIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmEnhancedIchimokuIndicator.defaultInputs },
+    calculate: cmEnhancedIchimokuIndicator.calculate,
+  },
+  {
+    id: 'cm-gann-swing',
+    group: 'community',
+    name: 'CM Gann Swing High Low V2',
+    shortName: 'Gann Swing',
+    category: 'Trend',
+    overlay: true,
+    metadata: cmGannSwingIndicator.metadata,
+    inputConfig: cmGannSwingIndicator.inputConfig as InputConfig[],
+    plotConfig: cmGannSwingIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmGannSwingIndicator.defaultInputs },
+    calculate: cmGannSwingIndicator.calculate,
+  },
+  {
+    id: 'cm-guppy-ema',
+    group: 'community',
+    name: 'CM Guppy EMA',
+    shortName: 'GuppyEMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: cmGuppyEmaIndicator.metadata,
+    inputConfig: cmGuppyEmaIndicator.inputConfig as InputConfig[],
+    plotConfig: cmGuppyEmaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmGuppyEmaIndicator.defaultInputs },
+    calculate: cmGuppyEmaIndicator.calculate,
+  },
+  {
+    id: 'cm-heikin-ashi',
+    group: 'community',
+    name: 'CM Heikin-Ashi',
+    shortName: 'CMHA',
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: cmHeikinAshiIndicator.metadata,
+    inputConfig: cmHeikinAshiIndicator.inputConfig as InputConfig[],
+    plotConfig: cmHeikinAshiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmHeikinAshiIndicator.defaultInputs },
+    calculate: cmHeikinAshiIndicator.calculate,
+  },
+  {
+    id: 'cm-laguerre-ppo',
+    group: 'community',
+    name: 'CM Laguerre PPO PercentileRank',
+    shortName: 'LagPPO',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: cmLaguerrePpoIndicator.metadata,
+    inputConfig: cmLaguerrePpoIndicator.inputConfig as InputConfig[],
+    plotConfig: cmLaguerrePpoIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmLaguerrePpoIndicator.defaultInputs },
+    calculate: cmLaguerrePpoIndicator.calculate,
+  },
+  {
+    id: 'cm-parabolic-sar',
+    group: 'community',
+    name: 'CM Parabolic SAR',
+    shortName: 'CMSAR',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: cmParabolicSarIndicator.metadata,
+    inputConfig: cmParabolicSarIndicator.inputConfig as InputConfig[],
+    plotConfig: cmParabolicSarIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmParabolicSarIndicator.defaultInputs },
+    calculate: cmParabolicSarIndicator.calculate,
+  },
+  {
+    id: 'cm-price-action',
+    group: 'community',
+    name: 'CM Price Action Bars',
+    shortName: 'CMPriceAction',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: cmPriceActionIndicator.metadata,
+    inputConfig: cmPriceActionIndicator.inputConfig as InputConfig[],
+    plotConfig: cmPriceActionIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmPriceActionIndicator.defaultInputs },
+    calculate: cmPriceActionIndicator.calculate,
+  },
+  {
+    id: 'cm-rsi-2-lower',
+    group: 'community',
+    name: 'CM RSI-2 Strategy Lower',
+    shortName: 'CMRSI2L',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: cmRsi2LowerIndicator.metadata,
+    inputConfig: cmRsi2LowerIndicator.inputConfig as InputConfig[],
+    plotConfig: cmRsi2LowerIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmRsi2LowerIndicator.defaultInputs },
+    calculate: cmRsi2LowerIndicator.calculate,
+  },
+  {
+    id: 'cm-rsi-2-upper',
+    group: 'community',
+    name: 'CM RSI-2 Strategy Upper',
+    shortName: 'CMRSI2',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: cmRsi2UpperIndicator.metadata,
+    inputConfig: cmRsi2UpperIndicator.inputConfig as InputConfig[],
+    plotConfig: cmRsi2UpperIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmRsi2UpperIndicator.defaultInputs },
+    calculate: cmRsi2UpperIndicator.calculate,
+  },
+  {
+    id: 'cm-rsi-ema',
+    group: 'community',
+    name: 'CM RSI Plus EMA',
+    shortName: 'CMRSIEMA',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: cmRsiEmaIndicator.metadata,
+    inputConfig: cmRsiEmaIndicator.inputConfig as InputConfig[],
+    plotConfig: cmRsiEmaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmRsiEmaIndicator.defaultInputs },
+    calculate: cmRsiEmaIndicator.calculate,
+  },
+  {
+    id: 'cm-stoch-highlight',
+    group: 'community',
+    name: 'CM Stochastic Highlight Bars',
+    shortName: 'CMStochHL',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: cmStochHighlightIndicator.metadata,
+    inputConfig: cmStochHighlightIndicator.inputConfig as InputConfig[],
+    plotConfig: cmStochHighlightIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmStochHighlightIndicator.defaultInputs },
+    calculate: cmStochHighlightIndicator.calculate,
+  },
+  {
+    id: 'cm-time-lines',
+    group: 'community',
+    name: 'CM Time Based Vertical Lines',
+    shortName: 'CMTime',
+    category: 'Trend',
+    overlay: false,
+    metadata: cmTimeLinesIndicator.metadata,
+    inputConfig: cmTimeLinesIndicator.inputConfig as InputConfig[],
+    plotConfig: cmTimeLinesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmTimeLinesIndicator.defaultInputs },
+    calculate: cmTimeLinesIndicator.calculate,
+  },
+  {
+    id: 'cm-vix-fix-v3',
+    group: 'community',
+    name: 'CM Williams Vix Fix V3',
+    shortName: 'VixFixV3',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: cmVixFixV3Indicator.metadata,
+    inputConfig: cmVixFixV3Indicator.inputConfig as InputConfig[],
+    plotConfig: cmVixFixV3Indicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmVixFixV3Indicator.defaultInputs },
+    calculate: cmVixFixV3Indicator.calculate,
+  },
+  {
+    id: 'cog-channel',
+    group: 'community',
+    name: 'Center of Gravity Channel',
+    shortName: 'COGCh',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: cogChannelIndicator.metadata,
+    inputConfig: cogChannelIndicator.inputConfig as InputConfig[],
+    plotConfig: cogChannelIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cogChannelIndicator.defaultInputs },
+    calculate: cogChannelIndicator.calculate,
+  },
+  {
+    id: 'darvas-box',
+    group: 'community',
+    name: 'Darvas Box',
+    shortName: 'Darvas',
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: darvasBoxIndicator.metadata,
+    inputConfig: darvasBoxIndicator.inputConfig as InputConfig[],
+    plotConfig: darvasBoxIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...darvasBoxIndicator.defaultInputs },
+    calculate: darvasBoxIndicator.calculate,
+  },
+  {
+    id: 'dmi-adx-levels',
+    group: 'community',
+    name: 'Directional Movement Index + ADX & Key Levels',
+    shortName: 'DMI ADX',
+    category: 'Trend',
+    overlay: false,
+    metadata: dmiAdxLevelsIndicator.metadata,
+    inputConfig: dmiAdxLevelsIndicator.inputConfig as InputConfig[],
+    plotConfig: dmiAdxLevelsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...dmiAdxLevelsIndicator.defaultInputs },
+    calculate: dmiAdxLevelsIndicator.calculate,
+  },
+  {
+    id: 'donchian-custom',
+    group: 'community',
+    name: 'Custom Donchian Channels',
+    shortName: 'DonchianC',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: donchianCustomIndicator.metadata,
+    inputConfig: donchianCustomIndicator.inputConfig as InputConfig[],
+    plotConfig: donchianCustomIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...donchianCustomIndicator.defaultInputs },
+    calculate: donchianCustomIndicator.calculate,
+  },
+  {
+    id: 'easy-trend-colors',
+    group: 'community',
+    name: 'Easy Entry/Exit Trend Colors',
+    shortName: 'EasyTrend',
+    category: 'Trend',
+    overlay: true,
+    metadata: easyTrendColorsIndicator.metadata,
+    inputConfig: easyTrendColorsIndicator.inputConfig as InputConfig[],
+    plotConfig: easyTrendColorsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...easyTrendColorsIndicator.defaultInputs },
+    calculate: easyTrendColorsIndicator.calculate,
+  },
+  {
+    id: 'ema-enveloper',
+    group: 'community',
+    name: 'EMA Enveloper',
+    shortName: 'EMAE',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: emaEnveloperIndicator.metadata,
+    inputConfig: emaEnveloperIndicator.inputConfig as InputConfig[],
+    plotConfig: emaEnveloperIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...emaEnveloperIndicator.defaultInputs },
+    calculate: emaEnveloperIndicator.calculate,
+  },
+  {
+    id: 'ema-ma-crossover',
+    group: 'community',
+    name: 'EMA & MA Crossover',
+    shortName: 'EMAC',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: emaMaCrossoverIndicator.metadata,
+    inputConfig: emaMaCrossoverIndicator.inputConfig as InputConfig[],
+    plotConfig: emaMaCrossoverIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...emaMaCrossoverIndicator.defaultInputs },
+    calculate: emaMaCrossoverIndicator.calculate,
+  },
+  {
+    id: 'ema-multi',
+    group: 'community',
+    name: 'EMA 20/50/100/200',
+    shortName: 'EMA4',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: emaMultiIndicator.metadata,
+    inputConfig: emaMultiIndicator.inputConfig as InputConfig[],
+    plotConfig: emaMultiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...emaMultiIndicator.defaultInputs },
+    calculate: emaMultiIndicator.calculate,
+  },
+  {
+    id: 'ema-ribbon',
+    group: 'community',
+    name: 'EMA Ribbon',
+    shortName: 'EMAR',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: emaRibbonIndicator.metadata,
+    inputConfig: emaRibbonIndicator.inputConfig as InputConfig[],
+    plotConfig: emaRibbonIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...emaRibbonIndicator.defaultInputs },
+    calculate: emaRibbonIndicator.calculate,
+  },
+  {
+    id: 'ema-supertrend',
+    group: 'community',
+    name: 'EMA + SuperTrend',
+    shortName: 'EMA+ST',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: emaSupertrendIndicator.metadata,
+    inputConfig: emaSupertrendIndicator.inputConfig as InputConfig[],
+    plotConfig: emaSupertrendIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...emaSupertrendIndicator.defaultInputs },
+    calculate: emaSupertrendIndicator.calculate,
+  },
+  {
+    id: 'ema-wave',
+    group: 'community',
+    name: 'EMA Wave Indicator',
+    shortName: 'EMAW',
+    category: 'Moving Averages',
+    overlay: false,
+    metadata: emaWaveIndicator.metadata,
+    inputConfig: emaWaveIndicator.inputConfig as InputConfig[],
+    plotConfig: emaWaveIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...emaWaveIndicator.defaultInputs },
+    calculate: emaWaveIndicator.calculate,
+  },
+  {
+    id: 'entry-points',
+    group: 'community',
+    name: 'Entry Points',
+    shortName: 'EntryPts',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: entryPointsIndicator.metadata,
+    inputConfig: entryPointsIndicator.inputConfig as InputConfig[],
+    plotConfig: entryPointsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...entryPointsIndicator.defaultInputs },
+    calculate: entryPointsIndicator.calculate,
+  },
+  {
+    id: 'envelope-rsi',
+    group: 'community',
+    name: 'Envelope RSI',
+    shortName: 'EnvRSI',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: envelopeRsiIndicator.metadata,
+    inputConfig: envelopeRsiIndicator.inputConfig as InputConfig[],
+    plotConfig: envelopeRsiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...envelopeRsiIndicator.defaultInputs },
+    calculate: envelopeRsiIndicator.calculate,
+  },
+  {
+    id: 'evwma-envelope',
+    group: 'community',
+    name: 'EVWMA Envelope',
+    shortName: 'EVWMA',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: evwmaEnvelopeIndicator.metadata,
+    inputConfig: evwmaEnvelopeIndicator.inputConfig as InputConfig[],
+    plotConfig: evwmaEnvelopeIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...evwmaEnvelopeIndicator.defaultInputs },
+    calculate: evwmaEnvelopeIndicator.calculate,
+  },
+  {
+    id: 'faith-indicator',
+    group: 'community',
+    name: 'Faith Indicator',
+    shortName: 'Faith',
+    category: 'Trend',
+    overlay: false,
+    metadata: faithIndicatorIndicator.metadata,
+    inputConfig: faithIndicatorIndicator.inputConfig as InputConfig[],
+    plotConfig: faithIndicatorIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...faithIndicatorIndicator.defaultInputs },
+    calculate: faithIndicatorIndicator.calculate,
+  },
+  {
+    id: 'fibonacci-levels',
+    group: 'community',
+    name: 'Fibonacci Levels',
+    shortName: 'FibLvl',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: fibonacciLevelsIndicator.metadata,
+    inputConfig: fibonacciLevelsIndicator.inputConfig as InputConfig[],
+    plotConfig: fibonacciLevelsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...fibonacciLevelsIndicator.defaultInputs },
+    calculate: fibonacciLevelsIndicator.calculate,
+  },
+  {
+    id: 'fibonacci-zone',
+    group: 'community',
+    name: 'Fibonacci Zone',
+    shortName: 'FibZone',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: fibonacciZoneIndicator.metadata,
+    inputConfig: fibonacciZoneIndicator.inputConfig as InputConfig[],
+    plotConfig: fibonacciZoneIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...fibonacciZoneIndicator.defaultInputs },
+    calculate: fibonacciZoneIndicator.calculate,
+  },
+  {
+    id: 'forex-sessions',
+    group: 'community',
+    name: 'Forex Sessions',
+    shortName: 'FXSessions',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: forexSessionsIndicator.metadata,
+    inputConfig: forexSessionsIndicator.inputConfig as InputConfig[],
+    plotConfig: forexSessionsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...forexSessionsIndicator.defaultInputs },
+    calculate: forexSessionsIndicator.calculate,
+  },
+  {
+    id: 'fx-sniper-t3-cci',
+    group: 'community',
+    name: 'FX Sniper T3-CCI',
+    shortName: 'T3CCI',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: fxSniperT3CciIndicator.metadata,
+    inputConfig: fxSniperT3CciIndicator.inputConfig as InputConfig[],
+    plotConfig: fxSniperT3CciIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...fxSniperT3CciIndicator.defaultInputs },
+    calculate: fxSniperT3CciIndicator.calculate,
+  },
+  {
+    id: 'hawkeye-volume',
+    group: 'community',
+    name: 'HawkEye Volume',
+    shortName: 'HEVol',
+    category: 'Volume',
+    overlay: false,
+    metadata: hawkeyeVolumeIndicator.metadata,
+    inputConfig: hawkeyeVolumeIndicator.inputConfig as InputConfig[],
+    plotConfig: hawkeyeVolumeIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...hawkeyeVolumeIndicator.defaultInputs },
+    calculate: hawkeyeVolumeIndicator.calculate,
+  },
+  {
+    id: 'ichimoku-ema-bands',
+    group: 'community',
+    name: 'Ichimoku EMA Bands',
+    shortName: 'Ichi EMA',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: ichimokuEmaBandsIndicator.metadata,
+    inputConfig: ichimokuEmaBandsIndicator.inputConfig as InputConfig[],
+    plotConfig: ichimokuEmaBandsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ichimokuEmaBandsIndicator.defaultInputs },
+    calculate: ichimokuEmaBandsIndicator.calculate,
+  },
+  {
+    id: 'intraday-buy-sell',
+    group: 'community',
+    name: 'Intraday BUY_SELL',
+    shortName: 'IBS',
+    category: 'Trend',
+    overlay: true,
+    metadata: intradayBuySellIndicator.metadata,
+    inputConfig: intradayBuySellIndicator.inputConfig as InputConfig[],
+    plotConfig: intradayBuySellIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...intradayBuySellIndicator.defaultInputs },
+    calculate: intradayBuySellIndicator.calculate,
+  },
+  {
+    id: 'intraday-ts-bb',
+    group: 'community',
+    name: 'Intraday TS BB',
+    shortName: 'ITSBB',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: intradayTsBbIndicator.metadata,
+    inputConfig: intradayTsBbIndicator.inputConfig as InputConfig[],
+    plotConfig: intradayTsBbIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...intradayTsBbIndicator.defaultInputs },
+    calculate: intradayTsBbIndicator.calculate,
+  },
+  {
+    id: 'isolated-peak-bottom',
+    group: 'community',
+    name: 'Isolated Peak and Bottom',
+    shortName: 'PeakBot',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: isolatedPeakBottomIndicator.metadata,
+    inputConfig: isolatedPeakBottomIndicator.inputConfig as InputConfig[],
+    plotConfig: isolatedPeakBottomIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...isolatedPeakBottomIndicator.defaultInputs },
+    calculate: isolatedPeakBottomIndicator.calculate,
+  },
+  {
+    id: 'leledc-levels',
+    group: 'community',
+    name: 'Leledc Levels',
+    shortName: 'Leledc',
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: leledcLevelsIndicator.metadata,
+    inputConfig: leledcLevelsIndicator.inputConfig as InputConfig[],
+    plotConfig: leledcLevelsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...leledcLevelsIndicator.defaultInputs },
+    calculate: leledcLevelsIndicator.calculate,
+  },
+  {
+    id: 'linear-regression-candles',
+    group: 'community',
+    name: 'Linear Regression Candles',
+    shortName: 'LRCandle',
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: linearRegressionCandlesIndicator.metadata,
+    inputConfig: linearRegressionCandlesIndicator.inputConfig as InputConfig[],
+    plotConfig: linearRegressionCandlesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...linearRegressionCandlesIndicator.defaultInputs },
+    calculate: linearRegressionCandlesIndicator.calculate,
+  },
+  {
+    id: 'ma-adx',
+    group: 'community',
+    name: 'Moving Average ADX',
+    shortName: 'MAADX',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: maAdxIndicator.metadata,
+    inputConfig: maAdxIndicator.inputConfig as InputConfig[],
+    plotConfig: maAdxIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...maAdxIndicator.defaultInputs },
+    calculate: maAdxIndicator.calculate,
+  },
+  {
+    id: 'macdas',
+    group: 'community',
+    name: 'MACDAS',
+    shortName: 'MACDAS',
+    category: 'Momentum',
+    overlay: false,
+    metadata: macdasIndicator.metadata,
+    inputConfig: macdasIndicator.inputConfig as InputConfig[],
+    plotConfig: macdasIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...macdasIndicator.defaultInputs },
+    calculate: macdasIndicator.calculate,
+  },
+  {
+    id: 'macd-bb',
+    group: 'community',
+    name: 'AK MACD BB',
+    shortName: 'MACDBB',
+    category: 'Momentum',
+    overlay: false,
+    metadata: macdBbIndicator.metadata,
+    inputConfig: macdBbIndicator.inputConfig as InputConfig[],
+    plotConfig: macdBbIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...macdBbIndicator.defaultInputs },
+    calculate: macdBbIndicator.calculate,
+  },
+  {
+    id: 'macd-crossover',
+    group: 'community',
+    name: 'MACD Crossover',
+    shortName: 'MACDCross',
+    category: 'Momentum',
+    overlay: false,
+    metadata: macdCrossoverIndicator.metadata,
+    inputConfig: macdCrossoverIndicator.inputConfig as InputConfig[],
+    plotConfig: macdCrossoverIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...macdCrossoverIndicator.defaultInputs },
+    calculate: macdCrossoverIndicator.calculate,
+  },
+  {
+    id: 'macd-dema',
+    group: 'community',
+    name: 'MACD DEMA',
+    shortName: 'MACDDEMA',
+    category: 'Momentum',
+    overlay: false,
+    metadata: macdDemaIndicator.metadata,
+    inputConfig: macdDemaIndicator.inputConfig as InputConfig[],
+    plotConfig: macdDemaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...macdDemaIndicator.defaultInputs },
+    calculate: macdDemaIndicator.calculate,
+  },
+  {
+    id: 'macd-divergence',
+    group: 'community',
+    name: 'MACD Divergence',
+    shortName: 'MACDDiv',
+    category: 'Momentum',
+    overlay: false,
+    metadata: macdDivergenceIndicator.metadata,
+    inputConfig: macdDivergenceIndicator.inputConfig as InputConfig[],
+    plotConfig: macdDivergenceIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...macdDivergenceIndicator.defaultInputs },
+    calculate: macdDivergenceIndicator.calculate,
+  },
+  {
+    id: 'macd-vxi',
+    group: 'community',
+    name: 'MACD VXI',
+    shortName: 'MACDVXI',
+    category: 'Momentum',
+    overlay: false,
+    metadata: macdVxiIndicator.metadata,
+    inputConfig: macdVxiIndicator.inputConfig as InputConfig[],
+    plotConfig: macdVxiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...macdVxiIndicator.defaultInputs },
+    calculate: macdVxiIndicator.calculate,
+  },
+  {
+    id: 'ma-colored',
+    group: 'community',
+    name: 'Moving Average Colored',
+    shortName: 'MAC',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: maColoredIndicator.metadata,
+    inputConfig: maColoredIndicator.inputConfig as InputConfig[],
+    plotConfig: maColoredIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...maColoredIndicator.defaultInputs },
+    calculate: maColoredIndicator.calculate,
+  },
+  {
+    id: 'ma-deviation-rate',
+    group: 'community',
+    name: 'Moving Average Deviation Rate',
+    shortName: 'MADR',
+    category: 'Moving Averages',
+    overlay: false,
+    metadata: maDeviationRateIndicator.metadata,
+    inputConfig: maDeviationRateIndicator.inputConfig as InputConfig[],
+    plotConfig: maDeviationRateIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...maDeviationRateIndicator.defaultInputs },
+    calculate: maDeviationRateIndicator.calculate,
+  },
+  {
+    id: 'market-cipher-a',
+    group: 'community',
+    name: 'Market Cipher A',
+    shortName: 'MCA',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: marketCipherAIndicator.metadata,
+    inputConfig: marketCipherAIndicator.inputConfig as InputConfig[],
+    plotConfig: marketCipherAIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...marketCipherAIndicator.defaultInputs },
+    calculate: marketCipherAIndicator.calculate,
+  },
+  {
+    id: 'market-cipher-b',
+    group: 'community',
+    name: 'Market Cipher B',
+    shortName: 'MCB',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: marketCipherBIndicator.metadata,
+    inputConfig: marketCipherBIndicator.inputConfig as InputConfig[],
+    plotConfig: marketCipherBIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...marketCipherBIndicator.defaultInputs },
+    calculate: marketCipherBIndicator.calculate,
+  },
+  {
+    id: 'market-shift-levels',
+    group: 'community',
+    name: 'Market Shift Levels',
+    shortName: 'MSL',
+    category: 'Trend',
+    overlay: true,
+    metadata: marketShiftLevelsIndicator.metadata,
+    inputConfig: marketShiftLevelsIndicator.inputConfig as InputConfig[],
+    plotConfig: marketShiftLevelsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...marketShiftLevelsIndicator.defaultInputs },
+    calculate: marketShiftLevelsIndicator.calculate,
+  },
+  {
+    id: 'ma-shaded-fill',
+    group: 'community',
+    name: 'MA Shaded Fill Crossover',
+    shortName: 'MASF',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: maShadedFillIndicator.metadata,
+    inputConfig: maShadedFillIndicator.inputConfig as InputConfig[],
+    plotConfig: maShadedFillIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...maShadedFillIndicator.defaultInputs },
+    calculate: maShadedFillIndicator.calculate,
+  },
+  {
+    id: 'ma-shift',
+    group: 'community',
+    name: 'Moving Average Shift',
+    shortName: 'MAS',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: maShiftIndicator.metadata,
+    inputConfig: maShiftIndicator.inputConfig as InputConfig[],
+    plotConfig: maShiftIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...maShiftIndicator.defaultInputs },
+    calculate: maShiftIndicator.calculate,
+  },
+  {
+    id: 'matrix-series',
+    group: 'community',
+    name: 'Matrix Series',
+    shortName: 'MTX',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: matrixSeriesIndicator.metadata,
+    inputConfig: matrixSeriesIndicator.inputConfig as InputConfig[],
+    plotConfig: matrixSeriesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...matrixSeriesIndicator.defaultInputs },
+    calculate: matrixSeriesIndicator.calculate,
+  },
+  {
+    id: 'mfi-rsi-bb',
+    group: 'community',
+    name: 'MFI/RSI Bollinger Bands',
+    shortName: 'MFIRSBB',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: mfiRsiBbIndicator.metadata,
+    inputConfig: mfiRsiBbIndicator.inputConfig as InputConfig[],
+    plotConfig: mfiRsiBbIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...mfiRsiBbIndicator.defaultInputs },
+    calculate: mfiRsiBbIndicator.calculate,
+  },
+  {
+    id: 'modified-heikin-ashi',
+    group: 'community',
+    name: 'Modified Heikin-Ashi',
+    shortName: 'ModHA',
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: modifiedHeikinAshiIndicator.metadata,
+    inputConfig: modifiedHeikinAshiIndicator.inputConfig as InputConfig[],
+    plotConfig: modifiedHeikinAshiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...modifiedHeikinAshiIndicator.defaultInputs },
+    calculate: modifiedHeikinAshiIndicator.calculate,
+  },
+  {
+    id: 'multiple-ma',
+    group: 'community',
+    name: 'Multiple Moving Averages',
+    shortName: 'MMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: multipleMaIndicator.metadata,
+    inputConfig: multipleMaIndicator.inputConfig as InputConfig[],
+    plotConfig: multipleMaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...multipleMaIndicator.defaultInputs },
+    calculate: multipleMaIndicator.calculate,
+  },
+  {
+    id: 'murreys-math-osc',
+    group: 'community',
+    name: 'MurreysOscillator',
+    shortName: 'MMO',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: murreysMathOscIndicator.metadata,
+    inputConfig: murreysMathOscIndicator.inputConfig as InputConfig[],
+    plotConfig: murreysMathOscIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...murreysMathOscIndicator.defaultInputs },
+    calculate: murreysMathOscIndicator.calculate,
+  },
+  {
+    id: 'normalized-qqe',
+    group: 'community',
+    name: 'Normalized QQE',
+    shortName: 'nQQE',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: normalizedQqeIndicator.metadata,
+    inputConfig: normalizedQqeIndicator.inputConfig as InputConfig[],
+    plotConfig: normalizedQqeIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...normalizedQqeIndicator.defaultInputs },
+    calculate: normalizedQqeIndicator.calculate,
+  },
+  {
+    id: 'parallel-pivot-lines',
+    group: 'community',
+    name: 'Parallel Pivot Lines',
+    shortName: 'PPL',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: parallelPivotLinesIndicator.metadata,
+    inputConfig: parallelPivotLinesIndicator.inputConfig as InputConfig[],
+    plotConfig: parallelPivotLinesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...parallelPivotLinesIndicator.defaultInputs },
+    calculate: parallelPivotLinesIndicator.calculate,
+  },
+  {
+    id: 'philakone-ema-swing',
+    group: 'community',
+    name: 'Philakone 55 EMA Swing Trading',
+    shortName: 'P55EMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: philakoneEmaSwingIndicator.metadata,
+    inputConfig: philakoneEmaSwingIndicator.inputConfig as InputConfig[],
+    plotConfig: philakoneEmaSwingIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...philakoneEmaSwingIndicator.defaultInputs },
+    calculate: philakoneEmaSwingIndicator.calculate,
+  },
+  {
+    id: 'pivot-point-supertrend',
+    group: 'community',
+    name: 'Pivot Point SuperTrend',
+    shortName: 'PPST',
+    category: 'Trend',
+    overlay: true,
+    metadata: pivotPointSupertrendIndicator.metadata,
+    inputConfig: pivotPointSupertrendIndicator.inputConfig as InputConfig[],
+    plotConfig: pivotPointSupertrendIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...pivotPointSupertrendIndicator.defaultInputs },
+    calculate: pivotPointSupertrendIndicator.calculate,
+  },
+  {
+    id: 'ppo-alerts',
+    group: 'community',
+    name: 'PPO Alerts',
+    shortName: 'PPOAlerts',
+    category: 'Momentum',
+    overlay: false,
+    metadata: ppoAlertsIndicator.metadata,
+    inputConfig: ppoAlertsIndicator.inputConfig as InputConfig[],
+    plotConfig: ppoAlertsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ppoAlertsIndicator.defaultInputs },
+    calculate: ppoAlertsIndicator.calculate,
+  },
+  {
+    id: 'ppo-divergence',
+    group: 'community',
+    name: 'PPO Divergence',
+    shortName: 'PPODiv',
+    category: 'Momentum',
+    overlay: false,
+    metadata: ppoDivergenceIndicator.metadata,
+    inputConfig: ppoDivergenceIndicator.inputConfig as InputConfig[],
+    plotConfig: ppoDivergenceIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ppoDivergenceIndicator.defaultInputs },
+    calculate: ppoDivergenceIndicator.calculate,
+  },
+  {
+    id: 'price-action-system',
+    group: 'community',
+    name: 'Price Action Trading System',
+    shortName: 'PATS',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: priceActionSystemIndicator.metadata,
+    inputConfig: priceActionSystemIndicator.inputConfig as InputConfig[],
+    plotConfig: priceActionSystemIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...priceActionSystemIndicator.defaultInputs },
+    calculate: priceActionSystemIndicator.calculate,
+  },
+  {
+    id: 'qqe',
+    group: 'community',
+    name: 'Quantitative Qualitative Estimation',
+    shortName: 'QQE',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: qqeIndicator.metadata,
+    inputConfig: qqeIndicator.inputConfig as InputConfig[],
+    plotConfig: qqeIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...qqeIndicator.defaultInputs },
+    calculate: qqeIndicator.calculate,
+  },
+  {
+    id: 'qqe-signals',
+    group: 'community',
+    name: 'QQE Signals',
+    shortName: 'QQESig',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: qqeSignalsIndicator.metadata,
+    inputConfig: qqeSignalsIndicator.inputConfig as InputConfig[],
+    plotConfig: qqeSignalsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...qqeSignalsIndicator.defaultInputs },
+    calculate: qqeSignalsIndicator.calculate,
+  },
+  {
+    id: 'rci-3lines',
+    group: 'community',
+    name: 'RCI 3 Lines',
+    shortName: 'RCI3',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: rci3linesIndicator.metadata,
+    inputConfig: rci3linesIndicator.inputConfig as InputConfig[],
+    plotConfig: rci3linesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rci3linesIndicator.defaultInputs },
+    calculate: rci3linesIndicator.calculate,
+  },
+  {
+    id: 'redk-rss-wma',
+    group: 'community',
+    name: 'RedK RSS_WMA',
+    shortName: 'RSS',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: redkRssWmaIndicator.metadata,
+    inputConfig: redkRssWmaIndicator.inputConfig as InputConfig[],
+    plotConfig: redkRssWmaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...redkRssWmaIndicator.defaultInputs },
+    calculate: redkRssWmaIndicator.calculate,
+  },
+  {
+    id: 'reversal-candle-setup',
+    group: 'community',
+    name: 'Reversal Candle Setup',
+    shortName: 'RevCdl',
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: reversalCandleSetupIndicator.metadata,
+    inputConfig: reversalCandleSetupIndicator.inputConfig as InputConfig[],
+    plotConfig: reversalCandleSetupIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...reversalCandleSetupIndicator.defaultInputs },
+    calculate: reversalCandleSetupIndicator.calculate,
+  },
+  {
+    id: 'rsi-bands',
+    group: 'community',
+    name: 'RSI Bands %B & Bandwidth',
+    shortName: 'RSIB',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: rsiBandsIndicator.metadata,
+    inputConfig: rsiBandsIndicator.inputConfig as InputConfig[],
+    plotConfig: rsiBandsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rsiBandsIndicator.defaultInputs },
+    calculate: rsiBandsIndicator.calculate,
+  },
+  {
+    id: 'rsi-bb-dispersion',
+    group: 'community',
+    name: 'RSI + BB + Dispersion',
+    shortName: 'RSIBB',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: rsiBbDispersionIndicator.metadata,
+    inputConfig: rsiBbDispersionIndicator.inputConfig as InputConfig[],
+    plotConfig: rsiBbDispersionIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rsiBbDispersionIndicator.defaultInputs },
+    calculate: rsiBbDispersionIndicator.calculate,
+  },
+  {
+    id: 'rsi-divergence',
+    group: 'community',
+    name: 'RSI Divergence',
+    shortName: 'RSIDiv',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: rsiDivergenceIndicator.metadata,
+    inputConfig: rsiDivergenceIndicator.inputConfig as InputConfig[],
+    plotConfig: rsiDivergenceIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rsiDivergenceIndicator.defaultInputs },
+    calculate: rsiDivergenceIndicator.calculate,
+  },
+  {
+    id: 'rsi-histoalert',
+    group: 'community',
+    name: 'RSI HistoAlert',
+    shortName: 'RSIHist',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: rsiHistoalertIndicator.metadata,
+    inputConfig: rsiHistoalertIndicator.inputConfig as InputConfig[],
+    plotConfig: rsiHistoalertIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rsiHistoalertIndicator.defaultInputs },
+    calculate: rsiHistoalertIndicator.calculate,
+  },
+  {
+    id: 'rsi-snabbel',
+    group: 'community',
+    name: 'RSI Snabbel',
+    shortName: 'RSISnab',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: rsiSnabbelIndicator.metadata,
+    inputConfig: rsiSnabbelIndicator.inputConfig as InputConfig[],
+    plotConfig: rsiSnabbelIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rsiSnabbelIndicator.defaultInputs },
+    calculate: rsiSnabbelIndicator.calculate,
+  },
+  {
+    id: 'rsi-swing-signal',
+    group: 'community',
+    name: 'RSI Swing Signal',
+    shortName: 'RSISwing',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: rsiSwingSignalIndicator.metadata,
+    inputConfig: rsiSwingSignalIndicator.inputConfig as InputConfig[],
+    plotConfig: rsiSwingSignalIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rsiSwingSignalIndicator.defaultInputs },
+    calculate: rsiSwingSignalIndicator.calculate,
+  },
+  {
+    id: 'rs-support-resistance',
+    group: 'community',
+    name: '[RS] Support and Resistance V0',
+    shortName: 'RS S/R',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: rsSupportResistanceIndicator.metadata,
+    inputConfig: rsSupportResistanceIndicator.inputConfig as InputConfig[],
+    plotConfig: rsSupportResistanceIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...rsSupportResistanceIndicator.defaultInputs },
+    calculate: rsSupportResistanceIndicator.calculate,
+  },
+  {
+    id: 'sar-ema-macd',
+    group: 'community',
+    name: 'SAR + EMA + MACD Signals',
+    shortName: 'SEM',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: sarEmaMacdIndicator.metadata,
+    inputConfig: sarEmaMacdIndicator.inputConfig as InputConfig[],
+    plotConfig: sarEmaMacdIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...sarEmaMacdIndicator.defaultInputs },
+    calculate: sarEmaMacdIndicator.calculate,
+  },
+  {
+    id: 'scalping-line',
+    group: 'community',
+    name: 'Scalping Line',
+    shortName: 'SL',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: scalpingLineIndicator.metadata,
+    inputConfig: scalpingLineIndicator.inputConfig as InputConfig[],
+    plotConfig: scalpingLineIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...scalpingLineIndicator.defaultInputs },
+    calculate: scalpingLineIndicator.calculate,
+  },
+  {
+    id: 'sell-buy-rates',
+    group: 'community',
+    name: 'Sell & Buy Rates',
+    shortName: 'SBR',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: sellBuyRatesIndicator.metadata,
+    inputConfig: sellBuyRatesIndicator.inputConfig as InputConfig[],
+    plotConfig: sellBuyRatesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...sellBuyRatesIndicator.defaultInputs },
+    calculate: sellBuyRatesIndicator.calculate,
+  },
+  {
+    id: 'signal-ma',
+    group: 'community',
+    name: 'Signal Moving Average',
+    shortName: 'SigMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: signalMaIndicator.metadata,
+    inputConfig: signalMaIndicator.inputConfig as InputConfig[],
+    plotConfig: signalMaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...signalMaIndicator.defaultInputs },
+    calculate: signalMaIndicator.calculate,
+  },
+  {
+    id: 'simple-moving-averages',
+    group: 'community',
+    name: 'Simple Moving Averages',
+    shortName: 'SMA5',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: simpleMovingAveragesIndicator.metadata,
+    inputConfig: simpleMovingAveragesIndicator.inputConfig as InputConfig[],
+    plotConfig: simpleMovingAveragesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...simpleMovingAveragesIndicator.defaultInputs },
+    calculate: simpleMovingAveragesIndicator.calculate,
+  },
+  {
+    id: 'slow-heiken-ashi',
+    group: 'community',
+    name: 'Slow Heiken Ashi',
+    shortName: 'SlowHA',
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: slowHeikenAshiIndicator.metadata,
+    inputConfig: slowHeikenAshiIndicator.inputConfig as InputConfig[],
+    plotConfig: slowHeikenAshiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...slowHeikenAshiIndicator.defaultInputs },
+    calculate: slowHeikenAshiIndicator.calculate,
+  },
+  {
+    id: 'smi-ucs',
+    group: 'community',
+    name: 'Stochastic Momentum Index UCS',
+    shortName: 'SMIUCS',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: smiUcsIndicator.metadata,
+    inputConfig: smiUcsIndicator.inputConfig as InputConfig[],
+    plotConfig: smiUcsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...smiUcsIndicator.defaultInputs },
+    calculate: smiUcsIndicator.calculate,
+  },
+  {
+    id: 'squeeze-momentum-v2',
+    group: 'community',
+    name: 'Squeeze Momentum V2',
+    shortName: 'SQZMOMV2',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: squeezeMomentumV2Indicator.metadata,
+    inputConfig: squeezeMomentumV2Indicator.inputConfig as InputConfig[],
+    plotConfig: squeezeMomentumV2Indicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...squeezeMomentumV2Indicator.defaultInputs },
+    calculate: squeezeMomentumV2Indicator.calculate,
+  },
+  {
+    id: 'sr-levels-breaks',
+    group: 'community',
+    name: 'Support and Resistance Levels with Breaks',
+    shortName: 'S/R Breaks',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: srLevelsBreaksIndicator.metadata,
+    inputConfig: srLevelsBreaksIndicator.inputConfig as InputConfig[],
+    plotConfig: srLevelsBreaksIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...srLevelsBreaksIndicator.defaultInputs },
+    calculate: srLevelsBreaksIndicator.calculate,
+  },
+  {
+    id: 'st0p',
+    group: 'community',
+    name: 'ST0P',
+    shortName: 'ST0P',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: st0pIndicator.metadata,
+    inputConfig: st0pIndicator.inputConfig as InputConfig[],
+    plotConfig: st0pIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...st0pIndicator.defaultInputs },
+    calculate: st0pIndicator.calculate,
+  },
+  {
+    id: 'stochastic-ott',
+    group: 'community',
+    name: 'Stochastic OTT',
+    shortName: 'StochOTT',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: stochasticOttIndicator.metadata,
+    inputConfig: stochasticOttIndicator.inputConfig as InputConfig[],
+    plotConfig: stochasticOttIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...stochasticOttIndicator.defaultInputs },
+    calculate: stochasticOttIndicator.calculate,
+  },
+  {
+    id: 'stoch-pop-1',
+    group: 'community',
+    name: 'CM Stochastic POP Method 1',
+    shortName: 'StochPOP1',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: stochPop1Indicator.metadata,
+    inputConfig: stochPop1Indicator.inputConfig as InputConfig[],
+    plotConfig: stochPop1Indicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...stochPop1Indicator.defaultInputs },
+    calculate: stochPop1Indicator.calculate,
+  },
+  {
+    id: 'stoch-pop-2',
+    group: 'community',
+    name: 'CM Stochastic POP Method 2',
+    shortName: 'StochPOP2',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: stochPop2Indicator.metadata,
+    inputConfig: stochPop2Indicator.inputConfig as InputConfig[],
+    plotConfig: stochPop2Indicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...stochPop2Indicator.defaultInputs },
+    calculate: stochPop2Indicator.calculate,
+  },
+  {
+    id: 'stoch-vx3',
+    group: 'community',
+    name: 'Stoch VX3',
+    shortName: 'StochVX3',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: stochVx3Indicator.metadata,
+    inputConfig: stochVx3Indicator.inputConfig as InputConfig[],
+    plotConfig: stochVx3Indicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...stochVx3Indicator.defaultInputs },
+    calculate: stochVx3Indicator.calculate,
+  },
+  {
+    id: 'super-smoothed-macd',
+    group: 'community',
+    name: 'Super Smoothed MACD',
+    shortName: 'SSMACD',
+    category: 'Momentum',
+    overlay: false,
+    metadata: superSmoothedMacdIndicator.metadata,
+    inputConfig: superSmoothedMacdIndicator.inputConfig as InputConfig[],
+    plotConfig: superSmoothedMacdIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...superSmoothedMacdIndicator.defaultInputs },
+    calculate: superSmoothedMacdIndicator.calculate,
+  },
+  {
+    id: 'super-supertrend',
+    group: 'community',
+    name: 'Super SuperTrend',
+    shortName: 'SST',
+    category: 'Trend',
+    overlay: true,
+    metadata: superSupertrendIndicator.metadata,
+    inputConfig: superSupertrendIndicator.inputConfig as InputConfig[],
+    plotConfig: superSupertrendIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...superSupertrendIndicator.defaultInputs },
+    calculate: superSupertrendIndicator.calculate,
+  },
+  {
+    id: 'supertrend-channels',
+    group: 'community',
+    name: 'SuperTrend Channels',
+    shortName: 'STCh',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: supertrendChannelsIndicator.metadata,
+    inputConfig: supertrendChannelsIndicator.inputConfig as InputConfig[],
+    plotConfig: supertrendChannelsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...supertrendChannelsIndicator.defaultInputs },
+    calculate: supertrendChannelsIndicator.calculate,
+  },
+  {
+    id: 'swing-trade-signals',
+    group: 'community',
+    name: 'Swing Trade Signals',
+    shortName: 'STS',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: swingTradeSignalsIndicator.metadata,
+    inputConfig: swingTradeSignalsIndicator.inputConfig as InputConfig[],
+    plotConfig: swingTradeSignalsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...swingTradeSignalsIndicator.defaultInputs },
+    calculate: swingTradeSignalsIndicator.calculate,
+  },
+  {
+    id: 'tdi-hlc-trix',
+    group: 'community',
+    name: 'Traders Dynamic Index',
+    shortName: 'TDI',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: tdiHlcTrixIndicator.metadata,
+    inputConfig: tdiHlcTrixIndicator.inputConfig as InputConfig[],
+    plotConfig: tdiHlcTrixIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...tdiHlcTrixIndicator.defaultInputs },
+    calculate: tdiHlcTrixIndicator.calculate,
+  },
+  {
+    id: 'td-macd',
+    group: 'community',
+    name: 'Tom DeMark MACD',
+    shortName: 'TDMacd',
+    category: 'Momentum',
+    overlay: false,
+    metadata: tdMacdIndicator.metadata,
+    inputConfig: tdMacdIndicator.inputConfig as InputConfig[],
+    plotConfig: tdMacdIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...tdMacdIndicator.defaultInputs },
+    calculate: tdMacdIndicator.calculate,
+  },
+  {
+    id: 'three-moving-averages',
+    group: 'community',
+    name: 'Three Moving Averages',
+    shortName: '3MA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: threeMovingAveragesIndicator.metadata,
+    inputConfig: threeMovingAveragesIndicator.inputConfig as InputConfig[],
+    plotConfig: threeMovingAveragesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...threeMovingAveragesIndicator.defaultInputs },
+    calculate: threeMovingAveragesIndicator.calculate,
+  },
+  {
+    id: 'tonyux-ema-scalper',
+    group: 'community',
+    name: 'TonyUX EMA Scalper',
+    shortName: 'TUXS',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: tonyuxEmaScalperIndicator.metadata,
+    inputConfig: tonyuxEmaScalperIndicator.inputConfig as InputConfig[],
+    plotConfig: tonyuxEmaScalperIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...tonyuxEmaScalperIndicator.defaultInputs },
+    calculate: tonyuxEmaScalperIndicator.calculate,
+  },
+  {
+    id: 'top-bottom-candle',
+    group: 'community',
+    name: 'Top & Bottom Candle',
+    shortName: 'TopBot',
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: topBottomCandleIndicator.metadata,
+    inputConfig: topBottomCandleIndicator.inputConfig as InputConfig[],
+    plotConfig: topBottomCandleIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...topBottomCandleIndicator.defaultInputs },
+    calculate: topBottomCandleIndicator.calculate,
+  },
+  {
+    id: 'tops-bottoms',
+    group: 'community',
+    name: 'Tops/Bottoms',
+    shortName: 'TB',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: topsBottomsIndicator.metadata,
+    inputConfig: topsBottomsIndicator.inputConfig as InputConfig[],
+    plotConfig: topsBottomsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...topsBottomsIndicator.defaultInputs },
+    calculate: topsBottomsIndicator.calculate,
+  },
+  {
+    id: 'trama',
+    group: 'community',
+    name: 'Trend Regularity Adaptive MA',
+    shortName: 'TRAMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: tramaIndicator.metadata,
+    inputConfig: tramaIndicator.inputConfig as InputConfig[],
+    plotConfig: tramaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...tramaIndicator.defaultInputs },
+    calculate: tramaIndicator.calculate,
+  },
+  {
+    id: 'transient-zones',
+    group: 'community',
+    name: 'Transient Zones v1.1',
+    shortName: 'TZones',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: transientZonesIndicator.metadata,
+    inputConfig: transientZonesIndicator.inputConfig as InputConfig[],
+    plotConfig: transientZonesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...transientZonesIndicator.defaultInputs },
+    calculate: transientZonesIndicator.calculate,
+  },
+  {
+    id: 'trend-following-ma',
+    group: 'community',
+    name: 'Trend Following Moving Averages',
+    shortName: 'TFMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: trendFollowingMaIndicator.metadata,
+    inputConfig: trendFollowingMaIndicator.inputConfig as InputConfig[],
+    plotConfig: trendFollowingMaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...trendFollowingMaIndicator.defaultInputs },
+    calculate: trendFollowingMaIndicator.calculate,
+  },
+  {
+    id: 'trend-trader',
+    group: 'community',
+    name: 'Trend Trader Strategy',
+    shortName: 'TrendTrader',
+    category: 'Trend',
+    overlay: true,
+    metadata: trendTraderIndicator.metadata,
+    inputConfig: trendTraderIndicator.inputConfig as InputConfig[],
+    plotConfig: trendTraderIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...trendTraderIndicator.defaultInputs },
+    calculate: trendTraderIndicator.calculate,
+  },
+  {
+    id: 'triangular-momentum-osc',
+    group: 'community',
+    name: 'Triangular Momentum Oscillator',
+    shortName: 'TMO',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: triangularMomentumOscIndicator.metadata,
+    inputConfig: triangularMomentumOscIndicator.inputConfig as InputConfig[],
+    plotConfig: triangularMomentumOscIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...triangularMomentumOscIndicator.defaultInputs },
+    calculate: triangularMomentumOscIndicator.calculate,
+  },
+  {
+    id: 'triple-ma-forecast',
+    group: 'community',
+    name: 'Triple MA Forecast',
+    shortName: '3MAF',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: tripleMaForecastIndicator.metadata,
+    inputConfig: tripleMaForecastIndicator.inputConfig as InputConfig[],
+    plotConfig: tripleMaForecastIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...tripleMaForecastIndicator.defaultInputs },
+    calculate: tripleMaForecastIndicator.calculate,
+  },
+  {
+    id: 'ttm-squeeze-pro',
+    group: 'community',
+    name: 'TTM Squeeze Pro',
+    shortName: 'TTMSqzPro',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: ttmSqueezeProIndicator.metadata,
+    inputConfig: ttmSqueezeProIndicator.inputConfig as InputConfig[],
+    plotConfig: ttmSqueezeProIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ttmSqueezeProIndicator.defaultInputs },
+    calculate: ttmSqueezeProIndicator.calculate,
+  },
+  {
+    id: 'vdub-sniper',
+    group: 'community',
+    name: 'Vdub FX Sniper',
+    shortName: 'VSniper',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: vdubSniperIndicator.metadata,
+    inputConfig: vdubSniperIndicator.inputConfig as InputConfig[],
+    plotConfig: vdubSniperIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...vdubSniperIndicator.defaultInputs },
+    calculate: vdubSniperIndicator.calculate,
+  },
+  {
+    id: 'vdubus-binarypro',
+    group: 'community',
+    name: 'vdubus BinaryPro',
+    shortName: 'VBP',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: vdubusBinaryproIndicator.metadata,
+    inputConfig: vdubusBinaryproIndicator.inputConfig as InputConfig[],
+    plotConfig: vdubusBinaryproIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...vdubusBinaryproIndicator.defaultInputs },
+    calculate: vdubusBinaryproIndicator.calculate,
+  },
+  {
+    id: 'volume-colored-bars',
+    group: 'community',
+    name: 'Volume Colored Bars',
+    shortName: 'VCBars',
+    category: 'Volume',
+    overlay: false,
+    metadata: volumeColoredBarsIndicator.metadata,
+    inputConfig: volumeColoredBarsIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeColoredBarsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...volumeColoredBarsIndicator.defaultInputs },
+    calculate: volumeColoredBarsIndicator.calculate,
+  },
+  {
+    id: 'volume-flow-v3',
+    group: 'community',
+    name: 'Volume Flow v3',
+    shortName: 'VFv3',
+    category: 'Volume',
+    overlay: false,
+    metadata: volumeFlowV3Indicator.metadata,
+    inputConfig: volumeFlowV3Indicator.inputConfig as InputConfig[],
+    plotConfig: volumeFlowV3Indicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...volumeFlowV3Indicator.defaultInputs },
+    calculate: volumeFlowV3Indicator.calculate,
+  },
+  {
+    id: 'volume-linreg-trend',
+    group: 'community',
+    name: 'Volume LinReg Trend',
+    shortName: 'VLRTrend',
+    category: 'Volume',
+    overlay: true,
+    metadata: volumeLinregTrendIndicator.metadata,
+    inputConfig: volumeLinregTrendIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeLinregTrendIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...volumeLinregTrendIndicator.defaultInputs },
+    calculate: volumeLinregTrendIndicator.calculate,
+  },
+  {
+    id: 'vwmacd-szo',
+    group: 'community',
+    name: 'VWMACD & SZO',
+    shortName: 'VWMACDSZO',
+    category: 'Momentum',
+    overlay: false,
+    metadata: vwmacdSzoIndicator.metadata,
+    inputConfig: vwmacdSzoIndicator.inputConfig as InputConfig[],
+    plotConfig: vwmacdSzoIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...vwmacdSzoIndicator.defaultInputs },
+    calculate: vwmacdSzoIndicator.calculate,
+  },
+  {
+    id: 'vw-macd-v2',
+    group: 'community',
+    name: 'Volume Weighted MACD V2',
+    shortName: 'VWMACDV2',
+    category: 'Momentum',
+    overlay: false,
+    metadata: vwMacdV2Indicator.metadata,
+    inputConfig: vwMacdV2Indicator.inputConfig as InputConfig[],
+    plotConfig: vwMacdV2Indicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...vwMacdV2Indicator.defaultInputs },
+    calculate: vwMacdV2Indicator.calculate,
+  },
+  {
+    id: 'weis-wave-volume',
+    group: 'community',
+    name: 'Weis Wave Volume',
+    shortName: 'WWV',
+    category: 'Volume',
+    overlay: false,
+    metadata: weisWaveVolumeIndicator.metadata,
+    inputConfig: weisWaveVolumeIndicator.inputConfig as InputConfig[],
+    plotConfig: weisWaveVolumeIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...weisWaveVolumeIndicator.defaultInputs },
+    calculate: weisWaveVolumeIndicator.calculate,
+  },
+  {
+    id: 'wicked-fractals',
+    group: 'community',
+    name: 'WICK.ED Fractals',
+    shortName: 'WFrac',
+    category: 'Oscillators',
+    overlay: true,
+    metadata: wickedFractalsIndicator.metadata,
+    inputConfig: wickedFractalsIndicator.inputConfig as InputConfig[],
+    plotConfig: wickedFractalsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...wickedFractalsIndicator.defaultInputs },
+    calculate: wickedFractalsIndicator.calculate,
+  },
+  {
+    id: 'williams-combo',
+    group: 'community',
+    name: 'Williams Alligator + Fractals',
+    shortName: 'WilliamsCombo',
+    category: 'Trend',
+    overlay: true,
+    metadata: williamsComboIndicator.metadata,
+    inputConfig: williamsComboIndicator.inputConfig as InputConfig[],
+    plotConfig: williamsComboIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...williamsComboIndicator.defaultInputs },
+    calculate: williamsComboIndicator.calculate,
+  },
+  {
+    id: 'zero-lag-ema',
+    group: 'community',
+    name: 'Zero Lag EMA',
+    shortName: 'ZLEMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: zeroLagEmaIndicator.metadata,
+    inputConfig: zeroLagEmaIndicator.inputConfig as InputConfig[],
+    plotConfig: zeroLagEmaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...zeroLagEmaIndicator.defaultInputs },
+    calculate: zeroLagEmaIndicator.calculate,
   },
   // Candlestick Patterns
   ...candlestickEntries([
