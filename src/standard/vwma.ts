@@ -10,16 +10,19 @@ import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, ty
 export interface VWMAInputs {
   length: number;
   src: SourceType;
+  offset: number;
 }
 
 export const defaultInputs: VWMAInputs = {
   length: 20,
   src: 'close',
+  offset: 0,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
+  { id: 'offset', type: 'int', title: 'Offset', defval: 0, min: -500, max: 500 },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -33,15 +36,15 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<VWMAInputs> = {}): IndicatorResult {
-  const { length, src } = { ...defaultInputs, ...inputs };
+  const { length, src, offset } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
   const volume = new Series(bars, (bar) => bar.volume ?? 0);
-  const vwma = ta.vwma(source, length, volume);
+  const vwmaArr = ta.vwma(source, length, volume).toArray();
 
-  const plotData = vwma.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
+  const plotData = bars.map((bar, i) => {
+    const srcIdx = i - offset;
+    return { time: bar.time, value: (srcIdx >= 0 && srcIdx < bars.length) ? (vwmaArr[srcIdx] ?? NaN) : NaN };
+  });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },

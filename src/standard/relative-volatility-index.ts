@@ -11,6 +11,7 @@ import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, ty
 
 export interface RelativeVolatilityIndexInputs {
   length: number;
+  offset: number;
   maType: 'None' | 'SMA' | 'SMA + Bollinger Bands' | 'EMA' | 'SMMA (RMA)' | 'WMA' | 'VWMA';
   maLength: number;
   bbMult: number;
@@ -18,6 +19,7 @@ export interface RelativeVolatilityIndexInputs {
 
 export const defaultInputs: RelativeVolatilityIndexInputs = {
   length: 10,
+  offset: 0,
   maType: 'SMA',
   maLength: 14,
   bbMult: 2.0,
@@ -25,6 +27,7 @@ export const defaultInputs: RelativeVolatilityIndexInputs = {
 
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Length', defval: 10, min: 1 },
+  { id: 'offset', type: 'int', title: 'Offset', defval: 0, min: -500, max: 500 },
   { id: 'maType', type: 'string', title: 'Type', defval: 'SMA', options: ['None', 'SMA', 'SMA + Bollinger Bands', 'EMA', 'SMMA (RMA)', 'WMA', 'VWMA'] },
   { id: 'maLength', type: 'int', title: 'Length', defval: 14, min: 1 },
   { id: 'bbMult', type: 'float', title: 'BB StdDev', defval: 2.0, min: 0.001, max: 50 },
@@ -54,7 +57,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<RelativeVolatilityIndexInputs> = {}): IndicatorResult {
-  const { length, maType, maLength, bbMult } = { ...defaultInputs, ...inputs };
+  const { length, offset, maType, maLength, bbMult } = { ...defaultInputs, ...inputs };
 
   const close = new Series(bars, b => b.close);
   const len = 14; // EMA smoothing length (hardcoded in PineScript)
@@ -119,10 +122,14 @@ export function calculate(bars: Bar[], inputs: Partial<RelativeVolatilityIndexIn
   }
 
   const rviArr = rviSeries.toArray();
-  const rviData = rviArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
-  const maData = smoothingArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
-  const bbUpperData = bbUpperArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
-  const bbLowerData = bbLowerArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
+  const applyOffset = (arr: (number | null)[]) => bars.map((bar, i) => {
+    const srcIdx = i - offset;
+    return { time: bar.time, value: (srcIdx >= 0 && srcIdx < bars.length) ? (arr[srcIdx] ?? NaN) : NaN };
+  });
+  const rviData = applyOffset(rviArr);
+  const maData = applyOffset(smoothingArr);
+  const bbUpperData = applyOffset(bbUpperArr);
+  const bbLowerData = applyOffset(bbLowerArr);
 
   const fills: FillData[] = [];
   if (isBB) {

@@ -14,12 +14,19 @@ import { array, type IndicatorResult, type InputConfig, type PlotConfig, type Ba
 import type { MarkerData, BgColorData } from '../types';
 
 export interface MoonPhasesInputs {
-  // No configurable calculation parameters
+  waxingMoonColor: string;
+  waningMoonColor: string;
 }
 
-export const defaultInputs: MoonPhasesInputs = {};
+export const defaultInputs: MoonPhasesInputs = {
+  waxingMoonColor: '#2196F3',
+  waningMoonColor: '#FFFFFF',
+};
 
-export const inputConfig: InputConfig[] = [];
+export const inputConfig: InputConfig[] = [
+  { id: 'waxingMoonColor', type: 'string', title: 'Waxing Moon', defval: '#2196F3' },
+  { id: 'waningMoonColor', type: 'string', title: 'Waning Moon', defval: '#FFFFFF' },
+];
 
 // No line plots — rendered via markers and bgcolor
 export const plotConfig: PlotConfig[] = [];
@@ -92,7 +99,15 @@ function getUNIXTimeFromJD(julianDay: number): number {
   return Date.UTC(_year, _month - 1, _day, _hour, _minute, _second);
 }
 
-export function calculate(bars: Bar[], _inputs: Partial<MoonPhasesInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
+function hexToRgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MoonPhasesInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
+  const { waxingMoonColor, waningMoonColor } = { ...defaultInputs, ...inputs };
   const markers: MarkerData[] = [];
   const bgColors: BgColorData[] = [];
 
@@ -169,7 +184,7 @@ export function calculate(bars: Bar[], _inputs: Partial<MoonPhasesInputs> = {}):
         time: bar.time as number,
         position: 'aboveBar',
         shape: 'circle',
-        color: 'rgba(33, 150, 243, 0.5)', // blue at 50% transparency
+        color: hexToRgba(waxingMoonColor, 0.5),
         text: 'New',
       });
     } else if (moonType === -1) {
@@ -177,15 +192,15 @@ export function calculate(bars: Bar[], _inputs: Partial<MoonPhasesInputs> = {}):
         time: bar.time as number,
         position: 'belowBar',
         shape: 'circle',
-        color: 'rgba(255, 255, 255, 0.5)', // white at 50% transparency
+        color: hexToRgba(waningMoonColor, 0.5),
         text: 'Full',
       });
     }
 
     // bgcolor based on current moon phase (95% transparency = 5% opacity)
     const bgColor = moonPhaseAdjusted === 1
-      ? 'rgba(33, 150, 243, 0.05)'   // waxing (blue)
-      : 'rgba(255, 255, 255, 0.05)'; // waning (white)
+      ? hexToRgba(waxingMoonColor, 0.05)
+      : hexToRgba(waningMoonColor, 0.05);
     bgColors.push({ time: bar.time as number, color: bgColor });
 
     prevTimeLastMoonPhase = timeLastMoonPhase;

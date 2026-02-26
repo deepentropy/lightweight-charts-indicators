@@ -34,6 +34,8 @@ export interface ZigZagInputs {
   extendLast: boolean;
   /** Display reversal price */
   showPrice: boolean;
+  /** Display cumulative volume */
+  showVolume: boolean;
   /** Display price change */
   showChange: boolean;
 }
@@ -60,6 +62,7 @@ export const defaultInputs: ZigZagInputs = {
   depth: 10,
   extendLast: true,
   showPrice: true,
+  showVolume: true,
   showChange: true,
 };
 
@@ -71,6 +74,7 @@ export const inputConfig: InputConfig[] = [
   { id: 'depth', type: 'int', title: 'Pivot legs', defval: 10, min: 2 },
   { id: 'extendLast', type: 'bool', title: 'Extend to last bar', defval: true },
   { id: 'showPrice', type: 'bool', title: 'Display reversal price', defval: true },
+  { id: 'showVolume', type: 'bool', title: 'Display cumulative volume', defval: true },
   { id: 'showChange', type: 'bool', title: 'Display reversal price change', defval: true },
 ];
 
@@ -144,6 +148,19 @@ export function calculate(bars: Bar[], inputs: Partial<ZigZagInputs> = {}): ZigZ
       let text = '';
       if (opts.showPrice) {
         text += pivot.end.price.toFixed(2);
+      }
+      if (opts.showVolume && i > 0) {
+        const prevIdx = allPivots[i - 1].end.barIndex;
+        const currIdx = pivot.end.barIndex;
+        let cumVol = 0;
+        for (let j = prevIdx; j <= currIdx; j++) {
+          cumVol += bars[j].volume ?? 0;
+        }
+        const volStr = cumVol >= 1e9 ? (cumVol / 1e9).toFixed(3) + 'B'
+          : cumVol >= 1e6 ? (cumVol / 1e6).toFixed(3) + 'M'
+          : cumVol >= 1e3 ? (cumVol / 1e3).toFixed(3) + 'K'
+          : cumVol.toFixed(0);
+        text += `\n${volStr}`;
       }
       if (opts.showChange && i > 0) {
         const prevPrice = allPivots[i - 1].end.price;
