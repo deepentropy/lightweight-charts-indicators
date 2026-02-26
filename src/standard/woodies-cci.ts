@@ -26,9 +26,9 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'CCI Turbo Histogram', color: '#26A69A', lineWidth: 1 },
-  { id: 'plot1', title: 'CCI Turbo', color: '#FF9800', lineWidth: 1 },
-  { id: 'plot2', title: 'CCI 14', color: '#787B86', lineWidth: 1 },
+  { id: 'plot0', title: 'CCI Turbo Histogram', color: '#009688', lineWidth: 1, style: 'histogram' },
+  { id: 'plot1', title: 'CCI Turbo', color: '#009688', lineWidth: 1 },
+  { id: 'plot2', title: 'CCI 14', color: '#F44336', lineWidth: 1 },
 ];
 
 export const hlineConfig: HLineConfig[] = [
@@ -95,10 +95,20 @@ export function calculate(bars: Bar[], inputs: Partial<WoodiesCCIInputs> = {}): 
   const cci14Values = cci(source, cciLength);
 
   // CCI Turbo Histogram = CCI 14 (displayed as histogram)
-  const histogramData = cci14Values.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
+  // Color logic: green if last 5 bars all positive, red if last 5 all negative,
+  // otherwise green if current < 0, red if current >= 0
+  const histogramData = cci14Values.map((value, i) => {
+    const v = value ?? NaN;
+    let color: string;
+    if (i >= 5) {
+      const last5Up = cci14Values[i-5] > 0 && cci14Values[i-4] > 0 && cci14Values[i-3] > 0 && cci14Values[i-2] > 0 && cci14Values[i-1] > 0;
+      const last5Down = cci14Values[i-5] < 0 && cci14Values[i-4] < 0 && cci14Values[i-3] < 0 && cci14Values[i-2] < 0 && cci14Values[i-1] < 0;
+      color = last5Up ? '#009688' : last5Down ? '#F44336' : v < 0 ? '#009688' : '#F44336';
+    } else {
+      color = v >= 0 ? '#009688' : '#F44336';
+    }
+    return { time: bars[i].time, value: v, color };
+  });
 
   const turboData = cciTurbo.map((value, i) => ({
     time: bars[i].time,

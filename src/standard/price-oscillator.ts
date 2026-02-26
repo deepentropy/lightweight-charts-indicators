@@ -37,7 +37,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Histogram', color: '#26A69A', lineWidth: 1 },
+  { id: 'plot0', title: 'Histogram', color: '#26A69A', lineWidth: 1, style: 'columns' },
   { id: 'plot1', title: 'PPO', color: '#009688', lineWidth: 1 },
   { id: 'plot2', title: 'Signal Line', color: '#FF9800', lineWidth: 1 },
 ];
@@ -95,7 +95,16 @@ export function calculate(bars: Bar[], inputs: Partial<PriceOscillatorInputs> = 
     }
   }
 
-  const histData = histogram.map((value, i) => ({ time: bars[i].time, value }));
+  const histData = histogram.map((value, i) => {
+    const prev = i > 0 ? histogram[i - 1] : NaN;
+    let color: string;
+    if (value >= 0) {
+      color = prev < value ? '#26A69A' : '#B2DFDB';
+    } else {
+      color = prev < value ? '#FFCDD2' : '#FF5252';
+    }
+    return { time: bars[i].time, value, color };
+  });
   const ppoData = ppo.map((value, i) => ({ time: bars[i].time, value }));
   const signalData = signalArr.map((value, i) => ({ time: bars[i].time, value: value ?? NaN }));
 

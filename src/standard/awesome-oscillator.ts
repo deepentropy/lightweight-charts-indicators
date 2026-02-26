@@ -25,7 +25,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'AO', color: '#009688', lineWidth: 1 },
+  { id: 'plot0', title: 'AO', color: '#009688', lineWidth: 1, style: 'columns' },
 ];
 
 export const metadata = {
@@ -48,10 +48,13 @@ export function calculate(bars: Bar[], inputs: Partial<AwesomeOscillatorInputs> 
   const ao = fastSma.sub(slowSma);
 
   const aoArr = ao.toArray();
-  const aoData = aoArr.map((value: number | null, i: number) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
+  const aoData = aoArr.map((value: number | null, i: number) => {
+    const v = value ?? NaN;
+    const prev = i > 0 ? (aoArr[i - 1] ?? NaN) : NaN;
+    const diff = v - prev;
+    const color = diff <= 0 ? '#F44336' : '#009688';
+    return { time: bars[i].time, value: v, color };
+  });
 
   return {
     metadata: {

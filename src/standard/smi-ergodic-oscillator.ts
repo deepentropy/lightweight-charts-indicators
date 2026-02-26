@@ -29,7 +29,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Oscillator', color: '#26A69A', lineWidth: 1 },
+  { id: 'plot0', title: 'Oscillator', color: '#FF5252', lineWidth: 1, style: 'histogram' },
 ];
 
 export const metadata = {

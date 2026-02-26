@@ -21,7 +21,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'BBPower', color: '#089981', lineWidth: 1 },
+  { id: 'plot0', title: 'BBPower', color: '#089981', lineWidth: 1, style: 'columns' },
 ];
 
 export const hlineConfig: HLineConfig[] = [
@@ -51,10 +51,11 @@ export function calculate(bars: Bar[], inputs: Partial<BullBearPowerInputs> = {}
   const bbp = bullPower.add(bearPower);
 
   const bbpArr = bbp.toArray();
-  const bbpData = bbpArr.map((value: number | null, i: number) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
+  const bbpData = bbpArr.map((value: number | null, i: number) => {
+    const v = value ?? NaN;
+    const color = v >= 0 ? '#089981' : '#f23645';
+    return { time: bars[i].time, value: v, color };
+  });
 
   return {
     metadata: {

@@ -29,7 +29,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Histogram', color: '#26A69A', lineWidth: 2 },
+  { id: 'plot0', title: 'Histogram', color: '#26A69A', lineWidth: 2, style: 'columns' },
   { id: 'plot1', title: 'MACD', color: '#2962FF', lineWidth: 2 },
   { id: 'plot2', title: 'Signal', color: '#FF6D00', lineWidth: 2 },
 ];
@@ -59,10 +59,18 @@ export function calculate(bars: Bar[], inputs: Partial<MACDInputs> = {}): Indica
   // Histogram = MACD line - Signal line
   const histogram = macdLine.sub(signalLine);
 
-  const histData = histogram.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
+  const histArr = histogram.toArray();
+  const histData = histArr.map((value, i) => {
+    const v = value ?? NaN;
+    const prev = i > 0 ? (histArr[i - 1] ?? NaN) : NaN;
+    let color: string;
+    if (v >= 0) {
+      color = prev < v ? '#26A69A' : '#B2DFDB';
+    } else {
+      color = prev < v ? '#FFCDD2' : '#FF5252';
+    }
+    return { time: bars[i].time, value: v, color };
+  });
 
   const macdData = macdLine.toArray().map((value, i) => ({
     time: bars[i].time,

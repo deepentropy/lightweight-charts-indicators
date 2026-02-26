@@ -29,7 +29,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'BBTrend', color: '#089981', lineWidth: 1 },
+  { id: 'plot0', title: 'BBTrend', color: '#089981', lineWidth: 1, style: 'columns' },
 ];
 
 export const hlineConfig: HLineConfig[] = [
@@ -66,6 +66,13 @@ export function calculate(bars: Bar[], inputs: Partial<BBTrendInputs> = {}): Ind
   const longUpperArr = longUpper.toArray();
   const shortMiddleArr = shortMiddle.toArray();
 
+  // Pine: color.new(#089981, 25) = 75% opacity, color.new(#089981, 50) = 50% opacity
+  const POS_STRONG = '#089981BF';
+  const POS_WEAK   = '#08998180';
+  const NEG_WEAK   = '#F2364580';
+  const NEG_STRONG = '#F23645BF';
+
+  let prevBBTrend = NaN;
   const bbTrendData = bars.map((bar, i) => {
     const sL = shortLowerArr[i];
     const sU = shortUpperArr[i];
@@ -78,7 +85,14 @@ export function calculate(bars: Bar[], inputs: Partial<BBTrendInputs> = {}): Ind
     }
 
     const bbTrend = (Math.abs(sL - lL) - Math.abs(sU - lU)) / sM * 100;
-    return { time: bar.time, value: bbTrend };
+    let color: string;
+    if (bbTrend > 0 && bbTrend >= prevBBTrend) color = POS_STRONG;
+    else if (bbTrend > 0) color = POS_WEAK;
+    else if (bbTrend < 0 && bbTrend <= prevBBTrend) color = NEG_STRONG;
+    else if (bbTrend < 0) color = NEG_WEAK;
+    else color = POS_WEAK;
+    prevBBTrend = bbTrend;
+    return { time: bar.time, value: bbTrend, color };
   });
 
   return {
