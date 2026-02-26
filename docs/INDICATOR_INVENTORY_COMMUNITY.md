@@ -263,7 +263,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 202 | Easy Entry_Exit Trend Colors (With Alerts) | Implementable | Easy | |
 | 203 | Ehlers Instantaneous Trend [LazyBear] | Implemented | Easy | |
 | 204 | Ehlers MESA Adaptive Moving Average [LazyBear] | Implemented | Easy | `ehlers-mesa-ma.ts` |
-| 205 | Ehlers Stochastic CG Oscillator [LazyBear] | Implementable | Easy | |
+| 205 | Ehlers Stochastic CG Oscillator [LazyBear] | Implemented | Easy | `ehlers-stochastic-cg.ts` |
 | 206 | Elastic Volume Weighted Moving Average & Envelope [LazyBear] | Implementable | Easy | |
 | 207 | Elliot Wave - Impulse | Blocked | N/A | Table;Drawing |
 | 208 | Elliot Wave Oscillator | Implemented | Easy | |
@@ -326,7 +326,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 265 | Global (World) Monetary Supply M2 (measured in USD) | Blocked | N/A | Screener;MTF |
 | 266 | Global Liquidity Index | Blocked | N/A | Screener;MTF;Table |
 | 267 | GMMA Oscillator v1 by JustUncleL | Implementable | Hard | |
-| 268 | GMMA | Implementable | Easy | |
+| 268 | GMMA | Implemented | Easy | `gmma.ts` |
 | 269 | Godmode 4.0.2 [Supply_Demand] | Blocked | N/A | MTF |
 | 270 | Golden Cross, SMA 200 Moving Average Strategy (by ChartArt) | Blocked | N/A | Strategy |
 | 271 | Grid Bot Simulator | Blocked | N/A | Drawing |
@@ -391,9 +391,9 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 330 | Indicator_ HawkEye Volume Indicator | Implementable | Easy | |
 | 331 | Indicator_ MFI or RSI enclosed by Bollinger Bands | Implementable | Easy | |
 | 332 | Indicator_ OBV Oscillator | Implemented | Easy | `obv-oscillator.ts` |
-| 333 | Indicator_ Premier Stochastic Oscillator | Implementable | Easy | |
+| 333 | Indicator_ Premier Stochastic Oscillator | Implemented | Easy | `premier-stochastic.ts` |
 | 334 | Indicator_ Trend Trigger Factor | Implemented | Easy | |
-| 335 | Indicator_ Volume Price Confirmation Indicator (VPCI) | Implementable | Easy | |
+| 335 | Indicator_ Volume Price Confirmation Indicator (VPCI) | Implemented | Easy | `vpci.ts` |
 | 336 | Indicator_ WaveTrend Oscillator [WT] | Implementable | Easy | |
 | 337 | Indicator_ Weis Wave Volume [LazyBear] | Implementable | Easy | |
 | 338 | Indicator_ Zero Lag EMA & a simple trading strategy | Implementable | Easy | |
@@ -421,7 +421,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 360 | Linear Regression ++ | Blocked | N/A | MTF |
 | 361 | Linear Regression Candles | Implementable | Easy | |
 | 362 | Linear Regression Channel _ Curve _ Slope by DGT | Blocked | N/A | Table;Drawing |
-| 363 | Linear Regression Channel | Implementable | Easy | |
+| 363 | Linear Regression Channel | Implemented | Easy | `linear-regression-channel.ts` |
 | 364 | Linear Regression Oscillator [ChartPrime] | Blocked | N/A | Drawing |
 | 365 | Liquidation Levels [LuxAlgo] | Blocked | N/A | Drawing |
 | 366 | Liquidations Zones [ChartPrime] | Blocked | N/A | Drawing |
@@ -834,18 +834,18 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 773 | Trendlines 2x + | Blocked | N/A | Screener;MTF |
 | 774 | Trendlines with Breaks [LuxAlgo] | Implementable | Hard | |
 | 775 | Triangular Momentum Oscillator & Real Time Divergences [LuxAlgo] | Implementable | Easy | |
-| 776 | Triangular Moving Average (TMA) bands | Implementable | Easy | |
+| 776 | Triangular Moving Average (TMA) bands | Implemented | Easy | `tma-bands.ts` |
 | 777 | Triple MA Forecast | Implementable | Easy | |
 | 778 | True Williams Alligator (SMMA) | Implementable | Easy | |
 | 779 | TTM Squeeze Pro | Implementable | Easy | |
 | 780 | TTM Squeeze | Implementable | Easy | |
 | 781 | TTrades Daily Bias [TFO] | Blocked | N/A | Table;Drawing |
-| 782 | Turtle Trade Channels Indicator TUTCI | Implementable | Easy | |
+| 782 | Turtle Trade Channels Indicator TUTCI | Implemented | Easy | `turtle-trade-channels.ts` |
 | 783 | TV Community Algo | Blocked | N/A | Screener;MTF;Drawing |
 | 784 | Tweezers and Kangaroo Tail | Implementable | Medium | |
 | 785 | Twin Optimized Trend Tracker Strategy TOTT | Blocked | N/A | Strategy |
 | 786 | Twin Range Filter Visualized | Implementable | Easy | |
-| 787 | Twin Range Filter | Implementable | Easy | |
+| 787 | Twin Range Filter | Implemented | Easy | `twin-range-filter.ts` |
 | 788 | UCS_Murrey's Math Oscillator_V2 | Implementable | Easy | |
 | 789 | UCS_Top & Bottom Candle | Implementable | Easy | |
 | 790 | Ultimate Moving Average-Multi-TimeFrame-7 MA Types | Blocked | N/A | MTF |
@@ -860,12 +860,12 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 799 | VDUB_BINARY_PRO_3_V2  FINAL + Strategy | Blocked | N/A | MTF |
 | 800 | vdub_Trend_Master_v  _  v1 _ v2 _ v3 | Blocked | N/A | MTF |
 | 801 | vdubus BinaryPro  - Indicators 1 & 2 | Implementable | Easy | |
-| 802 | Vervoort Heiken-Ashi LongTerm Candlestick Oscillator [LazyBear] | Implementable | Easy | |
+| 802 | Vervoort Heiken-Ashi LongTerm Candlestick Oscillator [LazyBear] | Implemented | Easy | `vervoort-ha-oscillator.ts` |
 | 803 | Vix FIX _ StochRSI Strategy | Blocked | N/A | Strategy |
 | 804 | Volumatic Support_Resistance Levels [BigBeluga] | Implementable | Medium | |
 | 805 | Volumatic Variable Index Dynamic Average [BigBeluga] | Blocked | N/A | Drawing |
 | 806 | Volume _ Open Interest _Footprint_ - By Leviathan | Blocked | N/A | Screener;MTF |
-| 807 | Volume Accumulation Percentage Indicator [LazyBear] | Implementable | Easy | |
+| 807 | Volume Accumulation Percentage Indicator [LazyBear] | Implemented | Easy | `volume-accumulation-pct.ts` |
 | 808 | Volume Analysis - Heatmap and Volume Profile | Blocked | N/A | MTF;Table;Drawing |
 | 809 | Volume Bar Breakout and Breakdown  Indicator | Implementable | Medium | |
 | 810 | Volume Based Coloured Bars | Implementable | Easy | |

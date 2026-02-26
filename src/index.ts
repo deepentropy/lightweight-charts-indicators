@@ -745,6 +745,56 @@ import * as obvOscillatorIndicator from './community/obv-oscillator';
 export { OBVOscillator, calculate as calculateOBVOscillator } from './community/obv-oscillator';
 export type { OBVOscillatorInputs } from './community/obv-oscillator';
 
+// GMMA - Guppy Multiple Moving Average
+import * as gmmaIndicator from './community/gmma';
+export { GMMA, calculate as calculateGMMA } from './community/gmma';
+export type { GMMAInputs } from './community/gmma';
+
+// Turtle Trade Channels
+import * as turtleTradeChannelsIndicator from './community/turtle-trade-channels';
+export { TurtleTradeChannels, calculate as calculateTurtleTradeChannels } from './community/turtle-trade-channels';
+export type { TurtleTradeChannelsInputs } from './community/turtle-trade-channels';
+
+// Linear Regression Channel
+import * as linearRegressionChannelIndicator from './community/linear-regression-channel';
+export { LinearRegressionChannel, calculate as calculateLinearRegressionChannel } from './community/linear-regression-channel';
+export type { LinearRegressionChannelInputs } from './community/linear-regression-channel';
+
+// Twin Range Filter
+import * as twinRangeFilterIndicator from './community/twin-range-filter';
+export { TwinRangeFilter, calculate as calculateTwinRangeFilter } from './community/twin-range-filter';
+export type { TwinRangeFilterInputs } from './community/twin-range-filter';
+
+// TMA Bands
+import * as tmaBandsIndicator from './community/tma-bands';
+export { TMABands, calculate as calculateTMABands } from './community/tma-bands';
+export type { TMABandsInputs } from './community/tma-bands';
+
+// Ehlers Stochastic CG Oscillator
+import * as ehlersStochasticCGIndicator from './community/ehlers-stochastic-cg';
+export { EhlersStochasticCG, calculate as calculateEhlersStochasticCG } from './community/ehlers-stochastic-cg';
+export type { EhlersStochasticCGInputs } from './community/ehlers-stochastic-cg';
+
+// Volume Price Confirmation Indicator
+import * as vpciIndicator from './community/vpci';
+export { VPCI, calculate as calculateVPCI } from './community/vpci';
+export type { VPCIInputs } from './community/vpci';
+
+// Premier Stochastic Oscillator
+import * as premierStochasticIndicator from './community/premier-stochastic';
+export { PremierStochastic, calculate as calculatePremierStochastic } from './community/premier-stochastic';
+export type { PremierStochasticInputs } from './community/premier-stochastic';
+
+// Volume Accumulation Percentage
+import * as volumeAccumulationPctIndicator from './community/volume-accumulation-pct';
+export { VolumeAccumulationPct, calculate as calculateVolumeAccumulationPct } from './community/volume-accumulation-pct';
+export type { VolumeAccumulationPctInputs } from './community/volume-accumulation-pct';
+
+// Vervoort HA Oscillator
+import * as vervoortHAOscillatorIndicator from './community/vervoort-ha-oscillator';
+export { VervoortHAOscillator, calculate as calculateVervoortHAOscillator } from './community/vervoort-ha-oscillator';
+export type { VervoortHAOscillatorInputs } from './community/vervoort-ha-oscillator';
+
 // Candlestick Patterns
 import * as hammerIndicator from './candlestick/hammer';
 import * as shootingStarIndicator from './candlestick/shooting-star';
@@ -2809,6 +2859,126 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: obvOscillatorIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...obvOscillatorIndicator.defaultInputs },
     calculate: obvOscillatorIndicator.calculate,
+  },
+  {
+    id: 'gmma',
+    name: 'Guppy Multiple Moving Average',
+    shortName: 'GMMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: gmmaIndicator.metadata,
+    inputConfig: gmmaIndicator.inputConfig as InputConfig[],
+    plotConfig: gmmaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...gmmaIndicator.defaultInputs },
+    calculate: gmmaIndicator.calculate,
+  },
+  {
+    id: 'turtle-trade-channels',
+    name: 'Turtle Trade Channels',
+    shortName: 'TTC',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: turtleTradeChannelsIndicator.metadata,
+    inputConfig: turtleTradeChannelsIndicator.inputConfig as InputConfig[],
+    plotConfig: turtleTradeChannelsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...turtleTradeChannelsIndicator.defaultInputs },
+    calculate: turtleTradeChannelsIndicator.calculate,
+  },
+  {
+    id: 'linear-regression-channel',
+    name: 'Linear Regression Channel',
+    shortName: 'LRC',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: linearRegressionChannelIndicator.metadata,
+    inputConfig: linearRegressionChannelIndicator.inputConfig as InputConfig[],
+    plotConfig: linearRegressionChannelIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...linearRegressionChannelIndicator.defaultInputs },
+    calculate: linearRegressionChannelIndicator.calculate,
+  },
+  {
+    id: 'twin-range-filter',
+    name: 'Twin Range Filter',
+    shortName: 'TRF',
+    category: 'Trend',
+    overlay: true,
+    metadata: twinRangeFilterIndicator.metadata,
+    inputConfig: twinRangeFilterIndicator.inputConfig as InputConfig[],
+    plotConfig: twinRangeFilterIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...twinRangeFilterIndicator.defaultInputs },
+    calculate: twinRangeFilterIndicator.calculate,
+  },
+  {
+    id: 'tma-bands',
+    name: 'Triangular MA Bands',
+    shortName: 'TMA',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: tmaBandsIndicator.metadata,
+    inputConfig: tmaBandsIndicator.inputConfig as InputConfig[],
+    plotConfig: tmaBandsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...tmaBandsIndicator.defaultInputs },
+    calculate: tmaBandsIndicator.calculate,
+  },
+  {
+    id: 'ehlers-stochastic-cg',
+    name: 'Ehlers Stochastic CG Oscillator',
+    shortName: 'ESCG',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: ehlersStochasticCGIndicator.metadata,
+    inputConfig: ehlersStochasticCGIndicator.inputConfig as InputConfig[],
+    plotConfig: ehlersStochasticCGIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ehlersStochasticCGIndicator.defaultInputs },
+    calculate: ehlersStochasticCGIndicator.calculate,
+  },
+  {
+    id: 'vpci',
+    name: 'Volume Price Confirmation Indicator',
+    shortName: 'VPCI',
+    category: 'Volume',
+    overlay: false,
+    metadata: vpciIndicator.metadata,
+    inputConfig: vpciIndicator.inputConfig as InputConfig[],
+    plotConfig: vpciIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...vpciIndicator.defaultInputs },
+    calculate: vpciIndicator.calculate,
+  },
+  {
+    id: 'premier-stochastic',
+    name: 'Premier Stochastic Oscillator',
+    shortName: 'PSO',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: premierStochasticIndicator.metadata,
+    inputConfig: premierStochasticIndicator.inputConfig as InputConfig[],
+    plotConfig: premierStochasticIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...premierStochasticIndicator.defaultInputs },
+    calculate: premierStochasticIndicator.calculate,
+  },
+  {
+    id: 'volume-accumulation-pct',
+    name: 'Volume Accumulation Percentage',
+    shortName: 'VA%',
+    category: 'Volume',
+    overlay: false,
+    metadata: volumeAccumulationPctIndicator.metadata,
+    inputConfig: volumeAccumulationPctIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeAccumulationPctIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...volumeAccumulationPctIndicator.defaultInputs },
+    calculate: volumeAccumulationPctIndicator.calculate,
+  },
+  {
+    id: 'vervoort-ha-oscillator',
+    name: 'Vervoort HA LT Candlestick Oscillator',
+    shortName: 'VHO',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: vervoortHAOscillatorIndicator.metadata,
+    inputConfig: vervoortHAOscillatorIndicator.inputConfig as InputConfig[],
+    plotConfig: vervoortHAOscillatorIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...vervoortHAOscillatorIndicator.defaultInputs },
+    calculate: vervoortHAOscillatorIndicator.calculate,
   },
   // Candlestick Patterns
   ...candlestickEntries([

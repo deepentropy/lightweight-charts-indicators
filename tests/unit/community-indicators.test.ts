@@ -51,6 +51,16 @@ import {
   VariableMA,
   SmoothedHeikenAshi,
   OBVOscillator,
+  GMMA,
+  TurtleTradeChannels,
+  LinearRegressionChannel,
+  TwinRangeFilter,
+  TMABands,
+  EhlersStochasticCG,
+  VPCI,
+  PremierStochastic,
+  VolumeAccumulationPct,
+  VervoortHAOscillator,
 } from '../../src/index.js';
 
 // ---------------------------------------------------------------------------
@@ -962,5 +972,173 @@ describe('OBVOscillator', () => {
     const hasNegative = vals.some((v) => v < 0);
     expect(hasPositive).toBe(true);
     expect(hasNegative).toBe(true);
+  });
+});
+
+describe('GMMA', () => {
+  const result = GMMA.calculate(bars);
+
+  it('returns correct shape (12 EMA plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5', 'plot6', 'plot7', 'plot8', 'plot9', 'plot10', 'plot11'], true);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+
+  it('tracks price level (overlay)', () => {
+    const vals = validValues(result);
+    const avgClose = bars.reduce((s, b) => s + b.close, 0) / bars.length;
+    const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
+    expect(Math.abs(avg - avgClose)).toBeLessThan(avgClose * 0.3);
+  });
+});
+
+describe('TurtleTradeChannels', () => {
+  const result = TurtleTradeChannels.calculate(bars);
+
+  it('returns correct shape (4 plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], true);
+  });
+
+  it('entry high >= entry low', () => {
+    const high = validValues(result, 'plot0');
+    const low = validValues(result, 'plot1');
+    const len = Math.min(high.length, low.length);
+    for (let i = 0; i < len; i++) {
+      expect(high[i]).toBeGreaterThanOrEqual(low[i]);
+    }
+  });
+});
+
+describe('LinearRegressionChannel', () => {
+  const result = LinearRegressionChannel.calculate(bars, { length: 30 });
+
+  it('returns correct shape (3 plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2'], true);
+  });
+
+  it('upper >= lower', () => {
+    const upper = validValues(result, 'plot1');
+    const lower = validValues(result, 'plot2');
+    const len = Math.min(upper.length, lower.length);
+    for (let i = 0; i < len; i++) {
+      expect(upper[i]).toBeGreaterThanOrEqual(lower[i]);
+    }
+  });
+});
+
+describe('TwinRangeFilter', () => {
+  const result = TwinRangeFilter.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], true);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+
+  it('tracks price level (overlay)', () => {
+    const vals = validValues(result);
+    const avgClose = bars.reduce((s, b) => s + b.close, 0) / bars.length;
+    const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
+    expect(Math.abs(avg - avgClose)).toBeLessThan(avgClose * 0.3);
+  });
+});
+
+describe('TMABands', () => {
+  const result = TMABands.calculate(bars);
+
+  it('returns correct shape (3 plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2'], true);
+  });
+
+  it('upper >= TMA >= lower', () => {
+    const tma = validValues(result, 'plot0');
+    const upper = validValues(result, 'plot1');
+    const lower = validValues(result, 'plot2');
+    const len = Math.min(tma.length, upper.length, lower.length);
+    for (let i = 0; i < len; i++) {
+      expect(upper[i]).toBeGreaterThanOrEqual(tma[i] - 0.001);
+      expect(tma[i]).toBeGreaterThanOrEqual(lower[i] - 0.001);
+    }
+  });
+});
+
+describe('EhlersStochasticCG', () => {
+  const result = EhlersStochasticCG.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0', 'plot1'], false);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+});
+
+describe('VPCI', () => {
+  const result = VPCI.calculate(bars, { longLength: 20 });
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0', 'plot1'], false);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+});
+
+describe('PremierStochastic', () => {
+  const result = PremierStochastic.calculate(bars, { smoothLength: 10 });
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0', 'plot1'], false);
+  });
+
+  it('PSO values in -1 to 1 range', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => {
+      expect(v).toBeGreaterThanOrEqual(-1);
+      expect(v).toBeLessThanOrEqual(1);
+    });
+  });
+});
+
+describe('VolumeAccumulationPct', () => {
+  const result = VolumeAccumulationPct.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], false);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+});
+
+describe('VervoortHAOscillator', () => {
+  const result = VervoortHAOscillator.calculate(bars, { temaLength: 10 });
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], false);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
   });
 });
