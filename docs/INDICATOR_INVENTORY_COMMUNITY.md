@@ -8,15 +8,15 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | Category | Count |
 |---|---|
 | **Total Indicators** | 867 |
-| **Implementable** | 346 |
+| **Implementable** | 336 |
 | **Blocked** | 511 |
-| **Implemented** | 24 |
+| **Implemented** | 34 |
 
 ### Implementable Breakdown
 
 | Difficulty | Count | Description |
 |---|---|---|
-| Easy | 212 | Direct TA port, all functions available, <80 lines |
+| Easy | 202 | Direct TA port, all functions available, <80 lines |
 | Medium | 80 | Stateful logic or custom MAs, 80-200 lines |
 | Hard | 54 | Complex logic, may need partial feature skip, 200+ lines |
 
@@ -212,7 +212,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 151 | CM_Stochastic Highlight Bars | Implementable | Easy | |
 | 152 | CM_Ultimate RSI Multi Time Frame | Blocked | N/A | MTF |
 | 153 | CM_Ultimate_MA_MTF_V2 | Blocked | N/A | MTF |
-| 154 | CM_Williams_Vix_Fix  Finds Market Bottoms | Implementable | Easy | |
+| 154 | CM_Williams_Vix_Fix  Finds Market Bottoms | Implemented | Easy | |
 | 155 | CM_Williams_Vix_Fix_V3_Ultimate_Filtered_Alerts | Implementable | Easy | |
 | 156 | CM_Williams_Vix_Fix_V3_Upper_Text Plots | Implementable | Easy | |
 | 157 | Code for All 4 Forex Sessions W_ Background Highlight!!! | Implementable | Easy | |
@@ -234,7 +234,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 173 | Daily Weekly Monthly Yearly Opens | Blocked | N/A | MTF;Session;Drawing |
 | 174 | DARVAS BOX by KIVANÇ fr3762 | Implementable | Easy | |
 | 175 | Day Trading Booster by DGT | Blocked | N/A | MTF;Table;Drawing |
-| 176 | DecisionPoint Price Momentum Oscillator [LazyBear] | Implementable | Easy | |
+| 176 | DecisionPoint Price Momentum Oscillator [LazyBear] | Implemented | Easy | |
 | 177 | DecisionPoint Volume Swenlin Trading Oscillator [LazyBear] | Blocked | N/A | MTF |
 | 178 | Delta Flow Profile [LuxAlgo] | Blocked | N/A | Drawing |
 | 179 | Delta Volume Candles [LucF] | Blocked | N/A | MTF;Table |
@@ -261,12 +261,12 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 200 | Dynamic Support_Resistance Zones [ChartPrime] | Blocked | N/A | Drawing |
 | 201 | Dynamic Swing Anchored VWAP (Zeiierman) | Blocked | N/A | Drawing |
 | 202 | Easy Entry_Exit Trend Colors (With Alerts) | Implementable | Easy | |
-| 203 | Ehlers Instantaneous Trend [LazyBear] | Implementable | Easy | |
+| 203 | Ehlers Instantaneous Trend [LazyBear] | Implemented | Easy | |
 | 204 | Ehlers MESA Adaptive Moving Average [LazyBear] | Implementable | Easy | |
 | 205 | Ehlers Stochastic CG Oscillator [LazyBear] | Implementable | Easy | |
 | 206 | Elastic Volume Weighted Moving Average & Envelope [LazyBear] | Implementable | Easy | |
 | 207 | Elliot Wave - Impulse | Blocked | N/A | Table;Drawing |
-| 208 | Elliot Wave Oscillator | Implementable | Easy | |
+| 208 | Elliot Wave Oscillator | Implemented | Easy | |
 | 209 | Elliott Wave [LuxAlgo] | Blocked | N/A | Drawing |
 | 210 | Elliott Wave Oscillator Signals by DGT | Blocked | N/A | Table;Drawing |
 | 211 | EMA & MA Crossover | Implementable | Easy | |
@@ -289,7 +289,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 228 | Faith Indicator | Implementable | Easy | |
 | 229 | False Breakout (Expo) | Implementable | Medium | |
 | 230 | Fibo Levels with Volume Profile and Targets [ChartPrime] | Blocked | N/A | MTF;Drawing |
-| 231 | Fibonacci Bollinger Bands | Implementable | Easy | |
+| 231 | Fibonacci Bollinger Bands | Implemented | Easy | |
 | 232 | Fibonacci Confluence Toolkit [LuxAlgo] | Blocked | N/A | Drawing |
 | 233 | Fibonacci Extension _ Retracement _ Pivot Points by DGT | Blocked | N/A | Table;Drawing |
 | 234 | Fibonacci levels MTF | Blocked | N/A | Drawing |
@@ -392,7 +392,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 331 | Indicator_ MFI or RSI enclosed by Bollinger Bands | Implementable | Easy | |
 | 332 | Indicator_ OBV Oscillator | Implementable | Easy | |
 | 333 | Indicator_ Premier Stochastic Oscillator | Implementable | Easy | |
-| 334 | Indicator_ Trend Trigger Factor | Implementable | Easy | |
+| 334 | Indicator_ Trend Trigger Factor | Implemented | Easy | |
 | 335 | Indicator_ Volume Price Confirmation Indicator (VPCI) | Implementable | Easy | |
 | 336 | Indicator_ WaveTrend Oscillator [WT] | Implementable | Easy | |
 | 337 | Indicator_ Weis Wave Volume [LazyBear] | Implementable | Easy | |
@@ -412,7 +412,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 351 | Isolated Peak and Bottom (Tuncer ŞENGÖZ)  by KıvanÇ fr3762 | Implementable | Easy | |
 | 352 | ITG Scalper | Blocked | N/A | MTF;Drawing |
 | 353 | Kalman Trend Levels [BigBeluga] | Blocked | N/A | Drawing |
-| 354 | Kaufman Moving Average Adaptive (KAMA) | Implementable | Easy | |
+| 354 | Kaufman Moving Average Adaptive (KAMA) | Implemented | Easy | |
 | 355 | KDJ Indicator - @iamaltcoin | Implementable | Easy | |
 | 356 | Key Levels SpacemanBTC IDWM | Blocked | N/A | Screener;MTF;Session;Drawing |
 | 357 | Laguerre Multi-Filter [DW] | Blocked | N/A | Screener;MTF |
@@ -476,7 +476,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 415 | Machine Learning_ Lorentzian Classification | Blocked | N/A | Table |
 | 416 | Madrid MA Ribbon Bar v2 | Implementable | Medium | |
 | 417 | Madrid Moving Average Ribbon | Implementable | Medium | |
-| 418 | Madrid Trend Squeeze | Implementable | Easy | |
+| 418 | Madrid Trend Squeeze | Implemented | Easy | |
 | 419 | Market Cipher A free version 1.1 | Implementable | Easy | |
 | 420 | Market Cipher B  Free version with Buy and sell | Implementable | Easy | |
 | 421 | Market Profile with TPO | Blocked | N/A | Session;Table;Drawing |
@@ -723,7 +723,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 662 | Stochastic + RSI, Double Strategy (by ChartArt) | Blocked | N/A | Strategy |
 | 663 | Stochastic Heat Map | Implementable | Hard | |
 | 664 | Stochastic Momentum Index (SMI) of Money Flow Index (MFI) | Blocked | N/A | MTF;Drawing |
-| 665 | Stochastic Momentum Index (SMI) | Implementable | Easy | |
+| 665 | Stochastic Momentum Index (SMI) | Implemented | Easy | |
 | 666 | Stochastic Momentum Index _ UCSgears | Implementable | Easy | |
 | 667 | Stochastic OTT | Implementable | Easy | |
 | 668 | Stop loss and Take Profit in $$ example | Blocked | N/A | Strategy |
@@ -873,7 +873,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 812 | Volume Delta [hapharmonic] | Blocked | N/A | Table |
 | 813 | Volume Delta Candles [LuxAlgo] | Blocked | N/A | MTF;Table |
 | 814 | Volume Divergence by MM | Implementable | Medium | |
-| 815 | Volume Flow Indicator [LazyBear] | Implementable | Easy | |
+| 815 | Volume Flow Indicator [LazyBear] | Implemented | Easy | |
 | 816 | Volume Flow v3 | Implementable | Easy | |
 | 817 | Volume Footprint [LuxAlgo] | Implementable | Medium | |
 | 818 | Volume Footprint Voids [BigBeluga] | Blocked | N/A | MTF |

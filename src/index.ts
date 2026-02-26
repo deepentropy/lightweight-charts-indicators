@@ -645,6 +645,56 @@ import * as chandelierStopIndicator from './community/chandelier-stop';
 export { ChandelierStop, calculate as calculateChandelierStop } from './community/chandelier-stop';
 export type { ChandelierStopInputs } from './community/chandelier-stop';
 
+// Stochastic Momentum Index
+import * as smiIndicator from './community/stochastic-momentum-index';
+export { StochasticMomentumIndex, calculate as calculateSMI } from './community/stochastic-momentum-index';
+export type { StochasticMomentumIndexInputs } from './community/stochastic-momentum-index';
+
+// Volume Flow Indicator
+import * as vfiIndicator from './community/volume-flow-indicator';
+export { VolumeFlowIndicator, calculate as calculateVFI } from './community/volume-flow-indicator';
+export type { VolumeFlowIndicatorInputs } from './community/volume-flow-indicator';
+
+// Ehlers Instantaneous Trend
+import * as ehlersITrendIndicator from './community/ehlers-instantaneous-trend';
+export { EhlersInstantaneousTrend, calculate as calculateEhlersITrend } from './community/ehlers-instantaneous-trend';
+export type { EhlersInstantaneousTrendInputs } from './community/ehlers-instantaneous-trend';
+
+// Price Momentum Oscillator
+import * as pmoIndicator from './community/price-momentum-oscillator';
+export { PriceMomentumOscillator, calculate as calculatePMO } from './community/price-momentum-oscillator';
+export type { PriceMomentumOscInputs } from './community/price-momentum-oscillator';
+
+// Fibonacci Bollinger Bands
+import * as fibBBIndicator from './community/fibonacci-bollinger-bands';
+export { FibonacciBollingerBands, calculate as calculateFibBB } from './community/fibonacci-bollinger-bands';
+export type { FibonacciBollingerBandsInputs } from './community/fibonacci-bollinger-bands';
+
+// Trend Trigger Factor
+import * as ttfIndicator from './community/trend-trigger-factor';
+export { TrendTriggerFactor, calculate as calculateTTF } from './community/trend-trigger-factor';
+export type { TrendTriggerFactorInputs } from './community/trend-trigger-factor';
+
+// Elliott Wave Oscillator
+import * as ewoIndicator from './community/elliott-wave-oscillator';
+export { ElliottWaveOscillator, calculate as calculateEWO } from './community/elliott-wave-oscillator';
+export type { ElliottWaveOscInputs } from './community/elliott-wave-oscillator';
+
+// Madrid Trend Squeeze
+import * as madridTrendSqueezeIndicator from './community/madrid-trend-squeeze';
+export { MadridTrendSqueeze, calculate as calculateMadridTrendSqueeze } from './community/madrid-trend-squeeze';
+export type { MadridTrendSqueezeInputs } from './community/madrid-trend-squeeze';
+
+// Kaufman Adaptive Moving Average
+import * as kamaIndicator from './community/kaufman-adaptive-ma';
+export { KaufmanAdaptiveMA, calculate as calculateKAMA } from './community/kaufman-adaptive-ma';
+export type { KaufmanAdaptiveMAInputs } from './community/kaufman-adaptive-ma';
+
+// Williams Vix Fix
+import * as williamsVixFixIndicator from './community/williams-vix-fix';
+export { WilliamsVixFix, calculate as calculateWilliamsVixFix } from './community/williams-vix-fix';
+export type { WilliamsVixFixInputs } from './community/williams-vix-fix';
+
 // Candlestick Patterns
 import * as hammerIndicator from './candlestick/hammer';
 import * as shootingStarIndicator from './candlestick/shooting-star';
@@ -2469,6 +2519,126 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: chandelierStopIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...chandelierStopIndicator.defaultInputs },
     calculate: chandelierStopIndicator.calculate,
+  },
+  {
+    id: 'stochastic-momentum-index',
+    name: 'Stochastic Momentum Index',
+    shortName: 'SMI',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: smiIndicator.metadata,
+    inputConfig: smiIndicator.inputConfig as InputConfig[],
+    plotConfig: smiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...smiIndicator.defaultInputs },
+    calculate: smiIndicator.calculate,
+  },
+  {
+    id: 'volume-flow-indicator',
+    name: 'Volume Flow Indicator',
+    shortName: 'VFI',
+    category: 'Volume',
+    overlay: false,
+    metadata: vfiIndicator.metadata,
+    inputConfig: vfiIndicator.inputConfig as InputConfig[],
+    plotConfig: vfiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...vfiIndicator.defaultInputs },
+    calculate: vfiIndicator.calculate,
+  },
+  {
+    id: 'ehlers-instantaneous-trend',
+    name: 'Ehlers Instantaneous Trend',
+    shortName: 'EIT',
+    category: 'Trend',
+    overlay: true,
+    metadata: ehlersITrendIndicator.metadata,
+    inputConfig: ehlersITrendIndicator.inputConfig as InputConfig[],
+    plotConfig: ehlersITrendIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ehlersITrendIndicator.defaultInputs },
+    calculate: ehlersITrendIndicator.calculate,
+  },
+  {
+    id: 'price-momentum-oscillator',
+    name: 'Price Momentum Oscillator',
+    shortName: 'PMO',
+    category: 'Momentum',
+    overlay: false,
+    metadata: pmoIndicator.metadata,
+    inputConfig: pmoIndicator.inputConfig as InputConfig[],
+    plotConfig: pmoIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...pmoIndicator.defaultInputs },
+    calculate: pmoIndicator.calculate,
+  },
+  {
+    id: 'fibonacci-bollinger-bands',
+    name: 'Fibonacci Bollinger Bands',
+    shortName: 'FBB',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: fibBBIndicator.metadata,
+    inputConfig: fibBBIndicator.inputConfig as InputConfig[],
+    plotConfig: fibBBIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...fibBBIndicator.defaultInputs },
+    calculate: fibBBIndicator.calculate,
+  },
+  {
+    id: 'trend-trigger-factor',
+    name: 'Trend Trigger Factor',
+    shortName: 'TTF',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: ttfIndicator.metadata,
+    inputConfig: ttfIndicator.inputConfig as InputConfig[],
+    plotConfig: ttfIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ttfIndicator.defaultInputs },
+    calculate: ttfIndicator.calculate,
+  },
+  {
+    id: 'elliott-wave-oscillator',
+    name: 'Elliott Wave Oscillator',
+    shortName: 'EWO',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: ewoIndicator.metadata,
+    inputConfig: ewoIndicator.inputConfig as InputConfig[],
+    plotConfig: ewoIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ewoIndicator.defaultInputs },
+    calculate: ewoIndicator.calculate,
+  },
+  {
+    id: 'madrid-trend-squeeze',
+    name: 'Madrid Trend Squeeze',
+    shortName: 'MTS',
+    category: 'Momentum',
+    overlay: false,
+    metadata: madridTrendSqueezeIndicator.metadata,
+    inputConfig: madridTrendSqueezeIndicator.inputConfig as InputConfig[],
+    plotConfig: madridTrendSqueezeIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...madridTrendSqueezeIndicator.defaultInputs },
+    calculate: madridTrendSqueezeIndicator.calculate,
+  },
+  {
+    id: 'kaufman-adaptive-ma',
+    name: 'Kaufman Adaptive Moving Average',
+    shortName: 'KAMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: kamaIndicator.metadata,
+    inputConfig: kamaIndicator.inputConfig as InputConfig[],
+    plotConfig: kamaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...kamaIndicator.defaultInputs },
+    calculate: kamaIndicator.calculate,
+  },
+  {
+    id: 'williams-vix-fix',
+    name: 'Williams Vix Fix',
+    shortName: 'WVF',
+    category: 'Volatility',
+    overlay: false,
+    metadata: williamsVixFixIndicator.metadata,
+    inputConfig: williamsVixFixIndicator.inputConfig as InputConfig[],
+    plotConfig: williamsVixFixIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...williamsVixFixIndicator.defaultInputs },
+    calculate: williamsVixFixIndicator.calculate,
   },
   // Candlestick Patterns
   ...candlestickEntries([

@@ -31,6 +31,16 @@ import {
   BullBearPowerTrend,
   BBBreakoutOscillator,
   ChandelierStop,
+  StochasticMomentumIndex,
+  VolumeFlowIndicator,
+  EhlersInstantaneousTrend,
+  PriceMomentumOscillator,
+  FibonacciBollingerBands,
+  TrendTriggerFactor,
+  ElliottWaveOscillator,
+  MadridTrendSqueeze,
+  KaufmanAdaptiveMA,
+  WilliamsVixFix,
 } from '../../src/index.js';
 
 // ---------------------------------------------------------------------------
@@ -597,5 +607,158 @@ describe('ChandelierStop', () => {
     const vals = validValues(result);
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+});
+
+describe('StochasticMomentumIndex', () => {
+  const result = StochasticMomentumIndex.calculate(bars);
+
+  it('returns correct shape (SMI, Signal, Histogram)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
+  });
+
+  it('SMI oscillates around zero', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    const hasPositive = vals.some((v) => v > 0);
+    const hasNegative = vals.some((v) => v < 0);
+    expect(hasPositive).toBe(true);
+    expect(hasNegative).toBe(true);
+  });
+});
+
+describe('VolumeFlowIndicator', () => {
+  const result = VolumeFlowIndicator.calculate(bars, { length: 20 });
+
+  it('returns correct shape (VFI, Signal)', () => {
+    assertShape(result, ['plot0', 'plot1'], false);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+});
+
+describe('EhlersInstantaneousTrend', () => {
+  const result = EhlersInstantaneousTrend.calculate(bars);
+
+  it('returns correct shape (Trigger, ITrend)', () => {
+    assertShape(result, ['plot0', 'plot1'], true);
+  });
+
+  it('tracks price (overlay)', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    const avgClose = bars.reduce((s, b) => s + b.close, 0) / bars.length;
+    const avgIT = vals.reduce((s, v) => s + v, 0) / vals.length;
+    expect(Math.abs(avgIT - avgClose)).toBeLessThan(avgClose * 0.3);
+  });
+});
+
+describe('PriceMomentumOscillator', () => {
+  const result = PriceMomentumOscillator.calculate(bars);
+
+  it('returns correct shape (PMO, Signal)', () => {
+    assertShape(result, ['plot0', 'plot1'], false);
+  });
+
+  it('oscillates around zero', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    const hasPositive = vals.some((v) => v > 0);
+    const hasNegative = vals.some((v) => v < 0);
+    expect(hasPositive).toBe(true);
+    expect(hasNegative).toBe(true);
+  });
+});
+
+describe('FibonacciBollingerBands', () => {
+  const result = FibonacciBollingerBands.calculate(bars, { length: 20 });
+
+  it('returns correct shape (13 plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5', 'plot6', 'plot7', 'plot8', 'plot9', 'plot10', 'plot11', 'plot12'], true);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+});
+
+describe('TrendTriggerFactor', () => {
+  const result = TrendTriggerFactor.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], false);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+});
+
+describe('ElliottWaveOscillator', () => {
+  const result = ElliottWaveOscillator.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], false);
+  });
+
+  it('oscillates around zero', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    const hasPositive = vals.some((v) => v > 0);
+    const hasNegative = vals.some((v) => v < 0);
+    expect(hasPositive).toBe(true);
+    expect(hasNegative).toBe(true);
+  });
+});
+
+describe('MadridTrendSqueeze', () => {
+  const result = MadridTrendSqueeze.calculate(bars);
+
+  it('returns correct shape (3 histograms)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+});
+
+describe('KaufmanAdaptiveMA', () => {
+  const result = KaufmanAdaptiveMA.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], true);
+  });
+
+  it('tracks price (overlay)', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    const avgClose = bars.reduce((s, b) => s + b.close, 0) / bars.length;
+    const avgKama = vals.reduce((s, v) => s + v, 0) / vals.length;
+    expect(Math.abs(avgKama - avgClose)).toBeLessThan(avgClose * 0.3);
+  });
+});
+
+describe('WilliamsVixFix', () => {
+  const result = WilliamsVixFix.calculate(bars);
+
+  it('returns correct shape (WVF, Upper Band)', () => {
+    assertShape(result, ['plot0', 'plot1'], false);
+  });
+
+  it('WVF values are non-negative', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
   });
 });
