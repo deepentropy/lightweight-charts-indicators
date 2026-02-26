@@ -595,6 +595,56 @@ import * as zeroLagMacdIndicator from './community/zero-lag-macd';
 export { ZeroLagMACD, calculate as calculateZeroLagMACD } from './community/zero-lag-macd';
 export type { ZeroLagMACDInputs } from './community/zero-lag-macd';
 
+// ADX and DI
+import * as adxDiIndicator from './community/adx-di';
+export { ADXDI, calculate as calculateADXDI } from './community/adx-di';
+export type { ADXDIInputs } from './community/adx-di';
+
+// Awesome Oscillator V2
+import * as awesomeOscV2Indicator from './community/awesome-oscillator-v2';
+export { AwesomeOscillatorV2, calculate as calculateAwesomeOscillatorV2 } from './community/awesome-oscillator-v2';
+export type { AwesomeOscillatorV2Inputs } from './community/awesome-oscillator-v2';
+
+// CM EMA Trend Bars
+import * as cmEmaTrendBarsIndicator from './community/cm-ema-trend-bars';
+export { CMEMATrendBars, calculate as calculateCMEMATrendBars } from './community/cm-ema-trend-bars';
+export type { CMEMATrendBarsInputs } from './community/cm-ema-trend-bars';
+
+// BB Fibonacci Ratios
+import * as bbFibRatiosIndicator from './community/bb-fibonacci-ratios';
+export { BBFibonacciRatios, calculate as calculateBBFibonacciRatios } from './community/bb-fibonacci-ratios';
+export type { BBFibonacciRatiosInputs } from './community/bb-fibonacci-ratios';
+
+// Average Sentiment Oscillator
+import * as avgSentimentOscIndicator from './community/average-sentiment-oscillator';
+export { AverageSentimentOscillator, calculate as calculateAverageSentimentOsc } from './community/average-sentiment-oscillator';
+export type { AverageSentimentOscInputs } from './community/average-sentiment-oscillator';
+
+// ATR Trailing Stops
+import * as atrTrailingStopsIndicator from './community/atr-trailing-stops';
+export { ATRTrailingStops, calculate as calculateATRTrailingStops } from './community/atr-trailing-stops';
+export type { ATRTrailingStopsInputs } from './community/atr-trailing-stops';
+
+// Accurate Swing Trading
+import * as accurateSwingTradingIndicator from './community/accurate-swing-trading';
+export { AccurateSwingTrading, calculate as calculateAccurateSwingTrading } from './community/accurate-swing-trading';
+export type { AccurateSwingTradingInputs } from './community/accurate-swing-trading';
+
+// Bull Bear Power Trend
+import * as bullBearPowerTrendIndicator from './community/bull-bear-power-trend';
+export { BullBearPowerTrend, calculate as calculateBullBearPowerTrend } from './community/bull-bear-power-trend';
+export type { BullBearPowerTrendInputs } from './community/bull-bear-power-trend';
+
+// BB Breakout Oscillator
+import * as bbBreakoutOscIndicator from './community/bb-breakout-oscillator';
+export { BBBreakoutOscillator, calculate as calculateBBBreakoutOsc } from './community/bb-breakout-oscillator';
+export type { BBBreakoutOscInputs } from './community/bb-breakout-oscillator';
+
+// Chandelier Stop
+import * as chandelierStopIndicator from './community/chandelier-stop';
+export { ChandelierStop, calculate as calculateChandelierStop } from './community/chandelier-stop';
+export type { ChandelierStopInputs } from './community/chandelier-stop';
+
 // Candlestick Patterns
 import * as hammerIndicator from './candlestick/hammer';
 import * as shootingStarIndicator from './candlestick/shooting-star';
@@ -2299,6 +2349,126 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: zeroLagMacdIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...zeroLagMacdIndicator.defaultInputs },
     calculate: zeroLagMacdIndicator.calculate,
+  },
+  {
+    id: 'adx-di',
+    name: 'ADX and DI',
+    shortName: 'ADX DI',
+    category: 'Trend',
+    overlay: false,
+    metadata: adxDiIndicator.metadata,
+    inputConfig: adxDiIndicator.inputConfig as InputConfig[],
+    plotConfig: adxDiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...adxDiIndicator.defaultInputs },
+    calculate: adxDiIndicator.calculate,
+  },
+  {
+    id: 'awesome-oscillator-v2',
+    name: 'Awesome Oscillator V2',
+    shortName: 'AOv2',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: awesomeOscV2Indicator.metadata,
+    inputConfig: awesomeOscV2Indicator.inputConfig as InputConfig[],
+    plotConfig: awesomeOscV2Indicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...awesomeOscV2Indicator.defaultInputs },
+    calculate: awesomeOscV2Indicator.calculate,
+  },
+  {
+    id: 'cm-ema-trend-bars',
+    name: 'CM EMA Trend Bars',
+    shortName: 'CM EMA',
+    category: 'Trend',
+    overlay: true,
+    metadata: cmEmaTrendBarsIndicator.metadata,
+    inputConfig: cmEmaTrendBarsIndicator.inputConfig as InputConfig[],
+    plotConfig: cmEmaTrendBarsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmEmaTrendBarsIndicator.defaultInputs },
+    calculate: cmEmaTrendBarsIndicator.calculate,
+  },
+  {
+    id: 'bb-fibonacci-ratios',
+    name: 'BB Fibonacci Ratios',
+    shortName: 'BB Fib',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: bbFibRatiosIndicator.metadata,
+    inputConfig: bbFibRatiosIndicator.inputConfig as InputConfig[],
+    plotConfig: bbFibRatiosIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...bbFibRatiosIndicator.defaultInputs },
+    calculate: bbFibRatiosIndicator.calculate,
+  },
+  {
+    id: 'average-sentiment-oscillator',
+    name: 'Average Sentiment Oscillator',
+    shortName: 'ASO',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: avgSentimentOscIndicator.metadata,
+    inputConfig: avgSentimentOscIndicator.inputConfig as InputConfig[],
+    plotConfig: avgSentimentOscIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...avgSentimentOscIndicator.defaultInputs },
+    calculate: avgSentimentOscIndicator.calculate,
+  },
+  {
+    id: 'atr-trailing-stops',
+    name: 'ATR Trailing Stops',
+    shortName: 'ATRTS',
+    category: 'Trend',
+    overlay: true,
+    metadata: atrTrailingStopsIndicator.metadata,
+    inputConfig: atrTrailingStopsIndicator.inputConfig as InputConfig[],
+    plotConfig: atrTrailingStopsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...atrTrailingStopsIndicator.defaultInputs },
+    calculate: atrTrailingStopsIndicator.calculate,
+  },
+  {
+    id: 'accurate-swing-trading',
+    name: 'Accurate Swing Trading',
+    shortName: 'AST',
+    category: 'Trend',
+    overlay: true,
+    metadata: accurateSwingTradingIndicator.metadata,
+    inputConfig: accurateSwingTradingIndicator.inputConfig as InputConfig[],
+    plotConfig: accurateSwingTradingIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...accurateSwingTradingIndicator.defaultInputs },
+    calculate: accurateSwingTradingIndicator.calculate,
+  },
+  {
+    id: 'bull-bear-power-trend',
+    name: 'Bull Bear Power Trend',
+    shortName: 'BBPT',
+    category: 'Momentum',
+    overlay: false,
+    metadata: bullBearPowerTrendIndicator.metadata,
+    inputConfig: bullBearPowerTrendIndicator.inputConfig as InputConfig[],
+    plotConfig: bullBearPowerTrendIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...bullBearPowerTrendIndicator.defaultInputs },
+    calculate: bullBearPowerTrendIndicator.calculate,
+  },
+  {
+    id: 'bb-breakout-oscillator',
+    name: 'BB Breakout Oscillator',
+    shortName: 'BBBO',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: bbBreakoutOscIndicator.metadata,
+    inputConfig: bbBreakoutOscIndicator.inputConfig as InputConfig[],
+    plotConfig: bbBreakoutOscIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...bbBreakoutOscIndicator.defaultInputs },
+    calculate: bbBreakoutOscIndicator.calculate,
+  },
+  {
+    id: 'chandelier-stop',
+    name: 'Chandelier Stop',
+    shortName: 'CStop',
+    category: 'Trend',
+    overlay: true,
+    metadata: chandelierStopIndicator.metadata,
+    inputConfig: chandelierStopIndicator.inputConfig as InputConfig[],
+    plotConfig: chandelierStopIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...chandelierStopIndicator.defaultInputs },
+    calculate: chandelierStopIndicator.calculate,
   },
   // Candlestick Patterns
   ...candlestickEntries([

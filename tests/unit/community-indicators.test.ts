@@ -21,6 +21,16 @@ import {
   SchaffTrendCycle,
   DonchianTrendRibbon,
   OBVMACD,
+  ADXDI,
+  AwesomeOscillatorV2,
+  CMEMATrendBars,
+  BBFibonacciRatios,
+  AverageSentimentOscillator,
+  ATRTrailingStops,
+  AccurateSwingTrading,
+  BullBearPowerTrend,
+  BBBreakoutOscillator,
+  ChandelierStop,
 } from '../../src/index.js';
 
 // ---------------------------------------------------------------------------
@@ -409,6 +419,182 @@ describe('OBVMACD', () => {
 
   it('produces finite values after warmup', () => {
     const vals = validValues(result, 'plot0');
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+});
+
+describe('ADXDI', () => {
+  const result = ADXDI.calculate(bars);
+
+  it('returns correct shape (DI+, DI-, ADX)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
+  });
+
+  it('DI+ and DI- are non-negative', () => {
+    const diPlus = validValues(result, 'plot0');
+    const diMinus = validValues(result, 'plot1');
+    expect(diPlus.length).toBeGreaterThan(0);
+    diPlus.forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
+    diMinus.forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
+  });
+
+  it('ADX is non-negative', () => {
+    const adx = validValues(result, 'plot2');
+    expect(adx.length).toBeGreaterThan(0);
+    adx.forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
+  });
+});
+
+describe('AwesomeOscillatorV2', () => {
+  const result = AwesomeOscillatorV2.calculate(bars);
+
+  it('returns correct shape (AO, Signal)', () => {
+    assertShape(result, ['plot0', 'plot1'], false);
+  });
+
+  it('AO oscillates around zero', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    const hasPositive = vals.some((v) => v > 0);
+    const hasNegative = vals.some((v) => v < 0);
+    expect(hasPositive).toBe(true);
+    expect(hasNegative).toBe(true);
+  });
+});
+
+describe('CMEMATrendBars', () => {
+  const result = CMEMATrendBars.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], true);
+  });
+
+  it('tracks price (overlay)', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    const avgClose = bars.reduce((s, b) => s + b.close, 0) / bars.length;
+    const avgEma = vals.reduce((s, v) => s + v, 0) / vals.length;
+    expect(Math.abs(avgEma - avgClose)).toBeLessThan(avgClose * 0.3);
+  });
+});
+
+describe('BBFibonacciRatios', () => {
+  const result = BBFibonacciRatios.calculate(bars);
+
+  it('returns correct shape (7 plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5', 'plot6'], true);
+  });
+
+  it('upper bands above basis, lower bands below', () => {
+    const basis = validValues(result, 'plot0');
+    const upper1 = validValues(result, 'plot1');
+    const lower1 = validValues(result, 'plot2');
+    expect(basis.length).toBeGreaterThan(0);
+    for (let i = 0; i < basis.length; i++) {
+      expect(upper1[i]).toBeGreaterThanOrEqual(basis[i]);
+      expect(lower1[i]).toBeLessThanOrEqual(basis[i]);
+    }
+  });
+});
+
+describe('AverageSentimentOscillator', () => {
+  const result = AverageSentimentOscillator.calculate(bars);
+
+  it('returns correct shape (Bulls, Bears)', () => {
+    assertShape(result, ['plot0', 'plot1'], false);
+  });
+
+  it('values are between 0 and 100', () => {
+    const bulls = validValues(result, 'plot0');
+    const bears = validValues(result, 'plot1');
+    expect(bulls.length).toBeGreaterThan(0);
+    bulls.forEach((v) => {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(100);
+    });
+    bears.forEach((v) => {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(100);
+    });
+  });
+});
+
+describe('ATRTrailingStops', () => {
+  const result = ATRTrailingStops.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], true);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+});
+
+describe('AccurateSwingTrading', () => {
+  const result = AccurateSwingTrading.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], true);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v) => expect(isFinite(v)).toBe(true));
+  });
+});
+
+describe('BullBearPowerTrend', () => {
+  const result = BullBearPowerTrend.calculate(bars);
+
+  it('returns correct shape (5 plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4'], false);
+  });
+
+  it('bull power is non-negative, bear power is non-positive', () => {
+    const bullHist = validValues(result, 'plot3');
+    const bearHist = validValues(result, 'plot4');
+    expect(bullHist.length).toBeGreaterThan(0);
+    bullHist.forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
+    bearHist.forEach((v) => expect(v).toBeLessThanOrEqual(0));
+  });
+});
+
+describe('BBBreakoutOscillator', () => {
+  const result = BBBreakoutOscillator.calculate(bars);
+
+  it('returns correct shape (Bull, Bear)', () => {
+    assertShape(result, ['plot0', 'plot1'], false);
+  });
+
+  it('values are between 0 and 100', () => {
+    const bull = validValues(result, 'plot0');
+    const bear = validValues(result, 'plot1');
+    expect(bull.length).toBeGreaterThan(0);
+    bull.forEach((v) => {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(100);
+    });
+    bear.forEach((v) => {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(100);
+    });
+  });
+});
+
+describe('ChandelierStop', () => {
+  const result = ChandelierStop.calculate(bars);
+
+  it('returns correct shape', () => {
+    assertShape(result, ['plot0'], true);
+  });
+
+  it('produces finite values after warmup', () => {
+    const vals = validValues(result);
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v) => expect(isFinite(v)).toBe(true));
   });

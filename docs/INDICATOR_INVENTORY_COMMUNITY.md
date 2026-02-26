@@ -8,15 +8,15 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | Category | Count |
 |---|---|
 | **Total Indicators** | 867 |
-| **Implementable** | 356 |
+| **Implementable** | 346 |
 | **Blocked** | 511 |
-| **Implemented** | 14 |
+| **Implemented** | 24 |
 
 ### Implementable Breakdown
 
 | Difficulty | Count | Description |
 |---|---|---|
-| Easy | 222 | Direct TA port, all functions available, <80 lines |
+| Easy | 212 | Direct TA port, all functions available, <80 lines |
 | Medium | 80 | Stateful logic or custom MAs, 80-200 lines |
 | Hard | 54 | Complex logic, may need partial feature skip, 200+ lines |
 
@@ -82,13 +82,13 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 21 | 72s_ Adaptive Hull Moving Average+ | Implementable | Medium | |
 | 22 | A Useful MA Weighting Function For Controlling Lag & Smoothness | Implementable | Medium | |
 | 23 | ABC on Recursive Zigzag [Trendoscope] | Blocked | N/A | Table;Drawing |
-| 24 | Accurate Swing Trading System | Implementable | Easy | |
+| 24 | Accurate Swing Trading System | Implemented | Easy | |
 | 25 | Activity and Volume Orderflow Profile [AlgoAlpha] | Blocked | N/A | Drawing |
 | 26 | Adaptive MACD [LuxAlgo] | Implementable | Medium | |
 | 27 | Adaptive Trend Finder (log) | Blocked | N/A | Table;Drawing |
 | 28 | Adaptive Trend Flow [QuantAlgo] | Implementable | Medium | |
 | 29 | ADR% - Average Daily Range % by MikeC (AKA TheScrutiniser) | Blocked | N/A | MTF |
-| 30 | ADX and DI | Implementable | Easy | |
+| 30 | ADX and DI | Implemented | Easy | |
 | 31 | ADX by cobra | Implementable | Easy | |
 | 32 | ADX Di+ Di- [Gu5] | Implementable | Hard | |
 | 33 | AG FX - Watermark | Blocked | N/A | Table |
@@ -107,7 +107,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 46 | AsiaSessionHighLowMidLines | Blocked | N/A | Session;Drawing |
 | 47 | ATR Bands | Blocked | N/A | Table |
 | 48 | ATR Stop Loss Finder | Blocked | N/A | Table |
-| 49 | ATR Trailing Stoploss | Implementable | Easy | |
+| 49 | ATR Trailing Stoploss | Implemented | Easy | |
 | 50 | ATR+ (Stop Loss Indicator) | Implementable | Easy | |
 | 51 | Auto Chart Patterns [Trendoscope®] | Implementable | Hard | |
 | 52 | Auto Fib Channels by DGT | Blocked | N/A | Table;Drawing |
@@ -123,9 +123,9 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 62 | Automatic Daily Fibonacci v0.3 by JustUncleL | Blocked | N/A | MTF |
 | 63 | Automatic Support & Resistance | Implementable | Easy | |
 | 64 | Auto-Support | Implementable | Easy | |
-| 65 | Average Sentiment Oscillator | Implementable | Easy | |
+| 65 | Average Sentiment Oscillator | Implemented | Easy | |
 | 66 | Average True Range Trailing Stops Colored | Implementable | Easy | |
-| 67 | AWESOME OSCILLATOR V2 by KIVANCfr3762 | Implementable | Easy | |
+| 67 | AWESOME OSCILLATOR V2 by KIVANCfr3762 | Implemented | Easy | |
 | 68 | Backtest Adapter | Blocked | N/A | Strategy |
 | 69 | Backtesting & Trading Engine [PineCoders] | Blocked | N/A | Strategy |
 | 70 | Backtesting 3commas DCA Bot v2 | Blocked | N/A | Strategy;MTF;Table |
@@ -149,8 +149,8 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 88 | Bollinger + RSI, Double Strategy Long-Only (by ChartArt) v1.2 | Blocked | N/A | Strategy |
 | 89 | Bollinger Awesome Alert R1 by JustUncleL | Implementable | Medium | |
 | 90 | Bollinger Band with RSI | Blocked | N/A | Strategy |
-| 91 | Bollinger Bands Breakout Oscillator [LuxAlgo] | Implementable | Easy | |
-| 92 | Bollinger Bands Fibonacci ratios | Implementable | Easy | |
+| 91 | Bollinger Bands Breakout Oscillator [LuxAlgo] | Implemented | Easy | |
+| 92 | Bollinger Bands Fibonacci ratios | Implemented | Easy | |
 | 93 | Bollinger Bands Stochastic RSI Extreme Signal | Implementable | Easy | |
 | 94 | Boom Hunter Pro | Implementable | Hard | |
 | 95 | Breakaway Fair Value Gaps [LuxAlgo] | Blocked | N/A | Table;Drawing |
@@ -160,7 +160,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 99 | Breakout Probability (Expo) | Blocked | N/A | Table |
 | 100 | Breakouts with Tests & Retests [LuxAlgo] | Blocked | N/A | Drawing |
 | 101 | BTCUSDSHORTS BTCUSDLONGS - Bitfinex BTC Shorts & Longs | Blocked | N/A | MTF |
-| 102 | Bull Bear Power Trend | Implementable | Easy | |
+| 102 | Bull Bear Power Trend | Implemented | Easy | |
 | 103 | Bull Market Support Band (20w SMA, 21w EMA) | Blocked | N/A | MTF |
 | 104 | Bullish Engulfing automatic finding script | Implementable | Easy | |
 | 105 | BUY & SELL VOLUME TO PRICE PRESSURE by @XeL_Arjona | Implementable | Easy | |
@@ -181,9 +181,9 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 120 | CDC Action Zone V.2 | Implementable | Easy | |
 | 121 | CDC ActionZone V3 2020 | Blocked | N/A | MTF |
 | 122 | Chandelier Exit | Implementable | Easy | |
-| 123 | Chandelier Stop | Implementable | Easy | |
+| 123 | Chandelier Stop | Implemented | Easy | |
 | 124 | Channels With Patterns [ChartPrime] | Blocked | N/A | Drawing |
-| 125 | CM EMA Trend Bars | Implementable | Easy | |
+| 125 | CM EMA Trend Bars | Implemented | Easy | |
 | 126 | CM Enhanced Ichimoku Cloud V5 | Implementable | Easy | |
 | 127 | CM Gann Swing High Low V2 | Implementable | Easy | |
 | 128 | CM Heikin-Ashi Candlesticks_V1 | Implementable | Easy | |
