@@ -34,13 +34,17 @@ export const plotConfig: PlotConfig[] = [
 ];
 
 export const hlineConfig: HLineConfig[] = [
+  { id: 'hline_top',   price: 100, color: 'transparent', linestyle: 'solid', title: '' },
   { id: 'hline_upper', price: 1, color: '#F2364580', linestyle: 'dashed', title: 'Overbought' },
   { id: 'hline_mid',   price: 0.5, color: '#2962FF80', linestyle: 'solid', title: 'Middle Band' },
   { id: 'hline_lower', price: 0, color: '#08998180', linestyle: 'dashed', title: 'Oversold' },
+  { id: 'hline_bottom', price: -100, color: 'transparent', linestyle: 'solid', title: '' },
 ];
 
 export const fillConfig: FillConfig[] = [
-  { id: 'fill_band', plot1: 'hline_upper', plot2: 'hline_lower', color: '#2962FF1A' },
+  { id: 'fill_ob', plot1: 'hline_top', plot2: 'hline_upper', color: '#F2364519' },
+  { id: 'fill_mid', plot1: 'hline_upper', plot2: 'hline_lower', color: '#2962FF19' },
+  { id: 'fill_os', plot1: 'hline_lower', plot2: 'hline_bottom', color: '#08998119' },
 ];
 
 export const metadata = {

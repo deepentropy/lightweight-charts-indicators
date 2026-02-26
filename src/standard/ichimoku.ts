@@ -6,7 +6,7 @@
  * momentum, and trend direction all at once.
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar } from 'oakscriptjs';
 
 /**
  * Ichimoku Cloud indicator input parameters
@@ -51,6 +51,8 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot2', title: 'Lagging Span', color: '#43A047', lineWidth: 1 },
   { id: 'plot3', title: 'Leading Span A', color: '#A5D6A7', lineWidth: 1 },
   { id: 'plot4', title: 'Leading Span B', color: '#EF9A9A', lineWidth: 1 },
+  { id: 'plot5', title: 'Lead A Bullish', color: '#A5D6A7', lineWidth: 0, display: 'none' },
+  { id: 'plot6', title: 'Lead A Bearish', color: '#EF9A9A', lineWidth: 0, display: 'none' },
 ];
 
 /**
@@ -151,6 +153,21 @@ export function calculate(bars: Bar[], inputs: Partial<IchimokuInputs> = {}): In
     };
   });
 
+  // Split leadA into bullish/bearish for cloud fill (dynamic fill colors not supported)
+  const leadABullish = leadingAData.map((d, i) => ({
+    time: d.time,
+    value: d.value >= leadingBData[i].value ? d.value : NaN,
+  }));
+  const leadABearish = leadingAData.map((d, i) => ({
+    time: d.time,
+    value: d.value < leadingBData[i].value ? d.value : NaN,
+  }));
+
+  const fills: FillData[] = [
+    { plot1: 'plot5', plot2: 'plot4', options: { color: '#43A047', transp: 90, title: 'Bullish Cloud' } },
+    { plot1: 'plot6', plot2: 'plot4', options: { color: '#F44336', transp: 90, title: 'Bearish Cloud' } },
+  ];
+
   return {
     metadata: {
       title: metadata.title,
@@ -163,7 +180,10 @@ export function calculate(bars: Bar[], inputs: Partial<IchimokuInputs> = {}): In
       'plot2': laggingData,
       'plot3': leadingAData,
       'plot4': leadingBData,
+      'plot5': leadABullish,
+      'plot6': leadABearish,
     },
+    fills,
   };
 }
 

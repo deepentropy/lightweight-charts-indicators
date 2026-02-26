@@ -6,7 +6,7 @@
  * Uses ATR (Average True Range) to set channel distance.
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
 
 /**
  * Keltner Channels indicator input parameters
@@ -121,6 +121,10 @@ export function calculate(bars: Bar[], inputs: Partial<KeltnerInputs> = {}): Ind
     value: value ?? NaN,
   }));
 
+  const fills: FillData[] = [
+    { plot1: 'plot0', plot2: 'plot2', options: { color: '#2196F3', transp: 95, title: 'Background' } },
+  ];
+
   return {
     metadata: {
       title: metadata.title,
@@ -132,6 +136,7 @@ export function calculate(bars: Bar[], inputs: Partial<KeltnerInputs> = {}): Ind
       'plot1': basisData,
       'plot2': lowerData,
     },
+    fills,
   };
 }
 

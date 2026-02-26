@@ -6,7 +6,7 @@
  * over a specified period, with a midline (basis).
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar } from 'oakscriptjs';
 
 /**
  * Donchian Channels indicator input parameters
@@ -102,6 +102,10 @@ export function calculate(bars: Bar[], inputs: Partial<DonchianInputs> = {}): In
     };
   });
 
+  const fills: FillData[] = [
+    { plot1: 'plot1', plot2: 'plot2', options: { color: '#2196F3', transp: 95, title: 'Background' } },
+  ];
+
   return {
     metadata: {
       title: metadata.title,
@@ -113,6 +117,7 @@ export function calculate(bars: Bar[], inputs: Partial<DonchianInputs> = {}): In
       'plot1': upperData,
       'plot2': lowerData,
     },
+    fills,
   };
 }
 

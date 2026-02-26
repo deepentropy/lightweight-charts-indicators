@@ -4,7 +4,7 @@
  * Shows the median price with ATR-based bands and EMA.
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar } from 'oakscriptjs';
 
 export interface MedianInputs {
   /** Median calculation length */
@@ -32,6 +32,8 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot1', title: 'Upper Band', color: '#00FF00', lineWidth: 1 },
   { id: 'plot2', title: 'Lower Band', color: '#FF00FF', lineWidth: 1 },
   { id: 'plot3', title: 'Median EMA', color: '#0000FF', lineWidth: 1 },
+  { id: 'plot4', title: 'Median Above', color: '#00FF00', lineWidth: 0, display: 'none' },
+  { id: 'plot5', title: 'Median Below', color: '#FF00FF', lineWidth: 0, display: 'none' },
 ];
 
 export const metadata = {
@@ -110,6 +112,21 @@ export function calculate(bars: Bar[], inputs: Partial<MedianInputs> = {}): Indi
     value: value ?? NaN,
   }));
 
+  // Split median into above/below EMA for conditional fill color
+  const medianAbove = medianData.map((d, i) => ({
+    time: d.time,
+    value: d.value > emaData[i].value ? d.value : NaN,
+  }));
+  const medianBelow = medianData.map((d, i) => ({
+    time: d.time,
+    value: d.value <= emaData[i].value ? d.value : NaN,
+  }));
+
+  const fills: FillData[] = [
+    { plot1: 'plot4', plot2: 'plot3', options: { color: '#00FF00', transp: 10, title: 'Bullish Fill' } },
+    { plot1: 'plot5', plot2: 'plot3', options: { color: '#FF00FF', transp: 10, title: 'Bearish Fill' } },
+  ];
+
   return {
     metadata: {
       title: metadata.title,
@@ -121,7 +138,10 @@ export function calculate(bars: Bar[], inputs: Partial<MedianInputs> = {}): Indi
       'plot1': upperData,
       'plot2': lowerData,
       'plot3': emaData,
+      'plot4': medianAbove,
+      'plot5': medianBelow,
     },
+    fills,
   };
 }
 

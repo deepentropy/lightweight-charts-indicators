@@ -5,7 +5,7 @@
  * Volatility bands placed above and below a moving average, using standard deviation.
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
 
 /**
  * BB indicator input parameters
@@ -121,6 +121,10 @@ export function calculate(bars: Bar[], inputs: Partial<BBInputs> = {}): Indicato
     value: value ?? NaN,
   }));
 
+  const fills: FillData[] = [
+    { plot1: 'plot1', plot2: 'plot2', options: { color: '#2196F3', transp: 95, title: 'Background' } },
+  ];
+
   return {
     metadata: {
       title: metadata.title,
@@ -132,6 +136,7 @@ export function calculate(bars: Bar[], inputs: Partial<BBInputs> = {}): Indicato
       'plot1': upperData,
       'plot2': lowerData,
     },
+    fills,
   };
 }
 

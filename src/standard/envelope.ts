@@ -5,7 +5,7 @@
  * at a fixed percentage distance from the basis.
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface EnvelopeInputs {
   /** Period length */
@@ -69,6 +69,10 @@ export function calculate(bars: Bar[], inputs: Partial<EnvelopeInputs> = {}): In
     value: value ?? NaN,
   }));
 
+  const fills: FillData[] = [
+    { plot1: 'plot1', plot2: 'plot2', options: { color: '#2196F3', transp: 95, title: 'Background' } },
+  ];
+
   return {
     metadata: {
       title: metadata.title,
@@ -80,6 +84,7 @@ export function calculate(bars: Bar[], inputs: Partial<EnvelopeInputs> = {}): In
       'plot1': upperData,
       'plot2': lowerData,
     },
+    fills,
   };
 }
 
