@@ -22,7 +22,7 @@ export const defaultInputs: NetVolumeInputs = {};
 export const inputConfig: InputConfig[] = [];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Net Volume', color: '#2962FF', lineWidth: 1 },
+  { id: 'plot0', title: 'Net Volume', color: '#2962FF', lineWidth: 1, style: 'columns' },
 ];
 
 export const hlineConfig: HLineConfig[] = [
@@ -61,6 +61,7 @@ export function calculate(bars: Bar[], _inputs: Partial<NetVolumeInputs> = {}): 
   const plotData = deltaValues.map((value, i) => ({
     time: bars[i].time,
     value: value,
+    color: value >= 0 ? '#26A69A' : '#EF5350',
   }));
 
   return {

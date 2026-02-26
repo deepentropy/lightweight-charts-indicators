@@ -26,7 +26,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'EOM', color: '#2962FF', lineWidth: 1 },
+  { id: 'plot0', title: 'EOM', color: '#43A047', lineWidth: 1 },
 ];
 
 export const metadata = {

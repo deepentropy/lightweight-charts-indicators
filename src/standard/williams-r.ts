@@ -22,7 +22,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: '%R', color: '#FF6D00', lineWidth: 1 },
+  { id: 'plot0', title: '%R', color: '#7E57C2', lineWidth: 1 },
 ];
 
 export const hlineConfig: HLineConfig[] = [
@@ -32,7 +32,7 @@ export const hlineConfig: HLineConfig[] = [
 ];
 
 export const fillConfig: FillConfig[] = [
-  { id: 'fill_band', plot1: 'hline_upper', plot2: 'hline_lower', color: '#2962FF1A' },
+  { id: 'fill_band', plot1: 'hline_upper', plot2: 'hline_lower', color: '#7E57C219' },
 ];
 
 export const metadata = {
