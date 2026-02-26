@@ -1515,6 +1515,16 @@ import * as rsiCyclicSmoothedIndicator from './community/rsi-cyclic-smoothed';
 import * as supertrendLadderIndicator from './community/supertrend-ladder';
 import * as t3PsarIndicator from './community/t3-psar';
 import * as zlmaTrendLevelsIndicator from './community/zlma-trend-levels';
+
+// AI/ML community indicators
+import * as aiTrendNavigatorIndicator from './community/ai-trend-navigator';
+import * as mlAdaptiveSupertrendIndicator from './community/ml-adaptive-supertrend';
+import * as mlKnnStrategyIndicator from './community/ml-knn-strategy';
+import * as mlMomentumIndexIndicator from './community/ml-momentum-index';
+import * as mlMovingAverageIndicator from './community/ml-moving-average';
+import * as mlRsiIndicator from './community/ml-rsi';
+import * as supertrendAiClusteringIndicator from './community/supertrend-ai-clustering';
+import * as volumeSupertrendAiIndicator from './community/volume-supertrend-ai';
 export { ZeroLagEMA, calculate as calculateZeroLagEMA } from './community/zero-lag-ema';
 
 export { BjorgumTripleEma } from './community/bjorgum-triple-ema';
@@ -1541,6 +1551,15 @@ export { RSICyclicSmoothed } from './community/rsi-cyclic-smoothed';
 export { SupertrendLadder } from './community/supertrend-ladder';
 export { T3Psar } from './community/t3-psar';
 export { ZlmaTrendLevels } from './community/zlma-trend-levels';
+
+export { AiTrendNavigator } from './community/ai-trend-navigator';
+export { MlAdaptiveSupertrend } from './community/ml-adaptive-supertrend';
+export { MlKnnStrategy } from './community/ml-knn-strategy';
+export { MlMomentumIndex } from './community/ml-momentum-index';
+export { MlMovingAverage } from './community/ml-moving-average';
+export { MlRsi } from './community/ml-rsi';
+export { SupertrendAiClustering } from './community/supertrend-ai-clustering';
+export { VolumeSuperTrendAi } from './community/volume-supertrend-ai';
 export type { ZeroLagEMAInputs } from './community/zero-lag-ema';
 
 export type { BjorgumTripleEmaInputs } from './community/bjorgum-triple-ema';
@@ -1567,6 +1586,15 @@ export type { RSICyclicSmoothedInputs } from './community/rsi-cyclic-smoothed';
 export type { SupertrendLadderInputs } from './community/supertrend-ladder';
 export type { T3PsarInputs } from './community/t3-psar';
 export type { ZlmaTrendLevelsInputs } from './community/zlma-trend-levels';
+
+export type { AiTrendNavigatorInputs } from './community/ai-trend-navigator';
+export type { MlAdaptiveSupertrendInputs } from './community/ml-adaptive-supertrend';
+export type { MlKnnStrategyInputs } from './community/ml-knn-strategy';
+export type { MlMomentumIndexInputs } from './community/ml-momentum-index';
+export type { MlMovingAverageInputs } from './community/ml-moving-average';
+export type { MlRsiInputs } from './community/ml-rsi';
+export type { SupertrendAiClusteringInputs } from './community/supertrend-ai-clustering';
+export type { VolumeSuperTrendAiInputs } from './community/volume-supertrend-ai';
 
 
 
@@ -6035,6 +6063,112 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: zlmaTrendLevelsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...zlmaTrendLevelsIndicator.defaultInputs },
     calculate: zlmaTrendLevelsIndicator.calculate,
+  },
+
+  // AI/ML community indicators
+  {
+    id: 'ai-trend-navigator',
+    group: 'community',
+    name: 'AI Trend Navigator [K-Neighbor]',
+    shortName: 'AiTrendNavigator',
+    category: 'Trend',
+    overlay: true,
+    metadata: aiTrendNavigatorIndicator.metadata,
+    inputConfig: aiTrendNavigatorIndicator.inputConfig as InputConfig[],
+    plotConfig: aiTrendNavigatorIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...aiTrendNavigatorIndicator.defaultInputs },
+    calculate: aiTrendNavigatorIndicator.calculate,
+  },
+  {
+    id: 'ml-adaptive-supertrend',
+    group: 'community',
+    name: 'ML Adaptive SuperTrend',
+    shortName: 'MlAdaptiveSupertrend',
+    category: 'Trend',
+    overlay: true,
+    metadata: mlAdaptiveSupertrendIndicator.metadata,
+    inputConfig: mlAdaptiveSupertrendIndicator.inputConfig as InputConfig[],
+    plotConfig: mlAdaptiveSupertrendIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...mlAdaptiveSupertrendIndicator.defaultInputs },
+    calculate: mlAdaptiveSupertrendIndicator.calculate,
+  },
+  {
+    id: 'ml-knn-strategy',
+    group: 'community',
+    name: 'ML: kNN Strategy',
+    shortName: 'MlKnnStrategy',
+    category: 'Momentum',
+    overlay: false,
+    metadata: mlKnnStrategyIndicator.metadata,
+    inputConfig: mlKnnStrategyIndicator.inputConfig as InputConfig[],
+    plotConfig: mlKnnStrategyIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...mlKnnStrategyIndicator.defaultInputs },
+    calculate: mlKnnStrategyIndicator.calculate,
+  },
+  {
+    id: 'ml-momentum-index',
+    group: 'community',
+    name: 'ML Momentum Index',
+    shortName: 'MlMomentumIndex',
+    category: 'Momentum',
+    overlay: false,
+    metadata: mlMomentumIndexIndicator.metadata,
+    inputConfig: mlMomentumIndexIndicator.inputConfig as InputConfig[],
+    plotConfig: mlMomentumIndexIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...mlMomentumIndexIndicator.defaultInputs },
+    calculate: mlMomentumIndexIndicator.calculate,
+  },
+  {
+    id: 'ml-moving-average',
+    group: 'community',
+    name: 'ML Moving Average',
+    shortName: 'MlMovingAverage',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: mlMovingAverageIndicator.metadata,
+    inputConfig: mlMovingAverageIndicator.inputConfig as InputConfig[],
+    plotConfig: mlMovingAverageIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...mlMovingAverageIndicator.defaultInputs },
+    calculate: mlMovingAverageIndicator.calculate,
+  },
+  {
+    id: 'ml-rsi',
+    group: 'community',
+    name: 'ML RSI',
+    shortName: 'MlRsi',
+    category: 'Momentum',
+    overlay: false,
+    metadata: mlRsiIndicator.metadata,
+    inputConfig: mlRsiIndicator.inputConfig as InputConfig[],
+    plotConfig: mlRsiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...mlRsiIndicator.defaultInputs },
+    calculate: mlRsiIndicator.calculate,
+  },
+  {
+    id: 'supertrend-ai-clustering',
+    group: 'community',
+    name: 'SuperTrend AI Clustering',
+    shortName: 'SupertrendAiClustering',
+    category: 'Trend',
+    overlay: true,
+    metadata: supertrendAiClusteringIndicator.metadata,
+    inputConfig: supertrendAiClusteringIndicator.inputConfig as InputConfig[],
+    plotConfig: supertrendAiClusteringIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...supertrendAiClusteringIndicator.defaultInputs },
+    calculate: supertrendAiClusteringIndicator.calculate,
+  },
+  {
+    id: 'volume-supertrend-ai',
+    group: 'community',
+    name: 'Volume SuperTrend AI',
+    shortName: 'VolumeSuperTrendAi',
+    category: 'Trend',
+    overlay: true,
+    metadata: volumeSupertrendAiIndicator.metadata,
+    inputConfig: volumeSupertrendAiIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeSupertrendAiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...volumeSupertrendAiIndicator.defaultInputs },
+    calculate: volumeSupertrendAiIndicator.calculate,
   },
   ...candlestickEntries([
     ['abandoned-baby-bearish', abandonedBabyBearishIndicator],

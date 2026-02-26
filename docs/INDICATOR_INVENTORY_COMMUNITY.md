@@ -8,9 +8,9 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | Category | Count |
 |---|---|
 | **Total Indicators** | 867 |
-| **Implementable** | 99 |
-| **Blocked** | 512 |
-| **Implemented** | 240 |
+| **Implementable** | 94 |
+| **Blocked** | 509 |
+| **Implemented** | 248 |
 | **Duplicate** | 15 |
 | **N/A** | 1 |
 
@@ -19,8 +19,8 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | Difficulty | Count | Description |
 |---|---|---|
 | Easy | 0 | Direct TA port, all functions available, <80 lines |
-| Medium | 46 | Stateful logic or custom MAs, 80-200 lines |
-| Hard | 53 | Complex logic, may need partial feature skip, 200+ lines |
+| Medium | 43 | Stateful logic or custom MAs, 80-200 lines |
+| Hard | 51 | Complex logic, may need partial feature skip, 200+ lines |
 
 ### Blocker Breakdown
 
@@ -28,7 +28,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 |---|---|---|
 | Drawing | 324 | Heavy use of line.new/box.new/label.new (>3 calls) |
 | MTF | 192 | Uses request.security() for multi-timeframe data |
-| Table | 131 | Uses table.new/table.cell for info display |
+| Table | 128 | Uses table.new/table.cell for info display |
 | Strategy | 61 | Uses strategy.* for backtesting/trade simulation |
 | Session | 38 | Uses session/timezone functions |
 | Screener | 37 | Cross-symbol scanning (>5 security calls or >2 input.symbol) |
@@ -96,7 +96,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 31 | ADX by cobra | Implemented | Easy | `adx-cobra.ts` |
 | 32 | ADX Di+ Di- [Gu5] | Implementable | Hard | |
 | 33 | AG FX - Watermark | Blocked | N/A | Table |
-| 34 | AI Trend Navigator [K-Neighbor] | Implementable | Medium | |
+| 34 | AI Trend Navigator [K-Neighbor] | Implemented | Medium | `community/ai-trend-navigator.ts` |
 | 35 | AI-EngulfingCandle | Implemented | Easy | `ai-engulfing.ts` |
 | 36 | AK  TREND ID v1.00 | Implemented | Easy | `ak-trend-id.ts` |
 | 37 | AK MACD BB INDICATOR V  1.00 | Implemented | Easy | `macd-bb.ts` |
@@ -470,12 +470,12 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 405 | MACD_VXI | Implemented | Easy | `macd-vxi.ts` |
 | 406 | MACDAS | Implemented | Easy | `macdas.ts` |
 | 407 | MACD-X, More Than MACD by DGT | Blocked | N/A | Drawing |
-| 408 | Machine Learning Adaptive SuperTrend [AlgoAlpha] | Blocked | N/A | Table |
-| 409 | Machine Learning Momentum Index (MLMI) [Zeiierman] | Implementable | Medium | |
-| 410 | Machine Learning Moving Average [LuxAlgo] | Implementable | Hard | |
-| 411 | Machine Learning RSI ║ BullVision | Blocked | N/A | Table |
+| 408 | Machine Learning Adaptive SuperTrend [AlgoAlpha] | Implemented | Hard | `community/ml-adaptive-supertrend.ts` |
+| 409 | Machine Learning Momentum Index (MLMI) [Zeiierman] | Implemented | Medium | `community/ml-momentum-index.ts` |
+| 410 | Machine Learning Moving Average [LuxAlgo] | Implemented | Hard | `community/ml-moving-average.ts` |
+| 411 | Machine Learning RSI ║ BullVision | Implemented | Medium | `community/ml-rsi.ts` |
 | 412 | Machine Learning_ Gaussian Process Regression [LuxAlgo] | Blocked | N/A | Drawing |
-| 413 | Machine Learning_ kNN-based Strategy | Implementable | Hard | |
+| 413 | Machine Learning_ kNN-based Strategy | Implemented | Hard | `community/ml-knn-strategy.ts` |
 | 414 | Machine Learning_ Logistic Regression | Blocked | N/A | MTF |
 | 415 | Machine Learning_ Lorentzian Classification | Blocked | N/A | Table |
 | 416 | Madrid MA Ribbon Bar v2 | Implemented | Medium | `community/madrid-ma-ribbon.ts` |
@@ -745,7 +745,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 680 | SuperBollingerTrend (Expo) | Blocked | N/A | Table;Drawing |
 | 681 | Supertrend - Ladder ATR | Implemented | Medium | `community/supertrend-ladder.ts` |
 | 682 | SuperTrend + Relative Volume (Kernel Optimized) | Blocked | N/A | Table |
-| 683 | SuperTrend AI (Clustering) [LuxAlgo] | Blocked | N/A | Table |
+| 683 | SuperTrend AI (Clustering) [LuxAlgo] | Implemented | Hard | `community/supertrend-ai-clustering.ts` |
 | 684 | Supertrend Channels [LuxAlgo] | Implemented | Easy | `supertrend-channels.ts` |
 | 685 | SuperTrend EXPLORER _ SCREENER | Blocked | N/A | Screener;MTF |
 | 686 | Supertrend MTF Heikin Ashi | Blocked | N/A | Screener;MTF |
@@ -899,7 +899,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 834 | Volume Profile, Pivot Anchored by DGT | Blocked | N/A | Table;Drawing |
 | 835 | Volume Profile | Blocked | N/A | MTF;Table;Drawing |
 | 836 | Volume Suite - By Leviathan (CVD, Volume Delta, Relative Volume) | Blocked | N/A | MTF |
-| 837 | Volume SuperTrend AI (Expo) | Implementable | Medium | |
+| 837 | Volume SuperTrend AI (Expo) | Implemented | Medium | `community/volume-supertrend-ai.ts` |
 | 838 | VOLUME WEIGHTED MACD V2 VWMACDV2 BY KIVANÇ fr3762 | Implemented | Easy | `vw-macd-v2.ts` |
 | 839 | Volume-based Support & Resistance Zones | Blocked | N/A | Screener;MTF;Table;Drawing |
 | 840 | VolumeHeatmap _ Experimental Version of Marketorders Matrix | Blocked | N/A | MTF;Drawing |

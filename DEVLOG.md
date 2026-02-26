@@ -1,5 +1,35 @@
 # DEVLOG
 
+## 2026-02-26 - AI/ML Community Indicators
+
+### Goal
+Implement 8 AI/ML indicators using kNN, k-Means Clustering, and Gaussian Process Regression.
+
+### Approach Taken
+- Researched all 13 AI/ML indicators from inventory; 8 feasible (5 already marked implementable + 3 unblocked by table support)
+- 2 parallel agent batches of 4 each
+- Algorithms: kNN classification/regression (5), k-means clustering (2), Gaussian kernel regression (1)
+- 3 indicators output data tables (ML Adaptive SuperTrend, ML RSI, SuperTrend AI Clustering)
+
+### What Worked
+- All 8 implemented with zero TypeScript errors
+- Table output works with existing chart.ts setTable() rendering
+- kNN with inverse-distance weighting for smooth predictions
+- k-means with 10-iteration convergence for volatility clustering
+
+### Current State
+- 243 community indicator files total
+- 616 tests passing across 5 test files
+- 3 indicators with table output (first usage of table feature)
+
+### Key Decisions
+- kNN uses Euclidean distance on normalized features
+- k-means initialized with min/median/max of training data
+- ML Moving Average uses Gaussian kernel weights (not true GP regression — simplified for bar-by-bar)
+- Volume SuperTrend AI adapts factor based on volume regime from kNN neighbors
+
+---
+
 ## 2026-02-26 - Medium Community Indicators
 
 ### Goal
