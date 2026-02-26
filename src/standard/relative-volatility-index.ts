@@ -7,7 +7,7 @@
  * Includes SMA smoothing (enabled by default). BB bands excluded (display=none).
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar } from 'oakscriptjs';
 
 export interface RelativeVolatilityIndexInputs {
   length: number;
@@ -114,6 +114,11 @@ export function calculate(bars: Bar[], inputs: Partial<RelativeVolatilityIndexIn
   const bbUpperData = bbUpperArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
   const bbLowerData = bbLowerArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
 
+  const fills: FillData[] = [];
+  if (isBB) {
+    fills.push({ plot1: 'plot2', plot2: 'plot3', options: { color: '#089981', transp: 90, title: 'BB Background' } });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {
@@ -122,6 +127,7 @@ export function calculate(bars: Bar[], inputs: Partial<RelativeVolatilityIndexIn
       'plot2': bbUpperData,
       'plot3': bbLowerData,
     },
+    fills,
   };
 }
 
