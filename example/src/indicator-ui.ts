@@ -235,6 +235,16 @@ export class IndicatorUI {
 
       item.classList.add('active');
       this.selectIndicator(id);
+
+      // Collapse all groups so the parameters panel is visible
+      for (const header of this.container.querySelectorAll('.group-header')) {
+        header.classList.add('collapsed');
+        (header.nextElementSibling as HTMLElement).classList.add('collapsed');
+      }
+
+      // Scroll the inputs panel into view
+      const inputsEl = this.container.querySelector('#indicator-inputs');
+      if (inputsEl) inputsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }
 
