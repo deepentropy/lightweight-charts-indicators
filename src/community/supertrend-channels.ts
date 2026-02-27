@@ -114,6 +114,10 @@ export function calculate(bars: Bar[], inputs: Partial<SupertrendChannelsInputs>
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
+    fills: [
+      { plot1: 'plot1', plot2: 'plot0', options: { color: 'rgba(12,181,26,0.15)' } },
+      { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(255,17,0,0.15)' } },
+    ],
   };
 }
 

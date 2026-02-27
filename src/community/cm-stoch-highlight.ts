@@ -8,6 +8,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData, BarColorData, BgColorData } from '../types';
 
 export interface CMStochHighlightInputs {
   kLen: number;
@@ -68,6 +69,65 @@ export function calculate(bars: Bar[], inputs: Partial<CMStochHighlightInputs> =
     value: (v == null || i < warmup) ? NaN : v,
   }));
 
+  // barcolor: orange when overbought (K > upLine), fuchsia when oversold (K < lowLine)
+  // Pine: barcolor(overBought() ? orange : overSold() ? fuchsia : na)
+  const barColors: BarColorData[] = [];
+  const upLine = 80;
+  const lowLine = 20;
+  for (let i = warmup; i < bars.length; i++) {
+    const kVal = kArr[i];
+    if (kVal == null) continue;
+    if (kVal > upLine) {
+      barColors.push({ time: bars[i].time, color: '#FF9800' }); // orange
+    } else if (kVal < lowLine) {
+      barColors.push({ time: bars[i].time, color: '#E040FB' }); // fuchsia
+    }
+  }
+
+  // markers: 'B' on strict crossUp (K was < D and < lowLine, now K > D), 'S' on strict crossDn
+  // Pine: plotchar(crossUp, 'B', belowbar, lime), plotchar(crossDn, 'S', abovebar, red)
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < bars.length; i++) {
+    const k1 = kArr[i - 1] ?? NaN;
+    const d1 = dArr[i - 1] ?? NaN;
+    const kNow = kArr[i] ?? NaN;
+    const dNow = dArr[i] ?? NaN;
+    if (isNaN(k1) || isNaN(d1) || isNaN(kNow) || isNaN(dNow)) continue;
+    // crossUp: K[1] < D[1] and K[1] < lowLine, and K > D
+    if (k1 < d1 && k1 < lowLine && kNow > dNow) {
+      markers.push({
+        time: bars[i].time,
+        position: 'belowBar',
+        shape: 'labelUp',
+        color: '#00E676', // lime
+        text: 'B',
+      });
+    }
+    // crossDn: K[1] > D[1] and K[1] > upLine, and K < D
+    if (k1 > d1 && k1 > upLine && kNow < dNow) {
+      markers.push({
+        time: bars[i].time,
+        position: 'aboveBar',
+        shape: 'labelDown',
+        color: '#EF5350', // red
+        text: 'S',
+      });
+    }
+  }
+
+  // bgcolor: highlight background when stoch is above/below lines
+  // Pine: bgcolor(sbh and aboveLine ? red : na, transp=70), bgcolor(sbh and belowLine ? lime : na, transp=70)
+  const bgColors: BgColorData[] = [];
+  for (let i = warmup; i < bars.length; i++) {
+    const kVal = kArr[i];
+    if (kVal == null) continue;
+    if (kVal > upLine) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(239, 83, 80, 0.30)' }); // red transp=70
+    } else if (kVal < lowLine) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(0, 230, 118, 0.30)' }); // lime transp=70
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
@@ -75,7 +135,10 @@ export function calculate(bars: Bar[], inputs: Partial<CMStochHighlightInputs> =
       { value: 80, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 20, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
-  };
+    markers,
+    barColors,
+    bgColors,
+  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
 }
 
 export const CMStochHighlight = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

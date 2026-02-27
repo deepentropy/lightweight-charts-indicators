@@ -39,6 +39,9 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'SuperTrend AI', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'VWMA', color: '#FF9800', lineWidth: 1 },
+  { id: 'upTrend', title: 'Up Trend', color: '#26A69A', lineWidth: 2 },
+  { id: 'downTrend', title: 'Down Trend', color: '#EF5350', lineWidth: 2 },
+  { id: 'middle', title: 'Middle', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -168,10 +171,43 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeSuperTrendAiInputs>
     value: i < warmup ? NaN : (v ?? NaN),
   }));
 
+  // upTrend: SuperTrend value when in uptrend (dir === 1, i.e. lower band)
+  const upTrend = st.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup || dir[i] !== 1) ? NaN : v,
+    color: dir[i] === 1 ? '#26A69A' : '#EF5350',
+  }));
+
+  // downTrend: SuperTrend value when in downtrend (dir === -1, i.e. upper band)
+  const downTrend = st.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup || dir[i] !== -1) ? NaN : v,
+    color: dir[i] === -1 ? '#EF5350' : '#26A69A',
+  }));
+
+  // Middle: (open + close) / 2
+  const middle = bars.map((b, i) => ({
+    time: b.time,
+    value: i < warmup ? NaN : (b.open + b.close) / 2,
+  }));
+
+  // Dynamic fill colors per bar (90% transparent version of trend color)
+  const upFillColors: string[] = new Array(n);
+  const dnFillColors: string[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const col = dir[i] === 1 ? 'rgba(38, 166, 154, 0.1)' : 'rgba(239, 83, 80, 0.1)';
+    upFillColors[i] = dir[i] === 1 ? col : 'rgba(0,0,0,0)';
+    dnFillColors[i] = dir[i] === -1 ? col : 'rgba(0,0,0,0)';
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'upTrend': upTrend, 'downTrend': downTrend, 'middle': middle },
     markers,
+    fills: [
+      { plot1: 'middle', plot2: 'upTrend', options: { color: 'rgba(38, 166, 154, 0.1)' }, colors: upFillColors },
+      { plot1: 'middle', plot2: 'downTrend', options: { color: 'rgba(239, 83, 80, 0.1)' }, colors: dnFillColors },
+    ],
   };
 }
 

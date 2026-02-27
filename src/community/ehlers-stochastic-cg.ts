@@ -9,6 +9,7 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface EhlersStochasticCGInputs {
   length: number;
@@ -33,7 +34,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EhlersStochasticCGInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<EhlersStochasticCGInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { length } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -83,12 +84,34 @@ export function calculate(bars: Bar[], inputs: Partial<EhlersStochasticCGInputs>
     value: i < warmup ? NaN : v,
   }));
 
+  // Pine barcolor: v2>v2[1] ? (v2>0?lime:green) : v2<v2[1] ? (v2>0?orange:red) : (v2>0.8?lime:v2<-0.8?red:gray)
+  const barColors: BarColorData[] = [];
+  for (let i = warmup; i < n; i++) {
+    const v2 = rawK[i];
+    const v2prev = i > 0 ? rawK[i - 1] : v2;
+    let color: string;
+    if (v2 > v2prev) {
+      color = v2 > 0 ? '#00E676' : '#26A69A';
+    } else if (v2 < v2prev) {
+      color = v2 > 0 ? '#FF9800' : '#EF5350';
+    } else {
+      color = v2 > 0.8 ? '#00E676' : v2 < -0.8 ? '#EF5350' : '#787B86';
+    }
+    barColors.push({ time: bars[i].time, color });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
+      { value: 0.8, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'OB Level' } },
+      { value: -0.8, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'OS Level' } },
     ],
+    fills: [
+      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(239, 83, 80, 0.15)' } },
+    ],
+    barColors,
   };
 }
 

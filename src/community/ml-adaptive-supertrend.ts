@@ -38,6 +38,7 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'SuperTrend', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot_body', title: 'Body Middle', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -182,6 +183,22 @@ export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInput
     return { time: bar.time, value: stValues[i], color };
   });
 
+  // Body middle plot: (open + close) / 2, used for fill reference per Pine source
+  const plot_body = bars.map((bar, i) => ({
+    time: bar.time,
+    value: i < warmup ? NaN : (bar.open + bar.close) / 2,
+  }));
+
+  // Fills between body middle and SuperTrend (2 fills per Pine: upTrend/downTrend)
+  const fillUpColors = bars.map((_b, i) => {
+    if (i < warmup || isNaN(stValues[i])) return 'transparent';
+    return stDir[i] === 1 ? 'rgba(0,255,187,0.05)' : 'transparent';
+  });
+  const fillDnColors = bars.map((_b, i) => {
+    if (i < warmup || isNaN(stValues[i])) return 'transparent';
+    return stDir[i] === -1 ? 'rgba(255,17,0,0.05)' : 'transparent';
+  });
+
   const clusterLabels = ['Low', 'Medium', 'High'];
   const cells: TableCell[] = [
     { row: 0, column: 0, text: 'Cluster Info', bgColor: '#1E222D', textColor: '#D1D4DC', textSize: 'small' },
@@ -207,7 +224,11 @@ export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInput
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot_body': plot_body },
+    fills: [
+      { plot1: 'plot_body', plot2: 'plot0', colors: fillUpColors },
+      { plot1: 'plot_body', plot2: 'plot0', colors: fillDnColors },
+    ],
     markers,
     tables,
   };

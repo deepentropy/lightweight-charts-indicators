@@ -7,6 +7,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface RedKRSSWMAInputs {
   length: number;
@@ -36,7 +37,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RedKRSSWMAInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<RedKRSSWMAInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { length, smoothLength, src } = { ...defaultInputs, ...inputs };
   const srcSeries = getSourceSeries(bars, src);
 
@@ -49,14 +50,34 @@ export function calculate(bars: Bar[], inputs: Partial<RedKRSSWMAInputs> = {}): 
 
   const warmup = length + smoothLength;
 
-  const plot = rssArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : (v ?? NaN),
-  }));
+  // Color: green (#33ff00) when rising, red (#ff1111) when falling
+  const plot = rssArr.map((v, i) => {
+    if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
+    const prev = i > 0 ? rssArr[i - 1] : null;
+    const color = (prev != null && v > prev) ? '#33ff00' : '#ff1111';
+    return { time: bars[i].time, value: v, color };
+  });
+
+  // Markers: swing up (was falling, now rising) and swing down (was rising, now falling)
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < bars.length; i++) {
+    const cur = rssArr[i];
+    const prev = rssArr[i - 1];
+    const prevPrev = rssArr[i - 2];
+    if (cur == null || prev == null || prevPrev == null) continue;
+    const uptrend = cur > prev;
+    const prevUptrend = prev > prevPrev;
+    if (uptrend && !prevUptrend) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#33ff00', text: 'Up' });
+    } else if (!uptrend && prevUptrend) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#ff1111', text: 'Dn' });
+    }
+  }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot },
+    markers,
   };
 }
 

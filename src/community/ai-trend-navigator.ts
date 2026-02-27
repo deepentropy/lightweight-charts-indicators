@@ -10,7 +10,7 @@
  */
 
 import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, BgColorData } from '../types';
 
 export interface AiTrendNavigatorInputs {
   length: number;
@@ -44,7 +44,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AiTrendNavigatorInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<AiTrendNavigatorInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
   const { length, k, smoothLen, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
   const srcArr = source.toArray();
@@ -116,6 +116,17 @@ export function calculate(bars: Bar[], inputs: Partial<AiTrendNavigatorInputs> =
     }
   }
 
+  // Background color based on kNN prediction (Pine: bgcolor with Up_col/Dn_col at transp=80)
+  const bgColors: BgColorData[] = [];
+  for (let i = warmup; i < n; i++) {
+    if (isNaN(knnMA[i])) continue;
+    if (trendDir[i] === 1) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(0,230,118,0.1)' }); // lime/green, bullish
+    } else if (trendDir[i] === -1) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(239,83,80,0.1)' }); // red, bearish
+    }
+  }
+
   const plot0 = knnMA.map((v, i) => ({
     time: bars[i].time,
     value: i < warmup ? NaN : v,
@@ -131,6 +142,7 @@ export function calculate(bars: Bar[], inputs: Partial<AiTrendNavigatorInputs> =
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     markers,
+    bgColors,
   };
 }
 

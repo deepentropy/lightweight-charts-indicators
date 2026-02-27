@@ -10,6 +10,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface RangeFilterDWInputs {
   period: number;
@@ -41,7 +42,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RangeFilterDWInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<RangeFilterDWInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { period, mult, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -64,6 +65,7 @@ export function calculate(bars: Bar[], inputs: Partial<RangeFilterDWInputs> = {}
 
   // Range filter calculation
   const filter: number[] = new Array(n);
+  const fdir: number[] = new Array(n);
 
   for (let i = 0; i < n; i++) {
     const s = srcArr[i] ?? 0;
@@ -71,6 +73,7 @@ export function calculate(bars: Bar[], inputs: Partial<RangeFilterDWInputs> = {}
 
     if (i === 0) {
       filter[i] = s;
+      fdir[i] = 0;
       continue;
     }
 
@@ -85,14 +88,33 @@ export function calculate(bars: Bar[], inputs: Partial<RangeFilterDWInputs> = {}
     } else {
       filter[i] = prevFilter;
     }
+
+    fdir[i] = filter[i] > filter[i - 1] ? 1 : filter[i] < filter[i - 1] ? -1 : fdir[i - 1];
   }
 
   const warmup = period;
 
+  // Bar colors based on trend direction and close vs filter
+  // Pine: upward and close>filt ? (close>close[1] ? #05ff9b : #00b36b) : downward and close<filt ? (close<close[1] ? #ff0583 : #b8005d) : #cccccc
+  const barColors: BarColorData[] = [];
+  for (let i = warmup; i < n; i++) {
+    const close = bars[i].close;
+    const prevClose = i > 0 ? bars[i - 1].close : close;
+    let color: string;
+    if (fdir[i] === 1 && close > filter[i]) {
+      color = close > prevClose ? '#05ff9b' : '#00b36b';
+    } else if (fdir[i] === -1 && close < filter[i]) {
+      color = close < prevClose ? '#ff0583' : '#b8005d';
+    } else {
+      color = '#cccccc';
+    }
+    barColors.push({ time: bars[i].time, color });
+  }
+
   const plot0 = filter.map((v, i) => {
     if (i < warmup) return { time: bars[i].time, value: NaN };
-    const upward = i > 0 && filter[i] > filter[i - 1];
-    const downward = i > 0 && filter[i] < filter[i - 1];
+    const upward = fdir[i] === 1;
+    const downward = fdir[i] === -1;
     const color = upward ? '#26A69A' : downward ? '#EF5350' : '#787B86';
     return { time: bars[i].time, value: v, color };
   });
@@ -107,9 +129,18 @@ export function calculate(bars: Bar[], inputs: Partial<RangeFilterDWInputs> = {}
     value: i < warmup ? NaN : v - smrng[i],
   }));
 
+  // Fills: high band to filter (green), low band to filter (red)
+  // Pine: fill(h_band_plot, filt_plot, color=#00b36b, transp=85)
+  // Pine: fill(l_band_plot, filt_plot, color=#b8005d, transp=85)
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
+    fills: [
+      { plot1: 'plot1', plot2: 'plot0', options: { color: 'rgba(0,179,107,0.15)' } },
+      { plot1: 'plot2', plot2: 'plot0', options: { color: 'rgba(184,0,93,0.15)' } },
+    ],
+    barColors,
   };
 }
 

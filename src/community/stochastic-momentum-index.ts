@@ -34,6 +34,10 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'SMI', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'Signal', color: '#EF5350', lineWidth: 1 },
   { id: 'plot2', title: 'Histogram', color: '#26A69A', lineWidth: 4, style: 'histogram' },
+  { id: 'plot3', title: 'OB Level', color: 'transparent', lineWidth: 0 },
+  { id: 'plot4', title: 'OB SMI Clamped', color: 'transparent', lineWidth: 0 },
+  { id: 'plot5', title: 'OS Level', color: 'transparent', lineWidth: 0 },
+  { id: 'plot6', title: 'OS SMI Clamped', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -83,13 +87,29 @@ export function calculate(bars: Bar[], inputs: Partial<StochasticMomentumIndexIn
     return { time: bars[i].time, value: v, color };
   });
 
+  // OB/OS fill: clamp SMI for fill region above OB (40) and below OS (-40)
+  const ob = 40;
+  const os = -40;
+  const plot3 = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : ob }));
+  const plot4 = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : (smiArr[i] > ob ? smiArr[i] : ob) }));
+  const plot5 = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : os }));
+  const plot6 = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : (smiArr[i] < os ? smiArr[i] : os) }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {
       'plot0': toPlot(smiArr),
       'plot1': sigArr.map((v, i) => ({ time: bars[i].time, value: (i < warmup || v == null) ? NaN : v })),
       'plot2': histPlot,
+      'plot3': plot3,
+      'plot4': plot4,
+      'plot5': plot5,
+      'plot6': plot6,
     },
+    fills: [
+      { plot1: 'plot3', plot2: 'plot4', options: { color: 'rgba(255,0,0,0.4)' } },
+      { plot1: 'plot5', plot2: 'plot6', options: { color: 'rgba(0,128,0,0.4)' } },
+    ],
     hlines: [
       { value: 40, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },

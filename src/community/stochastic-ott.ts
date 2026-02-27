@@ -8,6 +8,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface StochasticOTTInputs {
   kLen: number;
@@ -38,7 +39,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<StochasticOTTInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<StochasticOTTInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { kLen, kSmooth, ottPct } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -84,6 +85,25 @@ export function calculate(bars: Bar[], inputs: Partial<StochasticOTTInputs> = {}
 
   const warmup = kLen + kSmooth;
 
+  // Markers: buy when stoch crosses above OTT[2], sell when crosses below OTT[2]
+  // Pine: buySignalc = crossover(src, OTT[2]), sellSignallc = crossunder(src, OTT[2])
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 2; i < n; i++) {
+    const srcCur = kArr[i] ?? 50;
+    const srcPrev = kArr[i - 1] ?? 50;
+    const ottLag = ott[i - 2];
+    const ottLagPrev = i > 2 ? ott[i - 3] : ott[0];
+    if (srcPrev <= ottLagPrev && srcCur > ottLag) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
+    }
+    if (srcPrev >= ottLagPrev && srcCur < ottLag) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+    }
+  }
+
+  // Fill between upper band (80) and lower band (20)
+  // Pine: fill(h0, h1, color=#9915FF, transp=80)
+
   const plot0 = kArr.map((v, i) => ({
     time: bars[i].time,
     value: (v == null || i < warmup) ? NaN : v,
@@ -97,10 +117,12 @@ export function calculate(bars: Bar[], inputs: Partial<StochasticOTTInputs> = {}
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
+    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(153,21,255,0.2)' } }],
     hlines: [
       { value: 80, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 20, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
+    markers,
   };
 }
 

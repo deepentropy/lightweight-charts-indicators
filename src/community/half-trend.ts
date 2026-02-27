@@ -129,7 +129,10 @@ export function calculate(bars: Bar[], inputs: Partial<HalfTrendInputs> = {}): I
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': htPlot, 'plot1': toPlot(atrHighArr), 'plot2': toPlot(atrLowArr) },
-    fills: [{ plot1: 'plot0', plot2: 'plot1' }, { plot1: 'plot0', plot2: 'plot2' }],
+    fills: [
+      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(239,83,80,0.15)' } },
+      { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(41,98,255,0.15)' } },
+    ],
     markers,
   };
 }

@@ -9,7 +9,7 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, BarColorData } from '../types';
 
 export interface BullishEngulfingFinderInputs {}
 
@@ -27,8 +27,9 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], _inputs: Partial<BullishEngulfingFinderInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], _inputs: Partial<BullishEngulfingFinderInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
   const markers: MarkerData[] = [];
+  const barColors: BarColorData[] = [];
 
   const plot0 = bars.map((b) => ({ time: b.time, value: NaN }));
 
@@ -42,6 +43,7 @@ export function calculate(bars: Bar[], _inputs: Partial<BullishEngulfingFinderIn
 
     if (engulfing) {
       markers.push({ time: curr.time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Bull' });
+      barColors.push({ time: curr.time, color: '#FFEB3B' });
     }
   }
 
@@ -49,6 +51,7 @@ export function calculate(bars: Bar[], _inputs: Partial<BullishEngulfingFinderIn
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
     markers,
+    barColors,
   };
 }
 

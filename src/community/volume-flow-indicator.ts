@@ -36,6 +36,7 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'VFI', color: '#26A69A', lineWidth: 2 },
   { id: 'plot1', title: 'Signal', color: '#FF6D00', lineWidth: 1 },
+  { id: 'plot2', title: 'Histogram', color: '#787B86', lineWidth: 3, style: 'histogram' },
 ];
 
 export const metadata = {
@@ -104,9 +105,16 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeFlowIndicatorInputs
     value: (i < warmup || v == null) ? NaN : v,
   }));
 
+  // Pine: d = vfi - vfima (histogram)
+  const histPlot = vfiArr.map((v, i) => {
+    const s = signalArr[i];
+    if (i < warmup || s == null) return { time: bars[i].time, value: NaN };
+    return { time: bars[i].time, value: v - s };
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': vfiPlot, 'plot1': sigPlot },
+    plots: { 'plot0': vfiPlot, 'plot1': sigPlot, 'plot2': histPlot },
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
     ],

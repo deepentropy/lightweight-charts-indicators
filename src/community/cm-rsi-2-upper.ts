@@ -30,6 +30,7 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'SMA 200', color: '#787B86', lineWidth: 2 },
+  { id: 'plot1', title: 'SMA 5', color: '#26A69A', lineWidth: 3 },
 ];
 
 export const metadata = {
@@ -44,13 +45,15 @@ export function calculate(bars: Bar[], inputs: Partial<CMRSI2UpperInputs> = {}):
   const source = getSourceSeries(bars, src);
   const rsi = ta.rsi(source, rsiLen);
   const rsiArr = rsi.toArray();
-  const sma = ta.sma(source, smaLen);
-  const smaArr = sma.toArray();
+  const sma200 = ta.sma(source, smaLen);
+  const sma200Arr = sma200.toArray();
+  const sma5 = ta.sma(source, 5);
+  const sma5Arr = sma5.toArray();
 
   const warmup = Math.max(rsiLen, smaLen);
   const barColors: BarColorData[] = [];
 
-  const plot0 = smaArr.map((v, i) => {
+  const plot0 = sma200Arr.map((v, i) => {
     if (i >= rsiLen) {
       const r = rsiArr[i];
       if (r != null) {
@@ -64,9 +67,17 @@ export function calculate(bars: Bar[], inputs: Partial<CMRSI2UpperInputs> = {}):
     };
   });
 
+  // Pine: col = ma5 >= ma200 ? lime : red -- color both MAs by relative position
+  const plot1 = sma5Arr.map((v, i) => {
+    if (v == null || i < 5) return { time: bars[i].time, value: NaN };
+    const s200 = sma200Arr[i];
+    const color = (s200 != null && v >= s200) ? '#00E676' : '#EF5350';
+    return { time: bars[i].time, value: v, color };
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot1': plot1 },
     barColors,
   } as IndicatorResult & { barColors: BarColorData[] };
 }

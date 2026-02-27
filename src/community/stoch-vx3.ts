@@ -9,6 +9,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData, BgColorData } from '../types';
 
 export interface StochVX3Inputs {
   len: number;
@@ -84,6 +85,42 @@ export function calculate(bars: Bar[], inputs: Partial<StochVX3Inputs> = {}): In
     value: (v == null || i < warmup) ? NaN : v,
   }));
 
+  // markers: circle on K/D cross (Pine: plot(cross(d, k) ? d : na, style=circles, linewidth=4))
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < n; i++) {
+    const k3Now = k3Arr[i] ?? NaN;
+    const sigNow = sigArr[i] ?? NaN;
+    const k3Prev = k3Arr[i - 1] ?? NaN;
+    const sigPrev = sigArr[i - 1] ?? NaN;
+    if (isNaN(k3Now) || isNaN(sigNow) || isNaN(k3Prev) || isNaN(sigPrev)) continue;
+    // cross(d, k) means d crosses k in either direction
+    const prevDAbove = sigPrev > k3Prev;
+    const currDAbove = sigNow > k3Now;
+    if (prevDAbove !== currDAbove) {
+      markers.push({
+        time: bars[i].time,
+        position: sigNow > k3Now ? 'aboveBar' : 'belowBar',
+        shape: 'circle',
+        color: '#000000',
+        text: '',
+      });
+    }
+  }
+
+  // bgcolor: black when K3 < Signal (OutputSignal>0), teal otherwise
+  // Pine: bgcolor(OutputSignal>0?#000000:#128E89, transp=80)
+  const bgColors: BgColorData[] = [];
+  for (let i = warmup; i < n; i++) {
+    const k3 = k3Arr[i] ?? NaN;
+    const sig = sigArr[i] ?? NaN;
+    if (isNaN(k3) || isNaN(sig)) continue;
+    if (k3 < sig) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(0, 0, 0, 0.20)' }); // black transp=80
+    } else {
+      bgColors.push({ time: bars[i].time, color: 'rgba(18, 142, 137, 0.20)' }); // teal transp=80
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
@@ -91,7 +128,13 @@ export function calculate(bars: Bar[], inputs: Partial<StochVX3Inputs> = {}): In
       { value: 80, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 20, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
-  };
+    // fill between ob/os hlines (Pine: fill(h0, h1, color=purple, transp=100) - fully transparent, decorative)
+    fills: [
+      { plot1: 'overbought', plot2: 'oversold', options: { color: 'rgba(156, 39, 176, 0.0)' } },
+    ],
+    markers,
+    bgColors,
+  } as IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] };
 }
 
 export const StochVX3 = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

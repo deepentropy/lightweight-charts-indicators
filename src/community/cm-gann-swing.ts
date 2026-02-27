@@ -8,6 +8,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData, BarColorData, BgColorData } from '../types';
 
 export interface CMGannSwingInputs {
   length: number;
@@ -74,10 +75,53 @@ export function calculate(bars: Bar[], inputs: Partial<CMGannSwingInputs> = {}):
     slPlot.push({ time: bars[i].time, value: swingLow });
   }
 
+  // Pine display elements based on cross conditions
+  const markers: MarkerData[] = [];
+  const barColors: BarColorData[] = [];
+  const bgColors: BgColorData[] = [];
+
+  // Build arrays from plots for cross detection
+  const hiArr = shPlot.map(p => p.value);
+  const loArr = slPlot.map(p => p.value);
+
+  for (let i = warmup + 1; i < n; i++) {
+    const hi = hiArr[i];
+    const lo = loArr[i];
+
+    // Cross above swing high: close > hi and close[1] < hi
+    const crossAbove = !isNaN(hi) && bars[i].close > hi && bars[i - 1].close < hi;
+    // Cross below swing low: close < lo and close[1] > lo
+    const crossBelow = !isNaN(lo) && bars[i].close < lo && bars[i - 1].close > lo;
+
+    // Pine barcolor: yellow on cross
+    if (crossAbove || crossBelow) {
+      barColors.push({ time: bars[i].time, color: '#FFFF00' });
+    }
+
+    // Pine bgcolor: green on cross above, red on cross below (transp=60)
+    if (crossAbove) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(0,128,0,0.40)' });
+    }
+    if (crossBelow) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(255,0,0,0.40)' });
+    }
+
+    // Pine plotshape: triangles on cross events (pttb=true by default)
+    if (crossAbove) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#00FF00', text: 'Cross Up' });
+    }
+    if (crossBelow) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000', text: 'Cross Down' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': shPlot, 'plot1': slPlot },
-  };
+    markers,
+    barColors,
+    bgColors,
+  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
 }
 
 export const CMGannSwing = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

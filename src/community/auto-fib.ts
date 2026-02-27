@@ -69,9 +69,23 @@ export function calculate(bars: Bar[], inputs: Partial<AutoFibInputs> = {}): Ind
     }
   }
 
+  // Pine fills between adjacent fib level plots:
+  // fill(ON,SS, red), fill(SS,SO, #3399FF), fill(SO,FI, lime),
+  // fill(FI,TE, lime), fill(TE,TT, #3399FF), fill(TT,ZZ, red)
+  // Levels: plot6=1.0, plot5=0.786, plot4=0.618, plot3=0.5, plot2=0.382, plot1=0.236, plot0=0.0
+  const fills = [
+    { plot1: 'plot6', plot2: 'plot5', options: { color: 'rgba(255,0,0,0.20)' } },
+    { plot1: 'plot5', plot2: 'plot4', options: { color: 'rgba(51,153,255,0.20)' } },
+    { plot1: 'plot4', plot2: 'plot3', options: { color: 'rgba(0,255,0,0.20)' } },
+    { plot1: 'plot3', plot2: 'plot2', options: { color: 'rgba(0,255,0,0.20)' } },
+    { plot1: 'plot2', plot2: 'plot1', options: { color: 'rgba(51,153,255,0.20)' } },
+    { plot1: 'plot1', plot2: 'plot0', options: { color: 'rgba(255,0,0,0.20)' } },
+  ];
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots,
+    fills,
   };
 }
 

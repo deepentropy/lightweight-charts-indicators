@@ -10,6 +10,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface NRTRInputs {
   atrPeriod: number;
@@ -37,7 +38,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<NRTRInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<NRTRInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { atrPeriod, mult } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -85,6 +86,16 @@ export function calculate(bars: Bar[], inputs: Partial<NRTRInputs> = {}): Indica
 
   const warmup = atrPeriod;
 
+  // Markers: buy when trend flips to 1, sell when trend flips to -1
+  const markers: MarkerData[] = [];
+  for (let i = warmup; i < n; i++) {
+    if (dirArr[i] === 1 && dirArr[i - 1] === -1) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
+    } else if (dirArr[i] === -1 && dirArr[i - 1] === 1) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+    }
+  }
+
   const plot0 = trailArr.map((v, i) => ({
     time: bars[i].time,
     value: (i < warmup || dirArr[i] !== 1) ? NaN : v,
@@ -95,9 +106,24 @@ export function calculate(bars: Bar[], inputs: Partial<NRTRInputs> = {}): Indica
     value: (i < warmup || dirArr[i] !== -1) ? NaN : v,
   }));
 
+  // Fill: ohlc4 to longStop (green) and ohlc4 to shortStop (red)
+  // Pine uses fill(midPricePlot, longStopPlot) and fill(midPricePlot, shortStopPlot)
+  // Since plot0=longStop and plot1=shortStop are mutually exclusive (linebr),
+  // we use a static fill between them representing the trailing envelope
+  const fillColors: string[] = [];
+  for (let i = 0; i < n; i++) {
+    if (i < warmup) {
+      fillColors.push('rgba(0,0,0,0)');
+    } else {
+      fillColors.push(dirArr[i] === 1 ? 'rgba(38,166,154,0.15)' : 'rgba(239,83,80,0.15)');
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
+    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(38,166,154,0.15)' }, colors: fillColors }],
+    markers,
   };
 }
 

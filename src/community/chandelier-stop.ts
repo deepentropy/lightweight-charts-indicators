@@ -28,7 +28,8 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Stop', color: '#2962FF', lineWidth: 2, style: 'circles' },
+  { id: 'plot0', title: 'Stop Dots', color: '#2962FF', lineWidth: 2, style: 'circles' },
+  { id: 'plot1', title: 'Stop Line', color: '#2962FF', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -79,7 +80,14 @@ export function calculate(bars: Bar[], inputs: Partial<ChandelierStopInputs> = {
   }
 
   const warmup = Math.max(lookback, atrPeriod);
-  const plot = stopArr.map((v, i) => {
+  const plot0 = stopArr.map((v, i) => {
+    if (i < warmup) return { time: bars[i].time, value: NaN };
+    const color = dirArr[i] === 1 ? '#00BCD4' : '#FF00FF';
+    return { time: bars[i].time, value: v, color };
+  });
+
+  // Second plot: same values as line (Pine plots pc twice: circles + line)
+  const plot1 = stopArr.map((v, i) => {
     if (i < warmup) return { time: bars[i].time, value: NaN };
     const color = dirArr[i] === 1 ? '#00BCD4' : '#FF00FF';
     return { time: bars[i].time, value: v, color };
@@ -87,7 +95,7 @@ export function calculate(bars: Bar[], inputs: Partial<ChandelierStopInputs> = {
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot },
+    plots: { 'plot0': plot0, 'plot1': plot1 },
   };
 }
 

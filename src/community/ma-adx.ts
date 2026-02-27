@@ -17,16 +17,16 @@ export interface MAADXInputs {
 }
 
 export const defaultInputs: MAADXInputs = {
-  maLength: 20,
+  maLength: 34,
   adxLength: 14,
-  adxThreshold: 25,
+  adxThreshold: 18,
   src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'maLength', type: 'int', title: 'MA Length', defval: 20, min: 1 },
+  { id: 'maLength', type: 'int', title: 'MA Length', defval: 34, min: 1 },
   { id: 'adxLength', type: 'int', title: 'ADX Length', defval: 14, min: 1 },
-  { id: 'adxThreshold', type: 'int', title: 'ADX Threshold', defval: 25, min: 0 },
+  { id: 'adxThreshold', type: 'int', title: 'ADX MA Active', defval: 18, min: 0 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
@@ -45,10 +45,12 @@ export function calculate(bars: Bar[], inputs: Partial<MAADXInputs> = {}): Indic
   const srcSeries = getSourceSeries(bars, src);
   const n = bars.length;
 
-  const emaArr = ta.ema(srcSeries, maLength).toArray();
+  const wmaArr = ta.wma(srcSeries, maLength).toArray();
 
-  // Calculate ADX manually using Wilder's smoothing
+  // Calculate ADX + DI+/DI- manually using Wilder's smoothing
   const adxArr: number[] = new Array(n).fill(0);
+  const diPlusArr: number[] = new Array(n).fill(0);
+  const diMinusArr: number[] = new Array(n).fill(0);
   let smoothTR = 0;
   let smoothPlusDM = 0;
   let smoothMinusDM = 0;
@@ -77,6 +79,8 @@ export function calculate(bars: Bar[], inputs: Partial<MAADXInputs> = {}): Indic
 
     const diPlus = smoothTR !== 0 ? (smoothPlusDM / smoothTR) * 100 : 0;
     const diMinus = smoothTR !== 0 ? (smoothMinusDM / smoothTR) * 100 : 0;
+    diPlusArr[i] = diPlus;
+    diMinusArr[i] = diMinus;
     const diSum = diPlus + diMinus;
     const dx = diSum !== 0 ? Math.abs(diPlus - diMinus) / diSum * 100 : 0;
 
@@ -91,10 +95,16 @@ export function calculate(bars: Bar[], inputs: Partial<MAADXInputs> = {}): Indic
 
   const warmup = Math.max(maLength, 2 * adxLength);
 
-  const plot = emaArr.map((v, i) => {
+  // Pine: lime when ADX > threshold AND plus > minus, red when ADX > threshold AND plus < minus, black otherwise
+  const plot = wmaArr.map((v, i) => {
     if (i < warmup) return { time: bars[i].time, value: NaN };
     const val = v ?? NaN;
-    const color = adxArr[i] > adxThreshold ? '#26A69A' : '#787B86';
+    let color = '#000000'; // black (ranging)
+    if (adxArr[i] > adxThreshold && diPlusArr[i] > diMinusArr[i]) {
+      color = '#00FF00'; // lime (bullish trend)
+    } else if (adxArr[i] > adxThreshold && diPlusArr[i] < diMinusArr[i]) {
+      color = '#FF0000'; // red (bearish trend)
+    }
     return { time: bars[i].time, value: val, color };
   });
 

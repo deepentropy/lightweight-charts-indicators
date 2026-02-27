@@ -106,6 +106,9 @@ export function calculate(bars: Bar[], inputs: Partial<RSIBBDispersionInputs> = 
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
+    fills: [
+      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(255,109,0,0.15)' } },
+    ],
   };
 }
 

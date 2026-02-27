@@ -7,7 +7,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { PlotCandleData } from '../types';
+import type { PlotCandleData, MarkerData } from '../types';
 
 export interface SlowHeikenAshiInputs {
   length: number;
@@ -33,7 +33,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SlowHeikenAshiInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<SlowHeikenAshiInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; markers: MarkerData[] } {
   const { length } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -96,10 +96,34 @@ export function calculate(bars: Bar[], inputs: Partial<SlowHeikenAshiInputs> = {
     });
   }
 
+  // Markers: HA color flip signals
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < n; i++) {
+    const o = smoothO[i];
+    const c = smoothC[i];
+    const po = smoothO[i - 1];
+    const pc = smoothC[i - 1];
+    if (o == null || c == null || po == null || pc == null) continue;
+
+    const prevBullish = pc >= po; // previous candle was bullish (green)
+    const currBullish = c >= o;
+
+    // Cross(vOpen, vClose) means color flipped
+    if (prevBullish && !currBullish) {
+      // Was bullish, now bearish -> bearish signal (▼)
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#FFFFFF', text: 'Sell' });
+    }
+    if (!prevBullish && currBullish) {
+      // Was bearish, now bullish -> bullish signal (▲)
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#FFFFFF', text: 'Buy' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {},
     plotCandles: { candle0: candles },
+    markers,
   };
 }
 

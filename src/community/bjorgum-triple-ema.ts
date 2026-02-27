@@ -10,7 +10,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, BarColorData } from '../types';
 
 export interface BjorgumTripleEmaInputs {
   fastLen: number;
@@ -45,7 +45,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BjorgumTripleEmaInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<BjorgumTripleEmaInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
   const { fastLen, medLen, slowLen, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
   const n = bars.length;
@@ -89,10 +89,27 @@ export function calculate(bars: Bar[], inputs: Partial<BjorgumTripleEmaInputs> =
     value: i < warmup ? NaN : (v ?? NaN),
   }));
 
+  // barcolor: Pine barColor = uc ? #64b5f6 : dc ? #e91e63 : #b2b5be
+  // uc = close > fast AND close > med; dc = close < fast AND close < med
+  const barColors: BarColorData[] = [];
+  for (let i = warmup; i < n; i++) {
+    const f = fastArr[i] ?? NaN;
+    const m = medArr[i] ?? NaN;
+    if (isNaN(f) || isNaN(m)) continue;
+    const c = bars[i].close;
+    const color = (c > f && c > m) ? '#64B5F6' : (c < f && c < m) ? '#E91E63' : '#B2B5BE';
+    barColors.push({ time: bars[i].time, color });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
+    fills: [
+      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(100, 181, 246, 0.15)' } },
+      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(100, 181, 246, 0.2)' } },
+    ],
     markers,
+    barColors,
   };
 }
 

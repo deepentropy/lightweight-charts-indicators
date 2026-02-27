@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { PlotCandleData } from '../types';
 
 export interface MatrixSeriesInputs {
   length: number;
@@ -34,8 +35,10 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {}): IndicatorResult & { plotCandles: { candle0: PlotCandleData[] } } {
   const { length, src } = { ...defaultInputs, ...inputs };
+  const n = bars.length;
+  const nn = 5; // Pine: Smoother input, default 5
 
   const source = getSourceSeries(bars, src);
   const rsi = ta.rsi(source, length);
@@ -54,12 +57,46 @@ export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {})
     return { time: b.time, value: combined };
   });
 
+  // plotcandle from Pine: ys1 = (high+low+close*2)/4, then series of EMA/stdev transforms
+  const ys1Series = new Series(bars, (b) => (b.high + b.low + b.close * 2) / 4);
+  const rk3 = ta.ema(ys1Series, nn);
+  const rk4 = ta.stdev(ys1Series, nn);
+  const rk3Arr = rk3.toArray();
+  const rk4Arr = rk4.toArray();
+
+  const rk5Arr: number[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const ys1Val = (bars[i].high + bars[i].low + bars[i].close * 2) / 4;
+    const r3 = rk3Arr[i] ?? NaN;
+    const r4 = rk4Arr[i] ?? NaN;
+    rk5Arr[i] = (r4 !== 0 && !isNaN(r4)) ? (ys1Val - r3) * 200 / r4 : 0;
+  }
+  const rk5Series = new Series(bars, (_b, i) => rk5Arr[i]);
+  const rk6 = ta.ema(rk5Series, nn);
+  const upSeries = ta.ema(rk6, nn);
+  const downSeries = ta.ema(upSeries, nn);
+  const upArr = upSeries.toArray();
+  const downArr = downSeries.toArray();
+
+  const candles: PlotCandleData[] = bars.map((b, i) => {
+    const up = upArr[i] ?? NaN;
+    const dn = downArr[i] ?? NaN;
+    if (isNaN(up) || isNaN(dn) || i < nn * 4) {
+      return { time: b.time, open: NaN, high: NaN, low: NaN, close: NaN };
+    }
+    const Oo = Math.min(up, dn);
+    const Ll = Math.max(up, dn);
+    const color = up > dn ? '#26A69A' : '#EF5350';
+    return { time: b.time, open: Oo, high: Oo, low: Ll, close: Ll, color };
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Zero' } },
     ],
+    plotCandles: { candle0: candles },
   };
 }
 

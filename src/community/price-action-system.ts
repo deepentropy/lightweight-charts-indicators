@@ -9,7 +9,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, BarColorData, BgColorData } from '../types';
 
 export interface PriceActionSystemInputs {
   maLen: number;
@@ -31,6 +31,9 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'SMA', color: '#787B86', lineWidth: 2 },
+  { id: 'plot1', title: 'Low Price Line', color: '#787B86', lineWidth: 2 },
+  { id: 'plot2', title: 'High Price Line', color: '#787B86', lineWidth: 2 },
+  { id: 'plot3', title: 'Median Price Line', color: '#FF9800', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -39,7 +42,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PriceActionSystemInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<PriceActionSystemInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } {
   const { maLen, atrLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -47,8 +50,31 @@ export function calculate(bars: Bar[], inputs: Partial<PriceActionSystemInputs> 
   const sma = ta.sma(closeSeries, maLen);
   const smaArr = sma.toArray();
 
+  // Pine price channel: emaLo = ema(low, 5), emaHi = ema(high, 5), emaMe = ema(hl2, 4)
+  const lowSeries = new Series(bars, (b) => b.low);
+  const highSeries = new Series(bars, (b) => b.high);
+  const hl2Series = new Series(bars, (b) => (b.high + b.low) / 2);
+  const emaLoArr = ta.ema(lowSeries, 5).toArray();
+  const emaHiArr = ta.ema(highSeries, 5).toArray();
+  const emaMeArr = ta.ema(hl2Series, 4).toArray();
+
   const warmup = Math.max(maLen, atrLen);
   const markers: MarkerData[] = [];
+  const barColors: BarColorData[] = [];
+  const bgColors: BgColorData[] = [];
+
+  // CCI for bar coloring (Pine uses CCI > 75 = aqua, CCI < -75 = black)
+  const cci = ta.cci(closeSeries, 14).toArray();
+
+  // MACD for background coloring: Pine: bgcolor(OutputSignal>0?red: OutputSignal<0?green:yellow, transp=90)
+  // OutputSignal = signal > macd ? 1 : signal < macd ? -1 : 0
+  const fastMCArr = ta.ema(closeSeries, 12).toArray();
+  const slowMCArr = ta.ema(closeSeries, 17).toArray();
+  const macdArr: number[] = new Array(n);
+  for (let j = 0; j < n; j++) {
+    macdArr[j] = (fastMCArr[j] ?? 0) - (slowMCArr[j] ?? 0);
+  }
+  const macdSignalArr = ta.sma(Series.fromArray(bars, macdArr), 8).toArray();
 
   for (let i = warmup + 1; i < n; i++) {
     const curr = bars[i];
@@ -91,6 +117,27 @@ export function calculate(bars: Bar[], inputs: Partial<PriceActionSystemInputs> 
     } else if (downtrend && (isBearishEngulfing || isShootingStar)) {
       markers.push({ time: curr.time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
     }
+
+    // Bar colors: CCI > 75 = aqua (#00BCD4), CCI < -75 = black (#000000)
+    const cciVal = cci[i];
+    if (cciVal != null && !isNaN(cciVal)) {
+      if (cciVal > 75) {
+        barColors.push({ time: curr.time, color: '#00BCD4' });
+      } else if (cciVal < -75) {
+        barColors.push({ time: curr.time, color: '#000000' });
+      }
+    }
+
+    // Background: Pine OutputSignal = signal > macd ? 1 (red) : signal < macd ? -1 (green) : 0 (yellow)
+    const macdSig = macdSignalArr[i] ?? 0;
+    const macdVal = macdArr[i];
+    if (macdSig > macdVal) {
+      bgColors.push({ time: curr.time, color: 'rgba(239,83,80,0.1)' });
+    } else if (macdSig < macdVal) {
+      bgColors.push({ time: curr.time, color: 'rgba(38,166,154,0.1)' });
+    } else {
+      bgColors.push({ time: curr.time, color: 'rgba(255,235,59,0.1)' });
+    }
   }
 
   const plot0 = smaArr.map((v, i) => ({
@@ -98,10 +145,18 @@ export function calculate(bars: Bar[], inputs: Partial<PriceActionSystemInputs> 
     value: (v == null || i < warmup) ? NaN : v,
   }));
 
+  const toPlot = (arr: (number | null)[]) =>
+    arr.map((v, i) => ({
+      time: bars[i].time,
+      value: (v == null || i < 5) ? NaN : v,
+    }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot1': toPlot(emaLoArr), 'plot2': toPlot(emaHiArr), 'plot3': toPlot(emaMeArr) },
     markers,
+    barColors,
+    bgColors,
   };
 }
 

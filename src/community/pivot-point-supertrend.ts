@@ -8,6 +8,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface PivotPointSupertrendInputs {
   pivotLen: number;
@@ -29,6 +30,9 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'SuperTrend', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot1', title: 'Center Line', color: '#2196F3', lineWidth: 1 },
+  { id: 'plot2', title: 'Support', color: '#26A69A', lineWidth: 1, style: 'circles' },
+  { id: 'plot3', title: 'Resistance', color: '#EF5350', lineWidth: 1, style: 'circles' },
 ];
 
 export const metadata = {
@@ -37,7 +41,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PivotPointSupertrendInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<PivotPointSupertrendInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { pivotLen, atrFactor, atrLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -96,6 +100,18 @@ export function calculate(bars: Bar[], inputs: Partial<PivotPointSupertrendInput
     }
   }
 
+  // Support/Resistance tracking (Pine: support := pl ? pl : support[1])
+  const supportArr: number[] = new Array(n);
+  const resistanceArr: number[] = new Array(n);
+  let lastSupport = NaN;
+  let lastResistance = NaN;
+  for (let i = 0; i < n; i++) {
+    if (plArr[i] != null && !isNaN(plArr[i]!)) lastSupport = plArr[i]!;
+    if (phArr[i] != null && !isNaN(phArr[i]!)) lastResistance = phArr[i]!;
+    supportArr[i] = lastSupport;
+    resistanceArr[i] = lastResistance;
+  }
+
   const warmup = Math.max(atrLen, pivotLen * 2 + 1);
 
   const plot0 = stArr.map((v, i) => {
@@ -104,9 +120,43 @@ export function calculate(bars: Bar[], inputs: Partial<PivotPointSupertrendInput
     return { time: bars[i].time, value: v, color };
   });
 
+  // Center line: colored by position relative to hl2 (Pine: center < hl2 ? blue : red)
+  const plot1 = centerArr.map((v, i) => {
+    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
+    const hl2 = (bars[i].high + bars[i].low) / 2;
+    const color = v < hl2 ? '#2196F3' : '#EF5350';
+    return { time: bars[i].time, value: v, color };
+  });
+
+  // Support level (circles)
+  const plot2 = supportArr.map((v, i) => ({
+    time: bars[i].time,
+    value: i < warmup || isNaN(v) ? NaN : v,
+  }));
+
+  // Resistance level (circles)
+  const plot3 = resistanceArr.map((v, i) => ({
+    time: bars[i].time,
+    value: i < warmup || isNaN(v) ? NaN : v,
+  }));
+
+  // Markers: trend direction change signals
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < n; i++) {
+    // Buy: trend flips from bearish to bullish
+    if (dirArr[i] === 1 && dirArr[i - 1] === -1) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Buy' });
+    }
+    // Sell: trend flips from bullish to bearish
+    if (dirArr[i] === -1 && dirArr[i - 1] === 1) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
+    markers,
   };
 }
 

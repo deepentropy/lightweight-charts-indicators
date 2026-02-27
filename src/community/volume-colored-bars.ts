@@ -8,6 +8,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface VolumeColoredBarsInputs {
   length: number;
@@ -31,7 +32,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeColoredBarsInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<VolumeColoredBarsInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { length } = { ...defaultInputs, ...inputs };
 
   const volSeries = new Series(bars, (b) => b.volume ?? 0);
@@ -52,9 +53,33 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeColoredBarsInputs> 
     return { time: bar.time, value: vol, color };
   });
 
+  // barcolor: 6-level coloring based on volume vs average and price direction
+  // Pine: vold1=vol>avg*1.5 & down -> #800000 (dark red/maroon)
+  //        vold2=vol 0.5-1.5x & down -> #FF0000 (red)
+  //        vold3=vol<avg*0.5 & down -> orange
+  //        volu1=vol>avg*1.5 & up -> #006400 (dark green)
+  //        volu2=vol 0.5-1.5x & up -> lime (#00FF00)
+  //        volu3=vol<avg*0.5 & up -> #7FFFD4 (aquamarine)
+  const barColors: BarColorData[] = [];
+  for (let i = 0; i < bars.length; i++) {
+    const vol = bars[i].volume ?? 0;
+    const avg = avgVol[i] ?? 0;
+    const isUp = bars[i].close > bars[i].open;
+    let color: string;
+    if (!isUp && vol > avg * 1.5) color = '#800000';
+    else if (!isUp && vol >= avg * 0.5 && vol <= avg * 1.5) color = '#FF0000';
+    else if (!isUp && vol < avg * 0.5) color = '#FF9800';
+    else if (isUp && vol > avg * 1.5) color = '#006400';
+    else if (isUp && vol >= avg * 0.5 && vol <= avg * 1.5) color = '#00FF00';
+    else if (isUp && vol < avg * 0.5) color = '#7FFFD4';
+    else color = '#787B86';
+    barColors.push({ time: bars[i].time, color });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
+    barColors,
   };
 }
 

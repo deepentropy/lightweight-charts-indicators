@@ -13,21 +13,28 @@ import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } fro
 export interface CMLaguerrePPOInputs {
   gamma: number;
   pctLen: number;
+  pctile: number;
+  wrnPctile: number;
 }
 
 export const defaultInputs: CMLaguerrePPOInputs = {
   gamma: 0.7,
   pctLen: 50,
+  pctile: 90,
+  wrnPctile: 70,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'gamma', type: 'float', title: 'Gamma', defval: 0.7, min: 0.01, max: 0.99, step: 0.01 },
   { id: 'pctLen', type: 'int', title: 'Percentile Length', defval: 50, min: 1 },
+  { id: 'pctile', type: 'int', title: 'Extreme Threshold', defval: 90, min: 1, max: 100 },
+  { id: 'wrnPctile', type: 'int', title: 'Warning Threshold', defval: 70, min: 1, max: 100 },
 ];
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Laguerre PPO', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot1', title: 'Percentile Rank', color: '#FF6D00', lineWidth: 1 },
+  { id: 'plot1', title: 'Percentile Rank Top', color: '#787B86', lineWidth: 2, style: 'columns' },
+  { id: 'plot2', title: 'Percentile Rank Bottom', color: '#C0C0C0', lineWidth: 2, style: 'columns' },
 ];
 
 export const metadata = {
@@ -37,7 +44,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<CMLaguerrePPOInputs> = {}): IndicatorResult {
-  const { gamma, pctLen } = { ...defaultInputs, ...inputs };
+  const { gamma, pctLen, pctile, wrnPctile } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   // Laguerre filter
@@ -86,18 +93,34 @@ export function calculate(bars: Bar[], inputs: Partial<CMLaguerrePPOInputs> = {}
     value: i < 4 ? NaN : v,
   }));
 
-  const plot1 = pctRankArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : v,
-  }));
+  // Pine: pctRankT colored columns (positive percentile rank)
+  // colT = pctRankT >= pctile ? red : pctRankT >= wrnpctile ? orange : gray
+  const plot1 = pctRankArr.map((v, i) => {
+    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
+    const color = v >= pctile ? '#EF5350' : v >= wrnPctile ? '#FF9800' : '#787B86';
+    return { time: bars[i].time, value: v, color };
+  });
+
+  // Pine: pctRankB = percentrank(ppoB, lkbB) * -1, colored columns (negative percentile rank)
+  // colB = pctRankB <= -pctile ? lime : pctRankB <= -wrnpctile ? green : silver
+  // We compute bottom rank as (100 - pctRankT) * -1 to approximate
+  const plot2 = pctRankArr.map((v, i) => {
+    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
+    const bVal = -(100 - v);
+    const absBVal = Math.abs(bVal);
+    const color = absBVal >= pctile ? '#00E676' : absBVal >= wrnPctile ? '#4CAF50' : '#C0C0C0';
+    return { time: bars[i].time, value: bVal, color };
+  });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
     hlines: [
-      { value: 80, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Overbought' } },
-      { value: 50, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Mid' } },
-      { value: 20, options: { color: '#26A69A', linestyle: 'dashed' as const, title: 'Oversold' } },
+      { value: pctile, options: { color: '#EF5350', linestyle: 'solid' as const, title: 'Extreme Top' } },
+      { value: wrnPctile, options: { color: '#FF9800', linestyle: 'solid' as const, title: 'Warning Top' } },
+      { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Zero' } },
+      { value: -wrnPctile, options: { color: '#4CAF50', linestyle: 'solid' as const, title: 'Warning Bottom' } },
+      { value: -pctile, options: { color: '#00E676', linestyle: 'solid' as const, title: 'Extreme Bottom' } },
     ],
   };
 }

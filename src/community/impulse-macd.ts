@@ -10,6 +10,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface ImpulseMACDInputs {
   lengthMA: number;
@@ -38,7 +39,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ImpulseMACDInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<ImpulseMACDInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { lengthMA, lengthSignal } = { ...defaultInputs, ...inputs };
 
   const hlc3 = getSourceSeries(bars, 'hlc3');
@@ -121,10 +122,29 @@ export function calculate(bars: Bar[], inputs: Partial<ImpulseMACDInputs> = {}):
     return { time: bars[i].time, value: v, color };
   });
 
+  // barcolor: Pine mdc = src>mi?src>hi?lime:green:src<lo?red:orange
+  const hlc3Arr = hlc3.toArray();
+  const barColors: BarColorData[] = [];
+  for (let i = 0; i < bars.length; i++) {
+    const s = hlc3Arr[i] ?? NaN;
+    const m = miArr[i] ?? NaN;
+    const h = hiArr[i] ?? NaN;
+    const l = loArr[i] ?? NaN;
+    if (isNaN(s) || isNaN(m) || isNaN(h) || isNaN(l)) continue;
+    let color: string;
+    if (s > m) {
+      color = s > h ? '#00FF00' : '#008000'; // lime : green
+    } else {
+      color = s < l ? '#EF5350' : '#FF9800'; // red : orange
+    }
+    barColors.push({ time: bars[i].time, color });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': mdPlot, 'plot1': toPlot(sbArr), 'plot2': toPlot(shArr) },
     hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } }],
+    barColors,
   };
 }
 

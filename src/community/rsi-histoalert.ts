@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface RSIHistoAlertInputs {
   rsiLen: number;
@@ -34,7 +35,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RSIHistoAlertInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<RSIHistoAlertInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { rsiLen, src } = { ...defaultInputs, ...inputs };
 
   const source = getSourceSeries(bars, src);
@@ -52,6 +53,24 @@ export function calculate(bars: Bar[], inputs: Partial<RSIHistoAlertInputs> = {}
     return { time: bars[i].time, value: v, color };
   });
 
+  // barcolor: green when RSIMain > BuyAlertLevel (pos=1), red when RSIMain < SellAlertLevel (pos=-1), blue otherwise
+  // Pine: RSIMain = (rsi - 50) * 1.5, BuyAlertLevel = -10, SellAlertLevel = 10
+  const buyAlertLevel = -10;
+  const sellAlertLevel = 10;
+  const rsiHistoModify = 1.5;
+  const barColors: BarColorData[] = [];
+  let pos = 0;
+  for (let i = warmup; i < bars.length; i++) {
+    const v = rsiArr[i];
+    if (v == null) continue;
+    const rsiMain = (v - 50) * rsiHistoModify;
+    if (rsiMain > buyAlertLevel) pos = 1;
+    else if (rsiMain < sellAlertLevel) pos = -1;
+    if (pos === 1) barColors.push({ time: bars[i].time, color: '#26A69A' });
+    else if (pos === -1) barColors.push({ time: bars[i].time, color: '#EF5350' });
+    else barColors.push({ time: bars[i].time, color: '#2196F3' });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
@@ -59,6 +78,7 @@ export function calculate(bars: Bar[], inputs: Partial<RSIHistoAlertInputs> = {}
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
+    barColors,
   };
 }
 

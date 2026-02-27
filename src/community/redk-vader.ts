@@ -23,7 +23,9 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'VADER', color: '#26A69A', lineWidth: 4, style: 'histogram' },
+  { id: 'plot0', title: 'VADER Signal', color: '#359bfc', lineWidth: 4 },
+  { id: 'plot1', title: 'Demand Energy', color: 'rgba(0, 255, 255, 0.7)', lineWidth: 2 },
+  { id: 'plot2', title: 'Supply Energy', color: 'rgba(255, 165, 0, 0.7)', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -67,20 +69,45 @@ export function calculate(bars: Bar[], inputs: Partial<RedKVADERInputs> = {}): I
 
   const warmup = length;
 
+  // VADER signal = demand - supply (colored by direction)
   const plot0 = bars.map((bar, i) => {
     if (i < warmup || rmaBull[i] == null || rmaBear[i] == null) {
       return { time: bar.time, value: NaN };
     }
     const v = rmaBull[i]! - rmaBear[i]!;
-    const color = v >= 0 ? '#26A69A' : '#EF5350';
+    const color = v >= 0 ? '#359bfc' : '#f57f17';
     return { time: bar.time, value: v, color };
   });
 
+  // Demand and supply energy plots (for fill)
+  const plot1 = bars.map((bar, i) => ({
+    time: bar.time,
+    value: (i < warmup || rmaBull[i] == null) ? NaN : rmaBull[i]!,
+  }));
+
+  const plot2 = bars.map((bar, i) => ({
+    time: bar.time,
+    value: (i < warmup || rmaBear[i] == null) ? NaN : rmaBear[i]!,
+  }));
+
+  // Dynamic fill: green when demand > supply, red when supply > demand
+  const fillColors: string[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    if (i < warmup || rmaBull[i] == null || rmaBear[i] == null) {
+      fillColors[i] = 'rgba(0,0,0,0)';
+    } else {
+      fillColors[i] = rmaBull[i]! > rmaBear[i]! ? 'rgba(0, 128, 0, 0.2)' : 'rgba(255, 0, 0, 0.2)';
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
     hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },
+      { value: 0, options: { color: 'rgba(255, 238, 0, 0.3)', linestyle: 'solid' as const, title: 'Zero' } },
+    ],
+    fills: [
+      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(0, 128, 0, 0.2)' }, colors: fillColors },
     ],
   };
 }

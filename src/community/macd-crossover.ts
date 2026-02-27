@@ -7,6 +7,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface MACDCrossoverInputs {
   fastLength: number;
@@ -41,7 +42,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MACDCrossoverInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<MACDCrossoverInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { fastLength, slowLength, signalLength, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
 
@@ -65,10 +66,25 @@ export function calculate(bars: Bar[], inputs: Partial<MACDCrossoverInputs> = {}
     return { time: bars[i].time, value: v, color: v >= 0 ? '#26A69A' : '#EF5350' };
   });
 
+  // barcolor: green when MACD > signal (pos=1), red when MACD < signal (pos=-1), blue otherwise
+  const barColors: BarColorData[] = [];
+  let pos = 0;
+  for (let i = warmup; i < bars.length; i++) {
+    const sig = sigArr[i] ?? NaN;
+    const macd = macdArr[i] ?? NaN;
+    if (isNaN(sig) || isNaN(macd)) continue;
+    if (sig < macd) pos = 1;
+    else if (sig > macd) pos = -1;
+    if (pos === 1) barColors.push({ time: bars[i].time, color: '#26A69A' });
+    else if (pos === -1) barColors.push({ time: bars[i].time, color: '#EF5350' });
+    else barColors.push({ time: bars[i].time, color: '#2196F3' });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': toPlot(macdArr), 'plot1': toPlot(sigArr), 'plot2': histPlot },
     hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
+    barColors,
   };
 }
 

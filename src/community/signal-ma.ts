@@ -61,9 +61,20 @@ export function calculate(bars: Bar[], inputs: Partial<SignalMAInputs> = {}): In
     value: i < warmup ? NaN : (v ?? NaN),
   }));
 
+  // Dynamic fill color: green when SMA > Signal, red when SMA < Signal
+  const fillColors = smaArr.map((v, i) => {
+    if (i < warmup) return 'rgba(0,0,0,0)';
+    const smaVal = v ?? 0;
+    const sigVal = signalArr[i] ?? 0;
+    return smaVal > sigVal ? 'rgba(12,181,26,0.15)' : 'rgba(255,17,0,0.15)';
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
+    fills: [
+      { plot1: 'plot0', plot2: 'plot1', colors: fillColors },
+    ],
   };
 }
 

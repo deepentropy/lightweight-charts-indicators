@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { BgColorData } from '../types';
 
 export interface FaithIndicatorInputs {
   fastLen: number;
@@ -35,7 +36,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<FaithIndicatorInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<FaithIndicatorInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
   const { fastLen, slowLen } = { ...defaultInputs, ...inputs };
 
   const closeSeries = getSourceSeries(bars, 'close');
@@ -59,9 +60,40 @@ export function calculate(bars: Bar[], inputs: Partial<FaithIndicatorInputs> = {
     value: i < warmup || isNaN(v) ? NaN : v,
   }));
 
+  // Background color from Hull MA agreement (Pine: hullag = ftrend + strend)
+  // fhl=20, shl=25, trnd=0.1, istrend = 0.1 * ATR(30)
+  const atrArr = ta.atr(bars, 30).toArray();
+  const fhArr = ta.hma(closeSeries, 20).toArray();
+  const shArr = ta.hma(closeSeries, 25).toArray();
+  const bgColors: BgColorData[] = [];
+  for (let i = 1; i < bars.length; i++) {
+    const atrVal = atrArr[i] ?? NaN;
+    if (isNaN(atrVal)) continue;
+    const istrend = 0.1 * atrVal;
+    const fh = fhArr[i] ?? NaN;
+    const fhPrev = fhArr[i - 1] ?? NaN;
+    const sh = shArr[i] ?? NaN;
+    const shPrev = shArr[i - 1] ?? NaN;
+    if (isNaN(fh) || isNaN(fhPrev) || isNaN(sh) || isNaN(shPrev)) continue;
+    const fangle = fh - fhPrev;
+    const sangle = sh - shPrev;
+    const ftrend = fangle > istrend ? 1 : fangle < -istrend ? -1 : 0;
+    const strend = sangle > istrend ? 1 : sangle < -istrend ? -1 : 0;
+    const hullag = ftrend + strend;
+    // Pine: 2=blue(65%), 1=green(75%), 0=silver(85%), -1=maroon(80%), -2=red(65%)
+    let color: string;
+    if (hullag === 2) color = 'rgba(33,150,243,0.15)';       // blue
+    else if (hullag === 1) color = 'rgba(38,166,154,0.1)';   // green
+    else if (hullag === 0) color = 'rgba(120,123,134,0.05)';  // silver/gray
+    else if (hullag === -1) color = 'rgba(128,0,0,0.1)';     // maroon
+    else color = 'rgba(239,83,80,0.15)';                      // red
+    bgColors.push({ time: bars[i].time, color });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': faithPlot, 'plot1': signalPlot },
+    bgColors,
   };
 }
 

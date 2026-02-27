@@ -8,6 +8,7 @@
  */
 
 import { getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface OTTOInputs {
   period: number;
@@ -37,7 +38,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<OTTOInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<OTTOInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { period, percent, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -99,12 +100,30 @@ export function calculate(bars: Bar[], inputs: Partial<OTTOInputs> = {}): Indica
     return { time: bars[i].time, value: diff, color };
   });
 
+  // Markers: Buy when oscillator crosses above zero (LOTT crosses above HOTT),
+  // Sell when oscillator crosses below zero (LOTT crosses below HOTT)
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 3; i < n; i++) {
+    const prevDiff = plot0[i - 1].value;
+    const curDiff = plot0[i].value;
+    if (isNaN(prevDiff) || isNaN(curDiff)) continue;
+    // Buy: oscillator crosses above zero
+    if (prevDiff <= 0 && curDiff > 0) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
+    }
+    // Sell: oscillator crosses below zero
+    if (prevDiff >= 0 && curDiff < 0) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
     ],
+    markers,
   };
 }
 

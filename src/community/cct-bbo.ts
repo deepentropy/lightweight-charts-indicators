@@ -71,6 +71,14 @@ export function calculate(bars: Bar[], inputs: Partial<CCTBBOInputs> = {}): Indi
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': cctData, 'plot1': emaData },
+    hlines: [
+      { value: 100, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Upper' } },
+      { value: 50, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Mid' } },
+      { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Lower' } },
+    ],
+    fills: [
+      { plot1: 'hline_upper', plot2: 'hline_lower', options: { color: 'rgba(41, 98, 255, 0.12)' } },
+    ],
   };
 }
 

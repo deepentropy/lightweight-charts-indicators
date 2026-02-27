@@ -8,6 +8,7 @@
  */
 
 import { getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface VariableMAInputs {
   length: number;
@@ -34,7 +35,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VariableMAInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<VariableMAInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { length, src } = { ...defaultInputs, ...inputs };
   const sourceArr = getSourceSeries(bars, src).toArray();
 
@@ -87,9 +88,20 @@ export function calculate(bars: Bar[], inputs: Partial<VariableMAInputs> = {}): 
     return { time: bars[i].time, value: v, color };
   });
 
+  // barcolor: matches VMA line color - green when rising, red when falling, blue when flat
+  const barColors: BarColorData[] = [];
+  for (let i = warmup; i < bars.length; i++) {
+    const v = vmaArr[i];
+    const prev = vmaArr[i - 1];
+    if (v > prev) barColors.push({ time: bars[i].time, color: '#26A69A' });
+    else if (v < prev) barColors.push({ time: bars[i].time, color: '#EF5350' });
+    else barColors.push({ time: bars[i].time, color: '#2196F3' });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
+    barColors,
   };
 }
 

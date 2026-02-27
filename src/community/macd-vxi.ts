@@ -7,6 +7,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BgColorData } from '../types';
 
 export interface MACDVXIInputs {
   fastLength: number;
@@ -40,7 +41,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MACDVXIInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<MACDVXIInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
   const { fastLength, slowLength, signalLength, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
 
@@ -74,10 +75,26 @@ export function calculate(bars: Bar[], inputs: Partial<MACDVXIInputs> = {}): Ind
     value: (i < warmup || v == null) ? NaN : v,
   }));
 
+  // Background color: Pine bgcolor(OutputSignal>0?#000000:#128E89, transp=80)
+  // OutputSignal = signal >= macd ? 1 : 0 (bearish=black, bullish=teal)
+  const macdArr = macdLine.toArray();
+  const sigArr = signalLine.toArray();
+  const bgColors: BgColorData[] = [];
+  for (let i = warmup; i < bars.length; i++) {
+    const m = macdArr[i] ?? NaN;
+    const s = sigArr[i] ?? NaN;
+    if (isNaN(m) || isNaN(s)) continue;
+    const color = s >= m
+      ? 'rgba(0,0,0,0.1)'        // bearish: black at low alpha
+      : 'rgba(18,142,137,0.1)';  // bullish: teal
+    bgColors.push({ time: bars[i].time, color });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': histPlot, 'plot1': vxiPlot },
     hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
+    bgColors,
   };
 }
 

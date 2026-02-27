@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface TriangularMomentumOscInputs {
   length: number;
@@ -34,7 +35,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TriangularMomentumOscInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<TriangularMomentumOscInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { length, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -67,12 +68,53 @@ export function calculate(bars: Bar[], inputs: Partial<TriangularMomentumOscInpu
     value: (v == null || i < warmup) ? NaN : v,
   }));
 
+  // Markers: divergence signals
+  // phosc = osc peaks (change goes + to -), plosc = osc troughs (change goes - to +)
+  const markers: MarkerData[] = [];
+
+  // Track last two peaks and troughs for divergence
+  let prevPeakOsc = NaN, prevPeakHigh = NaN;
+  let prevTroughOsc = NaN, prevTroughLow = NaN;
+
+  for (let i = warmup + 2; i < n; i++) {
+    const osc = tmoArr[i];
+    const oscPrev = tmoArr[i - 1];
+    const oscPrev2 = tmoArr[i - 2];
+    if (osc == null || oscPrev == null || oscPrev2 == null) continue;
+
+    const chg = osc - oscPrev;
+    const prevChg = oscPrev - oscPrev2;
+
+    // Peak: change crosses from positive to negative (crossunder(change(osc), 0))
+    if (prevChg > 0 && chg <= 0 && osc > 0) {
+      const highVal = bars[i - 1].high;
+      // Bearish divergence: osc peak lower but price peak higher
+      if (!isNaN(prevPeakOsc) && oscPrev < prevPeakOsc && highVal > prevPeakHigh) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+      }
+      prevPeakOsc = oscPrev;
+      prevPeakHigh = highVal;
+    }
+
+    // Trough: change crosses from negative to positive (crossover(change(osc), 0))
+    if (prevChg < 0 && chg >= 0 && osc < 0) {
+      const lowVal = bars[i - 1].low;
+      // Bullish divergence: osc trough higher but price trough lower
+      if (!isNaN(prevTroughOsc) && oscPrev > prevTroughOsc && lowVal < prevTroughLow) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
+      }
+      prevTroughOsc = oscPrev;
+      prevTroughLow = lowVal;
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Zero' } },
     ],
+    markers,
   };
 }
 

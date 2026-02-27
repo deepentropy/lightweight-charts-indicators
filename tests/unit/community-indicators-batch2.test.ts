@@ -25,13 +25,13 @@ import {
   CandlestickReversal,
   CCIOBV,
   CDCActionZone,
-  CMADX,
+
   CMEnhancedIchimoku,
   CMGannSwing,
   CMGuppyEMA,
   CMHeikinAshi,
   CMLaguerrePPO,
-  CMParabolicSAR,
+
   CMPriceAction,
   CMRSI2Lower,
   CMRSI2Upper,
@@ -459,11 +459,11 @@ describe('BuyingSellVolume', () => {
   const result = BuyingSellVolume.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['volume', 'buyVol', 'sellVol', 'buyPct', 'sellPct', 'volIndex'], false);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'volume');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -473,11 +473,11 @@ describe('BuySellPressure', () => {
   const result = BuySellPressure.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['selling', 'buying', 'spAvg', 'bpAvg', 'vpo1', 'vpo2', 'vph'], false);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'buying');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -525,19 +525,6 @@ describe('CDCActionZone', () => {
   });
 });
 
-describe('CMADX', () => {
-  const result = CMADX.calculate(bars);
-
-  it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
-  });
-
-  it('produces finite values after warmup', () => {
-    const vals = validValues(result);
-    expect(vals.length).toBeGreaterThan(0);
-    vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
-  });
-});
 
 describe('CMEnhancedIchimoku', () => {
   const result = CMEnhancedIchimoku.calculate(bars);
@@ -610,19 +597,6 @@ describe('CMLaguerrePPO', () => {
   });
 });
 
-describe('CMParabolicSAR', () => {
-  const result = CMParabolicSAR.calculate(bars);
-
-  it('returns correct shape', () => {
-    assertShape(result, ['plot0'], true);
-  });
-
-  it('produces finite values after warmup', () => {
-    const vals = validValues(result);
-    expect(vals.length).toBeGreaterThan(0);
-    vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
-  });
-});
 
 describe('CMPriceAction', () => {
   const result = CMPriceAction.calculate(bars);
@@ -782,11 +756,11 @@ describe('EasyTrendColors', () => {
   const result = EasyTrendColors.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], true);
+    assertShape(result, ['upper', 'lower', 'zeroline'], false);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'upper');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -936,11 +910,11 @@ describe('FibonacciLevels', () => {
   const result = FibonacciLevels.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5', 'plot6'], true);
+    assertShape(result, ['midline', 'up1', 'up2', 'up3', 'up4', 'up5', 'up6', 'down1', 'down2', 'down3', 'down4', 'down5', 'down6'], true);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'midline');
     expect(vals.length).toBeGreaterThanOrEqual(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -1470,7 +1444,7 @@ describe('PhilakoneEMASwing', () => {
   const result = PhilakoneEMASwing.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], true);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], true);
   });
 
   it('produces finite values after warmup', () => {
@@ -1776,10 +1750,10 @@ describe('SAREMAMACDSignals', () => {
 });
 
 describe('ScalpingLine', () => {
-  const result = ScalpingLine.calculate(bars);
+  const result = ScalpingLine.calculate(bars, { mainPeriod: 20, signalPeriod: 5 });
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], true);
+    assertShape(result, ['plot0', 'plot1'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1821,7 +1795,7 @@ describe('SimpleMovingAverages', () => {
   const result = SimpleMovingAverages.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4'], true);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5', 'plot6', 'plot7', 'plot8', 'plot9'], true);
   });
 
   it('produces finite values after warmup', () => {
@@ -2298,11 +2272,11 @@ describe('VolumeFlowV3', () => {
   const result = VolumeFlowV3.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], false);
+    assertShape(result, ['volume', 'bullMa', 'bearMa', 'bullSpike', 'bearSpike', 'diffValue'], false);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'volume');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -2407,10 +2381,10 @@ describe('WilliamsCombo', () => {
 });
 
 describe('ZeroLagEMA', () => {
-  const result = ZeroLagEMA.calculate(bars);
+  const result = ZeroLagEMA.calculate(bars, { slowLen: 20 });
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], true);
+    assertShape(result, ['plot0', 'plot1', 'plot2'], true);
   });
 
   it('produces finite values after warmup', () => {

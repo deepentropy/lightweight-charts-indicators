@@ -10,6 +10,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { PlotCandleData } from '../types';
 
 export interface MadridTrendSqueezeInputs {
   length: number;
@@ -41,7 +42,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MadridTrendSqueezeInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<MadridTrendSqueezeInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
   const { length, ref, sqzLen } = { ...defaultInputs, ...inputs };
 
   const src = getSourceSeries(bars, 'close');
@@ -81,9 +82,48 @@ export function calculate(bars: Bar[], inputs: Partial<MadridTrendSqueezeInputs>
     return { time: bars[i].time, value: v, color };
   });
 
+  // Pine uses plotcandle(0, value, 0, value) for each component
+  // CMA candle: aqua if >= 0, fuchsia if < 0
+  const cmaCandles: PlotCandleData[] = [];
+  const rmaCandles: PlotCandleData[] = [];
+  const sqzCandles: PlotCandleData[] = [];
+  for (let i = warmup; i < bars.length; i++) {
+    const cmaV = cmaArr[i];
+    const rmaV = rmaArr[i];
+    const smaV = smaArr[i];
+    if (cmaV != null) {
+      cmaCandles.push({
+        time: bars[i].time,
+        open: 0, high: Math.max(0, cmaV), low: Math.min(0, cmaV), close: cmaV,
+        color: cmaV >= 0 ? '#00BCD4' : '#E040FB',
+      });
+    }
+    if (rmaV != null) {
+      const prevRma = i > 0 ? (rmaArr[i - 1] ?? 0) : 0;
+      const cross = (prevRma <= 0 && rmaV > 0) || (prevRma >= 0 && rmaV < 0);
+      const rmaColor = cross ? '#FFEB3B' : rmaV >= 0 ? '#26A69A' : '#880E4F';
+      rmaCandles.push({
+        time: bars[i].time,
+        open: 0, high: Math.max(0, rmaV), low: Math.min(0, rmaV), close: rmaV,
+        color: rmaColor,
+      });
+    }
+    if (smaV != null) {
+      sqzCandles.push({
+        time: bars[i].time,
+        open: 0, high: Math.max(0, smaV), low: Math.min(0, smaV), close: smaV,
+        color: smaV >= 0 ? '#00E676' : '#EF5350',
+      });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': cmaPlot, 'plot1': rmaPlot, 'plot2': smaPlot },
+    hlines: [
+      { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Zero' } },
+    ],
+    plotCandles: { candle0: cmaCandles, candle1: rmaCandles, candle2: sqzCandles },
   };
 }
 

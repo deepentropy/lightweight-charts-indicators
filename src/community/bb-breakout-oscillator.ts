@@ -31,6 +31,7 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Bull', color: '#26A69A', lineWidth: 2 },
   { id: 'plot1', title: 'Bear', color: '#EF5350', lineWidth: 2 },
+  { id: 'plot2', title: 'Zero', color: 'transparent', lineWidth: 0 },
 ];
 
 export const hlineConfig = [
@@ -94,11 +95,16 @@ export function calculate(bars: Bar[], inputs: Partial<BBBreakoutOscInputs> = {}
 
   const bullPlot = bullArr.map((v, i) => ({ time: bars[i].time, value: v }));
   const bearPlot = bearArr.map((v, i) => ({ time: bars[i].time, value: v }));
+  const zeroPlot = bars.map((b) => ({ time: b.time, value: 0 }));
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': bullPlot, 'plot1': bearPlot },
+    plots: { 'plot0': bullPlot, 'plot1': bearPlot, 'plot2': zeroPlot },
     hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
+    fills: [
+      { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(38,166,154,0.15)' } },
+      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(239,83,80,0.15)' } },
+    ],
   };
 }
 

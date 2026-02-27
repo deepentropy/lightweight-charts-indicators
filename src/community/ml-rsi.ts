@@ -9,7 +9,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import type { TableData, TableCell } from '../types';
+import type { TableData, TableCell, BarColorData } from '../types';
 
 export interface MlRsiInputs {
   rsiLen: number;
@@ -36,6 +36,7 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'RSI', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'Adaptive OB', color: '#EF5350', lineWidth: 1 },
   { id: 'plot2', title: 'Adaptive OS', color: '#26A69A', lineWidth: 1 },
+  { id: 'plot3', title: '50 Level', color: 'rgba(255,255,255,0.3)', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -44,7 +45,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MlRsiInputs> = {}): IndicatorResult & { tables: TableData } {
+export function calculate(bars: Bar[], inputs: Partial<MlRsiInputs> = {}): IndicatorResult & { tables: TableData; barColors: BarColorData[] } {
   const { rsiLen, k, lookback, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -133,6 +134,26 @@ export function calculate(bars: Bar[], inputs: Partial<MlRsiInputs> = {}): Indic
     return { time: bar.time, value: osArr[i] };
   });
 
+  // 50 level line for fill
+  const plot3 = bars.map((bar, i) => ({
+    time: bar.time,
+    value: i < warmup ? NaN : 50,
+  }));
+
+  // barcolor: bull (green) when RSI > 50, bear (red) when RSI <= 50
+  const barColors: BarColorData[] = [];
+  for (let i = warmup; i < n; i++) {
+    const rsi = rsiArr[i];
+    if (rsi == null) continue;
+    barColors.push({ time: bars[i].time, color: rsi > 50 ? 'rgba(0,255,187,0.8)' : 'rgba(255,17,0,0.8)' });
+  }
+
+  // Fill between RSI line and 50 level: green tint above 50, red tint below
+  const fillColors = bars.map((_, i) => {
+    if (i < warmup || rsiArr[i] == null) return 'transparent';
+    return rsiArr[i]! > 50 ? 'rgba(0,255,187,0.15)' : 'rgba(255,17,0,0.15)';
+  });
+
   const predColor = lastPrediction === 'Overbought' ? '#EF5350' : lastPrediction === 'Oversold' ? '#26A69A' : '#D1D4DC';
   const cells: TableCell[] = [
     { row: 0, column: 0, text: 'ML RSI Info', bgColor: '#1E222D', textColor: '#D1D4DC', textSize: 'small' },
@@ -156,7 +177,13 @@ export function calculate(bars: Bar[], inputs: Partial<MlRsiInputs> = {}): Indic
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
+    fills: [{ plot1: 'plot0', plot2: 'plot3', options: { color: 'rgba(0,255,187,0.15)' }, colors: fillColors }],
+    hlines: [
+      { value: 70, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Overbought' } },
+      { value: 30, options: { color: '#26A69A', linestyle: 'dashed' as const, title: 'Oversold' } },
+    ],
+    barColors,
     tables,
   };
 }

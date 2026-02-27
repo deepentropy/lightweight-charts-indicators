@@ -50,9 +50,38 @@ export function calculate(bars: Bar[], inputs: Partial<EMAMultiInputs> = {}): In
     }));
   }
 
+  // Dynamic fills between adjacent EMAs: green when shorter EMA > longer EMA, red otherwise
+  const fillColors01: string[] = [];
+  const fillColors12: string[] = [];
+  const fillColors23: string[] = [];
+
+  for (let i = 0; i < bars.length; i++) {
+    const e20 = emaArrays[0][i];
+    const e50 = emaArrays[1][i];
+    const e100 = emaArrays[2][i];
+    const e200 = emaArrays[3][i];
+
+    if (i < 200 || isNaN(e20) || isNaN(e50) || isNaN(e100) || isNaN(e200)) {
+      fillColors01.push('rgba(0,0,0,0)');
+      fillColors12.push('rgba(0,0,0,0)');
+      fillColors23.push('rgba(0,0,0,0)');
+    } else {
+      fillColors01.push(e20 > e50 ? 'rgba(0,230,118,0.15)' : 'rgba(255,109,0,0.15)');
+      fillColors12.push(e50 > e100 ? 'rgba(0,230,118,0.15)' : 'rgba(255,109,0,0.15)');
+      fillColors23.push(e100 > e200 ? 'rgba(0,230,118,0.15)' : 'rgba(255,109,0,0.15)');
+    }
+  }
+
+  const fills = [
+    { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(0,230,118,0.15)' }, colors: fillColors01 },
+    { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(0,230,118,0.15)' }, colors: fillColors12 },
+    { plot1: 'plot2', plot2: 'plot3', options: { color: 'rgba(0,230,118,0.15)' }, colors: fillColors23 },
+  ];
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots,
+    fills,
   };
 }
 

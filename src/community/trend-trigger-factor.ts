@@ -31,6 +31,8 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'TTF', color: '#800000', lineWidth: 2 },
+  { id: 'plot1', title: 'Buy Clip', color: '#FFFFFF', lineWidth: 1 },
+  { id: 'plot2', title: 'Sell Clip', color: '#FFFFFF', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -72,9 +74,24 @@ export function calculate(bars: Bar[], inputs: Partial<TrendTriggerFactorInputs>
     value: isNaN(v) ? NaN : v,
   }));
 
+  // Pine: bs = (ttf > bt) ? bt : ttf; us = (ttf < st) ? st : ttf
+  // fill(bl, tl, color=green, transp=75); fill(ul, tl, color=red, transp=75)
+  const bsPlot = ttfArr.map((v, i) => ({
+    time: bars[i].time,
+    value: isNaN(v) ? NaN : (v > buyTrigger ? buyTrigger : v),
+  }));
+  const usPlot = ttfArr.map((v, i) => ({
+    time: bars[i].time,
+    value: isNaN(v) ? NaN : (v < sellTrigger ? sellTrigger : v),
+  }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': ttfPlot },
+    plots: { 'plot0': ttfPlot, 'plot1': bsPlot, 'plot2': usPlot },
+    fills: [
+      { plot1: 'plot1', plot2: 'plot0', options: { color: 'rgba(0,128,0,0.25)' } },
+      { plot1: 'plot2', plot2: 'plot0', options: { color: 'rgba(255,0,0,0.25)' } },
+    ],
     hlines: [
       { value: buyTrigger, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Buy' } },
       { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },

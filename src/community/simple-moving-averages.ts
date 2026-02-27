@@ -1,7 +1,8 @@
 /**
  * Simple Moving Averages
  *
- * Five SMA lines at common periods: 10, 20, 50, 100, 200.
+ * Ten configurable SMA lines matching Pine source periods: 20,50,100,150,200,250,300,400,500,600.
+ * SMAs #1-#5 use blue/orange coloring, #6-#10 use green/red coloring in Pine.
  *
  * Reference: TradingView "Simple Moving Averages" (community)
  */
@@ -20,25 +21,30 @@ export const inputConfig: InputConfig[] = [
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
+const lengths = [20, 50, 100, 150, 200, 250, 300, 400, 500, 600];
+
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'SMA 10', color: '#FF6D00', lineWidth: 1 },
-  { id: 'plot1', title: 'SMA 20', color: '#2962FF', lineWidth: 1 },
-  { id: 'plot2', title: 'SMA 50', color: '#00E676', lineWidth: 1 },
-  { id: 'plot3', title: 'SMA 100', color: '#E91E63', lineWidth: 1 },
-  { id: 'plot4', title: 'SMA 200', color: '#9C27B0', lineWidth: 2 },
+  { id: 'plot0', title: 'SMA #1 (20)', color: '#2196F3', lineWidth: 1 },
+  { id: 'plot1', title: 'SMA #2 (50)', color: '#2196F3', lineWidth: 2 },
+  { id: 'plot2', title: 'SMA #3 (100)', color: '#2196F3', lineWidth: 1 },
+  { id: 'plot3', title: 'SMA #4 (150)', color: '#2196F3', lineWidth: 1 },
+  { id: 'plot4', title: 'SMA #5 (200)', color: '#2196F3', lineWidth: 4 },
+  { id: 'plot5', title: 'SMA #6 (250)', color: '#4CAF50', lineWidth: 1 },
+  { id: 'plot6', title: 'SMA #7 (300)', color: '#4CAF50', lineWidth: 2 },
+  { id: 'plot7', title: 'SMA #8 (400)', color: '#4CAF50', lineWidth: 1 },
+  { id: 'plot8', title: 'SMA #9 (500)', color: '#4CAF50', lineWidth: 1 },
+  { id: 'plot9', title: 'SMA #10 (600)', color: '#4CAF50', lineWidth: 4 },
 ];
 
 export const metadata = {
   title: 'Simple Moving Averages',
-  shortTitle: 'SMA5',
+  shortTitle: 'SMAs',
   overlay: true,
 };
 
 export function calculate(bars: Bar[], inputs: Partial<SimpleMovingAveragesInputs> = {}): IndicatorResult {
   const cfg = { ...defaultInputs, ...inputs };
   const src = getSourceSeries(bars, cfg.src);
-
-  const lengths = [10, 20, 50, 100, 200];
 
   const smaArrays = lengths.map((len) => ta.sma(src, len).toArray());
 

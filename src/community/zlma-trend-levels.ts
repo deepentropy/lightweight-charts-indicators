@@ -9,6 +9,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface ZlmaTrendLevelsInputs {
   length: number;
@@ -37,16 +38,18 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ZlmaTrendLevelsInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<ZlmaTrendLevelsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { length, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
   const n = bars.length;
 
-  // ZLEMA = 2 * EMA(src, length) - EMA(EMA(src, length), length)
+  // Pine uses: emaValue = ema(close, length), correction = close + (close - emaValue), zlma = ema(correction, length)
+  // signalUp = crossover(zlma, emaValue), signalDn = crossunder(zlma, emaValue)
   const ema1 = ta.ema(source, length);
   const ema2 = ta.ema(ema1, length);
   const zlema = ema1.mul(2).sub(ema2);
   const zlArr = zlema.toArray();
+  const emaArr = ema1.toArray();
 
   const warmup = length * 2;
   let support = NaN;
@@ -56,16 +59,33 @@ export function calculate(bars: Bar[], inputs: Partial<ZlmaTrendLevelsInputs> = 
   const plot0: { time: number; value: number; color?: string }[] = [];
   const plot1: { time: number; value: number }[] = [];
   const plot2: { time: number; value: number }[] = [];
+  const markers: MarkerData[] = [];
+  const fillColors: string[] = [];
 
   for (let i = 0; i < n; i++) {
     const val = i < warmup ? NaN : (zlArr[i] ?? NaN);
     const prev = i > 0 ? (zlArr[i - 1] ?? NaN) : NaN;
+    const emaVal = emaArr[i] ?? NaN;
+    const emaPrev = i > 0 ? (emaArr[i - 1] ?? NaN) : NaN;
 
-    // Determine trend direction
+    // Determine trend direction (Pine: zlma > zlma[3] ? up : down)
     let trend = prevTrend;
     if (!isNaN(val) && !isNaN(prev)) {
       if (val > prev) trend = 1;
       else if (val < prev) trend = -1;
+    }
+
+    // Detect crossover/crossunder for markers
+    // Pine: signalUp = crossover(zlma, emaValue), signalDn = crossunder(zlma, emaValue)
+    if (i >= warmup && !isNaN(val) && !isNaN(emaVal) && !isNaN(prev) && !isNaN(emaPrev)) {
+      const signalUp = prev <= emaPrev && val > emaVal;
+      const signalDn = prev >= emaPrev && val < emaVal;
+      if (signalUp) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'diamond', color: '#30d453', text: 'Up' });
+      }
+      if (signalDn) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'diamond', color: '#4043f1', text: 'Dn' });
+      }
     }
 
     // Detect trend flip and set levels
@@ -80,6 +100,13 @@ export function calculate(bars: Bar[], inputs: Partial<ZlmaTrendLevelsInputs> = 
     }
     prevTrend = trend;
 
+    // Fill between ZLMA and EMA: Pine fill(p1, p2, zlma, emaValue, color.new(zlma_color, 80), color.new(ema_col, 80))
+    if (i < warmup || isNaN(val) || isNaN(emaVal)) {
+      fillColors.push('rgba(0,0,0,0)');
+    } else {
+      fillColors.push(val > emaVal ? 'rgba(48,212,83,0.2)' : 'rgba(64,67,241,0.2)');
+    }
+
     const color = trend === 1 ? '#26A69A' : trend === -1 ? '#EF5350' : '#787B86';
     plot0.push({ time: bars[i].time, value: val, color });
     plot1.push({ time: bars[i].time, value: support });
@@ -89,6 +116,8 @@ export function calculate(bars: Bar[], inputs: Partial<ZlmaTrendLevelsInputs> = 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
+    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(48,212,83,0.2)' }, colors: fillColors }],
+    markers,
   };
 }
 

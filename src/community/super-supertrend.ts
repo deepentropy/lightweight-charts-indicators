@@ -8,6 +8,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData, PlotCandleData } from '../types';
 
 export interface SuperSupertrendInputs {
   atrLen: number;
@@ -92,8 +93,9 @@ function calcSuperTrend(bars: Bar[], atrArr: (number | null)[], mult: number): {
   return { st, dir };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<SuperSupertrendInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<SuperSupertrendInputs> = {}): IndicatorResult & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
   const { atrLen, mult1, mult2, mult3 } = { ...defaultInputs, ...inputs };
+  const n = bars.length;
 
   const atrArr = ta.atr(bars, atrLen).toArray();
 
@@ -110,6 +112,41 @@ export function calculate(bars: Bar[], inputs: Partial<SuperSupertrendInputs> = 
       return { time: bars[i].time, value: v, color };
     });
 
+  // Markers: plotarrow for each ST trend flip
+  // Pine: plotarrow(Trend1==1 and Trend1[1]==-1) up arrow lime, plotarrow(Trend1==-1 and Trend1[1]==1) down arrow red
+  // Also plotshape flags/triangles at bottom for cross events
+  const markers: MarkerData[] = [];
+  const allSTs = [
+    { data: st1, upColor: '#FFEB3B', label: 'ST1' },
+    { data: st2, upColor: '#26A69A', label: 'ST2' },
+    { data: st3, upColor: '#00E676', label: 'ST3' },
+  ];
+
+  for (let i = warmup + 1; i < n; i++) {
+    for (const { data, upColor, label } of allSTs) {
+      if (data.dir[i] === 1 && data.dir[i - 1] === -1) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: upColor, text: label });
+      } else if (data.dir[i] === -1 && data.dir[i - 1] === 1) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: label });
+      }
+    }
+  }
+
+  // plotCandles: Pine plots regular OHLC candles colored by trend
+  // plotcandle(open, high, low, close, color=(open < close) ? green : red, wickcolor=gray)
+  const candles: PlotCandleData[] = [];
+  for (let i = 0; i < n; i++) {
+    candles.push({
+      time: bars[i].time,
+      open: bars[i].open,
+      high: bars[i].high,
+      low: bars[i].low,
+      close: bars[i].close,
+      color: bars[i].open < bars[i].close ? '#26A69A' : '#EF5350',
+      wickColor: '#787B86',
+    });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {
@@ -117,6 +154,8 @@ export function calculate(bars: Bar[], inputs: Partial<SuperSupertrendInputs> = 
       'plot1': makePlot(st2),
       'plot2': makePlot(st3),
     },
+    markers,
+    plotCandles: { candle0: candles },
   };
 }
 

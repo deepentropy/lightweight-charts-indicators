@@ -9,7 +9,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { BarColorData } from '../types';
+import type { BarColorData, MarkerData } from '../types';
 
 export interface CMSlingShotInputs {
   emaFast: number;
@@ -37,7 +37,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CMSlingShotInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<CMSlingShotInputs> = {}): IndicatorResult & { barColors: BarColorData[]; markers: MarkerData[] } {
   const { emaFast, emaSlow } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -92,11 +92,32 @@ export function calculate(bars: Bar[], inputs: Partial<CMSlingShotInputs> = {}):
     barColors.push({ time: bars[i].time as number, color: barColor });
   }
 
+  // Markers: trend triangles + conservative entry arrows
+  const markers: MarkerData[] = [];
+  for (let i = warmup; i < n; i++) {
+    const fast = emaFastArr[i] ?? 0;
+    const slow = emaSlowArr[i] ?? 0;
+    const prevFast = emaFastArr[i - 1] ?? 0;
+    const prevSlow = emaSlowArr[i - 1] ?? 0;
+    const close = bars[i].close;
+    const prevClose = bars[i - 1].close;
+
+    // Conservative entry: close crosses above fast EMA in uptrend
+    if (fast > slow && prevClose < prevFast && close > fast) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#00E676', text: 'Buy' });
+    }
+    // Conservative entry: close crosses below fast EMA in downtrend
+    if (fast < slow && prevClose > prevFast && close < fast) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': fastPlot, 'plot1': slowPlot },
     fills: [{ plot1: 'plot0', plot2: 'plot1', colors: fillColors }],
     barColors,
+    markers,
   };
 }
 

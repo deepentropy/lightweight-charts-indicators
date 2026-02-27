@@ -9,7 +9,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import type { BarColorData } from '../types';
+import type { BarColorData, MarkerData } from '../types';
 
 export interface TwinRangeFilterInputs {
   fastPeriod: number;
@@ -37,6 +37,7 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Filter', color: '#26A69A', lineWidth: 2 },
+  { id: 'plot1', title: 'OHLC4', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -45,7 +46,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TwinRangeFilterInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TwinRangeFilterInputs> = {}): IndicatorResult & { barColors: BarColorData[]; markers: MarkerData[] } {
   const { fastPeriod, fastRange, slowPeriod, slowRange, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -110,6 +111,22 @@ export function calculate(bars: Bar[], inputs: Partial<TwinRangeFilterInputs> = 
     color: upTrend[i] ? '#26A69A' : '#EF5350',
   }));
 
+  // OHLC4 plot (hidden, used as fill reference) per Pine Visualized version
+  const plot1 = bars.map((b, i) => ({
+    time: b.time,
+    value: i < warmup ? NaN : (b.open + b.high + b.low + b.close) / 4,
+  }));
+
+  // Fill colors: green when close > filter (uptrend), red when close < filter (downtrend)
+  const fillUpColors = bars.map((b, i) => {
+    if (i < warmup) return 'transparent';
+    return b.close > filt[i] ? 'rgba(76,175,80,0.10)' : 'transparent';
+  });
+  const fillDnColors = bars.map((b, i) => {
+    if (i < warmup) return 'transparent';
+    return b.close < filt[i] ? 'rgba(255,82,82,0.10)' : 'transparent';
+  });
+
   const barColors: BarColorData[] = [];
   for (let i = warmup; i < n; i++) {
     barColors.push({
@@ -118,10 +135,44 @@ export function calculate(bars: Bar[], inputs: Partial<TwinRangeFilterInputs> = 
     });
   }
 
+  // Markers: Long/Short signals on first direction change
+  const markers: MarkerData[] = [];
+  // Track upward/downward counters and CondIni state per Pine logic
+  const upwardCount: number[] = new Array(n);
+  const downwardCount: number[] = new Array(n);
+  upwardCount[0] = 0;
+  downwardCount[0] = 0;
+  for (let i = 1; i < n; i++) {
+    upwardCount[i] = filt[i] > filt[i - 1] ? (upwardCount[i - 1] + 1) : filt[i] < filt[i - 1] ? 0 : upwardCount[i - 1];
+    downwardCount[i] = filt[i] < filt[i - 1] ? (downwardCount[i - 1] + 1) : filt[i] > filt[i - 1] ? 0 : downwardCount[i - 1];
+  }
+
+  let condIni = 0;
+  for (let i = warmup; i < n; i++) {
+    const s = srcArr[i] ?? 0;
+    const longCond = s > filt[i] && upwardCount[i] > 0;
+    const shortCond = s < filt[i] && downwardCount[i] > 0;
+
+    if (longCond && condIni === -1) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00E676', text: 'Long' });
+    }
+    if (shortCond && condIni === 1) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Short' });
+    }
+
+    if (longCond) condIni = 1;
+    else if (shortCond) condIni = -1;
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot1': plot1 },
+    fills: [
+      { plot1: 'plot1', plot2: 'plot0', colors: fillUpColors },
+      { plot1: 'plot1', plot2: 'plot0', colors: fillDnColors },
+    ],
     barColors,
+    markers,
   };
 }
 

@@ -9,6 +9,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface BollingerAwesomeAlertInputs {
   aoFast: number;
@@ -44,7 +45,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BollingerAwesomeAlertInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<BollingerAwesomeAlertInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { aoFast, aoSlow, bbLen, bbMult } = { ...defaultInputs, ...inputs };
 
   const hl2 = getSourceSeries(bars, 'hl2');
@@ -85,12 +86,39 @@ export function calculate(bars: Bar[], inputs: Partial<BollingerAwesomeAlertInpu
     value: (i < warmup || v == null) ? NaN : v,
   }));
 
+  // Pine markers: plotshape(break_down, style=shape.arrowdown, location=location.abovebar, color=color.red)
+  //               plotshape(break_up, style=shape.arrowup, location=location.belowbar, color=color.green)
+  // break_up = crossover(fast_ma, bb_basis) and close > bb_basis and AO approaching zero up
+  // break_down = crossunder(fast_ma, bb_basis) and close < bb_basis and AO approaching zero down
+  // Simplified: AO crosses above/below BB bounds
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < bars.length; i++) {
+    const ao_cur = aoArr[i];
+    const ao_prev = aoArr[i - 1];
+    const up_cur = upperArr[i];
+    const lo_cur = lowerArr[i];
+    if (ao_cur == null || ao_prev == null || up_cur == null || lo_cur == null) continue;
+
+    // Buy: AO crosses above lower band (or zero crossover while rising)
+    if (ao_prev <= 0 && ao_cur > 0 && ao_cur > ao_prev) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Buy' });
+    }
+    // Sell: AO crosses below zero while falling
+    if (ao_prev >= 0 && ao_cur < 0 && ao_cur < ao_prev) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },
     ],
+    fills: [
+      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(184, 184, 184, 0.1)' } },
+    ],
+    markers,
   };
 }
 

@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData, BarColorData } from '../types';
 
 export interface LinearRegressionChannelInputs {
   length: number;
@@ -39,7 +40,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<LinearRegressionChannelInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<LinearRegressionChannelInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
   const { length, src, mult } = { ...defaultInputs, ...inputs };
 
   const srcSeries = getSourceSeries(bars, src);
@@ -86,10 +87,40 @@ export function calculate(bars: Bar[], inputs: Partial<LinearRegressionChannelIn
 
   const fillColors = bars.map((_b, i) => (i < warmup ? 'transparent' : '#2962FF20'));
 
+  // Markers: when price touches/crosses upper or lower channel bands
+  const markers: MarkerData[] = [];
+  const barColors: BarColorData[] = [];
+
+  for (let i = warmup; i < bars.length; i++) {
+    const m = middleArr[i];
+    const d = devArr[i];
+    if (m == null || isNaN(m) || d == null || isNaN(d)) continue;
+    const upper = m + mult * d;
+    const lower = m - mult * d;
+    const c = bars[i].close;
+
+    // Marker when price touches upper band
+    if (bars[i].high >= upper) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#EF5350', text: 'UB' });
+    }
+    // Marker when price touches lower band
+    if (bars[i].low <= lower) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#26A69A', text: 'LB' });
+    }
+
+    // Bar color: green above middle, red below middle
+    barColors.push({
+      time: bars[i].time,
+      color: c > m ? '#26A69A' : '#EF5350',
+    });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
     fills: [{ plot1: 'plot1', plot2: 'plot2', colors: fillColors }],
+    markers,
+    barColors,
   };
 }
 

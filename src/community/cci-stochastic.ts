@@ -8,6 +8,7 @@
  */
 
 import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface CCIStochasticInputs {
   cciLen: number;
@@ -41,7 +42,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CCIStochasticInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<CCIStochasticInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { cciLen, stochLen, smoothK, smoothD } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -87,6 +88,32 @@ export function calculate(bars: Bar[], inputs: Partial<CCIStochasticInputs> = {}
     value: (v == null || i < warmup) ? NaN : v,
   }));
 
+  // Pine markers:
+  // trend_enter: crossunder(ma, OS) => buy arrow at 0; crossover(ma, OB) => sell arrow at 100
+  // trend_exit: crossunder(ma, OB) => sell arrow at 100; crossover(ma, OS) => buy arrow at 0
+  const markers: MarkerData[] = [];
+  // Use D line (plot1) as the "ma" per Pine default d_or_k="D"
+  for (let i = warmup + 1; i < bars.length; i++) {
+    const cur = dArr[i];
+    const prev = dArr[i - 1];
+    if (cur == null || prev == null) continue;
+
+    // Enter zone: crossunder(ma, OS=20) -> buy; crossover(ma, OB=80) -> sell
+    if (prev >= 20 && cur < 20) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Enter Buy' });
+    }
+    if (prev <= 80 && cur > 80) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Enter Sell' });
+    }
+    // Exit zone: crossunder(ma, OB=80) -> sell exit; crossover(ma, OS=20) -> buy exit
+    if (prev >= 80 && cur < 80) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#880E4F', text: 'Exit Sell' });
+    }
+    if (prev <= 20 && cur > 20) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#FF9800', text: 'Exit Buy' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
@@ -94,6 +121,10 @@ export function calculate(bars: Bar[], inputs: Partial<CCIStochasticInputs> = {}
       { value: 80, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 20, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
+    fills: [
+      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(41, 98, 255, 0.1)' } },
+    ],
+    markers,
   };
 }
 

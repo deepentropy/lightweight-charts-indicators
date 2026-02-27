@@ -1,31 +1,40 @@
 /**
  * Volume Flow v3
  *
- * Volume flow indicator using log price changes, stdev cutoff, and
- * directional volume force. Smoothed with SMA.
+ * Bull/bear volume analysis with moving averages, spike detection, and difference area.
+ * Plots: Volume (columns), Bull MA, Bear MA, Bull Vol Spike, Bear Vol Spike, Difference Value.
+ * MA type selectable: Simple, Exponential, Double Exponential.
  *
- * Reference: TradingView "Volume Flow v3" (community)
+ * Reference: TradingView "Volume Flow v3" by DepthHouse / oh92 (community)
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
 export interface VolumeFlowV3Inputs {
+  maType: string;
   length: number;
-  smoothLen: number;
+  factor: number;
 }
 
 export const defaultInputs: VolumeFlowV3Inputs = {
-  length: 20,
-  smoothLen: 3,
+  maType: 'Simple',
+  length: 14,
+  factor: 3.1,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1 },
-  { id: 'smoothLen', type: 'int', title: 'Smooth Length', defval: 3, min: 1 },
+  { id: 'maType', type: 'string', title: 'MA Type', defval: 'Simple', options: ['Simple', 'Exponential', 'Double Exponential'] },
+  { id: 'length', type: 'int', title: 'MA Length', defval: 14, min: 1 },
+  { id: 'factor', type: 'float', title: 'Spike Factor', defval: 3.1, min: 0.1 },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'VFlow', color: '#2962FF', lineWidth: 2 },
+  { id: 'volume', title: 'Volume', color: '#787B86', lineWidth: 1, style: 'columns' },
+  { id: 'bullMa', title: 'Bull MA', color: '#5AA650', lineWidth: 1 },
+  { id: 'bearMa', title: 'Bear MA', color: '#FF510D', lineWidth: 1 },
+  { id: 'bullSpike', title: 'Bull Vol Spike', color: '#5AA650', lineWidth: 1, style: 'columns' },
+  { id: 'bearSpike', title: 'Bear Vol Spike', color: '#FF510D', lineWidth: 1, style: 'columns' },
+  { id: 'diffValue', title: 'Difference Value', color: '#787B86', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -35,70 +44,108 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<VolumeFlowV3Inputs> = {}): IndicatorResult {
-  const { length, smoothLen } = { ...defaultInputs, ...inputs };
+  const { maType, length, factor } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
-  const hlc3Arr = bars.map((b) => (b.high + b.low + b.close) / 3);
+  // Basic volume split: bull = close > open ? vol : 0, bear = open > close ? vol : 0
+  const bullArr: number[] = new Array(n);
+  const bearArr: number[] = new Array(n);
+  const volArr: number[] = new Array(n);
 
-  // Log inter-bar change
-  const interArr: number[] = new Array(n);
-  interArr[0] = 0;
-  for (let i = 1; i < n; i++) {
-    interArr[i] = Math.log(hlc3Arr[i]) - Math.log(hlc3Arr[i - 1]);
+  for (let i = 0; i < n; i++) {
+    const vol = bars[i].volume ?? 0;
+    volArr[i] = vol;
+    bullArr[i] = bars[i].close > bars[i].open ? vol : 0;
+    bearArr[i] = bars[i].open > bars[i].close ? vol : 0;
   }
 
-  const interSeries = new Series(bars, (_b, i) => interArr[i]);
-  const vInterArr = ta.stdev(interSeries, 30).toArray();
+  // MA function selection
+  const bullSeries = new Series(bars, (_b, i) => bullArr[i]);
+  const bearSeries = new Series(bars, (_b, i) => bearArr[i]);
 
-  // Volume average and max
-  const volSeries = new Series(bars, (b) => b.volume ?? 0);
-  const vaveArr = ta.sma(volSeries, length).toArray();
+  let bullmaArr: (number | null)[];
+  let bearmaArr: (number | null)[];
 
-  // Direction and volume force
-  const dirForceArr: number[] = new Array(n);
+  if (maType === 'Exponential') {
+    bullmaArr = ta.ema(bullSeries, length).toArray();
+    bearmaArr = ta.ema(bearSeries, length).toArray();
+  } else if (maType === 'Double Exponential') {
+    // DEMA = 2 * EMA - EMA(EMA)
+    const bullEma1 = ta.ema(bullSeries, length).toArray();
+    const bullEma1Series = new Series(bars, (_b, i) => bullEma1[i] ?? 0);
+    const bullEma2 = ta.ema(bullEma1Series, length).toArray();
+    bullmaArr = bullEma1.map((v, i) => v != null && bullEma2[i] != null ? 2 * v - (bullEma2[i] ?? 0) : null);
+
+    const bearEma1 = ta.ema(bearSeries, length).toArray();
+    const bearEma1Series = new Series(bars, (_b, i) => bearEma1[i] ?? 0);
+    const bearEma2 = ta.ema(bearEma1Series, length).toArray();
+    bearmaArr = bearEma1.map((v, i) => v != null && bearEma2[i] != null ? 2 * v - (bearEma2[i] ?? 0) : null);
+  } else {
+    bullmaArr = ta.sma(bullSeries, length).toArray();
+    bearmaArr = ta.sma(bearSeries, length).toArray();
+  }
+
+  const warmup = maType === 'Double Exponential' ? length * 2 : length;
+
+  // Volume spikes: crossover(bull, bullma * factor) ? vol : na
+  const volumePlot: { time: number; value: number; color?: string }[] = [];
+  const bullMaPlot: { time: number; value: number }[] = [];
+  const bearMaPlot: { time: number; value: number }[] = [];
+  const bullSpikePlot: { time: number; value: number }[] = [];
+  const bearSpikePlot: { time: number; value: number }[] = [];
+  const diffPlot: { time: number; value: number; color?: string }[] = [];
+
   for (let i = 0; i < n; i++) {
-    const vInter = vInterArr[i] ?? 0;
-    const cutOff = 0.2 * vInter * bars[i].close;
-    const vave = vaveArr[i] ?? 1;
-    const vmax = vave * 2;
-    const vol = bars[i].volume ?? 0;
-    const vForce = vol > vmax ? vmax : vol;
-
-    let direction = 0;
-    if (i > 0) {
-      if (bars[i].close > bars[i - 1].close + cutOff) direction = 1;
-      else if (bars[i].close < bars[i - 1].close - cutOff) direction = -1;
+    const t = bars[i].time;
+    if (i < warmup) {
+      volumePlot.push({ time: t, value: NaN });
+      bullMaPlot.push({ time: t, value: NaN });
+      bearMaPlot.push({ time: t, value: NaN });
+      bullSpikePlot.push({ time: t, value: NaN });
+      bearSpikePlot.push({ time: t, value: NaN });
+      diffPlot.push({ time: t, value: NaN });
+      continue;
     }
 
-    dirForceArr[i] = direction * vForce;
+    const bma = bullmaArr[i] ?? 0;
+    const bema = bearmaArr[i] ?? 0;
+
+    // Volume colored by direction
+    const vClr = bars[i].close > bars[i].open ? '#5AA650' : '#FF510D';
+    volumePlot.push({ time: t, value: volArr[i], color: vClr });
+
+    // Bull/Bear MA * 2 (Pine plots bullma*2 and bearma*2)
+    bullMaPlot.push({ time: t, value: bma * 2 });
+    bearMaPlot.push({ time: t, value: bema * 2 });
+
+    // Volume spikes: crossover detection
+    const prevBull = i > 0 ? bullArr[i - 1] : 0;
+    const prevBullThresh = i > 0 ? (bullmaArr[i - 1] ?? 0) * factor : 0;
+    const gsig = prevBull <= prevBullThresh && bullArr[i] > bma * factor;
+    bullSpikePlot.push({ time: t, value: gsig ? volArr[i] : NaN });
+
+    const prevBear = i > 0 ? bearArr[i - 1] : 0;
+    const prevBearThresh = i > 0 ? (bearmaArr[i - 1] ?? 0) * factor : 0;
+    const rsig = prevBear <= prevBearThresh && bearArr[i] > bema * factor;
+    bearSpikePlot.push({ time: t, value: rsig ? volArr[i] : NaN });
+
+    // Difference: |bullma - bearma| / 2.5, colored by direction
+    const vfDif = bma - bema;
+    const vfAbsolute = Math.abs(vfDif);
+    const dClr = vfDif > 0 ? '#5AA650' : '#FF510D';
+    diffPlot.push({ time: t, value: vfAbsolute / 2.5, color: dClr });
   }
-
-  // SMA of direction * force
-  const dirForceSeries = new Series(bars, (_b, i) => dirForceArr[i]);
-  const vFlowArr = ta.sma(dirForceSeries, length).toArray();
-
-  // Optional additional smoothing
-  let finalArr: (number | null)[];
-  if (smoothLen > 1) {
-    const vFlowSeries = new Series(bars, (_b, i) => vFlowArr[i] ?? 0);
-    finalArr = ta.sma(vFlowSeries, smoothLen).toArray();
-  } else {
-    finalArr = vFlowArr;
-  }
-
-  const warmup = Math.max(length, 30) + smoothLen;
-
-  const plot0 = finalArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup || v == null ? NaN : v,
-  }));
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
-    hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
-    ],
+    plots: {
+      volume: volumePlot,
+      bullMa: bullMaPlot,
+      bearMa: bearMaPlot,
+      bullSpike: bullSpikePlot,
+      bearSpike: bearSpikePlot,
+      diffValue: diffPlot,
+    },
   };
 }
 

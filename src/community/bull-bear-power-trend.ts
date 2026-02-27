@@ -32,6 +32,8 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot2', title: 'Trend', color: '#FF6D00', lineWidth: 1 },
   { id: 'plot3', title: 'Bull Power', color: '#26A69A', lineWidth: 4, style: 'histogram' },
   { id: 'plot4', title: 'Bear Power', color: '#EF5350', lineWidth: 4, style: 'histogram' },
+  { id: 'plot5', title: 'Level 2', color: 'transparent', lineWidth: 0 },
+  { id: 'plot6', title: 'Level -2', color: 'transparent', lineWidth: 0 },
 ];
 
 export const hlineConfig = [
@@ -94,6 +96,9 @@ export function calculate(bars: Bar[], inputs: Partial<BullBearPowerTrendInputs>
     value: i < warmup ? NaN : Math.min(v, 0),
   }));
 
+  const level2Plot = bars.map((b) => ({ time: b.time, value: 2 }));
+  const levelNeg2Plot = bars.map((b) => ({ time: b.time, value: -2 }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {
@@ -102,8 +107,15 @@ export function calculate(bars: Bar[], inputs: Partial<BullBearPowerTrendInputs>
       'plot2': trendPlot,
       'plot3': bullHist,
       'plot4': bearHist,
+      'plot5': level2Plot,
+      'plot6': levelNeg2Plot,
     },
     hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
+    fills: [
+      { plot1: 'plot0', plot2: 'plot5', options: { color: 'rgba(0,128,0,0.15)' } },
+      { plot1: 'plot1', plot2: 'plot6', options: { color: 'rgba(255,0,0,0.15)' } },
+      { plot1: 'plot6', plot2: 'plot5', options: { color: 'rgba(255,255,255,0.12)' } },
+    ],
   };
 }
 

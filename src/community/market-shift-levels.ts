@@ -10,6 +10,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { BarColorData, PlotCandleData } from '../types';
 
 export interface MarketShiftLevelsInputs {
   pivotLen: number;
@@ -33,7 +34,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MarketShiftLevelsInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<MarketShiftLevelsInputs> = {}): IndicatorResult & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> } {
   const { pivotLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -72,9 +73,32 @@ export function calculate(bars: Bar[], inputs: Partial<MarketShiftLevelsInputs> 
     shiftPlot.push({ time: bars[i].time, value: i < warmup ? NaN : shiftLevel, color });
   }
 
+  // Pine barcolor(shift_col): close < level => red, close >= level => green
+  // Pine plotcandle(open, high, low, close, color=shift_col, wickcolor=shift_col, bordercolor=shift_col)
+  const barColors: BarColorData[] = [];
+  const candles: PlotCandleData[] = [];
+  for (let i = warmup; i < n; i++) {
+    const lvl = shiftPlot[i].value;
+    if (isNaN(lvl)) continue;
+    const color = bars[i].close < lvl ? '#EF5350' : '#26A69A';
+    barColors.push({ time: bars[i].time, color });
+    candles.push({
+      time: bars[i].time,
+      open: bars[i].open,
+      high: bars[i].high,
+      low: bars[i].low,
+      close: bars[i].close,
+      color,
+      borderColor: color,
+      wickColor: color,
+    });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': shiftPlot },
+    barColors,
+    plotCandles: { candle0: candles },
   };
 }
 

@@ -37,6 +37,7 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'WVF', color: '#787B86', lineWidth: 4, style: 'histogram' },
   { id: 'plot1', title: 'Upper Band', color: '#00BCD4', lineWidth: 2 },
+  { id: 'plot2', title: 'Range High Pct', color: '#FF9800', lineWidth: 4 },
 ];
 
 export const metadata = {
@@ -86,9 +87,15 @@ export function calculate(bars: Bar[], inputs: Partial<WilliamsVixFixInputs> = {
     return { time: b.time, value: (midLine[i]!) + mult * (sDev[i]!) };
   });
 
+  // Pine: rangeHigh = highest(wvf, lb) * ph
+  const rangeHighPlot = wvfHighest.map((v, i) => {
+    if (i < Math.max(warmup, lb) || v == null || isNaN(v)) return { time: bars[i].time, value: NaN };
+    return { time: bars[i].time, value: v * ph };
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': wvfPlot, 'plot1': upperPlot },
+    plots: { 'plot0': wvfPlot, 'plot1': upperPlot, 'plot2': rangeHighPlot },
   };
 }
 

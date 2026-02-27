@@ -9,6 +9,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface SRLevelsBreaksInputs {
   pivotLen: number;
@@ -33,7 +34,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SRLevelsBreaksInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<SRLevelsBreaksInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { pivotLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -49,6 +50,7 @@ export function calculate(bars: Bar[], inputs: Partial<SRLevelsBreaksInputs> = {
 
   const resistancePlot = [];
   const supportPlot = [];
+  const markers: MarkerData[] = [];
 
   for (let i = 0; i < n; i++) {
     if (i >= warmup && !isNaN(phArr[i]) && phArr[i] !== 0) {
@@ -60,9 +62,25 @@ export function calculate(bars: Bar[], inputs: Partial<SRLevelsBreaksInputs> = {
 
     // Break detection: invalidate level when price breaks through
     if (!isNaN(lastResistance) && bars[i].close > lastResistance) {
+      // Resistance break (bullish)
+      if (i >= warmup) {
+        const bullWick = (bars[i].open - bars[i].low) > (bars[i].close - bars[i].open);
+        markers.push({
+          time: bars[i].time, position: 'belowBar', shape: 'labelUp',
+          color: '#26A69A', text: bullWick ? 'Bull Wick' : 'B',
+        });
+      }
       lastResistance = NaN;
     }
     if (!isNaN(lastSupport) && bars[i].close < lastSupport) {
+      // Support break (bearish)
+      if (i >= warmup) {
+        const bearWick = (bars[i].open - bars[i].close) < (bars[i].high - bars[i].open);
+        markers.push({
+          time: bars[i].time, position: 'aboveBar', shape: 'labelDown',
+          color: '#EF5350', text: bearWick ? 'Bear Wick' : 'B',
+        });
+      }
       lastSupport = NaN;
     }
 
@@ -73,6 +91,7 @@ export function calculate(bars: Bar[], inputs: Partial<SRLevelsBreaksInputs> = {
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': resistancePlot, 'plot1': supportPlot },
+    markers,
   };
 }
 

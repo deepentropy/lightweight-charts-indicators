@@ -8,7 +8,7 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { PlotCandleData } from '../types';
+import type { PlotCandleData, BarColorData } from '../types';
 
 export interface CMHeikinAshiInputs {}
 
@@ -28,7 +28,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], _inputs: Partial<CMHeikinAshiInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], _inputs: Partial<CMHeikinAshiInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] } {
   const n = bars.length;
 
   const haClose: number[] = new Array(n);
@@ -66,10 +66,22 @@ export function calculate(bars: Bar[], _inputs: Partial<CMHeikinAshiInputs> = {}
     });
   }
 
+  // Pine: barcolor(heikUpColor() ? aqua: heikDownColor() ? red : na)
+  // heikUpColor = haclose > haopen, heikDownColor = haclose <= haopen
+  const barColors: BarColorData[] = [];
+  for (let i = 0; i < n; i++) {
+    if (haClose[i] > haOpen[i]) {
+      barColors.push({ time: bars[i].time as number, color: '#00FFFF' }); // aqua
+    } else {
+      barColors.push({ time: bars[i].time as number, color: '#FF0000' }); // red
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {},
     plotCandles: { candle0: candles },
+    barColors,
   };
 }
 

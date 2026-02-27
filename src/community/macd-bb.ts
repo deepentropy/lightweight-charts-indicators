@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface MACDBBInputs {
   fastLength: number;
@@ -49,7 +50,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MACDBBInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<MACDBBInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { fastLength, slowLength, signalLength, bbLength, bbMult, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
 
@@ -87,10 +88,28 @@ export function calculate(bars: Bar[], inputs: Partial<MACDBBInputs> = {}): Indi
   const toPlot = (arr: (number | null)[]) =>
     arr.map((v, i) => ({ time: bars[i].time, value: (i < warmup || v == null) ? NaN : v }));
 
+  // Pine barcolor: macd > Upper => yellow; macd < Lower => aqua
+  const barColors: BarColorData[] = [];
+  for (let i = warmup; i < bars.length; i++) {
+    const h = histArr[i];
+    const u = upperArr[i];
+    const l = lowerArr[i];
+    if (h == null || u == null || l == null) continue;
+    if (h > u) {
+      barColors.push({ time: bars[i].time, color: '#FFEB3B' });
+    } else if (h < l) {
+      barColors.push({ time: bars[i].time, color: '#00BCD4' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': toPlot(upperArr), 'plot2': toPlot(lowerArr), 'plot3': toPlot(basisArr) },
     hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
+    fills: [
+      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(33, 150, 243, 0.15)' } },
+    ],
+    barColors,
   };
 }
 

@@ -26,6 +26,7 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Upper', color: '#26A69A', lineWidth: 2 },
   { id: 'plot1', title: 'Lower', color: '#EF5350', lineWidth: 2 },
   { id: 'plot2', title: 'Midline', color: '#787B86', lineWidth: 1 },
+  { id: 'plot3', title: 'EMA', color: '#000000', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -105,9 +106,14 @@ export function calculate(bars: Bar[], inputs: Partial<RangeIdentifierInputs> = 
     fillColors.push(bullish ? '#26A69A40' : '#EF535040');
   }
 
+  const emaPlot = emaArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (v == null || i < warmup) ? NaN : v,
+  }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': upperPlot, 'plot1': lowerPlot, 'plot2': midPlot },
+    plots: { 'plot0': upperPlot, 'plot1': lowerPlot, 'plot2': midPlot, 'plot3': emaPlot },
     fills: [{ plot1: 'plot0', plot2: 'plot1', colors: fillColors }],
   };
 }

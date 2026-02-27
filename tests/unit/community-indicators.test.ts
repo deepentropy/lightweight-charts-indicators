@@ -21,7 +21,7 @@ import {
   SchaffTrendCycle,
   DonchianTrendRibbon,
   OBVMACD,
-  ADXDI,
+
   AwesomeOscillatorV2,
   CMEMATrendBars,
   BBFibonacciRatios,
@@ -46,7 +46,7 @@ import {
   MACDLeader,
   CMSlingShot,
   RangeIdentifier,
-  SlowStochastic,
+
   IFTStochRSICCI,
   VariableMA,
   SmoothedHeikenAshi,
@@ -454,27 +454,6 @@ describe('OBVMACD', () => {
   });
 });
 
-describe('ADXDI', () => {
-  const result = ADXDI.calculate(bars);
-
-  it('returns correct shape (DI+, DI-, ADX)', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
-  });
-
-  it('DI+ and DI- are non-negative', () => {
-    const diPlus = validValues(result, 'plot0');
-    const diMinus = validValues(result, 'plot1');
-    expect(diPlus.length).toBeGreaterThan(0);
-    diPlus.forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
-    diMinus.forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
-  });
-
-  it('ADX is non-negative', () => {
-    const adx = validValues(result, 'plot2');
-    expect(adx.length).toBeGreaterThan(0);
-    adx.forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
-  });
-});
 
 describe('AwesomeOscillatorV2', () => {
   const result = AwesomeOscillatorV2.calculate(bars);
@@ -884,22 +863,6 @@ describe('RangeIdentifier', () => {
   });
 });
 
-describe('SlowStochastic', () => {
-  const result = SlowStochastic.calculate(bars);
-
-  it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
-  });
-
-  it('values in 0-100 range', () => {
-    const vals = validValues(result);
-    expect(vals.length).toBeGreaterThan(0);
-    vals.forEach((v) => {
-      expect(v).toBeGreaterThanOrEqual(0);
-      expect(v).toBeLessThanOrEqual(100);
-    });
-  });
-});
 
 describe('IFTStochRSICCI', () => {
   const result = IFTStochRSICCI.calculate(bars);

@@ -8,7 +8,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, BarColorData, BgColorData } from '../types';
 
 export interface FollowLineInputs {
   bbPeriod: number;
@@ -41,7 +41,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<FollowLineInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<FollowLineInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } {
   const { bbPeriod, bbDeviations, useATRFilter, atrPeriod } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -107,10 +107,26 @@ export function calculate(bars: Bar[], inputs: Partial<FollowLineInputs> = {}): 
     }
   }
 
+  // Bar colors: blue in bullish trend, red/orange in bearish trend
+  const barColors: BarColorData[] = [];
+  const bgColors: BgColorData[] = [];
+  for (let i = warmup; i < n; i++) {
+    barColors.push({
+      time: bars[i].time,
+      color: iTrend[i] > 0 ? '#2962FF' : '#FF6D00',
+    });
+    bgColors.push({
+      time: bars[i].time,
+      color: iTrend[i] > 0 ? 'rgba(41,98,255,0.05)' : 'rgba(255,109,0,0.05)',
+    });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
     markers,
+    barColors,
+    bgColors,
   };
 }
 

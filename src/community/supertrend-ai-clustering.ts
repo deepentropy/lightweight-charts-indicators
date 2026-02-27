@@ -10,7 +10,7 @@
  */
 
 import { ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, BarColorData } from '../types';
 import type { TableData, TableCell } from '../types';
 
 export interface SupertrendAiClusteringInputs {
@@ -88,7 +88,7 @@ function calcSupertrendArrays(bars: Bar[], atrArr: (number | null)[], factor: nu
   return { st, dir };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<SupertrendAiClusteringInputs> = {}): IndicatorResult & { markers: MarkerData[]; tables: TableData } {
+export function calculate(bars: Bar[], inputs: Partial<SupertrendAiClusteringInputs> = {}): IndicatorResult & { markers: MarkerData[]; tables: TableData; barColors: BarColorData[] } {
   const { atrLen, minFactor, maxFactor, factorStep, trainLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -254,11 +254,22 @@ export function calculate(bars: Bar[], inputs: Partial<SupertrendAiClusteringInp
     cells,
   };
 
+  // barcolor: gradient based on trend direction (bullCss=teal, bearCss=red)
+  // Pine: barcolor(color.from_gradient(perf_idx, 0, 1, color.new(css, 80), css))
+  // Simplified: teal when uptrend (dir=1), red when downtrend (dir=-1), with faded color for lower perf
+  const barColors: BarColorData[] = [];
+  for (let i = warmup; i < n; i++) {
+    if (isNaN(finalSt[i])) continue;
+    if (finalDir[i] === 1) barColors.push({ time: bars[i].time, color: '#26A69A' });
+    else barColors.push({ time: bars[i].time, color: '#EF5350' });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     markers,
     tables,
+    barColors,
   };
 }
 

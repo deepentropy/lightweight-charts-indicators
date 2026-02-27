@@ -7,6 +7,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BgColorData } from '../types';
 
 export interface MFIRSIBollingerBandsInputs {
   rsiLength: number;
@@ -45,7 +46,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MFIRSIBollingerBandsInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<MFIRSIBollingerBandsInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
   const { rsiLength, bbLength, bbMult, useRSI, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
 
@@ -103,6 +104,20 @@ export function calculate(bars: Bar[], inputs: Partial<MFIRSIBollingerBandsInput
     value: (i < warmup || isNaN(v)) ? NaN : v,
   }));
 
+  // Pine bgcolor: bb_s > upper => red; bb_s < lower => green (highlight breaches)
+  const bgColors: BgColorData[] = [];
+  for (let i = warmup; i < bars.length; i++) {
+    const osc = oscArr[i];
+    const u = upperArr[i];
+    const l = lowerArr[i];
+    if (isNaN(osc) || u == null || l == null) continue;
+    if (osc > u) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(239, 83, 80, 0.1)' });
+    } else if (osc < l) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(38, 166, 154, 0.1)' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': oscPlot, 'plot1': toPlot(upperArr), 'plot2': toPlot(lowerArr), 'plot3': toPlot(basisArr) },
@@ -111,6 +126,10 @@ export function calculate(bars: Bar[], inputs: Partial<MFIRSIBollingerBandsInput
       { value: 30, options: { color: '#26A69A', linestyle: 'dashed', title: 'OS' } },
       { value: 50, options: { color: '#787B86', linestyle: 'dotted', title: 'Mid' } },
     ],
+    fills: [
+      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(33, 150, 243, 0.12)' } },
+    ],
+    bgColors,
   };
 }
 

@@ -8,7 +8,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { PlotCandleData } from '../types';
+import type { PlotCandleData, BarColorData } from '../types';
 
 export interface ModifiedHeikinAshiInputs {
   emaLen: number;
@@ -34,7 +34,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ModifiedHeikinAshiInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<ModifiedHeikinAshiInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] } {
   const { emaLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -97,10 +97,27 @@ export function calculate(bars: Bar[], inputs: Partial<ModifiedHeikinAshiInputs>
     });
   }
 
+  // Pine: barcolor(heikUpColor() ? lime: heikDownColor() ? red : na)
+  // heikUpColor = hlc3 >= emaAvg, heikDownColor = hlc3 < emaAvg
+  // emaAvg = (ema(haclose, uema) + ema(haopen, dema)) / 2
+  // smoothC = ema(haClose, emaLen), smoothO = ema(haOpen, emaLen)
+  const barColors: BarColorData[] = [];
+  for (let i = 0; i < n; i++) {
+    if (i < warmup || smoothO[i] == null || smoothC[i] == null) continue;
+    const hlc3 = (bars[i].high + bars[i].low + bars[i].close) / 3;
+    const emaAvg = (smoothC[i]! + smoothO[i]!) / 2;
+    if (hlc3 >= emaAvg) {
+      barColors.push({ time: bars[i].time as number, color: '#00FF00' }); // lime
+    } else {
+      barColors.push({ time: bars[i].time as number, color: '#FF0000' }); // red
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {},
     plotCandles: { candle0: candles },
+    barColors,
   };
 }
 

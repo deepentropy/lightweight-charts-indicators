@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface EMASuperTrendInputs {
   emaLen: number;
@@ -106,10 +107,34 @@ export function calculate(bars: Bar[], inputs: Partial<EMASuperTrendInputs> = {}
     return { time: bars[i].time, value: v, color };
   });
 
+  // Pine fill: between bodyMiddle and supertrend line (green/red based on direction)
+  // We fill between EMA (plot0) and SuperTrend (plot1) with dynamic colors
+  const fillColors: string[] = [];
+  for (let i = 0; i < n; i++) {
+    if (i < warmup) {
+      fillColors.push('rgba(0,0,0,0)');
+    } else {
+      fillColors.push(dirArr[i] === 1 ? 'rgba(0,128,0,0.10)' : 'rgba(255,0,0,0.10)');
+    }
+  }
+
+  // Pine label.new: buy/sell on supertrend direction change
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < n; i++) {
+    if (dirArr[i] === 1 && dirArr[i - 1] !== 1) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'BUY' });
+    }
+    if (dirArr[i] === -1 && dirArr[i - 1] !== -1) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'SELL' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
-  };
+    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(0,128,0,0.10)' }, colors: fillColors }],
+    markers,
+  } as IndicatorResult & { markers: MarkerData[] };
 }
 
 export const EMASupertrend = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

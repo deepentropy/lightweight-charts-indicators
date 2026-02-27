@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface PMaxRSIT3Inputs {
   rsiLen: number;
@@ -41,7 +42,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PMaxRSIT3Inputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<PMaxRSIT3Inputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { rsiLen, t3Len, t3Factor, atrMult } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -152,6 +153,29 @@ export function calculate(bars: Bar[], inputs: Partial<PMaxRSIT3Inputs> = {}): I
     return { time: bars[i].time, value: v, color };
   });
 
+  // Markers: Buy when T3 crosses above PMax, Sell when T3 crosses below PMax
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < n; i++) {
+    const prevT3 = t3[i - 1];
+    const curT3 = t3[i];
+    const prevPmax = pmaxArr[i - 1];
+    const curPmax = pmaxArr[i];
+    // Crossover: T3 crosses above PMax = Buy
+    if (prevT3 <= prevPmax && curT3 > curPmax) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
+    }
+    // Crossunder: T3 crosses below PMax = Sell
+    if (prevT3 >= prevPmax && curT3 < curPmax) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+    }
+  }
+
+  // Fill between T3 (plot0) and PMax (plot1): green when T3 > PMax, red otherwise
+  const fillColors = bars.map((_b, i) => {
+    if (i < warmup) return 'transparent';
+    return t3[i] > pmaxArr[i] ? 'rgba(38,166,154,0.20)' : 'rgba(239,83,80,0.20)';
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
@@ -159,6 +183,8 @@ export function calculate(bars: Bar[], inputs: Partial<PMaxRSIT3Inputs> = {}): I
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
+    fills: [{ plot1: 'plot0', plot2: 'plot1', colors: fillColors }],
+    markers,
   };
 }
 

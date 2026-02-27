@@ -84,6 +84,9 @@ export function calculate(bars: Bar[], inputs: Partial<MACDDEMAInputs> = {}): In
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': toPlot(macdArr), 'plot1': toPlot(sigArr), 'plot2': histPlot },
     hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
+    fills: [
+      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(33,150,243,0.15)' } },
+    ],
   };
 }
 

@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface ProfitMaximizerInputs {
   atrPeriod: number;
@@ -41,7 +42,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ProfitMaximizerInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<ProfitMaximizerInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { atrPeriod, atrMult, maLength, maType } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -103,6 +104,35 @@ export function calculate(bars: Bar[], inputs: Partial<ProfitMaximizerInputs> = 
 
   const warmup = Math.max(atrPeriod, maLength);
 
+  // Markers: buy when MA crosses above PMax, sell when MA crosses below PMax
+  // Pine: buySignalk = crossover(MAvg, PMax)
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < n; i++) {
+    const maCur = maArr[i] ?? 0;
+    const maPrev = maArr[i - 1] ?? 0;
+    const pmaxCur = pmaxArr[i];
+    const pmaxPrev = pmaxArr[i - 1];
+    // crossover: prev MA <= prev PMax and cur MA > cur PMax
+    if (maPrev <= pmaxPrev && maCur > pmaxCur) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
+    }
+    // crossunder: prev MA >= prev PMax and cur MA < cur PMax
+    if (maPrev >= pmaxPrev && maCur < pmaxCur) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+    }
+  }
+
+  // Fill between ohlc4 (price) and PMax: green when MAvg>PMax, red when MAvg<PMax
+  // Pine: fill(mPlot, pALL, color=MAvg>PMax ? color.green : MAvg<PMax ? color.red : na)
+  const fillColors: string[] = [];
+  for (let i = 0; i < n; i++) {
+    if (i < warmup) {
+      fillColors.push('rgba(0,0,0,0)');
+    } else {
+      fillColors.push(dirArr[i] === 1 ? 'rgba(38,166,154,0.15)' : 'rgba(239,83,80,0.15)');
+    }
+  }
+
   const plot0 = pmaxArr.map((v, i) => {
     if (i < warmup) return { time: bars[i].time, value: NaN };
     const color = dirArr[i] === 1 ? '#26A69A' : '#EF5350';
@@ -117,6 +147,8 @@ export function calculate(bars: Bar[], inputs: Partial<ProfitMaximizerInputs> = 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
+    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(38,166,154,0.15)' }, colors: fillColors }],
+    markers,
   };
 }
 

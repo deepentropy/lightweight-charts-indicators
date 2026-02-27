@@ -26,6 +26,8 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'RSI(2)', color: '#787B86', lineWidth: 4, style: 'histogram' },
+  { id: 'plot_band1', title: 'Upper Line 90', color: 'transparent', lineWidth: 0 },
+  { id: 'plot_band0', title: 'Lower Line 10', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -52,12 +54,19 @@ export function calculate(bars: Bar[], inputs: Partial<CMRSI2LowerInputs> = {}):
     return { time: bars[i].time, value: v, color };
   });
 
+  // Hidden level plots for fill reference (Pine: fill(band1, band0, color=silver, transp=90))
+  const plot_band1 = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : 90 }));
+  const plot_band0 = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : 10 }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot_band1': plot_band1, 'plot_band0': plot_band0 },
     hlines: [
       { value: 90, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 10, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
+    ],
+    fills: [
+      { plot1: 'plot_band1', plot2: 'plot_band0', options: { color: 'rgba(192,192,192,0.10)' } },
     ],
   };
 }

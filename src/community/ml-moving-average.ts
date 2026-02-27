@@ -10,6 +10,7 @@
  */
 
 import { getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData, BgColorData } from '../types';
 
 export interface MlMovingAverageInputs {
   window: number;
@@ -44,7 +45,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MlMovingAverageInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<MlMovingAverageInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
   const { window: win, sigma, mult, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
   const srcArr = source.toArray();
@@ -100,9 +101,25 @@ export function calculate(bars: Bar[], inputs: Partial<MlMovingAverageInputs> = 
     lowerArr[i] = center - mult * wStdev;
   }
 
+  // Compute trend state: os = 1 if close > upper and center rising, 0 if close < lower and center falling
+  const os: number[] = new Array(n).fill(0);
+  for (let i = warmup; i < n; i++) {
+    const c = bars[i].close;
+    const prev = i > warmup ? os[i - 1] : 0;
+    const rising = i > warmup && !isNaN(centerArr[i]) && !isNaN(centerArr[i - 1]) && centerArr[i] > centerArr[i - 1];
+    const falling = i > warmup && !isNaN(centerArr[i]) && !isNaN(centerArr[i - 1]) && centerArr[i] < centerArr[i - 1];
+    if (c > upperArr[i] && rising) os[i] = 1;
+    else if (c < lowerArr[i] && falling) os[i] = 0;
+    else os[i] = prev;
+  }
+
+  const bullCss = '#3179f5';
+  const bearCss = '#e91e63';
+
   const plot0 = centerArr.map((v, i) => ({
     time: bars[i].time,
     value: i < warmup - 1 ? NaN : v,
+    color: os[i] ? bullCss : bearCss,
   }));
 
   const plot1 = upperArr.map((v, i) => ({
@@ -115,10 +132,43 @@ export function calculate(bars: Bar[], inputs: Partial<MlMovingAverageInputs> = 
     value: i < warmup - 1 ? NaN : v,
   }));
 
+  // Markers: circle on trend change (os != os[1])
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < n; i++) {
+    if (os[i] !== os[i - 1] && !isNaN(centerArr[i])) {
+      markers.push({
+        time: bars[i].time,
+        position: 'inBar',
+        shape: 'circle',
+        color: os[i] ? bullCss : bearCss,
+        text: os[i] ? 'Bull' : 'Bear',
+      });
+    }
+  }
+
+  // bgColors: subtle background tint for current trend state
+  const bgColors: BgColorData[] = [];
+  for (let i = warmup; i < n; i++) {
+    if (os[i] !== os[i - 1]) {
+      bgColors.push({
+        time: bars[i].time,
+        color: os[i] ? 'rgba(49,121,245,0.08)' : 'rgba(233,30,99,0.08)',
+      });
+    }
+  }
+
+  // Dynamic fill colors: upper extremity gradient (bullish blue) and lower extremity gradient (bearish pink)
+  const fillColors = bars.map((_b, i) => {
+    if (i < warmup - 1 || isNaN(centerArr[i])) return 'transparent';
+    return os[i] ? 'rgba(91,156,246,0.15)' : 'rgba(233,30,99,0.15)';
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
-    fills: [{ plot1: 'plot1', plot2: 'plot2', options: { color: '#2962FF15' } }],
+    fills: [{ plot1: 'plot1', plot2: 'plot2', options: { color: '#2962FF15' }, colors: fillColors }],
+    markers,
+    bgColors,
   };
 }
 

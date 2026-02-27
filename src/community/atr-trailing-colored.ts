@@ -9,6 +9,7 @@
  */
 
 import { ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData, BarColorData } from '../types';
 
 export interface ATRTrailingColoredInputs {
   length: number;
@@ -83,10 +84,32 @@ export function calculate(bars: Bar[], inputs: Partial<ATRTrailingColoredInputs>
     return { time: bars[i].time, value: v, color };
   });
 
+  // Pine barcolor: green (pos=1), red (pos=-1), blue (neutral)
+  const barColors: BarColorData[] = [];
+  for (let i = warmup; i < n; i++) {
+    barColors.push({
+      time: bars[i].time,
+      color: dirArr[i] === 1 ? '#00FF00' : dirArr[i] === -1 ? '#FF0000' : '#0000FF',
+    });
+  }
+
+  // Markers: buy/sell on trend direction change
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < n; i++) {
+    if (dirArr[i] === 1 && dirArr[i - 1] !== 1) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#00FF00', text: 'Buy' });
+    }
+    if (dirArr[i] === -1 && dirArr[i - 1] !== -1) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#FF0000', text: 'Sell' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
-  };
+    markers,
+    barColors,
+  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] };
 }
 
 export const ATRTrailingColored = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

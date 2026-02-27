@@ -39,6 +39,7 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Prediction', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'Quick WMA', color: '#26A69A', lineWidth: 1 },
   { id: 'plot2', title: 'Slow WMA', color: '#EF5350', lineWidth: 1 },
+  { id: 'plot3', title: 'Mid', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -126,13 +127,23 @@ export function calculate(bars: Bar[], inputs: Partial<MlMomentumIndexInputs> = 
     value: i < warmup ? NaN : (v ?? NaN),
   }));
 
+  const plot3 = bars.map((b) => ({ time: b.time, value: 50 }));
+
+  const fillColors = prediction.map((v, i) => {
+    if (i < warmup || isNaN(v)) return 'transparent';
+    return v >= 50 ? 'rgba(0,255,0,0.1)' : 'rgba(255,0,0,0.1)';
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
     hlines: [
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 50, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Middle' } },
       { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
+    ],
+    fills: [
+      { plot1: 'plot0', plot2: 'plot3', options: { color: 'rgba(0,255,0,0.1)' }, colors: fillColors },
     ],
   };
 }

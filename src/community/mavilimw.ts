@@ -26,6 +26,7 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'MavilimW', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot1', title: 'MavWOld', color: '#2962FF', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -62,9 +63,23 @@ export function calculate(bars: Bar[], inputs: Partial<MavilimWInputs> = {}): In
     return { time: bars[i].time, value: val, color };
   });
 
+  // MavWOld: fixed Fibonacci periods 3/5/8/13/21/34
+  const m1Old = ta.wma(close, 3);
+  const m2Old = ta.wma(m1Old, 5);
+  const m3Old = ta.wma(m2Old, 8);
+  const m4Old = ta.wma(m3Old, 13);
+  const m5Old = ta.wma(m4Old, 21);
+  const mavwOld = ta.wma(m5Old, 34);
+  const mavwOldArr = mavwOld.toArray();
+  const warmupOld = 34;
+  const plot1 = mavwOldArr.map((v, i) => ({
+    time: bars[i].time,
+    value: i < warmupOld || v == null || isNaN(v) ? NaN : v,
+  }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot1': plot1 },
   };
 }
 

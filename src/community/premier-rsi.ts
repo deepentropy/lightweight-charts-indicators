@@ -32,7 +32,8 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Premier RSI', color: '#000000', lineWidth: 2, style: 'histogram' },
+  { id: 'plot0', title: 'Premier RSI', color: '#000000', lineWidth: 2 },
+  { id: 'plot1', title: 'PRO Histo', color: '#787B86', lineWidth: 1, style: 'histogram' },
 ];
 
 export const metadata = {
@@ -60,23 +61,43 @@ export function calculate(bars: Bar[], inputs: Partial<PremierRSIInputs> = {}): 
   const warmup = rsiLength + stochLength + len * 2;
 
   const barColors: BarColorData[] = [];
-  const plot0 = ssArr.map((v, i) => {
-    if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
+  const proValues: number[] = new Array(bars.length).fill(NaN);
+  for (let i = 0; i < bars.length; i++) {
+    const v = ssArr[i];
+    if (i < warmup || v == null) continue;
     const expss = Math.exp(v);
-    const pro = (expss - 1) / (expss + 1);
-    // Histogram color: red when negative, green when positive
-    const color = pro < 0 ? '#FF0000' : '#00FF00';
-    // barcolor: red if < -0.9, orange if < -0.2, lime if > 0.9, green if > 0.2
-    if (pro < -0.9) barColors.push({ time: bars[i].time as number, color: '#FF0000' });
-    else if (pro < -0.2) barColors.push({ time: bars[i].time as number, color: '#FFA500' });
-    else if (pro > 0.9) barColors.push({ time: bars[i].time as number, color: '#00FF00' });
-    else if (pro > 0.2) barColors.push({ time: bars[i].time as number, color: '#008000' });
-    return { time: bars[i].time, value: pro, color };
+    proValues[i] = (expss - 1) / (expss + 1);
+  }
+
+  // Pine: plot(pro, title="Premier RSI Stoch", color=black, linewidth=2) - line plot
+  const plot0 = proValues.map((v, i) => ({
+    time: bars[i].time,
+    value: isNaN(v) ? NaN : v,
+  }));
+
+  // Pine: plot(pro, color=iff(pro<0,red,green), style=histogram, title="PROHisto") - colored histogram
+  const plot1 = proValues.map((v, i) => {
+    if (isNaN(v)) return { time: bars[i].time, value: NaN };
+    return { time: bars[i].time, value: v, color: v < 0 ? '#FF0000' : '#00FF00' };
   });
+
+  // barcolor: pro<0 ? (pro<pro[1]?red:orange) : (pro>pro[1]?lime:green)
+  for (let i = warmup; i < bars.length; i++) {
+    const pro = proValues[i];
+    const prevPro = i > 0 ? proValues[i - 1] : NaN;
+    if (isNaN(pro)) continue;
+    let color: string;
+    if (pro < 0) {
+      color = pro < prevPro ? '#FF0000' : '#FFA500';
+    } else {
+      color = pro > prevPro ? '#00FF00' : '#008000';
+    }
+    barColors.push({ time: bars[i].time as number, color });
+  }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot1': plot1 },
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'dotted', title: 'Zero' } },
       { value: 0.9, options: { color: '#26A69A', linestyle: 'solid', title: 'Overbought' } },

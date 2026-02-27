@@ -24,7 +24,10 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'VA%', color: '#26A69A', lineWidth: 4, style: 'histogram' },
+  { id: 'plot0', title: 'VA%', color: '#787B86', lineWidth: 2 },
+  { id: 'plot1', title: 'VAPI Histogram', color: '#787B86', lineWidth: 4, style: 'histogram' },
+  { id: 'plotU', title: 'DummyU', color: '#787B86', lineWidth: 1 },
+  { id: 'plotL', title: 'DummyL', color: '#787B86', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -52,22 +55,53 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeAccumulationPctInpu
 
   const warmup = length;
 
-  const plot0 = bars.map((b, i) => {
+  const vaValues: number[] = new Array(n);
+  for (let i = 0; i < n; i++) {
     const smaVA = smaVAArr[i];
     const smaVol = smaVolArr[i];
     if (i < warmup || isNaN(smaVA) || isNaN(smaVol) || smaVol === 0) {
-      return { time: b.time, value: NaN };
+      vaValues[i] = NaN;
+    } else {
+      vaValues[i] = (smaVA / smaVol) * 100;
     }
-    const vaPct = (smaVA / smaVol) * 100;
-    const color = vaPct >= 0 ? '#26A69A' : '#EF5350';
-    return { time: b.time, value: vaPct, color };
+  }
+
+  // plot0: VA% oscillator line
+  const plot0 = vaValues.map((v, i) => ({
+    time: bars[i].time,
+    value: isNaN(v) ? NaN : v,
+  }));
+
+  // plot1: histogram (same values, colored)
+  const plot1 = vaValues.map((v, i) => ({
+    time: bars[i].time,
+    value: isNaN(v) ? NaN : v,
+    color: v >= 0 ? '#787B86' : '#787B86',
+  }));
+
+  // DummyU: us = va<0 ? 0 : (va==0 ? va[prev] : va) — positive portion capped at 0 on negative side
+  // DummyL: ls = va>0 ? 0 : (va==0 ? va[prev] : va) — negative portion capped at 0 on positive side
+  const plotU = vaValues.map((v, i) => {
+    if (isNaN(v)) return { time: bars[i].time, value: NaN };
+    const us = v < 0 ? 0 : (v === 0 ? (vaValues[i - 1] ?? 0) : v);
+    return { time: bars[i].time, value: us };
+  });
+
+  const plotL = vaValues.map((v, i) => {
+    if (isNaN(v)) return { time: bars[i].time, value: NaN };
+    const ls = v > 0 ? 0 : (v === 0 ? (vaValues[i - 1] ?? 0) : v);
+    return { time: bars[i].time, value: ls };
   });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plotU': plotU, 'plotL': plotL },
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
+    ],
+    fills: [
+      { plot1: 'plotU', plot2: 'plot1', options: { color: 'rgba(255, 0, 0, 0.5)' } },
+      { plot1: 'plotL', plot2: 'plot1', options: { color: 'rgba(0, 255, 0, 0.5)' } },
     ],
   };
 }

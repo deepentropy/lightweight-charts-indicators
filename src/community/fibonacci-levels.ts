@@ -1,34 +1,45 @@
 /**
  * Fibonacci Levels
  *
- * Basic Fibonacci retracement with longer lookback.
- * Plots 7 levels from 0% to 100% between lowest low and highest high.
+ * EMA-based midline with 6 symmetric Fibonacci deviation bands above and below.
+ * Uses standard deviation of effective close (max/min of open,close) multiplied
+ * by Fibonacci-derived factors (lm, lm2, lm3, lm4, lm5, lm6).
+ * Total: 13 plots (midline + 6 up + 6 down).
  *
- * Reference: TradingView "Fibonacci Levels" (community)
+ * Reference: TradingView "Fibonacci levels" (community)
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
 export interface FibonacciLevelsInputs {
-  length: number;
+  fastPeriod: number;
+  emaPeriod: number;
 }
 
 export const defaultInputs: FibonacciLevelsInputs = {
-  length: 100,
+  fastPeriod: 50,
+  emaPeriod: 100,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 100, min: 2 },
+  { id: 'fastPeriod', type: 'int', title: '50 MA', defval: 50, min: 1 },
+  { id: 'emaPeriod', type: 'int', title: '100 MA', defval: 100, min: 2 },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: '0%', color: '#787B86', lineWidth: 1 },
-  { id: 'plot1', title: '23.6%', color: '#FF6D00', lineWidth: 1 },
-  { id: 'plot2', title: '38.2%', color: '#FF6D00', lineWidth: 1 },
-  { id: 'plot3', title: '50%', color: '#FFEB3B', lineWidth: 1 },
-  { id: 'plot4', title: '61.8%', color: '#FF6D00', lineWidth: 1 },
-  { id: 'plot5', title: '78.6%', color: '#FF6D00', lineWidth: 1 },
-  { id: 'plot6', title: '100%', color: '#787B86', lineWidth: 1 },
+  { id: 'midline', title: 'Mid Line', color: '#FF0000', lineWidth: 2 },
+  { id: 'up1', title: '1 Up', color: '#787B86', lineWidth: 1 },
+  { id: 'up2', title: '2 Up', color: '#787B86', lineWidth: 1 },
+  { id: 'up3', title: '3 Up', color: '#787B86', lineWidth: 1 },
+  { id: 'up4', title: '4 Up', color: '#787B86', lineWidth: 1 },
+  { id: 'up5', title: '5 Up', color: '#787B86', lineWidth: 1 },
+  { id: 'up6', title: '6 Up', color: '#787B86', lineWidth: 1 },
+  { id: 'down1', title: '1 Down', color: '#787B86', lineWidth: 1 },
+  { id: 'down2', title: '2 Down', color: '#787B86', lineWidth: 1 },
+  { id: 'down3', title: '3 Down', color: '#787B86', lineWidth: 1 },
+  { id: 'down4', title: '4 Down', color: '#787B86', lineWidth: 1 },
+  { id: 'down5', title: '5 Down', color: '#787B86', lineWidth: 1 },
+  { id: 'down6', title: '6 Down', color: '#787B86', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -38,34 +49,78 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<FibonacciLevelsInputs> = {}): IndicatorResult {
-  const { length } = { ...defaultInputs, ...inputs };
+  const { emaPeriod } = { ...defaultInputs, ...inputs };
+  const n = bars.length;
 
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
+  // effclose = max(open,close) if close>=open, else min(open,close)
+  const effCloseSeries = new Series(bars, (b) =>
+    b.close >= b.open ? Math.max(b.open, b.close) : Math.min(b.open, b.close)
+  );
 
-  const highestArr = ta.highest(highSeries, length).toArray();
-  const lowestArr = ta.lowest(lowSeries, length).toArray();
+  const midlineArr = ta.ema(effCloseSeries, emaPeriod).toArray();
+  const devArr = ta.stdev(effCloseSeries, emaPeriod).toArray();
 
-  const warmup = length;
-  const fibLevels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0];
+  // Compute max deviation multiplier per bar, then EMA it
+  const toc = bars.map(b => Math.max(b.open, b.close));
+  const boc = bars.map(b => Math.min(b.open, b.close));
 
-  const plots: Record<string, { time: number; value: number }[]> = {};
-  for (let f = 0; f < fibLevels.length; f++) {
-    plots[`plot${f}`] = [];
+  const maxMultArr: number[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const mid = midlineArr[i] ?? 0;
+    const dev = devArr[i] ?? 0;
+    if (dev === 0 || isNaN(mid) || isNaN(dev)) {
+      maxMultArr[i] = 0;
+    } else {
+      const plusDevMult = toc[i] > mid ? (toc[i] - mid) / dev : 0;
+      const minusDevMult = boc[i] < mid ? (mid - boc[i]) / dev : 0;
+      maxMultArr[i] = Math.max(plusDevMult, minusDevMult);
+    }
   }
 
-  for (let i = 0; i < bars.length; i++) {
-    if (i < warmup || isNaN(highestArr[i]) || isNaN(lowestArr[i])) {
-      for (let f = 0; f < fibLevels.length; f++) {
-        plots[`plot${f}`].push({ time: bars[i].time, value: NaN });
+  const maxMultSeries = new Series(bars, (_b, i) => maxMultArr[i]);
+  const lmArr = ta.ema(maxMultSeries, emaPeriod).toArray();
+
+  const warmup = emaPeriod;
+
+  // Pine Fibonacci multipliers:
+  // lm, lm2=lm/2, lm3=lm2*0.38196601, lm4=lm*1.38196601, lm5=lm*1.61803399, lm6=(lm+lm2)/2
+  const plotIds = ['midline', 'up1', 'up2', 'up3', 'up4', 'up5', 'up6', 'down1', 'down2', 'down3', 'down4', 'down5', 'down6'];
+  const plots: Record<string, { time: number; value: number }[]> = {};
+  for (const id of plotIds) {
+    plots[id] = [];
+  }
+
+  for (let i = 0; i < n; i++) {
+    const mid = midlineArr[i] ?? NaN;
+    const dev = devArr[i] ?? NaN;
+    const lm = lmArr[i] ?? NaN;
+
+    if (i < warmup || isNaN(mid) || isNaN(dev) || isNaN(lm)) {
+      for (const id of plotIds) {
+        plots[id].push({ time: bars[i].time, value: NaN });
       }
     } else {
-      const h = highestArr[i];
-      const l = lowestArr[i];
-      const range = h - l;
-      for (let f = 0; f < fibLevels.length; f++) {
-        plots[`plot${f}`].push({ time: bars[i].time, value: l + range * fibLevels[f] });
-      }
+      const lm2 = lm / 2;
+      const lm3 = lm2 * 0.38196601;
+      const lm4 = lm * 1.38196601;
+      const lm5 = lm * 1.61803399;
+      const lm6 = (lm + lm2) / 2;
+
+      plots['midline'].push({ time: bars[i].time, value: mid });
+      // Up levels: 1=lm3, 2=lm2, 3=lm6, 4=lm, 5=lm4, 6=lm5 (per Pine plot order)
+      plots['up1'].push({ time: bars[i].time, value: mid + dev * lm3 });
+      plots['up2'].push({ time: bars[i].time, value: mid + dev * lm2 });
+      plots['up3'].push({ time: bars[i].time, value: mid + dev * lm6 });
+      plots['up4'].push({ time: bars[i].time, value: mid + dev * lm });
+      plots['up5'].push({ time: bars[i].time, value: mid + dev * lm4 });
+      plots['up6'].push({ time: bars[i].time, value: mid + dev * lm5 });
+      // Down levels: same multipliers, subtracted
+      plots['down1'].push({ time: bars[i].time, value: mid - dev * lm3 });
+      plots['down2'].push({ time: bars[i].time, value: mid - dev * lm2 });
+      plots['down3'].push({ time: bars[i].time, value: mid - dev * lm6 });
+      plots['down4'].push({ time: bars[i].time, value: mid - dev * lm });
+      plots['down5'].push({ time: bars[i].time, value: mid - dev * lm4 });
+      plots['down6'].push({ time: bars[i].time, value: mid - dev * lm5 });
     }
   }
 

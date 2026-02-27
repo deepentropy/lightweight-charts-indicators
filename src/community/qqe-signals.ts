@@ -7,6 +7,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface QQESignalsInputs {
   rsiLen: number;
@@ -40,7 +41,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<QQESignalsInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<QQESignalsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { rsiLen, smoothFactor, qqeFactor, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const wildersLen = rsiLen * 2 - 1;
@@ -111,12 +112,29 @@ export function calculate(bars: Bar[], inputs: Partial<QQESignalsInputs> = {}): 
     value: i < warmup ? NaN : v,
   }));
 
+  // Markers: QQE cross signals (first bar RSI crosses trailing stop)
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < n; i++) {
+    const sr = srArr[i] ?? 0;
+    const tr = trailing[i];
+
+    // Long: trend flips bullish (RSI crosses above trailing)
+    if (trendDir[i] === 1 && trendDir[i - 1] === -1) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Long' });
+    }
+    // Short: trend flips bearish (RSI crosses below trailing)
+    if (trendDir[i] === -1 && trendDir[i - 1] === 1) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Short' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     hlines: [
       { value: 50, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Midline' } },
     ],
+    markers,
   };
 }
 

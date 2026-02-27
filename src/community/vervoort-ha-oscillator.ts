@@ -8,6 +8,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface VervoortHAOscillatorInputs {
   temaLength: number;
@@ -31,7 +32,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VervoortHAOscillatorInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<VervoortHAOscillatorInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { temaLength } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -123,12 +124,22 @@ export function calculate(bars: Bar[], inputs: Partial<VervoortHAOscillatorInput
     return { time: b.time, value: osc, color };
   });
 
+  // Pine: barcolor(overlayMode ? hacolt>0?green : hacolt<0?red : blue : na)
+  // hacolt maps to oscillator sign: >0 = green, <0 = red, 0 = blue
+  const barColors: BarColorData[] = [];
+  for (let i = warmup; i < n; i++) {
+    const osc = haClose[i] !== 0 ? (haClose[i] - haOpen[i]) / haClose[i] * 100 : 0;
+    const color = osc > 0 ? '#008000' : osc < 0 ? '#FF0000' : '#0000FF'; // green/red/blue
+    barColors.push({ time: bars[i].time as number, color });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
     ],
+    barColors,
   };
 }
 

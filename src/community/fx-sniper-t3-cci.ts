@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface FXSniperT3CCIInputs {
   cciLength: number;
@@ -40,7 +41,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { cciLength, t3Length, t3Factor, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
   const srcArr = source.toArray();
@@ -115,6 +116,22 @@ export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}
     value: isNaN(v) ? NaN : v,
   }));
 
+  // Pine: pos = xccir > 0 ? 1 : xccir < 0 ? -1 : pos[1]
+  // barcolor(pos == -1 ? red : pos == 1 ? green : blue)
+  const barColors: BarColorData[] = [];
+  let pos = 0;
+  for (let i = 0; i < bars.length; i++) {
+    const v = t3Arr[i];
+    if (!isNaN(v)) {
+      if (v > 0) pos = 1;
+      else if (v < 0) pos = -1;
+    }
+    if (i >= cciLength - 1 && !isNaN(t3Arr[i])) {
+      const color = pos === 1 ? '#008000' : pos === -1 ? '#FF0000' : '#0000FF'; // green/red/blue
+      barColors.push({ time: bars[i].time as number, color });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
@@ -123,6 +140,7 @@ export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}
       { value: 100, options: { color: '#EF5350', linestyle: 'dashed', title: 'OB' } },
       { value: -100, options: { color: '#26A69A', linestyle: 'dashed', title: 'OS' } },
     ],
+    barColors,
   };
 }
 

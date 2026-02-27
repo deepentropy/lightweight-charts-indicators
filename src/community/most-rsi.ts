@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface MOSTRSIInputs {
   rsiLen: number;
@@ -30,6 +31,7 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'RSI MA', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'MOST', color: '#FF6D00', lineWidth: 2 },
+  { id: 'plot2', title: 'RSI', color: '#7E57C2', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -38,7 +40,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { rsiLen, percent, maLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -88,13 +90,44 @@ export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): Ind
     return { time: bars[i].time, value: mostLag };
   });
 
+  // Pine: plot(rsi, "RSI", color=#7E57C2) - raw RSI line
+  const rsiArr = rsiSeries.toArray();
+  const plot2 = rsiArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (v == null || i < rsiLen) ? NaN : v,
+  }));
+
+  // Pine markers: cro = crossover(exMov, MOST) => BUY; cru = crossunder(exMov, MOST) => SELL
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < n; i++) {
+    const val = rsiMaArr[i] ?? NaN;
+    const prevVal = rsiMaArr[i - 1] ?? NaN;
+    const mostVal = most[i];
+    const prevMost = most[i - 1];
+    if (isNaN(val) || isNaN(prevVal)) continue;
+
+    // crossover: prevVal <= prevMost and val > mostVal
+    if (prevVal <= prevMost && val > mostVal) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#0F18BF', text: 'BUY' });
+    }
+    // crossunder: prevVal >= prevMost and val < mostVal
+    if (prevVal >= prevMost && val < mostVal) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#0F18BF', text: 'SELL' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
     hlines: [
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
+      { value: 50, options: { color: 'rgba(120,123,134,0.5)', linestyle: 'dotted' as const, title: 'Midline' } },
       { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
+    fills: [
+      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(126, 87, 194, 0.1)' } },
+    ],
+    markers,
   };
 }
 

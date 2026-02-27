@@ -9,6 +9,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface RSIDivergenceInputs {
   rsiLen: number;
@@ -39,7 +40,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RSIDivergenceInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<RSIDivergenceInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { rsiLen, pivotLen, src } = { ...defaultInputs, ...inputs };
 
   const source = getSourceSeries(bars, src);
@@ -63,6 +64,71 @@ export function calculate(bars: Bar[], inputs: Partial<RSIDivergenceInputs> = {}
     value: (v == null || i < warmup + 2) ? NaN : v,
   }));
 
+  // Pivot-based divergence detection markers
+  const markers: MarkerData[] = [];
+  const rsiClean = rsiArr.map(v => v ?? 0);
+
+  // Find pivot lows and highs in RSI for divergence detection
+  for (let i = warmup + pivotLen; i < bars.length - pivotLen; i++) {
+    // Check for pivot low in RSI
+    let isPivotLow = true;
+    let isPivotHigh = true;
+    for (let j = 1; j <= pivotLen; j++) {
+      if (rsiClean[i - j] <= rsiClean[i] || rsiClean[i + j] <= rsiClean[i]) isPivotLow = false;
+      if (rsiClean[i - j] >= rsiClean[i] || rsiClean[i + j] >= rsiClean[i]) isPivotHigh = false;
+    }
+
+    if (isPivotLow) {
+      // Look back for previous pivot low to detect bullish divergence
+      for (let k = i - pivotLen - 1; k >= warmup + pivotLen; k--) {
+        let prevPivLow = true;
+        for (let j = 1; j <= pivotLen; j++) {
+          if (rsiClean[k - j] <= rsiClean[k] || rsiClean[k + j] <= rsiClean[k]) { prevPivLow = false; break; }
+        }
+        if (prevPivLow) {
+          // Bullish divergence: price lower low, RSI higher low
+          if (bars[i].low < bars[k].low && rsiClean[i] > rsiClean[k]) {
+            markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Bull Div' });
+          }
+          // Hidden bullish: price higher low, RSI lower low
+          if (bars[i].low > bars[k].low && rsiClean[i] < rsiClean[k]) {
+            markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#66BB6A', text: 'H.Bull' });
+          }
+          break;
+        }
+      }
+    }
+
+    if (isPivotHigh) {
+      // Look back for previous pivot high to detect bearish divergence
+      for (let k = i - pivotLen - 1; k >= warmup + pivotLen; k--) {
+        let prevPivHigh = true;
+        for (let j = 1; j <= pivotLen; j++) {
+          if (rsiClean[k - j] >= rsiClean[k] || rsiClean[k + j] >= rsiClean[k]) { prevPivHigh = false; break; }
+        }
+        if (prevPivHigh) {
+          // Bearish divergence: price higher high, RSI lower high
+          if (bars[i].high > bars[k].high && rsiClean[i] < rsiClean[k]) {
+            markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Bear Div' });
+          }
+          // Hidden bearish: price lower high, RSI higher high
+          if (bars[i].high < bars[k].high && rsiClean[i] > rsiClean[k]) {
+            markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#FF7043', text: 'H.Bear' });
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // Fill between RSI and Signal (positive = green, negative = red)
+  const fillColors = bars.map((_b, i) => {
+    const r = rsiArr[i];
+    const s = sigArr[i];
+    if (r == null || s == null || i < warmup + 2) return 'transparent';
+    return r > s ? 'rgba(38,166,154,0.15)' : 'rgba(239,83,80,0.15)';
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
@@ -70,6 +136,8 @@ export function calculate(bars: Bar[], inputs: Partial<RSIDivergenceInputs> = {}
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
+    fills: [{ plot1: 'plot0', plot2: 'plot1', colors: fillColors }],
+    markers,
   };
 }
 

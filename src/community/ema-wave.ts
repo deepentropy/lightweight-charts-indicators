@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface EMAWaveInputs {
   src: SourceType;
@@ -38,7 +39,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EMAWaveInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<EMAWaveInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const src = getSourceSeries(bars, cfg.src);
   const srcArr = src.toArray();
@@ -56,6 +57,26 @@ export function calculate(bars: Bar[], inputs: Partial<EMAWaveInputs> = {}): Ind
       value: i < warmup ? NaN : (av ?? 0) - (b[i] ?? 0),
     }));
 
+  // barcolor: exhaustion spikes
+  // Pine: wc = src-ema(src,clength=50), wb = src-ema(src,blength=25), wa = src-ema(src,alength=5)
+  // wcf = wb!=0 ? wc/wb > cutoff : false, wbf = wa!=0 ? wb/wa > cutoff : false
+  // barcolor: both wcf+wbf -> #81F7F3, either -> fuchsia
+  const cutoff = 10;
+  const barColors: BarColorData[] = [];
+  for (let i = warmup; i < bars.length; i++) {
+    const s = srcArr[i] ?? 0;
+    const e8 = ema8[i] ?? 0;
+    const e34 = ema34[i] ?? 0;
+    const e55 = ema55[i] ?? 0;
+    const wa = s - e8;
+    const wb = e8 - e34;  // approximation: using ema8/ema34 as wave A/B
+    const wc = e8 - e55;  // using ema55 as wave C
+    const wcf = wb !== 0 ? Math.abs(wc / wb) > cutoff : false;
+    const wbf = wa !== 0 ? Math.abs(wb / wa) > cutoff : false;
+    if (wcf && wbf) barColors.push({ time: bars[i].time, color: '#81F7F3' });
+    else if (wcf || wbf) barColors.push({ time: bars[i].time, color: '#E040FB' });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {
@@ -65,6 +86,7 @@ export function calculate(bars: Bar[], inputs: Partial<EMAWaveInputs> = {}): Ind
       'plot3': makePlot(ema8, ema89),
     },
     hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
+    barColors,
   };
 }
 

@@ -10,6 +10,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface VdubSniperInputs {
   len1: number;
@@ -44,8 +45,9 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VdubSniperInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<VdubSniperInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { len1, len2, len3, src } = { ...defaultInputs, ...inputs };
+  const n = bars.length;
 
   const source = getSourceSeries(bars, src);
   const ema1 = ta.ema(source, len1);
@@ -62,6 +64,44 @@ export function calculate(bars: Bar[], inputs: Partial<VdubSniperInputs> = {}): 
 
   const warmup = len3;
 
+  // Markers from Pine signal logic:
+  // EMA direction: ema(close,13) rising = +1, falling = -1
+  // Signal 1: tema/dema cross with vh1/vl1 momentum
+  // is_call = tema > dema and signal > low and (signal-signal[1] > signal[1]-signal[2]) and direction > 0
+  // is_put  = tema < dema and signal < high and (signal[1]-signal > signal[2]-signal[1]) and direction < 0
+  const markers: MarkerData[] = [];
+  const ema13 = ta.ema(source, 13).toArray();
+
+  // Simplified signal: wave1 cross above/below zero combined with direction
+  for (let i = warmup + 1; i < n; i++) {
+    const w1Cur = w1Arr[i] ?? 0;
+    const w1Prev = w1Arr[i - 1] ?? 0;
+    const dir13cur = ema13[i] ?? 0;
+    const dir13prev = i >= 2 ? (ema13[i - 2] ?? 0) : dir13cur;
+    const rising = dir13cur > dir13prev;
+    const falling = dir13cur < dir13prev;
+
+    // Buy: wave1 crosses above 0 in rising trend
+    if (w1Prev <= 0 && w1Cur > 0 && rising) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: '*BUY*' });
+    }
+    // Sell: wave1 crosses below 0 in falling trend
+    if (w1Prev >= 0 && w1Cur < 0 && falling) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: '*SELL*' });
+    }
+  }
+
+  // Fill between wave1 and wave2 lines
+  const fillColors: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const c = cArr[i];
+    if (c == null || i < warmup) {
+      fillColors.push('rgba(0,0,0,0)');
+    } else {
+      fillColors.push(c >= 0 ? 'rgba(38,166,154,0.15)' : 'rgba(239,83,80,0.15)');
+    }
+  }
+
   const toPlot = (arr: (number | null)[]) =>
     arr.map((v, i) => ({
       time: bars[i].time,
@@ -77,9 +117,11 @@ export function calculate(bars: Bar[], inputs: Partial<VdubSniperInputs> = {}): 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': toPlot(w1Arr), 'plot1': toPlot(w2Arr), 'plot2': plot2 },
+    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(38,166,154,0.15)' }, colors: fillColors }],
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Zero' } },
     ],
+    markers,
   };
 }
 

@@ -596,9 +596,6 @@ export { ZeroLagMACD, calculate as calculateZeroLagMACD } from './community/zero
 export type { ZeroLagMACDInputs } from './community/zero-lag-macd';
 
 // ADX and DI
-import * as adxDiIndicator from './community/adx-di';
-export { ADXDI, calculate as calculateADXDI } from './community/adx-di';
-export type { ADXDIInputs } from './community/adx-di';
 
 // Awesome Oscillator V2
 import * as awesomeOscV2Indicator from './community/awesome-oscillator-v2';
@@ -726,9 +723,6 @@ export { MACDLeader, calculate as calculateMACDLeader } from './community/macd-l
 export type { MACDLeaderInputs } from './community/macd-leader';
 
 // Slow Stochastic
-import * as slowStochasticIndicator from './community/slow-stochastic';
-export { SlowStochastic, calculate as calculateSlowStochastic } from './community/slow-stochastic';
-export type { SlowStochasticInputs } from './community/slow-stochastic';
 
 // IFT Stoch RSI CCI
 import * as iftStochRsiCciIndicator from './community/ift-stoch-rsi-cci';
@@ -893,9 +887,6 @@ export { CCIOBV, calculate as calculateCCIOBV } from './community/cci-obv';
 export type { CCIOBVInputs } from './community/cci-obv';
 
 // CMADX
-import * as cmAdxIndicator from './community/cm-adx';
-export { CMADX, calculate as calculateCMADX } from './community/cm-adx';
-export type { CMADXInputs } from './community/cm-adx';
 
 // CMEnhancedIchimoku
 import * as cmEnhancedIchimokuIndicator from './community/cm-enhanced-ichimoku';
@@ -923,9 +914,6 @@ export { CMLaguerrePPO, calculate as calculateCMLaguerrePPO } from './community/
 export type { CMLaguerrePPOInputs } from './community/cm-laguerre-ppo';
 
 // CMParabolicSAR
-import * as cmParabolicSarIndicator from './community/cm-parabolic-sar';
-export { CMParabolicSAR, calculate as calculateCMParabolicSAR } from './community/cm-parabolic-sar';
-export type { CMParabolicSARInputs } from './community/cm-parabolic-sar';
 
 // CMPriceAction
 import * as cmPriceActionIndicator from './community/cm-price-action';
@@ -1525,6 +1513,23 @@ import * as mlMovingAverageIndicator from './community/ml-moving-average';
 import * as mlRsiIndicator from './community/ml-rsi';
 import * as supertrendAiClusteringIndicator from './community/supertrend-ai-clustering';
 import * as volumeSupertrendAiIndicator from './community/volume-supertrend-ai';
+
+// Medium Wave 2 community indicators
+import * as traderXoIndicator from './community/trader-xo';
+import * as bankerFundFlowIndicator from './community/banker-fund-flow';
+import * as adaptiveMacdIndicator from './community/adaptive-macd';
+import * as radiusTrendIndicator from './community/radius-trend';
+import * as ultimateRsiIndicator from './community/ultimate-rsi';
+import * as adaptiveTrendFlowIndicator from './community/adaptive-trend-flow';
+import * as adaptiveHullMaIndicator from './community/adaptive-hull-ma';
+import * as weightedMaFunctionIndicator from './community/weighted-ma-function';
+import * as supertrendCciIndicator from './community/supertrend-cci';
+import * as consolidationZonesIndicator from './community/consolidation-zones';
+import * as divergenceIndicatorIndicator from './community/divergence-indicator';
+import * as falseBreakoutIndicator from './community/false-breakout';
+import * as maConvergingIndicator from './community/ma-converging';
+import * as pivotTrailingMaxminIndicator from './community/pivot-trailing-maxmin';
+import * as redkTpxIndicator from './community/redk-tpx';
 export { ZeroLagEMA, calculate as calculateZeroLagEMA } from './community/zero-lag-ema';
 
 export { BjorgumTripleEma } from './community/bjorgum-triple-ema';
@@ -1560,6 +1565,22 @@ export { MlMovingAverage } from './community/ml-moving-average';
 export { MlRsi } from './community/ml-rsi';
 export { SupertrendAiClustering } from './community/supertrend-ai-clustering';
 export { VolumeSuperTrendAi } from './community/volume-supertrend-ai';
+
+export { TraderXO } from './community/trader-xo';
+export { BankerFundFlow } from './community/banker-fund-flow';
+export { AdaptiveMACD } from './community/adaptive-macd';
+export { RadiusTrend } from './community/radius-trend';
+export { UltimateRSI } from './community/ultimate-rsi';
+export { AdaptiveTrendFlow } from './community/adaptive-trend-flow';
+export { AdaptiveHullMA } from './community/adaptive-hull-ma';
+export { WeightedMAFunction } from './community/weighted-ma-function';
+export { SupertrendCCI } from './community/supertrend-cci';
+export { ConsolidationZones } from './community/consolidation-zones';
+export { DivergenceIndicator } from './community/divergence-indicator';
+export { FalseBreakout } from './community/false-breakout';
+export { MAConverging } from './community/ma-converging';
+export { PivotTrailingMaxMin } from './community/pivot-trailing-maxmin';
+export { RedKTPX } from './community/redk-tpx';
 export type { ZeroLagEMAInputs } from './community/zero-lag-ema';
 
 export type { BjorgumTripleEmaInputs } from './community/bjorgum-triple-ema';
@@ -1595,6 +1616,22 @@ export type { MlMovingAverageInputs } from './community/ml-moving-average';
 export type { MlRsiInputs } from './community/ml-rsi';
 export type { SupertrendAiClusteringInputs } from './community/supertrend-ai-clustering';
 export type { VolumeSuperTrendAiInputs } from './community/volume-supertrend-ai';
+
+export type { TraderXOInputs } from './community/trader-xo';
+export type { BankerFundFlowInputs } from './community/banker-fund-flow';
+export type { AdaptiveMACDInputs } from './community/adaptive-macd';
+export type { RadiusTrendInputs } from './community/radius-trend';
+export type { UltimateRSIInputs } from './community/ultimate-rsi';
+export type { AdaptiveTrendFlowInputs } from './community/adaptive-trend-flow';
+export type { AdaptiveHullMAInputs } from './community/adaptive-hull-ma';
+export type { WeightedMAFunctionInputs } from './community/weighted-ma-function';
+export type { SupertrendCCIInputs } from './community/supertrend-cci';
+export type { ConsolidationZonesInputs } from './community/consolidation-zones';
+export type { DivergenceIndicatorInputs } from './community/divergence-indicator';
+export type { FalseBreakoutInputs } from './community/false-breakout';
+export type { MAConvergingInputs } from './community/ma-converging';
+export type { PivotTrailingMaxMinInputs } from './community/pivot-trailing-maxmin';
+export type { RedKTPXInputs } from './community/redk-tpx';
 
 
 
@@ -3423,19 +3460,6 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     calculate: zeroLagMacdIndicator.calculate,
   },
   {
-    id: 'adx-di',
-    group: 'community',
-    name: 'ADX and DI',
-    shortName: 'ADX DI',
-    category: 'Trend',
-    overlay: false,
-    metadata: adxDiIndicator.metadata,
-    inputConfig: adxDiIndicator.inputConfig as InputConfig[],
-    plotConfig: adxDiIndicator.plotConfig as PlotConfig[],
-    defaultInputs: { ...adxDiIndicator.defaultInputs },
-    calculate: adxDiIndicator.calculate,
-  },
-  {
     id: 'awesome-oscillator-v2',
     group: 'community',
     name: 'Awesome Oscillator V2',
@@ -3759,19 +3783,6 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: macdLeaderIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...macdLeaderIndicator.defaultInputs },
     calculate: macdLeaderIndicator.calculate,
-  },
-  {
-    id: 'slow-stochastic',
-    group: 'community',
-    name: 'Slow Stochastic',
-    shortName: 'SlowStoch',
-    category: 'Momentum',
-    overlay: false,
-    metadata: slowStochasticIndicator.metadata,
-    inputConfig: slowStochasticIndicator.inputConfig as InputConfig[],
-    plotConfig: slowStochasticIndicator.plotConfig as PlotConfig[],
-    defaultInputs: { ...slowStochasticIndicator.defaultInputs },
-    calculate: slowStochasticIndicator.calculate,
   },
   {
     id: 'ift-stoch-rsi-cci',
@@ -4190,19 +4201,6 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     calculate: cciObvIndicator.calculate,
   },
   {
-    id: 'cm-adx',
-    group: 'community',
-    name: 'CM ADX V1',
-    shortName: 'CM ADX',
-    category: 'Trend',
-    overlay: false,
-    metadata: cmAdxIndicator.metadata,
-    inputConfig: cmAdxIndicator.inputConfig as InputConfig[],
-    plotConfig: cmAdxIndicator.plotConfig as PlotConfig[],
-    defaultInputs: { ...cmAdxIndicator.defaultInputs },
-    calculate: cmAdxIndicator.calculate,
-  },
-  {
     id: 'cm-enhanced-ichimoku',
     group: 'community',
     name: 'CM Enhanced Ichimoku Cloud V5',
@@ -4266,19 +4264,6 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: cmLaguerrePpoIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...cmLaguerrePpoIndicator.defaultInputs },
     calculate: cmLaguerrePpoIndicator.calculate,
-  },
-  {
-    id: 'cm-parabolic-sar',
-    group: 'community',
-    name: 'CM Parabolic SAR',
-    shortName: 'CMSAR',
-    category: 'Oscillators',
-    overlay: true,
-    metadata: cmParabolicSarIndicator.metadata,
-    inputConfig: cmParabolicSarIndicator.inputConfig as InputConfig[],
-    plotConfig: cmParabolicSarIndicator.plotConfig as PlotConfig[],
-    defaultInputs: { ...cmParabolicSarIndicator.defaultInputs },
-    calculate: cmParabolicSarIndicator.calculate,
   },
   {
     id: 'cm-price-action',
@@ -6169,6 +6154,203 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     plotConfig: volumeSupertrendAiIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...volumeSupertrendAiIndicator.defaultInputs },
     calculate: volumeSupertrendAiIndicator.calculate,
+  },
+
+  // Medium Wave 2 community indicators
+  {
+    id: 'trader-xo',
+    group: 'community',
+    name: 'Trader XO Macro Trend Scanner',
+    shortName: 'TraderXO',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: traderXoIndicator.metadata,
+    inputConfig: traderXoIndicator.inputConfig as InputConfig[],
+    plotConfig: traderXoIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...traderXoIndicator.defaultInputs },
+    calculate: traderXoIndicator.calculate,
+  },
+  {
+    id: 'banker-fund-flow',
+    group: 'community',
+    name: 'Banker Fund Flow Trend Oscillator',
+    shortName: 'BankerFundFlow',
+    category: 'Oscillators',
+    overlay: false,
+    metadata: bankerFundFlowIndicator.metadata,
+    inputConfig: bankerFundFlowIndicator.inputConfig as InputConfig[],
+    plotConfig: bankerFundFlowIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...bankerFundFlowIndicator.defaultInputs },
+    calculate: bankerFundFlowIndicator.calculate,
+  },
+  {
+    id: 'adaptive-macd',
+    group: 'community',
+    name: 'Adaptive MACD',
+    shortName: 'AdaptiveMACD',
+    category: 'Momentum',
+    overlay: false,
+    metadata: adaptiveMacdIndicator.metadata,
+    inputConfig: adaptiveMacdIndicator.inputConfig as InputConfig[],
+    plotConfig: adaptiveMacdIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...adaptiveMacdIndicator.defaultInputs },
+    calculate: adaptiveMacdIndicator.calculate,
+  },
+  {
+    id: 'radius-trend',
+    group: 'community',
+    name: 'Radius Trend [ChartPrime]',
+    shortName: 'RadiusTrend',
+    category: 'Trend',
+    overlay: true,
+    metadata: radiusTrendIndicator.metadata,
+    inputConfig: radiusTrendIndicator.inputConfig as InputConfig[],
+    plotConfig: radiusTrendIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...radiusTrendIndicator.defaultInputs },
+    calculate: radiusTrendIndicator.calculate,
+  },
+  {
+    id: 'ultimate-rsi',
+    group: 'community',
+    name: 'Ultimate RSI [LuxAlgo]',
+    shortName: 'UltimateRSI',
+    category: 'Momentum',
+    overlay: false,
+    metadata: ultimateRsiIndicator.metadata,
+    inputConfig: ultimateRsiIndicator.inputConfig as InputConfig[],
+    plotConfig: ultimateRsiIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ultimateRsiIndicator.defaultInputs },
+    calculate: ultimateRsiIndicator.calculate,
+  },
+  {
+    id: 'adaptive-trend-flow',
+    group: 'community',
+    name: 'Adaptive Trend Flow [QuantAlgo]',
+    shortName: 'AdaptiveTrendFlow',
+    category: 'Trend',
+    overlay: true,
+    metadata: adaptiveTrendFlowIndicator.metadata,
+    inputConfig: adaptiveTrendFlowIndicator.inputConfig as InputConfig[],
+    plotConfig: adaptiveTrendFlowIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...adaptiveTrendFlowIndicator.defaultInputs },
+    calculate: adaptiveTrendFlowIndicator.calculate,
+  },
+  {
+    id: 'adaptive-hull-ma',
+    group: 'community',
+    name: '72s: Adaptive Hull Moving Average+',
+    shortName: 'AdaptiveHullMA',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: adaptiveHullMaIndicator.metadata,
+    inputConfig: adaptiveHullMaIndicator.inputConfig as InputConfig[],
+    plotConfig: adaptiveHullMaIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...adaptiveHullMaIndicator.defaultInputs },
+    calculate: adaptiveHullMaIndicator.calculate,
+  },
+  {
+    id: 'weighted-ma-function',
+    group: 'community',
+    name: 'Beta-Weighted Moving Average',
+    shortName: 'WeightedMAFunction',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: weightedMaFunctionIndicator.metadata,
+    inputConfig: weightedMaFunctionIndicator.inputConfig as InputConfig[],
+    plotConfig: weightedMaFunctionIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...weightedMaFunctionIndicator.defaultInputs },
+    calculate: weightedMaFunctionIndicator.calculate,
+  },
+  {
+    id: 'supertrend-cci',
+    group: 'community',
+    name: 'BEST Supertrend CCI',
+    shortName: 'SupertrendCCI',
+    category: 'Trend',
+    overlay: true,
+    metadata: supertrendCciIndicator.metadata,
+    inputConfig: supertrendCciIndicator.inputConfig as InputConfig[],
+    plotConfig: supertrendCciIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...supertrendCciIndicator.defaultInputs },
+    calculate: supertrendCciIndicator.calculate,
+  },
+  {
+    id: 'consolidation-zones',
+    group: 'community',
+    name: 'Consolidation Zones - Live',
+    shortName: 'ConsolidationZones',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: consolidationZonesIndicator.metadata,
+    inputConfig: consolidationZonesIndicator.inputConfig as InputConfig[],
+    plotConfig: consolidationZonesIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...consolidationZonesIndicator.defaultInputs },
+    calculate: consolidationZonesIndicator.calculate,
+  },
+  {
+    id: 'divergence-indicator',
+    group: 'community',
+    name: 'Divergence Indicator',
+    shortName: 'DivergenceIndicator',
+    category: 'Momentum',
+    overlay: false,
+    metadata: divergenceIndicatorIndicator.metadata,
+    inputConfig: divergenceIndicatorIndicator.inputConfig as InputConfig[],
+    plotConfig: divergenceIndicatorIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...divergenceIndicatorIndicator.defaultInputs },
+    calculate: divergenceIndicatorIndicator.calculate,
+  },
+  {
+    id: 'false-breakout',
+    group: 'community',
+    name: 'False Breakout (Expo)',
+    shortName: 'FalseBreakout',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: falseBreakoutIndicator.metadata,
+    inputConfig: falseBreakoutIndicator.inputConfig as InputConfig[],
+    plotConfig: falseBreakoutIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...falseBreakoutIndicator.defaultInputs },
+    calculate: falseBreakoutIndicator.calculate,
+  },
+  {
+    id: 'ma-converging',
+    group: 'community',
+    name: 'Moving Average Converging',
+    shortName: 'MAConverging',
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: maConvergingIndicator.metadata,
+    inputConfig: maConvergingIndicator.inputConfig as InputConfig[],
+    plotConfig: maConvergingIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...maConvergingIndicator.defaultInputs },
+    calculate: maConvergingIndicator.calculate,
+  },
+  {
+    id: 'pivot-trailing-maxmin',
+    group: 'community',
+    name: 'Pivot Based Trailing Maxima & Minima',
+    shortName: 'PivotTrailingMaxMin',
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: pivotTrailingMaxminIndicator.metadata,
+    inputConfig: pivotTrailingMaxminIndicator.inputConfig as InputConfig[],
+    plotConfig: pivotTrailingMaxminIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...pivotTrailingMaxminIndicator.defaultInputs },
+    calculate: pivotTrailingMaxminIndicator.calculate,
+  },
+  {
+    id: 'redk-tpx',
+    group: 'community',
+    name: 'RedK Trader Pressure Index',
+    shortName: 'RedKTPX',
+    category: 'Momentum',
+    overlay: false,
+    metadata: redkTpxIndicator.metadata,
+    inputConfig: redkTpxIndicator.inputConfig as InputConfig[],
+    plotConfig: redkTpxIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...redkTpxIndicator.defaultInputs },
+    calculate: redkTpxIndicator.calculate,
   },
   ...candlestickEntries([
     ['abandoned-baby-bearish', abandonedBabyBearishIndicator],

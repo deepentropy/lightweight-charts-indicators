@@ -8,6 +8,7 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData, BarColorData } from '../types';
 
 export interface DMIADXInputs {
   adxLen: number;
@@ -38,7 +39,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<DMIADXInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<DMIADXInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
   const { adxLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -96,6 +97,75 @@ export function calculate(bars: Bar[], inputs: Partial<DMIADXInputs> = {}): Indi
   const toPlot = (arr: number[], wu: number) =>
     arr.map((v, i) => ({ time: bars[i].time, value: i < wu ? NaN : v }));
 
+  // Markers: trend entry signals based on DI crossovers + ADX strength
+  const markers: MarkerData[] = [];
+  const barColors: BarColorData[] = [];
+  const hlRange = 20;
+  const hlTrend = 35;
+
+  for (let i = adxWarmup + 1; i < n; i++) {
+    const sig = adxArr[i];
+    const diUp = diPlusArr[i] >= diMinusArr[i];
+    const diDn = diMinusArr[i] > diPlusArr[i];
+    const diUpPrev = diPlusArr[i - 1] >= diMinusArr[i - 1];
+    const diDnPrev = diMinusArr[i - 1] > diPlusArr[i - 1];
+    const sigUp = sig > adxArr[i - 1];
+    const inRange = sig <= hlRange;
+    const inRangePrev = adxArr[i - 1] <= hlRange;
+
+    // Bullish trend entry
+    const entryLong = (!inRange && diUp && sigUp && !diUpPrev) ||
+                      (!inRange && diUp && sigUp && sig > hlRange && inRangePrev);
+    // Bearish trend entry
+    const entryShort = (!inRange && diDn && sigUp && !diDnPrev) ||
+                       (!inRange && diDn && sigUp && sig > hlRange && inRangePrev);
+    // Strong bullish
+    const entryLongStr = !inRange && diUp && sigUp && diPlusArr[i] >= hlTrend;
+    // Strong bearish
+    const entryShortStr = !inRange && diDn && sigUp && diMinusArr[i] > hlTrend;
+    // DI cross (exit)
+    const crossDi = (diPlusArr[i] >= diMinusArr[i]) !== (diPlusArr[i - 1] >= diMinusArr[i - 1]);
+    const exitLong = (crossDi && diUpPrev) || (inRange && !inRangePrev);
+    const exitShort = (crossDi && diDnPrev) || (inRange && !inRangePrev);
+
+    if (entryLongStr) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#006400', text: 'Strong Bull' });
+    } else if (entryLong) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#006400', text: 'Bull' });
+    }
+    if (entryShortStr) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#8B0000', text: 'Strong Bear' });
+    } else if (entryShort) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#8B0000', text: 'Bear' });
+    }
+    if (exitLong || exitShort) {
+      markers.push({ time: bars[i].time, position: 'inBar', shape: 'xcross', color: '#FF9800', text: 'Exit' });
+    }
+
+    // Bar color based on ADX/DI state
+    const barCol = inRange ? '#FF9800' :
+      (sigUp && diUp) ? '#006400' :
+      (!sigUp && diUp) ? '#388e3c' :
+      (sigUp && diDn) ? '#8B0000' :
+      (!sigUp && diDn) ? '#b71c1c' : '';
+    if (barCol) {
+      barColors.push({ time: bars[i].time, color: barCol });
+    }
+  }
+
+  // Fill between +DI and -DI
+  const fillColors = bars.map((_b, i) => {
+    if (i < adxWarmup) return 'transparent';
+    const sig = adxArr[i];
+    const diUp = diPlusArr[i] >= diMinusArr[i];
+    const inRange = sig <= hlRange;
+    if (inRange) return 'rgba(255,152,0,0.10)';
+    if (diUp && diPlusArr[i] >= hlTrend) return 'rgba(0,100,0,0.10)';
+    if (diUp) return 'rgba(56,142,60,0.10)';
+    if (diMinusArr[i] > hlTrend) return 'rgba(139,0,0,0.10)';
+    return 'rgba(183,28,28,0.10)';
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {
@@ -104,6 +174,9 @@ export function calculate(bars: Bar[], inputs: Partial<DMIADXInputs> = {}): Indi
       'plot2': toPlot(diMinusArr, warmup),
     },
     hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
+    fills: [{ plot1: 'plot1', plot2: 'plot2', colors: fillColors }],
+    markers,
+    barColors,
   };
 }
 

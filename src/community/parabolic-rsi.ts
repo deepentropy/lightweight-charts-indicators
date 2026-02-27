@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface ParabolicRSIInputs {
   rsiLen: number;
@@ -41,7 +42,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { rsiLen, sarStart, sarInc, sarMax } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -50,6 +51,7 @@ export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {})
 
   // SAR applied to RSI values
   const psarArr: number[] = new Array(n).fill(NaN);
+  const isLongArr: boolean[] = new Array(n).fill(true);
   const warmup = rsiLen + 1;
 
   // Find first valid RSI pair to initialize
@@ -72,6 +74,7 @@ export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {})
       const rsi = rsiArr[i];
       if (rsi == null || isNaN(rsi)) {
         psarArr[i] = NaN;
+        isLongArr[i] = isLong;
         continue;
       }
 
@@ -95,6 +98,7 @@ export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {})
       }
 
       psarArr[i] = sar;
+      isLongArr[i] = isLong;
 
       // Update EP and AF
       if (isLong) {
@@ -125,6 +129,21 @@ export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {})
     }
   }
 
+  // Markers: diamond at SAR reversal points
+  // sig_up: isBelow flips to true (bullish reversal), sig_dn: flips to false (bearish reversal)
+  // Strong signals: sig_up when sar <= 30, sig_dn when sar >= 70
+  const markers: MarkerData[] = [];
+  for (let i = 1; i < n; i++) {
+    if (isNaN(psarArr[i]) || isNaN(psarArr[i - 1])) continue;
+    const sigUp = isLongArr[i] && !isLongArr[i - 1];
+    const sigDn = !isLongArr[i] && isLongArr[i - 1];
+    if (sigUp) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'diamond', color: '#EEA47F', text: 'Up' });
+    } else if (sigDn) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'diamond', color: '#00539C', text: 'Dn' });
+    }
+  }
+
   const plot0 = rsiArr.map((v, i) => ({
     time: bars[i].time,
     value: (v == null || i < warmup) ? NaN : v,
@@ -135,14 +154,33 @@ export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {})
     value: isNaN(v) ? NaN : v,
   }));
 
+  // Fill between RSI and midline (50): overbought gradient above 70, oversold gradient below 30
+  // Pine: fill(rsiPlot, midLinePlot, 100, 70, top: red, bottom: orange) and fill(rsiPlot, midLinePlot, 30, 0, top: orange, bottom: red)
+  // Simplified: fill between RSI plot and hline at 50 with dynamic colors
+  const fillColors: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const rsi = rsiArr[i];
+    if (rsi == null || isNaN(rsi) || i < warmup) {
+      fillColors.push('rgba(0,0,0,0)');
+    } else if (rsi >= 70) {
+      fillColors.push('rgba(239,83,80,0.2)');
+    } else if (rsi <= 30) {
+      fillColors.push('rgba(255,152,0,0.2)');
+    } else {
+      fillColors.push('rgba(194,146,87,0.1)');
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
+    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(194,146,87,0.1)' }, colors: fillColors }],
     hlines: [
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
       { value: 50, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Middle' } },
     ],
+    markers,
   };
 }
 

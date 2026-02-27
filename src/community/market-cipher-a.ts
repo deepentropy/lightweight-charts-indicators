@@ -9,6 +9,7 @@
  */
 
 import { ta, getSourceSeries, Series, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface MarketCipherAInputs {
   wtChannelLen: number;
@@ -50,7 +51,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MarketCipherAInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<MarketCipherAInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { wtChannelLen, wtAvgLen, mfiLen, macdFast, macdSlow, macdSignal } = { ...defaultInputs, ...inputs };
 
   // WaveTrend
@@ -111,6 +112,25 @@ export function calculate(bars: Bar[], inputs: Partial<MarketCipherAInputs> = {}
     return { time: bars[i].time, value: v, color: v >= 0 ? '#E91E63' : '#9C27B0' };
   });
 
+  // Markers: WT1 crossing WT2 (WaveTrend cross signals)
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < bars.length; i++) {
+    const w1 = wt1Arr[i];
+    const w2 = wt2Arr[i];
+    const pw1 = wt1Arr[i - 1];
+    const pw2 = wt2Arr[i - 1];
+    if (w1 == null || w2 == null || pw1 == null || pw2 == null) continue;
+
+    // Bullish cross: wt1 crosses above wt2
+    if (pw1 <= pw2 && w1 > w2) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Buy' });
+    }
+    // Bearish cross: wt1 crosses below wt2
+    if (pw1 >= pw2 && w1 < w2) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': toPlot(wt1Arr), 'plot1': toPlot(wt2Arr), 'plot2': mfiPlot, 'plot3': macdPlot },
@@ -119,6 +139,7 @@ export function calculate(bars: Bar[], inputs: Partial<MarketCipherAInputs> = {}
       { value: 60, options: { color: '#EF5350', linestyle: 'dashed', title: 'OB' } },
       { value: -60, options: { color: '#26A69A', linestyle: 'dashed', title: 'OS' } },
     ],
+    markers,
   };
 }
 

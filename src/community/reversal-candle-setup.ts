@@ -8,7 +8,7 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, BgColorData } from '../types';
 
 export interface ReversalCandleSetupInputs {
   lookback: number;
@@ -32,7 +32,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ReversalCandleSetupInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ReversalCandleSetupInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
   const { lookback } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const markers: MarkerData[] = [];
@@ -85,10 +85,21 @@ export function calculate(bars: Bar[], inputs: Partial<ReversalCandleSetupInputs
     }
   }
 
+  // Background color on reversal bars (Pine: bgcolor lime for long, red for short, transp=70)
+  const bgColors: BgColorData[] = [];
+  for (const m of markers) {
+    if (m.text === 'BullRev') {
+      bgColors.push({ time: m.time, color: 'rgba(0,230,118,0.15)' }); // lime
+    } else if (m.text === 'BearRev') {
+      bgColors.push({ time: m.time, color: 'rgba(239,83,80,0.15)' }); // red
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': closePlot },
     markers,
+    bgColors,
   };
 }
 

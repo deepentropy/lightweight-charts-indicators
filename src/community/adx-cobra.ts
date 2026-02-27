@@ -9,6 +9,7 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { BgColorData } from '../types';
 
 export interface ADXCobraInputs {
   adxLen: number;
@@ -38,7 +39,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ADXCobraInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<ADXCobraInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
   const { adxLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -103,10 +104,33 @@ export function calculate(bars: Bar[], inputs: Partial<ADXCobraInputs> = {}): In
     return { time: bars[i].time, value: v, color };
   });
 
+  // bgColors from Pine: 4 bgcolor() calls
+  // 1. DIMOVS (DI- > 60) → lime/green background (transp=40)
+  // 2. DIPOVB (DI+ > 60) → orange background (transp=20)
+  // 3. DIPcross (DI+ > DI-) → green background (transp=60)
+  // 4. DIPput (DI- > DI+) → red background (transp=60)
+  const bgColors: BgColorData[] = [];
+  for (let i = warmup; i < n; i++) {
+    const diPlus = diPlusArr[i];
+    const diMinus = diMinusArr[i];
+
+    // Priority: DIMOVS and DIPOVB are stronger signals, shown on top
+    if (diMinus > 60) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(0,255,0,0.60)' }); // lime, transp=40
+    } else if (diPlus > 60) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(255,165,0,0.80)' }); // orange, transp=20
+    } else if (diPlus > diMinus) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(0,128,0,0.40)' }); // green, transp=60
+    } else if (diMinus > diPlus) {
+      bgColors.push({ time: bars[i].time, color: 'rgba(255,0,0,0.40)' }); // red, transp=60
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': adxPlot, 'plot1': toPlot(diPlusArr, warmup), 'plot2': toPlot(diMinusArr, warmup) },
     hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
+    bgColors,
   };
 }
 

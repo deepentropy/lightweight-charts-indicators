@@ -30,6 +30,8 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'RSI', color: '#7E57C2', lineWidth: 2 },
   { id: 'plot1', title: 'EMA of RSI', color: '#FF6D00', lineWidth: 1 },
+  { id: 'plot2', title: 'Upper Band', color: 'transparent', lineWidth: 0 },
+  { id: 'plot3', title: 'Lower Band', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -71,12 +73,18 @@ export function calculate(bars: Bar[], inputs: Partial<CMRSIPlusEMAInputs> = {})
     value: (isNaN(v) || i < warmup) ? NaN : v,
   }));
 
+  const plot2 = bars.map((b) => ({ time: b.time, value: 70 }));
+  const plot3 = bars.map((b) => ({ time: b.time, value: 30 }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
     hlines: [
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
+    ],
+    fills: [
+      { plot1: 'plot2', plot2: 'plot3', options: { color: 'rgba(126,87,194,0.1)' } },
     ],
   };
 }

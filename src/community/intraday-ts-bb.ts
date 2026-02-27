@@ -8,6 +8,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData, BarColorData } from '../types';
 
 export interface IntradayTSBBInputs {
   bbLen: number;
@@ -37,7 +38,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<IntradayTSBBInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<IntradayTSBBInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
   const { bbLen, bbMult, src } = { ...defaultInputs, ...inputs };
 
   const source = getSourceSeries(bars, src);
@@ -57,6 +58,41 @@ export function calculate(bars: Bar[], inputs: Partial<IntradayTSBBInputs> = {})
     return { time: b.time, value: pctB };
   });
 
+  // Markers: signal when %B crosses above 1 (overbought breakout) or below 0 (oversold breakout)
+  // and when it returns to the band (mean-reversion entry)
+  const markers: MarkerData[] = [];
+  const barColors: BarColorData[] = [];
+
+  for (let i = warmup + 1; i < bars.length; i++) {
+    const prevPctB = plot0[i - 1].value;
+    const curPctB = plot0[i].value;
+    if (isNaN(prevPctB) || isNaN(curPctB)) continue;
+
+    // Crossover above 1 = breakout bullish
+    if (prevPctB <= 1 && curPctB > 1) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleUp', color: '#00E676', text: 'OB' });
+    }
+    // Crossunder below 0 = breakout bearish
+    if (prevPctB >= 0 && curPctB < 0) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleDown', color: '#FF5252', text: 'OS' });
+    }
+    // Return inside from overbought
+    if (prevPctB > 1 && curPctB <= 1) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#FF9800', text: 'Ret' });
+    }
+
+    // Bar colors: aqua if inside bands, orange if near entry zones, fuchsia if at targets
+    if (curPctB > 1) {
+      barColors.push({ time: bars[i].time, color: '#FF00FF' }); // fuchsia - overbought
+    } else if (curPctB < 0) {
+      barColors.push({ time: bars[i].time, color: '#FF00FF' }); // fuchsia - oversold
+    } else if (curPctB > 0.8 || curPctB < 0.2) {
+      barColors.push({ time: bars[i].time, color: '#FFA500' }); // orange - near extremes
+    } else {
+      barColors.push({ time: bars[i].time, color: '#00FFFF' }); // aqua - inside bands
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
@@ -65,6 +101,8 @@ export function calculate(bars: Bar[], inputs: Partial<IntradayTSBBInputs> = {})
       { value: 0.5, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Mid' } },
       { value: 0.0, options: { color: '#26A69A', linestyle: 'dashed' as const, title: 'Lower' } },
     ],
+    markers,
+    barColors,
   };
 }
 

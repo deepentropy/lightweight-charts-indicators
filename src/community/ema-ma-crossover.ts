@@ -7,6 +7,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface EMAMACrossInputs {
   emaLen: number;
@@ -37,7 +38,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EMAMACrossInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<EMAMACrossInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { emaLen, smaLen, src } = { ...defaultInputs, ...inputs };
   const srcSeries = getSourceSeries(bars, src);
 
@@ -55,9 +56,24 @@ export function calculate(bars: Bar[], inputs: Partial<EMAMACrossInputs> = {}): 
     value: i < warmup ? NaN : (v ?? NaN),
   }));
 
+  // barcolor: green when EMA < SMA (pos=1), red when EMA > SMA (pos=-1), blue otherwise
+  // Pine: pos = iff(xEMA < xMA, 1, iff(xEMA > xMA, -1, nz(pos[1], 0)))
+  const barColors: BarColorData[] = [];
+  let pos = 0;
+  for (let i = warmup; i < bars.length; i++) {
+    const e = emaArr[i] ?? 0;
+    const s = smaArr[i] ?? 0;
+    if (e < s) pos = 1;
+    else if (e > s) pos = -1;
+    if (pos === 1) barColors.push({ time: bars[i].time, color: '#26A69A' });
+    else if (pos === -1) barColors.push({ time: bars[i].time, color: '#EF5350' });
+    else barColors.push({ time: bars[i].time, color: '#2196F3' });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
+    barColors,
   };
 }
 

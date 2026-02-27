@@ -9,6 +9,7 @@
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { BarColorData } from '../types';
 
 export interface TrendTraderInputs {
   maLen: number;
@@ -39,7 +40,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TrendTraderInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<TrendTraderInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
   const { maLen, atrLen, atrMult } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -93,9 +94,24 @@ export function calculate(bars: Bar[], inputs: Partial<TrendTraderInputs> = {}):
     return { time: bars[i].time, value: v, color };
   });
 
+  // barcolor: green when close > trail (pos=1), red when close < trail (pos=-1), blue otherwise
+  // Pine: pos = close > ret ? 1 : close < ret ? -1 : nz(pos[1], 0)
+  const barColors: BarColorData[] = [];
+  let pos = 0;
+  for (let i = warmup; i < n; i++) {
+    const close = bars[i].close;
+    const trail = trailArr[i];
+    if (close > trail) pos = 1;
+    else if (close < trail) pos = -1;
+    if (pos === 1) barColors.push({ time: bars[i].time, color: '#26A69A' });
+    else if (pos === -1) barColors.push({ time: bars[i].time, color: '#EF5350' });
+    else barColors.push({ time: bars[i].time, color: '#2196F3' });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': maPlot, 'plot1': trailPlot },
+    barColors,
   };
 }
 
