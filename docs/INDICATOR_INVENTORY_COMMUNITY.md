@@ -11,7 +11,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | **Implementable** | 79 |
 | **Blocked** | 509 |
 | **Implemented** | 259 |
-| **Duplicate** | 20 |
+| **Duplicate** | 19 |
 | **N/A** | 1 |
 
 ### Implementable Breakdown
@@ -1012,5 +1012,5 @@ docs/official/indicators_community/
 
 ---
 
-*Last updated: February 26, 2026*
+*Last updated: February 27, 2026*
 *Assessment based on oakscriptjs v0.2.4 capabilities*
