@@ -1,11 +1,15 @@
 /**
  * RedK Volume-Accelerated Directional Energy Ratio (VADER)
  *
- * Bull power = close > open ? vol * (close-low)/(high-low) : vol * (close-open)/(high-low)
- * Bear power = close <= open ? vol * (open-low)/(high-low) : vol * (open-close)/(high-low)
- * VADER = RMA(bull, length) - RMA(bear, length)
+ * Pine: R = (highest(2) - lowest(2)) / 2
+ *       sr = change(close) / R, clamped to [-1, 1]
+ *       c = sr * vola (volume acceleration)
+ *       dem = f_derma(c_plus, length) / avg_vola
+ *       sup = f_derma(c_minus, length) / avg_vola
+ *       adp = 100 * wma(dem, DER_avg), asp = 100 * wma(sup, DER_avg)
+ *       anp_s = wma(adp - asp, smooth)
  *
- * Reference: TradingView "RedK VADER" (TV#581)
+ * Reference: TradingView "RedK VADER v4.0" by RedKTrader
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
@@ -13,6 +17,7 @@ import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, ty
 export interface RedKVADERInputs {
   length: number;
   DER_avg: number;
+  MA_Type: string;
   smooth: number;
   showSenti: boolean;
   senti: number;
@@ -23,6 +28,7 @@ export interface RedKVADERInputs {
 export const defaultInputs: RedKVADERInputs = {
   length: 10,
   DER_avg: 5,
+  MA_Type: 'WMA',
   smooth: 3,
   showSenti: false,
   senti: 20,
@@ -33,9 +39,12 @@ export const defaultInputs: RedKVADERInputs = {
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Length', defval: 10, min: 1 },
   { id: 'DER_avg', type: 'int', title: 'Average', defval: 5, min: 1 },
+  { id: 'MA_Type', type: 'string', title: 'DER MA type', defval: 'WMA', options: ['WMA', 'EMA', 'SMA'] },
   { id: 'smooth', type: 'int', title: 'Smooth', defval: 3, min: 1 },
   { id: 'showSenti', type: 'bool', title: 'Sentiment', defval: false },
   { id: 'senti', type: 'int', title: 'Sentiment Length', defval: 20, min: 1 },
+  { id: 'vCalc', type: 'string', title: 'Volume Calculation', defval: 'Relative', options: ['Relative', 'Full', 'None'] },
+  { id: 'vlookbk', type: 'int', title: 'Lookback (for Relative)', defval: 20, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -51,73 +60,134 @@ export const metadata = {
   overlay: false,
 };
 
+/** Apply MA based on type selection (Pine: f_derma) */
+function derma(bars: Bar[], data: number[], len: number, maType: string): number[] {
+  const s = Series.fromArray(bars, data);
+  switch (maType) {
+    case 'SMA': return ta.sma(s, len).toArray();
+    case 'EMA': return ta.ema(s, len).toArray();
+    default:    return ta.wma(s, len).toArray();
+  }
+}
+
 export function calculate(bars: Bar[], inputs: Partial<RedKVADERInputs> = {}): IndicatorResult {
-  const { length, DER_avg, smooth, showSenti, senti } = { ...defaultInputs, ...inputs };
+  const { length, DER_avg, MA_Type, smooth, showSenti, senti, vCalc, vlookbk } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
-  // Pine v4: uses DER (directional energy ratio) approach with volume acceleration
-  // Simplified: bull/bear power based on bar position relative to range
-  const bullArr: number[] = new Array(n);
-  const bearArr: number[] = new Array(n);
-
+  // --- Volume acceleration ---
+  // Pine: vola = v_calc == 'None' ? 1 : v_calc == 'Relative' ? stoch(v,v,v,vlookbk)/100 : v
+  const volArr: number[] = new Array(n);
   for (let i = 0; i < n; i++) {
-    const { open, high, low, close, volume } = bars[i];
-    const hl = high - low;
-    if (hl === 0) {
-      bullArr[i] = 0;
-      bearArr[i] = 0;
-      continue;
-    }
-    const vol = volume ?? 0;
-    if (close > open) {
-      bullArr[i] = vol * (close - low) / hl;
-      bearArr[i] = vol * (open - close) / hl;
-    } else {
-      bullArr[i] = vol * (close - open) / hl;
-      bearArr[i] = vol * (open - low) / hl;
-    }
-    if (bullArr[i] < 0) bullArr[i] = 0;
-    if (bearArr[i] < 0) bearArr[i] = 0;
+    volArr[i] = bars[i].volume ?? 0;
   }
 
-  const bullSeries = Series.fromArray(bars, bullArr);
-  const bearSeries = Series.fromArray(bars, bearArr);
-  const rmaBull = ta.rma(bullSeries, length).toArray();
-  const rmaBear = ta.rma(bearSeries, length).toArray();
+  const volaArr: number[] = new Array(n);
+  if (vCalc === 'None') {
+    volaArr.fill(1);
+  } else if (vCalc === 'Full') {
+    for (let i = 0; i < n; i++) volaArr[i] = volArr[i];
+  } else {
+    // Relative: stoch(v, v, v, vlookbk) / 100
+    const volSeries = Series.fromArray(bars, volArr);
+    const stochVol = ta.stoch(volSeries, volSeries, volSeries, vlookbk).toArray();
+    for (let i = 0; i < n; i++) {
+      const sv = stochVol[i];
+      volaArr[i] = (sv != null && !isNaN(sv)) ? sv / 100 : 1;
+    }
+  }
 
+  // --- Directional energy ratio ---
+  // Pine: R = (highest(2) - lowest(2)) / 2
+  //        sr = change(close) / R, clamped [-1, 1]
+  //        c = fixnan(sr * vola)
+  const cArr: number[] = new Array(n);
+  const cPlusArr: number[] = new Array(n);
+  const cMinusArr: number[] = new Array(n);
+
+  for (let i = 0; i < n; i++) {
+    // R = (highest(high, 2) - lowest(low, 2)) / 2
+    let hh: number, ll: number;
+    if (i === 0) {
+      hh = bars[i].high;
+      ll = bars[i].low;
+    } else {
+      hh = Math.max(bars[i].high, bars[i - 1].high);
+      ll = Math.min(bars[i].low, bars[i - 1].low);
+    }
+    const R = (hh - ll) / 2;
+
+    // sr = change(close) / R
+    const priceChange = i === 0 ? 0 : bars[i].close - bars[i - 1].close;
+    const sr = R === 0 ? 0 : priceChange / R;
+
+    // Clamp to [-1, 1]
+    const rsr = Math.max(Math.min(sr, 1), -1);
+
+    // c = rsr * vola (fixnan: carry forward last valid value)
+    const rawC = rsr * volaArr[i];
+    cArr[i] = isNaN(rawC) ? (i > 0 ? cArr[i - 1] : 0) : rawC;
+
+    cPlusArr[i] = Math.max(cArr[i], 0);
+    cMinusArr[i] = -Math.min(cArr[i], 0);
+  }
+
+  // --- DER MA calculations ---
+  // Pine: avg_vola = f_derma(vola, length, MA_Type)
+  //        dem = f_derma(c_plus, length, MA_Type) / avg_vola
+  //        sup = f_derma(c_minus, length, MA_Type) / avg_vola
+  const avgVola = derma(bars, volaArr, length, MA_Type);
+  const demRaw = derma(bars, cPlusArr, length, MA_Type);
+  const supRaw = derma(bars, cMinusArr, length, MA_Type);
+
+  const demArr: number[] = new Array(n);
+  const supArr: number[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const av = avgVola[i];
+    demArr[i] = (av != null && av !== 0 && !isNaN(av)) ? demRaw[i] / av : 0;
+    supArr[i] = (av != null && av !== 0 && !isNaN(av)) ? supRaw[i] / av : 0;
+  }
+
+  // --- Average DER ---
   // Pine: adp = 100 * wma(dem, DER_avg), asp = 100 * wma(sup, DER_avg)
-  // Since we're using simplified bull/bear, scale via WMA averaging
-  const demSeries = Series.fromArray(bars, rmaBull);
-  const supSeries = Series.fromArray(bars, rmaBear);
+  const demSeries = Series.fromArray(bars, demArr);
+  const supSeries = Series.fromArray(bars, supArr);
   const adpRaw = ta.wma(demSeries, DER_avg).toArray();
   const aspRaw = ta.wma(supSeries, DER_avg).toArray();
 
-  // anp = adp - asp, anp_s = wma(anp, smooth)
+  for (let i = 0; i < n; i++) {
+    adpRaw[i] = (adpRaw[i] != null && !isNaN(adpRaw[i])) ? 100 * adpRaw[i] : NaN;
+    aspRaw[i] = (aspRaw[i] != null && !isNaN(aspRaw[i])) ? 100 * aspRaw[i] : NaN;
+  }
+
+  // --- Net DER and smoothed signal ---
+  // Pine: anp = adp - asp, anp_s = wma(anp, smooth)
   const anpArr: number[] = new Array(n);
   for (let i = 0; i < n; i++) {
     const a = adpRaw[i];
     const s = aspRaw[i];
-    anpArr[i] = (a != null && !isNaN(a) && s != null && !isNaN(s)) ? a - s : 0;
+    anpArr[i] = (!isNaN(a) && !isNaN(s)) ? a - s : NaN;
   }
   const anpSeries = Series.fromArray(bars, anpArr);
   const anpSmooth = ta.wma(anpSeries, smooth).toArray();
 
-  const warmup = length + DER_avg;
-
-  // Sentiment: Pine v3 4-color histogram
-  // s_adp = 100 * wma(dem, senti), s_asp = 100 * wma(sup, senti), V_senti = wma(s_adp - s_asp, smooth)
-  const sAdp = ta.wma(demSeries, senti).toArray();
-  const sAsp = ta.wma(supSeries, senti).toArray();
-  const sentiArr: number[] = new Array(n);
+  // --- Sentiment ---
+  // Pine: s_adp = 100 * wma(dem, senti), s_asp = 100 * wma(sup, senti)
+  //        V_senti = wma(s_adp - s_asp, smooth)
+  const sAdpRaw = ta.wma(demSeries, senti).toArray();
+  const sAspRaw = ta.wma(supSeries, senti).toArray();
+  const sentiDiffArr: number[] = new Array(n);
   for (let i = 0; i < n; i++) {
-    const sa = sAdp[i];
-    const ss = sAsp[i];
-    sentiArr[i] = (sa != null && !isNaN(sa) && ss != null && !isNaN(ss)) ? sa - ss : 0;
+    const sa = sAdpRaw[i];
+    const ss = sAspRaw[i];
+    sentiDiffArr[i] = (sa != null && !isNaN(sa) && ss != null && !isNaN(ss)) ? 100 * sa - 100 * ss : NaN;
   }
-  const sentiSeries = Series.fromArray(bars, sentiArr);
+  const sentiSeries = Series.fromArray(bars, sentiDiffArr);
   const vSenti = ta.wma(sentiSeries, smooth).toArray();
 
-  // VADER signal (anp_s) colored by direction
+  const warmup = length + DER_avg + smooth;
+
+  // --- Plot 0: VADER Signal (anp_s) colored by direction ---
+  // Pine: plot(anp_s, 'Signal', up ? c_up : c_dn, 4)
   const plot0 = bars.map((bar, i) => {
     const v = anpSmooth[i];
     if (i < warmup || v == null || isNaN(v)) return { time: bar.time, value: NaN };
@@ -125,20 +195,23 @@ export function calculate(bars: Bar[], inputs: Partial<RedKVADERInputs> = {}): I
     return { time: bar.time, value: v, color };
   });
 
+  // --- Plot 1: Demand Energy (adp) with cross style ---
   // Pine: d = plot(adp, 'Demand Energy', c_adp, 2, style=plot.style_cross, join=true)
   const plot1 = bars.map((bar, i) => ({
     time: bar.time,
-    value: (i < warmup || adpRaw[i] == null || isNaN(adpRaw[i])) ? NaN : adpRaw[i],
+    value: (i < warmup || isNaN(adpRaw[i])) ? NaN : adpRaw[i],
   }));
 
+  // --- Plot 2: Supply Energy (asp) with circles style ---
   // Pine: s = plot(asp, 'Supply Energy', c_asp, 2, style=plot.style_circles, join=true)
   const plot2 = bars.map((bar, i) => ({
     time: bar.time,
-    value: (i < warmup || aspRaw[i] == null || isNaN(aspRaw[i])) ? NaN : aspRaw[i],
+    value: (i < warmup || isNaN(aspRaw[i])) ? NaN : aspRaw[i],
   }));
 
-  // Pine: Sentiment 4-color histogram
-  // c_grow_above = #1b5e2080, c_grow_below = #dc4c4a80, c_fall_above = #66bb6a80, c_fall_below = #ef8e9880
+  // --- Plot 3: Sentiment 4-color histogram ---
+  // Pine: sflag_up = abs(V_senti) >= abs(V_senti[1])
+  //   color = s_up ? (sflag_up ? c_grow_above : c_fall_above) : (sflag_up ? c_grow_below : c_fall_below)
   const sentiWarmup = Math.max(warmup, senti + smooth);
   const plot3 = bars.map((bar, i) => {
     const v = vSenti[i];
@@ -155,10 +228,11 @@ export function calculate(bars: Bar[], inputs: Partial<RedKVADERInputs> = {}): I
     return { time: bar.time, value: v, color };
   });
 
-  // Dynamic fill: green when demand > supply, red when supply > demand
+  // --- Fill between demand and supply ---
+  // Pine: fill(d, s, adp > asp ? c_fd : c_fs)
   const fillColors: string[] = new Array(n);
   for (let i = 0; i < n; i++) {
-    if (i < warmup || adpRaw[i] == null || aspRaw[i] == null) {
+    if (i < warmup || isNaN(adpRaw[i]) || isNaN(aspRaw[i])) {
       fillColors[i] = 'rgba(0,0,0,0)';
     } else {
       fillColors[i] = adpRaw[i] > aspRaw[i] ? 'rgba(0, 128, 0, 0.2)' : 'rgba(255, 0, 0, 0.2)';

@@ -2,13 +2,14 @@
  * OTT Bands
  *
  * OTT with upper and lower percentage bands.
- * Support line (VAR MA) with upper band and lower band
+ * Support line (MA) with upper band and lower band
  * derived from the OTT trailing stop percentage offsets.
+ * Supports 8 MA types: SMA, EMA, WMA, TMA, VAR, WWMA, ZLEMA, TSF.
  *
- * Reference: TradingView "OTT Bands" (TV#492)
+ * Reference: TradingView "Optimized Trend Tracker Bands" by KivancOzbilgic
  */
 
-import { getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { getSourceSeries, ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface OTTBandsInputs {
   period: number;
@@ -17,6 +18,8 @@ export interface OTTBandsInputs {
   lowerCoeff: number;
   showFiboLines: boolean;
   showSupport: boolean;
+  highlight: boolean;
+  mav: string;
   src: SourceType;
 }
 
@@ -27,6 +30,8 @@ export const defaultInputs: OTTBandsInputs = {
   lowerCoeff: 0.077,
   showFiboLines: false,
   showSupport: false,
+  highlight: false,
+  mav: 'VAR',
   src: 'close',
 };
 
@@ -36,8 +41,10 @@ export const inputConfig: InputConfig[] = [
   { id: 'percent', type: 'float', title: 'OTT Optimization Coeff', defval: 15, min: 0, step: 0.1 },
   { id: 'upperCoeff', type: 'float', title: 'OTT Upper Band Coeff', defval: 0.1, min: 0, step: 0.001 },
   { id: 'lowerCoeff', type: 'float', title: 'OTT Lower Band Coeff', defval: 0.077, min: 0, step: 0.001 },
-  { id: 'showFiboLines', type: 'bool', title: 'Show Fibonacci Levels?', defval: false },
+  { id: 'showFiboLines', type: 'bool', title: 'Show OTT Bands Fibonacci Levels?', defval: false },
   { id: 'showSupport', type: 'bool', title: 'Show Support Line?', defval: false },
+  { id: 'highlight', type: 'bool', title: 'Show OTT Support Line Color Changes?', defval: false },
+  { id: 'mav', type: 'string', title: 'Moving Average Type', defval: 'VAR', options: ['SMA', 'EMA', 'WMA', 'TMA', 'VAR', 'WWMA', 'ZLEMA', 'TSF'] },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -57,29 +64,85 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<OTTBandsInputs> = {}): IndicatorResult {
-  const { period, percent, upperCoeff, lowerCoeff, showFiboLines, showSupport, src } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const srcSeries = getSourceSeries(bars, src);
-  const srcArr = srcSeries.toArray();
-
-  // VAR (Variable Index Dynamic Average) calculation
-  const valpha = 2 / (period + 1);
-  const mavg: number[] = new Array(n);
+// VAR (Variable Index Dynamic Average) calculation
+function varFunc(srcArr: number[], length: number): number[] {
+  const n = srcArr.length;
+  const out: number[] = new Array(n);
+  const valpha = 2 / (length + 1);
 
   for (let i = 0; i < n; i++) {
-    const s = srcArr[i] ?? 0;
+    const s = srcArr[i];
     let vUD = 0;
     let vDD = 0;
     for (let j = Math.max(0, i - 8); j <= i; j++) {
-      const cur = srcArr[j] ?? 0;
-      const prev = j > 0 ? (srcArr[j - 1] ?? 0) : cur;
+      const cur = srcArr[j];
+      const prev = j > 0 ? srcArr[j - 1] : cur;
       if (cur > prev) vUD += cur - prev;
       if (cur < prev) vDD += prev - cur;
     }
     const vCMO = (vUD + vDD) === 0 ? 0 : (vUD - vDD) / (vUD + vDD);
-    mavg[i] = i === 0 ? s : valpha * Math.abs(vCMO) * s + (1 - valpha * Math.abs(vCMO)) * mavg[i - 1];
+    out[i] = i === 0 ? s : valpha * Math.abs(vCMO) * s + (1 - valpha * Math.abs(vCMO)) * out[i - 1];
+  }
+  return out;
+}
+
+// WWMA (Welles Wilder Moving Average)
+function wwmaFunc(srcArr: number[], length: number): number[] {
+  const n = srcArr.length;
+  const out: number[] = new Array(n);
+  const wwalpha = 1 / length;
+  for (let i = 0; i < n; i++) {
+    out[i] = i === 0 ? srcArr[i] : wwalpha * srcArr[i] + (1 - wwalpha) * out[i - 1];
+  }
+  return out;
+}
+
+export function calculate(bars: Bar[], inputs: Partial<OTTBandsInputs> = {}): IndicatorResult {
+  const { period, percent, upperCoeff, lowerCoeff, showFiboLines, showSupport, highlight, mav, src } = { ...defaultInputs, ...inputs };
+  const n = bars.length;
+
+  const srcSeries = getSourceSeries(bars, src);
+  const srcArr = srcSeries.toArray().map(v => v ?? 0);
+
+  // Compute selected MA type
+  // Pine: MAvg=getMA(src, length) with mav selector
+  let mavg: number[];
+  const sSeries = Series.fromArray(bars, srcArr);
+
+  if (mav === 'SMA') {
+    mavg = ta.sma(sSeries, period).toArray();
+  } else if (mav === 'EMA') {
+    mavg = ta.ema(sSeries, period).toArray();
+  } else if (mav === 'WMA') {
+    mavg = ta.wma(sSeries, period).toArray();
+  } else if (mav === 'TMA') {
+    // Pine: sma(sma(src, ceil(length/2)), floor(length/2) + 1)
+    const sma1 = ta.sma(sSeries, Math.max(1, Math.ceil(period / 2)));
+    mavg = ta.sma(sma1, Math.floor(period / 2) + 1).toArray();
+  } else if (mav === 'WWMA') {
+    mavg = wwmaFunc(srcArr, period);
+  } else if (mav === 'ZLEMA') {
+    // Pine: zxLag = length/2==round(length/2) ? length/2 : (length-1)/2
+    const zxLag = (period / 2) === Math.round(period / 2) ? Math.floor(period / 2) : Math.floor((period - 1) / 2);
+    const zxData: number[] = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const lagged = i >= zxLag ? srcArr[i - zxLag] : srcArr[0];
+      zxData[i] = srcArr[i] + srcArr[i] - lagged;
+    }
+    mavg = ta.ema(Series.fromArray(bars, zxData), period).toArray();
+  } else if (mav === 'TSF') {
+    // Pine: lrc = linreg(src,length,0), lrc1 = linreg(src,length,1), TSF = lrc + (lrc - lrc1)
+    const lrc = ta.linreg(sSeries, period, 0).toArray();
+    const lrc1 = ta.linreg(sSeries, period, 1).toArray();
+    mavg = lrc.map((v, i) => (v ?? 0) + ((v ?? 0) - (lrc1[i] ?? 0)));
+  } else {
+    // Default: VAR
+    mavg = varFunc(srcArr, period);
+  }
+
+  // Replace NaN/undefined with 0 for downstream computation
+  for (let i = 0; i < n; i++) {
+    if (mavg[i] == null || isNaN(mavg[i])) mavg[i] = 0;
   }
 
   // OTT trailing stop logic
@@ -118,10 +181,13 @@ export function calculate(bars: Bar[], inputs: Partial<OTTBandsInputs> = {}): In
     return { time: bars[i].time, value: ott[i - 2] };
   });
 
+  // Pine: OTTC = highlight ? MAvg > MAvg[1] ? color.green : color.red : #0585E1
   // Pine: plot(showsupport ? MAvg : na, color=OTTC, linewidth=2, title="Support Line")
   const support = mavg.map((v, i) => {
     if (i < warmup || !showSupport) return { time: bars[i].time, value: NaN };
-    const color = (i > 0 && v > mavg[i - 1]) ? '#26A69A' : '#EF5350';
+    const color = highlight
+      ? (i > 0 && v > mavg[i - 1]) ? '#26A69A' : '#EF5350'
+      : '#0585E1';
     return { time: bars[i].time, value: v, color };
   });
 
@@ -185,6 +251,8 @@ export function calculate(bars: Bar[], inputs: Partial<OTTBandsInputs> = {}): In
       { plot1: 'ottLowerFibo', plot2: 'ottLowerHalf', options: { color: 'rgba(0,123,189,0.12)' } },
       // Pine: fill(OTTALTYARI, OTTMAIN, color=#024DE3, transp=88)
       { plot1: 'ottLowerHalf', plot2: 'ottMain', options: { color: 'rgba(2,77,227,0.12)' } },
+      // Pine: fill(OTTALTFIBO2, OTTMAIN, color=#024DE3, transp=88)
+      { plot1: 'ottLowerFibo', plot2: 'ottMain', options: { color: 'rgba(2,77,227,0.12)' } },
     ],
   };
 }

@@ -1,8 +1,16 @@
 /**
  * CM Time Based Vertical Lines
  *
- * Time-based background highlights for recurring sessions.
- * Six configurable session windows, each with its own color.
+ * Overlay indicator that highlights recurring session windows via background colors.
+ * Six configurable session windows, each with its own independent bgcolor.
+ *
+ * PineScript bgcolor calls (all overlay, all independent, transp=40):
+ *   1. Session 1 (default 0000-0100)  yellow
+ *   2. Session 2 (default 0300-0400)  orange
+ *   3. Session 3 (default 0800-0900)  aqua
+ *   4. Session 4 (default 0930-1030)  fuchsia
+ *   5. Session 5 (default 1500-1600)  maroon
+ *   6. Session 6 (default 1700-1800)  lime
  *
  * Reference: TradingView "CM_Time Based Vertical Lines" by ChrisMoody
  */
@@ -55,14 +63,12 @@ export const inputConfig: InputConfig[] = [
   { id: 'session6', type: 'string', title: 'Custom 6', defval: '1700-1800' },
 ];
 
-export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Time Marker', color: '#787B86', lineWidth: 1, style: 'histogram' },
-];
+export const plotConfig: PlotConfig[] = [];
 
 export const metadata = {
   title: 'CM Time Based Vertical Lines',
   shortTitle: 'CMTime',
-  overlay: false,
+  overlay: true,
 };
 
 /** Parse "HHMM-HHMM" session string into start/end minutes since midnight */
@@ -77,7 +83,6 @@ function parseSession(sess: string): { startMin: number; endMin: number } | null
 
 /** Check if a bar's time falls within a session window */
 function inSession(barTime: number, startMin: number, endMin: number): boolean {
-  // barTime is typically a Unix timestamp in seconds
   const d = new Date(barTime * 1000);
   const minuteOfDay = d.getUTCHours() * 60 + d.getUTCMinutes();
   if (startMin <= endMin) {
@@ -87,10 +92,11 @@ function inSession(barTime: number, startMin: number, endMin: number): boolean {
   return minuteOfDay >= startMin || minuteOfDay < endMin;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<CMTimeLinesInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<CMTimeLinesInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
   const cfg = { ...defaultInputs, ...inputs };
 
-  // Pine session colors: yellow, orange, aqua, fuchsia, maroon, lime (all transp=40)
+  // Pine session colors: yellow, orange, aqua, fuchsia, maroon, lime (all transp=40 => 0.60 alpha)
+  // In Pine, 6 independent bgcolor() calls evaluated in order; later ones paint over earlier.
   const sessions: { show: boolean; session: string; color: string }[] = [
     { show: cfg.show1, session: cfg.session1, color: 'rgba(255,255,0,0.60)' },    // yellow
     { show: cfg.show2, session: cfg.session2, color: 'rgba(255,165,0,0.60)' },    // orange
@@ -105,31 +111,27 @@ export function calculate(bars: Bar[], inputs: Partial<CMTimeLinesInputs> = {}):
     range: parseSession(s.session),
   }));
 
-  // plot0: spike at any session start (backward compat)
-  const plot0 = bars.map((b) => ({
-    time: b.time,
-    value: NaN as number,
-  }));
-
   const bgColors: BgColorData[] = [];
   for (let i = 0; i < bars.length; i++) {
     const t = bars[i].time;
+    // Evaluate all 6 sessions independently; last matching session wins (Pine layering order)
+    let matchColor: string | null = null;
     for (const s of parsed) {
       if (!s.show || !s.range) continue;
       if (inSession(t, s.range.startMin, s.range.endMin)) {
-        bgColors.push({ time: t, color: s.color });
-        // Mark as spike for plot0 for backward compat
-        plot0[i].value = 1;
-        break; // first matching session wins for this bar
+        matchColor = s.color;
       }
+    }
+    if (matchColor !== null) {
+      bgColors.push({ time: t, color: matchColor });
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: {},
     bgColors,
-  } as IndicatorResult & { bgColors: BgColorData[] };
+  };
 }
 
 export const CMTimeLines = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

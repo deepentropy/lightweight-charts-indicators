@@ -1,8 +1,11 @@
 /**
  * Tops/Bottoms
  *
- * Swing high/low detection using pivot points.
- * Plots horizontal lines at last detected top and bottom levels.
+ * CVI-based overbought/oversold detection.
+ * Plots constant bull/bear threshold lines and star markers
+ * when price exits the bull or bear zone.
+ *
+ * CVI = (close - SMA(hl2, length)) / (SMA(ATR(length), length) * sqrt(length))
  *
  * Reference: TradingView "Tops/Bottoms" (community)
  */
@@ -17,20 +20,20 @@ export interface TopsBottomsInputs {
 }
 
 export const defaultInputs: TopsBottomsInputs = {
-  length: 5,
+  length: 3,
   bull: -0.51,
   bear: 0.43,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 5, min: 1 },
+  { id: 'length', type: 'int', title: 'Length', defval: 3, min: 1 },
   { id: 'bull', type: 'float', title: 'Bullish', defval: -0.51, step: 0.01 },
   { id: 'bear', type: 'float', title: 'Bearish', defval: 0.43, step: 0.01 },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Top Level', color: '#EF5350', lineWidth: 2, style: 'linebr' },
-  { id: 'plot1', title: 'Bottom Level', color: '#26A69A', lineWidth: 2, style: 'linebr' },
+  { id: 'plot0', title: 'Bullish', color: '#4CAF50', lineWidth: 1 },
+  { id: 'plot1', title: 'Bearish', color: '#EF5350', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -42,72 +45,54 @@ export const metadata = {
 export function calculate(bars: Bar[], inputs: Partial<TopsBottomsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { length, bull, bear } = { ...defaultInputs, ...inputs };
   const n = bars.length;
-
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-
-  const pivotHighs = ta.pivothigh(highSeries, length, length);
-  const pivotLows = ta.pivotlow(lowSeries, length, length);
-
-  const phArr = pivotHighs.toArray();
-  const plArr = pivotLows.toArray();
-
-  let lastTop = NaN;
-  let lastBottom = NaN;
   const markers: MarkerData[] = [];
 
-  const topData: { time: number; value: number }[] = [];
-  const bottomData: { time: number; value: number }[] = [];
-
-  for (let i = 0; i < n; i++) {
-    if (phArr[i] != null && !isNaN(phArr[i]!)) {
-      lastTop = phArr[i]!;
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#EF5350', text: 'Top' });
-    }
-    if (plArr[i] != null && !isNaN(plArr[i]!)) {
-      lastBottom = plArr[i]!;
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#26A69A', text: 'Bot' });
-    }
-    topData.push({ time: bars[i].time, value: lastTop });
-    bottomData.push({ time: bars[i].time, value: lastBottom });
-  }
-
-  // Pine CVI strong signal detection: cvi = (close - ValC) / (vol * sqrt(length))
-  // bull1 = cvi <= bull, bear1 = cvi >= bear
-  // bull2 = bull1[1] and not bull1 (exit from bullish zone), bear2 = bear1[1] and not bear1
+  // Pine: ValC = sma(hl2, length)
   const hl2Series = new Series(bars, (b) => (b.high + b.low) / 2);
   const valC = ta.sma(hl2Series, length).toArray();
+
+  // Pine: vol = sma(atr(length), length)
   const atrArr = ta.atr(bars, length).toArray();
   const volArr = ta.sma(new Series(bars, (_b, i) => atrArr[i] ?? NaN), length).toArray();
   const sqrtLen = Math.sqrt(length);
 
+  // Pine: plot(bull, color=green) and plot(bear, color=red) -- constant threshold lines
+  const bullLine: { time: number; value: number }[] = [];
+  const bearLine: { time: number; value: number }[] = [];
+
   let prevBull1 = false;
   let prevBear1 = false;
-  for (let i = length; i < n; i++) {
+
+  for (let i = 0; i < n; i++) {
+    bullLine.push({ time: bars[i].time, value: bull });
+    bearLine.push({ time: bars[i].time, value: bear });
+
     const v = volArr[i];
     if (v == null || isNaN(v) || v === 0) continue;
-    const cvi = (bars[i].close - (valC[i] ?? 0)) / (v * sqrtLen);
+    const vc = valC[i];
+    if (vc == null || isNaN(vc)) continue;
+
+    // Pine: cvi = (close - ValC) / (vol * sqrt(length))
+    const cvi = (bars[i].close - vc) / (v * sqrtLen);
     const bull1 = cvi <= bull;
     const bear1 = cvi >= bear;
-    // Strong bullish signal: was in bull zone, now exited
+
+    // Pine: bull2 = bull1[1] and not bull1 (exited bullish zone)
     if (prevBull1 && !bull1) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'diamond', color: '#00E676', text: '*' });
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'circle', color: '#00E676', text: '*' });
     }
-    // Strong bearish signal: was in bear zone, now exited
+    // Pine: bear2 = bear1[1] and not bear1 (exited bearish zone)
     if (prevBear1 && !bear1) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'diamond', color: '#EF5350', text: '*' });
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'circle', color: '#EF5350', text: '*' });
     }
+
     prevBull1 = bull1;
     prevBear1 = bear1;
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': topData, 'plot1': bottomData },
-    hlines: [
-      { value: bull, options: { color: '#4CAF50', linestyle: 'solid' as const, title: 'Bullish' } },
-      { value: bear, options: { color: '#EF5350', linestyle: 'solid' as const, title: 'Bearish' } },
-    ],
+    plots: { 'plot0': bullLine, 'plot1': bearLine },
     markers,
   };
 }

@@ -76,7 +76,7 @@ export function calculate(bars: Bar[], inputs: Partial<BBStochRSIInputs> = {}): 
   const upperArr = upper.toArray();
   const lowerArr = lower.toArray();
 
-  // Stochastic RSI
+  // Stochastic RSI: stoch(rsi1, rsi1, rsi1, lengthStoch)
   const rsi = ta.rsi(source, rsiLen);
   const rsiArr = rsi.toArray();
   const rsiHigh = ta.highest(rsi, stochLen);
@@ -90,7 +90,7 @@ export function calculate(bars: Bar[], inputs: Partial<BBStochRSIInputs> = {}): 
     const h = rsiHighArr[i];
     const l = rsiLowArr[i];
     if (r == null || h == null || l == null || h === l) {
-      stochRSI[i] = 0;
+      stochRSI[i] = NaN;
     } else {
       stochRSI[i] = (r - l) / (h - l) * 100;
     }
@@ -133,21 +133,21 @@ export function calculate(bars: Bar[], inputs: Partial<BBStochRSIInputs> = {}): 
     const dPrev = dArr[i - 1];
 
     if (upperPrev == null || upperCur == null || lowerPrev == null || lowerCur == null ||
-        kPrev == null || dPrev == null) continue;
+        kPrev == null || dPrev == null || isNaN(kPrev) || isNaN(dPrev)) continue;
 
-    // Bear: close[1] > upper[1] and close < upper and k[1] > upperLimit and d[1] > upperLimit
+    // Bear: close[1] > upper[1] and close < upper and k[1] > upperlimit and d[1] > upperlimit
     const bear = closePrev > upperPrev && closeCur < upperCur &&
                  kPrev > upperLimit && dPrev > upperLimit;
 
-    // Bull: close[1] < lower[1] and close > lower and k[1] < lowerLimit and d[1] < lowerLimit
+    // Bull: close[1] < lower[1] and close > lower and k[1] < lowerlimit and d[1] < lowerlimit
     const bull = closePrev < lowerPrev && closeCur > lowerCur &&
                  kPrev < lowerLimit && dPrev < lowerLimit;
 
     if (bear) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#F44336', text: 'Bear' });
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FF5252' });
     }
     if (bull) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#4CAF50', text: 'Bull' });
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#4CAF50' });
     }
   }
 

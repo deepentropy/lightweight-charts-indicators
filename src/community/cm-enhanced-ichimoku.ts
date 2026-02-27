@@ -1,13 +1,13 @@
 /**
  * CM Enhanced Ichimoku Cloud V5
  *
- * Ichimoku Cloud with EMA overlay. Standard Ichimoku components:
- * Tenkan-sen, Kijun-sen, Senkou Span A/B, plus an EMA overlay.
+ * Enhanced Ichimoku Cloud with Tenkan-Sen, Kijun-Sen, Chikou Span,
+ * Senkou Span A/B cloud with dynamic trend coloring, and cross arrows.
  *
  * Reference: TradingView "CM_Enhanced Ichimoku Cloud V5" by ChrisMoody (community)
  */
 
-import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 
 export interface CMEnhancedIchimokuInputs {
@@ -89,9 +89,10 @@ export function calculate(bars: Bar[], inputs: Partial<CMEnhancedIchimokuInputs>
 
     // Chikou Span: close plotted offset by -displacement (shifted backwards)
     // Pine: plot(close, offset=-displacement, color=aqua)
+    // At output position i, display close from bar i+displacement (shifted back to here)
     const chikouSrcIdx = i + displacement;
     if (chikouSrcIdx < n) {
-      chikouPlot.push({ time: bars[i].time, value: i < warmup ? NaN : bars[chikouSrcIdx].close });
+      chikouPlot.push({ time: bars[i].time, value: bars[chikouSrcIdx].close });
     } else {
       chikouPlot.push({ time: bars[i].time, value: NaN });
     }

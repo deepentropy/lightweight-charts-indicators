@@ -35,7 +35,7 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'VWMACD', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'VWMACD Signal', color: '#FF6D00', lineWidth: 2 },
   { id: 'plot2', title: 'SZO', color: '#E91E63', lineWidth: 2 },
-  { id: 'plot3', title: 'Histogram', color: '#4CAF50', lineWidth: 4, style: 'histogram' },
+  { id: 'plot3', title: 'Histogram', color: '#4CAF50', lineWidth: 3, style: 'histogram' },
 ];
 
 export const metadata = {
@@ -84,27 +84,26 @@ export function calculate(bars: Bar[], inputs: Partial<VWMACDSZOInputs> = {}): I
   const toPlot = (arr: (number | null)[]) =>
     arr.map((v, i) => ({ time: bars[i].time, value: (i < warmup || v == null) ? NaN : v }));
 
-  // d-signal histogram: vwmacd - signal, with 4-state conditional coloring
-  // bright green (#00E676): > 0 and rising, faded green (#4CAF50): > 0 and falling
-  // bright red (#FF1744): < 0 and falling, faded red (#EF5350): < 0 and rising
+  // d-signal histogram (dm = d - signal) with 4-state coloring per Pine source:
+  // green (#4CAF50): >= 0 and rising, orange (#FF9800): >= 0 and falling
+  // red (#FF5252): < 0 and falling, orange (#FF9800): < 0 and rising
   const histPlot = vwmacdArr.map((v, i) => {
     const vwVal = (i < warmup || v == null) ? NaN : v;
     const sigVal = (i < warmup || vwSigArr[i] == null) ? NaN : vwSigArr[i]!;
-    const hist = isNaN(vwVal) || isNaN(sigVal) ? NaN : vwVal - sigVal;
-    if (isNaN(hist)) return { time: bars[i].time, value: NaN };
+    const dm = isNaN(vwVal) || isNaN(sigVal) ? NaN : vwVal - sigVal;
+    if (isNaN(dm)) return { time: bars[i].time, value: NaN };
 
     const prevVw = (i > 0 && i - 1 >= warmup && vwmacdArr[i - 1] != null) ? vwmacdArr[i - 1]! : NaN;
     const prevSig = (i > 0 && i - 1 >= warmup && vwSigArr[i - 1] != null) ? vwSigArr[i - 1]! : NaN;
-    const prevHist = (!isNaN(prevVw) && !isNaN(prevSig)) ? prevVw - prevSig : hist;
-    const rising = hist >= prevHist;
+    const prevDm = (!isNaN(prevVw) && !isNaN(prevSig)) ? prevVw - prevSig : dm;
 
     let color: string;
-    if (hist > 0) {
-      color = rising ? '#00E676' : '#4CAF50';
+    if (dm >= 0) {
+      color = dm > prevDm ? '#4CAF50' : '#FF9800';
     } else {
-      color = rising ? '#EF5350' : '#FF1744';
+      color = dm < prevDm ? '#FF5252' : '#FF9800';
     }
-    return { time: bars[i].time, value: hist, color };
+    return { time: bars[i].time, value: dm, color };
   });
 
   return {

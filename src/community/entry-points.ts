@@ -55,10 +55,10 @@ export function calculate(bars: Bar[], inputs: Partial<EntryPointsInputs> = {}):
     const sell = (close < ema && high >= ema && open < ema) || (open > ema && close < ema);
 
     if (buy) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#4CAF50', text: 'Buy' });
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: 'rgba(0,128,0,0.9)', text: 'Buy' });
     }
     if (sell) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: 'rgba(255,0,0,0.9)', text: 'Sell' });
     }
   }
 

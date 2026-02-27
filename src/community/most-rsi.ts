@@ -3,12 +3,12 @@
  *
  * OTT-style trailing stop applied to RSI instead of price.
  * Includes RSI, RSI-based MA, MOST line, divergence detection,
- * divergence markers/lines, and OB/OS gradient fills.
+ * divergence markers/lines, OB/OS gradient fills, and optional BB bands.
  *
  * Reference: TradingView "MOST on RSI" (TV#452)
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar } from 'oakscriptjs';
 import type { MarkerData, LineDrawingData } from '../types';
 
 export interface MOSTRSIInputs {
@@ -41,7 +41,9 @@ export const plotConfig: PlotConfig[] = [
   { id: 'most', title: 'MOST', color: '#800000', lineWidth: 3 },
   { id: 'bullDiv', title: 'Bullish Divergence', color: '#26A69A', lineWidth: 2 },
   { id: 'bearDiv', title: 'Bearish Divergence', color: '#EF5350', lineWidth: 2 },
-  { id: 'midline', title: 'Midline', color: 'transparent', lineWidth: 0 },
+  { id: 'obData', title: 'RSI OB', color: '#4CAF50', lineWidth: 0, display: 'none' },
+  { id: 'osData', title: 'RSI OS', color: '#FF5252', lineWidth: 0, display: 'none' },
+  { id: 'midline', title: 'Middle Line', color: 'transparent', lineWidth: 0, display: 'none' },
 ];
 
 export const metadata = {
@@ -135,8 +137,27 @@ export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): Ind
     value: i < warmup ? NaN : v,
   }));
 
-  // Midline for gradient fill reference
-  const midlinePlot = bars.map((b) => ({ time: b.time, value: 50 }));
+  // OB/OS gradient fill auxiliary plots (matching rsi.ts pattern)
+  // Pine: fill(rsiPlot, midLinePlot, 100, 70, top_color=green(0), bottom_color=green(100))
+  // Pine: fill(rsiPlot, midLinePlot, 30, 0, top_color=red(100), bottom_color=red(0))
+  const obData = rsiArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (v != null && v > 70) ? v : NaN,
+  }));
+  const osData = rsiArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (v != null && v < 30) ? v : NaN,
+  }));
+  const midlinePlot = bars.map(b => ({ time: b.time, value: 50 }));
+
+  const fills: FillData[] = [
+    // Pine: fill(rsiUpperBand, rsiLowerBand, color=color.rgb(126,87,194,90))
+    // This is the band fill between hlines 70-30 (handled via hlines below)
+    // OB gradient fill
+    { plot1: 'obData', plot2: 'midline', options: { color: '#4CAF50', transp: 90, title: 'Overbought Gradient Fill' } },
+    // OS gradient fill
+    { plot1: 'osData', plot2: 'midline', options: { color: '#FF5252', transp: 90, title: 'Oversold Gradient Fill' } },
+  ];
 
   // BUY/SELL markers
   const markers: MarkerData[] = [];
@@ -172,9 +193,11 @@ export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): Ind
   const phArr = rsiPivotHighSeries.toArray();
   const plArr = rsiPivotLowSeries.toArray();
 
-  // Track pivot positions for divergence lines
-  const bullDivPlot: { time: number; value: number; color?: string }[] = bars.map(b => ({ time: b.time, value: NaN }));
-  const bearDivPlot: { time: number; value: number; color?: string }[] = bars.map(b => ({ time: b.time, value: NaN }));
+  // Track pivot positions for divergence line plots
+  // Pine: plot(plFound ? rsi[lookbackRight] : na, offset=-lookbackRight, color=(bullCond ? bullColor : noneColor))
+  // Pine: plot(phFound ? rsi[lookbackRight] : na, offset=-lookbackRight, color=(bearCond ? bearColor : noneColor))
+  const bullDivPlot: { time: number; value: number }[] = bars.map(b => ({ time: b.time, value: NaN }));
+  const bearDivPlot: { time: number; value: number }[] = bars.map(b => ({ time: b.time, value: NaN }));
 
   if (showDivergence) {
     // Find pivot low positions for bullish divergence
@@ -194,7 +217,7 @@ export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): Ind
           if (barsSince >= rangeLower && barsSince <= rangeUpper) {
             // Regular Bullish: RSI higher low, Price lower low
             if (pivotRsi > lastPLRsi && pivotPrice < lastPLPrice) {
-              // Draw divergence line
+              // Divergence line between the two pivot points
               lines.push({
                 time1: bars[lastPLIdx].time,
                 price1: lastPLRsi,
@@ -204,8 +227,9 @@ export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): Ind
                 width: 2,
                 style: 'solid',
               });
-              // Mark the pivot point
+              // Plot point at the pivot (Pine: plot with offset)
               bullDivPlot[pivotIdx] = { time: bars[pivotIdx].time, value: pivotRsi };
+              // Marker label (Pine: plotshape with location.absolute)
               markers.push({
                 time: bars[pivotIdx].time,
                 position: 'belowBar',
@@ -266,35 +290,16 @@ export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): Ind
     }
   }
 
-  // OB/OS gradient fills:
-  // Pine: fill(rsiPlot, midLinePlot, 100, 70, top_color=green(0), bottom_color=green(100)) => OB gradient
-  // Pine: fill(rsiPlot, midLinePlot, 30, 0, top_color=red(100), bottom_color=red(0)) => OS gradient
-  // Approximate with per-bar colors on the RSI plot
-  const rsiColoredPlot = rsiArr.map((v, i) => {
-    if (v == null || i < rsiLen) return { time: bars[i].time, value: NaN };
-    let color: string | undefined;
-    if (v >= 70) {
-      // Overbought: green intensity proportional to how far above 70
-      const intensity = Math.min((v - 70) / 30, 1);
-      const alpha = intensity;
-      color = `rgba(0,128,0,${alpha.toFixed(2)})`;
-    } else if (v <= 30) {
-      // Oversold: red intensity proportional to how far below 30
-      const intensity = Math.min((30 - v) / 30, 1);
-      const alpha = intensity;
-      color = `rgba(255,0,0,${alpha.toFixed(2)})`;
-    }
-    return { time: bars[i].time, value: v, color };
-  });
-
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {
-      'rsi': rsiColoredPlot,
+      'rsi': rsiPlot,
       'rsiMa': rsiMaPlot,
       'most': mostPlot,
       'bullDiv': bullDivPlot,
       'bearDiv': bearDivPlot,
+      'obData': obData,
+      'osData': osData,
       'midline': midlinePlot,
     },
     hlines: [
@@ -302,9 +307,7 @@ export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): Ind
       { value: 50, options: { color: 'rgba(120,123,134,0.5)', linestyle: 'dotted' as const, title: 'Midline' } },
       { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
-    fills: [
-      { plot1: 'rsi', plot2: 'midline', options: { color: 'rgba(126, 87, 194, 0.1)' } },
-    ],
+    fills,
     markers,
     lines,
   };

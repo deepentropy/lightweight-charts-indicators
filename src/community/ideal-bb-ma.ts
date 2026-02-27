@@ -40,7 +40,7 @@ export const defaultInputs: IdealBbMaInputs = {
 export const inputConfig: InputConfig[] = [
   { id: 'length1', type: 'int', title: '1st Length (NMA)', defval: 120, min: 1 },
   { id: 'length2', type: 'int', title: '2nd Length (NMA)', defval: 12, min: 1 },
-  { id: 'maType', type: 'string', title: 'MA Type', defval: 'EMA', options: ['EMA', 'SMA', 'WMA'] },
+  { id: 'maType', type: 'string', title: 'MA Type', defval: 'EMA', options: ['EMA', 'SMA', 'VWMA', 'WMA'] },
   { id: 'src', type: 'source', title: 'Source', defval: 'hl2' },
   { id: 'hullLength', type: 'int', title: 'Hull Lookback', defval: 24, min: 2 },
   { id: 'hullGain', type: 'int', title: 'Kahlman Gain', defval: 10000, min: 1 },
@@ -69,11 +69,14 @@ export function calculate(bars: Bar[], inputs: Partial<IdealBbMaInputs> = {}): I
   const source = getSourceSeries(bars, src);
 
   // --- NMA (3rd generation MA) ---
-  // getMA based on maType
+  const volSeries = new Series(bars, (b) => b.volume ?? 0);
+
+  // getMA based on maType (Pine: EMA/SMA/VWMA/WMA)
   function getMA(srcArr: number[], length: number): number[] {
     const s = Series.fromArray(bars, srcArr);
     switch (maType) {
       case 'SMA': return ta.sma(s, length).toArray();
+      case 'VWMA': return ta.vwma(s, length, volSeries).toArray();
       case 'WMA': return ta.wma(s, length).toArray();
       default: return ta.ema(s, length).toArray();
     }
@@ -91,7 +94,6 @@ export function calculate(bars: Bar[], inputs: Partial<IdealBbMaInputs> = {}): I
 
   // --- VWAP ---
   const hlc3Series = new Series(bars, (b) => (b.high + b.low + b.close) / 3);
-  const volSeries = new Series(bars, (b) => b.volume ?? 0);
   const vwapArr = ta.vwap(hlc3Series, volSeries).toArray();
 
   // --- Bollinger Bands (SMA 20, mult 2) ---
@@ -182,7 +184,17 @@ export function calculate(bars: Bar[], inputs: Partial<IdealBbMaInputs> = {}): I
     color: (v > (hullA[i] ?? 0)) ? LIME : RED_HULL,
   }));
 
-  // Buy/Sell markers from Hull crossover
+  // Dynamic hull fill colors: lime when b > a, red otherwise (Pine: c = b > a ? color.lime : color.red)
+  const hullFillColors: string[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    if (i < warmup || isNaN(hullA[i]) || isNaN(hullB[i])) {
+      hullFillColors[i] = 'transparent';
+    } else {
+      hullFillColors[i] = hullB[i] > hullA[i] ? '#00E67638' : '#EF535038';
+    }
+  }
+
+  // Buy/Sell markers from Hull crossover (Pine offset=-1: marker placed one bar back)
   const markers: MarkerData[] = [];
   for (let i = warmup + 1; i < n; i++) {
     const a = hullA[i];
@@ -191,13 +203,13 @@ export function calculate(bars: Bar[], inputs: Partial<IdealBbMaInputs> = {}): I
     const prevB = hullB[i - 1];
     if (isNaN(a) || isNaN(b) || isNaN(prevA) || isNaN(prevB)) continue;
 
-    // crossup: b > a and b[1] < a[1]
+    // crossup: b > a and b[1] < a[1]  (offset=-1 → place at i-1)
     if (b > a && prevB < prevA) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#4CAF50', text: 'Buy' });
+      markers.push({ time: bars[i - 1].time, position: 'belowBar', shape: 'labelUp', color: '#4CAF50', text: 'Buy' });
     }
-    // crossdn: a > b and a[1] < b[1]
+    // crossdn: a > b and a[1] < b[1]  (offset=-1 → place at i-1)
     if (a > b && prevA < prevB) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#F44336', text: 'Sell' });
+      markers.push({ time: bars[i - 1].time, position: 'aboveBar', shape: 'labelDown', color: '#F44336', text: 'Sell' });
     }
   }
 
@@ -213,8 +225,8 @@ export function calculate(bars: Bar[], inputs: Partial<IdealBbMaInputs> = {}): I
       hullB: hullBPlot,
     },
     fills: [
-      { plot1: 'bbUpper', plot2: 'bbLower', options: { color: '#2962FF20' } },
-      { plot1: 'hullA', plot2: 'hullB', options: { color: '#26A69A40' } },
+      { plot1: 'bbUpper', plot2: 'bbLower', options: { color: '#2962FF1A' } },
+      { plot1: 'hullA', plot2: 'hullB', options: { color: '#00E67638' }, colors: hullFillColors },
     ],
     markers,
   };

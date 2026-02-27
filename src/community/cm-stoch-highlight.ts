@@ -100,16 +100,17 @@ export function calculate(bars: Bar[], inputs: Partial<CMStochHighlightInputs> =
       if (aboveLine) {
         barColors.push({ time: bars[i].time, color: '#FF9800' }); // orange
       } else if (belowLine) {
-        barColors.push({ time: bars[i].time, color: '#E040FB' }); // fuchsia
+        barColors.push({ time: bars[i].time, color: '#FF00FF' }); // fuchsia
       }
     }
 
     // bgcolor: above/below line highlights
     if (sbh) {
       if (aboveLine) {
-        bgColors.push({ time: bars[i].time, color: 'rgba(239, 83, 80, 0.30)' }); // red transp=70
-      } else if (belowLine) {
-        bgColors.push({ time: bars[i].time, color: 'rgba(0, 230, 118, 0.30)' }); // lime transp=70
+        bgColors.push({ time: bars[i].time, color: 'rgba(255, 0, 0, 0.30)' }); // red transp=70
+      }
+      if (belowLine) {
+        bgColors.push({ time: bars[i].time, color: 'rgba(0, 255, 0, 0.30)' }); // lime transp=70
       }
     }
 
@@ -131,40 +132,40 @@ export function calculate(bars: Bar[], inputs: Partial<CMStochHighlightInputs> =
     // bgcolor: strict cross highlights
     if (sch) {
       if (crossUp) {
-        bgColors.push({ time: bars[i].time, color: 'rgba(0, 230, 118, 0.60)' }); // lime transp=40
+        bgColors.push({ time: bars[i].time, color: 'rgba(0, 255, 0, 0.60)' }); // lime transp=40
       }
       if (crossDn) {
-        bgColors.push({ time: bars[i].time, color: 'rgba(239, 83, 80, 0.60)' }); // red transp=40
+        bgColors.push({ time: bars[i].time, color: 'rgba(255, 0, 0, 0.60)' }); // red transp=40
       }
     }
 
     // bgcolor: any cross highlights
     if (sac) {
       if (crossUpAll) {
-        bgColors.push({ time: bars[i].time, color: 'rgba(0, 230, 118, 0.60)' }); // lime transp=40
+        bgColors.push({ time: bars[i].time, color: 'rgba(0, 255, 0, 0.60)' }); // lime transp=40
       }
       if (crossDownAll) {
-        bgColors.push({ time: bars[i].time, color: 'rgba(239, 83, 80, 0.60)' }); // red transp=40
+        bgColors.push({ time: bars[i].time, color: 'rgba(255, 0, 0, 0.60)' }); // red transp=40
       }
     }
 
     // markers: strict cross B/S
     if (sl) {
       if (crossUp) {
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00E676', text: 'B' });
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'B' });
       }
       if (crossDn) {
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'S' });
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'S' });
       }
     }
 
     // markers: any cross B/S
     if (sacl) {
       if (crossUpAll) {
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00E676', text: 'B' });
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'B' });
       }
       if (crossDownAll) {
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'S' });
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'S' });
       }
     }
   }

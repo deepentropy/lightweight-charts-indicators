@@ -30,7 +30,7 @@ export const defaultInputs: TrendFollowingMAInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'maType', type: 'string', title: 'MA Type', defval: 'EMA', options: ['EMA', 'SMA', 'RMA', 'WMA'] },
+  { id: 'maType', type: 'string', title: 'MA Type', defval: 'EMA', options: ['EMA', 'SMA', 'RMA', 'WMA', 'VWMA'] },
   { id: 'period', type: 'int', title: 'Period to Check Trend', defval: 20, min: 5 },
   { id: 'channelRate', type: 'float', title: 'Trend Channel Rate %', defval: 1, min: 0.1, step: 0.1 },
   { id: 'useLinReg', type: 'bool', title: 'Use Linear Regression', defval: true },
@@ -82,16 +82,20 @@ export function calculate(bars: Bar[], inputs: Partial<TrendFollowingMAInputs> =
   const rate = channelRate / 100;
 
   const closeSeries = new Series(bars, (b) => b.close);
+  const highSeries = new Series(bars, (b) => b.high);
+  const lowSeries = new Series(bars, (b) => b.low);
+  const volumeSeries = new Series(bars, (b) => b.volume ?? 0);
 
-  // pricerange = highest(280) - lowest(280) for channel calculation
-  const highest280 = ta.highest(closeSeries, 280).toArray();
-  const lowest280 = ta.lowest(closeSeries, 280).toArray();
+  // Pine: highest(280) defaults to high series, lowest(280) defaults to low series
+  const highest280 = ta.highest(highSeries, 280).toArray();
+  const lowest280 = ta.lowest(lowSeries, 280).toArray();
 
   function computeMA(len: number): Series {
     switch (maType) {
       case 'EMA': return ta.ema(closeSeries, len);
       case 'RMA': return ta.rma(closeSeries, len);
       case 'WMA': return ta.wma(closeSeries, len);
+      case 'VWMA': return ta.vwma(closeSeries, len, volumeSeries);
       default: return ta.sma(closeSeries, len);
     }
   }

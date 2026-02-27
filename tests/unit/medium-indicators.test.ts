@@ -52,7 +52,7 @@ describe('Bjorgum Triple EMA', () => {
   });
 
   it('should have correct metadata', () => {
-    expect(BjorgumTripleEma.metadata.title).toBe('Bjorgum Triple EMA');
+    expect(BjorgumTripleEma.metadata.title).toBe('Bjorgum Triple EMA Strategy');
     expect(BjorgumTripleEma.metadata.overlay).toBe(true);
   });
 });
@@ -679,7 +679,7 @@ describe('RMI Trend Sniper', () => {
 
   it('should have correct metadata', () => {
     expect(RMITrendSniper.metadata.title).toBe('RMI Trend Sniper');
-    expect(RMITrendSniper.metadata.overlay).toBe(false);
+    expect(RMITrendSniper.metadata.overlay).toBe(true);
   });
 });
 
@@ -790,10 +790,6 @@ describe('Zero-Lag MA Trend Levels', () => {
     expect(result.plots['plot0'].length).toBe(bars.length);
     expect(result.plots['plot1']).toBeDefined();
     expect(result.plots['plot1'].length).toBe(bars.length);
-    expect(result.plots['plot2']).toBeDefined();
-    expect(result.plots['plot2'].length).toBe(bars.length);
-    expect(result.plots['plot3']).toBeDefined();
-    expect(result.plots['plot3'].length).toBe(bars.length);
   });
 
   it('should produce non-NaN values after warmup', () => {

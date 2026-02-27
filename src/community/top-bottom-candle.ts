@@ -158,8 +158,8 @@ export function calculate(bars: Bar[], inputs: Partial<TopBottomCandleInputs> = 
       { value: 0, options: { color: '#2196F3', linestyle: 'solid' as const, title: 'Zero Line' } },
     ],
     fills: [
-      { plot1: 'hline_0', plot2: 'hline_2', options: { color: 'rgba(239, 83, 80, 0.15)', title: 'Overbought' } },
-      { plot1: 'hline_0', plot2: 'hline_1', options: { color: 'rgba(38, 166, 154, 0.15)', title: 'Oversold' } },
+      { plot1: 'hline_2', plot2: 'hline_1', options: { color: 'rgba(38, 166, 154, 0.15)', title: 'Oversold' } },
+      { plot1: 'hline_2', plot2: 'hline_0', options: { color: 'rgba(239, 83, 80, 0.15)', title: 'Overbought' } },
     ],
     markers,
     barColors,

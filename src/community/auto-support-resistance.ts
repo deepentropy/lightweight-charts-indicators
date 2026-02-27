@@ -52,7 +52,7 @@ export function calculate(bars: Bar[], inputs: Partial<AutoSupportResistanceInpu
   const { left, right, quickRight } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
-  // Pine uses close source for pivots (default "Close")
+  // Pine default source is "Close" for pivots
   const closeSeries = new Series(bars, (b) => b.close);
 
   // Compute pivot highs and lows
@@ -61,47 +61,29 @@ export function calculate(bars: Bar[], inputs: Partial<AutoSupportResistanceInpu
   const quickPivotHighArr = ta.pivothigh(closeSeries, left, quickRight).toArray();
   const quickPivotLowArr = ta.pivotlow(closeSeries, left, quickRight).toArray();
 
-  // Manual valuewhen implementation: when condition is true, capture source value
-  // valuewhen(cond, src[offset], occurrence)
-  // For quick pivots: src is close[quickRight], for regular pivots: src is close[right]
-  function computeValuewhen(pivotArr: number[], offset: number, occurrence: number): number[] {
-    const result = new Array(n).fill(NaN);
-    // Track historical pivot values
-    const found: number[] = [];
-    for (let i = 0; i < n; i++) {
-      // pivothigh/pivotlow returns the pivot value at the bar where it's confirmed
-      // The actual pivot happened `offset` bars ago
-      if (!isNaN(pivotArr[i]) && pivotArr[i] !== 0) {
-        // The value at the pivot bar is close[i - offset] (but the pivot detection already
-        // returns at bar i, meaning the pivot was at bar i-offset)
-        const srcIdx = i - offset;
-        if (srcIdx >= 0) {
-          found.unshift(bars[srcIdx].close);
-        }
-      }
-      if (found.length > occurrence) {
-        result[i] = found[occurrence];
-      }
-    }
-    return result;
-  }
+  // Convert pivot arrays to boolean condition Series (1 where pivot found, 0 otherwise).
+  // oakscriptjs pivothigh/pivotlow place the pivot value at the actual pivot bar,
+  // so the close at that bar IS the pivot source value -- no offset needed.
+  const toBoolSeries = (arr: number[]) =>
+    Series.fromArray(bars, arr.map(v => isNaN(v) ? 0 : 1));
 
-  // level1 = valuewhen(quick_pivot_high, close[quick_right], 0)
-  const level1Arr = computeValuewhen(quickPivotHighArr, quickRight, 0);
-  // level2 = valuewhen(quick_pivot_lows, close[quick_right], 0)
-  const level2Arr = computeValuewhen(quickPivotLowArr, quickRight, 0);
-  // level3 = valuewhen(pivot_high, close[right], 0)
-  const level3Arr = computeValuewhen(pivotHighArr, right, 0);
-  // level4 = valuewhen(pivot_lows, close[right], 0)
-  const level4Arr = computeValuewhen(pivotLowArr, right, 0);
-  // level5 = valuewhen(pivot_high, close[right], 1)
-  const level5Arr = computeValuewhen(pivotHighArr, right, 1);
-  // level6 = valuewhen(pivot_lows, close[right], 1)
-  const level6Arr = computeValuewhen(pivotLowArr, right, 1);
-  // level7 = valuewhen(pivot_high, close[right], 2)
-  const level7Arr = computeValuewhen(pivotHighArr, right, 2);
-  // level8 = valuewhen(pivot_lows, close[right], 2)
-  const level8Arr = computeValuewhen(pivotLowArr, right, 2);
+  const pivotHighCond = toBoolSeries(pivotHighArr);
+  const pivotLowCond = toBoolSeries(pivotLowArr);
+  const quickPivotHighCond = toBoolSeries(quickPivotHighArr);
+  const quickPivotLowCond = toBoolSeries(quickPivotLowArr);
+
+  // Pine: valuewhen(pivot_cond, close[offset], occurrence)
+  // In Pine, pivot fires at the confirmation bar (offset bars after pivot).
+  // close[offset] at the confirmation bar = close at the actual pivot bar.
+  // In oakscriptjs, pivot fires at the actual pivot bar, so source is just closeSeries.
+  const level1Arr = ta.valuewhen(quickPivotHighCond, closeSeries, 0).toArray();
+  const level2Arr = ta.valuewhen(quickPivotLowCond, closeSeries, 0).toArray();
+  const level3Arr = ta.valuewhen(pivotHighCond, closeSeries, 0).toArray();
+  const level4Arr = ta.valuewhen(pivotLowCond, closeSeries, 0).toArray();
+  const level5Arr = ta.valuewhen(pivotHighCond, closeSeries, 1).toArray();
+  const level6Arr = ta.valuewhen(pivotLowCond, closeSeries, 1).toArray();
+  const level7Arr = ta.valuewhen(pivotHighCond, closeSeries, 2).toArray();
+  const level8Arr = ta.valuewhen(pivotLowCond, closeSeries, 2).toArray();
 
   const GREEN = '#26A69A';
   const RED = '#EF5350';

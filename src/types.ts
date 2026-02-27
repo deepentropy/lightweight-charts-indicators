@@ -81,6 +81,10 @@ export interface BoxData {
   borderColor?: string;
   borderWidth?: number;
   borderStyle?: 'solid' | 'dashed' | 'dotted';
+  text?: string;
+  textColor?: string;
+  textSize?: 'tiny' | 'small' | 'normal' | 'large' | 'huge';
+  textHAlign?: 'left' | 'center' | 'right';
 }
 
 /**

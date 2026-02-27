@@ -117,14 +117,18 @@ export function calculate(bars: Bar[], inputs: Partial<EasyTrendColorsInputs> = 
     zeroPlot.push({ time: t, value: 0 });
 
     // Pine plotshape triangleup: shown when macd >= Upper (lime), otherwise na
-    // Pine plotshape triangledown: shown when macd <= Upper (red), but really "macd < Upper"
-    // The key insight: Pine plots BOTH shapes every bar, one is lime (above upper), other red (not above upper)
+    // Pine plotshape triangledown: shown when macd <= Upper (red), otherwise na
+    // Pine plots BOTH shapes every bar: lime triangleUp when above upper, red triangleDown when not
     if (macdArr[i] >= upper) {
       macdUpPlot.push({ time: t, value: macdArr[i], color: '#00FF00' });
       macdDnPlot.push({ time: t, value: NaN });
+      // Per-bar MACD triangle shape (visible MACD representation)
+      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: '#00FF00' });
     } else {
       macdUpPlot.push({ time: t, value: NaN });
       macdDnPlot.push({ time: t, value: macdArr[i], color: '#FF0000' });
+      // Per-bar MACD triangle shape (visible MACD representation)
+      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000' });
     }
 
     // Pine barcolor: yellow when macd > Upper, aqua when macd < Lower

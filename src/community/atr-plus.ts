@@ -8,6 +8,9 @@
  * - Short Entry Size (pips from recent high to close + stop)
  * - Short Target Size (short entry * R:R ratio)
  *
+ * Pine plots all 5 with plot.style_circles and color.new(color, 100) (fully transparent).
+ * We keep them visible with low opacity so the data is usable in the TS framework.
+ *
  * Reference: TradingView "ATR+ (Stop Loss Indicator)" by ZenAndTheArtOfTrading
  */
 
@@ -37,12 +40,14 @@ export const inputConfig: InputConfig[] = [
   { id: 'useATR', type: 'bool', title: 'Use ATR Multiplier', defval: true },
 ];
 
+// Pine: all 5 plots use plot.style_circles with color.new(color, 100) (fully transparent)
+// We use style: 'circles' and keep colors visible for the TS framework
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'ATR', color: '#009688', lineWidth: 2 },
-  { id: 'plot1', title: 'Long Entry', color: '#4CAF50', lineWidth: 2 },
-  { id: 'plot2', title: 'Long Target', color: '#4CAF50', lineWidth: 2 },
-  { id: 'plot3', title: 'Short Entry', color: '#F44336', lineWidth: 2 },
-  { id: 'plot4', title: 'Short Target', color: '#F44336', lineWidth: 2 },
+  { id: 'plot0', title: 'ATR', color: '#009688', lineWidth: 2, style: 'circles' },
+  { id: 'plot1', title: 'Long Entry Size', color: '#4CAF50', lineWidth: 2, style: 'circles' },
+  { id: 'plot2', title: 'Long Target Size', color: '#4CAF50', lineWidth: 2, style: 'circles' },
+  { id: 'plot3', title: 'Short Entry Size', color: '#F44336', lineWidth: 2, style: 'circles' },
+  { id: 'plot4', title: 'Short Target Size', color: '#F44336', lineWidth: 2, style: 'circles' },
 ];
 
 export const metadata = {

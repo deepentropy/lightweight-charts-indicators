@@ -1,9 +1,9 @@
 /**
  * CM Sling Shot System
  *
- * Two-EMA crossover system with bar coloring for trend and pullback zones.
- * Fill between EMAs indicates overall trend; bar colors show four states:
- * aggressive long, pullback in uptrend, aggressive short, pullback in downtrend.
+ * Two-EMA crossover system that keeps traders on the trending side of the market.
+ * EMA cloud with silver fill, bar coloring for pullback (yellow) and entry (aqua)
+ * signals, persistent per-bar trend triangles, and conservative entry arrows.
  *
  * Reference: TradingView "CM Sling Shot System" by ChrisMoody
  */
@@ -27,8 +27,8 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'EMA Fast', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot1', title: 'EMA Slow', color: '#FF6D00', lineWidth: 2 },
+  { id: 'plot0', title: 'EMA Fast', color: '#00FF00', lineWidth: 2 },
+  { id: 'plot1', title: 'EMA Slow', color: '#00FF00', lineWidth: 4 },
 ];
 
 export const metadata = {
@@ -49,18 +49,20 @@ export function calculate(bars: Bar[], inputs: Partial<CMSlingShotInputs> = {}):
   const barColors: BarColorData[] = [];
   const fillColors: string[] = [];
 
+  // Pine: col = emaFast > emaSlow ? lime : emaFast < emaSlow ? red : yellow
+  const getColor = (fast: number, slow: number): string =>
+    fast > slow ? '#00FF00' : fast < slow ? '#FF0000' : '#FFFF00';
+
   const fastPlot = emaFastArr.map((v, i) => {
     if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
     const slow = emaSlowArr[i] ?? 0;
-    const color = v > slow ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
+    return { time: bars[i].time, value: v, color: getColor(v, slow) };
   });
 
   const slowPlot = emaSlowArr.map((v, i) => {
     if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
     const fast = emaFastArr[i] ?? 0;
-    const color = fast > v ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
+    return { time: bars[i].time, value: v, color: getColor(fast, v) };
   });
 
   for (let i = 0; i < n; i++) {
@@ -70,26 +72,31 @@ export function calculate(bars: Bar[], inputs: Partial<CMSlingShotInputs> = {}):
     }
 
     const close = bars[i].close;
+    const prevClose = i > 0 ? bars[i - 1].close : close;
     const fast = emaFastArr[i] ?? 0;
     const slow = emaSlowArr[i] ?? 0;
+    const prevFast = i > 0 ? (emaFastArr[i - 1] ?? 0) : fast;
 
-    // Fill color
-    fillColors.push(fast > slow ? '#26A69A80' : '#EF535080');
+    // Pine: fill(p1, p2, color=silver, transp=50) => #C0C0C080
+    fillColors.push('#C0C0C080');
 
-    // Bar color
-    let barColor: string;
-    if (close > fast && fast > slow) {
-      barColor = '#00E676'; // Lime - aggressive long
-    } else if (close < fast && close > slow && fast > slow) {
-      barColor = '#00BCD4'; // Aqua - pullback in uptrend
-    } else if (close < fast && fast < slow) {
-      barColor = '#B71C1C'; // Maroon - aggressive short
-    } else if (close > fast && close < slow && fast < slow) {
-      barColor = '#FF6D00'; // Orange - pullback in downtrend
-    } else {
-      barColor = fast > slow ? '#26A69A' : '#EF5350';
+    // Pine barcolor logic: second barcolor overrides first when both match.
+    // 1st: pullbackUpT (fast>slow && close<fast) => yellow
+    //      pullbackDnT (fast<slow && close>fast) => yellow
+    // 2nd: entryUpT (fast>slow && close[1]<fast && close>fast) => aqua
+    //      entryDnT (fast<slow && close[1]>fast && close<fast) => aqua
+    const pullbackUp = fast > slow && close < fast;
+    const pullbackDn = fast < slow && close > fast;
+    const entryUp = fast > slow && prevClose < prevFast && close > fast;
+    const entryDn = fast < slow && prevClose > prevFast && close < fast;
+
+    // Second barcolor overrides first in Pine
+    if (entryUp || entryDn) {
+      barColors.push({ time: bars[i].time as number, color: '#00FFFF' }); // aqua
+    } else if (pullbackUp || pullbackDn) {
+      barColors.push({ time: bars[i].time as number, color: '#FFFF00' }); // yellow
     }
-    barColors.push({ time: bars[i].time as number, color: barColor });
+    // No barcolor push when neither condition met (leave candle default)
   }
 
   // Markers: persistent trend triangles every bar + conservative entry arrows
@@ -97,28 +104,27 @@ export function calculate(bars: Bar[], inputs: Partial<CMSlingShotInputs> = {}):
   for (let i = warmup; i < n; i++) {
     const fast = emaFastArr[i] ?? 0;
     const slow = emaSlowArr[i] ?? 0;
-    const prevFast = emaFastArr[i - 1] ?? 0;
-    const prevSlow = emaSlowArr[i - 1] ?? 0;
+    const prevFast = i > 0 ? (emaFastArr[i - 1] ?? 0) : fast;
     const close = bars[i].close;
-    const prevClose = bars[i - 1].close;
+    const prevClose = i > 0 ? bars[i - 1].close : close;
 
     // Pine: plotshape(st and upTrend, style=shape.triangleup, location=location.bottom, color=lime)
     // Persistent every-bar trend triangles
     if (fast >= slow) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#00E676', text: '' });
+      markers.push({ time: bars[i].time as number, position: 'belowBar', shape: 'triangleUp', color: '#00FF00', text: '' });
     }
     // Pine: plotshape(st and downTrend, style=shape.triangledown, location=location.top, color=red)
     if (fast < slow) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000', text: '' });
+      markers.push({ time: bars[i].time as number, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000', text: '' });
     }
 
-    // Conservative entry: close crosses above fast EMA in uptrend
+    // Pine: plotarrow(pa and codiff, colorup=lime) - conservative entry up
     if (fast > slow && prevClose < prevFast && close > fast) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#00E676', text: 'Buy' });
+      markers.push({ time: bars[i].time as number, position: 'belowBar', shape: 'arrowUp', color: '#00FF00', text: 'Buy' });
     }
-    // Conservative entry: close crosses below fast EMA in downtrend
+    // Pine: plotarrow(pa and codiff2*-1, colordown=red) - conservative entry down
     if (fast < slow && prevClose > prevFast && close < fast) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
+      markers.push({ time: bars[i].time as number, position: 'aboveBar', shape: 'arrowDown', color: '#FF0000', text: 'Sell' });
     }
   }
 

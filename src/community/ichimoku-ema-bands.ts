@@ -41,13 +41,20 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'ema', title: 'EMA', color: '#FFA500', lineWidth: 1 },
+  // Pine: plot(out, title="EMA", color=orange, transp=85)
+  { id: 'ema', title: 'EMA', color: 'rgba(255,165,0,0.15)', lineWidth: 1 },
+  // Pine: plot(emaup, title="EMAUP", color=red)
   { id: 'emaUp', title: 'EMA Upper Band', color: '#EF5350', lineWidth: 1 },
+  // Pine: plot(emadw, title="EMADW", color=green)
   { id: 'emaDw', title: 'EMA Lower Band', color: '#26A69A', lineWidth: 1 },
+  // Pine: plot(conversionLine, color=red)
   { id: 'conversion', title: 'Conversion Line', color: '#EF5350', lineWidth: 1 },
+  // Pine: plot(baseLine, color=kjuncol, linewidth=2, transp=5) — conditional color per bar
   { id: 'base', title: 'Base Line', color: '#2962FF', lineWidth: 2 },
-  { id: 'lead1', title: 'Senkou Span A', color: '#26A69A', lineWidth: 1 },
-  { id: 'lead2', title: 'Senkou Span B', color: '#EF5350', lineWidth: 1 },
+  // Pine: plot(leadLine1, offset=displacement, color=green, transp=85)
+  { id: 'lead1', title: 'Senkou Span A', color: 'rgba(38,166,154,0.15)', lineWidth: 1 },
+  // Pine: plot(leadLine2, offset=displacement, color=red, transp=85)
+  { id: 'lead2', title: 'Senkou Span B', color: 'rgba(239,83,80,0.15)', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -162,7 +169,8 @@ export function calculate(bars: Bar[], inputs: Partial<IchimokuEMABandsInputs> =
       'lead2': lead2Plot,
     },
     fills: [
-      { plot1: 'lead1', plot2: 'lead2', options: { color: 'rgba(192,192,192,0.15)' } },
+      // Pine: fill(p1, p2, silver) — default transp=90 → 10% opacity
+      { plot1: 'lead1', plot2: 'lead2', options: { color: 'rgba(192,192,192,0.10)' } },
     ],
   };
 }

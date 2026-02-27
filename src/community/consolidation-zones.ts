@@ -65,8 +65,13 @@ export function calculate(bars: Bar[], inputs: Partial<ConsolidationZonesInputs>
   let condhigh = NaN;
   let condlow = NaN;
 
-  // Track line drawing data: Pine creates line.new from bar_index - conscnt to bar_index
+  // Track line drawing data: Pine uses var line upline/dnline (single persistent pair).
+  // When conscnt == consLen (new zone), previous pair is kept (not deleted), new pair starts.
+  // When conscnt > consLen (zone extends), old pair is deleted and recreated.
+  // Result: one finalized line pair per completed zone + one active pair for current zone.
   const lines: LineDrawingData[] = [];
+  // Index in lines[] where the current active pair starts (-1 = no active pair)
+  let activeLineIdx = -1;
 
   for (let i = 0; i < n; i++) {
     const hb = hbArr[i];
@@ -154,34 +159,40 @@ export function calculate(bars: Bar[], inputs: Partial<ConsolidationZonesInputs>
     condLowArr[i] = conscnt >= consLen ? condlow : NaN;
 
     // Pine: line.new(bar_index, condhigh, bar_index - conscnt, condhigh, style=dashed)
-    // Emit line drawings when in consolidation zone (update each bar, replacing previous)
+    // Pine uses var line upline/dnline - one persistent pair at a time.
+    // When conscnt == consLen: old pair stays (finalized), new pair created.
+    // When conscnt > consLen: line.delete(upline/dnline), then recreate.
     if (conscnt >= consLen && !isNaN(condhigh) && !isNaN(condlow)) {
       const startIdx = Math.max(0, i - conscnt);
-      // Remove previous lines for this zone (they get deleted/recreated each bar in Pine)
-      // We keep only the final line per zone by checking if last line has same price
-      const lastUp = lines.length >= 2 ? lines[lines.length - 2] : null;
-      if (lastUp && lastUp.price1 === condhigh && lastUp.time2 === bars[i - 1]?.time) {
-        // Replace the previous pair
-        lines.splice(lines.length - 2, 2);
+      if (conscnt === consLen) {
+        // New zone starting - finalize previous pair (keep it), start new active pair
+        activeLineIdx = lines.length;
+      } else if (activeLineIdx >= 0) {
+        // Zone extending - delete (replace) the active pair
+        lines.splice(activeLineIdx, 2);
+        // activeLineIdx stays the same since we removed at that position
       }
       lines.push({
-        time1: bars[i].time,
+        time1: bars[startIdx].time,
         price1: condhigh,
-        time2: bars[startIdx].time,
+        time2: bars[i].time,
         price2: condhigh,
         color: '#EF5350',
         width: 1,
         style: 'dashed',
       });
       lines.push({
-        time1: bars[i].time,
+        time1: bars[startIdx].time,
         price1: condlow,
-        time2: bars[startIdx].time,
+        time2: bars[i].time,
         price2: condlow,
         color: '#00FF00',
         width: 1,
         style: 'dashed',
       });
+    } else {
+      // Not in a consolidation zone - no active line pair
+      activeLineIdx = -1;
     }
   }
 

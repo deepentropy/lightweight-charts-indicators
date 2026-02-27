@@ -6,6 +6,7 @@
  * WaveB = SMA(src - EMA(src, bLength), smaLen)
  * WaveC = SMA(src - EMA(src, cLength), smaLen)
  * Spike/exhaustion overlays: fuchsia histogram when wc/wb or wb/wa ratio exceeds cutoff.
+ * Separate barcolor input: both spikes -> #81F7F3, either spike -> fuchsia.
  *
  * Reference: TradingView "EMA Wave Indicator [LazyBear]" community indicator
  */
@@ -20,6 +21,7 @@ export interface EMAWaveInputs {
   smaLength: number;
   cutoff: number;
   identifySpikes: boolean;
+  colorBarsOnSpikes: boolean;
   src: SourceType;
 }
 
@@ -30,6 +32,7 @@ export const defaultInputs: EMAWaveInputs = {
   smaLength: 4,
   cutoff: 10,
   identifySpikes: false,
+  colorBarsOnSpikes: false,
   src: 'hlc3',
 };
 
@@ -40,6 +43,7 @@ export const inputConfig: InputConfig[] = [
   { id: 'smaLength', type: 'int', title: 'Wave SMA Length', defval: 4, min: 1 },
   { id: 'cutoff', type: 'int', title: 'Cutoff', defval: 10, min: 1 },
   { id: 'identifySpikes', type: 'bool', title: 'Identify Spikes/Exhaustions', defval: false },
+  { id: 'colorBarsOnSpikes', type: 'bool', title: 'Color Bars on Spikes/Exhaustions', defval: false },
   { id: 'src', type: 'source', title: 'Source', defval: 'hlc3' },
 ];
 
@@ -84,8 +88,9 @@ export function calculate(bars: Bar[], inputs: Partial<EMAWaveInputs> = {}): Ind
 
   const warmup = cfg.cLength + cfg.smaLength;
 
-  // Spike detection: wcf = (wb != 0) ? (wc/wb > cutoff) : false
-  //                  wbf = (wa != 0) ? (wb/wa > cutoff) : false
+  // Pine spike detection (raw ratio, no abs):
+  //   wcf = (wb != 0) ? (wc/wb > cutoff) : false
+  //   wbf = (wa != 0) ? (wb/wa > cutoff) : false
   const waveCPlot: Array<{ time: number; value: number }> = [];
   const waveCSPlot: Array<{ time: number; value: number }> = [];
   const waveBPlot: Array<{ time: number; value: number }> = [];
@@ -109,22 +114,25 @@ export function calculate(bars: Bar[], inputs: Partial<EMAWaveInputs> = {}): Ind
     const wb = wbArr[i] ?? 0;
     const wc = wcArr[i] ?? 0;
 
-    const wcf = wb !== 0 ? Math.abs(wc / wb) > cfg.cutoff : false;
-    const wbf = wa !== 0 ? Math.abs(wb / wa) > cfg.cutoff : false;
+    // Pine: wcf=(wb != 0) ? (wc/wb > cutoff) : false  (raw ratio, not absolute)
+    const wcf = wb !== 0 ? (wc / wb) > cfg.cutoff : false;
+    // Pine: wbf=(wa != 0) ? (wb/wa > cutoff) : false
+    const wbf = wa !== 0 ? (wb / wa) > cfg.cutoff : false;
 
-    // Pine: plot(wc, color=maroon, style=histogram)
+    // Pine: plot(wc, color=maroon, style=histogram, linewidth=3)
     waveCPlot.push({ time: t, value: wc });
-    // Pine: plot(mse and wcf ? wc : na, color=fuchsia, style=histogram)
+    // Pine: plot(mse and wcf ? wc : na, color=fuchsia, style=histogram, linewidth=3)
     waveCSPlot.push({ time: t, value: (cfg.identifySpikes && wcf) ? wc : NaN });
-    // Pine: plot(wb, color=blue, style=histogram)
+    // Pine: plot(wb, color=blue, style=histogram, linewidth=3)
     waveBPlot.push({ time: t, value: wb });
-    // Pine: plot(mse and wbf ? wb : na, color=fuchsia, style=histogram)
+    // Pine: plot(mse and wbf ? wb : na, color=fuchsia, style=histogram, linewidth=3)
     waveBSPlot.push({ time: t, value: (cfg.identifySpikes && wbf) ? wb : NaN });
-    // Pine: plot(wa, color=red, style=histogram)
+    // Pine: plot(wa, color=red, style=histogram, linewidth=3)
     waveAPlot.push({ time: t, value: wa });
 
-    // Pine: barcolor: both wcf+wbf -> #81F7F3, either -> fuchsia
-    if (cfg.identifySpikes) {
+    // Pine: barcolor(ebc ? (wcf and wbf) ? #81F7F3 : (wcf or wbf) ? fuchsia : na : na)
+    // Uses separate ebc input (colorBarsOnSpikes), independent of mse (identifySpikes)
+    if (cfg.colorBarsOnSpikes) {
       if (wcf && wbf) barColors.push({ time: t, color: '#81F7F3' });
       else if (wcf || wbf) barColors.push({ time: t, color: '#E040FB' });
     }
@@ -144,4 +152,4 @@ export function calculate(bars: Bar[], inputs: Partial<EMAWaveInputs> = {}): Ind
   };
 }
 
-export const EMAWave = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const EMAWave = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig };

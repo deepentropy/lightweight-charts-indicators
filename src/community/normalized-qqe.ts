@@ -1,13 +1,14 @@
 /**
  * Normalized QQE (nQQE)
  *
- * QQE normalized to 0-100 range.
- * nqqe = (rsi - trailingStop) / band * 50 + 50, clamped to 0-100.
+ * Smoothed RSI with a QQE trailing stop, normalized around zero.
+ * QQEF = EMA(RSI, SF) − 50, QQES trailing stop − 50.
+ * ATR of RSI uses double-WWMA (alpha = 1/length).
  *
- * Reference: TradingView "Normalized QQE"
+ * Pine source: "Normalized Quantitative Qualitative Estimation" by KivancOzbilgic
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 
 export interface NormalizedQQEInputs {
@@ -48,95 +49,100 @@ export const metadata = {
 export function calculate(bars: Bar[], inputs: Partial<NormalizedQQEInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { rsiLen, smoothFactor, qqeFactor, src, showSignals } = { ...defaultInputs, ...inputs };
   const n = bars.length;
-  const wildersLen = rsiLen * 2 - 1;
 
   const source = getSourceSeries(bars, src);
   const rsi = ta.rsi(source, rsiLen);
+  // Pine: RSII=ema(rsi(src,length),SSF)  /  QQEF=ema(rsi(src,length),SSF)
   const smoothedRsi = ta.ema(rsi, smoothFactor);
-  const srArr = smoothedRsi.toArray();
+  const QQEF = smoothedRsi.toArray();
 
-  // ATR of RSI
-  const atrRsiRaw: number[] = new Array(n);
+  // Pine: TR=abs(RSII-RSII[1])
+  const TR: number[] = new Array(n);
   for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? (srArr[i - 1] ?? 0) : 0;
-    const cur = srArr[i] ?? 0;
-    atrRsiRaw[i] = Math.abs(cur - prev);
+    const cur = QQEF[i] ?? 0;
+    const prev = i > 0 ? (QQEF[i - 1] ?? 0) : 0;
+    TR[i] = Math.abs(cur - prev);
   }
-  const atrRsiSeries = Series.fromArray(bars, atrRsiRaw);
-  const smoothedAtr = ta.ema(atrRsiSeries, wildersLen);
-  const atrArr = smoothedAtr.toArray();
 
-  // Trailing stop
-  const longBand: number[] = new Array(n);
-  const shortBand: number[] = new Array(n);
-  const trendDir: number[] = new Array(n);
-  const trailing: number[] = new Array(n);
-  const bandArr: number[] = new Array(n);
+  // Pine: wwalpha = 1/length
+  // Pine: WWMA := wwalpha*TR + (1-wwalpha)*nz(WWMA[1])
+  // Pine: ATRRSI := wwalpha*WWMA + (1-wwalpha)*nz(ATRRSI[1])
+  // Two passes of recursive filter with alpha = 1/rsiLen
+  const wwalpha = 1 / rsiLen;
+  const WWMA: number[] = new Array(n);
+  const ATRRSI: number[] = new Array(n);
+  WWMA[0] = TR[0];
+  ATRRSI[0] = WWMA[0];
+  for (let i = 1; i < n; i++) {
+    WWMA[i] = wwalpha * TR[i] + (1 - wwalpha) * WWMA[i - 1];
+    ATRRSI[i] = wwalpha * WWMA[i] + (1 - wwalpha) * ATRRSI[i - 1];
+  }
 
+  // Pine: QUP=QQEF+ATRRSI*4.236, QDN=QQEF-ATRRSI*4.236
+  // Pine: QQES:=QUP<nz(QQES[1]) ? QUP
+  //            : QQEF>nz(QQES[1]) and QQEF[1]<nz(QQES[1]) ? QDN
+  //            : QDN>nz(QQES[1]) ? QDN
+  //            : QQEF<nz(QQES[1]) and QQEF[1]>nz(QQES[1]) ? QUP
+  //            : nz(QQES[1])
+  const QQES: number[] = new Array(n);
   for (let i = 0; i < n; i++) {
-    const sr = srArr[i] ?? 0;
-    const prevSr = i > 0 ? (srArr[i - 1] ?? 0) : 0;
-    const dar = (atrArr[i] ?? 0) * qqeFactor;
-    bandArr[i] = dar;
-    const newLong = sr - dar;
-    const newShort = sr + dar;
+    const f = QQEF[i] ?? 0;
+    const dar = ATRRSI[i] * qqeFactor;
+    const QUP = f + dar;
+    const QDN = f - dar;
 
     if (i === 0) {
-      longBand[i] = newLong;
-      shortBand[i] = newShort;
-      trendDir[i] = 1;
+      QQES[i] = 0;
     } else {
-      longBand[i] = (prevSr > longBand[i - 1] && sr > longBand[i - 1])
-        ? Math.max(longBand[i - 1], newLong)
-        : newLong;
-      shortBand[i] = (prevSr < shortBand[i - 1] && sr < shortBand[i - 1])
-        ? Math.min(shortBand[i - 1], newShort)
-        : newShort;
-
-      if (prevSr <= longBand[i - 1] && sr > longBand[i - 1]) {
-        trendDir[i] = 1;
-      } else if (prevSr >= shortBand[i - 1] && sr < shortBand[i - 1]) {
-        trendDir[i] = -1;
+      const prevS = QQES[i - 1];
+      const prevF = QQEF[i - 1] ?? 0;
+      if (QUP < prevS) {
+        QQES[i] = QUP;
+      } else if (f > prevS && prevF < prevS) {
+        QQES[i] = QDN;
+      } else if (QDN > prevS) {
+        QQES[i] = QDN;
+      } else if (f < prevS && prevF > prevS) {
+        QQES[i] = QUP;
       } else {
-        trendDir[i] = trendDir[i - 1];
+        QQES[i] = prevS;
       }
     }
-    trailing[i] = trendDir[i] === 1 ? longBand[i] : shortBand[i];
   }
 
-  const warmup = rsiLen * 2 + smoothFactor;
+  const warmup = rsiLen + smoothFactor;
 
   // Pine: QQF=plot(QQEF-50,"FAST",color=color.maroon,linewidth=2)
-  // Pine: plot(QQEF-50,color=Colorh,linewidth=2,style=5) -- colored version
-  // Pine: QQS=plot(QQES-50,"SLOW",color=#0007E1, linewidth=2)
-  const plot0 = srArr.map((v, i) => {
+  // Pine: plot(QQEF-50,color=Colorh,linewidth=2,style=5)  -- colored overlay
+  // Pine: Colorh = QQEF-50>10 ? #007002 : QQEF-50<-10 ? color.red : #E8E81A
+  const plot0 = QQEF.map((v, i) => {
     if (v == null || i < warmup) return { time: bars[i].time, value: NaN };
     const val = v - 50;
-    // Pine: Colorh = QQEF-50>10 ? #007002 : QQEF-50<-10 ? color.red : #E8E81A
     const color = val > 10 ? '#007002' : val < -10 ? '#FF0000' : '#E8E81A';
     return { time: bars[i].time, value: val, color };
   });
 
-  // Slow QQE line: QQES-50
-  const plot1 = trailing.map((v, i) => {
+  // Pine: QQS=plot(QQES-50,"SLOW",color=#0007E1,linewidth=2)
+  const plot1 = QQES.map((v, i) => {
     if (i < warmup) return { time: bars[i].time, value: NaN };
     return { time: bars[i].time, value: v - 50 };
   });
 
-  // Pine: buySignalr = crossover(QQEF, QQES), sellSignallr = crossunder(QQEF, QQES)
+  // Pine: buySignalr = crossover(QQEF, QQES)
+  // Pine: plotshape(buySignalr and showsignals ? (QQES-50)*0.995 : na, ...)
+  // Pine: sellSignallr = crossunder(QQEF, QQES)
+  // Pine: plotshape(sellSignallr and showsignals ? (QQES-50)*1.005 : na, ...)
   const markers: MarkerData[] = [];
-  for (let i = warmup; i < n; i++) {
-    const curFast = srArr[i] ?? 0;
-    const prevFast = srArr[i - 1] ?? 0;
-    const curSlow = trailing[i];
-    const prevSlow = trailing[i - 1];
-    if (prevFast <= prevSlow && curFast > curSlow) {
-      if (showSignals) {
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
-      }
-    } else if (prevFast >= prevSlow && curFast < curSlow) {
-      if (showSignals) {
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+  if (showSignals) {
+    for (let i = warmup; i < n; i++) {
+      const curF = QQEF[i] ?? 0;
+      const prevF = QQEF[i - 1] ?? 0;
+      const curS = QQES[i];
+      const prevS = QQES[i - 1];
+      if (prevF <= prevS && curF > curS) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#008000', text: 'Buy' });
+      } else if (prevF >= prevS && curF < curS) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Sell' });
       }
     }
   }

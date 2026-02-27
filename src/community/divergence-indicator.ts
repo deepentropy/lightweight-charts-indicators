@@ -2,8 +2,9 @@
  * Divergence Indicator (any oscillator)
  *
  * Overlay indicator that detects regular and hidden divergences by comparing
- * pivot highs/lows in price vs an oscillator (default: ohlc4 used as RSI source).
- * Plots divergence trendlines on price and marks with labels.
+ * pivot highs/lows in price vs an oscillator source.
+ * Since external indicator sourcing is not available, ohlc4 is used as the
+ * default oscillator (matching the Pine default).
  *
  * Regular Bullish: price makes lower low, oscillator makes higher low
  * Regular Bearish: price makes higher high, oscillator makes lower high
@@ -11,7 +12,7 @@
  * Hidden Bearish: price makes lower high, oscillator makes higher high
  *
  * Pine plots 4 trendlines (connecting consecutive pivots where divergence found)
- * and 4 plotshape labels at divergence points.
+ * and 4 plotshape labels at divergence points. overlay=true.
  *
  * Reference: TradingView "Divergence Indicator (any oscillator)"
  */
@@ -20,7 +21,6 @@ import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, ty
 import type { MarkerData, LineDrawingData } from '../types';
 
 export interface DivergenceIndicatorInputs {
-  rsiLength: number;
   src: SourceType;
   pivotLookbackLeft: number;
   pivotLookbackRight: number;
@@ -33,8 +33,7 @@ export interface DivergenceIndicatorInputs {
 }
 
 export const defaultInputs: DivergenceIndicatorInputs = {
-  rsiLength: 14,
-  src: 'close',
+  src: 'ohlc4',
   pivotLookbackLeft: 5,
   pivotLookbackRight: 5,
   rangeUpper: 60,
@@ -46,8 +45,7 @@ export const defaultInputs: DivergenceIndicatorInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'rsiLength', type: 'int', title: 'RSI Length', defval: 14, min: 1 },
-  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
+  { id: 'src', type: 'source', title: 'Indicator', defval: 'ohlc4' },
   { id: 'pivotLookbackLeft', type: 'int', title: 'Pivot Lookback Left', defval: 5, min: 1 },
   { id: 'pivotLookbackRight', type: 'int', title: 'Pivot Lookback Right', defval: 5, min: 1 },
   { id: 'rangeUpper', type: 'int', title: 'Max Lookback Range', defval: 60, min: 1 },
@@ -58,7 +56,7 @@ export const inputConfig: InputConfig[] = [
   { id: 'plotHiddenBear', type: 'bool', title: 'Plot Hidden Bearish', defval: false },
 ];
 
-// Overlay on price - no separate oscillator plots visible
+// Overlay on price - divergence shown via markers and lines
 export const plotConfig: PlotConfig[] = [];
 
 export const metadata = {
@@ -69,24 +67,29 @@ export const metadata = {
 
 export function calculate(bars: Bar[], inputs: Partial<DivergenceIndicatorInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
   const {
-    rsiLength, src, pivotLookbackLeft, pivotLookbackRight,
+    src, pivotLookbackLeft, pivotLookbackRight,
     rangeUpper, rangeLower, plotBull, plotHiddenBull, plotBear, plotHiddenBear,
   } = { ...defaultInputs, ...inputs };
 
   const n = bars.length;
-  const source = getSourceSeries(bars, src);
-  const rsiSeries = ta.rsi(source, rsiLength);
-  const rsiArr = rsiSeries.toArray();
+  const osc = getSourceSeries(bars, src);
+  const oscArr = osc.toArray();
 
   const lbL = pivotLookbackLeft;
   const lbR = pivotLookbackRight;
-  const plArr = ta.pivotlow(rsiSeries, lbL, lbR).toArray();
-  const phArr = ta.pivothigh(rsiSeries, lbL, lbR).toArray();
+
+  // Pivot detection on the oscillator
+  // Library pivotlow/pivothigh place values at the actual pivot bar (center),
+  // unlike Pine which places at the confirmation bar (center + rightbars).
+  const plArr = ta.pivotlow(osc, lbL, lbR).toArray();
+  const phArr = ta.pivothigh(osc, lbL, lbR).toArray();
 
   const markers: MarkerData[] = [];
   const lines: LineDrawingData[] = [];
 
-  // Track pivot history for divergence comparison
+  // Track previous pivot lows for bullish divergence checks
+  // Pine uses valuewhen(plFound, osc[lbR], 1) and barssince to find previous pivot
+  // and check if it's within range. We track pivot history manually.
   const pivotLows: { idx: number; oscVal: number; priceLow: number }[] = [];
   const pivotHighs: { idx: number; oscVal: number; priceHigh: number }[] = [];
 
@@ -94,26 +97,26 @@ export function calculate(bars: Bar[], inputs: Partial<DivergenceIndicatorInputs
     const plVal = plArr[i];
     const phVal = phArr[i];
 
-    // Pivot low detected on RSI
+    // Pivot low found on oscillator at bar i
     if (plVal != null && !isNaN(plVal as number)) {
-      const oscAtPivot = plVal as number;
+      const oscAtPivot = oscArr[i];
       const priceAtPivot = bars[i].low;
 
       if (pivotLows.length > 0) {
         const prev = pivotLows[pivotLows.length - 1];
-        const barsSincePrev = i - prev.idx;
+        const barsBetween = i - prev.idx;
 
-        if (barsSincePrev >= rangeLower && barsSincePrev <= rangeUpper) {
-          // Regular Bullish: price lower low, RSI higher low
+        // Pine: _inRange checks rangeLower <= barssince(plFound[1]) <= rangeUpper
+        if (barsBetween >= rangeLower && barsBetween <= rangeUpper) {
+          // Regular Bullish: price lower low, osc higher low
           if (plotBull && priceAtPivot < prev.priceLow && oscAtPivot > prev.oscVal) {
             markers.push({
               time: bars[i].time as number,
               position: 'belowBar',
               shape: 'labelUp',
-              color: '#4CAF50', // green
+              color: '#4CAF50',
               text: 'Bull',
             });
-            // Trendline connecting previous pivot low price to current pivot low price
             lines.push({
               time1: bars[prev.idx].time as number,
               price1: prev.priceLow,
@@ -125,13 +128,13 @@ export function calculate(bars: Bar[], inputs: Partial<DivergenceIndicatorInputs
             });
           }
 
-          // Hidden Bullish: price higher low, RSI lower low
+          // Hidden Bullish: price higher low, osc lower low
           if (plotHiddenBull && priceAtPivot > prev.priceLow && oscAtPivot < prev.oscVal) {
             markers.push({
               time: bars[i].time as number,
               position: 'belowBar',
               shape: 'labelUp',
-              color: '#4CAF50',
+              color: 'rgba(76, 175, 80, 0.20)',
               text: 'H Bull',
             });
             lines.push({
@@ -139,7 +142,7 @@ export function calculate(bars: Bar[], inputs: Partial<DivergenceIndicatorInputs
               price1: prev.priceLow,
               time2: bars[i].time as number,
               price2: priceAtPivot,
-              color: 'rgba(76, 175, 80, 0.20)', // hidden green
+              color: 'rgba(76, 175, 80, 0.20)',
               width: 2,
               style: 'solid',
             });
@@ -150,23 +153,23 @@ export function calculate(bars: Bar[], inputs: Partial<DivergenceIndicatorInputs
       pivotLows.push({ idx: i, oscVal: oscAtPivot, priceLow: priceAtPivot });
     }
 
-    // Pivot high detected on RSI
+    // Pivot high found on oscillator at bar i
     if (phVal != null && !isNaN(phVal as number)) {
-      const oscAtPivot = phVal as number;
+      const oscAtPivot = oscArr[i];
       const priceAtPivot = bars[i].high;
 
       if (pivotHighs.length > 0) {
         const prev = pivotHighs[pivotHighs.length - 1];
-        const barsSincePrev = i - prev.idx;
+        const barsBetween = i - prev.idx;
 
-        if (barsSincePrev >= rangeLower && barsSincePrev <= rangeUpper) {
-          // Regular Bearish: price higher high, RSI lower high
+        if (barsBetween >= rangeLower && barsBetween <= rangeUpper) {
+          // Regular Bearish: price higher high, osc lower high
           if (plotBear && priceAtPivot > prev.priceHigh && oscAtPivot < prev.oscVal) {
             markers.push({
               time: bars[i].time as number,
               position: 'aboveBar',
               shape: 'labelDown',
-              color: '#EF5350', // red
+              color: '#EF5350',
               text: 'Bear',
             });
             lines.push({
@@ -180,13 +183,13 @@ export function calculate(bars: Bar[], inputs: Partial<DivergenceIndicatorInputs
             });
           }
 
-          // Hidden Bearish: price lower high, RSI higher high
+          // Hidden Bearish: price lower high, osc higher high
           if (plotHiddenBear && priceAtPivot < prev.priceHigh && oscAtPivot > prev.oscVal) {
             markers.push({
               time: bars[i].time as number,
               position: 'aboveBar',
               shape: 'labelDown',
-              color: '#EF5350',
+              color: 'rgba(239, 83, 80, 0.20)',
               text: 'H Bear',
             });
             lines.push({
@@ -194,7 +197,7 @@ export function calculate(bars: Bar[], inputs: Partial<DivergenceIndicatorInputs
               price1: prev.priceHigh,
               time2: bars[i].time as number,
               price2: priceAtPivot,
-              color: 'rgba(239, 83, 80, 0.20)', // hidden red
+              color: 'rgba(239, 83, 80, 0.20)',
               width: 2,
               style: 'solid',
             });

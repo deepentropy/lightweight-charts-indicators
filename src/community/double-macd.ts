@@ -4,6 +4,7 @@
  * Two MACD instances (12/26 and 5/15) each plotted as both line AND histogram.
  * Divergence detection on MACD2 with fractal tops/bottoms.
  * Entry markers (largo/corto) on MACD2 zero cross with MACD1 confirmation.
+ * Counter-trend entries (largo1/corto1) on MACD2/MACD1 cross.
  *
  * Reference: TradingView "DOBLE MACD X" community indicator
  */
@@ -110,11 +111,11 @@ export function calculate(bars: Bar[], inputs: Partial<DoubleMACDInputs> = {}): 
   const divBearPlot: Array<{ time: number; value: number; color?: string }> = [];
   const divBullPlot: Array<{ time: number; value: number; color?: string }> = [];
 
-  // Divergence label markers
+  // Divergence label markers + entry markers
   const markers: MarkerData[] = [];
 
-  // Pine: max = highest(macd_2, 100) * 1.5, ploff = (max - (-max)) / 16 = max/8
-  // We compute a running max for ploff
+  // Pine: max = highest(macd_2, 100) * 1.5
+  // nsc = max, nsv = -max, midpoint = 0, ploff = nsc / 8 = max / 8
   for (let i = 0; i < n; i++) {
     // Compute local scale for label offset
     let localMax = 0;
@@ -130,14 +131,17 @@ export function calculate(bars: Bar[], inputs: Partial<DoubleMACDInputs> = {}): 
       const regBearish = !isNaN(highPrev) && curPrice > highPrice && curVal < highPrev;
       const hidBearish = !isNaN(highPrev) && curPrice < highPrice && curVal > highPrev;
       const col = regBearish || hidBearish ? '#FF0000' : 'transparent';
-      divBearPlot.push({ time: bars[i].time, value: curVal, color: col });
+      // Pine: plot with offset=-2, so place at i-2
+      divBearPlot.push({ time: bars[i - 2] ? bars[i - 2].time : bars[i].time, value: curVal, color: col });
 
       // Pine plotshape: regular bearish = Bear R, hidden bearish = Bear O
+      // Pine offset=-2, so place label at bar i-2
+      const labelTime = bars[i - 2] ? bars[i - 2].time : bars[i].time;
       if (regBearish) {
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Bear R' });
+        markers.push({ time: labelTime, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Bear R' });
       }
       if (hidBearish) {
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Bear O' });
+        markers.push({ time: labelTime, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Bear O' });
       }
 
       highPrev = curVal;
@@ -152,14 +156,17 @@ export function calculate(bars: Bar[], inputs: Partial<DoubleMACDInputs> = {}): 
       const regBullish = !isNaN(lowPrev) && curPrice < lowPrice && curVal > lowPrev;
       const hidBullish = !isNaN(lowPrev) && curPrice > lowPrice && curVal < lowPrev;
       const col = regBullish || hidBullish ? '#0AAC00' : 'transparent';
-      divBullPlot.push({ time: bars[i].time, value: curVal, color: col });
+      // Pine: plot with offset=-2, so place at i-2
+      divBullPlot.push({ time: bars[i - 2] ? bars[i - 2].time : bars[i].time, value: curVal, color: col });
 
       // Pine plotshape: regular bullish = Bull R, hidden bullish = Bull O
+      // Pine offset=-2, so place label at bar i-2
+      const labelTime = bars[i - 2] ? bars[i - 2].time : bars[i].time;
       if (regBullish) {
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#0AAC00', text: 'Bull R' });
+        markers.push({ time: labelTime, position: 'belowBar', shape: 'labelUp', color: '#0AAC00', text: 'Bull R' });
       }
       if (hidBullish) {
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#0AAC00', text: 'Bull O' });
+        markers.push({ time: labelTime, position: 'belowBar', shape: 'labelUp', color: '#0AAC00', text: 'Bull O' });
       }
 
       lowPrev = curVal;
@@ -169,9 +176,11 @@ export function calculate(bars: Bar[], inputs: Partial<DoubleMACDInputs> = {}): 
     }
   }
 
-  // Pine strategy markers:
-  // largo = crossover(macd_2,0) and macd_1 < macd_2 and macd_1[1] < macd_1[0] and macd_1 < 0
-  // corto = crossunder(macd_2,0) and macd_1 > macd_2 and macd_1[1] > macd_1[0] and macd_1 > 0
+  // Entry signals
+  // Pine: largo = crossover(macd_2,0) and macd_1 < macd_2 and macd_1[1] < macd_1[0] and macd_1 < 0
+  // Pine: largo1 = crossover(macd_2,macd_1) and macd_2 < 0
+  // Pine: corto = crossunder(macd_2,0) and macd_1 > macd_2 and macd_1[1] > macd_1[0] and macd_1 > 0
+  // Pine: corto1 = crossunder(macd_2,macd_1) and macd_2 > 0
   for (let i = warmup + 1; i < n; i++) {
     const m2 = macd2Arr[i];
     const m2prev = macd2Arr[i - 1];
@@ -179,37 +188,68 @@ export function calculate(bars: Bar[], inputs: Partial<DoubleMACDInputs> = {}): 
     const m1prev = macd1Arr[i - 1] ?? NaN;
     if (m2 == null || m2prev == null || m1 == null || isNaN(m1prev)) continue;
 
-    // Buy: macd2 crosses above 0, macd1 < macd2, macd1 rising, macd1 < 0
+    // Trend buy: macd2 crosses above 0, macd1 < macd2, macd1 rising, macd1 < 0
     if (m2prev <= 0 && m2 > 0 && m1 < m2 && m1 > m1prev && m1 < 0) {
       markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#0AAC00', text: 'Buy' });
     }
-    // Sell: macd2 crosses below 0, macd1 > macd2, macd1 falling, macd1 > 0
+    // Trend sell: macd2 crosses below 0, macd1 > macd2, macd1 falling, macd1 > 0
     if (m2prev >= 0 && m2 < 0 && m1 > m2 && m1 < m1prev && m1 > 0) {
       markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000', text: 'Sell' });
+    }
+
+    // Counter-trend buy: macd2 crosses above macd1, macd2 < 0
+    const m1prev2 = macd1Arr[i - 1] ?? NaN;
+    if (m2prev <= m1prev2 && m2 > m1 && m2 < 0) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#0AAC00', text: 'CT Buy' });
+    }
+    // Counter-trend sell: macd2 crosses below macd1, macd2 > 0
+    if (m2prev >= m1prev2 && m2 < m1 && m2 > 0) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000', text: 'CT Sell' });
     }
   }
 
   // Pine bgcolor: atlas zone (red bg when dbb < factor) and choppiness zone (red bg when chop > 50)
   const bgColors: BgColorData[] = [];
-  // Simplified atlas + choppiness detection
+  // Atlas + choppiness detection
   const bbLen = 20;
   const bbMult = 2.0;
   const chopLen = 14;
   const chopLevel = 50;
 
-  for (let i = Math.max(warmup, bbLen, chopLen); i < n; i++) {
-    // Atlas mini: dbb = sqrt((upper-lower)/upper)*20, factor = ema(dbb,120)*4/5
-    // Simplified: use BB width relative measure
+  // Pre-compute EMA of dbb for atlas factor (Pine: dbbmed = ema(dbb, 120), factor = dbbmed*4/5)
+  const dbbArr: number[] = new Array(n).fill(0);
+  for (let i = bbLen - 1; i < n; i++) {
     let sumSrc = 0, sumSq = 0;
     for (let j = i - bbLen + 1; j <= i; j++) {
       sumSrc += bars[j].close;
       sumSq += bars[j].close * bars[j].close;
     }
     const mean = sumSrc / bbLen;
-    const stdv = Math.sqrt(sumSq / bbLen - mean * mean);
+    const stdv = Math.sqrt(Math.max(0, sumSq / bbLen - mean * mean));
     const bbUp = mean + bbMult * stdv;
     const bbLo = mean - bbMult * stdv;
-    const dbb = bbUp > 0 ? Math.sqrt((bbUp - bbLo) / bbUp) * 20 : 0;
+    dbbArr[i] = bbUp > 0 ? Math.sqrt((bbUp - bbLo) / bbUp) * 20 : 0;
+  }
+
+  // EMA of dbb with period 120
+  const emaLen = 120;
+  const emaMult = 2 / (emaLen + 1);
+  const dbbEma: number[] = new Array(n).fill(0);
+  let emaInit = false;
+  for (let i = bbLen - 1; i < n; i++) {
+    if (!emaInit) {
+      dbbEma[i] = dbbArr[i];
+      emaInit = true;
+    } else {
+      dbbEma[i] = dbbArr[i] * emaMult + dbbEma[i - 1] * (1 - emaMult);
+    }
+  }
+
+  for (let i = Math.max(warmup, bbLen, chopLen); i < n; i++) {
+    // Atlas: atl = dbb - factor, all = atl > 0 ? 0 : 1
+    const factor = dbbEma[i] * 4 / 5;
+    const atl = dbbArr[i] - factor;
+    const atlZone = atl <= 0;
 
     // Choppiness: 100 * log10(sum(tr, len) / (highest - lowest)) / log10(len)
     let sumTr = 0, hh = -Infinity, ll = Infinity;
@@ -225,8 +265,9 @@ export function calculate(bars: Bar[], inputs: Partial<DoubleMACDInputs> = {}): 
     }
     const height = hh - ll;
     const chop = height > 0 ? 100 * Math.log10(sumTr / height) / Math.log10(chopLen) : 0;
+    const chopZone = chop >= chopLevel;
 
-    if (dbb < 2 || chop > chopLevel) {
+    if (atlZone || chopZone) {
       bgColors.push({ time: bars[i].time, color: 'rgba(255, 0, 0, 0.1)' });
     }
   }

@@ -46,8 +46,8 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'resistance', title: 'Resistance Line', color: '#26A69A', lineWidth: 1 },
   { id: 'support', title: 'Support Line', color: '#EF5350', lineWidth: 1 },
-  { id: 'obMarker', title: 'OB Cross', color: '#00FFFF', lineWidth: 2 },
-  { id: 'osMarker', title: 'OS Cross', color: '#00FFFF', lineWidth: 2 },
+  { id: 'obMarker', title: 'OB Cross', color: '#00FFFF', lineWidth: 2, style: 'cross' },
+  { id: 'osMarker', title: 'OS Cross', color: '#00FFFF', lineWidth: 2, style: 'cross' },
 ];
 
 export const metadata = {
@@ -61,7 +61,7 @@ export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {})
   const n = bars.length;
   const nn = smoother;
 
-  // Pine plotcandle: ys1 = (high+low+close*2)/4, then series of EMA/stdev transforms
+  // Pine: ys1 = (high+low+close*2)/4, then series of EMA/stdev transforms
   const ys1Series = new Series(bars, (b) => (b.high + b.low + b.close * 2) / 4);
   const rk3 = ta.ema(ys1Series, nn);
   const rk4 = ta.stdev(ys1Series, nn);
@@ -83,6 +83,8 @@ export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {})
   const downArr = downSeries.toArray();
 
   const candleWarmup = nn * 4;
+
+  // Pine: plotcandle(Oo,Hh,Ll,Cc,color=vcolor)
   const candles: PlotCandleData[] = bars.map((b, i) => {
     const up = upArr[i] ?? NaN;
     const dn = downArr[i] ?? NaN;
@@ -97,19 +99,17 @@ export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {})
     return { time: b.time, open: Oo, high: Oo, low: Ll, close: Ll, color };
   });
 
-  // S/R Zones: Pine CCI-based
-  // C3 = cci(close, Pds), then highest/lowest over Lookback, then percentage calc
+  // -------S/R Zones------
+  // Pine: C3 = cci(close, Pds) — uses close as source, not hlc3
   const closeSeries = new Series(bars, (b) => b.close);
-  const hlc3Series = new Series(bars, (b) => (b.high + b.low + b.close) / 3);
-  const cciArr = ta.cci(hlc3Series, pricePeriod).toArray();
+  const cciArr = ta.cci(closeSeries, pricePeriod).toArray();
   const cciSeries = new Series(bars, (_b, i) => cciArr[i] ?? 0);
   const value2Arr = ta.highest(cciSeries, supResPeriod).toArray();
   const value3Arr = ta.lowest(cciSeries, supResPeriod).toArray();
 
   const srWarmup = Math.max(pricePeriod, supResPeriod);
 
-  // Pine: ResistanceLine = Value3 + Value4 * (PerCent/100)
-  // Pine: SupportLine = Value2 - Value4 * (PerCent/100)
+  // Pine: ResistanceLine = Value3 + Value5, SupportLine = Value2 - Value5
   const resistancePlot = bars.map((b, i) => {
     if (!dynamic || i < srWarmup || value2Arr[i] == null || value3Arr[i] == null) {
       return { time: b.time, value: NaN };
@@ -132,18 +132,27 @@ export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {})
     return { time: b.time, value: v2 - v5 };
   });
 
-  // OB/OS cross markers
+  // --Overbought/Oversold/Warning Detail
   // Pine: UPshape = up > ob and up>down ? highest(up,1)+20 : up>ob and up<down ? highest(down,1)+20 : na
   // Pine: DOWNshape = down < os and up>down ? lowest(down,1)-20 : down<os and up<down ? lowest(up,1)-20 : na
+  // Pine: plot(UPshape, style=cross, color=aqua, linewidth=2)
+  // Pine: plot(DOWNshape, style=cross, color=aqua, linewidth=2)
   const markers: MarkerData[] = [];
   const obMarkerPlot = bars.map((b, i) => {
     if (i < candleWarmup) return { time: b.time, value: NaN };
     const up = upArr[i] ?? NaN;
     const dn = downArr[i] ?? NaN;
     if (isNaN(up) || isNaN(dn)) return { time: b.time, value: NaN };
-    if (up > ob && up > dn) return { time: b.time, value: up + 20 };
-    if (up > ob && up < dn) return { time: b.time, value: dn + 20 };
-    return { time: b.time, value: NaN };
+    let val = NaN;
+    if (up > ob && up > dn) {
+      val = up + 20;
+    } else if (up > ob && up < dn) {
+      val = dn + 20;
+    }
+    if (!isNaN(val)) {
+      markers.push({ time: b.time, position: 'aboveBar', shape: 'cross', color: '#00FFFF' });
+    }
+    return { time: b.time, value: val };
   });
 
   const osMarkerPlot = bars.map((b, i) => {
@@ -151,16 +160,29 @@ export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {})
     const up = upArr[i] ?? NaN;
     const dn = downArr[i] ?? NaN;
     if (isNaN(up) || isNaN(dn)) return { time: b.time, value: NaN };
-    if (dn < os && up > dn) return { time: b.time, value: dn - 20 };
-    if (dn < os && up < dn) return { time: b.time, value: up - 20 };
-    return { time: b.time, value: NaN };
+    let val = NaN;
+    if (dn < os && up > dn) {
+      val = dn - 20;
+    } else if (dn < os && up < dn) {
+      val = up - 20;
+    }
+    if (!isNaN(val)) {
+      markers.push({ time: b.time, position: 'belowBar', shape: 'cross', color: '#00FFFF' });
+    }
+    return { time: b.time, value: val };
   });
 
-  // Build hlines conditionally based on showOBOS
+  // Pine: hline(x1), hline(x2) where x1=OBOS?ob:false, x2=OBOS?os:false
   const hlines: any[] = [];
   if (showOBOS) {
     hlines.push({ value: ob, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } });
     hlines.push({ value: os, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } });
+  }
+
+  // Fill between resistance and support lines to visualize the S/R zone
+  const fills: any[] = [];
+  if (dynamic) {
+    fills.push({ plot1: 'resistance', plot2: 'support', options: { color: '#2196F3', transp: 90, title: 'S/R Zone' } });
   }
 
   return {
@@ -172,6 +194,7 @@ export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {})
       'osMarker': osMarkerPlot,
     },
     hlines,
+    fills,
     plotCandles: { candle0: candles },
     markers,
   };

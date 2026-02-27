@@ -37,7 +37,7 @@ export const plotConfig: PlotConfig[] = [
 
 export const metadata = {
   title: 'TonyUX EMA Scalper',
-  shortTitle: 'TUX Scalper',
+  shortTitle: 'TUX EMA Scalper',
   overlay: true,
 };
 
@@ -59,12 +59,12 @@ export function calculate(bars: Bar[], inputs: Partial<TonyUXScalperInputs> = {}
 
   const highPlot = highArr.map((v, i) => ({
     time: bars[i].time,
-    value: i < channelLength ? NaN : v,
+    value: i < channelLength ? NaN : (v ?? NaN),
   }));
 
   const lowPlot = lowArr.map((v, i) => ({
     time: bars[i].time,
-    value: i < channelLength ? NaN : v,
+    value: i < channelLength ? NaN : (v ?? NaN),
   }));
 
   // Buy/Sell markers: cross(close, EMA) means close crosses EMA in either direction

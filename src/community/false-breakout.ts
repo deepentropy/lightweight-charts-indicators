@@ -40,10 +40,7 @@ export const inputConfig: InputConfig[] = [
   { id: 'aggressive', type: 'bool', title: 'Aggressive', defval: false },
 ];
 
-export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Highest', color: '#787B86', lineWidth: 1 },
-  { id: 'plot1', title: 'Lowest', color: '#787B86', lineWidth: 1 },
-];
+export const plotConfig: PlotConfig[] = [];
 
 export const metadata = {
   title: 'False Breakout (Expo)',
@@ -104,6 +101,7 @@ export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}
 
   // State tracking
   let val = NaN;
+  let prevVal = NaN; // val[1] in Pine: previous bar's final val for crossunder/crossover
   let count = 0;
   let indx0 = 0; // most recent breakout bar
   let indx1 = 0; // previous breakout bar
@@ -131,15 +129,19 @@ export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}
       indx0 = i;
     }
 
-    if (i < warmup || isNaN(val)) continue;
+    if (i < warmup || isNaN(val)) {
+      prevVal = val;
+      continue;
+    }
 
     const c = bars[i].close;
     const prevClose = i > 0 ? bars[i - 1].close : NaN;
 
-    // Crossunder: close crosses below val
-    const breakdown = !isNaN(prevClose) && prevClose >= val && c < val;
-    // Crossover: close crosses above val
-    const breakup = !isNaN(prevClose) && prevClose <= val && c > val;
+    // Crossunder: close crosses below val (Pine: ta.crossunder(c, val))
+    // Uses current val for current bar, prevVal for previous bar comparison
+    const breakdown = !isNaN(prevClose) && !isNaN(prevVal) && prevClose >= prevVal && c < val;
+    // Crossover: close crosses above val (Pine: ta.crossover(c, val))
+    const breakup = !isNaN(prevClose) && !isNaN(prevVal) && prevClose <= prevVal && c > val;
 
     // Min bars between breakouts
     const minbars = indx1 + minPeriod < indx0;
@@ -147,7 +149,11 @@ export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}
     const maxvalid = i - maxPeriod <= indx0;
 
     // False breakout up: multiple new highs (count < -1), then price breaks down
-    if (count < -1 && breakdown && maxvalid && minbars) {
+    const falsebreakoutup = count < -1 && breakdown && maxvalid && minbars;
+    // False breakout down: multiple new lows (count > 1), then price breaks up
+    const falsebreakoutdown = count > 1 && breakup && maxvalid && minbars;
+
+    if (falsebreakoutup) {
       count = 0;
       markers.push({
         time: bars[i].time as number,
@@ -156,7 +162,6 @@ export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}
         color: '#f23645',
         text: 'False Up',
       });
-      // Pine: line.new(indx0, val, n, val, color=#f23645, width=2)
       lines.push({
         time1: bars[indx0].time,
         price1: val,
@@ -168,8 +173,7 @@ export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}
       });
     }
 
-    // False breakout down: multiple new lows (count > 1), then price breaks up
-    if (count > 1 && breakup && maxvalid && minbars) {
+    if (falsebreakoutdown) {
       count = 0;
       markers.push({
         time: bars[i].time as number,
@@ -178,7 +182,6 @@ export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}
         color: '#6ce5a0',
         text: 'False Down',
       });
-      // Pine: line.new(indx0, val, n, val, color=#6ce5a0, width=2)
       lines.push({
         time1: bars[indx0].time,
         price1: val,
@@ -189,21 +192,13 @@ export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}
         style: 'solid',
       });
     }
+
+    prevVal = val;
   }
-
-  const plot0 = hiArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || isNaN(v)) ? NaN : v,
-  }));
-
-  const plot1 = loArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || isNaN(v)) ? NaN : v,
-  }));
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
+    plots: {},
     markers,
     lines,
   };

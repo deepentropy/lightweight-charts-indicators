@@ -1,10 +1,12 @@
 /**
- * RedK Trader Pressure Index (TPX v1.0)
+ * RedK Trader Pressure Index (TPX v5.0)
  *
  * Measures bull/bear pressure from high/low changes relative to
  * a 2-bar range baseline. Bull pressure = how far bulls pull
  * highs and lows up; bear pressure = how far bears push them down.
  * Net pressure (TPX) is the WMA-smoothed difference.
+ * v3.0 adds optional pre-smoothing; v4.0 adds dominant pressure signals;
+ * v5.0 adds TPX swing alerts.
  *
  * Reference: TradingView "RedK Trader Pressure Index (TPX)" by RedKTrader
  */
@@ -16,6 +18,8 @@ export interface RedKTPXInputs {
   length: number;
   smooth: number;
   controlLevel: number;
+  preSmooth: boolean;
+  preSmoothLen: number;
   slevelOn: boolean;
   slevel: number;
 }
@@ -24,6 +28,8 @@ export const defaultInputs: RedKTPXInputs = {
   length: 7,
   smooth: 3,
   controlLevel: 30,
+  preSmooth: false,
+  preSmoothLen: 3,
   slevelOn: false,
   slevel: 70,
 };
@@ -32,6 +38,8 @@ export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Avg Length', defval: 7, min: 1 },
   { id: 'smooth', type: 'int', title: 'Smoothing', defval: 3, min: 1 },
   { id: 'controlLevel', type: 'int', title: 'Control Level', defval: 30, min: 5, max: 100 },
+  { id: 'preSmooth', type: 'bool', title: 'Pre-smoothing?', defval: false },
+  { id: 'preSmoothLen', type: 'int', title: 'Pre-smooth Length', defval: 3, min: 1 },
   { id: 'slevelOn', type: 'bool', title: 'Pressure Signal Line', defval: false },
   { id: 'slevel', type: 'int', title: 'Signal Level', defval: 70, min: 0, max: 100 },
 ];
@@ -51,7 +59,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<RedKTPXInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { length, smooth, controlLevel, slevelOn, slevel } = { ...defaultInputs, ...inputs };
+  const { length, smooth, controlLevel, preSmooth, preSmoothLen, slevelOn, slevel } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const high = new Series(bars, (b) => b.high);
@@ -97,8 +105,12 @@ export function calculate(bars: Bar[], inputs: Partial<RedKTPXInputs> = {}): Ind
   // WMA of bull and bear pressure
   const bullsSeries = Series.fromArray(bars, bullsArr);
   const bearsSeries = Series.fromArray(bars, bearsArr);
-  const avgBullsArr = ta.wma(bullsSeries, length).toArray();
-  const avgBearsArr = ta.wma(bearsSeries, length).toArray();
+  const avgBullRaw = ta.wma(bullsSeries, length);
+  const avgBearRaw = ta.wma(bearsSeries, length);
+
+  // Pine v3.0: optional pre-smoothing (avgbulls = pre_s ? wma(avgbull, pre_sv) : avgbull)
+  const avgBullsArr = preSmooth ? ta.wma(avgBullRaw, preSmoothLen).toArray() : avgBullRaw.toArray();
+  const avgBearsArr = preSmooth ? ta.wma(avgBearRaw, preSmoothLen).toArray() : avgBearRaw.toArray();
 
   // Net = avgBulls - avgBears, then WMA smooth
   const netArr: number[] = new Array(n);

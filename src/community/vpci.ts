@@ -21,17 +21,17 @@ export interface VPCIInputs {
 }
 
 export const defaultInputs: VPCIInputs = {
-  longLength: 30,
+  longLength: 20,
   shortLength: 5,
-  signalLength: 9,
+  signalLength: 8,
   bbLength: 20,
   bbMult: 2.5,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'longLength', type: 'int', title: 'Long Length', defval: 30, min: 1 },
+  { id: 'longLength', type: 'int', title: 'Long Length', defval: 20, min: 1 },
   { id: 'shortLength', type: 'int', title: 'Short Length', defval: 5, min: 1 },
-  { id: 'signalLength', type: 'int', title: 'Signal Length', defval: 9, min: 1 },
+  { id: 'signalLength', type: 'int', title: 'Signal MA Length', defval: 8, min: 1 },
   { id: 'bbLength', type: 'int', title: 'BB Length', defval: 20, min: 1 },
   { id: 'bbMult', type: 'float', title: 'BB Mult', defval: 2.5, min: 0.1, step: 0.1 },
 ];
@@ -75,7 +75,7 @@ export function calculate(bars: Bar[], inputs: Partial<VPCIInputs> = {}): Indica
     const volL = smaVolLongArr[i];
 
     if (isNaN(vwmaL) || isNaN(smaL) || isNaN(vwmaS) || isNaN(smaS) || isNaN(volS) || isNaN(volL) || smaS === 0 || volL === 0) {
-      vpciArr[i] = 0;
+      vpciArr[i] = NaN;
     } else {
       const vpc = vwmaL - smaL;
       const vpr = vwmaS / smaS;
@@ -85,7 +85,8 @@ export function calculate(bars: Bar[], inputs: Partial<VPCIInputs> = {}): Indica
   }
 
   const vpciSeries = new Series(bars, (_b, i) => vpciArr[i]);
-  const signalArr = ta.ema(vpciSeries, signalLength).toArray();
+  // Pine: s=sma(vpci, lengthMA)
+  const signalArr = ta.sma(vpciSeries, signalLength).toArray();
 
   const warmup = longLength;
 

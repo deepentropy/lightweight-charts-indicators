@@ -387,7 +387,7 @@ describe('TillsonT3', () => {
   const result = TillsonT3.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], true);
+    assertShape(result, ['plot0'], true);
   });
 
   it('produces finite values after warmup', () => {

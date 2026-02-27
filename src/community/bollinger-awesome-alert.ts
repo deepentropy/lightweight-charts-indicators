@@ -5,8 +5,22 @@
  * plus a fast EMA line. Buy/Sell signals when fast EMA crosses BB basis
  * combined with Awesome Oscillator direction.
  *
- * Buy: crossover(fast_ma, bb_basis) and close > bb_basis and |AO| == 1 (rising from zero)
- * Sell: crossunder(fast_ma, bb_basis) and close < bb_basis and |AO| == 2 (falling toward zero)
+ * Pine plots:
+ *   plot0: bb_basis (red, linewidth 2)
+ *   plot1: bb_upper (blue, linewidth 1)  -- "ubi"
+ *   plot2: bb_lower (blue, linewidth 1)  -- "lbi"
+ *   plot3: bb_sqz_upper (hidden, transp 100)  -- "usqzi"
+ *   plot4: bb_sqz_lower (hidden, transp 100)  -- "lsqzi"
+ *   plot5: fast_ma (black, linewidth 2)
+ *
+ * Pine fills:
+ *   fill(ubi, lbi) -- center channel, silver transp 90
+ *   fill(ubi, usqzi) -- squeeze band upper, dynamic white/blue transp 50
+ *   fill(lbi, lsqzi) -- squeeze band lower, dynamic white/blue transp 50
+ *
+ * Pine plotshape:
+ *   break_down -> arrowDown aboveBar red "Sell"
+ *   break_up   -> arrowUp belowBar green "Buy"
  *
  * Reference: TradingView "Bollinger Awesome Alert R1.1 by JustUncleL"
  */
@@ -55,9 +69,11 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Basis Line', color: '#F44336', lineWidth: 2 },
-  { id: 'plot1', title: 'Upper Band', color: '#2196F3', lineWidth: 1 },
-  { id: 'plot2', title: 'Lower Band', color: '#2196F3', lineWidth: 1 },
-  { id: 'plot3', title: 'Fast EMA', color: '#000000', lineWidth: 2 },
+  { id: 'plot1', title: 'Upper Band Inner', color: '#2196F3', lineWidth: 1 },
+  { id: 'plot2', title: 'Lower Band Inner', color: '#2196F3', lineWidth: 1 },
+  { id: 'plot3', title: 'Hide Sqz Upper', color: '#FFFFFF', lineWidth: 1, display: 'none' },
+  { id: 'plot4', title: 'Hide Sqz Lower', color: '#FFFFFF', lineWidth: 1, display: 'none' },
+  { id: 'plot5', title: 'Fast EMA', color: '#000000', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -80,6 +96,10 @@ export function calculate(bars: Bar[], inputs: Partial<BollingerAwesomeAlertInpu
 
   // Fast EMA
   const fastMa = ta.ema(source, fastMaLen);
+
+  // ATR(14) for squeeze band offset
+  const atr14 = ta.atr(bars, 14);
+  const atr14Arr = atr14.toArray();
 
   const basisArr = bbBasis.toArray();
   const upperArr = bbUpper.toArray();
@@ -126,6 +146,18 @@ export function calculate(bars: Bar[], inputs: Partial<BollingerAwesomeAlertInpu
     bbSqueeze[i] = avgSpread[i] !== 0 ? (spreadArr[i] / avgSpread[i]) * 100 : 0;
   }
 
+  // Calculate squeeze band offsets: bb_offset = atr(14) * 0.5
+  // bb_sqz_upper = bb_upper + bb_offset, bb_sqz_lower = bb_lower - bb_offset
+  const sqzUpperArr: number[] = new Array(n);
+  const sqzLowerArr: number[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const offset = (atr14Arr[i] ?? 0) * 0.5;
+    const u = upperArr[i];
+    const l = lowerArr[i];
+    sqzUpperArr[i] = u != null ? u + offset : NaN;
+    sqzLowerArr[i] = l != null ? l - offset : NaN;
+  }
+
   const warmup = Math.max(bbLength, aoSlow);
 
   const plot0 = basisArr.map((v, i) => ({
@@ -140,10 +172,32 @@ export function calculate(bars: Bar[], inputs: Partial<BollingerAwesomeAlertInpu
     time: bars[i].time,
     value: (i < warmup || v == null) ? NaN : v,
   }));
-  const plot3 = fastArr.map((v, i) => ({
+  const plot3 = sqzUpperArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup || isNaN(v)) ? NaN : v,
+  }));
+  const plot4 = sqzLowerArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup || isNaN(v)) ? NaN : v,
+  }));
+  const plot5 = fastArr.map((v, i) => ({
     time: bars[i].time,
     value: (i < fastMaLen || v == null) ? NaN : v,
   }));
+
+  // Dynamic squeeze fill colors: white when bb_squeeze > threshold, blue when not
+  // Pine: fill(ubi, usqzi, color=bb_squeeze > sqz_threshold ? color.white : color.blue, transp=50)
+  // Pine: fill(lbi, lsqzi, color=bb_squeeze > sqz_threshold ? color.white : color.blue, transp=50)
+  const sqzFillColors: string[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    if (i < warmup) {
+      sqzFillColors[i] = 'rgba(0,0,0,0)';
+    } else if (bbSqueeze[i] > sqzThreshold) {
+      sqzFillColors[i] = 'rgba(255,255,255,0.50)'; // white transp 50
+    } else {
+      sqzFillColors[i] = 'rgba(33,150,243,0.50)';  // blue transp 50
+    }
+  }
 
   // Buy/Sell signals
   const markers: MarkerData[] = [];
@@ -184,9 +238,14 @@ export function calculate(bars: Bar[], inputs: Partial<BollingerAwesomeAlertInpu
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'plot4': plot4, 'plot5': plot5 },
     fills: [
+      // fill(ubi, lbi) -- center channel silver transp 90
       { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(192,192,192,0.10)' } },
+      // fill(ubi, usqzi) -- squeeze indication upper band, dynamic white/blue transp 50
+      { plot1: 'plot1', plot2: 'plot3', options: { color: 'rgba(33,150,243,0.50)' }, colors: sqzFillColors },
+      // fill(lbi, lsqzi) -- squeeze indication lower band, dynamic white/blue transp 50
+      { plot1: 'plot2', plot2: 'plot4', options: { color: 'rgba(33,150,243,0.50)' }, colors: sqzFillColors },
     ],
     markers,
   };

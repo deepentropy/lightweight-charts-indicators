@@ -27,6 +27,7 @@ export interface AdaptiveHullMAInputs {
   showZone: boolean;
   mult: number;
   showSignals: boolean;
+  useBg: boolean;
 }
 
 export const defaultInputs: AdaptiveHullMAInputs = {
@@ -40,6 +41,7 @@ export const defaultInputs: AdaptiveHullMAInputs = {
   showZone: false,
   mult: 2.7,
   showSignals: true,
+  useBg: true,
 };
 
 export const inputConfig: InputConfig[] = [
@@ -53,6 +55,7 @@ export const inputConfig: InputConfig[] = [
   { id: 'showZone', type: 'bool', title: 'Show Distance Zone', defval: false },
   { id: 'mult', type: 'float', title: 'Distance Multiplier', defval: 2.7, min: 0.1, step: 0.1 },
   { id: 'showSignals', type: 'bool', title: 'Show Possible Signals', defval: true },
+  { id: 'useBg', type: 'bool', title: 'Background color to differentiate movement', defval: true },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -127,7 +130,7 @@ function hmaAt(arr: number[], endIdx: number, length: number): number {
 }
 
 export function calculate(bars: Bar[], inputs: Partial<AdaptiveHullMAInputs> = {}): IndicatorResult {
-  const { charger, minLength, maxLength, flat, showMinor, minorMin, minorMax, showZone, mult, showSignals } = { ...defaultInputs, ...inputs };
+  const { charger, minLength, maxLength, flat, showMinor, minorMin, minorMax, showZone, mult, showSignals, useBg } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const adaptPct = 0.03141;
 
@@ -320,22 +323,21 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveHullMAInputs> = {
   }
 
   // Background colors: consolidation/low volatility shading (from Pine bgcolor)
+  // Pine: bgcolor(useBg? plugged? na : notgreat? #757779 : #afb4b9 : na)
   const bgColors: BgColorData[] = [];
-  for (let i = warmup; i < n; i++) {
-    const notGreat = dynSlopes[i] < flat && dynSlopes[i] > -flat;
-    if (!plugged[i]) {
-      bgColors.push({
-        time: bars[i].time,
-        color: notGreat ? 'rgba(117,119,121,0.40)' : 'rgba(175,180,185,0.40)',
-      });
+  if (useBg) {
+    for (let i = warmup; i < n; i++) {
+      const notGreat = dynSlopes[i] < flat && dynSlopes[i] > -flat;
+      if (!plugged[i]) {
+        bgColors.push({
+          time: bars[i].time,
+          color: notGreat ? 'rgba(117,119,121,0.40)' : 'rgba(175,180,185,0.40)',
+        });
+      }
     }
   }
 
   // Fill between stop zone lines (Pine: fill(sutl, sltl, color=purple, transp=90))
-  const fills = showZone
-    ? [{ plot1: 'stopupperTL', plot2: 'stoplowerTL', options: { color: 'rgba(128,0,128,0.10)' } }]
-    : [];
-
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {
@@ -344,7 +346,9 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveHullMAInputs> = {
       'topTL': topTLPlot, 'botTL': botTLPlot,
       'stopupperTL': stopupperTLPlot, 'stoplowerTL': stoplowerTLPlot,
     },
-    fills,
+    fills: showZone
+      ? [{ plot1: 'stopupperTL', plot2: 'stoplowerTL', options: { color: 'rgba(128,0,128,0.10)' } }]
+      : [],
     markers,
     bgColors,
   } as IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] };

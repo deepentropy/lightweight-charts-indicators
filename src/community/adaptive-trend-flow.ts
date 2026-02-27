@@ -164,6 +164,16 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveTrendFlowInputs> 
     }
   }
 
+  // Fill colors: trend-dependent (Pine: fill(p1, p2, level, basis, trend == 1 ? bullcolor : bearcolor, na))
+  const fillColors: string[] = [];
+  for (let i = 0; i < len; i++) {
+    if (i < warmup || isNaN(basisArr[i])) {
+      fillColors.push('transparent');
+    } else {
+      fillColors.push(trendArr[i] === 1 ? 'rgba(0, 255, 170, 0.25)' : 'rgba(255, 0, 0, 0.25)');
+    }
+  }
+
   // Labels: "S" at crossunder(close, level), "L" at crossover(close, level)
   // Pine: label.new with style_label_lower_right for short, style_label_upper_right for long
   const labels: LabelData[] = [];
@@ -202,7 +212,7 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveTrendFlowInputs> 
     plots: { 'plot0': plot0, 'plot1': plot1 },
     // fill between basis (plot0) and level (plot1) colored by trend
     fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(0, 255, 170, 0.15)' } },
+      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(0, 255, 170, 0.25)' }, colors: fillColors },
     ],
     barColors,
     bgColors,

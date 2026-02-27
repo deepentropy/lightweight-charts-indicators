@@ -2,9 +2,10 @@
  * Stochastic OTT
  *
  * Optimized Trend Tracker applied to Stochastic oscillator.
- * Calculates Stochastic K, applies OTT trailing stop logic.
+ * Smooths raw Stochastic %K with VAR (CMO-based adaptive MA),
+ * then applies OTT trailing stop logic to the smoothed value.
  *
- * Reference: TradingView "Stochastic OTT" by Anilcan Ozcan
+ * Reference: TradingView "Stochastic Optimized Trend Tracker" by KivancOzbilgic
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
@@ -13,21 +14,24 @@ import type { MarkerData } from '../types';
 export interface StochasticOTTInputs {
   kLen: number;
   kSmooth: number;
+  ottPeriod: number;
   ottPct: number;
   showSupport: boolean;
 }
 
 export const defaultInputs: StochasticOTTInputs = {
-  kLen: 14,
-  kSmooth: 3,
-  ottPct: 1.0,
+  kLen: 500,
+  kSmooth: 200,
+  ottPeriod: 2,
+  ottPct: 0.5,
   showSupport: false,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'kLen', type: 'int', title: '%K Length', defval: 14, min: 1 },
-  { id: 'kSmooth', type: 'int', title: '%K Smoothing', defval: 3, min: 1 },
-  { id: 'ottPct', type: 'float', title: 'OTT Percent', defval: 1.0, min: 0.01, step: 0.1 },
+  { id: 'kLen', type: 'int', title: '%K Length', defval: 500, min: 1 },
+  { id: 'kSmooth', type: 'int', title: '%K Smoothing', defval: 200, min: 1 },
+  { id: 'ottPeriod', type: 'int', title: 'OTT Period', defval: 2, min: 1 },
+  { id: 'ottPct', type: 'float', title: 'OTT Percent', defval: 0.5, min: 0, step: 0.1 },
   { id: 'showSupport', type: 'bool', title: 'Show Support Line?', defval: false },
 ];
 
@@ -43,60 +47,104 @@ export const metadata = {
   overlay: false,
 };
 
+/** VAR function (VIDYA-like using CMO over 9 bars) matching PineScript Var_Func */
+function varFunc(srcArr: number[], length: number): number[] {
+  const n = srcArr.length;
+  const result: number[] = new Array(n);
+  const valpha = 2 / (length + 1);
+
+  for (let i = 0; i < n; i++) {
+    const s = srcArr[i];
+    let vUD = 0;
+    let vDD = 0;
+    for (let j = Math.max(0, i - 8); j <= i; j++) {
+      const cur = srcArr[j];
+      const prev = j > 0 ? srcArr[j - 1] : cur;
+      if (cur > prev) vUD += cur - prev;
+      if (cur < prev) vDD += prev - cur;
+    }
+    const vCMO = (vUD + vDD) === 0 ? 0 : (vUD - vDD) / (vUD + vDD);
+    result[i] = i === 0 ? s : valpha * Math.abs(vCMO) * s + (1 - valpha * Math.abs(vCMO)) * result[i - 1];
+  }
+  return result;
+}
+
 export function calculate(bars: Bar[], inputs: Partial<StochasticOTTInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { kLen, kSmooth, ottPct, showSupport } = { ...defaultInputs, ...inputs };
+  const { kLen, kSmooth, ottPeriod, ottPct, showSupport } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const closeSeries = new Series(bars, (b) => b.close);
   const highSeries = new Series(bars, (b) => b.high);
   const lowSeries = new Series(bars, (b) => b.low);
 
+  // Pine: stoch(close, high, low, periodK)
   const rawK = ta.stoch(closeSeries, highSeries, lowSeries, kLen);
-  const k = ta.sma(rawK, kSmooth);
-  const kArr = k.toArray();
+  const rawKArr = rawK.toArray().map(v => (v != null && !isNaN(v)) ? v : 0);
 
-  // OTT: trailing stop on K
-  const fup = ottPct / 100;
+  // Pine: k = Var_Func1(stoch(...), smoothK) -- VAR-smooth the raw stochastic
+  const kArr = varFunc(rawKArr, kSmooth);
+
+  // Pine: src = k + 1000
+  const srcArr = kArr.map(v => v + 1000);
+
+  // Pine: MAvg = Var_Func(src, length) -- VAR of the offset source
+  const mAvg = varFunc(srcArr, ottPeriod);
+
+  // OTT trailing stop on MAvg
+  const fark = mAvg.map(v => v * ottPct * 0.01);
   const longStop: number[] = new Array(n);
   const shortStop: number[] = new Array(n);
   const dir: number[] = new Array(n);
   const ott: number[] = new Array(n);
 
   for (let i = 0; i < n; i++) {
-    const val = kArr[i] ?? 50;
-    const newLong = val * (1 - fup);
-    const newShort = val * (1 + fup);
+    longStop[i] = mAvg[i] - fark[i];
+    shortStop[i] = mAvg[i] + fark[i];
 
-    if (i === 0) {
-      longStop[i] = newLong;
-      shortStop[i] = newShort;
-      dir[i] = 1;
+    if (i > 0) {
+      if (mAvg[i] > longStop[i - 1]) longStop[i] = Math.max(longStop[i], longStop[i - 1]);
+      if (mAvg[i] < shortStop[i - 1]) shortStop[i] = Math.min(shortStop[i], shortStop[i - 1]);
+
+      dir[i] = dir[i - 1];
+      if (dir[i - 1] === -1 && mAvg[i] > shortStop[i - 1]) dir[i] = 1;
+      else if (dir[i - 1] === 1 && mAvg[i] < longStop[i - 1]) dir[i] = -1;
     } else {
-      const prevVal = kArr[i - 1] ?? 50;
-      longStop[i] = val > longStop[i - 1] ? Math.max(newLong, longStop[i - 1]) : newLong;
-      shortStop[i] = val < shortStop[i - 1] ? Math.min(newShort, shortStop[i - 1]) : newShort;
-
-      if (prevVal <= longStop[i - 1] && val > longStop[i - 1]) {
-        dir[i] = 1;
-      } else if (prevVal >= shortStop[i - 1] && val < shortStop[i - 1]) {
-        dir[i] = -1;
-      } else {
-        dir[i] = dir[i - 1];
-      }
+      dir[i] = 1;
     }
-    ott[i] = dir[i] === 1 ? longStop[i] : shortStop[i];
+
+    const mt = dir[i] === 1 ? longStop[i] : shortStop[i];
+    ott[i] = mAvg[i] > mt ? mt * (200 + ottPct) / 200 : mt * (200 - ottPct) / 200;
   }
 
   const warmup = kLen + kSmooth;
 
-  // Markers: buy when stoch crosses above OTT[2], sell when crosses below OTT[2]
-  // Pine: buySignalc = crossover(src, OTT[2]), sellSignallc = crossunder(src, OTT[2])
+  // Pine: plot(k+1000, title="%K", color=#0094FF)
+  const plot0 = srcArr.map((v, i) => ({
+    time: bars[i].time,
+    value: i < warmup ? NaN : v,
+  }));
+
+  // Pine: pALL=plot(nz(OTT[2]), color=#B800D9, linewidth=2, title="OTT") -- 2-bar lag
+  const plot1 = ott.map((_v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup + 2) ? NaN : ott[i - 2],
+  }));
+
+  // Pine: plot(showsupport ? MAvg : na, color=#0585E1, linewidth=2, title="Support Line")
+  const plot2 = mAvg.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup || !showSupport) ? NaN : v,
+  }));
+
+  // Markers: buy when src crosses above OTT[2], sell when crosses below
+  // Pine: buySignalc = crossover(src, OTT[2])
+  // Pine: sellSignallc = crossunder(src, OTT[2])
   const markers: MarkerData[] = [];
-  for (let i = warmup + 2; i < n; i++) {
-    const srcCur = kArr[i] ?? 50;
-    const srcPrev = kArr[i - 1] ?? 50;
+  for (let i = warmup + 3; i < n; i++) {
+    const srcCur = srcArr[i];
+    const srcPrev = srcArr[i - 1];
     const ottLag = ott[i - 2];
-    const ottLagPrev = i > 2 ? ott[i - 3] : ott[0];
+    const ottLagPrev = ott[i - 3];
     if (srcPrev <= ottLagPrev && srcCur > ottLag) {
       markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
     }
@@ -105,39 +153,16 @@ export function calculate(bars: Bar[], inputs: Partial<StochasticOTTInputs> = {}
     }
   }
 
-  // Fill between upper band (80) and lower band (20)
-  // Pine: fill(h0, h1, color=#9915FF, transp=80)
-
-  // Pine: plot(k+1000, title="%K", color=#0094FF)
-  // We keep values in 0-100 range (no +1000 offset since our hlines are 80/20)
-  const plot0 = kArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (v == null || i < warmup) ? NaN : v,
-  }));
-
-  // Pine: pALL=plot(nz(OTT[2]), color=#B800D9, linewidth=2) -- 2-bar lag
-  const plot1 = ott.map((_v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup + 2) ? NaN : ott[i - 2],
-  }));
-
-  // Pine: plot(showsupport ? MAvg : na, color=#0585E1, linewidth=2, title="Support Line")
-  // In our TS, MAvg ≈ kArr (the smoothed K that feeds OTT)
-  const plot2 = kArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (v == null || i < warmup || !showSupport) ? NaN : v,
-  }));
-
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
     fills: [
-      // Pine: fill(h0, h1, color=#9915FF, transp=80) between hlines 80 and 20
+      // Pine: fill(h0, h1, color=#9915FF, transp=80) between hlines at 1080 and 1020
       { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(153,21,255,0.2)' } },
     ],
     hlines: [
-      { value: 80, options: { color: '#606060', linestyle: 'solid' as const, title: 'Upper Band' } },
-      { value: 20, options: { color: '#606060', linestyle: 'solid' as const, title: 'Lower Band' } },
+      { value: 1080, options: { color: '#606060', linestyle: 'solid' as const, title: 'Upper Band' } },
+      { value: 1020, options: { color: '#606060', linestyle: 'solid' as const, title: 'Lower Band' } },
     ],
     markers,
   };

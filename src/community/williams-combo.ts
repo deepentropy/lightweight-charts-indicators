@@ -77,6 +77,8 @@ export function calculate(bars: Bar[], inputs: Partial<WilliamsComboInputs> = {}
   const markers: MarkerData[] = [];
   let highRS = NaN;
   let lowRS = NaN;
+  let prevHighRS = NaN;
+  let prevLowRS = NaN;
 
   const plot3: { time: number; value: number }[] = [];
   const plot4: { time: number; value: number }[] = [];
@@ -89,6 +91,10 @@ export function calculate(bars: Bar[], inputs: Partial<WilliamsComboInputs> = {}
       markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#26A69A', text: 'F' });
     }
 
+    // Save previous raw values before updating (Pine: highRS[1], lowRS[1])
+    prevHighRS = highRS;
+    prevLowRS = lowRS;
+
     // Pine: highRS = valuewhen(high >= highest(high, lengthRS), high, 0)
     if (i >= lengthRS && bars[i].high >= hhArr[i]) {
       highRS = bars[i].high;
@@ -97,9 +103,6 @@ export function calculate(bars: Bar[], inputs: Partial<WilliamsComboInputs> = {}
     if (i >= lengthRS && bars[i].low <= llArr[i]) {
       lowRS = bars[i].low;
     }
-
-    const prevHighRS = i > 0 ? plot3[i - 1]?.value : NaN;
-    const prevLowRS = i > 0 ? plot4[i - 1]?.value : NaN;
 
     // Pine: color = highRS != highRS[1] ? na : olive (break line when level changes)
     const resVal = (i < lengthRS || isNaN(highRS)) ? NaN : (highRS !== prevHighRS && i > 0 ? NaN : highRS);

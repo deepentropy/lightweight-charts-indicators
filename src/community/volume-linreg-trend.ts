@@ -31,8 +31,8 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Short Term', color: '#00FF00', style: 'columns' },
-  { id: 'plot1', title: 'Long Term', color: '#008EFF', lineWidth: 3 },
+  { id: 'plot0', title: 'Short Term', color: '#00FF00', lineWidth: 1, style: 'columns' },
+  { id: 'plot1', title: 'Long Term', color: '#008EFF', lineWidth: 3, style: 'line' },
 ];
 
 export const metadata = {
@@ -94,8 +94,6 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeLinRegTrendInputs> 
   const lvDn0 = ta.linreg(deltaDownSeries, len2, 0).toArray();
   const lvDn1 = ta.linreg(deltaDownSeries, len2, 1).toArray();
 
-  const warmup = Math.max(len1, len2);
-
   // Column colors for short term
   const ccol11 = '#00FF00';   // strong bull
   const ccol12 = '#00BC00';   // medium bull
@@ -116,61 +114,61 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeLinRegTrendInputs> 
   const longPlot = new Array(n);
 
   for (let i = 0; i < n; i++) {
-    if (i < warmup) {
+    // Short-term: needs len1 bars of warmup
+    if (i < len1 || lr1_0[i] == null || lr1_1[i] == null) {
       shortPlot[i] = { time: bars[i].time, value: NaN };
+    } else {
+      const slopePrice = lr1_0[i] - lr1_1[i];
+      const slopeVolUp = svUp0[i] - svUp1[i];
+      const slopeVolDn = svDn0[i] - svDn1[i];
+
+      let colCol: string;
+      if (slopePrice > 0) {
+        if (slopeVolUp > 0) {
+          colCol = slopeVolUp > slopeVolDn ? ccol11 : ccol12;
+        } else {
+          colCol = ccol13;
+        }
+      } else if (slopePrice < 0) {
+        if (slopeVolDn > 0) {
+          colCol = slopeVolUp < slopeVolDn ? ccol21 : ccol22;
+        } else {
+          colCol = ccol23;
+        }
+      } else {
+        colCol = '#808080';
+      }
+
+      shortPlot[i] = { time: bars[i].time, value: slopePrice * len1, color: colCol };
+    }
+
+    // Long-term: needs len2 bars of warmup
+    if (i < len2 || lr2_0[i] == null || lr2_1[i] == null) {
       longPlot[i] = { time: bars[i].time, value: NaN };
-      continue;
-    }
-
-    // Short-term price slope
-    const slopePrice = lr1_0[i] - lr1_1[i];
-    // Short-term volume slopes
-    const slopeVolUp = svUp0[i] - svUp1[i];
-    const slopeVolDn = svDn0[i] - svDn1[i];
-
-    let colCol: string;
-    if (slopePrice > 0) {
-      if (slopeVolUp > 0) {
-        colCol = slopeVolUp > slopeVolDn ? ccol11 : ccol12;
-      } else {
-        colCol = ccol13;
-      }
-    } else if (slopePrice < 0) {
-      if (slopeVolDn > 0) {
-        colCol = slopeVolUp < slopeVolDn ? ccol21 : ccol22;
-      } else {
-        colCol = ccol23;
-      }
     } else {
-      colCol = '#808080';
-    }
+      const slopePriceLt = lr2_0[i] - lr2_1[i];
+      const slopeVolUpLt = lvUp0[i] - lvUp1[i];
+      const slopeVolDnLt = lvDn0[i] - lvDn1[i];
 
-    shortPlot[i] = { time: bars[i].time, value: slopePrice * len1, color: colCol };
-
-    // Long-term price slope
-    const slopePriceLt = lr2_0[i] - lr2_1[i];
-    // Long-term volume slopes
-    const slopeVolUpLt = lvUp0[i] - lvUp1[i];
-    const slopeVolDnLt = lvDn0[i] - lvDn1[i];
-
-    let lineCol: string;
-    if (slopePriceLt > 0) {
-      if (slopeVolUpLt > 0) {
-        lineCol = slopeVolUpLt > slopeVolDnLt ? col11 : col12;
+      let lineCol: string;
+      if (slopePriceLt > 0) {
+        if (slopeVolUpLt > 0) {
+          lineCol = slopeVolUpLt > slopeVolDnLt ? col11 : col12;
+        } else {
+          lineCol = col13;
+        }
+      } else if (slopePriceLt < 0) {
+        if (slopeVolDnLt > 0) {
+          lineCol = slopeVolUpLt < slopeVolDnLt ? col21 : col22;
+        } else {
+          lineCol = col23;
+        }
       } else {
-        lineCol = col13;
+        lineCol = '#808080';
       }
-    } else if (slopePriceLt < 0) {
-      if (slopeVolDnLt > 0) {
-        lineCol = slopeVolUpLt < slopeVolDnLt ? col21 : col22;
-      } else {
-        lineCol = col23;
-      }
-    } else {
-      lineCol = '#808080';
-    }
 
-    longPlot[i] = { time: bars[i].time, value: slopePriceLt * len2, color: lineCol };
+      longPlot[i] = { time: bars[i].time, value: slopePriceLt * len2, color: lineCol };
+    }
   }
 
   return {

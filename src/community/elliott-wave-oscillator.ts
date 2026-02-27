@@ -1,113 +1,76 @@
 /**
- * Elliott Wave Oscillator Signals (EWO-S)
+ * Elliott Wave Oscillator (EWO)
  *
- * Overlay indicator. Computes EWO = (EMA(5)/EMA(34) - 1) * 100 and its signal line.
- * Crossover/crossunder of EWO vs signal generates buy/sell markers on price chart.
+ * Difference between a fast SMA and a slow SMA, optionally expressed as a
+ * percentage of the current price. Plotted as a two-color histogram (green
+ * when positive, red when zero or negative).
  *
- * - Strong Long: crossover when EWO < -threshold (dark green labelUp)
- * - Long: crossover when EWO > -threshold (green labelUp)
- * - Strong Short: crossunder when EWO > threshold (dark red labelDown)
- * - Short: crossunder when EWO < threshold (red labelDown)
- *
- * The Pine also draws an EWO histogram via line.new on the price chart, but that
- * is a complex overlay rendering. We represent it as a secondary panel-less
- * visual reference and focus on the key trading signals (markers).
- *
- * Reference: TradingView "Elliott Wave Oscillator Signals by DGT"
+ * Reference: TradingView "Elliot Wave Oscillator" by Koryu
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface ElliottWaveOscInputs {
-  useEma: boolean;
-  signalDelay: number;
-  strengthThreshold: number;
+  src: SourceType;
+  sma1Length: number;
+  sma2Length: number;
+  usePercent: boolean;
 }
 
 export const defaultInputs: ElliottWaveOscInputs = {
-  useEma: true,
-  signalDelay: 5,
-  strengthThreshold: 13,
+  src: 'close',
+  sma1Length: 5,
+  sma2Length: 35,
+  usePercent: true,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'useEma', type: 'bool', title: 'Use Exponential MA', defval: true },
-  { id: 'signalDelay', type: 'int', title: 'Signal Delay', defval: 5, min: 2 },
-  { id: 'strengthThreshold', type: 'int', title: 'Strength Threshold', defval: 13, min: 1 },
+  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
+  { id: 'sma1Length', type: 'int', title: 'SMA 1 Length', defval: 5, min: 1 },
+  { id: 'sma2Length', type: 'int', title: 'SMA 2 Length', defval: 35, min: 1 },
+  { id: 'usePercent', type: 'bool', title: 'Show Dif as percent of current Candle', defval: true },
 ];
 
-// Overlay indicator - no separate panel plots
-export const plotConfig: PlotConfig[] = [];
+export const plotConfig: PlotConfig[] = [
+  { id: 'plot0', title: 'EWO', color: '#26A69A', lineWidth: 2, style: 'histogram' },
+];
 
 export const metadata = {
-  title: 'Elliott Wave Oscillator Signals',
-  shortTitle: 'EWO-S',
-  overlay: true,
+  title: 'Elliott Wave Oscillator',
+  shortTitle: 'EWO',
+  overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ElliottWaveOscInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { useEma, signalDelay, strengthThreshold } = { ...defaultInputs, ...inputs };
+export function calculate(bars: Bar[], inputs: Partial<ElliottWaveOscInputs> = {}): IndicatorResult {
+  const { src, sma1Length, sma2Length, usePercent } = { ...defaultInputs, ...inputs };
+  const source = getSourceSeries(bars, src);
 
-  const src = getSourceSeries(bars, 'close');
-
-  // EWO = (fast_ma / slow_ma - 1) * 100
-  const fastMa = useEma ? ta.ema(src, 5) : ta.sma(src, 5);
-  const slowMa = useEma ? ta.ema(src, 34) : ta.sma(src, 34);
-  const fastArr = fastMa.toArray();
-  const slowArr = slowMa.toArray();
+  const sma1 = ta.sma(source, sma1Length);
+  const sma2 = ta.sma(source, sma2Length);
+  const sma1Arr = sma1.toArray();
+  const sma2Arr = sma2.toArray();
+  const srcArr = source.toArray();
 
   const n = bars.length;
-  const ewoArr: number[] = new Array(n);
+  const ewoData: { time: any; value: number; color: string }[] = new Array(n);
+
   for (let i = 0; i < n; i++) {
-    const f = fastArr[i];
-    const s = slowArr[i];
-    if (f == null || s == null || s === 0) {
-      ewoArr[i] = NaN;
-    } else {
-      ewoArr[i] = (f / s - 1) * 100;
+    const s1 = sma1Arr[i];
+    const s2 = sma2Arr[i];
+    const sv = srcArr[i];
+    if (s1 == null || s2 == null || sv == null || (usePercent && sv === 0)) {
+      ewoData[i] = { time: bars[i].time, value: NaN, color: '#26A69A' };
+      continue;
     }
-  }
-
-  // Signal line = MA of EWO
-  const ewoSeries = new Series(bars, (_b, i) => ewoArr[i] ?? 0);
-  const ewoSignalArr = (useEma ? ta.ema(ewoSeries, signalDelay) : ta.sma(ewoSeries, signalDelay)).toArray();
-
-  const warmup = 34; // slowest MA length
-  const t = strengthThreshold;
-
-  const markers: MarkerData[] = [];
-  for (let i = warmup + 1; i < n; i++) {
-    const cur = ewoArr[i];
-    const prev = ewoArr[i - 1];
-    const curSig = ewoSignalArr[i];
-    const prevSig = ewoSignalArr[i - 1];
-    if (isNaN(cur) || isNaN(prev) || curSig == null || prevSig == null) continue;
-
-    const crossOver = prev <= prevSig && cur > curSig;
-    const crossUnder = prev >= prevSig && cur < curSig;
-
-    if (crossOver && cur < -t) {
-      // Strong Long
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#006400', text: 'SL' });
-    } else if (crossOver && cur > -t) {
-      // Long
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00E676', text: 'L' });
-    }
-
-    if (crossUnder && cur > t) {
-      // Strong Short
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#910000', text: 'SS' });
-    } else if (crossUnder && cur < t) {
-      // Short
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF5252', text: 'S' });
-    }
+    const dif = s1 - s2;
+    const value = usePercent ? (dif / sv) * 100 : dif;
+    const color = value <= 0 ? '#FF5252' : '#26A69A';
+    ewoData[i] = { time: bars[i].time, value, color };
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    plots: { 'plot0': ewoData },
   };
 }
 

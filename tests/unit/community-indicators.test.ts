@@ -706,12 +706,16 @@ describe('ElliottWaveOscillator', () => {
   const result = ElliottWaveOscillator.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, [], true);
+    assertShape(result, ['plot0'], false);
   });
 
-  it('produces markers', () => {
-    const r = result as any;
-    expect(Array.isArray(r.markers)).toBe(true);
+  it('produces finite values after warmup', () => {
+    const vals = (result.plots['plot0'] as any[])
+      .slice(40)
+      .map((p: any) => p.value)
+      .filter((v: number) => !isNaN(v));
+    expect(vals.length).toBeGreaterThan(0);
+    vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
 });
 
@@ -748,8 +752,8 @@ describe('KaufmanAdaptiveMA', () => {
 describe('WilliamsVixFix', () => {
   const result = WilliamsVixFix.calculate(bars);
 
-  it('returns correct shape (WVF, Upper Band)', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+  it('returns correct shape (WVF, Upper Band, Range High/Low Pct)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], false);
   });
 
   it('WVF values are non-negative', () => {

@@ -25,7 +25,7 @@ export const defaultInputs: TillsonT3Inputs = {
   volumeFactor: 0.7,
   lengthFibo: 5,
   volumeFactorFibo: 0.618,
-  showFibo: true,
+  showFibo: false,
 };
 
 export const inputConfig: InputConfig[] = [
@@ -33,11 +33,11 @@ export const inputConfig: InputConfig[] = [
   { id: 'volumeFactor', type: 'float', title: 'Volume Factor', defval: 0.7, min: 0, max: 1, step: 0.01 },
   { id: 'lengthFibo', type: 'int', title: 'T3 Length fibo', defval: 5, min: 1 },
   { id: 'volumeFactorFibo', type: 'float', title: 'Volume Factor fibo', defval: 0.618, min: 0, max: 1, step: 0.001 },
-  { id: 'showFibo', type: 'bool', title: 'Show T3 Fibonacci Ratio Line?', defval: true },
+  { id: 'showFibo', type: 'bool', title: 'Show T3 Fibonacci Ratio Line?', defval: false },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'T3', color: '#26A69A', lineWidth: 3 },
+  { id: 'plot0', title: 'T3', color: '#4CAF50', lineWidth: 3 },
   { id: 'plot1', title: 'T3fibo', color: '#2196F3', lineWidth: 2 },
 ];
 
@@ -72,7 +72,7 @@ export function calculate(bars: Bar[], inputs: Partial<TillsonT3Inputs> = {}): I
     const val = i < warmup ? NaN : (v ?? NaN);
     if (isNaN(val)) return { time: bars[i].time, value: NaN };
     const prev = i > 0 ? (t3Arr[i - 1] ?? NaN) : NaN;
-    const color = val > prev ? '#26A69A' : val < prev ? '#EF5350' : '#FFEB3B';
+    const color = val > prev ? '#4CAF50' : val < prev ? '#FF5252' : '#FFEB3B';
     return { time: bars[i].time, value: val, color };
   });
 

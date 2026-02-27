@@ -45,7 +45,7 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'WVF', color: '#787B86', lineWidth: 4, style: 'histogram' },
-  { id: 'plot1', title: 'Upper Band', color: '#00BCD4', lineWidth: 2 },
+  { id: 'plot1', title: 'Upper Band', color: '#00BCD4', lineWidth: 3 },
   { id: 'plot2', title: 'Range High Pct', color: '#FF9800', lineWidth: 4 },
   { id: 'plot3', title: 'Range Low Pct', color: '#FF9800', lineWidth: 4 },
 ];

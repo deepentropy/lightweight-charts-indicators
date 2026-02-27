@@ -33,7 +33,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'obv', title: 'OBV CCI coded', color: '#26A69A', lineWidth: 2 },
+  { id: 'obv', title: 'OBV_CCI coded', color: '#26A69A', lineWidth: 2 },
   { id: 'obvEma', title: 'EMA of OBV', color: '#FF9800', lineWidth: 2 },
 ];
 
@@ -73,17 +73,16 @@ export function calculate(bars: Bar[], inputs: Partial<CCIOBVInputs> = {}): Indi
   const GREEN = '#26A69A';
   const RED = '#EF5350';
 
-  const warmup = cciLength;
-
+  // Pine: color=c>=threshold?green:red  (na >= threshold is false → red during warmup)
   const obvPlot = obvArr.map((v, i) => ({
     time: bars[i].time,
     value: v,
-    color: i >= warmup && !isNaN(cciArr[i]) ? (cciArr[i] >= threshold ? GREEN : RED) : GREEN,
+    color: !isNaN(cciArr[i]) && cciArr[i] >= threshold ? GREEN : RED,
   }));
 
   const emaPlot = emaOBVArr.map((v, i) => ({
     time: bars[i].time,
-    value: i < emaLength ? NaN : (v ?? NaN),
+    value: v ?? NaN,
   }));
 
   return {
