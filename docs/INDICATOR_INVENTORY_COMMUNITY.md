@@ -8,18 +8,18 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | Category | Count |
 |---|---|
 | **Total Indicators** | 867 |
-| **Implementable** | 79 |
-| **Blocked** | 509 |
-| **Implemented** | 259 |
+| **Implementable** | 51 |
+| **Blocked** | 513 |
+| **Implemented** | 281 |
 | **Duplicate** | 19 |
-| **N/A** | 1 |
+| **N/A** | 2 |
 
 ### Implementable Breakdown
 
 | Difficulty | Count | Description |
 |---|---|---|
 | Easy | 0 | Direct TA port, all functions available, <80 lines |
-| Medium | 28 | Stateful logic or custom MAs, 80-200 lines |
+| Medium | 0 | Stateful logic or custom MAs, 80-200 lines |
 | Hard | 51 | Complex logic, may need partial feature skip, 200+ lines |
 
 ### Blocker Breakdown
@@ -118,7 +118,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 53 | Auto Fib Retracement Alerts | Blocked | N/A | Drawing |
 | 54 | Auto Fib Speed Resistance Fans by DGT | Blocked | N/A | Table;Drawing |
 | 55 | Auto Fib | Implemented | Easy | `auto-fib.ts` |
-| 56 | Auto Fibo on Indicators | Implementable | Medium | |
+| 56 | Auto Fibo on Indicators | Implemented | Medium |  \ |
 | 57 | Auto Fibonacci and Gann Fan_Retracements Combo | Blocked | N/A | Drawing |
 | 58 | Auto PitchFan, Fib Extension_Retracement and ZigZag by DGT | Blocked | N/A | Table;Drawing |
 | 59 | Auto Pitchfork, Fib Retracement and Zig Zag by DGT | Blocked | N/A | MTF;Table;Drawing |
@@ -140,7 +140,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 75 | Bill Williams. Alligator, Fractals & Res_Sup combined (by vlkvr) | Duplicate | Easy | `standard/williams-alligator.ts` + `community/wicked-fractals.ts` |
 | 76 | Binary Option Arrows (example) [TheMightyChicken] | Implemented | Easy | `binary-option-arrows.ts` |
 | 77 | BITCOIN KILL ZONES v2 | Implemented | Easy | `bitcoin-kill-zones.ts` |
-| 78 | Bitcoin Logarithmic Growth Curves | Implementable | Medium | |
+| 78 | Bitcoin Logarithmic Growth Curves | Implemented | Medium |  \ |
 | 79 | Bjorgum AutoTrail | Implementable | Hard | |
 | 80 | Bjorgum Double Tap | Blocked | N/A | Strategy;Table;Drawing |
 | 81 | Bjorgum Key Levels | Blocked | N/A | Drawing |
@@ -171,7 +171,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 106 | BUY and SELL -  Backtest single EMA cross By che_trader | Blocked | N/A | Strategy |
 | 107 | Buy&Sell Strategy depends on AO+Stoch+RSI+ATR by SerdarYILMAZ | Blocked | N/A | Strategy |
 | 108 | Buying Selling Volume | Implemented | Easy | `buying-selling-volume.ts` |
-| 109 | buysellsignal-yashgode9 | Implementable | Medium | |
+| 109 | buysellsignal-yashgode9 | Blocked | Medium | External library dependency (signalLib) |
 | 110 | Buyside & Sellside Liquidity [LuxAlgo] | Blocked | N/A | Drawing |
 | 111 | Candlestick Patterns Identified (updated 3_11_15) | Duplicate | Easy | `candlestick/candlestick-pattern.ts` |
 | 112 | Candlestick Reversal System | Implemented | Easy | `candlestick-reversal.ts` |
@@ -314,15 +314,15 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 249 | FREE INDICATOR_ Laguerre RSI | Implemented | Easy | `laguerre-rsi.ts` |
 | 250 | Full CRYPTO pack macd, rsi, obv, ema strategy | Blocked | N/A | Strategy;MTF |
 | 251 | Future Trend Channel [ChartPrime] | Blocked | N/A | Drawing |
-| 252 | FVG & IFVG ICT [TradingFinder] Inversion Fair Value Gap Signal | Implementable | Medium | |
+| 252 | FVG & IFVG ICT [TradingFinder] Inversion Fair Value Gap Signal | Blocked | Medium | External library dependency (4 TFlab libraries) |
 | 253 | FVG Instantaneous Mitigation Signals [LuxAlgo] | Blocked | N/A | Drawing |
 | 254 | FVG Order Blocks [BigBeluga] | Blocked | N/A | Drawing |
-| 255 | FVG Positioning Average [LuxAlgo] | Implementable | Medium | |
+| 255 | FVG Positioning Average [LuxAlgo] | Implemented | Medium |  \ |
 | 256 | FVG Sessions [LuxAlgo] | Blocked | N/A | Drawing |
 | 257 | FX Market Sessions | Blocked | N/A | Session;Table;Drawing |
 | 258 | FX Sniper_ T3-CCI Copy Strategy | Implemented | Easy | `fx-sniper-t3-cci.ts` |
 | 259 | FXN - Asian Session Range | Blocked | N/A | MTF;Drawing |
-| 260 | FXN - Week and Day Separator | Implementable | Medium | |
+| 260 | FXN - Week and Day Separator | Blocked | Medium | Session/timeframe boundary detection |
 | 261 | Gann High Low | Implemented | Easy | `gann-high-low.ts` |
 | 262 | Gaps + Imbalances + Wicks (MTF) - By Leviathan | Blocked | N/A | Screener;MTF;Drawing |
 | 263 | Gaussian Channel [DW] | Implemented | Medium | `community/gaussian-channel.ts` |
@@ -339,11 +339,11 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 274 | Harmonic Pattern Detection [LuxAlgo] | Blocked | N/A | Table;Drawing |
 | 275 | Harmonic Pattern Detection, Prediction, and Backtesting Tool | Blocked | N/A | Table |
 | 276 | Hash Ribbons | Blocked | N/A | Screener;MTF;Table |
-| 277 | Heatmap Volume [xdecow] | Implementable | Medium | |
+| 277 | Heatmap Volume [xdecow] | Implemented | Medium |  \ |
 | 278 | Heiken Ashi Candles | Blocked | N/A | MTF |
 | 279 | Heiken Ashi zero lag EMA v1.1 by JustUncleL | Blocked | N/A | MTF |
 | 280 | Heikin Ashi RSI Oscillator | Implementable | Hard | |
-| 281 | HEMA Trend Levels [AlgoAlpha] | Implementable | Medium | |
+| 281 | HEMA Trend Levels [AlgoAlpha] | Implemented | Medium |  \ |
 | 282 | HIGH and LOW Optimized Trend Tracker HOTT LOTT | Implementable | Hard | |
 | 283 | High Volume Points [BigBeluga] | Blocked | N/A | Drawing |
 | 284 | Higher High Lower Low Strategy (With Source Code) | Blocked | N/A | Drawing |
@@ -402,14 +402,14 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 337 | Indicator_ Weis Wave Volume [LazyBear] | Implemented | Easy | `weis-wave-volume.ts` |
 | 338 | Indicator_ Zero Lag EMA & a simple trading strategy | Implemented | Easy | `zero-lag-ema.ts` |
 | 339 | Indicators Overlay | Implementable | Hard | |
-| 340 | Indicators_ Better Volume Indicator & InstrumentVolume | Implementable | Medium | |
+| 340 | Indicators_ Better Volume Indicator & InstrumentVolume | Implemented | Medium |  \ |
 | 341 | Indicators_ Traders Dynamic Index, HLCTrends and Trix Ribbon | Implemented | Easy | `tdi-hlc-trix.ts` |
 | 342 | Indicators_ Volume-Weighted MACD Histogram & Sentiment Zone Osc | Implemented | Easy | `vwmacd-szo.ts` |
 | 343 | Initial Balance Breakout Signals [LuxAlgo] | Blocked | N/A | Session;Drawing |
 | 344 | Institutional OrderBlock Pressure | Blocked | N/A | Drawing |
 | 345 | Intraday BUY_SELL | Implemented | Easy | `intraday-buy-sell.ts` |
 | 346 | Intraday TS ,BB + Buy_Sell +Squeeze Mom.+ adx-dmi | Implemented | Easy | `intraday-ts-bb.ts` |
-| 347 | Intraday Volume Swings | Implementable | Medium | |
+| 347 | Intraday Volume Swings | Implemented | Medium |  \ |
 | 348 | Inverse Fisher Transform COMBO STO+RSI+CCIv2  by KIVANÇ fr3762 | Implemented | Easy | `ift-stoch-rsi-cci.ts` |
 | 349 | Inverse FVG with Rejections [TFO] | Blocked | N/A | MTF;Session |
 | 350 | Inversion Fair Value Gaps (IFVG) [LuxAlgo] | Blocked | N/A | Drawing |
@@ -479,7 +479,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 414 | Machine Learning_ Logistic Regression | Blocked | N/A | MTF |
 | 415 | Machine Learning_ Lorentzian Classification | Blocked | N/A | Table |
 | 416 | Madrid MA Ribbon Bar v2 | Implemented | Medium | `community/madrid-ma-ribbon.ts` |
-| 417 | Madrid Moving Average Ribbon | Implementable | Medium | |
+| 417 | Madrid Moving Average Ribbon | Implemented | Medium | Already exists as madrid-ma-ribbon.ts |
 | 418 | Madrid Trend Squeeze | Implemented | Easy | |
 | 419 | Market Cipher A free version 1.1 | Implemented | Easy | `market-cipher-a.ts` |
 | 420 | Market Cipher B  Free version with Buy and sell | Implemented | Easy | `market-cipher-b.ts` |
@@ -509,7 +509,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 444 | Momentum adjusted Moving Average by DGT | Blocked | N/A | Drawing |
 | 445 | Momentum Ghost Machine [ChartPrime] | Implementable | Hard | |
 | 446 | Momentum Shift [Bigbeluga] | Blocked | N/A | Drawing |
-| 447 | Momentum-based ZigZag (incl. QQE) NON-REPAINTING | Implementable | Medium | |
+| 447 | Momentum-based ZigZag (incl. QQE) NON-REPAINTING | Implemented | Medium |  \ |
 | 448 | Money Flow Index + Alerts | Blocked | N/A | MTF |
 | 449 | Money Flow Profile [LuxAlgo] | Blocked | N/A | Drawing |
 | 450 | Moon Phases Strategy [LuxAlgo] | Blocked | N/A | Strategy |
@@ -596,7 +596,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 531 | Position Size Calculator | Blocked | N/A | Drawing |
 | 532 | Power Of 3 ICT 01 [TradingFinder] AMD ICT & SMC Accumulations | Blocked | N/A | Session;Drawing |
 | 533 | PPO Divergence Alerts | Implemented | Easy | `ppo-alerts.ts` |
-| 534 | Predictive Channels [LuxAlgo] | Implementable | Medium | |
+| 534 | Predictive Channels [LuxAlgo] | Implemented | Medium |  \ |
 | 535 | Predictive Ranges [LuxAlgo] | Blocked | N/A | MTF |
 | 536 | Premier RSI Oscillator [LazyBear] | Implemented | Easy | `premier-rsi.ts` |
 | 537 | Previous Day High and Low + Separators Daily_Weekly | Blocked | N/A | Drawing |
@@ -628,7 +628,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 563 | Range Analysis - By Leviathan | Blocked | N/A | MTF;Drawing |
 | 564 | Range Average Retest Model [LuxAlgo] | Blocked | N/A | Drawing |
 | 565 | Range Breakout [BigBeluga] | Blocked | N/A | Drawing |
-| 566 | Range Detector [LuxAlgo] | Implementable | Medium | |
+| 566 | Range Detector [LuxAlgo] | Implemented | Medium |  \ |
 | 567 | Range Filter [DW] | Implemented | Medium | `community/range-filter-dw.ts` |
 | 568 | Range Filter Buy and Sell 5min - guikroth version | Blocked | N/A | Strategy |
 | 569 | Range Identifier [LazyBear] | Implemented | Easy | `range-identifier.ts` |
@@ -638,9 +638,9 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 573 | Realtime 5D Profile [LucF] | Blocked | N/A | Screener;MTF;Table;Drawing |
 | 574 | Realtime Delta Volume Action [LucF] | Blocked | N/A | Drawing |
 | 575 | Realtime Footprint | Blocked | N/A | Drawing |
-| 576 | Realtime Volume Bars w Market Buy_Sell_Neutral split & Mkt Delta | Implementable | Medium | |
+| 576 | Realtime Volume Bars w Market Buy_Sell_Neutral split & Mkt Delta | Implemented | Medium |  \ |
 | 577 | RedK EVEREX - Effort Versus Results Explorer | Implementable | Hard | |
-| 578 | RedK Momentum Bars (RedK Mo_Bars) | Implementable | Medium | |
+| 578 | RedK Momentum Bars (RedK Mo_Bars) | Implemented | Medium |  \ |
 | 579 | RedK Slow_Smooth Average (RSS_WMA) | Implemented | Easy | `redk-rss-wma.ts` |
 | 580 | RedK Trader Pressure Index (TPX v1.0) | Implemented | Medium | |
 | 581 | RedK Volume-Accelerated Directional Energy Ratio (RedK VADER) | Implemented | Medium | `community/redk-vader.ts` |
@@ -669,7 +669,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 604 | RSI Divergence Indicator strategy | Blocked | N/A | Strategy |
 | 605 | RSI Divergence | Implemented | Easy | `rsi-divergence.ts` |
 | 606 | RSI HistoAlert Strategy | Implemented | Easy | `rsi-histoalert.ts` |
-| 607 | RSI Momentum Divergence Zones [ChartPrime] | Implementable | Medium | |
+| 607 | RSI Momentum Divergence Zones [ChartPrime] | Implemented | Medium |  \ |
 | 608 | RSI Multi Length [LuxAlgo] | Blocked | N/A | Table |
 | 609 | RSI Strategy | Blocked | N/A | Strategy |
 | 610 | RSI Support & Resistance by DGT | Blocked | N/A | Table;Drawing |
@@ -741,7 +741,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 676 | Super Smoothed MACD for CRYPTO by KIVANÇ fr3762 | Implemented | Easy | `super-smoothed-macd.ts` |
 | 677 | SUPER SUPERTREND THREE LINE PROFIT STRATEGY | Implemented | Easy | `super-supertrend.ts` |
 | 678 | Super Trend Daily 2.0 BF | Blocked | N/A | Strategy |
-| 679 | Super trend V | Implementable | Medium | |
+| 679 | Super trend V | N/A | Medium | No PineScript source file found |
 | 680 | SuperBollingerTrend (Expo) | Blocked | N/A | Table;Drawing |
 | 681 | Supertrend - Ladder ATR | Implemented | Medium | `community/supertrend-ladder.ts` |
 | 682 | SuperTrend + Relative Volume (Kernel Optimized) | Blocked | N/A | Table |
@@ -772,14 +772,14 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 707 | Support Resistance Channels | Implementable | Hard | |
 | 708 | Support Resistance Channels_Zones Multi Time Frame | Blocked | N/A | MTF;Table |
 | 709 | Support Resistance Classification (VR) [LuxAlgo] | Blocked | N/A | MTF;Drawing |
-| 710 | Support Resistance Interactive | Implementable | Medium | |
+| 710 | Support Resistance Interactive | Blocked | Medium | 100% drawing-based (box/label), no calculation plots |
 | 711 | Support Resistance MTF | Blocked | N/A | MTF;Drawing |
 | 712 | Support Resistance with Breaks and Retests | Blocked | N/A | Drawing |
 | 713 | Support_Resistance V2 Indicator | Blocked | N/A | MTF;Drawing |
 | 714 | Swing Breakout Sequence [LuxAlgo] | Blocked | N/A | Drawing |
 | 715 | Swing Data - ADR% _ RVol _ PVol _ Float % _ Avg $ Vol | Blocked | N/A | Screener;MTF;Table;ExternalData |
 | 716 | Swing Failure Pattern (SFP) [LuxAlgo] | Blocked | N/A | MTF;Table;Drawing |
-| 717 | Swing Highs_Lows & Candle Patterns [LuxAlgo] | Implementable | Medium | |
+| 717 | Swing Highs_Lows & Candle Patterns [LuxAlgo] | Implemented | Medium |  \ |
 | 718 | Swing Levels and Liquidity - By Leviathan | Blocked | N/A | Screener;MTF;Drawing |
 | 719 | SWING TRADE SIGNALS | Implemented | Easy | `swing-trade-signals.ts` |
 | 720 | Swing Volume Profiles [LuxAlgo] | Blocked | N/A | Drawing |
@@ -818,7 +818,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 753 | Trend Impulse Channels (Zeiierman) | Implementable | Hard | |
 | 754 | Trend Indicator A-V2 (Smoothed Heikin Ashi Cloud) | Blocked | N/A | MTF |
 | 755 | Trend Levels [ChartPrime] | Blocked | N/A | Table;Drawing |
-| 756 | Trend Line | Implementable | Medium | |
+| 756 | Trend Line | Implemented | Medium |  \ |
 | 757 | Trend Lines [LuxAlgo] | Blocked | N/A | Drawing |
 | 758 | Trend Lines for RSI, CCI, Momentum, OBV | Blocked | N/A | Drawing |
 | 759 | Trend Lines v2 | Implementable | Hard | |
@@ -846,7 +846,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 781 | TTrades Daily Bias [TFO] | Blocked | N/A | Table;Drawing |
 | 782 | Turtle Trade Channels Indicator TUTCI | Implemented | Easy | `turtle-trade-channels.ts` |
 | 783 | TV Community Algo | Blocked | N/A | Screener;MTF;Drawing |
-| 784 | Tweezers and Kangaroo Tail | Implementable | Medium | |
+| 784 | Tweezers and Kangaroo Tail | Implemented | Medium |  \ |
 | 785 | Twin Optimized Trend Tracker Strategy TOTT | Blocked | N/A | Strategy |
 | 786 | Twin Range Filter Visualized | Duplicate | Easy | `community/twin-range-filter.ts` |
 | 787 | Twin Range Filter | Implemented | Easy | `twin-range-filter.ts` |
@@ -866,20 +866,20 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 801 | vdubus BinaryPro  - Indicators 1 & 2 | Implemented | Easy | `vdubus-binarypro.ts` |
 | 802 | Vervoort Heiken-Ashi LongTerm Candlestick Oscillator [LazyBear] | Implemented | Easy | `vervoort-ha-oscillator.ts` |
 | 803 | Vix FIX _ StochRSI Strategy | Blocked | N/A | Strategy |
-| 804 | Volumatic Support_Resistance Levels [BigBeluga] | Implementable | Medium | |
+| 804 | Volumatic Support_Resistance Levels [BigBeluga] | Implemented | Medium |  \ |
 | 805 | Volumatic Variable Index Dynamic Average [BigBeluga] | Blocked | N/A | Drawing |
 | 806 | Volume _ Open Interest _Footprint_ - By Leviathan | Blocked | N/A | Screener;MTF |
 | 807 | Volume Accumulation Percentage Indicator [LazyBear] | Implemented | Easy | `volume-accumulation-pct.ts` |
 | 808 | Volume Analysis - Heatmap and Volume Profile | Blocked | N/A | MTF;Table;Drawing |
-| 809 | Volume Bar Breakout and Breakdown  Indicator | Implementable | Medium | |
+| 809 | Volume Bar Breakout and Breakdown  Indicator | Implemented | Medium |  \ |
 | 810 | Volume Based Coloured Bars | Implemented | Easy | `volume-colored-bars.ts` |
 | 811 | Volume composition _ quantifytools | Blocked | N/A | MTF;Table |
 | 812 | Volume Delta [hapharmonic] | Blocked | N/A | Table |
 | 813 | Volume Delta Candles [LuxAlgo] | Blocked | N/A | MTF;Table |
-| 814 | Volume Divergence by MM | Implementable | Medium | |
+| 814 | Volume Divergence by MM | Implemented | Medium |  \ |
 | 815 | Volume Flow Indicator [LazyBear] | Implemented | Easy | |
 | 816 | Volume Flow v3 | Implemented | Easy | `volume-flow-v3.ts` |
-| 817 | Volume Footprint [LuxAlgo] | Implementable | Medium | |
+| 817 | Volume Footprint [LuxAlgo] | Implemented | Medium |  \ |
 | 818 | Volume Footprint Voids [BigBeluga] | Blocked | N/A | MTF |
 | 819 | Volume Order Blocks [BigBeluga] | Blocked | N/A | Drawing |
 | 820 | Volume Orderbook (Expo) | Blocked | N/A | Table |
@@ -906,12 +906,12 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | 841 | Volume-Supported Linear Regression Trend | Implemented | Easy | `volume-linreg-trend.ts` |
 | 842 | VuManChu Cipher A | Blocked | N/A | MTF |
 | 843 | VuManChu Cipher B + Divergences | Blocked | N/A | Screener;MTF |
-| 844 | VuManChu Swing Free | Implementable | Medium | |
+| 844 | VuManChu Swing Free | Implemented | Medium |  \ |
 | 845 | VWAP + Fibo Dev Extensions Strategy | Blocked | N/A | Strategy |
 | 846 | VWAP MTF (Multi Timeframe) | Blocked | N/A | MTF |
 | 847 | VWAP Stdev Bands v2 Mod UPDATE | Blocked | N/A | MTF |
 | 848 | VWAP Stdev Bands v2 Mod | Blocked | N/A | MTF |
-| 849 | VWAP_MVWAP_EMA CROSSOVER | Implementable | Medium | |
+| 849 | VWAP_MVWAP_EMA CROSSOVER | Implemented | Medium |  \ |
 | 850 | Waddah Attar Explosion V2 [SHK] | Implemented | Easy | `waddah-attar-explosion.ts` |
 | 851 | Waindrops [Makit0] | Blocked | N/A | Drawing |
 | 852 | WaveTrend 3D | Implementable | Hard | |

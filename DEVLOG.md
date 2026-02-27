@@ -1,5 +1,160 @@
 # DEVLOG
 
+## 2026-02-27 - Drawing-Based Hard Indicators: 9 Unblocked and Implemented
+
+### Goal
+Implement 9 hard-difficulty indicators previously blocked by drawing primitives (line.new/box.new/label.new), after discovering oakscriptjs v0.2.7 has full drawing support.
+
+### Indicators Implemented (9)
+1. **macd-support-resistance** - MACD crossover/crossunder creates S/R levels from highest high / lowest low in last 6 bars. Returns lines[], labels[], markers[].
+2. **liquidity-levels** - Pivot highs in volume → liquidity levels. Top N levels sorted, horizontal lines with optional histogram boxes.
+3. **zigzag-fibonacci** - ZigZag from highestbars/lowestbars pivots. Fibonacci retracement lines + labels between last two legs.
+4. **trend-lines-v2** - Validates ascending pivot low / descending pivot high pairs as trend lines. Max 3 per direction.
+5. **order-blocks-signals** - ROC-based OB detection. Boxes at first opposite-color candle in [4..15] lookback. Mitigation removes boxes.
+6. **support-resistance-channels** - Pivot clustering into channels within max width. Strength scoring. Top N channels as boxes.
+7. **auto-trendline** - Fractal-based trendlines connecting consecutive pivot highs/lows. Dashed lines extending right. HH/HL/LH/LL markers.
+8. **liquidity-sweeps** - Multi-depth (1/2/3) swing detection. Sweeps when price wicks beyond level but closes back. Lines + highlight boxes.
+9. **price-volume-profile** - Price range divided into N rows, count/volume per row. Boxes with red-to-green gradient. Optional POC.
+
+### Key Decisions
+- Output drawing data via existing `src/types.ts` interfaces: `LineDrawingData`, `BoxData`, `LabelData`
+- Extended `IndicatorResult` with `& { lines: LineDrawingData[]; boxes: BoxData[]; ... }` per indicator
+- Did NOT use oakscriptjs `line.new_line()` / `box.new_box()` runtime calls — indicators return data arrays for the chart renderer
+
+### Still Blocked (5 - external library dependencies, NOT drawing-related)
+- Extreme Trend Reversal Points (5 external libraries)
+- Indicators Overlay (external library)
+- Strength of Divergence (6 imports)
+- Auto Chart Patterns [Trendoscope] (library deps)
+- Breaker Blocks + Order Blocks (TFlab imports)
+
+### Current State
+- All 9 compile clean, registered in index.ts
+- Total hard-difficulty indicators: 41 (32 previous + 9 drawing)
+
+---
+
+## 2026-02-27 - Hard Difficulty Community Indicators: 32 Implemented
+
+### Goal
+Implement all feasible hard-difficulty community indicators from the inventory (51 total identified, 14 blocked by drawing/MTF/library dependencies).
+
+### Indicators Implemented (32)
+
+**Tier 1 (5 - core complex):**
+1. hyper-trend - ATR-based adaptive trend with upper/lower bands [LuxAlgo]
+2. trendlines-with-breaks - Pivot-based slope-adjusted trendlines with breakout signals [LuxAlgo]
+3. trend-impulse-channels - ATR trend channel with volatility bands + retest signals
+4. liquidity-grabs - Pivot-based liquidity zone detection with wick-body ratio sizing
+5. rsi-tops-bottoms - RSI divergence in OB/OS zones with bar coloring
+
+**Tier 2 Batch 1 (6 - structural):**
+6. hull-butterfly-oscillator - Hull MA butterfly spread oscillator [LuxAlgo]
+7. gmma-oscillator - GMMA fast/slow group difference oscillator
+8. bjorgum-tsi - True Strength Index with crossover signals
+9. adx-di-gu5 - ADX with DI+/DI- and range level bands [Gu5]
+10. market-structure-trailing-stop - CHoCH/BOS trailing stop [LuxAlgo]
+11. dynamic-structure-indicator - ATR-based S/R zones with break detection
+
+**Tier 2 Batch 2 (8 - multi-MA/divergence):**
+12. standardized-macd-ha - Standardized MACD with Heikin-Ashi transform, candle plots
+13. hott-lott - HIGH/LOW OTT with 10 MA types (VAR, DEMA, TMA, etc.)
+14. stochastic-heat-map - 28-period stochastic average with heat map coloring
+15. tdi-rsi - Traders Dynamic Index (RSI + volatility bands + fast/slow MA)
+16. heikin-ashi-rsi-oscillator - Zero-centered RSI as HA candles
+17. ma-strategy-emperor - 5 configurable MAs with 9 MA type variants
+18. multiple-divergences - 10 oscillator pivot-based divergence counting
+19. price-divergence-detector - 7 oscillator fractal-based divergence detection
+
+**Tier 3 (6 - algorithmic):**
+20. qqe-cross - QQE (smoothed RSI + ATR ratcheting bands) with MA filters
+21. wavetrend-oscillator - WaveTrend with divergences + direction detection
+22. open-close-cross - MA on close vs open, normalized % difference
+23. super-guppy - 27 EMAs (fast 3-23 + slow 25-70) with alignment coloring
+24. bjorgum-autotrail - ATR/Percent/Price trailing stop with swing tracking
+25. delta-rsi-oscillator - RSI derivative via linreg slope approximation
+
+**Tier 3/4 (7 - advanced):**
+26. macd-reloaded - MACD with 11 MA types including Tillson T3
+27. renko-chart - Renko bricks with ATR/Traditional sizing + EMA trend
+28. redk-everex - Volume vs price effort/result analysis with RSI-like index
+29. boom-hunter-pro - 3 Ehlers EOT oscillators + LSMA WaveTrend
+30. big-snapper-alerts - Multi-MA (11 types) + SuperTrend/BB signal filtering
+31. rsi-supply-demand - RSI OB/OS zone-based supply/demand levels
+32. ultimate-buy-sell - RSI BB watch signals + Price BB + multi-component buy/sell
+
+### Blocked Indicators (14)
+- Price & Volume Profile, Liquidity Levels, ZigZag with Fibonacci, Trend Lines v2, Order Blocks, Support Resistance Channels, Pure Price Action Liquidity Sweeps (line.new/box.new)
+- MACD Support and Resistance [ChartPrime] (line.new/label.new)
+- Extreme Trend Reversal Points (5 external libraries)
+- Indicators Overlay (external library)
+- Strength of Divergence (6 imports)
+- Auto Chart Patterns [Trendoscope] (library deps)
+- Breaker Blocks + Order Blocks (TFlab imports)
+- Auto Trendline Indicator (line.new)
+
+### Partially Feasible (5 - not attempted)
+- Momentum Ghost Machine, %R Trend Exhaustion, Divergence for Many v4, WaveTrend 3D, Pullback Trading Tool (external library dependencies)
+
+### Key Decisions
+- All 32 files registered in src/index.ts with proper imports + registry entries
+- Simplified interactive inputs (Bjorgum AutoTrail cursor selection → automatic trailing)
+- Delta-RSI uses linreg slope approximation instead of QR decomposition
+- Super Guppy skips anchor timeframe feature (not available in framework)
+- Stochastic Heat Map: averaged histogram instead of 28 individual plots
+- RSI Supply/Demand: single configurable RSI instead of 4 copy-paste blocks
+- Ultimate Buy/Sell: core signal logic only (RSI BB watch + buy/sell), skipped MACD/ATR sub-systems
+
+### Current State
+- 32 new hard-difficulty indicators implemented and registered
+- All compile clean (zero TypeScript errors)
+- No tests created (matches existing project pattern for community indicators)
+
+## 2026-02-27 - Medium Wave 3: 22 Community Indicators
+
+### Goal
+Implement all 28 remaining medium-difficulty community indicators from the inventory.
+
+### Indicators Implemented (22)
+1. **auto-fibo-indicators** - Fibonacci retracement levels on selectable indicator (RSI/CCI/MFI/Stoch/CMO), 12 plots
+2. **heatmap-volume** - Volume heatmap with 5-tier stddev coloring, barColors, threshold fills
+3. **better-volume** - Volume condition detection (climax/churn/low), bull/bear split, barColors
+4. **volume-divergence** - 4-type divergence detection between price and volume oscillator
+5. **predictive-channels** - ATR-based adaptive S/R channels (R2/R1/avg/S1/S2), dynamic fills
+6. **volume-bar-breakout** - Breakout signals from highest volume bar in lookback
+7. **redk-momentum-bars** - Triple WMA (LazyLine) momentum candles, multiple MA types
+8. **vumanchu-swing** - Range filter-based momentum with buy/sell signals, band fills
+9. **tweezers-kangaroo-tail** - Tweezer and kangaroo tail candlestick pattern detection
+10. **bitcoin-log-curves** - Logarithmic growth curves + Fibonacci levels for BTC
+11. **hema-trend-levels** - Hull EMA crossover signals with dynamic fills and barColors
+12. **rsi-momentum-divergence** - RSI divergence zones with pivot detection, gradient fills
+13. **fvg-positioning-average** - Fair Value Gap detection with ATR filter, positioning averages
+14. **momentum-zigzag** - Non-repainting ZigZag with MACD/MA/QQE momentum, force detection
+15. **range-detector** - Trading range detection using SMA+ATR deviation counting
+16. **swing-highs-lows-patterns** - Pivot detection + 6 candle patterns (hammer, engulfing, etc.)
+17. **trend-line-auto** - Auto trend lines from fractal highs/lows with angle optimization
+18. **intraday-volume-swings** - 3-bar volume swing patterns with daily level tracking
+19. **realtime-volume-bars** - Volume split into buy/sell/neutral components
+20. **volumatic-sr-levels** - Dynamic S/R from volume concentration with gradient fills
+21. **vwap-mvwap-ema-crossover** - VWAP/MVWAP/EMA crossover signals with Ichimoku cloud
+22. **volume-footprint** - Intra-bar volume profile distributed across price levels (BoxData)
+
+### Skipped (6)
+- **buysellsignal-yashgode9** - External library dependency (signalLib)
+- **FVG & IFVG ICT** - 4 external TFlab library dependencies
+- **FXN Week/Day Separator** - Session/timeframe boundary detection
+- **Support Resistance Interactive** - 100% drawing-based with manual inputs
+- **Super trend V** - No PineScript source file found
+- **Madrid Moving Average Ribbon** - Already exists as madrid-ma-ribbon.ts
+
+### Current State
+- 0 TypeScript compilation errors
+- 702/702 tests pass across 7 test files
+- 276 community indicator files total (254 + 22 new)
+- 0 medium-difficulty indicators remaining
+
+---
+
 ## 2026-02-27 - Fix 5 "Unfixable" Indicators
 
 ### Goal
