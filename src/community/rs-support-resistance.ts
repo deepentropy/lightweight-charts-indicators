@@ -41,6 +41,8 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot3', title: 'Long-term Support', color: 'rgba(33,150,243,0.3)', lineWidth: 4 },
   { id: 'plot4', title: 'Resist Trade Limit', color: '#EF5350', lineWidth: 1 },
   { id: 'plot5', title: 'Support Trade Limit', color: '#26A69A', lineWidth: 1 },
+  { id: 'ltResistMarker', title: '.R', color: '#EF5350', lineWidth: 4, style: 'circles' },
+  { id: 'ltSupportMarker', title: '.S', color: '#26A69A', lineWidth: 4, style: 'circles' },
 ];
 
 export const metadata = {
@@ -108,6 +110,18 @@ export function calculate(bars: Bar[], inputs: Partial<RSSupportResistanceInputs
     return { time: bars[i].time, value: changed ? NaN : v };
   });
 
+  // Circle markers at long-term level changes (Pine: plot(long_term_resist_marker, '.R', col_long_mark, 4, plot.style_circles))
+  const ltResistMarkerPlot = ltResistArr.map((v, i) => {
+    if (i < ltWarmup || isNaN(v)) return { time: bars[i].time, value: NaN };
+    const changed = i > 0 && ltResistArr[i] !== ltResistArr[i - 1];
+    return { time: bars[i].time, value: changed ? v : NaN };
+  });
+  const ltSupportMarkerPlot = ltSupportArr.map((v, i) => {
+    if (i < ltWarmup || isNaN(v)) return { time: bars[i].time, value: NaN };
+    const changed = i > 0 && ltSupportArr[i] !== ltSupportArr[i - 1];
+    return { time: bars[i].time, value: changed ? v : NaN };
+  });
+
   // Trade zone limits: Pine uses short_term values but we use our existing resist/support
   const pctMult = tradeZonePct / 100;
   const resistTradePlot = resistancePlot.map((p, i) => {
@@ -134,6 +148,8 @@ export function calculate(bars: Bar[], inputs: Partial<RSSupportResistanceInputs
       'plot3': ltSupportPlot,
       'plot4': resistTradePlot,
       'plot5': supportTradePlot,
+      'ltResistMarker': ltResistMarkerPlot,
+      'ltSupportMarker': ltSupportMarkerPlot,
     },
     fills: [
       { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(255,152,0,0.2)' } },

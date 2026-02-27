@@ -15,6 +15,8 @@ export interface MOSTRSIInputs {
   rsiLen: number;
   percent: number;
   maLen: number;
+  bbMult: number;
+  showBB: boolean;
   showDivergence: boolean;
   showSignals: boolean;
 }
@@ -23,6 +25,8 @@ export const defaultInputs: MOSTRSIInputs = {
   rsiLen: 14,
   percent: 9.0,
   maLen: 5,
+  bbMult: 2.0,
+  showBB: false,
   showDivergence: true,
   showSignals: false,
 };
@@ -31,6 +35,8 @@ export const inputConfig: InputConfig[] = [
   { id: 'rsiLen', type: 'int', title: 'RSI Length', defval: 14, min: 1 },
   { id: 'percent', type: 'float', title: 'STOP LOSS Percent', defval: 9.0, min: 0.1, step: 0.1 },
   { id: 'maLen', type: 'int', title: 'MA Length', defval: 5, min: 1 },
+  { id: 'bbMult', type: 'float', title: 'BB StdDev', defval: 2.0, min: 0.001, max: 50, step: 0.1 },
+  { id: 'showBB', type: 'bool', title: 'Show Bollinger Bands', defval: false },
   { id: 'showDivergence', type: 'bool', title: 'Show Divergence', defval: true },
   { id: 'showSignals', type: 'bool', title: 'Show Signals', defval: false },
 ];
@@ -44,6 +50,10 @@ export const plotConfig: PlotConfig[] = [
   { id: 'obData', title: 'RSI OB', color: '#4CAF50', lineWidth: 0, display: 'none' },
   { id: 'osData', title: 'RSI OS', color: '#FF5252', lineWidth: 0, display: 'none' },
   { id: 'midline', title: 'Middle Line', color: 'transparent', lineWidth: 0, display: 'none' },
+  { id: 'bbUpper', title: 'Upper Bollinger Band', color: '#4CAF50', lineWidth: 1 },
+  { id: 'bbLower', title: 'Lower Bollinger Band', color: '#4CAF50', lineWidth: 1 },
+  { id: 'hline70', title: 'RSI Upper Band', color: '#787B86', lineWidth: 1, display: 'none' },
+  { id: 'hline30', title: 'RSI Lower Band', color: '#787B86', lineWidth: 1, display: 'none' },
 ];
 
 export const metadata = {
@@ -79,7 +89,7 @@ function computeVAR(values: number[], length: number): number[] {
 }
 
 export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
-  const { rsiLen, percent, maLen, showDivergence, showSignals } = { ...defaultInputs, ...inputs };
+  const { rsiLen, percent, maLen, bbMult, showBB, showDivergence, showSignals } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const src = getSourceSeries(bars, 'close');
@@ -150,13 +160,62 @@ export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): Ind
   }));
   const midlinePlot = bars.map(b => ({ time: b.time, value: 50 }));
 
+  // Pine: bbUpperBand = plot(isBB ? rsiMA + ta.stdev(rsi, maLengthInput) * bbMultInput : na)
+  // Compute stdev of RSI over maLen window for BB bands
+  const bbUpperPlot = rsiArr.map((_, i) => {
+    if (!showBB || i < warmup) return { time: bars[i].time, value: NaN };
+    const maVal = rsiMaArr[i];
+    if (isNaN(maVal)) return { time: bars[i].time, value: NaN };
+    // stdev(rsi, maLen)
+    let sum = 0, count = 0;
+    for (let j = Math.max(0, i - maLen + 1); j <= i; j++) {
+      const v = rsiArr[j];
+      if (v != null) { sum += v; count++; }
+    }
+    if (count < 2) return { time: bars[i].time, value: NaN };
+    const mean = sum / count;
+    let sqSum = 0;
+    for (let j = Math.max(0, i - maLen + 1); j <= i; j++) {
+      const v = rsiArr[j];
+      if (v != null) sqSum += (v - mean) * (v - mean);
+    }
+    const std = Math.sqrt(sqSum / count);
+    return { time: bars[i].time, value: maVal + std * bbMult };
+  });
+
+  const bbLowerPlot = rsiArr.map((_, i) => {
+    if (!showBB || i < warmup) return { time: bars[i].time, value: NaN };
+    const maVal = rsiMaArr[i];
+    if (isNaN(maVal)) return { time: bars[i].time, value: NaN };
+    let sum = 0, count = 0;
+    for (let j = Math.max(0, i - maLen + 1); j <= i; j++) {
+      const v = rsiArr[j];
+      if (v != null) { sum += v; count++; }
+    }
+    if (count < 2) return { time: bars[i].time, value: NaN };
+    const mean = sum / count;
+    let sqSum = 0;
+    for (let j = Math.max(0, i - maLen + 1); j <= i; j++) {
+      const v = rsiArr[j];
+      if (v != null) sqSum += (v - mean) * (v - mean);
+    }
+    const std = Math.sqrt(sqSum / count);
+    return { time: bars[i].time, value: maVal - std * bbMult };
+  });
+
+  // Constant hline plots for 70/30 fill
+  const hline70Plot = bars.map(b => ({ time: b.time, value: 70 }));
+  const hline30Plot = bars.map(b => ({ time: b.time, value: 30 }));
+
   const fills: FillData[] = [
-    // Pine: fill(rsiUpperBand, rsiLowerBand, color=color.rgb(126,87,194,90))
-    // This is the band fill between hlines 70-30 (handled via hlines below)
+    // Pine: fill(rsiUpperBand, rsiLowerBand, color=color.rgb(126,87,194,90)) - purple fill between 70/30
+    { plot1: 'hline70', plot2: 'hline30', options: { color: 'rgba(126,87,194,0.10)', title: 'RSI Background Fill' } },
     // OB gradient fill
     { plot1: 'obData', plot2: 'midline', options: { color: '#4CAF50', transp: 90, title: 'Overbought Gradient Fill' } },
     // OS gradient fill
     { plot1: 'osData', plot2: 'midline', options: { color: '#FF5252', transp: 90, title: 'Oversold Gradient Fill' } },
+    // Pine: fill(bbUpperBand, bbLowerBand, color=color.new(color.green, 90))
+    { plot1: 'bbUpper', plot2: 'bbLower', options: { color: 'rgba(76,175,80,0.10)', title: 'Bollinger Bands Background Fill' } },
   ];
 
   // BUY/SELL markers
@@ -301,6 +360,10 @@ export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): Ind
       'obData': obData,
       'osData': osData,
       'midline': midlinePlot,
+      'bbUpper': bbUpperPlot,
+      'bbLower': bbLowerPlot,
+      'hline70': hline70Plot,
+      'hline30': hline30Plot,
     },
     hlines: [
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },

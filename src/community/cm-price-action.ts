@@ -19,6 +19,7 @@ export interface CMPriceActionInputs {
   showShavedBars: boolean;
   showInsideBars: boolean;
   showOutsideBars: boolean;
+  showGrayBars: boolean;
 }
 
 export const defaultInputs: CMPriceActionInputs = {
@@ -29,6 +30,7 @@ export const defaultInputs: CMPriceActionInputs = {
   showShavedBars: true,
   showInsideBars: true,
   showOutsideBars: true,
+  showGrayBars: false,
 };
 
 export const inputConfig: InputConfig[] = [
@@ -39,6 +41,7 @@ export const inputConfig: InputConfig[] = [
   { id: 'showShavedBars', type: 'bool', title: 'Show Shaved Bars', defval: true },
   { id: 'showInsideBars', type: 'bool', title: 'Show Inside Bars', defval: true },
   { id: 'showOutsideBars', type: 'bool', title: 'Show Outside Bars', defval: true },
+  { id: 'showGrayBars', type: 'bool', title: 'Check Box To Turn Bars Gray?', defval: false },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -52,7 +55,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<CMPriceActionInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
-  const { pctP, pblb, pctS, showPinBars, showShavedBars, showInsideBars, showOutsideBars } = { ...defaultInputs, ...inputs };
+  const { pctP, pblb, pctS, showPinBars, showShavedBars, showInsideBars, showOutsideBars, showGrayBars } = { ...defaultInputs, ...inputs };
   const barColors: BarColorData[] = [];
   const plot0 = bars.map((b) => ({ time: b.time, value: NaN }));
 
@@ -99,7 +102,7 @@ export function calculate(bars: Bar[], inputs: Partial<CMPriceActionInputs> = {}
 
     // Pine applies barcolor in order: pin bars, shaved bars, inside/outside
     // Later barcolor calls override earlier ones in Pine
-    let color = '#787B86'; // default gray
+    let color: string | undefined;
     if (pBarUp) color = '#00FF00';    // lime - pin bar up
     if (pBarDn) color = '#FF0000';    // red - pin bar down
     if (sBarDn) color = '#FF00FF';    // fuchsia - shaved bar down
@@ -107,7 +110,10 @@ export function calculate(bars: Bar[], inputs: Partial<CMPriceActionInputs> = {}
     if (insideBar) color = '#FFFF00'; // yellow - inside bar
     if (outsideBar) color = '#FFA500'; // orange - outside bar
 
-    barColors.push({ time: curr.time as number, color });
+    // If showGrayBars and no pattern matched, color gray
+    if (color == null && showGrayBars) color = '#787B86';
+
+    if (color != null) barColors.push({ time: curr.time as number, color });
   }
 
   return {

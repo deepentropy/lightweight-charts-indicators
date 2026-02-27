@@ -14,18 +14,21 @@ export interface PivotPointSupertrendInputs {
   pivotLen: number;
   atrFactor: number;
   atrLen: number;
+  showPivot: boolean;
 }
 
 export const defaultInputs: PivotPointSupertrendInputs = {
   pivotLen: 2,
   atrFactor: 3.0,
   atrLen: 10,
+  showPivot: false,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'pivotLen', type: 'int', title: 'Pivot Length', defval: 2, min: 1 },
   { id: 'atrFactor', type: 'float', title: 'ATR Factor', defval: 3.0, min: 0.1, step: 0.1 },
   { id: 'atrLen', type: 'int', title: 'ATR Length', defval: 10, min: 1 },
+  { id: 'showPivot', type: 'bool', title: 'Show Pivot Points', defval: false },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -42,7 +45,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<PivotPointSupertrendInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { pivotLen, atrFactor, atrLen } = { ...defaultInputs, ...inputs };
+  const { pivotLen, atrFactor, atrLen, showPivot } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const highSeries = new Series(bars, (b) => b.high);
@@ -140,8 +143,21 @@ export function calculate(bars: Bar[], inputs: Partial<PivotPointSupertrendInput
     value: i < warmup || isNaN(v) ? NaN : v,
   }));
 
-  // Markers: trend direction change signals
+  // Markers: pivot labels + trend direction change signals
   const markers: MarkerData[] = [];
+
+  // Pine: plotshape(ph and showpivot, text="H"), plotshape(pl and showpivot, text="L")
+  if (showPivot) {
+    for (let i = warmup; i < n; i++) {
+      if (phArr[i] != null && !isNaN(phArr[i]!)) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#26A69A', text: 'H' });
+      }
+      if (plArr[i] != null && !isNaN(plArr[i]!)) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#EF5350', text: 'L' });
+      }
+    }
+  }
+
   for (let i = warmup + 1; i < n; i++) {
     // Buy: trend flips from bearish to bullish
     if (dirArr[i] === 1 && dirArr[i - 1] === -1) {

@@ -171,31 +171,36 @@ export function calculate(bars: Bar[], inputs: Partial<BankerFundFlowInputs> = {
   }));
 
   // plotCandle: color-coded candles showing fund flow status
-  // Pine: plotcandle(fund_flow_trend, bull_bear_line, fund_flow_trend, bull_bear_line, color=...)
+  // Pine draws 5 overlapping plotcandles; later ones render on top.
+  // Priority (highest on top → lowest): blue(5) > red(4) > white(3) > green(2)
   const candles: PlotCandleData[] = [];
+  // Entry signal candle: plotcandle(0, 50, 0, 50, color=yellow when entry signal)
+  const entryCandles: PlotCandleData[] = [];
   for (let i = warmup; i < n; i++) {
     const fft = fundFlowTrend[i];
     const bbl = bullBearArr[i];
     if (isNaN(fft) || bbl == null || isNaN(bbl)) continue;
     const prevFft = i > 0 ? fundFlowTrend[i - 1] : NaN;
+    const prevBbl = i > 0 ? bullBearArr[i - 1] : NaN;
     const threshold95 = isNaN(prevFft) ? fft : prevFft * 0.95;
 
+    // Determine candle color following Pine's plotcandle layering order:
+    // plotcandle 2: green when fft > bbl
+    // plotcandle 3: white when fft < threshold95
+    // plotcandle 4: red when fft < bbl (on top of white)
+    // plotcandle 5: blue when fft < bbl AND fft > threshold95 (on top of red)
     let color: string | undefined;
     if (fft > bbl) {
-      // Banker increase position (green)
-      color = '#26A69A';
-    } else if (fft < bbl) {
-      if (fft > threshold95) {
-        // Weak rebound (blue)
-        color = '#2196F3';
-      } else {
-        // Exit/quit (red)
-        color = '#EF5350';
-      }
+      color = '#26A69A'; // green - banker increase position
     }
     if (fft < threshold95) {
-      // Decrease position (white) overrides
-      color = '#FFFFFF';
+      color = '#FFFFFF'; // white - banker decrease position
+    }
+    if (fft < bbl) {
+      color = '#EF5350'; // red - banker exit/quit (on top of white)
+    }
+    if (fft < bbl && fft > threshold95) {
+      color = '#2196F3'; // blue - weak rebound (on top of red)
     }
 
     candles.push({
@@ -206,6 +211,20 @@ export function calculate(bars: Bar[], inputs: Partial<BankerFundFlowInputs> = {
       close: bbl,
       color,
     });
+
+    // Entry signal yellow candle (plotcandle 1): fixed 0-50 range
+    if (!isNaN(prevFft) && prevBbl != null && !isNaN(prevBbl) &&
+        prevFft <= prevBbl && fft > bbl && bbl < entryThreshold) {
+      entryCandles.push({
+        time: bars[i].time,
+        open: 0,
+        high: 50,
+        low: 0,
+        close: 50,
+        color: '#FFD700', // yellow
+        borderColor: 'transparent',
+      });
+    }
   }
 
   return {
@@ -222,7 +241,7 @@ export function calculate(bars: Bar[], inputs: Partial<BankerFundFlowInputs> = {
       { plot1: 'hline_overbought', plot2: 'hline_strong', options: { color: 'rgba(224, 64, 251, 0.3)' } },
     ],
     markers,
-    plotCandles: { candle0: candles },
+    plotCandles: { candle0: candles, entrySignal: entryCandles },
   };
 }
 

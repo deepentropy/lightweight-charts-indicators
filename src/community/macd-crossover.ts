@@ -49,7 +49,7 @@ export function calculate(bars: Bar[], inputs: Partial<MACDCrossoverInputs> = {}
   const fastEMA = ta.ema(source, fastLength);
   const slowEMA = ta.ema(source, slowLength);
   const macdLine = fastEMA.sub(slowEMA);
-  const signalLine = ta.ema(macdLine, signalLength);
+  const signalLine = ta.sma(macdLine, signalLength);
   const histogram = macdLine.sub(signalLine);
 
   const macdArr = macdLine.toArray();

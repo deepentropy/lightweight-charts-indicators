@@ -31,6 +31,7 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'SuperTrend', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'Channel Upper', color: '#FF6D00', lineWidth: 1 },
   { id: 'plot2', title: 'Channel Lower', color: '#FF6D00', lineWidth: 1 },
+  { id: 'plot3', title: 'Average', color: '#FF5D00', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -111,9 +112,16 @@ export function calculate(bars: Bar[], inputs: Partial<SupertrendChannelsInputs>
     value: i < warmup || v == null ? NaN : v,
   }));
 
+  const plot3 = chUpperArr.map((v, i) => {
+    const upper = v ?? NaN;
+    const lower = chLowerArr[i] ?? NaN;
+    const avg = (i < warmup || isNaN(upper) || isNaN(lower)) ? NaN : (upper + lower) / 2;
+    return { time: bars[i].time, value: avg };
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
     fills: [
       { plot1: 'plot1', plot2: 'plot0', options: { color: 'rgba(12,181,26,0.15)' } },
       { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(255,17,0,0.15)' } },

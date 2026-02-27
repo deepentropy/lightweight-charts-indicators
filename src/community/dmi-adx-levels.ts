@@ -12,14 +12,17 @@ import type { MarkerData, BarColorData } from '../types';
 
 export interface DMIADXInputs {
   adxLen: number;
+  keyLevel: number;
 }
 
 export const defaultInputs: DMIADXInputs = {
   adxLen: 14,
+  keyLevel: 23,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'adxLen', type: 'int', title: 'ADX Length', defval: 14, min: 1 },
+  { id: 'keyLevel', type: 'int', title: 'Key Level', defval: 23, min: 0 },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -40,7 +43,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<DMIADXInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
-  const { adxLen } = { ...defaultInputs, ...inputs };
+  const { adxLen, keyLevel } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const diPlusArr: number[] = new Array(n);
@@ -173,7 +176,10 @@ export function calculate(bars: Bar[], inputs: Partial<DMIADXInputs> = {}): Indi
       'plot1': toPlot(diPlusArr, warmup),
       'plot2': toPlot(diMinusArr, warmup),
     },
-    hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
+    hlines: [
+      ...hlineConfig.map(h => ({ value: h.value, options: h.options })),
+      { value: keyLevel, options: { color: '#FFFFFF', linestyle: 'dashed' as const, title: 'Key Level' } },
+    ],
     fills: [{ plot1: 'plot1', plot2: 'plot2', colors: fillColors }],
     markers,
     barColors,

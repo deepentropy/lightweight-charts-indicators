@@ -14,16 +14,19 @@ import type { BarColorData, MarkerData } from '../types';
 export interface CMSlingShotInputs {
   emaFast: number;
   emaSlow: number;
+  showLetters: boolean;
 }
 
 export const defaultInputs: CMSlingShotInputs = {
   emaFast: 38,
   emaSlow: 62,
+  showLetters: false,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'emaFast', type: 'int', title: 'Fast EMA Length', defval: 38, min: 1 },
   { id: 'emaSlow', type: 'int', title: 'Slow EMA Length', defval: 62, min: 1 },
+  { id: 'showLetters', type: 'bool', title: 'Show Letters', defval: false },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -38,7 +41,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<CMSlingShotInputs> = {}): IndicatorResult & { barColors: BarColorData[]; markers: MarkerData[] } {
-  const { emaFast, emaSlow } = { ...defaultInputs, ...inputs };
+  const { emaFast, emaSlow, showLetters } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const closeSeries = new Series(bars, (b) => b.close);
@@ -119,12 +122,13 @@ export function calculate(bars: Bar[], inputs: Partial<CMSlingShotInputs> = {}):
     }
 
     // Pine: plotarrow(pa and codiff, colorup=lime) - conservative entry up
+    // Pine: plotchar(sl and codiff ? low - tr : na, char='B', color=lime)
     if (fast > slow && prevClose < prevFast && close > fast) {
-      markers.push({ time: bars[i].time as number, position: 'belowBar', shape: 'arrowUp', color: '#00FF00', text: 'Buy' });
+      markers.push({ time: bars[i].time as number, position: 'belowBar', shape: 'arrowUp', color: '#00FF00', text: showLetters ? 'B' : 'Buy' });
     }
-    // Pine: plotarrow(pa and codiff2*-1, colordown=red) - conservative entry down
+    // Pine: plotchar(sl and codiff2 ? high + tr : na, char='S', color=red)
     if (fast < slow && prevClose > prevFast && close < fast) {
-      markers.push({ time: bars[i].time as number, position: 'aboveBar', shape: 'arrowDown', color: '#FF0000', text: 'Sell' });
+      markers.push({ time: bars[i].time as number, position: 'aboveBar', shape: 'arrowDown', color: '#FF0000', text: showLetters ? 'S' : 'Sell' });
     }
   }
 

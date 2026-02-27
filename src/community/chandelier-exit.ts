@@ -114,13 +114,15 @@ export function calculate(bars: Bar[], inputs: Partial<ChandelierExitInputs> = {
     value: i < warmup ? NaN : (b.open + b.high + b.low + b.close) / 4,
   }));
 
-  // Markers: buy/sell on direction change
+  // Markers: buy/sell on direction change, plus circle at stop level
   const markers: MarkerData[] = [];
   for (let i = warmup + 1; i < bars.length; i++) {
     if (dirArr[i] !== dirArr[i - 1]) {
       if (dirArr[i] === 1) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'circle', color: '#26A69A', text: '' });
         markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
       } else {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'circle', color: '#EF5350', text: '' });
         markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
       }
     }

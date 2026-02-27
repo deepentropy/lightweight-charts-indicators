@@ -35,6 +35,7 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Laguerre PPO', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'Percentile Rank Top', color: '#787B86', lineWidth: 2, style: 'columns' },
   { id: 'plot2', title: 'Percentile Rank Bottom', color: '#C0C0C0', lineWidth: 2, style: 'columns' },
+  { id: 'zeroLine', title: '0 Line', color: '#C0C0C0', lineWidth: 4, style: 'circles' },
 ];
 
 export const metadata = {
@@ -112,9 +113,12 @@ export function calculate(bars: Bar[], inputs: Partial<CMLaguerrePPOInputs> = {}
     return { time: bars[i].time, value: bVal, color };
   });
 
+  // Pine: plot(0, title="0 Line Circles Plot", style=circles, linewidth=4, color=silver)
+  const zeroLine = bars.map((b) => ({ time: b.time, value: 0 }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'zeroLine': zeroLine },
     hlines: [
       { value: pctile, options: { color: '#EF5350', linestyle: 'solid' as const, title: 'Extreme Top' } },
       { value: wrnPctile, options: { color: '#FF9800', linestyle: 'solid' as const, title: 'Warning Top' } },

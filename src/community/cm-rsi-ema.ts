@@ -29,7 +29,7 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'RSI', color: '#7E57C2', lineWidth: 2 },
-  { id: 'plot1', title: 'EMA of RSI', color: '#FF6D00', lineWidth: 1 },
+  { id: 'plot1', title: 'EMA of RSI', color: '#FF6D00', lineWidth: 2, style: 'circles' },
   { id: 'plot2', title: 'Upper Band', color: 'transparent', lineWidth: 0 },
   { id: 'plot3', title: 'Lower Band', color: 'transparent', lineWidth: 0 },
 ];

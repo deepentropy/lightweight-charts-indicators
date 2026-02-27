@@ -118,6 +118,9 @@ export function calculate(bars: Bar[], inputs: Partial<MlKnnStrategyInputs> = {}
         markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Buy' });
       } else if (signal[i] === -1) {
         markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
+      } else {
+        // Pine: plot(clear_condition ? close : na, 'ClearPos', color.yellow, 4, plot.style_cross)
+        markers.push({ time: bars[i].time, position: 'inBar', shape: 'cross', color: '#FFEB3B', text: '' });
       }
     }
   }

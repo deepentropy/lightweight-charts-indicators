@@ -14,18 +14,24 @@ export interface CoralTrendInputs {
   smoothingPeriod: number;
   constantD: number;
   src: SourceType;
+  enableBarColor: boolean;
+  ribbonMode: boolean;
 }
 
 export const defaultInputs: CoralTrendInputs = {
   smoothingPeriod: 21,
   constantD: 0.4,
   src: 'close',
+  enableBarColor: false,
+  ribbonMode: false,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'smoothingPeriod', type: 'int', title: 'Smoothing Period', defval: 21, min: 1 },
   { id: 'constantD', type: 'float', title: 'Constant D', defval: 0.4, min: 0.01, max: 0.99, step: 0.01 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
+  { id: 'enableBarColor', type: 'bool', title: 'Enable Bar Color', defval: false },
+  { id: 'ribbonMode', type: 'bool', title: 'Ribbon Mode', defval: false },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -39,7 +45,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<CoralTrendInputs> = {}): IndicatorResult {
-  const { smoothingPeriod, constantD, src } = { ...defaultInputs, ...inputs };
+  const { smoothingPeriod, constantD, src, enableBarColor, ribbonMode } = { ...defaultInputs, ...inputs };
   const sourceArr = getSourceSeries(bars, src).toArray();
 
   const cd = constantD;
@@ -74,8 +80,8 @@ export function calculate(bars: Bar[], inputs: Partial<CoralTrendInputs> = {}): 
     if (i < warmup) return { time: bars[i].time, value: NaN };
     const prev = i > 0 ? bfrArr[i - 1] : value;
     const color = value > prev ? '#26A69A' : value < prev ? '#EF5350' : '#2962FF';
-    barColors.push({ time: bars[i].time as number, color });
-    bgColors.push({ time: bars[i].time as number, color: value > prev ? 'rgba(38,166,154,0.15)' : value < prev ? 'rgba(239,83,80,0.15)' : 'rgba(41,98,255,0.15)' });
+    if (enableBarColor) barColors.push({ time: bars[i].time as number, color });
+    if (ribbonMode) bgColors.push({ time: bars[i].time as number, color: value > prev ? 'rgba(38,166,154,0.15)' : value < prev ? 'rgba(239,83,80,0.15)' : 'rgba(41,98,255,0.15)' });
     return { time: bars[i].time, value, color };
   });
 

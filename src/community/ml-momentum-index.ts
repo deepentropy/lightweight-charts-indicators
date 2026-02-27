@@ -41,6 +41,8 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot2', title: 'Slow WMA', color: '#EF5350', lineWidth: 1 },
   { id: 'plot3', title: 'Mid', color: 'transparent', lineWidth: 0 },
   { id: 'plot4', title: 'WMA of Prediction', color: '#31FFC8', lineWidth: 1 },
+  { id: 'channelUpper', title: 'Channel Upper', color: 'transparent', lineWidth: 0 },
+  { id: 'channelLower', title: 'Channel Lower', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -156,21 +158,31 @@ export function calculate(bars: Bar[], inputs: Partial<MlMomentumIndexInputs> = 
     value: isNaN(v) ? NaN : v,
   }));
 
-  const fillColors = prediction.map((v, i) => {
+  // Channel boundary plots for fills
+  const channelUpper = bars.map((b) => ({ time: b.time, value: 70 }));
+  const channelLower = bars.map((b) => ({ time: b.time, value: 30 }));
+
+  // Dynamic fill colors based on prediction direction
+  const upperFillColors = prediction.map((v, i) => {
     if (i < warmup || isNaN(v)) return 'transparent';
-    return v >= 50 ? 'rgba(0,255,0,0.1)' : 'rgba(255,0,0,0.1)';
+    return v >= 50 ? 'rgba(0,255,0,0.15)' : 'rgba(255,0,0,0.05)';
+  });
+  const lowerFillColors = prediction.map((v, i) => {
+    if (i < warmup || isNaN(v)) return 'transparent';
+    return v < 50 ? 'rgba(255,0,0,0.15)' : 'rgba(0,255,0,0.05)';
   });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'plot4': plot4 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'plot4': plot4, 'channelUpper': channelUpper, 'channelLower': channelLower },
     hlines: [
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 50, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Middle' } },
       { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
     fills: [
-      { plot1: 'plot0', plot2: 'plot3', options: { color: 'rgba(0,255,0,0.1)' }, colors: fillColors },
+      { plot1: 'plot3', plot2: 'channelUpper', options: { color: 'rgba(0,255,0,0.1)' }, colors: upperFillColors },
+      { plot1: 'plot3', plot2: 'channelLower', options: { color: 'rgba(255,0,0,0.1)' }, colors: lowerFillColors },
     ],
   };
 }

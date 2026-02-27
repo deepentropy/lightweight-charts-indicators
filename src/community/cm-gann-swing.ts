@@ -75,6 +75,24 @@ export function calculate(bars: Bar[], inputs: Partial<CMGannSwingInputs> = {}):
     slPlot.push({ time: bars[i].time, value: swingLow });
   }
 
+  // Pine: hld = iff(close > sma(high,periods)[1], 1, iff(close<sma(low,periods)[1],-1, 0))
+  // Pine: hlv = valuewhen(hld != 0, hld, 1)
+  // Determine active swing direction for persistent markers
+  const smaHighArr = ta.sma(highSeries, length).toArray();
+  const smaLowArr = ta.sma(lowSeries, length).toArray();
+  let hlv = 0;
+  const hlvArr: number[] = new Array(n).fill(0);
+  for (let i = warmup + 1; i < n; i++) {
+    const prevSmaHigh = smaHighArr[i - 1];
+    const prevSmaLow = smaLowArr[i - 1];
+    if (prevSmaHigh != null && bars[i].close > prevSmaHigh) {
+      hlv = 1;
+    } else if (prevSmaLow != null && bars[i].close < prevSmaLow) {
+      hlv = -1;
+    }
+    hlvArr[i] = hlv;
+  }
+
   // Pine display elements based on cross conditions
   const markers: MarkerData[] = [];
   const barColors: BarColorData[] = [];
@@ -112,6 +130,15 @@ export function calculate(bars: Bar[], inputs: Partial<CMGannSwingInputs> = {}):
     }
     if (crossBelow) {
       markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000', text: 'Cross Down' });
+    }
+
+    // Pine: plotshape(pttb and hi ? hi : na, style=triangledown, location=top, color=red)
+    // Pine: plotshape(pttb and lo ? lo : na, style=triangleup, location=bottom, color=lime)
+    // Persistent per-bar triangles: hi is non-na when hlv==-1, lo is non-na when hlv==1
+    if (hlvArr[i] === -1) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000', text: '' });
+    } else if (hlvArr[i] === 1) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#00FF00', text: '' });
     }
   }
 

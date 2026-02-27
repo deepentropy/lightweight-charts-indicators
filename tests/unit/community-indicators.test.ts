@@ -565,12 +565,12 @@ describe('BullBearPowerTrend', () => {
     assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4'], false);
   });
 
-  it('bull power is non-negative, bear power is non-positive', () => {
+  it('bull histogram is non-positive (v-2), bear histogram is non-negative (v+2)', () => {
     const bullHist = validValues(result, 'plot3');
     const bearHist = validValues(result, 'plot4');
     expect(bullHist.length).toBeGreaterThan(0);
-    bullHist.forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
-    bearHist.forEach((v) => expect(v).toBeLessThanOrEqual(0));
+    bullHist.forEach((v) => expect(v).toBeLessThanOrEqual(0));
+    bearHist.forEach((v) => expect(v).toBeGreaterThanOrEqual(0));
   });
 });
 
@@ -980,12 +980,12 @@ describe('TurtleTradeChannels', () => {
 describe('LinearRegressionChannel', () => {
   const result = LinearRegressionChannel.calculate(bars, { length: 30 });
 
-  it('returns correct shape (3 plots)', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], true);
+  it('returns correct shape (4 plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], true);
   });
 
-  it('upper >= lower', () => {
-    const upper = validValues(result, 'plot1');
+  it('upper band >= lower band', () => {
+    const upper = validValues(result, 'plot3');
     const lower = validValues(result, 'plot2');
     const len = Math.min(upper.length, lower.length);
     for (let i = 0; i < len; i++) {

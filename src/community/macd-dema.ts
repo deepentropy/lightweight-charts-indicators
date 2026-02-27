@@ -56,7 +56,10 @@ export function calculate(bars: Bar[], inputs: Partial<MACDDEMAInputs> = {}): In
   const demaSlow = emaSlow.mul(2).sub(emaSlow2);
 
   const macdLine = demaFast.sub(demaSlow);
-  const signalLine = ta.ema(macdLine, signalLength);
+  // Signal is also DEMA: 2*EMA(macd, len) - EMA(EMA(macd, len), len)
+  const sigEma1 = ta.ema(macdLine, signalLength);
+  const sigEma2 = ta.ema(sigEma1, signalLength);
+  const signalLine = sigEma1.mul(2).sub(sigEma2);
   const histogram = macdLine.sub(signalLine);
 
   const macdArr = macdLine.toArray();

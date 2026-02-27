@@ -1,130 +1,86 @@
 /**
  * AK TREND ID
  *
- * Trend identification using EMA crossover + ADX filter.
- * Fast/slow EMA cross for signal, ADX > threshold confirms trend.
- * Bars colored green when bullish and confirmed, red when bearish and confirmed.
+ * Trend identification using EMA spread oscillator.
+ * bspread = (EMA(close,3) - EMA(close,8)) * 1.001
+ * Plotted as non-overlay oscillator with zero line.
+ * Bars colored green/red by spread sign.
  *
- * Reference: TradingView "AK TREND ID" (community)
+ * Reference: TradingView "AK_TREND ID (M)" by Algokid
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
 
 export interface AKTrendIDInputs {
-  emaFast: number;
-  emaSlow: number;
-  adxLen: number;
-  adxThreshold: number;
+  input1: number;
+  input2: number;
   src: SourceType;
 }
 
 export const defaultInputs: AKTrendIDInputs = {
-  emaFast: 8,
-  emaSlow: 21,
-  adxLen: 14,
-  adxThreshold: 25,
+  input1: 3,
+  input2: 8,
   src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'emaFast', type: 'int', title: 'Fast EMA', defval: 8, min: 1 },
-  { id: 'emaSlow', type: 'int', title: 'Slow EMA', defval: 21, min: 1 },
-  { id: 'adxLen', type: 'int', title: 'ADX Length', defval: 14, min: 1 },
-  { id: 'adxThreshold', type: 'int', title: 'ADX Threshold', defval: 25, min: 0 },
+  { id: 'input1', type: 'int', title: 'Fast EMA', defval: 3, min: 1 },
+  { id: 'input2', type: 'int', title: 'Slow EMA', defval: 8, min: 1 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Fast EMA', color: '#26A69A', lineWidth: 1 },
-  { id: 'plot1', title: 'Slow EMA', color: '#EF5350', lineWidth: 1 },
+  { id: 'plot0', title: 'Zero Line', color: '#FFFFFF', lineWidth: 1 },
+  { id: 'plot1', title: 'Spread', color: '#26A69A', lineWidth: 2 },
 ];
 
 export const metadata = {
   title: 'AK TREND ID',
   shortTitle: 'AKTID',
-  overlay: true,
+  overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AKTrendIDInputs> = {}): IndicatorResult {
-  const { emaFast, emaSlow, adxLen, adxThreshold, src } = { ...defaultInputs, ...inputs };
+export function calculate(bars: Bar[], inputs: Partial<AKTrendIDInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+  const { input1, input2, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const srcSeries = getSourceSeries(bars, src);
-  const fastArr = ta.ema(srcSeries, emaFast).toArray();
-  const slowArr = ta.ema(srcSeries, emaSlow).toArray();
+  const fastArr = ta.ema(srcSeries, input1).toArray();
+  const slowArr = ta.ema(srcSeries, input2).toArray();
 
-  // Manual ADX calculation
-  const adxArr: number[] = new Array(n);
-  let smoothTR = 0;
-  let smoothPlusDM = 0;
-  let smoothMinusDM = 0;
-  let adx = 0;
-
-  for (let i = 0; i < n; i++) {
-    const high = bars[i].high;
-    const low = bars[i].low;
-    const prevHigh = i > 0 ? bars[i - 1].high : high;
-    const prevLow = i > 0 ? bars[i - 1].low : low;
-    const prevClose = i > 0 ? bars[i - 1].close : bars[i].close;
-
-    const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
-    const upMove = high - prevHigh;
-    const downMove = prevLow - low;
-    const plusDM = upMove > downMove && upMove > 0 ? upMove : 0;
-    const minusDM = downMove > upMove && downMove > 0 ? downMove : 0;
-
-    if (i <= adxLen) {
-      smoothTR += tr;
-      smoothPlusDM += plusDM;
-      smoothMinusDM += minusDM;
-    } else {
-      smoothTR = smoothTR - smoothTR / adxLen + tr;
-      smoothPlusDM = smoothPlusDM - smoothPlusDM / adxLen + plusDM;
-      smoothMinusDM = smoothMinusDM - smoothMinusDM / adxLen + minusDM;
-    }
-
-    const diPlus = smoothTR !== 0 ? (smoothPlusDM / smoothTR) * 100 : 0;
-    const diMinus = smoothTR !== 0 ? (smoothMinusDM / smoothTR) * 100 : 0;
-    const diSum = diPlus + diMinus;
-    const dx = diSum !== 0 ? Math.abs(diPlus - diMinus) / diSum * 100 : 0;
-
-    if (i === 2 * adxLen - 1) {
-      adx = dx;
-    } else if (i >= 2 * adxLen) {
-      adx = (adx * (adxLen - 1) + dx) / adxLen;
-    }
-
-    adxArr[i] = adx;
-  }
-
-  const warmup = Math.max(emaFast, emaSlow, 2 * adxLen);
+  const warmup = Math.max(input1, input2);
   const barColors: BarColorData[] = [];
 
-  const fastPlot = fastArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup || isNaN(v) ? NaN : v,
-  }));
-  const slowPlot = slowArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup || isNaN(v) ? NaN : v,
+  const plot0 = bars.map((b, i) => ({
+    time: b.time,
+    value: i < warmup ? NaN : 0,
   }));
 
+  const plot1 = bars.map((b, i) => {
+    const f = fastArr[i];
+    const s = slowArr[i];
+    if (i < warmup || f == null || s == null || isNaN(f) || isNaN(s)) {
+      return { time: b.time, value: NaN };
+    }
+    const bspread = (f - s) * 1.001;
+    return { time: b.time, value: bspread, color: bspread > 0 ? '#00FF00' : '#FF0000' };
+  });
+
   for (let i = warmup; i < n; i++) {
-    const bullish = fastArr[i] > slowArr[i];
-    const confirmed = adxArr[i] >= adxThreshold;
-    if (confirmed) {
-      barColors.push({ time: bars[i].time as number, color: bullish ? '#26A69A' : '#EF5350' });
-    } else {
-      barColors.push({ time: bars[i].time as number, color: '#787B86' });
+    const f = fastArr[i];
+    const s = slowArr[i];
+    if (f != null && s != null) {
+      const bspread = (f - s) * 1.001;
+      barColors.push({ time: bars[i].time, color: bspread > 0 ? '#008000' : '#FF0000' });
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': fastPlot, 'plot1': slowPlot },
+    plots: { 'plot0': plot0, 'plot1': plot1 },
     barColors,
-  } as IndicatorResult & { barColors: BarColorData[] };
+  };
 }
 
 export const AKTrendID = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

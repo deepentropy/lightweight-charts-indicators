@@ -32,6 +32,7 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'MA', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot1', title: 'MA Glow', color: 'rgba(41,98,255,0.2)', lineWidth: 7 },
   { id: 'osc', title: 'Oscillator', color: '#787B86', lineWidth: 1, style: 'columns' },
   { id: 'oscTop', title: 'Osc Top', color: 'transparent', lineWidth: 0 },
   { id: 'oscZero', title: 'Osc Zero', color: 'transparent', lineWidth: 0 },
@@ -64,6 +65,9 @@ export function calculate(bars: Bar[], inputs: Partial<MAShiftInputs> = {}): Ind
     const val = srcIdx >= 0 && srcIdx < n && srcIdx >= length ? (maArr[srcIdx] ?? NaN) : NaN;
     return { time: bars[i].time, value: val };
   });
+
+  // Glow plot: same MA data with wider line (rendered behind via reduced opacity in plotConfig)
+  const glowPlot = plot.map(p => ({ time: p.time, value: p.value }));
 
   // barcolor: color bars based on source >= MA (Pine: barcolor(color) where color = source >= MA ? bullCol : bearCol)
   const srcArr = srcSeries.toArray();
@@ -192,7 +196,7 @@ export function calculate(bars: Bar[], inputs: Partial<MAShiftInputs> = {}): Ind
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot, 'osc': oscPlot, 'oscTop': oscTopPlot, 'oscZero': oscZeroPlot, 'oscBot': oscBotPlot },
+    plots: { 'plot0': plot, 'plot1': glowPlot, 'osc': oscPlot, 'oscTop': oscTopPlot, 'oscZero': oscZeroPlot, 'oscBot': oscBotPlot },
     markers,
     barColors,
     plotCandles: { candle0: candles },

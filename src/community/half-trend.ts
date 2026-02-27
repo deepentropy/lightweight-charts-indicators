@@ -14,16 +14,22 @@ import type { MarkerData } from '../types';
 export interface HalfTrendInputs {
   amplitude: number;
   channelDeviation: number;
+  showArrows: boolean;
+  showLabels: boolean;
 }
 
 export const defaultInputs: HalfTrendInputs = {
   amplitude: 2,
   channelDeviation: 2,
+  showArrows: true,
+  showLabels: true,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'amplitude', type: 'int', title: 'Amplitude', defval: 2, min: 1 },
   { id: 'channelDeviation', type: 'int', title: 'Channel Deviation', defval: 2, min: 0 },
+  { id: 'showArrows', type: 'bool', title: 'Show Arrows', defval: true },
+  { id: 'showLabels', type: 'bool', title: 'Show Labels', defval: true },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -39,7 +45,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<HalfTrendInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { amplitude, channelDeviation } = { ...defaultInputs, ...inputs };
+  const { amplitude, channelDeviation, showArrows, showLabels } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const atr2Arr = ta.atr(bars, 100).toArray();
@@ -114,14 +120,16 @@ export function calculate(bars: Bar[], inputs: Partial<HalfTrendInputs> = {}): I
     return { time: bars[i].time, value: v, color };
   });
 
-  // Markers: buy when trend flips 1→0, sell when trend flips 0→1
+  // Markers: arrows and/or labels on trend flip
   const markers: MarkerData[] = [];
   for (let i = warmup; i < n; i++) {
     if (i > 0 && trendArr[i] !== trendArr[i - 1]) {
       if (trendArr[i] === 0) {
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#2962FF', text: 'Buy' });
+        if (showArrows) markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#2962FF', text: '' });
+        if (showLabels) markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#2962FF', text: 'Buy' });
       } else {
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#FF6D00', text: 'Sell' });
+        if (showArrows) markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FF6D00', text: '' });
+        if (showLabels) markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF6D00', text: 'Sell' });
       }
     }
   }

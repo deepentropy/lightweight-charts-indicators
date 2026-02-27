@@ -13,18 +13,21 @@ export interface TDIHLCTrixInputs {
   rsiLen: number;
   bbLen: number;
   bbMult: number;
+  tradeSignalLen: number;
 }
 
 export const defaultInputs: TDIHLCTrixInputs = {
   rsiLen: 13,
   bbLen: 34,
   bbMult: 1.6185,
+  tradeSignalLen: 7,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'rsiLen', type: 'int', title: 'RSI Length', defval: 13, min: 1 },
   { id: 'bbLen', type: 'int', title: 'BB Length', defval: 34, min: 1 },
   { id: 'bbMult', type: 'float', title: 'BB Multiplier', defval: 1.6185, min: 0.01, step: 0.01 },
+  { id: 'tradeSignalLen', type: 'int', title: 'Trade Signal Length', defval: 7, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -42,7 +45,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<TDIHLCTrixInputs> = {}): IndicatorResult {
-  const { rsiLen, bbLen, bbMult } = { ...defaultInputs, ...inputs };
+  const { rsiLen, bbLen, bbMult, tradeSignalLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const closeSeries = new Series(bars, (b) => b.close);
@@ -53,8 +56,8 @@ export function calculate(bars: Bar[], inputs: Partial<TDIHLCTrixInputs> = {}): 
   const bbMid = ta.sma(rsiSeries, bbLen).toArray();
   const bbStd = ta.stdev(rsiSeries, bbLen).toArray();
 
-  // Signal line: SMA of RSI with period 2
-  const signalArr = ta.sma(rsiSeries, 2).toArray();
+  // Signal line: SMA of RSI (Pine: trade_signal = ta.sma(rsi, tradeSignalLen))
+  const signalArr = ta.sma(rsiSeries, tradeSignalLen).toArray();
 
   const warmup = rsiLen + bbLen;
 

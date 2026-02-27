@@ -61,6 +61,7 @@ export const plotConfig: PlotConfig[] = [
   { id: 'vwap', title: 'VWAP (WT1-WT2)', color: '#FFFFFF80', lineWidth: 2, style: 'area' },
   { id: 'mfiArea', title: 'MFI Area', color: '#3EE145', lineWidth: 1, style: 'area' },
   { id: 'crossDot', title: 'Cross Dot', color: '#00FF00', lineWidth: 3, style: 'circles' },
+  { id: 'crossLine', title: 'Cross Line', color: '#000000', lineWidth: 5 },
 ];
 
 export const metadata = {
@@ -138,12 +139,14 @@ export function calculate(bars: Bar[], inputs: Partial<MarketCipherBInputs> = {}
   //       buySignal = wtCross and wtCrossUp and wtOversold (wt2 <= osLevel)
   //       sellSignal = wtCross and wtCrossDown and wtOverbought (wt2 >= obLevel)
   const crossDotPlot: { time: number; value: number; color?: string }[] = [];
+  const crossLinePlot: { time: number; value: number }[] = [];
   const markers: MarkerData[] = [];
 
   for (let i = 0; i < n; i++) {
     if (i < warmup + 1 || wt1Arr[i] == null || wt2Arr[i] == null ||
         wt1Arr[i - 1] == null || wt2Arr[i - 1] == null) {
       crossDotPlot.push({ time: bars[i].time, value: NaN });
+      crossLinePlot.push({ time: bars[i].time, value: NaN });
       continue;
     }
 
@@ -158,6 +161,9 @@ export function calculate(bars: Bar[], inputs: Partial<MarketCipherBInputs> = {}
     const isCross = crossUp || crossDown;
 
     if (isCross) {
+      // Pine: plot(cross(wt1, wt2) ? wt2 : na, color=black, style=line, linewidth=5)
+      crossLinePlot.push({ time: bars[i].time, value: curr2 });
+
       // Small circle at every cross (Pine line 495)
       const dotColor = (curr2 - curr1) > 0 ? '#FF5252' : '#00E676';
       crossDotPlot.push({ time: bars[i].time, value: curr2, color: dotColor });
@@ -187,6 +193,7 @@ export function calculate(bars: Bar[], inputs: Partial<MarketCipherBInputs> = {}
       }
     } else {
       crossDotPlot.push({ time: bars[i].time, value: NaN });
+      crossLinePlot.push({ time: bars[i].time, value: NaN });
     }
   }
 
@@ -198,6 +205,7 @@ export function calculate(bars: Bar[], inputs: Partial<MarketCipherBInputs> = {}
       'vwap': vwapPlot,
       'mfiArea': mfiPlot,
       'crossDot': crossDotPlot,
+      'crossLine': crossLinePlot,
     },
     hlines: [
       { value: 0, options: { color: '#FFFFFF80', linestyle: 'solid' as const, title: 'Zero' } },

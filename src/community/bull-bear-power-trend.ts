@@ -86,14 +86,14 @@ export function calculate(bars: Bar[], inputs: Partial<BullBearPowerTrendInputs>
     return { time: b.time, value: trendArr[i] };
   });
 
-  // Histograms: bull power above 0, bear power below 0
+  // Histograms: bull power when BullTrend < 2, bear power when BearTrend > -2
   const bullHist = bullArr.map((v, i) => ({
     time: bars[i].time,
-    value: i < warmup ? NaN : Math.max(v, 0),
+    value: i < warmup ? NaN : (v < 2 ? v - 2 : NaN),
   }));
   const bearHist = bearArr.map((v, i) => ({
     time: bars[i].time,
-    value: i < warmup ? NaN : Math.min(v, 0),
+    value: i < warmup ? NaN : (v > -2 ? v + 2 : NaN),
   }));
 
   const level2Plot = bars.map((b) => ({ time: b.time, value: 2 }));

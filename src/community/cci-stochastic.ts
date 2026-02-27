@@ -15,6 +15,8 @@ export interface CCIStochasticInputs {
   stochLen: number;
   smoothK: number;
   smoothD: number;
+  showArrows: boolean;
+  showArrowsCenter: boolean;
 }
 
 export const defaultInputs: CCIStochasticInputs = {
@@ -22,6 +24,8 @@ export const defaultInputs: CCIStochasticInputs = {
   stochLen: 14,
   smoothK: 3,
   smoothD: 3,
+  showArrows: true,
+  showArrowsCenter: false,
 };
 
 export const inputConfig: InputConfig[] = [
@@ -29,11 +33,17 @@ export const inputConfig: InputConfig[] = [
   { id: 'stochLen', type: 'int', title: 'Stoch Length', defval: 14, min: 1 },
   { id: 'smoothK', type: 'int', title: 'Smooth K', defval: 3, min: 1 },
   { id: 'smoothD', type: 'int', title: 'Smooth D', defval: 3, min: 1 },
+  { id: 'showArrows', type: 'bool', title: 'Show Arrows', defval: true },
+  { id: 'showArrowsCenter', type: 'bool', title: 'Show Arrows on Center zone', defval: false },
 ];
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'K', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'MA', color: '#787B86', lineWidth: 3 },
+  { id: 'plot2', title: 'Max Level', color: 'transparent', lineWidth: 0 },
+  { id: 'plot3', title: 'OB Level', color: 'transparent', lineWidth: 0 },
+  { id: 'plot4', title: 'Min Level', color: 'transparent', lineWidth: 0 },
+  { id: 'plot5', title: 'OS Level', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -43,7 +53,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<CCIStochasticInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { cciLen, stochLen, smoothK, smoothD } = { ...defaultInputs, ...inputs };
+  const { cciLen, stochLen, smoothK, smoothD, showArrows, showArrowsCenter } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const close = getSourceSeries(bars, 'close');
@@ -118,11 +128,47 @@ export function calculate(bars: Bar[], inputs: Partial<CCIStochasticInputs> = {}
     if (prev <= 20 && cur > 20) {
       markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#FF9800', text: 'Exit Buy' });
     }
+
+    // Center zone: crossover(ma, 50) -> buy; crossunder(ma, 50) -> sell
+    if (showArrows && showArrowsCenter) {
+      if (prev <= 50 && cur > 50) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#00BCD4', text: 'Center Buy' });
+      }
+      if (prev >= 50 && cur < 50) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#E040FB', text: 'Center Sell' });
+      }
+    }
+  }
+
+  // OB/OS zone fill: Pine fills between maxLevelPlot(100)/overbought(80) and minLevelPlot(0)/oversold(20)
+  // color_fill_os = ma > OB ? red@90% : transparent  (fill between 100 and 80)
+  // color_fill_ob = ma < OS ? green@90% : transparent (fill between 0 and 20)
+  const plot2: { time: number; value: number }[] = [];
+  const plot3: { time: number; value: number }[] = [];
+  const plot4: { time: number; value: number }[] = [];
+  const plot5: { time: number; value: number }[] = [];
+  const obFillColors: string[] = [];
+  const osFillColors: string[] = [];
+
+  for (let i = 0; i < n; i++) {
+    plot2.push({ time: bars[i].time, value: 100 });
+    plot3.push({ time: bars[i].time, value: OB });
+    plot4.push({ time: bars[i].time, value: 0 });
+    plot5.push({ time: bars[i].time, value: OS });
+
+    const d = dArr[i];
+    const maValid = d != null && !isNaN(d) && i >= warmup;
+    obFillColors.push(maValid && d > OB ? 'rgba(239,83,80,0.10)' : 'transparent');
+    osFillColors.push(maValid && d < OS ? 'rgba(38,166,154,0.10)' : 'transparent');
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'plot4': plot4, 'plot5': plot5 },
+    fills: [
+      { plot1: 'plot2', plot2: 'plot3', colors: obFillColors },
+      { plot1: 'plot4', plot2: 'plot5', colors: osFillColors },
+    ],
     hlines: [
       { value: 100, options: { color: '#FFFFFF00', linestyle: 'dotted' as const, title: 'Max Level' } },
       { value: 80, options: { color: '#EF5350', linestyle: 'solid' as const, title: 'Overbought' } },

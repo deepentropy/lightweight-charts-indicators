@@ -23,6 +23,7 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'OBV Oscillator', color: '#26A69A', lineWidth: 2 },
+  { id: 'plot1', title: 'OBV Osc Area', color: '#C0C0C0', lineWidth: 1, style: 'area' },
 ];
 
 export const metadata = {
@@ -62,9 +63,12 @@ export function calculate(bars: Bar[], inputs: Partial<OBVOscillatorInputs> = {}
     return { time: bars[i].time, value: osc, color };
   });
 
+  // Area plot: same data, silver color (Pine: plot(obv_osc, color=silver, transp=70, style=area))
+  const plot1 = plot0.map(p => ({ time: p.time, value: p.value }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot1': plot1 },
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
     ],

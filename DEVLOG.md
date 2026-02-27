@@ -1,5 +1,96 @@
 # DEVLOG
 
+## 2026-02-27 - Minor Indicator Fixes (27 Indicators)
+
+### Goal
+Fix 36 community indicators with minor display gaps. 27 fixed, 4 already OK, 5 unfixable.
+
+### Indicators Fixed (27)
+**Batch A:** squeeze-momentum-v2 (line style), ma-shift (glow plot), cm-rsi-ema (circles style), market-cipher-a (marker position), nrtr (circle markers), supertrend-channels (midpoint plot), dmi-adx-levels (keyLevel input)
+**Batch B:** bull-bear-power-trend (histogram formula), chandelier-exit (circle markers), cm-rsi-2-lower (MA context color), cm-price-action (gray bars toggle), macd-dema (DEMA signal), macd-crossover (SMA signal), half-trend (arrow/label split)
+**Batch C:** madrid-trend-squeeze (yellow condition), cm-sling-shot (B/S letters), coral-trend (input gates), ml-knn-strategy (clear marker), pmax-rsi-t3 (hline fill), profit-maximizer (price signals), pivot-point-supertrend (pivot markers)
+**Batch D:** tdi-hlc-trix (signal period 7), rs-support-resistance (circle markers), sr-levels-breaks (volume filter), obv-oscillator (area plot), ml-momentum-index (gradient fills), pivot-hh-hl-lh-ll (channel mode)
+
+### Already OK (4)
+cog-channel, macd-leader, ml-rsi, volume-colored-bars
+
+### Unfixable (5)
+ml-adaptive-supertrend (per-bar labels), parallel-pivot-lines (line.new), t3-psar (plotbar), isolated-peak-bottom (algorithm), candlestick-reversal (3 missing systems)
+
+### Current State
+- 0 TypeScript compilation errors
+- 655/655 tests pass across 6 test files
+- All fixable gaps resolved: 248/254 indicators matched (98%)
+
+---
+
+## 2026-02-27 - Moderate Indicator Fixes (12 Indicators)
+
+### Goal
+Add missing display elements to 12 moderate-gap community indicators to match their PineScript source visualizations.
+
+### Indicators Fixed
+1. **ichimoku-oscillator** - Trend-strength bgColor with pow(3) intensity scaling, S/R zone coloring
+2. **rmi-trend-sniper** - Added max/min band plots (plot4/plot5) + 2 gradient fills between bands and RWMA center
+3. **most-rsi** - Purple RSI background fill between 70/30, optional BB bands + green fill (showBB input)
+4. **macd-divergence** - 4-color histogram (grow/fall above/below), hidden bull/bear divergence plots, dontTouchZero logic, rangeUpper/rangeLower inputs
+5. **rsi-bb-dispersion** - Dispersion bands (dispUp/dispDown) + white fill, dynamic RSI per-bar color (green/red/yellow), EMA basis
+6. **parabolic-rsi** - Strong signal diamond markers, configurable upperThreshold/lowerThreshold inputs
+7. **optimized-trend-tracker** - Price/OTT crossing signals (showSignalsC) + OTT color change signals (showSignalsR)
+8. **banker-fund-flow** - Entry signal yellow plotcandle, corrected candle color priority to match Pine layering
+9. **cci-stochastic** - OB/OS zone fills (red/green), center zone arrow markers (aqua up/fuchsia down)
+10. **cm-laguerre-ppo** - Zero-line circle plot (silver, lineWidth 4)
+11. **cm-gann-swing** - Persistent per-bar triangle markers at swing highs (red triangleDown) and lows (lime triangleUp)
+12. **market-cipher-b** - crossLine plot (black, lineWidth 5) at wt1/wt2 cross points
+13. **modified-heikin-ashi** - Conditional EMA trend line (emaTrend plot) with per-bar color (lime/red based on hlc3 vs prev emaAvg)
+
+### Already OK (3 of 15)
+- cdc-action-zone, reversal-candle-setup, cm-heikin-ashi V1
+
+### Tests Updated
+- MarketCipherB: added 'crossLine' to assertShape
+- ModifiedHeikinAshi: added emaTrend property check + EMA values test
+- CMLaguerrePPO: added 'zeroLine' to assertShape
+- MACDDivergence: assertShape updated to ['plot0', 'plot1', 'plot2', 'regBull', 'regBear', 'hidBull', 'hidBear']
+- RSIBBDispersion: assertShape updated to ['plot0', 'plot1', 'plot2', 'plot3', 'dispUp', 'dispDown']
+
+### Current State
+- 0 TypeScript compilation errors
+- 655/655 tests pass across 6 test files
+- All 15 moderate gaps resolved (12 fixed + 3 already OK)
+
+---
+
+## 2026-02-27 - Severe Indicator Fixes (7 Indicators)
+
+### Goal
+Rewrite 7 community indicators with severe architecture/algorithm mismatches to match their PineScript source code.
+
+### Indicators Fixed
+1. **ak-trend-id** - Changed from overlay=true 2-EMA+ADX trend to overlay=false spread oscillator. Now computes `bspread = (EMA(3) - EMA(8)) * 1.001`, plots zero line + colored spread, barcolor by sign.
+2. **rsi-bands** - Changed from overlay=false BB-on-RSI %B oscillator to overlay=true price-level bands. Uses LazyBear's RSI internals formula (auc/adc) to compute price levels where RSI equals overbought/oversold. 3 plots: Resistance, Support, Midline.
+3. **rsi-divergence** - Changed from RSI + SMA signal + pivot divergence detection to simple `RSI(5) - RSI(14)` single colored line (lime positive, red negative) + zero hline.
+4. **sell-buy-rates** - Changed from SMA(bull vol)/SMA(bear vol) 2-line to Pine's volume rate formula: `volup = vol * _rate(bullish)`, `rate = linreg(volup - voldown, 34)` single histogram with 4-color (lime/green/red/maroon).
+5. **swing-trade-signals** - Changed from 2 EMAs (10/30) to single SMA(50) with 3-color conditional (yellow for RSI extreme, lime for uptrend, red for downtrend). EMA(5) kept internally for buy/sell signal crossover logic.
+6. **macdas** - Changed from standard MACD/Signal/AvgSignal to Pine's `macdAS = MACD - Signal` and `signalAS = EMA(macdAS, signalperiod)`. Now plots the "second derivative" of MACD.
+7. **linear-regression-channel** - Changed from single linreg(close) + stdev bands (3 plots) to separate linreg(high) + linreg(low) + dev bands (4 plots). Default length changed from 100 to 300.
+
+### Tests Updated
+- AKTrendID: overlay true→false
+- MACDAS: 3 plots → 2 plots
+- RSIBands: 2 plots overlay=false → 3 plots overlay=true
+- RSIDivergence: 2 plots → 1 plot
+- SellBuyRates: 2 plots → 1 plot
+- SwingTradeSignals: 2 plots → 1 plot
+- LinearRegressionChannel: 3 plots → 4 plots
+
+### Current State
+- 0 TypeScript compilation errors
+- 654/654 tests pass across 6 test files
+- All 7 severe gaps resolved
+
+---
+
 ## 2026-02-27 - Minor-Gap Display Fixes Batch 3 (8 Indicators)
 
 ### Goal

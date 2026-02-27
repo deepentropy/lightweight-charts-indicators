@@ -7,7 +7,7 @@
  * Reference: TradingView "CM_RSI-2 Strategy Lower" by ChrisMoody
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface CMRSI2LowerInputs {
   rsiLen: number;
@@ -43,14 +43,21 @@ export function calculate(bars: Bar[], inputs: Partial<CMRSI2LowerInputs> = {}):
   const rsi = ta.rsi(source, rsiLen);
   const rsiArr = rsi.toArray();
 
+  const closeSeries = new Series(bars, (b) => b.close);
+  const ma5Arr = ta.sma(closeSeries, 5).toArray();
+  const ma200Arr = ta.sma(closeSeries, 200).toArray();
+
   const warmup = rsiLen;
 
   const plot0 = rsiArr.map((v, i) => {
     if (v == null || i < warmup) return { time: bars[i].time, value: NaN };
+    const close = bars[i].close;
+    const ma5 = ma5Arr[i] ?? NaN;
+    const ma200 = ma200Arr[i] ?? NaN;
     let color: string;
-    if (v < 10) color = '#26A69A';
-    else if (v > 90) color = '#EF5350';
-    else color = '#787B86';
+    if (close > ma200 && close < ma5 && v < 10) color = '#00FF00';       // lime
+    else if (close < ma200 && close > ma5 && v > 90) color = '#EF5350';  // red
+    else color = '#C0C0C0';                                                // silver
     return { time: bars[i].time, value: v, color };
   });
 

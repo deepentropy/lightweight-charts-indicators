@@ -263,7 +263,7 @@ describe('AKTrendID', () => {
   const result = AKTrendID.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], true);
+    assertShape(result, ['plot0', 'plot1'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -590,7 +590,7 @@ describe('CMLaguerrePPO', () => {
   const result = CMLaguerrePPO.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['plot0', 'plot1', 'zeroLine'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1147,7 +1147,7 @@ describe('MACDAS', () => {
   const result = MACDAS.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
+    assertShape(result, ['plot0', 'plot1'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1203,7 +1203,7 @@ describe('MACDDivergence', () => {
   const result = MACDDivergence.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'regBull', 'regBear', 'hidBull', 'hidBear'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1273,7 +1273,7 @@ describe('MarketCipherB', () => {
   const result = MarketCipherB.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['wt1', 'wt2', 'vwap', 'mfiArea', 'crossDot'], false);
+    assertShape(result, ['wt1', 'wt2', 'vwap', 'mfiArea', 'crossDot', 'crossLine'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1374,11 +1374,18 @@ describe('ModifiedHeikinAshi', () => {
     expect(result.metadata).toBeDefined();
     expect(result.metadata.title).toBeTruthy();
     expect(result.plotCandles).toBeDefined();
+    expect(result.plots).toHaveProperty('emaTrend');
   });
 
   it('produces candle data', () => {
     const candles = result.plotCandles?.candle0 ?? result.plotCandles?.['candle0'] ?? [];
     expect(candles.length).toBeGreaterThan(0);
+  });
+
+  it('produces EMA trend line values', () => {
+    const emaVals = result.plots.emaTrend.map((p: any) => p.value).filter((v: number) => !isNaN(v));
+    expect(emaVals.length).toBeGreaterThan(0);
+    emaVals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
 });
 
@@ -1640,7 +1647,7 @@ describe('RSIBands', () => {
   const result = RSIBands.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['plot0', 'plot1', 'plot2'], true);
   });
 
   it('produces finite values after warmup', () => {
@@ -1654,7 +1661,7 @@ describe('RSIBBDispersion', () => {
   const result = RSIBBDispersion.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], false);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'dispUp', 'dispDown'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1683,7 +1690,7 @@ describe('RSIDivergence', () => {
   const result = RSIDivergence.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['plot0'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1781,7 +1788,7 @@ describe('SellBuyRates', () => {
   const result = SellBuyRates.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['plot0'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -2008,7 +2015,7 @@ describe('SwingTradeSignals', () => {
   const result = SwingTradeSignals.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], true);
+    assertShape(result, ['plot0'], true);
   });
 
   it('produces finite values after warmup', () => {

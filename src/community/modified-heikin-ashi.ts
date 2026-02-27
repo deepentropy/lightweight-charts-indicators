@@ -12,17 +12,22 @@ import type { PlotCandleData, BarColorData } from '../types';
 
 export interface ModifiedHeikinAshiInputs {
   emaLen: number;
+  showEma: boolean;
 }
 
 export const defaultInputs: ModifiedHeikinAshiInputs = {
   emaLen: 6,
+  showEma: true,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'emaLen', type: 'int', title: 'EMA Length', defval: 6, min: 1 },
+  { id: 'showEma', type: 'bool', title: 'Show EMA Trend Line?', defval: true },
 ];
 
-export const plotConfig: PlotConfig[] = [];
+export const plotConfig: PlotConfig[] = [
+  { id: 'emaTrend', title: 'EMA Trend', color: '#00FF00', lineWidth: 3 },
+];
 
 export const plotCandleConfig = [
   { id: 'candle0', title: 'Modified HA' },
@@ -35,7 +40,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<ModifiedHeikinAshiInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] } {
-  const { emaLen } = { ...defaultInputs, ...inputs };
+  const { emaLen, showEma } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   // Step 1: Standard HA candles
@@ -113,9 +118,27 @@ export function calculate(bars: Bar[], inputs: Partial<ModifiedHeikinAshiInputs>
     }
   }
 
+  // Pine: plot(shema and emaAvg ? emaAvg : na, title="EMA UpTrend", style=line, linewidth=3, color=col)
+  // col = hlc3 >= emaAvg[1] ? lime : hlc3 < emaAvg[1] ? red : white
+  const emaTrendPlot: { time: number; value: number; color?: string }[] = [];
+  for (let i = 0; i < n; i++) {
+    if (!showEma || i < warmup || smoothO[i] == null || smoothC[i] == null) {
+      emaTrendPlot.push({ time: bars[i].time as number, value: NaN });
+      continue;
+    }
+    const emaAvg = (smoothC[i]! + smoothO[i]!) / 2;
+    const hlc3 = (bars[i].high + bars[i].low + bars[i].close) / 3;
+    let col = '#FFFFFF'; // white default
+    if (i > warmup && smoothO[i - 1] != null && smoothC[i - 1] != null) {
+      const prevEmaAvg = (smoothC[i - 1]! + smoothO[i - 1]!) / 2;
+      col = hlc3 >= prevEmaAvg ? '#00FF00' : '#FF0000';
+    }
+    emaTrendPlot.push({ time: bars[i].time as number, value: emaAvg, color: col });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
+    plots: { emaTrend: emaTrendPlot },
     plotCandles: { candle0: candles },
     barColors,
   };

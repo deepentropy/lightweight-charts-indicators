@@ -122,6 +122,83 @@ export function calculate(bars: Bar[], inputs: Partial<IchimokuOscillatorInputs>
       : Math.min(ll1 - ll2, 0));
   }
 
+  // Pine: trend variable - cumulative layer strength from -4 to 4
+  // Pine uses ATR-based tolerance for whipsaw protection
+  const atrLen = 9;
+  const atrMult = 2.0;
+  const trArr: number[] = new Array(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    const h = bars[i].high, l = bars[i].low, pc = closeArr[i - 1] ?? 0;
+    trArr[i] = Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+  }
+  const atrArr: number[] = new Array(n).fill(NaN);
+  // RMA(tr, atrLen)
+  for (let i = atrLen; i < n; i++) {
+    if (isNaN(atrArr[i - 1])) {
+      let s = 0;
+      for (let j = i - atrLen + 1; j <= i; j++) s += trArr[j];
+      atrArr[i] = s / atrLen;
+    } else {
+      atrArr[i] = (atrArr[i - 1] * (atrLen - 1) + trArr[i]) / atrLen;
+    }
+  }
+
+  const trendArr: number[] = new Array(n).fill(0);
+  const entryLevel: number[] = new Array(n).fill(NaN);
+
+  for (let i = warmup; i < n; i++) {
+    const c = closeArr[i] ?? 0;
+    const dIdx = i - (displacement - 1);
+    if (dIdx < 0) continue;
+    const ll1d = leadLine1Arr[dIdx] ?? 0;
+    const ll2d = leadLine2Arr[dIdx] ?? 0;
+    const cloudMinV = Math.min(ll1d, ll2d);
+    const cloudMaxV = Math.max(ll1d, ll2d);
+    const tole = !isNaN(atrArr[i]) ? atrArr[i] * atrMult : 0;
+    const tk = tenkanArr[i] ?? 0;
+    const kj = kijunArr[i] ?? 0;
+    const cloudup = (leadLine1Arr[i] ?? 0) >= (leadLine2Arr[i] ?? 0);
+    const clouddn = (leadLine1Arr[i] ?? 0) <= (leadLine2Arr[i] ?? 0);
+    const convoverbase = tk >= kj;
+    const baseoverconv = tk <= kj;
+    const anyRising = (i > 0) && ((tk - (tenkanArr[i - 1] ?? 0)) > 0 || (kj - (kijunArr[i - 1] ?? 0)) > 0);
+    const anyFalling = (i > 0) && ((tk - (tenkanArr[i - 1] ?? 0)) < 0 || (kj - (kijunArr[i - 1] ?? 0)) < 0);
+
+    const prevTrend = i > 0 ? trendArr[i - 1] : 0;
+    const prevMtrend = i > 0 ? mtrend[i - 1] : 0;
+
+    if (mtrend[i] === 1) {
+      trendArr[i] = prevMtrend === -1 ? 0 : prevTrend;
+      if (trendArr[i] < 4 && c > cloudMaxV) {
+        trendArr[i] = (lagging[i] > oscLine[i] ? 1 : 0)
+          + (convoverbase && anyRising ? 1 : 0)
+          + (cloudup ? 1 : 0)
+          + 1;
+        if (trendArr[i] === 4) entryLevel[i] = c;
+        else entryLevel[i] = i > 0 ? entryLevel[i - 1] : NaN;
+      } else {
+        trendArr[i] = tk < kj - tole ? 0 : trendArr[i];
+        entryLevel[i] = i > 0 ? entryLevel[i - 1] : NaN;
+      }
+    } else if (mtrend[i] === -1) {
+      trendArr[i] = prevMtrend === 1 ? 0 : prevTrend;
+      if (trendArr[i] > -4 && c < cloudMinV) {
+        trendArr[i] = (lagging[i] < oscLine[i] ? -1 : 0)
+          - (baseoverconv && anyFalling ? 1 : 0)
+          - (clouddn ? 1 : 0)
+          - 1;
+        if (trendArr[i] === -4) entryLevel[i] = c;
+        else entryLevel[i] = i > 0 ? entryLevel[i - 1] : NaN;
+      } else {
+        trendArr[i] = tk > kj + tole ? 0 : trendArr[i];
+        entryLevel[i] = i > 0 ? entryLevel[i - 1] : NaN;
+      }
+    } else {
+      trendArr[i] = prevTrend;
+      entryLevel[i] = i > 0 ? entryLevel[i - 1] : NaN;
+    }
+  }
+
   // EMA of cloud layer
   const cloudSeries = Series.fromArray(bars, cloud);
   const emaLine = ta.ema(cloudSeries, emaLen).toArray();
@@ -142,28 +219,39 @@ export function calculate(bars: Bar[], inputs: Partial<IchimokuOscillatorInputs>
   }));
 
   // Pine markers: uptrend = trend==4 signal, downtrend = trend==-4 signal
-  // Simplified: oscillator zero-cross markers
   const markers: MarkerData[] = [];
   for (let i = warmup + 1; i < n; i++) {
-    const cur = oscLine[i];
-    const prev = oscLine[i - 1];
-    if (isNaN(cur) || isNaN(prev)) continue;
-    if (prev <= 0 && cur > 0) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#FFFFFF', text: 'Bull' });
+    if (isNaN(cloud[i])) continue;
+    const uptrend = trendArr[i] === 4 && trendArr[i] !== trendArr[i - 1];
+    const downtrend = trendArr[i] === -4 && trendArr[i] !== trendArr[i - 1];
+    if (uptrend) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#FFFFFF', text: '' });
     }
-    if (prev >= 0 && cur < 0) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FFEB3B', text: 'Bear' });
+    if (downtrend) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FFEB3B', text: '' });
     }
   }
 
-  // bgColors: positive cloud = green, negative = blue
+  // Pine: bgColors using trend strength with power(3) intensity scaling
+  // uptmult = 159 + math.pow(trend, 3); bgcolup = rgb(0, uptmult, 0, bgtransp) (default green uptrend)
+  // dntmult = 159 - math.pow(trend, 3); bgcoldn = rgb(0, 0, dntmult, bgtransp) (default blue downtrend)
+  const bgtransp = 60; // default 60% transparency -> alpha = 0.4
+  const bgAlpha = 1 - bgtransp / 100;
   const bgColors: BgColorData[] = [];
   for (let i = warmup; i < n; i++) {
     if (isNaN(cloud[i])) continue;
-    if (cloud[i] > 0) {
-      bgColors.push({ time: bars[i].time, color: 'rgba(0, 150, 0, 0.1)' });
-    } else if (cloud[i] < 0) {
-      bgColors.push({ time: bars[i].time, color: 'rgba(0, 0, 150, 0.1)' });
+    const t = trendArr[i];
+    if (t > 0) {
+      // Green uptrend: intensity = 159 + pow(trend, 3), clamped to [0, 255]
+      const intensity = Math.max(0, Math.min(255, Math.round(159 + Math.pow(t, 3))));
+      bgColors.push({ time: bars[i].time, color: `rgba(0, ${intensity}, 0, ${bgAlpha})` });
+    } else if (t < 0) {
+      // Blue downtrend: intensity = 159 - pow(trend, 3) (trend is negative, so -pow gives positive)
+      const intensity = Math.max(0, Math.min(255, Math.round(159 - Math.pow(t, 3))));
+      bgColors.push({ time: bars[i].time, color: `rgba(0, 0, ${intensity}, ${bgAlpha})` });
+    } else {
+      // In S/R zone (trend == 0): use inSRcolor
+      bgColors.push({ time: bars[i].time, color: `rgba(209, 212, 220, ${bgAlpha})` });
     }
   }
 

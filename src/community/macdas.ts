@@ -1,41 +1,39 @@
 /**
  * MACDAS (MACD Average Signal)
  *
- * MACD with an additional average of the signal line (SMA of signal).
+ * Computes MACD-AS = MACD - Signal, then its own EMA (signalAS).
+ * This is a "second derivative" of MACD, showing momentum of the MACD histogram.
+ * Plots macdAS (blue) and signalAS (red) plus zero line.
  *
- * Reference: TradingView "MACDAS" community indicator
+ * Reference: TradingView "MACDAS"
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface MACDASInputs {
-  fastLength: number;
-  slowLength: number;
-  signalLength: number;
-  avgLength: number;
+  fastperiod: number;
+  slowperiod: number;
+  signalperiod: number;
   src: SourceType;
 }
 
 export const defaultInputs: MACDASInputs = {
-  fastLength: 12,
-  slowLength: 26,
-  signalLength: 9,
-  avgLength: 9,
+  fastperiod: 12,
+  slowperiod: 26,
+  signalperiod: 9,
   src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'fastLength', type: 'int', title: 'Fast Length', defval: 12, min: 1 },
-  { id: 'slowLength', type: 'int', title: 'Slow Length', defval: 26, min: 1 },
-  { id: 'signalLength', type: 'int', title: 'Signal Length', defval: 9, min: 1 },
-  { id: 'avgLength', type: 'int', title: 'Average Signal Length', defval: 9, min: 1 },
+  { id: 'fastperiod', type: 'int', title: 'Fast Period', defval: 12, min: 1, max: 500 },
+  { id: 'slowperiod', type: 'int', title: 'Slow Period', defval: 26, min: 1, max: 500 },
+  { id: 'signalperiod', type: 'int', title: 'Signal Period', defval: 9, min: 1, max: 500 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'MACD', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot1', title: 'Signal', color: '#FF6D00', lineWidth: 2 },
-  { id: 'plot2', title: 'Avg Signal', color: '#E91E63', lineWidth: 2 },
+  { id: 'plot0', title: 'MACD-AS', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot1', title: 'Signal-AS', color: '#EF5350', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -45,28 +43,35 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<MACDASInputs> = {}): IndicatorResult {
-  const { fastLength, slowLength, signalLength, avgLength, src } = { ...defaultInputs, ...inputs };
+  const { fastperiod, slowperiod, signalperiod, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
 
-  const fastEMA = ta.ema(source, fastLength);
-  const slowEMA = ta.ema(source, slowLength);
-  const macdLine = fastEMA.sub(slowEMA);
-  const signalLine = ta.ema(macdLine, signalLength);
-  const avgSignal = ta.sma(signalLine, avgLength);
+  // Pine: macd = ema(close, fast) - ema(close, slow)
+  const fastEMA = ta.ema(source, fastperiod);
+  const slowEMA = ta.ema(source, slowperiod);
+  const macd = fastEMA.sub(slowEMA);
 
-  const macdArr = macdLine.toArray();
-  const sigArr = signalLine.toArray();
-  const avgArr = avgSignal.toArray();
+  // Pine: signal = ema(macd, signalperiod)
+  const signal = ta.ema(macd, signalperiod);
 
-  const warmup = slowLength;
+  // Pine: macdAS = macd - signal
+  const macdAS = macd.sub(signal);
+
+  // Pine: signalAS = ema(macdAS, signalperiod)
+  const signalAS = ta.ema(macdAS, signalperiod);
+
+  const macdASArr = macdAS.toArray();
+  const signalASArr = signalAS.toArray();
+
+  const warmup = slowperiod + signalperiod;
 
   const toPlot = (arr: (number | null)[]) =>
     arr.map((v, i) => ({ time: bars[i].time, value: (i < warmup || v == null) ? NaN : v }));
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(macdArr), 'plot1': toPlot(sigArr), 'plot2': toPlot(avgArr) },
-    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
+    plots: { 'plot0': toPlot(macdASArr), 'plot1': toPlot(signalASArr) },
+    hlines: [{ value: 0, options: { color: '#000000', linestyle: 'solid', title: 'Zero' } }],
   };
 }
 

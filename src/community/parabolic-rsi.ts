@@ -15,6 +15,8 @@ export interface ParabolicRSIInputs {
   sarStart: number;
   sarInc: number;
   sarMax: number;
+  upperThreshold: number;
+  lowerThreshold: number;
 }
 
 export const defaultInputs: ParabolicRSIInputs = {
@@ -22,6 +24,8 @@ export const defaultInputs: ParabolicRSIInputs = {
   sarStart: 0.02,
   sarInc: 0.02,
   sarMax: 0.2,
+  upperThreshold: 70,
+  lowerThreshold: 30,
 };
 
 export const inputConfig: InputConfig[] = [
@@ -29,6 +33,8 @@ export const inputConfig: InputConfig[] = [
   { id: 'sarStart', type: 'float', title: 'SAR Start', defval: 0.02, min: 0.0001, step: 0.01 },
   { id: 'sarInc', type: 'float', title: 'SAR Increment', defval: 0.02, min: 0.0001, step: 0.01 },
   { id: 'sarMax', type: 'float', title: 'SAR Max', defval: 0.2, min: 0.01, step: 0.01 },
+  { id: 'upperThreshold', type: 'int', title: 'Threshold Upper', defval: 70, min: 1, max: 100 },
+  { id: 'lowerThreshold', type: 'int', title: 'Threshold Lower', defval: 30, min: 1, max: 100 },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -43,7 +49,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { rsiLen, sarStart, sarInc, sarMax } = { ...defaultInputs, ...inputs };
+  const { rsiLen, sarStart, sarInc, sarMax, upperThreshold, lowerThreshold } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const close = getSourceSeries(bars, 'close');
@@ -131,16 +137,34 @@ export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {})
 
   // Markers: diamond at SAR reversal points
   // sig_up: isBelow flips to true (bullish reversal), sig_dn: flips to false (bearish reversal)
-  // Strong signals: sig_up when sar <= 30, sig_dn when sar >= 70
+  // Normal signals: sig_up when sar >= lowerThreshold, sig_dn when sar <= upperThreshold
+  // Strong signals: s_sig_up when sar <= lowerThreshold, s_sig_dn when sar >= upperThreshold
   const markers: MarkerData[] = [];
   for (let i = 1; i < n; i++) {
     if (isNaN(psarArr[i]) || isNaN(psarArr[i - 1])) continue;
     const sigUp = isLongArr[i] && !isLongArr[i - 1];
     const sigDn = !isLongArr[i] && isLongArr[i - 1];
+    const sarVal = psarArr[i];
+    const sarColor = isLongArr[i] ? '#EEA47F' : '#00539C';
+
     if (sigUp) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'diamond', color: '#EEA47F', text: 'Up' });
+      // Pine: plotshape(sig_up and sar_rsi >= lower_ ? sar_rsi : na) - normal signal diamond
+      if (sarVal >= lowerThreshold) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'diamond', color: sarColor, text: 'Up' });
+      }
+      // Pine: s_sig_up = isBelow flips true AND sar_rsi <= lower_ - strong signal
+      if (sarVal <= lowerThreshold) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'diamond', color: sarColor, text: 'Strong Up', size: 2 });
+      }
     } else if (sigDn) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'diamond', color: '#00539C', text: 'Dn' });
+      // Pine: plotshape(sig_dn and sar_rsi <= upper_ ? sar_rsi : na) - normal signal diamond
+      if (sarVal <= upperThreshold) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'diamond', color: sarColor, text: 'Dn' });
+      }
+      // Pine: s_sig_dn = isBelow flips false AND sar_rsi >= upper_ - strong signal
+      if (sarVal >= upperThreshold) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'diamond', color: sarColor, text: 'Strong Dn', size: 2 });
+      }
     }
   }
 
@@ -154,17 +178,17 @@ export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {})
     value: isNaN(v) ? NaN : v,
   }));
 
-  // Fill between RSI and midline (50): overbought gradient above 70, oversold gradient below 30
-  // Pine: fill(rsiPlot, midLinePlot, 100, 70, top: red, bottom: orange) and fill(rsiPlot, midLinePlot, 30, 0, top: orange, bottom: red)
+  // Fill between RSI and midline (50): overbought gradient above upper, oversold gradient below lower
+  // Pine: fill(rsiPlot, midLinePlot, 100, upper_, top: red, bottom: orange) and fill(rsiPlot, midLinePlot, lower_, 0, top: orange, bottom: red)
   // Simplified: fill between RSI plot and hline at 50 with dynamic colors
   const fillColors: string[] = [];
   for (let i = 0; i < n; i++) {
     const rsi = rsiArr[i];
     if (rsi == null || isNaN(rsi) || i < warmup) {
       fillColors.push('rgba(0,0,0,0)');
-    } else if (rsi >= 70) {
+    } else if (rsi >= upperThreshold) {
       fillColors.push('rgba(239,83,80,0.2)');
-    } else if (rsi <= 30) {
+    } else if (rsi <= lowerThreshold) {
       fillColors.push('rgba(255,152,0,0.2)');
     } else {
       fillColors.push('rgba(194,146,87,0.1)');
@@ -176,8 +200,8 @@ export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {})
     plots: { 'plot0': plot0, 'plot1': plot1 },
     fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(194,146,87,0.1)' }, colors: fillColors }],
     hlines: [
-      { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
-      { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
+      { value: upperThreshold, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
+      { value: lowerThreshold, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
       { value: 50, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Middle' } },
     ],
     markers,

@@ -216,9 +216,9 @@ export function calculate(bars: Bar[], inputs: Partial<MarketCipherAInputs> = {}
     if (redCross) {
       markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'xcross', color: 'rgba(255,0,0,0.50)', text: '' });
     }
-    // blueTriangle: blue triangleUp aboveBar (transp=50)
+    // blueTriangle: blue triangleUp belowBar (transp=50)
     if (crossoverE2E3) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleUp', color: 'rgba(0,100,255,0.50)', text: '' });
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: 'rgba(0,100,255,0.50)', text: '' });
     }
     // redDiamond: red diamond aboveBar (transp=25)
     if (redDiamond) {

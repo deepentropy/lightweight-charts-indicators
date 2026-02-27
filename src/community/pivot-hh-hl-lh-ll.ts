@@ -16,18 +16,21 @@ export interface PivotHhHlLhLlInputs {
   leftBars: number;
   rightBars: number;
   showFB: boolean;
+  showChannel: boolean;
 }
 
 export const defaultInputs: PivotHhHlLhLlInputs = {
   leftBars: 4,
   rightBars: 2,
   showFB: true,
+  showChannel: false,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'leftBars', type: 'int', title: 'Left Bars', defval: 4, min: 0 },
   { id: 'rightBars', type: 'int', title: 'Right Bars', defval: 2, min: 0 },
   { id: 'showFB', type: 'bool', title: 'Show Fractal Break', defval: true },
+  { id: 'showChannel', type: 'bool', title: 'Show Channel', defval: false },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -43,7 +46,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<PivotHhHlLhLlInputs> = {}): IndicatorResult & { markers: MarkerData[]; labels: LabelData[] } {
-  const { leftBars, rightBars, showFB } = { ...defaultInputs, ...inputs };
+  const { leftBars, rightBars, showFB, showChannel } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const highSeries = new Series(bars, (b) => b.high);
@@ -140,16 +143,20 @@ export function calculate(bars: Bar[], inputs: Partial<PivotHhHlLhLlInputs> = {}
     const avgColor = !isNaN(pivotAvg) && bars[i].close > pivotAvg ? 'rgba(0,128,128,0.5)' : 'rgba(255,0,0,0.5)';
     plot0.push({ time: bars[i].time, value: pivotAvg, color: avgColor });
 
-    // Pine: Top Levels (pvtHighToShow) - circles at last pivot high level
-    // Pine: color = pvtH != pvtH[1] ? na : colorH (break line when value changes)
-    const prevPvtH = i > 0 ? plot1[i - 1]?.value : NaN;
-    const topVal = isNaN(pvtH) ? NaN : (pvtH !== prevPvtH && i > 0 ? NaN : pvtH);
-    plot1.push({ time: bars[i].time, value: topVal });
+    // Pine: Top Levels (pvtHighToShow) - circles or stepline depending on showChannel
+    // When showChannel: continuous stepline (Fractal Chaos Channel). Otherwise: circles with NaN breaks.
+    if (showChannel) {
+      plot1.push({ time: bars[i].time, value: pvtH });
+      plot2.push({ time: bars[i].time, value: pvtL });
+    } else {
+      const prevPvtH = i > 0 ? plot1[i - 1]?.value : NaN;
+      const topVal = isNaN(pvtH) ? NaN : (pvtH !== prevPvtH && i > 0 ? NaN : pvtH);
+      plot1.push({ time: bars[i].time, value: topVal });
 
-    // Pine: Bottom Levels (pvtLowToShow) - circles at last pivot low level
-    const prevPvtL = i > 0 ? plot2[i - 1]?.value : NaN;
-    const botVal = isNaN(pvtL) ? NaN : (pvtL !== prevPvtL && i > 0 ? NaN : pvtL);
-    plot2.push({ time: bars[i].time, value: botVal });
+      const prevPvtL = i > 0 ? plot2[i - 1]?.value : NaN;
+      const botVal = isNaN(pvtL) ? NaN : (pvtL !== prevPvtL && i > 0 ? NaN : pvtL);
+      plot2.push({ time: bars[i].time, value: botVal });
+    }
 
     // Pine: Fractal Break: buy = close > pvtH and open <= pvtH, sell = close < pvtL and open >= pvtL
     if (showFB && !isNaN(pvtH) && !isNaN(pvtL)) {

@@ -90,8 +90,10 @@ export function calculate(bars: Bar[], inputs: Partial<NRTRInputs> = {}): Indica
   const markers: MarkerData[] = [];
   for (let i = warmup; i < n; i++) {
     if (dirArr[i] === 1 && dirArr[i - 1] === -1) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'circle', color: '#26A69A', text: '' });
       markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
     } else if (dirArr[i] === -1 && dirArr[i - 1] === 1) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'circle', color: '#EF5350', text: '' });
       markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
     }
   }

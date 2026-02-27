@@ -69,10 +69,10 @@ export function calculate(bars: Bar[], inputs: Partial<MadridTrendSqueezeInputs>
 
   const rmaPlot = rmaArr.map((v, i) => {
     if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
-    // Yellow on zero cross, green if positive, maroon if negative
-    const prev = i > 0 ? (rmaArr[i - 1] ?? 0) : 0;
-    const cross = (prev <= 0 && v > 0) || (prev >= 0 && v < 0);
-    const color = cross ? '#FFEB3B' : v > 0 ? '#26A69A' : '#800000';
+    // Pine: yellow when (refma >= 0 AND closema < refma) OR (refma < 0 AND closema > refma)
+    const c = cmaArr[i] ?? 0;
+    const yellow = (v >= 0 && c < v) || (v < 0 && c > v);
+    const color = yellow ? '#FFEB3B' : v > 0 ? '#26A69A' : '#800000';
     return { time: bars[i].time, value: v, color };
   });
 
@@ -99,9 +99,9 @@ export function calculate(bars: Bar[], inputs: Partial<MadridTrendSqueezeInputs>
       });
     }
     if (rmaV != null) {
-      const prevRma = i > 0 ? (rmaArr[i - 1] ?? 0) : 0;
-      const cross = (prevRma <= 0 && rmaV > 0) || (prevRma >= 0 && rmaV < 0);
-      const rmaColor = cross ? '#FFEB3B' : rmaV >= 0 ? '#26A69A' : '#880E4F';
+      const cmaV2 = cmaArr[i] ?? 0;
+      const yellow = (rmaV >= 0 && cmaV2 < rmaV) || (rmaV < 0 && cmaV2 > rmaV);
+      const rmaColor = yellow ? '#FFEB3B' : rmaV >= 0 ? '#26A69A' : '#880E4F';
       rmaCandles.push({
         time: bars[i].time,
         open: 0, high: Math.max(0, rmaV), low: Math.min(0, rmaV), close: rmaV,

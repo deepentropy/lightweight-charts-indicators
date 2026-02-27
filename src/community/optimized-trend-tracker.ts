@@ -16,6 +16,8 @@ export interface OTTInputs {
   period: number;
   percent: number;
   highlight: boolean;
+  showSignalsC: boolean;
+  showSignalsR: boolean;
 }
 
 export const defaultInputs: OTTInputs = {
@@ -23,6 +25,8 @@ export const defaultInputs: OTTInputs = {
   period: 2,
   percent: 1.4,
   highlight: true,
+  showSignalsC: false,
+  showSignalsR: false,
 };
 
 export const inputConfig: InputConfig[] = [
@@ -30,6 +34,8 @@ export const inputConfig: InputConfig[] = [
   { id: 'period', type: 'int', title: 'OTT Period', defval: 2, min: 1 },
   { id: 'percent', type: 'float', title: 'OTT Percent', defval: 1.4, min: 0, step: 0.1 },
   { id: 'highlight', type: 'bool', title: 'Highlight OTT Color', defval: true },
+  { id: 'showSignalsC', type: 'bool', title: 'Show Price/OTT Crossing Signals', defval: false },
+  { id: 'showSignalsR', type: 'bool', title: 'Show OTT Color Change Signals', defval: false },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -44,7 +50,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<OTTInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { source, period, percent, highlight } = { ...defaultInputs, ...inputs };
+  const { source, period, percent, highlight, showSignalsC, showSignalsR } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   // Default MA type is VAR (Variable Index Dynamic Average)
@@ -119,15 +125,46 @@ export function calculate(bars: Bar[], inputs: Partial<OTTInputs> = {}): Indicat
     return 'transparent';
   });
 
-  // Markers: buy when MAvg crosses above OTT[2], sell when crosses below
+  // Markers: buy when MAvg crosses above OTT[2], sell when crosses below (support line signals - always shown)
   const markers: MarkerData[] = [];
   for (let i = warmup + 3; i < n; i++) {
     const ottLag = ott[i - 2];
     const ottLagPrev = ott[i - 3];
+    // Support line / MA crossover signals (showsignalsk - always on by default)
     if (mavg[i - 1] <= ottLagPrev && mavg[i] > ottLag) {
       markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#008000', text: 'Buy' });
     } else if (mavg[i - 1] >= ottLagPrev && mavg[i] < ottLag) {
       markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Sell' });
+    }
+
+    // Price/OTT crossing signals (Pine: buySignalc = crossover(src, OTT[2]))
+    if (showSignalsC) {
+      const srcCur = srcArr[i] ?? 0;
+      const srcPrev = srcArr[i - 1] ?? 0;
+      if (srcPrev <= ottLagPrev && srcCur > ottLag) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#008000', text: 'Buy' });
+      } else if (srcPrev >= ottLagPrev && srcCur < ottLag) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Sell' });
+      }
+    }
+
+  }
+
+  // Re-do OTT color change signals correctly outside the loop to avoid nested complexity
+  if (showSignalsR) {
+    for (let i = warmup + 4; i < n; i++) {
+      const curOtt2 = ott[i - 2];
+      const curOtt3 = ott[i - 3];
+      const prevOtt2 = ott[i - 3]; // at bar i-1, OTT[2] = ott[(i-1)-2] = ott[i-3]
+      const prevOtt3 = ott[i - 4]; // at bar i-1, OTT[3] = ott[(i-1)-3] = ott[i-4]
+      // crossover(OTT[2], OTT[3]): prevOtt2 <= prevOtt3 && curOtt2 > curOtt3
+      if (prevOtt2 <= prevOtt3 && curOtt2 > curOtt3) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#008000', text: 'Buy' });
+      }
+      // crossunder(OTT[2], OTT[3]): prevOtt2 >= prevOtt3 && curOtt2 < curOtt3
+      if (prevOtt2 >= prevOtt3 && curOtt2 < curOtt3) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Sell' });
+      }
     }
   }
 

@@ -38,6 +38,8 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot1', title: 'RRTH2', color: '#00bcd4', lineWidth: 2 },
   { id: 'plot2', title: 'RRTH3', color: '#00bcd4', lineWidth: 3 },
   { id: 'plot3', title: 'RRTH4', color: '#00bcd4', lineWidth: 4 },
+  { id: 'plot4', title: 'Max Band', color: 'transparent', lineWidth: 0 },
+  { id: 'plot5', title: 'Min Band', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -196,6 +198,10 @@ export function calculate(bars: Bar[], inputs: Partial<RMITrendSniperInputs> = {
   const plot1: { time: number; value: number }[] = [];
   const plot2: { time: number; value: number }[] = [];
   const plot3: { time: number; value: number }[] = [];
+  const plot4: { time: number; value: number }[] = [];
+  const plot5: { time: number; value: number }[] = [];
+  const topCenterFillColors: string[] = [];
+  const centerBottomFillColors: string[] = [];
   const barColors: BarColorData[] = [];
   const candles: PlotCandleData[] = [];
   const labels: LabelData[] = [];
@@ -220,6 +226,16 @@ export function calculate(bars: Bar[], inputs: Partial<RMITrendSniperInputs> = {
 
       const maxVal = RWMA + band;
       const minVal = RWMA - band;
+
+      // Pine: top = plot(max), bottom = plot(min), both transparent
+      plot4.push({ time, value: maxVal });
+      plot5.push({ time, value: minVal });
+      // Pine fill: colour @ 75% transparency near RWMA, transparent at edges
+      const fillColor = pos
+        ? 'rgba(0,188,212,0.25)'   // bull color at 75% transparency
+        : 'rgba(255,82,82,0.25)';  // bear color at 75% transparency
+      topCenterFillColors.push(fillColor);
+      centerBottomFillColors.push(fillColor);
 
       // Buy label: positive and not positive[1]
       if (i > 0 && pos && !posArr[i - 1]) {
@@ -251,6 +267,10 @@ export function calculate(bars: Bar[], inputs: Partial<RMITrendSniperInputs> = {
       plot1.push({ time, value: NaN });
       plot2.push({ time, value: NaN });
       plot3.push({ time, value: NaN });
+      plot4.push({ time, value: NaN });
+      plot5.push({ time, value: NaN });
+      topCenterFillColors.push('transparent');
+      centerBottomFillColors.push('transparent');
     }
 
     // Pine: Barcol = positive ? color.green : color.red
@@ -272,7 +292,11 @@ export function calculate(bars: Bar[], inputs: Partial<RMITrendSniperInputs> = {
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3 },
+    plots: { plot0, plot1, plot2, plot3, plot4, plot5 },
+    fills: [
+      { plot1: 'plot4', plot2: 'plot0', colors: topCenterFillColors },
+      { plot1: 'plot0', plot2: 'plot5', colors: centerBottomFillColors },
+    ],
     barColors,
     plotCandles: { candle0: candles },
     labels,

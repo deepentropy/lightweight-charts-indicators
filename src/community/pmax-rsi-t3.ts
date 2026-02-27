@@ -35,6 +35,8 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'T3 RSI', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'PMax', color: '#FF6D00', lineWidth: 2 },
   { id: 'plot2', title: 'RSI', color: '#8E1599', lineWidth: 1 },
+  { id: 'band1', title: 'OB Band', color: 'transparent', lineWidth: 0 },
+  { id: 'band0', title: 'OS Band', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -183,14 +185,23 @@ export function calculate(bars: Bar[], inputs: Partial<PMaxRSIT3Inputs> = {}): I
     return t3[i] > pmaxArr[i] ? 'rgba(38,166,154,0.20)' : 'rgba(239,83,80,0.20)';
   });
 
+  // Invisible constant plots at 70 and 30 for OB/OS zone fill
+  // Pine: fill(band1, band0, color=#9915FF, transp=90)
+  const band1 = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : 70 }));
+  const band0 = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : 30 }));
+  const bandFillColors = bars.map((_b, i) => i < warmup ? 'transparent' : 'rgba(153,21,255,0.10)');
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'band1': band1, 'band0': band0 },
     hlines: [
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
-    fills: [{ plot1: 'plot0', plot2: 'plot1', colors: fillColors }],
+    fills: [
+      { plot1: 'plot0', plot2: 'plot1', colors: fillColors },
+      { plot1: 'band1', plot2: 'band0', colors: bandFillColors },
+    ],
     markers,
   };
 }
