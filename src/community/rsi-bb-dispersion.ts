@@ -40,6 +40,8 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot3', title: 'BB Basis', color: '#000000', lineWidth: 1 },
   { id: 'dispUp', title: 'Dispersion Upper', color: '#FFFFFF', lineWidth: 1 },
   { id: 'dispDown', title: 'Dispersion Lower', color: '#FFFFFF', lineWidth: 1 },
+  { id: 'hline70', title: 'OB Level', color: 'transparent', lineWidth: 0 },
+  { id: 'hline30', title: 'OS Level', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -145,14 +147,20 @@ export function calculate(bars: Bar[], inputs: Partial<RSIBBDispersionInputs> = 
     value: (isNaN(v) || i < warmup) ? NaN : v,
   }));
 
+  // Invisible anchor plots at 70 and 30 for hline band fill
+  const hline70Plot = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : 70 }));
+  const hline30Plot = bars.map((b, i) => ({ time: b.time, value: i < warmup ? NaN : 30 }));
+
   const fills: FillData[] = [
     // Pine: fill(s1, s2, color=white, transp=80) - dispersion band fill
     { plot1: 'dispUp', plot2: 'dispDown', options: { color: 'rgba(255,255,255,0.20)', title: 'Dispersion Fill' } },
+    // Pine: fill(h1, h2, transp=95) - hline band fill between 70/30
+    { plot1: 'hline70', plot2: 'hline30', options: { color: 'rgba(128,128,128,0.05)', title: 'OB/OS Band' } },
   ];
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'dispUp': dispUpPlot, 'dispDown': dispDownPlot },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'dispUp': dispUpPlot, 'dispDown': dispDownPlot, 'hline70': hline70Plot, 'hline30': hline30Plot },
     hlines: [
       { value: 70, options: { color: '#D4D4D4', linestyle: 'dotted' as const, title: 'Overbought' } },
       { value: 30, options: { color: '#D4D4D4', linestyle: 'dotted' as const, title: 'Oversold' } },

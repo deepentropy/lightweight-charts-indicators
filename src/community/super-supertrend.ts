@@ -123,11 +123,30 @@ export function calculate(bars: Bar[], inputs: Partial<SuperSupertrendInputs> = 
   ];
 
   for (let i = warmup + 1; i < n; i++) {
-    for (const { data, upColor, label } of allSTs) {
+    for (let si = 0; si < allSTs.length; si++) {
+      const { data, upColor, label } = allSTs[si];
+      // Trend flip arrows
       if (data.dir[i] === 1 && data.dir[i - 1] === -1) {
         markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: upColor, text: label });
       } else if (data.dir[i] === -1 && data.dir[i - 1] === 1) {
         markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: label });
+      }
+
+      // Cross detection: close crosses ST line (separate from trend flips)
+      const close = bars[i].close;
+      const prevClose = bars[i - 1].close;
+      const stVal = data.st[i];
+      const prevStVal = data.st[i - 1];
+      const crossAbove = close > stVal && prevClose <= prevStVal;
+      const crossBelow = close < stVal && prevClose >= prevStVal;
+      if (si === 0) {
+        // ST1: flag for cross-above, triangleDown for cross-below
+        if (crossAbove) markers.push({ time: bars[i].time, position: 'belowBar', shape: 'square', color: '#FFEB3B', text: `${label}×` });
+        if (crossBelow) markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowDown', color: '#EF5350', text: `${label}×` });
+      } else {
+        // ST2/ST3: triangleUp for cross-above, triangleDown for cross-below
+        if (crossAbove) markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#00E676', text: `${label}×` });
+        if (crossBelow) markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowDown', color: '#EF5350', text: `${label}×` });
       }
     }
   }

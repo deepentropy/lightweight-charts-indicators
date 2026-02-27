@@ -100,6 +100,14 @@ export function calculate(bars: Bar[], inputs: Partial<EhlersStochasticCGInputs>
     barColors.push({ time: bars[i].time, color });
   }
 
+  // Pine: fill(v1, v2, color=red, transp=92) and fill(v2, v1, color=lime, transp=92)
+  // Red when CG below Trigger, green when CG above Trigger
+  const fillColors: string[] = [];
+  for (let i = 0; i < n; i++) {
+    if (i < warmup) { fillColors.push('transparent'); continue; }
+    fillColors.push(rawK[i] >= trigger[i] ? 'rgba(0,230,118,0.15)' : 'rgba(239,83,80,0.15)');
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
@@ -109,7 +117,7 @@ export function calculate(bars: Bar[], inputs: Partial<EhlersStochasticCGInputs>
       { value: -0.8, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'OS Level' } },
     ],
     fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(239, 83, 80, 0.15)' } },
+      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(239, 83, 80, 0.15)' }, colors: fillColors },
     ],
     barColors,
   };
