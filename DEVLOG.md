@@ -1,5 +1,24 @@
 # DEVLOG
 
+## 2026-02-27 - Fix 5 "Unfixable" Indicators
+
+### Goal
+Fix the 5 indicators previously classified as unfixable using workarounds and rewrites.
+
+### Indicators Fixed
+1. **isolated-peak-bottom** - Rewrote from generic ta.pivothigh/pivotlow to exact 4 Pine patterns (Peak1, Peak2, Bot1, Bot2) with specific bar-offset conditions
+2. **candlestick-reversal** - Added 3 missing reversal systems (Wick, Extreme, Outside, Doji) with enable toggles, pivot-based trend context, and system-specific marker colors
+3. **ml-adaptive-supertrend** - Added per-bar cluster markers (L/M/H text, green/orange/red) gated by showLabels input, positioned relative to SuperTrend direction
+4. **parallel-pivot-lines** - Rewrote from flat SMA levels to sloped parallel lines using linear regression slope projection from pivot sequences (matching LuxAlgo Pine source)
+5. **t3-psar** - Added Heikin-Ashi candle overlay via plotCandles with showHA toggle, matching Pine's plotbar() with 4-state HA coloring
+
+### Current State
+- 0 TypeScript compilation errors
+- 655/655 tests pass across 6 test files
+- 253/254 indicators matched (99.6%), 1 has no Pine source
+
+---
+
 ## 2026-02-27 - Minor Indicator Fixes (27 Indicators)
 
 ### Goal

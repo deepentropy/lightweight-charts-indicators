@@ -9,7 +9,7 @@
  */
 
 import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import type { MarkerData, BarColorData } from '../types';
+import type { MarkerData, BarColorData, PlotCandleData } from '../types';
 
 export interface T3PsarInputs {
   t3Len: number;
@@ -19,6 +19,7 @@ export interface T3PsarInputs {
   sarInc: number;
   sarMax: number;
   src: SourceType;
+  showHA: boolean;
 }
 
 export const defaultInputs: T3PsarInputs = {
@@ -29,6 +30,7 @@ export const defaultInputs: T3PsarInputs = {
   sarInc: 0.02,
   sarMax: 0.2,
   src: 'close',
+  showHA: false,
 };
 
 export const inputConfig: InputConfig[] = [
@@ -39,6 +41,7 @@ export const inputConfig: InputConfig[] = [
   { id: 'sarInc', type: 'float', title: 'SAR Increment', defval: 0.02, min: 0.001, step: 0.01 },
   { id: 'sarMax', type: 'float', title: 'SAR Max', defval: 0.2, min: 0.01, step: 0.01 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
+  { id: 'showHA', type: 'bool', title: 'Heikin-Ashi Bar Overlay', defval: false },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -48,14 +51,18 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot3', title: 'T3 Slow', color: '#FF6D00', lineWidth: 2 },
 ];
 
+export const plotCandleConfig = [
+  { id: 'ha', title: 'Heikin-Ashi' },
+];
+
 export const metadata = {
   title: 'TKP T3 Trend with PSAR',
   shortTitle: 'T3+SAR',
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<T3PsarInputs> = {}): IndicatorResult {
-  const { t3Len, t3SlowLen, t3Factor, sarStart, sarInc, sarMax, src } = { ...defaultInputs, ...inputs };
+export function calculate(bars: Bar[], inputs: Partial<T3PsarInputs> = {}): IndicatorResult & { plotCandles?: Record<string, PlotCandleData[]> } {
+  const { t3Len, t3SlowLen, t3Factor, sarStart, sarInc, sarMax, src, showHA } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const source = getSourceSeries(bars, src);
 
@@ -130,6 +137,20 @@ export function calculate(bars: Bar[], inputs: Partial<T3PsarInputs> = {}): Indi
       }
     }
     sarArr[i] = sar;
+  }
+
+  // Heikin-Ashi OHLC (Pine lines 116-120)
+  const haCloseArr: number[] = new Array(n);
+  const haOpenArr: number[] = new Array(n);
+  const haHighArr: number[] = new Array(n);
+  const haLowArr: number[] = new Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const { open: o, high: h, low: l, close: c } = bars[i];
+    haCloseArr[i] = (o + h + l + c) / 4;
+    haOpenArr[i] = i === 0 ? (o + c) / 2 : (haOpenArr[i - 1] + haCloseArr[i - 1]) / 2;
+    haHighArr[i] = Math.max(h, haOpenArr[i], haCloseArr[i]);
+    haLowArr[i] = Math.min(l, haOpenArr[i], haCloseArr[i]);
   }
 
   const warmup = Math.max(t3Len, t3SlowLen) * 6;
@@ -241,7 +262,42 @@ export function calculate(bars: Bar[], inputs: Partial<T3PsarInputs> = {}): Indi
     barColors.push({ time: bars[i].time, color: col });
   }
 
-  return {
+  // Build HA candle overlay when showHA is enabled (Pine lines 134-161)
+  // habarColor: hauc=bullcol, hadc=bearcol, hadr=bearrev, haur=bullrev, else hadefval
+  const haCandles: PlotCandleData[] | undefined = showHA ? bars.map((b, i) => {
+    const t3Fast = t3Arr[i] ?? NaN;
+    const t3SlowVal = t3SlowArr[i] ?? NaN;
+    const hc = haCloseArr[i];
+    const ho = haOpenArr[i];
+
+    let col: string;
+    if (i > warmup && !isNaN(t3Fast) && !isNaN(t3SlowVal)) {
+      const hauc = hc > t3SlowVal && t3Fast >= t3SlowVal;
+      const hadc = hc < t3SlowVal && t3Fast <= t3SlowVal;
+      const hadr = hc < t3SlowVal && t3Fast >= t3SlowVal;
+      const haur = hc > t3SlowVal && t3Fast <= t3SlowVal;
+      if (hauc) col = '#64B5F6';        // bull blue
+      else if (hadc) col = '#EF5350';    // bear red
+      else if (hadr) col = '#FFF176';    // bearish reversal yellow
+      else if (haur) col = '#FFF176';    // bullish reversal yellow
+      else col = hc >= ho ? '#64B5F6' : '#EF5350'; // hadefval
+    } else {
+      col = hc >= ho ? '#64B5F6' : '#EF5350'; // hadefval before warmup
+    }
+
+    return {
+      time: b.time as number,
+      open: ho,
+      high: haHighArr[i],
+      low: haLowArr[i],
+      close: hc,
+      color: col,
+      borderColor: col,
+      wickColor: col,
+    };
+  }) : undefined;
+
+  const result: IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; plotCandles?: Record<string, PlotCandleData[]> } = {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
     // Pine: fill between T3 Slow (plot3) and T3 Fast (plot0), colored by T3 relationship
@@ -250,7 +306,13 @@ export function calculate(bars: Bar[], inputs: Partial<T3PsarInputs> = {}): Indi
     ],
     markers,
     barColors,
-  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] };
+  };
+
+  if (haCandles) {
+    result.plotCandles = { ha: haCandles };
+  }
+
+  return result;
 }
 
-export const T3Psar = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const T3Psar = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };

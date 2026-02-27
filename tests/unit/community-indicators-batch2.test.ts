@@ -487,7 +487,7 @@ describe('BuySellPressure', () => {
 });
 
 describe('CandlestickReversal', () => {
-  const result = CandlestickReversal.calculate(bars);
+  const result = CandlestickReversal.calculate(bars, { showMA: true });
 
   it('returns correct shape', () => {
     assertShape(result, ['plot0'], true);

@@ -18,6 +18,7 @@ export interface MlAdaptiveSupertrendInputs {
   midFactor: number;
   maxFactor: number;
   trainLen: number;
+  showLabels: boolean;
 }
 
 export const defaultInputs: MlAdaptiveSupertrendInputs = {
@@ -26,6 +27,7 @@ export const defaultInputs: MlAdaptiveSupertrendInputs = {
   midFactor: 2.0,
   maxFactor: 3.0,
   trainLen: 200,
+  showLabels: true,
 };
 
 export const inputConfig: InputConfig[] = [
@@ -34,6 +36,7 @@ export const inputConfig: InputConfig[] = [
   { id: 'midFactor', type: 'float', title: 'Mid Factor', defval: 2.0, min: 0.1, step: 0.1 },
   { id: 'maxFactor', type: 'float', title: 'Max Factor (Low Vol)', defval: 3.0, min: 0.1, step: 0.1 },
   { id: 'trainLen', type: 'int', title: 'Training Length', defval: 200, min: 10 },
+  { id: 'showLabels', type: 'bool', title: 'Show Cluster Labels', defval: true },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -87,7 +90,7 @@ function kMeansClusters(data: number[], k: number, iterations: number): { centro
 }
 
 export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInputs> = {}): IndicatorResult & { markers: MarkerData[]; tables: TableData } {
-  const { atrLen, minFactor, midFactor, maxFactor, trainLen } = { ...defaultInputs, ...inputs };
+  const { atrLen, minFactor, midFactor, maxFactor, trainLen, showLabels } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const atrArr = ta.atr(bars, atrLen).toArray();
@@ -96,6 +99,7 @@ export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInput
   const stValues: number[] = new Array(n).fill(NaN);
   const stDir: number[] = new Array(n).fill(1);
   const factorUsed: number[] = new Array(n).fill(midFactor);
+  const clusterPerBar: number[] = new Array(n).fill(-1);
 
   // Track last cluster info for the table
   let lastCentroids = [0, 0, 0];
@@ -132,6 +136,7 @@ export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInput
       if (d < minDist) { minDist = d; cluster = c; }
     }
     lastCluster = cluster;
+    clusterPerBar[i] = cluster;
 
     // Map cluster to factor: low vol → higher factor, high vol → lower factor
     const factor = cluster === 0 ? maxFactor : cluster === 1 ? midFactor : minFactor;
@@ -174,6 +179,29 @@ export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInput
       markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Buy' });
     } else if (stDir[i] === -1 && stDir[i - 1] === 1) {
       markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
+    }
+  }
+
+  // Per-bar cluster labels matching Pine label.new() per-bar labels
+  // Pine: cluster 0=high,1=mid,2=low with text 4-(cluster+1) => 3,2,1
+  // TS:   cluster 0=low,1=mid,2=high (sorted ascending)
+  // Map: TS 0(low)->1, TS 1(mid)->2, TS 2(high)->3
+  const clusterText = ['L', 'M', 'H'] as const;
+  const clusterColor = ['#26A69A', '#FF9800', '#EF5350'] as const;
+  if (showLabels) {
+    for (let i = warmup; i < n; i++) {
+      if (isNaN(stValues[i]) || clusterPerBar[i] < 0) continue;
+      const c = clusterPerBar[i];
+      // Pine: dir > 0 (bearish) => aboveBar; dir < 0 (bullish) => belowBar
+      // TS: stDir 1 = uptrend(bullish) => belowBar; stDir -1 = downtrend(bearish) => aboveBar
+      const position = stDir[i] === 1 ? 'belowBar' : 'aboveBar';
+      markers.push({
+        time: bars[i].time,
+        position: position as 'aboveBar' | 'belowBar',
+        shape: 'circle',
+        color: clusterColor[c],
+        text: clusterText[c],
+      });
     }
   }
 
