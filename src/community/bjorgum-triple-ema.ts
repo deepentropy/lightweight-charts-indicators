@@ -9,7 +9,7 @@
  * Reference: TradingView "Bjorgum Triple EMA" (TV#84)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
 
 export interface BjorgumTripleEmaInputs {
@@ -37,6 +37,7 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Fast EMA', color: '#26A69A', lineWidth: 2 },
   { id: 'plot1', title: 'Medium EMA', color: '#FF9800', lineWidth: 2 },
   { id: 'plot2', title: 'Slow EMA', color: '#EF5350', lineWidth: 2 },
+  { id: 'plot3', title: 'Hidden Fast EMA (hl2)', color: '#000000', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -53,6 +54,10 @@ export function calculate(bars: Bar[], inputs: Partial<BjorgumTripleEmaInputs> =
   const fastArr = ta.ema(source, fastLen).toArray();
   const medArr = ta.ema(source, medLen).toArray();
   const slowArr = ta.ema(source, slowLen).toArray();
+
+  // Hidden fast EMA: ema(hl2, 1) - Pine: bjemafast = ema(hl2, 1), plotted with transp=100
+  const hl2Series = new Series(bars, (b) => (b.high + b.low) / 2);
+  const hiddenFastArr = ta.ema(hl2Series, 1).toArray();
 
   const warmup = slowLen;
   const markers: MarkerData[] = [];
@@ -89,6 +94,40 @@ export function calculate(bars: Bar[], inputs: Partial<BjorgumTripleEmaInputs> =
     value: i < warmup ? NaN : (v ?? NaN),
   }));
 
+  // Hidden fast EMA plot (invisible, used for fill) - Pine: plot(bjemafast, color=#000000, transp=100)
+  const plot3 = hiddenFastArr.map((v, i) => ({
+    time: bars[i].time,
+    value: i < warmup ? NaN : (v ?? NaN),
+  }));
+
+  // Fill colors: Pine uses directional coloring for all 3 fills
+  // fill1: fast EMA vs hidden fast EMA (Pine: fillCol1 = bjemaslow > bjemafast ? red : blue)
+  const fillCol1: string[] = new Array(n);
+  // fill2: med EMA vs fast EMA (Pine: fillCol2 = bjemaslow2 > bjemaslow ? red : blue)
+  const fillCol2: string[] = new Array(n);
+  // fill3: slow EMA vs med EMA (Pine: fillCol3 = bjemaslow3 > bjemaslow2 ? red : blue)
+  const fillCol3: string[] = new Array(n);
+
+  for (let i = 0; i < n; i++) {
+    if (i < warmup) {
+      fillCol1[i] = 'transparent';
+      fillCol2[i] = 'transparent';
+      fillCol3[i] = 'transparent';
+      continue;
+    }
+    const f = fastArr[i] ?? NaN;
+    const m = medArr[i] ?? NaN;
+    const s = slowArr[i] ?? NaN;
+    const hf = hiddenFastArr[i] ?? NaN;
+
+    // Pine: fillCol1 = bjemaslow > bjemafast ? #ef5350 : fillData2 ? #64b5f6 : na (transp=85)
+    fillCol1[i] = f > hf ? 'rgba(239, 83, 80, 0.15)' : f < hf ? 'rgba(100, 181, 246, 0.15)' : 'transparent';
+    // Pine: fillCol2 (transp=80)
+    fillCol2[i] = m > f ? 'rgba(239, 83, 80, 0.20)' : m < f ? 'rgba(100, 181, 246, 0.20)' : 'transparent';
+    // Pine: fillCol3 (transp=75)
+    fillCol3[i] = s > m ? 'rgba(239, 83, 80, 0.25)' : s < m ? 'rgba(100, 181, 246, 0.25)' : 'transparent';
+  }
+
   // barcolor: Pine barColor = uc ? #64b5f6 : dc ? #e91e63 : #b2b5be
   // uc = close > fast AND close > med; dc = close < fast AND close < med
   const barColors: BarColorData[] = [];
@@ -103,10 +142,11 @@ export function calculate(bars: Bar[], inputs: Partial<BjorgumTripleEmaInputs> =
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
     fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(100, 181, 246, 0.15)' } },
-      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(100, 181, 246, 0.2)' } },
+      { plot1: 'plot0', plot2: 'plot3', options: { color: 'rgba(100, 181, 246, 0.15)' }, colors: fillCol1 },
+      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(100, 181, 246, 0.20)' }, colors: fillCol2 },
+      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(100, 181, 246, 0.25)' }, colors: fillCol3 },
     ],
     markers,
     barColors,

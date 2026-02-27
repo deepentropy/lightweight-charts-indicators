@@ -1,118 +1,156 @@
 /**
- * Envelope RSI
+ * Envelope RSI - Buy Sell Signals
  *
- * RSI with envelope bands around its SMA.
- * Basis = SMA(RSI, rsiLen), upper = basis + pct, lower = basis - pct.
+ * Price envelope overlay: basis = EMA or SMA of hl2, upper = basis*(1+pct), lower = basis*(1-pct).
+ * Buy/Sell signals based on price crossing envelope bands + RSI filter.
  *
- * Reference: TradingView "Envelope RSI"
+ * Reference: TradingView "ENVELOPE - RSI - Buy Sell Signals" by Saleh_Toodarvari
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 
 export interface EnvelopeRSIInputs {
-  rsiLen: number;
+  envelopeLen: number;
   envelopePct: number;
-  src: SourceType;
+  exponential: boolean;
+  rsiLen: number;
+  overboughtRSI: number;
+  oversoldRSI: number;
 }
 
 export const defaultInputs: EnvelopeRSIInputs = {
-  rsiLen: 14,
-  envelopePct: 5.0,
-  src: 'close',
+  envelopeLen: 8,
+  envelopePct: 0.22,
+  exponential: false,
+  rsiLen: 8,
+  overboughtRSI: 80,
+  oversoldRSI: 25,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'rsiLen', type: 'int', title: 'RSI Length', defval: 14, min: 1 },
-  { id: 'envelopePct', type: 'float', title: 'Envelope %', defval: 5.0, min: 0.01, step: 0.1 },
-  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
+  { id: 'envelopeLen', type: 'int', title: 'Envelope Length', defval: 8, min: 1 },
+  { id: 'envelopePct', type: 'float', title: 'Envelope Percent', defval: 0.22, min: 0.01, step: 0.01 },
+  { id: 'exponential', type: 'bool', title: 'Exponential', defval: false },
+  { id: 'rsiLen', type: 'int', title: 'RSI Length', defval: 8, min: 1 },
+  { id: 'overboughtRSI', type: 'float', title: 'RSI Overbought', defval: 80, min: 50, max: 100 },
+  { id: 'oversoldRSI', type: 'float', title: 'RSI Oversold', defval: 25, min: 0, max: 50 },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'RSI', color: '#7E57C2', lineWidth: 2 },
-  { id: 'plot1', title: 'Upper Envelope', color: '#FF6D00', lineWidth: 1 },
-  { id: 'plot2', title: 'Lower Envelope', color: '#FF6D00', lineWidth: 1 },
+  { id: 'basis', title: 'Basis', color: '#ED7300', lineWidth: 1 },
+  { id: 'upper', title: 'Upper', color: '#FF2424', lineWidth: 1 },
+  { id: 'lower', title: 'Lower', color: '#24FF24', lineWidth: 1 },
 ];
 
 export const metadata = {
   title: 'Envelope RSI',
   shortTitle: 'EnvRSI',
-  overlay: false,
+  overlay: true,
 };
 
 export function calculate(bars: Bar[], inputs: Partial<EnvelopeRSIInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { rsiLen, envelopePct, src } = { ...defaultInputs, ...inputs };
+  const { envelopeLen, envelopePct, exponential, rsiLen, overboughtRSI, oversoldRSI } = { ...defaultInputs, ...inputs };
+  const n = bars.length;
 
-  const source = getSourceSeries(bars, src);
-  const rsi = ta.rsi(source, rsiLen);
-  const rsiArr = rsi.toArray();
+  // Envelope source = hl2
+  const hl2 = new Series(bars, (b) => (b.high + b.low) / 2);
+  const basisSeries = exponential ? ta.ema(hl2, envelopeLen) : ta.sma(hl2, envelopeLen);
+  const basisArr = basisSeries.toArray();
 
-  // Basis = SMA of RSI
-  const basis = ta.sma(rsi, rsiLen);
-  const basisArr = basis.toArray();
+  const k = envelopePct / 100.0;
+  const warmup = envelopeLen;
 
-  const warmup = rsiLen * 2;
-
-  const plot0 = rsiArr.map((v, i) => ({
+  const basisPlot = basisArr.map((v, i) => ({
     time: bars[i].time,
-    value: (v == null || i < rsiLen) ? NaN : v,
+    value: (v == null || i < warmup) ? NaN : v,
   }));
 
-  const plot1 = basisArr.map((v, i) => ({
+  const upperPlot = basisArr.map((v, i) => ({
     time: bars[i].time,
-    value: (v == null || i < warmup) ? NaN : v + envelopePct,
+    value: (v == null || i < warmup) ? NaN : v * (1 + k),
   }));
 
-  const plot2 = basisArr.map((v, i) => ({
+  const lowerPlot = basisArr.map((v, i) => ({
     time: bars[i].time,
-    value: (v == null || i < warmup) ? NaN : v - envelopePct,
+    value: (v == null || i < warmup) ? NaN : v * (1 - k),
   }));
 
-  // Pine markers:
-  // condition_buy = rsi < Oversold_RSI and price crosses lower envelope
-  // condition_sell = rsi > Overbought_RSI and price crosses upper envelope
+  // RSI on hl2 source (Pine uses hl2 as rsiSourceInput default)
+  const rsiSeries = ta.rsi(hl2, rsiLen);
+  const rsiArr = rsiSeries.toArray();
+
+  // cross_buy = crossover(close, lower), cross_sell = crossunder(close, upper)
+  // condition_buy = rsi < oversoldRSI AND price crosses lower band
+  // condition_sell = rsi > overboughtRSI AND price crosses upper band
   const markers: MarkerData[] = [];
-  for (let i = warmup + 1; i < bars.length; i++) {
+
+  for (let i = warmup + 1; i < n; i++) {
+    const b = basisArr[i];
+    const prevB = basisArr[i - 1];
+    if (b == null || prevB == null) continue;
+
+    const upper = b * (1 + k);
+    const lower = b * (1 - k);
+    const prevUpper = prevB * (1 + k);
+    const prevLower = prevB * (1 - k);
+
+    const curClose = bars[i].close;
+    const prevClose = bars[i - 1].close;
     const rsiVal = rsiArr[i];
-    const basisVal = basisArr[i];
-    if (rsiVal == null || basisVal == null) continue;
+    if (rsiVal == null) continue;
 
-    const upperVal = basisVal + envelopePct;
-    const lowerVal = basisVal - envelopePct;
+    // cross_buy: close crosses above lower
+    const crossBuy = prevClose <= prevLower && curClose > lower;
+    // cross_sell: close crosses below upper
+    const crossSell = prevClose >= prevUpper && curClose < upper;
 
-    // Buy: RSI crosses above lower envelope from below
-    if (rsiVal < 30 && rsiArr[i - 1] != null) {
-      const prevRsi = rsiArr[i - 1]!;
-      const prevBasis = basisArr[i - 1];
-      if (prevBasis != null) {
-        const prevLower = prevBasis - envelopePct;
-        if (prevRsi <= prevLower && rsiVal > lowerVal) {
-          markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
-        }
+    // condition_buy: rsi < oversold AND (any of low/close/high/open crosses lower)
+    if (crossBuy) {
+      const lo = bars[i].low;
+      const hi = bars[i].high;
+      const op = bars[i].open;
+      const prevLo = bars[i - 1].low;
+      const prevHi = bars[i - 1].high;
+      const prevOp = bars[i - 1].open;
+
+      const anyCrossLower =
+        (prevLo <= prevLower && lo > lower) || (prevLo >= prevLower && lo < lower) ||
+        (prevClose <= prevLower && curClose > lower) || (prevClose >= prevLower && curClose < lower) ||
+        (prevHi <= prevLower && hi > lower) || (prevHi >= prevLower && hi < lower) ||
+        (prevOp <= prevLower && op > lower) || (prevOp >= prevLower && op < lower);
+
+      if (rsiVal < oversoldRSI && anyCrossLower) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'Buy' });
       }
     }
-    // Sell: RSI crosses below upper envelope from above
-    if (rsiVal > 70 && rsiArr[i - 1] != null) {
-      const prevRsi = rsiArr[i - 1]!;
-      const prevBasis = basisArr[i - 1];
-      if (prevBasis != null) {
-        const prevUpper = prevBasis + envelopePct;
-        if (prevRsi >= prevUpper && rsiVal < upperVal) {
-          markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
-        }
+
+    // condition_sell: rsi > overbought AND (any of low/close/high/open crosses upper)
+    if (crossSell) {
+      const lo = bars[i].low;
+      const hi = bars[i].high;
+      const op = bars[i].open;
+      const prevLo = bars[i - 1].low;
+      const prevHi = bars[i - 1].high;
+      const prevOp = bars[i - 1].open;
+
+      const anyCrossUpper =
+        (prevLo <= prevUpper && lo > upper) || (prevLo >= prevUpper && lo < upper) ||
+        (prevClose <= prevUpper && curClose > upper) || (prevClose >= prevUpper && curClose < upper) ||
+        (prevHi <= prevUpper && hi > upper) || (prevHi >= prevUpper && hi < upper) ||
+        (prevOp <= prevUpper && op > upper) || (prevOp >= prevUpper && op < upper);
+
+      if (rsiVal > overboughtRSI && anyCrossUpper) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Sell' });
       }
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
-    hlines: [
-      { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
-      { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
-    ],
+    plots: { 'basis': basisPlot, 'upper': upperPlot, 'lower': lowerPlot },
     fills: [
-      { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(33, 150, 243, 0.05)' } },
+      { plot1: 'upper', plot2: 'lower', options: { color: 'rgba(33, 150, 243, 0.05)' } },
     ],
     markers,
   };

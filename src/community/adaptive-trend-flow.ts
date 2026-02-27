@@ -9,7 +9,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { BarColorData, BgColorData } from '../types';
+import type { BarColorData, BgColorData, LabelData } from '../types';
 
 export interface AdaptiveTrendFlowInputs {
   length: number;
@@ -164,6 +164,39 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveTrendFlowInputs> 
     }
   }
 
+  // Labels: "S" at crossunder(close, level), "L" at crossover(close, level)
+  // Pine: label.new with style_label_lower_right for short, style_label_upper_right for long
+  const labels: LabelData[] = [];
+  for (let i = warmup + 1; i < len; i++) {
+    if (isNaN(levelArr[i]) || isNaN(levelArr[i - 1])) continue;
+    const prevClose = bars[i - 1].close;
+    const curClose = bars[i].close;
+    const prevLevel = levelArr[i - 1];
+    const curLevel = levelArr[i];
+    // crossunder: prev close >= prev level AND cur close < cur level
+    if (prevClose >= prevLevel && curClose < curLevel) {
+      labels.push({
+        time: bars[i].time,
+        price: curLevel,
+        text: '\ud835\udc7a', // "𝑺"
+        color: '#ff0000',
+        textColor: '#FFFFFF',
+        style: 'label_down',
+      });
+    }
+    // crossover: prev close <= prev level AND cur close > cur level
+    if (prevClose <= prevLevel && curClose > curLevel) {
+      labels.push({
+        time: bars[i].time,
+        price: curLevel,
+        text: '\ud835\udc71', // "𝑳"
+        color: '#00ffaa',
+        textColor: '#000000',
+        style: 'label_up',
+      });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
@@ -173,7 +206,8 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveTrendFlowInputs> 
     ],
     barColors,
     bgColors,
-  } as IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] };
+    labels,
+  } as IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[]; labels: LabelData[] };
 }
 
 export const AdaptiveTrendFlow = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

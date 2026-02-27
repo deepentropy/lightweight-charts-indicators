@@ -27,10 +27,12 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Entry High', color: '#26A69A', lineWidth: 2 },
-  { id: 'plot1', title: 'Entry Low', color: '#EF5350', lineWidth: 2 },
+  { id: 'plot0', title: 'Entry High', color: '#0094FF', lineWidth: 1 },
+  { id: 'plot1', title: 'Entry Low', color: '#0094FF', lineWidth: 1 },
   { id: 'plot2', title: 'Exit High', color: '#2962FF', lineWidth: 1 },
   { id: 'plot3', title: 'Exit Low', color: '#FF6D00', lineWidth: 1 },
+  { id: 'trendLine', title: 'Trend Line', color: '#FF0000', lineWidth: 2 },
+  { id: 'exitLine', title: 'Exit Line', color: '#2962FF', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -52,6 +54,32 @@ export function calculate(bars: Bar[], inputs: Partial<TurtleTradeChannelsInputs
   const exitLowArr = ta.lowest(lowSeries, exitLength).toArray();
 
   const warmup = entryLength;
+
+  // Compute K1 (Trend Line) and K2 (Exit Line) per Pine:
+  // K1 = barssince(high>=up[1]) <= barssince(low<=down[1]) ? down : up
+  // K2 = barssince(high>=up[1]) <= barssince(low<=down[1]) ? sdown : sup
+  const k1Arr: number[] = new Array(n).fill(NaN);
+  const k2Arr: number[] = new Array(n).fill(NaN);
+  let lastHighBreak = -Infinity; // last bar where high >= up[1]
+  let lastLowBreak = -Infinity;  // last bar where low <= down[1]
+
+  for (let i = warmup + 1; i < n; i++) {
+    if (bars[i].high >= (entryHighArr[i - 1] ?? 0)) lastHighBreak = i;
+    if (bars[i].low <= (entryLowArr[i - 1] ?? Infinity)) lastLowBreak = i;
+
+    const bsHigh = lastHighBreak >= 0 ? i - lastHighBreak : Infinity;
+    const bsLow = lastLowBreak >= 0 ? i - lastLowBreak : Infinity;
+
+    if (bsHigh <= bsLow) {
+      // Long direction: trend line = entry low (down), exit line = exit low (sdown)
+      k1Arr[i] = entryLowArr[i] ?? NaN;
+      k2Arr[i] = exitLowArr[i] ?? NaN;
+    } else {
+      // Short direction: trend line = entry high (up), exit line = exit high (sup)
+      k1Arr[i] = entryHighArr[i] ?? NaN;
+      k2Arr[i] = exitHighArr[i] ?? NaN;
+    }
+  }
 
   // Turtle signals with barssince logic:
   // buySignal = high >= upper[1], sellSignal = low <= lower[1]
@@ -131,9 +159,19 @@ export function calculate(bars: Bar[], inputs: Partial<TurtleTradeChannelsInputs
     value: i < warmup || isNaN(v) ? NaN : v,
   }));
 
+  const trendLine = k1Arr.map((v, i) => ({
+    time: bars[i].time,
+    value: isNaN(v) ? NaN : v,
+  }));
+
+  const exitLine = k2Arr.map((v, i) => ({
+    time: bars[i].time,
+    value: isNaN(v) ? NaN : v,
+  }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'trendLine': trendLine, 'exitLine': exitLine },
     fills: [
       { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(38,166,154,0.12)' }, colors: fillColors },
       { plot1: 'plot1', plot2: 'plot3', options: { color: 'rgba(239,83,80,0.12)' }, colors: fillColors },

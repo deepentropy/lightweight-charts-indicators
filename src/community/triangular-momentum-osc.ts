@@ -8,7 +8,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, LineDrawingData } from '../types';
 
 export interface TriangularMomentumOscInputs {
   length: number;
@@ -26,7 +26,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'TMO', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot0', title: 'TMO', color: '#2962FF', lineWidth: 3, style: 'histogram' },
 ];
 
 export const metadata = {
@@ -35,7 +35,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TriangularMomentumOscInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TriangularMomentumOscInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
   const { length, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -63,18 +63,30 @@ export function calculate(bars: Bar[], inputs: Partial<TriangularMomentumOscInpu
 
   const warmup = length + halfLen1 + halfLen2;
 
-  const plot0 = tmoArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (v == null || i < warmup) ? NaN : v,
-  }));
+  // Histogram plot with 4-color conditional coloring (Pine: simple_css)
+  // bright green (#00c42b): > 0 and rising, faded green (#4ee567): > 0 and falling
+  // bright red (#ff441f): < 0 and falling, faded red (#c03920): < 0 and rising
+  const plot0 = tmoArr.map((v, i) => {
+    const val = (v == null || i < warmup) ? NaN : v;
+    if (isNaN(val)) return { time: bars[i].time, value: NaN };
+    const prev = (i > 0 && tmoArr[i - 1] != null && i - 1 >= warmup) ? tmoArr[i - 1]! : val;
+    const rising = val > prev;
+    let color: string;
+    if (val > 0) {
+      color = rising ? '#00c42b' : '#4ee567';
+    } else {
+      color = rising ? '#c03920' : '#ff441f';
+    }
+    return { time: bars[i].time, value: val, color };
+  });
 
-  // Markers: divergence signals
-  // phosc = osc peaks (change goes + to -), plosc = osc troughs (change goes - to +)
+  // Markers and divergence lines
   const markers: MarkerData[] = [];
+  const lines: LineDrawingData[] = [];
 
-  // Track last two peaks and troughs for divergence
-  let prevPeakOsc = NaN, prevPeakHigh = NaN;
-  let prevTroughOsc = NaN, prevTroughLow = NaN;
+  // Track peaks/troughs for divergence
+  let prevPeakIdx = -1, prevPeakOsc = NaN, prevPeakHigh = NaN;
+  let prevTroughIdx = -1, prevTroughOsc = NaN, prevTroughLow = NaN;
 
   for (let i = warmup + 2; i < n; i++) {
     const osc = tmoArr[i];
@@ -89,9 +101,17 @@ export function calculate(bars: Bar[], inputs: Partial<TriangularMomentumOscInpu
     if (prevChg > 0 && chg <= 0 && osc > 0) {
       const highVal = bars[i - 1].high;
       // Bearish divergence: osc peak lower but price peak higher
-      if (!isNaN(prevPeakOsc) && oscPrev < prevPeakOsc && highVal > prevPeakHigh) {
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+      if (!isNaN(prevPeakOsc) && oscPrev < prevPeakOsc && highVal > prevPeakHigh && prevPeakIdx >= 0) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#ff441f', text: 'Sell' });
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'circle', color: '#ff441f' });
+        // Divergence line connecting previous peak to current peak on oscillator
+        lines.push({
+          time1: bars[prevPeakIdx].time, price1: prevPeakOsc,
+          time2: bars[i].time, price2: oscPrev,
+          color: '#ff441f', width: 2, style: 'solid',
+        });
       }
+      prevPeakIdx = i;
       prevPeakOsc = oscPrev;
       prevPeakHigh = highVal;
     }
@@ -100,9 +120,17 @@ export function calculate(bars: Bar[], inputs: Partial<TriangularMomentumOscInpu
     if (prevChg < 0 && chg >= 0 && osc < 0) {
       const lowVal = bars[i - 1].low;
       // Bullish divergence: osc trough higher but price trough lower
-      if (!isNaN(prevTroughOsc) && oscPrev > prevTroughOsc && lowVal < prevTroughLow) {
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
+      if (!isNaN(prevTroughOsc) && oscPrev > prevTroughOsc && lowVal < prevTroughLow && prevTroughIdx >= 0) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00c42b', text: 'Buy' });
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'circle', color: '#00c42b' });
+        // Divergence line connecting previous trough to current trough on oscillator
+        lines.push({
+          time1: bars[prevTroughIdx].time, price1: prevTroughOsc,
+          time2: bars[i].time, price2: oscPrev,
+          color: '#00c42b', width: 2, style: 'solid',
+        });
       }
+      prevTroughIdx = i;
       prevTroughOsc = oscPrev;
       prevTroughLow = lowVal;
     }
@@ -115,6 +143,7 @@ export function calculate(bars: Bar[], inputs: Partial<TriangularMomentumOscInpu
       { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Zero' } },
     ],
     markers,
+    lines,
   };
 }
 

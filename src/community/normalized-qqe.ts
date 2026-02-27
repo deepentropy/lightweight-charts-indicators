@@ -8,12 +8,14 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface NormalizedQQEInputs {
   rsiLen: number;
   smoothFactor: number;
   qqeFactor: number;
   src: SourceType;
+  showSignals: boolean;
 }
 
 export const defaultInputs: NormalizedQQEInputs = {
@@ -21,6 +23,7 @@ export const defaultInputs: NormalizedQQEInputs = {
   smoothFactor: 5,
   qqeFactor: 4.236,
   src: 'close',
+  showSignals: false,
 };
 
 export const inputConfig: InputConfig[] = [
@@ -28,10 +31,12 @@ export const inputConfig: InputConfig[] = [
   { id: 'smoothFactor', type: 'int', title: 'Smooth Factor', defval: 5, min: 1 },
   { id: 'qqeFactor', type: 'float', title: 'QQE Factor', defval: 4.236, min: 0.01, step: 0.001 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
+  { id: 'showSignals', type: 'bool', title: 'Show Crossing Signals?', defval: false },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'nQQE', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot0', title: 'FAST', color: '#800000', lineWidth: 2 },
+  { id: 'plot1', title: 'SLOW', color: '#0007E1', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -40,8 +45,8 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<NormalizedQQEInputs> = {}): IndicatorResult {
-  const { rsiLen, smoothFactor, qqeFactor, src } = { ...defaultInputs, ...inputs };
+export function calculate(bars: Bar[], inputs: Partial<NormalizedQQEInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+  const { rsiLen, smoothFactor, qqeFactor, src, showSignals } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const wildersLen = rsiLen * 2 - 1;
 
@@ -101,27 +106,49 @@ export function calculate(bars: Bar[], inputs: Partial<NormalizedQQEInputs> = {}
 
   const warmup = rsiLen * 2 + smoothFactor;
 
+  // Pine: QQF=plot(QQEF-50,"FAST",color=color.maroon,linewidth=2)
+  // Pine: plot(QQEF-50,color=Colorh,linewidth=2,style=5) -- colored version
+  // Pine: QQS=plot(QQES-50,"SLOW",color=#0007E1, linewidth=2)
   const plot0 = srArr.map((v, i) => {
     if (v == null || i < warmup) return { time: bars[i].time, value: NaN };
-    const band = bandArr[i];
-    let nqqe: number;
-    if (band === 0) {
-      nqqe = 50;
-    } else {
-      nqqe = (v - trailing[i]) / band * 50 + 50;
-    }
-    nqqe = Math.max(0, Math.min(100, nqqe));
-    return { time: bars[i].time, value: nqqe };
+    const val = v - 50;
+    // Pine: Colorh = QQEF-50>10 ? #007002 : QQEF-50<-10 ? color.red : #E8E81A
+    const color = val > 10 ? '#007002' : val < -10 ? '#FF0000' : '#E8E81A';
+    return { time: bars[i].time, value: val, color };
   });
+
+  // Slow QQE line: QQES-50
+  const plot1 = trailing.map((v, i) => {
+    if (i < warmup) return { time: bars[i].time, value: NaN };
+    return { time: bars[i].time, value: v - 50 };
+  });
+
+  // Pine: buySignalr = crossover(QQEF, QQES), sellSignallr = crossunder(QQEF, QQES)
+  const markers: MarkerData[] = [];
+  for (let i = warmup; i < n; i++) {
+    const curFast = srArr[i] ?? 0;
+    const prevFast = srArr[i - 1] ?? 0;
+    const curSlow = trailing[i];
+    const prevSlow = trailing[i - 1];
+    if (prevFast <= prevSlow && curFast > curSlow) {
+      if (showSignals) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
+      }
+    } else if (prevFast >= prevSlow && curFast < curSlow) {
+      if (showSignals) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+      }
+    }
+  }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot1': plot1 },
     hlines: [
-      { value: 80, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
-      { value: 50, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Midline' } },
-      { value: 20, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
+      { value: 10, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Upper' } },
+      { value: -10, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Lower' } },
     ],
+    markers,
   };
 }
 

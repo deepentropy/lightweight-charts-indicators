@@ -26,7 +26,8 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'RSI Histogram', color: '#787B86', lineWidth: 4, style: 'histogram' },
+  { id: 'plot0', title: 'RSI HistoAlert', color: '#2196F3', lineWidth: 1 },
+  { id: 'plot1', title: 'RSI Histogram', color: '#787B86', lineWidth: 1, style: 'histogram' },
 ];
 
 export const metadata = {
@@ -44,20 +45,26 @@ export function calculate(bars: Bar[], inputs: Partial<RSIHistoAlertInputs> = {}
 
   const warmup = rsiLen;
 
-  const plot0 = rsiArr.map((v, i) => {
-    if (v == null || i < warmup) return { time: bars[i].time, value: NaN };
-    let color: string;
-    if (v > 70) color = '#EF5350';
-    else if (v < 30) color = '#26A69A';
-    else color = '#787B86';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // barcolor: green when RSIMain > BuyAlertLevel (pos=1), red when RSIMain < SellAlertLevel (pos=-1), blue otherwise
-  // Pine: RSIMain = (rsi - 50) * 1.5, BuyAlertLevel = -10, SellAlertLevel = 10
+  // Pine: RSIMain = (rsi - 50) * RSIHistoModify
   const buyAlertLevel = -10;
   const sellAlertLevel = 10;
   const rsiHistoModify = 1.5;
+
+  // Pine: plot(RSIMain, color=blue, title="RSI HistoAlert") -- line
+  const plot0 = rsiArr.map((v, i) => {
+    if (v == null || i < warmup) return { time: bars[i].time, value: NaN };
+    return { time: bars[i].time, value: (v - 50) * rsiHistoModify };
+  });
+
+  // Pine: plot(RSIMain, color=rsiHcolor, style=histogram) -- histogram with conditional color
+  const plot1 = rsiArr.map((v, i) => {
+    if (v == null || i < warmup) return { time: bars[i].time, value: NaN };
+    const rsiMain = (v - 50) * rsiHistoModify;
+    const color = rsiMain >= 0 ? '#26A69A' : '#EF5350';
+    return { time: bars[i].time, value: rsiMain, color };
+  });
+
+  // barcolor: green when pos=1, red when pos=-1, blue otherwise
   const barColors: BarColorData[] = [];
   let pos = 0;
   for (let i = warmup; i < bars.length; i++) {
@@ -73,10 +80,11 @@ export function calculate(bars: Bar[], inputs: Partial<RSIHistoAlertInputs> = {}
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'plot1': plot1 },
     hlines: [
-      { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
-      { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
+      { value: 0, options: { color: '#9C27B0', linestyle: 'solid' as const, title: 'Zero' } },
+      { value: buyAlertLevel, options: { color: '#26A69A', linestyle: 'dashed' as const, title: 'Buy Alert' } },
+      { value: sellAlertLevel, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Sell Alert' } },
     ],
     barColors,
   };

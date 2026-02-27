@@ -16,14 +16,14 @@ export interface CMRSIPlusEMAInputs {
 }
 
 export const defaultInputs: CMRSIPlusEMAInputs = {
-  rsiLen: 14,
-  emaLen: 12,
+  rsiLen: 20,
+  emaLen: 10,
   src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'rsiLen', type: 'int', title: 'RSI Length', defval: 14, min: 1 },
-  { id: 'emaLen', type: 'int', title: 'EMA Length', defval: 12, min: 1 },
+  { id: 'rsiLen', type: 'int', title: 'RSI Length', defval: 20, min: 1 },
+  { id: 'emaLen', type: 'int', title: 'EMA of RSI Length', defval: 10, min: 1 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
@@ -73,15 +73,15 @@ export function calculate(bars: Bar[], inputs: Partial<CMRSIPlusEMAInputs> = {})
     value: (isNaN(v) || i < warmup) ? NaN : v,
   }));
 
-  const plot2 = bars.map((b) => ({ time: b.time, value: 70 }));
-  const plot3 = bars.map((b) => ({ time: b.time, value: 30 }));
+  const plot2 = bars.map((b) => ({ time: b.time, value: 80 }));
+  const plot3 = bars.map((b) => ({ time: b.time, value: 20 }));
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
     hlines: [
-      { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
-      { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
+      { value: 80, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Upper Line' } },
+      { value: 20, options: { color: '#00E676', linestyle: 'dashed' as const, title: 'Lower Line' } },
     ],
     fills: [
       { plot1: 'plot2', plot2: 'plot3', options: { color: 'rgba(126,87,194,0.1)' } },

@@ -3,12 +3,13 @@
  *
  * Identifies consolidation ranges via zigzag pivot tracking.
  * When price pivots remain within a range for a minimum period,
- * a consolidation zone (top/bottom) is plotted.
+ * a consolidation zone (top/bottom) is plotted with dashed boundary lines.
  *
  * Reference: TradingView "Consolidation Zones - Live" by LonesomeTheBlue
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { LineDrawingData } from '../types';
 
 export interface ConsolidationZonesInputs {
   period: number;
@@ -36,7 +37,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ConsolidationZonesInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<ConsolidationZonesInputs> = {}): IndicatorResult & { lines: LineDrawingData[] } {
   const { period, consLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -64,6 +65,9 @@ export function calculate(bars: Bar[], inputs: Partial<ConsolidationZonesInputs>
   let condhigh = NaN;
   let condlow = NaN;
 
+  // Track line drawing data: Pine creates line.new from bar_index - conscnt to bar_index
+  const lines: LineDrawingData[] = [];
+
   for (let i = 0; i < n; i++) {
     const hb = hbArr[i];
     const lb = lbArr[i];
@@ -86,7 +90,7 @@ export function calculate(bars: Bar[], inputs: Partial<ConsolidationZonesInputs>
 
     // Determine zz value
     if (!isNaN(hb_) && !isNaN(lb_)) {
-      zz: if (dir === 1) {
+      if (dir === 1) {
         zzArr[i] = hb_;
       } else {
         zzArr[i] = lb_;
@@ -148,6 +152,37 @@ export function calculate(bars: Bar[], inputs: Partial<ConsolidationZonesInputs>
 
     condHighArr[i] = conscnt >= consLen ? condhigh : NaN;
     condLowArr[i] = conscnt >= consLen ? condlow : NaN;
+
+    // Pine: line.new(bar_index, condhigh, bar_index - conscnt, condhigh, style=dashed)
+    // Emit line drawings when in consolidation zone (update each bar, replacing previous)
+    if (conscnt >= consLen && !isNaN(condhigh) && !isNaN(condlow)) {
+      const startIdx = Math.max(0, i - conscnt);
+      // Remove previous lines for this zone (they get deleted/recreated each bar in Pine)
+      // We keep only the final line per zone by checking if last line has same price
+      const lastUp = lines.length >= 2 ? lines[lines.length - 2] : null;
+      if (lastUp && lastUp.price1 === condhigh && lastUp.time2 === bars[i - 1]?.time) {
+        // Replace the previous pair
+        lines.splice(lines.length - 2, 2);
+      }
+      lines.push({
+        time1: bars[i].time,
+        price1: condhigh,
+        time2: bars[startIdx].time,
+        price2: condhigh,
+        color: '#EF5350',
+        width: 1,
+        style: 'dashed',
+      });
+      lines.push({
+        time1: bars[i].time,
+        price1: condlow,
+        time2: bars[startIdx].time,
+        price2: condlow,
+        color: '#00FF00',
+        width: 1,
+        style: 'dashed',
+      });
+    }
   }
 
   const warmup = period;
@@ -168,6 +203,7 @@ export function calculate(bars: Bar[], inputs: Partial<ConsolidationZonesInputs>
     fills: [
       { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(33,150,243,0.15)' } },
     ],
+    lines,
   };
 }
 

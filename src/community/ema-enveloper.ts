@@ -1,30 +1,27 @@
 /**
  * EMA Enveloper
  *
- * EMA with percentage envelope bands above and below.
- * upper = ema * (1 + percent/100), lower = ema * (1 - percent/100).
+ * EMA with high/low envelope bands.
+ * upper = ema(high, length), lower = ema(low, length).
  *
  * Reference: TradingView "EMA Enveloper" (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData } from '../types';
 
 export interface EMAEnveloperInputs {
   length: number;
-  percent: number;
   src: SourceType;
 }
 
 export const defaultInputs: EMAEnveloperInputs = {
   length: 20,
-  percent: 2.5,
   src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1 },
-  { id: 'percent', type: 'float', title: 'Percent', defval: 2.5, min: 0.1, step: 0.1 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
@@ -41,25 +38,29 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<EMAEnveloperInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
-  const { length, percent, src } = { ...defaultInputs, ...inputs };
+  const { length, src } = { ...defaultInputs, ...inputs };
   const srcSeries = getSourceSeries(bars, src);
 
+  // Pine: e = ema(close, length), eu = ema(high, length), el = ema(low, length)
   const emaArr = ta.ema(srcSeries, length).toArray();
-  const mult = percent / 100;
+  const highSeries = new Series(bars, (b) => b.high);
+  const lowSeries = new Series(bars, (b) => b.low);
+  const euArr = ta.ema(highSeries, length).toArray();
+  const elArr = ta.ema(lowSeries, length).toArray();
 
   const plot0 = emaArr.map((v, i) => ({
     time: bars[i].time,
     value: i < length ? NaN : (v ?? NaN),
   }));
 
-  const plot1 = emaArr.map((v, i) => ({
+  const plot1 = euArr.map((v, i) => ({
     time: bars[i].time,
-    value: i < length ? NaN : ((v ?? 0) * (1 + mult)),
+    value: i < length ? NaN : (v ?? NaN),
   }));
 
-  const plot2 = emaArr.map((v, i) => ({
+  const plot2 = elArr.map((v, i) => ({
     time: bars[i].time,
-    value: i < length ? NaN : ((v ?? 0) * (1 - mult)),
+    value: i < length ? NaN : (v ?? NaN),
   }));
 
   const fillColors = bars.map((_b, i) => (i < length ? 'transparent' : '#2962FF20'));
@@ -68,10 +69,9 @@ export function calculate(bars: Bar[], inputs: Partial<EMAEnveloperInputs> = {})
   // Pine: bull_f = high > eu AND low > el, bear_f = high < eu AND low < el
   const bgColors: BgColorData[] = [];
   for (let i = length; i < bars.length; i++) {
-    const emaVal = emaArr[i] ?? NaN;
-    if (isNaN(emaVal)) continue;
-    const upper = emaVal * (1 + mult);
-    const lower = emaVal * (1 - mult);
+    const upper = euArr[i] ?? NaN;
+    const lower = elArr[i] ?? NaN;
+    if (isNaN(upper) || isNaN(lower)) continue;
     const h = bars[i].high;
     const l = bars[i].low;
     const bullF = h > upper && l > lower;

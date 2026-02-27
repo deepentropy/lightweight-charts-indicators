@@ -2,8 +2,9 @@
  * Easy Entry/Exit Trend Colors
  *
  * MACD oscillator with Bollinger Bands envelope, zero line, and golden/death cross signals.
- * Plots: Upper BB band, Lower BB band, Zero line.
- * MACD triangles colored lime (above upper) or red (below upper).
+ * Plots: Upper BB band, Lower BB band, Zero line, MACD triangles at MACD value.
+ * Pine plots triangleup (lime when MACD >= Upper) and triangledown (red when MACD <= Upper)
+ * at the MACD value position on every bar.
  * Death/golden cross from 50/200 SMA crossover.
  *
  * Reference: TradingView "Easy Entry/Exit Trend Colors (With Alerts)" (community)
@@ -46,6 +47,8 @@ export const plotConfig: PlotConfig[] = [
   { id: 'upper', title: 'Upper Band', color: '#787B86', lineWidth: 2 },
   { id: 'lower', title: 'Lower Band', color: '#787B86', lineWidth: 2 },
   { id: 'zeroline', title: 'Zero Line', color: '#FF7F00', lineWidth: 1 },
+  { id: 'macdUp', title: 'MACD Up', color: '#00FF00', lineWidth: 1, style: 'circles' },
+  { id: 'macdDn', title: 'MACD Down', color: '#FF0000', lineWidth: 1, style: 'circles' },
 ];
 
 export const metadata = {
@@ -83,6 +86,11 @@ export function calculate(bars: Bar[], inputs: Partial<EasyTrendColorsInputs> = 
   const upperPlot: { time: number; value: number }[] = [];
   const lowerPlot: { time: number; value: number }[] = [];
   const zeroPlot: { time: number; value: number }[] = [];
+  // Pine: plotshape(macd, color=mcl, style=shape.triangleup) where mcl = macd >= Upper ? lime : na
+  // Pine: plotshape(macd, color=mcr, style=shape.triangledown) where mcr = macd <= Upper ? red : na
+  // These are per-bar triangle shapes at MACD value position
+  const macdUpPlot: Array<{ time: number; value: number; color?: string }> = [];
+  const macdDnPlot: Array<{ time: number; value: number; color?: string }> = [];
 
   const markers: MarkerData[] = [];
   const barColors: BarColorData[] = [];
@@ -94,6 +102,8 @@ export function calculate(bars: Bar[], inputs: Partial<EasyTrendColorsInputs> = 
       upperPlot.push({ time: t, value: NaN });
       lowerPlot.push({ time: t, value: NaN });
       zeroPlot.push({ time: t, value: NaN });
+      macdUpPlot.push({ time: t, value: NaN });
+      macdDnPlot.push({ time: t, value: NaN });
       continue;
     }
 
@@ -105,6 +115,17 @@ export function calculate(bars: Bar[], inputs: Partial<EasyTrendColorsInputs> = 
     upperPlot.push({ time: t, value: upper });
     lowerPlot.push({ time: t, value: lower });
     zeroPlot.push({ time: t, value: 0 });
+
+    // Pine plotshape triangleup: shown when macd >= Upper (lime), otherwise na
+    // Pine plotshape triangledown: shown when macd <= Upper (red), but really "macd < Upper"
+    // The key insight: Pine plots BOTH shapes every bar, one is lime (above upper), other red (not above upper)
+    if (macdArr[i] >= upper) {
+      macdUpPlot.push({ time: t, value: macdArr[i], color: '#00FF00' });
+      macdDnPlot.push({ time: t, value: NaN });
+    } else {
+      macdUpPlot.push({ time: t, value: NaN });
+      macdDnPlot.push({ time: t, value: macdArr[i], color: '#FF0000' });
+    }
 
     // Pine barcolor: yellow when macd > Upper, aqua when macd < Lower
     if (macdArr[i] > upper) {
@@ -150,7 +171,7 @@ export function calculate(bars: Bar[], inputs: Partial<EasyTrendColorsInputs> = 
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { upper: upperPlot, lower: lowerPlot, zeroline: zeroPlot },
+    plots: { upper: upperPlot, lower: lowerPlot, zeroline: zeroPlot, macdUp: macdUpPlot, macdDn: macdDnPlot },
     markers,
     barColors,
     bgColors,

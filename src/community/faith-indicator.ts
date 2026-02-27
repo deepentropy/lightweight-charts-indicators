@@ -26,7 +26,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Faith', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot0', title: 'Grade of Faith', color: '#2962FF', lineWidth: 5, style: 'histogram' },
   { id: 'plot1', title: 'Signal', color: '#FF6D00', lineWidth: 1 },
 ];
 
@@ -51,7 +51,8 @@ export function calculate(bars: Bar[], inputs: Partial<FaithIndicatorInputs> = {
 
   const faithPlot = faithValues.map((v, i) => {
     if (i < warmup) return { time: bars[i].time, value: NaN };
-    const color = v > (signalArr[i] ?? 0) ? '#26A69A' : '#EF5350';
+    // Pine: dif > 0 ? color.blue : color.red
+    const color = v > 0 ? '#2962FF' : '#EF5350';
     return { time: bars[i].time, value: v, color };
   });
 

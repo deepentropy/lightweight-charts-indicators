@@ -10,7 +10,7 @@
  */
 
 import { ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData, BarColorData } from '../types';
+import type { MarkerData, BarColorData, LabelData } from '../types';
 import type { TableData, TableCell } from '../types';
 
 export interface SupertrendAiClusteringInputs {
@@ -88,7 +88,7 @@ function calcSupertrendArrays(bars: Bar[], atrArr: (number | null)[], factor: nu
   return { st, dir };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<SupertrendAiClusteringInputs> = {}): IndicatorResult & { markers: MarkerData[]; tables: TableData; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<SupertrendAiClusteringInputs> = {}): IndicatorResult & { markers: MarkerData[]; tables: TableData; barColors: BarColorData[]; labels: LabelData[] } {
   const { atrLen, minFactor, maxFactor, factorStep, trainLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -111,6 +111,7 @@ export function calculate(bars: Bar[], inputs: Partial<SupertrendAiClusteringInp
   let lastOptFactor = NaN;
   let lastPerfScore = NaN;
   let lastClusterInfo = '';
+  const perfIdxArr: number[] = new Array(n).fill(NaN);
 
   for (let i = warmup; i < n; i++) {
     // Score each factor by counting direction flips (whipsaws) in training window
@@ -183,6 +184,9 @@ export function calculate(bars: Bar[], inputs: Partial<SupertrendAiClusteringInp
     lastPerfScore = sortedCentroids[2].c;
     lastClusterInfo = `Poor: ${sortedCentroids[0].c.toFixed(0)}, Avg: ${sortedCentroids[1].c.toFixed(0)}, Best: ${sortedCentroids[2].c.toFixed(0)}`;
 
+    // Compute performance index for labels (simplified: cluster score / trainLen)
+    perfIdxArr[i] = Math.max(sortedCentroids[2].c, 0) / trainLen;
+
     // Compute SuperTrend with optimized factor for this bar
     const atrVal = atrArr[i];
     if (atrVal == null) continue;
@@ -216,12 +220,35 @@ export function calculate(bars: Bar[], inputs: Partial<SupertrendAiClusteringInp
   }
 
   const markers: MarkerData[] = [];
+  const labels: LabelData[] = [];
   for (let i = warmup + 1; i < n; i++) {
     if (isNaN(finalSt[i]) || isNaN(finalSt[i - 1])) continue;
     if (finalDir[i] === 1 && finalDir[i - 1] === -1) {
       markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Buy' });
+      // Pine: label.new(n, ts, str.tostring(int(perf_idx * 10)), color=bullCss, style=label_up)
+      const perfScore = isNaN(perfIdxArr[i]) ? 0 : Math.floor(perfIdxArr[i] * 10);
+      labels.push({
+        time: bars[i].time,
+        price: finalSt[i],
+        text: String(perfScore),
+        color: '#26A69A',
+        textColor: '#FFFFFF',
+        style: 'label_up',
+        size: 'tiny',
+      });
     } else if (finalDir[i] === -1 && finalDir[i - 1] === 1) {
       markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
+      // Pine: label.new(n, ts, str.tostring(int(perf_idx * 10)), color=bearCss, style=label_down)
+      const perfScore = isNaN(perfIdxArr[i]) ? 0 : Math.floor(perfIdxArr[i] * 10);
+      labels.push({
+        time: bars[i].time,
+        price: finalSt[i],
+        text: String(perfScore),
+        color: '#EF5350',
+        textColor: '#FFFFFF',
+        style: 'label_down',
+        size: 'tiny',
+      });
     }
   }
 
@@ -268,6 +295,7 @@ export function calculate(bars: Bar[], inputs: Partial<SupertrendAiClusteringInp
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     markers,
+    labels,
     tables,
     barColors,
   };

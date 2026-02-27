@@ -1,28 +1,40 @@
 /**
  * CCI coded OBV
  *
- * CCI calculated on OBV values instead of price.
- * CCI = (OBV - SMA(OBV, n)) / (0.015 * mean_deviation).
+ * Pine: overlay=false, 2 plots:
+ *   1) OBV line colored by CCI: green when CCI(close, length) >= threshold, red otherwise
+ *   2) EMA(OBV, emaLength) in orange
  *
- * Reference: TradingView "CCI coded OBV" community indicator
+ * The OBV is cum(change(src) > 0 ? volume : change(src) < 0 ? -volume : 0)
+ * The CCI is computed on close (standard CCI), NOT on OBV.
+ * Color coding: OBV line is green when CCI >= threshold, red otherwise.
+ *
+ * Reference: TradingView "CCI coded OBV" by LazyBear
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
 export interface CCIOBVInputs {
   cciLength: number;
+  threshold: number;
+  emaLength: number;
 }
 
 export const defaultInputs: CCIOBVInputs = {
   cciLength: 20,
+  threshold: 0,
+  emaLength: 13,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'cciLength', type: 'int', title: 'CCI Length', defval: 20, min: 1 },
+  { id: 'threshold', type: 'int', title: 'CCI threshold for OBV coding', defval: 0 },
+  { id: 'emaLength', type: 'int', title: 'EMA length', defval: 13, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'CCI of OBV', color: '#2962FF', lineWidth: 2 },
+  { id: 'obv', title: 'OBV CCI coded', color: '#26A69A', lineWidth: 2 },
+  { id: 'obvEma', title: 'EMA of OBV', color: '#FF9800', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -32,56 +44,51 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<CCIOBVInputs> = {}): IndicatorResult {
-  const { cciLength } = { ...defaultInputs, ...inputs };
+  const { cciLength, threshold, emaLength } = { ...defaultInputs, ...inputs };
+  const n = bars.length;
 
-  // Compute OBV
-  const obvArr: number[] = new Array(bars.length);
-  obvArr[0] = bars[0]?.volume ?? 0;
-  for (let i = 1; i < bars.length; i++) {
+  // Compute OBV: cum(change(src) > 0 ? volume : change(src) < 0 ? -volume : 0)
+  const obvArr: number[] = new Array(n);
+  obvArr[0] = 0;
+  for (let i = 1; i < n; i++) {
+    const chg = bars[i].close - bars[i - 1].close;
     const vol = bars[i].volume ?? 0;
-    if (bars[i].close > bars[i - 1].close) {
+    if (chg > 0) {
       obvArr[i] = obvArr[i - 1] + vol;
-    } else if (bars[i].close < bars[i - 1].close) {
+    } else if (chg < 0) {
       obvArr[i] = obvArr[i - 1] - vol;
     } else {
       obvArr[i] = obvArr[i - 1];
     }
   }
 
-  // CCI = (OBV - SMA(OBV, n)) / (0.015 * mean_deviation)
-  // mean_deviation = SMA(|OBV - SMA(OBV, n)|, n)
-  const obvSeries = new Series(bars, (_b, i) => obvArr[i]);
-  const smaObvArr = ta.sma(obvSeries, cciLength).toArray();
+  // Compute CCI on close (standard)
+  const closeSeries = new Series(bars, (b) => b.close);
+  const cciArr = ta.cci(closeSeries, cciLength).toArray();
 
-  const cciArr: number[] = new Array(bars.length);
-  for (let i = 0; i < bars.length; i++) {
-    const sma = smaObvArr[i];
-    if (sma == null || i < cciLength - 1) {
-      cciArr[i] = NaN;
-      continue;
-    }
-    // Mean deviation over the window
-    let sumDev = 0;
-    for (let j = 0; j < cciLength; j++) {
-      sumDev += Math.abs(obvArr[i - j] - sma);
-    }
-    const meanDev = sumDev / cciLength;
-    cciArr[i] = meanDev === 0 ? 0 : (obvArr[i] - sma) / (0.015 * meanDev);
-  }
+  // EMA of OBV
+  const obvSeries = Series.fromArray(bars, obvArr);
+  const emaOBVArr = ta.ema(obvSeries, emaLength).toArray();
 
-  const plot0 = cciArr.map((v, i) => ({
+  const GREEN = '#26A69A';
+  const RED = '#EF5350';
+
+  const warmup = cciLength;
+
+  const obvPlot = obvArr.map((v, i) => ({
     time: bars[i].time,
-    value: isNaN(v) ? NaN : v,
+    value: v,
+    color: i >= warmup && !isNaN(cciArr[i]) ? (cciArr[i] >= threshold ? GREEN : RED) : GREEN,
+  }));
+
+  const emaPlot = emaOBVArr.map((v, i) => ({
+    time: bars[i].time,
+    value: i < emaLength ? NaN : (v ?? NaN),
   }));
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
-    hlines: [
-      { value: 100, options: { color: '#EF5350', linestyle: 'dashed', title: 'OB' } },
-      { value: -100, options: { color: '#26A69A', linestyle: 'dashed', title: 'OS' } },
-      { value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } },
-    ],
+    plots: { obv: obvPlot, obvEma: emaPlot },
   };
 }
 

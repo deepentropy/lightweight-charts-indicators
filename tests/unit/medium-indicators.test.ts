@@ -88,8 +88,8 @@ describe('Bollinger Awesome Alert', () => {
   });
 
   it('should have correct metadata', () => {
-    expect(BollingerAwesomeAlert.metadata.title).toBe('Bollinger Awesome Alert');
-    expect(BollingerAwesomeAlert.metadata.overlay).toBe(false);
+    expect(BollingerAwesomeAlert.metadata.title).toBe('Bollinger Awesome Alert R1.1');
+    expect(BollingerAwesomeAlert.metadata.overlay).toBe(true);
   });
 });
 
@@ -132,19 +132,19 @@ describe('Double MACD', () => {
     expect(result).toBeDefined();
     expect(result.plots).toBeDefined();
     expect(result.metadata).toBeDefined();
-    expect(result.plots['plot0']).toBeDefined();
-    expect(result.plots['plot0'].length).toBe(bars.length);
-    expect(result.plots['plot1']).toBeDefined();
-    expect(result.plots['plot1'].length).toBe(bars.length);
-    expect(result.plots['plot2']).toBeDefined();
-    expect(result.plots['plot2'].length).toBe(bars.length);
-    expect(result.plots['plot3']).toBeDefined();
-    expect(result.plots['plot3'].length).toBe(bars.length);
+    expect(result.plots['macd1Line']).toBeDefined();
+    expect(result.plots['macd1Line'].length).toBe(bars.length);
+    expect(result.plots['macd1Hist']).toBeDefined();
+    expect(result.plots['macd1Hist'].length).toBe(bars.length);
+    expect(result.plots['macd2Line']).toBeDefined();
+    expect(result.plots['macd2Line'].length).toBe(bars.length);
+    expect(result.plots['macd2Hist']).toBeDefined();
+    expect(result.plots['macd2Hist'].length).toBe(bars.length);
   });
 
   it('should produce non-NaN values after warmup', () => {
     const result = DoubleMACD.calculate(bars);
-    const values = result.plots['plot0'];
+    const values = result.plots['macd1Line'];
     const nonNaN = values.filter((v: any) => !isNaN(v.value));
     expect(nonNaN.length).toBeGreaterThan(0);
   });
@@ -232,19 +232,25 @@ describe('IDEAL BB with MA', () => {
     expect(result).toBeDefined();
     expect(result.plots).toBeDefined();
     expect(result.metadata).toBeDefined();
-    expect(result.plots['plot0']).toBeDefined();
-    expect(result.plots['plot0'].length).toBe(bars.length);
-    expect(result.plots['plot1']).toBeDefined();
-    expect(result.plots['plot1'].length).toBe(bars.length);
-    expect(result.plots['plot2']).toBeDefined();
-    expect(result.plots['plot2'].length).toBe(bars.length);
-    expect(result.plots['plot3']).toBeDefined();
-    expect(result.plots['plot3'].length).toBe(bars.length);
+    expect(result.plots['nma']).toBeDefined();
+    expect(result.plots['nma'].length).toBe(bars.length);
+    expect(result.plots['vwap']).toBeDefined();
+    expect(result.plots['vwap'].length).toBe(bars.length);
+    expect(result.plots['bbBasis']).toBeDefined();
+    expect(result.plots['bbBasis'].length).toBe(bars.length);
+    expect(result.plots['bbUpper']).toBeDefined();
+    expect(result.plots['bbUpper'].length).toBe(bars.length);
+    expect(result.plots['bbLower']).toBeDefined();
+    expect(result.plots['bbLower'].length).toBe(bars.length);
+    expect(result.plots['hullA']).toBeDefined();
+    expect(result.plots['hullA'].length).toBe(bars.length);
+    expect(result.plots['hullB']).toBeDefined();
+    expect(result.plots['hullB'].length).toBe(bars.length);
   });
 
   it('should produce non-NaN values after warmup', () => {
     const result = IdealBbMa.calculate(bars);
-    const values = result.plots['plot0'];
+    const values = result.plots['bbUpper'];
     const nonNaN = values.filter((v: any) => !isNaN(v.value));
     expect(nonNaN.length).toBeGreaterThan(0);
   });
@@ -328,15 +334,15 @@ describe('MOST on RSI', () => {
     expect(result).toBeDefined();
     expect(result.plots).toBeDefined();
     expect(result.metadata).toBeDefined();
-    expect(result.plots['plot0']).toBeDefined();
-    expect(result.plots['plot0'].length).toBe(bars.length);
-    expect(result.plots['plot1']).toBeDefined();
-    expect(result.plots['plot1'].length).toBe(bars.length);
+    expect(result.plots['rsi']).toBeDefined();
+    expect(result.plots['rsi'].length).toBe(bars.length);
+    expect(result.plots['most']).toBeDefined();
+    expect(result.plots['most'].length).toBe(bars.length);
   });
 
   it('should produce non-NaN values after warmup', () => {
     const result = MOSTRSI.calculate(bars);
-    const values = result.plots['plot0'];
+    const values = result.plots['rsi'];
     const nonNaN = values.filter((v: any) => !isNaN(v.value));
     expect(nonNaN.length).toBeGreaterThan(0);
   });
@@ -392,17 +398,17 @@ describe('OTT Bands', () => {
     expect(result).toBeDefined();
     expect(result.plots).toBeDefined();
     expect(result.metadata).toBeDefined();
-    expect(result.plots['plot0']).toBeDefined();
-    expect(result.plots['plot0'].length).toBe(bars.length);
-    expect(result.plots['plot1']).toBeDefined();
-    expect(result.plots['plot1'].length).toBe(bars.length);
-    expect(result.plots['plot2']).toBeDefined();
-    expect(result.plots['plot2'].length).toBe(bars.length);
+    expect(result.plots['ottMain']).toBeDefined();
+    expect(result.plots['ottMain'].length).toBe(bars.length);
+    expect(result.plots['ottUpper']).toBeDefined();
+    expect(result.plots['ottUpper'].length).toBe(bars.length);
+    expect(result.plots['ottLower']).toBeDefined();
+    expect(result.plots['ottLower'].length).toBe(bars.length);
   });
 
   it('should produce non-NaN values after warmup', () => {
     const result = OTTBands.calculate(bars);
-    const values = result.plots['plot0'];
+    const values = result.plots['ottMain'];
     const nonNaN = values.filter((v: any) => !isNaN(v.value));
     expect(nonNaN.length).toBeGreaterThan(0);
   });
@@ -426,13 +432,15 @@ describe('OTT Oscillator', () => {
     expect(result).toBeDefined();
     expect(result.plots).toBeDefined();
     expect(result.metadata).toBeDefined();
-    expect(result.plots['plot0']).toBeDefined();
-    expect(result.plots['plot0'].length).toBe(bars.length);
+    expect(result.plots['hott']).toBeDefined();
+    expect(result.plots['hott'].length).toBe(bars.length);
+    expect(result.plots['lott']).toBeDefined();
+    expect(result.plots['lott'].length).toBe(bars.length);
   });
 
   it('should produce non-NaN values after warmup', () => {
     const result = OTTO.calculate(bars);
-    const values = result.plots['plot0'];
+    const values = result.plots['hott'];
     const nonNaN = values.filter((v: any) => !isNaN(v.value));
     expect(nonNaN.length).toBeGreaterThan(0);
   });
@@ -490,6 +498,10 @@ describe('Pivot Points HH/HL/LH/LL', () => {
     expect(result.metadata).toBeDefined();
     expect(result.plots['plot0']).toBeDefined();
     expect(result.plots['plot0'].length).toBe(bars.length);
+    expect(result.plots['plot1']).toBeDefined();
+    expect(result.plots['plot1'].length).toBe(bars.length);
+    expect(result.plots['plot2']).toBeDefined();
+    expect(result.plots['plot2'].length).toBe(bars.length);
   });
 
   it('should produce markers or valid plot data', () => {
@@ -522,6 +534,8 @@ describe('PMax on RSI with T3', () => {
     expect(result.plots['plot0'].length).toBe(bars.length);
     expect(result.plots['plot1']).toBeDefined();
     expect(result.plots['plot1'].length).toBe(bars.length);
+    expect(result.plots['plot2']).toBeDefined();
+    expect(result.plots['plot2'].length).toBe(bars.length);
   });
 
   it('should produce non-NaN values after warmup', () => {
@@ -778,6 +792,8 @@ describe('Zero-Lag MA Trend Levels', () => {
     expect(result.plots['plot1'].length).toBe(bars.length);
     expect(result.plots['plot2']).toBeDefined();
     expect(result.plots['plot2'].length).toBe(bars.length);
+    expect(result.plots['plot3']).toBeDefined();
+    expect(result.plots['plot3'].length).toBe(bars.length);
   });
 
   it('should produce non-NaN values after warmup', () => {

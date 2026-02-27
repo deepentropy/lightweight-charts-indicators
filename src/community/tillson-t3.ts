@@ -15,20 +15,30 @@ import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, ty
 export interface TillsonT3Inputs {
   length: number;
   volumeFactor: number;
+  lengthFibo: number;
+  volumeFactorFibo: number;
+  showFibo: boolean;
 }
 
 export const defaultInputs: TillsonT3Inputs = {
   length: 8,
   volumeFactor: 0.7,
+  lengthFibo: 5,
+  volumeFactorFibo: 0.618,
+  showFibo: true,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'T3 Length', defval: 8, min: 1 },
   { id: 'volumeFactor', type: 'float', title: 'Volume Factor', defval: 0.7, min: 0, max: 1, step: 0.01 },
+  { id: 'lengthFibo', type: 'int', title: 'T3 Length fibo', defval: 5, min: 1 },
+  { id: 'volumeFactorFibo', type: 'float', title: 'Volume Factor fibo', defval: 0.618, min: 0, max: 1, step: 0.001 },
+  { id: 'showFibo', type: 'bool', title: 'Show T3 Fibonacci Ratio Line?', defval: true },
 ];
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'T3', color: '#26A69A', lineWidth: 3 },
+  { id: 'plot1', title: 'T3fibo', color: '#2196F3', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -38,7 +48,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<TillsonT3Inputs> = {}): IndicatorResult {
-  const { length, volumeFactor } = { ...defaultInputs, ...inputs };
+  const { length, volumeFactor, lengthFibo, volumeFactorFibo, showFibo } = { ...defaultInputs, ...inputs };
   const a = volumeFactor;
 
   const src = new Series(bars, (b) => (b.high + b.low + 2 * b.close) / 4);
@@ -66,9 +76,40 @@ export function calculate(bars: Bar[], inputs: Partial<TillsonT3Inputs> = {}): I
     return { time: bars[i].time, value: val, color };
   });
 
+  // Second T3 with Fibonacci factor (Pine: T3 Length fibo=5, Volume Factor fibo=0.618)
+  const plots: Record<string, Array<{ time: number; value: number; color?: string }>> = { 'plot0': plot0 };
+
+  if (showFibo) {
+    const a2 = volumeFactorFibo;
+    const ef1 = ta.ema(src, lengthFibo);
+    const ef2 = ta.ema(ef1, lengthFibo);
+    const ef3 = ta.ema(ef2, lengthFibo);
+    const ef4 = ta.ema(ef3, lengthFibo);
+    const ef5 = ta.ema(ef4, lengthFibo);
+    const ef6 = ta.ema(ef5, lengthFibo);
+
+    const cf1 = -a2 * a2 * a2;
+    const cf2 = 3 * a2 * a2 + 3 * a2 * a2 * a2;
+    const cf3 = -6 * a2 * a2 - 3 * a2 - 3 * a2 * a2 * a2;
+    const cf4 = 1 + 3 * a2 + a2 * a2 * a2 + 3 * a2 * a2;
+
+    const t3f = ef6.mul(cf1).add(ef5.mul(cf2)).add(ef4.mul(cf3)).add(ef3.mul(cf4));
+    const warmupF = lengthFibo * 6;
+    const t3fArr = t3f.toArray();
+
+    plots['plot1'] = t3fArr.map((v, i) => {
+      const val = i < warmupF ? NaN : (v ?? NaN);
+      if (isNaN(val)) return { time: bars[i].time, value: NaN };
+      const prev = i > 0 ? (t3fArr[i - 1] ?? NaN) : NaN;
+      // Pine: blue if rising, purple if falling, yellow if flat
+      const color = val > prev ? '#2196F3' : val < prev ? '#9C27B0' : '#FFEB3B';
+      return { time: bars[i].time, value: val, color };
+    });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots,
   };
 }
 

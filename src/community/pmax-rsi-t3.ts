@@ -34,6 +34,7 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'T3 RSI', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'PMax', color: '#FF6D00', lineWidth: 2 },
+  { id: 'plot2', title: 'RSI', color: '#8E1599', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -170,6 +171,12 @@ export function calculate(bars: Bar[], inputs: Partial<PMaxRSIT3Inputs> = {}): I
     }
   }
 
+  // RSI line plot (Pine: plot(showrsi ? rsi : na, "RSI", color=#8E1599))
+  const plot2 = rsiArr.map((v, i) => ({
+    time: bars[i].time,
+    value: i < rsiLen || v == null || isNaN(v) ? NaN : v,
+  }));
+
   // Fill between T3 (plot0) and PMax (plot1): green when T3 > PMax, red otherwise
   const fillColors = bars.map((_b, i) => {
     if (i < warmup) return 'transparent';
@@ -178,7 +185,7 @@ export function calculate(bars: Bar[], inputs: Partial<PMaxRSIT3Inputs> = {}): I
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
     hlines: [
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },

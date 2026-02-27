@@ -92,7 +92,7 @@ export function calculate(bars: Bar[], inputs: Partial<CMSlingShotInputs> = {}):
     barColors.push({ time: bars[i].time as number, color: barColor });
   }
 
-  // Markers: trend triangles + conservative entry arrows
+  // Markers: persistent trend triangles every bar + conservative entry arrows
   const markers: MarkerData[] = [];
   for (let i = warmup; i < n; i++) {
     const fast = emaFastArr[i] ?? 0;
@@ -101,6 +101,16 @@ export function calculate(bars: Bar[], inputs: Partial<CMSlingShotInputs> = {}):
     const prevSlow = emaSlowArr[i - 1] ?? 0;
     const close = bars[i].close;
     const prevClose = bars[i - 1].close;
+
+    // Pine: plotshape(st and upTrend, style=shape.triangleup, location=location.bottom, color=lime)
+    // Persistent every-bar trend triangles
+    if (fast >= slow) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#00E676', text: '' });
+    }
+    // Pine: plotshape(st and downTrend, style=shape.triangledown, location=location.top, color=red)
+    if (fast < slow) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000', text: '' });
+    }
 
     // Conservative entry: close crosses above fast EMA in uptrend
     if (fast > slow && prevClose < prevFast && close > fast) {

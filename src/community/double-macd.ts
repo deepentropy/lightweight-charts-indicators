@@ -1,10 +1,11 @@
 /**
- * Double MACD
+ * Double MACD Buy and Sell
  *
- * Two MACD instances with independent parameters.
- * Buy when both histograms > 0, sell when both < 0.
+ * Two MACD instances (12/26 and 5/15) each plotted as both line AND histogram.
+ * Divergence detection on MACD2 with fractal tops/bottoms.
+ * Entry markers (largo/corto) on MACD2 zero cross with MACD1 confirmation.
  *
- * Reference: TradingView "Double MACD" (TV#192)
+ * Reference: TradingView "DOBLE MACD X" community indicator
  */
 
 import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
@@ -24,8 +25,8 @@ export const defaultInputs: DoubleMACDInputs = {
   fast1: 12,
   slow1: 26,
   sig1: 9,
-  fast2: 19,
-  slow2: 39,
+  fast2: 5,
+  slow2: 15,
   sig2: 9,
   src: 'close',
 };
@@ -34,19 +35,19 @@ export const inputConfig: InputConfig[] = [
   { id: 'fast1', type: 'int', title: 'MACD1 Fast', defval: 12, min: 1 },
   { id: 'slow1', type: 'int', title: 'MACD1 Slow', defval: 26, min: 1 },
   { id: 'sig1', type: 'int', title: 'MACD1 Signal', defval: 9, min: 1 },
-  { id: 'fast2', type: 'int', title: 'MACD2 Fast', defval: 19, min: 1 },
-  { id: 'slow2', type: 'int', title: 'MACD2 Slow', defval: 39, min: 1 },
+  { id: 'fast2', type: 'int', title: 'MACD2 Fast', defval: 5, min: 1 },
+  { id: 'slow2', type: 'int', title: 'MACD2 Slow', defval: 15, min: 1 },
   { id: 'sig2', type: 'int', title: 'MACD2 Signal', defval: 9, min: 1 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Hist1', color: '#26A69A', lineWidth: 4, style: 'histogram' },
-  { id: 'plot1', title: 'Hist2', color: '#B2DFDB', lineWidth: 4, style: 'histogram' },
-  { id: 'plot2', title: 'MACD1', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot3', title: 'Signal1', color: '#EF5350', lineWidth: 1 },
-  { id: 'plot4', title: 'Bearish Div', color: '#FF0000', lineWidth: 1 },
-  { id: 'plot5', title: 'Bullish Div', color: '#0AAC00', lineWidth: 1 },
+  { id: 'macd1Line', title: 'MACD 1226 Line', color: '#C0C0C0', lineWidth: 2 },
+  { id: 'macd1Hist', title: 'MACD 1226 Hist', color: '#C0C0C0', lineWidth: 2, style: 'histogram' },
+  { id: 'macd2Line', title: 'MACD 515 Line', color: '#FFFF00', lineWidth: 2 },
+  { id: 'macd2Hist', title: 'MACD 515 Hist', color: '#FFFF00', lineWidth: 2, style: 'histogram' },
+  { id: 'divBear', title: 'Bearish Div', color: '#FF0000', lineWidth: 1 },
+  { id: 'divBull', title: 'Bullish Div', color: '#0AAC00', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -58,53 +59,43 @@ export const metadata = {
 export function calculate(bars: Bar[], inputs: Partial<DoubleMACDInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
   const { fast1, slow1, sig1, fast2, slow2, sig2, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
-
-  // MACD 1
-  const macd1Line = ta.ema(source, fast1).sub(ta.ema(source, slow1));
-  const signal1Line = ta.ema(macd1Line, sig1);
-  const hist1 = macd1Line.sub(signal1Line);
-
-  // MACD 2
-  const macd2Line = ta.ema(source, fast2).sub(ta.ema(source, slow2));
-  const signal2Line = ta.ema(macd2Line, sig2);
-  const hist2 = macd2Line.sub(signal2Line);
-
-  const hist1Arr = hist1.toArray();
-  const hist2Arr = hist2.toArray();
-  const macd1Arr = macd1Line.toArray();
-  const signal1Arr = signal1Line.toArray();
-
-  const warmup1 = slow1 + sig1;
-  const warmup2 = slow2 + sig2;
-  const warmup = Math.max(warmup1, warmup2);
-
-  const plot0 = hist1Arr.map((v, i) => {
-    if (i < warmup1 || v == null) return { time: bars[i].time, value: NaN };
-    const color = v >= 0 ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  const plot1 = hist2Arr.map((v, i) => {
-    if (i < warmup2 || v == null) return { time: bars[i].time, value: NaN };
-    const color = v >= 0 ? '#B2DFDB' : '#FFCDD2';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  const plot2 = macd1Arr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup1 || v == null) ? NaN : v,
-  }));
-
-  const plot3 = signal1Arr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup1 || v == null) ? NaN : v,
-  }));
-
-  // Pine divergence plots: fractal tops/bottoms on macd_2, colored when divergence detected
-  const macd2Arr = macd2Line.toArray();
   const n = bars.length;
 
-  // Fractal detection: f_top_fractal(src) => src[4]<src[2] and src[3]<src[2] and src[2]>src[1] and src[2]>src[0]
+  // MACD 1 (12/26) - Pine plots as both line and histogram
+  const macd1Line = ta.ema(source, fast1).sub(ta.ema(source, slow1));
+  const macd1Arr = macd1Line.toArray();
+
+  // MACD 2 (5/15) - Pine plots as both line and histogram
+  const macd2Line = ta.ema(source, fast2).sub(ta.ema(source, slow2));
+  const macd2Arr = macd2Line.toArray();
+
+  const warmup1 = slow1;
+  const warmup2 = slow2;
+  const warmup = Math.max(warmup1, warmup2);
+
+  // MACD1 line + histogram (gray #C0C0C0)
+  const macd1LinePlot = macd1Arr.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup1 || v == null) ? NaN : v,
+  }));
+  const macd1HistPlot = macd1Arr.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup1 || v == null) ? NaN : v,
+  }));
+
+  // MACD2 line + histogram (yellow #FFFF00)
+  const macd2LinePlot = macd2Arr.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup2 || v == null) ? NaN : v,
+  }));
+  const macd2HistPlot = macd2Arr.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup2 || v == null) ? NaN : v,
+  }));
+
+  // Divergence detection on MACD2 using fractals
+  // f_top_fractal(src) => src[4]<src[2] and src[3]<src[2] and src[2]>src[1] and src[2]>src[0]
+  // f_bot_fractal(src) => src[4]>src[2] and src[3]>src[2] and src[2]<src[1] and src[2]<src[0]
   const fractalTop: (number | null)[] = new Array(n).fill(null);
   const fractalBot: (number | null)[] = new Array(n).fill(null);
   for (let i = 4; i < n; i++) {
@@ -116,70 +107,142 @@ export function calculate(bars: Bar[], inputs: Partial<DoubleMACDInputs> = {}): 
 
   // Track last fractal values for divergence comparison (simplified valuewhen)
   let highPrev = NaN, highPrice = NaN, lowPrev = NaN, lowPrice = NaN;
-  const plot4: Array<{ time: number; value: number; color?: string }> = [];
-  const plot5: Array<{ time: number; value: number; color?: string }> = [];
+  const divBearPlot: Array<{ time: number; value: number; color?: string }> = [];
+  const divBullPlot: Array<{ time: number; value: number; color?: string }> = [];
+
+  // Divergence label markers
+  const markers: MarkerData[] = [];
+
+  // Pine: max = highest(macd_2, 100) * 1.5, ploff = (max - (-max)) / 16 = max/8
+  // We compute a running max for ploff
   for (let i = 0; i < n; i++) {
+    // Compute local scale for label offset
+    let localMax = 0;
+    for (let j = Math.max(0, i - 99); j <= i; j++) {
+      const v = Math.abs(macd2Arr[j] ?? 0);
+      if (v > localMax) localMax = v;
+    }
+    const ploff = (localMax * 1.5) / 8;
+
     if (fractalTop[i] != null) {
       const curVal = fractalTop[i]!;
       const curPrice = bars[i - 2] ? bars[i - 2].high : bars[i].high;
       const regBearish = !isNaN(highPrev) && curPrice > highPrice && curVal < highPrev;
-      plot4.push({ time: bars[i].time, value: curVal, color: regBearish ? '#FF0000' : 'transparent' });
+      const hidBearish = !isNaN(highPrev) && curPrice < highPrice && curVal > highPrev;
+      const col = regBearish || hidBearish ? '#FF0000' : 'transparent';
+      divBearPlot.push({ time: bars[i].time, value: curVal, color: col });
+
+      // Pine plotshape: regular bearish = Bear R, hidden bearish = Bear O
+      if (regBearish) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Bear R' });
+      }
+      if (hidBearish) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Bear O' });
+      }
+
       highPrev = curVal;
       highPrice = curPrice;
     } else {
-      plot4.push({ time: bars[i].time, value: NaN });
+      divBearPlot.push({ time: bars[i].time, value: NaN });
     }
+
     if (fractalBot[i] != null) {
       const curVal = fractalBot[i]!;
       const curPrice = bars[i - 2] ? bars[i - 2].low : bars[i].low;
       const regBullish = !isNaN(lowPrev) && curPrice < lowPrice && curVal > lowPrev;
-      plot5.push({ time: bars[i].time, value: curVal, color: regBullish ? '#0AAC00' : 'transparent' });
+      const hidBullish = !isNaN(lowPrev) && curPrice > lowPrice && curVal < lowPrev;
+      const col = regBullish || hidBullish ? '#0AAC00' : 'transparent';
+      divBullPlot.push({ time: bars[i].time, value: curVal, color: col });
+
+      // Pine plotshape: regular bullish = Bull R, hidden bullish = Bull O
+      if (regBullish) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#0AAC00', text: 'Bull R' });
+      }
+      if (hidBullish) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#0AAC00', text: 'Bull O' });
+      }
+
       lowPrev = curVal;
       lowPrice = curPrice;
     } else {
-      plot5.push({ time: bars[i].time, value: NaN });
+      divBullPlot.push({ time: bars[i].time, value: NaN });
     }
   }
 
-  // Pine markers:
+  // Pine strategy markers:
   // largo = crossover(macd_2,0) and macd_1 < macd_2 and macd_1[1] < macd_1[0] and macd_1 < 0
   // corto = crossunder(macd_2,0) and macd_1 > macd_2 and macd_1[1] > macd_1[0] and macd_1 > 0
-  const markers: MarkerData[] = [];
-  for (let i = warmup + 1; i < bars.length; i++) {
+  for (let i = warmup + 1; i < n; i++) {
     const m2 = macd2Arr[i];
     const m2prev = macd2Arr[i - 1];
     const m1 = macd1Arr[i];
-    const m1prev = i > 0 ? (macd1Arr[i - 1] ?? NaN) : NaN;
+    const m1prev = macd1Arr[i - 1] ?? NaN;
     if (m2 == null || m2prev == null || m1 == null || isNaN(m1prev)) continue;
 
     // Buy: macd2 crosses above 0, macd1 < macd2, macd1 rising, macd1 < 0
     if (m2prev <= 0 && m2 > 0 && m1 < m2 && m1 > m1prev && m1 < 0) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#26A69A', text: 'Buy' });
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#0AAC00', text: 'Buy' });
     }
     // Sell: macd2 crosses below 0, macd1 > macd2, macd1 falling, macd1 > 0
     if (m2prev >= 0 && m2 < 0 && m1 > m2 && m1 < m1prev && m1 > 0) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#EF5350', text: 'Sell' });
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#FF0000', text: 'Sell' });
     }
   }
 
   // Pine bgcolor: atlas zone (red bg when dbb < factor) and choppiness zone (red bg when chop > 50)
-  // Simplified: bgcolor when both histograms are near zero (choppy/low volatility zone)
   const bgColors: BgColorData[] = [];
-  for (let i = warmup; i < bars.length; i++) {
-    const h1 = hist1Arr[i];
-    const h2 = hist2Arr[i];
-    if (h1 == null || h2 == null) continue;
-    // Both histograms same sign and small => choppy zone
-    if (Math.abs(h1) < Math.abs(macd1Arr[i] ?? 1) * 0.1 || Math.abs(h2) < Math.abs(macd2Arr[i] ?? 1) * 0.1) {
+  // Simplified atlas + choppiness detection
+  const bbLen = 20;
+  const bbMult = 2.0;
+  const chopLen = 14;
+  const chopLevel = 50;
+
+  for (let i = Math.max(warmup, bbLen, chopLen); i < n; i++) {
+    // Atlas mini: dbb = sqrt((upper-lower)/upper)*20, factor = ema(dbb,120)*4/5
+    // Simplified: use BB width relative measure
+    let sumSrc = 0, sumSq = 0;
+    for (let j = i - bbLen + 1; j <= i; j++) {
+      sumSrc += bars[j].close;
+      sumSq += bars[j].close * bars[j].close;
+    }
+    const mean = sumSrc / bbLen;
+    const stdv = Math.sqrt(sumSq / bbLen - mean * mean);
+    const bbUp = mean + bbMult * stdv;
+    const bbLo = mean - bbMult * stdv;
+    const dbb = bbUp > 0 ? Math.sqrt((bbUp - bbLo) / bbUp) * 20 : 0;
+
+    // Choppiness: 100 * log10(sum(tr, len) / (highest - lowest)) / log10(len)
+    let sumTr = 0, hh = -Infinity, ll = Infinity;
+    for (let j = i - chopLen + 1; j <= i; j++) {
+      const tr = Math.max(bars[j].high - bars[j].low,
+        j > 0 ? Math.abs(bars[j].high - bars[j - 1].close) : 0,
+        j > 0 ? Math.abs(bars[j].low - bars[j - 1].close) : 0);
+      sumTr += tr;
+      const cmpL = j > 0 ? Math.min(bars[j].low, bars[j - 1].close) : bars[j].low;
+      const cmpH = j > 0 ? Math.max(bars[j].high, bars[j - 1].close) : bars[j].high;
+      if (cmpH > hh) hh = cmpH;
+      if (cmpL < ll) ll = cmpL;
+    }
+    const height = hh - ll;
+    const chop = height > 0 ? 100 * Math.log10(sumTr / height) / Math.log10(chopLen) : 0;
+
+    if (dbb < 2 || chop > chopLevel) {
       bgColors.push({ time: bars[i].time, color: 'rgba(255, 0, 0, 0.1)' });
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'plot4': plot4, 'plot5': plot5 },
+    plots: {
+      'macd1Line': macd1LinePlot,
+      'macd1Hist': macd1HistPlot,
+      'macd2Line': macd2LinePlot,
+      'macd2Hist': macd2HistPlot,
+      'divBear': divBearPlot,
+      'divBull': divBullPlot,
+    },
     hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },
+      { value: 0, options: { color: '#000000', linestyle: 'solid' as const, title: 'Zero' } },
     ],
     markers,
     bgColors,

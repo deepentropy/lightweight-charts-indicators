@@ -13,19 +13,27 @@ import type { PlotCandleData } from '../types';
 export interface LinRegCandlesInputs {
   length: number;
   smoothLen: number;
+  signalLength: number;
+  smaSignal: boolean;
 }
 
 export const defaultInputs: LinRegCandlesInputs = {
-  length: 14,
-  smoothLen: 5,
+  length: 11,
+  smoothLen: 1,
+  signalLength: 11,
+  smaSignal: true,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'LinReg Length', defval: 14, min: 2 },
-  { id: 'smoothLen', type: 'int', title: 'Smooth Length', defval: 5, min: 1 },
+  { id: 'length', type: 'int', title: 'Linear Regression Length', defval: 11, min: 1 },
+  { id: 'smoothLen', type: 'int', title: 'Smooth Length', defval: 1, min: 1 },
+  { id: 'signalLength', type: 'int', title: 'Signal Smoothing', defval: 11, min: 1 },
+  { id: 'smaSignal', type: 'bool', title: 'Simple MA (Signal Line)', defval: true },
 ];
 
-export const plotConfig: PlotConfig[] = [];
+export const plotConfig: PlotConfig[] = [
+  { id: 'signal', title: 'Signal', color: '#FFFFFF', lineWidth: 1 },
+];
 
 export const plotCandleConfig = [
   { id: 'candle0', title: 'LinReg Candle' },
@@ -38,7 +46,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<LinRegCandlesInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
-  const { length, smoothLen } = { ...defaultInputs, ...inputs };
+  const { length, smoothLen, signalLength, smaSignal } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const openSeries = new Series(bars, (b) => b.open);
@@ -102,9 +110,22 @@ export function calculate(bars: Bar[], inputs: Partial<LinRegCandlesInputs> = {}
     });
   }
 
+  // Pine: signal = sma_signal ? sma(bclose, signal_length) : ema(bclose, signal_length)
+  // Compute signal from the linreg close values (finalC)
+  const closeSeries2 = new Series(bars, (_b, i) => (finalC[i] != null && i >= warmup) ? finalC[i]! : NaN);
+  const signalArr = smaSignal
+    ? ta.sma(closeSeries2, signalLength).toArray()
+    : ta.ema(closeSeries2, signalLength).toArray();
+
+  const signalWarmup = warmup + signalLength;
+  const signalPlot = signalArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < signalWarmup || v == null || isNaN(v)) ? NaN : v,
+  }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
+    plots: { signal: signalPlot },
     plotCandles: { candle0: candles },
   };
 }

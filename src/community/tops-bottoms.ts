@@ -12,14 +12,20 @@ import type { MarkerData } from '../types';
 
 export interface TopsBottomsInputs {
   length: number;
+  bull: number;
+  bear: number;
 }
 
 export const defaultInputs: TopsBottomsInputs = {
   length: 5,
+  bull: -0.51,
+  bear: 0.43,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Length', defval: 5, min: 1 },
+  { id: 'bull', type: 'float', title: 'Bullish', defval: -0.51, step: 0.01 },
+  { id: 'bear', type: 'float', title: 'Bearish', defval: 0.43, step: 0.01 },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -34,7 +40,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<TopsBottomsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { length } = { ...defaultInputs, ...inputs };
+  const { length, bull, bear } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const highSeries = new Series(bars, (b) => b.high);
@@ -66,9 +72,42 @@ export function calculate(bars: Bar[], inputs: Partial<TopsBottomsInputs> = {}):
     bottomData.push({ time: bars[i].time, value: lastBottom });
   }
 
+  // Pine CVI strong signal detection: cvi = (close - ValC) / (vol * sqrt(length))
+  // bull1 = cvi <= bull, bear1 = cvi >= bear
+  // bull2 = bull1[1] and not bull1 (exit from bullish zone), bear2 = bear1[1] and not bear1
+  const hl2Series = new Series(bars, (b) => (b.high + b.low) / 2);
+  const valC = ta.sma(hl2Series, length).toArray();
+  const atrArr = ta.atr(bars, length).toArray();
+  const volArr = ta.sma(new Series(bars, (_b, i) => atrArr[i] ?? NaN), length).toArray();
+  const sqrtLen = Math.sqrt(length);
+
+  let prevBull1 = false;
+  let prevBear1 = false;
+  for (let i = length; i < n; i++) {
+    const v = volArr[i];
+    if (v == null || isNaN(v) || v === 0) continue;
+    const cvi = (bars[i].close - (valC[i] ?? 0)) / (v * sqrtLen);
+    const bull1 = cvi <= bull;
+    const bear1 = cvi >= bear;
+    // Strong bullish signal: was in bull zone, now exited
+    if (prevBull1 && !bull1) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'diamond', color: '#00E676', text: '*' });
+    }
+    // Strong bearish signal: was in bear zone, now exited
+    if (prevBear1 && !bear1) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'diamond', color: '#EF5350', text: '*' });
+    }
+    prevBull1 = bull1;
+    prevBear1 = bear1;
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': topData, 'plot1': bottomData },
+    hlines: [
+      { value: bull, options: { color: '#4CAF50', linestyle: 'solid' as const, title: 'Bullish' } },
+      { value: bear, options: { color: '#EF5350', linestyle: 'solid' as const, title: 'Bearish' } },
+    ],
     markers,
   };
 }

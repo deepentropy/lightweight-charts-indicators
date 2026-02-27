@@ -1,36 +1,34 @@
 /**
  * Entry Points
  *
- * Buy/sell entry signals based on RSI extremes combined with EMA trend filter.
- * Buy: RSI < 30 and close > EMA. Sell: RSI > 70 and close < EMA.
+ * Overlay indicator with buy/sell signals based on EMA touch logic.
+ * No visible EMA plot on chart - only markers.
  *
- * Reference: TradingView "Entry Points" (community)
+ * Buy: close > ema AND low <= ema AND open > ema, OR open < ema AND close > ema
+ *      (price touches EMA from above = buy signal)
+ * Sell: close < ema AND high >= ema AND open < ema, OR open > ema AND close < ema
+ *       (price touches EMA from below = sell signal)
+ *
+ * Reference: TradingView "Entry points" (community)
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 
 export interface EntryPointsInputs {
-  rsiLen: number;
-  emaLen: number;
-  src: SourceType;
+  period: number;
 }
 
 export const defaultInputs: EntryPointsInputs = {
-  rsiLen: 14,
-  emaLen: 20,
-  src: 'close',
+  period: 100,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'rsiLen', type: 'int', title: 'RSI Length', defval: 14, min: 1 },
-  { id: 'emaLen', type: 'int', title: 'EMA Length', defval: 20, min: 1 },
-  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
+  { id: 'period', type: 'int', title: 'Period', defval: 100, min: 1 },
 ];
 
-export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'EMA', color: '#787B86', lineWidth: 1 },
-];
+// No visible plots - only markers on overlay
+export const plotConfig: PlotConfig[] = [];
 
 export const metadata = {
   title: 'Entry Points',
@@ -39,36 +37,34 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<EntryPointsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { rsiLen, emaLen, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
+  const { period } = { ...defaultInputs, ...inputs };
+  const closeSeries = getSourceSeries(bars, 'close');
+  const emaArr = ta.ema(closeSeries, period).toArray();
 
-  const rsiArr = ta.rsi(source, rsiLen).toArray();
-  const emaArr = ta.ema(source, emaLen).toArray();
-
-  const warmup = Math.max(rsiLen, emaLen);
   const markers: MarkerData[] = [];
 
-  const plot0 = emaArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup || v == null || isNaN(v) ? NaN : v,
-  }));
-
-  for (let i = warmup; i < bars.length; i++) {
-    const rsi = rsiArr[i];
+  for (let i = period; i < bars.length; i++) {
     const ema = emaArr[i];
-    if (isNaN(rsi) || ema == null || isNaN(ema)) continue;
+    if (ema == null || isNaN(ema)) continue;
 
-    if (rsi < 30 && bars[i].close > ema) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Buy' });
+    const { close, low, high, open } = bars[i];
+
+    // Pine: buy = close > b and low <= b and open > b or open < b and close > b
+    const buy = (close > ema && low <= ema && open > ema) || (open < ema && close > ema);
+    // Pine: sell = close < b and high >= b and open < b or open > b and close < b
+    const sell = (close < ema && high >= ema && open < ema) || (open > ema && close < ema);
+
+    if (buy) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#4CAF50', text: 'Buy' });
     }
-    if (rsi > 70 && bars[i].close < ema) {
+    if (sell) {
       markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: {},
     markers,
   };
 }

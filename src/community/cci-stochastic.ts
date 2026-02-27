@@ -33,7 +33,7 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'K', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot1', title: 'D', color: '#EF5350', lineWidth: 1 },
+  { id: 'plot1', title: 'MA', color: '#787B86', lineWidth: 3 },
 ];
 
 export const metadata = {
@@ -83,10 +83,16 @@ export function calculate(bars: Bar[], inputs: Partial<CCIStochasticInputs> = {}
     value: (v == null || i < warmup) ? NaN : v,
   }));
 
-  const plot1 = dArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (v == null || i < warmup) ? NaN : v,
-  }));
+  const OB = 80;
+  const OS = 20;
+  const plot1 = dArr.map((v, i) => {
+    const val = (v == null || i < warmup) ? NaN : v;
+    let color: string;
+    if (!isNaN(val) && val > OB) color = '#EF5350';     // red above overbought
+    else if (!isNaN(val) && val < OS) color = '#26A69A'; // green below oversold
+    else color = '#787B86';                                // gray otherwise
+    return { time: bars[i].time, value: val, color };
+  });
 
   // Pine markers:
   // trend_enter: crossunder(ma, OS) => buy arrow at 0; crossover(ma, OB) => sell arrow at 100
@@ -118,11 +124,11 @@ export function calculate(bars: Bar[], inputs: Partial<CCIStochasticInputs> = {}
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     hlines: [
-      { value: 80, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
-      { value: 20, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
-    ],
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(41, 98, 255, 0.1)' } },
+      { value: 100, options: { color: '#FFFFFF00', linestyle: 'dotted' as const, title: 'Max Level' } },
+      { value: 80, options: { color: '#EF5350', linestyle: 'solid' as const, title: 'Overbought' } },
+      { value: 50, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Mid Line' } },
+      { value: 20, options: { color: '#26A69A', linestyle: 'solid' as const, title: 'Oversold' } },
+      { value: 0, options: { color: '#FFFFFF00', linestyle: 'dotted' as const, title: 'Min Level' } },
     ],
     markers,
   };

@@ -63,8 +63,11 @@ export function calculate(bars: Bar[], inputs: Partial<RSISnabbelInputs> = {}): 
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     hlines: [
-      { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
-      { value: 30, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
+      { value: 80, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Overbought' } },
+      { value: 55, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Upper Mid' } },
+      { value: 50, options: { color: '#000000', linestyle: 'dashed' as const, title: 'Midline' } },
+      { value: 45, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Lower Mid' } },
+      { value: 20, options: { color: '#4CAF50', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
   };
 }

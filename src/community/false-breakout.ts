@@ -5,12 +5,13 @@
  * price reversal (crossing back through the breakout level).
  * A false breakout up occurs when price makes consecutive new highs
  * then crosses below the breakout level. Vice versa for down.
+ * Draws horizontal lines from breakout bar to current bar at breakout price level.
  *
  * Reference: TradingView "False Breakout (Expo)" by Zeiierman
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, LineDrawingData } from '../types';
 
 export interface FalseBreakoutInputs {
   period: number;
@@ -50,7 +51,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
   const { period, minPeriod, maxPeriod, maType, smoothLength, aggressive } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -108,6 +109,7 @@ export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}
   let indx1 = 0; // previous breakout bar
 
   const markers: MarkerData[] = [];
+  const lines: LineDrawingData[] = [];
   const warmup = period + 2;
 
   for (let i = 0; i < n; i++) {
@@ -154,6 +156,16 @@ export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}
         color: '#f23645',
         text: 'False Up',
       });
+      // Pine: line.new(indx0, val, n, val, color=#f23645, width=2)
+      lines.push({
+        time1: bars[indx0].time,
+        price1: val,
+        time2: bars[i].time,
+        price2: val,
+        color: '#f23645',
+        width: 2,
+        style: 'solid',
+      });
     }
 
     // False breakout down: multiple new lows (count > 1), then price breaks up
@@ -165,6 +177,16 @@ export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}
         shape: 'triangleUp',
         color: '#6ce5a0',
         text: 'False Down',
+      });
+      // Pine: line.new(indx0, val, n, val, color=#6ce5a0, width=2)
+      lines.push({
+        time1: bars[indx0].time,
+        price1: val,
+        time2: bars[i].time,
+        price2: val,
+        color: '#6ce5a0',
+        width: 2,
+        style: 'solid',
       });
     }
   }
@@ -183,6 +205,7 @@ export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     markers,
+    lines,
   };
 }
 

@@ -92,7 +92,8 @@ export function calculate(bars: Bar[], inputs: Partial<TDIHLCTrixInputs> = {}): 
       { value: 32, options: { color: '#26A69A', linestyle: 'dashed' as const, title: 'Oversold' } },
     ],
     fills: [
-      { plot1: 'plot2', plot2: 'plot3', options: { color: 'rgba(41,98,255,0.1)' } },
+      { plot1: 'plot2', plot2: 'plot4', options: { color: 'rgba(255,0,0,0.1)' } },
+      { plot1: 'plot4', plot2: 'plot3', options: { color: 'rgba(0,128,0,0.1)' } },
     ],
   };
 }

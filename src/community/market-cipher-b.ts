@@ -1,48 +1,48 @@
 /**
  * Market Cipher B
  *
- * Extended Market Cipher: WaveTrend + MACD + Stochastic RSI.
+ * WaveTrend oscillator with difference area, cross-detection dots,
+ * and cross background lines.
  *
- * Reference: TradingView "Market Cipher B" community indicator
+ * Reference: TradingView "Market Cipher B Free version with Buy and sell" (community)
  */
 
 import { ta, getSourceSeries, Series, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface MarketCipherBInputs {
   wtChannelLen: number;
   wtAvgLen: number;
-  macdFast: number;
-  macdSlow: number;
-  macdSignal: number;
-  stochLen: number;
-  stochSmooth: number;
+  obLevel1: number;
+  obLevel2: number;
+  osLevel1: number;
+  osLevel2: number;
 }
 
 export const defaultInputs: MarketCipherBInputs = {
-  wtChannelLen: 9,
-  wtAvgLen: 12,
-  macdFast: 12,
-  macdSlow: 26,
-  macdSignal: 9,
-  stochLen: 14,
-  stochSmooth: 3,
+  wtChannelLen: 10,
+  wtAvgLen: 21,
+  obLevel1: 60,
+  obLevel2: 53,
+  osLevel1: -60,
+  osLevel2: -53,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'wtChannelLen', type: 'int', title: 'WT Channel Length', defval: 9, min: 1 },
-  { id: 'wtAvgLen', type: 'int', title: 'WT Average Length', defval: 12, min: 1 },
-  { id: 'macdFast', type: 'int', title: 'MACD Fast', defval: 12, min: 1 },
-  { id: 'macdSlow', type: 'int', title: 'MACD Slow', defval: 26, min: 1 },
-  { id: 'macdSignal', type: 'int', title: 'MACD Signal', defval: 9, min: 1 },
-  { id: 'stochLen', type: 'int', title: 'Stoch Length', defval: 14, min: 1 },
-  { id: 'stochSmooth', type: 'int', title: 'Stoch Smooth', defval: 3, min: 1 },
+  { id: 'wtChannelLen', type: 'int', title: 'Channel Length', defval: 10, min: 1 },
+  { id: 'wtAvgLen', type: 'int', title: 'Average Length', defval: 21, min: 1 },
+  { id: 'obLevel1', type: 'int', title: 'Over Bought Level 1', defval: 60 },
+  { id: 'obLevel2', type: 'int', title: 'Over Bought Level 2', defval: 53 },
+  { id: 'osLevel1', type: 'int', title: 'Over Sold Level 1', defval: -60 },
+  { id: 'osLevel2', type: 'int', title: 'Over Sold Level 2', defval: -53 },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'WT1', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot1', title: 'WT2', color: '#FF6D00', lineWidth: 1 },
-  { id: 'plot2', title: 'MACD Hist', color: '#26A69A', lineWidth: 3, style: 'histogram' },
-  { id: 'plot3', title: 'StochRSI', color: '#E91E63', lineWidth: 1 },
+  { id: 'wt1', title: 'WT1', color: '#2196F3', lineWidth: 2, style: 'area' },
+  { id: 'wt2', title: 'WT2', color: '#0000FF', lineWidth: 1, style: 'area' },
+  { id: 'diff', title: 'WT1-WT2', color: '#FFFF00', lineWidth: 1, style: 'area' },
+  { id: 'crossLine', title: 'Cross Line', color: '#000000', lineWidth: 5 },
+  { id: 'crossDot', title: 'Cross Dot', color: '#00FF00', lineWidth: 6 },
 ];
 
 export const metadata = {
@@ -51,65 +51,93 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MarketCipherBInputs> = {}): IndicatorResult {
-  const { wtChannelLen, wtAvgLen, macdFast, macdSlow, macdSignal, stochLen, stochSmooth } = { ...defaultInputs, ...inputs };
+export function calculate(bars: Bar[], inputs: Partial<MarketCipherBInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+  const { wtChannelLen, wtAvgLen, obLevel1, obLevel2, osLevel1, osLevel2 } = { ...defaultInputs, ...inputs };
 
-  // WaveTrend
+  // WaveTrend: Pine original
+  // ap = hlc3, esa = ema(ap, n1), d = ema(abs(ap-esa), n1)
+  // ci = (ap-esa)/(0.015*d), tci = ema(ci, n2)
+  // wt1 = tci, wt2 = sma(wt1, 4)
   const hlc3 = getSourceSeries(bars, 'hlc3');
   const esa = ta.ema(hlc3, wtChannelLen);
   const d = ta.ema(math.abs(hlc3.sub(esa)) as Series, wtChannelLen);
   const ci = hlc3.sub(esa).div(d.mul(0.015));
   const wt1 = ta.ema(ci, wtAvgLen);
-  const wt2 = ta.sma(wt1, 3);
-
-  // MACD histogram
-  const close = new Series(bars, (b) => b.close);
-  const macdFastEma = ta.ema(close, macdFast);
-  const macdSlowEma = ta.ema(close, macdSlow);
-  const macdLine = macdFastEma.sub(macdSlowEma);
-  const macdSignalLine = ta.ema(macdLine, macdSignal);
-  const macdHist = macdLine.sub(macdSignalLine);
-
-  // Stochastic RSI: stoch of RSI values, then smooth
-  const rsi = ta.rsi(close, stochLen);
-  const stochRaw = ta.stoch(rsi, rsi, rsi, stochLen);
-  const stochSmoothed = ta.sma(stochRaw, stochSmooth);
-  // Scale to center at 0 (0-100 -> -50 to 50)
-  const stochCentered = stochSmoothed.sub(50);
+  const wt2 = ta.sma(wt1, 4);
 
   const wt1Arr = wt1.toArray();
   const wt2Arr = wt2.toArray();
-  const macdHistArr = macdHist.toArray();
-  const stochArr = stochCentered.toArray();
 
-  const warmup = Math.max(wtChannelLen + wtAvgLen, macdSlow, stochLen * 2);
+  const warmup = wtChannelLen + wtAvgLen;
+  const n = bars.length;
 
-  const toPlot = (arr: (number | null)[]) =>
-    arr.map((v, i) => {
-      const val = typeof v === 'number' ? v : NaN;
-      return { time: bars[i].time, value: (i < warmup || isNaN(val)) ? NaN : val };
-    });
+  const toVal = (v: number | null, i: number): number => {
+    if (v == null || i < warmup || isNaN(v)) return NaN;
+    return v;
+  };
 
-  const macdPlot = macdHistArr.map((v, i) => {
-    if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
-    const prev = i > 0 ? (macdHistArr[i - 1] ?? NaN) : NaN;
-    let color: string;
-    if (v >= 0) {
-      color = v > prev ? '#00E676' : '#26A69A';
-    } else {
-      color = v < prev ? '#FF5252' : '#EF5350';
-    }
-    return { time: bars[i].time, value: v, color };
+  // Pine: plot(wt1, style=area, color=#2196F3)
+  const wt1Plot = wt1Arr.map((v, i) => ({ time: bars[i].time, value: toVal(v, i) }));
+  // Pine: plot(wt2, style=area, color=blue)
+  const wt2Plot = wt2Arr.map((v, i) => ({ time: bars[i].time, value: toVal(v, i) }));
+
+  // Pine: plot(wt1-wt2, color=yellow, style=area)
+  const diffPlot = bars.map((b, i) => {
+    const v1 = wt1Arr[i];
+    const v2 = wt2Arr[i];
+    if (v1 == null || v2 == null || i < warmup) return { time: b.time, value: NaN };
+    return { time: b.time, value: v1 - v2 };
   });
+
+  // Pine: cross(wt1, wt2) - detect crosses
+  // plot(cross(wt1,wt2) ? wt2 : na, color=black, style=line, linewidth=5)
+  // plot(cross(wt1,wt2) ? wt2 : na, color=(wt2-wt1>0 ? red : lime), style=circles, linewidth=6)
+  const crossLinePlot: { time: number; value: number }[] = [];
+  const crossDotPlot: { time: number; value: number; color?: string }[] = [];
+  const markers: MarkerData[] = [];
+
+  for (let i = 0; i < n; i++) {
+    if (i < warmup + 1 || wt1Arr[i] == null || wt2Arr[i] == null || wt1Arr[i - 1] == null || wt2Arr[i - 1] == null) {
+      crossLinePlot.push({ time: bars[i].time, value: NaN });
+      crossDotPlot.push({ time: bars[i].time, value: NaN });
+      continue;
+    }
+
+    const prev1 = wt1Arr[i - 1]!;
+    const prev2 = wt2Arr[i - 1]!;
+    const curr1 = wt1Arr[i]!;
+    const curr2 = wt2Arr[i]!;
+
+    // cross: either crossover or crossunder
+    const isCross = (prev1 <= prev2 && curr1 > curr2) || (prev1 >= prev2 && curr1 < curr2);
+
+    if (isCross) {
+      crossLinePlot.push({ time: bars[i].time, value: curr2 });
+      const dotColor = (curr2 - curr1) > 0 ? '#FF0000' : '#00FF00'; // red if wt2>wt1, lime otherwise
+      crossDotPlot.push({ time: bars[i].time, value: curr2, color: dotColor });
+    } else {
+      crossLinePlot.push({ time: bars[i].time, value: NaN });
+      crossDotPlot.push({ time: bars[i].time, value: NaN });
+    }
+  }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(wt1Arr), 'plot1': toPlot(wt2Arr), 'plot2': macdPlot, 'plot3': toPlot(stochArr) },
+    plots: {
+      'wt1': wt1Plot,
+      'wt2': wt2Plot,
+      'diff': diffPlot,
+      'crossLine': crossLinePlot,
+      'crossDot': crossDotPlot,
+    },
     hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } },
-      { value: 60, options: { color: '#EF5350', linestyle: 'dashed', title: 'OB' } },
-      { value: -60, options: { color: '#26A69A', linestyle: 'dashed', title: 'OS' } },
+      { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Zero' } },
+      { value: obLevel1, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'OB1' } },
+      { value: osLevel1, options: { color: '#26A69A', linestyle: 'dashed' as const, title: 'OS1' } },
+      { value: obLevel2, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'OB2' } },
+      { value: osLevel2, options: { color: '#26A69A', linestyle: 'dashed' as const, title: 'OS2' } },
     ],
+    markers,
   };
 }
 

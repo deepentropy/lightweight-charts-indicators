@@ -1,89 +1,88 @@
 /**
- * Elliott Wave Oscillator (EWO)
+ * Elliott Wave Oscillator Signals (EWO-S)
  *
- * Difference between fast and slow EMA. Color-coded histogram.
- * EWO = EMA(close, 5) - EMA(close, 35)
+ * Overlay indicator. Computes EWO = (EMA(5)/EMA(34) - 1) * 100 and its signal line.
+ * Crossover/crossunder of EWO vs signal generates buy/sell markers on price chart.
  *
- * Reference: TradingView "Elliot Wave Oscillator [LazyBear]"
+ * - Strong Long: crossover when EWO < -threshold (dark green labelUp)
+ * - Long: crossover when EWO > -threshold (green labelUp)
+ * - Strong Short: crossunder when EWO > threshold (dark red labelDown)
+ * - Short: crossunder when EWO < threshold (red labelDown)
+ *
+ * The Pine also draws an EWO histogram via line.new on the price chart, but that
+ * is a complex overlay rendering. We represent it as a secondary panel-less
+ * visual reference and focus on the key trading signals (markers).
+ *
+ * Reference: TradingView "Elliott Wave Oscillator Signals by DGT"
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 
 export interface ElliottWaveOscInputs {
-  fastLength: number;
-  slowLength: number;
+  useEma: boolean;
   signalDelay: number;
   strengthThreshold: number;
 }
 
 export const defaultInputs: ElliottWaveOscInputs = {
-  fastLength: 5,
-  slowLength: 35,
+  useEma: true,
   signalDelay: 5,
   strengthThreshold: 13,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'fastLength', type: 'int', title: 'Fast EMA Length', defval: 5, min: 1 },
-  { id: 'slowLength', type: 'int', title: 'Slow EMA Length', defval: 35, min: 1 },
+  { id: 'useEma', type: 'bool', title: 'Use Exponential MA', defval: true },
   { id: 'signalDelay', type: 'int', title: 'Signal Delay', defval: 5, min: 2 },
   { id: 'strengthThreshold', type: 'int', title: 'Strength Threshold', defval: 13, min: 1 },
 ];
 
-export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'EWO', color: '#26A69A', lineWidth: 2, style: 'histogram' },
-  { id: 'plot1', title: 'Signal', color: '#FF9800', lineWidth: 1 },
-];
+// Overlay indicator - no separate panel plots
+export const plotConfig: PlotConfig[] = [];
 
 export const metadata = {
-  title: 'Elliott Wave Oscillator',
-  shortTitle: 'EWO',
-  overlay: false,
+  title: 'Elliott Wave Oscillator Signals',
+  shortTitle: 'EWO-S',
+  overlay: true,
 };
 
 export function calculate(bars: Bar[], inputs: Partial<ElliottWaveOscInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { fastLength, slowLength, signalDelay, strengthThreshold } = { ...defaultInputs, ...inputs };
+  const { useEma, signalDelay, strengthThreshold } = { ...defaultInputs, ...inputs };
 
   const src = getSourceSeries(bars, 'close');
-  const fastEma = ta.ema(src, fastLength);
-  const slowEma = ta.ema(src, slowLength);
-  const ewo = fastEma.sub(slowEma);
-  const ewoArr = ewo.toArray();
 
-  // Signal line = EMA of EWO
-  const ewoSeries = new Series(bars, (_b, i) => ewoArr[i] ?? 0);
-  const ewoSignalArr = ta.ema(ewoSeries, signalDelay).toArray();
+  // EWO = (fast_ma / slow_ma - 1) * 100
+  const fastMa = useEma ? ta.ema(src, 5) : ta.sma(src, 5);
+  const slowMa = useEma ? ta.ema(src, 34) : ta.sma(src, 34);
+  const fastArr = fastMa.toArray();
+  const slowArr = slowMa.toArray();
 
-  const warmup = slowLength;
-
-  // Histogram color: 4 shades based on direction and sign
-  const plot = ewoArr.map((v, i) => {
-    if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
-    const prev = i > 0 ? ewoArr[i - 1] : null;
-    let color: string;
-    if (v >= 0) {
-      color = (prev != null && v < prev) ? '#00E676' : '#006400'; // green shades
+  const n = bars.length;
+  const ewoArr: number[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const f = fastArr[i];
+    const s = slowArr[i];
+    if (f == null || s == null || s === 0) {
+      ewoArr[i] = NaN;
     } else {
-      color = (prev != null && v > prev) ? '#FF5252' : '#910000'; // red shades
+      ewoArr[i] = (f / s - 1) * 100;
     }
-    return { time: bars[i].time, value: v, color };
-  });
+  }
 
-  const plot1 = ewoSignalArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null) ? NaN : v,
-  }));
+  // Signal line = MA of EWO
+  const ewoSeries = new Series(bars, (_b, i) => ewoArr[i] ?? 0);
+  const ewoSignalArr = (useEma ? ta.ema(ewoSeries, signalDelay) : ta.sma(ewoSeries, signalDelay)).toArray();
 
-  // Markers: crossover/crossunder signals from Pine
-  const markers: MarkerData[] = [];
+  const warmup = 34; // slowest MA length
   const t = strengthThreshold;
-  for (let i = warmup + 1; i < bars.length; i++) {
+
+  const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < n; i++) {
     const cur = ewoArr[i];
     const prev = ewoArr[i - 1];
     const curSig = ewoSignalArr[i];
     const prevSig = ewoSignalArr[i - 1];
-    if (cur == null || prev == null || curSig == null || prevSig == null) continue;
+    if (isNaN(cur) || isNaN(prev) || curSig == null || prevSig == null) continue;
 
     const crossOver = prev <= prevSig && cur > curSig;
     const crossUnder = prev >= prevSig && cur < curSig;
@@ -91,7 +90,7 @@ export function calculate(bars: Bar[], inputs: Partial<ElliottWaveOscInputs> = {
     if (crossOver && cur < -t) {
       // Strong Long
       markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#006400', text: 'SL' });
-    } else if (crossOver) {
+    } else if (crossOver && cur > -t) {
       // Long
       markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00E676', text: 'L' });
     }
@@ -99,7 +98,7 @@ export function calculate(bars: Bar[], inputs: Partial<ElliottWaveOscInputs> = {
     if (crossUnder && cur > t) {
       // Strong Short
       markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#910000', text: 'SS' });
-    } else if (crossUnder) {
+    } else if (crossUnder && cur < t) {
       // Short
       markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF5252', text: 'S' });
     }
@@ -107,10 +106,7 @@ export function calculate(bars: Bar[], inputs: Partial<ElliottWaveOscInputs> = {
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot, 'plot1': plot1 },
-    hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },
-    ],
+    plots: {},
     markers,
   };
 }

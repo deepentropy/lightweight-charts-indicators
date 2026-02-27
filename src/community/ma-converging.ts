@@ -117,6 +117,7 @@ export function calculate(bars: Bar[], inputs: Partial<MAConvergingInputs> = {})
   const plot1 = maArr.map((v, i) => ({
     time: bars[i].time,
     value: i < warmup ? NaN : v,
+    color: (i < warmup) ? undefined : (fmaArr[i] > maArr[i] ? '#008080' : '#FF0000'),
   }));
 
   const fillColors = bars.map((_, i) => {

@@ -90,13 +90,14 @@ export function calculate(bars: Bar[], inputs: Partial<CMVixFixV3Inputs> = {}): 
 
   const warmup = Math.max(length, bbLen);
 
+  // Pine: plot(wvf * -1, style=columns) - WVF plotted inverted
   const plot0 = wvfArr.map((v, i) => {
     if (i < warmup) return { time: bars[i].time, value: NaN };
     const upperBand = (midLine[i] ?? 0) + bbMult * (sDev[i] ?? 0);
     const rangeHigh = (wvfHighest[i] ?? 0) * (percentile / 100);
     const alert = v >= upperBand || v >= rangeHigh;
     const color = alert ? '#00E676' : '#787B86';
-    return { time: bars[i].time, value: v, color };
+    return { time: bars[i].time, value: v * -1, color };
   });
 
   const plot1 = bars.map((b, i) => {
@@ -178,11 +179,21 @@ export function calculate(bars: Bar[], inputs: Partial<CMVixFixV3Inputs> = {}): 
     value: i < warmup ? NaN : (v === 1 ? v : NaN),
   }));
 
-  // barcolor: lime when WVF alert is active (wvf >= upperBand or wvf >= rangeHigh)
+  // barcolor: 4 states in Pine priority order (later overrides earlier):
+  // Pine: barcolor(sbcAggr and alert4 ? orange : na)
+  // Pine: barcolor(sbcFilt and alert3 ? fuchsia : na)
+  // Pine: barcolor(sbc and alert2 ? aqua : na)   -- "was true now false"
+  // Pine: barcolor(sbcc and alert1 ? lime : na)   -- "is true"
   const barColors: BarColorData[] = [];
   for (let i = warmup; i < bars.length; i++) {
-    if (alert1Arr[i] === 1) {
-      barColors.push({ time: bars[i].time, color: '#00E676' });
+    // Apply in reverse priority order so last applied wins
+    let color: string | null = null;
+    if (alert4Arr[i] === 1) color = '#FFA500';    // orange - aggressive filtered entry
+    if (alert3Arr[i] === 1) color = '#FF00FF';    // fuchsia - filtered entry
+    if (alert2Arr[i] === 1) color = '#00FFFF';    // aqua - was true now false
+    if (alert1Arr[i] === 1) color = '#00FF00';    // lime - is true
+    if (color) {
+      barColors.push({ time: bars[i].time, color });
     }
   }
 

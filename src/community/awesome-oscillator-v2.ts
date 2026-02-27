@@ -29,7 +29,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'AO', color: '#EF5350', lineWidth: 1, style: 'histogram' },
+  { id: 'plot0', title: 'AO', color: '#EF5350', lineWidth: 2 },
   { id: 'plot1', title: 'Signal', color: '#2962FF', lineWidth: 2 },
 ];
 
@@ -56,12 +56,10 @@ export function calculate(bars: Bar[], inputs: Partial<AwesomeOscillatorV2Inputs
   const signalArr = signal.toArray();
   const warmup = slowPeriod;
 
-  const aoPlot = aoArr.map((v, i) => {
-    if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
-    const prev = i > 0 ? (aoArr[i - 1] ?? NaN) : NaN;
-    const color = v >= prev ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
-  });
+  const aoPlot = aoArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup || v == null) ? NaN : v,
+  }));
 
   const signalPlot = signalArr.map((v, i) => ({
     time: bars[i].time,

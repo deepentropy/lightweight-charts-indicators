@@ -129,9 +129,22 @@ export function calculate(bars: Bar[], inputs: Partial<QQEInputs> = {}): Indicat
     }
   }
 
+  // Pine: fill(QQF, QQS, color=QQEF>QQES ? green : na) / fill(QQF, QQS, color=QQEF<QQES ? red : na)
+  const fillColors: string[] = [];
+  for (let i = 0; i < n; i++) {
+    if (i < warmup) {
+      fillColors.push('rgba(0,0,0,0)');
+    } else {
+      const sr = srArr[i] ?? 0;
+      const tr = trailing[i];
+      fillColors.push(sr > tr ? 'rgba(38,166,154,0.3)' : 'rgba(239,83,80,0.3)');
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
+    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(38,166,154,0.3)' }, colors: fillColors }],
     hlines: [
       { value: 50, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Midline' } },
     ],

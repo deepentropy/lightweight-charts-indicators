@@ -1,35 +1,46 @@
 /**
- * OTT Oscillator (OTTO)
+ * Optimized Trend Tracker Oscillator (OTTO)
  *
- * OTT computed as oscillator: normalized difference between MA and OTT.
- * Positive when MA is above OTT (bullish), negative when below (bearish).
+ * Plots HOTT (High OTT) and LOTT (Low OTT) as overlay lines with fill.
+ * HOTT = adjusted OTT trailing stop, LOTT = VIDYA-ratio source.
+ * Buy signal when LOTT crosses above HOTT, Sell when LOTT crosses below HOTT.
  *
- * Reference: TradingView "OTT Oscillator" (TV#493)
+ * Reference: TradingView "Optimized Trend Tracker Oscillator OTTO" by KivancOzbilgic
  */
 
-import { getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { getSourceSeries, Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 
 export interface OTTOInputs {
   period: number;
   percent: number;
+  fastVidyaLen: number;
+  slowVidyaLen: number;
+  correctingConst: number;
   src: SourceType;
 }
 
 export const defaultInputs: OTTOInputs = {
   period: 2,
-  percent: 1.4,
+  percent: 0.6,
+  fastVidyaLen: 10,
+  slowVidyaLen: 25,
+  correctingConst: 100000,
   src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
+  { id: 'period', type: 'int', title: 'OTT Period', defval: 2, min: 1 },
+  { id: 'percent', type: 'float', title: 'OTT Optimization Coeff', defval: 0.6, min: 0, step: 0.1 },
+  { id: 'fastVidyaLen', type: 'int', title: 'Fast VIDYA Length', defval: 10, min: 1 },
+  { id: 'slowVidyaLen', type: 'int', title: 'Slow VIDYA Length', defval: 25, min: 1 },
+  { id: 'correctingConst', type: 'int', title: 'Correcting Constant', defval: 100000, min: 1 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
-  { id: 'period', type: 'int', title: 'Period', defval: 2, min: 1 },
-  { id: 'percent', type: 'float', title: 'Percent', defval: 1.4, min: 0, step: 0.1 },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'OTTO', color: '#2962FF', lineWidth: 4, style: 'histogram' },
+  { id: 'hott', title: 'HOTT', color: '#FF0000', lineWidth: 2 },
+  { id: 'lott', title: 'LOTT', color: '#0000FF', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -38,33 +49,50 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<OTTOInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { period, percent, src } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const srcSeries = getSourceSeries(bars, src);
-  const srcArr = srcSeries.toArray();
-
-  // VAR calculation
-  const valpha = 2 / (period + 1);
-  const mavg: number[] = new Array(n);
+// VAR (Variable Index Dynamic Average) calculation
+function varFunc(srcArr: number[], length: number): number[] {
+  const n = srcArr.length;
+  const out: number[] = new Array(n);
+  const valpha = 2 / (length + 1);
 
   for (let i = 0; i < n; i++) {
-    const s = srcArr[i] ?? 0;
+    const s = srcArr[i];
     let vUD = 0;
     let vDD = 0;
     for (let j = Math.max(0, i - 8); j <= i; j++) {
-      const cur = srcArr[j] ?? 0;
-      const prev = j > 0 ? (srcArr[j - 1] ?? 0) : cur;
+      const cur = srcArr[j];
+      const prev = j > 0 ? srcArr[j - 1] : cur;
       if (cur > prev) vUD += cur - prev;
       if (cur < prev) vDD += prev - cur;
     }
     const vCMO = (vUD + vDD) === 0 ? 0 : (vUD - vDD) / (vUD + vDD);
-    mavg[i] = i === 0 ? s : valpha * Math.abs(vCMO) * s + (1 - valpha * Math.abs(vCMO)) * mavg[i - 1];
+    out[i] = i === 0 ? s : valpha * Math.abs(vCMO) * s + (1 - valpha * Math.abs(vCMO)) * out[i - 1];
+  }
+  return out;
+}
+
+export function calculate(bars: Bar[], inputs: Partial<OTTOInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+  const { period, percent, fastVidyaLen, slowVidyaLen, correctingConst, src } = { ...defaultInputs, ...inputs };
+  const n = bars.length;
+
+  const srcSeries = getSourceSeries(bars, src);
+  const srcArr = srcSeries.toArray().map(v => v ?? 0);
+
+  // Pine: mov1 = Var_Func1(src1, slength/2), mov2 = Var_Func1(src1, slength), mov3 = Var_Func1(src1, slength*flength)
+  const mov1 = varFunc(srcArr, Math.max(1, Math.floor(slowVidyaLen / 2)));
+  const mov2 = varFunc(srcArr, slowVidyaLen);
+  const mov3 = varFunc(srcArr, slowVidyaLen * fastVidyaLen);
+
+  // Pine: src = mov1 / (mov2 - mov3 + coco)
+  const normalizedSrc: number[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    normalizedSrc[i] = mov1[i] / (mov2[i] - mov3[i] + correctingConst);
   }
 
-  // OTT trailing stop logic
-  const fark = mavg.map((v) => v * percent * 0.01);
+  // OTT on normalized source using VAR MA
+  const mavg = varFunc(normalizedSrc, period);
+
+  const fark = mavg.map(v => v * percent * 0.01);
   const longStop: number[] = new Array(n);
   const shortStop: number[] = new Array(n);
   const dir: number[] = new Array(n);
@@ -91,38 +119,45 @@ export function calculate(bars: Bar[], inputs: Partial<OTTOInputs> = {}): Indica
 
   const warmup = period + 9;
 
-  // Oscillator = MA - OTT[2-bar lag]
-  const plot0 = mavg.map((v, i) => {
-    if (i < warmup + 2) return { time: bars[i].time, value: NaN };
-    const ottLag = ott[i - 2];
-    const diff = v - ottLag;
-    const color = diff > 0 ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: diff, color };
+  // Pine: HOTT = nz(HOTT[2]), LOTT = src (normalizedSrc)
+  const hottPlot = ott.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup + 2) ? NaN : ott[i - 2],
+  }));
+
+  const lottPlot = normalizedSrc.map((v, i) => ({
+    time: bars[i].time,
+    value: i < warmup ? NaN : v,
+  }));
+
+  // Fill color: red when LOTT < HOTT[2], green otherwise
+  const fillColors = normalizedSrc.map((v, i) => {
+    if (i < warmup + 2) return 'transparent';
+    return v < ott[i - 2] ? 'rgba(255, 0, 0, 0.80)' : 'rgba(0, 255, 0, 0.80)';
   });
 
-  // Markers: Buy when oscillator crosses above zero (LOTT crosses above HOTT),
-  // Sell when oscillator crosses below zero (LOTT crosses below HOTT)
+  // Markers: Buy = crossunder(HOTT[2], LOTT), Sell = crossover(HOTT[2], LOTT)
   const markers: MarkerData[] = [];
   for (let i = warmup + 3; i < n; i++) {
-    const prevDiff = plot0[i - 1].value;
-    const curDiff = plot0[i].value;
-    if (isNaN(prevDiff) || isNaN(curDiff)) continue;
-    // Buy: oscillator crosses above zero
-    if (prevDiff <= 0 && curDiff > 0) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
+    const curHOTT = ott[i - 2];
+    const prevHOTT = ott[i - 3];
+    const curLOTT = normalizedSrc[i];
+    const prevLOTT = normalizedSrc[i - 1];
+
+    // Buy: HOTT crosses under LOTT (HOTT was above, now below)
+    if (prevHOTT >= prevLOTT && curHOTT < curLOTT) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'Buy' });
     }
-    // Sell: oscillator crosses below zero
-    if (prevDiff >= 0 && curDiff < 0) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+    // Sell: HOTT crosses over LOTT (HOTT was below, now above)
+    if (prevHOTT <= prevLOTT && curHOTT > curLOTT) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Sell' });
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
-    hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
-    ],
+    plots: { 'hott': hottPlot, 'lott': lottPlot },
+    fills: [{ plot1: 'hott', plot2: 'lott', options: { color: '#00FF00' }, colors: fillColors }],
     markers,
   };
 }

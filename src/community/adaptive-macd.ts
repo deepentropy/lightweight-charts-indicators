@@ -88,10 +88,11 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveMACDInputs> = {})
 
   const warmup = r2Period;
 
-  const plot0Data: { time: number | string; value: number }[] = new Array(n);
+  const plot0Data: { time: number | string; value: number; color?: string }[] = new Array(n);
   const plot1Data: { time: number | string; value: number }[] = new Array(n);
   const plot2Data: { time: number | string; value: number }[] = new Array(n);
 
+  let prevHist = NaN;
   for (let i = 0; i < n; i++) {
     const t = bars[i].time;
     if (i < warmup) {
@@ -103,9 +104,20 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveMACDInputs> = {})
       const s = signalArr[i];
       const sVal = (s != null && !isNaN(s)) ? s : NaN;
       const hist = (!isNaN(m) && !isNaN(sVal)) ? m - sVal : NaN;
-      plot0Data[i] = { time: t, value: hist };
+      // 4-color histogram: bright/faded green/red based on direction and sign
+      let color: string;
+      if (!isNaN(hist)) {
+        if (hist > 0 && hist > prevHist) color = '#26A69A';       // bright green (rising above zero)
+        else if (hist > 0 && hist <= prevHist) color = '#B2DFDB';  // faded green (falling above zero)
+        else if (hist < 0 && hist < prevHist) color = '#FF5252';   // bright red (falling below zero)
+        else color = '#FFCDD2';                                     // faded red (rising below zero)
+      } else {
+        color = '#787B86';
+      }
+      plot0Data[i] = { time: t, value: hist, color };
       plot1Data[i] = { time: t, value: isNaN(m) ? NaN : m };
       plot2Data[i] = { time: t, value: sVal };
+      prevHist = hist;
     }
   }
 

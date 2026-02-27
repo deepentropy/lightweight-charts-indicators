@@ -16,6 +16,7 @@ export interface SqueezeMomentumV2Inputs {
   kcMult1: number;
   kcMult2: number;
   kcMult3: number;
+  signalPeriod: number;
   src: SourceType;
 }
 
@@ -26,6 +27,7 @@ export const defaultInputs: SqueezeMomentumV2Inputs = {
   kcMult1: 1.0,
   kcMult2: 1.5,
   kcMult3: 2.0,
+  signalPeriod: 5,
   src: 'close',
 };
 
@@ -36,12 +38,14 @@ export const inputConfig: InputConfig[] = [
   { id: 'kcMult1', type: 'float', title: 'KC Mult 1 (High)', defval: 1.0, min: 0.01, step: 0.5 },
   { id: 'kcMult2', type: 'float', title: 'KC Mult 2 (Mid)', defval: 1.5, min: 0.01, step: 0.5 },
   { id: 'kcMult3', type: 'float', title: 'KC Mult 3 (Low)', defval: 2.0, min: 0.01, step: 0.5 },
+  { id: 'signalPeriod', type: 'int', title: 'Signal Length', defval: 5, min: 1 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Momentum', color: '#26A69A', lineWidth: 4, style: 'histogram' },
   { id: 'plot1', title: 'Squeeze', color: '#787B86', lineWidth: 2, style: 'cross' },
+  { id: 'plot2', title: 'Signal', color: '#FF0000', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -51,7 +55,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<SqueezeMomentumV2Inputs> = {}): IndicatorResult {
-  const { bbLength, bbMult, kcLength, kcMult1, kcMult2, kcMult3, src } = { ...defaultInputs, ...inputs };
+  const { bbLength, bbMult, kcLength, kcMult1, kcMult2, kcMult3, signalPeriod, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
 
   // Bollinger Bands
@@ -116,9 +120,17 @@ export function calculate(bars: Bar[], inputs: Partial<SqueezeMomentumV2Inputs> 
     return { time: bars[i].time, value: 0, color };
   });
 
+  // Signal line: SMA of momentum value (Pine: plot(sma(val, SignalPeriod), color=red))
+  const valSeries = new Series(bars, (_b, i) => valArr[i] ?? 0);
+  const signalArr = ta.sma(valSeries, signalPeriod).toArray();
+  const signalData = signalArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup || v == null || isNaN(v)) ? NaN : v,
+  }));
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': momData, 'plot1': sqzData },
+    plots: { 'plot0': momData, 'plot1': sqzData, 'plot2': signalData },
   };
 }
 

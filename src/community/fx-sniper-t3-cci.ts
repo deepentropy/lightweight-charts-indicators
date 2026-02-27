@@ -3,6 +3,7 @@
  *
  * CCI smoothed with Tillson T3 moving average.
  * T3 uses a 6-stage EMA cascade with factor-based coefficients.
+ * Pine plots both a line (blue) and a histogram (green >= 0, red < 0) of the same T3-CCI value.
  *
  * Reference: TradingView "FX Sniper T3-CCI" community indicator
  */
@@ -20,19 +21,20 @@ export interface FXSniperT3CCIInputs {
 export const defaultInputs: FXSniperT3CCIInputs = {
   cciLength: 14,
   t3Length: 5,
-  t3Factor: 0.7,
+  t3Factor: 0.618,
   src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'cciLength', type: 'int', title: 'CCI Length', defval: 14, min: 1 },
   { id: 't3Length', type: 'int', title: 'T3 Length', defval: 5, min: 1 },
-  { id: 't3Factor', type: 'float', title: 'T3 Factor', defval: 0.7, min: 0.0, max: 1.0, step: 0.1 },
+  { id: 't3Factor', type: 'float', title: 'T3 Factor', defval: 0.618, min: 0.0, max: 1.0, step: 0.1 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'T3-CCI', color: '#2962FF', lineWidth: 2 },
+  { id: 'histogram', title: 'CCIH', color: '#008000', lineWidth: 2, style: 'histogram' },
 ];
 
 export const metadata = {
@@ -74,10 +76,16 @@ export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}
   const c3 = -6 * b2 - 3 * b - 3 * b3;
   const c4 = 1 + 3 * b + b3 + 3 * b2;
 
-  // EMA helper for plain arrays
-  const emaArray = (input: number[], len: number): number[] => {
+  // Pine: nr = 1 + 0.5*(nn-1), w1 = 2/(nr+1), w2 = 1-w1
+  // This is EMA with period = nr (not t3Length directly)
+  const nn = Math.max(1, t3Length);
+  const nr = 1 + 0.5 * (nn - 1);
+  const w1 = 2 / (nr + 1);
+  const w2 = 1 - w1;
+
+  // EMA helper using Pine's w1/w2 weighting
+  const emaArray = (input: number[]): number[] => {
     const result: number[] = new Array(input.length);
-    const k = 2 / (len + 1);
     let prev = NaN;
     for (let i = 0; i < input.length; i++) {
       const v = input[i];
@@ -87,19 +95,19 @@ export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}
         prev = v;
         result[i] = v;
       } else {
-        prev = v * k + prev * (1 - k);
+        prev = w1 * v + w2 * prev;
         result[i] = prev;
       }
     }
     return result;
   };
 
-  const e1 = emaArray(cciArr, t3Length);
-  const e2 = emaArray(e1, t3Length);
-  const e3 = emaArray(e2, t3Length);
-  const e4 = emaArray(e3, t3Length);
-  const e5 = emaArray(e4, t3Length);
-  const e6 = emaArray(e5, t3Length);
+  const e1 = emaArray(cciArr);
+  const e2 = emaArray(e1);
+  const e3 = emaArray(e2);
+  const e4 = emaArray(e3);
+  const e5 = emaArray(e4);
+  const e6 = emaArray(e5);
 
   const t3Arr: number[] = new Array(bars.length);
   const warmup = cciLength + t3Length * 6;
@@ -111,9 +119,18 @@ export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}
     }
   }
 
+  // Pine: plot(xccir, color=blue, title="T3-CCI") -- line plot
   const plot0 = t3Arr.map((v, i) => ({
     time: bars[i].time,
     value: isNaN(v) ? NaN : v,
+  }));
+
+  // Pine: plot(xccir, color=cciHcolor, title="CCIH", style=histogram)
+  // cciHcolor = xccir >= 0 ? green : xccir < 0 ? red : black
+  const histogram = t3Arr.map((v, i) => ({
+    time: bars[i].time,
+    value: isNaN(v) ? NaN : v,
+    color: isNaN(v) ? undefined : (v >= 0 ? '#008000' : '#FF0000'),
   }));
 
   // Pine: pos = xccir > 0 ? 1 : xccir < 0 ? -1 : pos[1]
@@ -134,11 +151,9 @@ export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'histogram': histogram },
     hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } },
-      { value: 100, options: { color: '#EF5350', linestyle: 'dashed', title: 'OB' } },
-      { value: -100, options: { color: '#26A69A', linestyle: 'dashed', title: 'OS' } },
+      { value: 0, options: { color: '#800080', linestyle: 'solid', title: 'Zero' } },
     ],
     barColors,
   };

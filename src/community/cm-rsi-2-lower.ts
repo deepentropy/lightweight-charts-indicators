@@ -25,7 +25,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'RSI(2)', color: '#787B86', lineWidth: 4, style: 'histogram' },
+  { id: 'plot0', title: 'RSI(2)', color: '#787B86', lineWidth: 4 },
   { id: 'plot_band1', title: 'Upper Line 90', color: 'transparent', lineWidth: 0 },
   { id: 'plot_band0', title: 'Lower Line 10', color: 'transparent', lineWidth: 0 },
 ];
@@ -62,8 +62,10 @@ export function calculate(bars: Bar[], inputs: Partial<CMRSI2LowerInputs> = {}):
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot_band1': plot_band1, 'plot_band0': plot_band0 },
     hlines: [
-      { value: 90, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
-      { value: 10, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
+      { value: 100, options: { color: '#00FFFF', linestyle: 'solid' as const, title: 'Upper Line 100' } },
+      { value: 90, options: { color: '#00FFFF', linestyle: 'solid' as const, title: 'Upper Line 90' } },
+      { value: 10, options: { color: '#00FFFF', linestyle: 'solid' as const, title: 'Lower Line 10' } },
+      { value: 0, options: { color: '#00FFFF', linestyle: 'solid' as const, title: 'Lower Line 0' } },
     ],
     fills: [
       { plot1: 'plot_band1', plot2: 'plot_band0', options: { color: 'rgba(192,192,192,0.10)' } },

@@ -28,8 +28,8 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'PSO', color: '#26A69A', lineWidth: 2 },
-  { id: 'plot1', title: 'Signal', color: '#FF6D00', lineWidth: 1 },
+  { id: 'plot0', title: 'PSO', color: '#000000', lineWidth: 2 },
+  { id: 'plot1', title: 'PSO Histogram', color: '#2196F3', lineWidth: 1, style: 'histogram' },
 ];
 
 export const metadata = {
@@ -68,29 +68,30 @@ export function calculate(bars: Bar[], inputs: Partial<PremierStochasticInputs> 
     psoArr[i] = (e - 1) / (e + 1);
   }
 
-  const psoSeries = new Series(bars, (_b, i) => psoArr[i]);
-  const signalArr = ta.ema(psoSeries, 9).toArray();
-
   const warmup = stochLength + smoothLength * 2;
 
+  // Pine: plot(pso, title="Premier Stoch", color=black, linewidth=2) -- line
   const plot0 = psoArr.map((v, i) => {
     if (i < warmup) return { time: bars[i].time, value: NaN };
-    const color = v >= 0 ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
+    return { time: bars[i].time, value: v };
   });
 
-  const plot1 = signalArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || isNaN(v)) ? NaN : v,
-  }));
+  // Pine: plot(pso, color=iff(pso < 0, red, blue), style=histogram) -- histogram with conditional color
+  const plot1 = psoArr.map((v, i) => {
+    if (i < warmup) return { time: bars[i].time, value: NaN };
+    const color = v < 0 ? '#EF5350' : '#2196F3';
+    return { time: bars[i].time, value: v, color };
+  });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
-      { value: 0.9, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Upper' } },
-      { value: -0.9, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Lower' } },
+      { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Zero' } },
+      { value: 0.2, options: { color: '#2196F3', linestyle: 'dashed' as const, title: 'Upper Trigger' } },
+      { value: 0.9, options: { color: '#2196F3', linestyle: 'solid' as const, title: 'Upper' } },
+      { value: -0.2, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Lower Trigger' } },
+      { value: -0.9, options: { color: '#EF5350', linestyle: 'solid' as const, title: 'Lower' } },
     ],
   };
 }

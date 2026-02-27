@@ -28,6 +28,7 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Stop', color: '#2962FF', lineWidth: 2 },
+  { id: 'ohlc4', title: 'OHLC4', color: '#00000000', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -85,9 +86,25 @@ export function calculate(bars: Bar[], inputs: Partial<ST0PInputs> = {}): Indica
     return { time: bars[i].time, value: v, color };
   });
 
+  // ohlc4 plot (invisible, used as fill anchor)
+  const ohlc4Plot = bars.map((b, i) => ({
+    time: b.time,
+    value: i < warmup ? NaN : (b.open + b.high + b.low + b.close) / 4,
+  }));
+
+  // Dynamic fill colors: green when ohlc4 > stop (long), red when short
+  const fillColors: string[] = bars.map((b, i) => {
+    if (i < warmup) return 'rgba(0,0,0,0)';
+    const mid = (b.open + b.high + b.low + b.close) / 4;
+    return mid > stopArr[i] ? 'rgba(0,128,0,0.12)' : 'rgba(255,0,0,0.12)';
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'ohlc4': ohlc4Plot },
+    fills: [
+      { plot1: 'ohlc4', plot2: 'plot0', options: { color: 'rgba(0,128,0,0.12)' }, colors: fillColors },
+    ],
     markers,
   };
 }

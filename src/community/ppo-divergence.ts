@@ -32,9 +32,13 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'PPO', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot0', title: 'PPO', color: '#FFFFFF', lineWidth: 2 },
   { id: 'plot1', title: 'Signal', color: '#FF6D00', lineWidth: 2 },
   { id: 'plot2', title: 'Histogram', color: '#26A69A', lineWidth: 4, style: 'histogram' },
+  { id: 'plot3', title: 'Tops', color: '#00FFFF', lineWidth: 4, style: 'circles' },
+  { id: 'plot4', title: 'Bottoms', color: '#FF0000', lineWidth: 4, style: 'circles' },
+  { id: 'plot5', title: 'Bearish Divergence', color: '#FF8C00', lineWidth: 4, style: 'circles' },
+  { id: 'plot6', title: 'Bullish Divergence', color: '#800080', lineWidth: 4, style: 'circles' },
 ];
 
 export const metadata = {
@@ -114,9 +118,63 @@ export function calculate(bars: Bar[], inputs: Partial<PPODivergenceInputs> = {}
     return { time: bars[i].time, value: v, color: v >= 0 ? '#26A69A' : '#EF5350' };
   });
 
+  // Pine: bulldiv = BottomPointsInPPO ? d[1] : na (plotted as "Tops" aqua circles, offset=-1)
+  // Pine: beardiv = TopPointsInPPO ? d[1] : na (plotted as "Bottoms" red circles, offset=-1)
+  // Plus divergence circles (orange bearish, purple bullish)
+  const plot3: { time: number; value: number }[] = new Array(bars.length);
+  const plot4: { time: number; value: number }[] = new Array(bars.length);
+  const plot5: { time: number; value: number }[] = new Array(bars.length);
+  const plot6: { time: number; value: number }[] = new Array(bars.length);
+
+  interface PivotInfo { idx: number; ppoVal: number; priceVal: number; }
+  let lastOscBottom: PivotInfo | null = null;
+  let lastOscTop: PivotInfo | null = null;
+
+  for (let i = 0; i < bars.length; i++) {
+    plot3[i] = { time: bars[i].time, value: NaN };
+    plot4[i] = { time: bars[i].time, value: NaN };
+    plot5[i] = { time: bars[i].time, value: NaN };
+    plot6[i] = { time: bars[i].time, value: NaN };
+
+    if (i < warmup + 2 || isNaN(ppoArr[i]) || isNaN(ppoArr[i - 1]) || isNaN(ppoArr[i - 2])) continue;
+
+    const d0 = ppoArr[i];
+    const d1 = ppoArr[i - 1];
+    const d2 = ppoArr[i - 2];
+
+    // Pine: oscMins = d > d[1] and d[1] < d[2] (PPO bottom)
+    // Pine: bulldiv = BottomPointsInPPO ? d[1] : na, plotted as "Tops" (aqua) with offset=-1
+    const isBottom = d0 > d1 && d1 < d2;
+    if (isBottom) {
+      plot3[i - 1] = { time: bars[i - 1].time, value: d1 };
+
+      // Bullish divergence: price lower low, PPO higher low
+      if (lastOscBottom && bars[i - 1].low < lastOscBottom.priceVal && d1 > lastOscBottom.ppoVal) {
+        plot6[i] = { time: bars[i].time, value: d0 };
+      }
+      lastOscBottom = { idx: i - 1, ppoVal: d1, priceVal: bars[i - 1].low };
+    }
+
+    // Pine: oscMax = d < d[1] and d[1] > d[2] (PPO top)
+    // Pine: beardiv = TopPointsInPPO ? d[1] : na, plotted as "Bottoms" (red) with offset=-1
+    const isTop = d0 < d1 && d1 > d2;
+    if (isTop) {
+      plot4[i - 1] = { time: bars[i - 1].time, value: d1 };
+
+      // Bearish divergence: price higher high, PPO lower high
+      if (lastOscTop && bars[i - 1].high > lastOscTop.priceVal && d1 < lastOscTop.ppoVal) {
+        plot5[i] = { time: bars[i].time, value: d0 };
+      }
+      lastOscTop = { idx: i - 1, ppoVal: d1, priceVal: bars[i - 1].high };
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(ppoArr), 'plot1': toPlot(sigArr.map(v => v ?? NaN)), 'plot2': histPlot },
+    plots: {
+      'plot0': toPlot(ppoArr), 'plot1': toPlot(sigArr.map(v => v ?? NaN)), 'plot2': histPlot,
+      'plot3': plot3, 'plot4': plot4, 'plot5': plot5, 'plot6': plot6,
+    },
     hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
     markers,
   };

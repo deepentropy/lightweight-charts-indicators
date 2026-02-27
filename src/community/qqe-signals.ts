@@ -1,9 +1,10 @@
 /**
  * QQE Signals
  *
- * QQE with cross signals. Detects when smoothed RSI crosses above/below trailing stop.
+ * Overlay indicator that shows only Long/Short plotshape markers.
+ * No RSI or trailing lines are displayed - only the signal markers on the price chart.
  *
- * Reference: TradingView "QQE Signals"
+ * Reference: TradingView "QQE signals" by colinmck
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
@@ -19,26 +20,23 @@ export interface QQESignalsInputs {
 export const defaultInputs: QQESignalsInputs = {
   rsiLen: 14,
   smoothFactor: 5,
-  qqeFactor: 4.236,
+  qqeFactor: 4.238,
   src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'rsiLen', type: 'int', title: 'RSI Length', defval: 14, min: 1 },
-  { id: 'smoothFactor', type: 'int', title: 'Smooth Factor', defval: 5, min: 1 },
-  { id: 'qqeFactor', type: 'float', title: 'QQE Factor', defval: 4.236, min: 0.01, step: 0.001 },
+  { id: 'smoothFactor', type: 'int', title: 'RSI Smoothing', defval: 5, min: 1 },
+  { id: 'qqeFactor', type: 'float', title: 'Fast QQE Factor', defval: 4.238, min: 0.01, step: 0.001 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
-export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'RSI', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot1', title: 'Trailing', color: '#FF6D00', lineWidth: 1 },
-];
+export const plotConfig: PlotConfig[] = [];
 
 export const metadata = {
   title: 'QQE Signals',
   shortTitle: 'QQESig',
-  overlay: false,
+  overlay: true,
 };
 
 export function calculate(bars: Bar[], inputs: Partial<QQESignalsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
@@ -59,10 +57,11 @@ export function calculate(bars: Bar[], inputs: Partial<QQESignalsInputs> = {}): 
     atrRsiRaw[i] = Math.abs(cur - prev);
   }
   const atrRsiSeries = Series.fromArray(bars, atrRsiRaw);
-  const smoothedAtr = ta.ema(atrRsiSeries, wildersLen);
-  const atrArr = smoothedAtr.toArray();
+  const maAtrRsi = ta.ema(atrRsiSeries, wildersLen);
+  const dar = ta.ema(maAtrRsi, wildersLen);
+  const darArr = dar.toArray();
 
-  // Trailing stop
+  // Trailing stop bands
   const longBand: number[] = new Array(n);
   const shortBand: number[] = new Array(n);
   const trendDir: number[] = new Array(n);
@@ -71,9 +70,9 @@ export function calculate(bars: Bar[], inputs: Partial<QQESignalsInputs> = {}): 
   for (let i = 0; i < n; i++) {
     const sr = srArr[i] ?? 0;
     const prevSr = i > 0 ? (srArr[i - 1] ?? 0) : 0;
-    const dar = (atrArr[i] ?? 0) * qqeFactor;
-    const newLong = sr - dar;
-    const newShort = sr + dar;
+    const deltaFast = (darArr[i] ?? 0) * qqeFactor;
+    const newLong = sr - deltaFast;
+    const newShort = sr + deltaFast;
 
     if (i === 0) {
       longBand[i] = newLong;
@@ -87,9 +86,17 @@ export function calculate(bars: Bar[], inputs: Partial<QQESignalsInputs> = {}): 
         ? Math.min(shortBand[i - 1], newShort)
         : newShort;
 
-      if (prevSr <= longBand[i - 1] && sr > longBand[i - 1]) {
+      // Pine: trend := cross(RSIndex, shortband[1]) ? 1 : cross_1 ? -1 : nz(trend[1], 1)
+      const crossUp = (prevSr <= shortBand[i - 1] && sr > shortBand[i - 1]) || (prevSr >= shortBand[i - 1] && sr < shortBand[i - 1]);
+      const crossDown = (prevSr <= longBand[i - 1] && sr > longBand[i - 1]) || (prevSr >= longBand[i - 1] && sr < longBand[i - 1]);
+
+      // Pine uses cross(RSIndex, shortband[1]) for trend=1 and cross(longband[1], RSIndex) for trend=-1
+      const crossRsiShort = (prevSr < shortBand[i - 1] && sr >= shortBand[i - 1]) || (prevSr > shortBand[i - 1] && sr <= shortBand[i - 1]);
+      const crossLongRsi = (longBand[i - 1] < prevSr && longBand[i - 1] >= sr) || (longBand[i - 1] > prevSr && longBand[i - 1] <= sr);
+
+      if (crossRsiShort) {
         trendDir[i] = 1;
-      } else if (prevSr >= shortBand[i - 1] && sr < shortBand[i - 1]) {
+      } else if (crossLongRsi) {
         trendDir[i] = -1;
       } else {
         trendDir[i] = trendDir[i - 1];
@@ -98,42 +105,33 @@ export function calculate(bars: Bar[], inputs: Partial<QQESignalsInputs> = {}): 
     trailing[i] = trendDir[i] === 1 ? longBand[i] : shortBand[i];
   }
 
+  // QQE cross count
+  const qqeXlong: number[] = new Array(n).fill(0);
+  const qqeXshort: number[] = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    const sr = srArr[i] ?? 0;
+    if (i > 0) {
+      qqeXlong[i] = trailing[i] < sr ? qqeXlong[i - 1] + 1 : 0;
+      qqeXshort[i] = trailing[i] > sr ? qqeXshort[i - 1] + 1 : 0;
+    }
+  }
+
   const warmup = rsiLen * 2 + smoothFactor;
 
-  // Color RSI based on cross signals
-  const plot0 = srArr.map((v, i) => {
-    if (v == null || i < warmup) return { time: bars[i].time, value: NaN };
-    const color = v > trailing[i] ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  const plot1 = trailing.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : v,
-  }));
-
-  // Markers: QQE cross signals (first bar RSI crosses trailing stop)
+  // Pine: plotshape for Long when QQExlong == 1, Short when QQExshort == 1
   const markers: MarkerData[] = [];
-  for (let i = warmup + 1; i < n; i++) {
-    const sr = srArr[i] ?? 0;
-    const tr = trailing[i];
-
-    // Long: trend flips bullish (RSI crosses above trailing)
-    if (trendDir[i] === 1 && trendDir[i - 1] === -1) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Long' });
+  for (let i = warmup; i < n; i++) {
+    if (qqeXlong[i] === 1) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'Long' });
     }
-    // Short: trend flips bearish (RSI crosses below trailing)
-    if (trendDir[i] === -1 && trendDir[i - 1] === 1) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Short' });
+    if (qqeXshort[i] === 1) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'Short' });
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    hlines: [
-      { value: 50, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Midline' } },
-    ],
+    plots: {},
     markers,
   };
 }

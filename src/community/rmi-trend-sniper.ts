@@ -9,7 +9,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { BarColorData, PlotCandleData } from '../types';
+import type { BarColorData, PlotCandleData, LabelData } from '../types';
 
 export interface RMITrendSniperInputs {
   rmiLen: number;
@@ -136,7 +136,83 @@ export function calculate(bars: Bar[], inputs: Partial<RMITrendSniperInputs> = {
     });
   }
 
-  // fills: between RMI ob/os hlines (Pine fills are between RWMA bands - approximated with hline fill)
+  // Pine: label.new at trend sniper entry points
+  // Pine: Band = math.min(ta.atr(30)*0.3, close*(0.3/100))[20]/2*8
+  // Pine: rwma = rangeMA(BarRange, 20)
+  // Pine: RWMA = positive ? rwma - Band : negative ? rwma + Band : na
+  // Pine: max = RWMA + Band, min = RWMA - Band
+  // Pine: if negative and not negative[1]: label.new(bar_index, max+(Band/2), "", color=red)
+  // Pine: if positive and not positive[1]: label.new(bar_index, min-(Band/2), "", color=green, style=label_up)
+  const atrArr = ta.atr(bars, 30).toArray();
+  const labels: LabelData[] = [];
+
+  // Compute Band array: min(atr*0.3, close*0.003) delayed by 20 bars, then /2*8
+  const bandRaw: number[] = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    const atrVal = atrArr[i] ?? 0;
+    bandRaw[i] = Math.min(atrVal * 0.3, bars[i].close * 0.003);
+  }
+  const bandArr: number[] = new Array(n).fill(0);
+  for (let i = 20; i < n; i++) {
+    bandArr[i] = bandRaw[i - 20] / 2 * 8;
+  }
+
+  // Compute RWMA (Range Weighted Moving Average of close, period=20, weighted by BarRange)
+  const rwmaArr: number[] = new Array(n).fill(NaN);
+  for (let i = 19; i < n; i++) {
+    let sumW = 0;
+    let sumWC = 0;
+    let sumR = 0;
+    for (let j = i - 19; j <= i; j++) {
+      const range = bars[j].high - bars[j].low;
+      sumR += range;
+    }
+    for (let j = i - 19; j <= i; j++) {
+      const range = bars[j].high - bars[j].low;
+      const weight = sumR > 0 ? range / sumR : 1 / 20;
+      sumW += weight;
+      sumWC += bars[j].close * weight;
+    }
+    rwmaArr[i] = sumW > 0 ? sumWC / sumW : bars[i].close;
+  }
+
+  for (let i = warmup + 1; i < n; i++) {
+    const Band = bandArr[i];
+    const rwma = rwmaArr[i];
+    if (isNaN(rwma) || Band === 0) continue;
+
+    const RWMA = posArr[i] ? rwma - Band : negArr[i] ? rwma + Band : NaN;
+    if (isNaN(RWMA)) continue;
+
+    const maxVal = RWMA + Band;
+    const minVal = RWMA - Band;
+
+    // Sell label: negative and not negative[1]
+    if (negArr[i] && !negArr[i - 1]) {
+      labels.push({
+        time: bars[i].time,
+        price: maxVal + Band / 2,
+        text: '',
+        color: '#EF5350',
+        textColor: '#FFFFFF',
+        style: 'label_down',
+        size: 'small',
+      });
+    }
+    // Buy label: positive and not positive[1]
+    if (posArr[i] && !posArr[i - 1]) {
+      labels.push({
+        time: bars[i].time,
+        price: minVal - Band / 2,
+        text: '',
+        color: '#26A69A',
+        textColor: '#FFFFFF',
+        style: 'label_up',
+        size: 'small',
+      });
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
@@ -149,7 +225,8 @@ export function calculate(bars: Bar[], inputs: Partial<RMITrendSniperInputs> = {
     ],
     barColors,
     plotCandles: { candle0: candles },
-  } as IndicatorResult & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> };
+    labels,
+  } as IndicatorResult & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]>; labels: LabelData[] };
 }
 
 export const RMITrendSniper = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

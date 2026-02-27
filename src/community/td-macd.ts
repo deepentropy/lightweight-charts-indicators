@@ -28,6 +28,7 @@ export const inputConfig: InputConfig[] = [
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'TD', color: '#2962FF', lineWidth: 2 },
   { id: 'plot1', title: 'Signal', color: '#FF6D00', lineWidth: 2 },
+  { id: 'plot2', title: 'Histogram', color: '#26A69A', lineWidth: 4, style: 'histogram' },
 ];
 
 export const metadata = {
@@ -63,9 +64,28 @@ export function calculate(bars: Bar[], inputs: Partial<TDMacdInputs> = {}): Indi
   const toPlot = (arr: (number | null)[]) =>
     arr.map((v, i) => ({ time: bars[i].time, value: (i < warmup || v == null) ? NaN : v }));
 
+  // Histogram plot with 4-color conditional coloring based on Pine:
+  // bright green (#00E676): hist > 0 and rising
+  // faded green (#4CAF50): hist > 0 and falling
+  // bright red (#FF1744): hist < 0 and falling
+  // faded red (#EF5350): hist < 0 and rising
+  const histPlot = tdArr.map((v, i) => {
+    const val = (i < warmup || v == null) ? NaN : v;
+    if (isNaN(val)) return { time: bars[i].time, value: NaN };
+    const prev = (i > 0 && i - 1 >= warmup && tdArr[i - 1] != null) ? tdArr[i - 1]! : val;
+    const rising = val >= prev;
+    let color: string;
+    if (val > 0) {
+      color = rising ? '#00E676' : '#4CAF50';
+    } else {
+      color = rising ? '#EF5350' : '#FF1744';
+    }
+    return { time: bars[i].time, value: val, color };
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(tdArr), 'plot1': toPlot(sigArr) },
+    plots: { 'plot0': toPlot(tdArr), 'plot1': toPlot(sigArr), 'plot2': histPlot },
     hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
   };
 }

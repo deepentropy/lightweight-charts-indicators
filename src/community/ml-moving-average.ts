@@ -157,16 +157,24 @@ export function calculate(bars: Bar[], inputs: Partial<MlMovingAverageInputs> = 
     }
   }
 
-  // Dynamic fill colors: upper extremity gradient (bullish blue) and lower extremity gradient (bearish pink)
-  const fillColors = bars.map((_b, i) => {
+  // Two gradient fills: center-to-upper (blue/bull) and center-to-lower (pink/bear), matching Pine
+  const upperFillColors = bars.map((_b, i) => {
     if (i < warmup - 1 || isNaN(centerArr[i])) return 'transparent';
-    return os[i] ? 'rgba(91,156,246,0.15)' : 'rgba(233,30,99,0.15)';
+    return 'rgba(91,156,246,0.5)';
+  });
+
+  const lowerFillColors = bars.map((_b, i) => {
+    if (i < warmup - 1 || isNaN(centerArr[i])) return 'transparent';
+    return 'rgba(233,30,99,0.5)';
   });
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
-    fills: [{ plot1: 'plot1', plot2: 'plot2', options: { color: '#2962FF15' }, colors: fillColors }],
+    fills: [
+      { plot1: 'plot1', plot2: 'plot0', options: { color: 'rgba(91,156,246,0.5)' }, colors: upperFillColors },
+      { plot1: 'plot0', plot2: 'plot2', options: { color: 'rgba(233,30,99,0.5)' }, colors: lowerFillColors },
+    ],
     markers,
     bgColors,
   };

@@ -1,8 +1,13 @@
 /**
  * UCS Top & Bottom Candle
  *
- * Detects swing tops and bottoms using pivot high/low detection.
- * Marks pivot highs with down arrows and pivot lows with up arrows.
+ * Panel indicator (overlay=false) with:
+ * - Momentum histogram (plot.style_columns, yellow)
+ * - SMI line (blue)
+ * - SMI Signal line (red)
+ * - 3 hlines: 40 (overbought/red), -40 (oversold/green), 0 (zero/blue)
+ * - Fills between hlines: H0-H2 green (oversold zone), H0-H1 red (overbought zone)
+ * - barcolor: lime when SMI < -35 and mom crosses above 0, red when SMI > 35 and mom crosses below 0
  *
  * Reference: TradingView "UCS_Top & Bottom Candle" (community)
  */
@@ -11,78 +16,45 @@ import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, ty
 import type { MarkerData, BarColorData } from '../types';
 
 export interface TopBottomCandleInputs {
-  leftBars: number;
-  rightBars: number;
+  percentKLength: number;
+  percentDLength: number;
 }
 
 export const defaultInputs: TopBottomCandleInputs = {
-  leftBars: 5,
-  rightBars: 5,
+  percentKLength: 5,
+  percentDLength: 3,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'leftBars', type: 'int', title: 'Left Bars', defval: 5, min: 1 },
-  { id: 'rightBars', type: 'int', title: 'Right Bars', defval: 5, min: 1 },
+  { id: 'percentKLength', type: 'int', title: 'Percent K Length', defval: 5, min: 1 },
+  { id: 'percentDLength', type: 'int', title: 'Percent D Length', defval: 3, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Close', color: 'transparent', lineWidth: 0, display: 'none' },
+  { id: 'momentum', title: 'Momentum', color: '#FFEB3B', lineWidth: 1, style: 'histogram' },
+  { id: 'smi', title: 'Stochastic Momentum Index', color: '#2196F3', lineWidth: 1 },
+  { id: 'smiSignal', title: 'SMI Signal Line', color: '#EF5350', lineWidth: 1 },
 ];
 
 export const metadata = {
   title: 'Top & Bottom Candle',
-  shortTitle: 'TopBot',
-  overlay: true,
+  shortTitle: 'UCS_T&B',
+  overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TopBottomCandleInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { leftBars, rightBars } = { ...defaultInputs, ...inputs };
-
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-
-  const phArr = ta.pivothigh(highSeries, leftBars, rightBars).toArray();
-  const plArr = ta.pivotlow(lowSeries, leftBars, rightBars).toArray();
-
-  const markers: MarkerData[] = [];
-  const closePlot = bars.map((b) => ({ time: b.time, value: NaN }));
-
-  for (let i = 0; i < bars.length; i++) {
-    if (phArr[i] != null && !isNaN(phArr[i]!)) {
-      markers.push({
-        time: bars[i].time as number,
-        position: 'aboveBar',
-        shape: 'arrowDown',
-        color: '#EF5350',
-        text: 'Top',
-      });
-    }
-
-    if (plArr[i] != null && !isNaN(plArr[i]!)) {
-      markers.push({
-        time: bars[i].time as number,
-        position: 'belowBar',
-        shape: 'arrowUp',
-        color: '#26A69A',
-        text: 'Bot',
-      });
-    }
-  }
-
-  // Pine also computes SMI (Stochastic Momentum Index) for panel display with hlines, fills, and barcolor
-  const a = leftBars; // Pine uses input 'a' for %K length (mapped to leftBars)
-  const b = rightBars; // Pine uses input 'b' for %D length (mapped to rightBars)
+export function calculate(bars: Bar[], inputs: Partial<TopBottomCandleInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+  const { percentKLength: a, percentDLength: b } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
-  const lowS = new Series(bars, (bar) => bar.low);
-  const highS = new Series(bars, (bar) => bar.high);
-  const closeS = new Series(bars, (bar) => bar.close);
+  const lowSeries = new Series(bars, (bar) => bar.low);
+  const highSeries = new Series(bars, (bar) => bar.high);
+  const closeSeries = new Series(bars, (bar) => bar.close);
 
-  const ll = ta.lowest(lowS, a);
-  const hh = ta.highest(highS, a);
+  const ll = ta.lowest(lowSeries, a);
+  const hh = ta.highest(highSeries, a);
   const hhArr = hh.toArray();
   const llArr = ll.toArray();
-  const closeArr = closeS.toArray();
+  const closeArr = closeSeries.toArray();
 
   // diff = hh - ll, rdiff = close - (hh+ll)/2
   const diffArr: number[] = new Array(n);
@@ -101,10 +73,10 @@ export function calculate(bars: Bar[], inputs: Partial<TopBottomCandleInputs> = 
   // Momentum = (close - close[b]) / close[b] * 1000
   const momArr: number[] = new Array(n);
   for (let i = 0; i < n; i++) {
-    if (i >= b && closeArr[i - b] !== 0) {
+    if (i >= b && closeArr[i - b] !== 0 && closeArr[i - b] != null) {
       momArr[i] = ((closeArr[i]! - closeArr[i - b]!) / closeArr[i - b]!) * 1000;
     } else {
-      momArr[i] = 0;
+      momArr[i] = NaN;
     }
   }
 
@@ -115,36 +87,81 @@ export function calculate(bars: Bar[], inputs: Partial<TopBottomCandleInputs> = 
     smiArr[i] = ad !== 0 ? ((avgrelArr[i] ?? 0) / (ad / 2)) * 100 : 0;
   }
 
-  // barcolor: long setup = SMI < -35 and mom > 0 and mom[1] < 0 -> lime
-  //           short setup = SMI > 35 and mom < 0 and mom[1] > 0 -> red
+  // SMIsignal = ema(SMI, b)
+  const smiS = Series.fromArray(bars, smiArr);
+  const smiSignalArr = ta.ema(smiS, b).toArray();
+
+  const warmup = a + b * 2;
+
+  // Momentum plot (histogram, yellow)
+  const momentumPlot = momArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup || isNaN(v)) ? NaN : v,
+    color: '#FFEB3B',
+  }));
+
+  // SMI plot (blue line)
+  const smiPlot = smiArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup || isNaN(v)) ? NaN : v,
+  }));
+
+  // SMI Signal plot (red line)
+  const smiSignalPlot = smiSignalArr.map((v, i) => ({
+    time: bars[i].time,
+    value: (i < warmup || v == null || isNaN(v)) ? NaN : v,
+  }));
+
+  // barcolor + markers: long setup = SMI < -35 and mom > 0 and mom[1] < 0 -> lime
+  //                      short setup = SMI > 35 and mom < 0 and mom[1] > 0 -> red
   const barColors: BarColorData[] = [];
-  const smiWarmup = a + b * 2;
-  for (let i = smiWarmup + 1; i < n; i++) {
+  const markers: MarkerData[] = [];
+
+  for (let i = warmup + 1; i < n; i++) {
     const smi = smiArr[i];
     const mom = momArr[i];
     const prevMom = momArr[i - 1];
-    if (smi < -35 && mom > 0 && prevMom < 0) {
-      barColors.push({ time: bars[i].time, color: '#00E676' }); // lime
-    } else if (smi > 35 && mom < 0 && prevMom > 0) {
-      barColors.push({ time: bars[i].time, color: '#EF5350' }); // red
+
+    if (!isNaN(smi) && !isNaN(mom) && !isNaN(prevMom)) {
+      if (smi < -35 && mom > 0 && prevMom < 0) {
+        barColors.push({ time: bars[i].time, color: '#00E676' }); // lime
+        markers.push({
+          time: bars[i].time,
+          position: 'belowBar',
+          shape: 'triangleUp',
+          color: '#00E676',
+          text: 'Bot',
+        });
+      } else if (smi > 35 && mom < 0 && prevMom > 0) {
+        barColors.push({ time: bars[i].time, color: '#EF5350' }); // red
+        markers.push({
+          time: bars[i].time,
+          position: 'aboveBar',
+          shape: 'triangleDown',
+          color: '#EF5350',
+          text: 'Top',
+        });
+      }
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': closePlot },
-    markers,
-    // hlines from Pine: H1=40 (overbought), H2=-40 (oversold), H0=0 (zero)
+    plots: {
+      'momentum': momentumPlot,
+      'smi': smiPlot,
+      'smiSignal': smiSignalPlot,
+    },
     hlines: [
       { value: 40, options: { color: '#EF5350', linestyle: 'solid' as const, title: 'Over Bought' } },
       { value: -40, options: { color: '#26A69A', linestyle: 'solid' as const, title: 'Over Sold' } },
       { value: 0, options: { color: '#2196F3', linestyle: 'solid' as const, title: 'Zero Line' } },
     ],
-    // fills between hlines (Pine: fill(H0,H2,green), fill(H0,H1,red))
     fills: [
-      { plot1: 'zeroLine', plot2: 'overSold', options: { color: 'rgba(38, 166, 154, 0.15)' } },
-      { plot1: 'zeroLine', plot2: 'overBought', options: { color: 'rgba(239, 83, 80, 0.15)' } },
+      { plot1: 'hline_0', plot2: 'hline_2', options: { color: 'rgba(239, 83, 80, 0.15)', title: 'Overbought' } },
+      { plot1: 'hline_0', plot2: 'hline_1', options: { color: 'rgba(38, 166, 154, 0.15)', title: 'Oversold' } },
     ],
+    markers,
     barColors,
   } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] };
 }

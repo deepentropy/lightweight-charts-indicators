@@ -36,10 +36,11 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Prediction', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot0', title: 'Prediction', color: '#426EFF', lineWidth: 2 },
   { id: 'plot1', title: 'Quick WMA', color: '#26A69A', lineWidth: 1 },
   { id: 'plot2', title: 'Slow WMA', color: '#EF5350', lineWidth: 1 },
   { id: 'plot3', title: 'Mid', color: 'transparent', lineWidth: 0 },
+  { id: 'plot4', title: 'WMA of Prediction', color: '#31FFC8', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -129,6 +130,32 @@ export function calculate(bars: Bar[], inputs: Partial<MlMomentumIndexInputs> = 
 
   const plot3 = bars.map((b) => ({ time: b.time, value: 50 }));
 
+  // WMA of prediction (period 20, matching Pine's ta.wma(prediction, 20))
+  const wmaLen = 20;
+  const predWma: number[] = new Array(n).fill(NaN);
+  for (let i = warmup; i < n; i++) {
+    // Need wmaLen valid prediction values ending at i
+    let wSum = 0;
+    let wDenom = 0;
+    let count = 0;
+    for (let j = 0; j < wmaLen; j++) {
+      const idx = i - j;
+      if (idx < 0 || isNaN(prediction[idx])) break;
+      const w = wmaLen - j;
+      wSum += w * prediction[idx];
+      wDenom += w;
+      count++;
+    }
+    if (count === wmaLen && wDenom > 0) {
+      predWma[i] = wSum / wDenom;
+    }
+  }
+
+  const plot4 = predWma.map((v, i) => ({
+    time: bars[i].time,
+    value: isNaN(v) ? NaN : v,
+  }));
+
   const fillColors = prediction.map((v, i) => {
     if (i < warmup || isNaN(v)) return 'transparent';
     return v >= 50 ? 'rgba(0,255,0,0.1)' : 'rgba(255,0,0,0.1)';
@@ -136,7 +163,7 @@ export function calculate(bars: Bar[], inputs: Partial<MlMomentumIndexInputs> = 
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'plot4': plot4 },
     hlines: [
       { value: 70, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
       { value: 50, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Middle' } },

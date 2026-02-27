@@ -1,101 +1,102 @@
 /**
- * TonyUX EMA Scalper
+ * TonyUX EMA Scalper - Buy / Sell
  *
- * EMA-based scalper with 4 EMA lines.
- * Buy when all aligned bullish (EMA8 > EMA13 > EMA21 > EMA55).
- * Sell when bearish aligned (EMA8 < EMA13 < EMA21 < EMA55).
+ * Pine: overlay=true, 3 plots + buy/sell markers:
+ *   1) EMA(close, 20) in blue
+ *   2) highest(close, 8) in red (linewidth=2)
+ *   3) lowest(close, 8) in green (linewidth=2)
+ *   Buy arrow: cross(close, EMA) and close[1] < close (bullish cross)
+ *   Sell arrow: cross(close, EMA) and close[1] > close (bearish cross)
  *
- * Reference: TradingView "TonyUX EMA Scalper" (community)
+ * Reference: TradingView "Tony's EMA Scalper - Buy / Sell" (community)
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 
 export interface TonyUXScalperInputs {
-  len1: number;
-  len2: number;
-  len3: number;
-  len4: number;
-  src: SourceType;
+  emaLength: number;
+  channelLength: number;
 }
 
 export const defaultInputs: TonyUXScalperInputs = {
-  len1: 8,
-  len2: 13,
-  len3: 21,
-  len4: 55,
-  src: 'close',
+  emaLength: 20,
+  channelLength: 8,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'len1', type: 'int', title: 'EMA 1 Length', defval: 8, min: 1 },
-  { id: 'len2', type: 'int', title: 'EMA 2 Length', defval: 13, min: 1 },
-  { id: 'len3', type: 'int', title: 'EMA 3 Length', defval: 21, min: 1 },
-  { id: 'len4', type: 'int', title: 'EMA 4 Length', defval: 55, min: 1 },
-  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
+  { id: 'emaLength', type: 'int', title: 'EMA Length', defval: 20, min: 1 },
+  { id: 'channelLength', type: 'int', title: 'Channel Length', defval: 8, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'EMA 8', color: '#00E676', lineWidth: 2 },
-  { id: 'plot1', title: 'EMA 13', color: '#26A69A', lineWidth: 2 },
-  { id: 'plot2', title: 'EMA 21', color: '#FF6D00', lineWidth: 2 },
-  { id: 'plot3', title: 'EMA 55', color: '#EF5350', lineWidth: 2 },
+  { id: 'ema', title: 'EMA', color: '#2962FF', lineWidth: 1 },
+  { id: 'highChannel', title: 'High Channel', color: '#EF5350', lineWidth: 2 },
+  { id: 'lowChannel', title: 'Low Channel', color: '#26A69A', lineWidth: 2 },
 ];
 
 export const metadata = {
   title: 'TonyUX EMA Scalper',
-  shortTitle: 'TUXS',
+  shortTitle: 'TUX Scalper',
   overlay: true,
 };
 
 export function calculate(bars: Bar[], inputs: Partial<TonyUXScalperInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { len1, len2, len3, len4, src } = { ...defaultInputs, ...inputs };
+  const { emaLength, channelLength } = { ...defaultInputs, ...inputs };
+  const n = bars.length;
 
-  const source = getSourceSeries(bars, src);
-  const ema1 = ta.ema(source, len1);
-  const ema2 = ta.ema(source, len2);
-  const ema3 = ta.ema(source, len3);
-  const ema4 = ta.ema(source, len4);
+  const closeSeries = new Series(bars, (b) => b.close);
+  const emaArr = ta.ema(closeSeries, emaLength).toArray();
+  const highArr = ta.highest(closeSeries, channelLength).toArray();
+  const lowArr = ta.lowest(closeSeries, channelLength).toArray();
 
-  const arr1 = ema1.toArray();
-  const arr2 = ema2.toArray();
-  const arr3 = ema3.toArray();
-  const arr4 = ema4.toArray();
+  const warmup = Math.max(emaLength, channelLength);
 
-  const warmup = len4;
+  const emaPlot = emaArr.map((v, i) => ({
+    time: bars[i].time,
+    value: i < emaLength ? NaN : (v ?? NaN),
+  }));
+
+  const highPlot = highArr.map((v, i) => ({
+    time: bars[i].time,
+    value: i < channelLength ? NaN : v,
+  }));
+
+  const lowPlot = lowArr.map((v, i) => ({
+    time: bars[i].time,
+    value: i < channelLength ? NaN : v,
+  }));
+
+  // Buy/Sell markers: cross(close, EMA) means close crosses EMA in either direction
+  // bearish = cross(close, out) == 1 and close[1] > close  (price fell through EMA)
+  // bullish = cross(close, out) == 1 and close[1] < close  (price rose through EMA)
   const markers: MarkerData[] = [];
+  for (let i = warmup + 1; i < n; i++) {
+    const emaVal = emaArr[i];
+    const prevEma = emaArr[i - 1];
+    if (emaVal == null || prevEma == null) continue;
 
-  for (let i = warmup + 1; i < bars.length; i++) {
-    const e1 = arr1[i] ?? 0;
-    const e2 = arr2[i] ?? 0;
-    const e3 = arr3[i] ?? 0;
-    const e4 = arr4[i] ?? 0;
-    const pe1 = arr1[i - 1] ?? 0;
-    const pe2 = arr2[i - 1] ?? 0;
-    const pe3 = arr3[i - 1] ?? 0;
-    const pe4 = arr4[i - 1] ?? 0;
+    const c = bars[i].close;
+    const pc = bars[i - 1].close;
 
-    const bullish = e1 > e2 && e2 > e3 && e3 > e4;
-    const prevBullish = pe1 > pe2 && pe2 > pe3 && pe3 > pe4;
-    const bearish = e1 < e2 && e2 < e3 && e3 < e4;
-    const prevBearish = pe1 < pe2 && pe2 < pe3 && pe3 < pe4;
+    // cross(): true when the two series cross (either direction)
+    const crossed = (pc <= prevEma && c > emaVal) || (pc >= prevEma && c < emaVal) ||
+                    (pc < prevEma && c >= emaVal) || (pc > prevEma && c <= emaVal);
 
-    if (bullish && !prevBullish) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
-    } else if (bearish && !prevBearish) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+    if (crossed) {
+      if (pc > c) {
+        // bearish: close[1] > close
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
+      } else if (pc < c) {
+        // bullish: close[1] < close
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Buy' });
+      }
     }
   }
 
-  const toPlot = (arr: (number | null)[]) =>
-    arr.map((v, i) => ({
-      time: bars[i].time,
-      value: (v == null || i < warmup) ? NaN : v,
-    }));
-
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(arr1), 'plot1': toPlot(arr2), 'plot2': toPlot(arr3), 'plot3': toPlot(arr4) },
+    plots: { ema: emaPlot, highChannel: highPlot, lowChannel: lowPlot },
     markers,
   };
 }

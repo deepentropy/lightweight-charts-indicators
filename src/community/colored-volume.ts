@@ -44,17 +44,24 @@ export const metadata = {
 export function calculate(bars: Bar[], inputs: Partial<ColoredVolumeInputs> = {}): IndicatorResult {
   const { lookback, showMA, lengthMA } = { ...defaultInputs, ...inputs };
 
+  // Pine: p2=close, v2=volume, p1=p2[lookback], v1=v2[lookback]
+  // Green: p2>p1 and v2>v1 (price up + volume up vs N bars ago)
+  // Blue: p2>p1 and v2<v1 (price up + volume down — note: Pine swaps blue/orange vs typical)
+  // Orange: p2<p1 and v2<v1 (price down + volume down)
+  // Red: p2<p1 and v2>v1 (price down + volume up)
   const data = bars.map((bar, i) => {
     const vol = bar.volume ?? 0;
-    if (i < lookback) return { time: bar.time, value: NaN };
-    const prevVol = bars[i - 1]?.volume ?? 0;
-    const priceUp = bar.close >= bar.open;
-    const volUp = vol >= prevVol;
+    if (i < lookback) return { time: bar.time, value: vol, color: '#808080' };
+    const prevClose = bars[i - lookback].close;
+    const prevVol = bars[i - lookback].volume ?? 0;
+    const priceUp = bar.close > prevClose;
+    const volUp = vol > prevVol;
     let color: string;
-    if (priceUp && volUp) color = '#00FF00';      // green
-    else if (priceUp && !volUp) color = '#0000FF'; // blue
-    else if (!priceUp && !volUp) color = '#FFA500'; // orange
-    else color = '#FF0000';                         // red
+    if (priceUp && volUp) color = '#00FF00';        // green
+    else if (!priceUp && volUp) color = '#FF0000';   // red
+    else if (priceUp && !volUp) color = '#0000FF';   // blue
+    else if (!priceUp && !volUp) color = '#FFA500';  // orange
+    else color = '#808080';                           // gray
     return { time: bar.time, value: vol, color };
   });
 

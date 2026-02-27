@@ -71,18 +71,36 @@ export function calculate(bars: Bar[], inputs: Partial<LinearRegressionChannelIn
     return { time: b.time, value: m };
   });
 
+  // Pine: plot(d, color=d>d[1]?green:red) -- upper band colored by direction
   const plot1 = bars.map((b, i) => {
     const m = middleArr[i];
     const d = devArr[i];
     if (i < warmup || m == null || isNaN(m) || d == null || isNaN(d)) return { time: b.time, value: NaN };
-    return { time: b.time, value: m + mult * d };
+    const val = m + mult * d;
+    const prevM = middleArr[i - 1];
+    const prevD = devArr[i - 1];
+    let color = '#26A69A';
+    if (i > warmup && prevM != null && prevD != null) {
+      const prevVal = prevM + mult * prevD;
+      color = val > prevVal ? '#26A69A' : '#EF5350';
+    }
+    return { time: b.time, value: val, color };
   });
 
+  // Pine: plot(c, color=c>c[1]?green:red) -- lower band colored by direction
   const plot2 = bars.map((b, i) => {
     const m = middleArr[i];
     const d = devArr[i];
     if (i < warmup || m == null || isNaN(m) || d == null || isNaN(d)) return { time: b.time, value: NaN };
-    return { time: b.time, value: m - mult * d };
+    const val = m - mult * d;
+    const prevM = middleArr[i - 1];
+    const prevD = devArr[i - 1];
+    let color = '#26A69A';
+    if (i > warmup && prevM != null && prevD != null) {
+      const prevVal = prevM - mult * prevD;
+      color = val > prevVal ? '#26A69A' : '#EF5350';
+    }
+    return { time: b.time, value: val, color };
   });
 
   const fillColors = bars.map((_b, i) => (i < warmup ? 'transparent' : '#2962FF20'));

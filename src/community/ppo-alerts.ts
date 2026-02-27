@@ -32,8 +32,12 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'PPO', color: '#2962FF', lineWidth: 2 },
+  { id: 'plot0', title: 'PPO', color: '#000000', lineWidth: 2 },
   { id: 'plot1', title: 'Signal', color: '#FF6D00', lineWidth: 2 },
+  { id: 'plot2', title: 'Bottoms', color: '#800000', lineWidth: 3, style: 'circles' },
+  { id: 'plot3', title: 'Tops', color: '#008000', lineWidth: 3, style: 'circles' },
+  { id: 'plot4', title: 'Bearish Divergence', color: '#FF8C00', lineWidth: 6, style: 'circles' },
+  { id: 'plot5', title: 'Bullish Divergence', color: '#800080', lineWidth: 6, style: 'circles' },
 ];
 
 export const metadata = {
@@ -92,9 +96,58 @@ export function calculate(bars: Bar[], inputs: Partial<PPOAlertsInputs> = {}): I
     }
   }
 
+  // PPO bottom/top detection (Pine: oscMins = d > d[1] and d[1] < d[2], oscMax = d < d[1] and d[1] > d[2])
+  // Use PPO as `d` since that's the smoothed oscillator
+  const plot2: { time: number; value: number }[] = new Array(bars.length);
+  const plot3: { time: number; value: number }[] = new Array(bars.length);
+  const plot4: { time: number; value: number }[] = new Array(bars.length);
+  const plot5: { time: number; value: number }[] = new Array(bars.length);
+
+  // Track PPO pivots for divergence detection
+  interface PivotInfo { idx: number; ppoVal: number; priceVal: number; }
+  let lastOscBottom: PivotInfo | null = null;
+  let lastOscTop: PivotInfo | null = null;
+
+  for (let i = 0; i < bars.length; i++) {
+    plot2[i] = { time: bars[i].time, value: NaN };
+    plot3[i] = { time: bars[i].time, value: NaN };
+    plot4[i] = { time: bars[i].time, value: NaN };
+    plot5[i] = { time: bars[i].time, value: NaN };
+
+    if (i < warmup + 2 || isNaN(ppoArr[i]) || isNaN(ppoArr[i - 1]) || isNaN(ppoArr[i - 2])) continue;
+
+    const d0 = ppoArr[i];
+    const d1 = ppoArr[i - 1];
+    const d2 = ppoArr[i - 2];
+
+    // Pine: oscMins (bottom in PPO) -- plot at d[1] with offset=-1
+    const isBottom = d0 > d1 && d1 < d2;
+    if (isBottom) {
+      plot2[i - 1] = { time: bars[i - 1].time, value: d1 };
+
+      // Bullish divergence: price makes lower low but PPO makes higher low
+      if (lastOscBottom && bars[i - 1].low < lastOscBottom.priceVal && d1 > lastOscBottom.ppoVal) {
+        plot5[i] = { time: bars[i].time, value: d0 };
+      }
+      lastOscBottom = { idx: i - 1, ppoVal: d1, priceVal: bars[i - 1].low };
+    }
+
+    // Pine: oscMax (top in PPO) -- plot at d[1] with offset=-1
+    const isTop = d0 < d1 && d1 > d2;
+    if (isTop) {
+      plot3[i - 1] = { time: bars[i - 1].time, value: d1 };
+
+      // Bearish divergence: price makes higher high but PPO makes lower high
+      if (lastOscTop && bars[i - 1].high > lastOscTop.priceVal && d1 < lastOscTop.ppoVal) {
+        plot4[i] = { time: bars[i].time, value: d0 };
+      }
+      lastOscTop = { idx: i - 1, ppoVal: d1, priceVal: bars[i - 1].high };
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(ppoArr), 'plot1': toPlot(sigArr) },
+    plots: { 'plot0': toPlot(ppoArr), 'plot1': toPlot(sigArr), 'plot2': plot2, 'plot3': plot3, 'plot4': plot4, 'plot5': plot5 },
     hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
     markers,
   };

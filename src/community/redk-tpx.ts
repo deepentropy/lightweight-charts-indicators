@@ -10,29 +10,38 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface RedKTPXInputs {
   length: number;
   smooth: number;
   controlLevel: number;
+  slevelOn: boolean;
+  slevel: number;
 }
 
 export const defaultInputs: RedKTPXInputs = {
   length: 7,
   smooth: 3,
   controlLevel: 30,
+  slevelOn: false,
+  slevel: 70,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Avg Length', defval: 7, min: 1 },
   { id: 'smooth', type: 'int', title: 'Smoothing', defval: 3, min: 1 },
   { id: 'controlLevel', type: 'int', title: 'Control Level', defval: 30, min: 5, max: 100 },
+  { id: 'slevelOn', type: 'bool', title: 'Pressure Signal Line', defval: false },
+  { id: 'slevel', type: 'int', title: 'Signal Level', defval: 70, min: 0, max: 100 },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Bull Pressure', color: '#33ff0099', lineWidth: 3 },
-  { id: 'plot1', title: 'Bear Pressure', color: '#ff111166', lineWidth: 3 },
+  { id: 'plot0', title: 'Bull Pressure', color: '#33ff0099', lineWidth: 3, style: 'area' },
+  { id: 'plot1', title: 'Bear Pressure', color: '#ff111166', lineWidth: 3, style: 'area' },
   { id: 'plot2', title: 'Net Pressure', color: '#ffffff', lineWidth: 3 },
+  { id: 'plot3', title: 'Cold', color: '#800000', lineWidth: 3, style: 'circles' },
+  { id: 'plot4', title: 'Hot', color: '#008000', lineWidth: 3, style: 'cross' },
 ];
 
 export const metadata = {
@@ -41,8 +50,8 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RedKTPXInputs> = {}): IndicatorResult {
-  const { length, smooth, controlLevel } = { ...defaultInputs, ...inputs };
+export function calculate(bars: Bar[], inputs: Partial<RedKTPXInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+  const { length, smooth, controlLevel, slevelOn, slevel } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const high = new Series(bars, (b) => b.high);
@@ -116,18 +125,51 @@ export function calculate(bars: Bar[], inputs: Partial<RedKTPXInputs> = {}): Ind
     value: (i < warmup || v == null || isNaN(v)) ? NaN : v,
   }));
 
+  // Pine: TPX colored by direction: TPX > 0 ? white : gray
   const plot2 = tpxArr.map((v, i) => ({
     time: bars[i].time,
     value: (i < warmup || v == null || isNaN(v)) ? NaN : v,
+    color: (v != null && !isNaN(v) && v > 0) ? '#ffffff' : '#808080',
   }));
+
+  // Pine: plot(maxbears and slevel_on ? slevel : na, 'Cold', style=circles, color=maroon, linewidth=3)
+  // Pine: plot(maxbulls and slevel_on ? slevel : na, 'Hot', style=cross, color=green, linewidth=3)
+  const plot3 = bars.map((b, i) => {
+    if (!slevelOn || i < warmup) return { time: b.time, value: NaN };
+    const avgBear = avgBearsArr[i];
+    const maxbears = avgBear != null && !isNaN(avgBear) && avgBear >= controlLevel;
+    return { time: b.time, value: maxbears ? slevel : NaN };
+  });
+
+  const plot4 = bars.map((b, i) => {
+    if (!slevelOn || i < warmup) return { time: b.time, value: NaN };
+    const avgBull = avgBullsArr[i];
+    const maxbulls = avgBull != null && !isNaN(avgBull) && avgBull >= controlLevel;
+    return { time: b.time, value: maxbulls ? slevel : NaN };
+  });
+
+  // Markers for TPX swing (crosses 0 line)
+  const markers: MarkerData[] = [];
+  for (let i = 1; i < n; i++) {
+    if (i < warmup) continue;
+    const curr = tpxArr[i];
+    const prev = tpxArr[i - 1];
+    if (curr == null || prev == null || isNaN(curr) || isNaN(prev)) continue;
+    if (prev <= 0 && curr > 0) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#33ff00', text: 'Swing' });
+    } else if (prev >= 0 && curr < 0) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#ff1111', text: 'Swing' });
+    }
+  }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'plot4': plot4 },
     hlines: [
       { value: 0, options: { color: '#ffee00', linestyle: 'solid' as const, title: 'Zero' } },
       { value: controlLevel, options: { color: '#ffee00', linestyle: 'dotted' as const, title: 'Control Level' } },
     ],
+    markers,
   };
 }
 

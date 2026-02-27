@@ -25,6 +25,10 @@ export const inputConfig: InputConfig[] = [
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Oscillator', color: '#2962FF', lineWidth: 2 },
+  { id: 'negLo', title: '-8 Quadrant', color: 'transparent', lineWidth: 0 },
+  { id: 'negHi', title: '-6 Quadrant', color: 'transparent', lineWidth: 0 },
+  { id: 'posLo', title: '+6 Quadrant', color: 'transparent', lineWidth: 0 },
+  { id: 'posHi', title: '+8 Quadrant', color: 'transparent', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -77,9 +81,19 @@ export function calculate(bars: Bar[], inputs: Partial<MurreysOscillatorInputs> 
     barColors.push({ time: bars[i].time, color });
   }
 
+  // Boundary plots for fills (constant lines at quadrant levels in 0-100 scale)
+  const negLo = bars.map(b => ({ time: b.time, value: 0 }));     // -8 quadrant = 0
+  const negHi = bars.map(b => ({ time: b.time, value: 12.5 }));  // -6 quadrant = 12.5
+  const posLo = bars.map(b => ({ time: b.time, value: 87.5 }));  // +6 quadrant = 87.5
+  const posHi = bars.map(b => ({ time: b.time, value: 100 }));   // +8 quadrant = 100
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
+    plots: { 'plot0': plot0, 'negLo': negLo, 'negHi': negHi, 'posLo': posLo, 'posHi': posHi },
+    fills: [
+      { plot1: 'negLo', plot2: 'negHi', options: { color: 'rgba(255,165,0,0.4)' } },  // orange fill
+      { plot1: 'posLo', plot2: 'posHi', options: { color: 'rgba(0,255,0,0.4)' } },     // lime fill
+    ],
     hlines: [
       { value: 100, options: { color: '#787B86', linestyle: 'dashed' as const, title: '8/8' } },
       { value: 87.5, options: { color: '#787B86', linestyle: 'dashed' as const, title: '7/8' } },

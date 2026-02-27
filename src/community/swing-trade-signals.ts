@@ -15,6 +15,8 @@ export interface SwingTradeSignalsInputs {
   fastLen: number;
   slowLen: number;
   rsiLen: number;
+  overbought: number;
+  oversold: number;
   src: SourceType;
 }
 
@@ -22,6 +24,8 @@ export const defaultInputs: SwingTradeSignalsInputs = {
   fastLen: 10,
   slowLen: 30,
   rsiLen: 14,
+  overbought: 80,
+  oversold: 20,
   src: 'close',
 };
 
@@ -29,6 +33,8 @@ export const inputConfig: InputConfig[] = [
   { id: 'fastLen', type: 'int', title: 'Fast EMA Length', defval: 10, min: 1 },
   { id: 'slowLen', type: 'int', title: 'Slow EMA Length', defval: 30, min: 1 },
   { id: 'rsiLen', type: 'int', title: 'RSI Length', defval: 14, min: 1 },
+  { id: 'overbought', type: 'int', title: 'Overbought limit of RSI', defval: 80, min: 50, max: 100 },
+  { id: 'oversold', type: 'int', title: 'Oversold limit of RSI', defval: 20, min: 0, max: 50 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
@@ -44,7 +50,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<SwingTradeSignalsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { fastLen, slowLen, rsiLen, src } = { ...defaultInputs, ...inputs };
+  const { fastLen, slowLen, rsiLen, overbought, oversold, src } = { ...defaultInputs, ...inputs };
 
   const source = getSourceSeries(bars, src);
   const fastEma = ta.ema(source, fastLen);
@@ -65,10 +71,21 @@ export function calculate(bars: Bar[], inputs: Partial<SwingTradeSignalsInputs> 
     const currSlow = slowArr[i] ?? 0;
     const rsiVal = rsiArr[i] ?? 50;
 
+    const prevRsi = rsiArr[i - 1] ?? 50;
+
     if (prevFast <= prevSlow && currFast > currSlow && rsiVal > 50) {
       markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
     } else if (prevFast >= prevSlow && currFast < currSlow && rsiVal < 50) {
       markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+    }
+
+    // Pine: buyexit = crossunder(rs, hl) - RSI crosses below overbought
+    if (prevRsi >= overbought && rsiVal < overbought) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: '#008080', text: '\u2193' });
+    }
+    // Pine: sellexit = crossover(rs, ll) - RSI crosses above oversold
+    if (prevRsi <= oversold && rsiVal > oversold) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#008080', text: '\u2191' });
     }
   }
 

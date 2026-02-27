@@ -10,6 +10,7 @@
  */
 
 import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { MarkerData } from '../types';
 
 export interface VPCIInputs {
   longLength: number;
@@ -40,6 +41,8 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot1', title: 'Signal', color: '#008080', lineWidth: 1 },
   { id: 'plot2', title: 'BB Upper', color: '#787B86', lineWidth: 1 },
   { id: 'plot3', title: 'BB Lower', color: '#787B86', lineWidth: 1 },
+  { id: 'plot4', title: 'BB Basis', color: '#787B86', lineWidth: 1 },
+  { id: 'plot5', title: 'Breach', color: '#EF5350', lineWidth: 3, style: 'cross' },
 ];
 
 export const metadata = {
@@ -48,7 +51,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VPCIInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<VPCIInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
   const { longLength, shortLength, signalLength, bbLength, bbMult } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -100,25 +103,69 @@ export function calculate(bars: Bar[], inputs: Partial<VPCIInputs> = {}): Indica
     value: (i < warmup || isNaN(v)) ? NaN : v,
   }));
 
-  const plot2 = bbBasis.map((v, i) => ({
+  const upperArr: number[] = new Array(n);
+  const lowerArr: number[] = new Array(n);
+  const plot2 = bbBasis.map((v, i) => {
+    const val = (i < warmup || isNaN(v) || isNaN(bbDev[i])) ? NaN : v + bbMult * bbDev[i];
+    upperArr[i] = val;
+    return { time: bars[i].time, value: val };
+  });
+
+  const plot3 = bbBasis.map((v, i) => {
+    const val = (i < warmup || isNaN(v) || isNaN(bbDev[i])) ? NaN : v - bbMult * bbDev[i];
+    lowerArr[i] = val;
+    return { time: bars[i].time, value: val };
+  });
+
+  // Pine: plot(DrawBands?basis:na, color=gray, style=line)
+  const plot4 = bbBasis.map((v, i) => ({
     time: bars[i].time,
-    value: (i < warmup || isNaN(v) || isNaN(bbDev[i])) ? NaN : v + bbMult * bbDev[i],
+    value: (i < warmup || isNaN(v)) ? NaN : v,
   }));
 
-  const plot3 = bbBasis.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || isNaN(v) || isNaN(bbDev[i])) ? NaN : v - bbMult * bbDev[i],
-  }));
+  // Pine: breach_pos = (bb_s >= upper) ? (bb_s+offs_v) : (bb_s <= lower ? (bb_s - offs_v) : 0)
+  // Pine: b_color = (bb_s > upper) ? red : (bb_s < lower) ? green : na
+  // Pine: plot(HighlightBreaches and Breached ? breach_pos : na, style=cross, color=b_color, linewidth=3)
+  const offs_v = 0.3;
+  const plot5 = bars.map((b, i) => {
+    if (i < warmup) return { time: b.time, value: NaN };
+    const v = vpciArr[i];
+    const upper = upperArr[i];
+    const lower = lowerArr[i];
+    if (isNaN(upper) || isNaN(lower)) return { time: b.time, value: NaN };
+    const breachedUp = v >= upper;
+    const breachedDn = v <= lower;
+    if (!breachedUp && !breachedDn) return { time: b.time, value: NaN };
+    const pos = breachedUp ? v + offs_v : v - offs_v;
+    const color = breachedUp ? '#EF5350' : '#26A69A';
+    return { time: b.time, value: pos, color };
+  });
+
+  // Also generate markers for breach points (for better visibility)
+  const markers: MarkerData[] = [];
+  for (let i = 0; i < n; i++) {
+    if (i < warmup) continue;
+    const v = vpciArr[i];
+    const upper = upperArr[i];
+    const lower = lowerArr[i];
+    if (isNaN(upper) || isNaN(lower)) continue;
+    if (v >= upper) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'cross', color: '#EF5350', text: 'B' });
+    } else if (v <= lower) {
+      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'cross', color: '#26A69A', text: 'B' });
+    }
+  }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
+    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'plot4': plot4, 'plot5': plot5 },
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Zero' } },
     ],
     fills: [
       { plot1: 'plot2', plot2: 'plot3', options: { color: 'rgba(33, 150, 243, 0.15)' } },
     ],
+    markers,
   };
 }
 

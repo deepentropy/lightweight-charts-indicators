@@ -7,7 +7,7 @@
  * Reference: TradingView "AK MACD BB INDICATOR" by Algokid
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
 
 export interface MACDBBInputs {
@@ -23,8 +23,8 @@ export const defaultInputs: MACDBBInputs = {
   fastLength: 12,
   slowLength: 26,
   signalLength: 9,
-  bbLength: 20,
-  bbMult: 2.0,
+  bbLength: 10,
+  bbMult: 1.0,
   src: 'close',
 };
 
@@ -32,15 +32,15 @@ export const inputConfig: InputConfig[] = [
   { id: 'fastLength', type: 'int', title: 'Fast Length', defval: 12, min: 1 },
   { id: 'slowLength', type: 'int', title: 'Slow Length', defval: 26, min: 1 },
   { id: 'signalLength', type: 'int', title: 'Signal Length', defval: 9, min: 1 },
-  { id: 'bbLength', type: 'int', title: 'BB Length', defval: 20, min: 1 },
-  { id: 'bbMult', type: 'float', title: 'BB Multiplier', defval: 2.0, min: 0.01, step: 0.5 },
+  { id: 'bbLength', type: 'int', title: 'BB Periods', defval: 10, min: 1 },
+  { id: 'bbMult', type: 'float', title: 'Deviations', defval: 1.0, min: 0.01, step: 0.5 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Histogram', color: '#26A69A', lineWidth: 4, style: 'histogram' },
-  { id: 'plot1', title: 'BB Upper', color: '#FF6D00', lineWidth: 1 },
-  { id: 'plot2', title: 'BB Lower', color: '#FF6D00', lineWidth: 1 },
+  { id: 'plot0', title: 'MACD', color: '#26A69A', lineWidth: 3, style: 'circles' },
+  { id: 'plot1', title: 'BB Upper', color: '#808080', lineWidth: 2 },
+  { id: 'plot2', title: 'BB Lower', color: '#808080', lineWidth: 2 },
   { id: 'plot3', title: 'BB Basis', color: '#787B86', lineWidth: 1 },
 ];
 
@@ -51,19 +51,16 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<MACDBBInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
-  const { fastLength, slowLength, signalLength, bbLength, bbMult, src } = { ...defaultInputs, ...inputs };
+  const { fastLength, slowLength, bbLength, bbMult, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
 
   const fastEMA = ta.ema(source, fastLength);
   const slowEMA = ta.ema(source, slowLength);
   const macdLine = fastEMA.sub(slowEMA);
-  const signalLine = ta.ema(macdLine, signalLength);
-  const histogram = macdLine.sub(signalLine);
-  const histArr = histogram.toArray();
 
-  // BB on histogram
-  const bbBasis = ta.sma(histogram, bbLength);
-  const bbDev = ta.stdev(histogram, bbLength).mul(bbMult);
+  // BB on MACD (Pine applies BB directly to macd, not histogram)
+  const bbBasis = ta.sma(macdLine, bbLength);
+  const bbDev = ta.stdev(macdLine, bbLength).mul(bbMult);
   const bbUpper = bbBasis.add(bbDev);
   const bbLower = bbBasis.sub(bbDev);
 
@@ -73,15 +70,12 @@ export function calculate(bars: Bar[], inputs: Partial<MACDBBInputs> = {}): Indi
 
   const warmup = Math.max(slowLength, bbLength);
 
-  const plot0 = histArr.map((v, i) => {
+  const macdArr = macdLine.toArray();
+
+  const plot0 = macdArr.map((v, i) => {
     if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
-    const prev = i > 0 ? (histArr[i - 1] ?? NaN) : NaN;
-    let color: string;
-    if (v >= 0) {
-      color = v > prev ? '#00E676' : '#26A69A';
-    } else {
-      color = v < prev ? '#FF5252' : '#EF5350';
-    }
+    const u = upperArr[i];
+    const color = (u != null && v >= u) ? '#00FF00' : '#FF0000';
     return { time: bars[i].time, value: v, color };
   });
 
@@ -91,13 +85,13 @@ export function calculate(bars: Bar[], inputs: Partial<MACDBBInputs> = {}): Indi
   // Pine barcolor: macd > Upper => yellow; macd < Lower => aqua
   const barColors: BarColorData[] = [];
   for (let i = warmup; i < bars.length; i++) {
-    const h = histArr[i];
+    const m = macdArr[i];
     const u = upperArr[i];
     const l = lowerArr[i];
-    if (h == null || u == null || l == null) continue;
-    if (h > u) {
+    if (m == null || u == null || l == null) continue;
+    if (m > u) {
       barColors.push({ time: bars[i].time, color: '#FFEB3B' });
-    } else if (h < l) {
+    } else if (m < l) {
       barColors.push({ time: bars[i].time, color: '#00BCD4' });
     }
   }
@@ -105,7 +99,7 @@ export function calculate(bars: Bar[], inputs: Partial<MACDBBInputs> = {}): Indi
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': toPlot(upperArr), 'plot2': toPlot(lowerArr), 'plot3': toPlot(basisArr) },
-    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
+    hlines: [{ value: 0, options: { color: '#FF7F00', linestyle: 'solid' as const, title: 'Zeroline' } }],
     fills: [
       { plot1: 'plot1', plot2: 'plot2', options: { color: 'rgba(33, 150, 243, 0.15)' } },
     ],

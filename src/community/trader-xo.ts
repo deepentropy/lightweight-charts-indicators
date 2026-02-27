@@ -1,10 +1,13 @@
 /**
  * Trader XO Macro Trend Scanner
  *
- * EMA crossover trend detection combined with Stochastic RSI oscillator.
- * Fast/Slow EMA crossover determines bull/bear regime.
- * Stoch RSI K/D crossovers, filtered by upper/middle/lower bands,
- * generate buy/sell signals.
+ * Overlay indicator (overlay=true) with:
+ * - Consolidated EMA (shown when bothEMAs=false), colored green/red based on fast vs slow EMA
+ * - Fast EMA (shown when bothEMAs=true), colored green/red based on trend
+ * - Slow EMA (shown when bothEMAs=true), colored green/red based on trend
+ * - Bull/Bear triangles on EMA crossover
+ * - barcolor: green for bull bars, red for bear bars
+ * - bgcolor for Stoch RSI crossover alerts at middle band
  *
  * Reference: TradingView "[@btc_charlie] Trader XO Macro Trend Scanner"
  */
@@ -15,6 +18,8 @@ import type { MarkerData, BarColorData, BgColorData } from '../types';
 export interface TraderXOInputs {
   fastEMA: number;
   slowEMA: number;
+  defEMA: number;
+  bothEMAs: boolean;
   smoothK: number;
   smoothD: number;
   rsiLength: number;
@@ -27,6 +32,8 @@ export interface TraderXOInputs {
 export const defaultInputs: TraderXOInputs = {
   fastEMA: 12,
   slowEMA: 25,
+  defEMA: 25,
+  bothEMAs: true,
   smoothK: 3,
   smoothD: 3,
   rsiLength: 14,
@@ -39,6 +46,8 @@ export const defaultInputs: TraderXOInputs = {
 export const inputConfig: InputConfig[] = [
   { id: 'fastEMA', type: 'int', title: 'Fast EMA', defval: 12, min: 1 },
   { id: 'slowEMA', type: 'int', title: 'Slow EMA', defval: 25, min: 1 },
+  { id: 'defEMA', type: 'int', title: 'Consolidated EMA', defval: 25, min: 1 },
+  { id: 'bothEMAs', type: 'bool', title: 'Show Both EMAs', defval: true },
   { id: 'smoothK', type: 'int', title: 'K Smoothing', defval: 3, min: 1 },
   { id: 'smoothD', type: 'int', title: 'D Smoothing', defval: 3, min: 1 },
   { id: 'rsiLength', type: 'int', title: 'RSI Length', defval: 14, min: 1 },
@@ -49,31 +58,31 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'K', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot1', title: 'D', color: '#FF6D00', lineWidth: 1 },
+  { id: 'consolidatedEMA', title: 'Consolidated EMA', color: '#26A69A', lineWidth: 3 },
+  { id: 'fastEMAPlot', title: 'Fast EMA', color: '#26A69A', lineWidth: 1 },
+  { id: 'slowEMAPlot', title: 'Slow EMA', color: '#26A69A', lineWidth: 1 },
 ];
 
 export const metadata = {
   title: 'Trader XO Macro Trend Scanner',
   shortTitle: 'TraderXO',
-  overlay: false,
+  overlay: true,
 };
 
 export function calculate(bars: Bar[], inputs: Partial<TraderXOInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } {
-  const { fastEMA, slowEMA, smoothK, smoothD, rsiLength, stochLength, upperBand, middleBand, lowerBand } = { ...defaultInputs, ...inputs };
+  const { fastEMA, slowEMA, defEMA, bothEMAs, smoothK, smoothD, rsiLength, stochLength, upperBand, middleBand, lowerBand } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const closeSeries = new Series(bars, (b) => b.close);
 
-  // EMA crossover for trend direction
+  // EMA calculations
   const fastEMAArr = ta.ema(closeSeries, fastEMA).toArray();
   const slowEMAArr = ta.ema(closeSeries, slowEMA).toArray();
+  const biasEMAArr = ta.ema(closeSeries, defEMA).toArray();
 
-  // Stoch RSI: RSI -> Stochastic(RSI, RSI, RSI, stochLength) -> SMA(K) -> SMA(D)
+  // Stoch RSI calculation
   const rsi = ta.rsi(closeSeries, rsiLength);
   const rsiArr = rsi.toArray();
-
-  // Stochastic of RSI: (rsi - lowest(rsi, stochLen)) / (highest(rsi, stochLen) - lowest(rsi, stochLen)) * 100
   const rsiHigh = ta.highest(rsi, stochLength).toArray();
   const rsiLow = ta.lowest(rsi, stochLength).toArray();
 
@@ -93,9 +102,9 @@ export function calculate(bars: Bar[], inputs: Partial<TraderXOInputs> = {}): In
   const kArr = ta.sma(stochSeries, smoothK).toArray();
   const dArr = ta.sma(Series.fromArray(bars, kArr), smoothD).toArray();
 
-  const warmup = rsiLength + stochLength + smoothK + smoothD;
+  const warmup = Math.max(fastEMA, slowEMA, defEMA);
+  const stochWarmup = rsiLength + stochLength + smoothK + smoothD;
 
-  // EMA crossover state: buy = fastEMA > slowEMA, sell = fastEMA < slowEMA
   const markers: MarkerData[] = [];
   const barColors: BarColorData[] = [];
   const bgColors: BgColorData[] = [];
@@ -103,73 +112,121 @@ export function calculate(bars: Bar[], inputs: Partial<TraderXOInputs> = {}): In
   let countBuy = 0;
   let countSell = 0;
 
-  for (let i = 1; i < n; i++) {
-    const fEMA = fastEMAArr[i] ?? 0;
-    const sEMA = slowEMAArr[i] ?? 0;
-    const fEMAPrev = fastEMAArr[i - 1] ?? 0;
-    const sEMAPrev = slowEMAArr[i - 1] ?? 0;
+  // EMA plots with per-bar conditional coloring
+  const consolidatedEMAPlot: { time: number; value: number; color?: string }[] = [];
+  const fastEMAPlot: { time: number; value: number; color?: string }[] = [];
+  const slowEMAPlot: { time: number; value: number; color?: string }[] = [];
 
-    const buy = fEMA > sEMA;
-    const sell = fEMA < sEMA;
-    const prevBuy = fEMAPrev > sEMAPrev;
+  for (let i = 0; i < n; i++) {
+    const fEMA = fastEMAArr[i] ?? NaN;
+    const sEMA = slowEMAArr[i] ?? NaN;
+    const bEMA = biasEMAArr[i] ?? NaN;
 
-    if (buy) { countBuy += 1; countSell = 0; }
-    if (sell) { countSell += 1; countBuy = 0; }
-
-    const buysignal = countBuy < 2 && countBuy > 0 && countSell < 1 && buy && !prevBuy;
-    const sellsignal = countSell > 0 && countSell < 2 && countBuy < 1 && sell && prevBuy;
-    const bull = countBuy > 1;
-    const bear = countSell > 1;
-
-    // Bar colors: Pine barcolor for buy/sell signal and sustained bull/bear
-    if (buysignal || bull) {
-      barColors.push({ time: bars[i].time, color: '#26A69A' });
-    } else if (sellsignal || bear) {
-      barColors.push({ time: bars[i].time, color: '#EF5350' });
+    // Pine: emaColor = v_fastEMA > v_slowEMA ? green : v_fastEMA < v_slowEMA ? red : #FF530D
+    let emaColor = '#FF530D';
+    if (!isNaN(fEMA) && !isNaN(sEMA)) {
+      if (fEMA > sEMA) emaColor = '#26A69A';
+      else if (fEMA < sEMA) emaColor = '#EF5350';
     }
 
-    // Stoch RSI crossover signals
-    if (i >= warmup) {
-      const kVal = kArr[i];
-      const dVal = dArr[i];
-      const kPrev = kArr[i - 1];
-      const dPrev = dArr[i - 1];
-      if (kVal != null && !isNaN(kVal) && dVal != null && !isNaN(dVal) &&
-          kPrev != null && !isNaN(kPrev) && dPrev != null && !isNaN(dPrev)) {
+    // Pine: plot(i_bothEMAs ? na : v_biasEMA, ...)
+    consolidatedEMAPlot.push({
+      time: bars[i].time,
+      value: (!bothEMAs && i >= warmup) ? bEMA : NaN,
+      color: emaColor,
+    });
 
-        const crossUp = kPrev <= dPrev && kVal > dVal;
-        const crossDown = kPrev >= dPrev && kVal < dVal;
+    // Pine: plot(i_bothEMAs ? v_fastEMA : na, ...)
+    fastEMAPlot.push({
+      time: bars[i].time,
+      value: (bothEMAs && i >= warmup) ? fEMA : NaN,
+      color: emaColor,
+    });
 
-        // Background colors for crossover alerts (Pine: bgcolor for crossover at middle band level)
-        if (crossUp && (kVal < middleBand || dVal < middleBand)) {
-          markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#4CAF50', text: 'Bull' });
-          bgColors.push({ time: bars[i].time, color: 'rgba(76,175,80,0.15)' });
-        } else if (crossDown && (kVal > middleBand || dVal > middleBand)) {
-          markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#FF0000', text: 'Bear' });
-          bgColors.push({ time: bars[i].time, color: 'rgba(255,0,0,0.15)' });
+    // Pine: plot(i_bothEMAs ? v_slowEMA : na, ...)
+    slowEMAPlot.push({
+      time: bars[i].time,
+      value: (bothEMAs && i >= warmup) ? sEMA : NaN,
+      color: emaColor,
+    });
+
+    // EMA crossover state tracking
+    if (i >= 1) {
+      const buy = fEMA > sEMA;
+      const sell = fEMA < sEMA;
+      const fEMAPrev = fastEMAArr[i - 1] ?? 0;
+      const sEMAPrev = slowEMAArr[i - 1] ?? 0;
+      const prevBuy = fEMAPrev > sEMAPrev;
+
+      if (buy) { countBuy += 1; countSell = 0; }
+      if (sell) { countSell += 1; countBuy = 0; }
+
+      const buysignal = countBuy < 2 && countBuy > 0 && countSell < 1 && buy && !prevBuy;
+      const sellsignal = countSell > 0 && countSell < 2 && countBuy < 1 && sell && prevBuy;
+      const bull = countBuy > 1;
+      const bear = countSell > 1;
+
+      // Pine: barcolor
+      if (buysignal) {
+        barColors.push({ time: bars[i].time, color: '#26A69A' });
+      } else if (sellsignal) {
+        barColors.push({ time: bars[i].time, color: '#EF5350' });
+      } else if (bull) {
+        barColors.push({ time: bars[i].time, color: '#26A69A' });
+      } else if (bear) {
+        barColors.push({ time: bars[i].time, color: '#EF5350' });
+      }
+
+      // Pine: plotshape Bull/Bear on first crossover bar
+      if (buysignal) {
+        markers.push({
+          time: bars[i].time,
+          position: 'belowBar',
+          shape: 'triangleUp',
+          color: '#26A69A',
+          text: 'Bull',
+        });
+      }
+      if (sellsignal) {
+        markers.push({
+          time: bars[i].time,
+          position: 'aboveBar',
+          shape: 'triangleDown',
+          color: '#EF5350',
+          text: 'Bear',
+        });
+      }
+
+      // Stoch RSI crossover bgcolor signals
+      if (i >= stochWarmup) {
+        const kVal = kArr[i];
+        const dVal = dArr[i];
+        const kPrev = kArr[i - 1];
+        const dPrev = dArr[i - 1];
+        if (kVal != null && !isNaN(kVal) && dVal != null && !isNaN(dVal) &&
+            kPrev != null && !isNaN(kPrev) && dPrev != null && !isNaN(dPrev)) {
+
+          const crossUp = kPrev <= dPrev && kVal > dVal;
+          const crossDown = kPrev >= dPrev && kVal < dVal;
+
+          // Pine: bgcolor for crossover at middle band
+          if (crossUp && (kVal < middleBand || dVal < middleBand)) {
+            bgColors.push({ time: bars[i].time, color: 'rgba(76,175,80,0.30)' });
+          } else if (crossDown && (kVal > middleBand || dVal > middleBand)) {
+            bgColors.push({ time: bars[i].time, color: 'rgba(255,0,0,0.30)' });
+          }
         }
       }
     }
   }
 
-  const plot0 = kArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null || isNaN(v)) ? NaN : v,
-  }));
-
-  const plot1 = dArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup || v == null || isNaN(v)) ? NaN : v,
-  }));
-
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    hlines: [
-      { value: upperBand, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Overbought' } },
-      { value: middleBand, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Midline' } },
-      { value: lowerBand, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Oversold' } },
-    ],
+    plots: {
+      'consolidatedEMA': consolidatedEMAPlot,
+      'fastEMAPlot': fastEMAPlot,
+      'slowEMAPlot': slowEMAPlot,
+    },
     markers,
     barColors,
     bgColors,

@@ -31,6 +31,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
+  // Pine uses style=cross for SMA; cross not supported, kept as line
   { id: 'plot0', title: 'Basis', color: '#FF6D00', lineWidth: 2 },
   { id: 'plot1', title: 'Upper 1', color: '#2962FF', lineWidth: 1 },
   { id: 'plot2', title: 'Lower 1', color: '#2962FF', lineWidth: 1 },

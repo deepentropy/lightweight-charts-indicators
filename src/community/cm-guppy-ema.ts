@@ -53,13 +53,36 @@ export function calculate(bars: Bar[], inputs: Partial<CMGuppyEMAInputs> = {}): 
 
   const emaArrays = allLengths.map((len) => ta.ema(src, len).toArray());
 
-  const plots: Record<string, Array<{ time: number; value: number }>> = {};
+  const plots: Record<string, Array<{ time: number; value: number; color?: string }>> = {};
 
   for (let idx = 0; idx < allLengths.length; idx++) {
     const arr = emaArrays[idx];
     plots[`plot${idx}`] = arr.map((v, i) => {
       if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
-      return { time: bars[i].time, value: v };
+
+      // Pine color rules:
+      // colfastL = ema1>ema2>ema3>ema4>ema5>ema6 (fast group aligned up)
+      // colfastS = ema1<ema2<ema3<ema4<ema5<ema6 (fast group aligned down)
+      // colslowL = ema7>ema8>ema9>ema10>ema11>ema12 (slow group aligned up)
+      // colslowS = ema7<ema8<ema9<ema10<ema11<ema12 (slow group aligned down)
+      // Fast EMAs: colFinal = colfastL && colslowL ? aqua : colfastS && colslowS ? orange : gray
+      // Slow EMAs: colFinal2 = colslowL ? lime : colslowS ? red : gray
+      const e = emaArrays.map(a => a[i]);
+      const colfastL = e[0]>e[1] && e[1]>e[2] && e[2]>e[3] && e[3]>e[4] && e[4]>e[5];
+      const colfastS = e[0]<e[1] && e[1]<e[2] && e[2]<e[3] && e[3]<e[4] && e[4]<e[5];
+      const colslowL = e[6]>e[7] && e[7]>e[8] && e[8]>e[9] && e[9]>e[10] && e[10]>e[11];
+      const colslowS = e[6]<e[7] && e[7]<e[8] && e[8]<e[9] && e[9]<e[10] && e[10]<e[11];
+
+      let color: string;
+      if (idx < 6) {
+        // Fast EMA color
+        color = (colfastL && colslowL) ? '#00FFFF' : (colfastS && colslowS) ? '#FFA500' : '#808080';
+      } else {
+        // Slow EMA color
+        color = colslowL ? '#00FF00' : colslowS ? '#FF0000' : '#808080';
+      }
+
+      return { time: bars[i].time, value: v, color };
     });
   }
 

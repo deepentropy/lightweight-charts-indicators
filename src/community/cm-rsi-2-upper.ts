@@ -52,22 +52,56 @@ export function calculate(bars: Bar[], inputs: Partial<CMRSI2UpperInputs> = {}):
 
   const warmup = Math.max(rsiLen, smaLen);
   const barColors: BarColorData[] = [];
+  const closeArr = bars.map(b => b.close);
 
-  const plot0 = sma200Arr.map((v, i) => {
-    if (i >= rsiLen) {
-      const r = rsiArr[i];
-      if (r != null) {
-        if (r < 10) barColors.push({ time: bars[i].time as number, color: '#26A69A' });
-        else if (r > 90) barColors.push({ time: bars[i].time as number, color: '#EF5350' });
+  // Pine: barcolor(isLongEntry() ? lime : na) -- green when close>ma200 & close<ma5 & rsi<10
+  // Pine: barcolor(isLongExit() ? yellow : na) -- yellow on crossunder(rsi, 90-level equivalent exit)
+  // Pine: barcolor(isShortEntry() ? red : na) -- red when close<ma200 & close>ma5 & rsi>90
+  // Pine: barcolor(isShortExit() ? yellow : na) -- yellow on crossover(rsi, 10-level equivalent exit)
+  for (let i = warmup; i < bars.length; i++) {
+    const r = rsiArr[i];
+    const c = closeArr[i];
+    const m5 = sma5Arr[i];
+    const m200 = sma200Arr[i];
+    if (r == null || m5 == null || m200 == null) continue;
+
+    const isLongEntry = c > m200 && c < m5 && r < 10;
+    const isShortEntry = c < m200 && c > m5 && r > 90;
+
+    // Long exit: close > ma200, close[1] < ma5[1], high > ma5, and any of previous 4 bars had long entry condition
+    let isLongExit = false;
+    if (c > m200 && i > 0 && (closeArr[i - 1] ?? 0) < (sma5Arr[i - 1] ?? 0) && bars[i].high > m5) {
+      for (let k = 1; k <= 4 && i - k >= 0; k++) {
+        const pk = i - k;
+        const rk = rsiArr[pk]; const ck = closeArr[pk]; const m5k = sma5Arr[pk]; const m200k = sma200Arr[pk];
+        if (rk != null && m5k != null && m200k != null && ck > m200k && ck < m5k && rk < 10) { isLongExit = true; break; }
       }
     }
-    return {
-      time: bars[i].time,
-      value: (v == null || i < smaLen) ? NaN : v,
-    };
+
+    // Short exit: close < ma200, close[1] > ma5[1], low < ma5, and any of previous 4 bars had short entry condition
+    let isShortExit = false;
+    if (c < m200 && i > 0 && (closeArr[i - 1] ?? 0) > (sma5Arr[i - 1] ?? 0) && bars[i].low < m5) {
+      for (let k = 1; k <= 4 && i - k >= 0; k++) {
+        const pk = i - k;
+        const rk = rsiArr[pk]; const ck = closeArr[pk]; const m5k = sma5Arr[pk]; const m200k = sma200Arr[pk];
+        if (rk != null && m5k != null && m200k != null && ck < m200k && ck > m5k && rk > 90) { isShortExit = true; break; }
+      }
+    }
+
+    if (isLongEntry) barColors.push({ time: bars[i].time as number, color: '#00E676' });
+    else if (isShortEntry) barColors.push({ time: bars[i].time as number, color: '#EF5350' });
+    else if (isLongExit || isShortExit) barColors.push({ time: bars[i].time as number, color: '#FFFF00' });
+  }
+
+  // Pine: plot(ma200, color=col, style=circles) -- per-bar color based on ma5 >= ma200
+  const plot0 = sma200Arr.map((v, i) => {
+    if (v == null || i < smaLen) return { time: bars[i].time, value: NaN };
+    const m5 = sma5Arr[i];
+    const color = (m5 != null && m5 >= v) ? '#00E676' : '#EF5350';
+    return { time: bars[i].time, value: v, color };
   });
 
-  // Pine: col = ma5 >= ma200 ? lime : red -- color both MAs by relative position
+  // Pine: plot(ma5, color=col) -- per-bar color based on ma5 >= ma200
   const plot1 = sma5Arr.map((v, i) => {
     if (v == null || i < 5) return { time: bars[i].time, value: NaN };
     const s200 = sma200Arr[i];

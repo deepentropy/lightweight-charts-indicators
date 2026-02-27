@@ -34,6 +34,7 @@ export const plotConfig: PlotConfig[] = [
   { id: 'plot1', title: 'Low Price Line', color: '#787B86', lineWidth: 2 },
   { id: 'plot2', title: 'High Price Line', color: '#787B86', lineWidth: 2 },
   { id: 'plot3', title: 'Median Price Line', color: '#FF9800', lineWidth: 2 },
+  { id: 'plot4', title: 'Slow EMA Trend Line', color: '#2196F3', lineWidth: 2 },
 ];
 
 export const metadata = {
@@ -153,7 +154,7 @@ export function calculate(bars: Bar[], inputs: Partial<PriceActionSystemInputs> 
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': toPlot(emaLoArr), 'plot2': toPlot(emaHiArr), 'plot3': toPlot(emaMeArr) },
+    plots: { 'plot0': plot0, 'plot1': toPlot(emaLoArr), 'plot2': toPlot(emaHiArr), 'plot3': toPlot(emaMeArr), 'plot4': toPlot(slowMCArr) },
     markers,
     barColors,
     bgColors,

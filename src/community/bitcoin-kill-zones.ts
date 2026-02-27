@@ -1,91 +1,102 @@
 /**
  * BITCOIN KILL ZONES v2
  *
- * Volatility-based momentum indicator using Bollinger Band %B.
- * Kill zone when %B > 1.0 (above upper BB) or %B < 0 (below lower BB).
+ * Overlay=true indicator that shows trading session kill zones via background colors.
+ * - New York Kill Zone (12:30-14:30 UTC): red bgcolor
+ * - London Open Kill Zone (06:00-08:00 UTC): green bgcolor
+ * - London Close Kill Zone (15:00-17:00 UTC): olive bgcolor
+ * - Asia Kill Zone (23:00-03:00 UTC): orange bgcolor
  *
- * Reference: TradingView "BITCOIN KILL ZONES v2" (community)
+ * No plots - only bgcolor for session time zones.
+ *
+ * Reference: TradingView "Bitcoin Kill Zones v2 [oscarvs]"
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
 
 export interface BitcoinKillZonesInputs {
-  length: number;
-  mult: number;
-  src: SourceType;
+  showNY: boolean;
+  showLondonOpen: boolean;
+  showLondonClose: boolean;
+  showAsia: boolean;
 }
 
 export const defaultInputs: BitcoinKillZonesInputs = {
-  length: 14,
-  mult: 2.0,
-  src: 'close',
+  showNY: true,
+  showLondonOpen: true,
+  showLondonClose: true,
+  showAsia: true,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 14, min: 1 },
-  { id: 'mult', type: 'float', title: 'Multiplier', defval: 2.0, min: 0.1, step: 0.1 },
-  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
+  { id: 'showNY', type: 'bool', title: 'New York Kill Zone', defval: true },
+  { id: 'showLondonOpen', type: 'bool', title: 'London Open Kill Zone', defval: true },
+  { id: 'showLondonClose', type: 'bool', title: 'London Close Kill Zone', defval: true },
+  { id: 'showAsia', type: 'bool', title: 'Asia Kill Zone', defval: true },
 ];
 
-export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: '%B', color: '#2962FF', lineWidth: 2 },
-];
+export const plotConfig: PlotConfig[] = [];
 
 export const metadata = {
-  title: 'Bitcoin Kill Zones',
+  title: 'Bitcoin Kill Zones v2',
   shortTitle: 'BKZ',
-  overlay: false,
+  overlay: true,
 };
 
+/**
+ * Check if a UTC hour:minute falls within a session range [startHour:startMin, endHour:endMin).
+ * Handles overnight sessions (e.g., 23:00-03:00).
+ */
+function inSession(hourMinute: number, startH: number, startM: number, endH: number, endM: number): boolean {
+  const start = startH * 60 + startM;
+  const end = endH * 60 + endM;
+  if (start <= end) {
+    return hourMinute >= start && hourMinute < end;
+  }
+  // Overnight session (e.g., 23:00 - 03:00)
+  return hourMinute >= start || hourMinute < end;
+}
+
 export function calculate(bars: Bar[], inputs: Partial<BitcoinKillZonesInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
-  const { length, mult, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
+  const { showNY, showLondonOpen, showLondonClose, showAsia } = { ...defaultInputs, ...inputs };
 
-  const [bbUpper, , bbLower] = ta.bb(source, length, mult);
-  const upperArr = bbUpper.toArray();
-  const lowerArr = bbLower.toArray();
-  const sourceArr = source.toArray();
-
-  const warmup = length;
-
-  const plot0 = bars.map((b, i) => {
-    if (i < warmup) return { time: b.time, value: NaN };
-    const upper = upperArr[i] ?? NaN;
-    const lower = lowerArr[i] ?? NaN;
-    const range = upper - lower;
-    if (isNaN(range) || range === 0) return { time: b.time, value: NaN };
-    const pctB = ((sourceArr[i] ?? NaN) - lower) / range;
-    // Color: red if kill zone (>1 or <0), blue otherwise
-    const color = (pctB > 1.0 || pctB < 0) ? '#EF5350' : '#2962FF';
-    return { time: b.time, value: pctB, color };
-  });
-
-  // Background color for kill zones: %B > 1.0 (above upper BB) or %B < 0 (below lower BB)
-  // Pine: bgcolor for session zones; TS adaptation colors extreme %B bars
   const bgColors: BgColorData[] = [];
-  for (let i = warmup; i < bars.length; i++) {
-    const upper = upperArr[i] ?? NaN;
-    const lower = lowerArr[i] ?? NaN;
-    const range = upper - lower;
-    if (isNaN(range) || range === 0) continue;
-    const pctB = ((sourceArr[i] ?? NaN) - lower) / range;
-    if (isNaN(pctB)) continue;
-    if (pctB > 1.0) {
-      bgColors.push({ time: bars[i].time, color: 'rgba(239,83,80,0.1)' }); // above upper BB
-    } else if (pctB < 0) {
-      bgColors.push({ time: bars[i].time, color: 'rgba(239,83,80,0.1)' }); // below lower BB
+
+  for (let i = 0; i < bars.length; i++) {
+    const t = bars[i].time;
+    // time is Unix timestamp in seconds
+    const date = new Date(t * 1000);
+    const hourMinute = date.getUTCHours() * 60 + date.getUTCMinutes();
+
+    // New York Kill Zone: 12:30-14:30 UTC (red)
+    if (showNY && inSession(hourMinute, 12, 30, 14, 30)) {
+      bgColors.push({ time: t, color: 'rgba(255,0,0,0.10)' });
+      continue;
+    }
+
+    // London Open Kill Zone: 06:00-08:00 UTC (green)
+    if (showLondonOpen && inSession(hourMinute, 6, 0, 8, 0)) {
+      bgColors.push({ time: t, color: 'rgba(0,128,0,0.10)' });
+      continue;
+    }
+
+    // London Close Kill Zone: 15:00-17:00 UTC (olive)
+    if (showLondonClose && inSession(hourMinute, 15, 0, 17, 0)) {
+      bgColors.push({ time: t, color: 'rgba(128,128,0,0.10)' });
+      continue;
+    }
+
+    // Asia Kill Zone: 23:00-03:00 UTC (orange)
+    if (showAsia && inSession(hourMinute, 23, 0, 3, 0)) {
+      bgColors.push({ time: t, color: 'rgba(255,165,0,0.10)' });
+      continue;
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
-    hlines: [
-      { value: 1.0, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Upper' } },
-      { value: 0.5, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'Mid' } },
-      { value: 0.0, options: { color: '#26A69A', linestyle: 'dashed' as const, title: 'Lower' } },
-    ],
+    plots: {},
     bgColors,
   };
 }

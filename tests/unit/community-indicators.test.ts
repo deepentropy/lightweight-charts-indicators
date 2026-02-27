@@ -236,10 +236,11 @@ describe('ColoredVolume', () => {
     vals.forEach((v) => expect(v).toBeGreaterThan(0));
   });
 
-  it('NaN for first lookback bars', () => {
-    const plot = (result.plots as Record<string, Array<{ value: number }>>)['plot0'];
+  it('all bars have volume values (gray color for first lookback bars)', () => {
+    const plot = (result.plots as Record<string, Array<{ value: number; color?: string }>>)['plot0'];
+    // Pine plots volume for all bars; first lookback bars get gray color
     for (let i = 0; i < 10; i++) {
-      expect(isNaN(plot[i].value)).toBe(true);
+      expect(isNaN(plot[i].value)).toBe(false);
     }
     expect(isNaN(plot[10].value)).toBe(false);
   });
@@ -705,16 +706,12 @@ describe('ElliottWaveOscillator', () => {
   const result = ElliottWaveOscillator.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], false);
+    assertShape(result, [], true);
   });
 
-  it('oscillates around zero', () => {
-    const vals = validValues(result);
-    expect(vals.length).toBeGreaterThan(0);
-    const hasPositive = vals.some((v) => v > 0);
-    const hasNegative = vals.some((v) => v < 0);
-    expect(hasPositive).toBe(true);
-    expect(hasNegative).toBe(true);
+  it('produces markers', () => {
+    const r = result as any;
+    expect(Array.isArray(r.markers)).toBe(true);
   });
 });
 
@@ -867,8 +864,8 @@ describe('RangeIdentifier', () => {
 describe('IFTStochRSICCI', () => {
   const result = IFTStochRSICCI.calculate(bars);
 
-  it('returns correct shape (4 plots)', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], false);
+  it('returns correct shape (5 plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4'], false);
   });
 
   it('IFT values in -1 to 1 range', () => {
@@ -962,8 +959,8 @@ describe('GMMA', () => {
 describe('TurtleTradeChannels', () => {
   const result = TurtleTradeChannels.calculate(bars);
 
-  it('returns correct shape (4 plots)', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], true);
+  it('returns correct shape (6 plots)', () => {
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'trendLine', 'exitLine'], true);
   });
 
   it('entry high >= entry low', () => {

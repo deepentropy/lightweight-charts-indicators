@@ -123,6 +123,8 @@ export function calculate(bars: Bar[], inputs: Partial<PriceMomentumOscInputs> =
     fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(38,166,154,0.2)' }, colors: fillColors }],
     hlines: [
       { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },
+      { value: 2.5, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'OB Level' } },
+      { value: -2.5, options: { color: '#787B86', linestyle: 'dashed' as const, title: 'OS Level' } },
     ],
     barColors,
   };

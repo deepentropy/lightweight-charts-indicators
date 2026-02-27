@@ -24,6 +24,9 @@ export interface AdaptiveHullMAInputs {
   showMinor: boolean;
   minorMin: number;
   minorMax: number;
+  showZone: boolean;
+  mult: number;
+  showSignals: boolean;
 }
 
 export const defaultInputs: AdaptiveHullMAInputs = {
@@ -34,6 +37,9 @@ export const defaultInputs: AdaptiveHullMAInputs = {
   showMinor: true,
   minorMin: 89,
   minorMax: 121,
+  showZone: false,
+  mult: 2.7,
+  showSignals: true,
 };
 
 export const inputConfig: InputConfig[] = [
@@ -44,11 +50,20 @@ export const inputConfig: InputConfig[] = [
   { id: 'showMinor', type: 'bool', title: 'Show Minor HMA+', defval: true },
   { id: 'minorMin', type: 'int', title: 'Minor Minimum', defval: 89, min: 2 },
   { id: 'minorMax', type: 'int', title: 'Minor Maximum', defval: 121, min: 2 },
+  { id: 'showZone', type: 'bool', title: 'Show Distance Zone', defval: false },
+  { id: 'mult', type: 'float', title: 'Distance Multiplier', defval: 2.7, min: 0.1, step: 0.1 },
+  { id: 'showSignals', type: 'bool', title: 'Show Possible Signals', defval: true },
 ];
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Dynamic HMA+', color: '#6fbf73', lineWidth: 3 },
   { id: 'plot1', title: 'Minor HMA+', color: '#6fbf73', lineWidth: 1 },
+  { id: 'upperTL', title: 'Upper Half Zone', color: '#26A69A' },
+  { id: 'lowerTL', title: 'Lower Half Zone', color: '#EF5350' },
+  { id: 'topTL', title: 'Top Zone', color: '#787B86' },
+  { id: 'botTL', title: 'Bottom Zone', color: '#787B86' },
+  { id: 'stopupperTL', title: 'Stop Upper', color: '#FFFFFF' },
+  { id: 'stoplowerTL', title: 'Stop Lower', color: '#FFFFFF' },
 ];
 
 export const metadata = {
@@ -112,7 +127,7 @@ function hmaAt(arr: number[], endIdx: number, length: number): number {
 }
 
 export function calculate(bars: Bar[], inputs: Partial<AdaptiveHullMAInputs> = {}): IndicatorResult {
-  const { charger, minLength, maxLength, flat, showMinor, minorMin, minorMax } = { ...defaultInputs, ...inputs };
+  const { charger, minLength, maxLength, flat, showMinor, minorMin, minorMax, showZone, mult, showSignals } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const adaptPct = 0.03141;
 
@@ -226,29 +241,56 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveHullMAInputs> = {
     return { time: bars[i].time, value: v, color };
   });
 
+  // Distance zone plots (Pine: ATR envelope around dynamicHMA)
+  const atr40 = ta.atr(bars, 40).toArray();
+
+  const upperTLPlot = dynamicHMA.map((v, i) => {
+    if (!showZone || i < warmup || isNaN(v) || isNaN(atr40[i])) return { time: bars[i].time, value: NaN };
+    return { time: bars[i].time, value: v + mult * atr40[i] };
+  });
+  const lowerTLPlot = dynamicHMA.map((v, i) => {
+    if (!showZone || i < warmup || isNaN(v) || isNaN(atr40[i])) return { time: bars[i].time, value: NaN };
+    return { time: bars[i].time, value: v - mult * atr40[i] };
+  });
+  const topTLPlot = dynamicHMA.map((v, i) => {
+    if (!showZone || i < warmup || isNaN(v) || isNaN(atr40[i])) return { time: bars[i].time, value: NaN };
+    return { time: bars[i].time, value: v + (mult * 2) * atr40[i] };
+  });
+  const botTLPlot = dynamicHMA.map((v, i) => {
+    if (!showZone || i < warmup || isNaN(v) || isNaN(atr40[i])) return { time: bars[i].time, value: NaN };
+    return { time: bars[i].time, value: v - (mult * 2) * atr40[i] };
+  });
+  const stopupperTLPlot = dynamicHMA.map((v, i) => {
+    if (!showZone || i < warmup || isNaN(v) || isNaN(atr40[i])) return { time: bars[i].time, value: NaN };
+    return { time: bars[i].time, value: v + (mult / 2) * atr40[i] };
+  });
+  const stoplowerTLPlot = dynamicHMA.map((v, i) => {
+    if (!showZone || i < warmup || isNaN(v) || isNaN(atr40[i])) return { time: bars[i].time, value: NaN };
+    return { time: bars[i].time, value: v - (mult / 2) * atr40[i] };
+  });
+
   // Markers: buy/sell signals, fast exits, warning signs (from Pine plotchar)
   const markers: MarkerData[] = [];
   for (let i = warmup + 1; i < n; i++) {
     const slope = dynSlopes[i];
     const prevSlope = dynSlopes[i - 1];
-    const atrPos = 0.72 * (atr5[i] ?? 0);
 
     // Buy: slope >= flat and plugged, first bar of condition
     const upSig = slope >= flat && plugged[i];
     const prevUpSig = prevSlope >= flat && plugged[i - 1];
-    if (upSig && !prevUpSig) {
+    if (showSignals && upSig && !prevUpSig) {
       markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#00FF00', text: 'BUY' });
     }
 
     // Sell: slope <= -flat and plugged, first bar of condition
     const dnSig = slope <= -flat && plugged[i];
     const prevDnSig = prevSlope <= -flat && plugged[i - 1];
-    if (dnSig && !prevDnSig) {
+    if (showSignals && dnSig && !prevDnSig) {
       markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#FF0000', text: 'SELL' });
     }
 
     // Fast exits (minor HMA based)
-    if (showMinor && !isNaN(minorHMA[i])) {
+    if (showSignals && showMinor && !isNaN(minorHMA[i])) {
       const _upExit = slope >= flat && !plugged[i] && bars[i].close < minorHMA[i];
       const prevUpExit = prevSlope >= flat && !plugged[i - 1] && bars[i - 1].close < minorHMA[i - 1];
       const _dnExit = slope <= -flat && !plugged[i] && bars[i].close > minorHMA[i];
@@ -256,6 +298,23 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveHullMAInputs> = {
       if ((_upExit && !prevUpExit) || (_dnExit && !prevDnExit)) {
         const exitColor = _upExit ? '#00FF00' : '#FF0000';
         markers.push({ time: bars[i].time, position: 'inBar', shape: 'xcross', color: exitColor, text: 'Exit' });
+      }
+    }
+
+    // Warning signs: price crossed outer distance zone (Pine: plotchar "⚠")
+    if (showSignals && !isNaN(atr40[i]) && !isNaN(dynamicHMA[i])) {
+      const topZone = dynamicHMA[i] + (mult * 2) * atr40[i];
+      const botZone = dynamicHMA[i] - (mult * 2) * atr40[i];
+      const _topWarn = bars[i].high > topZone;
+      const _botWarn = bars[i].low < botZone;
+      const prevTopZone = !isNaN(dynamicHMA[i - 1]) && !isNaN(atr40[i - 1])
+        ? dynamicHMA[i - 1] + (mult * 2) * atr40[i - 1] : NaN;
+      const prevBotZone = !isNaN(dynamicHMA[i - 1]) && !isNaN(atr40[i - 1])
+        ? dynamicHMA[i - 1] - (mult * 2) * atr40[i - 1] : NaN;
+      const prevTopWarn = !isNaN(prevTopZone) && bars[i - 1].high > prevTopZone;
+      const prevBotWarn = !isNaN(prevBotZone) && bars[i - 1].low < prevBotZone;
+      if ((_topWarn && !prevTopWarn) || (_botWarn && !prevBotWarn)) {
+        markers.push({ time: bars[i].time, position: _topWarn ? 'aboveBar' : 'belowBar', shape: 'diamond', color: '#FFA500', text: 'Warn' });
       }
     }
   }
@@ -272,9 +331,20 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveHullMAInputs> = {
     }
   }
 
+  // Fill between stop zone lines (Pine: fill(sutl, sltl, color=purple, transp=90))
+  const fills = showZone
+    ? [{ plot1: 'stopupperTL', plot2: 'stoplowerTL', options: { color: 'rgba(128,0,128,0.10)' } }]
+    : [];
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
+    plots: {
+      'plot0': plot0, 'plot1': plot1,
+      'upperTL': upperTLPlot, 'lowerTL': lowerTLPlot,
+      'topTL': topTLPlot, 'botTL': botTLPlot,
+      'stopupperTL': stopupperTLPlot, 'stoplowerTL': stoplowerTLPlot,
+    },
+    fills,
     markers,
     bgColors,
   } as IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] };

@@ -1,5 +1,169 @@
 # DEVLOG
 
+## 2026-02-27 - Minor-Gap Display Fixes Batch 3 (8 Indicators)
+
+### Goal
+Fix 8 community indicators with minor display gaps to match their PineScript source display elements.
+
+### Indicators Fixed
+1. **squeeze-momentum-v2** - Added signal line plot (plot2, SMA of momentum value with configurable `signalPeriod` input, default 5). Matches Pine's `plot(sma(val, SignalPeriod), color=red)`.
+2. **st0p** - Added invisible ohlc4 plot (anchor for fill) and dynamic fill between ohlc4 and ST0P line: green when ohlc4 > stop (long), red when short. Matches Pine's `fill(plot(ohlc4), plot(ST0P))` with highlighting colors.
+3. **stoch-pop-1** - Restructured to match Pine: single stochastic line with per-bar color (green >= ul, red <= ll, blue otherwise). Added 4 zone boundary plots (upperLine, line100, lowerLine, line0) and 3 zone fills (Long Trade green, No Trade blue, Short Trade red). Added barColors matching Pine's `barcolor()`. Changed inputs to match Pine: smoothK=5, ul=60, ll=30.
+4. **stoch-pop-2** - Same structure as stoch-pop-1: single stochastic with per-bar color, 4 zone boundary plots, 3 zone fills, and barColors. Inputs match Pine: smoothK=5, ul=55, ll=45. Barcolor uses lime for Long.
+5. **swing-trade-signals** - Added RSI exit markers: triangleDown for `buyexit` (RSI crosses below overbought=80) and triangleUp for `sellexit` (RSI crosses above oversold=20). Added `overbought` and `oversold` inputs. Colors match Pine's teal.
+6. **tdi-hlc-trix** - Replaced single BB-band fill with 2 separate fills: red fill between upper (plot2) and midline (plot4), green fill between midline (plot4) and lower (plot3). Matches Pine's `fill(upl, midl, red)` and `fill(midl, dnl, green)`.
+7. **turtle-trade-channels** - Added Trend Line (trendLine) and Exit Line (exitLine) derived plots using `barssince` logic: K1 switches between entry low/high based on last breakout direction, K2 switches between exit low/high. Matches Pine's primary visual K1/K2 lines.
+8. **volume-flow-v3** - Added zero line plot (diffZero) and fill between diffValue and diffZero to approximate Pine's `plot.style_area`. Dynamic fill colors: green when bull MA > bear MA, red otherwise.
+
+### Tests Updated
+- SqueezeMomentumV2: assertShape now checks ['plot0', 'plot1', 'plot2']
+- ST0P: assertShape now checks ['plot0', 'ohlc4']
+- StochPOP1: assertShape now checks ['plot0', 'upperLine', 'line100', 'lowerLine', 'line0']
+- StochPOP2: assertShape now checks ['plot0', 'upperLine', 'line100', 'lowerLine', 'line0']
+- TurtleTradeChannels: assertShape now checks ['plot0', 'plot1', 'plot2', 'plot3', 'trendLine', 'exitLine']
+- VolumeFlowV3: assertShape now checks ['volume', 'bullMa', 'bearMa', 'bullSpike', 'bearSpike', 'diffValue', 'diffZero']
+
+### Current State
+- 0 TypeScript compilation errors
+- 653/653 tests pass across 6 test files
+
+---
+
+## 2026-02-27 - Minor-Gap Display Fixes Batch 2 (7 Indicators)
+
+### Goal
+Fix 7 community indicators with minor display gaps (plus 1 no-change-needed) to match their PineScript source display elements.
+
+### Indicators Fixed
+1. **ma-converging** - Added per-bar conditional color on the Converging MA plot (plot1): teal (#008080) when fma > ma, red (#FF0000) otherwise, matching Pine's `css = fma > ma ? color.teal : color.red`.
+2. **ma-deviation-rate** - No change needed. Pine uses `style=plot.style_cross` for HiBound/LoBound which has no plotConfig equivalent. Existing implementation is acceptable.
+3. **macd-bb** - Changed plot0 from MACD-Signal histogram to raw MACD line with circles style, matching Pine's `plot(macd, color=mc, style=circles)`. Changed BB to apply to MACD (not histogram). Updated color logic: lime when MACD >= BB Upper, red otherwise. Changed BB defaults to length=10, mult=1.0. Changed zeroline to orange solid.
+4. **macd-vxi** - Added MACD line plot (plot1, red), Signal line plot (plot2, blue), and cross-detection circles plot (plot3, black circles when signal crosses macd). Changed signal from EMA to SMA matching Pine. Updated defaults to fast=13, slow=21, signal=8 matching Pine source.
+5. **madrid-ma-ribbon** - Added 4-state conditional colors on all 18 MA plots using Pine's `maColor()` function: lime (#00FF00) when MA rising AND close > MA100, maroon (#800000) when MA falling AND close > MA100, red (#FF0000) when falling AND close < MA100, green (#008000) when rising AND close < MA100.
+6. **ml-momentum-index** - Added WMA of prediction line (plot4, #31FFC8) computing `ta.wma(prediction, 20)` matching Pine's `prediction_ma = ta.wma(prediction, 20)`.
+7. **ml-moving-average** - Replaced single upper-to-lower fill with 2 gradient fills: center-to-upper (blue) and center-to-lower (pink), matching Pine's `fill(plot_upper, plot_out, ...)` and `fill(plot_out, plot_lower, ...)`.
+8. **murreys-math-osc** - Added 2 fills between extreme quadrant levels: orange fill between 0/8 (value 0) and 1/8 (value 12.5), lime fill between 7/8 (value 87.5) and 8/8 (value 100), matching Pine's `fill(p1,p2,color=orange)` and `fill(p3,p4,color=lime)`.
+
+### Tests
+- 0 TypeScript compilation errors
+- 653/653 tests pass across 6 test files
+- No test updates needed (MACDVXI test already expected 4 plots, other changes are additive)
+
+---
+
+## 2026-02-27 - Minor-Gap Display Fixes (8 Indicators)
+
+### Goal
+Fix 8 community indicators with small display gaps to match their PineScript source display elements.
+
+### Indicators Fixed
+1. **cm-rsi-2-upper** - Added per-bar conditional color to SMA 200 plot (lime/red based on ma5 >= ma200). Added full barcolor logic: green (long entry), red (short entry), yellow (long/short exit) matching Pine's isLongEntry/isLongExit/isShortEntry/isShortExit conditions.
+2. **cm-rsi-ema** - Fixed hlines from 70/30 to 80/20 matching Pine `hline(80)` and `hline(20)`. Updated defaults to rsiLen=20, emaLen=10 matching Pine source.
+3. **colored-volume** - Fixed color logic: now compares current close/volume to `close[lookback]`/`volume[lookback]` (N-bar lookback) instead of previous bar. Green: price up + volume up. Red: price down + volume up. Blue: price up + volume down. Orange: price down + volume down. First lookback bars show gray instead of NaN.
+4. **ehlers-mesa-ma** - Replaced single static fill with dynamic per-bar `colors` array: green (`rgba(0,230,118,0.3)`) when MAMA > FAMA, red (`rgba(239,83,80,0.3)`) when MAMA < FAMA.
+5. **ema-enveloper** - Fixed upper/lower calculation: now uses `ema(high, len)` for upper and `ema(low, len)` for lower (separate EMAs on high/low sources) instead of percentage envelope. Removed `percent` input.
+6. **gaussian-channel** - Added per-bar conditional color to all 3 plots (filter, upper, lower): green (#0aff68) when filter rising, red (#ff0a5a) when falling, gray (#cccccc) otherwise. Added dynamic fill color matching the same logic.
+7. **linear-regression-candles** - Added signal line plot (SMA or EMA of linreg close, matching Pine's `signal = sma_signal ? sma(bclose, signal_length) : ema(bclose, signal_length)`). Added `signalLength` (default 11) and `smaSignal` (default true) inputs. Updated defaults to match Pine: length=11, smoothLen=1.
+8. **linear-regression-channel** - Added per-bar conditional colors on upper and lower channel plots: green (#26A69A) when value rising, red (#EF5350) when falling.
+
+### Tests Updated
+- CMRSI2Upper: assertShape now checks ['plot0', 'plot1'] (was ['plot0'])
+- ColoredVolume: updated test from "NaN for first lookback bars" to "all bars have volume values"
+- LinRegCandles: added signal plot assertion
+
+### Current State
+- 0 TypeScript compilation errors
+- 521/523 tests pass (2 pre-existing StochPOP failures)
+
+---
+
+## 2026-02-27 - Moderate-Gap Display Fixes Batch 3 (7 Indicators)
+
+### Goal
+Fix 7 moderate-gap community indicators to match their PineScript source display elements (plots, fills, markers, labels, boxes).
+
+### Indicators Fixed
+1. **williams-combo** - Added Resistance (plot3, olive #808000) and Support (plot4, maroon #800000) level plots using `valuewhen(high >= highest(high, lengthRS), high, 0)` logic. Lines break (NaN) when level changes. Added `lengthRS` input (default 13).
+2. **williams-vix-fix** - Added rangeLow plot (plot3, orange #FF9800, linewidth=4) showing `lowest(wvf, lb) * pl` when `hp` input enabled. Added `pl` (lowest percentile, default 1.01), `hp` (show high range), `sd` (show stddev line) inputs. Made upperBand conditional on `sd` and rangeHigh/rangeLow conditional on `hp`.
+3. **zlma-trend-levels** - Added raw EMA plot (plot1) alongside ZLMA; added gradient fill between ZLMA and EMA (green/blue per Pine); added BoxData[] for trend level boxes at signal crossovers (sized by ATR(200)); added LabelData[] for triangle labels when price crosses box boundaries. ZLMA now uses `zlma > zlma[3]` color logic matching Pine.
+4. **redk-tpx** - Changed Bull/Bear Pressure plots to area style. Added Cold (plot3, circles, maroon) and Hot (plot4, cross, green) signal plots at `slevel` when bears/bulls exceed control level. Added TPX direction color (white/gray). Added `slevelOn` and `slevel` inputs. Added swing markers on TPX zero-cross.
+5. **redk-vader** - Added Sentiment histogram (plot3, columns, 4-color conditional matching Pine v3). Changed Supply Energy to circles style and Demand Energy to cross style. Added `DER_avg`, `smooth`, `showSenti`, `senti` inputs. Refactored to use WMA averaging for DER computation.
+6. **vpci** - Added BB basis midline plot (plot4, gray #787B86). Added breach marker plot (plot5, cross style) when VPCI breaks above BB upper or below BB lower, colored red/green by direction. Also added MarkerData[] for breach cross points.
+7. **pivot-hh-hl-lh-ll** - Added pivot avg stepline plot (plot0, conditional color by close vs avg). Added Top Levels circles plot (plot1, teal) and Bottom Levels circles plot (plot2, red) with NaN breaks on level change. Added Breakout/Breakdown markers (triangleUp/Down). Added LabelData[] at pivot price points with values. Added `showFB` input. Changed defaults to leftBars=4, rightBars=2 matching Pine source.
+
+### Tests Updated
+- ZlmaTrendLevels test: added plot3 assertion
+- PivotHhHlLhLl test: added plot1, plot2 assertions
+- RedKTPX test: added plot3, plot4 assertions
+
+### Current State
+- 0 TypeScript compilation errors
+- 567/567 tests pass across 4 test files
+- All existing calculation logic preserved
+
+---
+
+## 2026-02-27 - Moderate-Gap Display Fixes Batch 2 (7 Indicators)
+
+### Goal
+Fix 7 moderate-gap community indicators to match their PineScript source display elements (plots, fills, markers, labels).
+
+### Indicators Fixed
+1. **normalized-qqe** - Added slow QQE line (QQES-50, plot1, blue #0007E1) alongside fast line; added per-bar color on fast line (green >10, red <-10, yellow otherwise); added Buy/Sell markers on QQEF/QQES crossover (gated by showSignals input); fixed hlines to +10/-10 matching Pine
+2. **ott-bands** - Complete overhaul of plots: added OTT main line (nz(OTT[2]), purple #B800D9), Support Line (MAvg, conditional on showSupport), 6 band lines (upper/lower with half and fibo sub-bands). Added 7 gradient fills between all band levels. New inputs: upperCoeff, lowerCoeff, showFiboLines, showSupport. Default percent changed to 15 matching Pine.
+3. **ppo-alerts** - Added 4 circle-style plots: Bottoms (maroon, linewidth=3), Tops (green, linewidth=3), Bearish Divergence (orange, linewidth=6), Bullish Divergence (purple, linewidth=6). Uses oscillator pivot detection (d>d[1] and d[1]<d[2]) for bottoms/tops and price/PPO divergence comparison.
+4. **ppo-divergence** - Added 4 circle-style plots: Tops (aqua circles at PPO bottoms), Bottoms (red circles at PPO tops), Bearish Divergence (orange), Bullish Divergence (purple). Uses same oscillator pivot detection as PPO Alerts.
+5. **rmi-trend-sniper** - Added LabelData[] for buy/sell signal labels. Computes RWMA (Range Weighted MA), Band (from ATR), and positions labels at max+(Band/2) for sells and min-(Band/2) for buys at trend state transitions.
+6. **stochastic-ott** - Added %K plot color to #0094FF, OTT color to #B800D9 matching Pine, added 2-bar lag on OTT plot (nz(OTT[2])), added Support Line plot (MAvg, conditional on showSupport input), updated hline style to solid matching Pine.
+7. **supertrend-ai-clustering** - Added LabelData[] for performance index labels at trailing stop position showing cluster performance score (int(perf_idx * 10)) at each trend flip.
+
+### Tests Updated
+- NormalizedQQE: assertShape now checks ['plot0', 'plot1']
+- PPOAlerts: assertShape now checks ['plot0'..'plot5'] (6 plots)
+- PPODivergence: assertShape now checks ['plot0'..'plot6'] (7 plots)
+- StochasticOTT: assertShape now checks ['plot0', 'plot1', 'plot2']
+- OTTBands: plot IDs changed from [plot0,plot1,plot2] to [ottMain,support,ottUpper,ottUpperHalf,ottUpperFibo,ottLower,ottLowerHalf,ottLowerFibo]
+
+### Current State
+- 0 TypeScript compilation errors
+- 652/652 tests pass across 6 test files
+
+### Key Decisions
+- Kept all existing calculation logic intact; only added display elements
+- NormalizedQQE: changed from normalized (0-100) output to Pine's raw (QQEF-50, QQES-50) output to match source
+- OTT Bands: default percent changed from 1.4 to 15 to match Pine source
+- Stochastic OTT: OTT now plotted with 2-bar lag matching Pine's nz(OTT[2])
+- PPO circle plots use offset=-1 pattern matching Pine's offset parameter
+
+---
+
+## 2026-02-27 - Moderate-Gap Display Element Fixes (7 Indicators)
+
+### Goal
+Fix 7 community indicators with moderate display gaps to match their PineScript source display elements.
+
+### Indicators Fixed
+1. **cog-channel** - Added ATR outer channel (Starc+/Starc- using SMA(TR)*2), 2 fills (BB-to-ATR outer channels: green lower, red upper), squeeze cross marker plots when ATR inside BB. Changed default length from 10 to 34 to match Pine.
+2. **consolidation-zones** - Added LineDrawingData[] output for dashed zone boundary lines drawn from current bar back to consolidation start, matching Pine's line.new calls.
+3. **double-macd** - Restructured to match Pine: MACD1 (12/26) as line+histogram, MACD2 (5/15) as line+histogram. Changed fast2/slow2 defaults to 5/15 to match Pine. Added 4 divergence label markers (Bear R, Bear O, Bull R, Bull O) from plotshape. Added proper atlas/choppiness bgcolor.
+4. **easy-trend-colors** - Added per-bar MACD triangle plots at MACD value position (macdUp=triangleup/lime when MACD >= Upper, macdDn=triangledown/red otherwise), matching Pine's plotshape calls.
+5. **ema-wave** - Rewrote to match Pine's actual algorithm: wa=SMA(src-EMA(src,aLen),smaLen), wb/wc similarly. Changed all plots to histogram style. Added spike/exhaustion overlay plots (fuchsia histogram when ratio exceeds cutoff). Added proper input configuration.
+6. **false-breakout** - Added LineDrawingData[] output for horizontal breakout level lines drawn from breakout origin bar to current bar, matching Pine's line.new(indx0,val,n,val) calls.
+7. **fx-sniper-t3-cci** - Added second histogram plot of same T3-CCI value with conditional colors (green >= 0, red < 0). Changed default t3Factor to 0.618 to match Pine. Fixed EMA weighting to use Pine's nr=1+0.5*(nn-1) formula.
+
+### Tests Updated
+- COGChannel: plot IDs expanded from [plot0,plot1,plot2] to [plot0,plot1,plot2,plot3,plot4,sqzHi,sqzLo]
+- EasyTrendColors: added [macdUp,macdDn] to expected plots
+- EMAWave: changed from [plot0-3] to [waveC,waveCSpike,waveB,waveBSpike,waveA]
+- FXSniperT3CCI: added 'histogram' to expected plots
+- DoubleMACD: changed from [plot0-3] to [macd1Line,macd1Hist,macd2Line,macd2Hist]
+
+### Current State
+- 0 TypeScript compilation errors
+- 650/652 tests pass (2 pre-existing OTT Bands failures)
+
+---
+
 ## 2026-02-27 - Display Fidelity Review: Complete Session Summary
 
 ### Goal

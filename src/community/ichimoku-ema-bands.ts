@@ -1,8 +1,9 @@
 /**
  * Ichimoku EMA Bands
  *
- * Ichimoku cloud with EMA-based bands.
- * Standard Tenkan-sen and Kijun-sen plus two EMA bands.
+ * Ichimoku cloud with EMA-based ATR bands.
+ * Base EMA + ATR upper/lower bands, standard Tenkan/Kijun with conditional color,
+ * and displaced Senkou spans with cloud fill.
  *
  * Reference: TradingView "Ichimoku EMA Bands" (community)
  */
@@ -12,8 +13,9 @@ import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, ty
 export interface IchimokuEMABandsInputs {
   convLen: number;
   baseLen: number;
-  emaLen1: number;
-  emaLen2: number;
+  emaLen: number;
+  atrLength: number;
+  atrMult: number;
   laggingSpan2Periods: number;
   displacement: number;
 }
@@ -21,8 +23,9 @@ export interface IchimokuEMABandsInputs {
 export const defaultInputs: IchimokuEMABandsInputs = {
   convLen: 5,
   baseLen: 26,
-  emaLen1: 12,
-  emaLen2: 26,
+  emaLen: 26,
+  atrLength: 200,
+  atrMult: 2.272,
   laggingSpan2Periods: 52,
   displacement: 26,
 };
@@ -30,19 +33,21 @@ export const defaultInputs: IchimokuEMABandsInputs = {
 export const inputConfig: InputConfig[] = [
   { id: 'convLen', type: 'int', title: 'Conversion Length', defval: 5, min: 1 },
   { id: 'baseLen', type: 'int', title: 'Base Length', defval: 26, min: 1 },
-  { id: 'emaLen1', type: 'int', title: 'EMA 1 Length', defval: 12, min: 1 },
-  { id: 'emaLen2', type: 'int', title: 'EMA 2 Length', defval: 26, min: 1 },
+  { id: 'emaLen', type: 'int', title: 'EMA Length', defval: 26, min: 1 },
+  { id: 'atrLength', type: 'int', title: 'ATR Length', defval: 200, min: 1 },
+  { id: 'atrMult', type: 'float', title: 'ATR Multiplier', defval: 2.272, min: 0.1, step: 0.001 },
   { id: 'laggingSpan2Periods', type: 'int', title: 'Lagging Span 2 Periods', defval: 52, min: 1 },
   { id: 'displacement', type: 'int', title: 'Displacement', defval: 26, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Tenkan', color: '#2962FF', lineWidth: 1 },
-  { id: 'plot1', title: 'Kijun', color: '#EF5350', lineWidth: 1 },
-  { id: 'plot2', title: 'EMA 1', color: '#26A69A', lineWidth: 1 },
-  { id: 'plot3', title: 'EMA 2', color: '#FF6D00', lineWidth: 1 },
-  { id: 'plot4', title: 'Senkou Span A', color: '#26A69A', lineWidth: 1 },
-  { id: 'plot5', title: 'Senkou Span B', color: '#EF5350', lineWidth: 1 },
+  { id: 'ema', title: 'EMA', color: '#FFA500', lineWidth: 1 },
+  { id: 'emaUp', title: 'EMA Upper Band', color: '#EF5350', lineWidth: 1 },
+  { id: 'emaDw', title: 'EMA Lower Band', color: '#26A69A', lineWidth: 1 },
+  { id: 'conversion', title: 'Conversion Line', color: '#EF5350', lineWidth: 1 },
+  { id: 'base', title: 'Base Line', color: '#2962FF', lineWidth: 2 },
+  { id: 'lead1', title: 'Senkou Span A', color: '#26A69A', lineWidth: 1 },
+  { id: 'lead2', title: 'Senkou Span B', color: '#EF5350', lineWidth: 1 },
 ];
 
 export const metadata = {
@@ -52,81 +57,112 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<IchimokuEMABandsInputs> = {}): IndicatorResult {
-  const { convLen, baseLen, emaLen1, emaLen2, laggingSpan2Periods, displacement } = { ...defaultInputs, ...inputs };
+  const { convLen, baseLen, emaLen, atrLength, atrMult, laggingSpan2Periods, displacement } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const highSeries = new Series(bars, (b) => b.high);
   const lowSeries = new Series(bars, (b) => b.low);
   const closeSeries = getSourceSeries(bars, 'close');
 
+  // Pine: out = ema(src, len)
+  const emaArr = ta.ema(closeSeries, emaLen).toArray();
+
+  // Pine: ATR = rma(tr(true), ATRlength)
+  const atrArr = ta.atr(bars, atrLength).toArray();
+
+  // Ichimoku donchian channels
   const convHighArr = ta.highest(highSeries, convLen).toArray();
   const convLowArr = ta.lowest(lowSeries, convLen).toArray();
   const baseHighArr = ta.highest(highSeries, baseLen).toArray();
   const baseLowArr = ta.lowest(lowSeries, baseLen).toArray();
-  const ema1Arr = ta.ema(closeSeries, emaLen1).toArray();
-  const ema2Arr = ta.ema(closeSeries, emaLen2).toArray();
-
-  // Senkou Span B: donchian(laggingSpan2Periods)
   const span2HighArr = ta.highest(highSeries, laggingSpan2Periods).toArray();
   const span2LowArr = ta.lowest(lowSeries, laggingSpan2Periods).toArray();
 
-  const warmup = Math.max(convLen, baseLen, emaLen1, emaLen2);
+  const warmup = Math.max(convLen, baseLen, emaLen, atrLength);
 
-  // Pre-compute tenkan and kijun values for lead line calculation
+  // Pre-compute tenkan and kijun values
   const tenkanVals: number[] = new Array(n);
   const kijunVals: number[] = new Array(n);
   for (let i = 0; i < n; i++) {
-    tenkanVals[i] = i < warmup ? NaN : (convHighArr[i] + convLowArr[i]) / 2;
-    kijunVals[i] = i < warmup ? NaN : (baseHighArr[i] + baseLowArr[i]) / 2;
+    tenkanVals[i] = i < convLen ? NaN : (convHighArr[i] + convLowArr[i]) / 2;
+    kijunVals[i] = i < baseLen ? NaN : (baseHighArr[i] + baseLowArr[i]) / 2;
   }
 
-  const tenkanPlot = tenkanVals.map((v, i) => ({
+  // Pine: plot(out, title="EMA", color=orange, transp=85)
+  const emaPlot = emaArr.map((v, i) => ({
     time: bars[i].time,
-    value: v,
-  }));
-  const kijunPlot = kijunVals.map((v, i) => ({
-    time: bars[i].time,
-    value: v,
-  }));
-  const ema1Plot = ema1Arr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup || isNaN(v) ? NaN : v,
-  }));
-  const ema2Plot = ema2Arr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup || isNaN(v) ? NaN : v,
+    value: (v == null || i < emaLen) ? NaN : v,
   }));
 
-  // Pine: leadLine1 = avg(conversionLine, baseLine) displaced forward
-  // Pine: leadLine2 = donchian(laggingSpan2Periods) displaced forward
-  // Displacement means the value at bar i is plotted at bar i+displacement
-  const spanAPlot: { time: number; value: number }[] = [];
-  const spanBPlot: { time: number; value: number }[] = [];
-  for (let i = 0; i < n; i++) {
-    // The value at plot position i comes from bar (i - displacement)
-    const srcIdx = i - displacement;
-    if (srcIdx < 0 || srcIdx < warmup) {
-      spanAPlot.push({ time: bars[i].time, value: NaN });
+  // Pine: emaup = out+(ATR*ATRMult), emadw = out-(ATR*ATRMult)
+  const emaUpPlot = bars.map((b, i) => {
+    const e = emaArr[i];
+    const a = atrArr[i];
+    if (e == null || a == null || i < warmup) return { time: b.time, value: NaN };
+    return { time: b.time, value: e + a * atrMult };
+  });
+  const emaDwPlot = bars.map((b, i) => {
+    const e = emaArr[i];
+    const a = atrArr[i];
+    if (e == null || a == null || i < warmup) return { time: b.time, value: NaN };
+    return { time: b.time, value: e - a * atrMult };
+  });
+
+  // Pine: plot(conversionLine, color=red)
+  const convPlot = tenkanVals.map((v, i) => ({
+    time: bars[i].time,
+    value: v,
+  }));
+
+  // Pine: kjuncol = conversionLine > baseLine ? blue : conversionLine < baseLine ? red : orange
+  // plot(baseLine, color=kjuncol, linewidth=2)
+  const basePlot = kijunVals.map((v, i) => {
+    const conv = tenkanVals[i];
+    const base = v;
+    let color: string;
+    if (isNaN(conv) || isNaN(base)) {
+      color = '#FFA500'; // orange
+    } else if (conv > base) {
+      color = '#2962FF'; // blue
+    } else if (conv < base) {
+      color = '#EF5350'; // red
     } else {
-      const spanA = (tenkanVals[srcIdx] + kijunVals[srcIdx]) / 2;
-      spanAPlot.push({ time: bars[i].time, value: isNaN(spanA) ? NaN : spanA });
+      color = '#FFA500'; // orange
+    }
+    return { time: bars[i].time, value: v, color };
+  });
+
+  // Lead lines with displacement
+  const lead1Plot: { time: number; value: number }[] = [];
+  const lead2Plot: { time: number; value: number }[] = [];
+  for (let i = 0; i < n; i++) {
+    const srcIdx = i - displacement;
+    if (srcIdx < 0 || isNaN(tenkanVals[srcIdx]) || isNaN(kijunVals[srcIdx])) {
+      lead1Plot.push({ time: bars[i].time, value: NaN });
+    } else {
+      lead1Plot.push({ time: bars[i].time, value: (tenkanVals[srcIdx] + kijunVals[srcIdx]) / 2 });
     }
 
-    const span2Warmup = Math.max(laggingSpan2Periods, warmup);
-    if (srcIdx < 0 || srcIdx < span2Warmup) {
-      spanBPlot.push({ time: bars[i].time, value: NaN });
+    if (srcIdx < 0 || srcIdx < laggingSpan2Periods) {
+      lead2Plot.push({ time: bars[i].time, value: NaN });
     } else {
-      const spanB = (span2HighArr[srcIdx] + span2LowArr[srcIdx]) / 2;
-      spanBPlot.push({ time: bars[i].time, value: isNaN(spanB) ? NaN : spanB });
+      lead2Plot.push({ time: bars[i].time, value: (span2HighArr[srcIdx] + span2LowArr[srcIdx]) / 2 });
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': tenkanPlot, 'plot1': kijunPlot, 'plot2': ema1Plot, 'plot3': ema2Plot, 'plot4': spanAPlot, 'plot5': spanBPlot },
+    plots: {
+      'ema': emaPlot,
+      'emaUp': emaUpPlot,
+      'emaDw': emaDwPlot,
+      'conversion': convPlot,
+      'base': basePlot,
+      'lead1': lead1Plot,
+      'lead2': lead2Plot,
+    },
     fills: [
-      { plot1: 'plot2', plot2: 'plot3', options: { color: 'rgba(38,166,154,0.1)' } },
-      { plot1: 'plot4', plot2: 'plot5', options: { color: 'rgba(192,192,192,0.15)' } },
+      { plot1: 'lead1', plot2: 'lead2', options: { color: 'rgba(192,192,192,0.15)' } },
     ],
   };
 }

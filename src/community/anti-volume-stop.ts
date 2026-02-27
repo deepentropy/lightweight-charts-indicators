@@ -22,7 +22,8 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Stop Level', color: '#2962FF', lineWidth: 2 },
+  // Pine uses plot.style_cross; closest available is line with per-bar color
+  { id: 'plot0', title: 'Stop Level', color: '#FFFFFF', lineWidth: 2 },
 ];
 
 export const metadata = {

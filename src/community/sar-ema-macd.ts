@@ -33,7 +33,7 @@ export const inputConfig: InputConfig[] = [
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'SAR', color: '#787B86', lineWidth: 1, style: 'cross' },
+  { id: 'plot0', title: 'SAR', color: '#2962FF', lineWidth: 1, style: 'circles' },
   { id: 'plot1', title: 'EMA 200', color: '#787B86', lineWidth: 2 },
 ];
 

@@ -1,36 +1,36 @@
 /**
- * Auto-Support
+ * Auto-Support v0.3
  *
- * Three support levels based on lowest lows at different lookback periods.
+ * Pine: overlay=true, 28 pairs of resistance (highest) and support (lowest) lines
+ * at various multipliers of a sensitivity parameter.
+ * Each pair: resistance = highest(close, sensitivity * mult), support = lowest(close, sensitivity * mult)
  *
- * Reference: TradingView "Auto-Support" (community)
+ * Multipliers: 1,2,3,4,5,6,7,8,9,10,15,20,25,30,35,40,45,50,75,100,150,200,250,300,350,400,450,500
+ *
+ * Reference: TradingView "Auto-Support v 0.3" (community)
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
 export interface AutoSupportInputs {
-  len1: number;
-  len2: number;
-  len3: number;
+  sensitivity: number;
 }
 
 export const defaultInputs: AutoSupportInputs = {
-  len1: 10,
-  len2: 20,
-  len3: 50,
+  sensitivity: 10,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'len1', type: 'int', title: 'Length 1', defval: 10, min: 1 },
-  { id: 'len2', type: 'int', title: 'Length 2', defval: 20, min: 1 },
-  { id: 'len3', type: 'int', title: 'Length 3', defval: 50, min: 1 },
+  { id: 'sensitivity', type: 'int', title: 'Sensitivity', defval: 10, min: 1, max: 10 },
 ];
 
-export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'S1', color: '#26A69A', lineWidth: 2 },
-  { id: 'plot1', title: 'S2', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot2', title: 'S3', color: '#E91E63', lineWidth: 2 },
-];
+const MULTIPLIERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40, 45, 50, 75, 100, 150, 200, 250, 300, 350, 400, 450, 500];
+
+// Generate plotConfig for all 56 plots (28 resistance + 28 support)
+export const plotConfig: PlotConfig[] = MULTIPLIERS.flatMap((m) => [
+  { id: `r${m}`, title: `Resistance ${m}x`, color: '#FF0000', lineWidth: 2 },
+  { id: `s${m}`, title: `Support ${m}x`, color: '#0000FF', lineWidth: 2 },
+]);
 
 export const metadata = {
   title: 'Auto-Support',
@@ -39,22 +39,33 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<AutoSupportInputs> = {}): IndicatorResult {
-  const { len1, len2, len3 } = { ...defaultInputs, ...inputs };
+  const { sensitivity } = { ...defaultInputs, ...inputs };
+  const n = bars.length;
 
-  const lowSeries = new Series(bars, (b) => b.low);
+  const closeSeries = new Series(bars, (b) => b.close);
 
-  const s1Arr = ta.lowest(lowSeries, len1).toArray();
-  const s2Arr = ta.lowest(lowSeries, len2).toArray();
-  const s3Arr = ta.lowest(lowSeries, len3).toArray();
+  const plots: Record<string, { time: number; value: number }[]> = {};
 
-  const warmup = Math.max(len1, len2, len3);
+  for (const m of MULTIPLIERS) {
+    const len = sensitivity * m;
+    // Pine's highest(a*N) = highest(close, a*N)
+    const highArr = ta.highest(closeSeries, Math.max(len, 1)).toArray();
+    const lowArr = ta.lowest(closeSeries, Math.max(len, 1)).toArray();
 
-  const toPlot = (arr: number[]) =>
-    arr.map((v, i) => ({ time: bars[i].time, value: i < warmup || isNaN(v) ? NaN : v }));
+    const rPlot = new Array(n);
+    const sPlot = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const ready = i >= len - 1;
+      rPlot[i] = { time: bars[i].time, value: ready ? highArr[i] : NaN };
+      sPlot[i] = { time: bars[i].time, value: ready ? lowArr[i] : NaN };
+    }
+    plots[`r${m}`] = rPlot;
+    plots[`s${m}`] = sPlot;
+  }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(s1Arr), 'plot1': toPlot(s2Arr), 'plot2': toPlot(s3Arr) },
+    plots,
   };
 }
 

@@ -1,144 +1,131 @@
 /**
  * Market Cipher A
  *
- * WaveTrend + Money Flow + MACD combined oscillator.
- * WaveTrend: esa=EMA(hlc3, n), d=EMA(|hlc3-esa|, n), ci=(hlc3-esa)/(0.015*d),
- *   wt1=EMA(ci, avg), wt2=SMA(wt1, 3).
+ * EMA ribbon overlay with 8 EMAs (5,11,15,18,21,24,28,34) and crossover signals.
+ * - Green circle: EMA2 crosses above EMA8 (long signal)
+ * - Red xcross: EMA1 crosses below EMA2 (warning)
+ * - Blue triangle: EMA2 crosses above EMA3 (momentum)
  *
- * Reference: TradingView "Market Cipher A" community indicator
+ * Reference: TradingView "Market Cipher A free version 1.1"
  */
 
-import { ta, getSourceSeries, Series, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 
 export interface MarketCipherAInputs {
-  wtChannelLen: number;
-  wtAvgLen: number;
-  mfiLen: number;
-  macdFast: number;
-  macdSlow: number;
-  macdSignal: number;
+  ema1Len: number;
+  ema2Len: number;
+  ema3Len: number;
+  ema4Len: number;
+  ema5Len: number;
+  ema6Len: number;
+  ema7Len: number;
+  ema8Len: number;
 }
 
 export const defaultInputs: MarketCipherAInputs = {
-  wtChannelLen: 9,
-  wtAvgLen: 12,
-  mfiLen: 14,
-  macdFast: 12,
-  macdSlow: 26,
-  macdSignal: 9,
+  ema1Len: 5,
+  ema2Len: 11,
+  ema3Len: 15,
+  ema4Len: 18,
+  ema5Len: 21,
+  ema6Len: 24,
+  ema7Len: 28,
+  ema8Len: 34,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'wtChannelLen', type: 'int', title: 'WT Channel Length', defval: 9, min: 1 },
-  { id: 'wtAvgLen', type: 'int', title: 'WT Average Length', defval: 12, min: 1 },
-  { id: 'mfiLen', type: 'int', title: 'MFI Length', defval: 14, min: 1 },
-  { id: 'macdFast', type: 'int', title: 'MACD Fast', defval: 12, min: 1 },
-  { id: 'macdSlow', type: 'int', title: 'MACD Slow', defval: 26, min: 1 },
-  { id: 'macdSignal', type: 'int', title: 'MACD Signal', defval: 9, min: 1 },
+  { id: 'ema1Len', type: 'int', title: 'EMA 1', defval: 5, min: 1 },
+  { id: 'ema2Len', type: 'int', title: 'EMA 2', defval: 11, min: 1 },
+  { id: 'ema3Len', type: 'int', title: 'EMA 3', defval: 15, min: 1 },
+  { id: 'ema4Len', type: 'int', title: 'EMA 4', defval: 18, min: 1 },
+  { id: 'ema5Len', type: 'int', title: 'EMA 5', defval: 21, min: 1 },
+  { id: 'ema6Len', type: 'int', title: 'EMA 6', defval: 24, min: 1 },
+  { id: 'ema7Len', type: 'int', title: 'EMA 7', defval: 28, min: 1 },
+  { id: 'ema8Len', type: 'int', title: 'EMA 8', defval: 34, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'WT1', color: '#2962FF', lineWidth: 2 },
-  { id: 'plot1', title: 'WT2', color: '#FF6D00', lineWidth: 1 },
-  { id: 'plot2', title: 'MFI', color: '#00E676', lineWidth: 3, style: 'histogram' },
-  { id: 'plot3', title: 'MACD Hist', color: '#E91E63', lineWidth: 2, style: 'histogram' },
+  { id: 'ema1', title: 'EMA 1', color: '#265aa6', lineWidth: 2 },
+  { id: 'ema2', title: 'EMA 2', color: '#265aa6', lineWidth: 2 },
+  { id: 'ema3', title: 'EMA 3', color: '#1976d2', lineWidth: 2 },
+  { id: 'ema4', title: 'EMA 4', color: '#1976d2', lineWidth: 2 },
+  { id: 'ema5', title: 'EMA 5', color: '#7fb3ff', lineWidth: 2 },
+  { id: 'ema6', title: 'EMA 6', color: '#7fb3ff', lineWidth: 2 },
+  { id: 'ema7', title: 'EMA 7', color: '#bbdefb', lineWidth: 2 },
+  { id: 'ema8', title: 'EMA 8', color: '#bbdefb', lineWidth: 2 },
 ];
 
 export const metadata = {
   title: 'Market Cipher A',
   shortTitle: 'MCA',
-  overlay: false,
+  overlay: true,
 };
 
 export function calculate(bars: Bar[], inputs: Partial<MarketCipherAInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { wtChannelLen, wtAvgLen, mfiLen, macdFast, macdSlow, macdSignal } = { ...defaultInputs, ...inputs };
+  const { ema1Len, ema2Len, ema3Len, ema4Len, ema5Len, ema6Len, ema7Len, ema8Len } = { ...defaultInputs, ...inputs };
 
-  // WaveTrend
-  const hlc3 = getSourceSeries(bars, 'hlc3');
-  const esa = ta.ema(hlc3, wtChannelLen);
-  const d = ta.ema(math.abs(hlc3.sub(esa)) as Series, wtChannelLen);
-  const ci = hlc3.sub(esa).div(d.mul(0.015));
-  const wt1 = ta.ema(ci, wtAvgLen);
-  const wt2 = ta.sma(wt1, 3);
-
-  // MFI (centered at 0)
-  const hlc3Arr = bars.map(b => (b.high + b.low + b.close) / 3);
-  const rawMoneyFlow = hlc3Arr.map((v, i) => v * (bars[i].volume ?? 0));
-  const posFlow: number[] = new Array(bars.length).fill(0);
-  const negFlow: number[] = new Array(bars.length).fill(0);
-  for (let i = 1; i < bars.length; i++) {
-    if (hlc3Arr[i] > hlc3Arr[i - 1]) posFlow[i] = rawMoneyFlow[i];
-    else if (hlc3Arr[i] < hlc3Arr[i - 1]) negFlow[i] = rawMoneyFlow[i];
-  }
-  const mfiArr: number[] = new Array(bars.length).fill(NaN);
-  for (let i = mfiLen; i < bars.length; i++) {
-    let sumPos = 0, sumNeg = 0;
-    for (let j = 0; j < mfiLen; j++) {
-      sumPos += posFlow[i - j];
-      sumNeg += negFlow[i - j];
-    }
-    const mfi = sumNeg === 0 ? 100 : 100 - 100 / (1 + sumPos / sumNeg);
-    mfiArr[i] = mfi - 50; // Center at 0
-  }
-
-  // MACD histogram
   const close = new Series(bars, (b) => b.close);
-  const macdFastEma = ta.ema(close, macdFast);
-  const macdSlowEma = ta.ema(close, macdSlow);
-  const macdLine = macdFastEma.sub(macdSlowEma);
-  const macdSignalLine = ta.ema(macdLine, macdSignal);
-  const macdHist = macdLine.sub(macdSignalLine);
 
-  const wt1Arr = wt1.toArray();
-  const wt2Arr = wt2.toArray();
-  const macdHistArr = macdHist.toArray();
+  const lengths = [ema1Len, ema2Len, ema3Len, ema4Len, ema5Len, ema6Len, ema7Len, ema8Len];
+  const emaArrays = lengths.map(len => ta.ema(close, len).toArray());
 
-  const warmup = Math.max(wtChannelLen + wtAvgLen, macdSlow, mfiLen);
+  const warmup = Math.max(...lengths);
+  const plotIds = ['ema1', 'ema2', 'ema3', 'ema4', 'ema5', 'ema6', 'ema7', 'ema8'];
 
-  const toPlot = (arr: (number | null)[]) =>
-    arr.map((v, i) => {
-      const val = typeof v === 'number' ? v : NaN;
-      return { time: bars[i].time, value: (i < warmup || isNaN(val)) ? NaN : val };
-    });
+  const plots: Record<string, Array<{ time: number; value: number }>> = {};
+  for (let p = 0; p < 8; p++) {
+    plots[plotIds[p]] = emaArrays[p].map((v, i) => ({
+      time: bars[i].time,
+      value: (v == null || i < lengths[p]) ? NaN : v,
+    }));
+  }
 
-  const mfiPlot = mfiArr.map((v, i) => {
-    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: v, color: v >= 0 ? '#00E676' : '#FF5252' };
-  });
-
-  const macdPlot = macdHistArr.map((v, i) => {
-    if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: v, color: v >= 0 ? '#E91E63' : '#9C27B0' };
-  });
-
-  // Markers: WT1 crossing WT2 (WaveTrend cross signals)
+  // Crossover markers from Pine:
+  // Longema = crossover(ema2_, ema8_) -> green circle aboveBar
+  // Redcross = crossunder(ema1_, ema2_) -> red xcross aboveBar
+  // Bluetriangle = crossover(ema2_, ema3_) -> blue triangleUp belowBar
   const markers: MarkerData[] = [];
-  for (let i = warmup + 1; i < bars.length; i++) {
-    const w1 = wt1Arr[i];
-    const w2 = wt2Arr[i];
-    const pw1 = wt1Arr[i - 1];
-    const pw2 = wt2Arr[i - 1];
-    if (w1 == null || w2 == null || pw1 == null || pw2 == null) continue;
+  const ema1Arr = emaArrays[0];
+  const ema2Arr = emaArrays[1];
+  const ema3Arr = emaArrays[2];
+  const ema8Arr = emaArrays[7];
 
-    // Bullish cross: wt1 crosses above wt2
-    if (pw1 <= pw2 && w1 > w2) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: '#26A69A', text: 'Buy' });
+  for (let i = warmup + 1; i < bars.length; i++) {
+    const e2 = ema2Arr[i];
+    const e8 = ema8Arr[i];
+    const pe2 = ema2Arr[i - 1];
+    const pe8 = ema8Arr[i - 1];
+    const e1 = ema1Arr[i];
+    const pe1 = ema1Arr[i - 1];
+    const e3 = ema3Arr[i];
+    const pe3 = ema3Arr[i - 1];
+
+    if (e2 == null || e8 == null || pe2 == null || pe8 == null) continue;
+
+    // Longema: ema2 crosses above ema8
+    if (pe2 <= pe8 && e2 > e8) {
+      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'circle', color: '#00FF00', text: '' });
     }
-    // Bearish cross: wt1 crosses below wt2
-    if (pw1 >= pw2 && w1 < w2) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'Sell' });
+
+    // Redcross: ema1 crosses below ema2
+    if (e1 != null && pe1 != null) {
+      if (pe1 >= pe2 && e1 < e2) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'xcross', color: '#FF0000', text: '' });
+      }
+    }
+
+    // Bluetriangle: ema2 crosses above ema3
+    if (e3 != null && pe3 != null) {
+      if (pe2 <= pe3 && e2 > e3) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: '#0000FF', text: '' });
+      }
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(wt1Arr), 'plot1': toPlot(wt2Arr), 'plot2': mfiPlot, 'plot3': macdPlot },
-    hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'solid', title: 'Zero' } },
-      { value: 60, options: { color: '#EF5350', linestyle: 'dashed', title: 'OB' } },
-      { value: -60, options: { color: '#26A69A', linestyle: 'dashed', title: 'OS' } },
-    ],
+    plots,
     markers,
   };
 }

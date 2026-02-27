@@ -187,13 +187,19 @@ export function calculate(bars: Bar[], inputs: Partial<EhlersMESAMAInputs> = {})
     });
   }
 
+  // Pine: fill(duml, mamal, red, transp=70) -- red when MAMA < FAMA
+  //        fill(duml, famal, green, transp=70) -- green when MAMA > FAMA
+  // Use single fill with per-bar colors array for directional coloring
+  const fillColors = mama.map((v, i) => {
+    if (i < warmup) return 'transparent';
+    return v > fama[i] ? 'rgba(0, 230, 118, 0.3)' : 'rgba(239, 83, 80, 0.3)';
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': mamaPlot, 'plot1': famaPlot },
-    // fill between MAMA and FAMA (Pine: fill(duml, mamal, red, transp=70) and fill(duml, famal, green, transp=70))
-    // Simplified as a single fill between plot0 (MAMA) and plot1 (FAMA)
     fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(38, 166, 154, 0.2)' } },
+      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(38, 166, 154, 0.2)' }, colors: fillColors },
     ],
     markers,
     barColors,

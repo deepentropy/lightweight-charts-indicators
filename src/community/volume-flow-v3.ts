@@ -35,6 +35,7 @@ export const plotConfig: PlotConfig[] = [
   { id: 'bullSpike', title: 'Bull Vol Spike', color: '#5AA650', lineWidth: 1, style: 'columns' },
   { id: 'bearSpike', title: 'Bear Vol Spike', color: '#FF510D', lineWidth: 1, style: 'columns' },
   { id: 'diffValue', title: 'Difference Value', color: '#787B86', lineWidth: 1 },
+  { id: 'diffZero', title: 'Zero', color: '#00000000', lineWidth: 0 },
 ];
 
 export const metadata = {
@@ -136,6 +137,24 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeFlowV3Inputs> = {})
     diffPlot.push({ time: t, value: vfAbsolute / 2.5, color: dClr });
   }
 
+  // Zero line for fill-to-zero (approximates area style)
+  const diffZero = bars.map((b, i) => ({
+    time: b.time,
+    value: i < warmup ? NaN : 0,
+  }));
+
+  // Dynamic fill colors matching diffValue direction
+  const diffFillColors: string[] = [];
+  for (let i = 0; i < n; i++) {
+    if (i < warmup) {
+      diffFillColors.push('rgba(0,0,0,0)');
+    } else {
+      const bma = bullmaArr[i] ?? 0;
+      const bema = bearmaArr[i] ?? 0;
+      diffFillColors.push(bma - bema > 0 ? 'rgba(90,166,80,0.3)' : 'rgba(255,81,13,0.3)');
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {
@@ -145,7 +164,11 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeFlowV3Inputs> = {})
       bullSpike: bullSpikePlot,
       bearSpike: bearSpikePlot,
       diffValue: diffPlot,
+      diffZero: diffZero,
     },
+    fills: [
+      { plot1: 'diffValue', plot2: 'diffZero', options: { color: 'rgba(90,166,80,0.3)' }, colors: diffFillColors },
+    ],
   };
 }
 

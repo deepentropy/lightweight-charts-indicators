@@ -11,14 +11,23 @@ import type { MarkerData } from '../types';
 
 export interface TransientZonesInputs {
   length: number;
+  hLeft: number;
+  hRight: number;
+  showPtz: boolean;
 }
 
 export const defaultInputs: TransientZonesInputs = {
   length: 14,
+  hLeft: 10,
+  hRight: 10,
+  showPtz: true,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Length', defval: 14, min: 1 },
+  { id: 'hLeft', type: 'int', title: 'H left', defval: 10, min: 1 },
+  { id: 'hRight', type: 'int', title: 'H right', defval: 10, min: 1 },
+  { id: 'showPtz', type: 'bool', title: 'Show PTZ', defval: true },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -33,7 +42,8 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<TransientZonesInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
-  const { length } = { ...defaultInputs, ...inputs };
+  const { length, hLeft, hRight, showPtz } = { ...defaultInputs, ...inputs };
+  const n = bars.length;
 
   const atrArr = ta.atr(bars, length).toArray();
   const warmup = length;
@@ -47,22 +57,49 @@ export function calculate(bars: Bar[], inputs: Partial<TransientZonesInputs> = {
     value: i < warmup || isNaN(atrArr[i]) ? NaN : b.close - atrArr[i],
   }));
 
-  // Markers: PTZ - new highs and new lows relative to lookback
   const markers: MarkerData[] = [];
-  for (let i = length; i < bars.length; i++) {
-    // Check if current bar makes a new low within the lookback period
-    let isNewLow = true;
-    let isNewHigh = true;
-    for (let j = 1; j <= length; j++) {
-      if (bars[i].low > bars[i - j].low) isNewLow = false;
-      if (bars[i].high < bars[i - j].high) isNewHigh = false;
-      if (!isNewLow && !isNewHigh) break;
+
+  // PTZ markers: new highs/lows relative to h_left lookback (Pine: plotshape)
+  if (showPtz) {
+    for (let i = hLeft; i < n; i++) {
+      let hLeftLow = Infinity;
+      let hLeftHigh = -Infinity;
+      for (let j = 1; j <= hLeft; j++) {
+        if (bars[i - j].low < hLeftLow) hLeftLow = bars[i - j].low;
+        if (bars[i - j].high > hLeftHigh) hLeftHigh = bars[i - j].high;
+      }
+      const newHigh = bars[i].high >= hLeftHigh;
+      const newLow = bars[i].low <= hLeftLow;
+      if (newHigh) {
+        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleUp', color: '#4CAF50' });
+      }
+      if (newLow) {
+        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleDown', color: '#EF5350' });
+      }
     }
-    if (isNewHigh) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowUp', color: '#26A69A' });
+  }
+
+  // Confirmed TZ: central bar is highest/lowest in full h_left + h_right + 1 window
+  // Pine: plotarrow with offset=-h_right-1, so marker placed at central bar
+  const fullWindow = hLeft + hRight + 1;
+  for (let i = fullWindow - 1; i < n; i++) {
+    const centralIdx = i - hRight;
+    if (centralIdx < 0) continue;
+    const centralLow = bars[centralIdx].low;
+    const centralHigh = bars[centralIdx].high;
+    let isHighest = true;
+    let isLowest = true;
+    for (let j = i - fullWindow + 1; j <= i; j++) {
+      if (j === centralIdx) continue;
+      if (bars[j].high > centralHigh) isHighest = false;
+      if (bars[j].low < centralLow) isLowest = false;
+      if (!isHighest && !isLowest) break;
     }
-    if (isNewLow) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowDown', color: '#EF5350' });
+    if (isHighest) {
+      markers.push({ time: bars[centralIdx].time, position: 'aboveBar', shape: 'arrowDown', color: '#EF5350', text: 'TZ' });
+    }
+    if (isLowest) {
+      markers.push({ time: bars[centralIdx].time, position: 'belowBar', shape: 'arrowUp', color: '#4CAF50', text: 'TZ' });
     }
   }
 

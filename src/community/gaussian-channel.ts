@@ -52,21 +52,32 @@ export function calculate(bars: Bar[], inputs: Partial<GaussianChannelInputs> = 
 
   const warmup = length;
 
+  // Pine: fcolor = filt > filt[1] ? #0aff68 : filt < filt[1] ? #ff0a5a : #cccccc
+  const getFilterColor = (i: number): string => {
+    if (i < warmup) return '#cccccc';
+    const curr = centerArr[i] ?? 0;
+    const prev = i > 0 ? (centerArr[i - 1] ?? 0) : 0;
+    if (curr > prev) return '#0aff68';
+    if (curr < prev) return '#ff0a5a';
+    return '#cccccc';
+  };
+
   const plot0 = centerArr.map((v, i) => ({
     time: bars[i].time,
     value: i < warmup ? NaN : (v ?? NaN),
+    color: getFilterColor(i),
   }));
 
   const plot1 = centerArr.map((v, i) => {
     const c = v ?? NaN;
     const d = devArr[i] ?? NaN;
-    return { time: bars[i].time, value: i < warmup ? NaN : c + mult * d };
+    return { time: bars[i].time, value: i < warmup ? NaN : c + mult * d, color: getFilterColor(i) };
   });
 
   const plot2 = centerArr.map((v, i) => {
     const c = v ?? NaN;
     const d = devArr[i] ?? NaN;
-    return { time: bars[i].time, value: i < warmup ? NaN : c - mult * d };
+    return { time: bars[i].time, value: i < warmup ? NaN : c - mult * d, color: getFilterColor(i) };
   });
 
   // barcolor: 6-level coloring based on src direction vs filter/band position
@@ -97,10 +108,18 @@ export function calculate(bars: Bar[], inputs: Partial<GaussianChannelInputs> = 
     barColors.push({ time: bars[i].time, color });
   }
 
+  // Pine: fill(hbandplot, lbandplot, color=fcolor, transp=80) -- dynamic fill matching filter direction
+  const fillColors = centerArr.map((_v, i) => {
+    const fc = getFilterColor(i);
+    if (fc === '#0aff68') return 'rgba(10, 255, 104, 0.2)';   // green, 80% transparent
+    if (fc === '#ff0a5a') return 'rgba(255, 10, 90, 0.2)';    // red, 80% transparent
+    return 'rgba(204, 204, 204, 0.2)';                         // gray
+  });
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
-    fills: [{ plot1: 'plot1', plot2: 'plot2', options: { color: '#2962FF15' } }],
+    fills: [{ plot1: 'plot1', plot2: 'plot2', options: { color: '#cccccc33' }, colors: fillColors }],
     barColors,
   };
 }

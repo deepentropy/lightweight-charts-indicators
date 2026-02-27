@@ -48,13 +48,17 @@ export function calculate(bars: Bar[], inputs: Partial<SimpleMovingAveragesInput
 
   const smaArrays = lengths.map((len) => ta.sma(src, len).toArray());
 
-  const plots: Record<string, Array<{ time: number; value: number }>> = {};
+  // Pine: SMAs #1-#5 use close >= sma ? blue : orange, #6-#10 use close >= sma ? green : red
+  const plots: Record<string, Array<{ time: number; value: number; color?: string }>> = {};
   for (let idx = 0; idx < lengths.length; idx++) {
     const arr = smaArrays[idx];
-    plots[`plot${idx}`] = arr.map((v, i) => ({
-      time: bars[i].time,
-      value: i < lengths[idx] ? NaN : (v ?? NaN),
-    }));
+    const aboveColor = idx < 5 ? '#2196F3' : '#4CAF50';
+    const belowColor = idx < 5 ? '#FF9800' : '#EF5350';
+    plots[`plot${idx}`] = arr.map((v, i) => {
+      if (i < lengths[idx] || v == null) return { time: bars[i].time, value: NaN };
+      const color = bars[i].close >= v ? aboveColor : belowColor;
+      return { time: bars[i].time, value: v, color };
+    });
   }
 
   return {

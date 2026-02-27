@@ -47,6 +47,17 @@ export const metadata = {
   overlay: true,
 };
 
+// Pine maColor: lime if rising AND above ma100, maroon if falling AND above ma100,
+// red if falling AND below ma100, green if rising AND below ma100, gray otherwise
+function maColor(maVal: number, prevMaVal: number, ma100Val: number): string {
+  const diff = maVal - prevMaVal;
+  if (diff >= 0 && maVal > ma100Val) return '#00FF00'; // LIME
+  if (diff < 0 && maVal > ma100Val) return '#800000';  // MAROON
+  if (diff <= 0 && maVal < ma100Val) return '#FF0000';  // RED (RUBI)
+  if (diff >= 0 && maVal < ma100Val) return '#008000';  // GREEN
+  return '#808080'; // GRAY
+}
+
 export function calculate(bars: Bar[], inputs: Partial<MadridMaRibbonInputs> = {}): IndicatorResult {
   const { maType, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
@@ -54,14 +65,19 @@ export function calculate(bars: Bar[], inputs: Partial<MadridMaRibbonInputs> = {
   const maFn = maType === 'ema' ? ta.ema : ta.sma;
   const warmup = lengths[lengths.length - 1]; // 90
 
-  const plots: Record<string, { time: number; value: number }[]> = {};
+  // Compute ma100 reference for color logic
+  const ma100Arr = maFn(source, 100).toArray();
+
+  const plots: Record<string, { time: number; value: number; color?: string }[]> = {};
 
   for (let idx = 0; idx < lengths.length; idx++) {
     const arr = maFn(source, lengths[idx]).toArray();
-    plots[`plot${idx}`] = arr.map((v, i) => ({
-      time: bars[i].time,
-      value: i < warmup ? NaN : (v ?? NaN),
-    }));
+    plots[`plot${idx}`] = arr.map((v, i) => {
+      if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
+      const prev = (i > 0 && arr[i - 1] != null) ? arr[i - 1]! : v;
+      const ref = ma100Arr[i] ?? v;
+      return { time: bars[i].time, value: v, color: maColor(v, prev, ref) };
+    });
   }
 
   return {

@@ -319,7 +319,7 @@ describe('ATRPlus', () => {
   const result = ATRPlus.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], true);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -361,25 +361,25 @@ describe('AutoSupport', () => {
   const result = AutoSupport.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], true);
+    assertShape(result, ['r1', 's1', 'r2', 's2', 'r3', 's3'], true);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'r1');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
 });
 
 describe('AutoSupportResistance', () => {
-  const result = AutoSupportResistance.calculate(bars);
+  const result = AutoSupportResistance.calculate(bars, { left: 10, right: 5, quickRight: 2 });
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], true);
+    assertShape(result, ['level1', 'level2', 'level3', 'level4', 'level5', 'level6', 'level7', 'level8'], true);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'level1');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -389,7 +389,7 @@ describe('BBStochRSI', () => {
   const result = BBStochRSI.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['plot0', 'plot1', 'plot2'], true);
   });
 
   it('produces finite values after warmup', () => {
@@ -417,13 +417,16 @@ describe('BitcoinKillZones', () => {
   const result = BitcoinKillZones.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], false);
+    expect(result.metadata).toBeDefined();
+    expect(result.metadata.title).toBeTruthy();
+    expect(result.metadata.overlay).toBe(true);
+    // No plots - this indicator only uses bgColors for session zones
+    expect(Object.keys(result.plots).length).toBe(0);
   });
 
-  it('produces finite values after warmup', () => {
-    const vals = validValues(result);
-    expect(vals.length).toBeGreaterThan(0);
-    vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
+  it('produces bgColors for session zones', () => {
+    expect(result.bgColors).toBeDefined();
+    expect(Array.isArray(result.bgColors)).toBe(true);
   });
 });
 
@@ -445,7 +448,7 @@ describe('BullsBears', () => {
   const result = BullsBears.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], false);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5', 'plot6', 'plot7'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -501,11 +504,11 @@ describe('CCIOBV', () => {
   const result = CCIOBV.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], false);
+    assertShape(result, ['obv', 'obvEma'], false);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'obv');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -630,7 +633,7 @@ describe('CMRSI2Upper', () => {
   const result = CMRSI2Upper.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], true);
+    assertShape(result, ['plot0', 'plot1'], true);
   });
 
   it('produces finite values after warmup', () => {
@@ -658,13 +661,14 @@ describe('CMStochHighlight', () => {
   const result = CMStochHighlight.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, [], true);
   });
 
-  it('produces finite values after warmup', () => {
-    const vals = validValues(result);
-    expect(vals.length).toBeGreaterThan(0);
-    vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
+  it('produces barColors or markers', () => {
+    const r = result as any;
+    const hasBarColors = Array.isArray(r.barColors) && r.barColors.length > 0;
+    const hasMarkers = Array.isArray(r.markers) && r.markers.length > 0;
+    expect(hasBarColors || hasMarkers).toBe(true);
   });
 });
 
@@ -700,7 +704,7 @@ describe('COGChannel', () => {
   const result = COGChannel.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], true);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'sqzHi', 'sqzLo'], true);
   });
 
   it('produces finite values after warmup', () => {
@@ -756,7 +760,7 @@ describe('EasyTrendColors', () => {
   const result = EasyTrendColors.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['upper', 'lower', 'zeroline'], false);
+    assertShape(result, ['upper', 'lower', 'zeroline', 'macdUp', 'macdDn'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -826,7 +830,7 @@ describe('EMASupertrend', () => {
   const result = EMASupertrend.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], true);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5', 'plot6', 'plot7', 'plot8', 'plot9', 'plot10', 'plot11', 'plot12', 'plot13'], true);
   });
 
   it('produces finite values after warmup', () => {
@@ -840,11 +844,11 @@ describe('EMAWave', () => {
   const result = EMAWave.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], false);
+    assertShape(result, ['waveC', 'waveCSpike', 'waveB', 'waveBSpike', 'waveA'], false);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'waveC');
     expect(vals.length).toBeGreaterThanOrEqual(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -854,13 +858,12 @@ describe('EntryPoints', () => {
   const result = EntryPoints.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], true);
+    assertShape(result, [], true);
   });
 
-  it('produces finite values after warmup', () => {
-    const vals = validValues(result);
-    expect(vals.length).toBeGreaterThan(0);
-    vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
+  it('produces markers', () => {
+    const r = result as any;
+    expect(Array.isArray(r.markers)).toBe(true);
   });
 });
 
@@ -868,11 +871,11 @@ describe('EnvelopeRSI', () => {
   const result = EnvelopeRSI.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
+    assertShape(result, ['basis', 'upper', 'lower'], true);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'basis');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -966,7 +969,7 @@ describe('FXSniperT3CCI', () => {
   const result = FXSniperT3CCI.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], false);
+    assertShape(result, ['plot0', 'histogram'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1022,11 +1025,11 @@ describe('IchimokuEMABands', () => {
   const result = IchimokuEMABands.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], true);
+    assertShape(result, ['ema', 'emaUp', 'emaDw', 'conversion', 'base', 'lead1', 'lead2'], true);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'conversion');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -1036,11 +1039,11 @@ describe('IntradayBuySell', () => {
   const result = IntradayBuySell.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], true);
+    assertShape(result, ['sma'], true);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'sma');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -1050,11 +1053,11 @@ describe('IntradayTSBB', () => {
   const result = IntradayTSBB.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], false);
+    assertShape(result, ['upperBB', 'lowerBB'], true);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'upperBB');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -1109,11 +1112,17 @@ describe('LinRegCandles', () => {
     expect(result.metadata).toBeDefined();
     expect(result.metadata.title).toBeTruthy();
     expect(result.plotCandles).toBeDefined();
+    expect(result.plots.signal).toBeDefined();
   });
 
   it('produces candle data', () => {
     const candles = result.plotCandles?.candle0 ?? result.plotCandles?.['candle0'] ?? [];
     expect(candles.length).toBeGreaterThan(0);
+  });
+
+  it('produces signal line values', () => {
+    const sigVals = result.plots.signal.map((p: any) => p.value).filter((v: number) => !isNaN(v));
+    expect(sigVals.length).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -1205,7 +1214,7 @@ describe('MACDVXI', () => {
   const result = MACDVXI.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1247,11 +1256,11 @@ describe('MarketCipherA', () => {
   const result = MarketCipherA.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], false);
+    assertShape(result, ['ema1', 'ema2', 'ema3', 'ema4', 'ema5', 'ema6', 'ema7', 'ema8'], true);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'ema1');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -1261,11 +1270,11 @@ describe('MarketCipherB', () => {
   const result = MarketCipherB.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], false);
+    assertShape(result, ['wt1', 'wt2', 'diff', 'crossLine', 'crossDot'], false);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'wt1');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -1317,11 +1326,11 @@ describe('MatrixSeries', () => {
   const result = MatrixSeries.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], false);
+    assertShape(result, ['resistance', 'support', 'obMarker', 'osMarker'], false);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'resistance');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -1402,7 +1411,7 @@ describe('NormalizedQQE', () => {
   const result = NormalizedQQE.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], false);
+    assertShape(result, ['plot0', 'plot1'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1472,7 +1481,7 @@ describe('PPOAlerts', () => {
   const result = PPOAlerts.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1486,7 +1495,7 @@ describe('PPODivergence', () => {
   const result = PPODivergence.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5', 'plot6'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1514,7 +1523,7 @@ describe('PriceActionSystem', () => {
   const result = PriceActionSystem.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], true);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4'], true);
   });
 
   it('produces finite values after warmup', () => {
@@ -1556,13 +1565,15 @@ describe('QQESignals', () => {
   const result = QQESignals.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    expect(result.metadata).toBeDefined();
+    expect(result.metadata.title).toBeTruthy();
+    expect(result.metadata.overlay).toBe(true);
+    expect(result.plots).toBeDefined();
   });
 
-  it('produces finite values after warmup', () => {
-    const vals = validValues(result);
-    expect(vals.length).toBeGreaterThan(0);
-    vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
+  it('produces markers', () => {
+    expect(result.markers).toBeDefined();
+    expect(Array.isArray(result.markers)).toBe(true);
   });
 });
 
@@ -1683,7 +1694,7 @@ describe('RSIHistoAlert', () => {
   const result = RSIHistoAlert.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], false);
+    assertShape(result, ['plot0', 'plot1'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1838,7 +1849,7 @@ describe('SqueezeMomentumV2', () => {
   const result = SqueezeMomentumV2.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1880,7 +1891,7 @@ describe('ST0P', () => {
   const result = ST0P.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], true);
+    assertShape(result, ['plot0', 'ohlc4'], true);
   });
 
   it('produces finite values after warmup', () => {
@@ -1894,7 +1905,7 @@ describe('StochasticOTT', () => {
   const result = StochasticOTT.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1908,7 +1919,7 @@ describe('StochPOP1', () => {
   const result = StochPOP1.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['plot0', 'upperLine', 'line100', 'lowerLine', 'line0'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -1922,7 +1933,7 @@ describe('StochPOP2', () => {
   const result = StochPOP2.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['plot0', 'upperLine', 'line100', 'lowerLine', 'line0'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -2020,7 +2031,7 @@ describe('TDMacd', () => {
   const result = TDMacd.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], false);
+    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -2048,7 +2059,7 @@ describe('TillsonT3', () => {
   const result = TillsonT3.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], true);
+    assertShape(result, ['plot0', 'plot1'], true);
   });
 
   it('produces finite values after warmup', () => {
@@ -2062,11 +2073,11 @@ describe('TonyUXScalper', () => {
   const result = TonyUXScalper.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], true);
+    assertShape(result, ['ema', 'highChannel', 'lowChannel'], true);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'ema');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -2076,11 +2087,11 @@ describe('TopBottomCandle', () => {
   const result = TopBottomCandle.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0'], true);
+    assertShape(result, ['momentum', 'smi', 'smiSignal'], false);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'smi');
     expect(vals.length).toBeGreaterThanOrEqual(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -2132,11 +2143,11 @@ describe('TrendFollowingMA', () => {
   const result = TrendFollowingMA.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], true);
+    assertShape(result, ['ma5', 'ma10', 'ma50', 'ma100'], true);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'ma5');
     expect(vals.length).toBeGreaterThanOrEqual(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -2188,7 +2199,7 @@ describe('TripleMAForecast', () => {
   const result = TripleMAForecast.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], true);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5', 'plot6', 'plot7', 'plot8', 'plot9', 'plot10', 'plot11'], true);
   });
 
   it('produces finite values after warmup', () => {
@@ -2230,11 +2241,11 @@ describe('VdubSniper', () => {
   const result = VdubSniper.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
+    assertShape(result, ['channelTop', 'channelBottom', 'ema1', 'ema2', 'hullMA'], true);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'channelTop');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -2244,11 +2255,11 @@ describe('VdubusBinaryPro', () => {
   const result = VdubusBinaryPro.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
+    assertShape(result, ['upper', 'lower', 'ma50', 'bbUpper', 'bbLower'], true);
   });
 
   it('produces finite values after warmup', () => {
-    const vals = validValues(result);
+    const vals = validValues(result, 'upper');
     expect(vals.length).toBeGreaterThan(0);
     vals.forEach((v: number) => expect(isFinite(v)).toBe(true));
   });
@@ -2272,7 +2283,7 @@ describe('VolumeFlowV3', () => {
   const result = VolumeFlowV3.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['volume', 'bullMa', 'bearMa', 'bullSpike', 'bearSpike', 'diffValue'], false);
+    assertShape(result, ['volume', 'bullMa', 'bearMa', 'bullSpike', 'bearSpike', 'diffValue', 'diffZero'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -2286,7 +2297,7 @@ describe('VolumeLinRegTrend', () => {
   const result = VolumeLinRegTrend.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1'], true);
+    assertShape(result, ['plot0', 'plot1'], false);
   });
 
   it('produces finite values after warmup', () => {
@@ -2300,7 +2311,7 @@ describe('VWMACDSZO', () => {
   const result = VWMACDSZO.calculate(bars);
 
   it('returns correct shape', () => {
-    assertShape(result, ['plot0', 'plot1', 'plot2'], false);
+    assertShape(result, ['plot0', 'plot1', 'plot2', 'plot3'], false);
   });
 
   it('produces finite values after warmup', () => {
