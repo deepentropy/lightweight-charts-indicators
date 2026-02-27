@@ -1,5 +1,26 @@
 # DEVLOG
 
+## 2026-02-27 - Fix 6 LOW-severity Community Indicators: Missing Drawing Objects
+
+### Goal
+Add missing drawing objects (LineDrawingData, LabelData) to 6 low-severity community indicators to match their PineScript source code.
+
+### Indicators Fixed (5 of 6)
+1. **bitcoin-log-curves** - Added `showExtensions` input + LineDrawingData[] for forward curve projections of top/mid/bottom curves beyond last bar. Matches Pine's `ExtenZe` function with 13 line segments per curve (91-bar steps).
+2. **volume-footprint** - Added LineDrawingData[] for vertical high-to-low lines per bar in Regular/Gradient display modes (not Candle). Color: green (#089981) bullish, red (#f23645) bearish. Width: 3. Matches Pine's `line.new(n,high,n,low,...)`.
+3. **momentum-zigzag** - Updated marker text from "SHORT"/"LONG" to include pivot price: "SHORT\npivot high:\n123.45" and "LONG\npivot low:\n123.45". Matches Pine's `label.new` text format.
+4. **intraday-volume-swings** - Added LabelData[] for "Higher Swing High" and "Lower Swing Low" positioned at zone midpoint `avg(prev_swing_high_bottom, prev_swing_high_top)`. Matches Pine's `label.new` with `label.style_label_left`.
+5. **ml-adaptive-supertrend** - Added LabelData[] for per-bar cluster numbers (1/2/3) positioned at SuperTrend +/- ATR(7). Text color gradient from visible to faded based on cluster level. Kept existing circle markers.
+
+### Skipped (1 of 6)
+- **pivot-trailing-maxmin** - Pine's bridge lines only drawn when `backpaint=true`. TS uses offset=0 (no backpainting), so plots already extend to the end. Added explanatory comment.
+
+### Current State
+- 0 TypeScript compilation errors
+- 702/702 tests pass across 7 test files
+
+---
+
 ## 2026-02-27 - Drawing-Based Hard Indicators: 9 Unblocked and Implemented
 
 ### Goal

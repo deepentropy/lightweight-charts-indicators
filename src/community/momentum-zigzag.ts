@@ -395,7 +395,7 @@ export function calculate(bars: Bar[], inputs: Partial<MomentumZigZagInputs> = {
           position: 'aboveBar',
           shape: 'labelDown',
           color: '#FF0000',
-          text: 'SHORT',
+          text: 'SHORT\npivot high:\n' + zigzag[i].toFixed(2),
         });
       }
     }
@@ -410,7 +410,7 @@ export function calculate(bars: Bar[], inputs: Partial<MomentumZigZagInputs> = {
           position: 'belowBar',
           shape: 'labelUp',
           color: '#00FF00',
-          text: 'LONG',
+          text: 'LONG\npivot low:\n' + zigzag[i].toFixed(2),
         });
       }
     }

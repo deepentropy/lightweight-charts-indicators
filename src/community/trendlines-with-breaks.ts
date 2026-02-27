@@ -9,7 +9,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, LineDrawingData } from '../types';
 
 export interface TrendlinesWithBreaksInputs {
   length: number;
@@ -40,7 +40,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TrendlinesWithBreaksInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TrendlinesWithBreaksInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
   const { length, mult, calcMethod } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -94,12 +94,23 @@ export function calculate(bars: Bar[], inputs: Partial<TrendlinesWithBreaksInput
   const upos: number[] = new Array(n).fill(0);
   const dnos: number[] = new Array(n).fill(0);
 
+  // Track last pivot bar indices for extended lines
+  let lastPhBar = -1;
+  let lastPhUpper = NaN;
+  let lastPhSlope = 0;
+  let lastPlBar = -1;
+  let lastPlLower = NaN;
+  let lastPlSlope = 0;
+
   for (let i = 0; i < n; i++) {
     const slope = slopeArr[i] ?? 0;
 
     if (ph[i] !== null) {
       slopePh = slope;
       upper = ph[i]!;
+      lastPhBar = i;
+      lastPhUpper = upper;
+      lastPhSlope = slopePh;
     } else if (!isNaN(upper)) {
       upper = upper - slopePh;
     }
@@ -107,6 +118,9 @@ export function calculate(bars: Bar[], inputs: Partial<TrendlinesWithBreaksInput
     if (pl[i] !== null) {
       slopePl = slope;
       lower = pl[i]!;
+      lastPlBar = i;
+      lastPlLower = lower;
+      lastPlSlope = slopePl;
     } else if (!isNaN(lower)) {
       lower = lower + slopePl;
     }
@@ -159,10 +173,32 @@ export function calculate(bars: Bar[], inputs: Partial<TrendlinesWithBreaksInput
     }
   }
 
+  // Extended projection lines (dashed, extend right) from last pivot high/low
+  const lines: LineDrawingData[] = [];
+  if (lastPhBar >= 0 && lastPhBar < n - 1) {
+    const y1 = lastPhUpper - lastPhSlope * length;
+    const y2 = lastPhUpper - lastPhSlope * (length + 1);
+    lines.push({
+      time1: bars[lastPhBar].time, price1: y1,
+      time2: bars[Math.min(lastPhBar + 1, n - 1)].time, price2: y2,
+      color: upCss, width: 1, style: 'dashed', extend: 'right',
+    });
+  }
+  if (lastPlBar >= 0 && lastPlBar < n - 1) {
+    const y1 = lastPlLower + lastPlSlope * length;
+    const y2 = lastPlLower + lastPlSlope * (length + 1);
+    lines.push({
+      time1: bars[lastPlBar].time, price1: y1,
+      time2: bars[Math.min(lastPlBar + 1, n - 1)].time, price2: y2,
+      color: dnCss, width: 1, style: 'dashed', extend: 'right',
+    });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     markers,
+    lines,
   };
 }
 

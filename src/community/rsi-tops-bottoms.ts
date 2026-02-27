@@ -11,7 +11,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData, BarColorData } from '../types';
+import type { MarkerData, BarColorData, LineDrawingData } from '../types';
 
 export interface RsiTopsBottomsInputs {
   rsiLength: number;
@@ -70,7 +70,7 @@ function getSource(bar: Bar, src: string): number {
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<RsiTopsBottomsInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RsiTopsBottomsInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; lines: LineDrawingData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -113,6 +113,7 @@ export function calculate(bars: Bar[], inputs: Partial<RsiTopsBottomsInputs> = {
   const mayGoDown: boolean[] = new Array(n).fill(false);
 
   const markers: MarkerData[] = [];
+  const lines: LineDrawingData[] = [];
 
   for (let i = 1; i < n; i++) {
     const rsi = rsiArr[i] ?? 50;
@@ -158,6 +159,14 @@ export function calculate(bars: Bar[], inputs: Partial<RsiTopsBottomsInputs> = {
         itsFineOs && prevItsFineOs &&
         i - prevLastLowestBi > cfg.minDist) {
       mayGoUp[i] = true;
+      // Diagonal line connecting consecutive RSI pivot lows (bullish divergence)
+      if (lastLowestBi >= 0 && lastLowestBi < n && prevLastLowestBi >= 0 && prevLastLowestBi < n) {
+        lines.push({
+          time1: bars[lastLowestBi].time, price1: lastLowestRsi,
+          time2: bars[prevLastLowestBi].time, price2: prevLastLowestRsi,
+          color: '#00FF00', width: 2,
+        });
+      }
     }
 
     // --- Top (overbought) tracking ---
@@ -200,6 +209,14 @@ export function calculate(bars: Bar[], inputs: Partial<RsiTopsBottomsInputs> = {
         itsFineOb && prevItsFineOb &&
         i - prevLastHighestBi > cfg.minDist) {
       mayGoDown[i] = true;
+      // Diagonal line connecting consecutive RSI pivot highs (bearish divergence)
+      if (lastHighestBi >= 0 && lastHighestBi < n && prevLastHighestBi >= 0 && prevLastHighestBi < n) {
+        lines.push({
+          time1: bars[lastHighestBi].time, price1: lastHighestRsi,
+          time2: bars[prevLastHighestBi].time, price2: prevLastHighestRsi,
+          color: '#FF0000', width: 2,
+        });
+      }
     }
   }
 
@@ -236,6 +253,7 @@ export function calculate(bars: Bar[], inputs: Partial<RsiTopsBottomsInputs> = {
     fills: [{ plot1: 'lower', plot2: 'upper', options: { color: 'rgba(153,21,255,0.10)' } }],
     markers,
     barColors,
+    lines,
   };
 }
 

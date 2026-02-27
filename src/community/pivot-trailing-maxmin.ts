@@ -7,6 +7,9 @@
  * min ratchets down. An average line is plotted between the two.
  *
  * Note: Backpainting is disabled (offset = 0) for real-time accuracy.
+ * Bridge lines (Pine's for loop in barstate.islast) are only needed when
+ * backpaint=true to fill the gap in the last `length` bars. Since we use
+ * offset=0, plots already extend to the end — no LineDrawingData needed.
  *
  * Reference: TradingView "Pivot Based Trailing Maxima & Minima [LuxAlgo]" by LuxAlgo
  */

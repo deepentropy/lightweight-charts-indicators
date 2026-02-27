@@ -9,7 +9,7 @@
  */
 
 import { ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, LabelData } from '../types';
 import type { TableData, TableCell } from '../types';
 
 export interface MlAdaptiveSupertrendInputs {
@@ -89,11 +89,12 @@ function kMeansClusters(data: number[], k: number, iterations: number): { centro
   return { centroids, assignments };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInputs> = {}): IndicatorResult & { markers: MarkerData[]; tables: TableData } {
+export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInputs> = {}): IndicatorResult & { markers: MarkerData[]; labels: LabelData[]; tables: TableData } {
   const { atrLen, minFactor, midFactor, maxFactor, trainLen, showLabels } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const atrArr = ta.atr(bars, atrLen).toArray();
+  const atr7Arr = ta.atr(bars, 7).toArray();
 
   const warmup = atrLen + trainLen;
   const stValues: number[] = new Array(n).fill(NaN);
@@ -182,18 +183,13 @@ export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInput
     }
   }
 
-  // Per-bar cluster labels matching Pine label.new() per-bar labels
-  // Pine: cluster 0=high,1=mid,2=low with text 4-(cluster+1) => 3,2,1
-  // TS:   cluster 0=low,1=mid,2=high (sorted ascending)
-  // Map: TS 0(low)->1, TS 1(mid)->2, TS 2(high)->3
+  // Per-bar cluster circle markers (existing approximation)
   const clusterText = ['L', 'M', 'H'] as const;
   const clusterColor = ['#26A69A', '#FF9800', '#EF5350'] as const;
   if (showLabels) {
     for (let i = warmup; i < n; i++) {
       if (isNaN(stValues[i]) || clusterPerBar[i] < 0) continue;
       const c = clusterPerBar[i];
-      // Pine: dir > 0 (bearish) => aboveBar; dir < 0 (bullish) => belowBar
-      // TS: stDir 1 = uptrend(bullish) => belowBar; stDir -1 = downtrend(bearish) => aboveBar
       const position = stDir[i] === 1 ? 'belowBar' : 'aboveBar';
       markers.push({
         time: bars[i].time,
@@ -201,6 +197,42 @@ export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInput
         shape: 'circle',
         color: clusterColor[c],
         text: clusterText[c],
+      });
+    }
+  }
+
+  // Per-bar cluster number labels matching Pine's label.new() with label.style_none
+  // Pine: text = str.tostring(4 - (cluster + 1)), positioned at ST +/- atr(7)
+  // Pine cluster 0=high→"3", 1=mid→"2", 2=low→"1"
+  // TS cluster 0=low→"1", 1=mid→"2", 2=high→"3"
+  const labels: LabelData[] = [];
+  if (showLabels) {
+    for (let i = warmup; i < n; i++) {
+      if (isNaN(stValues[i]) || clusterPerBar[i] < 0) continue;
+      const c = clusterPerBar[i];
+      const labelText = (c + 1).toString();
+      const atr7 = atr7Arr[i] ?? 0;
+      // Pine: dir > 0 means bearish (ST above price), offset ST + atr7
+      // TS: stDir -1 = downtrend (bearish), stDir 1 = uptrend (bullish)
+      const labelPrice = stDir[i] === -1
+        ? stValues[i] + atr7
+        : stValues[i] - atr7;
+      // Color gradient: base color depends on trend direction
+      // Bullish (stDir 1) → green base, Bearish (stDir -1) → red base
+      // Transparency: cluster 0(low) → most visible (30%), cluster 2(high) → most faded (90%)
+      const baseR = stDir[i] === -1 ? 255 : 0;
+      const baseG = stDir[i] === -1 ? 17 : 255;
+      const baseB = stDir[i] === -1 ? 0 : 187;
+      // Linear transparency from 30% (cluster 0) to 90% (cluster 2)
+      const alpha = 1 - (0.3 + (c / 2) * 0.6);
+      const textColor = `rgba(${baseR},${baseG},${baseB},${alpha.toFixed(2)})`;
+      labels.push({
+        time: bars[i].time,
+        price: labelPrice,
+        text: labelText,
+        textColor,
+        style: 'label_center',
+        size: 'small',
       });
     }
   }
@@ -258,6 +290,7 @@ export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInput
       { plot1: 'plot_body', plot2: 'plot0', colors: fillDnColors },
     ],
     markers,
+    labels,
     tables,
   };
 }

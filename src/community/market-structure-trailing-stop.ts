@@ -11,7 +11,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, LineDrawingData } from '../types';
 
 export interface MarketStructureTrailingStopInputs {
   length: number;
@@ -48,7 +48,7 @@ export const metadata = {
 const BULL_COLOR = '#089981';  // teal
 const BEAR_COLOR = '#f23645';  // red
 
-export function calculate(bars: Bar[], inputs: Partial<MarketStructureTrailingStopInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MarketStructureTrailingStopInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const len = cfg.length;
@@ -69,6 +69,7 @@ export function calculate(bars: Bar[], inputs: Partial<MarketStructureTrailingSt
   const tsArr: number[] = new Array(n).fill(NaN);
   const osArr: number[] = new Array(n).fill(0);
   const markers: MarkerData[] = [];
+  const lines: LineDrawingData[] = [];
 
   // State
   let os = 0;
@@ -128,6 +129,15 @@ export function calculate(bars: Bar[], inputs: Partial<MarketStructureTrailingSt
             color: BULL_COLOR,
             text: prevOs === -1 ? 'CHoCH' : 'BOS',
           });
+          const pivotBarIdx = Math.max(0, upperPivotIdx);
+          lines.push({
+            time1: bars[pivotBarIdx].time,
+            price1: upperPivot,
+            time2: bars[i].time,
+            price2: upperPivot,
+            color: BULL_COLOR,
+            style: prevOs === -1 ? 'dashed' : 'dotted',
+          });
         }
       }
     }
@@ -155,6 +165,15 @@ export function calculate(bars: Bar[], inputs: Partial<MarketStructureTrailingSt
             shape: prevOs === 1 ? 'labelDown' : 'triangleDown',
             color: BEAR_COLOR,
             text: prevOs === 1 ? 'CHoCH' : 'BOS',
+          });
+          const pivotBarIdx = Math.max(0, lowerPivotIdx);
+          lines.push({
+            time1: bars[pivotBarIdx].time,
+            price1: lowerPivot,
+            time2: bars[i].time,
+            price2: lowerPivot,
+            color: BEAR_COLOR,
+            style: prevOs === 1 ? 'dashed' : 'dotted',
           });
         }
       }
@@ -216,6 +235,7 @@ export function calculate(bars: Bar[], inputs: Partial<MarketStructureTrailingSt
     },
     fills: [{ plot1: 'ts', plot2: 'closeLine', options: { color: 'rgba(8,153,129,0.08)' }, colors: fillColors }],
     markers,
+    lines,
   };
 }
 

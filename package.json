@@ -1,8 +1,8 @@
 {
   "name": "lightweight-charts-indicators",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
-  "description": "Optimized technical indicators built with OakScriptJS for use with lightweight-charts",
+  "description": "446 technical analysis indicators for TradingView's lightweight-charts library",
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",

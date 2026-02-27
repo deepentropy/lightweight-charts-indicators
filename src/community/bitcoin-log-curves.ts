@@ -8,9 +8,11 @@
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { LineDrawingData } from '../types';
 
 export interface BitcoinLogCurvesInputs {
   showFibs: boolean;
+  showExtensions: boolean;
   highIntercept: number;
   highSlope: number;
   lowIntercept: number;
@@ -19,6 +21,7 @@ export interface BitcoinLogCurvesInputs {
 
 export const defaultInputs: BitcoinLogCurvesInputs = {
   showFibs: true,
+  showExtensions: true,
   highIntercept: 1.06930947,
   highSlope: 0.00076,
   lowIntercept: -3.0269716,
@@ -27,6 +30,7 @@ export const defaultInputs: BitcoinLogCurvesInputs = {
 
 export const inputConfig: InputConfig[] = [
   { id: 'showFibs', type: 'bool', title: 'Show Fibonacci Levels', defval: true },
+  { id: 'showExtensions', type: 'bool', title: 'Show Curve Projections', defval: true },
   { id: 'highIntercept', type: 'float', title: 'Top Curve Intercept', defval: 1.06930947, step: 0.001 },
   { id: 'highSlope', type: 'float', title: 'Top Curve Slope', defval: 0.00076, step: 0.00001 },
   { id: 'lowIntercept', type: 'float', title: 'Bottom Curve Intercept', defval: -3.0269716, step: 0.001 },
@@ -57,8 +61,8 @@ export const metadata = {
 const GENESIS_MS = 1279670400000;
 const E = 2.718281828459;
 
-export function calculate(bars: Bar[], inputs: Partial<BitcoinLogCurvesInputs> = {}): IndicatorResult {
-  const { showFibs, highIntercept, highSlope, lowIntercept, lowSlope } = { ...defaultInputs, ...inputs };
+export function calculate(bars: Bar[], inputs: Partial<BitcoinLogCurvesInputs> = {}): IndicatorResult & { lines: LineDrawingData[] } {
+  const { showFibs, showExtensions, highIntercept, highSlope, lowIntercept, lowSlope } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
   const fibLevels = [0.9098, 0.8541, 0.7639, 0.618, 0.5, 0.382, 0.2361, 0.1459, 0.0902];
@@ -137,10 +141,66 @@ export function calculate(bars: Bar[], inputs: Partial<BitcoinLogCurvesInputs> =
     'plot10': plotBottom,
   };
 
+  // Forward curve projection lines (Pine's ExtenZe function + for loop)
+  const lines: LineDrawingData[] = [];
+  if (showExtensions && n >= 2) {
+    const lastT = bars[n - 1].time as number;
+    const lastTMs = lastT > 1e12 ? lastT : lastT * 1000;
+    const timeDeltaMs = n >= 2
+      ? ((bars[n - 1].time as number) - (bars[n - 2].time as number)) * (lastT > 1e12 ? 1 : 1000)
+      : 86400000;
+    // Pine: ForLoopStep ~91 for daily, ForLoopMax = ForLoopStep * 13
+    // We use a default daily-like step of 91 bars, 13 segments
+    const forLoopStep = 91;
+    const forLoopMax = forLoopStep * 13;
+
+    // ExtenZe: compute curve value at future offset i bars from last bar
+    function extenZe(offsetBars: number, slope: number, intercept: number): number {
+      const futMs = lastTMs + timeDeltaMs * offsetBars;
+      const ti = (futMs - GENESIS_MS) / 86400000;
+      const w = (Math.log10(ti + 10) * ti * ti - ti) / 30000;
+      if (w <= 0) return NaN;
+      const hld = Math.log(w) + intercept + slope * ti;
+      return Math.pow(E, hld);
+    }
+
+    const midSlope = (highSlope + lowSlope) * 0.5;
+    const midIntercept = (highIntercept + lowIntercept) * 0.5;
+
+    const curveParams = [
+      { slope: highSlope, intercept: highIntercept },
+      { slope: lowSlope, intercept: lowIntercept },
+      { slope: midSlope, intercept: midIntercept },
+    ];
+
+    for (const { slope, intercept } of curveParams) {
+      for (let i = 0; i < forLoopMax; i += forLoopStep) {
+        const t1Offset = i;
+        const t2Offset = i + forLoopStep;
+        const v1 = extenZe(t1Offset, slope, intercept);
+        const v2 = extenZe(t2Offset, slope, intercept);
+        if (isNaN(v1) || isNaN(v2)) continue;
+        // Convert back to time units matching bar time format
+        const time1 = lastT > 1e12
+          ? lastT + timeDeltaMs * t1Offset
+          : lastT + (timeDeltaMs * t1Offset) / 1000;
+        const time2 = lastT > 1e12
+          ? lastT + timeDeltaMs * t2Offset
+          : lastT + (timeDeltaMs * t2Offset) / 1000;
+        lines.push({
+          time1, price1: v1,
+          time2, price2: v2,
+          color: '#808080', width: 1,
+        });
+      }
+    }
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots,
     fills,
+    lines,
   };
 }
 

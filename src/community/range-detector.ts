@@ -9,7 +9,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { BgColorData } from '../types';
+import type { BgColorData, BoxData, LineDrawingData } from '../types';
 
 export interface RangeDetectorInputs {
   length: number;
@@ -40,7 +40,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RangeDetectorInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RangeDetectorInputs> = {}): IndicatorResult & { bgColors: BgColorData[]; boxes: BoxData[]; lines: LineDrawingData[] } {
   const { length, mult, atrLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -65,6 +65,11 @@ export function calculate(bars: Bar[], inputs: Partial<RangeDetectorInputs> = {}
   const minArr: number[] = new Array(n).fill(NaN);
   const osArr: number[] = new Array(n).fill(0);
   const bgColors: BgColorData[] = [];
+
+  // Track range segments for boxes and midlines
+  interface RangeSeg { leftBar: number; rightBar: number; top: number; bottom: number; mid: number; os: number }
+  const rangeSegs: RangeSeg[] = [];
+  let curSeg: RangeSeg | null = null;
 
   for (let i = 0; i < n; i++) {
     const atr = (atrArr[i] ?? 0) * mult;
@@ -100,8 +105,15 @@ export function calculate(bars: Bar[], inputs: Partial<RangeDetectorInputs> = {}
         bxTop = max;
         bxBottom = min;
         bxRight = i;
+        if (curSeg) {
+          curSeg.top = max;
+          curSeg.bottom = min;
+          curSeg.mid = (max + min) / 2;
+          curSeg.rightBar = i;
+        }
       } else {
-        // New range
+        // New range - finalize previous segment
+        if (curSeg) rangeSegs.push(curSeg);
         max = ma + atr;
         min = ma - atr;
         bxTop = max;
@@ -109,10 +121,12 @@ export function calculate(bars: Bar[], inputs: Partial<RangeDetectorInputs> = {}
         bxRight = i;
         detectBg = true;
         os = 0;
+        curSeg = { leftBar: Math.max(0, i - length), rightBar: i, top: max, bottom: min, mid: ma, os: 0 };
       }
     } else if (count === 0) {
       // Extend current range
       bxRight = i;
+      if (curSeg) curSeg.rightBar = i;
     }
 
     // Check for breakout
@@ -122,6 +136,7 @@ export function calculate(bars: Bar[], inputs: Partial<RangeDetectorInputs> = {}
       } else if (bars[i].close < bxBottom) {
         os = -1;
       }
+      if (curSeg) curSeg.os = os;
     }
 
     maxArr[i] = max;
@@ -147,10 +162,32 @@ export function calculate(bars: Bar[], inputs: Partial<RangeDetectorInputs> = {}
     return { time: bars[i].time, value: v, color };
   });
 
+  // Finalize last range segment
+  if (curSeg) rangeSegs.push(curSeg);
+
+  // Convert range segments to BoxData[] and LineDrawingData[]
+  const boxes: BoxData[] = [];
+  const lines: LineDrawingData[] = [];
+  for (const seg of rangeSegs) {
+    const css = seg.os === 0 ? unbrokenCss : seg.os === 1 ? upCss : dnCss;
+    boxes.push({
+      time1: bars[seg.leftBar].time, price1: seg.top,
+      time2: bars[seg.rightBar].time, price2: seg.bottom,
+      bgColor: css + '33', borderColor: 'transparent',
+    });
+    lines.push({
+      time1: bars[seg.leftBar].time, price1: seg.mid,
+      time2: bars[seg.rightBar].time, price2: seg.mid,
+      color: css, width: 1, style: 'dotted',
+    });
+  }
+
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     bgColors,
+    boxes,
+    lines,
   };
 }
 

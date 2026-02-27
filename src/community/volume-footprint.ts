@@ -10,7 +10,7 @@
  */
 
 import { ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { BoxData, BarColorData } from '../types';
+import type { BoxData, BarColorData, LineDrawingData } from '../types';
 
 export interface VolumeFootprintInputs {
   method: string;
@@ -43,7 +43,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeFootprintInputs> = {}): IndicatorResult & { boxes: BoxData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<VolumeFootprintInputs> = {}): IndicatorResult & { boxes: BoxData[]; barColors: BarColorData[]; lines: LineDrawingData[] } {
   const { method, length, percent, displayType } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -60,6 +60,7 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeFootprintInputs> = 
 
   const boxes: BoxData[] = [];
   const barColors: BarColorData[] = [];
+  const lines: LineDrawingData[] = [];
   const plot0: { time: number; value: number }[] = [];
 
   // Color constants
@@ -77,7 +78,18 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeFootprintInputs> = 
     plot0.push({ time: t, value: NaN });
 
     // Bar color for trend direction
-    barColors.push({ time: t, color: bar.close > bar.open ? bull : bear });
+    const isBullBar = bar.close > bar.open;
+    barColors.push({ time: t, color: isBullBar ? bull : bear });
+
+    // Vertical high-to-low line per bar in Regular/Gradient modes (Pine: line.new(n,high,n,low,...))
+    if (displayType !== 'Candle' && r > 0 && i >= atrLen) {
+      lines.push({
+        time1: t, price1: bar.high,
+        time2: t, price2: bar.low,
+        color: isBullBar ? bull : bear,
+        width: 3,
+      });
+    }
 
     if (r <= 0 || i < atrLen) continue;
 
@@ -88,7 +100,6 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeFootprintInputs> = 
     if (k < 1 || k > 100) continue; // safety cap
 
     const vol = bar.volume ?? 0;
-    const isBull = bar.close > bar.open;
 
     // Distribute volume across intervals
     // For historical data, we approximate by distributing volume based on
@@ -126,8 +137,8 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeFootprintInputs> = 
       const textColor = '#808080';
 
       if (displayType === 'Candle') {
-        bgColor = isBull ? `${bull}80` : `${bear}80`; // 50% transparency
-        borderColor = isBull ? bull : bear;
+        bgColor = isBullBar ? `${bull}80` : `${bear}80`; // 50% transparency
+        borderColor = isBullBar ? bull : bear;
       } else if (displayType === 'Gradient') {
         // Gradient from colA to colB based on sum/volume ratio
         const ratio = vol > 0 ? Math.min(1, sum / vol) : 0;
@@ -172,6 +183,7 @@ export function calculate(bars: Bar[], inputs: Partial<VolumeFootprintInputs> = 
     plots: { 'plot0': plot0 },
     boxes,
     barColors,
+    lines,
   };
 }
 

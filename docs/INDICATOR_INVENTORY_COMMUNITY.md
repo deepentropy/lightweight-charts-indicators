@@ -10,7 +10,7 @@ from TradingView. It tracks implementation feasibility and status in OakScriptJS
 | **Total Indicators** | 867 |
 | **Implementable** | 51 |
 | **Blocked** | 513 |
-| **Implemented** | 281 |
+| **Implemented** | 317 |
 | **Duplicate** | 19 |
 | **N/A** | 2 |
 

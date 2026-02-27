@@ -9,7 +9,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData } from '../types';
+import type { MarkerData, LineDrawingData } from '../types';
 
 export interface RsiMomentumDivergenceInputs {
   rsiLength: number;
@@ -45,7 +45,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RsiMomentumDivergenceInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RsiMomentumDivergenceInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
   const { rsiLength, enableDivCheck, divLookbackL, divLookbackR, minBarsInRange, maxBarsInRange } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -70,6 +70,10 @@ export function calculate(bars: Bar[], inputs: Partial<RsiMomentumDivergenceInpu
 
   // Track barssince for pivots and valuewhen
   const markers: MarkerData[] = [];
+  const qtyDivLevels = 10;
+
+  // Track divergence events: { barIndex (of the divergence bar), isBull }
+  const divEvents: { barIdx: number; isBull: boolean }[] = [];
 
   if (enableDivCheck) {
     // Store pivot history for valuewhen lookback
@@ -95,13 +99,15 @@ export function calculate(bars: Bar[], inputs: Partial<RsiMomentumDivergenceInpu
           const rsiHL = rsiRight > lastPLRsiRight;
           const priceLL = bars[i - divLookbackR]?.low < lastPLPriceLow;
           if (rsiHL && priceLL && i >= warmup) {
+            const divBar = i - divLookbackR;
             markers.push({
-              time: bars[i - divLookbackR]?.time ?? bars[i].time,
+              time: bars[divBar]?.time ?? bars[i].time,
               position: 'belowBar',
               shape: 'labelUp',
               color: bullColor,
               text: 'Bull',
             });
+            divEvents.push({ barIdx: divBar, isBull: true });
           }
         }
 
@@ -121,13 +127,15 @@ export function calculate(bars: Bar[], inputs: Partial<RsiMomentumDivergenceInpu
           const rsiLH = rsiRight < lastPHRsiRight;
           const priceHH = bars[i - divLookbackR]?.high > lastPHPriceHigh;
           if (rsiLH && priceHH && i >= warmup) {
+            const divBar = i - divLookbackR;
             markers.push({
-              time: bars[i - divLookbackR]?.time ?? bars[i].time,
+              time: bars[divBar]?.time ?? bars[i].time,
               position: 'aboveBar',
               shape: 'labelDown',
               color: bearColor,
               text: 'Bear',
             });
+            divEvents.push({ barIdx: divBar, isBull: false });
           }
         }
 
@@ -135,6 +143,99 @@ export function calculate(bars: Bar[], inputs: Partial<RsiMomentumDivergenceInpu
         lastPHPriceHigh = bars[i - divLookbackR]?.high ?? NaN;
         lastPHBar = i;
       }
+    }
+  }
+
+  // Build divergence zone lines (force_overlay=true in Pine — drawn on price chart)
+  // Simulates Pine's bar-by-bar zone management:
+  //   - New zone added at divergence price level
+  //   - Each bar: if price breaks through zone, extend (solid); otherwise dashed + remove
+  //   - Cap at qtyDivLevels per type
+  const lines: LineDrawingData[] = [];
+
+  if (divEvents.length > 0) {
+    // Active zones: { priceLevel, startBarIdx, isBull, endBarIdx }
+    type Zone = { price: number; startIdx: number; isBull: boolean; endIdx: number };
+    const bullZones: Zone[] = [];
+    const bearZones: Zone[] = [];
+
+    // Finalized (expired) zones that got dashed when price didn't break through
+    const expiredZones: (Zone & { style: 'dashed' })[] = [];
+
+    // Sort divergence events by barIdx for sequential processing
+    divEvents.sort((a, b) => a.barIdx - b.barIdx);
+    let nextEventIdx = 0;
+
+    for (let i = 0; i < n; i++) {
+      // Add new zones from divergence events on this bar
+      while (nextEventIdx < divEvents.length && divEvents[nextEventIdx].barIdx === i) {
+        const ev = divEvents[nextEventIdx];
+        const price = ev.isBull ? bars[i].low : bars[i].high;
+        const zone: Zone = { price, startIdx: i, isBull: ev.isBull, endIdx: i };
+        if (ev.isBull) {
+          bullZones.push(zone);
+          if (bullZones.length > qtyDivLevels) bullZones.shift();
+        } else {
+          bearZones.push(zone);
+          if (bearZones.length > qtyDivLevels) bearZones.shift();
+        }
+        nextEventIdx++;
+      }
+
+      // Update existing bull zones
+      for (let z = bullZones.length - 1; z >= 0; z--) {
+        const zone = bullZones[z];
+        if (bars[i].high > zone.price) {
+          // Price broke through — extend zone (stays solid)
+          zone.endIdx = i;
+        } else {
+          // Not broken — finalize as dashed and remove from active tracking
+          zone.endIdx = i;
+          expiredZones.push({ ...zone, style: 'dashed' });
+          bullZones.splice(z, 1);
+        }
+      }
+
+      // Update existing bear zones
+      for (let z = bearZones.length - 1; z >= 0; z--) {
+        const zone = bearZones[z];
+        if (bars[i].low < zone.price) {
+          // Price broke through — extend zone (stays solid)
+          zone.endIdx = i;
+        } else {
+          // Not broken — finalize as dashed and remove from active tracking
+          zone.endIdx = i;
+          expiredZones.push({ ...zone, style: 'dashed' });
+          bearZones.splice(z, 1);
+        }
+      }
+    }
+
+    // Emit still-active zones as solid lines
+    for (const zone of [...bullZones, ...bearZones]) {
+      lines.push({
+        time1: bars[zone.startIdx].time,
+        price1: zone.price,
+        time2: bars[zone.endIdx].time,
+        price2: zone.price,
+        color: zone.isBull ? bullColor : bearColor,
+        width: 2,
+        style: 'solid',
+      });
+    }
+
+    // Emit most recent expired zones as dashed lines (capped to avoid clutter)
+    const recentExpired = expiredZones.slice(-qtyDivLevels * 2);
+    for (const zone of recentExpired) {
+      lines.push({
+        time1: bars[zone.startIdx].time,
+        price1: zone.price,
+        time2: bars[zone.endIdx].time,
+        price2: zone.price,
+        color: zone.isBull ? bullColor : bearColor,
+        width: 2,
+        style: 'dashed',
+      });
     }
   }
 
@@ -166,6 +267,7 @@ export function calculate(bars: Bar[], inputs: Partial<RsiMomentumDivergenceInpu
       { value: 30, options: { color: bullColor, linestyle: 'dashed', title: 'Oversold' } },
     ],
     markers,
+    lines,
   };
 }
 

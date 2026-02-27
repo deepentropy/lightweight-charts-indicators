@@ -9,6 +9,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { BoxData } from '../types';
 
 export interface FvgPositioningAverageInputs {
   lookback: number;
@@ -39,7 +40,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<FvgPositioningAverageInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<FvgPositioningAverageInputs> = {}): IndicatorResult & { boxes: BoxData[] } {
   const { lookback, lookbackType, atrMultiplier } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -68,6 +69,7 @@ export function calculate(bars: Bar[], inputs: Partial<FvgPositioningAverageInpu
   const plot1: { time: number; value: number; color?: string }[] = [];
 
   const fillColors: string[] = [];
+  const boxes: BoxData[] = [];
 
   for (let i = 0; i < n; i++) {
     // ATR with fallback
@@ -84,11 +86,23 @@ export function calculate(bars: Bar[], inputs: Partial<FvgPositioningAverageInpu
       // Bullish FVG: low > high[2] and close[1] > high[2] and gap > atr
       if (low0 > high2 && close1 > high2 && (low0 - high2) > atr) {
         upFvgs.push({ barIdx: i, value: high2 }); // bottom of gap = high[2]
+        // Box: left=bar[2], top=current low, right=current bar, bottom=high[2]
+        boxes.push({
+          time1: bars[i - 2].time, price1: low0,
+          time2: bars[i].time, price2: high2,
+          bgColor: 'rgba(8,153,129,0.50)', borderColor: 'rgba(8,153,129,0.50)',
+        });
       }
 
       // Bearish FVG: high < low[2] and close[1] < low[2] and gap > atr
       if (high0 < low2 && close1 < low2 && (low2 - high0) > atr) {
         downFvgs.push({ barIdx: i, value: high0 }); // top of gap = high[0]
+        // Box: left=bar[2], top=low[2], right=current bar, bottom=current high
+        boxes.push({
+          time1: bars[i - 2].time, price1: low2,
+          time2: bars[i].time, price2: high0,
+          bgColor: 'rgba(242,54,69,0.50)', borderColor: 'rgba(242,54,69,0.50)',
+        });
       }
     }
 
@@ -150,6 +164,7 @@ export function calculate(bars: Bar[], inputs: Partial<FvgPositioningAverageInpu
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: '#2962FF' }, colors: fillColors }],
+    boxes,
   };
 }
 

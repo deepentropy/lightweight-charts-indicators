@@ -9,7 +9,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData, BarColorData } from '../types';
+import type { MarkerData, BarColorData, BoxData } from '../types';
 
 export interface HemaTrendLevelsInputs {
   hemaLengthFast: number;
@@ -53,7 +53,7 @@ function computeHEMA(src: Series, length: number): Series {
   return ta.ema(diff, sqrtLength);
 }
 
-export function calculate(bars: Bar[], inputs: Partial<HemaTrendLevelsInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<HemaTrendLevelsInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; boxes: BoxData[] } {
   const { hemaLengthFast, hemaLengthSlow, bullColor, bearColor } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -70,6 +70,16 @@ export function calculate(bars: Bar[], inputs: Partial<HemaTrendLevelsInputs> = 
   const warmup = hemaLengthSlow;
   const markers: MarkerData[] = [];
   const barColors: BarColorData[] = [];
+  const boxes: BoxData[] = [];
+
+  // Track most recent bull/bear box indices (Pine: var bull_box / bear_box arrays, using .first())
+  let lastBullBoxIdx = -1;
+  let lastBearBoxIdx = -1;
+  // Store box top/bottom prices for price-test logic
+  let bullBoxTop = NaN;
+  let bullBoxBot = NaN;
+  let bearBoxTop = NaN;
+  let bearBoxBot = NaN;
 
   // Detect crossovers
   for (let i = warmup; i < n; i++) {
@@ -79,8 +89,11 @@ export function calculate(bars: Bar[], inputs: Partial<HemaTrendLevelsInputs> = 
     const prevH2 = h2Arr[i - 1] ?? NaN;
     const vola = (atrArr[i] ?? 0) / 2;
 
+    const isCrossover = prevH1 <= prevH2 && h1 > h2;
+    const isCrossunder = prevH1 >= prevH2 && h1 < h2;
+
     // Crossover: hema1 crosses above hema2 (bullish)
-    if (prevH1 <= prevH2 && h1 > h2) {
+    if (isCrossover) {
       markers.push({
         time: bars[i].time,
         position: 'belowBar',
@@ -88,9 +101,18 @@ export function calculate(bars: Bar[], inputs: Partial<HemaTrendLevelsInputs> = 
         color: bullColor,
         text: '',
       });
+      // Bullish support box: low to low + vola
+      bullBoxBot = bars[i].low;
+      bullBoxTop = bars[i].low + vola;
+      boxes.push({
+        time1: bars[i].time, price1: bullBoxTop,
+        time2: bars[i].time, price2: bullBoxBot,
+        bgColor: bullColor + '4D', borderColor: 'transparent',
+      });
+      lastBullBoxIdx = boxes.length - 1;
     }
     // Crossunder: hema1 crosses below hema2 (bearish)
-    if (prevH1 >= prevH2 && h1 < h2) {
+    if (isCrossunder) {
       markers.push({
         time: bars[i].time,
         position: 'aboveBar',
@@ -98,6 +120,51 @@ export function calculate(bars: Bar[], inputs: Partial<HemaTrendLevelsInputs> = 
         color: bearColor,
         text: '',
       });
+      // Bearish resistance box: high - vola to high
+      bearBoxTop = bars[i].high;
+      bearBoxBot = bars[i].high - vola;
+      boxes.push({
+        time1: bars[i].time, price1: bearBoxTop,
+        time2: bars[i].time, price2: bearBoxBot,
+        bgColor: bearColor + '4D', borderColor: 'transparent',
+      });
+      lastBearBoxIdx = boxes.length - 1;
+    }
+
+    // Extend most recent boxes to current bar (Pine: Q.set_right(bar_index))
+    if (lastBullBoxIdx >= 0) {
+      boxes[lastBullBoxIdx].time2 = bars[i].time;
+    }
+    if (lastBearBoxIdx >= 0) {
+      boxes[lastBearBoxIdx].time2 = bars[i].time;
+    }
+
+    // Price-test markers: wick into box but body stays outside
+    // Bullish box support test: low dips into box but open & close above box top
+    if (lastBullBoxIdx >= 0 && !isNaN(bullBoxTop)) {
+      if (bars[i].low < bullBoxTop && bars[i].high > bullBoxTop &&
+          bars[i].open > bullBoxTop && bars[i].close > bullBoxTop) {
+        markers.push({
+          time: bars[i].time,
+          position: 'belowBar',
+          shape: 'triangleUp',
+          color: bullColor,
+          text: '',
+        });
+      }
+    }
+    // Bearish box resistance test: high wicks into box but open & close below box top
+    if (lastBearBoxIdx >= 0 && !isNaN(bearBoxTop)) {
+      if (bars[i].high > bearBoxTop && bars[i].low < bearBoxTop &&
+          bars[i].open < bearBoxTop && bars[i].close < bearBoxTop) {
+        markers.push({
+          time: bars[i].time,
+          position: 'aboveBar',
+          shape: 'triangleDown',
+          color: bearColor,
+          text: '',
+        });
+      }
     }
 
     // Bar colors
@@ -143,6 +210,7 @@ export function calculate(bars: Bar[], inputs: Partial<HemaTrendLevelsInputs> = 
     fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: bullColor + '1A' }, colors: fillColors }],
     markers,
     barColors,
+    boxes,
   };
 }
 

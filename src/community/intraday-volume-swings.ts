@@ -9,7 +9,7 @@
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import type { MarkerData, BgColorData } from '../types';
+import type { MarkerData, BgColorData, LabelData } from '../types';
 
 export interface IntradayVolumeSwingsInputs {
   markSwings: boolean;
@@ -59,7 +59,7 @@ function isNewDay(bar: Bar, prevBar: Bar | null): boolean {
     d1.getUTCDate() !== d2.getUTCDate();
 }
 
-export function calculate(bars: Bar[], inputs: Partial<IntradayVolumeSwingsInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<IntradayVolumeSwingsInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[]; labels: LabelData[] } {
   const { markSwings, markNewDay, markGreaterSwings, plotCurrent } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -231,6 +231,7 @@ export function calculate(bars: Bar[], inputs: Partial<IntradayVolumeSwingsInput
 
   const markers: MarkerData[] = [];
   const bgColors: BgColorData[] = [];
+  const labels: LabelData[] = [];
   const fillColors4_5: string[] = [];
   const fillColors6_7: string[] = [];
 
@@ -277,12 +278,32 @@ export function calculate(bars: Bar[], inputs: Partial<IntradayVolumeSwingsInput
           time: t, position: 'aboveBar', shape: 'labelDown',
           color: '#008000', text: 'HSH',
         });
+        // Pine: label.new at avg(prev_swing_high_bottom, prev_swing_high_top)
+        const hshMid = (prevSwingHighBot[i] + prevSwingHighTop[i]) / 2;
+        if (!isNaN(hshMid)) {
+          labels.push({
+            time: t, price: hshMid,
+            text: 'Higher Swing High',
+            color: '#008000', textColor: '#FFFFFF',
+            style: 'label_left', size: 'small',
+          });
+        }
       }
       if (lowerSwingLow && newDay[i]) {
         markers.push({
           time: t, position: 'belowBar', shape: 'labelUp',
           color: '#FF0000', text: 'LSL',
         });
+        // Pine: label.new at avg(prev_swing_low_bottom, prev_swing_low_top)
+        const lslMid = (prevSwingLowBot[i] + prevSwingLowTop[i]) / 2;
+        if (!isNaN(lslMid)) {
+          labels.push({
+            time: t, price: lslMid,
+            text: 'Lower Swing Low',
+            color: '#FF0000', textColor: '#FFFFFF',
+            style: 'label_left', size: 'small',
+          });
+        }
       }
     }
 
@@ -306,6 +327,7 @@ export function calculate(bars: Bar[], inputs: Partial<IntradayVolumeSwingsInput
     ],
     markers,
     bgColors,
+    labels,
   };
 }
 
