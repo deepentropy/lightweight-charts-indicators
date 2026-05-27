@@ -1,12 +1,13 @@
 /**
  * Chandelier Exit
  *
- * ATR-based trailing stop system.
- * Long stop: highest high - ATR*mult (ratchets up only)
- * Short stop: lowest low + ATR*mult (ratchets down only)
- * Direction flips when price crosses the opposite stop.
+ * Long stop:  highest(length) - ATR*mult
+ * Short stop: lowest(length)  + ATR*mult
  *
- * Reference: TradingView "Chandelier Exit" by everget
+ * Both lines are plotted continuously, matching TradingView's built-in
+ * `ta.chandelier()` (TradingView/ta library). Direction state is still
+ * tracked to drive buy/sell markers and the fill colors, but the plotted
+ * series are never gated to NaN.
  */
 
 import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
@@ -63,23 +64,12 @@ export function calculate(bars: Bar[], inputs: Partial<ChandelierExitInputs> = {
 
   for (let i = 0; i < bars.length; i++) {
     const atrVal = (atrArr[i] ?? 0) * atrMult;
-    let longStop = (highestArr[i] ?? bars[i].high) - atrVal;
-    let shortStop = (lowestArr[i] ?? bars[i].low) + atrVal;
+    const longStop = (highestArr[i] ?? bars[i].high) - atrVal;
+    const shortStop = (lowestArr[i] ?? bars[i].low) + atrVal;
 
     if (i > 0) {
       const prevLongStop = longStopArr[i - 1];
       const prevShortStop = shortStopArr[i - 1];
-      const prevClose = bars[i - 1].close;
-
-      // Ratchet: only move stop in favorable direction
-      if (prevClose > prevLongStop) {
-        longStop = Math.max(longStop, prevLongStop);
-      }
-      if (prevClose < prevShortStop) {
-        shortStop = Math.min(shortStop, prevShortStop);
-      }
-
-      // Direction
       const prevDir = dirArr[i - 1];
       const close = bars[i].close;
       if (close > prevShortStop) {
@@ -100,12 +90,12 @@ export function calculate(bars: Bar[], inputs: Partial<ChandelierExitInputs> = {
   const warmup = atrPeriod;
   const longData = longStopArr.map((value, i) => ({
     time: bars[i].time,
-    value: i < warmup ? NaN : (dirArr[i] === 1 ? value : NaN),
+    value: i < warmup ? NaN : value,
   }));
 
   const shortData = shortStopArr.map((value, i) => ({
     time: bars[i].time,
-    value: i < warmup ? NaN : (dirArr[i] === -1 ? value : NaN),
+    value: i < warmup ? NaN : value,
   }));
 
   // Hidden ohlc4 plot for fills
