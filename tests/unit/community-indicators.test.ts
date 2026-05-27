@@ -367,20 +367,14 @@ describe('ChandelierExit', () => {
     assertShape(result, ['plot0', 'plot1'], true);
   });
 
-  it('shows only one stop at a time (directional)', () => {
+  it('plots both stops continuously after warmup', () => {
     const longPlot = (result.plots as Record<string, Array<{ value: number }>>)['plot0'];
     const shortPlot = (result.plots as Record<string, Array<{ value: number }>>)['plot1'];
-    // After warmup, exactly one of long/short should be visible per bar
-    let bothCount = 0;
-    let neitherCount = 0;
+    // Matches TradingView's built-in ta.chandelier(): both lines drawn at every bar past warmup.
     for (let i = 22; i < bars.length; i++) {
-      const longVisible = !isNaN(longPlot[i].value);
-      const shortVisible = !isNaN(shortPlot[i].value);
-      if (longVisible && shortVisible) bothCount++;
-      if (!longVisible && !shortVisible) neitherCount++;
+      expect(isNaN(longPlot[i].value)).toBe(false);
+      expect(isNaN(shortPlot[i].value)).toBe(false);
     }
-    expect(bothCount).toBe(0);
-    expect(neitherCount).toBe(0);
   });
 });
 
