@@ -3,3 +3,6 @@ dist
 node_modules
 .claude
 example/node_modules
+
+# Large local catalog artifact (regenerable via the TradingView sweep scripts)
+docs/official/catalog/community-catalog.json

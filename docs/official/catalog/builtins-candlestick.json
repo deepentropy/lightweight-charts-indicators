@@ -1,0 +1,767 @@
+[
+  {
+    "userId": 605017,
+    "scriptName": "Abandoned Baby - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Abandoned%1Baby",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Abandoned Baby - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Abandoned Baby - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Abandoned%1Baby",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Abandoned Baby - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "*All Candlestick Patterns*",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1All%1Candlestick%1Patterns",
+    "version": "36.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "All Patterns",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Dark Cloud Cover - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Dark%1Cloud%1Cover",
+    "version": "20.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Dark Cloud Cover - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Doji",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Doji",
+    "version": "32.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Doji",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Doji Star - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Doji%1Star",
+    "version": "20.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Doji Star - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Doji Star - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Doji%1Star",
+    "version": "20.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Doji Star - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Downside Tasuki Gap - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Downside%1Tasuki%1Gap",
+    "version": "20.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Downside Tasuki Gap - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Dragonfly Doji - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Dragonfly%1Doji",
+    "version": "32.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Dragonfly Doji - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Engulfing - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Engulfing",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Engulfing - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Engulfing - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Engulfing",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Engulfing - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Evening Doji Star - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Evening%1Doji%1Star",
+    "version": "21.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Evening Doji Star - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Evening Star - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Evening%1Star",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Evening Star - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Falling Three Methods - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Falling%1Three%1Methods",
+    "version": "20.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Falling Three Methods - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Falling Window - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Falling%1Window",
+    "version": "20.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Falling Window - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Gravestone Doji - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Gravestone%1Doji",
+    "version": "32.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Gravestone Doji - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Hammer - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Hammer",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Hammer - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Hanging Man - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Hanging%1Man",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Hanging Man - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Harami - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Harami",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Harami - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Harami - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Harami",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Harami - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Harami Cross - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Harami%1Cross",
+    "version": "21.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Harami Cross - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Harami Cross - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Harami%1Cross",
+    "version": "21.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Harami Cross - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Inverted Hammer - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Inverted%1Hammer",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Inverted Hammer - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Kicking - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Kicking",
+    "version": "32.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Kicking - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Kicking - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Kicking",
+    "version": "32.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Kicking - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Long Lower Shadow - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Long%1Lower%1Shadow",
+    "version": "32.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Long Lower Shadow - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Long Upper Shadow - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Long%1Upper%1Shadow",
+    "version": "32.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Long Upper Shadow - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Marubozu Black - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Marubozu%1Black",
+    "version": "33.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Marubozu Black - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Marubozu White - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Marubozu%1White",
+    "version": "33.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Marubozu White - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Morning Doji Star - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Morning%1Doji%1Star",
+    "version": "21.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Morning Doji Star - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Morning Star - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Morning%1Star",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Morning Star - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "On Neck - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1On%1Neck",
+    "version": "20.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "On Neck - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Piercing - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Piercing",
+    "version": "23.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Piercing - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Rising Three Methods - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Rising%1Three%1Methods",
+    "version": "20.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Rising Three Methods - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Rising Window - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Rising%1Window",
+    "version": "20.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Rising Window - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Shooting Star - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Shooting%1Star",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Shooting Star - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Spinning Top Black",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Spinning%1Top%1Black",
+    "version": "32.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Spinning Top Black",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Spinning Top White",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Spinning%1Top%1White",
+    "version": "32.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Spinning Top White",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Three Black Crows - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Three%1Black%1Crows",
+    "version": "32.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Three Black Crows - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Three White Soldiers - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Three%1White%1Soldiers",
+    "version": "32.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Three White Soldiers - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Tri-Star - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Tri-Star",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Tri-Star - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Tri-Star - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Tri-Star",
+    "version": "34.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Tri-Star - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Tweezer Bottom - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Tweezer%1Bottom",
+    "version": "21.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Tweezer Bottom - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Tweezer Top - Bearish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bearish%1Tweezer%1Top",
+    "version": "20.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Tweezer Top - Bear",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Upside Tasuki Gap - Bullish",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Candlestick%1Pattern%1Bullish%1Upside%1Tasuki%1Gap",
+    "version": "20.0",
+    "extra": {
+      "isBuiltIn": true,
+      "isCandleStick": true,
+      "kind": "study",
+      "shortDescription": "Upside Tasuki Gap - Bull",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  }
+]

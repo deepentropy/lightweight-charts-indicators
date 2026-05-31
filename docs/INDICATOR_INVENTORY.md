@@ -7,13 +7,20 @@ ranked by complexity. It tracks implementation status in OakScriptJS.
 
 | Category               | Count |
 |------------------------|-------|
-| **Total Indicators**   | 134   |
-| **Implemented**        | 75    |
-| **Pending**            | 59    |
+| **Total Indicators**   | 147   |
+| **Implemented**        | 90    |
+| **Pending**            | 57    |
 | **Very Complex (25+)** | 3     |
 | **Complex (15-24)**    | 29    |
 | **Medium (5-14)**      | 43    |
 | **Simple (0-4)**       | 59    |
+
+> Totals reconciled against the live `indicatorRegistry` in `src/index.ts` (2026-05-31):
+> 131 scored rows below (84 implemented / 47 pending) + the 16 built-ins captured this session
+> (6 implemented / 10 pending). The complexity buckets cover the scored table only (the 16 new
+> rows await Pine-source scoring). Note `src/` registers 402 indicators in total — the bulk are
+> community/candlestick ports tracked in `INDICATOR_INVENTORY_COMMUNITY.md` /
+> `INDICATOR_INVENTORY_CANDLESTICK.md`, not in this standard-library table.
 
 ## Complexity Scoring
 
@@ -68,7 +75,7 @@ Complexity is calculated based on:
 | Relative Strength Index | 11 | 11 | - | **Implemented** | Yes | ✅ Pass |
 | Auto Fib Retracement | 11 | 1 | Drawing | Pending | No | - |
 | Performance | 10 | 0 | ReqSec, Tables | Pending | No | - |
-| Linear Regression Channel | 10 | 0 | Drawing | Pending | No | - |
+| Linear Regression Channel | 10 | 0 | Drawing | **Implemented** | No | - (community/) |
 | On Balance Volume | 8 | 8 | - | **Implemented** | Yes | ✅ Pass |
 | Relative Volatility Index | 7 | 7 | - | **Implemented** | Yes | ✅ Pass |
 | Rank Correlation Index | 7 | 7 | - | **Implemented** | Yes | ✅ Pass |
@@ -166,6 +173,36 @@ Complexity is calculated based on:
 
 ---
 
+## Built-in indicators added from live capture (2026-05-31)
+
+These 16 built-in **studies** appear in TradingView's live `standard` catalog
+(`pine-facade.tradingview.com/pine-facade/list?filter=standard`, 145 entries) but were
+absent from the table above. Captured by driving the TradingView Desktop app over CDP — see
+[`TRADINGVIEW_INDICATOR_CATALOG.md`](TRADINGVIEW_INDICATOR_CATALOG.md). Six were already
+implemented (the table above was stale); ten are genuinely pending. Complexity scores are
+left blank pending Pine-source analysis and so are excluded from the bucket counts above.
+
+| Indicator | scriptIdPart | Status | Implementation / Notes |
+|-----------|--------------|--------|------------------------|
+| Arnaud Legoux Moving Average (ALMA) | `STD;Arnaud%1Legoux%1Moving%1Average` | **Implemented** | `src/standard/alma.ts` |
+| TRIX | `STD;TRIX` | **Implemented** | `src/standard/trix.ts` |
+| Chandelier Exit | `STD;Chandelier_Exit` | **Implemented** | `src/community/chandelier-exit.ts` |
+| Kaufman's Adaptive Moving Average (KAMA) | `STD;Kaufmans_Adaptive_Moving_Average` | **Implemented** | `src/community/kaufman-adaptive-ma.ts` |
+| Price Momentum Oscillator (PMO) | `STD;Price_Momentum_Oscillator` | **Implemented** | `src/community/price-momentum-oscillator.ts` |
+| Stochastic Momentum Index (SMI) | `STD;SMI` | **Implemented** | `src/community/stochastic-momentum-index.ts` (distinct from SMI Ergodic) |
+| Aroon Oscillator | `STD;Aroon_Oscillator` | Pending | Aroon base is implemented; oscillator (Up − Down) is not |
+| Auto Key Levels | `STD;Auto_Key_Levels` | Pending | drawing-based |
+| Auto Trend Detector | `STD;Auto_Trend_Detector` | Pending | drawing-based |
+| Negative Volume Index (NVI) | `STD;Negative_Volume_Index` | Pending | - |
+| Positive Volume Index (PVI) | `STD;Positive_Volume_Index` | Pending | - |
+| Pring's Special K | `STD;Prings_Special_K` | Pending | - |
+| Ulcer Index | `STD;Ulcer_Index` | Pending | - |
+| Up/Down Volume | `STD;UP_DOWN_Volume` | Pending | needs lower-timeframe up/down volume (like CVD) |
+| Volatility Stop | `STD;Volatility_Stop` | Pending | - |
+| Volume Weighted Average Price (VWAP) | `STD;VWAP` | Pending | only the `vwap-mvwap-ema-crossover` community variant exists |
+
+---
+
 ## Core TA Functions
 
 These functions are implemented in the core `ta` module (`packages/oakscriptjs/src/ta/`):
@@ -227,3 +264,5 @@ Failed:           0
 ---
 
 *Last updated: February 25, 2026 - Added KST, Connors RSI, Chop Zone, RCI, RVI, Williams Fractals, TWAP, Bollinger Bars, Moon Phases*
+
+*Updated May 31, 2026 - Added 16 built-in studies from live TradingView Desktop capture (6 already implemented but undocumented, 10 pending). See the "Built-in indicators added from live capture" section above. Reconciled the full table against `src/index.ts`: flipped Linear Regression Channel (Pending → Implemented, `community/`) and corrected the stale summary counts; the rest of the scored table matched the registry.*

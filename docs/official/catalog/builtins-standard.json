@@ -1,0 +1,3345 @@
+[
+  {
+    "userId": 605017,
+    "scriptName": "24-hour Volume",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;24h%Volume",
+    "version": "7.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "24H Vol",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 1
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Accumulation/Distribution",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Accumulation_Distribution",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Accum/Dist",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Advance Decline Line",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Advance%1Decline%1Line",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "ADL",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Advance Decline Ratio",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Advance%1Decline%1Ratio",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "ADR",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Advance/Decline Ratio (Bars)",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Advance_Decline_Ratio_Bars",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "ADR_B",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Arnaud Legoux Moving Average",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Arnaud%1Legoux%1Moving%1Average",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "ALMA",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Aroon",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Aroon",
+    "version": "31.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Aroon",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Aroon Oscillator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Aroon_Oscillator",
+    "version": "1.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": true,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Aroon Osc",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 2
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Auto Fib Extension",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Auto%1Fib%1Extension%1",
+    "version": "28.0",
+    "extra": {
+      "isAuto": true,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Auto Fib Extension",
+      "sourceInputsCount": 0,
+      "tags": [
+        "Fibonacci"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Auto Fib Retracement",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Auto%1Fib%1Retracement%1",
+    "version": "38.0",
+    "extra": {
+      "isAuto": true,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Auto Fib Retracement",
+      "sourceInputsCount": 0,
+      "tags": [
+        "Fibonacci"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Auto Key Levels",
+    "scriptSource": "",
+    "scriptAccess": "closed_no_auth",
+    "scriptIdPart": "STD;Auto_Key_Levels",
+    "version": "1.0",
+    "extra": {
+      "isAuto": true,
+      "isBeta": true,
+      "isBuiltIn": true,
+      "isNew": true,
+      "isUpdated": false,
+      "is_price_study": true,
+      "kind": "study",
+      "shortDescription": "Auto Key Levels",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 21
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Auto Pitchfork",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Auto%1Pitchfork",
+    "version": "11.0",
+    "extra": {
+      "isAuto": true,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Auto Pitchfork",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Auto Trend Detector",
+    "scriptSource": "",
+    "scriptAccess": "closed_no_auth",
+    "scriptIdPart": "STD;Auto_Trend_Detector",
+    "version": "2.0",
+    "extra": {
+      "isAuto": true,
+      "isBeta": true,
+      "isBuiltIn": true,
+      "isChartPattern": true,
+      "isNew": true,
+      "kind": "study",
+      "shortDescription": "ATD",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Average Daily Range",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Average%Day%Range",
+    "version": "7.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "ADR",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 1
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Average Directional Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Average%1Directional%1Index",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "ADX",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 1
+      },
+      "tags": [
+        "Directional Moving Index",
+        "dmi"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Average True Range",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Average_True_Range",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "ATR",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Awesome Oscillator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Awesome_Oscillator",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "AO",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Balance of Power",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Balance%1of%1Power",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Balance of Power",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 1
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "BarUpDn Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Bars%1Up%1Dn%1Strategy",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "BarUpDn Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "BBTrend",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;BBTrend",
+    "version": "3.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "BBTrend",
+      "sourceInputsCount": 0,
+      "tags": [
+        "Bollinger"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Bollinger Bands",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Bollinger_Bands",
+    "version": "33.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "BB",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 3
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Bollinger Bands %b",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Bollinger_Bands_B",
+    "version": "34.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "BB %b",
+      "sourceInputsCount": 1,
+      "tags": [
+        "BBB"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Bollinger Bands Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Bollinger%1Bands%1Strategy",
+    "version": "27.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Bollinger Bands Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Bollinger Bands Strategy directed",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Bollinger%1Band%1Directed%1Strategy",
+    "version": "27.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Bollinger Bands Strategy directed",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Bollinger BandWidth",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Bollinger_Bands_Width",
+    "version": "32.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "BBW",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 3
+      },
+      "tags": [
+        "Bollinger Bands Width"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Bollinger Bars",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Bollinger%1Bars",
+    "version": "2.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": true,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Bollinger Bars",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Bull Bear Power",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Bull%Bear%Power",
+    "version": "5.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "BBP",
+      "sourceInputsCount": 0,
+      "tags": [
+        "Elder-Ray Index",
+        "Elder Ray Index"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Chaikin Money Flow",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Chaikin_Money_Flow",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "CMF",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Chaikin Oscillator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Chaikin_Oscillator",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Chaikin Osc",
+      "sourceInputsCount": 0,
+      "tags": [
+        "co"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Chande Kroll Stop",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Chande%1Kroll%1Stop",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Chande Kroll Stop",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Chandelier Exit",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Chandelier_Exit",
+    "version": "1.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": true,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Chandelier",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 2
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Chande Momentum Oscillator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Chande_Momentum_Oscillator",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "ChandeMO",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "ChannelBreakOutStrategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Channel%1BreakOut%1Strategy",
+    "version": "27.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "ChannelBreakOutStrategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Choppiness Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Choppiness_Index",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "CHOP",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Chop Zone",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Chop%1Zone",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Chop Zone",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Commodity Channel Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;CCI",
+    "version": "38.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "CCI",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 4
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Connors RSI",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Connors_RSI",
+    "version": "31.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "CRSI",
+      "sourceInputsCount": 0,
+      "tags": [
+        "Connors Relative Strength Index"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Consecutive Up/Down Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Consecutive%1Ups%1Downs%1Strategy",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Consecutive Up/Down Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Coppock Curve",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Coppock%1Curve",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Coppock Curve",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Correlation Coefficient",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Correlation_Coeff",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "CC",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Cumulative Volume Delta",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Cumulative%1Volume%1Delta",
+    "version": "7.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "CVD",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plotcandle": 1
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Cumulative Volume Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Cumulative%1Volume%1Index",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "CVI",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Detrended Price Oscillator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;DPO",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "DPO",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Directional Movement Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;DMI",
+    "version": "32.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "DMI",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 3
+      },
+      "tags": [
+        "adx",
+        "average directional index"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Donchian Channels",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Donchian_Channels",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "DC",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Double EMA",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;DEMA",
+    "version": "31.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "DEMA",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Ease of Movement",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;EOM",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "EOM",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Elder Force Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;EFI",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "EFI",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Envelope",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;ENV",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Env",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Fisher Transform",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Fisher_Transform",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Fisher",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Gaps",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Gaps",
+    "version": "7.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Gaps",
+      "sourceInputsCount": 0,
+      "stats": {
+        "alertcondition": 2
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Greedy Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Greedy%1Strategy",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Greedy Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Historical Volatility",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Historical_Volatility",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "HV",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Hull Moving Average",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Hull%1MA",
+    "version": "26.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "HMA",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Ichimoku Cloud",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Ichimoku%1Cloud",
+    "version": "33.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Ichimoku",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 7
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "InSide Bar Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;InSide%1Bar%1Strategy",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "InSide Bar Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Kaufman&#039;s Adaptive Moving Average",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Kaufmans_Adaptive_Moving_Average",
+    "version": "1.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": true,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "KAMA",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 1
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Keltner Channels",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Keltner_Channels",
+    "version": "33.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "KC",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 3
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Keltner Channels Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Keltner%1Channel%1Strategy",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Keltner Channels Strategy",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Klinger Oscillator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Klinger%1Oscillator",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Klinger Oscillator",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Know Sure Thing",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Know_Sure_Thing",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "KST",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Least Squares Moving Average",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Least%1Squares%1Moving%1Average",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "LSMA",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Linear Regression Channel",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Linear_Regression",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "LinReg",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "MACD Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;MACD%1Strategy",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "MACD Strategy",
+      "sourceInputsCount": 0,
+      "tags": [
+        "Moving Average Convergence Divergence"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "MA Cross",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;MA%1Cross",
+    "version": "31.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "MA Cross",
+      "sourceInputsCount": 0,
+      "tags": [
+        "Moving Average Cross"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Mass Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Mass%1Index",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Mass Index",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "McGinley Dynamic",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;McGinley%1Dynamic",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "McGinley Dynamic",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Median",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Median",
+    "version": "8.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Median",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Momentum",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Momentum",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Mom",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Momentum Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Momentum%1Strategy",
+    "version": "27.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Momentum Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Money Flow Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Money_Flow",
+    "version": "31.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "MFI",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Moon Phases",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Moon%1Phases",
+    "version": "3.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Moon Phases",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Moving Average Convergence Divergence",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;MACD",
+    "version": "40.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": true,
+      "kind": "study",
+      "shortDescription": "MACD",
+      "sourceInputsCount": 1,
+      "stats": {
+        "alertcondition": 2,
+        "plot": 3
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Moving Average Exponential",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;EMA",
+    "version": "36.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "EMA",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 4
+      },
+      "tags": [
+        "MA"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Moving Average Ribbon",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;MA%Ribbon",
+    "version": "13.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "MA Ribbon",
+      "sourceInputsCount": 4,
+      "stats": {
+        "plot": 4
+      },
+      "tags": [
+        "EMA",
+        "EMA Ribbon",
+        "Exponential Moving Average",
+        "SMA",
+        "SMA Ribbon",
+        "Simple Moving Average"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Moving Average Weighted",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;WMA",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "WMA",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 1
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "MovingAvg2Line Cross",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;MovingAvg%1Cross2%1Strategy",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "MovingAvg2Line Cross",
+      "sourceInputsCount": 0,
+      "tags": [
+        "Moving Average Cross"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "MovingAvg Cross",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;MovingAvg%1Cross%1Strategy",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "MovingAvg Cross",
+      "sourceInputsCount": 0,
+      "tags": [
+        "Moving Average Cross"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Multi-Time Period Charts",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Multi-Time%Period%Charts",
+    "version": "13.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": true,
+      "kind": "study",
+      "shortDescription": "MTPC",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Negative Volume Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Negative_Volume_Index",
+    "version": "1.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": true,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "NVI",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 2
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Net Volume",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Net%1Volume",
+    "version": "31.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Net Volume",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 1
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "On Balance Volume",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;On_Balance_Volume",
+    "version": "37.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "OBV",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 4
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Open Interest",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Open%Interest",
+    "version": "7.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "OI",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 1,
+        "plotcandle": 1
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "OutSide Bar Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;OutSide%1Bar%1Strategy",
+    "version": "27.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "OutSide Bar Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Parabolic SAR",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;PSAR",
+    "version": "31.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "SAR",
+      "sourceInputsCount": 0,
+      "tags": [
+        "psar",
+        "parabolic stop and reverse"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Parabolic SAR Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Parabolic%1SAR%1Strategy",
+    "version": "31.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Parabolic SAR Strategy",
+      "sourceInputsCount": 0,
+      "tags": [
+        "psar",
+        "parabolic stop and reverse"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Percentage Price Oscillator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Price_Oscillator",
+    "version": "32.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": true,
+      "kind": "study",
+      "shortDescription": "PPO",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 3
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Percentage Volume Oscillator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Volume%1Oscillator",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": true,
+      "kind": "study",
+      "shortDescription": "PVO",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 3
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Performance",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Performance",
+    "version": "5.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": true,
+      "kind": "study",
+      "shortDescription": "Performance",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Pivot Extension Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Pivot%1Extension%1Strategy",
+    "version": "32.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Pivot Extension Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Pivot Points High Low",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Pivot%1Points%1High%1Low",
+    "version": "10.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Pivots HL",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Pivot Points Standard",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Pivot%1Points%1Standard",
+    "version": "21.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "is_price_study": true,
+      "kind": "study",
+      "shortDescription": "Pivots",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Pivot Reversal Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Pivot%1Reversal%1Strategy",
+    "version": "31.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Pivot Reversal Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Positive Volume Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Positive_Volume_Index",
+    "version": "1.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": true,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "PVI",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 2
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Price Channel Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Price%1Channel%1Strategy",
+    "version": "27.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Price Channel Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Price Momentum Oscillator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Price_Momentum_Oscillator",
+    "version": "1.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": true,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "PMO",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 2
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Price Target",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Price%1Target",
+    "version": "3.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Price Target",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Price Volume Trend",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Price_Volume_Trend",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "PVT",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Pring&#039;s Special K",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Prings_Special_K",
+    "version": "1.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": true,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Special K",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 2
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Rank Correlation Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Rank_Correlation_Index",
+    "version": "4.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "RCI",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 4
+      },
+      "tags": [
+        "Spearman",
+        "Spearman's rank correlation coeffecient"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Rate Of Change",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;ROC",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "ROC",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "RCI Ribbon",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;RCI_Ribbon",
+    "version": "2.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": true,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "RCI Ribbon",
+      "sourceInputsCount": 1,
+      "tags": [
+        "Rank Correlation Index",
+        "Spearman",
+        "Spearman's rank correlation coeffecient",
+        "RCI3lines"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Relative Strength Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;RSI",
+    "version": "45.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "RSI",
+      "sourceInputsCount": 1,
+      "stats": {
+        "alertcondition": 2,
+        "plot": 7,
+        "plotshape": 2
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "RelativeValue",
+    "scriptSource": "",
+    "scriptAccess": "closed_no_auth",
+    "scriptIdPart": "PUB;LIB_TradingView_RelativeValue",
+    "version": "21.0",
+    "extra": {
+      "is_price_study": false,
+      "kind": "library",
+      "shortDescription": "RelativeValue",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 3
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Relative Vigor Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Relative_Vigor_Index",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "RVGI",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 2
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Relative Volatility Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Relative_Volatility_Index",
+    "version": "35.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "RVI",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 4
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Relative Volume at Time",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Relative%1Volume%1at%1Time",
+    "version": "5.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "RelVol",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Rob Booker - ADX Breakout",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Rob%1Booker%1ADX%1Breakout%1Strategy",
+    "version": "22.0",
+    "extra": {
+      "isBuiltIn": true,
+      "kind": "strategy",
+      "shortDescription": "ADX Breakout",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Rob Booker - Ziv Ghost Pivots",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Rob%1Booker%1Ghost%1Pivots%1v2",
+    "version": "28.0",
+    "extra": {
+      "isBuiltIn": true,
+      "kind": "study",
+      "shortDescription": "Ghost Pivots",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "RSI Divergence Indicator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Divergence%1Indicator",
+    "version": "35.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "RSI Divergence Indicator",
+      "sourceInputsCount": 1,
+      "stats": {
+        "alertcondition": 4,
+        "plot": 5,
+        "plotshape": 4
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "RSI Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;RSI%1Strategy",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "RSI Strategy",
+      "sourceInputsCount": 0,
+      "tags": [
+        "Relative Strength Index Strategy"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Seasonality",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Seasonality",
+    "version": "8.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Seasonality",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 4
+      },
+      "tags": [
+        "Seasonals"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Simple Moving Average",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;SMA",
+    "version": "39.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "SMA",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 4
+      },
+      "tags": [
+        "SMA",
+        "MA"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "SMI Ergodic Indicator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;SMI_Ergodic_Indicator_Oscillator",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "SMII",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "SMI Ergodic Oscillator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;SMI_Ergodic_Oscillator",
+    "version": "26.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "SMIO",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Smoothed Moving Average",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Smoothed%1Moving%1Average",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "SMMA",
+      "sourceInputsCount": 1,
+      "tags": [
+        "MA"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Stochastic",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Stochastic",
+    "version": "31.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Stoch",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Stochastic Momentum Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;SMI",
+    "version": "4.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "SMI",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 3
+      },
+      "tags": [
+        "Stochastic Momentum Indicator"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Stochastic RSI",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Stochastic_RSI",
+    "version": "31.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Stoch RSI",
+      "sourceInputsCount": 1,
+      "tags": [
+        "Stochastic Relative Strength Index"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Stochastic Slow Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Stochastic%1Slow%1Strategy",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Stochastic Slow Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Supertrend",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Supertrend",
+    "version": "10.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Supertrend",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Supertrend Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Supertrend%Strategy",
+    "version": "7.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Supertrend Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Technical Ratings",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Technical%1Ratings",
+    "version": "15.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Technicals",
+      "sourceInputsCount": 0,
+      "stats": {
+        "alertcondition": 4,
+        "plot": 1
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Technical Ratings Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Technical%1Ratings%1Strategy",
+    "version": "12.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Technicals Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Time Weighted Average Price",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Time%1Weighted%1Average%1Price",
+    "version": "5.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "TWAP",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 1
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Trading Sessions",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Trading%1Sessions",
+    "version": "5.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Trading Sessions",
+      "sourceInputsCount": 0,
+      "tags": [
+        "Forex",
+        "FX",
+        "Asian",
+        "European",
+        "American",
+        "Session",
+        "Trading Sessions",
+        "Trading"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Trend Strength Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Trend%1Strength%1Index",
+    "version": "2.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "TSI",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Triple EMA",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;TEMA",
+    "version": "31.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "TEMA",
+      "sourceInputsCount": 0,
+      "tags": [
+        "MA"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "TRIX",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;TRIX",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "TRIX",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "True Strength Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;True%1Strength%1Indicator",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "TSI",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Ulcer Index",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Ulcer_Index",
+    "version": "1.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": true,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Ulcer Index",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 2
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Ultimate Oscillator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Ultimate_Oscillator",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "UO",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Up/Down Volume",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;UP_DOWN_Volume",
+    "version": "8.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Up/Dn Vol",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plot": 2,
+        "plotchar": 1
+      },
+      "tags": [
+        "upvol",
+        "dnvol",
+        "updn vol"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Visible Average Price",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Visible%1Average%1Price",
+    "version": "3.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Avg Price",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Volatility Stop",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Volatility_Stop",
+    "version": "19.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "VStop",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Volty Expan Close Strategy",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Volty%1Expan%1Close%1Strategy",
+    "version": "28.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "strategy",
+      "shortDescription": "Volty Expan Close Strategy",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Volume Delta",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Volume%1Delta",
+    "version": "6.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Volume Delta",
+      "sourceInputsCount": 0,
+      "stats": {
+        "plotcandle": 1
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Volume Weighted Average Price",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;VWAP",
+    "version": "45.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "VWAP",
+      "sourceInputsCount": 1,
+      "stats": {
+        "plot": 7
+      },
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Volume Weighted Moving Average",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;VWMA",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "VWMA",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Vortex Indicator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Vortex%1Indicator",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "VI",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Williams Alligator",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Williams_Alligator",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Alligator",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Williams Fractals",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Whilliams_Fractals",
+    "version": "29.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Fractals",
+      "sourceInputsCount": 0,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Williams Percent Range",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Willams_R",
+    "version": "32.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Williams %R",
+      "sourceInputsCount": 1,
+      "tags": []
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Woodies CCI",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Woodies%1CCI",
+    "version": "30.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isMTFResolution": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Woodies CCI",
+      "sourceInputsCount": 0,
+      "tags": [
+        "Woodies Commodity Channel Index"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  },
+  {
+    "userId": 605017,
+    "scriptName": "Zig Zag",
+    "scriptSource": "",
+    "scriptAccess": "open_no_auth",
+    "scriptIdPart": "STD;Zig_Zag",
+    "version": "41.0",
+    "extra": {
+      "isAuto": false,
+      "isBeta": false,
+      "isBuiltIn": true,
+      "isNew": false,
+      "isPineEditorNewTemplate": true,
+      "isUpdated": false,
+      "kind": "study",
+      "shortDescription": "Zig Zag",
+      "sourceInputsCount": 0,
+      "tags": [
+        "ZigZag"
+      ]
+    },
+    "lastVersionMaj": "0.0"
+  }
+]
