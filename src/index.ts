@@ -1852,6 +1852,48 @@ export type {
 /**
  * Indicator category types
  */
+// ── Built-in studies added from live TradingView Desktop capture (2026-05-31) ──
+// Aroon Oscillator
+import * as aroonOscIndicator from './standard/aroon-oscillator';
+export { AroonOscillator, calculate as calculateAroonOscillator } from './standard/aroon-oscillator';
+export type { AroonOscillatorInputs } from './standard/aroon-oscillator';
+// Negative Volume Index
+import * as nviIndicator from './standard/nvi';
+export { NegativeVolumeIndex, calculate as calculateNVI } from './standard/nvi';
+export type { NVIInputs } from './standard/nvi';
+// Positive Volume Index
+import * as pviIndicator from './standard/pvi';
+export { PositiveVolumeIndex, calculate as calculatePVI } from './standard/pvi';
+export type { PVIInputs } from './standard/pvi';
+// Ulcer Index
+import * as ulcerIndexIndicator from './standard/ulcer-index';
+export { UlcerIndex, calculate as calculateUlcerIndex } from './standard/ulcer-index';
+export type { UlcerIndexInputs } from './standard/ulcer-index';
+// Pring's Special K
+import * as pringsSpecialKIndicator from './standard/prings-special-k';
+export { PringsSpecialK, calculate as calculatePringsSpecialK } from './standard/prings-special-k';
+export type { PringsSpecialKInputs } from './standard/prings-special-k';
+// Volatility Stop
+import * as volatilityStopIndicator from './standard/volatility-stop';
+export { VolatilityStop, calculate as calculateVolatilityStop } from './standard/volatility-stop';
+export type { VolatilityStopInputs } from './standard/volatility-stop';
+// Volume Weighted Average Price
+import * as vwapIndicator from './standard/vwap';
+export { VWAP, calculate as calculateVWAP } from './standard/vwap';
+export type { VWAPInputs } from './standard/vwap';
+// Up/Down Volume
+import * as upDownVolumeIndicator from './standard/up-down-volume';
+export { UpDownVolume, calculate as calculateUpDownVolume } from './standard/up-down-volume';
+export type { UpDownVolumeInputs } from './standard/up-down-volume';
+// Auto Key Levels
+import * as autoKeyLevelsIndicator from './standard/auto-key-levels';
+export { AutoKeyLevels, calculate as calculateAutoKeyLevels } from './standard/auto-key-levels';
+export type { AutoKeyLevelsInputs } from './standard/auto-key-levels';
+// Auto Trend Detector
+import * as autoTrendDetectorIndicator from './standard/auto-trend-detector';
+export { AutoTrendDetector, calculate as calculateAutoTrendDetector } from './standard/auto-trend-detector';
+export type { AutoTrendDetectorInputs } from './standard/auto-trend-detector';
+
 export type IndicatorCategory =
   | 'Moving Averages'
   | 'Momentum'
@@ -7327,6 +7369,149 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     ['tweezer-top', tweezerTopIndicator],
     ['upside-tasuki-gap', upsideTasukiGapIndicator],
   ]),
+  // ── Built-in studies added from live TradingView Desktop capture (2026-05-31) ──
+  {
+    id: 'aroon-oscillator',
+    group: 'standard',
+    name: 'Aroon Oscillator',
+    shortName: 'Aroon Osc',
+    description: 'The difference between Aroon Up and Aroon Down; oscillates between -100 and +100.',
+    category: 'Trend',
+    overlay: false,
+    metadata: aroonOscIndicator.metadata,
+    inputConfig: aroonOscIndicator.inputConfig as InputConfig[],
+    plotConfig: aroonOscIndicator.plotConfig as PlotConfig[],
+    hlineConfig: aroonOscIndicator.hlineConfig as HLineConfig[],
+    defaultInputs: { ...aroonOscIndicator.defaultInputs },
+    calculate: aroonOscIndicator.calculate,
+  },
+  {
+    id: 'nvi',
+    group: 'standard',
+    name: 'Negative Volume Index (NVI)',
+    shortName: 'NVI',
+    description: 'Cumulative index that changes only on lower-volume bars; seeded at 1000 with an EMA signal.',
+    category: 'Volume',
+    overlay: false,
+    metadata: nviIndicator.metadata,
+    inputConfig: nviIndicator.inputConfig as InputConfig[],
+    plotConfig: nviIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...nviIndicator.defaultInputs },
+    calculate: nviIndicator.calculate,
+  },
+  {
+    id: 'pvi',
+    group: 'standard',
+    name: 'Positive Volume Index (PVI)',
+    shortName: 'PVI',
+    description: 'Cumulative index that changes only on higher-volume bars; seeded at 1000 with an EMA signal.',
+    category: 'Volume',
+    overlay: false,
+    metadata: pviIndicator.metadata,
+    inputConfig: pviIndicator.inputConfig as InputConfig[],
+    plotConfig: pviIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...pviIndicator.defaultInputs },
+    calculate: pviIndicator.calculate,
+  },
+  {
+    id: 'ulcer-index',
+    group: 'standard',
+    name: 'Ulcer Index (UI)',
+    shortName: 'UI',
+    description: 'Downside-only volatility measure: RMS of percentage drawdowns from the running highest close.',
+    category: 'Volatility',
+    overlay: false,
+    metadata: ulcerIndexIndicator.metadata,
+    inputConfig: ulcerIndexIndicator.inputConfig as InputConfig[],
+    plotConfig: ulcerIndexIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...ulcerIndexIndicator.defaultInputs },
+    calculate: ulcerIndexIndicator.calculate,
+  },
+  {
+    id: 'prings-special-k',
+    group: 'standard',
+    name: "Pring's Special K",
+    shortName: 'Special K',
+    description: 'Weighted sum of twelve smoothed Rate-of-Change terms across short, intermediate and long bands.',
+    category: 'Momentum',
+    overlay: false,
+    metadata: pringsSpecialKIndicator.metadata,
+    inputConfig: pringsSpecialKIndicator.inputConfig as InputConfig[],
+    plotConfig: pringsSpecialKIndicator.plotConfig as PlotConfig[],
+    hlineConfig: pringsSpecialKIndicator.hlineConfig as HLineConfig[],
+    defaultInputs: { ...pringsSpecialKIndicator.defaultInputs },
+    calculate: pringsSpecialKIndicator.calculate,
+  },
+  {
+    id: 'volatility-stop',
+    group: 'standard',
+    name: 'Volatility Stop',
+    shortName: 'VStop',
+    description: 'ATR-based trailing stop that flips between long and short as price crosses the stop.',
+    category: 'Trend',
+    overlay: true,
+    metadata: volatilityStopIndicator.metadata,
+    inputConfig: volatilityStopIndicator.inputConfig as InputConfig[],
+    plotConfig: volatilityStopIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...volatilityStopIndicator.defaultInputs },
+    calculate: volatilityStopIndicator.calculate,
+  },
+  {
+    id: 'vwap',
+    group: 'standard',
+    name: 'Volume Weighted Average Price (VWAP)',
+    shortName: 'VWAP',
+    description: 'Volume-weighted average price anchored to a period, with optional standard-deviation bands.',
+    category: 'Volume',
+    overlay: true,
+    metadata: vwapIndicator.metadata,
+    inputConfig: vwapIndicator.inputConfig as InputConfig[],
+    plotConfig: vwapIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...vwapIndicator.defaultInputs },
+    calculate: vwapIndicator.calculate,
+  },
+  {
+    id: 'up-down-volume',
+    group: 'standard',
+    name: 'Up/Down Volume',
+    shortName: 'U/D Vol',
+    description: 'Splits volume into up/down components (approximated from bar direction) plus the delta.',
+    category: 'Volume',
+    overlay: false,
+    metadata: upDownVolumeIndicator.metadata,
+    inputConfig: upDownVolumeIndicator.inputConfig as InputConfig[],
+    plotConfig: upDownVolumeIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...upDownVolumeIndicator.defaultInputs },
+    calculate: upDownVolumeIndicator.calculate,
+  },
+  {
+    id: 'auto-key-levels',
+    group: 'standard',
+    name: 'Auto Key Levels',
+    shortName: 'Key Levels',
+    description: 'Auto-drawn horizontal support/resistance rays from recent confirmed pivot highs and lows.',
+    category: 'Trend',
+    overlay: true,
+    metadata: autoKeyLevelsIndicator.metadata,
+    inputConfig: autoKeyLevelsIndicator.inputConfig as InputConfig[],
+    plotConfig: autoKeyLevelsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...autoKeyLevelsIndicator.defaultInputs },
+    calculate: autoKeyLevelsIndicator.calculate,
+  },
+  {
+    id: 'auto-trend-detector',
+    group: 'standard',
+    name: 'Auto Trend Detector',
+    shortName: 'Auto Trend',
+    description: 'Auto-drawn support/resistance trendlines connecting the two most recent pivot highs and lows.',
+    category: 'Trend',
+    overlay: true,
+    metadata: autoTrendDetectorIndicator.metadata,
+    inputConfig: autoTrendDetectorIndicator.inputConfig as InputConfig[],
+    plotConfig: autoTrendDetectorIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...autoTrendDetectorIndicator.defaultInputs },
+    calculate: autoTrendDetectorIndicator.calculate,
+  },
 ];
 
 // Package version

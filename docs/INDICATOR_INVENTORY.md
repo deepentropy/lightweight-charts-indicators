@@ -8,8 +8,8 @@ ranked by complexity. It tracks implementation status in OakScriptJS.
 | Category               | Count |
 |------------------------|-------|
 | **Total Indicators**   | 147   |
-| **Implemented**        | 90    |
-| **Pending**            | 57    |
+| **Implemented**        | 100   |
+| **Pending**            | 47    |
 | **Very Complex (25+)** | 3     |
 | **Complex (15-24)**    | 29    |
 | **Medium (5-14)**      | 43    |
@@ -17,8 +17,8 @@ ranked by complexity. It tracks implementation status in OakScriptJS.
 
 > Totals reconciled against the live `indicatorRegistry` in `src/index.ts` (2026-05-31):
 > 131 scored rows below (84 implemented / 47 pending) + the 16 built-ins captured this session
-> (6 implemented / 10 pending). The complexity buckets cover the scored table only (the 16 new
-> rows await Pine-source scoring). Note `src/` registers 402 indicators in total — the bulk are
+> (all 16 now implemented). The complexity buckets cover the scored table only (the 16 new
+> rows await Pine-source scoring). Note `src/` registers 412 indicators in total — the bulk are
 > community/candlestick ports tracked in `INDICATOR_INVENTORY_COMMUNITY.md` /
 > `INDICATOR_INVENTORY_CANDLESTICK.md`, not in this standard-library table.
 
@@ -179,8 +179,9 @@ These 16 built-in **studies** appear in TradingView's live `standard` catalog
 (`pine-facade.tradingview.com/pine-facade/list?filter=standard`, 145 entries) but were
 absent from the table above. Captured by driving the TradingView Desktop app over CDP — see
 [`TRADINGVIEW_INDICATOR_CATALOG.md`](TRADINGVIEW_INDICATOR_CATALOG.md). Six were already
-implemented (the table above was stale); ten are genuinely pending. Complexity scores are
-left blank pending Pine-source analysis and so are excluded from the bucket counts above.
+implemented (the table above was stale); the other ten were implemented on 2026-05-31. All 16
+are now implemented. Complexity scores are left blank pending Pine-source analysis and so are
+excluded from the bucket counts above.
 
 | Indicator | scriptIdPart | Status | Implementation / Notes |
 |-----------|--------------|--------|------------------------|
@@ -190,16 +191,16 @@ left blank pending Pine-source analysis and so are excluded from the bucket coun
 | Kaufman's Adaptive Moving Average (KAMA) | `STD;Kaufmans_Adaptive_Moving_Average` | **Implemented** | `src/community/kaufman-adaptive-ma.ts` |
 | Price Momentum Oscillator (PMO) | `STD;Price_Momentum_Oscillator` | **Implemented** | `src/community/price-momentum-oscillator.ts` |
 | Stochastic Momentum Index (SMI) | `STD;SMI` | **Implemented** | `src/community/stochastic-momentum-index.ts` (distinct from SMI Ergodic) |
-| Aroon Oscillator | `STD;Aroon_Oscillator` | Pending | Aroon base is implemented; oscillator (Up − Down) is not |
-| Auto Key Levels | `STD;Auto_Key_Levels` | Pending | drawing-based |
-| Auto Trend Detector | `STD;Auto_Trend_Detector` | Pending | drawing-based |
-| Negative Volume Index (NVI) | `STD;Negative_Volume_Index` | Pending | - |
-| Positive Volume Index (PVI) | `STD;Positive_Volume_Index` | Pending | - |
-| Pring's Special K | `STD;Prings_Special_K` | Pending | - |
-| Ulcer Index | `STD;Ulcer_Index` | Pending | - |
-| Up/Down Volume | `STD;UP_DOWN_Volume` | Pending | needs lower-timeframe up/down volume (like CVD) |
-| Volatility Stop | `STD;Volatility_Stop` | Pending | - |
-| Volume Weighted Average Price (VWAP) | `STD;VWAP` | Pending | only the `vwap-mvwap-ema-crossover` community variant exists |
+| Aroon Oscillator | `STD;Aroon_Oscillator` | **Implemented** | `src/standard/aroon-oscillator.ts` |
+| Negative Volume Index (NVI) | `STD;Negative_Volume_Index` | **Implemented** | `src/standard/nvi.ts` (NVI + EMA signal) |
+| Positive Volume Index (PVI) | `STD;Positive_Volume_Index` | **Implemented** | `src/standard/pvi.ts` (PVI + EMA signal) |
+| Pring's Special K | `STD;Prings_Special_K` | **Implemented** | `src/standard/prings-special-k.ts` |
+| Ulcer Index | `STD;Ulcer_Index` | **Implemented** | `src/standard/ulcer-index.ts` |
+| Volatility Stop | `STD;Volatility_Stop` | **Implemented** | `src/standard/volatility-stop.ts` |
+| Volume Weighted Average Price (VWAP) | `STD;VWAP` | **Implemented** | `src/standard/vwap.ts` (anchored, optional bands) |
+| Auto Key Levels | `STD;Auto_Key_Levels` | **Implemented** | `src/standard/auto-key-levels.ts` (approx; pivot-based S/R rays) |
+| Auto Trend Detector | `STD;Auto_Trend_Detector` | **Implemented** | `src/standard/auto-trend-detector.ts` (approx; pivot trendlines) |
+| Up/Down Volume | `STD;UP_DOWN_Volume` | **Implemented** | `src/standard/up-down-volume.ts` (approx; no intrabar data — like CVD) |
 
 ---
 
@@ -265,4 +266,4 @@ Failed:           0
 
 *Last updated: February 25, 2026 - Added KST, Connors RSI, Chop Zone, RCI, RVI, Williams Fractals, TWAP, Bollinger Bars, Moon Phases*
 
-*Updated May 31, 2026 - Added 16 built-in studies from live TradingView Desktop capture (6 already implemented but undocumented, 10 pending). See the "Built-in indicators added from live capture" section above. Reconciled the full table against `src/index.ts`: flipped Linear Regression Channel (Pending → Implemented, `community/`) and corrected the stale summary counts; the rest of the scored table matched the registry.*
+*Updated May 31, 2026 - Added 16 built-in studies from live TradingView Desktop capture (6 already implemented but undocumented). Implemented the remaining 10 (`src/standard/`: aroon-oscillator, nvi, pvi, ulcer-index, prings-special-k, volatility-stop, vwap, up-down-volume, auto-key-levels, auto-trend-detector) with unit tests — Auto Key Levels, Auto Trend Detector, and Up/Down Volume are approximations (drawing/intrabar). Reconciled the full table against `src/index.ts`: flipped Linear Regression Channel (Pending → Implemented, `community/`) and corrected the stale summary counts; the rest of the scored table matched the registry.*

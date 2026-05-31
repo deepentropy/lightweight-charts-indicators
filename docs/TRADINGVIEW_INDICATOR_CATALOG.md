@@ -21,8 +21,10 @@ Raw data: [`builtins-standard.json`](official/catalog/builtins-standard.json),
 
 ### Built-in indicators missing from `INDICATOR_INVENTORY.md` (16)
 
-These built-in **studies** exist in the live `standard` list but are absent from the inventory
-(naming aliases such as "Average Day Range" ↔ "Average Daily Range" already reconciled):
+These built-in **studies** exist in the live `standard` list but were absent from the inventory
+at capture time (naming aliases such as "Average Day Range" ↔ "Average Daily Range" already
+reconciled). **Update (2026-05-31): all 16 have since been added to the inventory and
+implemented** — see `INDICATOR_INVENTORY.md`. The list below is the original capture finding:
 
 1. Arnaud Legoux Moving Average (ALMA)
 2. Aroon Oscillator
