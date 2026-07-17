@@ -74,7 +74,7 @@ function isNewPeriod(currentTime: number, previousTime: number | null, timeframe
   return getStartOfPeriod(currentTime, timeframe) !== getStartOfPeriod(previousTime, timeframe);
 }
 
-export function calculate(bars: Bar[], inputs: Partial<CumulativeVolumeDeltaInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<CumulativeVolumeDeltaInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
   const { anchorTimeframe } = { ...defaultInputs, ...inputs };
 
   const candles: PlotCandleData[] = [];

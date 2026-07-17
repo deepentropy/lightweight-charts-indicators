@@ -58,7 +58,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RsiSupplyDemandInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RsiSupplyDemandInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const closeSeries = new Series(bars, b => b.close);

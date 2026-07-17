@@ -45,7 +45,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RsiMomentumDivergenceInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RsiMomentumDivergenceInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; lines: LineDrawingData[] } {
   const { rsiLength, enableDivCheck, divLookbackL, divLookbackR, minBarsInRange, maxBarsInRange } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

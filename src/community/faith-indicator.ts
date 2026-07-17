@@ -36,7 +36,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<FaithIndicatorInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<FaithIndicatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] } {
   const { fastLen, slowLen } = { ...defaultInputs, ...inputs };
 
   const closeSeries = getSourceSeries(bars, 'close');

@@ -90,7 +90,7 @@ export function calculate(bars: Bar[], inputs: Partial<CoralTrendInputs> = {}): 
     plots: { 'plot0': data },
     barColors,
     bgColors,
-  } as IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[]; bgColors: BgColorData[] };
 }
 
 export const CoralTrend = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

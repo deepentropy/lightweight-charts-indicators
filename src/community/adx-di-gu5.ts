@@ -55,7 +55,7 @@ const COLOR_LIGHT_GREEN = '#388E3C';
 const COLOR_DARK_RED = '#8B0000';
 const COLOR_LIGHT_RED = '#B71C1C';
 
-export function calculate(bars: Bar[], inputs: Partial<ADXDiGu5Inputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ADXDiGu5Inputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const diLen = cfg.diLen;

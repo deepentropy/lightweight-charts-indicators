@@ -45,7 +45,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<OBVMACDInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<OBVMACDInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { fastLength, slowLength, signalLength, showSignal } = { ...defaultInputs, ...inputs };
 
   // Compute OBV

@@ -48,7 +48,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SupportResistanceChannelsInputs> = {}): IndicatorResult & { boxes: BoxData[]; markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<SupportResistanceChannelsInputs> = {}): Omit<IndicatorResult, 'markers'> & { boxes: BoxData[]; markers: MarkerData[] } {
   const { prd, ppsrc, channelW, minStrength, maxNumSR, loopback } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const maxnumsr = maxNumSR - 1;

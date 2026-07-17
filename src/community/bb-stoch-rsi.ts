@@ -61,7 +61,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BBStochRSIInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<BBStochRSIInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { src, bbLength, bbMult, kSmooth, dSmooth, rsiLen, stochLen, upperLimit, lowerLimit } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

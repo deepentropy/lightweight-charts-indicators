@@ -51,7 +51,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SchaffTrendCycleInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<SchaffTrendCycleInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { length, fastLength, slowLength, factor, src, highlightBreakouts } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
 

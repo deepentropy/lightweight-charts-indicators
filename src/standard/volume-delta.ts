@@ -42,7 +42,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], _inputs: Partial<VolumeDeltaInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], _inputs: Partial<VolumeDeltaInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
   const candles: PlotCandleData[] = [];
 
   for (let i = 0; i < bars.length; i++) {

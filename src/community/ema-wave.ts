@@ -65,7 +65,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EMAWaveInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<EMAWaveInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

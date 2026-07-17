@@ -42,7 +42,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BinaryOptionArrowsInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<BinaryOptionArrowsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
   const { rsiLen, macdFast, macdSlow, macdSignal } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const closeSeries = new Series(bars, (b) => b.close);

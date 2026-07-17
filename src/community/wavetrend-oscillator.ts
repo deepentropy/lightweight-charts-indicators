@@ -50,7 +50,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WavetrendOscillatorInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<WavetrendOscillatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

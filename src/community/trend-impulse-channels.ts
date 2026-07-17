@@ -57,7 +57,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TrendImpulseChannelsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TrendImpulseChannelsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

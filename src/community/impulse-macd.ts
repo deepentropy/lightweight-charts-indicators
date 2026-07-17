@@ -39,7 +39,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ImpulseMACDInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ImpulseMACDInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { lengthMA, lengthSignal } = { ...defaultInputs, ...inputs };
 
   const hlc3 = getSourceSeries(bars, 'hlc3');

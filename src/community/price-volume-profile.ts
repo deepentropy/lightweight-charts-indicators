@@ -59,7 +59,7 @@ function gradientColor(values: number[], index: number): string {
 export function calculate(
   bars: Bar[],
   inputs: Partial<PriceVolumeProfileInputs> = {},
-): IndicatorResult & { boxes: BoxData[] } {
+): Omit<IndicatorResult, 'markers'> & { boxes: BoxData[] } {
   const { rows, display, lookback, poc } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

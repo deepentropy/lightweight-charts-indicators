@@ -41,7 +41,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CDCActionZoneInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<CDCActionZoneInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { source, shortPeriod, longPeriod } = { ...defaultInputs, ...inputs };
 
   const src = getSourceSeries(bars, source);

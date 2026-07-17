@@ -37,7 +37,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ConsolidationZonesInputs> = {}): IndicatorResult & { lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ConsolidationZonesInputs> = {}): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[] } {
   const { period, consLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

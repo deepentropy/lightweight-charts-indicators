@@ -84,7 +84,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MarketCipherAInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MarketCipherAInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const {
     wtChannelLen, wtAverageLen, wtMALen,
     ema1Len, ema2Len, ema3Len, ema4Len, ema5Len, ema6Len, ema7Len, ema8Len,

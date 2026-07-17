@@ -99,7 +99,7 @@ interface PivotState {
   lastHighBar: number;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MultipleDivergencesInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MultipleDivergencesInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { minDivCount, lbR, lbL, rangeUpper, rangeLower, plotBull, plotHiddenBull, plotBear, plotHiddenBear } =
     { ...defaultInputs, ...inputs };
 

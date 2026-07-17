@@ -35,7 +35,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PhilakoneEMASwingInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<PhilakoneEMASwingInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const src = getSourceSeries(bars, cfg.src);
 

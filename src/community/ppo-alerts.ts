@@ -52,7 +52,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PPOAlertsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<PPOAlertsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { fastLength, slowLength, smoother, divLookbackPeriod, longTermDiv, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const source = getSourceSeries(bars, src);

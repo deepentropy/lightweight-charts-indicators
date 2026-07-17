@@ -46,7 +46,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TdiRsiInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TdiRsiInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { rsiPeriod, bandLength, fastMALength, slowMALength } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

@@ -57,7 +57,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EasyTrendColorsInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<EasyTrendColorsInputs> = {}): Omit<IndicatorResult, 'markers'> {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -180,7 +180,7 @@ export function calculate(bars: Bar[], inputs: Partial<EasyTrendColorsInputs> = 
     barColors,
     bgColors,
     fills: [{ plot1: 'upper', plot2: 'lower', options: { color: '#2196F3', transp: 75, title: 'Fill' } }],
-  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
 }
 
 export const EasyTrendColors = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

@@ -49,7 +49,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<OTTInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<OTTInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { source, period, percent, highlight, showSignalsC, showSignalsR } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

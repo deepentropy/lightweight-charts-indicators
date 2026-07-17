@@ -113,7 +113,7 @@ export function calculate(bars: Bar[], inputs: Partial<CMRSI2UpperInputs> = {}):
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1 },
     barColors,
-  } as IndicatorResult & { barColors: BarColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
 }
 
 export const CMRSI2Upper = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

@@ -182,7 +182,7 @@ function computeMA(bars: Bar[], src: number[], len: number, type: string): numbe
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MAStrategyEmperorInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MAStrategyEmperorInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

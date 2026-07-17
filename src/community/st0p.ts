@@ -37,7 +37,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ST0PInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ST0PInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { length, mult } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

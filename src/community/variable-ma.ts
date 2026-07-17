@@ -35,7 +35,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VariableMAInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<VariableMAInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { length, src } = { ...defaultInputs, ...inputs };
   const sourceArr = getSourceSeries(bars, src).toArray();
 

@@ -70,7 +70,7 @@ function normalize(value: number, avg: number): number {
   return 0.1;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<RedkEverexInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RedkEverexInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { length, smooth, sigLength, lookback, biasLength, showMarkers } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

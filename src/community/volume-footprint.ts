@@ -43,7 +43,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeFootprintInputs> = {}): IndicatorResult & { boxes: BoxData[]; barColors: BarColorData[]; lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<VolumeFootprintInputs> = {}): Omit<IndicatorResult, 'markers'> & { boxes: BoxData[]; barColors: BarColorData[]; lines: LineDrawingData[] } {
   const { method, length, percent, displayType } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

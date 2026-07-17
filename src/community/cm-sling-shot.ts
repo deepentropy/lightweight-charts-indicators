@@ -40,7 +40,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CMSlingShotInputs> = {}): IndicatorResult & { barColors: BarColorData[]; markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<CMSlingShotInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[]; markers: MarkerData[] } {
   const { emaFast, emaSlow, showLetters } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

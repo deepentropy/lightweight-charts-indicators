@@ -61,7 +61,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RSIInputs> = {}): IndicatorResult & { markers?: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RSIInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers?: MarkerData[] } {
   const { length, src, calculateDivergence, maType, maLength, bbMult } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
   const rsi = ta.rsi(source, length);

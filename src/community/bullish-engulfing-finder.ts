@@ -27,7 +27,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], _inputs: Partial<BullishEngulfingFinderInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], _inputs: Partial<BullishEngulfingFinderInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const markers: MarkerData[] = [];
   const barColors: BarColorData[] = [];
 

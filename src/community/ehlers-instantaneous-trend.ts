@@ -94,7 +94,7 @@ export function calculate(bars: Bar[], inputs: Partial<EhlersInstantaneousTrendI
       { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(0,128,0,0.15)' }, colors: fillColors },
     ],
     barColors,
-  } as IndicatorResult & { barColors: BarColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
 }
 
 export const EhlersInstantaneousTrend = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

@@ -45,7 +45,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BjorgumAutoTrailInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<BjorgumAutoTrailInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { trailType, atrLength, atrMult, perc, lookback } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

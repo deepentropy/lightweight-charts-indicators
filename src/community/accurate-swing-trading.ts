@@ -38,7 +38,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AccurateSwingTradingInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<AccurateSwingTradingInputs> = {}): Omit<IndicatorResult, 'markers'> {
   const { swingLength, showBarColor, showBgColor } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -110,7 +110,7 @@ export function calculate(bars: Bar[], inputs: Partial<AccurateSwingTradingInput
     markers,
     barColors,
     bgColors,
-  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
 }
 
 export const AccurateSwingTrading = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

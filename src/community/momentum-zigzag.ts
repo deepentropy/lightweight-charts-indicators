@@ -69,7 +69,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MomentumZigZagInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MomentumZigZagInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

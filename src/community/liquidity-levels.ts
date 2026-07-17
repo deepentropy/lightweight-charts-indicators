@@ -50,7 +50,7 @@ export const metadata = {
 export function calculate(
   bars: Bar[],
   inputs: Partial<LiquidityLevelsInputs> = {},
-): IndicatorResult & { lines: LineDrawingData[]; boxes: BoxData[] } {
+): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; boxes: BoxData[] } {
   const { length, show, showHist, distWin, lvlStyle } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

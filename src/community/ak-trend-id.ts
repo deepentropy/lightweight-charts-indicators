@@ -41,7 +41,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AKTrendIDInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<AKTrendIDInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { input1, input2, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

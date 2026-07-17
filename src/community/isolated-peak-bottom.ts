@@ -31,7 +31,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], _inputs: Partial<IsolatedPeakBottomInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], _inputs: Partial<IsolatedPeakBottomInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const n = bars.length;
   const markers: MarkerData[] = [];
   const plot0 = bars.map((b) => ({ time: b.time, value: NaN }));

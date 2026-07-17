@@ -52,7 +52,7 @@ export const metadata = {
 export function calculate(
   bars: Bar[],
   inputs: Partial<AutoTrendlineInputs> = {},
-): IndicatorResult & { lines: LineDrawingData[]; markers: MarkerData[] } {
+): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; markers: MarkerData[] } {
   const { fractalPeriod: nPeriod, maxPairs, extend, showHH, showHL, showLH, showLL } = {
     ...defaultInputs,
     ...inputs,

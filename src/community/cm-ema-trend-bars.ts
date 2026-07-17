@@ -58,7 +58,7 @@ export function calculate(bars: Bar[], inputs: Partial<CMEMATrendBarsInputs> = {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': emaPlot },
     barColors,
-  } as IndicatorResult & { barColors: BarColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
 }
 
 export const CMEMATrendBars = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

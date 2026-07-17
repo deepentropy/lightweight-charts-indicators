@@ -48,7 +48,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BjorgumTripleEmaInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<BjorgumTripleEmaInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { fastLen, medLen, slowLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

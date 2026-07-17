@@ -92,7 +92,7 @@ function inSession(barTime: number, startMin: number, endMin: number): boolean {
   return minuteOfDay >= startMin || minuteOfDay < endMin;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<CMTimeLinesInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<CMTimeLinesInputs> = {}): Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] } {
   const cfg = { ...defaultInputs, ...inputs };
 
   // Pine session colors: yellow, orange, aqua, fuchsia, maroon, lime (all transp=40 => 0.60 alpha)

@@ -59,7 +59,7 @@ function isNewDay(bar: Bar, prevBar: Bar | null): boolean {
     d1.getUTCDate() !== d2.getUTCDate();
 }
 
-export function calculate(bars: Bar[], inputs: Partial<IntradayVolumeSwingsInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[]; labels: LabelData[] } {
+export function calculate(bars: Bar[], inputs: Partial<IntradayVolumeSwingsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[]; labels: LabelData[] } {
   const { markSwings, markNewDay, markGreaterSwings, plotCurrent } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

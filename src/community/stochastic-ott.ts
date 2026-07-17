@@ -69,7 +69,7 @@ function varFunc(srcArr: number[], length: number): number[] {
   return result;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<StochasticOTTInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<StochasticOTTInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { kLen, kSmooth, ottPeriod, ottPct, showSupport } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

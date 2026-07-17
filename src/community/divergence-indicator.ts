@@ -65,7 +65,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<DivergenceIndicatorInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<DivergenceIndicatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; lines: LineDrawingData[] } {
   const {
     src, pivotLookbackLeft, pivotLookbackRight,
     rangeUpper, rangeLower, plotBull, plotHiddenBull, plotBear, plotHiddenBear,

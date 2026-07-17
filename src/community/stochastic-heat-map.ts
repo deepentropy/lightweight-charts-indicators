@@ -83,7 +83,7 @@ function smoothArray(bars: Bar[], arr: number[], length: number, maType: string)
   return result.map(v => v ?? NaN);
 }
 
-export function calculate(bars: Bar[], inputs: Partial<StochasticHeatMapInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<StochasticHeatMapInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { maType, increment, smooth, smoothSlow, plotNumber, paintBars } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const numLines = Math.min(plotNumber, 28);

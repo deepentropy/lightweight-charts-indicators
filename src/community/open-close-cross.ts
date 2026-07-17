@@ -135,7 +135,7 @@ function variant(srcArr: number[], length: number, maType: string, bars: Bar[]):
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<OpenCloseCrossInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<OpenCloseCrossInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

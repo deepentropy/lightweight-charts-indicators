@@ -44,7 +44,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AiTrendNavigatorInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<AiTrendNavigatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
   const { length, k, smoothLen, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
   const srcArr = source.toArray();

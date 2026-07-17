@@ -44,7 +44,7 @@ const SUPPORT = '#089981';
 export function calculate(
   bars: Bar[],
   inputs: Partial<AutoKeyLevelsInputs> = {},
-): IndicatorResult & { lines: LineDrawingData[]; labels: LabelData[] } {
+): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; labels: LabelData[] } {
   const { pivotLength: p, maxLevels } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

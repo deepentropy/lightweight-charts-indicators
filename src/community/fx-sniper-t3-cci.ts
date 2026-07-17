@@ -43,7 +43,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<FXSniperT3CCIInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { cciLength, t3Length, t3Factor, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
   const srcArr = source.toArray();

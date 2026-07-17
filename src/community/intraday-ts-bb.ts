@@ -129,7 +129,7 @@ function linreg(arr: number[], len: number, offset: number): number[] {
   return out;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<IntradayTSBBInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<IntradayTSBBInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const { bbLen, bbStdev, tp, sqzBBLen, sqzBBMult, sqzKCLen, sqzKCMult, useTrueRange, diLen, adxSmooth, adxThresh } = cfg;
   const n = bars.length;

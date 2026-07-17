@@ -45,7 +45,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<StochPOP2Inputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<StochPOP2Inputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { kLen, kSmooth, ul, ll } = { ...defaultInputs, ...inputs };
 
   const closeSeries = new Series(bars, (b) => b.close);

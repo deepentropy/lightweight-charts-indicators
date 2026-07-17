@@ -52,7 +52,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<StandardizedMacdHAInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<StandardizedMacdHAInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]>; markers: MarkerData[]; barColors: BarColorData[] } {
   const { src, fast, slow, signalSrc, signalLength, reversionThreshold } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

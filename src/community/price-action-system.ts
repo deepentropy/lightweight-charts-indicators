@@ -43,7 +43,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PriceActionSystemInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<PriceActionSystemInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } {
   const { maLen, atrLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

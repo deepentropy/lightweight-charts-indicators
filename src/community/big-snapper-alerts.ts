@@ -171,7 +171,7 @@ function variant(bars: Bar[], src: number[], len: number, type: string): number[
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<BigSnapperAlertsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<BigSnapperAlertsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const closeArr = bars.map(b => b.close);

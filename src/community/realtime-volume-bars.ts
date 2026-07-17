@@ -48,7 +48,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RealtimeVolumeBarsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RealtimeVolumeBarsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { mode, showSplit, showMA, maPeriod, showDelta } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const isUpDownOnly = mode === 'Up/Down';

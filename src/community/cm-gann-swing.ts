@@ -33,7 +33,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CMGannSwingInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<CMGannSwingInputs> = {}): Omit<IndicatorResult, 'markers'> {
   const { length } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -148,7 +148,7 @@ export function calculate(bars: Bar[], inputs: Partial<CMGannSwingInputs> = {}):
     markers,
     barColors,
     bgColors,
-  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
 }
 
 export const CMGannSwing = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

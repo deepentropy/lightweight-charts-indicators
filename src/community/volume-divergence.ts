@@ -87,7 +87,7 @@ function pineWma(xArr: number[], bars: Bar[], period: number): number[] {
   return out;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeDivergenceInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<VolumeDivergenceInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const lbR = cfg.pivotLookbackRight;

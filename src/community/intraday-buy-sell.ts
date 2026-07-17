@@ -41,7 +41,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<IntradayBuySellInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<IntradayBuySellInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const { rsiLength, rsiHL, rsiLL, smaLength } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

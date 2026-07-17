@@ -217,7 +217,7 @@ function computeOTT(maArr: number[], percent: number): number[] {
   return OTT;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<HottLottInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<HottLottInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { ottPeriod, percent, hlLength, maType } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

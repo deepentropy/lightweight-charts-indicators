@@ -80,7 +80,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CandlestickReversalInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<CandlestickReversalInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const {
     pivotLen, showMA, maLen,
     enableWick, wickMultiplier, wickBodyPct,

@@ -37,7 +37,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RedKRSSWMAInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RedKRSSWMAInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { length, smoothLength, src } = { ...defaultInputs, ...inputs };
   const srcSeries = getSourceSeries(bars, src);
 

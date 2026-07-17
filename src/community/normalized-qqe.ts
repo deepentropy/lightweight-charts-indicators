@@ -46,7 +46,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<NormalizedQQEInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<NormalizedQQEInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { rsiLen, smoothFactor, qqeFactor, src, showSignals } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

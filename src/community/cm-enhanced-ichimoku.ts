@@ -48,7 +48,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CMEnhancedIchimokuInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<CMEnhancedIchimokuInputs> = {}): Omit<IndicatorResult, 'markers'> {
   const { conversionLen, baseLen, spanBLen, displacement, showCrosses } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -146,7 +146,7 @@ export function calculate(bars: Bar[], inputs: Partial<CMEnhancedIchimokuInputs>
     plots: { 'plot0': tenkanPlot, 'plot1': kijunPlot, 'plot2': spanAPlot, 'plot3': spanBPlot, 'plot4': chikouPlot },
     fills: [{ plot1: 'plot2', plot2: 'plot3', options: { color: 'rgba(0, 255, 0, 0.30)' }, colors: fillColors }],
     markers,
-  } as IndicatorResult & { markers: MarkerData[] };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
 }
 
 export const CMEnhancedIchimoku = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

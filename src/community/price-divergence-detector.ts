@@ -171,7 +171,7 @@ function computeOscillator(
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<PriceDivergenceDetectorInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<PriceDivergenceDetectorInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { method, length, showLabels, showChannel, showHidden, showRegular, macdFast, macdSlow, macdSmooth } =
     { ...defaultInputs, ...inputs };
 

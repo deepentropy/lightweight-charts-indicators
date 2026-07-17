@@ -53,7 +53,7 @@ function applyMA(src: Series, length: number, maType: string): number[] {
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MAShiftInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<MAShiftInputs> = {}): Omit<IndicatorResult, 'markers'> {
   const { length, maType, offset, src } = { ...defaultInputs, ...inputs };
   const srcSeries = getSourceSeries(bars, src);
   const n = bars.length;
@@ -204,7 +204,7 @@ export function calculate(bars: Bar[], inputs: Partial<MAShiftInputs> = {}): Ind
       { plot1: 'oscTop', plot2: 'oscZero', options: { color: 'rgba(29, 209, 194, 0.15)' }, colors: topFillColors },
       { plot1: 'oscBot', plot2: 'oscZero', options: { color: 'rgba(255, 152, 0, 0.15)' }, colors: botFillColors },
     ],
-  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> };
 }
 
 export const MAShift = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

@@ -161,7 +161,7 @@ export function calculate(bars: Bar[], inputs: Partial<GMMAOscillatorInputs> = {
     plots: { 'plot0': oscPlot, 'plot1': sigPlot, 'plot2': histPlot },
     hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, linewidth: 1, title: 'Zero' } }],
     bgColors,
-  } as IndicatorResult & { bgColors: BgColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] };
 }
 
 export const GMMAOscillator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

@@ -32,7 +32,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeColoredBarsInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<VolumeColoredBarsInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { length } = { ...defaultInputs, ...inputs };
 
   const volSeries = new Series(bars, (b) => b.volume ?? 0);

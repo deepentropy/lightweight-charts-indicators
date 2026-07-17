@@ -111,7 +111,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EMASuperTrendInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<EMASuperTrendInputs> = {}): Omit<IndicatorResult, 'markers'> {
   const {
     ema1Len, ema2Len, ema3Len, ema4Len, ema5Len, emaSrc,
     atrLen, factor,
@@ -293,7 +293,7 @@ export function calculate(bars: Bar[], inputs: Partial<EMASuperTrendInputs> = {}
       { plot1: 'plot8', plot2: 'plot9', options: { color: 'rgba(0,128,0,0.20)' }, colors: nwFillColors },
     ],
     markers,
-  } as IndicatorResult & { markers: MarkerData[] };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
 }
 
 export const EMASupertrend = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

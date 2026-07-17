@@ -40,7 +40,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TrendlinesWithBreaksInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TrendlinesWithBreaksInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; lines: LineDrawingData[] } {
   const { length, mult, calcMethod } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

@@ -29,7 +29,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WilliamsFractalsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<WilliamsFractalsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { n } = { ...defaultInputs, ...inputs };
 
   const upFractalValues: number[] = new Array(bars.length).fill(NaN);

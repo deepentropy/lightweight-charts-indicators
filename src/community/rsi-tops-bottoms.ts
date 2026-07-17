@@ -70,7 +70,7 @@ function getSource(bar: Bar, src: string): number {
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<RsiTopsBottomsInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RsiTopsBottomsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; lines: LineDrawingData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

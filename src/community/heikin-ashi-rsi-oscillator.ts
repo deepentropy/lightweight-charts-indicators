@@ -84,7 +84,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<HeikinAshiRsiOscillatorInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<HeikinAshiRsiOscillatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

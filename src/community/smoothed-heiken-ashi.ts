@@ -37,7 +37,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SmoothedHeikenAshiInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<SmoothedHeikenAshiInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
   const { emaLength1, emaLength2 } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

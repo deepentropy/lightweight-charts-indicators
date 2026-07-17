@@ -127,7 +127,7 @@ function ehlers_eot(
   return { q1, q2 };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<BoomHunterProInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<BoomHunterProInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { lpPeriod, k1, trigLen, lpPeriod2, k12, k22, lpPeriod3, k13, square, showLongs, showShorts } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

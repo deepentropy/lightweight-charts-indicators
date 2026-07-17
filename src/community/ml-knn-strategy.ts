@@ -45,7 +45,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MlKnnStrategyInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MlKnnStrategyInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { k, rsiLen, cciLen, lookback, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

@@ -32,7 +32,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ReversalCandleSetupInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ReversalCandleSetupInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
   const { lookback } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const markers: MarkerData[] = [];

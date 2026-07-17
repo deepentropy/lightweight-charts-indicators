@@ -35,7 +35,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RSISwingSignalInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RSISwingSignalInputs> = {}): Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] } {
   const { rsiLen, src } = { ...defaultInputs, ...inputs };
 
   const source = getSourceSeries(bars, src);

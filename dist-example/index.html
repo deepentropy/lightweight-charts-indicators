@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>lightweight-charts-indicators Demo</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background-color: #131722;
+      color: #d1d4dc;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background-color: #1e222d;
+      padding: 12px 20px;
+      border-bottom: 1px solid #2b2b43;
+    }
+
+    header h1 {
+      font-size: 18px;
+      font-weight: 500;
+      color: #f0f3fa;
+    }
+
+    header p {
+      font-size: 12px;
+      color: #787b86;
+      margin-top: 4px;
+    }
+
+    .main-container {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    #chart-container {
+      flex: 1;
+      min-height: 400px;
+    }
+
+    #indicator-panel {
+      width: 280px;
+      background-color: #1e222d;
+      border-left: 1px solid #2b2b43;
+      overflow-y: auto;
+      padding: 16px;
+    }
+
+    .indicator-panel h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #f0f3fa;
+      margin-bottom: 16px;
+    }
+
+    #indicator-search {
+      width: 100%;
+      padding: 8px 12px;
+      background-color: #2a2e39;
+      border: 1px solid #363a45;
+      border-radius: 4px;
+      color: #d1d4dc;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+
+    #indicator-search:focus {
+      outline: none;
+      border-color: #2962FF;
+    }
+
+    #indicator-search::placeholder {
+      color: #787b86;
+    }
+
+    .group-section {
+      margin-bottom: 8px;
+    }
+
+    .group-header {
+      display: flex;
+      align-items: center;
+      padding: 8px 8px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #f0f3fa;
+      cursor: pointer;
+      user-select: none;
+      border-radius: 4px;
+      border-bottom: 1px solid #2b2b43;
+    }
+
+    .group-header:hover {
+      background-color: #2a2e39;
+    }
+
+    .group-header::before {
+      content: '';
+      display: inline-block;
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 5px solid #d1d4dc;
+      margin-right: 8px;
+      transition: transform 0.15s;
+    }
+
+    .group-header.collapsed::before {
+      transform: rotate(-90deg);
+    }
+
+    .group-count {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 400;
+      color: #787b86;
+    }
+
+    .group-items.collapsed {
+      display: none;
+    }
+
+    .category-group {
+      margin-bottom: 4px;
+    }
+
+    .category-header {
+      display: flex;
+      align-items: center;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #787b86;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      user-select: none;
+      border-radius: 4px;
+    }
+
+    .category-header:hover {
+      background-color: #2a2e39;
+    }
+
+    .category-header::before {
+      content: '';
+      display: inline-block;
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 5px solid #787b86;
+      margin-right: 8px;
+      transition: transform 0.15s;
+    }
+
+    .category-header.collapsed::before {
+      transform: rotate(-90deg);
+    }
+
+    .category-count {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 400;
+      color: #555;
+    }
+
+    .category-items.collapsed {
+      display: none;
+    }
+
+    .indicator-item {
+      padding: 5px 8px 5px 24px;
+      font-size: 13px;
+      cursor: pointer;
+      border-radius: 4px;
+      border-left: 3px solid transparent;
+    }
+
+    .indicator-item:hover {
+      background-color: #2a2e39;
+    }
+
+    .indicator-item.active {
+      border-left-color: #2962FF;
+      background-color: rgba(41, 98, 255, 0.1);
+      color: #f0f3fa;
+    }
+
+    .indicator-item.hidden {
+      display: none;
+    }
+
+    .category-group.hidden {
+      display: none;
+    }
+
+    .group-section.hidden {
+      display: none;
+    }
+
+    .indicator-inputs h4 {
+      font-size: 13px;
+      font-weight: 500;
+      color: #f0f3fa;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #2b2b43;
+    }
+
+    .input-group {
+      margin-bottom: 12px;
+    }
+
+    .input-group label {
+      display: block;
+      font-size: 12px;
+      color: #787b86;
+      margin-bottom: 4px;
+    }
+
+    .input-group input[type="number"],
+    .input-group input[type="text"],
+    .input-group select {
+      width: 100%;
+      padding: 8px 12px;
+      background-color: #2a2e39;
+      border: 1px solid #363a45;
+      border-radius: 4px;
+      color: #d1d4dc;
+      font-size: 13px;
+    }
+
+    .input-group input[type="number"]:hover,
+    .input-group input[type="text"]:hover,
+    .input-group select:hover {
+      border-color: #4b5563;
+    }
+
+    .input-group input[type="number"]:focus,
+    .input-group input[type="text"]:focus,
+    .input-group select:focus {
+      outline: none;
+      border-color: #2962FF;
+    }
+
+    .input-group input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+
+    .loading, .error {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      font-size: 14px;
+    }
+
+    .error {
+      color: #ef5350;
+    }
+
+    /* Remove spinner from number inputs */
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    input[type="number"] {
+      -moz-appearance: textfield;
+    }
+  </style>
+  <script type="module" crossorigin src="/lightweight-charts-indicators/assets/index-DB7IrjNN.js"></script>
+</head>
+<body>
+  <header>
+    <h1>lightweight-charts-indicators Demo</h1>
+    <p>Technical indicators using LightweightCharts v5</p>
+  </header>
+  <div class="main-container">
+    <div id="chart-container"></div>
+    <div id="indicator-panel"></div>
+  </div>
+</body>
+</html>

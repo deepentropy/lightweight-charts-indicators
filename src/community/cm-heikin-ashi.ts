@@ -28,7 +28,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], _inputs: Partial<CMHeikinAshiInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], _inputs: Partial<CMHeikinAshiInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] } {
   const n = bars.length;
 
   const haClose: number[] = new Array(n);

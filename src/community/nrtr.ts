@@ -38,7 +38,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<NRTRInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<NRTRInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { atrPeriod, mult } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

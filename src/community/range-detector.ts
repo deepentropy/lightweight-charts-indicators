@@ -40,7 +40,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RangeDetectorInputs> = {}): IndicatorResult & { bgColors: BgColorData[]; boxes: BoxData[]; lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RangeDetectorInputs> = {}): Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[]; boxes: BoxData[]; lines: LineDrawingData[] } {
   const { length, mult, atrLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

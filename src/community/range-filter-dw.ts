@@ -42,7 +42,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RangeFilterDWInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RangeFilterDWInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { period, mult, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

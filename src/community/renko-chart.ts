@@ -70,7 +70,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RenkoChartInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RenkoChartInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const reversal = 2;
@@ -400,7 +400,7 @@ export function calculate(bars: Bar[], inputs: Partial<RenkoChartInputs> = {}): 
     ],
     markers,
     barColors,
-  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
 }
 
 export const RenkoChart = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

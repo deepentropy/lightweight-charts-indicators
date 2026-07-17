@@ -129,7 +129,7 @@ function hmaAt(arr: number[], endIdx: number, length: number): number {
   return num / den;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<AdaptiveHullMAInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<AdaptiveHullMAInputs> = {}): Omit<IndicatorResult, 'markers'> {
   const { charger, minLength, maxLength, flat, showMinor, minorMin, minorMax, showZone, mult, showSignals, useBg } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const adaptPct = 0.03141;
@@ -351,7 +351,7 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveHullMAInputs> = {
       : [],
     markers,
     bgColors,
-  } as IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
 }
 
 export const AdaptiveHullMA = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

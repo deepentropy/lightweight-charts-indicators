@@ -89,7 +89,7 @@ function kMeansClusters(data: number[], k: number, iterations: number): { centro
   return { centroids, assignments };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInputs> = {}): IndicatorResult & { markers: MarkerData[]; labels: LabelData[]; tables: TableData } {
+export function calculate(bars: Bar[], inputs: Partial<MlAdaptiveSupertrendInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; labels: LabelData[]; tables: TableData } {
   const { atrLen, minFactor, midFactor, maxFactor, trainLen, showLabels } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

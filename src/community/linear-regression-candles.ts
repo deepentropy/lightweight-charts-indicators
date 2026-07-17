@@ -45,7 +45,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<LinRegCandlesInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<LinRegCandlesInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
   const { length, smoothLen, signalLength, smaSignal } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

@@ -36,7 +36,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WickedFractalsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<WickedFractalsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { leftBars, rightBars } = { ...defaultInputs, ...inputs };
 
   const highSeries = new Series(bars, (b) => b.high);

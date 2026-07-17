@@ -39,7 +39,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ModifiedHeikinAshiInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ModifiedHeikinAshiInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] } {
   const { emaLen, showEma } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

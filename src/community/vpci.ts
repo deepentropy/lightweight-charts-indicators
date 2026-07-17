@@ -51,7 +51,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VPCIInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<VPCIInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { longLength, shortLength, signalLength, bbLength, bbMult } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

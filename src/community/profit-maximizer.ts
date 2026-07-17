@@ -45,7 +45,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ProfitMaximizerInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ProfitMaximizerInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { atrPeriod, atrMult, maLength, maType, showSignalsC } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

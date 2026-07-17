@@ -40,7 +40,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AlphaTrendInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<AlphaTrendInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { coeff, period, useRSI } = { ...defaultInputs, ...inputs };
 
   const close = new Series(bars, (b) => b.close);

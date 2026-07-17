@@ -32,7 +32,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AIEngulfingInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<AIEngulfingInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { trendLen } = { ...defaultInputs, ...inputs };
   const closeSeries = new Series(bars, (b) => b.close);
   const smaArr = ta.sma(closeSeries, trendLen).toArray();

@@ -44,7 +44,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<HalfTrendInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<HalfTrendInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { amplitude, channelDeviation, showArrows, showLabels } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

@@ -53,7 +53,7 @@ function computeHEMA(src: Series, length: number): Series {
   return ta.ema(diff, sqrtLength);
 }
 
-export function calculate(bars: Bar[], inputs: Partial<HemaTrendLevelsInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; boxes: BoxData[] } {
+export function calculate(bars: Bar[], inputs: Partial<HemaTrendLevelsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; boxes: BoxData[] } {
   const { hemaLengthFast, hemaLengthSlow, bullColor, bearColor } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

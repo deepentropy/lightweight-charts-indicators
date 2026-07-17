@@ -37,7 +37,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SRLevelsBreaksInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<SRLevelsBreaksInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { pivotLen, volumeThresh } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

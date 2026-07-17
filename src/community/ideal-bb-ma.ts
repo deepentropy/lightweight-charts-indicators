@@ -63,7 +63,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<IdealBbMaInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<IdealBbMaInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { length1, length2, maType, src, hullLength, hullGain, useKahlman } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const source = getSourceSeries(bars, src);

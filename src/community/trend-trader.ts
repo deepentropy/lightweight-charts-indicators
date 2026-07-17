@@ -40,7 +40,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TrendTraderInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TrendTraderInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { maLen, atrLen, atrMult } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

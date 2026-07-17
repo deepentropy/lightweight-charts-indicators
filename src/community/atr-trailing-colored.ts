@@ -36,7 +36,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ATRTrailingColoredInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<ATRTrailingColoredInputs> = {}): Omit<IndicatorResult, 'markers'> {
   const { length, mult } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -109,7 +109,7 @@ export function calculate(bars: Bar[], inputs: Partial<ATRTrailingColoredInputs>
     plots: { 'plot0': plot0 },
     markers,
     barColors,
-  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
 }
 
 export const ATRTrailingColored = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

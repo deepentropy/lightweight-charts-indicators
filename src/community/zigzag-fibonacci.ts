@@ -58,7 +58,7 @@ export const metadata = {
 export function calculate(
   bars: Bar[],
   inputs: Partial<ZigzagFibonacciInputs> = {},
-): IndicatorResult & { lines: LineDrawingData[]; labels: LabelData[] } {
+): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; labels: LabelData[] } {
   const { period, showZigzag, showFibo, enable236, enable382, enable500, enable618, enable786 } = {
     ...defaultInputs,
     ...inputs,

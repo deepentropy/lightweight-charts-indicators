@@ -82,7 +82,7 @@ function calcWeightedSimpleAverage(srcArr: number[], length: number, weight: num
   return output;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<BankerFundFlowInputs> = {}): IndicatorResult & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<BankerFundFlowInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
   const { normLength, typicalLength, emaLength, entryThreshold } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

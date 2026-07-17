@@ -93,7 +93,7 @@ function calcSuperTrend(bars: Bar[], atrArr: (number | null)[], mult: number): {
   return { st, dir };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<SuperSupertrendInputs> = {}): IndicatorResult & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<SuperSupertrendInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
   const { atrLen, mult1, mult2, mult3 } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

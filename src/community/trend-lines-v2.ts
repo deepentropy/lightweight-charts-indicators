@@ -35,7 +35,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TrendLinesV2Inputs> = {}): IndicatorResult & { lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TrendLinesV2Inputs> = {}): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[] } {
   const { prd, ppNum } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

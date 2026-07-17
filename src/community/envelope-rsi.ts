@@ -65,7 +65,7 @@ function cross(prevA: number, curA: number, prevB: number, curB: number): boolea
   return (prevA <= prevB && curA > curB) || (prevA >= prevB && curA < curB);
 }
 
-export function calculate(bars: Bar[], inputs: Partial<EnvelopeRSIInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<EnvelopeRSIInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { envelopeLen, envelopePct, exponential, rsiLen, overboughtRSI, oversoldRSI, tpPercent, slPercent } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

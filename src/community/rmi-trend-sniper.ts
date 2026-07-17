@@ -300,7 +300,7 @@ export function calculate(bars: Bar[], inputs: Partial<RMITrendSniperInputs> = {
     barColors,
     plotCandles: { candle0: candles },
     labels,
-  } as IndicatorResult & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]>; labels: LabelData[] };
+  } as Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]>; labels: LabelData[] };
 }
 
 export const RMITrendSniper = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

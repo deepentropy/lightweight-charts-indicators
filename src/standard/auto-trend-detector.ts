@@ -39,7 +39,7 @@ const SUPPORT = '#089981';
 export function calculate(
   bars: Bar[],
   inputs: Partial<AutoTrendDetectorInputs> = {},
-): IndicatorResult & { lines: LineDrawingData[]; markers: MarkerData[] } {
+): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; markers: MarkerData[] } {
   const { pivotLength: p } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

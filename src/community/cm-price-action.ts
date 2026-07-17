@@ -54,7 +54,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CMPriceActionInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<CMPriceActionInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { pctP, pblb, pctS, showPinBars, showShavedBars, showInsideBars, showOutsideBars, showGrayBars } = { ...defaultInputs, ...inputs };
   const barColors: BarColorData[] = [];
   const plot0 = bars.map((b) => ({ time: b.time, value: NaN }));
@@ -120,7 +120,7 @@ export function calculate(bars: Bar[], inputs: Partial<CMPriceActionInputs> = {}
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0 },
     barColors,
-  } as IndicatorResult & { barColors: BarColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
 }
 
 export const CMPriceAction = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

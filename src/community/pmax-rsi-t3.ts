@@ -45,7 +45,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PMaxRSIT3Inputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<PMaxRSIT3Inputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { rsiLen, t3Len, t3Factor, atrMult } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

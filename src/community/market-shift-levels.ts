@@ -35,7 +35,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MarketShiftLevelsInputs> = {}): IndicatorResult & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]>; labels: LabelData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MarketShiftLevelsInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]>; labels: LabelData[] } {
   const { length, labelData } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const useLblVol = labelData === 'Volume';

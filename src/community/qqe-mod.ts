@@ -127,7 +127,7 @@ function calculateQQE(
   return { trendLine, smoothedRsi: smoothedRsiArr.map((v) => v ?? 0) };
 }
 
-export function calculate(bars: Bar[], inputs: Partial<QQEModInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<QQEModInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const close = new Series(bars, (b) => b.close);
 

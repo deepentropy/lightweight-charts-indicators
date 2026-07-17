@@ -45,7 +45,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SuperGuppyInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<SuperGuppyInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const { showBreak, showSwing, lookback } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const close = new Series(bars, (b) => b.close);

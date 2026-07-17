@@ -47,7 +47,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ZlmaTrendLevelsInputs> = {}): IndicatorResult & { markers: MarkerData[]; boxes: BoxData[]; labels: LabelData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ZlmaTrendLevelsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; boxes: BoxData[]; labels: LabelData[] } {
   const { length, showLevels } = { ...defaultInputs, ...inputs };
   const close = getSourceSeries(bars, 'close');
   const n = bars.length;

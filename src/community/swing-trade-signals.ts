@@ -50,7 +50,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SwingTradeSignalsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<SwingTradeSignalsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { emaValue, smaValue, rsiLen, overbought, oversold, src } = { ...defaultInputs, ...inputs };
 
   const source = getSourceSeries(bars, src);

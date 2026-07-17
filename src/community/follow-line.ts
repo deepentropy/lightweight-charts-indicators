@@ -41,7 +41,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<FollowLineInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<FollowLineInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } {
   const { bbPeriod, bbDeviations, useATRFilter, atrPeriod } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

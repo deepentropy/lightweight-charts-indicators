@@ -39,7 +39,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WilliamsComboInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<WilliamsComboInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { lengthRS } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const hl2Series = new Series(bars, (b) => (b.high + b.low) / 2);

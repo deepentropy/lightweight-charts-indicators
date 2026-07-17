@@ -42,7 +42,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TopsBottomsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TopsBottomsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { length, bull, bear } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const markers: MarkerData[] = [];

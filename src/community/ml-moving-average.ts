@@ -45,7 +45,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MlMovingAverageInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MlMovingAverageInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
   const { window: win, sigma, mult, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
   const srcArr = source.toArray();

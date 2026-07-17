@@ -43,7 +43,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ChandelierExitInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ChandelierExitInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { atrPeriod, atrMult, useClose } = { ...defaultInputs, ...inputs };
 
   const atrSeries = ta.atr(bars, atrPeriod);

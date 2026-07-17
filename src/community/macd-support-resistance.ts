@@ -60,7 +60,7 @@ interface Level {
 export function calculate(
   bars: Bar[],
   inputs: Partial<MacdSupportResistanceInputs> = {},
-): IndicatorResult & { lines: LineDrawingData[]; labels: LabelData[]; markers: MarkerData[] } {
+): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; labels: LabelData[]; markers: MarkerData[] } {
   const { fastLength, slowLength, signalLength, oscMaType, sigMaType } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

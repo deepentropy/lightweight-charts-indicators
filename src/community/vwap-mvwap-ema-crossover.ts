@@ -63,7 +63,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VwapMvwapEmaCrossoverInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<VwapMvwapEmaCrossoverInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const {
     vwapLength, emaLength1, emaLength2, rsiLimit, rsiMinimum, mvwapLength,
     conversionLen, baseLineLen, senkouBLen, displacementA, displacementB,

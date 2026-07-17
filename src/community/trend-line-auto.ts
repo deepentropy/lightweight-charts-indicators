@@ -40,7 +40,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TrendLineAutoInputs> = {}): IndicatorResult & { lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TrendLineAutoInputs> = {}): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[] } {
   const { limit, segment, term } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const mid = Math.floor(term / 2) + 1;

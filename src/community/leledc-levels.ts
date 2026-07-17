@@ -38,7 +38,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<LeledcLevelsInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<LeledcLevelsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const { length, bars: barCount } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const lookback = 4;

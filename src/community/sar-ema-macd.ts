@@ -43,7 +43,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SAREMAMACDInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<SAREMAMACDInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { sarStart, sarInc, sarMax, emaLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

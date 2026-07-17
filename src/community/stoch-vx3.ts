@@ -43,7 +43,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<StochVX3Inputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<StochVX3Inputs> = {}): Omit<IndicatorResult, 'markers'> {
   const { len, smooth1, smooth2, smooth3 } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
@@ -134,7 +134,7 @@ export function calculate(bars: Bar[], inputs: Partial<StochVX3Inputs> = {}): In
     ],
     markers,
     bgColors,
-  } as IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] };
 }
 
 export const StochVX3 = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

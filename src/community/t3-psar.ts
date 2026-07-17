@@ -61,7 +61,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<T3PsarInputs> = {}): IndicatorResult & { plotCandles?: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<T3PsarInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles?: Record<string, PlotCandleData[]> } {
   const { t3Len, t3SlowLen, t3Factor, sarStart, sarInc, sarMax, src, showHA } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const source = getSourceSeries(bars, src);
@@ -297,7 +297,7 @@ export function calculate(bars: Bar[], inputs: Partial<T3PsarInputs> = {}): Indi
     };
   }) : undefined;
 
-  const result: IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; plotCandles?: Record<string, PlotCandleData[]> } = {
+  const result: Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; plotCandles?: Record<string, PlotCandleData[]> } = {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
     // Pine: fill between T3 Slow (plot3) and T3 Fast (plot0), colored by T3 relationship

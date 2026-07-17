@@ -39,7 +39,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ADXCobraInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ADXCobraInputs> = {}): Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] } {
   const { adxLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

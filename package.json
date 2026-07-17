@@ -21,8 +21,8 @@
   "scripts": {
     "prepublishOnly": "npm run build",
     "build": "npm run clean && npm run build:esm && npm run build:cjs && npm run build:types",
-    "build:esm": "esbuild src/index.ts --bundle --format=esm --outfile=dist/index.mjs --platform=neutral --external:oakscriptjs --external:@types/*",
-    "build:cjs": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.cjs --platform=neutral --external:oakscriptjs --external:@types/*",
+    "build:esm": "esbuild src/index.ts --bundle --format=esm --outfile=dist/index.mjs --platform=neutral --external:oakscriptjs --external:oakscriptjs/* --external:@types/*",
+    "build:cjs": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.cjs --platform=neutral --external:oakscriptjs --external:oakscriptjs/* --external:@types/*",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
     "build:example": "vite build",
     "dev:example": "vite",
@@ -54,13 +54,13 @@
   },
   "homepage": "https://github.com/deepentropy/lightweight-charts-indicators#readme",
   "peerDependencies": {
-    "oakscriptjs": ">=0.2.8 <0.5.0"
+    "oakscriptjs": ">=0.2.8 <0.6.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.6",
     "esbuild": "^0.19.11",
     "lightweight-charts": "^5.0.0",
-    "oakscriptjs": "^0.2.8",
+    "oakscriptjs": "^0.5.0",
     "rimraf": "^6.1.0",
     "typescript": "^5.3.3",
     "vite": "^5.4.0",

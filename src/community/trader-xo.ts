@@ -88,7 +88,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TraderXOInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TraderXOInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] } {
   const {
     fastEMA, slowEMA, defEMA, bothEMAs,
     smoothK, smoothD, rsiLength, stochLength,

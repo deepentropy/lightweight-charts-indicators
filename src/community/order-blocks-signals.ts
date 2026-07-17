@@ -35,7 +35,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<OrderBlocksSignalsInputs> = {}): IndicatorResult & { boxes: BoxData[]; markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<OrderBlocksSignalsInputs> = {}): Omit<IndicatorResult, 'markers'> & { boxes: BoxData[]; markers: MarkerData[] } {
   const { sensitivity, mitigationType } = { ...defaultInputs, ...inputs };
   const sens = sensitivity / 100;
   const n = bars.length;

@@ -78,7 +78,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VdubSniperInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<VdubSniperInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const {
     bodyChannelLen, bodyChannelPeriod,
     ema1Len, ema2Len,

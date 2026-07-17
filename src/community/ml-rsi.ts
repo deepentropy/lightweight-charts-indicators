@@ -45,7 +45,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MlRsiInputs> = {}): IndicatorResult & { tables: TableData; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MlRsiInputs> = {}): Omit<IndicatorResult, 'markers'> & { tables: TableData; barColors: BarColorData[] } {
   const { rsiLen, k, lookback, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

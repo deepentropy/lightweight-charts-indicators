@@ -26,7 +26,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], _inputs: Partial<AllCandlestickPatternsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], _inputs: Partial<AllCandlestickPatternsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const n = bars.length;
   const markers: MarkerData[] = [];
 

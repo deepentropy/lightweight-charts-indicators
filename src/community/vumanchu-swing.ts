@@ -41,7 +41,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VuManChuSwingInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<VuManChuSwingInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const { swingPeriod, swingMultiplier, useBarColor } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

@@ -94,7 +94,7 @@ function wwmaFunc(srcArr: number[], length: number): number[] {
   return out;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<OTTOInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<OTTOInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { period, percent, fastVidyaLen, slowVidyaLen, correctingConst, src, showSignals, highlighting, mav } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

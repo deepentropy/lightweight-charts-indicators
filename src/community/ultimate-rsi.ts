@@ -66,7 +66,7 @@ function applyMA(series: Series, length: number, maType: string): Series {
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<UltimateRSIInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<UltimateRSIInputs> = {}): Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] } {
   const { length, smoType1, src, smooth, smoType2, obValue, osValue } = { ...defaultInputs, ...inputs };
   const len = bars.length;
 

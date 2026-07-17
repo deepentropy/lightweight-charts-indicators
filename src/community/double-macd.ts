@@ -57,7 +57,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<DoubleMACDInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<DoubleMACDInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
   const { fast1, slow1, sig1, fast2, slow2, sig2, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
   const n = bars.length;

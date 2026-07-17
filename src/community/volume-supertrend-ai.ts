@@ -50,7 +50,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VolumeSuperTrendAiInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<VolumeSuperTrendAiInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { atrLen, factor, k, volLen, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

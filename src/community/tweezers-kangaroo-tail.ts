@@ -63,7 +63,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TweezersKangarooTailInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TweezersKangarooTailInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const {
     enableTweezer, maxRate: maxRatePct, levelDiff: levelDiffPct, tweezPrd, apartPrd,
     enableKangaroo, kangPrd, kangMinPrd, atrMult, wickMult, wickMultAvg,

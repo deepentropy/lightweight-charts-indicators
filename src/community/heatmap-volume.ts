@@ -81,7 +81,7 @@ const DN_MEDIUM = '#FF6060';
 const DN_NORMAL = '#FF8F8F';
 const DN_LOW = '#FFBFBF';
 
-export function calculate(bars: Bar[], inputs: Partial<HeatmapVolumeInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<HeatmapVolumeInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

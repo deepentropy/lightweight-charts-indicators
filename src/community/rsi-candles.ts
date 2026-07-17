@@ -45,7 +45,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RSICandlesInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RSICandlesInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]>; barColors: BarColorData[] } {
   const { length } = { ...defaultInputs, ...inputs };
 
   const rsiOpen = ta.rsi(new Series(bars, (b) => b.open), length).toArray();

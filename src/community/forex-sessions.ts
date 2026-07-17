@@ -33,7 +33,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ForexSessionsInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ForexSessionsInputs> = {}): Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] } {
   const { sessionLen } = { ...defaultInputs, ...inputs };
   const totalCycle = sessionLen * 4;
 

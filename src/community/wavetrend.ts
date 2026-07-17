@@ -44,7 +44,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WaveTrendInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<WaveTrendInputs> = {}): Omit<IndicatorResult, 'markers'> {
   const { channelLength, averageLength } = { ...defaultInputs, ...inputs };
 
   const ap = getSourceSeries(bars, 'hlc3');
@@ -96,7 +96,7 @@ export function calculate(bars: Bar[], inputs: Partial<WaveTrendInputs> = {}): I
     ],
     markers,
     barColors,
-  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
 }
 
 export const WaveTrend = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

@@ -32,7 +32,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<VervoortHAOscillatorInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<VervoortHAOscillatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { temaLength } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

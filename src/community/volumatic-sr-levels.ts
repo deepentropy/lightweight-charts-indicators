@@ -58,7 +58,7 @@ function percentileLinear(arr: number[], p: number): number {
   return sorted[lo] + (idx - lo) * (sorted[hi] - sorted[lo]);
 }
 
-export function calculate(bars: Bar[], inputs: Partial<VolumaticSRLevelsInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<VolumaticSRLevelsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const { length, upperThreshold, lowerThreshold, barsThreshold } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

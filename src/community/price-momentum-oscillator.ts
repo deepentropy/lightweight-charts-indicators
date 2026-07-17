@@ -42,7 +42,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PriceMomentumOscInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<PriceMomentumOscInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { firstLength, secondLength, signalLength } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

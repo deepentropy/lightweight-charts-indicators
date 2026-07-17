@@ -48,7 +48,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ParabolicRSIInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { rsiLen, sarStart, sarInc, sarMax, upperThreshold, lowerThreshold } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

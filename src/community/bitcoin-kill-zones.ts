@@ -67,7 +67,7 @@ function inSession(minuteOfDay: number, startH: number, startM: number, endH: nu
   return minuteOfDay >= start || minuteOfDay < end;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<BitcoinKillZonesInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<BitcoinKillZonesInputs> = {}): Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] } {
   const { showNY, showLondonOpen, showLondonClose, showAsia, showAlertBars } = { ...defaultInputs, ...inputs };
 
   const bgColors: BgColorData[] = [];

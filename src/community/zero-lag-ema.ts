@@ -43,7 +43,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<ZeroLagEMAInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<ZeroLagEMAInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
   const { length, fastLen, slowLen, src } = { ...defaultInputs, ...inputs };
   const srcArr = getSourceSeries(bars, src).toArray();
   const n = bars.length;

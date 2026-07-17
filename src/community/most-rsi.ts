@@ -88,7 +88,7 @@ function computeVAR(values: number[], length: number): number[] {
   return result;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MOSTRSIInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; lines: LineDrawingData[] } {
   const { rsiLen, percent, maLen, bbMult, showBB, showDivergence, showSignals } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

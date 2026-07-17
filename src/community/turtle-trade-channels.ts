@@ -41,7 +41,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TurtleTradeChannelsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TurtleTradeChannelsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { entryLength, exitLength } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

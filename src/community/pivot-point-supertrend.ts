@@ -44,7 +44,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PivotPointSupertrendInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<PivotPointSupertrendInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { pivotLen, atrFactor, atrLen, showPivot } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

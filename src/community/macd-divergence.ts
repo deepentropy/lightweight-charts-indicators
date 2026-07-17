@@ -70,7 +70,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MACDDivergenceInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MACDDivergenceInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { fastLength, slowLength, signalLength, pivotLookback, rangeUpper, rangeLower,
     dontTouchZero, plotBull, plotBear, plotHiddenBull, plotHiddenBear, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);

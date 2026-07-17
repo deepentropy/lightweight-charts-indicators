@@ -44,7 +44,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<QQESignalsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<QQESignalsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { rsiLen, smoothFactor, qqeFactor } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const wildersLen = rsiLen * 2 - 1;

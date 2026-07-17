@@ -42,7 +42,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MadridTrendSqueezeInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<MadridTrendSqueezeInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
   const { length, ref, sqzLen } = { ...defaultInputs, ...inputs };
 
   const src = getSourceSeries(bars, 'close');

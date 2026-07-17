@@ -87,7 +87,7 @@ function computeMA(bars: Bar[], src: number[], len: number, type: string): numbe
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<UltimateBuySellInputs> = {}): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<UltimateBuySellInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const closeArr = bars.map(b => b.close);

@@ -73,7 +73,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CMVixFixV3Inputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<CMVixFixV3Inputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { length, bbLen, bbMult, lookbackPct, pctHighest, ltLB, mtLB, str, sbc, sbcc, sbcFilt, sbcAggr, sgb } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

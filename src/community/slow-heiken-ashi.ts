@@ -33,7 +33,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SlowHeikenAshiInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]>; markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<SlowHeikenAshiInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]>; markers: MarkerData[] } {
   const { length } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

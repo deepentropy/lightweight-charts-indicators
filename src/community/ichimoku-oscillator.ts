@@ -49,7 +49,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<IchimokuOscillatorInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<IchimokuOscillatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
   const { conversionPeriods, basePeriods, laggingSpan, displacement, emaLen } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

@@ -97,7 +97,7 @@ function computeMA(src: Series, length: number, maType: string): number[] {
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<QqeCrossInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<QqeCrossInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

@@ -62,7 +62,7 @@ const CHURN_COLOR = '#00FF00';       // green
 const CLIMAX_CHURN_COLOR = '#8B008B'; // dark magenta
 const DEF_COLOR = '#00FFFF';         // cyan
 
-export function calculate(bars: Bar[], inputs: Partial<BetterVolumeInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<BetterVolumeInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const len = cfg.length;

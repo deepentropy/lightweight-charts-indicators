@@ -59,7 +59,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TransientZonesInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TransientZonesInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { hLeft, hRight, samplePeriod, showPtz, showChannel } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

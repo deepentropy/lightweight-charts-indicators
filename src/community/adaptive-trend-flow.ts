@@ -217,7 +217,7 @@ export function calculate(bars: Bar[], inputs: Partial<AdaptiveTrendFlowInputs> 
     barColors,
     bgColors,
     labels,
-  } as IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[]; labels: LabelData[] };
+  } as Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[]; bgColors: BgColorData[]; labels: LabelData[] };
 }
 
 export const AdaptiveTrendFlow = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

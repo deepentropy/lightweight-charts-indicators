@@ -58,7 +58,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RedKTPXInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<RedKTPXInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { length, smooth, controlLevel, preSmooth, preSmoothLen, slevelOn, slevel } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

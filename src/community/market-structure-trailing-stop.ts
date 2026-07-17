@@ -48,7 +48,7 @@ export const metadata = {
 const BULL_COLOR = '#089981';  // teal
 const BEAR_COLOR = '#f23645';  // red
 
-export function calculate(bars: Bar[], inputs: Partial<MarketStructureTrailingStopInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MarketStructureTrailingStopInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; lines: LineDrawingData[] } {
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const len = cfg.length;

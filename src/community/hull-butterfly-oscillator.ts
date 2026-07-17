@@ -76,7 +76,7 @@ function buildHullCoeffs(length: number): number[] {
   return hullCoeffs;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<HullButterflyOscInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<HullButterflyOscInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { length, mult, src } = { ...defaultInputs, ...inputs };
   const source = getSourceSeries(bars, src);
   const srcArr = source.toArray();

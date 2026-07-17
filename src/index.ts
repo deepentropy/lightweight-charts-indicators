@@ -1697,6 +1697,7 @@ import * as supportResistanceChannelsIndicator from './community/support-resista
 import * as autoTrendlineIndicator from './community/auto-trendline';
 import * as liquiditySweepsIndicator from './community/liquidity-sweeps';
 import * as priceVolumeProfileIndicator from './community/price-volume-profile';
+import * as idealEntryPointIndicator from './community/ideal-entry-point';
 
 export { AutoFiboIndicators } from './community/auto-fibo-indicators';
 export { HeatmapVolume } from './community/heatmap-volume';
@@ -1746,94 +1747,54 @@ export type { VolumeFootprintInputs } from './community/volume-footprint';
 
 
 // Candlestick Patterns
-import * as hammerIndicator from './candlestick/hammer';
-import * as shootingStarIndicator from './candlestick/shooting-star';
-import * as hangingManIndicator from './candlestick/hanging-man';
-import * as invertedHammerIndicator from './candlestick/inverted-hammer';
-import * as marubozuWhiteIndicator from './candlestick/marubozu-white';
-import * as marubozuBlackIndicator from './candlestick/marubozu-black';
-import * as dojiIndicator from './candlestick/doji';
-import * as gravestoneDojiIndicator from './candlestick/gravestone-doji';
-import * as dragonflyDojiIndicator from './candlestick/dragonfly-doji';
-import * as longLowerShadowIndicator from './candlestick/long-lower-shadow';
-import * as longUpperShadowIndicator from './candlestick/long-upper-shadow';
-import * as spinningTopWhiteIndicator from './candlestick/spinning-top-white';
-import * as spinningTopBlackIndicator from './candlestick/spinning-top-black';
-import * as onNeckIndicator from './candlestick/on-neck';
-import * as piercingIndicator from './candlestick/piercing';
-import * as darkCloudCoverIndicator from './candlestick/dark-cloud-cover';
-import * as tweezerTopIndicator from './candlestick/tweezer-top';
-import * as tweezerBottomIndicator from './candlestick/tweezer-bottom';
-import * as dojiStarBearishIndicator from './candlestick/doji-star-bearish';
-import * as dojiStarBullishIndicator from './candlestick/doji-star-bullish';
-import * as engulfingBullishIndicator from './candlestick/engulfing-bullish';
-import * as engulfingBearishIndicator from './candlestick/engulfing-bearish';
-import * as haramiBullishIndicator from './candlestick/harami-bullish';
-import * as haramiBearishIndicator from './candlestick/harami-bearish';
-import * as haramiCrossBullishIndicator from './candlestick/harami-cross-bullish';
-import * as haramiCrossBearishIndicator from './candlestick/harami-cross-bearish';
-import * as risingWindowIndicator from './candlestick/rising-window';
-import * as fallingWindowIndicator from './candlestick/falling-window';
-import * as kickingBullishIndicator from './candlestick/kicking-bullish';
-import * as kickingBearishIndicator from './candlestick/kicking-bearish';
-import * as morningStarIndicator from './candlestick/morning-star';
-import * as eveningStarIndicator from './candlestick/evening-star';
-import * as morningDojiStarIndicator from './candlestick/morning-doji-star';
-import * as eveningDojiStarIndicator from './candlestick/evening-doji-star';
-import * as threeWhiteSoldiersIndicator from './candlestick/three-white-soldiers';
-import * as threeBlackCrowsIndicator from './candlestick/three-black-crows';
-import * as abandonedBabyBullishIndicator from './candlestick/abandoned-baby-bullish';
-import * as abandonedBabyBearishIndicator from './candlestick/abandoned-baby-bearish';
-import * as triStarBullishIndicator from './candlestick/tri-star-bullish';
-import * as triStarBearishIndicator from './candlestick/tri-star-bearish';
-import * as downsideTasukiGapIndicator from './candlestick/downside-tasuki-gap';
-import * as upsideTasukiGapIndicator from './candlestick/upside-tasuki-gap';
-import * as fallingThreeMethodsIndicator from './candlestick/falling-three-methods';
-import * as risingThreeMethodsIndicator from './candlestick/rising-three-methods';
-export { Hammer } from './candlestick/hammer';
-export { ShootingStar } from './candlestick/shooting-star';
-export { HangingMan } from './candlestick/hanging-man';
-export { InvertedHammer } from './candlestick/inverted-hammer';
-export { MarubozuWhite } from './candlestick/marubozu-white';
-export { MarubozuBlack } from './candlestick/marubozu-black';
-export { Doji } from './candlestick/doji';
-export { GravestoneDoji } from './candlestick/gravestone-doji';
-export { DragonflyDoji } from './candlestick/dragonfly-doji';
-export { LongLowerShadow } from './candlestick/long-lower-shadow';
-export { LongUpperShadow } from './candlestick/long-upper-shadow';
-export { SpinningTopWhite } from './candlestick/spinning-top-white';
-export { SpinningTopBlack } from './candlestick/spinning-top-black';
-export { OnNeck } from './candlestick/on-neck';
-export { Piercing } from './candlestick/piercing';
-export { DarkCloudCover } from './candlestick/dark-cloud-cover';
-export { TweezerTop } from './candlestick/tweezer-top';
-export { TweezerBottom } from './candlestick/tweezer-bottom';
-export { DojiStarBearish } from './candlestick/doji-star-bearish';
-export { DojiStarBullish } from './candlestick/doji-star-bullish';
-export { EngulfingBullish } from './candlestick/engulfing-bullish';
-export { EngulfingBearish } from './candlestick/engulfing-bearish';
-export { HaramiBullish } from './candlestick/harami-bullish';
-export { HaramiBearish } from './candlestick/harami-bearish';
-export { HaramiCrossBullish } from './candlestick/harami-cross-bullish';
-export { HaramiCrossBearish } from './candlestick/harami-cross-bearish';
-export { RisingWindow } from './candlestick/rising-window';
-export { FallingWindow } from './candlestick/falling-window';
-export { KickingBullish } from './candlestick/kicking-bullish';
-export { KickingBearish } from './candlestick/kicking-bearish';
-export { MorningStar } from './candlestick/morning-star';
-export { EveningStar } from './candlestick/evening-star';
-export { MorningDojiStar } from './candlestick/morning-doji-star';
-export { EveningDojiStar } from './candlestick/evening-doji-star';
-export { ThreeWhiteSoldiers } from './candlestick/three-white-soldiers';
-export { ThreeBlackCrows } from './candlestick/three-black-crows';
-export { AbandonedBabyBullish } from './candlestick/abandoned-baby-bullish';
-export { AbandonedBabyBearish } from './candlestick/abandoned-baby-bearish';
-export { TriStarBullish } from './candlestick/tri-star-bullish';
-export { TriStarBearish } from './candlestick/tri-star-bearish';
-export { DownsideTasukiGap } from './candlestick/downside-tasuki-gap';
-export { UpsideTasukiGap } from './candlestick/upside-tasuki-gap';
-export { FallingThreeMethods } from './candlestick/falling-three-methods';
-export { RisingThreeMethods } from './candlestick/rising-three-methods';
+import { candlestickPortIndicators, candlestickPortEntries } from './candlestick-port/adapter';
+export { candlestickPortIndicators, candlestickPortEntries } from './candlestick-port/adapter';
+
+// Individual candlestick pattern indicators (backed by the oakscriptjs 0.5.0 port)
+export const Hammer = candlestickPortIndicators['hammer'];
+export const ShootingStar = candlestickPortIndicators['shooting-star'];
+export const HangingMan = candlestickPortIndicators['hanging-man'];
+export const InvertedHammer = candlestickPortIndicators['inverted-hammer'];
+export const MarubozuWhite = candlestickPortIndicators['marubozu-white'];
+export const MarubozuBlack = candlestickPortIndicators['marubozu-black'];
+export const Doji = candlestickPortIndicators['doji'];
+export const GravestoneDoji = candlestickPortIndicators['gravestone-doji'];
+export const DragonflyDoji = candlestickPortIndicators['dragonfly-doji'];
+export const LongLowerShadow = candlestickPortIndicators['long-lower-shadow'];
+export const LongUpperShadow = candlestickPortIndicators['long-upper-shadow'];
+export const SpinningTopWhite = candlestickPortIndicators['spinning-top-white'];
+export const SpinningTopBlack = candlestickPortIndicators['spinning-top-black'];
+export const OnNeck = candlestickPortIndicators['on-neck'];
+export const Piercing = candlestickPortIndicators['piercing'];
+export const DarkCloudCover = candlestickPortIndicators['dark-cloud-cover'];
+export const TweezerTop = candlestickPortIndicators['tweezer-top'];
+export const TweezerBottom = candlestickPortIndicators['tweezer-bottom'];
+export const DojiStarBearish = candlestickPortIndicators['doji-star-bearish'];
+export const DojiStarBullish = candlestickPortIndicators['doji-star-bullish'];
+export const EngulfingBullish = candlestickPortIndicators['engulfing-bullish'];
+export const EngulfingBearish = candlestickPortIndicators['engulfing-bearish'];
+export const HaramiBullish = candlestickPortIndicators['harami-bullish'];
+export const HaramiBearish = candlestickPortIndicators['harami-bearish'];
+export const HaramiCrossBullish = candlestickPortIndicators['harami-cross-bullish'];
+export const HaramiCrossBearish = candlestickPortIndicators['harami-cross-bearish'];
+export const RisingWindow = candlestickPortIndicators['rising-window'];
+export const FallingWindow = candlestickPortIndicators['falling-window'];
+export const KickingBullish = candlestickPortIndicators['kicking-bullish'];
+export const KickingBearish = candlestickPortIndicators['kicking-bearish'];
+export const MorningStar = candlestickPortIndicators['morning-star'];
+export const EveningStar = candlestickPortIndicators['evening-star'];
+export const MorningDojiStar = candlestickPortIndicators['morning-doji-star'];
+export const EveningDojiStar = candlestickPortIndicators['evening-doji-star'];
+export const ThreeWhiteSoldiers = candlestickPortIndicators['three-white-soldiers'];
+export const ThreeBlackCrows = candlestickPortIndicators['three-black-crows'];
+export const AbandonedBabyBullish = candlestickPortIndicators['abandoned-baby-bullish'];
+export const AbandonedBabyBearish = candlestickPortIndicators['abandoned-baby-bearish'];
+export const TriStarBullish = candlestickPortIndicators['tri-star-bullish'];
+export const TriStarBearish = candlestickPortIndicators['tri-star-bearish'];
+export const DownsideTasukiGap = candlestickPortIndicators['downside-tasuki-gap'];
+export const UpsideTasukiGap = candlestickPortIndicators['upside-tasuki-gap'];
+export const FallingThreeMethods = candlestickPortIndicators['falling-three-methods'];
+export const RisingThreeMethods = candlestickPortIndicators['rising-three-methods'];
 
 // InputConfig, PlotConfig, HLineConfig, FillConfig re-exported from oakscriptjs above
 
@@ -7323,52 +7284,22 @@ export const indicatorRegistry: IndicatorRegistryEntry[] = [
     defaultInputs: { ...priceVolumeProfileIndicator.defaultInputs },
     calculate: priceVolumeProfileIndicator.calculate,
   },
-  ...candlestickEntries([
-    ['abandoned-baby-bearish', abandonedBabyBearishIndicator],
-    ['abandoned-baby-bullish', abandonedBabyBullishIndicator],
-    ['dark-cloud-cover', darkCloudCoverIndicator],
-    ['doji', dojiIndicator],
-    ['doji-star-bearish', dojiStarBearishIndicator],
-    ['doji-star-bullish', dojiStarBullishIndicator],
-    ['downside-tasuki-gap', downsideTasukiGapIndicator],
-    ['dragonfly-doji', dragonflyDojiIndicator],
-    ['engulfing-bearish', engulfingBearishIndicator],
-    ['engulfing-bullish', engulfingBullishIndicator],
-    ['evening-doji-star', eveningDojiStarIndicator],
-    ['evening-star', eveningStarIndicator],
-    ['falling-three-methods', fallingThreeMethodsIndicator],
-    ['falling-window', fallingWindowIndicator],
-    ['gravestone-doji', gravestoneDojiIndicator],
-    ['hammer', hammerIndicator],
-    ['hanging-man', hangingManIndicator],
-    ['harami-bearish', haramiBearishIndicator],
-    ['harami-bullish', haramiBullishIndicator],
-    ['harami-cross-bearish', haramiCrossBearishIndicator],
-    ['harami-cross-bullish', haramiCrossBullishIndicator],
-    ['inverted-hammer', invertedHammerIndicator],
-    ['kicking-bearish', kickingBearishIndicator],
-    ['kicking-bullish', kickingBullishIndicator],
-    ['long-lower-shadow', longLowerShadowIndicator],
-    ['long-upper-shadow', longUpperShadowIndicator],
-    ['marubozu-black', marubozuBlackIndicator],
-    ['marubozu-white', marubozuWhiteIndicator],
-    ['morning-doji-star', morningDojiStarIndicator],
-    ['morning-star', morningStarIndicator],
-    ['on-neck', onNeckIndicator],
-    ['piercing', piercingIndicator],
-    ['rising-three-methods', risingThreeMethodsIndicator],
-    ['rising-window', risingWindowIndicator],
-    ['shooting-star', shootingStarIndicator],
-    ['spinning-top-black', spinningTopBlackIndicator],
-    ['spinning-top-white', spinningTopWhiteIndicator],
-    ['three-black-crows', threeBlackCrowsIndicator],
-    ['three-white-soldiers', threeWhiteSoldiersIndicator],
-    ['tri-star-bearish', triStarBearishIndicator],
-    ['tri-star-bullish', triStarBullishIndicator],
-    ['tweezer-bottom', tweezerBottomIndicator],
-    ['tweezer-top', tweezerTopIndicator],
-    ['upside-tasuki-gap', upsideTasukiGapIndicator],
-  ]),
+  {
+    id: 'ideal-entry-point',
+    group: 'community',
+    name: 'Ideal Entry Point',
+    shortName: 'IEP',
+    category: 'Trend',
+    overlay: true,
+    metadata: idealEntryPointIndicator.metadata,
+    inputConfig: idealEntryPointIndicator.inputConfig as InputConfig[],
+    plotConfig: idealEntryPointIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...idealEntryPointIndicator.defaultInputs },
+    calculate: idealEntryPointIndicator.calculate,
+  },
+  ...candlestickEntries(
+    candlestickPortEntries.map((e) => [e.id, e.indicator] as [string, typeof e.indicator])
+  ),
   // ── Built-in studies added from live TradingView Desktop capture (2026-05-31) ──
   {
     id: 'aroon-oscillator',

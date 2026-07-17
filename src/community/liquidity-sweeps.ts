@@ -52,7 +52,7 @@ interface PivLevel {
 export function calculate(
   bars: Bar[],
   inputs: Partial<LiquiditySweepsInputs> = {},
-): IndicatorResult & { lines: LineDrawingData[]; boxes: BoxData[] } {
+): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[]; boxes: BoxData[] } {
   const { term } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

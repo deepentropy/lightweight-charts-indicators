@@ -73,7 +73,7 @@ function getMA(source: Series, length: number, type: string): Series {
   }
 }
 
-export function calculate(bars: Bar[], inputs: Partial<RedKMomentumBarsInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<RedKMomentumBarsInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
   const { fastLength, fastType, slowLength, slowType, slowDelay, filterLength, filterType } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

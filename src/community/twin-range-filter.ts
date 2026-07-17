@@ -46,7 +46,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TwinRangeFilterInputs> = {}): IndicatorResult & { barColors: BarColorData[]; markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<TwinRangeFilterInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[]; markers: MarkerData[] } {
   const { fastPeriod, fastRange, slowPeriod, slowRange, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

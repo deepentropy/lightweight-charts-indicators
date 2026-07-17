@@ -48,7 +48,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}): IndicatorResult & { markers: MarkerData[]; lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<FalseBreakoutInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; lines: LineDrawingData[] } {
   const { period, minPeriod, maxPeriod, maType, smoothLength, aggressive } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

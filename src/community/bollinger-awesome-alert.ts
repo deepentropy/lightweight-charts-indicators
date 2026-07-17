@@ -82,7 +82,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BollingerAwesomeAlertInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<BollingerAwesomeAlertInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { bbUseEma, bbFilter, sqzFilter, bbLength, bbMult, fastMaLen, aoSlow, aoFast, sqzLength, sqzThreshold } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

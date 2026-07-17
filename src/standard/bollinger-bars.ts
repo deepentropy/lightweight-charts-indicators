@@ -35,7 +35,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], _inputs: Partial<BollingerBarsInputs> = {}): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], _inputs: Partial<BollingerBarsInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
   // Wicks: plotcandle(high, high, low, low) — all navy blue
   const wicks: PlotCandleData[] = bars.map(b => ({
     time: b.time as number,

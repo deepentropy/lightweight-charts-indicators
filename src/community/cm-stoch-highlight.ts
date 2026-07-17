@@ -68,7 +68,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CMStochHighlightInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<CMStochHighlightInputs> = {}): Omit<IndicatorResult, 'markers'> {
   const { kLen, kSmooth, dSmooth, upLine, lowLine, sbc, sbh, sch, sl, sac, sacl } = { ...defaultInputs, ...inputs };
 
   const closeSeries = new Series(bars, (b) => b.close);
@@ -176,7 +176,7 @@ export function calculate(bars: Bar[], inputs: Partial<CMStochHighlightInputs> =
     markers,
     barColors,
     bgColors,
-  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] };
 }
 
 export const CMStochHighlight = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

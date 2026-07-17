@@ -36,7 +36,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EntryPointsInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<EntryPointsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { period } = { ...defaultInputs, ...inputs };
   const closeSeries = getSourceSeries(bars, 'close');
   const emaArr = ta.ema(closeSeries, period).toArray();

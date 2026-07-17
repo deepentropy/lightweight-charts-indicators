@@ -106,7 +106,7 @@ export function calculate(bars: Bar[], inputs: Partial<PremierRSIInputs> = {}): 
       { value: -0.2, options: { color: '#787B86', linestyle: 'dashed' } },
     ],
     barColors,
-  } as IndicatorResult & { barColors: BarColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
 }
 
 export const PremierRSI = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

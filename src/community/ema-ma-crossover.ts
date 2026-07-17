@@ -38,7 +38,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EMAMACrossInputs> = {}): IndicatorResult & { barColors: BarColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<EMAMACrossInputs> = {}): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
   const { emaLen, smaLen, src } = { ...defaultInputs, ...inputs };
   const srcSeries = getSourceSeries(bars, src);
 

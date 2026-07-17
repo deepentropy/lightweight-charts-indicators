@@ -39,7 +39,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<EhlersMESAMAInputs> = {}): IndicatorResult {
+export function calculate(bars: Bar[], inputs: Partial<EhlersMESAMAInputs> = {}): Omit<IndicatorResult, 'markers'> {
   const { fastLimit, slowLimit, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const srcArr = getSourceSeries(bars, src).toArray();
@@ -203,7 +203,7 @@ export function calculate(bars: Bar[], inputs: Partial<EhlersMESAMAInputs> = {})
     ],
     markers,
     barColors,
-  } as IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
 }
 
 export const EhlersMESAMA = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

@@ -52,7 +52,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<CCIStochasticInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<CCIStochasticInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { cciLen, stochLen, smoothK, smoothD, showArrows, showArrowsCenter } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

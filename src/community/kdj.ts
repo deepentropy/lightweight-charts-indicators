@@ -94,7 +94,7 @@ export function calculate(bars: Bar[], inputs: Partial<KDJInputs> = {}): Indicat
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: { 'plot0': toPlot(kArr), 'plot1': toPlot(dArr), 'plot2': toPlot(jArr) },
     bgColors,
-  } as IndicatorResult & { bgColors: BgColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] };
 }
 
 export const KDJ = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

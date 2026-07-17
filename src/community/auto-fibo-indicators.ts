@@ -186,7 +186,7 @@ export function calculate(bars: Bar[], inputs: Partial<AutoFiboIndicatorsInputs>
     value: i < warmup ? NaN : (cfg.showFibo3618 ? v : NaN),
   }));
 
-  const result: IndicatorResult & { hlines?: any[]; fills?: any[] } = {
+  const result: Omit<IndicatorResult, 'markers'> & { hlines?: any[]; fills?: any[] } = {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {
       low: makePlot(lowPlot),

@@ -100,7 +100,7 @@ function highestN(arr: number[], idx: number, len: number): number {
   return max === -Infinity ? NaN : max;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<PPODivergenceInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<PPODivergenceInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const { fastLength, slowLength, smoother, divLookbackPeriod, longTermDiv, src } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const source = getSourceSeries(bars, src);

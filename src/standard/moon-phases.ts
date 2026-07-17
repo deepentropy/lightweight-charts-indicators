@@ -106,7 +106,7 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MoonPhasesInputs> = {}): IndicatorResult & { markers: MarkerData[]; bgColors: BgColorData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MoonPhasesInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } {
   const { waxingMoonColor, waningMoonColor } = { ...defaultInputs, ...inputs };
   const markers: MarkerData[] = [];
   const bgColors: BgColorData[] = [];

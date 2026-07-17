@@ -70,7 +70,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MarketCipherBInputs> = {}): IndicatorResult & { markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MarketCipherBInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
   const {
     wtChannelLen, wtAvgLen, wtMALen,
     rsiMFIPeriod, rsiMFIMult, rsiMFIPosY,

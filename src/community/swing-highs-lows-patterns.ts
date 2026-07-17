@@ -33,7 +33,7 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SwingHighsLowsPatternsInputs> = {}): IndicatorResult & { markers: MarkerData[]; labels: LabelData[] } {
+export function calculate(bars: Bar[], inputs: Partial<SwingHighsLowsPatternsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; labels: LabelData[] } {
   const { length } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 

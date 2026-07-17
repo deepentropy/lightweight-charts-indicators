@@ -56,7 +56,7 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {}): IndicatorResult & { plotCandles: { candle0: PlotCandleData[] }; markers: MarkerData[] } {
+export function calculate(bars: Bar[], inputs: Partial<MatrixSeriesInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: { candle0: PlotCandleData[] }; markers: MarkerData[] } {
   const { smoother, supResPeriod, supResPercentage, pricePeriod, ob, os, showOBOS, dynamic } = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const nn = smoother;

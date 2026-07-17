@@ -93,7 +93,7 @@ export function calculate(bars: Bar[], inputs: Partial<HullSuiteInputs> = {}): I
     plots: { 'plot0': mhull, 'plot1': shull },
     fills: [{ plot1: 'plot0', plot2: 'plot1', options: { color: '#00ff00' }, colors: fillColors }],
     barColors,
-  } as IndicatorResult & { barColors: BarColorData[] };
+  } as Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
 }
 
 export const HullSuite = { calculate, metadata, defaultInputs, inputConfig, plotConfig };

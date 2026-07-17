@@ -61,7 +61,7 @@ export const metadata = {
 const GENESIS_MS = 1279670400000;
 const E = 2.718281828459;
 
-export function calculate(bars: Bar[], inputs: Partial<BitcoinLogCurvesInputs> = {}): IndicatorResult & { lines: LineDrawingData[] } {
+export function calculate(bars: Bar[], inputs: Partial<BitcoinLogCurvesInputs> = {}): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[] } {
   const { showFibs, showExtensions, highIntercept, highSlope, lowIntercept, lowSlope } = { ...defaultInputs, ...inputs };
   const n = bars.length;
 
