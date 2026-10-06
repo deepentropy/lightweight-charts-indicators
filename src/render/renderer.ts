@@ -31,6 +31,11 @@ import {
   type Time,
   type DeepPartial,
   type SeriesOptionsCommon,
+  type SeriesDefinition,
+  type SeriesPartialOptionsMap,
+  type CustomData,
+  type CustomSeriesOptions,
+  type ICustomSeriesPaneView,
 } from 'lightweight-charts';
 import type {
   Bar,
@@ -135,6 +140,12 @@ export interface RenderOptions {
   precision?: number | null;
   /** Series in the price pane take part in its autoscale (default true; false = scale on the price only) */
   autoscale?: boolean;
+  /**
+   * Keep the series of the previous render (same indicator, bars changed at the end: a live update). A series of the
+   * same type in the same pane and creation order is kept with the new options; when only its newest points changed
+   * they are updated, else its data is replaced. Default false: every series is created again.
+   */
+  reuseSeries?: boolean;
 }
 
 type PlotPoint = { time: number; value: number; color?: string };
@@ -154,6 +165,15 @@ export class IndicatorRenderer {
   private tableObserver: ResizeObserver | null = null;
   private tableFrame = 0;
   private renderOpts: RenderOptions = {};
+  /** Series of this render in creation order, with their type (series definition or custom pane view class) */
+  private created: Array<{ series: ISeriesApi<SeriesType, Time>; kind: unknown }> = [];
+  /** Series of the previous render a reuseSeries render can take again (by creation order); null = taken */
+  private pool: Array<{ series: ISeriesApi<SeriesType, Time>; kind: unknown } | null> = [];
+  private kinds = new WeakMap<object, unknown>();
+  /** Series taken from the pool in this render */
+  private reused = new Set<object>();
+  /** Data last set on each series */
+  private lastData = new WeakMap<object, readonly unknown[]>();
 
   constructor(private readonly chart: IChartApi, options: IndicatorRendererOptions = {}) {
     this.opts = { ...options };
@@ -178,13 +198,19 @@ export class IndicatorRenderer {
     const paneApi = pane > 0 ? this.chart.panes()[pane] : undefined;
     const preserved = paneApi?.preserveEmptyPane();
     paneApi?.setPreserveEmptyPane(true);
-    this.clearOwned();
-    if (paneApi && !this.opts.preserveEmptyPane) paneApi.setPreserveEmptyPane(preserved ?? false);
+    try {
+      this.clearOwned(options.reuseSeries === true);
+      this.renderOpts = options;
+      this.grid.setBars(bars);
+      if (bars.length) this.draw(entry, result as IndicatorResult & Record<string, any>, bars, pane);
+    } finally {
+      // series of the previous render not taken again
+      for (const p of this.pool.splice(0)) if (p) this.chart.removeSeries(p.series);
+      if (paneApi && !this.opts.preserveEmptyPane) paneApi.setPreserveEmptyPane(preserved ?? false);
+    }
+  }
 
-    this.renderOpts = options;
-    this.grid.setBars(bars);
-    if (!bars.length) return;
-    const r = result as IndicatorResult & Record<string, any>;
+  private draw(entry: RenderableIndicator, r: IndicatorResult & Record<string, any>, bars: Bar[], pane: number): void {
 
     this.drawPlots(entry, r, pane);
     this.drawHLines(entry, r, pane, bars);
@@ -223,12 +249,16 @@ export class IndicatorRenderer {
     }
   }
 
-  private clearOwned(): void {
+  /** Remove what the last render drew; `keepSeries`: its series go to the pool instead (reuseSeries) */
+  private clearOwned(keepSeries = false): void {
     for (const { series, primitive } of this.attached) series.detachPrimitive(primitive);
     this.attached = [];
     for (const p of this.markerPlugins) p.detach();
     this.markerPlugins = [];
-    for (const s of this.series()) this.chart.removeSeries(s);
+    if (keepSeries) this.pool = this.created;
+    else for (const s of this.series()) this.chart.removeSeries(s);
+    this.created = [];
+    this.reused.clear();
     this.plotSeries = [];
     this.otherSeries = [];
     for (const { el } of this.tables) el.remove();
@@ -259,8 +289,58 @@ export class IndicatorRenderer {
   }
 
   private own<T extends ISeriesApi<SeriesType, Time>>(series: T, plot = false): T {
-    (plot ? this.plotSeries : this.otherSeries).push(series as unknown as ISeriesApi<SeriesType, Time>);
+    const s = series as unknown as ISeriesApi<SeriesType, Time>;
+    (plot ? this.plotSeries : this.otherSeries).push(s);
+    this.created.push({ series: s, kind: this.kinds.get(s) });
     return series;
+  }
+
+  /** The pool series of this creation slot when it has the same type and pane (options re-applied), else null */
+  private take(kind: unknown, pane: number, options: object): ISeriesApi<SeriesType, Time> | null {
+    const slot = this.created.length;
+    const p = this.pool[slot];
+    if (!p || p.kind !== kind || p.series.getPane().paneIndex() !== pane) return null;
+    this.pool[slot] = null;
+    p.series.applyOptions(options);
+    this.reused.add(p.series);
+    return p.series;
+  }
+
+  private addSeries<T extends SeriesType>(
+    definition: SeriesDefinition<T>,
+    options: SeriesPartialOptionsMap[T],
+    pane: number
+  ): ISeriesApi<T, Time> {
+    const reused = this.take(definition, pane, options);
+    if (reused) return reused as unknown as ISeriesApi<T, Time>;
+    const series = this.chart.addSeries(definition, options, pane);
+    this.kinds.set(series, definition);
+    return series;
+  }
+
+  private addCustomSeries<TData extends CustomData<Time>, TOptions extends CustomSeriesOptions>(
+    view: ICustomSeriesPaneView<Time, TData, TOptions>,
+    options: DeepPartial<TOptions & SeriesOptionsCommon>,
+    pane: number
+  ): ISeriesApi<'Custom', Time, TData | WhitespaceData<Time>, TOptions> {
+    const reused = this.take(view.constructor, pane, options);
+    if (reused) return reused as unknown as ISeriesApi<'Custom', Time, TData | WhitespaceData<Time>, TOptions>;
+    const series = this.chart.addCustomSeries(view, options, pane);
+    this.kinds.set(series, view.constructor);
+    return series;
+  }
+
+  /** Series data; a reused series whose newest points alone changed (or that has new bars) gets them as updates */
+  private setData(series: ISeriesApi<any, Time, any>, data: readonly unknown[]): void {
+    const s = series as ISeriesApi<SeriesType, Time>;
+    const old = this.reused.has(s) ? this.lastData.get(s) : undefined;
+    this.lastData.set(s, data);
+    const from = old ? changedTail(old, data) : -1;
+    if (from < 0) {
+      s.setData(data as never);
+      return;
+    }
+    for (let i = from; i < data.length; i++) s.update(data[i] as never, i < old!.length - 1);
   }
 
   private attach(series: ISeriesApi<SeriesType, Time>, primitive: ISeriesPrimitive<Time>): void {
@@ -270,7 +350,7 @@ export class IndicatorRenderer {
 
   /** Invisible line series that holds primitives (and, with autoscale, the price range of what they draw) */
   private anchor(pane: number, autoscale = true): ISeriesApi<'Line', Time> {
-    return this.own(this.chart.addSeries(LineSeries, {
+    return this.own(this.addSeries(LineSeries, {
       color: 'transparent',
       lineVisible: false,
       lastValueVisible: false,
@@ -347,7 +427,7 @@ export class IndicatorRenderer {
   ): ISeriesApi<'Line', Time> {
     // PineScript widths go above 4 (glow lines): the canvas draws any width, the LineWidth type lists 1..4
     const lineWidth = (o.lineWidth && o.lineWidth >= 1 ? o.lineWidth : 2) as LineWidth;
-    const series = this.own(this.chart.addSeries(LineSeries, {
+    const series = this.own(this.addSeries(LineSeries, {
       color: o.color,
       lineWidth,
       lineStyle: o.lineStyle,
@@ -361,7 +441,7 @@ export class IndicatorRenderer {
     }, pane), true);
     const valid = data.filter((d) => d.value != null && !Number.isNaN(d.value)) as unknown as LineData<Time>[];
     const simpleLine = (o.lineType ?? LineType.Simple) === LineType.Simple && o.lineVisible !== false && !o.pointMarkersVisible;
-    series.setData(simpleLine ? segmentColors(valid, o.color) : valid);
+    this.setData(series, simpleLine ? segmentColors(valid, o.color) : valid);
     return series;
   }
 
@@ -385,14 +465,14 @@ export class IndicatorRenderer {
 
   /** plot.style_histogram: bars of the plot line width from histbase (thin histogram series) */
   private addThinHistogram(data: PlotPoint[], color: string, lineWidth: number | undefined, base: number, pane: number, title: string): void {
-    const series = this.own(this.chart.addCustomSeries(new ThinHistogramPaneView(), {
+    const series = this.own(this.addCustomSeries(new ThinHistogramPaneView(), {
       histColor: color,
       histWidth: Math.max(1, lineWidth ?? 1),
       histBase: base,
       ...this.plotOptions(title),
       ...this.scaleOptions(pane),
     }, pane) as unknown as ISeriesApi<SeriesType, Time>, true);
-    (series as unknown as ISeriesApi<'Custom', Time, HistogramItem>).setData(
+    this.setData(series, 
       data.map((d) => {
         const time = d.time as unknown as Time;
         if (d.value == null || Number.isNaN(d.value)) return { time } as unknown as HistogramItem;
@@ -403,18 +483,18 @@ export class IndicatorRenderer {
 
   /** plot.style_columns: bars of the bar slot width from histbase */
   private addColumns(data: PlotPoint[], color: string, base: number, pane: number, title: string): void {
-    const series = this.own(this.chart.addSeries(HistogramSeries, {
+    const series = this.own(this.addSeries(HistogramSeries, {
       color,
       base,
       ...this.plotOptions(title),
       ...this.scaleOptions(pane),
     }, pane), true);
-    series.setData(data.filter((d) => d.value != null && !Number.isNaN(d.value)) as unknown as HistogramData<Time>[]);
+    this.setData(series, data.filter((d) => d.value != null && !Number.isNaN(d.value)) as unknown as HistogramData<Time>[]);
   }
 
   private addCross(data: PlotPoint[], color: string, lineWidth: number | undefined, pane: number): void {
     const anchor = this.anchor(pane);
-    anchor.setData(data.filter((d) => d.value != null && !Number.isNaN(d.value)) as unknown as LineData<Time>[]);
+    this.setData(anchor, data.filter((d) => d.value != null && !Number.isNaN(d.value)) as unknown as LineData<Time>[]);
     const primitive = new CrossPlotPrimitive();
     this.attach(anchor as unknown as ISeriesApi<SeriesType, Time>, primitive as ISeriesPrimitive<Time>);
     primitive.setData(data, color, (lineWidth ?? 2) * 3);
@@ -423,7 +503,7 @@ export class IndicatorRenderer {
   /** linebr / steplinebr: a line that breaks at na values */
   private addLineBr(data: PlotPoint[], color: string, lineWidth: number | undefined, lineStyle: LineStyle, steps: boolean, pane: number): void {
     const anchor = this.anchor(pane);
-    anchor.setData(data.filter((d) => d.value != null && !Number.isNaN(d.value)) as unknown as LineData<Time>[]);
+    this.setData(anchor, data.filter((d) => d.value != null && !Number.isNaN(d.value)) as unknown as LineData<Time>[]);
     const primitive = new LineBrPrimitive();
     this.attach(anchor as unknown as ISeriesApi<SeriesType, Time>, primitive as ISeriesPrimitive<Time>);
     primitive.setData(data, color, lineWidth ?? 2, lineStyle, steps);
@@ -448,7 +528,7 @@ export class IndicatorRenderer {
     for (const h of hlines) {
       // hline(..., display = display.none): not drawn (it can still bound a fill)
       if (h.display === 'none') continue;
-      const series = this.own(this.chart.addSeries(LineSeries, {
+      const series = this.own(this.addSeries(LineSeries, {
         color: h.color ?? '#787B86',
         lineWidth: (h.linewidth ?? 1) as LineWidth,
         lineStyle: LINE_STYLES[h.linestyle ?? 'solid'] ?? LineStyle.Solid,
@@ -457,7 +537,7 @@ export class IndicatorRenderer {
         priceLineVisible: false,
         ...this.scaleOptions(pane),
       }, pane));
-      series.setData([{ time: first, value: h.price }, { time: last, value: h.price }]);
+      this.setData(series, [{ time: first, value: h.price }, { time: last, value: h.price }]);
     }
 
     // fills between hlines: the ones of the result (they follow the inputs), else the entry's fillConfig
@@ -494,7 +574,7 @@ export class IndicatorRenderer {
         const gradient = fill.gradient as FillGradientData | undefined;
         const colors = fill.colors;
         const anchor = this.anchor(pane);
-        anchor.setData(bars.map((b) => ({ time: b.time as unknown as Time, value: Math.max(p1, p2) })));
+        this.setData(anchor, bars.map((b) => ({ time: b.time as unknown as Time, value: Math.max(p1, p2) })));
         const primitive = new PlotFillPrimitive();
         primitive.setData(bars.map((b, i) => ({
           time: b.time,
@@ -507,7 +587,7 @@ export class IndicatorRenderer {
         continue;
       }
       const color = fill.color ?? 'rgba(41,98,255,0.1)';
-      const series = this.own(this.chart.addSeries(BaselineSeries, {
+      const series = this.own(this.addSeries(BaselineSeries, {
         baseValue: { type: 'price', price: Math.min(p1, p2) },
         topFillColor1: color,
         topFillColor2: color,
@@ -521,7 +601,7 @@ export class IndicatorRenderer {
         crosshairMarkerVisible: false,
         ...this.scaleOptions(pane),
       }, pane));
-      series.setData([
+      this.setData(series, [
         { time: first, value: Math.max(p1, p2) },
         { time: last, value: Math.max(p1, p2) },
       ] as BaselineData<Time>[]);
@@ -575,7 +655,7 @@ export class IndicatorRenderer {
       if (!valid.length) continue;
       const bothOverlay = overlayPlots.has(String(fill.plot1)) && overlayPlots.has(String(fill.plot2));
       const anchor = this.anchor(bothOverlay ? 0 : pane);
-      anchor.setData(valid.map((p) => ({ time: p.time as unknown as Time, value: Math.max(p.v1, p.v2) })));
+      this.setData(anchor, valid.map((p) => ({ time: p.time as unknown as Time, value: Math.max(p.v1, p.v2) })));
       const primitive = new PlotFillPrimitive();
       primitive.setData(points);
       this.attach(anchor as unknown as ISeriesApi<SeriesType, Time>, primitive as ISeriesPrimitive<Time>);
@@ -632,7 +712,7 @@ export class IndicatorRenderer {
     const onPrice = split(markers.filter((m) => !inPane(m)), !!main);
     if (onPrice.native.length || onPrice.extended.length) {
       const target = main ?? (this.anchor(0, false) as unknown as ISeriesApi<SeriesType, Time>);
-      if (!main) (target as ISeriesApi<'Line', Time>).setData(anchorData(this.grid.bars.map((b) => ({ time: b.time, value: b.close })), this.grid));
+      if (!main) this.setData(target, anchorData(this.grid.bars.map((b) => ({ time: b.time, value: b.close })), this.grid));
       if (onPrice.native.length) this.markerPlugins.push(createSeriesMarkers(target, onPrice.native));
       if (onPrice.extended.length) {
         const primitive = new ExtendedMarkerPrimitive(this.grid);
@@ -646,7 +726,7 @@ export class IndicatorRenderer {
     if (paneMarkers.length) {
       const parts = split(paneMarkers, true);
       const anchor = this.anchor(pane);
-      anchor.setData(anchorData(paneMarkers.map((m) => ({ time: m.time, value: m.price! })), this.grid));
+      this.setData(anchor, anchorData(paneMarkers.map((m) => ({ time: m.time, value: m.price! })), this.grid));
       if (parts.native.length) this.markerPlugins.push(createSeriesMarkers(anchor, parts.native));
       if (parts.extended.length) {
         const primitive = new ExtendedMarkerPrimitive(this.grid);
@@ -699,7 +779,7 @@ export class IndicatorRenderer {
       // one point when the layer has one bar (times must be ascending)
       const first = list[0].time;
       const last = list[list.length - 1].time;
-      anchor.setData((first === last ? [first] : [first, last]).map((time) => ({ time: time as unknown as Time, value: 0 })));
+      this.setData(anchor, (first === last ? [first] : [first, last]).map((time) => ({ time: time as unknown as Time, value: 0 })));
       const primitive = new BgColorPrimitive();
       this.attach(anchor as unknown as ISeriesApi<SeriesType, Time>, primitive as ISeriesPrimitive<Time>);
       primitive.setData(list);
@@ -709,7 +789,7 @@ export class IndicatorRenderer {
   /** plotcandle: a candlestick series (force_overlay candles go to the price pane) */
   private drawCandles(_id: string, data: PlotCandleData[], pane: number): void {
     const p = data.some((d) => d.forceOverlay) ? 0 : pane;
-    const series = this.own(this.chart.addSeries(CandlestickSeries, {
+    const series = this.own(this.addSeries(CandlestickSeries, {
       upColor: '#26a69a',
       downColor: '#ef5350',
       borderVisible: true,
@@ -720,7 +800,7 @@ export class IndicatorRenderer {
       ...this.scaleOptions(p),
     }, p));
     // a bar with an na value draws no candle (whitespace point)
-    series.setData(data.map((d): CandlestickData<Time> | WhitespaceData<Time> => {
+    this.setData(series, data.map((d): CandlestickData<Time> | WhitespaceData<Time> => {
       const time = d.time as unknown as Time;
       if (![d.open, d.high, d.low, d.close].every((v) => Number.isFinite(v))) return { time };
       return {
@@ -737,7 +817,7 @@ export class IndicatorRenderer {
   /** plotbar: an OHLC bar series in the bar colour (PineScript default colour when none) */
   private drawBars(data: PlotBarData[], pane: number): void {
     const p = data.some((d) => d.forceOverlay) ? 0 : pane;
-    const series = this.own(this.chart.addSeries(BarSeries, {
+    const series = this.own(this.addSeries(BarSeries, {
       upColor: '#2962FF',
       downColor: '#2962FF',
       openVisible: true,
@@ -746,7 +826,7 @@ export class IndicatorRenderer {
       priceLineVisible: false,
       ...this.scaleOptions(p),
     }, p));
-    series.setData(data.map((d): BarData<Time> | WhitespaceData<Time> => {
+    this.setData(series, data.map((d): BarData<Time> | WhitespaceData<Time> => {
       const time = d.time as unknown as Time;
       if (![d.open, d.high, d.low, d.close].every((v) => Number.isFinite(v))) return { time };
       return { time, open: d.open, high: d.high, low: d.low, close: d.close, ...(d.color && { color: d.color }) };
@@ -776,7 +856,7 @@ export class IndicatorRenderer {
     }
     for (const [p, group] of groups) {
       const anchor = this.anchor(p, autoscale);
-      anchor.setData(anchorData(group.flatMap(points), this.grid));
+      this.setData(anchor, anchorData(group.flatMap(points), this.grid));
       this.attach(anchor as unknown as ISeriesApi<SeriesType, Time>, new DrawingPrimitive(this.grid, group, draw, zOrder) as ISeriesPrimitive<Time>);
     }
   }
@@ -819,7 +899,7 @@ export class IndicatorRenderer {
     const series = this.anchor(0, false);
     const data: WhitespaceData<Time>[] = [];
     for (let i = 1; i <= k; i++) data.push({ time: (this.grid.lastTime + i * this.grid.interval) as unknown as Time });
-    series.setData(data);
+    this.setData(series, data);
   }
 
   // ─── Tables ───────────────────────────────────────────────────────────────
@@ -885,6 +965,37 @@ function segmentColors<T extends { color?: string }>(data: T[], base: string): T
     const next = data[i + 1];
     return next ? { ...d, color: next.color ?? base } : d;
   });
+}
+
+/** Newest points a live update can change: the last bar and the one before it */
+const TAIL_POINTS = 2;
+
+/**
+ * Index of the first point of `next` to update on a series that shows `old`: only the last TAIL_POINTS points changed
+ * their values (same times) and at most TAIL_POINTS points were added. -1: anything else (the data is replaced).
+ */
+function changedTail(old: readonly unknown[], next: readonly unknown[]): number {
+  const m = old.length;
+  if (next.length < m || next.length - m > TAIL_POINTS) return -1;
+  let i = 0;
+  while (i < m && samePoint(old[i], next[i])) i++;
+  if (i < m - TAIL_POINTS) return -1;
+  for (let j = i; j < m; j++) if ((old[j] as { time: unknown }).time !== (next[j] as { time: unknown }).time) return -1;
+  return i;
+}
+
+/** Same data point: the same fields with the same values */
+function samePoint(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  const x = a as Record<string, unknown>;
+  const y = b as Record<string, unknown>;
+  let n = 0;
+  for (const k in y) {
+    if (x[k] !== y[k]) return false;
+    n++;
+  }
+  for (const _ in x) n--;
+  return n === 0;
 }
 
 /** Latest time of the outputs (last non-na plot points, markers, arrows, drawings) */

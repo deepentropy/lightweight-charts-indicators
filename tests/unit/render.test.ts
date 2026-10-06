@@ -13,6 +13,8 @@ interface FakeSeries {
   primitives: Set<unknown>;
   options: Record<string, unknown>;
   data: unknown[];
+  setDataCalls: number;
+  updateCalls: number;
 }
 
 function fakeChart() {
@@ -20,12 +22,21 @@ function fakeChart() {
   const preserve = new Map<number, boolean>();
   let paneCount = 1;
   const make = (options: Record<string, unknown> = {}, pane = 0) => {
-    const s: FakeSeries = { pane, primitives: new Set(), options: { ...options }, data: [] };
+    const s: FakeSeries = { pane, primitives: new Set(), options: { ...options }, data: [], setDataCalls: 0, updateCalls: 0 };
     paneCount = Math.max(paneCount, pane + 1);
     series.add(s);
     return {
       _fake: s,
-      setData: (d: unknown[]) => { s.data = d; },
+      setData: (d: unknown[]) => { s.data = [...d]; s.setDataCalls++; },
+      // the library's update: the point of that time is replaced, a newer one appended
+      update: (p: { time: number }, historical = false) => {
+        s.updateCalls++;
+        const i = s.data.findIndex((d) => (d as { time: number }).time === p.time);
+        const last = s.data.length - 1;
+        if (i >= 0 && (i === last || historical)) s.data[i] = p;
+        else if (i < 0 && (last < 0 || (s.data[last] as { time: number }).time < p.time)) s.data.push(p);
+        else throw new Error('update of an older point');
+      },
       applyOptions: (o: Record<string, unknown>) => Object.assign(s.options, o),
       options: () => s.options,
       attachPrimitive: (p: unknown) => { s.primitives.add(p); },
@@ -121,5 +132,76 @@ describe('IndicatorRenderer', () => {
     const all = r.series().length;
     r.render(rsi, rsi.calculate(bars, {}), bars, { plots: { [rsi.plotConfig[0].id]: { visible: false } } });
     expect(r.series().length).toBe(all - 1);
+  });
+
+  describe('reuseSeries', () => {
+    const fake = (s: unknown) => (s as { _fake: FakeSeries })._fake;
+    /** Data of every series of a fresh render (the reference for a reused one) */
+    const freshData = (id: string, b: Bar[], pane = 1) => {
+      const f = fakeChart();
+      const r = new IndicatorRenderer(f.chart, { paneIndex: pane });
+      r.render(entry(id), entry(id).calculate(b, {}), b);
+      return r.series().map((s) => fake(s).data);
+    };
+    const tick = (b: Bar[]): Bar[] => {
+      const last = b[b.length - 1];
+      return [...b.slice(0, -1), { ...last, close: last.close + 1.5, high: last.high + 1.5 }];
+    };
+    const append = (b: Bar[]): Bar[] => {
+      const last = b[b.length - 1];
+      return [...b, { ...last, time: last.time + 86_400, open: last.close, close: last.close - 2, low: last.low - 2 }];
+    };
+
+    for (const id of ['rsi', 'bb', 'macd', 'ma-ribbon']) {
+      it(`${id}: a live update keeps the series and updates the newest points`, () => {
+        const f = fakeChart();
+        const r = new IndicatorRenderer(f.chart, { paneIndex: 1 });
+        const e = entry(id);
+        r.render(e, e.calculate(bars, {}), bars);
+        const before = r.series();
+        const setData = before.map((s) => fake(s).setDataCalls);
+        for (const next of [tick(bars), append(tick(bars))]) {
+          r.render(e, e.calculate(next, {}), next, { reuseSeries: true });
+          expect(r.series()).toEqual(before);
+          expect(f.series.size).toBe(before.length);
+          expect(r.series().map((s) => fake(s).data)).toEqual(freshData(id, next));
+        }
+        // the per-bar series took updates, no new data set (hlines: 2 points whose end moves with a new bar)
+        r.series().forEach((s, i) => {
+          if (fake(s).data.length < 100) return;
+          expect(fake(s).setDataCalls).toBe(setData[i]);
+          expect(fake(s).updateCalls).toBeGreaterThan(0);
+        });
+      });
+    }
+
+    it('replaces the data when more than the newest points changed', () => {
+      const f = fakeChart();
+      const r = new IndicatorRenderer(f.chart, { paneIndex: 1 });
+      const rsi = entry('rsi');
+      r.render(rsi, rsi.calculate(bars, {}), bars);
+      const s = fake(r.series()[0]);
+      const calls = s.setDataCalls;
+      r.render(rsi, rsi.calculate(bars, { length: 7 }), bars, { reuseSeries: true });
+      expect(s.setDataCalls).toBe(calls + 1);
+      const ref = new IndicatorRenderer(fakeChart().chart, { paneIndex: 1 });
+      ref.render(rsi, rsi.calculate(bars, { length: 7 }), bars);
+      expect(s.data).toEqual(fake(ref.series()[0]).data);
+    });
+
+    it('creates and removes series when the drawing changed', () => {
+      const f = fakeChart();
+      const r = new IndicatorRenderer(f.chart, { paneIndex: 1 });
+      const rsi = entry('rsi');
+      r.render(rsi, rsi.calculate(bars, {}), bars);
+      const all = r.series().length;
+      r.render(rsi, rsi.calculate(bars, {}), bars, { reuseSeries: true, plots: { [rsi.plotConfig[0].id]: { visible: false } } });
+      expect(r.series().length).toBe(all - 1);
+      expect(f.series.size).toBe(all - 1);
+      r.render(rsi, rsi.calculate(bars, {}), bars, { reuseSeries: true });
+      expect(f.series.size).toBe(all);
+      r.clear();
+      expect(f.series.size).toBe(0);
+    });
   });
 });

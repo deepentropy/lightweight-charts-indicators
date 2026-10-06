@@ -69,6 +69,9 @@ before, and the indicator pane keeps its height across a redraw.
 - **Render options**: `inputs` (plots whose visibility follows an input), `plots` (per-plot `visible`, `color`,
   `lineWidth`, `style`, `palette`), `lastValueVisible`, `titleVisible`, `priceLineVisible`, `precision`, and
   `autoscale: false` to leave the indicator out of the price-pane autoscale.
+- **Live updates**: `reuseSeries: true` keeps the series of the previous render (same indicator, bars changed at
+  the end). Series of the same type, pane and creation order are kept; when only their newest points changed
+  (or a bar was added) those points are updated instead of the whole data being set again.
 
 The demo page (`example/`) uses the same renderer.
 
