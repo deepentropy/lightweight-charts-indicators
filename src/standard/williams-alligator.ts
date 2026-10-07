@@ -12,34 +12,34 @@ import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, ty
 export interface WilliamsAlligatorInputs {
   /** Jaw period */
   jawLength: number;
-  /** Jaw offset */
-  jawOffset: number;
   /** Teeth period */
   teethLength: number;
-  /** Teeth offset */
-  teethOffset: number;
   /** Lips period */
   lipsLength: number;
+  /** Jaw offset */
+  jawOffset: number;
+  /** Teeth offset */
+  teethOffset: number;
   /** Lips offset */
   lipsOffset: number;
 }
 
 export const defaultInputs: WilliamsAlligatorInputs = {
   jawLength: 13,
-  jawOffset: 8,
   teethLength: 8,
-  teethOffset: 5,
   lipsLength: 5,
+  jawOffset: 8,
+  teethOffset: 5,
   lipsOffset: 3,
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'jawLength', type: 'int', title: 'Jaw Length', defval: 13, min: 1 },
-  { id: 'jawOffset', type: 'int', title: 'Jaw Offset', defval: 8, min: 0 },
   { id: 'teethLength', type: 'int', title: 'Teeth Length', defval: 8, min: 1 },
-  { id: 'teethOffset', type: 'int', title: 'Teeth Offset', defval: 5, min: 0 },
   { id: 'lipsLength', type: 'int', title: 'Lips Length', defval: 5, min: 1 },
-  { id: 'lipsOffset', type: 'int', title: 'Lips Offset', defval: 3, min: 0 },
+  { id: 'jawOffset', type: 'int', title: 'Jaw Offset', defval: 8 },
+  { id: 'teethOffset', type: 'int', title: 'Teeth Offset', defval: 5 },
+  { id: 'lipsOffset', type: 'int', title: 'Lips Offset', defval: 3 },
 ];
 
 export const plotConfig: PlotConfig[] = [

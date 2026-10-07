@@ -30,11 +30,11 @@ export const defaultInputs: BBBandWidthInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1 },
-  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
-  { id: 'mult', type: 'float', title: 'StdDev', defval: 2, min: 0.001, max: 50 },
-  { id: 'expansionLength', type: 'int', title: 'Highest Expansion Length', defval: 125, min: 1 },
-  { id: 'contractionLength', type: 'int', title: 'Lowest Contraction Length', defval: 125, min: 1 },
+  { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1, tooltip: 'The time period to be used in calculating the SMA which creates the base for the Upper and Lower Bands' },
+  { id: 'src', type: 'source', title: 'Source', defval: 'close', tooltip: 'Determines what data from each bar will be used in calculations.' },
+  { id: 'mult', type: 'float', title: 'StdDev', defval: 2, min: 0.001, max: 50, tooltip: 'The number of Standard Deviations away from the SMA that the Upper and Lower Bands should be.' },
+  { id: 'expansionLength', type: 'int', title: 'Highest Expansion Length', defval: 125, min: 1, tooltip: 'The Highest Expansion plot displays the highest value that BBW had in the last N bars, where N is the length specified by this input.', display: 'none' },
+  { id: 'contractionLength', type: 'int', title: 'Lowest Contraction Length', defval: 125, min: 1, tooltip: 'The Lowest Contraction plot displays the lowest value that BBW had in the last N bars, where N is the length specified by this input.', display: 'none' },
 ];
 
 export const plotConfig: PlotConfig[] = [

@@ -5,19 +5,29 @@
  * within anchor periods (e.g., daily, weekly). This helps identify unusual volume
  * relative to typical volume at that time of day/week.
  *
- * Based on the standard Relative Volume at Time indicator.
+ * Based on the standard Relative Volume at Time indicator (ta.relativeVolume: timeframe.change / time of the anchor
+ * timeframe, the average of the past `Length` periods at the same time offset).
+ *
+ * 'Anchor Timeframe' accepts any timeframe ("" = the chart timeframe: every bar is its own period). The original takes
+ * the periods (timeframe.change, time) from the exchange time zone and sessions, which the bars do not carry: the
+ * port takes them from the UTC calendar and the bars (see src/anchor-period.ts). Exact on UTC 24x7 symbols and on
+ * symbols whose trading day is inside the UTC day (e.g. US stocks), after the first period of the bars; not on
+ * sessions that cross 00:00 UTC (futures, forex).
+ * Adjust Unconfirmed (last bar): the original extrapolates the cumulative volume to the close time of the bar; the
+ * bars carry no close time, so it is estimated as the bar time plus the bar interval.
  */
 
-import { type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { barInterval, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { periodStarts } from '../anchor-period';
 
 export interface RelativeVolumeAtTimeInputs {
-  /** Anchor timeframe for period boundaries (e.g., "1D", "1W", "1M") */
+  /** Anchor timeframe for period boundaries: any timeframe string ("1D", "1W", "240", ...; "" = chart timeframe) */
   anchorTimeframe: string;
   /** Number of periods to use for the historical average calculation */
   length: number;
   /** Calculation mode: 'Cumulative' or 'Regular' */
   calculationMode: 'Cumulative' | 'Regular';
-  /** Adjust unclosed bars by extrapolating volume to end of period */
+  /** Adjust the unconfirmed last bar: extrapolate its cumulative volume to the close of the bar */
   adjustRealtime: boolean;
 }
 
@@ -29,10 +39,10 @@ export const defaultInputs: RelativeVolumeAtTimeInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'anchorTimeframe', type: 'string', title: 'Anchor Timeframe', defval: '1D', options: ['1D', '1W', '1M'] },
+  { id: 'anchorTimeframe', type: 'timeframe', title: 'Anchor Timeframe', defval: '1D', tooltip: 'When Chart Timeframe >= `Anchor Timeframe`, the indicator will use last `Length` bars in its calculations.' },
   { id: 'length', type: 'int', title: 'Length', defval: 10, min: 1 },
   { id: 'calculationMode', type: 'string', title: 'Calculation Mode', defval: 'Cumulative', options: ['Cumulative', 'Regular'] },
-  { id: 'adjustRealtime', type: 'bool', title: 'Adjust Unconfirmed', defval: true },
+  { id: 'adjustRealtime', type: 'bool', title: 'Adjust Unconfirmed', defval: true, tooltip: 'If checked, the volume on bars that have not yet closed will be adjusted based on the previous volume data for the current session, extrapolating the volume at the end of the period.', display: 'none' },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -59,67 +69,8 @@ interface CollectedData {
 }
 
 /**
- * Parse timeframe string to get period duration in milliseconds
- */
-function parseTimeframe(tf: string): number {
-  const match = tf.match(/^(\d+)?([SMHDWM])$/i);
-  if (!match) {
-    // Default to daily
-    return 24 * 60 * 60 * 1000;
-  }
-
-  const value = match[1] ? parseInt(match[1], 10) : 1;
-  const unit = match[2].toUpperCase();
-
-  switch (unit) {
-    case 'S': return value * 1000;
-    case 'M': return value * 60 * 1000;
-    case 'H': return value * 60 * 60 * 1000;
-    case 'D': return value * 24 * 60 * 60 * 1000;
-    case 'W': return value * 7 * 24 * 60 * 60 * 1000;
-    default: return value * 30 * 24 * 60 * 60 * 1000; // Monthly approximation
-  }
-}
-
-/**
- * Get the start of the period for a given timestamp based on the anchor timeframe
- */
-function getStartOfPeriod(timestamp: number, timeframe: string): number {
-  // Convert to milliseconds if needed (detect if seconds or ms)
-  const ts = timestamp < 1e12 ? timestamp * 1000 : timestamp;
-  const date = new Date(ts);
-
-  const tf = timeframe.toUpperCase();
-
-  if (tf === '1W' || tf === 'W') {
-    // Start of week (Sunday or Monday depending on locale, using Monday)
-    const day = date.getUTCDay();
-    const diff = day === 0 ? 6 : day - 1; // Adjust to make Monday = 0
-    date.setUTCDate(date.getUTCDate() - diff);
-    date.setUTCHours(0, 0, 0, 0);
-  } else if (tf === '1M' || tf === 'M') {
-    // Start of month
-    date.setUTCDate(1);
-    date.setUTCHours(0, 0, 0, 0);
-  } else {
-    // Default to daily
-    date.setUTCHours(0, 0, 0, 0);
-  }
-
-  // Return in same format as input
-  return timestamp < 1e12 ? Math.floor(date.getTime() / 1000) : date.getTime();
-}
-
-/**
- * Check if a new period has started compared to the previous bar
- */
-function isNewPeriod(currentTime: number, previousTime: number | null, timeframe: string): boolean {
-  if (previousTime === null) return true;
-  return getStartOfPeriod(currentTime, timeframe) !== getStartOfPeriod(previousTime, timeframe);
-}
-
-/**
- * Binary search to find the leftmost index where times[index] >= target
+ * Pine array.binary_search_leftmost: the index of the first element equal to `target`; when no element is equal,
+ * the index of the last element below `target` (0 when every element is above it; checked on reference runs).
  */
 function binarySearchLeftmost(times: number[], target: number): number {
   let left = 0;
@@ -134,7 +85,7 @@ function binarySearchLeftmost(times: number[], target: number): number {
     }
   }
 
-  return left;
+  return left < times.length && times[left] === target ? left : Math.max(left - 1, 0);
 }
 
 /**
@@ -155,13 +106,8 @@ function calcAverageByTime(
     const targetTime = period.startTime + timeOffset;
     const index = binarySearchLeftmost(period.times, targetTime);
 
-    // Get the value at the found index, or the last value if index is out of bounds
-    let value: number;
-    if (index >= period.data.length) {
-      value = period.data[period.data.length - 1];
-    } else {
-      value = period.data[index];
-    }
+    // data.size() - 1 >= index ? data.get(index) : data.last()
+    const value = index < period.data.length ? period.data[index] : period.data[period.data.length - 1];
 
     sum += value;
   }
@@ -173,53 +119,50 @@ export function calculate(bars: Bar[], inputs: Partial<RelativeVolumeAtTimeInput
   const { anchorTimeframe, length, calculationMode, adjustRealtime } = { ...defaultInputs, ...inputs };
   const isCumulative = calculationMode === 'Cumulative';
 
+  // time(anchorTimeframe) of each bar; timeframe.change(anchorTimeframe) where it differs from the previous bar
+  const starts = periodStarts(bars, anchorTimeframe);
+
   // Historical periods storage (FIFO queue)
   const historicalData: CollectedData[] = [];
 
-  // Current period data
+  // Current period data (created on the first bar with time(anchorTimeframe))
   let currentPeriod: CollectedData = {
     data: [],
     times: [],
-    startTime: 0,
+    startTime: starts[0],
   };
 
   // Cumulative sum for current period
   let cumulativeSum = 0;
 
-  // Previous bar time for detecting period changes
-  let prevTime: number | null = null;
-
-  // Track anchor start time for realtime adjustment
-  let lastAnchorTime = 0;
+  // Time of the last anchor bar (na until the first anchor), for the realtime adjustment
+  let lastAnchorTime = NaN;
 
   // Output arrays
   const ratioValues: number[] = [];
 
   for (let i = 0; i < bars.length; i++) {
     const bar = bars[i];
-    const barTime = typeof bar.time === 'number' ? bar.time : new Date(bar.time).getTime() / 1000;
+    const barTime = bar.time;
     const volume = bar.volume ?? 0;
 
-    // Check for new anchor period
-    const isAnchor = isNewPeriod(barTime, prevTime, anchorTimeframe);
+    // timeframe.change(anchorTimeframe): false on the first bar
+    const isAnchor = i > 0 && starts[i] !== starts[i - 1];
 
     if (isAnchor) {
-      // Save the previous period to historical data if it has data
-      if (currentPeriod.data.length > 0) {
-        historicalData.push(currentPeriod);
+      // Save the previous period to historical data
+      historicalData.push(currentPeriod);
 
-        // Maintain maximum size
-        if (historicalData.length > length) {
-          historicalData.shift();
-        }
+      // Maintain maximum size
+      if (historicalData.length > length) {
+        historicalData.shift();
       }
 
       // Start a new period
-      const periodStart = getStartOfPeriod(barTime, anchorTimeframe);
       currentPeriod = {
         data: [],
         times: [],
-        startTime: periodStart,
+        startTime: starts[i],
       };
 
       // Reset cumulative sum and anchor time
@@ -229,33 +172,31 @@ export function calculate(bars: Bar[], inputs: Partial<RelativeVolumeAtTimeInput
 
     // Calculate current value based on mode
     let currentValue: number;
+    let historyValue: number;
     if (isCumulative) {
       cumulativeSum += volume;
       currentValue = cumulativeSum;
+      historyValue = cumulativeSum;
 
-      // Apply realtime adjustment for unclosed bars (last bar in the dataset)
-      // This extrapolates the cumulative volume based on time elapsed
-      if (adjustRealtime && i === bars.length - 1 && lastAnchorTime > 0) {
-        const timePassed = barTime - lastAnchorTime;
-        if (timePassed > 0) {
-          // Estimate the bar's close time (next bar time or end of period)
-          const periodDuration = parseTimeframe(anchorTimeframe);
-          const periodEnd = currentPeriod.startTime + periodDuration / 1000; // Convert to seconds
-          const timeTotal = periodEnd - lastAnchorTime;
-
-          if (timeTotal > 0 && timePassed < timeTotal) {
-            const currentRatio = cumulativeSum / timePassed;
-            currentValue = currentRatio * timeTotal;
-          }
-        }
+      // Adjust Unconfirmed: the last bar is not confirmed (as in the original, until the data feed closes it).
+      // The original extrapolates the sum since the last anchor bar to the close of the bar:
+      // sum / (min(timenow, time_close) - lastAnchor) * (time_close - lastAnchor). time_close is estimated as the
+      // bar time plus the bar interval (the bars carry no close time); a bar whose close is past gives no change.
+      if (adjustRealtime && i === bars.length - 1) {
+        const timeClose = barTime + barInterval(bars);
+        const now = barTime < 1e12 ? Date.now() / 1000 : Date.now();
+        const timePassed = Math.min(now, timeClose) - lastAnchorTime;
+        const timeTotal = timeClose - lastAnchorTime;
+        currentValue = (cumulativeSum / timePassed) * timeTotal;
       }
     } else {
       currentValue = volume;
+      historyValue = volume;
     }
 
     // Add to current period
     currentPeriod.times.push(barTime);
-    currentPeriod.data.push(currentValue);
+    currentPeriod.data.push(historyValue);
 
     // Calculate time offset from start of current period
     const timeOffset = barTime - currentPeriod.startTime;
@@ -263,18 +204,8 @@ export function calculate(bars: Bar[], inputs: Partial<RelativeVolumeAtTimeInput
     // Calculate historical average at this time offset
     const pastVolume = calcAverageByTime(historicalData, timeOffset);
 
-    // Calculate ratio (Pine division: non-zero / 0 is +-infinity, 0 / 0 is na)
-    let ratio: number;
-    if (Number.isNaN(pastVolume) || Number.isNaN(currentValue)) {
-      ratio = NaN;
-    } else if (pastVolume === 0) {
-      ratio = currentValue === 0 ? NaN : (currentValue > 0 ? Infinity : -Infinity);
-    } else {
-      ratio = currentValue / pastVolume;
-    }
-
-    ratioValues.push(ratio);
-    prevTime = barTime;
+    // Pine division (as JavaScript): non-zero / 0 is +-infinity, 0 / 0 is na
+    ratioValues.push(currentValue / pastVolume);
   }
 
   // Colour: green when ratio > 1 (Pine float comparison: ratio - 1 > 1e-10; na compares false), else red;

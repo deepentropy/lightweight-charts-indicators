@@ -33,9 +33,9 @@ export const defaultInputs: ParabolicSARInputs = {
  * Input configuration for UI
  */
 export const inputConfig: InputConfig[] = [
-  { id: 'start', type: 'float', title: 'Start', defval: 0.02, min: 0.0001, step: 0.01 },
-  { id: 'increment', type: 'float', title: 'Increment', defval: 0.02, min: 0.0001, step: 0.01 },
-  { id: 'maximum', type: 'float', title: 'Max Value', defval: 0.2, min: 0.01, step: 0.01 },
+  { id: 'start', type: 'float', title: 'start', defval: 0.02 },
+  { id: 'increment', type: 'float', title: 'increment', defval: 0.02 },
+  { id: 'maximum', type: 'float', title: 'Max value', defval: 0.2 },
 ];
 
 /**

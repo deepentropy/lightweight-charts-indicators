@@ -5,7 +5,7 @@
  * More sensitive than standard RSI.
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface StochRSIInputs {
   /** K smoothing period */
@@ -16,6 +16,8 @@ export interface StochRSIInputs {
   lengthRSI: number;
   /** Stochastic period */
   lengthStoch: number;
+  /** RSI source */
+  src: SourceType;
 }
 
 export const defaultInputs: StochRSIInputs = {
@@ -23,6 +25,7 @@ export const defaultInputs: StochRSIInputs = {
   smoothD: 3,
   lengthRSI: 14,
   lengthStoch: 14,
+  src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
@@ -30,6 +33,7 @@ export const inputConfig: InputConfig[] = [
   { id: 'smoothD', type: 'int', title: 'D', defval: 3, min: 1 },
   { id: 'lengthRSI', type: 'int', title: 'RSI Length', defval: 14, min: 1 },
   { id: 'lengthStoch', type: 'int', title: 'Stochastic Length', defval: 14, min: 1 },
+  { id: 'src', type: 'source', title: 'RSI Source', defval: 'close' },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -54,12 +58,12 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<StochRSIInputs> = {}): IndicatorResult {
-  const { smoothK, smoothD, lengthRSI, lengthStoch } = { ...defaultInputs, ...inputs };
+  const { smoothK, smoothD, lengthRSI, lengthStoch, src } = { ...defaultInputs, ...inputs };
 
-  const close = new Series(bars, b => b.close);
+  const source = getSourceSeries(bars, src);
 
   // Calculate RSI
-  const rsiSeries = ta.rsi(close, lengthRSI);
+  const rsiSeries = ta.rsi(source, lengthRSI);
 
   // Apply Stochastic to RSI: stoch(rsi, rsi, rsi, lengthStoch)
   // stoch = 100 * (src - lowest(low, len)) / (highest(high, len) - lowest(low, len))

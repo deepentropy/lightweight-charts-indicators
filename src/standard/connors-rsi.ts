@@ -20,9 +20,9 @@ export const defaultInputs: ConnorsRSIInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'lenrsi', type: 'int', title: 'RSI Length', defval: 3, min: 1 },
-  { id: 'lenupdown', type: 'int', title: 'UpDown Length', defval: 2, min: 1 },
-  { id: 'lenroc', type: 'int', title: 'ROC Length', defval: 100, min: 1 },
+  { id: 'lenrsi', type: 'int', title: 'RSI Length', defval: 3 },
+  { id: 'lenupdown', type: 'int', title: 'UpDown Length', defval: 2 },
+  { id: 'lenroc', type: 'int', title: 'ROC Length', defval: 100 },
 ];
 
 export const plotConfig: PlotConfig[] = [

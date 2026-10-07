@@ -10,19 +10,16 @@ import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotC
 export interface DEMAInputs {
   length: number;
   src: SourceType;
-  offset: number;
 }
 
 export const defaultInputs: DEMAInputs = {
   length: 9,
   src: 'close',
-  offset: 0,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 9, min: 1 },
+  { id: 'length', type: 'int', title: 'length', defval: 9, min: 1 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
-  { id: 'offset', type: 'int', title: 'Offset', defval: 0, min: -500, max: 500 },
 ];
 
 export const plotConfig: PlotConfig[] = [

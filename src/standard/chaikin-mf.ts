@@ -18,7 +18,7 @@ export const defaultInputs: ChaikinMFInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1 },
+  { id: 'length', type: 'int', title: 'length', defval: 20, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [

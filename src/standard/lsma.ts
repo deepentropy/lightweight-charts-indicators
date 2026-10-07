@@ -9,20 +9,20 @@ import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotC
 
 export interface LSMAInputs {
   length: number;
-  src: SourceType;
   offset: number;
+  src: SourceType;
 }
 
 export const defaultInputs: LSMAInputs = {
   length: 25,
-  src: 'close',
   offset: 0,
+  src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 25, min: 1 },
+  { id: 'length', type: 'int', title: 'Length', defval: 25 },
+  { id: 'offset', type: 'int', title: 'Offset', defval: 0 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
-  { id: 'offset', type: 'int', title: 'Offset', defval: 0, min: -500, max: 500 },
 ];
 
 export const plotConfig: PlotConfig[] = [

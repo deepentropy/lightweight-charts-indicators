@@ -25,7 +25,7 @@ export const defaultInputs: SMIErgodicOscInputs = {
 export const inputConfig: InputConfig[] = [
   { id: 'longLength', type: 'int', title: 'Long Length', defval: 20, min: 1 },
   { id: 'shortLength', type: 'int', title: 'Short Length', defval: 5, min: 1 },
-  { id: 'signalLength', type: 'int', title: 'Signal Length', defval: 5, min: 1 },
+  { id: 'signalLength', type: 'int', title: 'Signal Line Length', defval: 5, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [

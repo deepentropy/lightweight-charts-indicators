@@ -21,7 +21,7 @@ export const defaultInputs: EaseOfMovementInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 14, min: 1 },
+  { id: 'length', type: 'int', title: 'length', defval: 14, min: 1 },
   { id: 'divisor', type: 'int', title: 'Divisor', defval: 10000, min: 1 },
 ];
 

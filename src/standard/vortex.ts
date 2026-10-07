@@ -17,7 +17,7 @@ export const defaultInputs: VortexInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 14, min: 1 },
+  { id: 'length', type: 'int', title: 'Length', defval: 14, min: 2 },
 ];
 
 export const plotConfig: PlotConfig[] = [

@@ -3,7 +3,7 @@
  * Handles indicator selection dropdown and dynamic input generation
  */
 
-import type {Bar} from 'oakscriptjs';
+import { isInputActive, type Bar, type InputConfig } from 'oakscriptjs';
 import { ChartManager } from './chart';
 import { parseColor } from '../../src/render/color';
 import { indicatorRegistry, type IndicatorRegistryEntry, type IndicatorCategory } from '../../src/index';
@@ -281,7 +281,7 @@ export class IndicatorUI {
     // Handle inputConfig as either array or object
     const inputConfigArray = Array.isArray(indicator.inputConfig) ? indicator.inputConfig : [];
 
-    const inputsHtml = inputConfigArray.map((input: any) => {
+    const controlsHtml = inputConfigArray.map((input: any) => {
       const value = this.currentInputs[input.id] ?? input.defval;
 
       switch (input.type) {
@@ -330,6 +330,8 @@ export class IndicatorUI {
           `;
 
         case 'string':
+        case 'timeframe': // "60", "1D", "" = chart timeframe
+        case 'session':
           if (input.options) {
             return `
               <div class="input-group">
@@ -394,12 +396,56 @@ export class IndicatorUI {
         default:
           return '';
       }
-    }).join('');
+    });
+
+    // Layout as in the original settings: a header per `group`, inputs sharing an `inline` id on one row
+    let inputsHtml = '';
+    let lastGroup: string | undefined;
+    for (let i = 0; i < inputConfigArray.length; i++) {
+      const input = inputConfigArray[i] as InputConfig;
+      if (input.group !== lastGroup) {
+        if (input.group) inputsHtml += `<div class="input-section">${escapeHtml(input.group)}</div>`;
+        lastGroup = input.group;
+      }
+      if (!input.inline) {
+        inputsHtml += controlsHtml[i];
+        continue;
+      }
+      let row = '';
+      let j = i;
+      for (; j < inputConfigArray.length; j++) {
+        const next = inputConfigArray[j] as InputConfig;
+        if (next.inline !== input.inline || next.group !== input.group) break;
+        row += controlsHtml[j];
+      }
+      inputsHtml += `<div class="input-row">${row}</div>`;
+      i = j - 1;
+    }
 
     container.innerHTML = `
       <h4>${indicator.metadata.title} Settings</h4>
       ${inputsHtml}
     `;
+
+    // Tooltips, untitled inputs (no label) and the `active` state of each input
+    const applyActive = () => {
+      for (const config of inputConfigArray as InputConfig[]) {
+        const el = container.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-input-id="${config.id}"]`);
+        if (!el) continue;
+        const active = isInputActive(config, this.currentInputs, inputConfigArray as InputConfig[]);
+        el.disabled = !active;
+        el.closest('.input-group')?.classList.toggle('inactive', !active);
+      }
+    };
+    for (const config of inputConfigArray as InputConfig[]) {
+      const group = container.querySelector(`[data-input-id="${config.id}"]`)?.closest('.input-group');
+      if (!group) continue;
+      if (config.tooltip) group.setAttribute('title', config.tooltip);
+      if (!config.title) group.querySelector('label')?.remove();
+      if (config.type === 'bool' || config.type === 'color') group.classList.add('compact');
+    }
+    applyActive();
+    container.onchange = applyActive; // one handler per container (renderInputs runs again for each indicator)
 
     // Add event listeners
     container.querySelectorAll('[data-input-id]').forEach(element => {
@@ -475,4 +521,8 @@ export class IndicatorUI {
       console.error('Error calculating indicator:', error);
     }
   }
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 }

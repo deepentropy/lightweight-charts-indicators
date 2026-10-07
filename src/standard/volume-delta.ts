@@ -11,21 +11,40 @@
  *   hline(0)
  *   plotcandle(openVolume, maxVolume, minVolume, lastVolume, "Volume Delta", color=col, bordercolor=col, wickcolor=col)
  *
- * The values are an estimate: the standard indicator splits the volume of each bar into up and down volume from
- * lower-timeframe (intrabar) volume, which the chart bars do not have. This implementation gives all the volume of a
- * bar to up or down volume by close vs open. The design (colours, zero line) is the one of the standard indicator.
+ * The standard indicator splits the volume of each bar into up and down volume from lower-timeframe (intrabar)
+ * volume: 'Use custom timeframe' / 'Timeframe', else automatic ("1S" on seconds charts, "1" intraday, "5" daily,
+ * "60" above). See src/lower-tf-volume.ts:
+ * - lower timeframe = chart timeframe (e.g. 'Timeframe' "1D" on a daily chart, automatic on a 1-minute chart): the
+ *   chart bars are the intrabars and the values are the original ones (library rule: up when close > open, down
+ *   when close < open, else by close vs previous close, else as the previous bar)
+ * - lower timeframe below the chart timeframe: the chart bars do not have the intrabar volume; the values are an
+ *   estimate that gives all the volume of a bar to up or down volume by close vs open (0 when equal)
+ * - lower timeframe above the chart timeframe: error, as the original
+ * The design (colours, zero line) is the one of the standard indicator.
  */
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import { lowerTimeframe, upDownVolumeOfChartBars } from '../lower-tf-volume';
 
 export interface VolumeDeltaInputs {
-  // No configurable inputs in the standard indicator
+  /** Use the custom lower timeframe instead of the automatic one */
+  useCustomTimeframe: boolean;
+  /** Custom lower timeframe of the intrabar volume */
+  lowerTimeframe: string;
 }
 
-export const defaultInputs: VolumeDeltaInputs = {};
+export const defaultInputs: VolumeDeltaInputs = {
+  useCustomTimeframe: false,
+  lowerTimeframe: '1',
+};
 
-export const inputConfig: InputConfig[] = [];
+const LOWER_TF_TOOLTIP = 'The indicator scans lower timeframe data to approximate up and down volume used in the delta calculation. By default, the timeframe is chosen automatically. These inputs override this with a custom timeframe. \n\nHigher timeframes provide more historical data, but the data will be less precise.';
+
+export const inputConfig: InputConfig[] = [
+  { id: 'useCustomTimeframe', type: 'bool', title: 'Use custom timeframe', defval: false, tooltip: LOWER_TF_TOOLTIP, display: 'none' },
+  { id: 'lowerTimeframe', type: 'timeframe', title: 'Timeframe', defval: '1', active: 'useCustomTimeframe' },
+];
 
 // No line plots — rendered via plotCandles
 export const plotConfig: PlotConfig[] = [];
@@ -48,7 +67,10 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], _inputs: Partial<VolumeDeltaInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
+export function calculate(bars: Bar[], inputs: Partial<VolumeDeltaInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
+  const { useCustomTimeframe, lowerTimeframe: customTimeframe } = { ...defaultInputs, ...inputs };
+  const { exact } = lowerTimeframe(bars, useCustomTimeframe, customTimeframe);
+  const exactDelta = exact ? upDownVolumeOfChartBars(bars).delta : [];
   const candles: PlotCandleData[] = [];
 
   for (let i = 0; i < bars.length; i++) {
@@ -56,7 +78,9 @@ export function calculate(bars: Bar[], _inputs: Partial<VolumeDeltaInputs> = {})
     const volume = bar.volume ?? 0;
 
     let delta: number;
-    if (bar.close > bar.open) {
+    if (exact) {
+      delta = exactDelta[i];
+    } else if (bar.close > bar.open) {
       delta = volume;
     } else if (bar.close < bar.open) {
       delta = -volume;

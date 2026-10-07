@@ -27,9 +27,9 @@ export const defaultInputs: EnvelopeInputs = {
 
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1 },
-  { id: 'percent', type: 'float', title: 'Percent', defval: 10, min: 0.001 },
+  { id: 'percent', type: 'float', title: 'Percent', defval: 10 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
-  { id: 'exponential', type: 'bool', title: 'Exponential', defval: false },
+  { id: 'exponential', type: 'bool', title: 'Exponential', defval: false, display: 'none' },
 ];
 
 export const plotConfig: PlotConfig[] = [

@@ -20,8 +20,8 @@ export const defaultInputs: MACrossInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'shortLength', type: 'int', title: 'Short Length', defval: 9, min: 1 },
-  { id: 'longLength', type: 'int', title: 'Long Length', defval: 21, min: 1 },
+  { id: 'shortLength', type: 'int', title: 'Short MA Length', defval: 9, min: 1 },
+  { id: 'longLength', type: 'int', title: 'Long MA Length', defval: 21, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [

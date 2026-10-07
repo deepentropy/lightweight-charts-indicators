@@ -5,21 +5,18 @@
  * follows MD = MD[1] + (src - MD[1]) / (length * (src / MD[1])^4).
  */
 
-import { getSourceSeries, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { getSourceSeries, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
 export interface McGinleyDynamicInputs {
   length: number;
-  src: SourceType;
 }
 
 export const defaultInputs: McGinleyDynamicInputs = {
   length: 14,
-  src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 14, min: 1 },
-  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
+  { id: 'length', type: 'int', title: 'length', defval: 14, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -33,13 +30,13 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<McGinleyDynamicInputs> = {}): IndicatorResult {
-  const { length, src } = { ...defaultInputs, ...inputs };
-  const sourceArr = getSourceSeries(bars, src).toArray().map((v) => v ?? NaN);
+  const { length } = { ...defaultInputs, ...inputs };
+  const sourceArr = getSourceSeries(bars, 'close').toArray().map((v) => v ?? NaN);
 
   // mg := na(mg[1]) ? ta.ema(source, length) : mg[1] + (source - mg[1]) / (length * math.pow(source / mg[1], 4))
   // ta.ema runs only on the bars where mg[1] is na: from bar 0 until its first value (the SMA of the first
   // `length` values), so it is the plain EMA there.
-  const ema = ta.ema(getSourceSeries(bars, src), length).toArray().map((v) => v ?? NaN);
+  const ema = ta.ema(getSourceSeries(bars, 'close'), length).toArray().map((v) => v ?? NaN);
   const mdArr: number[] = new Array(bars.length);
   let prev = NaN;
   for (let i = 0; i < bars.length; i++) {

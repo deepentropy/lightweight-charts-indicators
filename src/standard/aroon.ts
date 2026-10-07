@@ -19,7 +19,7 @@ export const defaultInputs: AroonInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 14, min: 1 },
+  { id: 'length', type: 'int', title: 'length', defval: 14, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [

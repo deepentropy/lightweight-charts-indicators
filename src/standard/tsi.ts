@@ -23,9 +23,9 @@ export const defaultInputs: TSIInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'longLength', type: 'int', title: 'Long Length', defval: 25, min: 1 },
-  { id: 'shortLength', type: 'int', title: 'Short Length', defval: 13, min: 1 },
-  { id: 'signalLength', type: 'int', title: 'Signal Length', defval: 13, min: 1 },
+  { id: 'longLength', type: 'int', title: 'Long Length', defval: 25 },
+  { id: 'shortLength', type: 'int', title: 'Short Length', defval: 13 },
+  { id: 'signalLength', type: 'int', title: 'Signal Length', defval: 13 },
 ];
 
 export const plotConfig: PlotConfig[] = [

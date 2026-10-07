@@ -30,7 +30,7 @@ export const defaultInputs: DonchianInputs = {
  * Input configuration for UI
  */
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1 },
+  { id: 'length', type: 'int', title: 'length', defval: 20, min: 1 },
   { id: 'offset', type: 'int', title: 'Offset', defval: 0 },
 ];
 

@@ -38,11 +38,11 @@ export const defaultInputs: BBInputs = {
  * Input configuration for UI
  */
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1 },
-  { id: 'maType', type: 'string', title: 'Basis MA Type', defval: 'SMA', options: ['SMA', 'EMA', 'SMMA (RMA)', 'WMA', 'VWMA'] },
-  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
-  { id: 'mult', type: 'float', title: 'StdDev', defval: 2, min: 0.001, max: 50 },
-  { id: 'offset', type: 'int', title: 'Offset', defval: 0, min: -500, max: 500 },
+  { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1, tooltip: 'The time period to be used in calculating the MA which creates the base for the Upper and Lower Bands.' },
+  { id: 'maType', type: 'string', title: 'Basis MA Type', defval: 'SMA', options: ['SMA', 'EMA', 'SMMA (RMA)', 'WMA', 'VWMA'], tooltip: 'Determines the type of Moving Average that is applied to the basis plot line.' },
+  { id: 'src', type: 'source', title: 'Source', defval: 'close', tooltip: 'Determines what data from each bar will be used in calculations.' },
+  { id: 'mult', type: 'float', title: 'StdDev', defval: 2, min: 0.001, max: 50, tooltip: 'The number of Standard Deviations away from the MA that the Upper and Lower Bands should be.' },
+  { id: 'offset', type: 'int', title: 'Offset', defval: 0, min: -500, max: 500, tooltip: 'Changing this number will move the Bollinger Bands either Forwards or Backwards relative to the current market.', display: 'none' },
 ];
 
 /**

@@ -9,26 +9,12 @@
 
 import { Series, ta, type Bar, type IndicatorResult, type InputConfig, type PlotConfig } from 'oakscriptjs';
 
-export interface KlingerInputs {
-  /** Fast EMA period */
-  fastLength: number;
-  /** Slow EMA period */
-  slowLength: number;
-  /** Signal line period */
-  signalLength: number;
-}
+/** The original has no inputs: the EMA lengths 34, 55 and 13 are fixed. */
+export type KlingerInputs = Record<string, never>;
 
-export const defaultInputs: KlingerInputs = {
-  fastLength: 34,
-  slowLength: 55,
-  signalLength: 13,
-};
+export const defaultInputs: KlingerInputs = {};
 
-export const inputConfig: InputConfig[] = [
-  { id: 'fastLength', type: 'int', title: 'Fast Length', defval: 34, min: 1 },
-  { id: 'slowLength', type: 'int', title: 'Slow Length', defval: 55, min: 1 },
-  { id: 'signalLength', type: 'int', title: 'Signal Length', defval: 13, min: 1 },
-];
+export const inputConfig: InputConfig[] = [];
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Klinger Oscillator', color: '#2962FF', lineWidth: 1 },
@@ -49,8 +35,10 @@ export const metadata = {
  * kvo = ta.ema(sv, 34) - ta.ema(sv, 55)
  * sig = ta.ema(kvo, 13)
  */
-export function calculate(bars: Bar[], inputs: Partial<KlingerInputs> = {}): IndicatorResult {
-  const { fastLength, slowLength, signalLength } = { ...defaultInputs, ...inputs };
+export function calculate(bars: Bar[], _inputs: Partial<KlingerInputs> = {}): IndicatorResult {
+  const fastLength = 34;
+  const slowLength = 55;
+  const signalLength = 13;
 
   // Calculate HLC3
   const hlc3: number[] = bars.map(b => (b.high + b.low + b.close) / 3);

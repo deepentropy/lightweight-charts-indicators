@@ -5,19 +5,23 @@
  * SMMA = (prev_smma * (length - 1) + src) / length
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { getSourceSeries, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface SMMAInputs {
   /** Period length */
   length: number;
+  /** Source */
+  src: SourceType;
 }
 
 export const defaultInputs: SMMAInputs = {
   length: 7,
+  src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Length', defval: 7, min: 1 },
+  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -31,12 +35,12 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<SMMAInputs> = {}): IndicatorResult {
-  const { length } = { ...defaultInputs, ...inputs };
+  const { length, src } = { ...defaultInputs, ...inputs };
 
-  const close = new Series(bars, b => b.close);
+  const source = getSourceSeries(bars, src);
 
   // SMMA is the same as RMA (Wilder's smoothing)
-  const smmaValues = ta.rma(close, length);
+  const smmaValues = ta.rma(source, length);
   const smmaArr = smmaValues.toArray();
 
   const smmaData = smmaArr.map((value: number | null, i: number) => ({

@@ -1,41 +1,59 @@
 /**
  * Moving Average Convergence Divergence (MACD) Indicator
  *
- * Hand-optimized implementation using oakscriptjs.
- * Trend-following momentum indicator showing relationship between two EMAs.
+ * Trend-following momentum indicator: macd = fastMA - slowMA of the source, a signal line (MA of the MACD) and a
+ * histogram (macd - signal). The histogram is teal above 0 and red below 0, bright when it rises versus the previous
+ * bar and pale otherwise. The moving averages are EMA or SMA (oscillator and signal types chosen separately).
+ *
+ * Based on the standard "Moving Average Convergence Divergence" indicator. Its two alertcondition() calls
+ * (histogram sign changes) are not ported.
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+
+export type MACDMaType = 'EMA' | 'SMA';
 
 export interface MACDInputs {
-  fastLength: number;
-  slowLength: number;
-  signalLength: number;
+  /** Price source */
   src: SourceType;
+  /** Fast MA length */
+  fastLength: number;
+  /** Slow MA length */
+  slowLength: number;
+  /** Signal MA length */
+  signalLength: number;
+  /** MA type of the fast and slow averages */
+  oscMaType: MACDMaType;
+  /** MA type of the signal line */
+  signalMaType: MACDMaType;
 }
 
 export const defaultInputs: MACDInputs = {
+  src: 'close',
   fastLength: 12,
   slowLength: 26,
   signalLength: 9,
-  src: 'close',
+  oscMaType: 'EMA',
+  signalMaType: 'EMA',
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'fastLength', type: 'int', title: 'Fast Length', defval: 12, min: 1 },
-  { id: 'slowLength', type: 'int', title: 'Slow Length', defval: 26, min: 1 },
-  { id: 'signalLength', type: 'int', title: 'Signal Smoothing', defval: 9, min: 1 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
+  { id: 'fastLength', type: 'int', title: 'Fast length', defval: 12, min: 1 },
+  { id: 'slowLength', type: 'int', title: 'Slow length', defval: 26, min: 1 },
+  { id: 'signalLength', type: 'int', title: 'Signal length', defval: 9, min: 1 },
+  { id: 'oscMaType', type: 'string', title: 'Oscillator MA type', defval: 'EMA', options: ['EMA', 'SMA'], display: 'none' },
+  { id: 'signalMaType', type: 'string', title: 'Signal MA type', defval: 'EMA', options: ['EMA', 'SMA'], display: 'none' },
 ];
 
 export const plotConfig: PlotConfig[] = [
-  { id: 'plot0', title: 'Histogram', color: '#26A69A', lineWidth: 1, style: 'columns' },
+  { id: 'plot0', title: 'Histogram', color: '#2962FF', lineWidth: 1, style: 'columns' },
   { id: 'plot1', title: 'MACD', color: '#2962FF', lineWidth: 1 },
-  { id: 'plot2', title: 'Signal', color: '#FF6D00', lineWidth: 1 },
+  { id: 'plot2', title: 'Signal line', color: '#FF6D00', lineWidth: 1 },
 ];
 
 export const hlineConfig: HLineConfig[] = [
-  { id: 'hline_zero', price: 0, color: '#787B8680', linestyle: 'solid', title: 'Zero Line' },
+  { id: 'hline_zero', price: 0, color: '#787B8680', linestyle: 'dashed', title: 'Zero' },
 ];
 
 export const metadata = {
@@ -44,50 +62,37 @@ export const metadata = {
   overlay: false,
 };
 
+/** Pine float comparisons: a > b only when a - b > 1e-10 (na compares false) */
+const EPS = 1e-10;
+const gt = (a: number, b: number) => a - b > EPS;
+const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
+
 export function calculate(bars: Bar[], inputs: Partial<MACDInputs> = {}): IndicatorResult {
-  const { fastLength, slowLength, signalLength, src } = { ...defaultInputs, ...inputs };
+  const { src, fastLength, slowLength, signalLength, oscMaType, signalMaType } = { ...defaultInputs, ...inputs };
+  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
+  const ma = (source: Series, length: number, maType: MACDMaType) =>
+    maType === 'SMA' ? ta.sma(source, length) : ta.ema(source, length);
   const source = getSourceSeries(bars, src);
 
-  // MACD line = Fast EMA - Slow EMA
-  const fastEMA = ta.ema(source, fastLength);
-  const slowEMA = ta.ema(source, slowLength);
-  const macdLine = fastEMA.sub(slowEMA);
+  // MACD line = fast MA - slow MA; signal line = MA of the MACD line; histogram = MACD - signal
+  const maFast = A(ma(source, fastLength, oscMaType));
+  const maSlow = A(ma(source, slowLength, oscMaType));
+  const macd = maFast.map((f, i) => f - maSlow[i]);
+  const signal = A(ma(Series.fromArray(bars, macd), signalLength, signalMaType));
+  const hist = macd.map((m, i) => m - signal[i]);
 
-  // Signal line = EMA of MACD line
-  const signalLine = ta.ema(macdLine, signalLength);
-
-  // Histogram = MACD line - Signal line
-  const histogram = macdLine.sub(signalLine);
-
-  const histArr = histogram.toArray();
-  const histData = histArr.map((value, i) => {
-    const v = value ?? NaN;
-    const prev = i > 0 ? (histArr[i - 1] ?? NaN) : NaN;
-    let color: string;
-    if (v >= 0) {
-      color = prev < v ? '#26A69A' : '#B2DFDB';
-    } else {
-      color = prev < v ? '#FFCDD2' : '#FF5252';
-    }
-    return { time: bars[i].time, value: v, color };
+  const histData = hist.map((h, i) => {
+    const prev = i > 0 ? hist[i - 1] : NaN;
+    const color = ge(h, 0) ? (gt(h, prev) ? '#26A69A' : '#B2DFDB') : gt(h, prev) ? '#FFCDD2' : '#FF5252';
+    return { time: bars[i].time, value: h, color };
   });
-
-  const macdData = macdLine.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const signalData = signalLine.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {
       'plot0': histData,
-      'plot1': macdData,
-      'plot2': signalData,
+      'plot1': macd.map((value, i) => ({ time: bars[i].time, value })),
+      'plot2': signal.map((value, i) => ({ time: bars[i].time, value })),
     },
   };
 }

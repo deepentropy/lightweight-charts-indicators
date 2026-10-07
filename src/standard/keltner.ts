@@ -42,12 +42,12 @@ export const defaultInputs: KeltnerInputs = {
  * Input configuration for UI
  */
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1 },
-  { id: 'mult', type: 'float', title: 'Multiplier', defval: 2, min: 0.001, max: 50 },
+  { id: 'length', type: 'int', title: 'length', defval: 20, min: 1 },
+  { id: 'mult', type: 'float', title: 'Multiplier', defval: 2 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
-  { id: 'useEMA', type: 'bool', title: 'Use Exponential MA', defval: true },
-  { id: 'bandsStyle', type: 'string', title: 'Bands Style', defval: 'Average True Range', options: ['Average True Range', 'True Range', 'Range'] },
-  { id: 'atrLength', type: 'int', title: 'ATR Length', defval: 10, min: 1 },
+  { id: 'useEMA', type: 'bool', title: 'Use Exponential MA', defval: true, display: 'none' },
+  { id: 'bandsStyle', type: 'string', title: 'Bands Style', defval: 'Average True Range', options: ['Average True Range', 'True Range', 'Range'], display: 'none' },
+  { id: 'atrLength', type: 'int', title: 'ATR Length', defval: 10, display: 'none' },
 ];
 
 /**

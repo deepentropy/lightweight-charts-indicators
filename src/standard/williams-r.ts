@@ -19,7 +19,7 @@ export const defaultInputs: WilliamsRInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 14, min: 1 },
+  { id: 'length', type: 'int', title: 'Length', defval: 14 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 

@@ -19,7 +19,7 @@ export const defaultInputs: TRIXInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 18, min: 1 },
+  { id: 'length', type: 'int', title: 'length', defval: 18, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [

@@ -27,12 +27,12 @@ export const defaultInputs: RSIInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'RSI Length', defval: 14, min: 1 },
-  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
-  { id: 'calculateDivergence', type: 'bool', title: 'Calculate Divergence', defval: false },
-  { id: 'maType', type: 'string', title: 'Smoothing Type', defval: 'SMA', options: ['None', 'SMA', 'SMA + Bollinger Bands', 'EMA', 'SMMA (RMA)', 'WMA', 'VWMA'] },
-  { id: 'maLength', type: 'int', title: 'Smoothing Length', defval: 14, min: 1 },
-  { id: 'bbMult', type: 'float', title: 'BB StdDev', defval: 2.0, min: 0.001, max: 50 },
+  { id: 'length', type: 'int', title: 'RSI Length', defval: 14, min: 1, group: 'RSI Settings' },
+  { id: 'src', type: 'source', title: 'Source', defval: 'close', group: 'RSI Settings' },
+  { id: 'calculateDivergence', type: 'bool', title: 'Calculate Divergence', defval: false, group: 'RSI Settings', tooltip: 'Calculating divergences is needed in order for divergence alerts to fire.', display: 'none' },
+  { id: 'maType', type: 'string', title: 'Type', defval: 'SMA', options: ['None', 'SMA', 'SMA + Bollinger Bands', 'EMA', 'SMMA (RMA)', 'WMA', 'VWMA'], group: 'Smoothing', display: 'none' },
+  { id: 'maLength', type: 'int', title: 'Length', defval: 14, group: 'Smoothing', display: 'none', active: { input: 'maType', ne: 'None' } },
+  { id: 'bbMult', type: 'float', title: 'BB StdDev', defval: 2.0, min: 0.001, max: 50, group: 'Smoothing', tooltip: 'Only applies when \'SMA + Bollinger Bands\' is selected. Determines the distance between the SMA and the bands.', display: 'none', step: 0.5, active: { input: 'maType', eq: 'SMA + Bollinger Bands' } },
 ];
 
 export const plotConfig: PlotConfig[] = [

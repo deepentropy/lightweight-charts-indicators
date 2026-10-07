@@ -30,8 +30,8 @@ export const defaultInputs: MedianInputs = {
 
 export const inputConfig: InputConfig[] = [
   { id: 'source', type: 'source', title: 'Median Source', defval: 'hl2' },
-  { id: 'length', type: 'int', title: 'Median Length', defval: 3, min: 1 },
-  { id: 'atrLength', type: 'int', title: 'ATR Length', defval: 14, min: 1 },
+  { id: 'length', type: 'int', title: 'Median Length', defval: 3 },
+  { id: 'atrLength', type: 'int', title: 'ATR Length', defval: 14 },
   { id: 'atrMult', type: 'int', title: 'ATR Multiplier', defval: 2 },
 ];
 

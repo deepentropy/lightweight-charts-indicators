@@ -2,30 +2,23 @@
  * Historical Volatility (HV) Indicator
  *
  * Measures the annualized standard deviation of log returns.
- * HV = 100 * stdev(ln(close/close[1]), length) * sqrt(annual/per)
+ * HV = 100 * stdev(ln(close/close[1]), length) * sqrt(annual/per), annual = 365,
+ * per = 1 on intraday and 1-day bars, 7 on longer bars (taken from the bar interval).
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { Series, ta, barInterval, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
 export interface HistoricalVolatilityInputs {
   /** Period length */
   length: number;
-  /** Annual trading days */
-  annual: number;
-  /** Period multiplier (1 for daily, 7 for weekly) */
-  per: number;
 }
 
 export const defaultInputs: HistoricalVolatilityInputs = {
   length: 10,
-  annual: 365,
-  per: 1, // Assumes daily data
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 10, min: 1 },
-  { id: 'annual', type: 'int', title: 'Annual', defval: 365 },
-  { id: 'per', type: 'int', title: 'Period', defval: 1 },
+  { id: 'length', type: 'int', title: 'length', defval: 10, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -39,7 +32,10 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<HistoricalVolatilityInputs> = {}): IndicatorResult {
-  const { length, annual, per } = { ...defaultInputs, ...inputs };
+  const { length } = { ...defaultInputs, ...inputs };
+  const annual = 365;
+  // timeframe.isintraday or timeframe.isdaily and timeframe.multiplier == 1 ? 1 : 7 (bar times in seconds)
+  const per = barInterval(bars) <= 86400 ? 1 : 7;
 
   // Calculate log returns
   const logReturns: number[] = [NaN];

@@ -8,18 +8,23 @@
  */
 
 import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { barInterval, barTime } from '../bar-time';
 
 export interface ChoppinessInputs {
   /** Period length */
   length: number;
+  /** Plot offset */
+  offset: number;
 }
 
 export const defaultInputs: ChoppinessInputs = {
   length: 14,
+  offset: 0,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 14, min: 1 },
+  { id: 'length', type: 'int', title: 'length', defval: 14, min: 1 },
+  { id: 'offset', type: 'int', title: 'Offset', defval: 0, min: -500, max: 500 },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -43,7 +48,7 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<ChoppinessInputs> = {}): IndicatorResult {
-  const { length } = { ...defaultInputs, ...inputs };
+  const { length, offset } = { ...defaultInputs, ...inputs };
 
   // Calculate ATR(1) for each bar
   const atr1 = ta.atr(bars, 1);
@@ -88,10 +93,13 @@ export function calculate(bars: Bar[], inputs: Partial<ChoppinessInputs> = {}): 
     }
   }
 
-  const plotData = chop.map((value, i) => ({
-    time: bars[i].time,
-    value,
-  }));
+  // plot(..., offset = offset): the value of bar i is drawn on bar i + offset (future bars after the last bar)
+  const interval = barInterval(bars);
+  const plotData: { time: number; value: number }[] = [];
+  for (let i = 0; i < bars.length; i++) {
+    if (i + offset < 0) continue;
+    plotData.push({ time: barTime(bars, i + offset, interval), value: chop[i] });
+  }
 
   return {
     metadata: {

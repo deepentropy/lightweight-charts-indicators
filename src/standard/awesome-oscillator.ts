@@ -7,22 +7,11 @@
 
 import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
-export interface AwesomeOscillatorInputs {
-  /** Fast SMA period */
-  fastPeriod: number;
-  /** Slow SMA period */
-  slowPeriod: number;
-}
+export type AwesomeOscillatorInputs = Record<string, never>;
 
-export const defaultInputs: AwesomeOscillatorInputs = {
-  fastPeriod: 5,
-  slowPeriod: 34,
-};
+export const defaultInputs: AwesomeOscillatorInputs = {};
 
-export const inputConfig: InputConfig[] = [
-  { id: 'fastPeriod', type: 'int', title: 'Fast Period', defval: 5, min: 1 },
-  { id: 'slowPeriod', type: 'int', title: 'Slow Period', defval: 34, min: 1 },
-];
+export const inputConfig: InputConfig[] = [];
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'AO', color: '#009688', lineWidth: 1, style: 'columns' },
@@ -34,17 +23,15 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AwesomeOscillatorInputs> = {}): IndicatorResult {
-  const { fastPeriod, slowPeriod } = { ...defaultInputs, ...inputs };
-
+export function calculate(bars: Bar[], _inputs: Partial<AwesomeOscillatorInputs> = {}): IndicatorResult {
   // hl2 = (high + low) / 2
   const high = new Series(bars, b => b.high);
   const low = new Series(bars, b => b.low);
   const hl2 = high.add(low).div(2);
 
-  // AO = SMA(hl2, fast) - SMA(hl2, slow)
-  const fastSma = ta.sma(hl2, fastPeriod);
-  const slowSma = ta.sma(hl2, slowPeriod);
+  // AO = SMA(hl2, 5) - SMA(hl2, 34)
+  const fastSma = ta.sma(hl2, 5);
+  const slowSma = ta.sma(hl2, 34);
   const ao = fastSma.sub(slowSma);
 
   const aoArr = ao.toArray();

@@ -5,24 +5,18 @@
  * Further reduces lag: TEMA = 3*EMA - 3*EMA(EMA) + EMA(EMA(EMA))
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
 export interface TEMAInputs {
   length: number;
-  src: SourceType;
-  offset: number;
 }
 
 export const defaultInputs: TEMAInputs = {
   length: 9,
-  src: 'close',
-  offset: 0,
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 9, min: 1 },
-  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
-  { id: 'offset', type: 'int', title: 'Offset', defval: 0, min: -500, max: 500 },
+  { id: 'length', type: 'int', title: 'length', defval: 9, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -36,8 +30,8 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<TEMAInputs> = {}): IndicatorResult {
-  const { length, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
+  const { length } = { ...defaultInputs, ...inputs };
+  const source = getSourceSeries(bars, 'close');
 
   // TEMA = 3*EMA - 3*EMA(EMA) + EMA(EMA(EMA))
   const ema1 = ta.ema(source, length);

@@ -4,16 +4,23 @@
  * Identifies trend reversals by connecting pivot highs and lows
  * that exceed a specified percentage deviation threshold.
  *
- * Based on the standard ZigZag indicator v8.
+ * Based on the standard Zig Zag indicator (ZigZag library v7 / v8).
  *
  * PineScript display:
- *   line.new(x1, y1, x2, y2, color=lineColorInput)
- *   label.new(x, y, text, style=label.style_label_down/up)
+ *   line.new(start, end, color = lineColorInput, width = 2) for each pivot (the first pivot's line has zero length)
+ *   label.new(end, text, yloc = abovebar / belowbar, style = label.style_none, textcolor = green / red)
+ *   Label text: "<price> (<change>) \n<cumulative volume>", parts shown per the Display inputs; no label when all
+ *   three are off. The change is absolute (format.mintick) or a percentage of the previous pivot ("Percent").
+ *   The volume of a pivot sums volume[depth] over the bars that built it; the last-bar extension adds the
+ *   volume of the last max(depth, 1) bars (depth = max(2, floor(Pivot legs / 2))).
+ *
+ * The original formats prices with format.mintick (syminfo.mintick). Bars carry no symbol info, so the port uses a
+ * tick of 0.01 (prices rounded to 2 decimals); symbols with another tick show other decimals in the original.
  */
 
 import {
-  calculateZigZag,
-  type ZigZagSettings,
+  ZigZag as ZigZagEngine,
+  str,
   type ZigZagPivot,
   type IndicatorResult,
   type Bar,
@@ -21,6 +28,11 @@ import {
 
 import type { InputConfig, PlotConfig } from 'oakscriptjs';
 import type { LineDrawingData, LabelData } from '../types';
+
+/** syminfo.mintick is not available to the port (Bar has no symbol info): tick 0.01, printed with 2 decimals */
+const MINTICK = 0.01;
+
+export type ZigZagPriceDiffMode = 'Absolute' | 'Percent';
 
 /**
  * ZigZag indicator input parameters
@@ -30,6 +42,8 @@ export interface ZigZagInputs {
   deviation: number;
   /** Number of bars for pivot point detection (default: 10) */
   depth: number;
+  /** Colour of the zig zag lines */
+  lineColor: string;
   /** Extend line from last pivot to current bar */
   extendLast: boolean;
   /** Display reversal price */
@@ -38,6 +52,8 @@ export interface ZigZagInputs {
   showVolume: boolean;
   /** Display price change */
   showChange: boolean;
+  /** Price change as an absolute price difference or a percentage */
+  priceDiff: ZigZagPriceDiffMode;
 }
 
 /**
@@ -60,22 +76,26 @@ export interface ZigZagResult extends IndicatorResult {
 export const defaultInputs: ZigZagInputs = {
   deviation: 5.0,
   depth: 10,
+  lineColor: '#2962FF',
   extendLast: true,
   showPrice: true,
   showVolume: true,
   showChange: true,
+  priceDiff: 'Absolute',
 };
 
 /**
  * Input configuration for UI
  */
 export const inputConfig: InputConfig[] = [
-  { id: 'deviation', type: 'float', title: 'Price deviation for reversals (%)', defval: 5.0, min: 0.00001, max: 100 },
+  { id: 'deviation', type: 'float', title: 'Price deviation for reversals (%)', defval: 5.0, min: 1e-05, max: 100, tooltip: '0.00001 - 100', step: 0.5 },
   { id: 'depth', type: 'int', title: 'Pivot legs', defval: 10, min: 2 },
-  { id: 'extendLast', type: 'bool', title: 'Extend to last bar', defval: true },
-  { id: 'showPrice', type: 'bool', title: 'Display reversal price', defval: true },
-  { id: 'showVolume', type: 'bool', title: 'Display cumulative volume', defval: true },
-  { id: 'showChange', type: 'bool', title: 'Display reversal price change', defval: true },
+  { id: 'lineColor', type: 'color', title: 'Line color', defval: '#2962FF' },
+  { id: 'extendLast', type: 'bool', title: 'Extend to last bar', defval: true, display: 'none' },
+  { id: 'showPrice', type: 'bool', title: 'Display reversal price', defval: true, display: 'none' },
+  { id: 'showVolume', type: 'bool', title: 'Display cumulative volume', defval: true, display: 'none' },
+  { id: 'showChange', type: 'bool', title: 'Display reversal price change', defval: true, inline: 'priceRev', display: 'none' },
+  { id: 'priceDiff', type: 'string', title: '', defval: 'Absolute', options: ['Absolute', 'Percent'], inline: 'priceRev', display: 'none', active: 'showChange' },
 ];
 
 // No line plots — rendered via lines and labels
@@ -107,88 +127,73 @@ export function calculate(bars: Bar[], inputs: Partial<ZigZagInputs> = {}): ZigZ
     };
   }
 
-  const settings: Partial<ZigZagSettings> = {
-    devThreshold: opts.deviation,
-    depth: opts.depth,
-    extendLast: opts.extendLast,
-  };
-
-  const result = calculateZigZag(bars, settings);
-  const lineColor = '#2962FF';
-
-  // Build line segments between consecutive pivots
-  const lines: LineDrawingData[] = [];
-  const labels: LabelData[] = [];
-  const allPivots = [...result.pivots];
-  if (result.extension) {
-    allPivots.push(result.extension);
+  // Pivot detection and per-pivot volume of the library. The original adds nz(volume[depth]) on each bar.
+  const depth = Math.max(2, Math.floor(opts.depth / 2));
+  const engine = new ZigZagEngine({ devThreshold: opts.deviation, depth: opts.depth, extendLast: opts.extendLast });
+  for (let i = 0; i < bars.length; i++) {
+    const v = i >= depth ? bars[i - depth].volume : NaN;
+    engine.update({ ...bars[i], volume: Number.isFinite(v) ? v : 0 }, i);
+  }
+  const pivots = engine.pivots;
+  const last = bars.length - 1;
+  let extension = engine.getExtension(bars[last], last);
+  if (extension) {
+    // updatePivot(end, sumVol + math.sum(volume, max(depth, 1)))
+    let remVol = 0;
+    for (let i = Math.max(0, last - depth + 1); i <= last; i++) remVol += bars[i].volume ?? NaN;
+    extension = { ...extension, volume: extension.volume + (last + 1 >= depth ? remVol : NaN) };
   }
 
-  for (let i = 1; i < allPivots.length; i++) {
-    const prev = allPivots[i - 1];
-    const curr = allPivots[i];
+  // Each pivot draws its own line and label; the first pivot starts on its own end point (start moves with end)
+  const segments = pivots.map((p, k) => (k === 0 ? { ...p, start: p.end } : p));
+  if (extension) segments.push(extension);
 
+  // str.tostring(v, format.mintick) with the port's tick
+  const fmtPrice = (v: number) => str.tostring(v, 'mintick', MINTICK);
+  const labelText = (start: number, end: number, vol: number) => {
+    let text = '';
+    if (opts.showPrice) text += fmtPrice(end) + ' ';
+    if (opts.showChange) {
+      const diff = end - start;
+      const sign = Math.sign(diff) > 0 ? '+' : '';
+      const diffStr = opts.priceDiff === 'Absolute' ? fmtPrice(diff) : str.tostring((diff * 100) / start, 'percent');
+      text += `(${sign}${diffStr}) `;
+    }
+    if (opts.showVolume) text += '\n' + str.tostring(vol, 'volume');
+    return text;
+  };
+  const showLabels = opts.showPrice || opts.showChange || opts.showVolume;
+
+  const lines: LineDrawingData[] = [];
+  const labels: LabelData[] = [];
+  for (const seg of segments) {
     lines.push({
-      time1: bars[prev.end.barIndex].time as number,
-      price1: prev.end.price,
-      time2: bars[curr.end.barIndex].time as number,
-      price2: curr.end.price,
-      color: lineColor,
+      time1: seg.start.time,
+      price1: seg.start.price,
+      time2: seg.end.time,
+      price2: seg.end.price,
+      color: opts.lineColor,
       width: 2,
       style: 'solid',
     });
-  }
-
-  // Build labels at pivot points
-  if (opts.showPrice || opts.showChange) {
-    for (let i = 0; i < allPivots.length; i++) {
-      const pivot = allPivots[i];
-      const isHigh = pivot.end.price > (i > 0 ? allPivots[i - 1].end.price : pivot.end.price);
-
-      let text = '';
-      if (opts.showPrice) {
-        text += pivot.end.price.toFixed(2);
-      }
-      if (opts.showVolume && i > 0) {
-        const prevIdx = allPivots[i - 1].end.barIndex;
-        const currIdx = pivot.end.barIndex;
-        let cumVol = 0;
-        for (let j = prevIdx; j <= currIdx; j++) {
-          cumVol += bars[j].volume ?? 0;
-        }
-        const volStr = cumVol >= 1e9 ? (cumVol / 1e9).toFixed(3) + 'B'
-          : cumVol >= 1e6 ? (cumVol / 1e6).toFixed(3) + 'M'
-          : cumVol >= 1e3 ? (cumVol / 1e3).toFixed(3) + 'K'
-          : cumVol.toFixed(0);
-        text += `\n${volStr}`;
-      }
-      if (opts.showChange && i > 0) {
-        const prevPrice = allPivots[i - 1].end.price;
-        const change = pivot.end.price - prevPrice;
-        const pctChange = (change / prevPrice) * 100;
-        const sign = change >= 0 ? '+' : '';
-        text += `\n(${sign}${change.toFixed(2)}, ${sign}${pctChange.toFixed(2)}%)`;
-      }
-
-      if (text) {
-        labels.push({
-          time: bars[pivot.end.barIndex].time as number,
-          price: pivot.end.price,
-          text: text.trim(),
-          color: lineColor,
-          textColor: '#FFFFFF',
-          style: isHigh ? 'label_down' : 'label_up',
-          size: 'small',
-        });
-      }
+    if (showLabels) {
+      labels.push({
+        time: seg.end.time,
+        price: seg.end.price,
+        text: labelText(seg.start.price, seg.end.price, seg.volume),
+        textColor: seg.isHigh ? '#4CAF50' : '#FF5252',
+        style: 'none',
+        yloc: seg.isHigh ? 'abovebar' : 'belowbar',
+        size: 'normal',
+      });
     }
   }
 
   return {
     metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
     plots: {},
-    pivots: result.pivots,
-    extension: result.extension,
+    pivots,
+    extension,
     lines,
     labels,
   };

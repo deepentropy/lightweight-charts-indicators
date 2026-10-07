@@ -2,12 +2,19 @@
  * Time Weighted Average Price (TWAP) Indicator
  *
  * Cumulative average of source within anchor periods.
- * Resets at each new anchor period boundary.
+ * Resets at each new anchor period boundary (timeframe.change(anchor)).
+ *
+ * 'Anchor Period' accepts any timeframe ("" = the chart timeframe: every bar is its own period). The original takes
+ * the periods from the exchange time zone and sessions, which the bars do not carry: the port takes them from the
+ * UTC calendar and the bars (see src/anchor-period.ts). Exact on UTC 24x7 symbols and on symbols whose trading day
+ * is inside the UTC day (e.g. US stocks), after the first period of the bars; not on sessions that cross 00:00 UTC.
  */
 
 import { getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { periodStarts } from '../anchor-period';
 
 export interface TWAPInputs {
+  /** Anchor period: any timeframe string ("1D", "1W", "240", ...; "" = chart timeframe) */
   anchor: string;
   src: SourceType;
   offset: number;
@@ -20,9 +27,9 @@ export const defaultInputs: TWAPInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'anchor', type: 'string', title: 'Anchor Period', defval: '1D', options: ['1D', '1W', '1M'] },
+  { id: 'anchor', type: 'timeframe', title: 'Anchor Period', defval: '1D' },
   { id: 'src', type: 'source', title: 'Source', defval: 'ohlc4' },
-  { id: 'offset', type: 'int', title: 'Offset', defval: 0, min: -500, max: 500 },
+  { id: 'offset', type: 'int', title: 'Offset', defval: 0, display: 'none' },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -35,40 +42,18 @@ export const metadata = {
   overlay: true,
 };
 
-function getStartOfPeriod(timestamp: number, timeframe: string): number {
-  const ts = timestamp < 1e12 ? timestamp * 1000 : timestamp;
-  const date = new Date(ts);
-  const tf = timeframe.toUpperCase();
-
-  if (tf === '1W' || tf === 'W') {
-    const day = date.getUTCDay();
-    const diff = day === 0 ? 6 : day - 1;
-    date.setUTCDate(date.getUTCDate() - diff);
-    date.setUTCHours(0, 0, 0, 0);
-  } else if (tf === '1M' || tf === 'M') {
-    date.setUTCDate(1);
-    date.setUTCHours(0, 0, 0, 0);
-  } else {
-    date.setUTCHours(0, 0, 0, 0);
-  }
-
-  return timestamp < 1e12 ? Math.floor(date.getTime() / 1000) : date.getTime();
-}
-
 export function calculate(bars: Bar[], inputs: Partial<TWAPInputs> = {}): IndicatorResult {
   const { anchor, src, offset } = { ...defaultInputs, ...inputs };
   const sourceArr = getSourceSeries(bars, src).toArray();
 
   let sum = 0;
   let count = 0;
-  let prevPeriodStart: number | null = null;
+  const starts = periodStarts(bars, anchor);
   const twapArr: number[] = [];
 
   for (let i = 0; i < bars.length; i++) {
-    const barTime = bars[i].time;
-    const periodStart = getStartOfPeriod(barTime, anchor);
-
-    if (prevPeriodStart === null || periodStart !== prevPeriodStart) {
+    // timeframe.change(anchor)
+    if (i > 0 && starts[i] !== starts[i - 1]) {
       sum = 0;
       count = 0;
     }
@@ -80,7 +65,6 @@ export function calculate(bars: Bar[], inputs: Partial<TWAPInputs> = {}): Indica
     }
 
     twapArr.push(count > 0 ? sum / count : NaN);
-    prevPeriodStart = periodStart;
   }
 
   const plotData = bars.map((bar, i) => {

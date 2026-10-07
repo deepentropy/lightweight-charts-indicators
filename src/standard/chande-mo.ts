@@ -5,19 +5,23 @@
  * Range: -100 to +100
  */
 
-import { type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface ChandeMOInputs {
   /** Period length */
   length: number;
+  /** Source */
+  src: SourceType;
 }
 
 export const defaultInputs: ChandeMOInputs = {
   length: 9,
+  src: 'close',
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 9, min: 1 },
+  { id: 'length', type: 'int', title: 'length', defval: 9, min: 1 },
+  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
 ];
 
 export const plotConfig: PlotConfig[] = [
@@ -35,14 +39,14 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<ChandeMOInputs> = {}): IndicatorResult {
-  const { length } = { ...defaultInputs, ...inputs };
+  const { length, src } = { ...defaultInputs, ...inputs };
 
-  const close = bars.map(b => b.close);
+  const source = getSourceSeries(bars, src).toArray().map(v => v ?? NaN);
 
   // Calculate momentum (change)
   const mom: number[] = [NaN];
   for (let i = 1; i < bars.length; i++) {
-    mom.push(close[i] - close[i - 1]);
+    mom.push(source[i] - source[i - 1]);
   }
 
   // Separate positive and negative momentum

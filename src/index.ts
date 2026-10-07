@@ -21784,4 +21784,4 @@ const registryPart5: IndicatorRegistryEntry[] = [
 export const indicatorRegistry: IndicatorRegistryEntry[] = [...registryPart1, ...registryPart2, ...registryPart3, ...registryPart4, ...registryPart5];
 
 // Package version
-export const version = '0.9.1';
+export const version = '0.10.0';

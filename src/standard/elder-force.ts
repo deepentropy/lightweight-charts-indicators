@@ -18,7 +18,7 @@ export const defaultInputs: ElderForceInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 13, min: 1 },
+  { id: 'length', type: 'int', title: 'length', defval: 13, min: 1 },
 ];
 
 export const plotConfig: PlotConfig[] = [

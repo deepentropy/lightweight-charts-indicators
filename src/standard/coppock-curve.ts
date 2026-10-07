@@ -24,9 +24,9 @@ export const defaultInputs: CoppockCurveInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'wmaLength', type: 'int', title: 'WMA Length', defval: 10, min: 1 },
-  { id: 'longRocLength', type: 'int', title: 'Long RoC Length', defval: 14, min: 1 },
-  { id: 'shortRocLength', type: 'int', title: 'Short RoC Length', defval: 11, min: 1 },
+  { id: 'wmaLength', type: 'int', title: 'WMA Length', defval: 10 },
+  { id: 'longRocLength', type: 'int', title: 'Long RoC Length', defval: 14 },
+  { id: 'shortRocLength', type: 'int', title: 'Short RoC Length', defval: 11 },
 ];
 
 export const plotConfig: PlotConfig[] = [

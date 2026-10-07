@@ -21,8 +21,8 @@ export const defaultInputs: DMIInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'adxSmoothing', type: 'int', title: 'ADX Smoothing', defval: 14, min: 1 },
-  { id: 'diLength', type: 'int', title: 'DI Length', defval: 14, min: 1 },
+  { id: 'adxSmoothing', type: 'int', title: 'ADX Smoothing', defval: 14, min: 1, tooltip: 'The time period to be used in calculating the ADX which has a smoothing component.' },
+  { id: 'diLength', type: 'int', title: 'DI Length', defval: 14, min: 1, tooltip: 'The time period to be used in calculating the DI (Directional Indicator).' },
 ];
 
 export const plotConfig: PlotConfig[] = [

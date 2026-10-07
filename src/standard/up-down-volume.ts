@@ -5,10 +5,17 @@
  * red columns below zero, and the delta (up - down) as a "—" character at its value, green when positive and red
  * otherwise.
  *
- * The values are an estimate: the standard indicator splits the volume of each bar into up and down volume from
- * lower-timeframe (intrabar) volume, which the chart bars do not have. This implementation gives all the volume of a
- * bar to "up" when it closes at or above the previous close (first bar: the open), else to "down". The design
- * (columns, colours, delta character) is the one of the standard indicator.
+ * The standard indicator splits the volume of each bar into up and down volume from lower-timeframe (intrabar)
+ * volume: 'Use custom timeframe' / 'Timeframe', else automatic ("1S" on seconds charts, "1" intraday, "5" daily,
+ * "60" above). See src/lower-tf-volume.ts:
+ * - lower timeframe = chart timeframe (e.g. 'Timeframe' "1D" on a daily chart, automatic on a 1-minute chart): the
+ *   chart bars are the intrabars and the values are the original ones (library rule: up when close > open, down
+ *   when close < open, else by close vs previous close, else as the previous bar)
+ * - lower timeframe below the chart timeframe: the chart bars do not have the intrabar volume; the values are an
+ *   estimate that gives all the volume of a bar to "up" when it closes at or above the previous close (first bar:
+ *   the open), else to "down"
+ * - lower timeframe above the chart timeframe: error, as the original
+ * The design (columns, colours, delta character) is the one of the standard indicator.
  *
  * PineScript display:
  *   plot(upVolume, "Up Volume", style = plot.style_columns, color = color.new(color.green, 60))
@@ -18,14 +25,26 @@
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import { lowerTimeframe, upDownVolumeOfChartBars } from '../lower-tf-volume';
 
 export interface UpDownVolumeInputs {
-  // No inputs.
+  /** Use the custom lower timeframe instead of the automatic one */
+  useCustomTimeframe: boolean;
+  /** Custom lower timeframe of the intrabar volume */
+  lowerTimeframe: string;
 }
 
-export const defaultInputs: UpDownVolumeInputs = {};
+export const defaultInputs: UpDownVolumeInputs = {
+  useCustomTimeframe: false,
+  lowerTimeframe: '1',
+};
 
-export const inputConfig: InputConfig[] = [];
+const LOWER_TF_TOOLTIP = 'The indicator scans lower timeframe data to approximate Up/Down volume.  By default, the timeframe is chosen automatically. These inputs override this with a custom timeframe. \n\nHigher timeframes provide more historical data, but the data will be less precise.';
+
+export const inputConfig: InputConfig[] = [
+  { id: 'useCustomTimeframe', type: 'bool', title: 'Use custom timeframe', defval: false, tooltip: LOWER_TF_TOOLTIP, display: 'none' },
+  { id: 'lowerTimeframe', type: 'timeframe', title: 'Timeframe', defval: '1', active: 'useCustomTimeframe' },
+];
 
 // color.new(color.green, 60) / color.new(color.red, 60): alpha 0.4 = 102 = 0x66
 export const plotConfig: PlotConfig[] = [
@@ -45,19 +64,30 @@ const gt = (a: number, b: number) => a - b > EPS;
 
 export function calculate(
   bars: Bar[],
-  _inputs: Partial<UpDownVolumeInputs> = {},
+  inputs: Partial<UpDownVolumeInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+  const { useCustomTimeframe, lowerTimeframe: customTimeframe } = { ...defaultInputs, ...inputs };
+  const { exact } = lowerTimeframe(bars, useCustomTimeframe, customTimeframe);
+  const exactVolume = exact ? upDownVolumeOfChartBars(bars) : null;
   const up: { time: number; value: number }[] = [];
   const down: { time: number; value: number }[] = [];
   const markers: MarkerData[] = [];
 
   for (let i = 0; i < bars.length; i++) {
-    const vol = bars[i].volume ?? 0;
-    // Direction from close vs previous close; first bar falls back to close vs open.
-    const ref = i > 0 ? bars[i - 1].close : bars[i].open;
-    const isUp = bars[i].close >= ref;
-    const upVol = isUp ? vol : 0;
-    const downVol = isUp ? 0 : vol;
+    let upVol: number;
+    let downVol: number;
+    if (exactVolume) {
+      // Lower timeframe = chart timeframe: the original values
+      upVol = exactVolume.up[i];
+      downVol = -exactVolume.down[i];
+    } else {
+      const vol = bars[i].volume ?? 0;
+      // Estimate: direction from close vs previous close; first bar falls back to close vs open.
+      const ref = i > 0 ? bars[i - 1].close : bars[i].open;
+      const isUp = bars[i].close >= ref;
+      upVol = isUp ? vol : 0;
+      downVol = isUp ? 0 : vol;
+    }
     const delta = upVol - downVol;
 
     up.push({ time: bars[i].time, value: upVol });

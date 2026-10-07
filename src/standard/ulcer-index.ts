@@ -3,26 +3,30 @@
  *
  * Volatility/risk measure that only considers downside movement. It is the
  * square root of the mean of squared percentage drawdowns from the highest
- * close over the lookback window.
+ * source over the lookback window.
  *
- *   drawdown_i = 100 * (close - highest(close, length)) / highest(close, length)
+ *   drawdown_i = 100 * (src - highest(src, length)) / highest(src, length)
  *   UI        = sqrt( sma(drawdown^2, length) )
  *
  * Based on the standard "Ulcer Index" indicator.
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 
 export interface UlcerIndexInputs {
+  /** Source */
+  src: SourceType;
   /** Lookback length */
   length: number;
 }
 
 export const defaultInputs: UlcerIndexInputs = {
+  src: 'close',
   length: 14,
 };
 
 export const inputConfig: InputConfig[] = [
+  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
   { id: 'length', type: 'int', title: 'Length', defval: 14, min: 1 },
 ];
 
@@ -37,16 +41,17 @@ export const metadata = {
 };
 
 export function calculate(bars: Bar[], inputs: Partial<UlcerIndexInputs> = {}): IndicatorResult {
-  const { length } = { ...defaultInputs, ...inputs };
+  const { length, src } = { ...defaultInputs, ...inputs };
 
-  const closeSeries = new Series(bars, b => b.close);
-  const highestArr = ta.highest(closeSeries, length).toArray();
+  const srcSeries = getSourceSeries(bars, src);
+  const srcArr = srcSeries.toArray();
+  const highestArr = ta.highest(srcSeries, length).toArray();
 
   // Squared percentage drawdown from the running highest close.
-  const drawdownSq: number[] = bars.map((bar, i) => {
+  const drawdownSq: number[] = bars.map((_, i) => {
     const hi = highestArr[i];
     if (hi == null || hi === 0) return NaN;
-    const dd = (100 * (bar.close - hi)) / hi;
+    const dd = (100 * ((srcArr[i] ?? NaN) - hi)) / hi;
     return dd * dd;
   });
 

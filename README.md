@@ -204,7 +204,7 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 
 | Indicator | Export | Description |
 |-----------|--------|-------------|
-| MACD | `MACD` | Relationship between two EMAs |
+| MACD | `MACD` | Relationship between two moving averages (EMA or SMA) |
 | Momentum | `Momentum` | Rate of change of price |
 | Rate of Change | `ROC` | Percentage change over a period |
 | Balance of Power | `BOP` | Strength of buyers vs sellers |
@@ -374,6 +374,34 @@ const result = sma?.calculate(bars, sma.defaultInputs);
 // Filter by category
 const oscillators = indicatorRegistry.filter(i => i.category === 'Oscillators');
 ```
+
+### Settings dialog
+
+Each registry entry gives its inputs in `inputConfig`, in the order, with the titles, limits and layout of the
+original indicator. A settings dialog can be built from these fields:
+
+| Field | Meaning |
+|---|---|
+| `title`, `type`, `defval`, `options`, `min`, `max`, `step` | Label, control and limits (an empty title has no label) |
+| `group` | Section header: consecutive inputs with the same group are shown under it |
+| `inline` | Inputs with the same `inline` id are shown on one row |
+| `tooltip` | Info text of the input |
+| `display` | Where the value is shown outside the dialog (`'all'`, `'none'`, ...) |
+| `active` | The input is greyed out unless the condition on other inputs holds |
+
+```typescript
+import { isInputActive } from 'oakscriptjs';
+import { indicatorRegistry } from 'lightweight-charts-indicators';
+
+const { inputConfig } = indicatorRegistry.find(i => i.id === 'ma-ribbon')!;
+const inputs = { showMa2: false };
+
+for (const input of inputConfig) {
+  const enabled = isInputActive(input, inputs, inputConfig); // ma2Type, ma2Source, ma2Length, ma2Color: false
+}
+```
+
+An inactive input still gives its value to `calculate`.
 
 ## Building
 

@@ -26,7 +26,7 @@ export const defaultInputs: ADRInputs = {
  * Input configuration for UI
  */
 export const inputConfig: InputConfig[] = [
-  { id: 'lengthInput', type: 'int', title: 'Length', defval: 14, min: 1 },
+  { id: 'lengthInput', type: 'int', title: 'Length', defval: 14 },
 ];
 
 /**

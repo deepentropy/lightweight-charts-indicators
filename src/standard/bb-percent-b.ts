@@ -24,9 +24,9 @@ export const defaultInputs: BBPercentBInputs = {
 };
 
 export const inputConfig: InputConfig[] = [
-  { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1 },
-  { id: 'src', type: 'source', title: 'Source', defval: 'close' },
-  { id: 'mult', type: 'float', title: 'StdDev', defval: 2, min: 0.001, max: 50 },
+  { id: 'length', type: 'int', title: 'Length', defval: 20, min: 1, tooltip: 'The time period to be used in calculating the SMA which creates the base for the Upper and Lower Bands' },
+  { id: 'src', type: 'source', title: 'Source', defval: 'close', tooltip: 'Determines what data from each bar will be used in calculations.' },
+  { id: 'mult', type: 'float', title: 'StdDev', defval: 2, min: 0.001, max: 50, tooltip: 'The number of Standard Deviations away from the SMA that the Upper and Lower Bands should be.' },
 ];
 
 export const plotConfig: PlotConfig[] = [

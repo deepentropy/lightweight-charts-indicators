@@ -33,8 +33,8 @@ export const defaultInputs: ALMAInputs = {
  */
 export const inputConfig: InputConfig[] = [
   { id: 'lengthInput', type: 'int', title: 'Length', defval: 9, min: 1 },
-  { id: 'offsetInput', type: 'float', title: 'Offset', defval: 0.85, step: 0.01 },
-  { id: 'sigmaInput', type: 'float', title: 'Sigma', defval: 6 },
+  { id: 'offsetInput', type: 'float', title: 'Offset', defval: 0.85, step: 0.01, tooltip: 'Controls tradeoff between smoothness (closer to 1) and responsiveness (closer to 0).' },
+  { id: 'sigmaInput', type: 'float', title: 'Sigma', defval: 6, tooltip: 'This element is a standard deviation that is applied to the combo line in order for it to appear more sharp.' },
 ];
 
 /**

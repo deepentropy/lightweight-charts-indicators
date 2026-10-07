@@ -38,8 +38,8 @@ export const inputConfig: InputConfig[] = [
   { id: 'shortLength', type: 'int', title: 'Fast length', defval: 12, min: 1 },
   { id: 'longLength', type: 'int', title: 'Slow length', defval: 26, min: 1 },
   { id: 'signalLength', type: 'int', title: 'Signal length', defval: 9, min: 1 },
-  { id: 'oscMaType', type: 'string', title: 'Oscillator MA type', defval: 'EMA', options: ['EMA', 'SMA'] },
-  { id: 'signalMaType', type: 'string', title: 'Signal MA type', defval: 'EMA', options: ['EMA', 'SMA'] },
+  { id: 'oscMaType', type: 'string', title: 'Oscillator MA type', defval: 'EMA', options: ['EMA', 'SMA'], display: 'none' },
+  { id: 'signalMaType', type: 'string', title: 'Signal MA type', defval: 'EMA', options: ['EMA', 'SMA'], display: 'none' },
 ];
 
 export const plotConfig: PlotConfig[] = [

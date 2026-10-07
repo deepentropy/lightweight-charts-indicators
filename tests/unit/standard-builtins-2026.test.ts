@@ -92,16 +92,31 @@ describe('Volatility Stop', () => {
 
 import { VWAP } from '../../src/standard/vwap';
 describe('VWAP', () => {
-  it('produces a VWAP line; bands #1 on by default', () => {
+  it('produces a VWAP line; bands #1 shown by default, bands #2 / #3 hidden', () => {
     const r = VWAP.calculate(bars);
     expect(hasValues(r.plots['plot0'])).toBe(true);
     expect(hasValues(r.plots['plot1'])).toBe(true);
-    expect(hasValues(VWAP.calculate(bars, { showBands: false }).plots['plot1'])).toBe(false);
+    expect(r.visibility).toEqual({ showBand1: true, showBand2: false, showBand3: false });
+    expect(r.fills?.length).toBe(1);
+    const off = VWAP.calculate(bars, { showBand1: false });
+    expect(off.visibility.showBand1).toBe(false);
+    expect(off.fills?.length).toBe(0);
   });
-  it('produces bands when enabled', () => {
-    const r = VWAP.calculate(bars, { showBands: true, anchor: '1M' });
-    expect(hasValues(r.plots['plot1'])).toBe(true);
-    expect(hasValues(r.plots['plot2'])).toBe(true);
+  it('produces monthly bands (standard deviation and percentage)', () => {
+    const r = VWAP.calculate(bars, { anchor: 'Month', showBand2: true });
+    const v = r.plots['plot0'][100].value;
+    expect(r.plots['plot1'][100].value).toBeGreaterThan(v);
+    expect(r.plots['plot3'][100].value).toBeGreaterThan(r.plots['plot1'][100].value);
+    expect(r.fills?.length).toBe(2);
+    const p = VWAP.calculate(bars, { anchor: 'Month', calcMode: 'Percentage' });
+    expect(p.plots['plot1'][100].value).toBeCloseTo(p.plots['plot0'][100].value * 1.01, 10);
+  });
+  it('hides on daily bars, shifts with the offset, has no anchor for corporate events', () => {
+    expect(hasValues(VWAP.calculate(bars, { hideOnDWM: true }).plots['plot0'])).toBe(false);
+    const s = VWAP.calculate(bars, { offset: 2 }).plots['plot0'];
+    expect(s[0].time).toBe(bars[2].time);
+    expect(s[s.length - 1].time).toBe(bars[bars.length - 1].time + 2 * 86400);
+    expect(hasValues(VWAP.calculate(bars, { anchor: 'Earnings' }).plots['plot0'])).toBe(false);
   });
 });
 

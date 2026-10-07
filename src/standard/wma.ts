@@ -22,7 +22,7 @@ export const defaultInputs: WMAInputs = {
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Length', defval: 9, min: 1 },
   { id: 'src', type: 'source', title: 'Source', defval: 'close' },
-  { id: 'offset', type: 'int', title: 'Offset', defval: 0, min: -500, max: 500 },
+  { id: 'offset', type: 'int', title: 'Offset', defval: 0, min: -500, max: 500, display: 'none' },
 ];
 
 export const plotConfig: PlotConfig[] = [

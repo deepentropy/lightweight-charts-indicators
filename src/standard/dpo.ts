@@ -21,7 +21,7 @@ export const defaultInputs: DPOInputs = {
 
 export const inputConfig: InputConfig[] = [
   { id: 'length', type: 'int', title: 'Length', defval: 21, min: 1 },
-  { id: 'centered', type: 'bool', title: 'Centered', defval: false },
+  { id: 'centered', type: 'bool', title: 'Centered', defval: false, tooltip: 'When the DPO is centered, the DPO line stays offset towards the left. When it is not centered, it shifts back to the right to match current price.', display: 'none' },
 ];
 
 export const plotConfig: PlotConfig[] = [
