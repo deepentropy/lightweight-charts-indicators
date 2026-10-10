@@ -17,7 +17,7 @@ ranked by complexity. It tracks implementation status in OakScriptJS.
 
 > 131 scored rows below (84 implemented / 47 pending) + 16 built-in studies listed separately
 > (all 16 implemented). The complexity buckets cover the scored table only (the 16 built-in
-> rows await Pine-source scoring). Note `src/` registers 1290 indicators in total — the bulk are
+> rows await Pine-source scoring). Note `src/` registers 1337 indicators in total — the bulk are
 > community/candlestick ports tracked in `INDICATOR_INVENTORY_COMMUNITY.md` /
 > `INDICATOR_INVENTORY_CANDLESTICK.md`, not in this standard-library table.
 
