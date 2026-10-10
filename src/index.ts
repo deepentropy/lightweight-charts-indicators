@@ -5428,6 +5428,10 @@ export type { LiquidityPoolsInputs } from './community/liquidity-pools';
 import * as fluidtradesSmcLiteIndicator from './community/fluidtrades-smc-lite';
 export { FluidtradesSmcLite, calculate as calculateFluidtradesSmcLite } from './community/fluidtrades-smc-lite';
 export type { FluidtradesSmcLiteInputs } from './community/fluidtrades-smc-lite';
+// Smart Money Breakout Channels
+import * as smartMoneyBreakoutChannelsIndicator from './community/smart-money-breakout-channels';
+export { SmartMoneyBreakoutChannels, calculate as calculateSmartMoneyBreakoutChannels } from './community/smart-money-breakout-channels';
+export type { SmartMoneyBreakoutChannelsInputs } from './community/smart-money-breakout-channels';
 
 export type IndicatorCategory =
   | 'Moving Averages'
@@ -22583,6 +22587,19 @@ const registryPart6: IndicatorRegistryEntry[] = [
     plotConfig: fluidtradesSmcLiteIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...fluidtradesSmcLiteIndicator.defaultInputs },
     calculate: fluidtradesSmcLiteIndicator.calculate,
+  },
+  {
+    id: 'smart-money-breakout-channels',
+    group: 'community',
+    name: 'Smart Money Breakout Channels',
+    shortName: smartMoneyBreakoutChannelsIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: smartMoneyBreakoutChannelsIndicator.metadata,
+    inputConfig: smartMoneyBreakoutChannelsIndicator.inputConfig as InputConfig[],
+    plotConfig: smartMoneyBreakoutChannelsIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...smartMoneyBreakoutChannelsIndicator.defaultInputs },
+    calculate: smartMoneyBreakoutChannelsIndicator.calculate,
   },
 ];
 

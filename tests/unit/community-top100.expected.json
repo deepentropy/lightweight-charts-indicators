@@ -329,6 +329,24 @@
    "tables": 1
   }
  },
+ "smart-money-breakout-channels": {
+  "daily": {
+   "plots": {},
+   "markers": 73,
+   "lines": 53,
+   "boxes": 222,
+   "labels": 1,
+   "plotCandles": 2432
+  },
+  "m15": {
+   "plots": {},
+   "markers": 93,
+   "lines": 55,
+   "boxes": 282,
+   "labels": 1,
+   "plotCandles": 3952
+  }
+ },
  "breakout-probability": {
   "daily": {
    "plots": {},
