@@ -1,6 +1,6 @@
 {
   "name": "lightweight-charts-indicators",
-  "version": "0.16.9",
+  "version": "0.16.10",
   "type": "module",
   "description": "1713 technical analysis indicators for the lightweight-charts library",
   "main": "dist/index.cjs",
@@ -73,7 +73,7 @@
   "homepage": "https://github.com/deepentropy/lightweight-charts-indicators#readme",
   "peerDependencies": {
     "lightweight-charts": ">=5.2.0 <6.0.0",
-    "oakscriptjs": ">=0.12.0 <0.13.0"
+    "oakscriptjs": ">=0.13.0 <0.14.0"
   },
   "peerDependenciesMeta": {
     "lightweight-charts": {
@@ -84,7 +84,7 @@
     "@types/node": "^20.10.6",
     "esbuild": "^0.19.11",
     "lightweight-charts": "^5.2.1",
-    "oakscriptjs": "^0.12.3",
+    "oakscriptjs": "^0.13.2",
     "rimraf": "^6.1.0",
     "typescript": "^5.3.3",
     "vite": "^5.4.0",
