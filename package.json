@@ -27,6 +27,8 @@
   },
   "files": [
     "dist",
+    "skills",
+    "AGENTS.md",
     "README.md",
     "LICENSE"
   ],
@@ -43,7 +45,7 @@
     "dev:example": "vite",
     "clean": "rimraf dist dist-example",
     "dev": "tsc --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.skills.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:pinesuite": "vitest run --config vitest.regression.config.ts",
