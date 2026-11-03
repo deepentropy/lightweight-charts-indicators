@@ -55,8 +55,14 @@ describe('BarGrid', () => {
     expect(g.slotsAfter(LAST + 6 * DAY, true)).toBe(4);
     // inside the last bar: the last bar
     expect(g.x(timeScale(), LAST + 3600, true)).toBe(10 * 9);
-    // the anchor of the autoscale follows the same slot
-    expect(anchorData([{ time: t, value: 5, script: true }], g)).toEqual([{ time: LAST + 13 * DAY, value: 5 }]);
+    // a point after the last bar is not an anchor point (the chart would take it as its last bar): its slot and price
+    // go to the autoscale of the drawing; with no point on the bars, the series holds it on the last bar
+    const future: { slot: number; value: number }[] = [];
+    expect(anchorData([{ time: t, value: 5, script: true }], g, future)).toEqual([{ time: LAST, value: 5 }]);
+    expect(future).toEqual([{ slot: 13, value: 5 }]);
+    const future2: { slot: number; value: number }[] = [];
+    expect(anchorData([{ time: bars[3].time, value: 4 }, { time: t, value: 5, script: true }], g, future2)).toEqual([{ time: bars[3].time, value: 4 }]);
+    expect(future2).toEqual([{ slot: 13, value: 5 }]);
   });
 
   it('a time on or before the last bar keeps its bar; off the bars: not drawn', () => {

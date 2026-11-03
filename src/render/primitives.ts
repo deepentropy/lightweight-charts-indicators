@@ -14,6 +14,8 @@ import type {
   LineData,
   Time,
   SeriesType,
+  AutoscaleInfo,
+  Logical,
 } from 'lightweight-charts';
 import type { CanvasRenderingTarget2D } from 'fancy-canvas';
 import { barInterval } from 'oakscriptjs';
@@ -150,17 +152,35 @@ export function markerSizeMult(size: MarkerData['size']): number {
   return PINE_SIZE_MULT[size] ?? 1;
 }
 
+/** A price a drawing reaches on the k-th bar slot after the last bar */
+export type FuturePrice = { slot: number; value: number };
+
 /**
- * Anchor line data (invisible series that holds a primitive): one point per time, sorted, future times on the
- * bar grid, so the time scale and the autoscale include the drawings.
+ * Anchor line data (invisible series that holds a primitive): one point per time, sorted, so the autoscale includes
+ * the drawings. A point after the last bar is not a data point: the chart would take it as its last bar and move the
+ * view when the study is added or removed (the reference keeps the view). It goes to `future` (its slot and price,
+ * for the primitive's autoscale); when no point is on the bars, the first one is held on the last bar so the series
+ * has data.
  */
-export function anchorData(points: Array<{ time: number; value: number; script?: boolean }>, grid: BarGrid): LineData<Time>[] {
+export function anchorData(
+  points: Array<{ time: number; value: number; script?: boolean }>,
+  grid: BarGrid,
+  future: FuturePrice[] = [],
+): LineData<Time>[] {
   const byTime = new Map<number, number>();
   for (const p of points) {
     if (p.value == null || Number.isNaN(p.value) || p.time == null || Number.isNaN(p.time)) continue;
+    if (p.time > grid.lastTime) {
+      const slot = grid.slotsAfter(p.time, p.script);
+      if (slot > 0) {
+        future.push({ slot, value: p.value });
+        continue;
+      }
+    }
     const t = grid.snap(p.time, p.script);
     if (!byTime.has(t)) byTime.set(t, p.value);
   }
+  if (byTime.size === 0 && future.length && Number.isFinite(grid.lastTime)) byTime.set(grid.lastTime, future[0].value);
   return Array.from(byTime.entries())
     .sort((a, b) => a[0] - b[0])
     .map(([t, v]) => ({ time: t as unknown as Time, value: v }));
@@ -952,7 +972,8 @@ export class DrawingPrimitive<T> extends BasePrimitive {
     private _grid: BarGrid,
     private _items: T[],
     private _draw: (env: DrawEnv, item: T) => void,
-    zOrder: 'bottom' | 'normal' | 'top'
+    zOrder: 'bottom' | 'normal' | 'top',
+    private _future: FuturePrice[] = []
   ) {
     super();
     const renderer: IPrimitivePaneRenderer = { draw: (target) => this.drawAll(target) };
@@ -960,6 +981,22 @@ export class DrawingPrimitive<T> extends BasePrimitive {
   }
 
   updateAllViews(): void {}
+
+  /** Prices the drawings reach on the visible bar slots after the last bar (they are not points of the anchor) */
+  autoscaleInfo(startTimePoint: Logical, endTimePoint: Logical): AutoscaleInfo | null {
+    if (!this._future.length || !this._chart) return null;
+    const last = this._chart.timeScale().timeToIndex(this._grid.lastTime as unknown as Time, false);
+    if (last == null) return null;
+    let min = Infinity;
+    let max = -Infinity;
+    for (const f of this._future) {
+      const i = last + f.slot;
+      if (i < startTimePoint || i > endTimePoint) continue;
+      if (f.value < min) min = f.value;
+      if (f.value > max) max = f.value;
+    }
+    return min <= max ? { priceRange: { minValue: min, maxValue: max } } : null;
+  }
 
   paneViews(): readonly IPrimitivePaneView[] {
     return this._views;

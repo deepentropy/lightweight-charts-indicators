@@ -66,6 +66,7 @@ import {
   anchorData,
   scriptTimes,
   type FutureSlots,
+  type FuturePrice,
   markerSizeMult,
   gradientAt,
   BUILTIN_MARKER_SHAPES,
@@ -871,8 +872,9 @@ export class IndicatorRenderer {
     }
     for (const [p, group] of groups) {
       const anchor = this.anchor(p, autoscale);
-      this.setData(anchor, anchorData(group.flatMap(points), this.grid));
-      this.attach(anchor as unknown as ISeriesApi<SeriesType, Time>, new DrawingPrimitive(this.grid, group, draw, zOrder) as ISeriesPrimitive<Time>);
+      const future: FuturePrice[] = [];
+      this.setData(anchor, anchorData(group.flatMap(points), this.grid, future));
+      this.attach(anchor as unknown as ISeriesApi<SeriesType, Time>, new DrawingPrimitive(this.grid, group, draw, zOrder, future) as ISeriesPrimitive<Time>);
     }
   }
 
