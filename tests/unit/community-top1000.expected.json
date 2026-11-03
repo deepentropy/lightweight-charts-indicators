@@ -240,5 +240,226 @@
    "boxes": 55,
    "labels": 51
   }
+ },
+ "zone-shift": {
+  "daily": {
+   "plots": {
+    "plot0": 3101,
+    "plot1": 3001,
+    "plot2": 3001,
+    "plot3": 2980
+   },
+   "barColors": 3200,
+   "labels": 20,
+   "plotCandles": 3200
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3901,
+    "plot1": 3801,
+    "plot2": 3801,
+    "plot3": 3778
+   },
+   "barColors": 4000,
+   "labels": 25,
+   "plotCandles": 4000
+  }
+ },
+ "r-r-trading-system-framework": {
+  "daily": {
+   "plots": {
+    "plot0": 534,
+    "plot1": 837,
+    "plot2": 0,
+    "plot3": 0,
+    "plot4": 0,
+    "plot5": 0,
+    "plot6": 0,
+    "plot7": 0,
+    "plot8": 0,
+    "plot9": 0
+   },
+   "lines": 16,
+   "boxes": 118,
+   "labels": 320,
+   "tables": 2
+  },
+  "m15": {
+   "plots": {
+    "plot0": 661,
+    "plot1": 1036,
+    "plot2": 0,
+    "plot3": 0,
+    "plot4": 0,
+    "plot5": 0,
+    "plot6": 0,
+    "plot7": 0,
+    "plot8": 0,
+    "plot9": 0
+   },
+   "lines": 16,
+   "boxes": 154,
+   "labels": 383,
+   "tables": 2
+  }
+ },
+ "machine-learning-supertrend": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 3200,
+    "plot2": 3200,
+    "plot3": 3200,
+    "plot4": 3200,
+    "plot5": 3200,
+    "plot6": 3200,
+    "plot7": 1021,
+    "plot8": 2179,
+    "plot9": 3168,
+    "plot10": 3168
+   },
+   "markers": 484,
+   "barColors": 3200,
+   "labels": 71,
+   "tables": 1,
+   "fills": 7
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 4000,
+    "plot2": 4000,
+    "plot3": 4000,
+    "plot4": 4000,
+    "plot5": 4000,
+    "plot6": 4000,
+    "plot7": 1238,
+    "plot8": 2762,
+    "plot9": 3968,
+    "plot10": 3968
+   },
+   "markers": 626,
+   "barColors": 4000,
+   "labels": 89,
+   "tables": 1,
+   "fills": 7
+  }
+ },
+ "gmma-daisuke-gewinn": {
+  "daily": {
+   "plots": {
+    "plot0": 3198,
+    "plot1": 3196,
+    "plot2": 3193,
+    "plot3": 3191,
+    "plot4": 3189,
+    "plot5": 3186,
+    "plot6": 3171,
+    "plot7": 3166,
+    "plot8": 3161,
+    "plot9": 3156,
+    "plot10": 3151,
+    "plot11": 3141
+   }
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3998,
+    "plot1": 3996,
+    "plot2": 3993,
+    "plot3": 3991,
+    "plot4": 3989,
+    "plot5": 3986,
+    "plot6": 3971,
+    "plot7": 3966,
+    "plot8": 3961,
+    "plot9": 3956,
+    "plot10": 3951,
+    "plot11": 3941
+   }
+  }
+ },
+ "extreme-trend-reversal-points": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 2201,
+    "plot2": 2201,
+    "plot3": 2201,
+    "plot4": 2201,
+    "plot5": 3200,
+    "plot6": 3181
+   },
+   "markers": 104,
+   "lines": 10,
+   "labels": 10
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 3001,
+    "plot2": 3001,
+    "plot3": 3001,
+    "plot4": 3001,
+    "plot5": 4000,
+    "plot6": 3981
+   },
+   "markers": 120,
+   "lines": 10,
+   "labels": 10
+  }
+ },
+ "demand-supply-zones": {
+  "daily": {
+   "plots": {},
+   "boxes": 501,
+   "labels": 6
+  },
+  "m15": {
+   "plots": {},
+   "lines": 1,
+   "boxes": 500,
+   "labels": 6
+  }
+ },
+ "breakout-volume-delta-flux-charts": {
+  "daily": {
+   "plots": {},
+   "lines": 10,
+   "labels": 113,
+   "plotCandles": 3426
+  },
+  "m15": {
+   "plots": {},
+   "lines": 10,
+   "labels": 142,
+   "plotCandles": 4284
+  }
+ },
+ "vwap-mtf": {
+  "daily": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 3197
+   }
+  },
+  "m15": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 3745
+   }
+  }
+ },
+ "change-in-state-of-delivery": {
+  "daily": {
+   "plots": {},
+   "lines": 503,
+   "labels": 501
+  },
+  "m15": {
+   "plots": {},
+   "lines": 502,
+   "labels": 501
+  }
  }
 }

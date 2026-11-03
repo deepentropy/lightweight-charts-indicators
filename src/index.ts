@@ -7008,6 +7008,42 @@ export type { IctSessionsInputs } from './community/ict-sessions';
 import * as volumeProfilePlusIndicator from './community/volume-profile-plus';
 export { VolumeProfilePlus, calculate as calculateVolumeProfilePlus } from './community/volume-profile-plus';
 export type { VolumeProfilePlusInputs } from './community/volume-profile-plus';
+// Zone Shift
+import * as zoneShiftIndicator from './community/zone-shift';
+export { ZoneShift, calculate as calculateZoneShift } from './community/zone-shift';
+export type { ZoneShiftInputs } from './community/zone-shift';
+// R:R Trading System Framework
+import * as rRTradingSystemFrameworkIndicator from './community/r-r-trading-system-framework';
+export { RRTradingSystemFramework, calculate as calculateRRTradingSystemFramework } from './community/r-r-trading-system-framework';
+export type { RRTradingSystemFrameworkInputs } from './community/r-r-trading-system-framework';
+// Machine Learning Supertrend
+import * as machineLearningSupertrendIndicator from './community/machine-learning-supertrend';
+export { MachineLearningSupertrend, calculate as calculateMachineLearningSupertrend } from './community/machine-learning-supertrend';
+export type { MachineLearningSupertrendInputs } from './community/machine-learning-supertrend';
+// GMMA
+import * as gmmaDaisukeGewinnIndicator from './community/gmma-daisuke-gewinn';
+export { GmmaDaisukeGewinn, calculate as calculateGmmaDaisukeGewinn } from './community/gmma-daisuke-gewinn';
+export type { GmmaDaisukeGewinnInputs } from './community/gmma-daisuke-gewinn';
+// Extreme Trend Reversal Points
+import * as extremeTrendReversalPointsIndicator from './community/extreme-trend-reversal-points';
+export { ExtremeTrendReversalPoints, calculate as calculateExtremeTrendReversalPoints } from './community/extreme-trend-reversal-points';
+export type { ExtremeTrendReversalPointsInputs } from './community/extreme-trend-reversal-points';
+// Demand & Supply Zones
+import * as demandSupplyZonesIndicator from './community/demand-supply-zones';
+export { DemandSupplyZones, calculate as calculateDemandSupplyZones } from './community/demand-supply-zones';
+export type { DemandSupplyZonesInputs } from './community/demand-supply-zones';
+// Breakout Volume Delta | Flux Charts
+import * as breakoutVolumeDeltaFluxChartsIndicator from './community/breakout-volume-delta-flux-charts';
+export { BreakoutVolumeDeltaFluxCharts, calculate as calculateBreakoutVolumeDeltaFluxCharts } from './community/breakout-volume-delta-flux-charts';
+export type { BreakoutVolumeDeltaFluxChartsInputs } from './community/breakout-volume-delta-flux-charts';
+// VWAP MTF (Multi Timeframe)
+import * as vwapMtfIndicator from './community/vwap-mtf';
+export { VwapMtf, calculate as calculateVwapMtf } from './community/vwap-mtf';
+export type { VwapMtfInputs } from './community/vwap-mtf';
+// Change in State of Delivery (CISD)
+import * as changeInStateOfDeliveryIndicator from './community/change-in-state-of-delivery';
+export { ChangeInStateOfDeliveryLuxAlgo, calculate as calculateChangeInStateOfDeliveryLuxAlgo } from './community/change-in-state-of-delivery';
+export type { ChangeInStateOfDeliveryLuxAlgoInputs } from './community/change-in-state-of-delivery';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -29823,6 +29859,9 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'machine-learning-supertrend': machineLearningSupertrendIndicator,
+  'extreme-trend-reversal-points': extremeTrendReversalPointsIndicator,
+  'demand-supply-zones': demandSupplyZonesIndicator,
   'market-structure-zigzag-break-of-structure': marketStructureZigzagBreakOfStructureIndicator,
   'liquidity-entry-zones': liquidityEntryZonesIndicator,
 };
@@ -30024,6 +30063,138 @@ const registryPart12: IndicatorRegistryEntry[] = [
     usesVisibleRange: true,
     defaultInputs: { ...volumeProfilePlusIndicator.defaultInputs },
     calculate: volumeProfilePlusIndicator.calculate,
+  },
+  {
+    id: 'zone-shift',
+    group: 'community',
+    name: 'Zone Shift',
+    shortName: zoneShiftIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: zoneShiftIndicator.metadata,
+    inputConfig: zoneShiftIndicator.inputConfig as InputConfig[],
+    plotConfig: zoneShiftIndicator.plotConfig as PlotConfig[],
+    barColorConfig: zoneShiftIndicator.barColorConfig,
+    plotCandleConfig: zoneShiftIndicator.plotCandleConfig,
+    drawingKinds: zoneShiftIndicator.drawingKinds,
+    defaultInputs: { ...zoneShiftIndicator.defaultInputs },
+    calculate: zoneShiftIndicator.calculate,
+  },
+  {
+    id: 'r-r-trading-system-framework',
+    group: 'community',
+    name: 'R:R Trading System Framework',
+    shortName: rRTradingSystemFrameworkIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: rRTradingSystemFrameworkIndicator.metadata,
+    inputConfig: rRTradingSystemFrameworkIndicator.inputConfig as InputConfig[],
+    plotConfig: rRTradingSystemFrameworkIndicator.plotConfig as PlotConfig[],
+    drawingKinds: rRTradingSystemFrameworkIndicator.drawingKinds,
+    defaultInputs: { ...rRTradingSystemFrameworkIndicator.defaultInputs },
+    calculate: rRTradingSystemFrameworkIndicator.calculate,
+  },
+  {
+    id: 'machine-learning-supertrend',
+    group: 'community',
+    name: 'Machine Learning Supertrend',
+    shortName: machineLearningSupertrendIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: machineLearningSupertrendIndicator.metadata,
+    inputConfig: machineLearningSupertrendIndicator.inputConfig as InputConfig[],
+    plotConfig: machineLearningSupertrendIndicator.plotConfig as PlotConfig[],
+    fillConfig: machineLearningSupertrendIndicator.fillConfig,
+    shapeConfig: machineLearningSupertrendIndicator.shapeConfig,
+    barColorConfig: machineLearningSupertrendIndicator.barColorConfig,
+    drawingKinds: machineLearningSupertrendIndicator.drawingKinds,
+    defaultInputs: { ...machineLearningSupertrendIndicator.defaultInputs },
+    calculate: machineLearningSupertrendIndicator.calculate,
+  },
+  {
+    id: 'gmma-daisuke-gewinn',
+    group: 'community',
+    name: 'GMMA',
+    shortName: gmmaDaisukeGewinnIndicator.metadata.shortTitle,
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: gmmaDaisukeGewinnIndicator.metadata,
+    inputConfig: gmmaDaisukeGewinnIndicator.inputConfig as InputConfig[],
+    plotConfig: gmmaDaisukeGewinnIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...gmmaDaisukeGewinnIndicator.defaultInputs },
+    calculate: gmmaDaisukeGewinnIndicator.calculate,
+  },
+  {
+    id: 'extreme-trend-reversal-points',
+    group: 'community',
+    name: 'Extreme Trend Reversal Points',
+    shortName: extremeTrendReversalPointsIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: extremeTrendReversalPointsIndicator.metadata,
+    inputConfig: extremeTrendReversalPointsIndicator.inputConfig as InputConfig[],
+    plotConfig: extremeTrendReversalPointsIndicator.plotConfig as PlotConfig[],
+    shapeConfig: extremeTrendReversalPointsIndicator.shapeConfig,
+    drawingKinds: extremeTrendReversalPointsIndicator.drawingKinds,
+    defaultInputs: { ...extremeTrendReversalPointsIndicator.defaultInputs },
+    calculate: extremeTrendReversalPointsIndicator.calculate,
+  },
+  {
+    id: 'demand-supply-zones',
+    group: 'community',
+    name: 'Demand & Supply Zones',
+    shortName: demandSupplyZonesIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: demandSupplyZonesIndicator.metadata,
+    inputConfig: demandSupplyZonesIndicator.inputConfig as InputConfig[],
+    plotConfig: demandSupplyZonesIndicator.plotConfig as PlotConfig[],
+    drawingKinds: demandSupplyZonesIndicator.drawingKinds,
+    defaultInputs: { ...demandSupplyZonesIndicator.defaultInputs },
+    calculate: demandSupplyZonesIndicator.calculate,
+  },
+  {
+    id: 'breakout-volume-delta-flux-charts',
+    group: 'community',
+    name: 'Breakout Volume Delta | Flux Charts',
+    shortName: breakoutVolumeDeltaFluxChartsIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: breakoutVolumeDeltaFluxChartsIndicator.metadata,
+    inputConfig: breakoutVolumeDeltaFluxChartsIndicator.inputConfig as InputConfig[],
+    plotConfig: breakoutVolumeDeltaFluxChartsIndicator.plotConfig as PlotConfig[],
+    plotCandleConfig: breakoutVolumeDeltaFluxChartsIndicator.plotCandleConfig,
+    drawingKinds: breakoutVolumeDeltaFluxChartsIndicator.drawingKinds,
+    defaultInputs: { ...breakoutVolumeDeltaFluxChartsIndicator.defaultInputs },
+    calculate: breakoutVolumeDeltaFluxChartsIndicator.calculate,
+  },
+  {
+    id: 'vwap-mtf',
+    group: 'community',
+    name: 'VWAP MTF (Multi Timeframe)',
+    shortName: vwapMtfIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: vwapMtfIndicator.metadata,
+    inputConfig: vwapMtfIndicator.inputConfig as InputConfig[],
+    plotConfig: vwapMtfIndicator.plotConfig as PlotConfig[],
+    barColorConfig: vwapMtfIndicator.barColorConfig,
+    defaultInputs: { ...vwapMtfIndicator.defaultInputs },
+    calculate: vwapMtfIndicator.calculate,
+  },
+  {
+    id: 'change-in-state-of-delivery',
+    group: 'community',
+    name: 'Change in State of Delivery (CISD)',
+    shortName: changeInStateOfDeliveryIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: changeInStateOfDeliveryIndicator.metadata,
+    inputConfig: changeInStateOfDeliveryIndicator.inputConfig as InputConfig[],
+    plotConfig: changeInStateOfDeliveryIndicator.plotConfig as PlotConfig[],
+    drawingKinds: changeInStateOfDeliveryIndicator.drawingKinds,
+    defaultInputs: { ...changeInStateOfDeliveryIndicator.defaultInputs },
+    calculate: changeInStateOfDeliveryIndicator.calculate,
   },
 ];
 
