@@ -6955,6 +6955,60 @@ export type { DivergenceScreenerInputs } from './community/divergence-screener';
 import * as renkoMovingAverageRmiAlertR3ByIndicator from './community/renko-moving-average-rmi-alert-r3-by';
 export { RenkoMovingAverageRmiAlertR3By, calculate as calculateRenkoMovingAverageRmiAlertR3By } from './community/renko-moving-average-rmi-alert-r3-by';
 export type { RenkoMovingAverageRmiAlertR3ByInputs } from './community/renko-moving-average-rmi-alert-r3-by';
+// ── Community top-1000 ports ──
+// Adaptive Support and Resistance Zones
+import * as adaptiveSupportAndResistanceZonesIndicator from './community/adaptive-support-and-resistance-zones';
+export { AdaptiveSupportAndResistanceZones, calculate as calculateAdaptiveSupportAndResistanceZones } from './community/adaptive-support-and-resistance-zones';
+export type { AdaptiveSupportAndResistanceZonesInputs } from './community/adaptive-support-and-resistance-zones';
+// ICT HTF Candles (fadi)
+import * as ictHtfCandlesIndicator from './community/ict-htf-candles';
+export { IctHtfCandles, calculate as calculateIctHtfCandles } from './community/ict-htf-candles';
+export type { IctHtfCandlesInputs } from './community/ict-htf-candles';
+// Previous Highs & Lows
+import * as previousHighsLowsIndicator from './community/previous-highs-lows';
+export { PreviousHighsLows, calculate as calculatePreviousHighsLows } from './community/previous-highs-lows';
+export type { PreviousHighsLowsInputs } from './community/previous-highs-lows';
+// Master Pattern
+import * as masterPatternIndicator from './community/master-pattern';
+export { MasterPattern, calculate as calculateMasterPattern } from './community/master-pattern';
+export type { MasterPatternInputs } from './community/master-pattern';
+// Liquidity Entry Zones
+import * as liquidityEntryZonesIndicator from './community/liquidity-entry-zones';
+export { LiquidityEntryZones, calculate as calculateLiquidityEntryZones } from './community/liquidity-entry-zones';
+export type { LiquidityEntryZonesInputs } from './community/liquidity-entry-zones';
+// Fibonacci levels MTF
+import * as fibonacciLevelsMtfIndicator from './community/fibonacci-levels-mtf';
+export { FibonacciLevelsMtf, calculate as calculateFibonacciLevelsMtf } from './community/fibonacci-levels-mtf';
+export type { FibonacciLevelsMtfInputs } from './community/fibonacci-levels-mtf';
+// CM_OldSchool_Projected_high_Low
+import * as cmOldschoolProjectedHighLowIndicator from './community/cm-oldschool-projected-high-low';
+export { CmOldschoolProjectedHighLow, calculate as calculateCmOldschoolProjectedHighLow } from './community/cm-oldschool-projected-high-low';
+export type { CmOldschoolProjectedHighLowInputs } from './community/cm-oldschool-projected-high-low';
+// Swing High/Low (ZigZag)
+import * as swingHighLowIndicator from './community/swing-high-low';
+export { SwingHighLow, calculate as calculateSwingHighLow } from './community/swing-high-low';
+export type { SwingHighLowInputs } from './community/swing-high-low';
+// Smart Trader, Episode 03, by Ata Sabanci, Candles and Tradelines
+import * as smartTraderEpisode03ByAtaSabanciIndicator from './community/smart-trader-episode-03-by-ata-sabanci';
+export { SmartTraderEpisode03ByAtaSabanci, calculate as calculateSmartTraderEpisode03ByAtaSabanci } from './community/smart-trader-episode-03-by-ata-sabanci';
+export type { SmartTraderEpisode03ByAtaSabanciInputs } from './community/smart-trader-episode-03-by-ata-sabanci';
+// Market Structure- ZigZag, Break of Structure & Order Blocks
+import * as marketStructureZigzagBreakOfStructureIndicator from './community/market-structure-zigzag-break-of-structure';
+export { MarketStructureZigzagBreakOfStructure, calculate as calculateMarketStructureZigzagBreakOfStructure } from './community/market-structure-zigzag-break-of-structure';
+export type { MarketStructureZigzagBreakOfStructureInputs } from './community/market-structure-zigzag-break-of-structure';
+// ICT Venom Trading Model SMC NY Session 2025Setup
+import * as ictVenomTradingModelSmcNySessionIndicator from './community/ict-venom-trading-model-smc-ny-session';
+export { IctVenomTradingModelSmcNySession, calculate as calculateIctVenomTradingModelSmcNySession } from './community/ict-venom-trading-model-smc-ny-session';
+export type { IctVenomTradingModelSmcNySessionInputs } from './community/ict-venom-trading-model-smc-ny-session';
+// ICT Sessions
+import * as ictSessionsIndicator from './community/ict-sessions';
+export { IctSessions, calculate as calculateIctSessions } from './community/ict-sessions';
+export type { IctSessionsInputs } from './community/ict-sessions';
+// Volume Profile Plus
+import * as volumeProfilePlusIndicator from './community/volume-profile-plus';
+export { VolumeProfilePlus, calculate as calculateVolumeProfilePlus } from './community/volume-profile-plus';
+export type { VolumeProfilePlusInputs } from './community/volume-profile-plus';
+// ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
   | 'Moving Averages'
@@ -29769,6 +29823,8 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'market-structure-zigzag-break-of-structure': marketStructureZigzagBreakOfStructureIndicator,
+  'liquidity-entry-zones': liquidityEntryZonesIndicator,
 };
 const withAlertConditions = (e: IndicatorRegistryEntry): IndicatorRegistryEntry => {
   const m = ALERT_MODULES[e.id];
@@ -29781,7 +29837,197 @@ const withAlertConditions = (e: IndicatorRegistryEntry): IndicatorRegistryEntry 
 };
 
 // Built-in studies carry the reference app's names (reference-names.ts).
-export const indicatorRegistry: IndicatorRegistryEntry[] = [...registryPart1, ...registryPart11, ...registryPart2, ...registryPart3, ...registryPart4, ...registryPart5, ...registryPart6, ...registryPart7, ...registryPart8, ...registryPart9, ...registryPart10].map(withReferenceNames).map(withValueFormat).map(withStyleOutputs).map(withAlertConditions);
+const registryPart12: IndicatorRegistryEntry[] = [
+  {
+    id: 'adaptive-support-and-resistance-zones',
+    group: 'community',
+    name: 'Adaptive Support and Resistance Zones',
+    shortName: adaptiveSupportAndResistanceZonesIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: adaptiveSupportAndResistanceZonesIndicator.metadata,
+    inputConfig: adaptiveSupportAndResistanceZonesIndicator.inputConfig as InputConfig[],
+    plotConfig: adaptiveSupportAndResistanceZonesIndicator.plotConfig as PlotConfig[],
+    drawingKinds: adaptiveSupportAndResistanceZonesIndicator.drawingKinds,
+    defaultInputs: { ...adaptiveSupportAndResistanceZonesIndicator.defaultInputs },
+    calculate: adaptiveSupportAndResistanceZonesIndicator.calculate,
+  },
+  {
+    id: 'ict-htf-candles',
+    group: 'community',
+    name: 'ICT HTF Candles (fadi)',
+    shortName: ictHtfCandlesIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: ictHtfCandlesIndicator.metadata,
+    inputConfig: ictHtfCandlesIndicator.inputConfig as InputConfig[],
+    plotConfig: ictHtfCandlesIndicator.plotConfig as PlotConfig[],
+    drawingKinds: ictHtfCandlesIndicator.drawingKinds,
+    defaultInputs: { ...ictHtfCandlesIndicator.defaultInputs },
+    calculate: ictHtfCandlesIndicator.calculate,
+  },
+  {
+    id: 'previous-highs-lows',
+    group: 'community',
+    name: 'Previous Highs & Lows',
+    shortName: previousHighsLowsIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: previousHighsLowsIndicator.metadata,
+    inputConfig: previousHighsLowsIndicator.inputConfig as InputConfig[],
+    plotConfig: previousHighsLowsIndicator.plotConfig as PlotConfig[],
+    drawingKinds: previousHighsLowsIndicator.drawingKinds,
+    defaultInputs: { ...previousHighsLowsIndicator.defaultInputs },
+    calculate: previousHighsLowsIndicator.calculate,
+  },
+  {
+    id: 'master-pattern',
+    group: 'community',
+    name: 'Master Pattern',
+    shortName: masterPatternIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: masterPatternIndicator.metadata,
+    inputConfig: masterPatternIndicator.inputConfig as InputConfig[],
+    plotConfig: masterPatternIndicator.plotConfig as PlotConfig[],
+    drawingKinds: masterPatternIndicator.drawingKinds,
+    defaultInputs: { ...masterPatternIndicator.defaultInputs },
+    calculate: masterPatternIndicator.calculate,
+  },
+  {
+    id: 'liquidity-entry-zones',
+    group: 'community',
+    name: 'Liquidity Entry Zones',
+    shortName: liquidityEntryZonesIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: liquidityEntryZonesIndicator.metadata,
+    inputConfig: liquidityEntryZonesIndicator.inputConfig as InputConfig[],
+    plotConfig: liquidityEntryZonesIndicator.plotConfig as PlotConfig[],
+    shapeConfig: liquidityEntryZonesIndicator.shapeConfig,
+    barColorConfig: liquidityEntryZonesIndicator.barColorConfig,
+    drawingKinds: liquidityEntryZonesIndicator.drawingKinds,
+    defaultInputs: { ...liquidityEntryZonesIndicator.defaultInputs },
+    calculate: liquidityEntryZonesIndicator.calculate,
+  },
+  {
+    id: 'fibonacci-levels-mtf',
+    group: 'community',
+    name: 'Fibonacci levels MTF',
+    shortName: fibonacciLevelsMtfIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: fibonacciLevelsMtfIndicator.metadata,
+    inputConfig: fibonacciLevelsMtfIndicator.inputConfig as InputConfig[],
+    plotConfig: fibonacciLevelsMtfIndicator.plotConfig as PlotConfig[],
+    drawingKinds: fibonacciLevelsMtfIndicator.drawingKinds,
+    defaultInputs: { ...fibonacciLevelsMtfIndicator.defaultInputs },
+    calculate: fibonacciLevelsMtfIndicator.calculate,
+  },
+  {
+    id: 'cm-oldschool-projected-high-low',
+    group: 'community',
+    name: 'CM_OldSchool_Projected_high_Low',
+    shortName: cmOldschoolProjectedHighLowIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: cmOldschoolProjectedHighLowIndicator.metadata,
+    inputConfig: cmOldschoolProjectedHighLowIndicator.inputConfig as InputConfig[],
+    plotConfig: cmOldschoolProjectedHighLowIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmOldschoolProjectedHighLowIndicator.defaultInputs },
+    calculate: cmOldschoolProjectedHighLowIndicator.calculate,
+  },
+  {
+    id: 'swing-high-low',
+    group: 'community',
+    name: 'Swing High/Low (ZigZag)',
+    shortName: swingHighLowIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: swingHighLowIndicator.metadata,
+    inputConfig: swingHighLowIndicator.inputConfig as InputConfig[],
+    plotConfig: swingHighLowIndicator.plotConfig as PlotConfig[],
+    drawingKinds: swingHighLowIndicator.drawingKinds,
+    defaultInputs: { ...swingHighLowIndicator.defaultInputs },
+    calculate: swingHighLowIndicator.calculate,
+  },
+  {
+    id: 'smart-trader-episode-03-by-ata-sabanci',
+    group: 'community',
+    name: 'Smart Trader, Episode 03, by Ata Sabanci, Candles and Tradelines',
+    shortName: smartTraderEpisode03ByAtaSabanciIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: smartTraderEpisode03ByAtaSabanciIndicator.metadata,
+    inputConfig: smartTraderEpisode03ByAtaSabanciIndicator.inputConfig as InputConfig[],
+    plotConfig: smartTraderEpisode03ByAtaSabanciIndicator.plotConfig as PlotConfig[],
+    barColorConfig: smartTraderEpisode03ByAtaSabanciIndicator.barColorConfig,
+    drawingKinds: smartTraderEpisode03ByAtaSabanciIndicator.drawingKinds,
+    defaultInputs: { ...smartTraderEpisode03ByAtaSabanciIndicator.defaultInputs },
+    calculate: smartTraderEpisode03ByAtaSabanciIndicator.calculate,
+  },
+  {
+    id: 'market-structure-zigzag-break-of-structure',
+    group: 'community',
+    name: 'Market Structure- ZigZag, Break of Structure & Order Blocks',
+    shortName: marketStructureZigzagBreakOfStructureIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: marketStructureZigzagBreakOfStructureIndicator.metadata,
+    inputConfig: marketStructureZigzagBreakOfStructureIndicator.inputConfig as InputConfig[],
+    plotConfig: marketStructureZigzagBreakOfStructureIndicator.plotConfig as PlotConfig[],
+    shapeConfig: marketStructureZigzagBreakOfStructureIndicator.shapeConfig,
+    drawingKinds: marketStructureZigzagBreakOfStructureIndicator.drawingKinds,
+    defaultInputs: { ...marketStructureZigzagBreakOfStructureIndicator.defaultInputs },
+    calculate: marketStructureZigzagBreakOfStructureIndicator.calculate,
+  },
+  {
+    id: 'ict-venom-trading-model-smc-ny-session',
+    group: 'community',
+    name: 'ICT Venom Trading Model SMC NY Session 2025Setup',
+    shortName: ictVenomTradingModelSmcNySessionIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: ictVenomTradingModelSmcNySessionIndicator.metadata,
+    inputConfig: ictVenomTradingModelSmcNySessionIndicator.inputConfig as InputConfig[],
+    plotConfig: ictVenomTradingModelSmcNySessionIndicator.plotConfig as PlotConfig[],
+    drawingKinds: ictVenomTradingModelSmcNySessionIndicator.drawingKinds,
+    defaultInputs: { ...ictVenomTradingModelSmcNySessionIndicator.defaultInputs },
+    calculate: ictVenomTradingModelSmcNySessionIndicator.calculate,
+  },
+  {
+    id: 'ict-sessions',
+    group: 'community',
+    name: 'ICT Sessions',
+    shortName: ictSessionsIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: ictSessionsIndicator.metadata,
+    inputConfig: ictSessionsIndicator.inputConfig as InputConfig[],
+    plotConfig: ictSessionsIndicator.plotConfig as PlotConfig[],
+    fillConfig: ictSessionsIndicator.fillConfig,
+    defaultInputs: { ...ictSessionsIndicator.defaultInputs },
+    calculate: ictSessionsIndicator.calculate,
+  },
+  {
+    id: 'volume-profile-plus',
+    group: 'community',
+    name: 'Volume Profile Plus',
+    shortName: volumeProfilePlusIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: volumeProfilePlusIndicator.metadata,
+    inputConfig: volumeProfilePlusIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeProfilePlusIndicator.plotConfig as PlotConfig[],
+    drawingKinds: volumeProfilePlusIndicator.drawingKinds,
+    requiredSymbols: volumeProfilePlusIndicator.requiredSymbols,
+    usesVisibleRange: true,
+    defaultInputs: { ...volumeProfilePlusIndicator.defaultInputs },
+    calculate: volumeProfilePlusIndicator.calculate,
+  },
+];
+
+export const indicatorRegistry: IndicatorRegistryEntry[] = [...registryPart1, ...registryPart11, ...registryPart2, ...registryPart3, ...registryPart4, ...registryPart5, ...registryPart6, ...registryPart7, ...registryPart8, ...registryPart9, ...registryPart10, ...registryPart12].map(withReferenceNames).map(withValueFormat).map(withStyleOutputs).map(withAlertConditions);
 
 // Chart context (third argument of calculate)
 export type { ChartContext, VisibleRange, SymbolRequest, SymbolInfo } from './chart-context';

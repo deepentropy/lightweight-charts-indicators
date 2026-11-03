@@ -106,7 +106,7 @@ describe('visible chart range', () => {
       'liquidity-price-depth-chart', 'open-interest-suite-by-leviathan', 'order-blocks-volume-delta-3d-flux-charts',
       'signal-table-autofib-sma-ema-rsi-atr-vol', 'supply-and-demand-visible-range', 'support-resistance-channels-mtf',
       'support-resistance-classification', 'visible-average-price', 'volume-open-interest-footprint-by-leviathan',
-      'volume-profile-kv4coins',
+      'volume-profile-kv4coins', 'volume-profile-plus',
     ]);
   });
 
