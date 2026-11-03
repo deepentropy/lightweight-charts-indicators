@@ -789,5 +789,53 @@
    "lines": 1,
    "boxes": 1
   }
+ },
+ "swing-anchored-vwap": {
+  "daily": {
+   "plots": {},
+   "lines": 1,
+   "labels": 26,
+   "polylines": 25
+  },
+  "m15": {
+   "plots": {},
+   "lines": 1,
+   "labels": 34,
+   "polylines": 33
+  }
+ },
+ "volume-heatmap-divergence": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 146,
+    "plot2": 146
+   },
+   "markers": 40,
+   "labels": 40,
+   "plotCandles": 2201
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 192,
+    "plot2": 192
+   },
+   "markers": 58,
+   "labels": 58,
+   "plotCandles": 3001
+  }
+ },
+ "three-drive-pattern-detector": {
+  "daily": {
+   "plots": {},
+   "lines": 1,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "lines": 1,
+   "tables": 1
+  }
  }
 }

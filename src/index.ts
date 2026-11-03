@@ -7148,6 +7148,26 @@ export type { RangeSentimentProfileInputs } from './community/range-sentiment-pr
 import * as inverseFvgWithRejectionsIndicator from './community/inverse-fvg-with-rejections';
 export { InverseFvgWithRejections, calculate as calculateInverseFvgWithRejections } from './community/inverse-fvg-with-rejections';
 export type { InverseFvgWithRejectionsInputs } from './community/inverse-fvg-with-rejections';
+// Swing Anchored Vwap
+import * as swingAnchoredVwapIndicator from './community/swing-anchored-vwap';
+export { SwingAnchoredVwap, calculate as calculateSwingAnchoredVwap } from './community/swing-anchored-vwap';
+export type { SwingAnchoredVwapInputs } from './community/swing-anchored-vwap';
+// Volume HeatMap Divergence
+import * as volumeHeatmapDivergenceIndicator from './community/volume-heatmap-divergence';
+export { VolumeHeatmapDivergence, calculate as calculateVolumeHeatmapDivergence } from './community/volume-heatmap-divergence';
+export type { VolumeHeatmapDivergenceInputs } from './community/volume-heatmap-divergence';
+// Volume Analysis - Heatmap and Volume Profile
+import * as volumeAnalysisHeatmapAndVolumeProfileIndicator from './community/volume-analysis-heatmap-and-volume-profile';
+export { VolumeAnalysisHeatmapAndVolumeProfile, calculate as calculateVolumeAnalysisHeatmapAndVolumeProfile } from './community/volume-analysis-heatmap-and-volume-profile';
+export type { VolumeAnalysisHeatmapAndVolumeProfileInputs } from './community/volume-analysis-heatmap-and-volume-profile';
+// Three Drive Pattern Detector
+import * as threeDrivePatternDetectorIndicator from './community/three-drive-pattern-detector';
+export { ThreeDrivePatternDetector, calculate as calculateThreeDrivePatternDetector } from './community/three-drive-pattern-detector';
+export type { ThreeDrivePatternDetectorInputs } from './community/three-drive-pattern-detector';
+// Trendlines 2x +
+import * as trendlines2xIndicator from './community/trendlines-2x';
+export { Trendlines2x, calculate as calculateTrendlines2x } from './community/trendlines-2x';
+export type { Trendlines2xInputs } from './community/trendlines-2x';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -29963,6 +29983,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'trendlines-2x': trendlines2xIndicator,
   'atr-trailing-stoploss': atrTrailingStoplossIndicator,
   'best-support-and-resistance-indicator-v1': bestSupportAndResistanceIndicatorV1Indicator,
   'inverse-fvg-with-rejections': inverseFvgWithRejectionsIndicator,
@@ -30698,6 +30719,83 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: inverseFvgWithRejectionsIndicator.drawingKinds,
     defaultInputs: { ...inverseFvgWithRejectionsIndicator.defaultInputs },
     calculate: inverseFvgWithRejectionsIndicator.calculate,
+  },
+  {
+    id: 'swing-anchored-vwap',
+    group: 'community',
+    name: 'Swing Anchored Vwap',
+    shortName: swingAnchoredVwapIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: swingAnchoredVwapIndicator.metadata,
+    inputConfig: swingAnchoredVwapIndicator.inputConfig as InputConfig[],
+    plotConfig: swingAnchoredVwapIndicator.plotConfig as PlotConfig[],
+    drawingKinds: swingAnchoredVwapIndicator.drawingKinds,
+    defaultInputs: { ...swingAnchoredVwapIndicator.defaultInputs },
+    calculate: swingAnchoredVwapIndicator.calculate,
+  },
+  {
+    id: 'volume-heatmap-divergence',
+    group: 'community',
+    name: 'Volume HeatMap Divergence',
+    shortName: volumeHeatmapDivergenceIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: volumeHeatmapDivergenceIndicator.metadata,
+    inputConfig: volumeHeatmapDivergenceIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeHeatmapDivergenceIndicator.plotConfig as PlotConfig[],
+    shapeConfig: volumeHeatmapDivergenceIndicator.shapeConfig,
+    plotCandleConfig: volumeHeatmapDivergenceIndicator.plotCandleConfig,
+    drawingKinds: volumeHeatmapDivergenceIndicator.drawingKinds,
+    defaultInputs: { ...volumeHeatmapDivergenceIndicator.defaultInputs },
+    calculate: volumeHeatmapDivergenceIndicator.calculate,
+  },
+  {
+    id: 'volume-analysis-heatmap-and-volume-profile',
+    group: 'community',
+    name: 'Volume Analysis - Heatmap and Volume Profile',
+    shortName: volumeAnalysisHeatmapAndVolumeProfileIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: false,
+    metadata: volumeAnalysisHeatmapAndVolumeProfileIndicator.metadata,
+    inputConfig: volumeAnalysisHeatmapAndVolumeProfileIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeAnalysisHeatmapAndVolumeProfileIndicator.plotConfig as PlotConfig[],
+    drawingKinds: volumeAnalysisHeatmapAndVolumeProfileIndicator.drawingKinds,
+    requiredSymbols: volumeAnalysisHeatmapAndVolumeProfileIndicator.requiredSymbols,
+    defaultInputs: { ...volumeAnalysisHeatmapAndVolumeProfileIndicator.defaultInputs },
+    calculate: volumeAnalysisHeatmapAndVolumeProfileIndicator.calculate,
+  },
+  {
+    id: 'three-drive-pattern-detector',
+    group: 'community',
+    name: 'Three Drive Pattern Detector',
+    shortName: threeDrivePatternDetectorIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: threeDrivePatternDetectorIndicator.metadata,
+    inputConfig: threeDrivePatternDetectorIndicator.inputConfig as InputConfig[],
+    plotConfig: threeDrivePatternDetectorIndicator.plotConfig as PlotConfig[],
+    drawingKinds: threeDrivePatternDetectorIndicator.drawingKinds,
+    defaultInputs: { ...threeDrivePatternDetectorIndicator.defaultInputs },
+    calculate: threeDrivePatternDetectorIndicator.calculate,
+  },
+  {
+    id: 'trendlines-2x',
+    group: 'community',
+    name: 'Trendlines 2x +',
+    shortName: trendlines2xIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: trendlines2xIndicator.metadata,
+    inputConfig: trendlines2xIndicator.inputConfig as InputConfig[],
+    plotConfig: trendlines2xIndicator.plotConfig as PlotConfig[],
+    fillConfig: trendlines2xIndicator.fillConfig,
+    shapeConfig: trendlines2xIndicator.shapeConfig,
+    barColorConfig: trendlines2xIndicator.barColorConfig,
+    drawingKinds: trendlines2xIndicator.drawingKinds,
+    requiredSymbols: trendlines2xIndicator.requiredSymbols,
+    defaultInputs: { ...trendlines2xIndicator.defaultInputs },
+    calculate: trendlines2xIndicator.calculate,
   },
 ];
 
