@@ -508,6 +508,32 @@
    "labels": 501
   }
  },
+ "activity-and-volume-orderflow-profile": {
+  "daily": {
+   "plots": {},
+   "boxes": 61
+  },
+  "m15": {
+   "plots": {},
+   "boxes": 61
+  }
+ },
+ "machine-learning-price-target-prediction": {
+  "daily": {
+   "plots": {},
+   "markers": 1,
+   "barColors": 3200,
+   "boxes": 3,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "markers": 1,
+   "barColors": 4000,
+   "boxes": 3,
+   "tables": 1
+  }
+ },
  "volumetric-order-flow-structure": {
   "daily": {
    "plots": {},
@@ -606,6 +632,52 @@
    },
    "lines": 25,
    "fills": 1
+  }
+ },
+ "bos-choch-demand-supply": {
+  "daily": {
+   "plots": {},
+   "labels": 51
+  },
+  "m15": {
+   "plots": {},
+   "labels": 40
+  }
+ },
+ "momentum-acceleration-by-dgt": {
+  "daily": {
+   "plots": {
+    "plot0": 0
+   },
+   "markers": 16,
+   "arrows": 233,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 0
+   },
+   "markers": 10,
+   "arrows": 233,
+   "tables": 1
+  }
+ },
+ "volume-weighted-macd-v2-vwmacdv2-by-kivan": {
+  "daily": {
+   "plots": {
+    "plot0": 3175,
+    "plot1": 3167,
+    "plot2": 3167,
+    "plot3": 3200
+   }
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3975,
+    "plot1": 3967,
+    "plot2": 3967,
+    "plot3": 4000
+   }
   }
  }
 }

@@ -7084,6 +7084,38 @@ export type { HeikenAshiCandlesInputs } from './community/heiken-ashi-candles';
 import * as gridBotSimulatorIndicator from './community/grid-bot-simulator';
 export { GridBotSimulator, calculate as calculateGridBotSimulator } from './community/grid-bot-simulator';
 export type { GridBotSimulatorInputs } from './community/grid-bot-simulator';
+// buy/sell signals with Support/Resistance
+import * as buySellSignalsWithSupportResistanceIndicator from './community/buy-sell-signals-with-support-resistance';
+export { BuySellSignalsWithSupportResistance, calculate as calculateBuySellSignalsWithSupportResistance } from './community/buy-sell-signals-with-support-resistance';
+export type { BuySellSignalsWithSupportResistanceInputs } from './community/buy-sell-signals-with-support-resistance';
+// Activity and Volume Orderflow Profile
+import * as activityAndVolumeOrderflowProfileIndicator from './community/activity-and-volume-orderflow-profile';
+export { ActivityAndVolumeOrderflowProfile, calculate as calculateActivityAndVolumeOrderflowProfile } from './community/activity-and-volume-orderflow-profile';
+export type { ActivityAndVolumeOrderflowProfileInputs } from './community/activity-and-volume-orderflow-profile';
+// Machine Learning Price Target Prediction Signals
+import * as machineLearningPriceTargetPredictionIndicator from './community/machine-learning-price-target-prediction';
+export { MachineLearningPriceTargetPrediction, calculate as calculateMachineLearningPriceTargetPrediction } from './community/machine-learning-price-target-prediction';
+export type { MachineLearningPriceTargetPredictionInputs } from './community/machine-learning-price-target-prediction';
+// Delta Volume Candles
+import * as deltaVolumeCandlesIndicator from './community/delta-volume-candles';
+export { DeltaVolumeCandles, calculate as calculateDeltaVolumeCandles } from './community/delta-volume-candles';
+export type { DeltaVolumeCandlesInputs } from './community/delta-volume-candles';
+// Zero Lag Liquidity
+import * as zeroLagLiquidityIndicator from './community/zero-lag-liquidity';
+export { ZeroLagLiquidity, calculate as calculateZeroLagLiquidity } from './community/zero-lag-liquidity';
+export type { ZeroLagLiquidityInputs } from './community/zero-lag-liquidity';
+// BOS/CHOCH Demand & Supply
+import * as bosChochDemandSupplyIndicator from './community/bos-choch-demand-supply';
+export { BosChochDemandSupply, calculate as calculateBosChochDemandSupply } from './community/bos-choch-demand-supply';
+export type { BosChochDemandSupplyInputs } from './community/bos-choch-demand-supply';
+// Momentum Acceleration by DGT
+import * as momentumAccelerationByDgtIndicator from './community/momentum-acceleration-by-dgt';
+export { MomentumAccelerationByDgt, calculate as calculateMomentumAccelerationByDgt } from './community/momentum-acceleration-by-dgt';
+export type { MomentumAccelerationByDgtInputs } from './community/momentum-acceleration-by-dgt';
+// VOLUME WEIGHTED MACD V2 VWMACDV2 BY KIVANÇ fr3762
+import * as volumeWeightedMacdV2Vwmacdv2ByKivanIndicator from './community/volume-weighted-macd-v2-vwmacdv2-by-kivan';
+export { VolumeWeightedMacdV2VwmacdV2ByKivan, calculate as calculateVolumeWeightedMacdV2VwmacdV2ByKivan } from './community/volume-weighted-macd-v2-vwmacdv2-by-kivan';
+export type { VolumeWeightedMacdV2VwmacdV2ByKivanInputs } from './community/volume-weighted-macd-v2-vwmacdv2-by-kivan';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -29899,6 +29931,11 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'machine-learning-price-target-prediction': machineLearningPriceTargetPredictionIndicator,
+  'delta-volume-candles': deltaVolumeCandlesIndicator,
+  'zero-lag-liquidity': zeroLagLiquidityIndicator,
+  'bos-choch-demand-supply': bosChochDemandSupplyIndicator,
+  'momentum-acceleration-by-dgt': momentumAccelerationByDgtIndicator,
   'liquidity-structure-order-flow': liquidityStructureOrderFlowIndicator,
   'lance-algo': lanceAlgoIndicator,
   'ifvg-sniper-entry-engine': ifvgSniperEntryEngineIndicator,
@@ -30384,6 +30421,129 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: gridBotSimulatorIndicator.drawingKinds,
     defaultInputs: { ...gridBotSimulatorIndicator.defaultInputs },
     calculate: gridBotSimulatorIndicator.calculate,
+  },
+  {
+    id: 'buy-sell-signals-with-support-resistance',
+    group: 'community',
+    name: 'buy/sell signals with Support/Resistance',
+    shortName: buySellSignalsWithSupportResistanceIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: buySellSignalsWithSupportResistanceIndicator.metadata,
+    inputConfig: buySellSignalsWithSupportResistanceIndicator.inputConfig as InputConfig[],
+    plotConfig: buySellSignalsWithSupportResistanceIndicator.plotConfig as PlotConfig[],
+    shapeConfig: buySellSignalsWithSupportResistanceIndicator.shapeConfig,
+    requiredSymbols: buySellSignalsWithSupportResistanceIndicator.requiredSymbols,
+    defaultInputs: { ...buySellSignalsWithSupportResistanceIndicator.defaultInputs },
+    calculate: buySellSignalsWithSupportResistanceIndicator.calculate,
+  },
+  {
+    id: 'activity-and-volume-orderflow-profile',
+    group: 'community',
+    name: 'Activity and Volume Orderflow Profile',
+    shortName: activityAndVolumeOrderflowProfileIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: activityAndVolumeOrderflowProfileIndicator.metadata,
+    inputConfig: activityAndVolumeOrderflowProfileIndicator.inputConfig as InputConfig[],
+    plotConfig: activityAndVolumeOrderflowProfileIndicator.plotConfig as PlotConfig[],
+    drawingKinds: activityAndVolumeOrderflowProfileIndicator.drawingKinds,
+    defaultInputs: { ...activityAndVolumeOrderflowProfileIndicator.defaultInputs },
+    calculate: activityAndVolumeOrderflowProfileIndicator.calculate,
+  },
+  {
+    id: 'machine-learning-price-target-prediction',
+    group: 'community',
+    name: 'Machine Learning Price Target Prediction Signals',
+    shortName: machineLearningPriceTargetPredictionIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: machineLearningPriceTargetPredictionIndicator.metadata,
+    inputConfig: machineLearningPriceTargetPredictionIndicator.inputConfig as InputConfig[],
+    plotConfig: machineLearningPriceTargetPredictionIndicator.plotConfig as PlotConfig[],
+    shapeConfig: machineLearningPriceTargetPredictionIndicator.shapeConfig,
+    barColorConfig: machineLearningPriceTargetPredictionIndicator.barColorConfig,
+    drawingKinds: machineLearningPriceTargetPredictionIndicator.drawingKinds,
+    defaultInputs: { ...machineLearningPriceTargetPredictionIndicator.defaultInputs },
+    calculate: machineLearningPriceTargetPredictionIndicator.calculate,
+  },
+  {
+    id: 'delta-volume-candles',
+    group: 'community',
+    name: 'Delta Volume Candles',
+    shortName: deltaVolumeCandlesIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: deltaVolumeCandlesIndicator.metadata,
+    inputConfig: deltaVolumeCandlesIndicator.inputConfig as InputConfig[],
+    plotConfig: deltaVolumeCandlesIndicator.plotConfig as PlotConfig[],
+    fillConfig: deltaVolumeCandlesIndicator.fillConfig,
+    barColorConfig: deltaVolumeCandlesIndicator.barColorConfig,
+    plotCandleConfig: deltaVolumeCandlesIndicator.plotCandleConfig,
+    drawingKinds: deltaVolumeCandlesIndicator.drawingKinds,
+    requiredSymbols: deltaVolumeCandlesIndicator.requiredSymbols,
+    defaultInputs: { ...deltaVolumeCandlesIndicator.defaultInputs },
+    calculate: deltaVolumeCandlesIndicator.calculate,
+  },
+  {
+    id: 'zero-lag-liquidity',
+    group: 'community',
+    name: 'Zero Lag Liquidity',
+    shortName: zeroLagLiquidityIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: zeroLagLiquidityIndicator.metadata,
+    inputConfig: zeroLagLiquidityIndicator.inputConfig as InputConfig[],
+    plotConfig: zeroLagLiquidityIndicator.plotConfig as PlotConfig[],
+    shapeConfig: zeroLagLiquidityIndicator.shapeConfig,
+    plotCandleConfig: zeroLagLiquidityIndicator.plotCandleConfig,
+    drawingKinds: zeroLagLiquidityIndicator.drawingKinds,
+    requiredSymbols: zeroLagLiquidityIndicator.requiredSymbols,
+    defaultInputs: { ...zeroLagLiquidityIndicator.defaultInputs },
+    calculate: zeroLagLiquidityIndicator.calculate,
+  },
+  {
+    id: 'bos-choch-demand-supply',
+    group: 'community',
+    name: 'BOS/CHOCH Demand & Supply',
+    shortName: bosChochDemandSupplyIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: bosChochDemandSupplyIndicator.metadata,
+    inputConfig: bosChochDemandSupplyIndicator.inputConfig as InputConfig[],
+    plotConfig: bosChochDemandSupplyIndicator.plotConfig as PlotConfig[],
+    drawingKinds: bosChochDemandSupplyIndicator.drawingKinds,
+    defaultInputs: { ...bosChochDemandSupplyIndicator.defaultInputs },
+    calculate: bosChochDemandSupplyIndicator.calculate,
+  },
+  {
+    id: 'momentum-acceleration-by-dgt',
+    group: 'community',
+    name: 'Momentum Acceleration by DGT',
+    shortName: momentumAccelerationByDgtIndicator.metadata.shortTitle,
+    category: 'Momentum',
+    overlay: true,
+    metadata: momentumAccelerationByDgtIndicator.metadata,
+    inputConfig: momentumAccelerationByDgtIndicator.inputConfig as InputConfig[],
+    plotConfig: momentumAccelerationByDgtIndicator.plotConfig as PlotConfig[],
+    shapeConfig: momentumAccelerationByDgtIndicator.shapeConfig,
+    arrowConfig: momentumAccelerationByDgtIndicator.arrowConfig,
+    drawingKinds: momentumAccelerationByDgtIndicator.drawingKinds,
+    defaultInputs: { ...momentumAccelerationByDgtIndicator.defaultInputs },
+    calculate: momentumAccelerationByDgtIndicator.calculate,
+  },
+  {
+    id: 'volume-weighted-macd-v2-vwmacdv2-by-kivan',
+    group: 'community',
+    name: 'VOLUME WEIGHTED MACD V2',
+    shortName: volumeWeightedMacdV2Vwmacdv2ByKivanIndicator.metadata.shortTitle,
+    category: 'Momentum',
+    overlay: false,
+    metadata: volumeWeightedMacdV2Vwmacdv2ByKivanIndicator.metadata,
+    inputConfig: volumeWeightedMacdV2Vwmacdv2ByKivanIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeWeightedMacdV2Vwmacdv2ByKivanIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...volumeWeightedMacdV2Vwmacdv2ByKivanIndicator.defaultInputs },
+    calculate: volumeWeightedMacdV2Vwmacdv2ByKivanIndicator.calculate,
   },
 ];
 
