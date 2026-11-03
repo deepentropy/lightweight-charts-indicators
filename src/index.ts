@@ -7044,6 +7044,46 @@ export type { VwapMtfInputs } from './community/vwap-mtf';
 import * as changeInStateOfDeliveryIndicator from './community/change-in-state-of-delivery';
 export { ChangeInStateOfDeliveryLuxAlgo, calculate as calculateChangeInStateOfDeliveryLuxAlgo } from './community/change-in-state-of-delivery';
 export type { ChangeInStateOfDeliveryLuxAlgoInputs } from './community/change-in-state-of-delivery';
+// Strat Assistant
+import * as stratAssistantIndicator from './community/strat-assistant';
+export { StratAssistant, calculate as calculateStratAssistant } from './community/strat-assistant';
+export type { StratAssistantInputs } from './community/strat-assistant';
+// Liquidity Structure & Order Flow
+import * as liquidityStructureOrderFlowIndicator from './community/liquidity-structure-order-flow';
+export { LiquidityStructureOrderFlow, calculate as calculateLiquidityStructureOrderFlow } from './community/liquidity-structure-order-flow';
+export type { LiquidityStructureOrderFlowInputs } from './community/liquidity-structure-order-flow';
+// Volume-Weighted Order Block Zones
+import * as volumeWeightedOrderBlockZonesIndicator from './community/volume-weighted-order-block-zones';
+export { VolumeWeightedOrderBlockZones, calculate as calculateVolumeWeightedOrderBlockZones } from './community/volume-weighted-order-block-zones';
+export type { VolumeWeightedOrderBlockZonesInputs } from './community/volume-weighted-order-block-zones';
+// Volumetric Order Flow Structure
+import * as volumetricOrderFlowStructureIndicator from './community/volumetric-order-flow-structure';
+export { VolumetricOrderFlowStructure, calculate as calculateVolumetricOrderFlowStructure } from './community/volumetric-order-flow-structure';
+export type { VolumetricOrderFlowStructureInputs } from './community/volumetric-order-flow-structure';
+// lance algo
+import * as lanceAlgoIndicator from './community/lance-algo';
+export { LanceAlgo, calculate as calculateLanceAlgo } from './community/lance-algo';
+export type { LanceAlgoInputs } from './community/lance-algo';
+// Extrapolated Pivot Connector - Lets Make Support And Resistances
+import * as extrapolatedPivotConnectorLetsMakeIndicator from './community/extrapolated-pivot-connector-lets-make';
+export { ExtrapolatedPivotConnector, calculate as calculateExtrapolatedPivotConnector } from './community/extrapolated-pivot-connector-lets-make';
+export type { ExtrapolatedPivotConnectorInputs } from './community/extrapolated-pivot-connector-lets-make';
+// Liqudation HeatMap
+import * as liqudationHeatmapIndicator from './community/liqudation-heatmap';
+export { LiqudationHeatmap, calculate as calculateLiqudationHeatmap } from './community/liqudation-heatmap';
+export type { LiqudationHeatmapInputs } from './community/liqudation-heatmap';
+// IFVG Sniper Entry Engine
+import * as ifvgSniperEntryEngineIndicator from './community/ifvg-sniper-entry-engine';
+export { IfvgSniperEntryEngine, calculate as calculateIfvgSniperEntryEngine } from './community/ifvg-sniper-entry-engine';
+export type { IfvgSniperEntryEngineInputs } from './community/ifvg-sniper-entry-engine';
+// Heiken Ashi Candles
+import * as heikenAshiCandlesIndicator from './community/heiken-ashi-candles';
+export { HeikenAshiCandles, calculate as calculateHeikenAshiCandles } from './community/heiken-ashi-candles';
+export type { HeikenAshiCandlesInputs } from './community/heiken-ashi-candles';
+// Grid Bot Simulator
+import * as gridBotSimulatorIndicator from './community/grid-bot-simulator';
+export { GridBotSimulator, calculate as calculateGridBotSimulator } from './community/grid-bot-simulator';
+export type { GridBotSimulatorInputs } from './community/grid-bot-simulator';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -29859,6 +29899,10 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'liquidity-structure-order-flow': liquidityStructureOrderFlowIndicator,
+  'lance-algo': lanceAlgoIndicator,
+  'ifvg-sniper-entry-engine': ifvgSniperEntryEngineIndicator,
+  'grid-bot-simulator': gridBotSimulatorIndicator,
   'machine-learning-supertrend': machineLearningSupertrendIndicator,
   'extreme-trend-reversal-points': extremeTrendReversalPointsIndicator,
   'demand-supply-zones': demandSupplyZonesIndicator,
@@ -30195,6 +30239,151 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: changeInStateOfDeliveryIndicator.drawingKinds,
     defaultInputs: { ...changeInStateOfDeliveryIndicator.defaultInputs },
     calculate: changeInStateOfDeliveryIndicator.calculate,
+  },
+  {
+    id: 'strat-assistant',
+    group: 'community',
+    name: 'Strat Assistant',
+    shortName: stratAssistantIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: stratAssistantIndicator.metadata,
+    inputConfig: stratAssistantIndicator.inputConfig as InputConfig[],
+    plotConfig: stratAssistantIndicator.plotConfig as PlotConfig[],
+    shapeConfig: stratAssistantIndicator.shapeConfig,
+    barColorConfig: stratAssistantIndicator.barColorConfig,
+    drawingKinds: stratAssistantIndicator.drawingKinds,
+    defaultInputs: { ...stratAssistantIndicator.defaultInputs },
+    calculate: stratAssistantIndicator.calculate,
+  },
+  {
+    id: 'liquidity-structure-order-flow',
+    group: 'community',
+    name: 'Liquidity Structure & Order Flow',
+    shortName: liquidityStructureOrderFlowIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: liquidityStructureOrderFlowIndicator.metadata,
+    inputConfig: liquidityStructureOrderFlowIndicator.inputConfig as InputConfig[],
+    plotConfig: liquidityStructureOrderFlowIndicator.plotConfig as PlotConfig[],
+    drawingKinds: liquidityStructureOrderFlowIndicator.drawingKinds,
+    defaultInputs: { ...liquidityStructureOrderFlowIndicator.defaultInputs },
+    calculate: liquidityStructureOrderFlowIndicator.calculate,
+  },
+  {
+    id: 'volume-weighted-order-block-zones',
+    group: 'community',
+    name: 'Volume-Weighted Order Block Zones',
+    shortName: volumeWeightedOrderBlockZonesIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: volumeWeightedOrderBlockZonesIndicator.metadata,
+    inputConfig: volumeWeightedOrderBlockZonesIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeWeightedOrderBlockZonesIndicator.plotConfig as PlotConfig[],
+    drawingKinds: volumeWeightedOrderBlockZonesIndicator.drawingKinds,
+    defaultInputs: { ...volumeWeightedOrderBlockZonesIndicator.defaultInputs },
+    calculate: volumeWeightedOrderBlockZonesIndicator.calculate,
+  },
+  {
+    id: 'volumetric-order-flow-structure',
+    group: 'community',
+    name: 'Volumetric Order Flow Structure',
+    shortName: volumetricOrderFlowStructureIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: volumetricOrderFlowStructureIndicator.metadata,
+    inputConfig: volumetricOrderFlowStructureIndicator.inputConfig as InputConfig[],
+    plotConfig: volumetricOrderFlowStructureIndicator.plotConfig as PlotConfig[],
+    drawingKinds: volumetricOrderFlowStructureIndicator.drawingKinds,
+    defaultInputs: { ...volumetricOrderFlowStructureIndicator.defaultInputs },
+    calculate: volumetricOrderFlowStructureIndicator.calculate,
+  },
+  {
+    id: 'lance-algo',
+    group: 'community',
+    name: '[imba]lance algo',
+    shortName: lanceAlgoIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: lanceAlgoIndicator.metadata,
+    inputConfig: lanceAlgoIndicator.inputConfig as InputConfig[],
+    plotConfig: lanceAlgoIndicator.plotConfig as PlotConfig[],
+    shapeConfig: lanceAlgoIndicator.shapeConfig,
+    drawingKinds: lanceAlgoIndicator.drawingKinds,
+    defaultInputs: { ...lanceAlgoIndicator.defaultInputs },
+    calculate: lanceAlgoIndicator.calculate,
+  },
+  {
+    id: 'extrapolated-pivot-connector-lets-make',
+    group: 'community',
+    name: 'Extrapolated Pivot Connector - Lets Make Support And Resistances',
+    shortName: extrapolatedPivotConnectorLetsMakeIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: extrapolatedPivotConnectorLetsMakeIndicator.metadata,
+    inputConfig: extrapolatedPivotConnectorLetsMakeIndicator.inputConfig as InputConfig[],
+    plotConfig: extrapolatedPivotConnectorLetsMakeIndicator.plotConfig as PlotConfig[],
+    drawingKinds: extrapolatedPivotConnectorLetsMakeIndicator.drawingKinds,
+    defaultInputs: { ...extrapolatedPivotConnectorLetsMakeIndicator.defaultInputs },
+    calculate: extrapolatedPivotConnectorLetsMakeIndicator.calculate,
+  },
+  {
+    id: 'liqudation-heatmap',
+    group: 'community',
+    name: 'Liqudation HeatMap',
+    shortName: liqudationHeatmapIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: liqudationHeatmapIndicator.metadata,
+    inputConfig: liqudationHeatmapIndicator.inputConfig as InputConfig[],
+    plotConfig: liqudationHeatmapIndicator.plotConfig as PlotConfig[],
+    drawingKinds: liqudationHeatmapIndicator.drawingKinds,
+    defaultInputs: { ...liqudationHeatmapIndicator.defaultInputs },
+    calculate: liqudationHeatmapIndicator.calculate,
+  },
+  {
+    id: 'ifvg-sniper-entry-engine',
+    group: 'community',
+    name: 'IFVG Sniper Entry Engine',
+    shortName: ifvgSniperEntryEngineIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: ifvgSniperEntryEngineIndicator.metadata,
+    inputConfig: ifvgSniperEntryEngineIndicator.inputConfig as InputConfig[],
+    plotConfig: ifvgSniperEntryEngineIndicator.plotConfig as PlotConfig[],
+    drawingKinds: ifvgSniperEntryEngineIndicator.drawingKinds,
+    defaultInputs: { ...ifvgSniperEntryEngineIndicator.defaultInputs },
+    calculate: ifvgSniperEntryEngineIndicator.calculate,
+  },
+  {
+    id: 'heiken-ashi-candles',
+    group: 'community',
+    name: 'Heiken Ashi Candles',
+    shortName: heikenAshiCandlesIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: heikenAshiCandlesIndicator.metadata,
+    inputConfig: heikenAshiCandlesIndicator.inputConfig as InputConfig[],
+    plotConfig: heikenAshiCandlesIndicator.plotConfig as PlotConfig[],
+    plotCandleConfig: heikenAshiCandlesIndicator.plotCandleConfig,
+    defaultInputs: { ...heikenAshiCandlesIndicator.defaultInputs },
+    calculate: heikenAshiCandlesIndicator.calculate,
+  },
+  {
+    id: 'grid-bot-simulator',
+    group: 'community',
+    name: 'Grid Bot Simulator',
+    shortName: gridBotSimulatorIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: gridBotSimulatorIndicator.metadata,
+    inputConfig: gridBotSimulatorIndicator.inputConfig as InputConfig[],
+    plotConfig: gridBotSimulatorIndicator.plotConfig as PlotConfig[],
+    fillConfig: gridBotSimulatorIndicator.fillConfig,
+    shapeConfig: gridBotSimulatorIndicator.shapeConfig,
+    drawingKinds: gridBotSimulatorIndicator.drawingKinds,
+    defaultInputs: { ...gridBotSimulatorIndicator.defaultInputs },
+    calculate: gridBotSimulatorIndicator.calculate,
   },
 ];
 

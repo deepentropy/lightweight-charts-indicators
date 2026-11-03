@@ -303,6 +303,52 @@
    "tables": 2
   }
  },
+ "strat-assistant": {
+  "daily": {
+   "plots": {},
+   "markers": 5276,
+   "barColors": 3199,
+   "lines": 2
+  },
+  "m15": {
+   "plots": {},
+   "markers": 6578,
+   "barColors": 3999,
+   "lines": 2
+  }
+ },
+ "liquidity-structure-order-flow": {
+  "daily": {
+   "plots": {},
+   "lines": 13,
+   "boxes": 211,
+   "labels": 18,
+   "polylines": 4,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "lines": 14,
+   "boxes": 204,
+   "labels": 20,
+   "polylines": 4,
+   "tables": 1
+  }
+ },
+ "volume-weighted-order-block-zones": {
+  "daily": {
+   "plots": {},
+   "lines": 10,
+   "boxes": 9,
+   "labels": 339
+  },
+  "m15": {
+   "plots": {},
+   "lines": 6,
+   "boxes": 5,
+   "labels": 351
+  }
+ },
  "machine-learning-supertrend": {
   "daily": {
    "plots": {
@@ -460,6 +506,106 @@
    "plots": {},
    "lines": 502,
    "labels": 501
+  }
+ },
+ "volumetric-order-flow-structure": {
+  "daily": {
+   "plots": {},
+   "boxes": 417,
+   "labels": 197
+  },
+  "m15": {
+   "plots": {},
+   "boxes": 444,
+   "labels": 246
+  }
+ },
+ "lance-algo": {
+  "daily": {
+   "plots": {
+    "plot0": 3021
+   },
+   "tables": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3821
+   },
+   "tables": 1
+  }
+ },
+ "extrapolated-pivot-connector-lets-make": {
+  "daily": {
+   "plots": {
+    "plot0": 3,
+    "plot1": 4
+   },
+   "lines": 2,
+   "labels": 4
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4,
+    "plot1": 5
+   },
+   "lines": 2,
+   "labels": 4
+  }
+ },
+ "liqudation-heatmap": {
+  "daily": {
+   "plots": {},
+   "boxes": 448,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "boxes": 427,
+   "tables": 1
+  }
+ },
+ "ifvg-sniper-entry-engine": {
+  "daily": {
+   "plots": {},
+   "lines": 1,
+   "labels": 1,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "tables": 1
+  }
+ },
+ "heiken-ashi-candles": {
+  "daily": {
+   "plots": {},
+   "plotCandles": 3200
+  },
+  "m15": {
+   "plots": {},
+   "plotCandles": 4000
+  }
+ },
+ "grid-bot-simulator": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 3200,
+    "plot2": 0,
+    "plot3": 0
+   },
+   "lines": 26,
+   "fills": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 4000,
+    "plot2": 0,
+    "plot3": 0
+   },
+   "lines": 25,
+   "fills": 1
   }
  }
 }
