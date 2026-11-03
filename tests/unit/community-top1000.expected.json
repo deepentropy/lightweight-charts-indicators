@@ -679,5 +679,115 @@
     "plot3": 4000
    }
   }
+ },
+ "market-trend-levels-detector": {
+  "daily": {
+   "plots": {
+    "plot0": 3189,
+    "plot1": 3176
+   },
+   "markers": 82,
+   "lines": 50,
+   "labels": 52,
+   "fills": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3989,
+    "plot1": 3976
+   },
+   "markers": 102,
+   "lines": 50,
+   "labels": 54,
+   "fills": 1
+  }
+ },
+ "atr-trailing-stoploss": {
+  "daily": {
+   "plots": {
+    "plot0": 3200
+   },
+   "barColors": 3200
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000
+   },
+   "barColors": 4000
+  }
+ },
+ "market-structure-trend-targets": {
+  "daily": {
+   "plots": {
+    "plot0": 2760,
+    "plot1": 2760,
+    "plot2": 3200
+   },
+   "lines": 209,
+   "labels": 198,
+   "fills": 1,
+   "plotCandles": 3200
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3366,
+    "plot1": 3366,
+    "plot2": 4000
+   },
+   "lines": 264,
+   "labels": 249,
+   "fills": 1,
+   "plotCandles": 4000
+  }
+ },
+ "best-support-and-resistance-indicator-v1": {
+  "daily": {
+   "plots": {
+    "plot0": 128,
+    "plot1": 81
+   },
+   "lines": 50,
+   "labels": 52,
+   "linefills": 25
+  },
+  "m15": {
+   "plots": {
+    "plot0": 161,
+    "plot1": 103
+   },
+   "lines": 70,
+   "labels": 54,
+   "linefills": 35
+  }
+ },
+ "kdj-indicator-iamaltcoin": {
+  "daily": {
+   "plots": {
+    "plot0": 3192,
+    "plot1": 3192,
+    "plot2": 3192
+   },
+   "bgColors": 3200
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3992,
+    "plot1": 3992,
+    "plot2": 3992
+   },
+   "bgColors": 4000
+  }
+ },
+ "inverse-fvg-with-rejections": {
+  "daily": {
+   "plots": {},
+   "lines": 3,
+   "boxes": 3
+  },
+  "m15": {
+   "plots": {},
+   "lines": 1,
+   "boxes": 1
+  }
  }
 }

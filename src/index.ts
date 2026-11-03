@@ -7116,6 +7116,38 @@ export type { MomentumAccelerationByDgtInputs } from './community/momentum-accel
 import * as volumeWeightedMacdV2Vwmacdv2ByKivanIndicator from './community/volume-weighted-macd-v2-vwmacdv2-by-kivan';
 export { VolumeWeightedMacdV2VwmacdV2ByKivan, calculate as calculateVolumeWeightedMacdV2VwmacdV2ByKivan } from './community/volume-weighted-macd-v2-vwmacdv2-by-kivan';
 export type { VolumeWeightedMacdV2VwmacdV2ByKivanInputs } from './community/volume-weighted-macd-v2-vwmacdv2-by-kivan';
+// Market Trend Levels Detector
+import * as marketTrendLevelsDetectorIndicator from './community/market-trend-levels-detector';
+export { MarketTrendLevelsDetector, calculate as calculateMarketTrendLevelsDetector } from './community/market-trend-levels-detector';
+export type { MarketTrendLevelsDetectorInputs } from './community/market-trend-levels-detector';
+// Liquidity Sniper Pro
+import * as liquiditySniperProIndicator from './community/liquidity-sniper-pro';
+export { LiquiditySniperPro, calculate as calculateLiquiditySniperPro } from './community/liquidity-sniper-pro';
+export type { LiquiditySniperProInputs } from './community/liquidity-sniper-pro';
+// ATR Trailing Stoploss
+import * as atrTrailingStoplossIndicator from './community/atr-trailing-stoploss';
+export { AtrTrailingStoploss, calculate as calculateAtrTrailingStoploss } from './community/atr-trailing-stoploss';
+export type { AtrTrailingStoplossInputs } from './community/atr-trailing-stoploss';
+// Market Structure Trend Targets
+import * as marketStructureTrendTargetsIndicator from './community/market-structure-trend-targets';
+export { MarketStructureTrendTargets, calculate as calculateMarketStructureTrendTargets } from './community/market-structure-trend-targets';
+export type { MarketStructureTrendTargetsInputs } from './community/market-structure-trend-targets';
+// Best Support And Resistance Indicator V1
+import * as bestSupportAndResistanceIndicatorV1Indicator from './community/best-support-and-resistance-indicator-v1';
+export { BestSupportAndResistanceIndicatorV1, calculate as calculateBestSupportAndResistanceIndicatorV1 } from './community/best-support-and-resistance-indicator-v1';
+export type { BestSupportAndResistanceIndicatorV1Inputs } from './community/best-support-and-resistance-indicator-v1';
+// KDJ Indicator - @iamaltcoin
+import * as kdjIndicatorIamaltcoinIndicator from './community/kdj-indicator-iamaltcoin';
+export { KdjIndicatorIamaltcoin, calculate as calculateKdjIndicatorIamaltcoin } from './community/kdj-indicator-iamaltcoin';
+export type { KdjIndicatorIamaltcoinInputs } from './community/kdj-indicator-iamaltcoin';
+// Range Sentiment Profile
+import * as rangeSentimentProfileIndicator from './community/range-sentiment-profile';
+export { RangeSentimentProfile, calculate as calculateRangeSentimentProfile } from './community/range-sentiment-profile';
+export type { RangeSentimentProfileInputs } from './community/range-sentiment-profile';
+// Inverse FVG with Rejections
+import * as inverseFvgWithRejectionsIndicator from './community/inverse-fvg-with-rejections';
+export { InverseFvgWithRejections, calculate as calculateInverseFvgWithRejections } from './community/inverse-fvg-with-rejections';
+export type { InverseFvgWithRejectionsInputs } from './community/inverse-fvg-with-rejections';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -29931,6 +29963,9 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'atr-trailing-stoploss': atrTrailingStoplossIndicator,
+  'best-support-and-resistance-indicator-v1': bestSupportAndResistanceIndicatorV1Indicator,
+  'inverse-fvg-with-rejections': inverseFvgWithRejectionsIndicator,
   'machine-learning-price-target-prediction': machineLearningPriceTargetPredictionIndicator,
   'delta-volume-candles': deltaVolumeCandlesIndicator,
   'zero-lag-liquidity': zeroLagLiquidityIndicator,
@@ -30544,6 +30579,125 @@ const registryPart12: IndicatorRegistryEntry[] = [
     plotConfig: volumeWeightedMacdV2Vwmacdv2ByKivanIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...volumeWeightedMacdV2Vwmacdv2ByKivanIndicator.defaultInputs },
     calculate: volumeWeightedMacdV2Vwmacdv2ByKivanIndicator.calculate,
+  },
+  {
+    id: 'market-trend-levels-detector',
+    group: 'community',
+    name: 'Market Trend Levels Detector',
+    shortName: marketTrendLevelsDetectorIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: marketTrendLevelsDetectorIndicator.metadata,
+    inputConfig: marketTrendLevelsDetectorIndicator.inputConfig as InputConfig[],
+    plotConfig: marketTrendLevelsDetectorIndicator.plotConfig as PlotConfig[],
+    fillConfig: marketTrendLevelsDetectorIndicator.fillConfig,
+    shapeConfig: marketTrendLevelsDetectorIndicator.shapeConfig,
+    drawingKinds: marketTrendLevelsDetectorIndicator.drawingKinds,
+    defaultInputs: { ...marketTrendLevelsDetectorIndicator.defaultInputs },
+    calculate: marketTrendLevelsDetectorIndicator.calculate,
+  },
+  {
+    id: 'liquidity-sniper-pro',
+    group: 'community',
+    name: 'Liquidity Sniper Pro',
+    shortName: liquiditySniperProIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: liquiditySniperProIndicator.metadata,
+    inputConfig: liquiditySniperProIndicator.inputConfig as InputConfig[],
+    plotConfig: liquiditySniperProIndicator.plotConfig as PlotConfig[],
+    drawingKinds: liquiditySniperProIndicator.drawingKinds,
+    requiredSymbols: liquiditySniperProIndicator.requiredSymbols,
+    defaultInputs: { ...liquiditySniperProIndicator.defaultInputs },
+    calculate: liquiditySniperProIndicator.calculate,
+  },
+  {
+    id: 'atr-trailing-stoploss',
+    group: 'community',
+    name: 'ATR Trailing Stoploss',
+    shortName: atrTrailingStoplossIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: atrTrailingStoplossIndicator.metadata,
+    inputConfig: atrTrailingStoplossIndicator.inputConfig as InputConfig[],
+    plotConfig: atrTrailingStoplossIndicator.plotConfig as PlotConfig[],
+    barColorConfig: atrTrailingStoplossIndicator.barColorConfig,
+    defaultInputs: { ...atrTrailingStoplossIndicator.defaultInputs },
+    calculate: atrTrailingStoplossIndicator.calculate,
+  },
+  {
+    id: 'market-structure-trend-targets',
+    group: 'community',
+    name: 'Market Structure Trend Targets',
+    shortName: marketStructureTrendTargetsIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: marketStructureTrendTargetsIndicator.metadata,
+    inputConfig: marketStructureTrendTargetsIndicator.inputConfig as InputConfig[],
+    plotConfig: marketStructureTrendTargetsIndicator.plotConfig as PlotConfig[],
+    fillConfig: marketStructureTrendTargetsIndicator.fillConfig,
+    plotCandleConfig: marketStructureTrendTargetsIndicator.plotCandleConfig,
+    drawingKinds: marketStructureTrendTargetsIndicator.drawingKinds,
+    defaultInputs: { ...marketStructureTrendTargetsIndicator.defaultInputs },
+    calculate: marketStructureTrendTargetsIndicator.calculate,
+  },
+  {
+    id: 'best-support-and-resistance-indicator-v1',
+    group: 'community',
+    name: 'Best Support And Resistance Indicator V1',
+    shortName: bestSupportAndResistanceIndicatorV1Indicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: bestSupportAndResistanceIndicatorV1Indicator.metadata,
+    inputConfig: bestSupportAndResistanceIndicatorV1Indicator.inputConfig as InputConfig[],
+    plotConfig: bestSupportAndResistanceIndicatorV1Indicator.plotConfig as PlotConfig[],
+    drawingKinds: bestSupportAndResistanceIndicatorV1Indicator.drawingKinds,
+    defaultInputs: { ...bestSupportAndResistanceIndicatorV1Indicator.defaultInputs },
+    calculate: bestSupportAndResistanceIndicatorV1Indicator.calculate,
+  },
+  {
+    id: 'kdj-indicator-iamaltcoin',
+    group: 'community',
+    name: 'KDJ Indicator - @iamaltcoin',
+    shortName: kdjIndicatorIamaltcoinIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: false,
+    metadata: kdjIndicatorIamaltcoinIndicator.metadata,
+    inputConfig: kdjIndicatorIamaltcoinIndicator.inputConfig as InputConfig[],
+    plotConfig: kdjIndicatorIamaltcoinIndicator.plotConfig as PlotConfig[],
+    barColorConfig: kdjIndicatorIamaltcoinIndicator.barColorConfig,
+    defaultInputs: { ...kdjIndicatorIamaltcoinIndicator.defaultInputs },
+    calculate: kdjIndicatorIamaltcoinIndicator.calculate,
+  },
+  {
+    id: 'range-sentiment-profile',
+    group: 'community',
+    name: 'Range Sentiment Profile',
+    shortName: rangeSentimentProfileIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: rangeSentimentProfileIndicator.metadata,
+    inputConfig: rangeSentimentProfileIndicator.inputConfig as InputConfig[],
+    plotConfig: rangeSentimentProfileIndicator.plotConfig as PlotConfig[],
+    drawingKinds: rangeSentimentProfileIndicator.drawingKinds,
+    requiredSymbols: rangeSentimentProfileIndicator.requiredSymbols,
+    defaultInputs: { ...rangeSentimentProfileIndicator.defaultInputs },
+    calculate: rangeSentimentProfileIndicator.calculate,
+  },
+  {
+    id: 'inverse-fvg-with-rejections',
+    group: 'community',
+    name: 'Inverse FVG with Rejections',
+    shortName: inverseFvgWithRejectionsIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: inverseFvgWithRejectionsIndicator.metadata,
+    inputConfig: inverseFvgWithRejectionsIndicator.inputConfig as InputConfig[],
+    plotConfig: inverseFvgWithRejectionsIndicator.plotConfig as PlotConfig[],
+    shapeConfig: inverseFvgWithRejectionsIndicator.shapeConfig,
+    drawingKinds: inverseFvgWithRejectionsIndicator.drawingKinds,
+    defaultInputs: { ...inverseFvgWithRejectionsIndicator.defaultInputs },
+    calculate: inverseFvgWithRejectionsIndicator.calculate,
   },
 ];
 
