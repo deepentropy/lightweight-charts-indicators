@@ -10,7 +10,7 @@
 npm install lightweight-charts-indicators oakscriptjs lightweight-charts
 ```
 
-`oakscriptjs` is a peer dependency: version 0.11.2 or later, below 0.12. `lightweight-charts` 5 is only needed for
+`oakscriptjs` is a peer dependency: version 0.14.0 or later, below 0.15. `lightweight-charts` 5 is only needed for
 the renderer.
 
 ## Quick Start
