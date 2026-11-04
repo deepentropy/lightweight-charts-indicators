@@ -1398,5 +1398,67 @@
    "lines": 16,
    "labels": 8
   }
+ },
+ "machine-learning-gaussian-process-regression": {
+  "daily": {
+   "plots": {},
+   "polylines": 2
+  },
+  "m15": {
+   "plots": {},
+   "polylines": 2
+  }
+ },
+ "risk-management-tool": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 3200
+   },
+   "markers": 3200,
+   "boxes": 2,
+   "labels": 3,
+   "tables": 1,
+   "fills": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 4000
+   },
+   "markers": 4000,
+   "boxes": 2,
+   "labels": 3,
+   "tables": 1,
+   "fills": 1
+  }
+ },
+ "pivot-high-low-analysis-forecast": {
+  "daily": {
+   "plots": {
+    "plot0": 11,
+    "plot1": 9
+   },
+   "lines": 40,
+   "labels": 18,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 15,
+    "plot1": 13
+   },
+   "lines": 56,
+   "labels": 26,
+   "tables": 1
+  }
+ },
+ "pocs-and-vahs-vals-all-and-non-broken": {
+  "daily": {
+   "plots": {}
+  },
+  "m15": {
+   "plots": {}
+  }
  }
 }

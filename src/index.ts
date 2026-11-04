@@ -7264,6 +7264,22 @@ export type { PivotLevelsInputs } from './community/pivot-levels';
 import * as backtestingTradingEngineIndicator from './community/backtesting-trading-engine';
 export { BacktestingTradingEngine, calculate as calculateBacktestingTradingEngine } from './community/backtesting-trading-engine';
 export type { BacktestingTradingEngineInputs } from './community/backtesting-trading-engine';
+// Machine Learning: Gaussian Process Regression
+import * as machineLearningGaussianProcessRegressionIndicator from './community/machine-learning-gaussian-process-regression';
+export { MachineLearningGaussianProcessRegression, calculate as calculateMachineLearningGaussianProcessRegression } from './community/machine-learning-gaussian-process-regression';
+export type { MachineLearningGaussianProcessRegressionInputs } from './community/machine-learning-gaussian-process-regression';
+// Risk Management Tool
+import * as riskManagementToolIndicator from './community/risk-management-tool';
+export { RiskManagementTool, calculate as calculateRiskManagementTool } from './community/risk-management-tool';
+export type { RiskManagementToolInputs } from './community/risk-management-tool';
+// Pivot High/Low Analysis & Forecast
+import * as pivotHighLowAnalysisForecastIndicator from './community/pivot-high-low-analysis-forecast';
+export { PivotHighLowAnalysisForecast, calculate as calculatePivotHighLowAnalysisForecast } from './community/pivot-high-low-analysis-forecast';
+export type { PivotHighLowAnalysisForecastInputs } from './community/pivot-high-low-analysis-forecast';
+// POCs and VAHs VALs - All and Non-Broken
+import * as pocsAndVahsValsAllAndNonBrokenIndicator from './community/pocs-and-vahs-vals-all-and-non-broken';
+export { PocsAndVahsValsAllAndNonBroken, calculate as calculatePocsAndVahsValsAllAndNonBroken } from './community/pocs-and-vahs-vals-all-and-non-broken';
+export type { PocsAndVahsValsAllAndNonBrokenInputs } from './community/pocs-and-vahs-vals-all-and-non-broken';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -31261,6 +31277,64 @@ const registryPart12: IndicatorRegistryEntry[] = [
     barColorConfig: backtestingTradingEngineIndicator.barColorConfig,
     defaultInputs: { ...backtestingTradingEngineIndicator.defaultInputs },
     calculate: backtestingTradingEngineIndicator.calculate,
+  },
+  {
+    id: 'machine-learning-gaussian-process-regression',
+    group: 'community',
+    name: 'Machine Learning: Gaussian Process Regression',
+    shortName: machineLearningGaussianProcessRegressionIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: machineLearningGaussianProcessRegressionIndicator.metadata,
+    inputConfig: machineLearningGaussianProcessRegressionIndicator.inputConfig as InputConfig[],
+    plotConfig: machineLearningGaussianProcessRegressionIndicator.plotConfig as PlotConfig[],
+    drawingKinds: machineLearningGaussianProcessRegressionIndicator.drawingKinds,
+    defaultInputs: { ...machineLearningGaussianProcessRegressionIndicator.defaultInputs },
+    calculate: machineLearningGaussianProcessRegressionIndicator.calculate,
+  },
+  {
+    id: 'risk-management-tool',
+    group: 'community',
+    name: 'Risk Management Tool',
+    shortName: riskManagementToolIndicator.metadata.shortTitle,
+    category: 'Volatility',
+    overlay: true,
+    metadata: riskManagementToolIndicator.metadata,
+    inputConfig: riskManagementToolIndicator.inputConfig as InputConfig[],
+    plotConfig: riskManagementToolIndicator.plotConfig as PlotConfig[],
+    fillConfig: riskManagementToolIndicator.fillConfig,
+    shapeConfig: riskManagementToolIndicator.shapeConfig,
+    drawingKinds: riskManagementToolIndicator.drawingKinds,
+    defaultInputs: { ...riskManagementToolIndicator.defaultInputs },
+    calculate: riskManagementToolIndicator.calculate,
+  },
+  {
+    id: 'pivot-high-low-analysis-forecast',
+    group: 'community',
+    name: 'Pivot High/Low Analysis & Forecast',
+    shortName: pivotHighLowAnalysisForecastIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: pivotHighLowAnalysisForecastIndicator.metadata,
+    inputConfig: pivotHighLowAnalysisForecastIndicator.inputConfig as InputConfig[],
+    plotConfig: pivotHighLowAnalysisForecastIndicator.plotConfig as PlotConfig[],
+    drawingKinds: pivotHighLowAnalysisForecastIndicator.drawingKinds,
+    defaultInputs: { ...pivotHighLowAnalysisForecastIndicator.defaultInputs },
+    calculate: pivotHighLowAnalysisForecastIndicator.calculate,
+  },
+  {
+    id: 'pocs-and-vahs-vals-all-and-non-broken',
+    group: 'community',
+    name: 'POCs and VAHs VALs - All and Non-Broken',
+    shortName: pocsAndVahsValsAllAndNonBrokenIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: pocsAndVahsValsAllAndNonBrokenIndicator.metadata,
+    inputConfig: pocsAndVahsValsAllAndNonBrokenIndicator.inputConfig as InputConfig[],
+    plotConfig: pocsAndVahsValsAllAndNonBrokenIndicator.plotConfig as PlotConfig[],
+    drawingKinds: pocsAndVahsValsAllAndNonBrokenIndicator.drawingKinds,
+    defaultInputs: { ...pocsAndVahsValsAllAndNonBrokenIndicator.defaultInputs },
+    calculate: pocsAndVahsValsAllAndNonBrokenIndicator.calculate,
   },
 ];
 

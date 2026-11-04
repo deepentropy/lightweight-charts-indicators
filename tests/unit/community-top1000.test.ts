@@ -48,9 +48,8 @@ describe.each(Object.keys(expected))('%s', (id) => {
     }
   });
 
-  // supply-demand-profiles / supply-and-demand-anchored: the default profile dates / anchors are not on the fixture bars;
-  // gaps-imbalances-wicks-by-leviathan: draws nothing on the synthetic fixture bars with default inputs
-  it.skipIf(['supply-demand-profiles', 'supply-and-demand-anchored', 'gaps-imbalances-wicks-by-leviathan'].includes(id))('draws something on at least one of the two fixtures', () => {
+  // pocs-and-vahs-vals-all-and-non-broken: like its original, draws only on a 5-minute chart
+  it.skipIf(['pocs-and-vahs-vals-all-and-non-broken'].includes(id))('draws something on at least one of the two fixtures', () => {
     const drawn = (['daily', 'm15'] as const).some((name) => {
       const want = expected[id][name];
       if ('error' in want) return false;
