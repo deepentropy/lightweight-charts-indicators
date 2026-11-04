@@ -7468,6 +7468,22 @@ export type { OrderFlowVwapDeviationInputs } from './community/order-flow-vwap-d
 import * as internalCandleStrengthIndicator from './community/internal-candle-strength';
 export { InternalCandleStrength, calculate as calculateInternalCandleStrength } from './community/internal-candle-strength';
 export type { InternalCandleStrengthInputs } from './community/internal-candle-strength';
+// Breakaway Fair Value Gaps
+import * as breakawayFairValueGapsIndicator from './community/breakaway-fair-value-gaps';
+export { BreakawayFairValueGaps, calculate as calculateBreakawayFairValueGaps } from './community/breakaway-fair-value-gaps';
+export type { BreakawayFairValueGapsInputs } from './community/breakaway-fair-value-gaps';
+// MACD-X, More Than MACD by DGT
+import * as macdXMoreThanMacdByDgtIndicator from './community/macd-x-more-than-macd-by-dgt';
+export { MacdXMoreThanMacdByDgt, calculate as calculateMacdXMoreThanMacdByDgt } from './community/macd-x-more-than-macd-by-dgt';
+export type { MacdXMoreThanMacdByDgtInputs } from './community/macd-x-more-than-macd-by-dgt';
+// Traders Dynamic Index Indicator Alert v0.1 by JustUncleL
+import * as tradersDynamicIndexIndicatorAlertV01ByIndicator from './community/traders-dynamic-index-indicator-alert-v0-1-by';
+export { TradersDynamicIndexIndicatorAlertV01By, calculate as calculateTradersDynamicIndexIndicatorAlertV01By } from './community/traders-dynamic-index-indicator-alert-v0-1-by';
+export type { TradersDynamicIndexIndicatorAlertV01ByInputs } from './community/traders-dynamic-index-indicator-alert-v0-1-by';
+// CISD with Alerts
+import * as cisdWithAlertsIndicator from './community/cisd-with-alerts';
+export { CisdWithAlerts, calculate as calculateCisdWithAlerts } from './community/cisd-with-alerts';
+export type { CisdWithAlertsInputs } from './community/cisd-with-alerts';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30283,6 +30299,9 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'macd-x-more-than-macd-by-dgt': macdXMoreThanMacdByDgtIndicator,
+  'traders-dynamic-index-indicator-alert-v0-1-by': tradersDynamicIndexIndicatorAlertV01ByIndicator,
+  'cisd-with-alerts': cisdWithAlertsIndicator,
   'liquidity-grab-zones-flux-charts': liquidityGrabZonesFluxChartsIndicator,
   'balanced-price-range': balancedPriceRangeIndicator,
   'smart-trader-episode-06-isotropic-trend-lines': smartTraderEpisode06IsotropicTrendLinesIndicator,
@@ -32251,6 +32270,68 @@ const registryPart12: IndicatorRegistryEntry[] = [
     requiredSymbols: internalCandleStrengthIndicator.requiredSymbols,
     defaultInputs: { ...internalCandleStrengthIndicator.defaultInputs },
     calculate: internalCandleStrengthIndicator.calculate,
+  },
+  {
+    id: 'breakaway-fair-value-gaps',
+    group: 'community',
+    name: 'Breakaway Fair Value Gaps',
+    shortName: breakawayFairValueGapsIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: breakawayFairValueGapsIndicator.metadata,
+    inputConfig: breakawayFairValueGapsIndicator.inputConfig as InputConfig[],
+    plotConfig: breakawayFairValueGapsIndicator.plotConfig as PlotConfig[],
+    drawingKinds: breakawayFairValueGapsIndicator.drawingKinds,
+    defaultInputs: { ...breakawayFairValueGapsIndicator.defaultInputs },
+    calculate: breakawayFairValueGapsIndicator.calculate,
+  },
+  {
+    id: 'macd-x-more-than-macd-by-dgt',
+    group: 'community',
+    name: 'MACD-X, More Than MACD by DGT',
+    shortName: macdXMoreThanMacdByDgtIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: false,
+    metadata: macdXMoreThanMacdByDgtIndicator.metadata,
+    inputConfig: macdXMoreThanMacdByDgtIndicator.inputConfig as InputConfig[],
+    plotConfig: macdXMoreThanMacdByDgtIndicator.plotConfig as PlotConfig[],
+    fillConfig: macdXMoreThanMacdByDgtIndicator.fillConfig,
+    shapeConfig: macdXMoreThanMacdByDgtIndicator.shapeConfig,
+    barColorConfig: macdXMoreThanMacdByDgtIndicator.barColorConfig,
+    drawingKinds: macdXMoreThanMacdByDgtIndicator.drawingKinds,
+    defaultInputs: { ...macdXMoreThanMacdByDgtIndicator.defaultInputs },
+    calculate: macdXMoreThanMacdByDgtIndicator.calculate,
+  },
+  {
+    id: 'traders-dynamic-index-indicator-alert-v0-1-by',
+    group: 'community',
+    name: 'Traders Dynamic Index Indicator Alert v0.1 by JustUncleL',
+    shortName: tradersDynamicIndexIndicatorAlertV01ByIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: false,
+    metadata: tradersDynamicIndexIndicatorAlertV01ByIndicator.metadata,
+    inputConfig: tradersDynamicIndexIndicatorAlertV01ByIndicator.inputConfig as InputConfig[],
+    plotConfig: tradersDynamicIndexIndicatorAlertV01ByIndicator.plotConfig as PlotConfig[],
+    hlineConfig: tradersDynamicIndexIndicatorAlertV01ByIndicator.hlineConfig,
+    fillConfig: tradersDynamicIndexIndicatorAlertV01ByIndicator.fillConfig,
+    shapeConfig: tradersDynamicIndexIndicatorAlertV01ByIndicator.shapeConfig,
+    barColorConfig: tradersDynamicIndexIndicatorAlertV01ByIndicator.barColorConfig,
+    defaultInputs: { ...tradersDynamicIndexIndicatorAlertV01ByIndicator.defaultInputs },
+    calculate: tradersDynamicIndexIndicatorAlertV01ByIndicator.calculate,
+  },
+  {
+    id: 'cisd-with-alerts',
+    group: 'community',
+    name: 'CISD with Alerts',
+    shortName: cisdWithAlertsIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: cisdWithAlertsIndicator.metadata,
+    inputConfig: cisdWithAlertsIndicator.inputConfig as InputConfig[],
+    plotConfig: cisdWithAlertsIndicator.plotConfig as PlotConfig[],
+    drawingKinds: cisdWithAlertsIndicator.drawingKinds,
+    defaultInputs: { ...cisdWithAlertsIndicator.defaultInputs },
+    calculate: cisdWithAlertsIndicator.calculate,
   },
 ];
 

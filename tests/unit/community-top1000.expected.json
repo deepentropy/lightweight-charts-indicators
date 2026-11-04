@@ -2170,5 +2170,99 @@
    "labels": 5,
    "fills": 1
   }
+ },
+ "breakaway-fair-value-gaps": {
+  "daily": {
+   "plots": {},
+   "lines": 33,
+   "boxes": 53,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "lines": 41,
+   "boxes": 65,
+   "tables": 1
+  }
+ },
+ "macd-x-more-than-macd-by-dgt": {
+  "daily": {
+   "plots": {
+    "plot0": 3159,
+    "plot1": 3167,
+    "plot2": 3159,
+    "plot3": 0,
+    "plot4": 0,
+    "plot5": 0,
+    "plot6": 0,
+    "plot7": 0,
+    "plot8": 0,
+    "plot9": 0
+   },
+   "barColors": 3200,
+   "tables": 2,
+   "fills": 3
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3959,
+    "plot1": 3967,
+    "plot2": 3959,
+    "plot3": 0,
+    "plot4": 0,
+    "plot5": 0,
+    "plot6": 0,
+    "plot7": 0,
+    "plot8": 0,
+    "plot9": 0
+   },
+   "barColors": 4000,
+   "tables": 2,
+   "fills": 3
+  }
+ },
+ "traders-dynamic-index-indicator-alert-v0-1-by": {
+  "daily": {
+   "plots": {
+    "plot0": 3154,
+    "plot1": 3154,
+    "plot2": 3154,
+    "plot3": 3186,
+    "plot4": 3181,
+    "plot5": 0,
+    "plot6": 0
+   },
+   "markers": 674,
+   "barColors": 1187,
+   "fills": 1,
+   "hlines": 3
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3954,
+    "plot1": 3954,
+    "plot2": 3954,
+    "plot3": 3986,
+    "plot4": 3981,
+    "plot5": 0,
+    "plot6": 0
+   },
+   "markers": 839,
+   "barColors": 1468,
+   "fills": 1,
+   "hlines": 3
+  }
+ },
+ "cisd-with-alerts": {
+  "daily": {
+   "plots": {},
+   "lines": 2,
+   "labels": 2
+  },
+  "m15": {
+   "plots": {},
+   "lines": 2,
+   "labels": 2
+  }
  }
 }
