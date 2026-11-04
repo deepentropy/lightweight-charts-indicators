@@ -7484,6 +7484,26 @@ export type { TradersDynamicIndexIndicatorAlertV01ByInputs } from './community/t
 import * as cisdWithAlertsIndicator from './community/cisd-with-alerts';
 export { CisdWithAlerts, calculate as calculateCisdWithAlerts } from './community/cisd-with-alerts';
 export type { CisdWithAlertsInputs } from './community/cisd-with-alerts';
+// Liquidation Levels
+import * as liquidationLevelsIndicator from './community/liquidation-levels';
+export { LiquidationLevels, calculate as calculateLiquidationLevels } from './community/liquidation-levels';
+export type { LiquidationLevelsInputs } from './community/liquidation-levels';
+// Double Top/Bottom - Ultimate (OS)
+import * as doubleTopBottomUltimateIndicator from './community/double-top-bottom-ultimate';
+export { DoubleTopBottomUltimate, calculate as calculateDoubleTopBottomUltimate } from './community/double-top-bottom-ultimate';
+export type { DoubleTopBottomUltimateInputs } from './community/double-top-bottom-ultimate';
+// High Probability Order Blocks
+import * as highProbabilityOrderBlocksIndicator from './community/high-probability-order-blocks';
+export { HighProbabilityOrderBlocks, calculate as calculateHighProbabilityOrderBlocks } from './community/high-probability-order-blocks';
+export type { HighProbabilityOrderBlocksInputs } from './community/high-probability-order-blocks';
+// Logarithmic Regression Channel-Trend
+import * as logarithmicRegressionChannelTrendIndicator from './community/logarithmic-regression-channel-trend';
+export { LogarithmicRegressionChannelTrend, calculate as calculateLogarithmicRegressionChannelTrend } from './community/logarithmic-regression-channel-trend';
+export type { LogarithmicRegressionChannelTrendInputs } from './community/logarithmic-regression-channel-trend';
+// RVOL Relative Volume - Intraday
+import * as rvolRelativeVolumeIntradayIndicator from './community/rvol-relative-volume-intraday';
+export { RvolRelativeVolumeIntraday, calculate as calculateRvolRelativeVolumeIntraday } from './community/rvol-relative-volume-intraday';
+export type { RvolRelativeVolumeIntradayInputs } from './community/rvol-relative-volume-intraday';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30299,6 +30319,8 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'double-top-bottom-ultimate': doubleTopBottomUltimateIndicator,
+  'high-probability-order-blocks': highProbabilityOrderBlocksIndicator,
   'macd-x-more-than-macd-by-dgt': macdXMoreThanMacdByDgtIndicator,
   'traders-dynamic-index-indicator-alert-v0-1-by': tradersDynamicIndexIndicatorAlertV01ByIndicator,
   'cisd-with-alerts': cisdWithAlertsIndicator,
@@ -32332,6 +32354,81 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: cisdWithAlertsIndicator.drawingKinds,
     defaultInputs: { ...cisdWithAlertsIndicator.defaultInputs },
     calculate: cisdWithAlertsIndicator.calculate,
+  },
+  {
+    id: 'liquidation-levels',
+    group: 'community',
+    name: 'Liquidation Levels',
+    shortName: liquidationLevelsIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: liquidationLevelsIndicator.metadata,
+    inputConfig: liquidationLevelsIndicator.inputConfig as InputConfig[],
+    plotConfig: liquidationLevelsIndicator.plotConfig as PlotConfig[],
+    shapeConfig: liquidationLevelsIndicator.shapeConfig,
+    drawingKinds: liquidationLevelsIndicator.drawingKinds,
+    defaultInputs: { ...liquidationLevelsIndicator.defaultInputs },
+    calculate: liquidationLevelsIndicator.calculate,
+  },
+  {
+    id: 'double-top-bottom-ultimate',
+    group: 'community',
+    name: 'Double Top/Bottom - Ultimate (OS)',
+    shortName: doubleTopBottomUltimateIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: doubleTopBottomUltimateIndicator.metadata,
+    inputConfig: doubleTopBottomUltimateIndicator.inputConfig as InputConfig[],
+    plotConfig: doubleTopBottomUltimateIndicator.plotConfig as PlotConfig[],
+    drawingKinds: doubleTopBottomUltimateIndicator.drawingKinds,
+    defaultInputs: { ...doubleTopBottomUltimateIndicator.defaultInputs },
+    calculate: doubleTopBottomUltimateIndicator.calculate,
+  },
+  {
+    id: 'high-probability-order-blocks',
+    group: 'community',
+    name: 'High Probability Order Blocks',
+    shortName: highProbabilityOrderBlocksIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: highProbabilityOrderBlocksIndicator.metadata,
+    inputConfig: highProbabilityOrderBlocksIndicator.inputConfig as InputConfig[],
+    plotConfig: highProbabilityOrderBlocksIndicator.plotConfig as PlotConfig[],
+    shapeConfig: highProbabilityOrderBlocksIndicator.shapeConfig,
+    drawingKinds: highProbabilityOrderBlocksIndicator.drawingKinds,
+    defaultInputs: { ...highProbabilityOrderBlocksIndicator.defaultInputs },
+    calculate: highProbabilityOrderBlocksIndicator.calculate,
+  },
+  {
+    id: 'logarithmic-regression-channel-trend',
+    group: 'community',
+    name: 'Logarithmic Regression Channel-Trend',
+    shortName: logarithmicRegressionChannelTrendIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: logarithmicRegressionChannelTrendIndicator.metadata,
+    inputConfig: logarithmicRegressionChannelTrendIndicator.inputConfig as InputConfig[],
+    plotConfig: logarithmicRegressionChannelTrendIndicator.plotConfig as PlotConfig[],
+    fillConfig: logarithmicRegressionChannelTrendIndicator.fillConfig,
+    shapeConfig: logarithmicRegressionChannelTrendIndicator.shapeConfig,
+    drawingKinds: logarithmicRegressionChannelTrendIndicator.drawingKinds,
+    defaultInputs: { ...logarithmicRegressionChannelTrendIndicator.defaultInputs },
+    calculate: logarithmicRegressionChannelTrendIndicator.calculate,
+  },
+  {
+    id: 'rvol-relative-volume-intraday',
+    group: 'community',
+    name: 'RVOL Relative Volume - Intraday',
+    shortName: rvolRelativeVolumeIntradayIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: false,
+    metadata: rvolRelativeVolumeIntradayIndicator.metadata,
+    inputConfig: rvolRelativeVolumeIntradayIndicator.inputConfig as InputConfig[],
+    plotConfig: rvolRelativeVolumeIntradayIndicator.plotConfig as PlotConfig[],
+    hlineConfig: rvolRelativeVolumeIntradayIndicator.hlineConfig,
+    drawingKinds: rvolRelativeVolumeIntradayIndicator.drawingKinds,
+    defaultInputs: { ...rvolRelativeVolumeIntradayIndicator.defaultInputs },
+    calculate: rvolRelativeVolumeIntradayIndicator.calculate,
   },
 ];
 
