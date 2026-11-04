@@ -7440,6 +7440,22 @@ export type { TriangularHullMovingAverageVolatilityInputs } from './community/tr
 import * as marketStructureInducementsIctChochBosIndicator from './community/market-structure-inducements-ict-choch-bos';
 export { MarketStructureInducementsIctChochBos, calculate as calculateMarketStructureInducementsIctChochBos } from './community/market-structure-inducements-ict-choch-bos';
 export type { MarketStructureInducementsIctChochBosInputs } from './community/market-structure-inducements-ict-choch-bos';
+// Volume Bubbles & Liquidity Heatmap
+import * as volumeBubblesLiquidityHeatmapIndicator from './community/volume-bubbles-liquidity-heatmap';
+export { VolumeBubblesLiquidityHeatmap, calculate as calculateVolumeBubblesLiquidityHeatmap } from './community/volume-bubbles-liquidity-heatmap';
+export type { VolumeBubblesLiquidityHeatmapInputs } from './community/volume-bubbles-liquidity-heatmap';
+// Liquidity Grab Zones | Flux Charts
+import * as liquidityGrabZonesFluxChartsIndicator from './community/liquidity-grab-zones-flux-charts';
+export { LiquidityGrabZonesFluxCharts, calculate as calculateLiquidityGrabZonesFluxCharts } from './community/liquidity-grab-zones-flux-charts';
+export type { LiquidityGrabZonesFluxChartsInputs } from './community/liquidity-grab-zones-flux-charts';
+// Balanced Price Range (BPR)
+import * as balancedPriceRangeIndicator from './community/balanced-price-range';
+export { BalancedPriceRange, calculate as calculateBalancedPriceRange } from './community/balanced-price-range';
+export type { BalancedPriceRangeInputs } from './community/balanced-price-range';
+// Institutional Order Flow Strength Classifier
+import * as institutionalOrderFlowStrengthClassifierIndicator from './community/institutional-order-flow-strength-classifier';
+export { InstitutionalOrderFlowStrengthClassifier, calculate as calculateInstitutionalOrderFlowStrengthClassifier } from './community/institutional-order-flow-strength-classifier';
+export type { InstitutionalOrderFlowStrengthClassifierInputs } from './community/institutional-order-flow-strength-classifier';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30255,6 +30271,8 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'liquidity-grab-zones-flux-charts': liquidityGrabZonesFluxChartsIndicator,
+  'balanced-price-range': balancedPriceRangeIndicator,
   'smart-trader-episode-06-isotropic-trend-lines': smartTraderEpisode06IsotropicTrendLinesIndicator,
   'strength-of-divergence-across-multiple': strengthOfDivergenceAcrossMultipleIndicator,
   'cdc-actionzone-v3-2020': cdcActionzoneV32020Indicator,
@@ -32114,6 +32132,64 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: marketStructureInducementsIctChochBosIndicator.drawingKinds,
     defaultInputs: { ...marketStructureInducementsIctChochBosIndicator.defaultInputs },
     calculate: marketStructureInducementsIctChochBosIndicator.calculate,
+  },
+  {
+    id: 'volume-bubbles-liquidity-heatmap',
+    group: 'community',
+    name: 'Volume Bubbles & Liquidity Heatmap',
+    shortName: volumeBubblesLiquidityHeatmapIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: volumeBubblesLiquidityHeatmapIndicator.metadata,
+    inputConfig: volumeBubblesLiquidityHeatmapIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeBubblesLiquidityHeatmapIndicator.plotConfig as PlotConfig[],
+    drawingKinds: volumeBubblesLiquidityHeatmapIndicator.drawingKinds,
+    defaultInputs: { ...volumeBubblesLiquidityHeatmapIndicator.defaultInputs },
+    calculate: volumeBubblesLiquidityHeatmapIndicator.calculate,
+  },
+  {
+    id: 'liquidity-grab-zones-flux-charts',
+    group: 'community',
+    name: 'Liquidity Grab Zones | Flux Charts',
+    shortName: liquidityGrabZonesFluxChartsIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: liquidityGrabZonesFluxChartsIndicator.metadata,
+    inputConfig: liquidityGrabZonesFluxChartsIndicator.inputConfig as InputConfig[],
+    plotConfig: liquidityGrabZonesFluxChartsIndicator.plotConfig as PlotConfig[],
+    shapeConfig: liquidityGrabZonesFluxChartsIndicator.shapeConfig,
+    drawingKinds: liquidityGrabZonesFluxChartsIndicator.drawingKinds,
+    defaultInputs: { ...liquidityGrabZonesFluxChartsIndicator.defaultInputs },
+    calculate: liquidityGrabZonesFluxChartsIndicator.calculate,
+  },
+  {
+    id: 'balanced-price-range',
+    group: 'community',
+    name: 'Balanced Price Range (BPR)',
+    shortName: balancedPriceRangeIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: balancedPriceRangeIndicator.metadata,
+    inputConfig: balancedPriceRangeIndicator.inputConfig as InputConfig[],
+    plotConfig: balancedPriceRangeIndicator.plotConfig as PlotConfig[],
+    drawingKinds: balancedPriceRangeIndicator.drawingKinds,
+    defaultInputs: { ...balancedPriceRangeIndicator.defaultInputs },
+    calculate: balancedPriceRangeIndicator.calculate,
+  },
+  {
+    id: 'institutional-order-flow-strength-classifier',
+    group: 'community',
+    name: 'Institutional Order Flow Strength Classifier',
+    shortName: institutionalOrderFlowStrengthClassifierIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: institutionalOrderFlowStrengthClassifierIndicator.metadata,
+    inputConfig: institutionalOrderFlowStrengthClassifierIndicator.inputConfig as InputConfig[],
+    plotConfig: institutionalOrderFlowStrengthClassifierIndicator.plotConfig as PlotConfig[],
+    fillConfig: institutionalOrderFlowStrengthClassifierIndicator.fillConfig,
+    drawingKinds: institutionalOrderFlowStrengthClassifierIndicator.drawingKinds,
+    defaultInputs: { ...institutionalOrderFlowStrengthClassifierIndicator.defaultInputs },
+    calculate: institutionalOrderFlowStrengthClassifierIndicator.calculate,
   },
 ];
 
