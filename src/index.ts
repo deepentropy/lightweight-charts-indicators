@@ -32919,4 +32919,4 @@ export {
 } from './other-symbol';
 
 // Package version
-export const version = '0.16.11';
+export const version = '0.17.0';

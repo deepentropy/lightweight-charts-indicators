@@ -1,6 +1,6 @@
 {
   "name": "lightweight-charts-indicators",
-  "version": "0.16.11",
+  "version": "0.17.0",
   "type": "module",
   "description": "1869 technical analysis indicators for the lightweight-charts library",
   "main": "dist/index.cjs",
