@@ -2451,6 +2451,88 @@
    "tables": 2
   }
  },
+ "bollinger-bands-flux-charts": {
+  "daily": {
+   "plots": {
+    "plot0": 2682,
+    "plot1": 2682,
+    "plot2": 2627,
+    "plot3": 2627,
+    "plot4": 2602,
+    "plot5": 2602,
+    "plot6": 2602,
+    "plot7": 2602,
+    "plot8": 2682,
+    "plot9": 2682
+   },
+   "markers": 149,
+   "fills": 4
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3482,
+    "plot1": 3482,
+    "plot2": 3427,
+    "plot3": 3427,
+    "plot4": 3402,
+    "plot5": 3402,
+    "plot6": 3402,
+    "plot7": 3402,
+    "plot8": 3482,
+    "plot9": 3482
+   },
+   "markers": 199,
+   "fills": 4
+  }
+ },
+ "gann-box": {
+  "daily": {
+   "plots": {},
+   "boxes": 36,
+   "labels": 28
+  },
+  "m15": {
+   "plots": {},
+   "boxes": 36,
+   "labels": 28
+  }
+ },
+ "ai-moving-average": {
+  "daily": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 0,
+    "plot2": 0,
+    "plot3": 3061,
+    "plot4": 0,
+    "plot5": 3196
+   }
+  },
+  "m15": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 0,
+    "plot2": 0,
+    "plot3": 3840,
+    "plot4": 0,
+    "plot5": 3996
+   }
+  }
+ },
+ "support-resistance-ai": {
+  "daily": {
+   "plots": {},
+   "lines": 9,
+   "linefills": 3,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "lines": 9,
+   "linefills": 3,
+   "tables": 1
+  }
+ },
  "code-plots-high-low-open-close-daily-weekly": {
   "daily": {
    "plots": {

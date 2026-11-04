@@ -7532,6 +7532,22 @@ export type { CodePlotsHighLowOpenCloseDailyWeeklyInputs } from './community/cod
 import * as indicatorsTradersDynamicIndexHlctrendsIndicator from './community/indicators-traders-dynamic-index-hlctrends';
 export { IndicatorsTradersDynamicIndexHlctrends, calculate as calculateIndicatorsTradersDynamicIndexHlctrends } from './community/indicators-traders-dynamic-index-hlctrends';
 export type { IndicatorsTradersDynamicIndexHlctrendsInputs } from './community/indicators-traders-dynamic-index-hlctrends';
+// Bollinger Bands (Nadaraya Smoothed) | Flux Charts
+import * as bollingerBandsFluxChartsIndicator from './community/bollinger-bands-flux-charts';
+export { BollingerBandsFluxCharts, calculate as calculateBollingerBandsFluxCharts } from './community/bollinger-bands-flux-charts';
+export type { BollingerBandsFluxChartsInputs } from './community/bollinger-bands-flux-charts';
+// Gann Box
+import * as gannBoxIndicator from './community/gann-box';
+export { GannBox, calculate as calculateGannBox } from './community/gann-box';
+export type { GannBoxInputs } from './community/gann-box';
+// AI Moving Average (Expo)
+import * as aiMovingAverageIndicator from './community/ai-moving-average';
+export { AiMovingAverage, calculate as calculateAiMovingAverage } from './community/ai-moving-average';
+export type { AiMovingAverageInputs } from './community/ai-moving-average';
+// Support & Resistance AI (K means/median)
+import * as supportResistanceAiIndicator from './community/support-resistance-ai';
+export { SupportResistanceAi, calculate as calculateSupportResistanceAi } from './community/support-resistance-ai';
+export type { SupportResistanceAiInputs } from './community/support-resistance-ai';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30347,6 +30363,8 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'bollinger-bands-flux-charts': bollingerBandsFluxChartsIndicator,
+  'gann-box': gannBoxIndicator,
   'elliott-impulse-engine': elliottImpulseEngineIndicator,
   'double-top-bottom-ultimate': doubleTopBottomUltimateIndicator,
   'high-probability-order-blocks': highProbabilityOrderBlocksIndicator,
@@ -32559,6 +32577,65 @@ const registryPart12: IndicatorRegistryEntry[] = [
     fillConfig: indicatorsTradersDynamicIndexHlctrendsIndicator.fillConfig,
     defaultInputs: { ...indicatorsTradersDynamicIndexHlctrendsIndicator.defaultInputs },
     calculate: indicatorsTradersDynamicIndexHlctrendsIndicator.calculate,
+  },
+  {
+    id: 'bollinger-bands-flux-charts',
+    group: 'community',
+    name: 'Bollinger Bands (Nadaraya Smoothed) | Flux Charts',
+    shortName: bollingerBandsFluxChartsIndicator.metadata.shortTitle,
+    category: 'Volatility',
+    overlay: true,
+    metadata: bollingerBandsFluxChartsIndicator.metadata,
+    inputConfig: bollingerBandsFluxChartsIndicator.inputConfig as InputConfig[],
+    plotConfig: bollingerBandsFluxChartsIndicator.plotConfig as PlotConfig[],
+    fillConfig: bollingerBandsFluxChartsIndicator.fillConfig,
+    shapeConfig: bollingerBandsFluxChartsIndicator.shapeConfig,
+    drawingKinds: bollingerBandsFluxChartsIndicator.drawingKinds,
+    defaultInputs: { ...bollingerBandsFluxChartsIndicator.defaultInputs },
+    calculate: bollingerBandsFluxChartsIndicator.calculate,
+  },
+  {
+    id: 'gann-box',
+    group: 'community',
+    name: 'Gann Box',
+    shortName: gannBoxIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: gannBoxIndicator.metadata,
+    inputConfig: gannBoxIndicator.inputConfig as InputConfig[],
+    plotConfig: gannBoxIndicator.plotConfig as PlotConfig[],
+    drawingKinds: gannBoxIndicator.drawingKinds,
+    usesVisibleRange: true,
+    defaultInputs: { ...gannBoxIndicator.defaultInputs },
+    calculate: gannBoxIndicator.calculate,
+  },
+  {
+    id: 'ai-moving-average',
+    group: 'community',
+    name: 'AI Moving Average (Expo)',
+    shortName: aiMovingAverageIndicator.metadata.shortTitle,
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: aiMovingAverageIndicator.metadata,
+    inputConfig: aiMovingAverageIndicator.inputConfig as InputConfig[],
+    plotConfig: aiMovingAverageIndicator.plotConfig as PlotConfig[],
+    drawingKinds: aiMovingAverageIndicator.drawingKinds,
+    defaultInputs: { ...aiMovingAverageIndicator.defaultInputs },
+    calculate: aiMovingAverageIndicator.calculate,
+  },
+  {
+    id: 'support-resistance-ai',
+    group: 'community',
+    name: 'Support & Resistance AI (K means/median)',
+    shortName: supportResistanceAiIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: supportResistanceAiIndicator.metadata,
+    inputConfig: supportResistanceAiIndicator.inputConfig as InputConfig[],
+    plotConfig: supportResistanceAiIndicator.plotConfig as PlotConfig[],
+    drawingKinds: supportResistanceAiIndicator.drawingKinds,
+    defaultInputs: { ...supportResistanceAiIndicator.defaultInputs },
+    calculate: supportResistanceAiIndicator.calculate,
   },
 ];
 
