@@ -7524,6 +7524,14 @@ export type { AtrFibonacciTrendEnvelopesInputs } from './community/atr-fibonacci
 import * as dynamicSupportResistanceZonesIndicator from './community/dynamic-support-resistance-zones';
 export { DynamicSupportResistanceZones, calculate as calculateDynamicSupportResistanceZones } from './community/dynamic-support-resistance-zones';
 export type { DynamicSupportResistanceZonesInputs } from './community/dynamic-support-resistance-zones';
+// Code Plots - High, Low, Open, Close—Daily, Weekly, & Monthly!!!
+import * as codePlotsHighLowOpenCloseDailyWeeklyIndicator from './community/code-plots-high-low-open-close-daily-weekly';
+export { CodePlotsHighLowOpenCloseDailyWeekly, calculate as calculateCodePlotsHighLowOpenCloseDailyWeekly } from './community/code-plots-high-low-open-close-daily-weekly';
+export type { CodePlotsHighLowOpenCloseDailyWeeklyInputs } from './community/code-plots-high-low-open-close-daily-weekly';
+// Indicators: Traders Dynamic Index, HLCTrends and Trix Ribbon
+import * as indicatorsTradersDynamicIndexHlctrendsIndicator from './community/indicators-traders-dynamic-index-hlctrends';
+export { IndicatorsTradersDynamicIndexHlctrends, calculate as calculateIndicatorsTradersDynamicIndexHlctrends } from './community/indicators-traders-dynamic-index-hlctrends';
+export type { IndicatorsTradersDynamicIndexHlctrendsInputs } from './community/indicators-traders-dynamic-index-hlctrends';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -32523,6 +32531,34 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: dynamicSupportResistanceZonesIndicator.drawingKinds,
     defaultInputs: { ...dynamicSupportResistanceZonesIndicator.defaultInputs },
     calculate: dynamicSupportResistanceZonesIndicator.calculate,
+  },
+  {
+    id: 'code-plots-high-low-open-close-daily-weekly',
+    group: 'community',
+    name: 'Code Plots - High, Low, Open, Close—Daily, Weekly, & Monthly!!!',
+    shortName: codePlotsHighLowOpenCloseDailyWeeklyIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: codePlotsHighLowOpenCloseDailyWeeklyIndicator.metadata,
+    inputConfig: codePlotsHighLowOpenCloseDailyWeeklyIndicator.inputConfig as InputConfig[],
+    plotConfig: codePlotsHighLowOpenCloseDailyWeeklyIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...codePlotsHighLowOpenCloseDailyWeeklyIndicator.defaultInputs },
+    calculate: codePlotsHighLowOpenCloseDailyWeeklyIndicator.calculate,
+  },
+  {
+    id: 'indicators-traders-dynamic-index-hlctrends',
+    group: 'community',
+    name: 'Indicators: Traders Dynamic Index, HLCTrends and Trix Ribbon',
+    shortName: indicatorsTradersDynamicIndexHlctrendsIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: false,
+    metadata: indicatorsTradersDynamicIndexHlctrendsIndicator.metadata,
+    inputConfig: indicatorsTradersDynamicIndexHlctrendsIndicator.inputConfig as InputConfig[],
+    plotConfig: indicatorsTradersDynamicIndexHlctrendsIndicator.plotConfig as PlotConfig[],
+    hlineConfig: indicatorsTradersDynamicIndexHlctrendsIndicator.hlineConfig,
+    fillConfig: indicatorsTradersDynamicIndexHlctrendsIndicator.fillConfig,
+    defaultInputs: { ...indicatorsTradersDynamicIndexHlctrendsIndicator.defaultInputs },
+    calculate: indicatorsTradersDynamicIndexHlctrendsIndicator.calculate,
   },
 ];
 

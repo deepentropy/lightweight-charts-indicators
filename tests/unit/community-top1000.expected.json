@@ -2450,5 +2450,87 @@
    "labels": 39,
    "tables": 2
   }
+ },
+ "code-plots-high-low-open-close-daily-weekly": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 0,
+    "plot2": 3200,
+    "plot3": 0,
+    "plot4": 3200,
+    "plot5": 0,
+    "plot6": 3200,
+    "plot7": 0,
+    "plot8": 0,
+    "plot9": 0,
+    "plot10": 0,
+    "plot11": 0,
+    "plot12": 0,
+    "plot13": 0,
+    "plot14": 0,
+    "plot15": 0,
+    "plot16": 0,
+    "plot17": 0,
+    "plot18": 0,
+    "plot19": 0,
+    "plot20": 0,
+    "plot21": 0,
+    "plot22": 0,
+    "plot23": 0
+   }
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 0,
+    "plot2": 4000,
+    "plot3": 0,
+    "plot4": 4000,
+    "plot5": 0,
+    "plot6": 4000,
+    "plot7": 0,
+    "plot8": 0,
+    "plot9": 0,
+    "plot10": 0,
+    "plot11": 0,
+    "plot12": 0,
+    "plot13": 0,
+    "plot14": 0,
+    "plot15": 0,
+    "plot16": 0,
+    "plot17": 0,
+    "plot18": 0,
+    "plot19": 0,
+    "plot20": 0,
+    "plot21": 0,
+    "plot22": 0,
+    "plot23": 0
+   }
+  }
+ },
+ "indicators-traders-dynamic-index-hlctrends": {
+  "daily": {
+   "plots": {
+    "plot0": 3154,
+    "plot1": 3154,
+    "plot2": 3154,
+    "plot3": 3186,
+    "plot4": 3181
+   },
+   "fills": 2,
+   "hlines": 2
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3954,
+    "plot1": 3954,
+    "plot2": 3954,
+    "plot3": 3986,
+    "plot4": 3981
+   },
+   "fills": 2,
+   "hlines": 2
+  }
  }
 }
