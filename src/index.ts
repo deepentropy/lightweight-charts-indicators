@@ -7356,6 +7356,22 @@ export type { RollingVwapInputs } from './community/rolling-vwap';
 import * as movingAverageShadedFillAreaCrossoverEmaIndicator from './community/moving-average-shaded-fill-area-crossover-ema';
 export { MovingAverageShadedFillAreaCrossoverEma, calculate as calculateMovingAverageShadedFillAreaCrossoverEma } from './community/moving-average-shaded-fill-area-crossover-ema';
 export type { MovingAverageShadedFillAreaCrossoverEmaInputs } from './community/moving-average-shaded-fill-area-crossover-ema';
+// Breakout Boxes
+import * as breakoutBoxesIndicator from './community/breakout-boxes';
+export { BreakoutBoxes, calculate as calculateBreakoutBoxes } from './community/breakout-boxes';
+export type { BreakoutBoxesInputs } from './community/breakout-boxes';
+// Delta Ladder
+import * as deltaLadderIndicator from './community/delta-ladder';
+export { DeltaLadder, calculate as calculateDeltaLadder } from './community/delta-ladder';
+export type { DeltaLadderInputs } from './community/delta-ladder';
+// Sweep institutional
+import * as sweepInstitutionalIndicator from './community/sweep-institutional';
+export { SweepInstitutional, calculate as calculateSweepInstitutional } from './community/sweep-institutional';
+export type { SweepInstitutionalInputs } from './community/sweep-institutional';
+// Next Pivot Projection
+import * as nextPivotProjectionIndicator from './community/next-pivot-projection';
+export { NextPivotProjection, calculate as calculateNextPivotProjection } from './community/next-pivot-projection';
+export type { NextPivotProjectionInputs } from './community/next-pivot-projection';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30171,6 +30187,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'sweep-institutional': sweepInstitutionalIndicator,
   'reversal': reversalIndicator,
   'fibonacci-support-resistant-trendline': fibonacciSupportResistantTrendlineIndicator,
   'footprint-iq-pro': footprintIqProIndicator,
@@ -31703,6 +31720,65 @@ const registryPart12: IndicatorRegistryEntry[] = [
     fillConfig: movingAverageShadedFillAreaCrossoverEmaIndicator.fillConfig,
     defaultInputs: { ...movingAverageShadedFillAreaCrossoverEmaIndicator.defaultInputs },
     calculate: movingAverageShadedFillAreaCrossoverEmaIndicator.calculate,
+  },
+  {
+    id: 'breakout-boxes',
+    group: 'community',
+    name: 'Breakout Boxes',
+    shortName: breakoutBoxesIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: breakoutBoxesIndicator.metadata,
+    inputConfig: breakoutBoxesIndicator.inputConfig as InputConfig[],
+    plotConfig: breakoutBoxesIndicator.plotConfig as PlotConfig[],
+    drawingKinds: breakoutBoxesIndicator.drawingKinds,
+    defaultInputs: { ...breakoutBoxesIndicator.defaultInputs },
+    calculate: breakoutBoxesIndicator.calculate,
+  },
+  {
+    id: 'delta-ladder',
+    group: 'community',
+    name: 'Delta Ladder',
+    shortName: deltaLadderIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: deltaLadderIndicator.metadata,
+    inputConfig: deltaLadderIndicator.inputConfig as InputConfig[],
+    plotConfig: deltaLadderIndicator.plotConfig as PlotConfig[],
+    barColorConfig: deltaLadderIndicator.barColorConfig,
+    drawingKinds: deltaLadderIndicator.drawingKinds,
+    requiredSymbols: deltaLadderIndicator.requiredSymbols,
+    defaultInputs: { ...deltaLadderIndicator.defaultInputs },
+    calculate: deltaLadderIndicator.calculate,
+  },
+  {
+    id: 'sweep-institutional',
+    group: 'community',
+    name: 'Sweep institutional',
+    shortName: sweepInstitutionalIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: sweepInstitutionalIndicator.metadata,
+    inputConfig: sweepInstitutionalIndicator.inputConfig as InputConfig[],
+    plotConfig: sweepInstitutionalIndicator.plotConfig as PlotConfig[],
+    shapeConfig: sweepInstitutionalIndicator.shapeConfig,
+    drawingKinds: sweepInstitutionalIndicator.drawingKinds,
+    defaultInputs: { ...sweepInstitutionalIndicator.defaultInputs },
+    calculate: sweepInstitutionalIndicator.calculate,
+  },
+  {
+    id: 'next-pivot-projection',
+    group: 'community',
+    name: 'Next Pivot Projection',
+    shortName: nextPivotProjectionIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: nextPivotProjectionIndicator.metadata,
+    inputConfig: nextPivotProjectionIndicator.inputConfig as InputConfig[],
+    plotConfig: nextPivotProjectionIndicator.plotConfig as PlotConfig[],
+    drawingKinds: nextPivotProjectionIndicator.drawingKinds,
+    defaultInputs: { ...nextPivotProjectionIndicator.defaultInputs },
+    calculate: nextPivotProjectionIndicator.calculate,
   },
 ];
 

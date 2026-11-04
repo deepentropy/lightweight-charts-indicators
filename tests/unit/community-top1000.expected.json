@@ -1680,6 +1680,58 @@
    "plotCandles": 4000
   }
  },
+ "breakout-boxes": {
+  "daily": {
+   "plots": {},
+   "boxes": 108,
+   "labels": 21
+  },
+  "m15": {
+   "plots": {},
+   "boxes": 150,
+   "labels": 29
+  }
+ },
+ "sweep-institutional": {
+  "daily": {
+   "plots": {},
+   "markers": 14,
+   "lines": 16,
+   "labels": 8
+  },
+  "m15": {
+   "plots": {},
+   "markers": 16,
+   "lines": 18,
+   "labels": 8
+  }
+ },
+ "next-pivot-projection": {
+  "daily": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 2141,
+    "plot2": 2152,
+    "plot3": 2226,
+    "plot4": 2368
+   },
+   "lines": 364,
+   "labels": 6,
+   "fills": 2
+  },
+  "m15": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 2884,
+    "plot2": 2874,
+    "plot3": 2964,
+    "plot4": 3106
+   },
+   "lines": 459,
+   "labels": 6,
+   "fills": 2
+  }
+ },
  "rolling-vwap": {
   "daily": {
    "plots": {
