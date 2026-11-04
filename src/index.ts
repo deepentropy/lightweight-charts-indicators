@@ -7456,6 +7456,18 @@ export type { BalancedPriceRangeInputs } from './community/balanced-price-range'
 import * as institutionalOrderFlowStrengthClassifierIndicator from './community/institutional-order-flow-strength-classifier';
 export { InstitutionalOrderFlowStrengthClassifier, calculate as calculateInstitutionalOrderFlowStrengthClassifier } from './community/institutional-order-flow-strength-classifier';
 export type { InstitutionalOrderFlowStrengthClassifierInputs } from './community/institutional-order-flow-strength-classifier';
+// HTF Candle Profile
+import * as htfCandleProfileIndicator from './community/htf-candle-profile';
+export { HtfCandleProfile, calculate as calculateHtfCandleProfile } from './community/htf-candle-profile';
+export type { HtfCandleProfileInputs } from './community/htf-candle-profile';
+// Order Flow VWAP Deviation
+import * as orderFlowVwapDeviationIndicator from './community/order-flow-vwap-deviation';
+export { OrderFlowVwapDeviation, calculate as calculateOrderFlowVwapDeviation } from './community/order-flow-vwap-deviation';
+export type { OrderFlowVwapDeviationInputs } from './community/order-flow-vwap-deviation';
+// Internal Candle Strength
+import * as internalCandleStrengthIndicator from './community/internal-candle-strength';
+export { InternalCandleStrength, calculate as calculateInternalCandleStrength } from './community/internal-candle-strength';
+export type { InternalCandleStrengthInputs } from './community/internal-candle-strength';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -32190,6 +32202,55 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: institutionalOrderFlowStrengthClassifierIndicator.drawingKinds,
     defaultInputs: { ...institutionalOrderFlowStrengthClassifierIndicator.defaultInputs },
     calculate: institutionalOrderFlowStrengthClassifierIndicator.calculate,
+  },
+  {
+    id: 'htf-candle-profile',
+    group: 'community',
+    name: 'HTF Candle Profile',
+    shortName: htfCandleProfileIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: htfCandleProfileIndicator.metadata,
+    inputConfig: htfCandleProfileIndicator.inputConfig as InputConfig[],
+    plotConfig: htfCandleProfileIndicator.plotConfig as PlotConfig[],
+    shapeConfig: htfCandleProfileIndicator.shapeConfig,
+    barColorConfig: htfCandleProfileIndicator.barColorConfig,
+    drawingKinds: htfCandleProfileIndicator.drawingKinds,
+    defaultInputs: { ...htfCandleProfileIndicator.defaultInputs },
+    calculate: htfCandleProfileIndicator.calculate,
+  },
+  {
+    id: 'order-flow-vwap-deviation',
+    group: 'community',
+    name: 'Order Flow VWAP Deviation',
+    shortName: orderFlowVwapDeviationIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: orderFlowVwapDeviationIndicator.metadata,
+    inputConfig: orderFlowVwapDeviationIndicator.inputConfig as InputConfig[],
+    plotConfig: orderFlowVwapDeviationIndicator.plotConfig as PlotConfig[],
+    fillConfig: orderFlowVwapDeviationIndicator.fillConfig,
+    shapeConfig: orderFlowVwapDeviationIndicator.shapeConfig,
+    barColorConfig: orderFlowVwapDeviationIndicator.barColorConfig,
+    drawingKinds: orderFlowVwapDeviationIndicator.drawingKinds,
+    defaultInputs: { ...orderFlowVwapDeviationIndicator.defaultInputs },
+    calculate: orderFlowVwapDeviationIndicator.calculate,
+  },
+  {
+    id: 'internal-candle-strength',
+    group: 'community',
+    name: 'Internal Candle Strength',
+    shortName: internalCandleStrengthIndicator.metadata.shortTitle,
+    category: 'Volatility',
+    overlay: true,
+    metadata: internalCandleStrengthIndicator.metadata,
+    inputConfig: internalCandleStrengthIndicator.inputConfig as InputConfig[],
+    plotConfig: internalCandleStrengthIndicator.plotConfig as PlotConfig[],
+    plotCandleConfig: internalCandleStrengthIndicator.plotCandleConfig,
+    drawingKinds: internalCandleStrengthIndicator.drawingKinds,
+    requiredSymbols: internalCandleStrengthIndicator.requiredSymbols,
+    defaultInputs: { ...internalCandleStrengthIndicator.defaultInputs },
+    calculate: internalCandleStrengthIndicator.calculate,
   },
 ];
 

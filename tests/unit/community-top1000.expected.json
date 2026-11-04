@@ -2022,6 +2022,55 @@
    "labels": 376
   }
  },
+ "htf-candle-profile": {
+  "daily": {
+   "plots": {},
+   "markers": 143,
+   "bgColors": 143,
+   "lines": 7,
+   "boxes": 7,
+   "labels": 5
+  },
+  "m15": {
+   "plots": {},
+   "markers": 1,
+   "bgColors": 1,
+   "lines": 7,
+   "boxes": 78,
+   "labels": 5
+  }
+ },
+ "order-flow-vwap-deviation": {
+  "daily": {
+   "plots": {
+    "plot0": 3199,
+    "plot1": 3199,
+    "plot2": 3199,
+    "plot3": 3199,
+    "plot4": 3199
+   },
+   "markers": 3,
+   "lines": 20,
+   "boxes": 48,
+   "labels": 28,
+   "fills": 2
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3937,
+    "plot1": 3937,
+    "plot2": 3937,
+    "plot3": 3937,
+    "plot4": 3937
+   },
+   "markers": 5,
+   "bgColors": 42,
+   "lines": 28,
+   "boxes": 7,
+   "labels": 4,
+   "fills": 2
+  }
+ },
  "smart-trader-episode-06-isotropic-trend-lines": {
   "daily": {
    "plots": {
