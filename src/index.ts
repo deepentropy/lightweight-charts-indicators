@@ -7548,6 +7548,22 @@ export type { AiMovingAverageInputs } from './community/ai-moving-average';
 import * as supportResistanceAiIndicator from './community/support-resistance-ai';
 export { SupportResistanceAi, calculate as calculateSupportResistanceAi } from './community/support-resistance-ai';
 export type { SupportResistanceAiInputs } from './community/support-resistance-ai';
+// Fibonacci Optimal Entry Zone
+import * as fibonacciOptimalEntryZoneIndicator from './community/fibonacci-optimal-entry-zone';
+export { FibonacciOptimalEntryZone, calculate as calculateFibonacciOptimalEntryZone } from './community/fibonacci-optimal-entry-zone';
+export type { FibonacciOptimalEntryZoneInputs } from './community/fibonacci-optimal-entry-zone';
+// FX Sniper: T3-CCI Copy Strategy
+import * as fxSniperT3CciCopyStrategyIndicator from './community/fx-sniper-t3-cci-copy-strategy';
+export { FxSniperT3CciCopyStrategy, calculate as calculateFxSniperT3CciCopyStrategy } from './community/fx-sniper-t3-cci-copy-strategy';
+export type { FxSniperT3CciCopyStrategyInputs } from './community/fx-sniper-t3-cci-copy-strategy';
+// RSI Trendlines with Breakouts
+import * as rsiTrendlinesWithBreakoutsIndicator from './community/rsi-trendlines-with-breakouts';
+export { RsiTrendlinesWithBreakouts, calculate as calculateRsiTrendlinesWithBreakouts } from './community/rsi-trendlines-with-breakouts';
+export type { RsiTrendlinesWithBreakoutsInputs } from './community/rsi-trendlines-with-breakouts';
+// ICT Setup 04 SFP Sweep Liquidity Fake CHoCH/BOS
+import * as ictSetup04SfpSweepLiquidityFakeChochIndicator from './community/ict-setup-04-sfp-sweep-liquidity-fake-choch';
+export { IctSetup04SfpSweepLiquidityFakeChoch, calculate as calculateIctSetup04SfpSweepLiquidityFakeChoch } from './community/ict-setup-04-sfp-sweep-liquidity-fake-choch';
+export type { IctSetup04SfpSweepLiquidityFakeChochInputs } from './community/ict-setup-04-sfp-sweep-liquidity-fake-choch';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30363,6 +30379,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'rsi-trendlines-with-breakouts': rsiTrendlinesWithBreakoutsIndicator,
   'bollinger-bands-flux-charts': bollingerBandsFluxChartsIndicator,
   'gann-box': gannBoxIndicator,
   'elliott-impulse-engine': elliottImpulseEngineIndicator,
@@ -32636,6 +32653,62 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: supportResistanceAiIndicator.drawingKinds,
     defaultInputs: { ...supportResistanceAiIndicator.defaultInputs },
     calculate: supportResistanceAiIndicator.calculate,
+  },
+  {
+    id: 'fibonacci-optimal-entry-zone',
+    group: 'community',
+    name: 'Fibonacci Optimal Entry Zone',
+    shortName: fibonacciOptimalEntryZoneIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: fibonacciOptimalEntryZoneIndicator.metadata,
+    inputConfig: fibonacciOptimalEntryZoneIndicator.inputConfig as InputConfig[],
+    plotConfig: fibonacciOptimalEntryZoneIndicator.plotConfig as PlotConfig[],
+    drawingKinds: fibonacciOptimalEntryZoneIndicator.drawingKinds,
+    defaultInputs: { ...fibonacciOptimalEntryZoneIndicator.defaultInputs },
+    calculate: fibonacciOptimalEntryZoneIndicator.calculate,
+  },
+  {
+    id: 'fx-sniper-t3-cci-copy-strategy',
+    group: 'community',
+    name: 'FX Sniper: T3-CCI Copy Strategy',
+    shortName: fxSniperT3CciCopyStrategyIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: false,
+    metadata: fxSniperT3CciCopyStrategyIndicator.metadata,
+    inputConfig: fxSniperT3CciCopyStrategyIndicator.inputConfig as InputConfig[],
+    plotConfig: fxSniperT3CciCopyStrategyIndicator.plotConfig as PlotConfig[],
+    barColorConfig: fxSniperT3CciCopyStrategyIndicator.barColorConfig,
+    defaultInputs: { ...fxSniperT3CciCopyStrategyIndicator.defaultInputs },
+    calculate: fxSniperT3CciCopyStrategyIndicator.calculate,
+  },
+  {
+    id: 'rsi-trendlines-with-breakouts',
+    group: 'community',
+    name: 'RSI Trendlines with Breakouts',
+    shortName: rsiTrendlinesWithBreakoutsIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: false,
+    metadata: rsiTrendlinesWithBreakoutsIndicator.metadata,
+    inputConfig: rsiTrendlinesWithBreakoutsIndicator.inputConfig as InputConfig[],
+    plotConfig: rsiTrendlinesWithBreakoutsIndicator.plotConfig as PlotConfig[],
+    drawingKinds: rsiTrendlinesWithBreakoutsIndicator.drawingKinds,
+    defaultInputs: { ...rsiTrendlinesWithBreakoutsIndicator.defaultInputs },
+    calculate: rsiTrendlinesWithBreakoutsIndicator.calculate,
+  },
+  {
+    id: 'ict-setup-04-sfp-sweep-liquidity-fake-choch',
+    group: 'community',
+    name: 'ICT Setup 04 SFP Sweep Liquidity Fake CHoCH/BOS',
+    shortName: ictSetup04SfpSweepLiquidityFakeChochIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: ictSetup04SfpSweepLiquidityFakeChochIndicator.metadata,
+    inputConfig: ictSetup04SfpSweepLiquidityFakeChochIndicator.inputConfig as InputConfig[],
+    plotConfig: ictSetup04SfpSweepLiquidityFakeChochIndicator.plotConfig as PlotConfig[],
+    drawingKinds: ictSetup04SfpSweepLiquidityFakeChochIndicator.drawingKinds,
+    defaultInputs: { ...ictSetup04SfpSweepLiquidityFakeChochIndicator.defaultInputs },
+    calculate: ictSetup04SfpSweepLiquidityFakeChochIndicator.calculate,
   },
 ];
 

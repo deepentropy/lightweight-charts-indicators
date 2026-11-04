@@ -2614,5 +2614,65 @@
    "fills": 2,
    "hlines": 2
   }
+ },
+ "fibonacci-optimal-entry-zone": {
+  "daily": {
+   "plots": {},
+   "lines": 61,
+   "labels": 61
+  },
+  "m15": {
+   "plots": {},
+   "lines": 76,
+   "labels": 76
+  }
+ },
+ "fx-sniper-t3-cci-copy-strategy": {
+  "daily": {
+   "plots": {
+    "plot0": 3187,
+    "plot1": 3187
+   },
+   "barColors": 3200,
+   "hlines": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3987,
+    "plot1": 3987
+   },
+   "barColors": 4000,
+   "hlines": 1
+  }
+ },
+ "rsi-trendlines-with-breakouts": {
+  "daily": {
+   "plots": {
+    "plot0": 3186
+   },
+   "lines": 166,
+   "labels": 164,
+   "hlines": 2
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3986
+   },
+   "lines": 207,
+   "labels": 205,
+   "hlines": 2
+  }
+ },
+ "ict-setup-04-sfp-sweep-liquidity-fake-choch": {
+  "daily": {
+   "plots": {},
+   "lines": 10,
+   "labels": 10
+  },
+  "m15": {
+   "plots": {},
+   "lines": 12,
+   "labels": 12
+  }
  }
 }
