@@ -7372,6 +7372,18 @@ export type { SweepInstitutionalInputs } from './community/sweep-institutional';
 import * as nextPivotProjectionIndicator from './community/next-pivot-projection';
 export { NextPivotProjection, calculate as calculateNextPivotProjection } from './community/next-pivot-projection';
 export type { NextPivotProjectionInputs } from './community/next-pivot-projection';
+// Two-Pole Oscillator
+import * as twoPoleOscillatorIndicator from './community/two-pole-oscillator';
+export { TwoPoleOscillator, calculate as calculateTwoPoleOscillator } from './community/two-pole-oscillator';
+export type { TwoPoleOscillatorInputs } from './community/two-pole-oscillator';
+// Liquidity Sweep Hunter Algo
+import * as liquiditySweepHunterAlgoIndicator from './community/liquidity-sweep-hunter-algo';
+export { LiquiditySweepHunterAlgo, calculate as calculateLiquiditySweepHunterAlgo } from './community/liquidity-sweep-hunter-algo';
+export type { LiquiditySweepHunterAlgoInputs } from './community/liquidity-sweep-hunter-algo';
+// Market Structure Confluence
+import * as marketStructureConfluenceIndicator from './community/market-structure-confluence';
+export { MarketStructureConfluence, calculate as calculateMarketStructureConfluence } from './community/market-structure-confluence';
+export type { MarketStructureConfluenceInputs } from './community/market-structure-confluence';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30187,6 +30199,8 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'liquidity-sweep-hunter-algo': liquiditySweepHunterAlgoIndicator,
+  'market-structure-confluence': marketStructureConfluenceIndicator,
   'sweep-institutional': sweepInstitutionalIndicator,
   'reversal': reversalIndicator,
   'fibonacci-support-resistant-trendline': fibonacciSupportResistantTrendlineIndicator,
@@ -31779,6 +31793,53 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: nextPivotProjectionIndicator.drawingKinds,
     defaultInputs: { ...nextPivotProjectionIndicator.defaultInputs },
     calculate: nextPivotProjectionIndicator.calculate,
+  },
+  {
+    id: 'two-pole-oscillator',
+    group: 'community',
+    name: 'Two-Pole Oscillator',
+    shortName: twoPoleOscillatorIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: false,
+    metadata: twoPoleOscillatorIndicator.metadata,
+    inputConfig: twoPoleOscillatorIndicator.inputConfig as InputConfig[],
+    plotConfig: twoPoleOscillatorIndicator.plotConfig as PlotConfig[],
+    fillConfig: twoPoleOscillatorIndicator.fillConfig,
+    shapeConfig: twoPoleOscillatorIndicator.shapeConfig,
+    drawingKinds: twoPoleOscillatorIndicator.drawingKinds,
+    defaultInputs: { ...twoPoleOscillatorIndicator.defaultInputs },
+    calculate: twoPoleOscillatorIndicator.calculate,
+  },
+  {
+    id: 'liquidity-sweep-hunter-algo',
+    group: 'community',
+    name: 'Liquidity Sweep Hunter Algo',
+    shortName: liquiditySweepHunterAlgoIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: liquiditySweepHunterAlgoIndicator.metadata,
+    inputConfig: liquiditySweepHunterAlgoIndicator.inputConfig as InputConfig[],
+    plotConfig: liquiditySweepHunterAlgoIndicator.plotConfig as PlotConfig[],
+    shapeConfig: liquiditySweepHunterAlgoIndicator.shapeConfig,
+    drawingKinds: liquiditySweepHunterAlgoIndicator.drawingKinds,
+    defaultInputs: { ...liquiditySweepHunterAlgoIndicator.defaultInputs },
+    calculate: liquiditySweepHunterAlgoIndicator.calculate,
+  },
+  {
+    id: 'market-structure-confluence',
+    group: 'community',
+    name: 'Market Structure Confluence',
+    shortName: marketStructureConfluenceIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: marketStructureConfluenceIndicator.metadata,
+    inputConfig: marketStructureConfluenceIndicator.inputConfig as InputConfig[],
+    plotConfig: marketStructureConfluenceIndicator.plotConfig as PlotConfig[],
+    shapeConfig: marketStructureConfluenceIndicator.shapeConfig,
+    barColorConfig: marketStructureConfluenceIndicator.barColorConfig,
+    drawingKinds: marketStructureConfluenceIndicator.drawingKinds,
+    defaultInputs: { ...marketStructureConfluenceIndicator.defaultInputs },
+    calculate: marketStructureConfluenceIndicator.calculate,
   },
 ];
 

@@ -1732,6 +1732,74 @@
    "fills": 2
   }
  },
+ "two-pole-oscillator": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 3200,
+    "plot2": 3200,
+    "plot3": 3200,
+    "plot4": 3200,
+    "plot5": 3152,
+    "plot6": 3148
+   },
+   "markers": 280,
+   "lines": 138,
+   "labels": 360,
+   "fills": 3
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 4000,
+    "plot2": 4000,
+    "plot3": 4000,
+    "plot4": 4000,
+    "plot5": 3952,
+    "plot6": 3948
+   },
+   "markers": 350,
+   "lines": 173,
+   "labels": 452,
+   "fills": 3
+  }
+ },
+ "liquidity-sweep-hunter-algo": {
+  "daily": {
+   "plots": {},
+   "markers": 7,
+   "lines": 21,
+   "boxes": 504
+  },
+  "m15": {
+   "plots": {},
+   "markers": 12,
+   "lines": 36,
+   "boxes": 502
+  }
+ },
+ "market-structure-confluence": {
+  "daily": {
+   "plots": {
+    "plot0": 1925,
+    "plot1": 1176
+   },
+   "markers": 176,
+   "barColors": 3200,
+   "lines": 90,
+   "labels": 299
+  },
+  "m15": {
+   "plots": {
+    "plot0": 2487,
+    "plot1": 1414
+   },
+   "markers": 246,
+   "barColors": 4000,
+   "lines": 111,
+   "labels": 375
+  }
+ },
  "rolling-vwap": {
   "daily": {
    "plots": {
