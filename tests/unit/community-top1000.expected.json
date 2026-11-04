@@ -1487,5 +1487,63 @@
   "m15": {
    "plots": {}
   }
+ },
+ "nadaraya-watson-regression-liquidity-sweeps": {
+  "daily": {
+   "plots": {
+    "plot0": 2941,
+    "plot1": 2928,
+    "plot2": 3200,
+    "plot3": 3200
+   },
+   "markers": 174,
+   "lines": 71,
+   "fills": 2,
+   "plotCandles": 6261
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3741,
+    "plot1": 3728,
+    "plot2": 4000,
+    "plot3": 4000
+   },
+   "markers": 216,
+   "lines": 87,
+   "fills": 2,
+   "plotCandles": 7861
+  }
+ },
+ "bull-market-support-band": {
+  "daily": {
+   "plots": {
+    "plot0": 438,
+    "plot1": 437
+   },
+   "fills": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 0
+   },
+   "fills": 1
+  }
+ },
+ "double-ema-with-pullback-buy-sell-signal": {
+  "daily": {
+   "plots": {
+    "plot0": 3151,
+    "plot1": 3001
+   },
+   "labels": 56
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3951,
+    "plot1": 3801
+   },
+   "labels": 73
+  }
  }
 }

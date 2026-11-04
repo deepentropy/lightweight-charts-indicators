@@ -290,8 +290,8 @@ export function calculate(
   }
 
   // hlines (display = showhlines for the band levels; the control levels are na when hidden): ids in declaration order
-  // color.new(color.yellow, 40) (Pine color.yellow = #FFEB3B)
-  const cBand = String(color.new('#FFEB3B', 40));
+  // color.new(color.yellow, 40) (Pine v6 color.yellow = #FDD835)
+  const cBand = String(color.new('#FDD835', 40));
   const ctrColor = String(color.new('#ffee58', 30));
   const hlines: HLineData[] = [
     { id: 'hline0', value: 0, options: { title: 'Zero Line', color: String(color.new('#1163f6', 25)), linestyle: 'solid', linewidth: 1 } },

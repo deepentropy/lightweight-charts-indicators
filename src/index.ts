@@ -7292,6 +7292,18 @@ export type { MovingAveragesAsSupportResistanceMtfInputs } from './community/mov
 import * as supplyDemandZonesProIndicator from './community/supply-demand-zones-pro';
 export { SupplyDemandZonesPro, calculate as calculateSupplyDemandZonesPro } from './community/supply-demand-zones-pro';
 export type { SupplyDemandZonesProInputs } from './community/supply-demand-zones-pro';
+// Nadaraya-Watson Regression Liquidity Sweeps
+import * as nadarayaWatsonRegressionLiquiditySweepsIndicator from './community/nadaraya-watson-regression-liquidity-sweeps';
+export { NadarayaWatsonRegressionLiquiditySweeps, calculate as calculateNadarayaWatsonRegressionLiquiditySweeps } from './community/nadaraya-watson-regression-liquidity-sweeps';
+export type { NadarayaWatsonRegressionLiquiditySweepsInputs } from './community/nadaraya-watson-regression-liquidity-sweeps';
+// Bull Market Support Band (20w SMA, 21w EMA)
+import * as bullMarketSupportBandIndicator from './community/bull-market-support-band';
+export { BullMarketSupportBand, calculate as calculateBullMarketSupportBand } from './community/bull-market-support-band';
+export type { BullMarketSupportBandInputs } from './community/bull-market-support-band';
+// Double EMA WIth Pullback Buy Sell Signal - Smarter Algo
+import * as doubleEmaWithPullbackBuySellSignalIndicator from './community/double-ema-with-pullback-buy-sell-signal';
+export { DoubleEmaWithPullbackBuySellSignal, calculate as calculateDoubleEmaWithPullbackBuySellSignal } from './community/double-ema-with-pullback-buy-sell-signal';
+export type { DoubleEmaWithPullbackBuySellSignalInputs } from './community/double-ema-with-pullback-buy-sell-signal';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30107,6 +30119,8 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'nadaraya-watson-regression-liquidity-sweeps': nadarayaWatsonRegressionLiquiditySweepsIndicator,
+  'double-ema-with-pullback-buy-sell-signal': doubleEmaWithPullbackBuySellSignalIndicator,
   'moving-averages-as-support-resistance-mtf': movingAveragesAsSupportResistanceMtfIndicator,
   'supply-demand-zones-pro': supplyDemandZonesProIndicator,
   'backtesting-trading-engine': backtestingTradingEngineIndicator,
@@ -31392,6 +31406,51 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: supplyDemandZonesProIndicator.drawingKinds,
     defaultInputs: { ...supplyDemandZonesProIndicator.defaultInputs },
     calculate: supplyDemandZonesProIndicator.calculate,
+  },
+  {
+    id: 'nadaraya-watson-regression-liquidity-sweeps',
+    group: 'community',
+    name: 'Nadaraya-Watson Regression Liquidity Sweeps',
+    shortName: nadarayaWatsonRegressionLiquiditySweepsIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: false,
+    metadata: nadarayaWatsonRegressionLiquiditySweepsIndicator.metadata,
+    inputConfig: nadarayaWatsonRegressionLiquiditySweepsIndicator.inputConfig as InputConfig[],
+    plotConfig: nadarayaWatsonRegressionLiquiditySweepsIndicator.plotConfig as PlotConfig[],
+    fillConfig: nadarayaWatsonRegressionLiquiditySweepsIndicator.fillConfig,
+    shapeConfig: nadarayaWatsonRegressionLiquiditySweepsIndicator.shapeConfig,
+    plotCandleConfig: nadarayaWatsonRegressionLiquiditySweepsIndicator.plotCandleConfig,
+    drawingKinds: nadarayaWatsonRegressionLiquiditySweepsIndicator.drawingKinds,
+    defaultInputs: { ...nadarayaWatsonRegressionLiquiditySweepsIndicator.defaultInputs },
+    calculate: nadarayaWatsonRegressionLiquiditySweepsIndicator.calculate,
+  },
+  {
+    id: 'bull-market-support-band',
+    group: 'community',
+    name: 'Bull Market Support Band (20w SMA, 21w EMA)',
+    shortName: bullMarketSupportBandIndicator.metadata.shortTitle,
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: bullMarketSupportBandIndicator.metadata,
+    inputConfig: bullMarketSupportBandIndicator.inputConfig as InputConfig[],
+    plotConfig: bullMarketSupportBandIndicator.plotConfig as PlotConfig[],
+    fillConfig: bullMarketSupportBandIndicator.fillConfig,
+    defaultInputs: { ...bullMarketSupportBandIndicator.defaultInputs },
+    calculate: bullMarketSupportBandIndicator.calculate,
+  },
+  {
+    id: 'double-ema-with-pullback-buy-sell-signal',
+    group: 'community',
+    name: 'Double EMA WIth Pullback Buy Sell Signal - Smarter Algo',
+    shortName: doubleEmaWithPullbackBuySellSignalIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: doubleEmaWithPullbackBuySellSignalIndicator.metadata,
+    inputConfig: doubleEmaWithPullbackBuySellSignalIndicator.inputConfig as InputConfig[],
+    plotConfig: doubleEmaWithPullbackBuySellSignalIndicator.plotConfig as PlotConfig[],
+    drawingKinds: doubleEmaWithPullbackBuySellSignalIndicator.drawingKinds,
+    defaultInputs: { ...doubleEmaWithPullbackBuySellSignalIndicator.defaultInputs },
+    calculate: doubleEmaWithPullbackBuySellSignalIndicator.calculate,
   },
 ];
 
