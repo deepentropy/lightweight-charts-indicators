@@ -1843,5 +1843,37 @@
    },
    "fills": 1
   }
+ },
+ "vwap-supply-demand-zones-pro": {
+  "daily": {
+   "plots": {
+    "plot0": 3181,
+    "plot1": 3181,
+    "plot2": 3181
+   },
+   "markers": 51,
+   "barColors": 3181,
+   "bgColors": 434,
+   "lines": 9,
+   "boxes": 9,
+   "labels": 9,
+   "tables": 1,
+   "fills": 2
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3981,
+    "plot1": 3981,
+    "plot2": 3981
+   },
+   "markers": 66,
+   "barColors": 3981,
+   "bgColors": 554,
+   "lines": 10,
+   "boxes": 10,
+   "labels": 10,
+   "tables": 1,
+   "fills": 2
+  }
  }
 }

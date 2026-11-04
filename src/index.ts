@@ -7384,6 +7384,10 @@ export type { LiquiditySweepHunterAlgoInputs } from './community/liquidity-sweep
 import * as marketStructureConfluenceIndicator from './community/market-structure-confluence';
 export { MarketStructureConfluence, calculate as calculateMarketStructureConfluence } from './community/market-structure-confluence';
 export type { MarketStructureConfluenceInputs } from './community/market-structure-confluence';
+// VWAP Supply & Demand Zones PRO
+import * as vwapSupplyDemandZonesProIndicator from './community/vwap-supply-demand-zones-pro';
+export { VwapSupplyDemandZonesPro, calculate as calculateVwapSupplyDemandZonesPro } from './community/vwap-supply-demand-zones-pro';
+export type { VwapSupplyDemandZonesProInputs } from './community/vwap-supply-demand-zones-pro';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30199,6 +30203,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'vwap-supply-demand-zones-pro': vwapSupplyDemandZonesProIndicator,
   'liquidity-sweep-hunter-algo': liquiditySweepHunterAlgoIndicator,
   'market-structure-confluence': marketStructureConfluenceIndicator,
   'sweep-institutional': sweepInstitutionalIndicator,
@@ -31840,6 +31845,23 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: marketStructureConfluenceIndicator.drawingKinds,
     defaultInputs: { ...marketStructureConfluenceIndicator.defaultInputs },
     calculate: marketStructureConfluenceIndicator.calculate,
+  },
+  {
+    id: 'vwap-supply-demand-zones-pro',
+    group: 'community',
+    name: 'VWAP Supply & Demand Zones PRO',
+    shortName: vwapSupplyDemandZonesProIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: vwapSupplyDemandZonesProIndicator.metadata,
+    inputConfig: vwapSupplyDemandZonesProIndicator.inputConfig as InputConfig[],
+    plotConfig: vwapSupplyDemandZonesProIndicator.plotConfig as PlotConfig[],
+    fillConfig: vwapSupplyDemandZonesProIndicator.fillConfig,
+    shapeConfig: vwapSupplyDemandZonesProIndicator.shapeConfig,
+    barColorConfig: vwapSupplyDemandZonesProIndicator.barColorConfig,
+    drawingKinds: vwapSupplyDemandZonesProIndicator.drawingKinds,
+    defaultInputs: { ...vwapSupplyDemandZonesProIndicator.defaultInputs },
+    calculate: vwapSupplyDemandZonesProIndicator.calculate,
   },
 ];
 
