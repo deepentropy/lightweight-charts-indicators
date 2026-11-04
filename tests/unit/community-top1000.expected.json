@@ -2615,6 +2615,51 @@
    "hlines": 2
   }
  },
+ "all-in-one-sessions-weekly-monday-previous": {
+  "daily": {
+   "plots": {},
+   "lines": 8,
+   "labels": 8
+  },
+  "m15": {
+   "plots": {},
+   "lines": 8,
+   "boxes": 3,
+   "labels": 8
+  }
+ },
+ "smart-money-setup-01-double-order-blocks-proof": {
+  "daily": {
+   "plots": {},
+   "markers": 4,
+   "boxes": 8
+  },
+  "m15": {
+   "plots": {},
+   "markers": 4,
+   "boxes": 8
+  }
+ },
+ "adx-by-cobra": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 3200,
+    "plot2": 3198
+   },
+   "bgColors": 3306,
+   "hlines": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 4000,
+    "plot2": 3998
+   },
+   "bgColors": 4130,
+   "hlines": 1
+  }
+ },
  "fibonacci-optimal-entry-zone": {
   "daily": {
    "plots": {},

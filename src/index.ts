@@ -7572,6 +7572,22 @@ export type { StochasticZScoreInputs } from './community/stochastic-z-score';
 import * as multiZigzagHarmonicPatternsIndicator from './community/multi-zigzag-harmonic-patterns';
 export { MultiZigzagHarmonicPatterns, calculate as calculateMultiZigzagHarmonicPatterns } from './community/multi-zigzag-harmonic-patterns';
 export type { MultiZigzagHarmonicPatternsInputs } from './community/multi-zigzag-harmonic-patterns';
+// All-In-One Sessions, Weekly, Monday, Previous Highs/Lows
+import * as allInOneSessionsWeeklyMondayPreviousIndicator from './community/all-in-one-sessions-weekly-monday-previous';
+export { AllInOneSessions, calculate as calculateAllInOneSessions } from './community/all-in-one-sessions-weekly-monday-previous';
+export type { AllInOneSessionsInputs } from './community/all-in-one-sessions-weekly-monday-previous';
+// Smart Money Setup 01Double Order Blocks Proof
+import * as smartMoneySetup01DoubleOrderBlocksProofIndicator from './community/smart-money-setup-01-double-order-blocks-proof';
+export { SmartMoneySetup01, calculate as calculateSmartMoneySetup01 } from './community/smart-money-setup-01-double-order-blocks-proof';
+export type { SmartMoneySetup01Inputs } from './community/smart-money-setup-01-double-order-blocks-proof';
+// Liquidity Heatmap LTF
+import * as liquidityHeatmapLtfIndicator from './community/liquidity-heatmap-ltf';
+export { LiquidityHeatmapLtf, calculate as calculateLiquidityHeatmapLtf } from './community/liquidity-heatmap-ltf';
+export type { LiquidityHeatmapLtfInputs } from './community/liquidity-heatmap-ltf';
+// ADX by cobra
+import * as adxByCobraIndicator from './community/adx-by-cobra';
+export { AdxByCobra, calculate as calculateAdxByCobra } from './community/adx-by-cobra';
+export type { AdxByCobraInputs } from './community/adx-by-cobra';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30387,6 +30403,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'all-in-one-sessions-weekly-monday-previous': allInOneSessionsWeeklyMondayPreviousIndicator,
   'stochastic-z-score': stochasticZScoreIndicator,
   'multi-zigzag-harmonic-patterns': multiZigzagHarmonicPatternsIndicator,
   'rsi-trendlines-with-breakouts': rsiTrendlinesWithBreakoutsIndicator,
@@ -32748,6 +32765,64 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: multiZigzagHarmonicPatternsIndicator.drawingKinds,
     defaultInputs: { ...multiZigzagHarmonicPatternsIndicator.defaultInputs },
     calculate: multiZigzagHarmonicPatternsIndicator.calculate,
+  },
+  {
+    id: 'all-in-one-sessions-weekly-monday-previous',
+    group: 'community',
+    name: 'All-In-One Sessions, Weekly, Monday, Previous Highs/Lows',
+    shortName: allInOneSessionsWeeklyMondayPreviousIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: allInOneSessionsWeeklyMondayPreviousIndicator.metadata,
+    inputConfig: allInOneSessionsWeeklyMondayPreviousIndicator.inputConfig as InputConfig[],
+    plotConfig: allInOneSessionsWeeklyMondayPreviousIndicator.plotConfig as PlotConfig[],
+    drawingKinds: allInOneSessionsWeeklyMondayPreviousIndicator.drawingKinds,
+    defaultInputs: { ...allInOneSessionsWeeklyMondayPreviousIndicator.defaultInputs },
+    calculate: allInOneSessionsWeeklyMondayPreviousIndicator.calculate,
+  },
+  {
+    id: 'smart-money-setup-01-double-order-blocks-proof',
+    group: 'community',
+    name: 'Smart Money Setup 01Double Order Blocks Proof',
+    shortName: smartMoneySetup01DoubleOrderBlocksProofIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: smartMoneySetup01DoubleOrderBlocksProofIndicator.metadata,
+    inputConfig: smartMoneySetup01DoubleOrderBlocksProofIndicator.inputConfig as InputConfig[],
+    plotConfig: smartMoneySetup01DoubleOrderBlocksProofIndicator.plotConfig as PlotConfig[],
+    shapeConfig: smartMoneySetup01DoubleOrderBlocksProofIndicator.shapeConfig,
+    drawingKinds: smartMoneySetup01DoubleOrderBlocksProofIndicator.drawingKinds,
+    defaultInputs: { ...smartMoneySetup01DoubleOrderBlocksProofIndicator.defaultInputs },
+    calculate: smartMoneySetup01DoubleOrderBlocksProofIndicator.calculate,
+  },
+  {
+    id: 'liquidity-heatmap-ltf',
+    group: 'community',
+    name: 'Liquidity Heatmap LTF',
+    shortName: liquidityHeatmapLtfIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: liquidityHeatmapLtfIndicator.metadata,
+    inputConfig: liquidityHeatmapLtfIndicator.inputConfig as InputConfig[],
+    plotConfig: liquidityHeatmapLtfIndicator.plotConfig as PlotConfig[],
+    drawingKinds: liquidityHeatmapLtfIndicator.drawingKinds,
+    requiredSymbols: liquidityHeatmapLtfIndicator.requiredSymbols,
+    defaultInputs: { ...liquidityHeatmapLtfIndicator.defaultInputs },
+    calculate: liquidityHeatmapLtfIndicator.calculate,
+  },
+  {
+    id: 'adx-by-cobra',
+    group: 'community',
+    name: 'ADX by cobra',
+    shortName: adxByCobraIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: false,
+    metadata: adxByCobraIndicator.metadata,
+    inputConfig: adxByCobraIndicator.inputConfig as InputConfig[],
+    plotConfig: adxByCobraIndicator.plotConfig as PlotConfig[],
+    barColorConfig: adxByCobraIndicator.barColorConfig,
+    defaultInputs: { ...adxByCobraIndicator.defaultInputs },
+    calculate: adxByCobraIndicator.calculate,
   },
 ];
 
