@@ -7344,6 +7344,10 @@ export type { ReversalInputs } from './community/reversal';
 import * as algoMarketStructureIndicator from './community/algo-market-structure';
 export { AlgoMarketStructure, calculate as calculateAlgoMarketStructure } from './community/algo-market-structure';
 export type { AlgoMarketStructureInputs } from './community/algo-market-structure';
+// Volume Footprint: Measuring by Math & Geometry
+import * as volumeFootprintMeasuringByMathGeometryIndicator from './community/volume-footprint-measuring-by-math-geometry';
+export { VolumeFootprintMeasuringByMathGeometry, calculate as calculateVolumeFootprintMeasuringByMathGeometry } from './community/volume-footprint-measuring-by-math-geometry';
+export type { VolumeFootprintMeasuringByMathGeometryInputs } from './community/volume-footprint-measuring-by-math-geometry';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -31647,6 +31651,21 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: algoMarketStructureIndicator.drawingKinds,
     defaultInputs: { ...algoMarketStructureIndicator.defaultInputs },
     calculate: algoMarketStructureIndicator.calculate,
+  },
+  {
+    id: 'volume-footprint-measuring-by-math-geometry',
+    group: 'community',
+    name: 'Volume Footprint: Measuring by Math & Geometry',
+    shortName: volumeFootprintMeasuringByMathGeometryIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: volumeFootprintMeasuringByMathGeometryIndicator.metadata,
+    inputConfig: volumeFootprintMeasuringByMathGeometryIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeFootprintMeasuringByMathGeometryIndicator.plotConfig as PlotConfig[],
+    drawingKinds: volumeFootprintMeasuringByMathGeometryIndicator.drawingKinds,
+    requiredSymbols: volumeFootprintMeasuringByMathGeometryIndicator.requiredSymbols,
+    defaultInputs: { ...volumeFootprintMeasuringByMathGeometryIndicator.defaultInputs },
+    calculate: volumeFootprintMeasuringByMathGeometryIndicator.calculate,
   },
 ];
 
