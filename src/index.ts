@@ -7404,6 +7404,22 @@ export type { RangeAnalysisByLeviathanInputs } from './community/range-analysis-
 import * as ictUnicornFluxChartsIndicator from './community/ict-unicorn-flux-charts';
 export { IctUnicornFluxCharts, calculate as calculateIctUnicornFluxCharts } from './community/ict-unicorn-flux-charts';
 export type { IctUnicornFluxChartsInputs } from './community/ict-unicorn-flux-charts';
+// Strength of Divergence Across Multiple Indicators
+import * as strengthOfDivergenceAcrossMultipleIndicator from './community/strength-of-divergence-across-multiple';
+export { StrengthOfDivergenceAcrossMultiple, calculate as calculateStrengthOfDivergenceAcrossMultiple } from './community/strength-of-divergence-across-multiple';
+export type { StrengthOfDivergenceAcrossMultipleInputs } from './community/strength-of-divergence-across-multiple';
+// Volume Profile Auto
+import * as volumeProfileAutoIndicator from './community/volume-profile-auto';
+export { VolumeProfileAuto, calculate as calculateVolumeProfileAuto } from './community/volume-profile-auto';
+export type { VolumeProfileAutoInputs } from './community/volume-profile-auto';
+// Horns Pattern Identifier
+import * as hornsPatternIdentifierIndicator from './community/horns-pattern-identifier';
+export { HornsPatternIdentifier, calculate as calculateHornsPatternIdentifier } from './community/horns-pattern-identifier';
+export type { HornsPatternIdentifierInputs } from './community/horns-pattern-identifier';
+// CDC ActionZone V3 2020
+import * as cdcActionzoneV32020Indicator from './community/cdc-actionzone-v3-2020';
+export { CdcActionzoneV32020, calculate as calculateCdcActionzoneV32020 } from './community/cdc-actionzone-v3-2020';
+export type { CdcActionzoneV32020Inputs } from './community/cdc-actionzone-v3-2020';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30219,6 +30235,8 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'strength-of-divergence-across-multiple': strengthOfDivergenceAcrossMultipleIndicator,
+  'cdc-actionzone-v3-2020': cdcActionzoneV32020Indicator,
   'ict-unicorn-flux-charts': ictUnicornFluxChartsIndicator,
   'elliot-wave-impulse': elliotWaveImpulseIndicator,
   'vwap-supply-demand-zones-pro': vwapSupplyDemandZonesProIndicator,
@@ -31940,6 +31958,67 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: ictUnicornFluxChartsIndicator.drawingKinds,
     defaultInputs: { ...ictUnicornFluxChartsIndicator.defaultInputs },
     calculate: ictUnicornFluxChartsIndicator.calculate,
+  },
+  {
+    id: 'strength-of-divergence-across-multiple',
+    group: 'community',
+    name: 'Strength of Divergence Across Multiple Indicators',
+    shortName: strengthOfDivergenceAcrossMultipleIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: true,
+    metadata: strengthOfDivergenceAcrossMultipleIndicator.metadata,
+    inputConfig: strengthOfDivergenceAcrossMultipleIndicator.inputConfig as InputConfig[],
+    plotConfig: strengthOfDivergenceAcrossMultipleIndicator.plotConfig as PlotConfig[],
+    drawingKinds: strengthOfDivergenceAcrossMultipleIndicator.drawingKinds,
+    defaultInputs: { ...strengthOfDivergenceAcrossMultipleIndicator.defaultInputs },
+    calculate: strengthOfDivergenceAcrossMultipleIndicator.calculate,
+  },
+  {
+    id: 'volume-profile-auto',
+    group: 'community',
+    name: 'Volume Profile Auto',
+    shortName: volumeProfileAutoIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: volumeProfileAutoIndicator.metadata,
+    inputConfig: volumeProfileAutoIndicator.inputConfig as InputConfig[],
+    plotConfig: volumeProfileAutoIndicator.plotConfig as PlotConfig[],
+    barColorConfig: volumeProfileAutoIndicator.barColorConfig,
+    drawingKinds: volumeProfileAutoIndicator.drawingKinds,
+    defaultInputs: { ...volumeProfileAutoIndicator.defaultInputs },
+    calculate: volumeProfileAutoIndicator.calculate,
+  },
+  {
+    id: 'horns-pattern-identifier',
+    group: 'community',
+    name: 'Horns Pattern Identifier',
+    shortName: hornsPatternIdentifierIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: hornsPatternIdentifierIndicator.metadata,
+    inputConfig: hornsPatternIdentifierIndicator.inputConfig as InputConfig[],
+    plotConfig: hornsPatternIdentifierIndicator.plotConfig as PlotConfig[],
+    shapeConfig: hornsPatternIdentifierIndicator.shapeConfig,
+    drawingKinds: hornsPatternIdentifierIndicator.drawingKinds,
+    defaultInputs: { ...hornsPatternIdentifierIndicator.defaultInputs },
+    calculate: hornsPatternIdentifierIndicator.calculate,
+  },
+  {
+    id: 'cdc-actionzone-v3-2020',
+    group: 'community',
+    name: 'CDC ActionZone V3 2020',
+    shortName: cdcActionzoneV32020Indicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: cdcActionzoneV32020Indicator.metadata,
+    inputConfig: cdcActionzoneV32020Indicator.inputConfig as InputConfig[],
+    plotConfig: cdcActionzoneV32020Indicator.plotConfig as PlotConfig[],
+    fillConfig: cdcActionzoneV32020Indicator.fillConfig,
+    shapeConfig: cdcActionzoneV32020Indicator.shapeConfig,
+    barColorConfig: cdcActionzoneV32020Indicator.barColorConfig,
+    drawingKinds: cdcActionzoneV32020Indicator.drawingKinds,
+    defaultInputs: { ...cdcActionzoneV32020Indicator.defaultInputs },
+    calculate: cdcActionzoneV32020Indicator.calculate,
   },
 ];
 

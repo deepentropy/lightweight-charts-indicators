@@ -1876,6 +1876,66 @@
    "fills": 1
   }
  },
+ "strength-of-divergence-across-multiple": {
+  "daily": {
+   "plots": {},
+   "lines": 505,
+   "labels": 400
+  },
+  "m15": {
+   "plots": {},
+   "lines": 503,
+   "labels": 504
+  }
+ },
+ "volume-profile-auto": {
+  "daily": {
+   "plots": {},
+   "barColors": 3200,
+   "lines": 501,
+   "boxes": 25
+  },
+  "m15": {
+   "plots": {},
+   "barColors": 4000,
+   "lines": 507,
+   "boxes": 25
+  }
+ },
+ "horns-pattern-identifier": {
+  "daily": {
+   "plots": {},
+   "markers": 92,
+   "lines": 504
+  },
+  "m15": {
+   "plots": {},
+   "markers": 113,
+   "lines": 501
+  }
+ },
+ "cdc-actionzone-v3-2020": {
+  "daily": {
+   "plots": {
+    "plot0": 3189,
+    "plot1": 3175
+   },
+   "markers": 79,
+   "barColors": 3200,
+   "labels": 1,
+   "fills": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3989,
+    "plot1": 3975
+   },
+   "markers": 99,
+   "barColors": 4000,
+   "labels": 1,
+   "fills": 1
+  }
+ },
  "vwap-supply-demand-zones-pro": {
   "daily": {
    "plots": {
