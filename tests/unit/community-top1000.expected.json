@@ -906,6 +906,172 @@
    "fills": 2
   }
  },
+ "wolfe-scanner": {
+  "daily": {
+   "plots": {},
+   "lines": 344
+  },
+  "m15": {
+   "plots": {},
+   "lines": 464
+  }
+ },
+ "cm-pivot-points-custom": {
+  "daily": {
+   "plots": {
+    "plot0": 3199,
+    "plot1": 3199,
+    "plot2": 3199,
+    "plot3": 3199,
+    "plot4": 3199,
+    "plot5": 0,
+    "plot6": 0,
+    "plot7": 0,
+    "plot8": 0,
+    "plot9": 0,
+    "plot10": 0,
+    "plot11": 0,
+    "plot12": 0,
+    "plot13": 0,
+    "plot14": 0,
+    "plot15": 0,
+    "plot16": 0,
+    "plot17": 0,
+    "plot18": 0,
+    "plot19": 0,
+    "plot20": 0,
+    "plot21": 0,
+    "plot22": 0,
+    "plot23": 0,
+    "plot24": 0,
+    "plot25": 0,
+    "plot26": 0,
+    "plot27": 0,
+    "plot28": 0,
+    "plot29": 0,
+    "plot30": 0,
+    "plot31": 0,
+    "plot32": 0,
+    "plot33": 0,
+    "plot34": 0
+   }
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3937,
+    "plot1": 3937,
+    "plot2": 3937,
+    "plot3": 3937,
+    "plot4": 3937,
+    "plot5": 0,
+    "plot6": 0,
+    "plot7": 0,
+    "plot8": 0,
+    "plot9": 0,
+    "plot10": 0,
+    "plot11": 0,
+    "plot12": 0,
+    "plot13": 0,
+    "plot14": 0,
+    "plot15": 0,
+    "plot16": 0,
+    "plot17": 0,
+    "plot18": 0,
+    "plot19": 0,
+    "plot20": 0,
+    "plot21": 0,
+    "plot22": 0,
+    "plot23": 0,
+    "plot24": 0,
+    "plot25": 0,
+    "plot26": 0,
+    "plot27": 0,
+    "plot28": 0,
+    "plot29": 0,
+    "plot30": 0,
+    "plot31": 0,
+    "plot32": 0,
+    "plot33": 0,
+    "plot34": 0
+   }
+  }
+ },
+ "fair-value-bands-flowly-indicators": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 3181,
+    "plot2": 3181,
+    "plot3": 3181,
+    "plot4": 3124,
+    "plot5": 2608,
+    "plot6": 3124,
+    "plot7": 2608,
+    "plot8": 3124,
+    "plot9": 2608,
+    "plot10": 0,
+    "plot11": 0,
+    "plot12": 0,
+    "plot13": 0,
+    "plot14": 0,
+    "plot15": 0,
+    "plot16": 0,
+    "plot17": 0,
+    "plot18": 0,
+    "plot19": 0,
+    "plot20": 0,
+    "plot21": 0,
+    "plot22": 0,
+    "plot23": 0,
+    "plot24": 0,
+    "plot25": 0,
+    "plot26": 0,
+    "plot27": 0,
+    "plot28": 0,
+    "plot29": 0
+   },
+   "labels": 11,
+   "tables": 1,
+   "fills": 5
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 3981,
+    "plot2": 3981,
+    "plot3": 3981,
+    "plot4": 3924,
+    "plot5": 3408,
+    "plot6": 3924,
+    "plot7": 3408,
+    "plot8": 3924,
+    "plot9": 3408,
+    "plot10": 0,
+    "plot11": 0,
+    "plot12": 0,
+    "plot13": 0,
+    "plot14": 0,
+    "plot15": 0,
+    "plot16": 0,
+    "plot17": 0,
+    "plot18": 0,
+    "plot19": 0,
+    "plot20": 0,
+    "plot21": 0,
+    "plot22": 0,
+    "plot23": 0,
+    "plot24": 0,
+    "plot25": 0,
+    "plot26": 0,
+    "plot27": 0,
+    "plot28": 0,
+    "plot29": 0
+   },
+   "labels": 15,
+   "tables": 1,
+   "fills": 5
+  }
+ },
  "auto-pattern-detector-targets": {
   "daily": {
    "plots": {},
@@ -989,6 +1155,76 @@
   "m15": {
    "plots": {},
    "lines": 15
+  }
+ },
+ "candlesticks-patterns-identified": {
+  "daily": {
+   "plots": {},
+   "markers": 1184
+  },
+  "m15": {
+   "plots": {},
+   "markers": 1501
+  }
+ },
+ "tdi-traders-dynamic-index-rsi-divergences-buy": {
+  "daily": {
+   "plots": {
+    "plot0": 3153,
+    "plot1": 3153,
+    "plot2": 3153,
+    "plot3": 3185,
+    "plot4": 3180,
+    "plot5": 199,
+    "plot6": 199,
+    "plot7": 225,
+    "plot8": 225
+   },
+   "markers": 164,
+   "bgColors": 1564,
+   "fills": 1,
+   "hlines": 3
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3953,
+    "plot1": 3953,
+    "plot2": 3953,
+    "plot3": 3985,
+    "plot4": 3980,
+    "plot5": 252,
+    "plot6": 252,
+    "plot7": 285,
+    "plot8": 285
+   },
+   "markers": 221,
+   "bgColors": 1937,
+   "fills": 1,
+   "hlines": 3
+  }
+ },
+ "super-trend-v": {
+  "daily": {
+   "plots": {
+    "plot0": 3154,
+    "plot1": 3194,
+    "plot2": 3154,
+    "plot3": 3194,
+    "plot4": 3153
+   },
+   "markers": 178,
+   "fills": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3625,
+    "plot1": 3665,
+    "plot2": 3625,
+    "plot3": 3665,
+    "plot4": 3624
+   },
+   "markers": 50,
+   "fills": 1
   }
  }
 }

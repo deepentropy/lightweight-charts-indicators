@@ -7216,6 +7216,34 @@ export type { FairValueGapsByDgtInputs } from './community/fair-value-gaps-by-dg
 import * as htfLiquidityLevelsIndicator from './community/htf-liquidity-levels';
 export { HtfLiquidityLevels, calculate as calculateHtfLiquidityLevels } from './community/htf-liquidity-levels';
 export type { HtfLiquidityLevelsInputs } from './community/htf-liquidity-levels';
+// Relative Strength of a stock
+import * as relativeStrengthOfAStockIndicator from './community/relative-strength-of-a-stock';
+export { RelativeStrengthOfAStock, calculate as calculateRelativeStrengthOfAStock } from './community/relative-strength-of-a-stock';
+export type { RelativeStrengthOfAStockInputs } from './community/relative-strength-of-a-stock';
+// Candlesticks Patterns Identified
+import * as candlesticksPatternsIdentifiedIndicator from './community/candlesticks-patterns-identified';
+export { CandlesticksPatternsIdentified, calculate as calculateCandlesticksPatternsIdentified } from './community/candlesticks-patterns-identified';
+export type { CandlesticksPatternsIdentifiedInputs } from './community/candlesticks-patterns-identified';
+// TDI - Traders Dynamic Index + RSI Divergences + Buy/Sell Signals
+import * as tdiTradersDynamicIndexRsiDivergencesBuyIndicator from './community/tdi-traders-dynamic-index-rsi-divergences-buy';
+export { TdiTradersDynamicIndexRsiDivergencesBuy, calculate as calculateTdiTradersDynamicIndexRsiDivergencesBuy } from './community/tdi-traders-dynamic-index-rsi-divergences-buy';
+export type { TdiTradersDynamicIndexRsiDivergencesBuyInputs } from './community/tdi-traders-dynamic-index-rsi-divergences-buy';
+// Super trend V
+import * as superTrendVIndicator from './community/super-trend-v';
+export { SuperTrendV, calculate as calculateSuperTrendV } from './community/super-trend-v';
+export type { SuperTrendVInputs } from './community/super-trend-v';
+// Wolfe Scanner (Multi - zigzag)
+import * as wolfeScannerIndicator from './community/wolfe-scanner';
+export { WolfeScanner, calculate as calculateWolfeScanner } from './community/wolfe-scanner';
+export type { WolfeScannerInputs } from './community/wolfe-scanner';
+// CM_Pivot Points_Custom
+import * as cmPivotPointsCustomIndicator from './community/cm-pivot-points-custom';
+export { CmPivotPointsCustom, calculate as calculateCmPivotPointsCustom } from './community/cm-pivot-points-custom';
+export type { CmPivotPointsCustomInputs } from './community/cm-pivot-points-custom';
+// Fair value bands / Flowly Indicators
+import * as fairValueBandsFlowlyIndicatorsIndicator from './community/fair-value-bands-flowly-indicators';
+export { FairValueBandsFlowlyIndicators, calculate as calculateFairValueBandsFlowlyIndicators } from './community/fair-value-bands-flowly-indicators';
+export type { FairValueBandsFlowlyIndicatorsInputs } from './community/fair-value-bands-flowly-indicators';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30031,6 +30059,11 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'wolfe-scanner': wolfeScannerIndicator,
+  'fair-value-bands-flowly-indicators': fairValueBandsFlowlyIndicatorsIndicator,
+  'relative-strength-of-a-stock': relativeStrengthOfAStockIndicator,
+  'tdi-traders-dynamic-index-rsi-divergences-buy': tdiTradersDynamicIndexRsiDivergencesBuyIndicator,
+  'super-trend-v': superTrendVIndicator,
   'htf-liquidity-levels': htfLiquidityLevelsIndicator,
   'auto-pattern-detector-targets': autoPatternDetectorTargetsIndicator,
   'whale-liquidity-and-absorption-profile': whaleLiquidityAndAbsorptionProfileIndicator,
@@ -31028,6 +31061,110 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: htfLiquidityLevelsIndicator.drawingKinds,
     defaultInputs: { ...htfLiquidityLevelsIndicator.defaultInputs },
     calculate: htfLiquidityLevelsIndicator.calculate,
+  },
+  {
+    id: 'relative-strength-of-a-stock',
+    group: 'community',
+    name: 'Relative Strength of a stock',
+    shortName: relativeStrengthOfAStockIndicator.metadata.shortTitle,
+    category: 'Momentum',
+    overlay: false,
+    metadata: relativeStrengthOfAStockIndicator.metadata,
+    inputConfig: relativeStrengthOfAStockIndicator.inputConfig as InputConfig[],
+    plotConfig: relativeStrengthOfAStockIndicator.plotConfig as PlotConfig[],
+    drawingKinds: relativeStrengthOfAStockIndicator.drawingKinds,
+    requiredSymbols: relativeStrengthOfAStockIndicator.requiredSymbols,
+    defaultInputs: { ...relativeStrengthOfAStockIndicator.defaultInputs },
+    calculate: relativeStrengthOfAStockIndicator.calculate,
+  },
+  {
+    id: 'candlesticks-patterns-identified',
+    group: 'community',
+    name: 'Candlesticks Patterns Identified',
+    shortName: candlesticksPatternsIdentifiedIndicator.metadata.shortTitle,
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: candlesticksPatternsIdentifiedIndicator.metadata,
+    inputConfig: candlesticksPatternsIdentifiedIndicator.inputConfig as InputConfig[],
+    plotConfig: candlesticksPatternsIdentifiedIndicator.plotConfig as PlotConfig[],
+    shapeConfig: candlesticksPatternsIdentifiedIndicator.shapeConfig,
+    defaultInputs: { ...candlesticksPatternsIdentifiedIndicator.defaultInputs },
+    calculate: candlesticksPatternsIdentifiedIndicator.calculate,
+  },
+  {
+    id: 'tdi-traders-dynamic-index-rsi-divergences-buy',
+    group: 'community',
+    name: 'TDI - Traders Dynamic Index + RSI Divergences + Buy/Sell Signals',
+    shortName: tdiTradersDynamicIndexRsiDivergencesBuyIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: false,
+    metadata: tdiTradersDynamicIndexRsiDivergencesBuyIndicator.metadata,
+    inputConfig: tdiTradersDynamicIndexRsiDivergencesBuyIndicator.inputConfig as InputConfig[],
+    plotConfig: tdiTradersDynamicIndexRsiDivergencesBuyIndicator.plotConfig as PlotConfig[],
+    hlineConfig: tdiTradersDynamicIndexRsiDivergencesBuyIndicator.hlineConfig,
+    fillConfig: tdiTradersDynamicIndexRsiDivergencesBuyIndicator.fillConfig,
+    shapeConfig: tdiTradersDynamicIndexRsiDivergencesBuyIndicator.shapeConfig,
+    barColorConfig: tdiTradersDynamicIndexRsiDivergencesBuyIndicator.barColorConfig,
+    defaultInputs: { ...tdiTradersDynamicIndexRsiDivergencesBuyIndicator.defaultInputs },
+    calculate: tdiTradersDynamicIndexRsiDivergencesBuyIndicator.calculate,
+  },
+  {
+    id: 'super-trend-v',
+    group: 'community',
+    name: 'Super trend V',
+    shortName: superTrendVIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: superTrendVIndicator.metadata,
+    inputConfig: superTrendVIndicator.inputConfig as InputConfig[],
+    plotConfig: superTrendVIndicator.plotConfig as PlotConfig[],
+    fillConfig: superTrendVIndicator.fillConfig,
+    shapeConfig: superTrendVIndicator.shapeConfig,
+    defaultInputs: { ...superTrendVIndicator.defaultInputs },
+    calculate: superTrendVIndicator.calculate,
+  },
+  {
+    id: 'wolfe-scanner',
+    group: 'community',
+    name: 'Wolfe Scanner (Multi - zigzag)',
+    shortName: wolfeScannerIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: wolfeScannerIndicator.metadata,
+    inputConfig: wolfeScannerIndicator.inputConfig as InputConfig[],
+    plotConfig: wolfeScannerIndicator.plotConfig as PlotConfig[],
+    drawingKinds: wolfeScannerIndicator.drawingKinds,
+    defaultInputs: { ...wolfeScannerIndicator.defaultInputs },
+    calculate: wolfeScannerIndicator.calculate,
+  },
+  {
+    id: 'cm-pivot-points-custom',
+    group: 'community',
+    name: 'CM_Pivot Points_Custom',
+    shortName: cmPivotPointsCustomIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: cmPivotPointsCustomIndicator.metadata,
+    inputConfig: cmPivotPointsCustomIndicator.inputConfig as InputConfig[],
+    plotConfig: cmPivotPointsCustomIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...cmPivotPointsCustomIndicator.defaultInputs },
+    calculate: cmPivotPointsCustomIndicator.calculate,
+  },
+  {
+    id: 'fair-value-bands-flowly-indicators',
+    group: 'community',
+    name: 'Fair value bands / Flowly Indicators',
+    shortName: fairValueBandsFlowlyIndicatorsIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: fairValueBandsFlowlyIndicatorsIndicator.metadata,
+    inputConfig: fairValueBandsFlowlyIndicatorsIndicator.inputConfig as InputConfig[],
+    plotConfig: fairValueBandsFlowlyIndicatorsIndicator.plotConfig as PlotConfig[],
+    fillConfig: fairValueBandsFlowlyIndicatorsIndicator.fillConfig,
+    barColorConfig: fairValueBandsFlowlyIndicatorsIndicator.barColorConfig,
+    drawingKinds: fairValueBandsFlowlyIndicatorsIndicator.drawingKinds,
+    defaultInputs: { ...fairValueBandsFlowlyIndicatorsIndicator.defaultInputs },
+    calculate: fairValueBandsFlowlyIndicatorsIndicator.calculate,
   },
 ];
 
