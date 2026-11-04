@@ -2765,5 +2765,25 @@
    "labels": 209,
    "tables": 1
   }
+ },
+ "indicator-hawkeye-volume-indicator": {
+  "daily": {
+   "plots": {
+    "plot0": 3200
+   }
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000
+   }
+  }
+ },
+ "balanced-price-range-flux-charts": {
+  "daily": {
+   "plots": {}
+  },
+  "m15": {
+   "plots": {}
+  }
  }
 }

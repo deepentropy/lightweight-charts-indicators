@@ -7588,6 +7588,18 @@ export type { LiquidityHeatmapLtfInputs } from './community/liquidity-heatmap-lt
 import * as adxByCobraIndicator from './community/adx-by-cobra';
 export { AdxByCobra, calculate as calculateAdxByCobra } from './community/adx-by-cobra';
 export type { AdxByCobraInputs } from './community/adx-by-cobra';
+// Indicator: HawkEye Volume Indicator
+import * as indicatorHawkeyeVolumeIndicatorIndicator from './community/indicator-hawkeye-volume-indicator';
+export { IndicatorHawkeyeVolumeIndicator, calculate as calculateIndicatorHawkeyeVolumeIndicator } from './community/indicator-hawkeye-volume-indicator';
+export type { IndicatorHawkeyeVolumeIndicatorInputs } from './community/indicator-hawkeye-volume-indicator';
+// SMT Divergence ICT 01 Smart Money Technique
+import * as smtDivergenceIct01SmartMoneyTechniqueIndicator from './community/smt-divergence-ict-01-smart-money-technique';
+export { SmtDivergenceIct01SmartMoneyTechnique, calculate as calculateSmtDivergenceIct01SmartMoneyTechnique } from './community/smt-divergence-ict-01-smart-money-technique';
+export type { SmtDivergenceIct01SmartMoneyTechniqueInputs } from './community/smt-divergence-ict-01-smart-money-technique';
+// Balanced Price Range | Flux Charts
+import * as balancedPriceRangeFluxChartsIndicator from './community/balanced-price-range-flux-charts';
+export { BalancedPriceRangeFluxCharts, calculate as calculateBalancedPriceRangeFluxCharts } from './community/balanced-price-range-flux-charts';
+export type { BalancedPriceRangeFluxChartsInputs } from './community/balanced-price-range-flux-charts';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30403,6 +30415,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'balanced-price-range-flux-charts': balancedPriceRangeFluxChartsIndicator,
   'all-in-one-sessions-weekly-monday-previous': allInOneSessionsWeeklyMondayPreviousIndicator,
   'stochastic-z-score': stochasticZScoreIndicator,
   'multi-zigzag-harmonic-patterns': multiZigzagHarmonicPatternsIndicator,
@@ -32823,6 +32836,49 @@ const registryPart12: IndicatorRegistryEntry[] = [
     barColorConfig: adxByCobraIndicator.barColorConfig,
     defaultInputs: { ...adxByCobraIndicator.defaultInputs },
     calculate: adxByCobraIndicator.calculate,
+  },
+  {
+    id: 'indicator-hawkeye-volume-indicator',
+    group: 'community',
+    name: 'Indicator: HawkEye Volume Indicator',
+    shortName: indicatorHawkeyeVolumeIndicatorIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: false,
+    metadata: indicatorHawkeyeVolumeIndicatorIndicator.metadata,
+    inputConfig: indicatorHawkeyeVolumeIndicatorIndicator.inputConfig as InputConfig[],
+    plotConfig: indicatorHawkeyeVolumeIndicatorIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...indicatorHawkeyeVolumeIndicatorIndicator.defaultInputs },
+    calculate: indicatorHawkeyeVolumeIndicatorIndicator.calculate,
+  },
+  {
+    id: 'smt-divergence-ict-01-smart-money-technique',
+    group: 'community',
+    name: 'SMT Divergence ICT 01 Smart Money Technique',
+    shortName: smtDivergenceIct01SmartMoneyTechniqueIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: false,
+    metadata: smtDivergenceIct01SmartMoneyTechniqueIndicator.metadata,
+    inputConfig: smtDivergenceIct01SmartMoneyTechniqueIndicator.inputConfig as InputConfig[],
+    plotConfig: smtDivergenceIct01SmartMoneyTechniqueIndicator.plotConfig as PlotConfig[],
+    plotCandleConfig: smtDivergenceIct01SmartMoneyTechniqueIndicator.plotCandleConfig,
+    drawingKinds: smtDivergenceIct01SmartMoneyTechniqueIndicator.drawingKinds,
+    requiredSymbols: smtDivergenceIct01SmartMoneyTechniqueIndicator.requiredSymbols,
+    defaultInputs: { ...smtDivergenceIct01SmartMoneyTechniqueIndicator.defaultInputs },
+    calculate: smtDivergenceIct01SmartMoneyTechniqueIndicator.calculate,
+  },
+  {
+    id: 'balanced-price-range-flux-charts',
+    group: 'community',
+    name: 'Balanced Price Range | Flux Charts',
+    shortName: balancedPriceRangeFluxChartsIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: balancedPriceRangeFluxChartsIndicator.metadata,
+    inputConfig: balancedPriceRangeFluxChartsIndicator.inputConfig as InputConfig[],
+    plotConfig: balancedPriceRangeFluxChartsIndicator.plotConfig as PlotConfig[],
+    drawingKinds: balancedPriceRangeFluxChartsIndicator.drawingKinds,
+    defaultInputs: { ...balancedPriceRangeFluxChartsIndicator.defaultInputs },
+    calculate: balancedPriceRangeFluxChartsIndicator.calculate,
   },
 ];
 
