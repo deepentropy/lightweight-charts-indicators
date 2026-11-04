@@ -7400,6 +7400,10 @@ export type { KnnMarketArchitectureInputs } from './community/knn-market-archite
 import * as rangeAnalysisByLeviathanIndicator from './community/range-analysis-by-leviathan';
 export { RangeAnalysisByLeviathan, calculate as calculateRangeAnalysisByLeviathan } from './community/range-analysis-by-leviathan';
 export type { RangeAnalysisByLeviathanInputs } from './community/range-analysis-by-leviathan';
+// ICT Unicorn | Flux Charts
+import * as ictUnicornFluxChartsIndicator from './community/ict-unicorn-flux-charts';
+export { IctUnicornFluxCharts, calculate as calculateIctUnicornFluxCharts } from './community/ict-unicorn-flux-charts';
+export type { IctUnicornFluxChartsInputs } from './community/ict-unicorn-flux-charts';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30215,6 +30219,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'ict-unicorn-flux-charts': ictUnicornFluxChartsIndicator,
   'elliot-wave-impulse': elliotWaveImpulseIndicator,
   'vwap-supply-demand-zones-pro': vwapSupplyDemandZonesProIndicator,
   'liquidity-sweep-hunter-algo': liquiditySweepHunterAlgoIndicator,
@@ -31920,6 +31925,21 @@ const registryPart12: IndicatorRegistryEntry[] = [
     requiredSymbols: rangeAnalysisByLeviathanIndicator.requiredSymbols,
     defaultInputs: { ...rangeAnalysisByLeviathanIndicator.defaultInputs },
     calculate: rangeAnalysisByLeviathanIndicator.calculate,
+  },
+  {
+    id: 'ict-unicorn-flux-charts',
+    group: 'community',
+    name: 'ICT Unicorn | Flux Charts',
+    shortName: ictUnicornFluxChartsIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: ictUnicornFluxChartsIndicator.metadata,
+    inputConfig: ictUnicornFluxChartsIndicator.inputConfig as InputConfig[],
+    plotConfig: ictUnicornFluxChartsIndicator.plotConfig as PlotConfig[],
+    shapeConfig: ictUnicornFluxChartsIndicator.shapeConfig,
+    drawingKinds: ictUnicornFluxChartsIndicator.drawingKinds,
+    defaultInputs: { ...ictUnicornFluxChartsIndicator.defaultInputs },
+    calculate: ictUnicornFluxChartsIndicator.calculate,
   },
 ];
 

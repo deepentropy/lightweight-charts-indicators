@@ -1907,5 +1907,15 @@
    "tables": 1,
    "fills": 2
   }
+ },
+ "ict-unicorn-flux-charts": {
+  "daily": {
+   "plots": {},
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "tables": 1
+  }
  }
 }
