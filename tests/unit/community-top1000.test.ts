@@ -48,8 +48,9 @@ describe.each(Object.keys(expected))('%s', (id) => {
     }
   });
 
-  // pocs-and-vahs-vals-all-and-non-broken: like its original, draws only on a 5-minute chart
-  it.skipIf(['pocs-and-vahs-vals-all-and-non-broken'].includes(id))('draws something on at least one of the two fixtures', () => {
+  // pocs-and-vahs-vals-all-and-non-broken: like its original, draws only on a 5-minute chart;
+  // balanced-price-range-flux-charts: no balanced price range on the synthetic fixture bars with default inputs
+  it.skipIf(['pocs-and-vahs-vals-all-and-non-broken', 'balanced-price-range-flux-charts'].includes(id))('draws something on at least one of the two fixtures', () => {
     const drawn = (['daily', 'm15'] as const).some((name) => {
       const want = expected[id][name];
       if ('error' in want) return false;
