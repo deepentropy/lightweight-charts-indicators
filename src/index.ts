@@ -7420,6 +7420,10 @@ export type { HornsPatternIdentifierInputs } from './community/horns-pattern-ide
 import * as cdcActionzoneV32020Indicator from './community/cdc-actionzone-v3-2020';
 export { CdcActionzoneV32020, calculate as calculateCdcActionzoneV32020 } from './community/cdc-actionzone-v3-2020';
 export type { CdcActionzoneV32020Inputs } from './community/cdc-actionzone-v3-2020';
+// Smart Trader, Episode 06, Isotropic Trend Lines
+import * as smartTraderEpisode06IsotropicTrendLinesIndicator from './community/smart-trader-episode-06-isotropic-trend-lines';
+export { SmartTraderEpisode06IsotropicTrendLines, calculate as calculateSmartTraderEpisode06IsotropicTrendLines } from './community/smart-trader-episode-06-isotropic-trend-lines';
+export type { SmartTraderEpisode06IsotropicTrendLinesInputs } from './community/smart-trader-episode-06-isotropic-trend-lines';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30235,6 +30239,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'smart-trader-episode-06-isotropic-trend-lines': smartTraderEpisode06IsotropicTrendLinesIndicator,
   'strength-of-divergence-across-multiple': strengthOfDivergenceAcrossMultipleIndicator,
   'cdc-actionzone-v3-2020': cdcActionzoneV32020Indicator,
   'ict-unicorn-flux-charts': ictUnicornFluxChartsIndicator,
@@ -32019,6 +32024,20 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: cdcActionzoneV32020Indicator.drawingKinds,
     defaultInputs: { ...cdcActionzoneV32020Indicator.defaultInputs },
     calculate: cdcActionzoneV32020Indicator.calculate,
+  },
+  {
+    id: 'smart-trader-episode-06-isotropic-trend-lines',
+    group: 'community',
+    name: 'Smart Trader, Episode 06, Isotropic Trend Lines',
+    shortName: smartTraderEpisode06IsotropicTrendLinesIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: smartTraderEpisode06IsotropicTrendLinesIndicator.metadata,
+    inputConfig: smartTraderEpisode06IsotropicTrendLinesIndicator.inputConfig as InputConfig[],
+    plotConfig: smartTraderEpisode06IsotropicTrendLinesIndicator.plotConfig as PlotConfig[],
+    drawingKinds: smartTraderEpisode06IsotropicTrendLinesIndicator.drawingKinds,
+    defaultInputs: { ...smartTraderEpisode06IsotropicTrendLinesIndicator.defaultInputs },
+    calculate: smartTraderEpisode06IsotropicTrendLinesIndicator.calculate,
   },
 ];
 

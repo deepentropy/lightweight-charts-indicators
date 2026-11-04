@@ -1977,5 +1977,29 @@
    "plots": {},
    "tables": 1
   }
+ },
+ "smart-trader-episode-06-isotropic-trend-lines": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 3200,
+    "plot2": 3200
+   },
+   "lines": 4,
+   "labels": 2,
+   "linefills": 2,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 4000,
+    "plot2": 4000
+   },
+   "lines": 4,
+   "labels": 2,
+   "linefills": 2,
+   "tables": 1
+  }
  }
 }
