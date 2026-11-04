@@ -957,5 +957,38 @@
    "lines": 24,
    "tables": 1
   }
+ },
+ "session-tpo-market-profile": {
+  "daily": {
+   "plots": {}
+  },
+  "m15": {
+   "plots": {},
+   "lines": 252,
+   "boxes": 500,
+   "labels": 54
+  }
+ },
+ "adr-average-daily-range-by-mikec": {
+  "daily": {
+   "plots": {
+    "plot0": 3181
+   }
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3919
+   }
+  }
+ },
+ "htf-liquidity-levels": {
+  "daily": {
+   "plots": {},
+   "lines": 203
+  },
+  "m15": {
+   "plots": {},
+   "lines": 15
+  }
  }
 }

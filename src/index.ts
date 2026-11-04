@@ -7200,6 +7200,22 @@ export type { HigherTimeframeHighLowInputs } from './community/higher-timeframe-
 import * as orderblocksOpenSourceIndicator from './community/orderblocks-open-source';
 export { OrderblocksOpenSource, calculate as calculateOrderblocksOpenSource } from './community/orderblocks-open-source';
 export type { OrderblocksOpenSourceInputs } from './community/orderblocks-open-source';
+// Session TPO Market Profile
+import * as sessionTpoMarketProfileIndicator from './community/session-tpo-market-profile';
+export { SessionTpoMarketProfile, calculate as calculateSessionTpoMarketProfile } from './community/session-tpo-market-profile';
+export type { SessionTpoMarketProfileInputs } from './community/session-tpo-market-profile';
+// ADR% - Average Daily Range % by MikeC (AKA TheScrutiniser)
+import * as adrAverageDailyRangeByMikecIndicator from './community/adr-average-daily-range-by-mikec';
+export { AdrAverageDailyRangeByMikec, calculate as calculateAdrAverageDailyRangeByMikec } from './community/adr-average-daily-range-by-mikec';
+export type { AdrAverageDailyRangeByMikecInputs } from './community/adr-average-daily-range-by-mikec';
+// Fair Value Gaps by DGT
+import * as fairValueGapsByDgtIndicator from './community/fair-value-gaps-by-dgt';
+export { FairValueGapsByDgt, calculate as calculateFairValueGapsByDgt } from './community/fair-value-gaps-by-dgt';
+export type { FairValueGapsByDgtInputs } from './community/fair-value-gaps-by-dgt';
+// HTF Liquidity Levels
+import * as htfLiquidityLevelsIndicator from './community/htf-liquidity-levels';
+export { HtfLiquidityLevels, calculate as calculateHtfLiquidityLevels } from './community/htf-liquidity-levels';
+export type { HtfLiquidityLevelsInputs } from './community/htf-liquidity-levels';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30015,6 +30031,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'htf-liquidity-levels': htfLiquidityLevelsIndicator,
   'auto-pattern-detector-targets': autoPatternDetectorTargetsIndicator,
   'whale-liquidity-and-absorption-profile': whaleLiquidityAndAbsorptionProfileIndicator,
   'machine-learning-logistic-regression': machineLearningLogisticRegressionIndicator,
@@ -30955,6 +30972,62 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: orderblocksOpenSourceIndicator.drawingKinds,
     defaultInputs: { ...orderblocksOpenSourceIndicator.defaultInputs },
     calculate: orderblocksOpenSourceIndicator.calculate,
+  },
+  {
+    id: 'session-tpo-market-profile',
+    group: 'community',
+    name: 'Session TPO Market Profile',
+    shortName: sessionTpoMarketProfileIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: sessionTpoMarketProfileIndicator.metadata,
+    inputConfig: sessionTpoMarketProfileIndicator.inputConfig as InputConfig[],
+    plotConfig: sessionTpoMarketProfileIndicator.plotConfig as PlotConfig[],
+    drawingKinds: sessionTpoMarketProfileIndicator.drawingKinds,
+    defaultInputs: { ...sessionTpoMarketProfileIndicator.defaultInputs },
+    calculate: sessionTpoMarketProfileIndicator.calculate,
+  },
+  {
+    id: 'adr-average-daily-range-by-mikec',
+    group: 'community',
+    name: 'ADR% - Average Daily Range % by MikeC (AKA TheScrutiniser)',
+    shortName: adrAverageDailyRangeByMikecIndicator.metadata.shortTitle,
+    category: 'Volatility',
+    overlay: false,
+    metadata: adrAverageDailyRangeByMikecIndicator.metadata,
+    inputConfig: adrAverageDailyRangeByMikecIndicator.inputConfig as InputConfig[],
+    plotConfig: adrAverageDailyRangeByMikecIndicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...adrAverageDailyRangeByMikecIndicator.defaultInputs },
+    calculate: adrAverageDailyRangeByMikecIndicator.calculate,
+  },
+  {
+    id: 'fair-value-gaps-by-dgt',
+    group: 'community',
+    name: 'Fair Value Gaps by DGT',
+    shortName: fairValueGapsByDgtIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: fairValueGapsByDgtIndicator.metadata,
+    inputConfig: fairValueGapsByDgtIndicator.inputConfig as InputConfig[],
+    plotConfig: fairValueGapsByDgtIndicator.plotConfig as PlotConfig[],
+    drawingKinds: fairValueGapsByDgtIndicator.drawingKinds,
+    requiredSymbols: fairValueGapsByDgtIndicator.requiredSymbols,
+    defaultInputs: { ...fairValueGapsByDgtIndicator.defaultInputs },
+    calculate: fairValueGapsByDgtIndicator.calculate,
+  },
+  {
+    id: 'htf-liquidity-levels',
+    group: 'community',
+    name: 'HTF Liquidity Levels',
+    shortName: htfLiquidityLevelsIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: htfLiquidityLevelsIndicator.metadata,
+    inputConfig: htfLiquidityLevelsIndicator.inputConfig as InputConfig[],
+    plotConfig: htfLiquidityLevelsIndicator.plotConfig as PlotConfig[],
+    drawingKinds: htfLiquidityLevelsIndicator.drawingKinds,
+    defaultInputs: { ...htfLiquidityLevelsIndicator.defaultInputs },
+    calculate: htfLiquidityLevelsIndicator.calculate,
   },
 ];
 
