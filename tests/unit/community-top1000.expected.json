@@ -905,5 +905,57 @@
    "barColors": 3959,
    "fills": 2
   }
+ },
+ "auto-pattern-detector-targets": {
+  "daily": {
+   "plots": {},
+   "lines": 7,
+   "labels": 4,
+   "linefills": 1,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "lines": 6,
+   "labels": 4,
+   "linefills": 1,
+   "tables": 1
+  }
+ },
+ "higher-timeframe-high-low": {
+  "daily": {
+   "plots": {
+    "plot0": 1,
+    "plot1": 1,
+    "plot2": 1
+   },
+   "markers": 1660,
+   "barColors": 876,
+   "labels": 2,
+   "fills": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3896,
+    "plot1": 3896,
+    "plot2": 3896
+   },
+   "markers": 104,
+   "barColors": 122,
+   "labels": 2,
+   "fills": 1
+  }
+ },
+ "orderblocks-open-source": {
+  "daily": {
+   "plots": {},
+   "lines": 26,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "lines": 24,
+   "tables": 1
+  }
  }
 }

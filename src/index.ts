@@ -7188,6 +7188,18 @@ export type { FibonacciEntryBandsInputs } from './community/fibonacci-entry-band
 import * as poorManSVolumeClustersIndicator from './community/poor-man-s-volume-clusters';
 export { PoorManSVolumeClusters, calculate as calculatePoorManSVolumeClusters } from './community/poor-man-s-volume-clusters';
 export type { PoorManSVolumeClustersInputs } from './community/poor-man-s-volume-clusters';
+// Auto Pattern Detector Targets
+import * as autoPatternDetectorTargetsIndicator from './community/auto-pattern-detector-targets';
+export { AutoPatternDetectorTargets, calculate as calculateAutoPatternDetectorTargets } from './community/auto-pattern-detector-targets';
+export type { AutoPatternDetectorTargetsInputs } from './community/auto-pattern-detector-targets';
+// Higher Timeframe High & Low
+import * as higherTimeframeHighLowIndicator from './community/higher-timeframe-high-low';
+export { HigherTimeframeHighLow, calculate as calculateHigherTimeframeHighLow } from './community/higher-timeframe-high-low';
+export type { HigherTimeframeHighLowInputs } from './community/higher-timeframe-high-low';
+// Orderblocks - Open source
+import * as orderblocksOpenSourceIndicator from './community/orderblocks-open-source';
+export { OrderblocksOpenSource, calculate as calculateOrderblocksOpenSource } from './community/orderblocks-open-source';
+export type { OrderblocksOpenSourceInputs } from './community/orderblocks-open-source';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30003,6 +30015,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'auto-pattern-detector-targets': autoPatternDetectorTargetsIndicator,
   'whale-liquidity-and-absorption-profile': whaleLiquidityAndAbsorptionProfileIndicator,
   'machine-learning-logistic-regression': machineLearningLogisticRegressionIndicator,
   'fibonacci-entry-bands': fibonacciEntryBandsIndicator,
@@ -30896,6 +30909,52 @@ const registryPart12: IndicatorRegistryEntry[] = [
     requiredSymbols: poorManSVolumeClustersIndicator.requiredSymbols,
     defaultInputs: { ...poorManSVolumeClustersIndicator.defaultInputs },
     calculate: poorManSVolumeClustersIndicator.calculate,
+  },
+  {
+    id: 'auto-pattern-detector-targets',
+    group: 'community',
+    name: 'Auto Pattern Detector Targets',
+    shortName: autoPatternDetectorTargetsIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: autoPatternDetectorTargetsIndicator.metadata,
+    inputConfig: autoPatternDetectorTargetsIndicator.inputConfig as InputConfig[],
+    plotConfig: autoPatternDetectorTargetsIndicator.plotConfig as PlotConfig[],
+    drawingKinds: autoPatternDetectorTargetsIndicator.drawingKinds,
+    defaultInputs: { ...autoPatternDetectorTargetsIndicator.defaultInputs },
+    calculate: autoPatternDetectorTargetsIndicator.calculate,
+  },
+  {
+    id: 'higher-timeframe-high-low',
+    group: 'community',
+    name: 'Higher Timeframe High & Low',
+    shortName: higherTimeframeHighLowIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: higherTimeframeHighLowIndicator.metadata,
+    inputConfig: higherTimeframeHighLowIndicator.inputConfig as InputConfig[],
+    plotConfig: higherTimeframeHighLowIndicator.plotConfig as PlotConfig[],
+    fillConfig: higherTimeframeHighLowIndicator.fillConfig,
+    shapeConfig: higherTimeframeHighLowIndicator.shapeConfig,
+    barColorConfig: higherTimeframeHighLowIndicator.barColorConfig,
+    drawingKinds: higherTimeframeHighLowIndicator.drawingKinds,
+    defaultInputs: { ...higherTimeframeHighLowIndicator.defaultInputs },
+    calculate: higherTimeframeHighLowIndicator.calculate,
+  },
+  {
+    id: 'orderblocks-open-source',
+    group: 'community',
+    name: 'Orderblocks - Open source',
+    shortName: orderblocksOpenSourceIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: orderblocksOpenSourceIndicator.metadata,
+    inputConfig: orderblocksOpenSourceIndicator.inputConfig as InputConfig[],
+    plotConfig: orderblocksOpenSourceIndicator.plotConfig as PlotConfig[],
+    shapeConfig: orderblocksOpenSourceIndicator.shapeConfig,
+    drawingKinds: orderblocksOpenSourceIndicator.drawingKinds,
+    defaultInputs: { ...orderblocksOpenSourceIndicator.defaultInputs },
+    calculate: orderblocksOpenSourceIndicator.calculate,
   },
 ];
 
