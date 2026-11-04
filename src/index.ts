@@ -7600,6 +7600,10 @@ export type { SmtDivergenceIct01SmartMoneyTechniqueInputs } from './community/sm
 import * as balancedPriceRangeFluxChartsIndicator from './community/balanced-price-range-flux-charts';
 export { BalancedPriceRangeFluxCharts, calculate as calculateBalancedPriceRangeFluxCharts } from './community/balanced-price-range-flux-charts';
 export type { BalancedPriceRangeFluxChartsInputs } from './community/balanced-price-range-flux-charts';
+// Luxy Super-Duper SuperTrend Predictor Engine and Buy/Sell signal
+import * as luxySuperDuperSupertrendPredictorEngineIndicator from './community/luxy-super-duper-supertrend-predictor-engine';
+export { LuxySuperDuperSupertrendPredictorEngine, calculate as calculateLuxySuperDuperSupertrendPredictorEngine } from './community/luxy-super-duper-supertrend-predictor-engine';
+export type { LuxySuperDuperSupertrendPredictorEngineInputs } from './community/luxy-super-duper-supertrend-predictor-engine';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30415,6 +30419,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'luxy-super-duper-supertrend-predictor-engine': luxySuperDuperSupertrendPredictorEngineIndicator,
   'balanced-price-range-flux-charts': balancedPriceRangeFluxChartsIndicator,
   'all-in-one-sessions-weekly-monday-previous': allInOneSessionsWeeklyMondayPreviousIndicator,
   'stochastic-z-score': stochasticZScoreIndicator,
@@ -32879,6 +32884,22 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: balancedPriceRangeFluxChartsIndicator.drawingKinds,
     defaultInputs: { ...balancedPriceRangeFluxChartsIndicator.defaultInputs },
     calculate: balancedPriceRangeFluxChartsIndicator.calculate,
+  },
+  {
+    id: 'luxy-super-duper-supertrend-predictor-engine',
+    group: 'community',
+    name: 'Luxy Super-Duper SuperTrend Predictor Engine and Buy/Sell signal',
+    shortName: luxySuperDuperSupertrendPredictorEngineIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: luxySuperDuperSupertrendPredictorEngineIndicator.metadata,
+    inputConfig: luxySuperDuperSupertrendPredictorEngineIndicator.inputConfig as InputConfig[],
+    plotConfig: luxySuperDuperSupertrendPredictorEngineIndicator.plotConfig as PlotConfig[],
+    fillConfig: luxySuperDuperSupertrendPredictorEngineIndicator.fillConfig,
+    drawingKinds: luxySuperDuperSupertrendPredictorEngineIndicator.drawingKinds,
+    requiredSymbols: luxySuperDuperSupertrendPredictorEngineIndicator.requiredSymbols,
+    defaultInputs: { ...luxySuperDuperSupertrendPredictorEngineIndicator.defaultInputs },
+    calculate: luxySuperDuperSupertrendPredictorEngineIndicator.calculate,
   },
 ];
 
