@@ -2347,5 +2347,20 @@
    "lines": 42,
    "hlines": 5
   }
+ },
+ "elliott-impulse-engine": {
+  "daily": {
+   "plots": {},
+   "lines": 53,
+   "boxes": 1,
+   "labels": 53,
+   "tables": 2
+  },
+  "m15": {
+   "plots": {},
+   "lines": 39,
+   "labels": 39,
+   "tables": 2
+  }
  }
 }

@@ -7504,6 +7504,10 @@ export type { LogarithmicRegressionChannelTrendInputs } from './community/logari
 import * as rvolRelativeVolumeIntradayIndicator from './community/rvol-relative-volume-intraday';
 export { RvolRelativeVolumeIntraday, calculate as calculateRvolRelativeVolumeIntraday } from './community/rvol-relative-volume-intraday';
 export type { RvolRelativeVolumeIntradayInputs } from './community/rvol-relative-volume-intraday';
+// Elliott Impulse Engine
+import * as elliottImpulseEngineIndicator from './community/elliott-impulse-engine';
+export { ElliottImpulseEngine, calculate as calculateElliottImpulseEngine } from './community/elliott-impulse-engine';
+export type { ElliottImpulseEngineInputs } from './community/elliott-impulse-engine';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30319,6 +30323,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'elliott-impulse-engine': elliottImpulseEngineIndicator,
   'double-top-bottom-ultimate': doubleTopBottomUltimateIndicator,
   'high-probability-order-blocks': highProbabilityOrderBlocksIndicator,
   'macd-x-more-than-macd-by-dgt': macdXMoreThanMacdByDgtIndicator,
@@ -32429,6 +32434,20 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: rvolRelativeVolumeIntradayIndicator.drawingKinds,
     defaultInputs: { ...rvolRelativeVolumeIntradayIndicator.defaultInputs },
     calculate: rvolRelativeVolumeIntradayIndicator.calculate,
+  },
+  {
+    id: 'elliott-impulse-engine',
+    group: 'community',
+    name: 'Elliott Impulse Engine',
+    shortName: elliottImpulseEngineIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: elliottImpulseEngineIndicator.metadata,
+    inputConfig: elliottImpulseEngineIndicator.inputConfig as InputConfig[],
+    plotConfig: elliottImpulseEngineIndicator.plotConfig as PlotConfig[],
+    drawingKinds: elliottImpulseEngineIndicator.drawingKinds,
+    defaultInputs: { ...elliottImpulseEngineIndicator.defaultInputs },
+    calculate: elliottImpulseEngineIndicator.calculate,
   },
 ];
 
