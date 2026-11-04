@@ -7244,6 +7244,26 @@ export type { CmPivotPointsCustomInputs } from './community/cm-pivot-points-cust
 import * as fairValueBandsFlowlyIndicatorsIndicator from './community/fair-value-bands-flowly-indicators';
 export { FairValueBandsFlowlyIndicators, calculate as calculateFairValueBandsFlowlyIndicators } from './community/fair-value-bands-flowly-indicators';
 export type { FairValueBandsFlowlyIndicatorsInputs } from './community/fair-value-bands-flowly-indicators';
+// Liquidity Spectrum Visualizer
+import * as liquiditySpectrumVisualizerIndicator from './community/liquidity-spectrum-visualizer';
+export { LiquiditySpectrumVisualizer, calculate as calculateLiquiditySpectrumVisualizer } from './community/liquidity-spectrum-visualizer';
+export type { LiquiditySpectrumVisualizerInputs } from './community/liquidity-spectrum-visualizer';
+// Code for All 4 Forex Sessions W/ Background Highlight!!!
+import * as codeForAll4ForexSessionsWBackgroundIndicator from './community/code-for-all-4-forex-sessions-w-background';
+export { CodeForAll4ForexSessions, calculate as calculateCodeForAll4ForexSessions } from './community/code-for-all-4-forex-sessions-w-background';
+export type { CodeForAll4ForexSessionsInputs } from './community/code-for-all-4-forex-sessions-w-background';
+// Momentum Ghost Machine
+import * as momentumGhostMachineIndicator from './community/momentum-ghost-machine';
+export { MomentumGhostMachine, calculate as calculateMomentumGhostMachine } from './community/momentum-ghost-machine';
+export type { MomentumGhostMachineInputs } from './community/momentum-ghost-machine';
+// Pivot Levels
+import * as pivotLevelsIndicator from './community/pivot-levels';
+export { PivotLevels, calculate as calculatePivotLevels } from './community/pivot-levels';
+export type { PivotLevelsInputs } from './community/pivot-levels';
+// Backtesting & Trading Engine
+import * as backtestingTradingEngineIndicator from './community/backtesting-trading-engine';
+export { BacktestingTradingEngine, calculate as calculateBacktestingTradingEngine } from './community/backtesting-trading-engine';
+export type { BacktestingTradingEngineInputs } from './community/backtesting-trading-engine';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30059,6 +30079,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'backtesting-trading-engine': backtestingTradingEngineIndicator,
   'wolfe-scanner': wolfeScannerIndicator,
   'fair-value-bands-flowly-indicators': fairValueBandsFlowlyIndicatorsIndicator,
   'relative-strength-of-a-stock': relativeStrengthOfAStockIndicator,
@@ -31165,6 +31186,81 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: fairValueBandsFlowlyIndicatorsIndicator.drawingKinds,
     defaultInputs: { ...fairValueBandsFlowlyIndicatorsIndicator.defaultInputs },
     calculate: fairValueBandsFlowlyIndicatorsIndicator.calculate,
+  },
+  {
+    id: 'liquidity-spectrum-visualizer',
+    group: 'community',
+    name: 'Liquidity Spectrum Visualizer',
+    shortName: liquiditySpectrumVisualizerIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: liquiditySpectrumVisualizerIndicator.metadata,
+    inputConfig: liquiditySpectrumVisualizerIndicator.inputConfig as InputConfig[],
+    plotConfig: liquiditySpectrumVisualizerIndicator.plotConfig as PlotConfig[],
+    shapeConfig: liquiditySpectrumVisualizerIndicator.shapeConfig,
+    drawingKinds: liquiditySpectrumVisualizerIndicator.drawingKinds,
+    defaultInputs: { ...liquiditySpectrumVisualizerIndicator.defaultInputs },
+    calculate: liquiditySpectrumVisualizerIndicator.calculate,
+  },
+  {
+    id: 'code-for-all-4-forex-sessions-w-background',
+    group: 'community',
+    name: 'Code for All 4 Forex Sessions W/ Background Highlight!!!',
+    shortName: codeForAll4ForexSessionsWBackgroundIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: codeForAll4ForexSessionsWBackgroundIndicator.metadata,
+    inputConfig: codeForAll4ForexSessionsWBackgroundIndicator.inputConfig as InputConfig[],
+    plotConfig: codeForAll4ForexSessionsWBackgroundIndicator.plotConfig as PlotConfig[],
+    barColorConfig: codeForAll4ForexSessionsWBackgroundIndicator.barColorConfig,
+    defaultInputs: { ...codeForAll4ForexSessionsWBackgroundIndicator.defaultInputs },
+    calculate: codeForAll4ForexSessionsWBackgroundIndicator.calculate,
+  },
+  {
+    id: 'momentum-ghost-machine',
+    group: 'community',
+    name: 'Momentum Ghost Machine',
+    shortName: momentumGhostMachineIndicator.metadata.shortTitle,
+    category: 'Momentum',
+    overlay: false,
+    metadata: momentumGhostMachineIndicator.metadata,
+    inputConfig: momentumGhostMachineIndicator.inputConfig as InputConfig[],
+    plotConfig: momentumGhostMachineIndicator.plotConfig as PlotConfig[],
+    hlineConfig: momentumGhostMachineIndicator.hlineConfig,
+    fillConfig: momentumGhostMachineIndicator.fillConfig,
+    barColorConfig: momentumGhostMachineIndicator.barColorConfig,
+    drawingKinds: momentumGhostMachineIndicator.drawingKinds,
+    defaultInputs: { ...momentumGhostMachineIndicator.defaultInputs },
+    calculate: momentumGhostMachineIndicator.calculate,
+  },
+  {
+    id: 'pivot-levels',
+    group: 'community',
+    name: 'Pivot Levels',
+    shortName: pivotLevelsIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: pivotLevelsIndicator.metadata,
+    inputConfig: pivotLevelsIndicator.inputConfig as InputConfig[],
+    plotConfig: pivotLevelsIndicator.plotConfig as PlotConfig[],
+    drawingKinds: pivotLevelsIndicator.drawingKinds,
+    defaultInputs: { ...pivotLevelsIndicator.defaultInputs },
+    calculate: pivotLevelsIndicator.calculate,
+  },
+  {
+    id: 'backtesting-trading-engine',
+    group: 'community',
+    name: 'Backtesting & Trading Engine',
+    shortName: backtestingTradingEngineIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: backtestingTradingEngineIndicator.metadata,
+    inputConfig: backtestingTradingEngineIndicator.inputConfig as InputConfig[],
+    plotConfig: backtestingTradingEngineIndicator.plotConfig as PlotConfig[],
+    shapeConfig: backtestingTradingEngineIndicator.shapeConfig,
+    barColorConfig: backtestingTradingEngineIndicator.barColorConfig,
+    defaultInputs: { ...backtestingTradingEngineIndicator.defaultInputs },
+    calculate: backtestingTradingEngineIndicator.calculate,
   },
 ];
 

@@ -1124,6 +1124,104 @@
    "tables": 1
   }
  },
+ "backtesting-trading-engine": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 3200,
+    "plot2": 3200,
+    "plot3": 3200,
+    "plot4": 3200,
+    "plot5": 3200,
+    "plot6": 3200,
+    "plot7": 3200,
+    "plot8": 3183,
+    "plot9": 3200,
+    "plot10": 3200,
+    "plot11": 3200,
+    "plot12": 3200,
+    "plot13": 3200,
+    "plot14": 3200,
+    "plot15": 3200,
+    "plot16": 3200,
+    "plot17": 3200,
+    "plot18": 3200,
+    "plot19": 3200,
+    "plot20": 3183,
+    "plot21": 3183,
+    "plot22": 3200,
+    "plot23": 3200,
+    "plot24": 3200,
+    "plot25": 3200,
+    "plot26": 3199,
+    "plot27": 3183,
+    "plot28": 3183,
+    "plot29": 3183,
+    "plot30": 3183,
+    "plot31": 3200,
+    "plot32": 3183,
+    "plot33": 3200,
+    "plot34": 3200,
+    "plot35": 3200,
+    "plot36": 3200,
+    "plot37": 2484,
+    "plot38": 0,
+    "plot39": 0,
+    "plot40": 2484,
+    "plot41": 0
+   },
+   "markers": 179,
+   "bgColors": 2484
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 4000,
+    "plot2": 4000,
+    "plot3": 4000,
+    "plot4": 4000,
+    "plot5": 4000,
+    "plot6": 4000,
+    "plot7": 4000,
+    "plot8": 3983,
+    "plot9": 4000,
+    "plot10": 4000,
+    "plot11": 4000,
+    "plot12": 4000,
+    "plot13": 4000,
+    "plot14": 4000,
+    "plot15": 4000,
+    "plot16": 4000,
+    "plot17": 4000,
+    "plot18": 4000,
+    "plot19": 4000,
+    "plot20": 3983,
+    "plot21": 3983,
+    "plot22": 4000,
+    "plot23": 4000,
+    "plot24": 4000,
+    "plot25": 4000,
+    "plot26": 3999,
+    "plot27": 3983,
+    "plot28": 3983,
+    "plot29": 3983,
+    "plot30": 3983,
+    "plot31": 4000,
+    "plot32": 3983,
+    "plot33": 4000,
+    "plot34": 4000,
+    "plot35": 4000,
+    "plot36": 4000,
+    "plot37": 3157,
+    "plot38": 0,
+    "plot39": 0,
+    "plot40": 3157,
+    "plot41": 0
+   },
+   "markers": 218,
+   "bgColors": 3157
+  }
+ },
  "session-tpo-market-profile": {
   "daily": {
    "plots": {}
@@ -1225,6 +1323,80 @@
    },
    "markers": 50,
    "fills": 1
+  }
+ },
+ "liquidity-spectrum-visualizer": {
+  "daily": {
+   "plots": {},
+   "markers": 200,
+   "lines": 3,
+   "boxes": 101,
+   "labels": 205
+  },
+  "m15": {
+   "plots": {},
+   "markers": 200,
+   "lines": 14,
+   "boxes": 101,
+   "labels": 205
+  }
+ },
+ "code-for-all-4-forex-sessions-w-background": {
+  "daily": {
+   "plots": {},
+   "bgColors": 4572
+  },
+  "m15": {
+   "plots": {},
+   "bgColors": 4394
+  }
+ },
+ "momentum-ghost-machine": {
+  "daily": {
+   "plots": {
+    "plot0": 3096,
+    "plot1": 3096,
+    "plot2": 3096,
+    "plot3": 3096,
+    "plot4": 3096,
+    "plot5": 3096,
+    "plot6": 1,
+    "plot7": 1
+   },
+   "barColors": 3200,
+   "lines": 2,
+   "linefills": 1,
+   "fills": 1,
+   "hlines": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3896,
+    "plot1": 3896,
+    "plot2": 3896,
+    "plot3": 3896,
+    "plot4": 3896,
+    "plot5": 3896,
+    "plot6": 1,
+    "plot7": 1
+   },
+   "barColors": 4000,
+   "lines": 2,
+   "linefills": 1,
+   "fills": 1,
+   "hlines": 1
+  }
+ },
+ "pivot-levels": {
+  "daily": {
+   "plots": {},
+   "lines": 16,
+   "labels": 8
+  },
+  "m15": {
+   "plots": {},
+   "lines": 16,
+   "labels": 8
   }
  }
 }
