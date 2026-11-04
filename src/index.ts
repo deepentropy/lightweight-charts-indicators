@@ -7564,6 +7564,14 @@ export type { RsiTrendlinesWithBreakoutsInputs } from './community/rsi-trendline
 import * as ictSetup04SfpSweepLiquidityFakeChochIndicator from './community/ict-setup-04-sfp-sweep-liquidity-fake-choch';
 export { IctSetup04SfpSweepLiquidityFakeChoch, calculate as calculateIctSetup04SfpSweepLiquidityFakeChoch } from './community/ict-setup-04-sfp-sweep-liquidity-fake-choch';
 export type { IctSetup04SfpSweepLiquidityFakeChochInputs } from './community/ict-setup-04-sfp-sweep-liquidity-fake-choch';
+// Stochastic Z-Score
+import * as stochasticZScoreIndicator from './community/stochastic-z-score';
+export { StochasticZScore, calculate as calculateStochasticZScore } from './community/stochastic-z-score';
+export type { StochasticZScoreInputs } from './community/stochastic-z-score';
+// Multi ZigZag Harmonic Patterns
+import * as multiZigzagHarmonicPatternsIndicator from './community/multi-zigzag-harmonic-patterns';
+export { MultiZigzagHarmonicPatterns, calculate as calculateMultiZigzagHarmonicPatterns } from './community/multi-zigzag-harmonic-patterns';
+export type { MultiZigzagHarmonicPatternsInputs } from './community/multi-zigzag-harmonic-patterns';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30379,6 +30387,8 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'stochastic-z-score': stochasticZScoreIndicator,
+  'multi-zigzag-harmonic-patterns': multiZigzagHarmonicPatternsIndicator,
   'rsi-trendlines-with-breakouts': rsiTrendlinesWithBreakoutsIndicator,
   'bollinger-bands-flux-charts': bollingerBandsFluxChartsIndicator,
   'gann-box': gannBoxIndicator,
@@ -32709,6 +32719,35 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: ictSetup04SfpSweepLiquidityFakeChochIndicator.drawingKinds,
     defaultInputs: { ...ictSetup04SfpSweepLiquidityFakeChochIndicator.defaultInputs },
     calculate: ictSetup04SfpSweepLiquidityFakeChochIndicator.calculate,
+  },
+  {
+    id: 'stochastic-z-score',
+    group: 'community',
+    name: 'Stochastic Z-Score',
+    shortName: stochasticZScoreIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: false,
+    metadata: stochasticZScoreIndicator.metadata,
+    inputConfig: stochasticZScoreIndicator.inputConfig as InputConfig[],
+    plotConfig: stochasticZScoreIndicator.plotConfig as PlotConfig[],
+    fillConfig: stochasticZScoreIndicator.fillConfig,
+    shapeConfig: stochasticZScoreIndicator.shapeConfig,
+    defaultInputs: { ...stochasticZScoreIndicator.defaultInputs },
+    calculate: stochasticZScoreIndicator.calculate,
+  },
+  {
+    id: 'multi-zigzag-harmonic-patterns',
+    group: 'community',
+    name: 'Multi ZigZag Harmonic Patterns',
+    shortName: multiZigzagHarmonicPatternsIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: multiZigzagHarmonicPatternsIndicator.metadata,
+    inputConfig: multiZigzagHarmonicPatternsIndicator.inputConfig as InputConfig[],
+    plotConfig: multiZigzagHarmonicPatternsIndicator.plotConfig as PlotConfig[],
+    drawingKinds: multiZigzagHarmonicPatternsIndicator.drawingKinds,
+    defaultInputs: { ...multiZigzagHarmonicPatternsIndicator.defaultInputs },
+    calculate: multiZigzagHarmonicPatternsIndicator.calculate,
   },
 ];
 

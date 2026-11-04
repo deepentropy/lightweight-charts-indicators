@@ -2674,5 +2674,51 @@
    "lines": 12,
    "labels": 12
   }
+ },
+ "stochastic-z-score": {
+  "daily": {
+   "plots": {
+    "plot0": 3180,
+    "plot1": 3156,
+    "plot2": 3155,
+    "plot3": 3160,
+    "plot4": 3200,
+    "plot5": 3200,
+    "plot6": 3200,
+    "plot7": 3200,
+    "plot8": 3200
+   },
+   "markers": 457,
+   "fills": 4
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3980,
+    "plot1": 3956,
+    "plot2": 3955,
+    "plot3": 3960,
+    "plot4": 4000,
+    "plot5": 4000,
+    "plot6": 4000,
+    "plot7": 4000,
+    "plot8": 4000
+   },
+   "markers": 583,
+   "fills": 4
+  }
+ },
+ "multi-zigzag-harmonic-patterns": {
+  "daily": {
+   "plots": {},
+   "lines": 504,
+   "labels": 167,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "lines": 504,
+   "labels": 209,
+   "tables": 1
+  }
  }
 }

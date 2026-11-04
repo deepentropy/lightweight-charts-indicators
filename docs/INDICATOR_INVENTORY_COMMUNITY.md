@@ -8,15 +8,15 @@ source. This list is generated from the indicator registry (`indicatorRegistry` 
 
 | | Count |
 |---|---|
-| **Community indicators** | 1697 |
-| Drawn on the price pane (overlay) | 1146 |
-| Drawn in their own pane | 551 |
-| Compared with reference outputs (batches 1-42 and the most liked set) | 1390 |
+| **Community indicators** | 1699 |
+| Drawn on the price pane (overlay) | 1147 |
+| Drawn in their own pane | 552 |
+| Compared with reference outputs (batches 1-42 and the most liked set) | 1392 |
 
 | Category | Count |
 |---|---|
-| Trend | 578 |
-| Oscillators | 268 |
+| Trend | 579 |
+| Oscillators | 269 |
 | Volume | 227 |
 | Momentum | 169 |
 | Moving Averages | 163 |
@@ -977,762 +977,764 @@ source. This list is generated from the indicator registry (`indicatorRegistry` 
 | 936 | Multi Kernel Regression | `multi-kernel-regression` | Trend | price | ChartPrime | most liked |
 | 937 | Multi Time Frame Candles with Volume Info / 3D | `multi-time-frame-candles-with-volume-info-3d` | Volume | own | LonesomeTheBlue | most liked |
 | 938 | Multi Timeframe Support and Resistance | `multi-timeframe-support-and-resistance` | Channels & Bands | price | abainvest | most liked |
-| 939 | Multi-Band Trend Line | `multi-band-trend-line` | Trend | price | Mr_Rakun | batch 4 |
-| 940 | Multi-Layer Volume Profile | `multi-layer-volume-profile` | Volume | price | BigBeluga | most liked |
-| 941 | Multi-Oscillator Adaptive Kernel \| AlphaAlgos | `multi-oscillator-adaptive-kernel-alphaalgos` | Oscillators | own | AlphaNatt | batch 4 |
-| 942 | Multicator Table | `signal-table-autofib-sma-ema-rsi-atr-vol` | Trend | price | only_fibonacci | most liked |
-| 943 | Multiple Divergences | `multiple-divergences` | Momentum | price | PeterO |  |
-| 944 | Multiple Exponential Fibnonacci Moving Averages | `multiple-exponential-fibnonacci-moving-averages` | Moving Averages | price | LensOfChartist | batch 13 |
-| 945 | Multiple Moving Averages | `multiple-ma` | Moving Averages | price |  |  |
-| 946 | Multiple RSI | `multiple-rsi` | Oscillators | own | PrasadJoshi12 | batch 19 |
-| 947 | Multitimeframe Fair Value Gap – FVG | `multitimeframe-fair-value-gap-fvg` | Trend | price | Zeiierman | most liked |
-| 948 | Multpile strategies | `multpile-strategies` | Oscillators | own | Lupown | most liked |
-| 949 | MurreysOscillator | `murreys-math-osc` | Oscillators | own |  |  |
-| 950 | Muses afl script | `muses-afl-script` | Trend | price | mostafa47ab (indicator title "L1 Filter Sig") | batch 31 |
-| 951 | Mushir's Inside Candle Indicator | `mushir-s-inside-candle-indicator` | Candlestick Patterns | price | mushirinamdar | batch 42 |
-| 952 | My auto dual avwap with Auto swing low/pivot low finder | `my-auto-dual-avwap-with-auto-swing-low-pivot-low-finder` | Volume | price | doqkhanh | batch 22 |
-| 953 | N Bar Reversal Detector | `n-bar-reversal-detector` | Trend | price | LuxAlgo | most liked |
-| 954 | N Order EMA | `n-order-ema` | Moving Averages | price | The_Peaceful_Lizard | batch 35 |
-| 955 | Nadaraya-Watson Envelope | `nadaraya-watson-envelope` | Channels & Bands | price | LuxAlgo | most liked |
-| 956 | Nadaraya-Watson Regression Liquidity Sweeps | `nadaraya-watson-regression-liquidity-sweeps` | Oscillators | own | AlgoAlpha | most liked |
-| 957 | Nadaraya-Watson Smoothers | `nadaraya-watson-smoothers` | Trend | price | LuxAlgo | most liked |
-| 958 | Nadaraya-Watson Trend | `nadaraya-watson-trend` | Trend | price | QuantAlgo | batch 1 |
-| 959 | Navier-Cauchy Market Elasticity | `navier-cauchy-market-elasticity` | Oscillators | own | PhenLabs | batch 30 |
-| 960 | Neighboring Price Bands | `neighboring-price-bands` | Channels & Bands | price | LuxAlgo | batch 21 |
-| 961 | Next Pivot Projection | `next-pivot-projection` | Trend | price | Trendoscope | most liked |
-| 962 | Nexus Sentiment & Risk Matrix | `nexus-sentiment-risk-matrix` | Oscillators | own | Pineify | batch 37 |
-| 963 | NLMS Volatility Trail | `nlms-volatility-trail` | Trend | price | BackQuant | batch 4 |
-| 964 | No wick candles | `no-wick-candles` | Candlestick Patterns | price | KORD_ | batch 39 |
-| 965 | Normalized Candles RSI | `normalized-candles-rsi` | Oscillators | own | Jamallo22 | batch 32 |
-| 966 | Normalized QQE | `normalized-qqe` | Oscillators | own |  |  |
-| 967 | Normalized Quantitative Qualitative Estimation nQQE | `normalized-quantitative-qualitative` | Momentum | own | KivancOzbilgic | most liked |
-| 968 | Normalized SPMA \| NAL | `normalized-spma-nal` | Oscillators | own | NordicAlphaLab | batch 30 |
-| 969 | Normalized Volume & True Range | `normalized-volume-true-range` | Volume | own | The_Peaceful_Lizard | batch 36 |
-| 970 | Nova Flow Lite (Free) | `nova-flow-lite` | Trend | price | NovaQuantX | batch 36 |
-| 971 | Nova Statistical Filtering Oscillator | `nova-statistical-filtering-oscillator` | Oscillators | own | Pineify | batch 27 |
-| 972 | NR4 & NR7 with Breakouts | `nr4-nr7-with-breakouts` | Volatility | price | LuxAlgo | most liked |
-| 973 | NY ORB + Fakeout Detector | `ny-orb-fakeout-detector` | Channels & Bands | price | STEFANGAS | batch 27 |
-| 974 | OA - SMES | `oa-smes` | Oscillators | own | onurag | batch 4 |
-| 975 | OBV & AD Oscillators with Dual Smoothing Options | `obv-ad-oscillators-with-dual-smoothing-options` | Volume | own | hollowwick (indicator title "OBV, AD, VPT & CDV | batch 27 |
-| 976 | OBV (Delta or regular) | `obv-gizmo` | Volume | own | GizmoTheInvestor | batch 37 |
-| 977 | OBV + Custom MA Strategy | `obv-custom-ma-strategy` | Volume | own | Rafiki-is-Trading | batch 14 |
-| 978 | OBV MACD | `obv-macd` | Volume | own |  |  |
-| 979 | OBV Oscillator | `obv-oscillator` | Volume | own |  |  |
-| 980 | OBVX Conviction Bias | `obvx-conviction-bias` | Volume | own | TheLeadingIndicator | batch 31 |
-| 981 | One Shot One Kill ICT Liquidity MMXM + CISD OTE | `one-shot-one-kill-ict-liquidity-mmxm-cisd-ote` | Trend | price | TradingFinder | most liked |
-| 982 | Opal | `opal` | Channels & Bands | price | FlyingSeaHorse | batch 36 |
-| 983 | Open Close Cross | `open-close-cross` | Momentum | own | JustUncleL |  |
-| 984 | Open Close Cross Alerts NoRepaint Version by JustUncleL | `open-close-cross-alerts-norepaint-version-by` | Trend | own | JustUncleL | most liked |
-| 985 | Open Interest Stochastic Money Flow Index | `open-interest-stochastic-money-flow-index` | Volume | own | Noldo (uses the "LibraryCOT" library) | most liked |
-| 986 | Open Interest Suite - By Leviathan | `open-interest-suite-by-leviathan` | Volume | own | LeviathanCapital | most liked |
-| 987 | Open Liquidity Heatmap | `open-liquidity-heatmap` | Volume | price | BigBeluga | most liked |
-| 988 | Opening Range Breakout with 2 Profit Targets. | `opening-range-breakout-with-2-profit-targets` | Trend | price |  | most liked |
-| 989 | Opening Range with Breakouts & Targets | `opening-range-breakouts-targets` | Trend | price | LuxAlgo | most liked |
-| 990 | Optimized Trend Tracker | `optimized-trend-tracker` | Trend | price | KivancOzbilgic |  |
-| 991 | ORB - Opening Range Breakout | `orb-opening-range-breakout` | Trend | price | zzzcrypto123 | most liked |
-| 992 | ORB Algo \| Flux Charts | `orb-algo-flux-charts` | Trend | price | fluxchart | most liked |
-| 993 | Order Block Detector | `order-block-detector` | Trend | price | LuxAlgo | most liked |
-| 994 | Order Block Finder (Experimental) | `order-block-finder` | Trend | price | wugamlo | most liked |
-| 995 | Order Block Finder \| Gold \| ProjectSyndicate | `order-block-finder-gold-projectsyndicate` | Trend | price | ProjectSyndicate | most liked |
-| 996 | Order Blocks & Breaker Blocks | `order-blocks-breaker-blocks` | Trend | price | LuxAlgo | most liked |
-| 997 | Order Blocks Finder Major OB \| Supply and Demand | `order-blocks-finder-major-ob-supply-and-demand` | Channels & Bands | price | TradingFinder | most liked |
-| 998 | Order Blocks Volume Delta 3D \| Flux Charts | `order-blocks-volume-delta-3d-flux-charts` | Volume | price | fluxchart | most liked |
-| 999 | Order Blocks W/ Realtime Fibs | `order-blocks-w-realtime-fibs` | Trend | price | QuantVue | most liked |
-| 1000 | Order Blocks with Signals | `order-blocks-signals` | Trend | price | ClayeWeight |  |
-| 1001 | Order Blocks \| Flux Charts | `order-blocks-flux-charts` | Volume | price | fluxchart | most liked |
-| 1002 | Order Flow Imbalance Oscillator | `order-flow-imbalance-oscillator` | Volume | own | StrikePriceLabs | batch 33 |
-| 1003 | Order Flow VWAP Deviation | `order-flow-vwap-deviation` | Volume | price | LuxAlgo | most liked |
-| 1004 | Orderblocks - Open source | `orderblocks-open-source` | Channels & Bands | price | nephew_sam_ | most liked |
-| 1005 | Oscillator Matrix | `oscillator-matrix` | Oscillators | own | AlphaExtract | batch 6 |
-| 1006 | PAFT | `paft` | Momentum | own | TREESinvest | batch 30 |
-| 1007 | Parabolic Stoch SAR Visualizer | `parabolic-stoch-sar-visualizer` | Oscillators | own | BOSWaves | batch 24 |
-| 1008 | Parallel Pivot Lines | `parallel-pivot-lines` | Channels & Bands | price | LuxAlgo |  |
-| 1009 | Pay Attention Candle | `pay-attention-candle` | Candlestick Patterns | price | asenski (inspired by the RexDog Trading System) | batch 41 |
-| 1010 | PCR Market Regime Indicator | `pcr-market-regime-indicator` | Momentum | own | Aleksin_Aleksandar | batch 31 |
-| 1011 | Peak Reversal v2 | `peak-reversal-v2` | Channels & Bands | price | Zettt | batch 11 |
-| 1012 | Peak Reversal v3 | `peak-reversal-v3` | Channels & Bands | price | Zettt | batch 21 |
-| 1013 | Percent Off All-time High (% Off High) | `percent-off-all-time-high` | Oscillators | own | xHmmmmm | batch 19 |
-| 1014 | Percentile Rank Oscillator (Price + VWMA) | `percentile-rank-oscillator` | Oscillators | own | exploretranspose | batch 26 |
-| 1015 | Percentile-Based BB% Trend - Mattes | `percentile-based-bb-trend-mattes` | Oscillators | own | Mattes00 | batch 7 |
-| 1016 | Perfect Hammer Pattern Indicators and Alerts | `perfect-hammer-pattern-indicators-and-alerts` | Candlestick Patterns | price | girishptryambakee | batch 40 |
-| 1017 | Perfect RSI | `perfect-rsi` | Oscillators | own | HabibiBudo | batch 26 |
-| 1018 | Perforance integral | `perforance-integral` | Momentum | own | Majimbi | batch 37 |
-| 1019 | Periodic Linear Regressions | `periodic-linear-regressions` | Channels & Bands | price | LuxAlgo | most liked |
-| 1020 | Philakone 55 EMA Swing Trading | `philakone-ema-swing` | Moving Averages | price |  |  |
-| 1021 | Pipstocrat Market Participant Analysis | `pipstocrat-market-participant-analysis` | Momentum | own | Delast2 | batch 23 |
-| 1022 | Pivot Based Trailing Maxima & Minima | `pivot-trailing-maxmin` | Channels & Bands | price | LuxAlgo |  |
-| 1023 | Pivot Breakout High&Low Signals | `pivot-breakout-high-low-signals` | Trend | price | Jos-ProTrader | batch 3 |
-| 1024 | Pivot Breakout with Trend Zones | `pivot-breakout-with-trend-zones` | Trend | price | dreamaker7 | batch 33 |
-| 1025 | Pivot High/Low Analysis & Forecast | `pivot-high-low-analysis-forecast` | Trend | price | LuxAlgo | most liked |
-| 1026 | Pivot Hilo Support n Resistance Levels R3-3 by JustUncleL | `pivot-hilo-support-n-resistance-levels-r3-3` | Trend | price | JustUncleL | most liked |
-| 1027 | Pivot Levels | `pivot-levels` | Channels & Bands | price | BigBeluga | most liked |
-| 1028 | Pivot Market Structure | `pivot-market-structure` | Trend | price | Daniel_Ge | batch 11 |
-| 1029 | Pivot Oscillator | `pivot-oscillator` | Oscillators | own | Uncle_the_shooter | batch 3 |
-| 1030 | Pivot Point | `pivot-point-hpotter` | Trend | price | HPotter | most liked |
-| 1031 | Pivot Point SuperTrend | `pivot-point-supertrend` | Trend | price | LonesomeTheBlue |  |
-| 1032 | Pivot Points High Low & Missed Reversal Levels | `pivot-points-high-low-missed-reversal` | Trend | price | LuxAlgo | most liked |
-| 1033 | Pivot Points High Low Multi Time Frame | `pivot-points-high-low-multi-time-frame` | Trend | price | LonesomeTheBlue | most liked |
-| 1034 | Pivot Trend | `pivot-trend` | Trend | price | ChartPrime | batch 1 |
-| 1035 | Pivot Trendlines with Breaks | `pivot-trendlines-with-breaks` | Trend | price | HoanGhetti | most liked |
-| 1036 | PMax on RSI with Tillson T3 | `pmax-on-rsi-with-tillson-t3` | Oscillators | own | KivancOzbilgic | most liked |
-| 1037 | POC Volume Bar (Highest Volume in Range) | `poc-volume-bar` | Volume | own | greatbrownball | batch 28 |
-| 1038 | Pocket Pivot Breakout | `pocket-pivot-breakout` | Volume | price | simatricks | batch 38 |
-| 1039 | POCs and VAHs VALs - All and Non-Broken | `pocs-and-vahs-vals-all-and-non-broken` | Volume | price | Frien_dd-DisDev | most liked |
-| 1040 | PolyFilter | `polyfilter` | Moving Averages | price | BackQuant | batch 8 |
-| 1041 | Polynomial Regression Moving Average (PRMA) | `polynomial-regression-moving-average` | Moving Averages | price | ZakAlgoTrade | batch 24 |
-| 1042 | Polynomial Trend Exhaustion & Divergence | `polynomial-trend-exhaustion-divergence` | Trend | price | B3AR_Trades | batch 40 |
-| 1043 | Polyphase MACD (PMACD) | `polyphase-macd` | Momentum | own | The_Peaceful_Lizard | batch 19 |
-| 1044 | Poor man's volume clusters | `poor-man-s-volume-clusters` | Volume | price | IldarAkhmetgaleev | most liked |
-| 1045 | Position Size Calculator | `position-size-calculator` | Volatility | price | zzzcrypto123 | most liked |
-| 1046 | Power Of 3 ICT 01 AMD ICT & SMC Accumulations | `power-of-3-ict-01-amd-ict-smc-accumulations` | Trend | price | TradingFinder | most liked |
-| 1047 | PPO Alerts | `ppo-alerts` | Momentum | own |  |  |
-| 1048 | PPO Divergence | `ppo-divergence` | Momentum | own | Pekipek |  |
-| 1049 | Precision Sniper | `precision-sniper` | Trend | price | WillyAlgoTrader | most liked |
-| 1050 | Predictive Channels | `predictive-channels` | Channels & Bands | price | LuxAlgo |  |
-| 1051 | Predictive Ranges | `predictive-ranges` | Channels & Bands | price | LuxAlgo | most liked |
-| 1052 | Premier RSI Oscillator | `premier-rsi` | Momentum | own |  |  |
-| 1053 | Premier Stochastic Oscillator | `premier-stochastic` | Oscillators | own |  |  |
-| 1054 | Premium & Discount Delta Volume | `premium-discount-delta-volume` | Volume | price | BigBeluga | most liked |
-| 1055 | PREMIUM TRADE ZONES | `premium-trade-zones` | Oscillators | own | ENTRYLAB | batch 27 |
-| 1056 | Previous Day High and Low + Separators Daily/Weekly | `previous-day-high-and-low-separators-daily` | Trend | price | Algoryze | most liked |
-| 1057 | Previous Day Week Highs & Lows | `previous-day-week-highs-lows` | Trend | price | sbtnc | most liked |
-| 1058 | Previous Highs & Lows | `previous-highs-lows` | Channels & Bands | price | LuxAlgo | most liked |
-| 1059 | Price & Volume Profile (Expo) | `price-volume-profile` | Volume | price | Zeiierman (community) |  |
-| 1060 | Price Acceleration Indicator (PAI) | `price-acceleration-indicator` | Momentum | own | PHICAPITALINVESTMENTS | batch 35 |
-| 1061 | Price Action Bands \| Trend & Volatility | `price-action-bands-trend-volatility` | Channels & Bands | price | RadixAlgo | batch 15 |
-| 1062 | Price Action Breakout Trend | `price-action-breakout-trend` | Trend | price | QuantAlgo | batch 5 |
-| 1063 | Price Action Signals Filtered +EMA | `price-action-signals-filtered-ema` | Trend | price | Aleksin_Aleksandar | batch 11 |
-| 1064 | Price Action Smart Money Concepts | `price-action-smart-money-concepts` | Trend | price | BigBeluga | most liked |
-| 1065 | Price Action Trading System | `price-action-system` | Oscillators | price |  |  |
-| 1066 | Price Action: Engulfing Patterns | `price-action-engulfing-patterns` | Candlestick Patterns | price | Jay9286 | batch 33 |
-| 1067 | Price Advance & Decline Range Analysis | `price-advance-decline-range-analysis` | Volatility | own | RicardoSantos | batch 16 |
-| 1068 | Price Change Sentiment Index | `price-change-sentiment-index` | Oscillators | own | TradeVizion | batch 23 |
-| 1069 | Price Contraction / Expansion | `price-contraction-expansion` | Volatility | price | destrobr0685 | batch 42 |
-| 1070 | Price Divergence Detector V3.2 revised by JustUncleL | `price-divergence-detector` | Momentum | price | JustUncleL (original author RicardoSantos) | most liked |
-| 1071 | Price Flow - Buy Sell | `price-flow-buy-sell` | Channels & Bands | price | IVTrader1990 | batch 35 |
-| 1072 | Price Linear Sequence Counter | `price-linear-sequence-counter` | Momentum | own | RicardoSantos | batch 14 |
-| 1073 | Price Momentum Oscillator | `price-momentum-oscillator` | Momentum | own |  |  |
-| 1074 | Price/Volume Value Histogram | `price-volume-value-histogram` | Volume | own | dman103 | batch 2 |
-| 1075 | Primitive Delta Divergence | `primitive-delta-divergence` | Volume | price | bfoster238 | batch 41 |
-| 1076 | Pring Special K\|a2m | `pring-special-k-a2m` | Momentum | own | ask2maniish | batch 34 |
-| 1077 | Prism Moving Average Trend | `prism-moving-average-trend` | Trend | price | MisinkoMaster | batch 19 |
-| 1078 | Pro Scalper - 2 MinutesTF by Ayoob | `pro-scalper-2-minutestf-by-ayoob` | Trend | price | FGMNDFBF | batch 30 |
-| 1079 | Pro Scalper AI | `pro-scalper-ai` | Oscillators | own | BullByte | most liked |
-| 1080 | Probabilities Module - The Quant Science | `probabilities-module-the-quant-science` | Oscillators | own | thequantscience | batch 31 |
-| 1081 | Projected Crossover Trend | `projected-crossover-trend` | Trend | price | SchizoQuant | batch 4 |
-| 1082 | Prometheus Topological Persistent Entropy | `prometheus-topological-persistent-entropy` | Volatility | own | ScorsoneEnterprises | batch 23 |
-| 1083 | Protected Highs & Lows | `protected-highs-lows` | Trend | price | tradeforopp | most liked |
-| 1084 | Pullback Candles (Candlestick Analysis) Guaranteed Winners!!!! | `pullback-candles-guaranteed-winners` | Candlestick Patterns | price | LuxTradeVenture | most liked |
-| 1085 | Pullback SAR | `pullback-sar` | Trend | price | szymonsobkowiak | batch 32 |
-| 1086 | Pullback Scalp Trade V2 | `pullback-scalp-trade-v2` | Trend | price | Sinyalbak_App | batch 12 |
-| 1087 | Pullback Trading Tool ALT R1.0 by JustUncleL | `pullback-trading-tool-alt-r1-0-by-justunclel` | Moving Averages | price | JustUncleL | most liked |
-| 1088 | Pulse Range | `pulse-range` | Trend | price | MarketStructureLab | batch 13 |
-| 1089 | Pulse RSI \| Lyro RS | `pulse-rsi-lyro-rs` | Oscillators | own | LyroRS | batch 10 |
-| 1090 | PulseWave + Divergence | `pulsewave-divergence` | Oscillators | own | Uncle_the_shooter | batch 7 |
-| 1091 | Pump & Dump Detector (sensitive) | `pump-dump-detector` | Volume | price | btcpayer | batch 39 |
-| 1092 | Pure Coca | `pure-coca` | Oscillators | own | La_Von | batch 7 |
-| 1093 | Pure Price Action ICT Tools | `pure-price-action-ict-tools` | Trend | price | LuxAlgo | most liked |
-| 1094 | Pure Price Action Order & Breaker Blocks | `pure-price-action-order-breaker-blocks` | Trend | price | LuxAlgo | most liked |
-| 1095 | Pure Price Action Structures | `pure-price-action-structures` | Trend | price | LuxAlgo | most liked |
-| 1096 | Q Impulse Entry | `q-impulse-entry` | Trend | price | Quantora | batch 17 |
-| 1097 | Q KAMA Clarity Trend | `q-kama-clarity-trend` | Trend | price | Quantora | batch 7 |
-| 1098 | Q Wave | `q-wave` | Trend | price | Quantora | batch 36 |
-| 1099 | QG-Particle Oscillator | `qg-particle-oscillator` | Oscillators | own | QuantG | batch 35 |
-| 1100 | QQE Cross | `qqe-cross` | Trend | price | JustUncleL |  |
-| 1101 | QQE MOD | `qqe-mod` | Momentum | own |  |  |
-| 1102 | QQE Signals | `qqe-signals` | Oscillators | price | colinmck |  |
-| 1103 | QTechLabs Machine Learning Logistic Regression Indicator | `qtechlabs-machine-learning-logistic-regression-indicator` | Oscillators | price | QTechLabsInfo | batch 33 |
-| 1104 | Quant VWAP System 3.8 | `quant-vwap-system-3-8` | Oscillators | own | CustomQuantLabs (published as "Quant VWAP System 3.8") | batch 8 |
-| 1105 | Quantile Regression Bands | `quantile-regression-bands` | Channels & Bands | price | BackQuant | batch 17 |
-| 1106 | Quantitative Qualitative Estimation | `qqe` | Oscillators | own | Glaz |  |
-| 1107 | Quantitative Qualitative Estimation QQE | `qqe-kivanc` | Oscillators | own |  | most liked |
-| 1108 | Quantum Regression Oscillator | `quantum-regression-oscillator` | Oscillators | own | abgthecoder | batch 32 |
-| 1109 | Quantum Trend Signal | `quantum-trend-signal` | Trend | price | ReubenMiles | batch 9 |
-| 1110 | QuantumTrend SwiftEdge | `quantumtrend-swiftedge` | Trend | price | SwiftEdge | batch 5 |
-| 1111 | Quartile For Loop | `quartile-for-loop` | Trend | own | SeerQuant | batch 6 |
-| 1112 | Quasimodo Pattern | `quasimodo-pattern` | Candlestick Patterns | price | anodrr2 | batch 41 |
-| 1113 | R:R Trading System Framework | `r-r-trading-system-framework` | Trend | price | carnagecain | most liked |
-| 1114 | Radiant Mean Reversion Channels | `radiant-mean-reversion-channels` | Oscillators | own | Pineify | batch 34 |
-| 1115 | Radius Trend [ChartPrime] | `radius-trend` | Trend | price | ChartPrime |  |
-| 1116 | Rally Base Drop Signals | `rally-base-drop-signals` | Trend | price | LuxAlgo | batch 38 |
-| 1117 | Range Analysis - By Leviathan | `range-analysis-by-leviathan` | Volume | price | LeviathanCapital | most liked |
-| 1118 | Range Average Retest Model | `range-average-retest-model` | Trend | price | LuxAlgo | most liked |
-| 1119 | Range Breakout | `range-breakout` | Channels & Bands | price | BigBeluga | most liked |
-| 1120 | Range Channel by Atilla Yurtseven | `range-channel-by-atilla-yurtseven` | Channels & Bands | own | AtillaYurtseven | batch 17 |
-| 1121 | Range Detector | `range-detector` | Trend | price | LuxAlgo |  |
-| 1122 | Range Filter Buy and Sell 5min - guikroth version | `range-filter-buy-sell-5min` | Trend | price | PHVNTOM_TRADER (original script by DonovanWall, adapted by | most liked |
-| 1123 | Range Identifier | `range-identifier` | Channels & Bands | price |  |  |
-| 1124 | Range Oscillator | `range-oscillator` | Oscillators | own | Zeiierman | batch 1 |
-| 1125 | Range Sentiment Profile | `range-sentiment-profile` | Volume | price | LuxAlgo | most liked |
-| 1126 | Range Tightening Indicator (RTI) | `range-tightening-indicator` | Volatility | own | Ollie_AllCaps | batch 2 |
-| 1127 | Ranges With Targets | `ranges-with-targets` | Trend | price | ChartPrime | most liked |
-| 1128 | Rapid Exponential Moving Average | `rapid-exponential-moving-average` | Moving Averages | price | ImmortalFreedom | batch 28 |
-| 1129 | RBT strategy | `rbt-strategy` | Momentum | price | luckykoshti | batch 38 |
-| 1130 | RCI3lines | `rci-3lines` | Oscillators | own |  |  |
-| 1131 | RCYC Bullish Bearish Indicator | `rcyc-bullish-bearish-indicator` | Momentum | price | bizarro29 | batch 38 |
-| 1132 | ReadyFor401ks Just Tell Me When! | `readyfor401ks-just-tell-me-when` | Trend | price | ReadyFor401k | batch 20 |
-| 1133 | Real-Time Big Trades Bubbles & Absorbtions & Deep Pressure | `big-trades-bubbles` | Volume | price | samet_lezki | batch 5 |
-| 1134 | Realtime Volume Bars | `realtime-volume-bars` | Volume | own | the_MarketWhisperer |  |
-| 1135 | RedK Effort Versus Results Explorer v3.0 | `redk-everex` | Momentum | own | RedKTrader |  |
-| 1136 | RedK Magic Ribbon | `redk-magic-ribbon` | Moving Averages | price | RedKTrader | batch 2 |
-| 1137 | RedK Momentum Bars | `redk-momentum-bars` | Momentum | own | RedKTrader |  |
-| 1138 | RedK RSS_WMA | `redk-rss-wma` | Moving Averages | price | RedKTrader |  |
-| 1139 | RedK Trader Pressure Index | `redk-tpx` | Momentum | own | RedKTrader |  |
-| 1140 | RedK Vol_Weighted RSI: Extending the power of the classic RSI | `redk-vol-weighted-rsi` | Momentum | own | RedKTrader | batch 5 |
-| 1141 | Reflex & Trendflex | `reflex-trendflex` | Oscillators | own | e2e4 | batch 6 |
-| 1142 | Regression Channel Oscillator | `regression-channel-oscillator` | Oscillators | own | Uncle_the_shooter | batch 27 |
-| 1143 | Relative ATR Volatility Indicator | `relative-atr-volatility-indicator` | Volatility | own | ZenAndTheArtOfTrading | batch 20 |
-| 1144 | Relative Strength Heatmap | `relative-strength-heatmap` | Momentum | own | BackQuant | batch 22 |
-| 1145 | Relative Strength Index - Divergences - Libertus | `relative-strength-index-divergences-libertus` | Momentum | own | Libertus | most liked |
-| 1146 | Relative Strength of a stock | `relative-strength-of-a-stock` | Momentum | own | bharatTrader | most liked |
-| 1147 | Relative Valuation Oscillator | `relative-valuation-oscillator` | Oscillators | own | QuantAlgo | batch 14 |
-| 1148 | Relative Volume Indicator (RVOL) | `relative-volume-indicator` | Volume | own | AlgoCollective | batch 13 |
-| 1149 | Renko Boxes | `renko-boxes` | Trend | price | LuxAlgo | batch 4 |
-| 1150 | Renko Candles Overlay | `renko-candles-overlay` | Trend | price | LonesomeTheBlue | most liked |
-| 1151 | Renko Chart | `renko-chart` | Trend | price | LonesomeTheBlue |  |
-| 1152 | Renko Compression Index (RCI) | `renko-compression-index` | Oscillators | own | nasu_is_gaji | batch 34 |
-| 1153 | Renko Flip Alert (Traditional Only) | `renko-flip-alert` | Candlestick Patterns | price | deephrenology | batch 41 |
-| 1154 | Renko Mod | `renko-mod` | Trend | price | RicardoSantos | batch 13 |
-| 1155 | Renko Sniper PRO (Liquidity Sweep + EMA + ST + RSI) | `renko-sniper-pro` | Trend | price | zachsprad | batch 24 |
-| 1156 | Renko+Moving Average+RMI Alert R3 by JustUncleL | `renko-moving-average-rmi-alert-r3-by` | Trend | price | JustUncleL | most liked |
-| 1157 | Res/Sup With Concavity & Increasing / Decreasing Trend Analysis | `res-sup-with-concavity-increasing-decreasing-trend-analysis` | Trend | price | Celar (published as "Res/Sup With Concavity & Increasing / Decreasing Trend Analysis") | batch 28 |
-| 1158 | Retail vs Banker Net Positions – Symmetry Break | `retail-vs-banker-net-positions-symmetry-break` | Volume | own | JasonHyde | batch 17 |
-| 1159 | Retest Support Resistance Signals | `retest-support-resistance-signals` | Trend | price | ChartPrime | most liked |
-| 1160 | Reversal | `reversal` | Trend | price | HasanRifat | most liked |
-| 1161 | Reversal Candle Setup | `reversal-candle-setup` | Candlestick Patterns | price |  |  |
-| 1162 | Reversal Candlestick Structure | `reversal-candlestick-structure` | Candlestick Patterns | price | LuxAlgo | most liked |
-| 1163 | Reversal Correlation Pressure | `reversal-correlation-pressure` | Oscillators | own | OmegaTools | batch 27 |
-| 1164 | Reversal Probability Zone & Levels | `reversal-probability-zone-levels` | Trend | price | LuxAlgo | most liked |
-| 1165 | Reversal Scalper 2.0- Adib Noorani | `reversal-scalper-2-0-adib-noorani` | Oscillators | own | AdibNoorani | batch 28 |
-| 1166 | Reversal Signals | `reversal-signals` | Momentum | price | LuxAlgo | most liked |
-| 1167 | Reversal Trap Probability Bands | `reversal-trap-probability-bands` | Channels & Bands | price | BigBeluga | most liked |
-| 1168 | Rhokeo-VW-RSI Histogram for Cumulative Delta by Zeiirman | `rhokeo-vw-rsi-histogram-for-cumulative-delta-by-zeiirman` | Oscillators | own | nabil007 | batch 24 |
-| 1169 | Ripster EMA Clouds | `ripster-ema-clouds` | Trend | price | ripster47 |  |
-| 1170 | Risk Management Tool | `risk-management-tool` | Volatility | price | LuxAlgo | most liked |
-| 1171 | RMA ATR Bands | `rma-atr-bands` | Channels & Bands | price | SchizoQuant | batch 3 |
-| 1172 | RMI Length | `rmi-trend-sniper` | Momentum | price | TZack88 |  |
-| 1173 | Robby DSS Bressert Colored Dots | `robby-dss-bressert-colored-dots` | Oscillators | own | huatzhi | batch 21 |
-| 1174 | ROC-Weighted MA Oscillator | `roc-weighted-ma-oscillator` | Oscillators | own | SeerQuant | batch 2 |
-| 1175 | Rolling Liquidity Clusters Channel | `rolling-liquidity-clusters-channel` | Channels & Bands | price | LuxAlgo | batch 12 |
-| 1176 | Rolling Sharpe Ratio Oscillator \| Astral Vision | `rolling-sharpe-ratio-oscillator-astral-vision` | Oscillators | own | AstralVision | batch 13 |
-| 1177 | Rolling Trendline | `rolling-trendline` | Trend | price | LuxAlgo | batch 5 |
-| 1178 | Rolling VWAP | `rolling-vwap` | Volume | price | TradingView | most liked |
-| 1179 | Ross Cameron-Inspired Day Trading Strategy | `ross-cameron-inspired-day-trading-strategy` | Momentum | price | manaziir | batch 25 |
-| 1180 | RRR EMA Ignition BUY & SELL (Sideways-Proof) | `rrr-ema-ignition-buy-sell` | Trend | price | RAGSTER123 | batch 21 |
-| 1181 | RS Rating (1-99) | `rs-rating` | Momentum | own | kulturdesken | batch 16 |
-| 1182 | rs_MACD | `rs-macd` | Momentum | price | RicardoSantos | batch 17 |
-| 1183 | RSI | `rsi-hash-capital` | Oscillators | own | Hash_Capital | batch 31 |
-| 1184 | RSI & BB Oversold Scalper with MACD Confirmation | `rsi-bb-oversold-scalper-with-macd-confirmation` | Momentum | price | DotGain | batch 40 |
-| 1185 | RSI & MACD Suite | `rsi-macd-suite` | Oscillators | own | aaboomar | batch 34 |
-| 1186 | RSI (14) with Auto Zone Colors - Overbought/Oversold Highlighter | `rsi-with-auto-zone-colors-overbought-oversold-highlighter` | Oscillators | own | tarangbharti18 | batch 29 |
-| 1187 | RSI (Kernel Optimized) \| Flux Charts | `rsi-flux-charts` | Momentum | price | fluxchart | most liked |
-| 1188 | RSI + ADX + ATR 18-01-25 | `rsi-adx-atr-18-01-25` | Oscillators | own | dipak11298 | batch 37 |
-| 1189 | RSI + ADX + ATR Combo | `rsi-adx-atr-combo` | Oscillators | own | shawasutosh | batch 26 |
-| 1190 | RSI + BB + Dispersion | `rsi-bb-dispersion` | Oscillators | own |  |  |
-| 1191 | RSI + Fibonacci HH LL Support Resistance | `rsi-fibonacci-hh-ll-support-resistance` | Channels & Bands | price | FibonacciFlux | batch 12 |
-| 1192 | RSI + MACD (RSI Divergence) V3.2 | `rsi-macd-v3-2` | Oscillators | own | MKhoa | batch 24 |
-| 1193 | RSI + STOCH RSI - Marx_Capital | `rsi-stoch-rsi-marx-capital` | Oscillators | own | Marx_Capital | batch 12 |
-| 1194 | RSI - 5UP | `rsi-5up` | Oscillators | own | Marrulk | batch 29 |
-| 1195 | RSI Bands | `rsi-bands` | Channels & Bands | price |  |  |
-| 1196 | RSI Bars - OnlyFlow | `rsi-bars-onlyflow` | Momentum | price | ofderk | batch 10 |
-| 1197 | RSI BB StdDev Signal | `rsi-bb-stddev-signal` | Oscillators | own | trade_lexx (Pine title "RSI Signal [trade_lexx]") | batch 8 |
-| 1198 | RSI Candle Color | `rsi-candle-color` | Momentum | price | The_Peaceful_Lizard | batch 39 |
-| 1199 | RSI Candles | `rsi-candles` | Momentum | own | Glaz |  |
-| 1200 | RSI Confirm Trend with Williams (W%R) | `rsi-confirm-trend-with-williams` | Momentum | own | javageek | batch 11 |
-| 1201 | RSI Core Levels Heatmap | `rsi-core-levels-heatmap` | Oscillators | own | BigBeluga | most liked |
-| 1202 | RSI cyclic smoothed v2 | `rsi-cyclic-smoothed-v2` | Oscillators | own | StockMarketCycles | most liked |
-| 1203 | RSI Divergence | `rsi-divergence` | Oscillators | own |  |  |
-| 1204 | RSI Entry Engine | `rsi-entry-engine` | Oscillators | own | tradewsamet | most liked |
-| 1205 | RSI Games 1.2 | `rsi-games-1-2` | Oscillators | own | petejfjohnson | batch 22 |
-| 1206 | RSI HistoAlert Strategy | `rsi-histoalert` | Oscillators | own |  |  |
-| 1207 | RSI Length | `most-rsi` | Momentum | own |  |  |
-| 1208 | RSI Length | `parabolic-rsi` | Momentum | own |  |  |
-| 1209 | RSI Length | `pmax-rsi-t3` | Momentum | own |  |  |
-| 1210 | RSI Length | `rsi-cyclic-smoothed` | Momentum | own |  |  |
-| 1211 | RSI MA Cross + Divergence Signal (V2) | `rsi-ma-cross-divergence-signal` | Momentum | price | noxum | batch 39 |
-| 1212 | RSI Modified | `rsi-modified` | Oscillators | own | Santos_Trader_PT | batch 5 |
-| 1213 | RSI Momentum Divergence | `rsi-momentum-divergence` | Oscillators | own | ChartPrime |  |
-| 1214 | RSI Multi Length | `rsi-multi-length` | Oscillators | own | LuxAlgo | most liked |
-| 1215 | RSI Multi Levels kiawosch 7-14-42 Consolidation | `rsi-multi-levels` | Oscillators | own | TFlab | batch 5 |
-| 1216 | RSI Multicolor editable | `rsi-multicolor-editable` | Oscillators | own | Guillaume46 | batch 8 |
-| 1217 | RSI PERFECT Flip Dots | `rsi-perfect-flip-dots` | Momentum | price | debanshuchanda6 | batch 42 |
-| 1218 | RSI Potential | `rsi-potential` | Momentum | own | nasu_is_gaji | batch 35 |
-| 1219 | RSI Snabbel | `rsi-snabbel` | Oscillators | own |  |  |
-| 1220 | RSI Strategy | `rsi-strategy` | Momentum | price | HPotter | most liked |
-| 1221 | RSI Supply/Demand | `rsi-supply-demand` | Trend | price | shtcoinr / Lij_MC |  |
-| 1222 | RSI Support & Resistance by DGT | `rsi-support-resistance-by-dgt` | Momentum | price | dgtrd | most liked |
-| 1223 | RSI Swing Indicator v2 | `rsi-swing-indicator-v2` | Momentum | price | MrDinasty (BalintDavid) | most liked |
-| 1224 | RSI Swing Signal | `rsi-swing-signal` | Oscillators | own |  |  |
-| 1225 | RSI Tops and Bottoms | `rsi-tops-bottoms` | Momentum | own | LonesomeTheBlue |  |
-| 1226 | RSI Trend Bias | `rsi-trend-bias` | Oscillators | own | Botnet101 | batch 24 |
-| 1227 | RSI Trend Navigator | `rsi-trend-navigator` | Trend | price | QuantAlgo | batch 10 |
-| 1228 | RSI Trendlines with Breakouts | `rsi-trendlines-with-breakouts` | Oscillators | own | HoanGhetti | most liked |
-| 1229 | RSI Zone Step Lines | `rsi-zone-step-lines` | Channels & Bands | price | Devjames | batch 11 |
-| 1230 | RSI+EMA+MZONES with Divergences | `rsi-ema-mzones-with-divergences` | Oscillators | own | lordoflolz | batch 22 |
-| 1231 | RSI+Stoch Band Oscillator | `rsi-stoch-band-oscillator` | Oscillators | own | nasu_is_gaji | batch 26 |
-| 1232 | RSI-50 Step Line | `rsi-50-step-line` | Trend | price | Devjames | batch 5 |
-| 1233 | RSI-Colored Price Candles with Background | `rsi-colored-price-candles-with-background` | Momentum | price | Midgar- | batch 39 |
-| 1234 | RSI-EMA-Crossing with Donchian-Stop-Loss | `rsi-ema-crossing-with-donchian-stop-loss` | Channels & Bands | price | Kahael | batch 28 |
-| 1235 | RSI: alternative derivation | `rsi-alternative-derivation` | Oscillators | own | AdaptiveRSI | batch 25 |
-| 1236 | RVOL Effort Matrix | `rvol-effort-matrix` | Volume | own | TheLeadingIndicator | batch 36 |
-| 1237 | RVOL Relative Volume - Intraday | `rvol-relative-volume-intraday` | Volume | own | LonesomeTheBlue | most liked |
-| 1238 | S&R Breakout ATR Confirmation | `s-r-breakout-atr-confirmation` | Trend | price | Jos-ProTrader | batch 33 |
-| 1239 | SAR + EMA + MACD Signals | `sar-ema-macd` | Oscillators | price |  |  |
-| 1240 | Saty ATR Levels | `saty-atr-levels` | Volatility | price | satymahajan | most liked |
-| 1241 | Saty Pivot Ribbon | `saty-pivot-ribbon` | Moving Averages | price | satymahajan | most liked |
-| 1242 | Savitzky Flow Bands | `savitzky-flow-bands` | Channels & Bands | price | ChartPrime | batch 2 |
-| 1243 | Savitzky-Golay Hampel Filter \| AlphaNatt | `savitzky-golay-hampel-filter-alphanatt` | Moving Averages | price | AlphaNatt | batch 15 |
-| 1244 | Scalp Pro | `scalp-pro` | Momentum | own | ovelix | most liked |
-| 1245 | Scalping Line | `scalping-line` | Oscillators | own | KivancOzbilgic |  |
-| 1246 | Scalping PullBack Tool R1 by JustUncleL | `scalping-pullback-tool` | Trend | price | JustUncleL | most liked |
-| 1247 | Scalping Swing Trading Tool R1-4 by JustUncleL | `scalping-swing-trading-tool-r1-4-by-justunclel` | Moving Averages | price | JustUncleL | most liked |
-| 1248 | Scalping Tool with Dynamic Take Profit & Stop Loss | `scalping-tool-dynamic-tp-sl` | Trend | price | TruFREND | batch 3 |
-| 1249 | ScalpMap - EMA Pivot Targets | `scalpmap-ema-pivot-targets` | Trend | price | blockybears | batch 12 |
-| 1250 | SCE GANN Predictions | `sce-gann-predictions` | Trend | price | ScorsoneEnterprises | batch 22 |
-| 1251 | Schaff Trend Cycle | `schaff-trend-cycle` | Oscillators | price | LazyBear |  |
-| 1252 | SCOTTGO Advanced MACD | `scottgo-advanced-macd` | Momentum | own | SCOTTGO (indicator title "MACD: Clean Visuals (Fixed Arrows)") | batch 27 |
-| 1253 | Screener - Mean Reversion Channel | `screener-mean-reversion-channel` | Channels & Bands | price | fareidzulkifli | most liked |
-| 1254 | Self-Aware Trend System | `self-aware-trend-system` | Trend | price | WillyAlgoTrader | most liked |
-| 1255 | Sell & Buy Rates | `sell-buy-rates` | Volume | own | LonesomeTheBlue |  |
-| 1256 | Sequential Pattern Strength | `sequential-pattern-strength` | Momentum | own | QuantAlgo | batch 9 |
-| 1257 | Session Liquidity | `session-liquidity` | Channels & Bands | price | Infinity_Trading_ | most liked |
-| 1258 | Session Streaks | `session-streaks` | Trend | price | LuxAlgo | most liked |
-| 1259 | Session Sweeps | `session-sweeps` | Volatility | price | LuxAlgo | most liked |
-| 1260 | Session TPO Market Profile | `session-tpo-market-profile` | Volume | price | noop-noop | most liked |
-| 1261 | Sessions | `sessions-luxalgo` | Trend | price | LuxAlgo | most liked |
-| 1262 | Sessions on Chart | `sessions-on-chart` | Trend | price | Aurocks_AIF | most liked |
-| 1263 | Setup 9.1 (Larry Williams) + EMA 50 | `setup-9-1-ema-50` | Moving Averages | price | oDouglasAlex | batch 7 |
-| 1264 | SExI - Super Exhaustion Indicator | `sexi-super-exhaustion-indicator` | Oscillators | own | Da_Prof | batch 14 |
-| 1265 | Sharp Modified Moving Average | `sharp-modified-moving-average` | Moving Averages | price | everget | batch 18 |
-| 1266 | Sharpe Ratio Indicator (180) | `sharpe-ratio-indicator` | Volatility | own | tim_amblard | batch 3 |
-| 1267 | Sharpe Ratio v4 | `sharpe-ratio-v4` | Oscillators | own | Zettt | batch 32 |
-| 1268 | Sharpshooter 30 – EMA Distance | `sharpshooter-30-ema-distance` | Moving Averages | price | hrak22 | batch 33 |
-| 1269 | Shock Percentile Moving Average \| NAL | `shock-percentile-moving-average-nal` | Moving Averages | price | NordicAlphaLab | batch 22 |
-| 1270 | Sigmoid RSI \| NAL | `sigmoid-rsi-nal` | Oscillators | own | NordicAlphaLab | batch 11 |
-| 1271 | Signal Forge | `signal-forge` | Trend | price | LuxAlgo | most liked |
-| 1272 | Signal Moving Average | `signal-ma` | Moving Averages | price | LuxAlgo |  |
-| 1273 | Simple Moving Averages | `simple-moving-averages` | Moving Averages | price |  |  |
-| 1274 | Simplified Percentile Clustering | `simplified-percentile-clustering` | Oscillators | own | InvestorUnknown | batch 4 |
-| 1275 | Sine Weighted Moving Average | `sine-weighted-moving-average` | Moving Averages | price | everget | batch 13 |
-| 1276 | SL - 4 EMAs, 2 SMAs & Crossover Signals | `sl-4-emas-2-smas-crossover-signals` | Moving Averages | price | MVP202020205 | batch 27 |
-| 1277 | Slow Heiken Ashi | `slow-heiken-ashi` | Candlestick Patterns | price |  |  |
-| 1278 | Slow Stochastic | `slow-stochastic` | Oscillators | own | Oshri17 | most liked |
-| 1279 | SMA Angle Alerts | `sma-angle-alerts` | Moving Averages | price | readysetfire | batch 21 |
-| 1280 | SMA DMA Crossing Signal | `sma-dma-crossing-signal` | Moving Averages | price | tradingqueen18 | batch 31 |
-| 1281 | SMA Squeeze Oscillator | `sma-squeeze-oscillator` | Momentum | own | Uncle_the_shooter | batch 23 |
-| 1282 | SMA+ADX Filter | `sma-adx-filter` | Trend | price | iping99 | batch 31 |
-| 1283 | Smart Breakout Targets | `smart-breakout-targets` | Volatility | price | WillyAlgoTrader | most liked |
-| 1284 | Smart MCDX FINAL PRO | `smart-mcdx-final-pro` | Volume | own | Sachse-1980 | batch 30 |
-| 1285 | Smart Money Breakout Channels | `smart-money-breakout-channels` | Channels & Bands | price | AlgoAlpha | most liked |
-| 1286 | Smart Money Breakout Signals | `smart-money-breakout-signals` | Trend | price | AlgoAlpha | most liked |
-| 1287 | Smart Money Breakouts | `smart-money-breakouts` | Trend | price | ChartPrime | most liked |
-| 1288 | Smart Money Concepts (SMC) | `smart-money-concepts-luxalgo` | Trend | price | LuxAlgo | most liked |
-| 1289 | Smart Money Concepts Probability (Expo) | `smart-money-concepts-probability` | Trend | price | Zeiierman | most liked |
-| 1290 | Smart Money Flow Signals | `smart-money-flow-signals` | Volume | own | QuantAlgo | batch 2 |
-| 1291 | Smart Money Range | `smart-money-range` | Volume | price | ChartPrime | most liked |
-| 1292 | Smart Money Volume Index | `smart-money-volume-index` | Volume | own | AlgoAlpha | most liked |
-| 1293 | Smart Trader, Episode 03, by Ata Sabanci, Candles and Tradelines | `smart-trader-episode-03-by-ata-sabanci` | Trend | price | ata_sabanci | most liked |
-| 1294 | Smart Trader, Episode 06, Isotropic Trend Lines | `smart-trader-episode-06-isotropic-trend-lines` | Trend | price | ata_sabanci | most liked |
-| 1295 | Smart Trend | `smart-trend` | Trend | price | Zofesu | batch 21 |
-| 1296 | Smarter SNR (Support and Ressistance, Trendline, MTF OSC) | `smarter-snr` | Trend | price | hanabil | most liked |
-| 1297 | SMC Indicator With Webhook | `smc-indicator-with-webhook` | Trend | price | sunwoo101 | most liked |
-| 1298 | SMC Statistical Liquidity Walls | `smc-statistical-liquidity-walls` | Channels & Bands | price | PhenLabs | batch 25 |
-| 1299 | SMC Structures and FVG | `smc-structures-and-fvg` | Trend | price | LudoGH68 | most liked |
-| 1300 | SMIIOL | `smiiol` | Momentum | own | iilter | batch 25 |
-| 1301 | Smooth RSI | `smooth-rsi` | Momentum | own | MarktQuant | batch 8 |
-| 1302 | Smoothed Heiken Ashi | `smoothed-heiken-ashi` | Trend | price | jackvmk |  |
-| 1303 | Smoothed Low-Pass Butterworth Filtered Median | `butterworth-filtered-median` | Moving Averages | price | AlphaNatt | batch 8 |
-| 1304 | Smoothed Source Weighted EMA | `smoothed-source-weighted-ema` | Moving Averages | price | Clokivez | batch 13 |
-| 1305 | SMT Divergences | `smt-divergences` | Trend | price | LuxAlgo | most liked |
-| 1306 | Source | `ott-bands` | Channels & Bands | price | KivancOzbilgic |  |
-| 1307 | Source | `otto` | Oscillators | own | KivancOzbilgic |  |
-| 1308 | Source | `range-filter-dw` | Trend | price |  |  |
-| 1309 | Source-Aligned Oscillators (for Divergences) | `source-aligned-oscillators` | Oscillators | own | QuantNomad | batch 18 |
-| 1310 | SP - MACD with Divergence | `sp-macd-with-divergence` | Momentum | own | ca_sidnayak | batch 24 |
-| 1311 | Spira Alligator | `spira-alligator` | Trend | price | Markedsignaler | batch 26 |
-| 1312 | SPX500 Quick Drop & Rise Alerts | `spx500-quick-drop-rise-alerts` | Momentum | price | PaperChains | batch 41 |
-| 1313 | Squeeze Channel | `squeeze-channel` | Channels & Bands | price | B3AR_Trades | batch 16 |
-| 1314 | Squeeze Momentum | `squeeze-momentum` | Momentum | own | LazyBear |  |
-| 1315 | Squeeze Momentum Indicator Version2 by KıvanÇ fr3762 | `squeeze-momentum-indicator-version2-by-k-van` | Momentum | own | KivancOzbilgic | most liked |
-| 1316 | Squeeze Momentum V2 with Divergence | `squeeze-momentum-v2` | Oscillators | own |  |  |
-| 1317 | SSL Channel | `ssl-channel` | Trend | price |  |  |
-| 1318 | SSL Hybrid | `ssl-hybrid` | Trend | price | Mihkel00 | most liked |
-| 1319 | SSL HYBRID Advanced | `ssl-hybrid-advanced` | Trend | price | traderharikrishna (after "SSL Hybrid" by Mihkel00) | most liked |
-| 1320 | SSL Hybrid Scalper | `ssl-hybrid-scalper` | Moving Averages | price | nabeel8369 | batch 11 |
-| 1321 | ST0P | `st0p` | Oscillators | price |  |  |
-| 1322 | Standardized MACD HA | `standardized-macd-ha` | Momentum | own | EliCobra |  |
-| 1323 | Start | `lucid-sar` | Trend | price |  |  |
-| 1324 | Statistical Price Deviation Index (MAD/VWMA) | `statistical-price-deviation-index` | Oscillators | own | exploretranspose | batch 16 |
-| 1325 | STC Indicator - A Better MACD | `stc-indicator-a-better-macd` | Oscillators | own | shayankm | most liked |
-| 1326 | STD-Filtered, N-Pole Gaussian Filter | `std-filtered-n-pole-gaussian-filter` | Moving Averages | price | loxx | most liked |
-| 1327 | STH Unrealized Profit/Loss Ratio (STH-NUPL) | `sth-unrealized-profit-loss-ratio` | Oscillators | own | DeVrizii | batch 15 |
-| 1328 | Stoch VX3 | `stoch-vx3` | Oscillators | own |  |  |
-| 1329 | Stochastic Heat Map | `stochastic-heat-map` | Momentum | own | Violent |  |
-| 1330 | Stochastic Momentum Index | `stochastic-momentum-index` | Oscillators | own |  |  |
-| 1331 | UCS_Stochastic Momentum Index | `smi-ucs` | Oscillators | own |  |  |
-| 1332 | Stochastic OTT | `stochastic-ott` | Oscillators | own | KivancOzbilgic |  |
-| 1333 | Stockbee ComboBull | `stockbee-combobull` | Momentum | own | traderabhi81 | batch 29 |
-| 1334 | Stockbee Reversal Bullish v2 | `stockbee-reversal-bullish-v2` | Momentum | own | traderabhi81 | batch 29 |
-| 1335 | Stop/Take Bounds | `stop-take-bounds` | Volatility | price | Y_Goldman | batch 27 |
-| 1336 | Strat Assistant | `strat-assistant` | Trend | price | rickyzcarroll | most liked |
-| 1337 | Strength of Divergence Across Multiple Indicators | `strength-of-divergence-across-multiple` | Oscillators | price | reees | most liked |
-| 1338 | Strong Burst Fader \| ProjectSyndicate | `strong-burst-fader-projectsyndicate` | Volatility | price | ProjectSyndicate | batch 38 |
-| 1339 | Strong Demands & Supplies + Liquidity \| Zonas de Compra e Venda | `strong-demands-supplies-liquidity-zonas-de` | Trend | price | Luis_TudoSobreTrading | most liked |
-| 1340 | Strong Engulfing Candlestick (With Alerts) | `strong-engulfing-candlestick` | Candlestick Patterns | price | kyjefive | batch 39 |
-| 1341 | Super Guppy | `super-guppy` | Trend | price | JustUncleL |  |
-| 1342 | Super OrderBlock / FVG / BoS Tools by makuchaku & eFe | `super-orderblock-fvg-bos` | Trend | price | makuchaku | most liked |
-| 1343 | Super SMA 5 8 13 + EMA 20/200 Regime Filter (ALIZET) | `super-sma-5-8-13-ema-20-200-regime-filter` | Moving Averages | price | afdzjr69 | batch 19 |
-| 1344 | Super Smoothed MACD | `super-smoothed-macd` | Momentum | own |  |  |
-| 1345 | Super SuperTrend | `super-supertrend` | Trend | price |  |  |
-| 1346 | Super trend V | `super-trend-v` | Trend | price | RafaelZioni | most liked |
-| 1347 | SuperBands | `superbands` | Trend | price | The_Peaceful_Lizard | batch 7 |
-| 1348 | SuperBollingerTrend (Expo) | `superbollingertrend` | Trend | price | Zeiierman | most liked |
-| 1349 | SuperSmoother MA Oscillator | `supersmoother-ma-oscillator` | Oscillators | own | BOSWaves | batch 1 |
-| 1350 | SuperTrend + Relative Volume (Kernel Optimized) | `supertrend-relative-volume-kernel` | Trend | price | fluxchart | most liked |
-| 1351 | SuperTrend AI Clustering | `supertrend-ai-clustering` | Trend | price |  |  |
-| 1352 | SuperTrend Channels | `supertrend-channels` | Channels & Bands | price |  |  |
-| 1353 | Supertrend MTF Heikin Ashi | `supertrend-mtf-heikin-ashi` | Trend | price | LonesomeTheBlue | most liked |
-| 1354 | SuperTrend Oscillator | `supertrend-oscillator` | Oscillators | own | LuxAlgo | most liked |
-| 1355 | Supply & Demand (MTF) \| Flux Charts | `supply-demand-flux-charts` | Trend | price | fluxchart | most liked |
-| 1356 | Supply and Demand Anchored | `supply-and-demand-anchored` | Volume | price | LuxAlgo | most liked |
-| 1357 | Supply and Demand Daily | `supply-and-demand-daily` | Volume | price | LuxAlgo | most liked |
-| 1358 | Supply and Demand Visible Range | `supply-and-demand-visible-range` | Volume | price | LuxAlgo | most liked |
-| 1359 | Supply and Demand Zones | `supply-and-demand-zones` | Volume | price | BigBeluga | most liked |
-| 1360 | Supply Demand Profiles | `supply-demand-profiles` | Volume | price | LuxAlgo | most liked |
-| 1361 | Supply Demand Zones Pro | `supply-demand-zones-pro` | Channels & Bands | price | ProjectSyndicate | most liked |
-| 1362 | Support & Resistance AI (K means/median) | `support-resistance-ai` | Channels & Bands | price | ThinkLogicAI | most liked |
-| 1363 | Support & Resistance Pro Toolkit | `support-resistance-pro-toolkit` | Trend | price | LuxAlgo | most liked |
-| 1364 | Support and Resistance (High Volume Boxes) | `support-resistance-high-volume-boxes` | Volume | price | ChartPrime | most liked |
-| 1365 | Support and Resistance (MTF) \| Flux Charts | `support-and-resistance-flux-charts` | Trend | price | fluxchart | most liked |
-| 1366 | Support and Resistance Levels with Breaks | `sr-levels-breaks` | Channels & Bands | price |  |  |
-| 1367 | Support and Resistance Logistic Regression \| Flux Charts | `support-and-resistance-logistic-regression` | Trend | price | fluxchart | most liked |
-| 1368 | Support and Resistance Power Channel | `support-resistance-power-channel` | Trend | price | ChartPrime | most liked |
-| 1369 | Support and Resistance Signals MTF | `support-resistance-signals-mtf` | Trend | price | LuxAlgo | most liked |
-| 1370 | Support Resistance - Dynamic | `support-resistance-dynamic` | Trend | price | LonesomeTheBlue | most liked |
-| 1371 | Support Resistance - Dynamic v2 | `support-resistance-dynamic-v2` | Trend | price | LonesomeTheBlue | most liked |
-| 1372 | Support Resistance Channels | `support-resistance-channels` | Trend | price | LonesomeTheBlue |  |
-| 1373 | Support Resistance Channels/Zones Multi Time Frame | `support-resistance-channels-mtf` | Trend | price | LonesomeTheBlue | most liked |
-| 1374 | Support Resistance Classification (VR) | `support-resistance-classification` | Channels & Bands | price | LuxAlgo | most liked |
-| 1375 | Support Resistance Interactive | `support-resistance-interactive` | Trend | price | LonesomeTheBlue | most liked |
-| 1376 | Support Resistance MTF | `support-resistance-mtf` | Trend | price | LonesomeTheBlue | most liked |
-| 1377 | Support Resistance with Breaks and Retests | `support-resistance-with-breaks-and-retests` | Trend | price | HoanGhetti | most liked |
-| 1378 | Support/Resistance Channel Breakout | `support-resistance-channel-breakout` | Channels & Bands | price | SuprAlgo | batch 31 |
-| 1379 | Support/Resistance V2 Indicator | `support-resistance-v2-indicator` | Trend | price | BarsStallone | most liked |
-| 1380 | Suppot and resistance & BUY SELL SIGNALS | `suppot-and-resistance-buy-sell-signals` | Channels & Bands | price | doganayy2 | batch 20 |
-| 1381 | Sweep Candle | `sweep-candle` | Candlestick Patterns | price | odnac | batch 41 |
-| 1382 | Sweep Engulf 2 Candle | `sweep-engulf-2-candle` | Candlestick Patterns | price | gastrophollic | batch 41 |
-| 1383 | Sweep Engulf CHoCH | `sweep-engulf-choch` | Candlestick Patterns | price | gastrophollic | batch 38 |
-| 1384 | Sweep institutional | `sweep-institutional` | Trend | price | Algoryze | most liked |
-| 1385 | Sweep2Trade Pro | `sweep2trade-pro` | Trend | price | chervolino | batch 8 |
-| 1386 | Swing Anchored Vwap | `swing-anchored-vwap` | Volume | price | BigBeluga | most liked |
-| 1387 | Swing Breakout Sequence | `swing-breakout-sequence` | Trend | price | LuxAlgo | most liked |
-| 1388 | Swing Failure Pattern (SFP) | `swing-failure-pattern` | Trend | price | LuxAlgo | most liked |
-| 1389 | Swing Failure Signals | `swing-failure-signals` | Trend | price | AlgoAlpha | most liked |
-| 1390 | Swing High/Low (ZigZag) | `swing-high-low` | Trend | price | ChartPrime | most liked |
-| 1391 | Swing Highs/Lows & Candle Patterns | `swing-highs-lows-patterns` | Candlestick Patterns | price | LuxAlgo (Pine v5) |  |
-| 1392 | Swing Levels and Liquidity - By Leviathan | `swing-levels-and-liquidity-by-leviathan` | Trend | price | LeviathanCapital | most liked |
-| 1393 | Swing Points | `swing-points` | Trend | price | CrossTradeTeam | batch 14 |
-| 1394 | Swing Profile | `swing-profile` | Volume | price | BigBeluga | most liked |
-| 1395 | Swing Support and Resistance | `swing-support-and-resistance` | Trend | price | VSB-2024 | batch 25 |
-| 1396 | Swing Trade Signals | `swing-trade-signals` | Oscillators | price | nicks1008 |  |
-| 1397 | Swing Volume Profiles | `swing-volume-profiles` | Volume | price | LuxAlgo | most liked |
-| 1398 | SwingArm ATR Trend Indicator | `swingarm-atr-trend-indicator` | Trend | price | vsnfnd (script title "Blackflag FTS") | most liked |
-| 1399 | T1 Wyckoff Aggressive A/D Setup | `t1-wyckoff-aggressive-a-d-setup` | Volume | price | Teyo69 | batch 38 |
-| 1400 | T3 Length | `t3-psar` | Moving Averages | price |  |  |
-| 1401 | TA (Miles) Adaptive Trend | `ta-adaptive-trend` | Trend | price | TradingApologist | batch 27 |
-| 1402 | Target Trend | `target-trend` | Trend | price | BigBeluga | most liked |
-| 1403 | Targets For Many Indicators | `targets-for-many-indicators` | Trend | price | LuxAlgo | most liked |
-| 1404 | Targets For Overlay Indicators | `targets-for-overlay-indicators` | Trend | price | LuxAlgo | most liked |
-| 1405 | TASC 2025.02 Autocorrelation Indicator | `tasc-2025-02-autocorrelation` | Oscillators | own | PineCodersTASC | batch 6 |
-| 1406 | TASC 2025.06 Cybernetic Oscillator | `tasc-2025-06-cybernetic-oscillator` | Oscillators | own | PineCodersTASC | batch 5 |
-| 1407 | TASC 2025.09 The Continuation Index | `tasc-2025-09-the-continuation-index` | Trend | own | PineCodersTASC | batch 14 |
-| 1408 | TASC 2026.01 The Reversion Index | `tasc-2026-01-the-reversion-index` | Oscillators | own | PineCodersTASC | batch 26 |
-| 1409 | TASC 2026.04 A Synthetic Oscillator | `tasc-2026-04-a-synthetic-oscillator` | Oscillators | own | PineCodersTASC | batch 7 |
-| 1410 | TASC 2026.05 The AutoTune Filter | `tasc-2026-05-the-autotune-filter` | Oscillators | own | PineCodersTASC | batch 8 |
-| 1411 | TASC 2026.09 Adaptive SuperSmoother | `tasc-2026-09-adaptive-supersmoother` | Moving Averages | own | PineCodersTASC | batch 15 |
-| 1412 | TDI - Traders Dynamic Index + RSI Divergences + Buy/Sell Signals | `tdi-traders-dynamic-index-rsi-divergences-buy` | Oscillators | own | ZyadaCharts | most liked |
-| 1413 | TDI - Traders Dynamic Index [Goldminds] | `tdi-rsi` | Momentum | own |  |  |
-| 1414 | Technical Ratings | `technical-ratings` | Oscillators | own |  | most liked |
-| 1415 | Tenkan Cloud Signals | `tenkan-cloud-signals` | Trend | price | CodaPro | batch 11 |
-| 1416 | Terminal Velocity Stop \| Lyro RS | `terminal-velocity-stop-lyro-rs` | Trend | price | LyroRS | batch 13 |
-| 1417 | TFO + ADX with Histogram & Signal | `tfo-adx-with-histogram-signal` | Oscillators | own | WalrusQuant | batch 26 |
-| 1418 | The Echo Forecast | `the-echo-forecast` | Trend | price | LuxAlgo | most liked |
-| 1419 | The Jewel | `the-jewel` | Oscillators | own | afonso_77 | batch 37 |
-| 1420 | The Mean Goose v1 | `the-mean-goose-v1` | Channels & Bands | price | FattyGuinness | batch 15 |
-| 1421 | The Next Pivot | `the-next-pivot` | Trend | price | KioseffTrading | most liked |
-| 1422 | The Strat | `the-strat` | Candlestick Patterns | price | shayy110 | batch 42 |
-| 1423 | Theil-Sen Line Filter | `theil-sen-line-filter` | Moving Averages | price | BackQuant | batch 18 |
-| 1424 | Three Bar Reversal Pattern | `three-bar-reversal-pattern` | Trend | price | LuxAlgo | most liked |
-| 1425 | Three Drive Pattern Detector | `three-drive-pattern-detector` | Trend | price | LuxAlgo | most liked |
-| 1426 | Three Moving Averages | `three-moving-averages` | Moving Averages | price |  |  |
-| 1427 | Three-Bar Reversal/Continuation | `three-bar-reversal-continuation` | Candlestick Patterns | price | abuzka | batch 42 |
-| 1428 | Tight Range Display with Background | `tight-range-display-with-background` | Volatility | price | rakeshhelva | batch 42 |
-| 1429 | Tillson T3 | `tillson-t3` | Trend | price | KivancOzbilgic (fr3762) |  |
-| 1430 | Time-based Alerts for Trading Windows | `time-based-alerts-for-trading-windows` | Trend | price | xhmxdir | batch 41 |
-| 1431 | TMA Overlay | `tma-overlay` | Moving Averages | price | ArtyFXC | most liked |
-| 1432 | TMO (True Momentum Oscillator) | `tmo` | Momentum | own | Coulisnosaj | batch 15 |
-| 1433 | Tom DeMark MACD | `td-macd` | Momentum | own |  |  |
-| 1434 | TonyUX EMA Scalper | `tonyux-ema-scalper` | Oscillators | price |  |  |
-| 1435 | Top & Bottom Candle | `top-bottom-candle` | Candlestick Patterns | own |  |  |
-| 1436 | Tops/Bottoms | `tops-bottoms` | Oscillators | price |  |  |
-| 1437 | TR High/Low meter | `tr-high-low-meter` | Momentum | own | dman103 | batch 10 |
-| 1438 | Trade Price - Spread Compensator Overlay | `trade-price-spread-compensator-overlay` | Channels & Bands | price | The_Forex_Steward | batch 40 |
-| 1439 | Trade Prime - Fluid Trend Indicator | `trade-prime-fluid-trend-indicator` | Trend | price | tradeprime01 | batch 31 |
-| 1440 | Trader XO Macro Trend Scanner | `trader-xo` | Oscillators | price |  |  |
-| 1441 | Traders Dynamic Index Indicator Alert v0.1 by JustUncleL | `traders-dynamic-index-indicator-alert-v0-1-by` | Oscillators | own | JustUncleL | most liked |
-| 1442 | Traders Reality Main | `traders-reality-main` | Trend | price | TradersReality | most liked |
-| 1443 | Trading ABC | `trading-abc` | Trend | price | LonesomeTheBlue | most liked |
-| 1444 | Trading Activity Index | `trading-activity-index` | Volume | own | Zeiierman | batch 2 |
-| 1445 | Trading Gaul | `trading-gaul` | Trend | price | investment20223 | batch 26 |
-| 1446 | TradingMoja / SQZMOM ADX | `tradingmoja-sqzmom-adx` | Momentum | own | Trading_Moja | batch 32 |
-| 1447 | Trailing Stop Loss Indicator by KıvanÇ fr3762 | `trailing-stop-loss-indicator-by-k-van-fr3762` | Trend | price | KivancOzbilgic | most liked |
-| 1448 | Transient Zones v1.1 | `transient-zones` | Channels & Bands | price | Jurij (community) |  |
-| 1449 | Tremor Tracker | `tremor-tracker` | Volatility | own | TheUltimator5 | batch 19 |
-| 1450 | Trend Channels With Liquidity Breaks | `trend-channels-with-liquidity-breaks` | Channels & Bands | price | ChartPrime | most liked |
-| 1451 | Trend Direction Helper (ZigZag and S/R and HH/LL labels) | `trend-direction-helper` | Trend | price | Daveatt (zig zag by Ricardo Santos, pivot levels from Backtest Rookies) | most liked |
-| 1452 | Trend Direction Zone | `trend-direction-zone` | Trend | price | MarketStructureLab | batch 16 |
-| 1453 | Trend Double Pullbackv1.0 | `trend-double-pullback-v1-0` | Trend | price | puduxbt | batch 26 |
-| 1454 | Trend Duration Forecast | `trend-duration-forecast` | Trend | price | ChartPrime | most liked |
-| 1455 | Trend Filter (2-pole) | `trend-filter` | Trend | price | BigBeluga | batch 1 |
-| 1456 | Trend Flow Oscillator (CMF + MFI) + ADX | `trend-flow-oscillator-adx` | Oscillators | own | WalrusQuant | batch 19 |
-| 1457 | Trend Following Moving Averages | `trend-following-ma` | Moving Averages | price | LonesomeTheBlue |  |
-| 1458 | Trend Heatmap | `trend-heatmap` | Trend | own | autocrp | batch 30 |
-| 1459 | Trend Impulse Channels | `trend-impulse-channels` | Trend | price | Zeiierman |  |
-| 1460 | Trend Indicator A-V2 (Smoothed Heikin Ashi Cloud) | `trend-indicator-a-v2` | Trend | price | DZIV | most liked |
-| 1461 | Trend Levels | `trend-levels` | Trend | price | ChartPrime | most liked |
-| 1462 | Trend Line Auto | `trend-line-auto` | Trend | price | HarryBot |  |
-| 1463 | Trend Lines | `trend-lines` | Trend | price | LonesomeTheBlue | most liked |
-| 1464 | Trend Lines for RSI, CCI, Momentum, OBV | `trend-lines-for-rsi-cci-momentum-obv` | Oscillators | own | LonesomeTheBlue | most liked |
-| 1465 | Trend Lines v2 | `trend-lines-v2` | Trend | price | LonesomeTheBlue (Pine v4) |  |
-| 1466 | Trend Magic | `trend-magic` | Trend | price |  |  |
-| 1467 | Trend Meter | `trend-meter` | Trend | own | Lij_MC | most liked |
-| 1468 | Trend Predictor Ribbon Clone - Fixed roj karo moj karo | `trend-predictor-ribbon` | Trend | price | ronitjain18 | batch 6 |
-| 1469 | Trend Pulse Oscillator | `trend-pulse-oscillator` | Oscillators | own | ChaosTrader63 | batch 35 |
-| 1470 | Trend Range Detector | `trend-range-detector` | Channels & Bands | price | Zeiierman | most liked |
-| 1471 | Trend Regularity Adaptive MA | `trama` | Moving Averages | price | LuxAlgo |  |
-| 1472 | Trend Scalper | `trend-scalper` | Moving Averages | price | abedmahmood | batch 35 |
-| 1473 | Trend State Signals | `trend-state-signals` | Trend | price | MarketStructureLab | batch 4 |
-| 1474 | Trend Strength/Direction | `trend-strength-direction` | Trend | own | ddcakez | batch 32 |
-| 1475 | Trend Targets | `trend-targets` | Trend | price | AlgoAlpha | most liked |
-| 1476 | Trend Trader Strategy | `trend-trader` | Trend | price |  |  |
-| 1477 | Trend Trigger Factor | `trend-trigger-factor` | Oscillators | own |  |  |
-| 1478 | Trend Type Indicator by BobRivera990 | `trend-type-indicator-by-bobrivera990` | Trend | own | BobRivera990 | most liked |
-| 1479 | Trend Volatility Index (TVI) | `trend-volatility-index` | Volatility | own | chikaharu | batch 3 |
-| 1480 | Trend with ADX/EMA - Buy & Sell Signals | `trend-with-adx-ema-buy-sell-signals` | Trend | price | RMPM | batch 28 |
-| 1481 | Trend-Pro | `trend-pro` | Trend | price | andrwxwy | batch 38 |
-| 1482 | TrendCylinder (Expo) | `trendcylinder` | Trend | price | Zeiierman | batch 4 |
-| 1483 | Trending Market Toolkit | `trending-market-toolkit` | Trend | price | LuxAlgo | most liked |
-| 1484 | Trendline Breakout Navigator | `trendline-breakout-navigator` | Trend | price | LuxAlgo | most liked |
-| 1485 | Trendline Breakouts With Targets | `trendline-breakouts-with-targets` | Trend | price | ChartPrime | most liked |
-| 1486 | Trendlines - JD | `trendlines-jd` | Trend | price | Duyck | most liked |
-| 1487 | Trendlines 2x + | `trendlines-2x` | Trend | price | Lij_MC | most liked |
-| 1488 | Trendlines with Breaks [LuxAlgo] | `trendlines-with-breaks` | Trend | price | LuxAlgo |  |
-| 1489 | TrendMasterPro_Fekonomi | `trendmasterpro-fekonomi` | Trend | price | fekonomi | batch 20 |
-| 1490 | Trendshift | `trendshift` | Trend | price | chervolino | batch 39 |
-| 1491 | TrendShift Detector | `trendshift-detector` | Candlestick Patterns | price | GIANESELLI | batch 40 |
-| 1492 | TRENDSYNC BUY/SELL BY SIMPLY_DANTE-FX | `trendsync-buy-sell-by-simply-dante-fx` | Trend | price | Simply_Dante-fx | batch 36 |
-| 1493 | TrendWave Bands | `trendwave-bands` | Channels & Bands | price | BigBeluga | batch 1 |
-| 1494 | Triangular Hull Moving Average + Volatility | `triangular-hull-moving-average-volatility` | Trend | price | BigBeluga | most liked |
-| 1495 | Triangular MA Bands | `tma-bands` | Channels & Bands | price |  |  |
-| 1496 | Triangular Momentum Oscillator | `triangular-momentum-osc` | Oscillators | own |  |  |
-| 1497 | Trimmed Mean ATR Bands | `trimmed-mean-atr-bands` | Channels & Bands | price | CryptoNejc | batch 17 |
-| 1498 | Triple Doji Sequence | `triple-doji-sequence` | Candlestick Patterns | price | Marc_Thiart | batch 39 |
-| 1499 | Triple Gaussian Smoothed Ribbon | `triple-gaussian-smoothed-ribbon` | Trend | price | BOSWaves | batch 16 |
-| 1500 | Triple MA For Loop | `triple-ma-for-loop` | Trend | own | SeerQuant | batch 7 |
-| 1501 | Triple MA Forecast | `triple-ma-forecast` | Moving Averages | price | yatrader2 (community) |  |
-| 1502 | Triple RSI \| MisinkoMaster | `triple-rsi-misinkomaster` | Momentum | own | MisinkoMaster | batch 19 |
-| 1503 | True Breakout Pattern Breakout Signal Indicator | `true-breakout-pattern-breakout-signal` | Trend | price | TradingFinder | most liked |
-| 1504 | True High/Low RSI for Divergence | `true-high-low-rsi-for-divergence` | Oscillators | own | Lakt_ | batch 29 |
-| 1505 | True Range eXpansion | `true-range-expansion` | Volatility | price | Sherlock_MacGyver | batch 22 |
-| 1506 | TTM Squeeze | `ttm-squeeze-greeny` | Momentum | own | Greeny | most liked |
-| 1507 | TTM Squeeze Pro | `ttm-squeeze-pro` | Oscillators | own | John Carter |  |
-| 1508 | TTrades Daily Bias | `ttrades-daily-bias` | Trend | price | tradeforopp | most liked |
-| 1509 | Turtle Soup ICT Strategy FVG + CHoCH/CSD | `turtle-soup-ict-strategy-fvg-choch-csd` | Trend | price | TradingFinder | most liked |
-| 1510 | Turtle Trade Channels | `turtle-trade-channels` | Channels & Bands | price | Richard Dennis / William Eckhardt |  |
-| 1511 | Tweezers & Kangaroo Tail | `tweezers-kangaroo-tail` | Candlestick Patterns | price | LonesomeTheBlue |  |
-| 1512 | Twin Range Filter | `twin-range-filter` | Trend | price | colinmck |  |
-| 1513 | Twin Range Filter Visualized | `twin-range-filter-visualized` | Trend | price | KivancOzbilgic | most liked |
-| 1514 | Two-Pole Oscillator | `two-pole-oscillator` | Oscillators | own | BigBeluga | most liked |
-| 1515 | Ultimate Buy & Sell | `ultimate-buy-sell` | Trend | price |  |  |
-| 1516 | Ultimate Moving Average-Multi-TimeFrame-7 MA Types | `ultimate-moving-average-mtf` | Moving Averages | price | ChrisMoody | most liked |
-| 1517 | Ultimate Opening Range Breakout | `ultimate-opening-range-breakout` | Volatility | price | LuxAlgo | most liked |
-| 1518 | Ultimate RSI [LuxAlgo] | `ultimate-rsi` | Momentum | own | LuxAlgo |  |
-| 1519 | Ultra Clean Support / Resistance Levels | `ultra-clean-support-resistance-levels` | Trend | price | Stocktitian | batch 30 |
-| 1520 | Ultra Smart Trail | `ultra-smart-trail` | Trend | price | Rathack | batch 18 |
-| 1521 | UM EMA SMA WMA HMA with Directional Color Change | `um-ema-sma-wma-hma-with-directional-color-change` | Moving Averages | price | UnderwearMillionaire | batch 30 |
-| 1522 | Unicorn Setup Detector (aziz abid) | `unicorn-setup-detector` | Trend | price | mohammedazizabid | batch 40 |
-| 1523 | Universal Large Orders Proxy fabio valentini Chat gpt Recreation | `universal-large-orders-proxy-fabio-valentini-chat-gpt-recreation` | Volume | price | boss11233 | batch 18 |
-| 1524 | Universal Signal Backtester | `universal-signal-backtester` | Trend | price | LuxAlgo | most liked |
-| 1525 | Uptrick: Dynamic Z-Score Deviation | `uptrick-dynamic-z-score-deviation` | Trend | price | Uptrick | batch 6 |
-| 1526 | Uptrick: Liquid Reversal Bands | `liquid-reversal-bands` | Channels & Bands | price | Uptrick | batch 3 |
-| 1527 | Uptrick: MultiMA_Volume | `uptrick-multima-volume` | Moving Averages | price | Uptrick | batch 16 |
-| 1528 | Uptrick: RSI MA Buying/Selling signals | `uptrick-rsi-ma-buying-selling-signals` | Momentum | own | Uptrick | batch 12 |
-| 1529 | Uptrick: Trend Analysis | `uptrick-trend-analysis` | Momentum | own | Uptrick | batch 14 |
-| 1530 | Uptrick: Volatility Reversion Bands | `uptrick-volatility-reversion-bands` | Channels & Bands | price | Uptrick | batch 4 |
-| 1531 | Uptrick: Zero Lag HMA Trend Suite | `zero-lag-hma-trend-suite` | Moving Averages | price | Uptrick | batch 3 |
-| 1532 | User Defined Range Selector and Color Changing EMA Line | `user-defined-range-selector-and-color-changing-ema-line` | Moving Averages | price | Crypto_Moses | batch 23 |
-| 1533 | UT Bot | `ut-bot` | Trend | price |  |  |
-| 1534 | Ut bot - Trend+volume | `ut-bot-trend-volume` | Trend | price | BhargavMeghnathi | batch 40 |
-| 1535 | Vacuum Candles | `vacuum-candles` | Volume | price | XrayAlgo | batch 41 |
-| 1536 | Variable Moving Average | `variable-ma` | Moving Averages | price | LazyBear |  |
-| 1537 | VARIS Zones | `varis-zones` | Channels & Bands | price | IAmTheLiquidity2 | batch 17 |
-| 1538 | VCO Fusion | `vco-fusion` | Oscillators | own | Uncle_the_shooter | batch 20 |
-| 1539 | Vdub FX Sniper | `vdub-sniper` | Oscillators | price | Vdubus |  |
-| 1540 | VDUB_BINARY_PRO_3_V2  FINAL + Strategy | `vdub-binary-pro-3-v2` | Channels & Bands | price | vdubus | most liked |
-| 1541 | vdub_Trend_Master_v  /  v1 / v2 / v3 | `vdub-trend-master-v-v1-v2-v3` | Trend | price | vdubus | most liked |
-| 1542 | vdubus BinaryPro | `vdubus-binarypro` | Oscillators | price |  |  |
-| 1543 | Vdubus Divergence Wave Pattern Generator V1 | `vdubus-divergence-wave-pattern-generator-v1` | Trend | price | vdubus | most liked |
-| 1544 | VEGA (Velocity of Efficient Gain Adaptation) | `vega` | Momentum | own | B3AR_Trades | batch 20 |
-| 1545 | Vervoort HA LT Candlestick Oscillator | `vervoort-ha-oscillator` | Oscillators | own |  |  |
-| 1546 | VIM (Volume in Money) | `vim` | Volume | own | tbtb1111 | batch 29 |
-| 1547 | Visualisation tendances | `visualisation-tendances` | Trend | price | Benjamin69 | batch 17 |
-| 1548 | Volatility & Big Market Moves | `volatility-big-market-moves` | Volatility | own | nilstrades_ | batch 24 |
-| 1549 | Volatility Adaptive Filtered Trend | `volatility-adaptive-filtered-trend` | Trend | price | SchizoQuant | batch 6 |
-| 1550 | Volatility Band Cloud with Overextension Signals | `volatility-band-cloud-with-overextension-signals` | Channels & Bands | price | Retire_by_50 | batch 35 |
-| 1551 | Volatility Bands | `volatility-bands` | Channels & Bands | price | pmk07 | batch 23 |
-| 1552 | Volatility Breakout Pulse (VBP FIX) | `volatility-breakout-pulse` | Channels & Bands | price | JohnsonForexTrader | batch 36 |
-| 1553 | Volatility Channel Oscillator | `volatility-channel-oscillator` | Oscillators | own | Uncle_the_shooter | batch 3 |
-| 1554 | Volatility Halo \| NAL | `volatility-halo-nal` | Volatility | price | NordicAlphaLab | batch 6 |
-| 1555 | Volatility Quality | `volatility-quality` | Volatility | own | AlphaExtract | batch 18 |
-| 1556 | Volatility-Driven VWAP Structure | `volatility-driven-vwap-structure` | Channels & Bands | price | Zeiierman | batch 3 |
-| 1557 | Volatility-Gated Trend Oscillator | `volatility-gated-trend-oscillator` | Oscillators | own | QuantAlgo | batch 9 |
-| 1558 | VOLD Ratio Histogram | `vold-ratio-histogram` | Volume | own | Th16rry | batch 23 |
-| 1559 | Volumatic Fair Value Gaps | `volumatic-fair-value-gaps` | Volume | price | BigBeluga | most liked |
-| 1560 | Volumatic S/R Levels | `volumatic-sr-levels` | Trend | price | BigBeluga |  |
-| 1561 | Volumatic Variable Index Dynamic Average | `volumatic-variable-index-dynamic-average` | Trend | price | BigBeluga | most liked |
-| 1562 | Volume + RSI & MA Differential | `volume-rsi-ma-differential` | Volume | own | ozzy_livin | batch 7 |
-| 1563 | Volume / Open Interest "Footprint" - By Leviathan | `volume-open-interest-footprint-by-leviathan` | Volume | price | LeviathanCapital | most liked |
-| 1564 | Volume Accumulation Percentage | `volume-accumulation-pct` | Volume | own |  |  |
-| 1565 | Volume Alert | `volume-alert` | Volume | price | oDouglasAlex | batch 42 |
-| 1566 | Volume Analysis - Heatmap and Volume Profile | `volume-analysis-heatmap-and-volume-profile` | Volume | own | LonesomeTheBlue | most liked |
-| 1567 | Volume and Volatility Ratio Indicator-WODI | `volume-and-volatility-ratio-indicator-wodi` | Volume | own | W0DI | batch 16 |
-| 1568 | Volume Bands | `volume-bands` | Channels & Bands | price | MisinkoMaster | batch 6 |
-| 1569 | Volume bar range | `volume-bar-range` | Volume | price | pandorid | batch 25 |
-| 1570 | Volume Bars Color | `volume-bars-color` | Volume | own | Evgenyc111 | batch 20 |
-| 1571 | Volume Bubbles & Liquidity Heatmap | `volume-bubbles-liquidity-heatmap` | Volume | price | LuxAlgo | most liked |
-| 1572 | Volume Buy/Sell Split | `volume-buy-sell-split` | Volume | own | LHAMA-Trading | batch 26 |
-| 1573 | Volume Candle Coloring v5 (BARCOLOR STABLE) | `volume-candle-coloring-v5` | Volume | price | sugogou | batch 37 |
-| 1574 | Volume Candle Highlighter | `volume-candle-highlighter` | Volume | price | Dougie_dee | batch 5 |
-| 1575 | Volume Candles | `volume-candles` | Volume | price | alexrainman | batch 39 |
-| 1576 | Volume Colored Bars | `volume-colored-bars` | Volume | own |  |  |
-| 1577 | Volume Comparison with Buyer/Seller Pressure | `volume-comparison-with-buyer-seller-pressure` | Volume | own | ask2maniish | batch 26 |
-| 1578 | Volume Divergence | `volume-divergence` | Volume | own | baymucuk |  |
-| 1579 | Volume Flow Indicator | `volume-flow-indicator` | Volume | own |  |  |
-| 1580 | Volume Flow v3 | `volume-flow-v3` | Volume | own | DepthHouse / oh92 (community) |  |
-| 1581 | Volume Footprint | `volume-footprint` | Volume | price | LuxAlgo |  |
-| 1582 | Volume Footprint: Measuring by Math & Geometry | `volume-footprint-measuring-by-math-geometry` | Volume | price | ata_sabanci | most liked |
-| 1583 | Volume Gaps & Imbalances | `volume-gaps-imbalances` | Volume | price | Zeiierman | most liked |
-| 1584 | Volume HeatMap Divergence | `volume-heatmap-divergence` | Volume | price | BigBeluga | most liked |
-| 1585 | Volume LinReg Trend | `volume-linreg-trend` | Volume | own | LonesomeTheBlue |  |
-| 1586 | Volume Order Blocks | `volume-order-blocks` | Volume | price | BigBeluga | most liked |
-| 1587 | Volume Orderbook (Expo) | `volume-orderbook` | Volume | price | Zeiierman | most liked |
-| 1588 | Volume Positive Negative (VPN) | `volume-positive-negative` | Volume | own | LevelUpTools | batch 2 |
-| 1589 | Volume Price Confirmation Indicator | `vpci` | Volume | own |  |  |
-| 1590 | Volume Profile | `volume-profile` | Volume | price | LuxAlgo | most liked |
-| 1591 | Volume Profile (kv4coins) | `volume-profile-kv4coins` | Volume | price | kv4coins | most liked |
-| 1592 | Volume Profile + Pivot Levels | `volume-profile-pivot-levels` | Volume | price | ChartPrime | most liked |
-| 1593 | Volume Profile / Fixed Range | `volume-profile-fixed-range` | Volume | price | LonesomeTheBlue | most liked |
-| 1594 | Volume Profile Auto | `volume-profile-auto` | Volume | price | fikira | most liked |
-| 1595 | Volume Profile Free Pro (25 Levels Value Area VWAP) by RRB | `volume-profile-free-pro-by-rrb` | Volume | price | RagingRocketBull | most liked |
-| 1596 | Volume Profile Free Ultra SLI (100 Levels Value Area VWAP) - RRB | `volume-profile-free-ultra-sli` | Volume | price | RagingRocketBull | most liked |
-| 1597 | Volume Profile Heatmap | `volume-profile-heatmap` | Volume | price | KeyAlgos | batch 13 |
-| 1598 | Volume Profile per day with support/resistance lines | `volume-profile-per-day-with-support` | Volume | price | juliangonzaconde | most liked |
-| 1599 | Volume Profile Plus | `volume-profile-plus` | Volume | price | AlphaViz | most liked |
-| 1600 | Volume Profile, Pivot Anchored by DGT | `volume-profile-pivot-anchored` | Volume | price | dgtrd | most liked |
-| 1601 | Volume Sentiment Breakout Channels | `volume-sentiment-breakout-channels` | Channels & Bands | price | AlgoAlpha | most liked |
-| 1602 | Volume Spike and Contraction Indicator | `volume-spike-and-contraction-indicator` | Volume | price | epicurusMcPot | batch 41 |
-| 1603 | Volume Spike Indicator | `volume-spike-indicator` | Volume | price | rikyu04 | batch 42 |
-| 1604 | Volume Suite - By Leviathan (CVD, Volume Delta, Relative Volume) | `volume-suite-by-leviathan` | Volume | own | LeviathanCapital | most liked |
-| 1605 | Volume SuperTrend AI (Expo) | `volume-supertrend-ai` | Trend | price |  |  |
-| 1606 | Volume Surge Detector | `volume-surge-detector` | Volume | own | SpeculationLab | batch 19 |
-| 1607 | Volume Variation Index Indicator | `volume-variation-index-indicator` | Volume | own | thequantscience | batch 35 |
-| 1608 | Volume Weighted MACD V2 | `vw-macd-v2` | Momentum | own |  |  |
-| 1609 | VOLUME WEIGHTED MACD V2 | `volume-weighted-macd-v2-vwmacdv2-by-kivan` | Momentum | own | KivancOzbilgic | most liked |
-| 1610 | Volume Weighted Median Price (VWMP) | `volume-weighted-median-price` | Moving Averages | price | vsov | batch 14 |
-| 1611 | Volume Weighted RSI (VW RSI) | `volume-weighted-rsi` | Momentum | own | CsokosGeza | batch 34 |
-| 1612 | Volume Weighted Trend | `volume-weighted-trend` | Trend | price | QuantAlgo | batch 1 |
-| 1613 | Volume with Alert | `volume-with-alert` | Volume | own | BullBearSR | batch 30 |
-| 1614 | Volume with EMA and Coloring Rules | `volume-with-ema-and-coloring-rules` | Volume | own | itisfilipe | batch 37 |
-| 1615 | Volume-Based Moving Average | `volume-based-moving-average` | Moving Averages | price | The_Forex_Steward | batch 36 |
-| 1616 | Volume-Based RSI Color Indicator with MAs | `volume-based-rsi-color-indicator-with-mas` | Oscillators | own | Riccardo02 | batch 32 |
-| 1617 | Volume-based Support & Resistance Zones | `volume-based-support-resistance-zones` | Volume | price | tommyf1001 | most liked |
-| 1618 | Volume-Gated Trend Ribbon | `volume-gated-trend-ribbon` | Trend | price | QuantAlgo | batch 3 |
-| 1619 | Volume-Trend Order Block Engine | `volume-trend-order-block-engine` | Trend | price | BigBeluga | most liked |
-| 1620 | Volume-Weighted MA Crossover | `volume-weighted-ma-crossover` | Moving Averages | price | AlphaNatt | batch 9 |
-| 1621 | Volume-Weighted Money Flow | `volume-weighted-money-flow` | Volume | own | sgbpulse | batch 33 |
-| 1622 | Volume-Weighted Order Block Zones | `volume-weighted-order-block-zones` | Volume | price | BigBeluga | most liked |
-| 1623 | Volume-Weighted Pivot Bands | `volume-weighted-pivot-bands` | Channels & Bands | price | LeafAlgo | batch 33 |
-| 1624 | Volume-Weighted Price Z-Score | `volume-weighted-price-z-score` | Oscillators | own | QuantAlgo | batch 6 |
-| 1625 | Volumetric Compressed MA | `volumetric-compressed-ma` | Moving Averages | price | serkany88 | batch 14 |
-| 1626 | Volumetric Entropy Index | `volumetric-entropy-index` | Volume | own | Sherlock_MacGyver | batch 27 |
-| 1627 | Volumetric Order Flow Structure | `volumetric-order-flow-structure` | Trend | price | LuxAlgo | most liked |
-| 1628 | Volumetric Tensegrity | `volumetric-tensegrity` | Volume | own | TheLeadingIndicator | batch 30 |
-| 1629 | VolVol | `volvol` | Volume | price | kunalgolani | batch 26 |
-| 1630 | Vortex Pro with Moving average | `vortex-pro-with-moving-average` | Oscillators | own | pointalgo | batch 25 |
-| 1631 | Voss Predictive Filter | `voss-predictive-filter` | Oscillators | own | e2e4 | batch 8 |
-| 1632 | VPSA-VTD | `vpsa-vtd` | Volume | own | CatTheTrader | batch 11 |
-| 1633 | Vulkan Profit | `vulkan-profit` | Trend | price | AlgoCollective | batch 33 |
-| 1634 | VuManChu Swing Free | `vumanchu-swing` | Trend | price |  |  |
-| 1635 | VWAP & Dual MA Ribbon Tracker Pro | `vwap-dual-ma-ribbon-tracker-pro` | Trend | own | Simon20cent | batch 19 |
-| 1636 | VWAP Deviation Oscillator | `vwap-deviation-oscillator` | Oscillators | own | BackQuant | batch 9 |
-| 1637 | VWAP MTF (Multi Timeframe) | `vwap-mtf` | Volume | price | TheYangGuizi | most liked |
-| 1638 | VWAP Periodic Close | `vwap-periodic-close` | Volume | price | LuxAlgo | most liked |
-| 1639 | VWAP Predictive Breakout + RSI + OB + Trend/Chop | `vwap-predictive-breakout-rsi-ob-trend-chop` | Volume | price | Viggy02 | batch 31 |
-| 1640 | VWAP Stdev Bands v2 Mod | `vwap-stdev-bands-v2-mod` | Channels & Bands | price | TheYangGuizi | most liked |
-| 1641 | VWAP Supply & Demand Zones PRO | `vwap-supply-demand-zones-pro` | Channels & Bands | price | Finntech1 | most liked |
-| 1642 | VWAP Volume Profile | `vwap-volume-profile` | Volume | price | BigBeluga | most liked |
-| 1643 | VWAP/MVWAP/EMA Crossover | `vwap-mvwap-ema-crossover` | Trend | price | DerrickLaFlame |  |
-| 1644 | VWMA/SMA Delta Volatility (Statistical Anomaly Detector) | `vwma-sma-delta-volatility` | Volatility | own | tkarolak | batch 14 |
-| 1645 | VWMACD-MFI-OBV Composite | `vwmacd-mfi-obv-composite` | Volume | own | munair | batch 27 |
-| 1646 | VWRSI Crossovers & Extremes | `vwrsi-crossovers-extremes` | Momentum | own | TheAITradingDesk | batch 35 |
-| 1647 | Waddah Attar Explosion | `waddah-attar-explosion` | Momentum | own | LazyBear/ShayanKM |  |
-| 1648 | WAE Sniper Scalp XAUUSD M1 Tuned | `wae-sniper-scalp-xauusd-m1-tuned` | Momentum | own | khonthailoei19071983 | batch 19 |
-| 1649 | Waindrops | `waindrops` | Volume | price | makit0 | most liked |
-| 1650 | Wave N + KDJ + Volumi + SMC + Ichimoku | `wave-n-kdj-volumi-smc-ichimoku` | Trend | price | Nikus63 | batch 31 |
-| 1651 | WaveFunction MACD | `wavefunction-macd` | Momentum | own | TechnoBlooms | batch 27 |
-| 1652 | Wavelet Filter with Adaptive Upsampling | `wavelet-filter-with-adaptive-upsampling` | Oscillators | own | BackQuant | batch 29 |
-| 1653 | Wavelet Transform Trend | `wavelet-transform-trend` | Trend | price | QuantAlgo | batch 12 |
-| 1654 | Wavelet-Trend ML Integration | `wavelet-trend-ml-integration` | Oscillators | own | AlphaExtract | batch 1 |
-| 1655 | WaveTrend | `wavetrend` | Oscillators | own | LazyBear |  |
-| 1656 | WaveTrend Oscillator | `wavetrend-oscillator` | Momentum | own | LazyBear |  |
-| 1657 | WaveTrend Oscillator + Divergence  + Direction Detection +Alerts | `wavetrend-oscillator-divergence-direction` | Oscillators | own |  | most liked |
-| 1658 | Wedge and Flag Finder (Multi - zigzag) | `wedge-and-flag-finder` | Trend | price | Trendoscope | most liked |
-| 1659 | Weierstrass Function (Fractal Cycles) | `weierstrass-function` | Oscillators | own | fract | batch 17 |
-| 1660 | Weighted percentile nearest rank | `weighted-percentile-nearest-rank` | Moving Averages | price | gorx1 | batch 10 |
-| 1661 | Weighted Regression Bands | `weighted-regression-bands` | Channels & Bands | price | Zeiierman | batch 5 |
-| 1662 | Weis Wave Candle | `weis-wave-candle` | Trend | own | Uncle_the_shooter | batch 34 |
-| 1663 | Weis Wave Volume | `weis-wave-volume` | Volume | own |  |  |
-| 1664 | Whale Activity Impact Oscillator | `whale-activity-impact-oscillator` | Volume | own | mdeacey | batch 18 |
-| 1665 | Whale Liquidity and Absorption Profile | `whale-liquidity-and-absorption-profile` | Volume | price | AlgoAlpha | most liked |
-| 1666 | Whale Volume Absorption & Aggression @MaxMaserati 3.0 | `whale-volume-absorption-aggression-maxmaserati-3-0` | Volume | own | MaxMaserati | batch 22 |
-| 1667 | Wick Volume Alert | `wick-volume-alert` | Candlestick Patterns | price | Shazam77 | batch 41 |
-| 1668 | WICK.ED Fractals | `wicked-fractals` | Oscillators | price | Mit Nayi (community) |  |
-| 1669 | Williams Alligator + Fractals | `williams-combo` | Trend | price | vlkvr (Pine v3) |  |
-| 1670 | Williams BBDiv Signal | `williams-bbdiv-signal` | Oscillators | own | trade_lexx | batch 20 |
-| 1671 | Williams Percent Range with Threshold | `williams-percent-range-with-threshold` | Oscillators | own | xdextra | batch 29 |
-| 1672 | Williams Vix Fix | `williams-vix-fix` | Volatility | own | ChrisMoody |  |
-| 1673 | WLSMA: fast approximation | `wlsma-fast-approximation` | Moving Averages | price | gorx1 | batch 33 |
-| 1674 | Wolfe Scanner (Multi - zigzag) | `wolfe-scanner` | Trend | price | Trendoscope | most liked |
-| 1675 | Wyckoff Effort vs. Result | `wyckoff-effort-vs-result` | Volume | price | TradeTechanalysis | batch 34 |
-| 1676 | x5-smooth-ema | `x5-smooth-ema` | Moving Averages | price | traderninezero | batch 19 |
-| 1677 | XAUUSD Buy/Sell Alerts with SL & TP | `xauusd-buy-sell-alerts-with-sl-tp` | Moving Averages | price | alexandrossolomou1 | batch 8 |
-| 1678 | XAUUSD Family Scalping (5min) | `xauusd-family-scalping` | Oscillators | price | cupra_inc | batch 8 |
-| 1679 | Z-Score | `z-score` | Oscillators | own | joecalledher | batch 21 |
-| 1680 | Z-Score Oscillator | `z-score-oscillator` | Oscillators | own | B3AR_Trades | batch 12 |
-| 1681 | Z-Score STDEMA Bands | `z-score-stdema-bands` | Oscillators | own | TiagoTF | batch 24 |
-| 1682 | Z-Score Trend Monitor | `z-score-trend-monitor` | Oscillators | own | EdgeTerminal | batch 31 |
-| 1683 | Zero Lag Liquidity | `zero-lag-liquidity` | Volume | price | AlgoAlpha | most liked |
-| 1684 | Zero Lag LSMA (ZLSMA) | `zlsma` | Moving Averages | price | veryfid |  |
-| 1685 | Zero Lag MACD | `zero-lag-macd` | Momentum | own | AC (based on Glaz) |  |
-| 1686 | Zero Lag Signals For Loop | `zero-lag-signals-for-loop` | Trend | price | QuantAlgo | batch 1 |
-| 1687 | Zero Lag Trend Signals (MTF) | `zero-lag-trend-signals` | Trend | price | AlgoAlpha | most liked |
-| 1688 | Zero-Lag GARCH Bands \| NAL | `zero-lag-garch-bands-nal` | Volatility | price | NordicAlphaLab | batch 12 |
-| 1689 | Zig Zag Channels | `zig-zag-channels` | Channels & Bands | price | LuxAlgo | most liked |
-| 1690 | ZigZag Multi Time Frame with Fibonacci Retracement | `zigzag-multi-time-frame-with-fibonacci` | Trend | price | LonesomeTheBlue | most liked |
-| 1691 | ZigZag Multiple Methods - Forecast - patterns - labels | `zigzag-multiple-methods-forecast-patterns` | Trend | price | RicardoSantos | most liked |
-| 1692 | ZigZag Percent Reversal - Forecast - patterns - labels | `zigzag-percent-reversal-forecast-patterns` | Trend | price | RicardoSantos | most liked |
-| 1693 | Zigzag Trend/Divergence Detector | `zigzag-trend-divergence-detector` | Trend | price | Trendoscope | most liked |
-| 1694 | ZigZag with Fibonacci Levels | `zigzag-fibonacci` | Trend | price | LonesomeTheBlue |  |
-| 1695 | Zone Shift | `zone-shift` | Trend | price | ChartPrime | most liked |
-| 1696 | ZVOL - Z-Score Volume Heatmap | `zvol-z-score-volume-heatmap` | Volume | own | TheLeadingIndicator | batch 28 |
-| 1697 | 🌊 ALMA Bands | `alma-bands` | Moving Averages | price | B3AR_Trades | batch 26 |
+| 939 | Multi ZigZag Harmonic Patterns | `multi-zigzag-harmonic-patterns` | Trend | price | Trendoscope | most liked |
+| 940 | Multi-Band Trend Line | `multi-band-trend-line` | Trend | price | Mr_Rakun | batch 4 |
+| 941 | Multi-Layer Volume Profile | `multi-layer-volume-profile` | Volume | price | BigBeluga | most liked |
+| 942 | Multi-Oscillator Adaptive Kernel \| AlphaAlgos | `multi-oscillator-adaptive-kernel-alphaalgos` | Oscillators | own | AlphaNatt | batch 4 |
+| 943 | Multicator Table | `signal-table-autofib-sma-ema-rsi-atr-vol` | Trend | price | only_fibonacci | most liked |
+| 944 | Multiple Divergences | `multiple-divergences` | Momentum | price | PeterO |  |
+| 945 | Multiple Exponential Fibnonacci Moving Averages | `multiple-exponential-fibnonacci-moving-averages` | Moving Averages | price | LensOfChartist | batch 13 |
+| 946 | Multiple Moving Averages | `multiple-ma` | Moving Averages | price |  |  |
+| 947 | Multiple RSI | `multiple-rsi` | Oscillators | own | PrasadJoshi12 | batch 19 |
+| 948 | Multitimeframe Fair Value Gap – FVG | `multitimeframe-fair-value-gap-fvg` | Trend | price | Zeiierman | most liked |
+| 949 | Multpile strategies | `multpile-strategies` | Oscillators | own | Lupown | most liked |
+| 950 | MurreysOscillator | `murreys-math-osc` | Oscillators | own |  |  |
+| 951 | Muses afl script | `muses-afl-script` | Trend | price | mostafa47ab (indicator title "L1 Filter Sig") | batch 31 |
+| 952 | Mushir's Inside Candle Indicator | `mushir-s-inside-candle-indicator` | Candlestick Patterns | price | mushirinamdar | batch 42 |
+| 953 | My auto dual avwap with Auto swing low/pivot low finder | `my-auto-dual-avwap-with-auto-swing-low-pivot-low-finder` | Volume | price | doqkhanh | batch 22 |
+| 954 | N Bar Reversal Detector | `n-bar-reversal-detector` | Trend | price | LuxAlgo | most liked |
+| 955 | N Order EMA | `n-order-ema` | Moving Averages | price | The_Peaceful_Lizard | batch 35 |
+| 956 | Nadaraya-Watson Envelope | `nadaraya-watson-envelope` | Channels & Bands | price | LuxAlgo | most liked |
+| 957 | Nadaraya-Watson Regression Liquidity Sweeps | `nadaraya-watson-regression-liquidity-sweeps` | Oscillators | own | AlgoAlpha | most liked |
+| 958 | Nadaraya-Watson Smoothers | `nadaraya-watson-smoothers` | Trend | price | LuxAlgo | most liked |
+| 959 | Nadaraya-Watson Trend | `nadaraya-watson-trend` | Trend | price | QuantAlgo | batch 1 |
+| 960 | Navier-Cauchy Market Elasticity | `navier-cauchy-market-elasticity` | Oscillators | own | PhenLabs | batch 30 |
+| 961 | Neighboring Price Bands | `neighboring-price-bands` | Channels & Bands | price | LuxAlgo | batch 21 |
+| 962 | Next Pivot Projection | `next-pivot-projection` | Trend | price | Trendoscope | most liked |
+| 963 | Nexus Sentiment & Risk Matrix | `nexus-sentiment-risk-matrix` | Oscillators | own | Pineify | batch 37 |
+| 964 | NLMS Volatility Trail | `nlms-volatility-trail` | Trend | price | BackQuant | batch 4 |
+| 965 | No wick candles | `no-wick-candles` | Candlestick Patterns | price | KORD_ | batch 39 |
+| 966 | Normalized Candles RSI | `normalized-candles-rsi` | Oscillators | own | Jamallo22 | batch 32 |
+| 967 | Normalized QQE | `normalized-qqe` | Oscillators | own |  |  |
+| 968 | Normalized Quantitative Qualitative Estimation nQQE | `normalized-quantitative-qualitative` | Momentum | own | KivancOzbilgic | most liked |
+| 969 | Normalized SPMA \| NAL | `normalized-spma-nal` | Oscillators | own | NordicAlphaLab | batch 30 |
+| 970 | Normalized Volume & True Range | `normalized-volume-true-range` | Volume | own | The_Peaceful_Lizard | batch 36 |
+| 971 | Nova Flow Lite (Free) | `nova-flow-lite` | Trend | price | NovaQuantX | batch 36 |
+| 972 | Nova Statistical Filtering Oscillator | `nova-statistical-filtering-oscillator` | Oscillators | own | Pineify | batch 27 |
+| 973 | NR4 & NR7 with Breakouts | `nr4-nr7-with-breakouts` | Volatility | price | LuxAlgo | most liked |
+| 974 | NY ORB + Fakeout Detector | `ny-orb-fakeout-detector` | Channels & Bands | price | STEFANGAS | batch 27 |
+| 975 | OA - SMES | `oa-smes` | Oscillators | own | onurag | batch 4 |
+| 976 | OBV & AD Oscillators with Dual Smoothing Options | `obv-ad-oscillators-with-dual-smoothing-options` | Volume | own | hollowwick (indicator title "OBV, AD, VPT & CDV | batch 27 |
+| 977 | OBV (Delta or regular) | `obv-gizmo` | Volume | own | GizmoTheInvestor | batch 37 |
+| 978 | OBV + Custom MA Strategy | `obv-custom-ma-strategy` | Volume | own | Rafiki-is-Trading | batch 14 |
+| 979 | OBV MACD | `obv-macd` | Volume | own |  |  |
+| 980 | OBV Oscillator | `obv-oscillator` | Volume | own |  |  |
+| 981 | OBVX Conviction Bias | `obvx-conviction-bias` | Volume | own | TheLeadingIndicator | batch 31 |
+| 982 | One Shot One Kill ICT Liquidity MMXM + CISD OTE | `one-shot-one-kill-ict-liquidity-mmxm-cisd-ote` | Trend | price | TradingFinder | most liked |
+| 983 | Opal | `opal` | Channels & Bands | price | FlyingSeaHorse | batch 36 |
+| 984 | Open Close Cross | `open-close-cross` | Momentum | own | JustUncleL |  |
+| 985 | Open Close Cross Alerts NoRepaint Version by JustUncleL | `open-close-cross-alerts-norepaint-version-by` | Trend | own | JustUncleL | most liked |
+| 986 | Open Interest Stochastic Money Flow Index | `open-interest-stochastic-money-flow-index` | Volume | own | Noldo (uses the "LibraryCOT" library) | most liked |
+| 987 | Open Interest Suite - By Leviathan | `open-interest-suite-by-leviathan` | Volume | own | LeviathanCapital | most liked |
+| 988 | Open Liquidity Heatmap | `open-liquidity-heatmap` | Volume | price | BigBeluga | most liked |
+| 989 | Opening Range Breakout with 2 Profit Targets. | `opening-range-breakout-with-2-profit-targets` | Trend | price |  | most liked |
+| 990 | Opening Range with Breakouts & Targets | `opening-range-breakouts-targets` | Trend | price | LuxAlgo | most liked |
+| 991 | Optimized Trend Tracker | `optimized-trend-tracker` | Trend | price | KivancOzbilgic |  |
+| 992 | ORB - Opening Range Breakout | `orb-opening-range-breakout` | Trend | price | zzzcrypto123 | most liked |
+| 993 | ORB Algo \| Flux Charts | `orb-algo-flux-charts` | Trend | price | fluxchart | most liked |
+| 994 | Order Block Detector | `order-block-detector` | Trend | price | LuxAlgo | most liked |
+| 995 | Order Block Finder (Experimental) | `order-block-finder` | Trend | price | wugamlo | most liked |
+| 996 | Order Block Finder \| Gold \| ProjectSyndicate | `order-block-finder-gold-projectsyndicate` | Trend | price | ProjectSyndicate | most liked |
+| 997 | Order Blocks & Breaker Blocks | `order-blocks-breaker-blocks` | Trend | price | LuxAlgo | most liked |
+| 998 | Order Blocks Finder Major OB \| Supply and Demand | `order-blocks-finder-major-ob-supply-and-demand` | Channels & Bands | price | TradingFinder | most liked |
+| 999 | Order Blocks Volume Delta 3D \| Flux Charts | `order-blocks-volume-delta-3d-flux-charts` | Volume | price | fluxchart | most liked |
+| 1000 | Order Blocks W/ Realtime Fibs | `order-blocks-w-realtime-fibs` | Trend | price | QuantVue | most liked |
+| 1001 | Order Blocks with Signals | `order-blocks-signals` | Trend | price | ClayeWeight |  |
+| 1002 | Order Blocks \| Flux Charts | `order-blocks-flux-charts` | Volume | price | fluxchart | most liked |
+| 1003 | Order Flow Imbalance Oscillator | `order-flow-imbalance-oscillator` | Volume | own | StrikePriceLabs | batch 33 |
+| 1004 | Order Flow VWAP Deviation | `order-flow-vwap-deviation` | Volume | price | LuxAlgo | most liked |
+| 1005 | Orderblocks - Open source | `orderblocks-open-source` | Channels & Bands | price | nephew_sam_ | most liked |
+| 1006 | Oscillator Matrix | `oscillator-matrix` | Oscillators | own | AlphaExtract | batch 6 |
+| 1007 | PAFT | `paft` | Momentum | own | TREESinvest | batch 30 |
+| 1008 | Parabolic Stoch SAR Visualizer | `parabolic-stoch-sar-visualizer` | Oscillators | own | BOSWaves | batch 24 |
+| 1009 | Parallel Pivot Lines | `parallel-pivot-lines` | Channels & Bands | price | LuxAlgo |  |
+| 1010 | Pay Attention Candle | `pay-attention-candle` | Candlestick Patterns | price | asenski (inspired by the RexDog Trading System) | batch 41 |
+| 1011 | PCR Market Regime Indicator | `pcr-market-regime-indicator` | Momentum | own | Aleksin_Aleksandar | batch 31 |
+| 1012 | Peak Reversal v2 | `peak-reversal-v2` | Channels & Bands | price | Zettt | batch 11 |
+| 1013 | Peak Reversal v3 | `peak-reversal-v3` | Channels & Bands | price | Zettt | batch 21 |
+| 1014 | Percent Off All-time High (% Off High) | `percent-off-all-time-high` | Oscillators | own | xHmmmmm | batch 19 |
+| 1015 | Percentile Rank Oscillator (Price + VWMA) | `percentile-rank-oscillator` | Oscillators | own | exploretranspose | batch 26 |
+| 1016 | Percentile-Based BB% Trend - Mattes | `percentile-based-bb-trend-mattes` | Oscillators | own | Mattes00 | batch 7 |
+| 1017 | Perfect Hammer Pattern Indicators and Alerts | `perfect-hammer-pattern-indicators-and-alerts` | Candlestick Patterns | price | girishptryambakee | batch 40 |
+| 1018 | Perfect RSI | `perfect-rsi` | Oscillators | own | HabibiBudo | batch 26 |
+| 1019 | Perforance integral | `perforance-integral` | Momentum | own | Majimbi | batch 37 |
+| 1020 | Periodic Linear Regressions | `periodic-linear-regressions` | Channels & Bands | price | LuxAlgo | most liked |
+| 1021 | Philakone 55 EMA Swing Trading | `philakone-ema-swing` | Moving Averages | price |  |  |
+| 1022 | Pipstocrat Market Participant Analysis | `pipstocrat-market-participant-analysis` | Momentum | own | Delast2 | batch 23 |
+| 1023 | Pivot Based Trailing Maxima & Minima | `pivot-trailing-maxmin` | Channels & Bands | price | LuxAlgo |  |
+| 1024 | Pivot Breakout High&Low Signals | `pivot-breakout-high-low-signals` | Trend | price | Jos-ProTrader | batch 3 |
+| 1025 | Pivot Breakout with Trend Zones | `pivot-breakout-with-trend-zones` | Trend | price | dreamaker7 | batch 33 |
+| 1026 | Pivot High/Low Analysis & Forecast | `pivot-high-low-analysis-forecast` | Trend | price | LuxAlgo | most liked |
+| 1027 | Pivot Hilo Support n Resistance Levels R3-3 by JustUncleL | `pivot-hilo-support-n-resistance-levels-r3-3` | Trend | price | JustUncleL | most liked |
+| 1028 | Pivot Levels | `pivot-levels` | Channels & Bands | price | BigBeluga | most liked |
+| 1029 | Pivot Market Structure | `pivot-market-structure` | Trend | price | Daniel_Ge | batch 11 |
+| 1030 | Pivot Oscillator | `pivot-oscillator` | Oscillators | own | Uncle_the_shooter | batch 3 |
+| 1031 | Pivot Point | `pivot-point-hpotter` | Trend | price | HPotter | most liked |
+| 1032 | Pivot Point SuperTrend | `pivot-point-supertrend` | Trend | price | LonesomeTheBlue |  |
+| 1033 | Pivot Points High Low & Missed Reversal Levels | `pivot-points-high-low-missed-reversal` | Trend | price | LuxAlgo | most liked |
+| 1034 | Pivot Points High Low Multi Time Frame | `pivot-points-high-low-multi-time-frame` | Trend | price | LonesomeTheBlue | most liked |
+| 1035 | Pivot Trend | `pivot-trend` | Trend | price | ChartPrime | batch 1 |
+| 1036 | Pivot Trendlines with Breaks | `pivot-trendlines-with-breaks` | Trend | price | HoanGhetti | most liked |
+| 1037 | PMax on RSI with Tillson T3 | `pmax-on-rsi-with-tillson-t3` | Oscillators | own | KivancOzbilgic | most liked |
+| 1038 | POC Volume Bar (Highest Volume in Range) | `poc-volume-bar` | Volume | own | greatbrownball | batch 28 |
+| 1039 | Pocket Pivot Breakout | `pocket-pivot-breakout` | Volume | price | simatricks | batch 38 |
+| 1040 | POCs and VAHs VALs - All and Non-Broken | `pocs-and-vahs-vals-all-and-non-broken` | Volume | price | Frien_dd-DisDev | most liked |
+| 1041 | PolyFilter | `polyfilter` | Moving Averages | price | BackQuant | batch 8 |
+| 1042 | Polynomial Regression Moving Average (PRMA) | `polynomial-regression-moving-average` | Moving Averages | price | ZakAlgoTrade | batch 24 |
+| 1043 | Polynomial Trend Exhaustion & Divergence | `polynomial-trend-exhaustion-divergence` | Trend | price | B3AR_Trades | batch 40 |
+| 1044 | Polyphase MACD (PMACD) | `polyphase-macd` | Momentum | own | The_Peaceful_Lizard | batch 19 |
+| 1045 | Poor man's volume clusters | `poor-man-s-volume-clusters` | Volume | price | IldarAkhmetgaleev | most liked |
+| 1046 | Position Size Calculator | `position-size-calculator` | Volatility | price | zzzcrypto123 | most liked |
+| 1047 | Power Of 3 ICT 01 AMD ICT & SMC Accumulations | `power-of-3-ict-01-amd-ict-smc-accumulations` | Trend | price | TradingFinder | most liked |
+| 1048 | PPO Alerts | `ppo-alerts` | Momentum | own |  |  |
+| 1049 | PPO Divergence | `ppo-divergence` | Momentum | own | Pekipek |  |
+| 1050 | Precision Sniper | `precision-sniper` | Trend | price | WillyAlgoTrader | most liked |
+| 1051 | Predictive Channels | `predictive-channels` | Channels & Bands | price | LuxAlgo |  |
+| 1052 | Predictive Ranges | `predictive-ranges` | Channels & Bands | price | LuxAlgo | most liked |
+| 1053 | Premier RSI Oscillator | `premier-rsi` | Momentum | own |  |  |
+| 1054 | Premier Stochastic Oscillator | `premier-stochastic` | Oscillators | own |  |  |
+| 1055 | Premium & Discount Delta Volume | `premium-discount-delta-volume` | Volume | price | BigBeluga | most liked |
+| 1056 | PREMIUM TRADE ZONES | `premium-trade-zones` | Oscillators | own | ENTRYLAB | batch 27 |
+| 1057 | Previous Day High and Low + Separators Daily/Weekly | `previous-day-high-and-low-separators-daily` | Trend | price | Algoryze | most liked |
+| 1058 | Previous Day Week Highs & Lows | `previous-day-week-highs-lows` | Trend | price | sbtnc | most liked |
+| 1059 | Previous Highs & Lows | `previous-highs-lows` | Channels & Bands | price | LuxAlgo | most liked |
+| 1060 | Price & Volume Profile (Expo) | `price-volume-profile` | Volume | price | Zeiierman (community) |  |
+| 1061 | Price Acceleration Indicator (PAI) | `price-acceleration-indicator` | Momentum | own | PHICAPITALINVESTMENTS | batch 35 |
+| 1062 | Price Action Bands \| Trend & Volatility | `price-action-bands-trend-volatility` | Channels & Bands | price | RadixAlgo | batch 15 |
+| 1063 | Price Action Breakout Trend | `price-action-breakout-trend` | Trend | price | QuantAlgo | batch 5 |
+| 1064 | Price Action Signals Filtered +EMA | `price-action-signals-filtered-ema` | Trend | price | Aleksin_Aleksandar | batch 11 |
+| 1065 | Price Action Smart Money Concepts | `price-action-smart-money-concepts` | Trend | price | BigBeluga | most liked |
+| 1066 | Price Action Trading System | `price-action-system` | Oscillators | price |  |  |
+| 1067 | Price Action: Engulfing Patterns | `price-action-engulfing-patterns` | Candlestick Patterns | price | Jay9286 | batch 33 |
+| 1068 | Price Advance & Decline Range Analysis | `price-advance-decline-range-analysis` | Volatility | own | RicardoSantos | batch 16 |
+| 1069 | Price Change Sentiment Index | `price-change-sentiment-index` | Oscillators | own | TradeVizion | batch 23 |
+| 1070 | Price Contraction / Expansion | `price-contraction-expansion` | Volatility | price | destrobr0685 | batch 42 |
+| 1071 | Price Divergence Detector V3.2 revised by JustUncleL | `price-divergence-detector` | Momentum | price | JustUncleL (original author RicardoSantos) | most liked |
+| 1072 | Price Flow - Buy Sell | `price-flow-buy-sell` | Channels & Bands | price | IVTrader1990 | batch 35 |
+| 1073 | Price Linear Sequence Counter | `price-linear-sequence-counter` | Momentum | own | RicardoSantos | batch 14 |
+| 1074 | Price Momentum Oscillator | `price-momentum-oscillator` | Momentum | own |  |  |
+| 1075 | Price/Volume Value Histogram | `price-volume-value-histogram` | Volume | own | dman103 | batch 2 |
+| 1076 | Primitive Delta Divergence | `primitive-delta-divergence` | Volume | price | bfoster238 | batch 41 |
+| 1077 | Pring Special K\|a2m | `pring-special-k-a2m` | Momentum | own | ask2maniish | batch 34 |
+| 1078 | Prism Moving Average Trend | `prism-moving-average-trend` | Trend | price | MisinkoMaster | batch 19 |
+| 1079 | Pro Scalper - 2 MinutesTF by Ayoob | `pro-scalper-2-minutestf-by-ayoob` | Trend | price | FGMNDFBF | batch 30 |
+| 1080 | Pro Scalper AI | `pro-scalper-ai` | Oscillators | own | BullByte | most liked |
+| 1081 | Probabilities Module - The Quant Science | `probabilities-module-the-quant-science` | Oscillators | own | thequantscience | batch 31 |
+| 1082 | Projected Crossover Trend | `projected-crossover-trend` | Trend | price | SchizoQuant | batch 4 |
+| 1083 | Prometheus Topological Persistent Entropy | `prometheus-topological-persistent-entropy` | Volatility | own | ScorsoneEnterprises | batch 23 |
+| 1084 | Protected Highs & Lows | `protected-highs-lows` | Trend | price | tradeforopp | most liked |
+| 1085 | Pullback Candles (Candlestick Analysis) Guaranteed Winners!!!! | `pullback-candles-guaranteed-winners` | Candlestick Patterns | price | LuxTradeVenture | most liked |
+| 1086 | Pullback SAR | `pullback-sar` | Trend | price | szymonsobkowiak | batch 32 |
+| 1087 | Pullback Scalp Trade V2 | `pullback-scalp-trade-v2` | Trend | price | Sinyalbak_App | batch 12 |
+| 1088 | Pullback Trading Tool ALT R1.0 by JustUncleL | `pullback-trading-tool-alt-r1-0-by-justunclel` | Moving Averages | price | JustUncleL | most liked |
+| 1089 | Pulse Range | `pulse-range` | Trend | price | MarketStructureLab | batch 13 |
+| 1090 | Pulse RSI \| Lyro RS | `pulse-rsi-lyro-rs` | Oscillators | own | LyroRS | batch 10 |
+| 1091 | PulseWave + Divergence | `pulsewave-divergence` | Oscillators | own | Uncle_the_shooter | batch 7 |
+| 1092 | Pump & Dump Detector (sensitive) | `pump-dump-detector` | Volume | price | btcpayer | batch 39 |
+| 1093 | Pure Coca | `pure-coca` | Oscillators | own | La_Von | batch 7 |
+| 1094 | Pure Price Action ICT Tools | `pure-price-action-ict-tools` | Trend | price | LuxAlgo | most liked |
+| 1095 | Pure Price Action Order & Breaker Blocks | `pure-price-action-order-breaker-blocks` | Trend | price | LuxAlgo | most liked |
+| 1096 | Pure Price Action Structures | `pure-price-action-structures` | Trend | price | LuxAlgo | most liked |
+| 1097 | Q Impulse Entry | `q-impulse-entry` | Trend | price | Quantora | batch 17 |
+| 1098 | Q KAMA Clarity Trend | `q-kama-clarity-trend` | Trend | price | Quantora | batch 7 |
+| 1099 | Q Wave | `q-wave` | Trend | price | Quantora | batch 36 |
+| 1100 | QG-Particle Oscillator | `qg-particle-oscillator` | Oscillators | own | QuantG | batch 35 |
+| 1101 | QQE Cross | `qqe-cross` | Trend | price | JustUncleL |  |
+| 1102 | QQE MOD | `qqe-mod` | Momentum | own |  |  |
+| 1103 | QQE Signals | `qqe-signals` | Oscillators | price | colinmck |  |
+| 1104 | QTechLabs Machine Learning Logistic Regression Indicator | `qtechlabs-machine-learning-logistic-regression-indicator` | Oscillators | price | QTechLabsInfo | batch 33 |
+| 1105 | Quant VWAP System 3.8 | `quant-vwap-system-3-8` | Oscillators | own | CustomQuantLabs (published as "Quant VWAP System 3.8") | batch 8 |
+| 1106 | Quantile Regression Bands | `quantile-regression-bands` | Channels & Bands | price | BackQuant | batch 17 |
+| 1107 | Quantitative Qualitative Estimation | `qqe` | Oscillators | own | Glaz |  |
+| 1108 | Quantitative Qualitative Estimation QQE | `qqe-kivanc` | Oscillators | own |  | most liked |
+| 1109 | Quantum Regression Oscillator | `quantum-regression-oscillator` | Oscillators | own | abgthecoder | batch 32 |
+| 1110 | Quantum Trend Signal | `quantum-trend-signal` | Trend | price | ReubenMiles | batch 9 |
+| 1111 | QuantumTrend SwiftEdge | `quantumtrend-swiftedge` | Trend | price | SwiftEdge | batch 5 |
+| 1112 | Quartile For Loop | `quartile-for-loop` | Trend | own | SeerQuant | batch 6 |
+| 1113 | Quasimodo Pattern | `quasimodo-pattern` | Candlestick Patterns | price | anodrr2 | batch 41 |
+| 1114 | R:R Trading System Framework | `r-r-trading-system-framework` | Trend | price | carnagecain | most liked |
+| 1115 | Radiant Mean Reversion Channels | `radiant-mean-reversion-channels` | Oscillators | own | Pineify | batch 34 |
+| 1116 | Radius Trend [ChartPrime] | `radius-trend` | Trend | price | ChartPrime |  |
+| 1117 | Rally Base Drop Signals | `rally-base-drop-signals` | Trend | price | LuxAlgo | batch 38 |
+| 1118 | Range Analysis - By Leviathan | `range-analysis-by-leviathan` | Volume | price | LeviathanCapital | most liked |
+| 1119 | Range Average Retest Model | `range-average-retest-model` | Trend | price | LuxAlgo | most liked |
+| 1120 | Range Breakout | `range-breakout` | Channels & Bands | price | BigBeluga | most liked |
+| 1121 | Range Channel by Atilla Yurtseven | `range-channel-by-atilla-yurtseven` | Channels & Bands | own | AtillaYurtseven | batch 17 |
+| 1122 | Range Detector | `range-detector` | Trend | price | LuxAlgo |  |
+| 1123 | Range Filter Buy and Sell 5min - guikroth version | `range-filter-buy-sell-5min` | Trend | price | PHVNTOM_TRADER (original script by DonovanWall, adapted by | most liked |
+| 1124 | Range Identifier | `range-identifier` | Channels & Bands | price |  |  |
+| 1125 | Range Oscillator | `range-oscillator` | Oscillators | own | Zeiierman | batch 1 |
+| 1126 | Range Sentiment Profile | `range-sentiment-profile` | Volume | price | LuxAlgo | most liked |
+| 1127 | Range Tightening Indicator (RTI) | `range-tightening-indicator` | Volatility | own | Ollie_AllCaps | batch 2 |
+| 1128 | Ranges With Targets | `ranges-with-targets` | Trend | price | ChartPrime | most liked |
+| 1129 | Rapid Exponential Moving Average | `rapid-exponential-moving-average` | Moving Averages | price | ImmortalFreedom | batch 28 |
+| 1130 | RBT strategy | `rbt-strategy` | Momentum | price | luckykoshti | batch 38 |
+| 1131 | RCI3lines | `rci-3lines` | Oscillators | own |  |  |
+| 1132 | RCYC Bullish Bearish Indicator | `rcyc-bullish-bearish-indicator` | Momentum | price | bizarro29 | batch 38 |
+| 1133 | ReadyFor401ks Just Tell Me When! | `readyfor401ks-just-tell-me-when` | Trend | price | ReadyFor401k | batch 20 |
+| 1134 | Real-Time Big Trades Bubbles & Absorbtions & Deep Pressure | `big-trades-bubbles` | Volume | price | samet_lezki | batch 5 |
+| 1135 | Realtime Volume Bars | `realtime-volume-bars` | Volume | own | the_MarketWhisperer |  |
+| 1136 | RedK Effort Versus Results Explorer v3.0 | `redk-everex` | Momentum | own | RedKTrader |  |
+| 1137 | RedK Magic Ribbon | `redk-magic-ribbon` | Moving Averages | price | RedKTrader | batch 2 |
+| 1138 | RedK Momentum Bars | `redk-momentum-bars` | Momentum | own | RedKTrader |  |
+| 1139 | RedK RSS_WMA | `redk-rss-wma` | Moving Averages | price | RedKTrader |  |
+| 1140 | RedK Trader Pressure Index | `redk-tpx` | Momentum | own | RedKTrader |  |
+| 1141 | RedK Vol_Weighted RSI: Extending the power of the classic RSI | `redk-vol-weighted-rsi` | Momentum | own | RedKTrader | batch 5 |
+| 1142 | Reflex & Trendflex | `reflex-trendflex` | Oscillators | own | e2e4 | batch 6 |
+| 1143 | Regression Channel Oscillator | `regression-channel-oscillator` | Oscillators | own | Uncle_the_shooter | batch 27 |
+| 1144 | Relative ATR Volatility Indicator | `relative-atr-volatility-indicator` | Volatility | own | ZenAndTheArtOfTrading | batch 20 |
+| 1145 | Relative Strength Heatmap | `relative-strength-heatmap` | Momentum | own | BackQuant | batch 22 |
+| 1146 | Relative Strength Index - Divergences - Libertus | `relative-strength-index-divergences-libertus` | Momentum | own | Libertus | most liked |
+| 1147 | Relative Strength of a stock | `relative-strength-of-a-stock` | Momentum | own | bharatTrader | most liked |
+| 1148 | Relative Valuation Oscillator | `relative-valuation-oscillator` | Oscillators | own | QuantAlgo | batch 14 |
+| 1149 | Relative Volume Indicator (RVOL) | `relative-volume-indicator` | Volume | own | AlgoCollective | batch 13 |
+| 1150 | Renko Boxes | `renko-boxes` | Trend | price | LuxAlgo | batch 4 |
+| 1151 | Renko Candles Overlay | `renko-candles-overlay` | Trend | price | LonesomeTheBlue | most liked |
+| 1152 | Renko Chart | `renko-chart` | Trend | price | LonesomeTheBlue |  |
+| 1153 | Renko Compression Index (RCI) | `renko-compression-index` | Oscillators | own | nasu_is_gaji | batch 34 |
+| 1154 | Renko Flip Alert (Traditional Only) | `renko-flip-alert` | Candlestick Patterns | price | deephrenology | batch 41 |
+| 1155 | Renko Mod | `renko-mod` | Trend | price | RicardoSantos | batch 13 |
+| 1156 | Renko Sniper PRO (Liquidity Sweep + EMA + ST + RSI) | `renko-sniper-pro` | Trend | price | zachsprad | batch 24 |
+| 1157 | Renko+Moving Average+RMI Alert R3 by JustUncleL | `renko-moving-average-rmi-alert-r3-by` | Trend | price | JustUncleL | most liked |
+| 1158 | Res/Sup With Concavity & Increasing / Decreasing Trend Analysis | `res-sup-with-concavity-increasing-decreasing-trend-analysis` | Trend | price | Celar (published as "Res/Sup With Concavity & Increasing / Decreasing Trend Analysis") | batch 28 |
+| 1159 | Retail vs Banker Net Positions – Symmetry Break | `retail-vs-banker-net-positions-symmetry-break` | Volume | own | JasonHyde | batch 17 |
+| 1160 | Retest Support Resistance Signals | `retest-support-resistance-signals` | Trend | price | ChartPrime | most liked |
+| 1161 | Reversal | `reversal` | Trend | price | HasanRifat | most liked |
+| 1162 | Reversal Candle Setup | `reversal-candle-setup` | Candlestick Patterns | price |  |  |
+| 1163 | Reversal Candlestick Structure | `reversal-candlestick-structure` | Candlestick Patterns | price | LuxAlgo | most liked |
+| 1164 | Reversal Correlation Pressure | `reversal-correlation-pressure` | Oscillators | own | OmegaTools | batch 27 |
+| 1165 | Reversal Probability Zone & Levels | `reversal-probability-zone-levels` | Trend | price | LuxAlgo | most liked |
+| 1166 | Reversal Scalper 2.0- Adib Noorani | `reversal-scalper-2-0-adib-noorani` | Oscillators | own | AdibNoorani | batch 28 |
+| 1167 | Reversal Signals | `reversal-signals` | Momentum | price | LuxAlgo | most liked |
+| 1168 | Reversal Trap Probability Bands | `reversal-trap-probability-bands` | Channels & Bands | price | BigBeluga | most liked |
+| 1169 | Rhokeo-VW-RSI Histogram for Cumulative Delta by Zeiirman | `rhokeo-vw-rsi-histogram-for-cumulative-delta-by-zeiirman` | Oscillators | own | nabil007 | batch 24 |
+| 1170 | Ripster EMA Clouds | `ripster-ema-clouds` | Trend | price | ripster47 |  |
+| 1171 | Risk Management Tool | `risk-management-tool` | Volatility | price | LuxAlgo | most liked |
+| 1172 | RMA ATR Bands | `rma-atr-bands` | Channels & Bands | price | SchizoQuant | batch 3 |
+| 1173 | RMI Length | `rmi-trend-sniper` | Momentum | price | TZack88 |  |
+| 1174 | Robby DSS Bressert Colored Dots | `robby-dss-bressert-colored-dots` | Oscillators | own | huatzhi | batch 21 |
+| 1175 | ROC-Weighted MA Oscillator | `roc-weighted-ma-oscillator` | Oscillators | own | SeerQuant | batch 2 |
+| 1176 | Rolling Liquidity Clusters Channel | `rolling-liquidity-clusters-channel` | Channels & Bands | price | LuxAlgo | batch 12 |
+| 1177 | Rolling Sharpe Ratio Oscillator \| Astral Vision | `rolling-sharpe-ratio-oscillator-astral-vision` | Oscillators | own | AstralVision | batch 13 |
+| 1178 | Rolling Trendline | `rolling-trendline` | Trend | price | LuxAlgo | batch 5 |
+| 1179 | Rolling VWAP | `rolling-vwap` | Volume | price | TradingView | most liked |
+| 1180 | Ross Cameron-Inspired Day Trading Strategy | `ross-cameron-inspired-day-trading-strategy` | Momentum | price | manaziir | batch 25 |
+| 1181 | RRR EMA Ignition BUY & SELL (Sideways-Proof) | `rrr-ema-ignition-buy-sell` | Trend | price | RAGSTER123 | batch 21 |
+| 1182 | RS Rating (1-99) | `rs-rating` | Momentum | own | kulturdesken | batch 16 |
+| 1183 | rs_MACD | `rs-macd` | Momentum | price | RicardoSantos | batch 17 |
+| 1184 | RSI | `rsi-hash-capital` | Oscillators | own | Hash_Capital | batch 31 |
+| 1185 | RSI & BB Oversold Scalper with MACD Confirmation | `rsi-bb-oversold-scalper-with-macd-confirmation` | Momentum | price | DotGain | batch 40 |
+| 1186 | RSI & MACD Suite | `rsi-macd-suite` | Oscillators | own | aaboomar | batch 34 |
+| 1187 | RSI (14) with Auto Zone Colors - Overbought/Oversold Highlighter | `rsi-with-auto-zone-colors-overbought-oversold-highlighter` | Oscillators | own | tarangbharti18 | batch 29 |
+| 1188 | RSI (Kernel Optimized) \| Flux Charts | `rsi-flux-charts` | Momentum | price | fluxchart | most liked |
+| 1189 | RSI + ADX + ATR 18-01-25 | `rsi-adx-atr-18-01-25` | Oscillators | own | dipak11298 | batch 37 |
+| 1190 | RSI + ADX + ATR Combo | `rsi-adx-atr-combo` | Oscillators | own | shawasutosh | batch 26 |
+| 1191 | RSI + BB + Dispersion | `rsi-bb-dispersion` | Oscillators | own |  |  |
+| 1192 | RSI + Fibonacci HH LL Support Resistance | `rsi-fibonacci-hh-ll-support-resistance` | Channels & Bands | price | FibonacciFlux | batch 12 |
+| 1193 | RSI + MACD (RSI Divergence) V3.2 | `rsi-macd-v3-2` | Oscillators | own | MKhoa | batch 24 |
+| 1194 | RSI + STOCH RSI - Marx_Capital | `rsi-stoch-rsi-marx-capital` | Oscillators | own | Marx_Capital | batch 12 |
+| 1195 | RSI - 5UP | `rsi-5up` | Oscillators | own | Marrulk | batch 29 |
+| 1196 | RSI Bands | `rsi-bands` | Channels & Bands | price |  |  |
+| 1197 | RSI Bars - OnlyFlow | `rsi-bars-onlyflow` | Momentum | price | ofderk | batch 10 |
+| 1198 | RSI BB StdDev Signal | `rsi-bb-stddev-signal` | Oscillators | own | trade_lexx (Pine title "RSI Signal [trade_lexx]") | batch 8 |
+| 1199 | RSI Candle Color | `rsi-candle-color` | Momentum | price | The_Peaceful_Lizard | batch 39 |
+| 1200 | RSI Candles | `rsi-candles` | Momentum | own | Glaz |  |
+| 1201 | RSI Confirm Trend with Williams (W%R) | `rsi-confirm-trend-with-williams` | Momentum | own | javageek | batch 11 |
+| 1202 | RSI Core Levels Heatmap | `rsi-core-levels-heatmap` | Oscillators | own | BigBeluga | most liked |
+| 1203 | RSI cyclic smoothed v2 | `rsi-cyclic-smoothed-v2` | Oscillators | own | StockMarketCycles | most liked |
+| 1204 | RSI Divergence | `rsi-divergence` | Oscillators | own |  |  |
+| 1205 | RSI Entry Engine | `rsi-entry-engine` | Oscillators | own | tradewsamet | most liked |
+| 1206 | RSI Games 1.2 | `rsi-games-1-2` | Oscillators | own | petejfjohnson | batch 22 |
+| 1207 | RSI HistoAlert Strategy | `rsi-histoalert` | Oscillators | own |  |  |
+| 1208 | RSI Length | `most-rsi` | Momentum | own |  |  |
+| 1209 | RSI Length | `parabolic-rsi` | Momentum | own |  |  |
+| 1210 | RSI Length | `pmax-rsi-t3` | Momentum | own |  |  |
+| 1211 | RSI Length | `rsi-cyclic-smoothed` | Momentum | own |  |  |
+| 1212 | RSI MA Cross + Divergence Signal (V2) | `rsi-ma-cross-divergence-signal` | Momentum | price | noxum | batch 39 |
+| 1213 | RSI Modified | `rsi-modified` | Oscillators | own | Santos_Trader_PT | batch 5 |
+| 1214 | RSI Momentum Divergence | `rsi-momentum-divergence` | Oscillators | own | ChartPrime |  |
+| 1215 | RSI Multi Length | `rsi-multi-length` | Oscillators | own | LuxAlgo | most liked |
+| 1216 | RSI Multi Levels kiawosch 7-14-42 Consolidation | `rsi-multi-levels` | Oscillators | own | TFlab | batch 5 |
+| 1217 | RSI Multicolor editable | `rsi-multicolor-editable` | Oscillators | own | Guillaume46 | batch 8 |
+| 1218 | RSI PERFECT Flip Dots | `rsi-perfect-flip-dots` | Momentum | price | debanshuchanda6 | batch 42 |
+| 1219 | RSI Potential | `rsi-potential` | Momentum | own | nasu_is_gaji | batch 35 |
+| 1220 | RSI Snabbel | `rsi-snabbel` | Oscillators | own |  |  |
+| 1221 | RSI Strategy | `rsi-strategy` | Momentum | price | HPotter | most liked |
+| 1222 | RSI Supply/Demand | `rsi-supply-demand` | Trend | price | shtcoinr / Lij_MC |  |
+| 1223 | RSI Support & Resistance by DGT | `rsi-support-resistance-by-dgt` | Momentum | price | dgtrd | most liked |
+| 1224 | RSI Swing Indicator v2 | `rsi-swing-indicator-v2` | Momentum | price | MrDinasty (BalintDavid) | most liked |
+| 1225 | RSI Swing Signal | `rsi-swing-signal` | Oscillators | own |  |  |
+| 1226 | RSI Tops and Bottoms | `rsi-tops-bottoms` | Momentum | own | LonesomeTheBlue |  |
+| 1227 | RSI Trend Bias | `rsi-trend-bias` | Oscillators | own | Botnet101 | batch 24 |
+| 1228 | RSI Trend Navigator | `rsi-trend-navigator` | Trend | price | QuantAlgo | batch 10 |
+| 1229 | RSI Trendlines with Breakouts | `rsi-trendlines-with-breakouts` | Oscillators | own | HoanGhetti | most liked |
+| 1230 | RSI Zone Step Lines | `rsi-zone-step-lines` | Channels & Bands | price | Devjames | batch 11 |
+| 1231 | RSI+EMA+MZONES with Divergences | `rsi-ema-mzones-with-divergences` | Oscillators | own | lordoflolz | batch 22 |
+| 1232 | RSI+Stoch Band Oscillator | `rsi-stoch-band-oscillator` | Oscillators | own | nasu_is_gaji | batch 26 |
+| 1233 | RSI-50 Step Line | `rsi-50-step-line` | Trend | price | Devjames | batch 5 |
+| 1234 | RSI-Colored Price Candles with Background | `rsi-colored-price-candles-with-background` | Momentum | price | Midgar- | batch 39 |
+| 1235 | RSI-EMA-Crossing with Donchian-Stop-Loss | `rsi-ema-crossing-with-donchian-stop-loss` | Channels & Bands | price | Kahael | batch 28 |
+| 1236 | RSI: alternative derivation | `rsi-alternative-derivation` | Oscillators | own | AdaptiveRSI | batch 25 |
+| 1237 | RVOL Effort Matrix | `rvol-effort-matrix` | Volume | own | TheLeadingIndicator | batch 36 |
+| 1238 | RVOL Relative Volume - Intraday | `rvol-relative-volume-intraday` | Volume | own | LonesomeTheBlue | most liked |
+| 1239 | S&R Breakout ATR Confirmation | `s-r-breakout-atr-confirmation` | Trend | price | Jos-ProTrader | batch 33 |
+| 1240 | SAR + EMA + MACD Signals | `sar-ema-macd` | Oscillators | price |  |  |
+| 1241 | Saty ATR Levels | `saty-atr-levels` | Volatility | price | satymahajan | most liked |
+| 1242 | Saty Pivot Ribbon | `saty-pivot-ribbon` | Moving Averages | price | satymahajan | most liked |
+| 1243 | Savitzky Flow Bands | `savitzky-flow-bands` | Channels & Bands | price | ChartPrime | batch 2 |
+| 1244 | Savitzky-Golay Hampel Filter \| AlphaNatt | `savitzky-golay-hampel-filter-alphanatt` | Moving Averages | price | AlphaNatt | batch 15 |
+| 1245 | Scalp Pro | `scalp-pro` | Momentum | own | ovelix | most liked |
+| 1246 | Scalping Line | `scalping-line` | Oscillators | own | KivancOzbilgic |  |
+| 1247 | Scalping PullBack Tool R1 by JustUncleL | `scalping-pullback-tool` | Trend | price | JustUncleL | most liked |
+| 1248 | Scalping Swing Trading Tool R1-4 by JustUncleL | `scalping-swing-trading-tool-r1-4-by-justunclel` | Moving Averages | price | JustUncleL | most liked |
+| 1249 | Scalping Tool with Dynamic Take Profit & Stop Loss | `scalping-tool-dynamic-tp-sl` | Trend | price | TruFREND | batch 3 |
+| 1250 | ScalpMap - EMA Pivot Targets | `scalpmap-ema-pivot-targets` | Trend | price | blockybears | batch 12 |
+| 1251 | SCE GANN Predictions | `sce-gann-predictions` | Trend | price | ScorsoneEnterprises | batch 22 |
+| 1252 | Schaff Trend Cycle | `schaff-trend-cycle` | Oscillators | price | LazyBear |  |
+| 1253 | SCOTTGO Advanced MACD | `scottgo-advanced-macd` | Momentum | own | SCOTTGO (indicator title "MACD: Clean Visuals (Fixed Arrows)") | batch 27 |
+| 1254 | Screener - Mean Reversion Channel | `screener-mean-reversion-channel` | Channels & Bands | price | fareidzulkifli | most liked |
+| 1255 | Self-Aware Trend System | `self-aware-trend-system` | Trend | price | WillyAlgoTrader | most liked |
+| 1256 | Sell & Buy Rates | `sell-buy-rates` | Volume | own | LonesomeTheBlue |  |
+| 1257 | Sequential Pattern Strength | `sequential-pattern-strength` | Momentum | own | QuantAlgo | batch 9 |
+| 1258 | Session Liquidity | `session-liquidity` | Channels & Bands | price | Infinity_Trading_ | most liked |
+| 1259 | Session Streaks | `session-streaks` | Trend | price | LuxAlgo | most liked |
+| 1260 | Session Sweeps | `session-sweeps` | Volatility | price | LuxAlgo | most liked |
+| 1261 | Session TPO Market Profile | `session-tpo-market-profile` | Volume | price | noop-noop | most liked |
+| 1262 | Sessions | `sessions-luxalgo` | Trend | price | LuxAlgo | most liked |
+| 1263 | Sessions on Chart | `sessions-on-chart` | Trend | price | Aurocks_AIF | most liked |
+| 1264 | Setup 9.1 (Larry Williams) + EMA 50 | `setup-9-1-ema-50` | Moving Averages | price | oDouglasAlex | batch 7 |
+| 1265 | SExI - Super Exhaustion Indicator | `sexi-super-exhaustion-indicator` | Oscillators | own | Da_Prof | batch 14 |
+| 1266 | Sharp Modified Moving Average | `sharp-modified-moving-average` | Moving Averages | price | everget | batch 18 |
+| 1267 | Sharpe Ratio Indicator (180) | `sharpe-ratio-indicator` | Volatility | own | tim_amblard | batch 3 |
+| 1268 | Sharpe Ratio v4 | `sharpe-ratio-v4` | Oscillators | own | Zettt | batch 32 |
+| 1269 | Sharpshooter 30 – EMA Distance | `sharpshooter-30-ema-distance` | Moving Averages | price | hrak22 | batch 33 |
+| 1270 | Shock Percentile Moving Average \| NAL | `shock-percentile-moving-average-nal` | Moving Averages | price | NordicAlphaLab | batch 22 |
+| 1271 | Sigmoid RSI \| NAL | `sigmoid-rsi-nal` | Oscillators | own | NordicAlphaLab | batch 11 |
+| 1272 | Signal Forge | `signal-forge` | Trend | price | LuxAlgo | most liked |
+| 1273 | Signal Moving Average | `signal-ma` | Moving Averages | price | LuxAlgo |  |
+| 1274 | Simple Moving Averages | `simple-moving-averages` | Moving Averages | price |  |  |
+| 1275 | Simplified Percentile Clustering | `simplified-percentile-clustering` | Oscillators | own | InvestorUnknown | batch 4 |
+| 1276 | Sine Weighted Moving Average | `sine-weighted-moving-average` | Moving Averages | price | everget | batch 13 |
+| 1277 | SL - 4 EMAs, 2 SMAs & Crossover Signals | `sl-4-emas-2-smas-crossover-signals` | Moving Averages | price | MVP202020205 | batch 27 |
+| 1278 | Slow Heiken Ashi | `slow-heiken-ashi` | Candlestick Patterns | price |  |  |
+| 1279 | Slow Stochastic | `slow-stochastic` | Oscillators | own | Oshri17 | most liked |
+| 1280 | SMA Angle Alerts | `sma-angle-alerts` | Moving Averages | price | readysetfire | batch 21 |
+| 1281 | SMA DMA Crossing Signal | `sma-dma-crossing-signal` | Moving Averages | price | tradingqueen18 | batch 31 |
+| 1282 | SMA Squeeze Oscillator | `sma-squeeze-oscillator` | Momentum | own | Uncle_the_shooter | batch 23 |
+| 1283 | SMA+ADX Filter | `sma-adx-filter` | Trend | price | iping99 | batch 31 |
+| 1284 | Smart Breakout Targets | `smart-breakout-targets` | Volatility | price | WillyAlgoTrader | most liked |
+| 1285 | Smart MCDX FINAL PRO | `smart-mcdx-final-pro` | Volume | own | Sachse-1980 | batch 30 |
+| 1286 | Smart Money Breakout Channels | `smart-money-breakout-channels` | Channels & Bands | price | AlgoAlpha | most liked |
+| 1287 | Smart Money Breakout Signals | `smart-money-breakout-signals` | Trend | price | AlgoAlpha | most liked |
+| 1288 | Smart Money Breakouts | `smart-money-breakouts` | Trend | price | ChartPrime | most liked |
+| 1289 | Smart Money Concepts (SMC) | `smart-money-concepts-luxalgo` | Trend | price | LuxAlgo | most liked |
+| 1290 | Smart Money Concepts Probability (Expo) | `smart-money-concepts-probability` | Trend | price | Zeiierman | most liked |
+| 1291 | Smart Money Flow Signals | `smart-money-flow-signals` | Volume | own | QuantAlgo | batch 2 |
+| 1292 | Smart Money Range | `smart-money-range` | Volume | price | ChartPrime | most liked |
+| 1293 | Smart Money Volume Index | `smart-money-volume-index` | Volume | own | AlgoAlpha | most liked |
+| 1294 | Smart Trader, Episode 03, by Ata Sabanci, Candles and Tradelines | `smart-trader-episode-03-by-ata-sabanci` | Trend | price | ata_sabanci | most liked |
+| 1295 | Smart Trader, Episode 06, Isotropic Trend Lines | `smart-trader-episode-06-isotropic-trend-lines` | Trend | price | ata_sabanci | most liked |
+| 1296 | Smart Trend | `smart-trend` | Trend | price | Zofesu | batch 21 |
+| 1297 | Smarter SNR (Support and Ressistance, Trendline, MTF OSC) | `smarter-snr` | Trend | price | hanabil | most liked |
+| 1298 | SMC Indicator With Webhook | `smc-indicator-with-webhook` | Trend | price | sunwoo101 | most liked |
+| 1299 | SMC Statistical Liquidity Walls | `smc-statistical-liquidity-walls` | Channels & Bands | price | PhenLabs | batch 25 |
+| 1300 | SMC Structures and FVG | `smc-structures-and-fvg` | Trend | price | LudoGH68 | most liked |
+| 1301 | SMIIOL | `smiiol` | Momentum | own | iilter | batch 25 |
+| 1302 | Smooth RSI | `smooth-rsi` | Momentum | own | MarktQuant | batch 8 |
+| 1303 | Smoothed Heiken Ashi | `smoothed-heiken-ashi` | Trend | price | jackvmk |  |
+| 1304 | Smoothed Low-Pass Butterworth Filtered Median | `butterworth-filtered-median` | Moving Averages | price | AlphaNatt | batch 8 |
+| 1305 | Smoothed Source Weighted EMA | `smoothed-source-weighted-ema` | Moving Averages | price | Clokivez | batch 13 |
+| 1306 | SMT Divergences | `smt-divergences` | Trend | price | LuxAlgo | most liked |
+| 1307 | Source | `ott-bands` | Channels & Bands | price | KivancOzbilgic |  |
+| 1308 | Source | `otto` | Oscillators | own | KivancOzbilgic |  |
+| 1309 | Source | `range-filter-dw` | Trend | price |  |  |
+| 1310 | Source-Aligned Oscillators (for Divergences) | `source-aligned-oscillators` | Oscillators | own | QuantNomad | batch 18 |
+| 1311 | SP - MACD with Divergence | `sp-macd-with-divergence` | Momentum | own | ca_sidnayak | batch 24 |
+| 1312 | Spira Alligator | `spira-alligator` | Trend | price | Markedsignaler | batch 26 |
+| 1313 | SPX500 Quick Drop & Rise Alerts | `spx500-quick-drop-rise-alerts` | Momentum | price | PaperChains | batch 41 |
+| 1314 | Squeeze Channel | `squeeze-channel` | Channels & Bands | price | B3AR_Trades | batch 16 |
+| 1315 | Squeeze Momentum | `squeeze-momentum` | Momentum | own | LazyBear |  |
+| 1316 | Squeeze Momentum Indicator Version2 by KıvanÇ fr3762 | `squeeze-momentum-indicator-version2-by-k-van` | Momentum | own | KivancOzbilgic | most liked |
+| 1317 | Squeeze Momentum V2 with Divergence | `squeeze-momentum-v2` | Oscillators | own |  |  |
+| 1318 | SSL Channel | `ssl-channel` | Trend | price |  |  |
+| 1319 | SSL Hybrid | `ssl-hybrid` | Trend | price | Mihkel00 | most liked |
+| 1320 | SSL HYBRID Advanced | `ssl-hybrid-advanced` | Trend | price | traderharikrishna (after "SSL Hybrid" by Mihkel00) | most liked |
+| 1321 | SSL Hybrid Scalper | `ssl-hybrid-scalper` | Moving Averages | price | nabeel8369 | batch 11 |
+| 1322 | ST0P | `st0p` | Oscillators | price |  |  |
+| 1323 | Standardized MACD HA | `standardized-macd-ha` | Momentum | own | EliCobra |  |
+| 1324 | Start | `lucid-sar` | Trend | price |  |  |
+| 1325 | Statistical Price Deviation Index (MAD/VWMA) | `statistical-price-deviation-index` | Oscillators | own | exploretranspose | batch 16 |
+| 1326 | STC Indicator - A Better MACD | `stc-indicator-a-better-macd` | Oscillators | own | shayankm | most liked |
+| 1327 | STD-Filtered, N-Pole Gaussian Filter | `std-filtered-n-pole-gaussian-filter` | Moving Averages | price | loxx | most liked |
+| 1328 | STH Unrealized Profit/Loss Ratio (STH-NUPL) | `sth-unrealized-profit-loss-ratio` | Oscillators | own | DeVrizii | batch 15 |
+| 1329 | Stoch VX3 | `stoch-vx3` | Oscillators | own |  |  |
+| 1330 | Stochastic Heat Map | `stochastic-heat-map` | Momentum | own | Violent |  |
+| 1331 | Stochastic Momentum Index | `stochastic-momentum-index` | Oscillators | own |  |  |
+| 1332 | UCS_Stochastic Momentum Index | `smi-ucs` | Oscillators | own |  |  |
+| 1333 | Stochastic OTT | `stochastic-ott` | Oscillators | own | KivancOzbilgic |  |
+| 1334 | Stochastic Z-Score | `stochastic-z-score` | Oscillators | own | AlgoAlpha | most liked |
+| 1335 | Stockbee ComboBull | `stockbee-combobull` | Momentum | own | traderabhi81 | batch 29 |
+| 1336 | Stockbee Reversal Bullish v2 | `stockbee-reversal-bullish-v2` | Momentum | own | traderabhi81 | batch 29 |
+| 1337 | Stop/Take Bounds | `stop-take-bounds` | Volatility | price | Y_Goldman | batch 27 |
+| 1338 | Strat Assistant | `strat-assistant` | Trend | price | rickyzcarroll | most liked |
+| 1339 | Strength of Divergence Across Multiple Indicators | `strength-of-divergence-across-multiple` | Oscillators | price | reees | most liked |
+| 1340 | Strong Burst Fader \| ProjectSyndicate | `strong-burst-fader-projectsyndicate` | Volatility | price | ProjectSyndicate | batch 38 |
+| 1341 | Strong Demands & Supplies + Liquidity \| Zonas de Compra e Venda | `strong-demands-supplies-liquidity-zonas-de` | Trend | price | Luis_TudoSobreTrading | most liked |
+| 1342 | Strong Engulfing Candlestick (With Alerts) | `strong-engulfing-candlestick` | Candlestick Patterns | price | kyjefive | batch 39 |
+| 1343 | Super Guppy | `super-guppy` | Trend | price | JustUncleL |  |
+| 1344 | Super OrderBlock / FVG / BoS Tools by makuchaku & eFe | `super-orderblock-fvg-bos` | Trend | price | makuchaku | most liked |
+| 1345 | Super SMA 5 8 13 + EMA 20/200 Regime Filter (ALIZET) | `super-sma-5-8-13-ema-20-200-regime-filter` | Moving Averages | price | afdzjr69 | batch 19 |
+| 1346 | Super Smoothed MACD | `super-smoothed-macd` | Momentum | own |  |  |
+| 1347 | Super SuperTrend | `super-supertrend` | Trend | price |  |  |
+| 1348 | Super trend V | `super-trend-v` | Trend | price | RafaelZioni | most liked |
+| 1349 | SuperBands | `superbands` | Trend | price | The_Peaceful_Lizard | batch 7 |
+| 1350 | SuperBollingerTrend (Expo) | `superbollingertrend` | Trend | price | Zeiierman | most liked |
+| 1351 | SuperSmoother MA Oscillator | `supersmoother-ma-oscillator` | Oscillators | own | BOSWaves | batch 1 |
+| 1352 | SuperTrend + Relative Volume (Kernel Optimized) | `supertrend-relative-volume-kernel` | Trend | price | fluxchart | most liked |
+| 1353 | SuperTrend AI Clustering | `supertrend-ai-clustering` | Trend | price |  |  |
+| 1354 | SuperTrend Channels | `supertrend-channels` | Channels & Bands | price |  |  |
+| 1355 | Supertrend MTF Heikin Ashi | `supertrend-mtf-heikin-ashi` | Trend | price | LonesomeTheBlue | most liked |
+| 1356 | SuperTrend Oscillator | `supertrend-oscillator` | Oscillators | own | LuxAlgo | most liked |
+| 1357 | Supply & Demand (MTF) \| Flux Charts | `supply-demand-flux-charts` | Trend | price | fluxchart | most liked |
+| 1358 | Supply and Demand Anchored | `supply-and-demand-anchored` | Volume | price | LuxAlgo | most liked |
+| 1359 | Supply and Demand Daily | `supply-and-demand-daily` | Volume | price | LuxAlgo | most liked |
+| 1360 | Supply and Demand Visible Range | `supply-and-demand-visible-range` | Volume | price | LuxAlgo | most liked |
+| 1361 | Supply and Demand Zones | `supply-and-demand-zones` | Volume | price | BigBeluga | most liked |
+| 1362 | Supply Demand Profiles | `supply-demand-profiles` | Volume | price | LuxAlgo | most liked |
+| 1363 | Supply Demand Zones Pro | `supply-demand-zones-pro` | Channels & Bands | price | ProjectSyndicate | most liked |
+| 1364 | Support & Resistance AI (K means/median) | `support-resistance-ai` | Channels & Bands | price | ThinkLogicAI | most liked |
+| 1365 | Support & Resistance Pro Toolkit | `support-resistance-pro-toolkit` | Trend | price | LuxAlgo | most liked |
+| 1366 | Support and Resistance (High Volume Boxes) | `support-resistance-high-volume-boxes` | Volume | price | ChartPrime | most liked |
+| 1367 | Support and Resistance (MTF) \| Flux Charts | `support-and-resistance-flux-charts` | Trend | price | fluxchart | most liked |
+| 1368 | Support and Resistance Levels with Breaks | `sr-levels-breaks` | Channels & Bands | price |  |  |
+| 1369 | Support and Resistance Logistic Regression \| Flux Charts | `support-and-resistance-logistic-regression` | Trend | price | fluxchart | most liked |
+| 1370 | Support and Resistance Power Channel | `support-resistance-power-channel` | Trend | price | ChartPrime | most liked |
+| 1371 | Support and Resistance Signals MTF | `support-resistance-signals-mtf` | Trend | price | LuxAlgo | most liked |
+| 1372 | Support Resistance - Dynamic | `support-resistance-dynamic` | Trend | price | LonesomeTheBlue | most liked |
+| 1373 | Support Resistance - Dynamic v2 | `support-resistance-dynamic-v2` | Trend | price | LonesomeTheBlue | most liked |
+| 1374 | Support Resistance Channels | `support-resistance-channels` | Trend | price | LonesomeTheBlue |  |
+| 1375 | Support Resistance Channels/Zones Multi Time Frame | `support-resistance-channels-mtf` | Trend | price | LonesomeTheBlue | most liked |
+| 1376 | Support Resistance Classification (VR) | `support-resistance-classification` | Channels & Bands | price | LuxAlgo | most liked |
+| 1377 | Support Resistance Interactive | `support-resistance-interactive` | Trend | price | LonesomeTheBlue | most liked |
+| 1378 | Support Resistance MTF | `support-resistance-mtf` | Trend | price | LonesomeTheBlue | most liked |
+| 1379 | Support Resistance with Breaks and Retests | `support-resistance-with-breaks-and-retests` | Trend | price | HoanGhetti | most liked |
+| 1380 | Support/Resistance Channel Breakout | `support-resistance-channel-breakout` | Channels & Bands | price | SuprAlgo | batch 31 |
+| 1381 | Support/Resistance V2 Indicator | `support-resistance-v2-indicator` | Trend | price | BarsStallone | most liked |
+| 1382 | Suppot and resistance & BUY SELL SIGNALS | `suppot-and-resistance-buy-sell-signals` | Channels & Bands | price | doganayy2 | batch 20 |
+| 1383 | Sweep Candle | `sweep-candle` | Candlestick Patterns | price | odnac | batch 41 |
+| 1384 | Sweep Engulf 2 Candle | `sweep-engulf-2-candle` | Candlestick Patterns | price | gastrophollic | batch 41 |
+| 1385 | Sweep Engulf CHoCH | `sweep-engulf-choch` | Candlestick Patterns | price | gastrophollic | batch 38 |
+| 1386 | Sweep institutional | `sweep-institutional` | Trend | price | Algoryze | most liked |
+| 1387 | Sweep2Trade Pro | `sweep2trade-pro` | Trend | price | chervolino | batch 8 |
+| 1388 | Swing Anchored Vwap | `swing-anchored-vwap` | Volume | price | BigBeluga | most liked |
+| 1389 | Swing Breakout Sequence | `swing-breakout-sequence` | Trend | price | LuxAlgo | most liked |
+| 1390 | Swing Failure Pattern (SFP) | `swing-failure-pattern` | Trend | price | LuxAlgo | most liked |
+| 1391 | Swing Failure Signals | `swing-failure-signals` | Trend | price | AlgoAlpha | most liked |
+| 1392 | Swing High/Low (ZigZag) | `swing-high-low` | Trend | price | ChartPrime | most liked |
+| 1393 | Swing Highs/Lows & Candle Patterns | `swing-highs-lows-patterns` | Candlestick Patterns | price | LuxAlgo (Pine v5) |  |
+| 1394 | Swing Levels and Liquidity - By Leviathan | `swing-levels-and-liquidity-by-leviathan` | Trend | price | LeviathanCapital | most liked |
+| 1395 | Swing Points | `swing-points` | Trend | price | CrossTradeTeam | batch 14 |
+| 1396 | Swing Profile | `swing-profile` | Volume | price | BigBeluga | most liked |
+| 1397 | Swing Support and Resistance | `swing-support-and-resistance` | Trend | price | VSB-2024 | batch 25 |
+| 1398 | Swing Trade Signals | `swing-trade-signals` | Oscillators | price | nicks1008 |  |
+| 1399 | Swing Volume Profiles | `swing-volume-profiles` | Volume | price | LuxAlgo | most liked |
+| 1400 | SwingArm ATR Trend Indicator | `swingarm-atr-trend-indicator` | Trend | price | vsnfnd (script title "Blackflag FTS") | most liked |
+| 1401 | T1 Wyckoff Aggressive A/D Setup | `t1-wyckoff-aggressive-a-d-setup` | Volume | price | Teyo69 | batch 38 |
+| 1402 | T3 Length | `t3-psar` | Moving Averages | price |  |  |
+| 1403 | TA (Miles) Adaptive Trend | `ta-adaptive-trend` | Trend | price | TradingApologist | batch 27 |
+| 1404 | Target Trend | `target-trend` | Trend | price | BigBeluga | most liked |
+| 1405 | Targets For Many Indicators | `targets-for-many-indicators` | Trend | price | LuxAlgo | most liked |
+| 1406 | Targets For Overlay Indicators | `targets-for-overlay-indicators` | Trend | price | LuxAlgo | most liked |
+| 1407 | TASC 2025.02 Autocorrelation Indicator | `tasc-2025-02-autocorrelation` | Oscillators | own | PineCodersTASC | batch 6 |
+| 1408 | TASC 2025.06 Cybernetic Oscillator | `tasc-2025-06-cybernetic-oscillator` | Oscillators | own | PineCodersTASC | batch 5 |
+| 1409 | TASC 2025.09 The Continuation Index | `tasc-2025-09-the-continuation-index` | Trend | own | PineCodersTASC | batch 14 |
+| 1410 | TASC 2026.01 The Reversion Index | `tasc-2026-01-the-reversion-index` | Oscillators | own | PineCodersTASC | batch 26 |
+| 1411 | TASC 2026.04 A Synthetic Oscillator | `tasc-2026-04-a-synthetic-oscillator` | Oscillators | own | PineCodersTASC | batch 7 |
+| 1412 | TASC 2026.05 The AutoTune Filter | `tasc-2026-05-the-autotune-filter` | Oscillators | own | PineCodersTASC | batch 8 |
+| 1413 | TASC 2026.09 Adaptive SuperSmoother | `tasc-2026-09-adaptive-supersmoother` | Moving Averages | own | PineCodersTASC | batch 15 |
+| 1414 | TDI - Traders Dynamic Index + RSI Divergences + Buy/Sell Signals | `tdi-traders-dynamic-index-rsi-divergences-buy` | Oscillators | own | ZyadaCharts | most liked |
+| 1415 | TDI - Traders Dynamic Index [Goldminds] | `tdi-rsi` | Momentum | own |  |  |
+| 1416 | Technical Ratings | `technical-ratings` | Oscillators | own |  | most liked |
+| 1417 | Tenkan Cloud Signals | `tenkan-cloud-signals` | Trend | price | CodaPro | batch 11 |
+| 1418 | Terminal Velocity Stop \| Lyro RS | `terminal-velocity-stop-lyro-rs` | Trend | price | LyroRS | batch 13 |
+| 1419 | TFO + ADX with Histogram & Signal | `tfo-adx-with-histogram-signal` | Oscillators | own | WalrusQuant | batch 26 |
+| 1420 | The Echo Forecast | `the-echo-forecast` | Trend | price | LuxAlgo | most liked |
+| 1421 | The Jewel | `the-jewel` | Oscillators | own | afonso_77 | batch 37 |
+| 1422 | The Mean Goose v1 | `the-mean-goose-v1` | Channels & Bands | price | FattyGuinness | batch 15 |
+| 1423 | The Next Pivot | `the-next-pivot` | Trend | price | KioseffTrading | most liked |
+| 1424 | The Strat | `the-strat` | Candlestick Patterns | price | shayy110 | batch 42 |
+| 1425 | Theil-Sen Line Filter | `theil-sen-line-filter` | Moving Averages | price | BackQuant | batch 18 |
+| 1426 | Three Bar Reversal Pattern | `three-bar-reversal-pattern` | Trend | price | LuxAlgo | most liked |
+| 1427 | Three Drive Pattern Detector | `three-drive-pattern-detector` | Trend | price | LuxAlgo | most liked |
+| 1428 | Three Moving Averages | `three-moving-averages` | Moving Averages | price |  |  |
+| 1429 | Three-Bar Reversal/Continuation | `three-bar-reversal-continuation` | Candlestick Patterns | price | abuzka | batch 42 |
+| 1430 | Tight Range Display with Background | `tight-range-display-with-background` | Volatility | price | rakeshhelva | batch 42 |
+| 1431 | Tillson T3 | `tillson-t3` | Trend | price | KivancOzbilgic (fr3762) |  |
+| 1432 | Time-based Alerts for Trading Windows | `time-based-alerts-for-trading-windows` | Trend | price | xhmxdir | batch 41 |
+| 1433 | TMA Overlay | `tma-overlay` | Moving Averages | price | ArtyFXC | most liked |
+| 1434 | TMO (True Momentum Oscillator) | `tmo` | Momentum | own | Coulisnosaj | batch 15 |
+| 1435 | Tom DeMark MACD | `td-macd` | Momentum | own |  |  |
+| 1436 | TonyUX EMA Scalper | `tonyux-ema-scalper` | Oscillators | price |  |  |
+| 1437 | Top & Bottom Candle | `top-bottom-candle` | Candlestick Patterns | own |  |  |
+| 1438 | Tops/Bottoms | `tops-bottoms` | Oscillators | price |  |  |
+| 1439 | TR High/Low meter | `tr-high-low-meter` | Momentum | own | dman103 | batch 10 |
+| 1440 | Trade Price - Spread Compensator Overlay | `trade-price-spread-compensator-overlay` | Channels & Bands | price | The_Forex_Steward | batch 40 |
+| 1441 | Trade Prime - Fluid Trend Indicator | `trade-prime-fluid-trend-indicator` | Trend | price | tradeprime01 | batch 31 |
+| 1442 | Trader XO Macro Trend Scanner | `trader-xo` | Oscillators | price |  |  |
+| 1443 | Traders Dynamic Index Indicator Alert v0.1 by JustUncleL | `traders-dynamic-index-indicator-alert-v0-1-by` | Oscillators | own | JustUncleL | most liked |
+| 1444 | Traders Reality Main | `traders-reality-main` | Trend | price | TradersReality | most liked |
+| 1445 | Trading ABC | `trading-abc` | Trend | price | LonesomeTheBlue | most liked |
+| 1446 | Trading Activity Index | `trading-activity-index` | Volume | own | Zeiierman | batch 2 |
+| 1447 | Trading Gaul | `trading-gaul` | Trend | price | investment20223 | batch 26 |
+| 1448 | TradingMoja / SQZMOM ADX | `tradingmoja-sqzmom-adx` | Momentum | own | Trading_Moja | batch 32 |
+| 1449 | Trailing Stop Loss Indicator by KıvanÇ fr3762 | `trailing-stop-loss-indicator-by-k-van-fr3762` | Trend | price | KivancOzbilgic | most liked |
+| 1450 | Transient Zones v1.1 | `transient-zones` | Channels & Bands | price | Jurij (community) |  |
+| 1451 | Tremor Tracker | `tremor-tracker` | Volatility | own | TheUltimator5 | batch 19 |
+| 1452 | Trend Channels With Liquidity Breaks | `trend-channels-with-liquidity-breaks` | Channels & Bands | price | ChartPrime | most liked |
+| 1453 | Trend Direction Helper (ZigZag and S/R and HH/LL labels) | `trend-direction-helper` | Trend | price | Daveatt (zig zag by Ricardo Santos, pivot levels from Backtest Rookies) | most liked |
+| 1454 | Trend Direction Zone | `trend-direction-zone` | Trend | price | MarketStructureLab | batch 16 |
+| 1455 | Trend Double Pullbackv1.0 | `trend-double-pullback-v1-0` | Trend | price | puduxbt | batch 26 |
+| 1456 | Trend Duration Forecast | `trend-duration-forecast` | Trend | price | ChartPrime | most liked |
+| 1457 | Trend Filter (2-pole) | `trend-filter` | Trend | price | BigBeluga | batch 1 |
+| 1458 | Trend Flow Oscillator (CMF + MFI) + ADX | `trend-flow-oscillator-adx` | Oscillators | own | WalrusQuant | batch 19 |
+| 1459 | Trend Following Moving Averages | `trend-following-ma` | Moving Averages | price | LonesomeTheBlue |  |
+| 1460 | Trend Heatmap | `trend-heatmap` | Trend | own | autocrp | batch 30 |
+| 1461 | Trend Impulse Channels | `trend-impulse-channels` | Trend | price | Zeiierman |  |
+| 1462 | Trend Indicator A-V2 (Smoothed Heikin Ashi Cloud) | `trend-indicator-a-v2` | Trend | price | DZIV | most liked |
+| 1463 | Trend Levels | `trend-levels` | Trend | price | ChartPrime | most liked |
+| 1464 | Trend Line Auto | `trend-line-auto` | Trend | price | HarryBot |  |
+| 1465 | Trend Lines | `trend-lines` | Trend | price | LonesomeTheBlue | most liked |
+| 1466 | Trend Lines for RSI, CCI, Momentum, OBV | `trend-lines-for-rsi-cci-momentum-obv` | Oscillators | own | LonesomeTheBlue | most liked |
+| 1467 | Trend Lines v2 | `trend-lines-v2` | Trend | price | LonesomeTheBlue (Pine v4) |  |
+| 1468 | Trend Magic | `trend-magic` | Trend | price |  |  |
+| 1469 | Trend Meter | `trend-meter` | Trend | own | Lij_MC | most liked |
+| 1470 | Trend Predictor Ribbon Clone - Fixed roj karo moj karo | `trend-predictor-ribbon` | Trend | price | ronitjain18 | batch 6 |
+| 1471 | Trend Pulse Oscillator | `trend-pulse-oscillator` | Oscillators | own | ChaosTrader63 | batch 35 |
+| 1472 | Trend Range Detector | `trend-range-detector` | Channels & Bands | price | Zeiierman | most liked |
+| 1473 | Trend Regularity Adaptive MA | `trama` | Moving Averages | price | LuxAlgo |  |
+| 1474 | Trend Scalper | `trend-scalper` | Moving Averages | price | abedmahmood | batch 35 |
+| 1475 | Trend State Signals | `trend-state-signals` | Trend | price | MarketStructureLab | batch 4 |
+| 1476 | Trend Strength/Direction | `trend-strength-direction` | Trend | own | ddcakez | batch 32 |
+| 1477 | Trend Targets | `trend-targets` | Trend | price | AlgoAlpha | most liked |
+| 1478 | Trend Trader Strategy | `trend-trader` | Trend | price |  |  |
+| 1479 | Trend Trigger Factor | `trend-trigger-factor` | Oscillators | own |  |  |
+| 1480 | Trend Type Indicator by BobRivera990 | `trend-type-indicator-by-bobrivera990` | Trend | own | BobRivera990 | most liked |
+| 1481 | Trend Volatility Index (TVI) | `trend-volatility-index` | Volatility | own | chikaharu | batch 3 |
+| 1482 | Trend with ADX/EMA - Buy & Sell Signals | `trend-with-adx-ema-buy-sell-signals` | Trend | price | RMPM | batch 28 |
+| 1483 | Trend-Pro | `trend-pro` | Trend | price | andrwxwy | batch 38 |
+| 1484 | TrendCylinder (Expo) | `trendcylinder` | Trend | price | Zeiierman | batch 4 |
+| 1485 | Trending Market Toolkit | `trending-market-toolkit` | Trend | price | LuxAlgo | most liked |
+| 1486 | Trendline Breakout Navigator | `trendline-breakout-navigator` | Trend | price | LuxAlgo | most liked |
+| 1487 | Trendline Breakouts With Targets | `trendline-breakouts-with-targets` | Trend | price | ChartPrime | most liked |
+| 1488 | Trendlines - JD | `trendlines-jd` | Trend | price | Duyck | most liked |
+| 1489 | Trendlines 2x + | `trendlines-2x` | Trend | price | Lij_MC | most liked |
+| 1490 | Trendlines with Breaks [LuxAlgo] | `trendlines-with-breaks` | Trend | price | LuxAlgo |  |
+| 1491 | TrendMasterPro_Fekonomi | `trendmasterpro-fekonomi` | Trend | price | fekonomi | batch 20 |
+| 1492 | Trendshift | `trendshift` | Trend | price | chervolino | batch 39 |
+| 1493 | TrendShift Detector | `trendshift-detector` | Candlestick Patterns | price | GIANESELLI | batch 40 |
+| 1494 | TRENDSYNC BUY/SELL BY SIMPLY_DANTE-FX | `trendsync-buy-sell-by-simply-dante-fx` | Trend | price | Simply_Dante-fx | batch 36 |
+| 1495 | TrendWave Bands | `trendwave-bands` | Channels & Bands | price | BigBeluga | batch 1 |
+| 1496 | Triangular Hull Moving Average + Volatility | `triangular-hull-moving-average-volatility` | Trend | price | BigBeluga | most liked |
+| 1497 | Triangular MA Bands | `tma-bands` | Channels & Bands | price |  |  |
+| 1498 | Triangular Momentum Oscillator | `triangular-momentum-osc` | Oscillators | own |  |  |
+| 1499 | Trimmed Mean ATR Bands | `trimmed-mean-atr-bands` | Channels & Bands | price | CryptoNejc | batch 17 |
+| 1500 | Triple Doji Sequence | `triple-doji-sequence` | Candlestick Patterns | price | Marc_Thiart | batch 39 |
+| 1501 | Triple Gaussian Smoothed Ribbon | `triple-gaussian-smoothed-ribbon` | Trend | price | BOSWaves | batch 16 |
+| 1502 | Triple MA For Loop | `triple-ma-for-loop` | Trend | own | SeerQuant | batch 7 |
+| 1503 | Triple MA Forecast | `triple-ma-forecast` | Moving Averages | price | yatrader2 (community) |  |
+| 1504 | Triple RSI \| MisinkoMaster | `triple-rsi-misinkomaster` | Momentum | own | MisinkoMaster | batch 19 |
+| 1505 | True Breakout Pattern Breakout Signal Indicator | `true-breakout-pattern-breakout-signal` | Trend | price | TradingFinder | most liked |
+| 1506 | True High/Low RSI for Divergence | `true-high-low-rsi-for-divergence` | Oscillators | own | Lakt_ | batch 29 |
+| 1507 | True Range eXpansion | `true-range-expansion` | Volatility | price | Sherlock_MacGyver | batch 22 |
+| 1508 | TTM Squeeze | `ttm-squeeze-greeny` | Momentum | own | Greeny | most liked |
+| 1509 | TTM Squeeze Pro | `ttm-squeeze-pro` | Oscillators | own | John Carter |  |
+| 1510 | TTrades Daily Bias | `ttrades-daily-bias` | Trend | price | tradeforopp | most liked |
+| 1511 | Turtle Soup ICT Strategy FVG + CHoCH/CSD | `turtle-soup-ict-strategy-fvg-choch-csd` | Trend | price | TradingFinder | most liked |
+| 1512 | Turtle Trade Channels | `turtle-trade-channels` | Channels & Bands | price | Richard Dennis / William Eckhardt |  |
+| 1513 | Tweezers & Kangaroo Tail | `tweezers-kangaroo-tail` | Candlestick Patterns | price | LonesomeTheBlue |  |
+| 1514 | Twin Range Filter | `twin-range-filter` | Trend | price | colinmck |  |
+| 1515 | Twin Range Filter Visualized | `twin-range-filter-visualized` | Trend | price | KivancOzbilgic | most liked |
+| 1516 | Two-Pole Oscillator | `two-pole-oscillator` | Oscillators | own | BigBeluga | most liked |
+| 1517 | Ultimate Buy & Sell | `ultimate-buy-sell` | Trend | price |  |  |
+| 1518 | Ultimate Moving Average-Multi-TimeFrame-7 MA Types | `ultimate-moving-average-mtf` | Moving Averages | price | ChrisMoody | most liked |
+| 1519 | Ultimate Opening Range Breakout | `ultimate-opening-range-breakout` | Volatility | price | LuxAlgo | most liked |
+| 1520 | Ultimate RSI [LuxAlgo] | `ultimate-rsi` | Momentum | own | LuxAlgo |  |
+| 1521 | Ultra Clean Support / Resistance Levels | `ultra-clean-support-resistance-levels` | Trend | price | Stocktitian | batch 30 |
+| 1522 | Ultra Smart Trail | `ultra-smart-trail` | Trend | price | Rathack | batch 18 |
+| 1523 | UM EMA SMA WMA HMA with Directional Color Change | `um-ema-sma-wma-hma-with-directional-color-change` | Moving Averages | price | UnderwearMillionaire | batch 30 |
+| 1524 | Unicorn Setup Detector (aziz abid) | `unicorn-setup-detector` | Trend | price | mohammedazizabid | batch 40 |
+| 1525 | Universal Large Orders Proxy fabio valentini Chat gpt Recreation | `universal-large-orders-proxy-fabio-valentini-chat-gpt-recreation` | Volume | price | boss11233 | batch 18 |
+| 1526 | Universal Signal Backtester | `universal-signal-backtester` | Trend | price | LuxAlgo | most liked |
+| 1527 | Uptrick: Dynamic Z-Score Deviation | `uptrick-dynamic-z-score-deviation` | Trend | price | Uptrick | batch 6 |
+| 1528 | Uptrick: Liquid Reversal Bands | `liquid-reversal-bands` | Channels & Bands | price | Uptrick | batch 3 |
+| 1529 | Uptrick: MultiMA_Volume | `uptrick-multima-volume` | Moving Averages | price | Uptrick | batch 16 |
+| 1530 | Uptrick: RSI MA Buying/Selling signals | `uptrick-rsi-ma-buying-selling-signals` | Momentum | own | Uptrick | batch 12 |
+| 1531 | Uptrick: Trend Analysis | `uptrick-trend-analysis` | Momentum | own | Uptrick | batch 14 |
+| 1532 | Uptrick: Volatility Reversion Bands | `uptrick-volatility-reversion-bands` | Channels & Bands | price | Uptrick | batch 4 |
+| 1533 | Uptrick: Zero Lag HMA Trend Suite | `zero-lag-hma-trend-suite` | Moving Averages | price | Uptrick | batch 3 |
+| 1534 | User Defined Range Selector and Color Changing EMA Line | `user-defined-range-selector-and-color-changing-ema-line` | Moving Averages | price | Crypto_Moses | batch 23 |
+| 1535 | UT Bot | `ut-bot` | Trend | price |  |  |
+| 1536 | Ut bot - Trend+volume | `ut-bot-trend-volume` | Trend | price | BhargavMeghnathi | batch 40 |
+| 1537 | Vacuum Candles | `vacuum-candles` | Volume | price | XrayAlgo | batch 41 |
+| 1538 | Variable Moving Average | `variable-ma` | Moving Averages | price | LazyBear |  |
+| 1539 | VARIS Zones | `varis-zones` | Channels & Bands | price | IAmTheLiquidity2 | batch 17 |
+| 1540 | VCO Fusion | `vco-fusion` | Oscillators | own | Uncle_the_shooter | batch 20 |
+| 1541 | Vdub FX Sniper | `vdub-sniper` | Oscillators | price | Vdubus |  |
+| 1542 | VDUB_BINARY_PRO_3_V2  FINAL + Strategy | `vdub-binary-pro-3-v2` | Channels & Bands | price | vdubus | most liked |
+| 1543 | vdub_Trend_Master_v  /  v1 / v2 / v3 | `vdub-trend-master-v-v1-v2-v3` | Trend | price | vdubus | most liked |
+| 1544 | vdubus BinaryPro | `vdubus-binarypro` | Oscillators | price |  |  |
+| 1545 | Vdubus Divergence Wave Pattern Generator V1 | `vdubus-divergence-wave-pattern-generator-v1` | Trend | price | vdubus | most liked |
+| 1546 | VEGA (Velocity of Efficient Gain Adaptation) | `vega` | Momentum | own | B3AR_Trades | batch 20 |
+| 1547 | Vervoort HA LT Candlestick Oscillator | `vervoort-ha-oscillator` | Oscillators | own |  |  |
+| 1548 | VIM (Volume in Money) | `vim` | Volume | own | tbtb1111 | batch 29 |
+| 1549 | Visualisation tendances | `visualisation-tendances` | Trend | price | Benjamin69 | batch 17 |
+| 1550 | Volatility & Big Market Moves | `volatility-big-market-moves` | Volatility | own | nilstrades_ | batch 24 |
+| 1551 | Volatility Adaptive Filtered Trend | `volatility-adaptive-filtered-trend` | Trend | price | SchizoQuant | batch 6 |
+| 1552 | Volatility Band Cloud with Overextension Signals | `volatility-band-cloud-with-overextension-signals` | Channels & Bands | price | Retire_by_50 | batch 35 |
+| 1553 | Volatility Bands | `volatility-bands` | Channels & Bands | price | pmk07 | batch 23 |
+| 1554 | Volatility Breakout Pulse (VBP FIX) | `volatility-breakout-pulse` | Channels & Bands | price | JohnsonForexTrader | batch 36 |
+| 1555 | Volatility Channel Oscillator | `volatility-channel-oscillator` | Oscillators | own | Uncle_the_shooter | batch 3 |
+| 1556 | Volatility Halo \| NAL | `volatility-halo-nal` | Volatility | price | NordicAlphaLab | batch 6 |
+| 1557 | Volatility Quality | `volatility-quality` | Volatility | own | AlphaExtract | batch 18 |
+| 1558 | Volatility-Driven VWAP Structure | `volatility-driven-vwap-structure` | Channels & Bands | price | Zeiierman | batch 3 |
+| 1559 | Volatility-Gated Trend Oscillator | `volatility-gated-trend-oscillator` | Oscillators | own | QuantAlgo | batch 9 |
+| 1560 | VOLD Ratio Histogram | `vold-ratio-histogram` | Volume | own | Th16rry | batch 23 |
+| 1561 | Volumatic Fair Value Gaps | `volumatic-fair-value-gaps` | Volume | price | BigBeluga | most liked |
+| 1562 | Volumatic S/R Levels | `volumatic-sr-levels` | Trend | price | BigBeluga |  |
+| 1563 | Volumatic Variable Index Dynamic Average | `volumatic-variable-index-dynamic-average` | Trend | price | BigBeluga | most liked |
+| 1564 | Volume + RSI & MA Differential | `volume-rsi-ma-differential` | Volume | own | ozzy_livin | batch 7 |
+| 1565 | Volume / Open Interest "Footprint" - By Leviathan | `volume-open-interest-footprint-by-leviathan` | Volume | price | LeviathanCapital | most liked |
+| 1566 | Volume Accumulation Percentage | `volume-accumulation-pct` | Volume | own |  |  |
+| 1567 | Volume Alert | `volume-alert` | Volume | price | oDouglasAlex | batch 42 |
+| 1568 | Volume Analysis - Heatmap and Volume Profile | `volume-analysis-heatmap-and-volume-profile` | Volume | own | LonesomeTheBlue | most liked |
+| 1569 | Volume and Volatility Ratio Indicator-WODI | `volume-and-volatility-ratio-indicator-wodi` | Volume | own | W0DI | batch 16 |
+| 1570 | Volume Bands | `volume-bands` | Channels & Bands | price | MisinkoMaster | batch 6 |
+| 1571 | Volume bar range | `volume-bar-range` | Volume | price | pandorid | batch 25 |
+| 1572 | Volume Bars Color | `volume-bars-color` | Volume | own | Evgenyc111 | batch 20 |
+| 1573 | Volume Bubbles & Liquidity Heatmap | `volume-bubbles-liquidity-heatmap` | Volume | price | LuxAlgo | most liked |
+| 1574 | Volume Buy/Sell Split | `volume-buy-sell-split` | Volume | own | LHAMA-Trading | batch 26 |
+| 1575 | Volume Candle Coloring v5 (BARCOLOR STABLE) | `volume-candle-coloring-v5` | Volume | price | sugogou | batch 37 |
+| 1576 | Volume Candle Highlighter | `volume-candle-highlighter` | Volume | price | Dougie_dee | batch 5 |
+| 1577 | Volume Candles | `volume-candles` | Volume | price | alexrainman | batch 39 |
+| 1578 | Volume Colored Bars | `volume-colored-bars` | Volume | own |  |  |
+| 1579 | Volume Comparison with Buyer/Seller Pressure | `volume-comparison-with-buyer-seller-pressure` | Volume | own | ask2maniish | batch 26 |
+| 1580 | Volume Divergence | `volume-divergence` | Volume | own | baymucuk |  |
+| 1581 | Volume Flow Indicator | `volume-flow-indicator` | Volume | own |  |  |
+| 1582 | Volume Flow v3 | `volume-flow-v3` | Volume | own | DepthHouse / oh92 (community) |  |
+| 1583 | Volume Footprint | `volume-footprint` | Volume | price | LuxAlgo |  |
+| 1584 | Volume Footprint: Measuring by Math & Geometry | `volume-footprint-measuring-by-math-geometry` | Volume | price | ata_sabanci | most liked |
+| 1585 | Volume Gaps & Imbalances | `volume-gaps-imbalances` | Volume | price | Zeiierman | most liked |
+| 1586 | Volume HeatMap Divergence | `volume-heatmap-divergence` | Volume | price | BigBeluga | most liked |
+| 1587 | Volume LinReg Trend | `volume-linreg-trend` | Volume | own | LonesomeTheBlue |  |
+| 1588 | Volume Order Blocks | `volume-order-blocks` | Volume | price | BigBeluga | most liked |
+| 1589 | Volume Orderbook (Expo) | `volume-orderbook` | Volume | price | Zeiierman | most liked |
+| 1590 | Volume Positive Negative (VPN) | `volume-positive-negative` | Volume | own | LevelUpTools | batch 2 |
+| 1591 | Volume Price Confirmation Indicator | `vpci` | Volume | own |  |  |
+| 1592 | Volume Profile | `volume-profile` | Volume | price | LuxAlgo | most liked |
+| 1593 | Volume Profile (kv4coins) | `volume-profile-kv4coins` | Volume | price | kv4coins | most liked |
+| 1594 | Volume Profile + Pivot Levels | `volume-profile-pivot-levels` | Volume | price | ChartPrime | most liked |
+| 1595 | Volume Profile / Fixed Range | `volume-profile-fixed-range` | Volume | price | LonesomeTheBlue | most liked |
+| 1596 | Volume Profile Auto | `volume-profile-auto` | Volume | price | fikira | most liked |
+| 1597 | Volume Profile Free Pro (25 Levels Value Area VWAP) by RRB | `volume-profile-free-pro-by-rrb` | Volume | price | RagingRocketBull | most liked |
+| 1598 | Volume Profile Free Ultra SLI (100 Levels Value Area VWAP) - RRB | `volume-profile-free-ultra-sli` | Volume | price | RagingRocketBull | most liked |
+| 1599 | Volume Profile Heatmap | `volume-profile-heatmap` | Volume | price | KeyAlgos | batch 13 |
+| 1600 | Volume Profile per day with support/resistance lines | `volume-profile-per-day-with-support` | Volume | price | juliangonzaconde | most liked |
+| 1601 | Volume Profile Plus | `volume-profile-plus` | Volume | price | AlphaViz | most liked |
+| 1602 | Volume Profile, Pivot Anchored by DGT | `volume-profile-pivot-anchored` | Volume | price | dgtrd | most liked |
+| 1603 | Volume Sentiment Breakout Channels | `volume-sentiment-breakout-channels` | Channels & Bands | price | AlgoAlpha | most liked |
+| 1604 | Volume Spike and Contraction Indicator | `volume-spike-and-contraction-indicator` | Volume | price | epicurusMcPot | batch 41 |
+| 1605 | Volume Spike Indicator | `volume-spike-indicator` | Volume | price | rikyu04 | batch 42 |
+| 1606 | Volume Suite - By Leviathan (CVD, Volume Delta, Relative Volume) | `volume-suite-by-leviathan` | Volume | own | LeviathanCapital | most liked |
+| 1607 | Volume SuperTrend AI (Expo) | `volume-supertrend-ai` | Trend | price |  |  |
+| 1608 | Volume Surge Detector | `volume-surge-detector` | Volume | own | SpeculationLab | batch 19 |
+| 1609 | Volume Variation Index Indicator | `volume-variation-index-indicator` | Volume | own | thequantscience | batch 35 |
+| 1610 | Volume Weighted MACD V2 | `vw-macd-v2` | Momentum | own |  |  |
+| 1611 | VOLUME WEIGHTED MACD V2 | `volume-weighted-macd-v2-vwmacdv2-by-kivan` | Momentum | own | KivancOzbilgic | most liked |
+| 1612 | Volume Weighted Median Price (VWMP) | `volume-weighted-median-price` | Moving Averages | price | vsov | batch 14 |
+| 1613 | Volume Weighted RSI (VW RSI) | `volume-weighted-rsi` | Momentum | own | CsokosGeza | batch 34 |
+| 1614 | Volume Weighted Trend | `volume-weighted-trend` | Trend | price | QuantAlgo | batch 1 |
+| 1615 | Volume with Alert | `volume-with-alert` | Volume | own | BullBearSR | batch 30 |
+| 1616 | Volume with EMA and Coloring Rules | `volume-with-ema-and-coloring-rules` | Volume | own | itisfilipe | batch 37 |
+| 1617 | Volume-Based Moving Average | `volume-based-moving-average` | Moving Averages | price | The_Forex_Steward | batch 36 |
+| 1618 | Volume-Based RSI Color Indicator with MAs | `volume-based-rsi-color-indicator-with-mas` | Oscillators | own | Riccardo02 | batch 32 |
+| 1619 | Volume-based Support & Resistance Zones | `volume-based-support-resistance-zones` | Volume | price | tommyf1001 | most liked |
+| 1620 | Volume-Gated Trend Ribbon | `volume-gated-trend-ribbon` | Trend | price | QuantAlgo | batch 3 |
+| 1621 | Volume-Trend Order Block Engine | `volume-trend-order-block-engine` | Trend | price | BigBeluga | most liked |
+| 1622 | Volume-Weighted MA Crossover | `volume-weighted-ma-crossover` | Moving Averages | price | AlphaNatt | batch 9 |
+| 1623 | Volume-Weighted Money Flow | `volume-weighted-money-flow` | Volume | own | sgbpulse | batch 33 |
+| 1624 | Volume-Weighted Order Block Zones | `volume-weighted-order-block-zones` | Volume | price | BigBeluga | most liked |
+| 1625 | Volume-Weighted Pivot Bands | `volume-weighted-pivot-bands` | Channels & Bands | price | LeafAlgo | batch 33 |
+| 1626 | Volume-Weighted Price Z-Score | `volume-weighted-price-z-score` | Oscillators | own | QuantAlgo | batch 6 |
+| 1627 | Volumetric Compressed MA | `volumetric-compressed-ma` | Moving Averages | price | serkany88 | batch 14 |
+| 1628 | Volumetric Entropy Index | `volumetric-entropy-index` | Volume | own | Sherlock_MacGyver | batch 27 |
+| 1629 | Volumetric Order Flow Structure | `volumetric-order-flow-structure` | Trend | price | LuxAlgo | most liked |
+| 1630 | Volumetric Tensegrity | `volumetric-tensegrity` | Volume | own | TheLeadingIndicator | batch 30 |
+| 1631 | VolVol | `volvol` | Volume | price | kunalgolani | batch 26 |
+| 1632 | Vortex Pro with Moving average | `vortex-pro-with-moving-average` | Oscillators | own | pointalgo | batch 25 |
+| 1633 | Voss Predictive Filter | `voss-predictive-filter` | Oscillators | own | e2e4 | batch 8 |
+| 1634 | VPSA-VTD | `vpsa-vtd` | Volume | own | CatTheTrader | batch 11 |
+| 1635 | Vulkan Profit | `vulkan-profit` | Trend | price | AlgoCollective | batch 33 |
+| 1636 | VuManChu Swing Free | `vumanchu-swing` | Trend | price |  |  |
+| 1637 | VWAP & Dual MA Ribbon Tracker Pro | `vwap-dual-ma-ribbon-tracker-pro` | Trend | own | Simon20cent | batch 19 |
+| 1638 | VWAP Deviation Oscillator | `vwap-deviation-oscillator` | Oscillators | own | BackQuant | batch 9 |
+| 1639 | VWAP MTF (Multi Timeframe) | `vwap-mtf` | Volume | price | TheYangGuizi | most liked |
+| 1640 | VWAP Periodic Close | `vwap-periodic-close` | Volume | price | LuxAlgo | most liked |
+| 1641 | VWAP Predictive Breakout + RSI + OB + Trend/Chop | `vwap-predictive-breakout-rsi-ob-trend-chop` | Volume | price | Viggy02 | batch 31 |
+| 1642 | VWAP Stdev Bands v2 Mod | `vwap-stdev-bands-v2-mod` | Channels & Bands | price | TheYangGuizi | most liked |
+| 1643 | VWAP Supply & Demand Zones PRO | `vwap-supply-demand-zones-pro` | Channels & Bands | price | Finntech1 | most liked |
+| 1644 | VWAP Volume Profile | `vwap-volume-profile` | Volume | price | BigBeluga | most liked |
+| 1645 | VWAP/MVWAP/EMA Crossover | `vwap-mvwap-ema-crossover` | Trend | price | DerrickLaFlame |  |
+| 1646 | VWMA/SMA Delta Volatility (Statistical Anomaly Detector) | `vwma-sma-delta-volatility` | Volatility | own | tkarolak | batch 14 |
+| 1647 | VWMACD-MFI-OBV Composite | `vwmacd-mfi-obv-composite` | Volume | own | munair | batch 27 |
+| 1648 | VWRSI Crossovers & Extremes | `vwrsi-crossovers-extremes` | Momentum | own | TheAITradingDesk | batch 35 |
+| 1649 | Waddah Attar Explosion | `waddah-attar-explosion` | Momentum | own | LazyBear/ShayanKM |  |
+| 1650 | WAE Sniper Scalp XAUUSD M1 Tuned | `wae-sniper-scalp-xauusd-m1-tuned` | Momentum | own | khonthailoei19071983 | batch 19 |
+| 1651 | Waindrops | `waindrops` | Volume | price | makit0 | most liked |
+| 1652 | Wave N + KDJ + Volumi + SMC + Ichimoku | `wave-n-kdj-volumi-smc-ichimoku` | Trend | price | Nikus63 | batch 31 |
+| 1653 | WaveFunction MACD | `wavefunction-macd` | Momentum | own | TechnoBlooms | batch 27 |
+| 1654 | Wavelet Filter with Adaptive Upsampling | `wavelet-filter-with-adaptive-upsampling` | Oscillators | own | BackQuant | batch 29 |
+| 1655 | Wavelet Transform Trend | `wavelet-transform-trend` | Trend | price | QuantAlgo | batch 12 |
+| 1656 | Wavelet-Trend ML Integration | `wavelet-trend-ml-integration` | Oscillators | own | AlphaExtract | batch 1 |
+| 1657 | WaveTrend | `wavetrend` | Oscillators | own | LazyBear |  |
+| 1658 | WaveTrend Oscillator | `wavetrend-oscillator` | Momentum | own | LazyBear |  |
+| 1659 | WaveTrend Oscillator + Divergence  + Direction Detection +Alerts | `wavetrend-oscillator-divergence-direction` | Oscillators | own |  | most liked |
+| 1660 | Wedge and Flag Finder (Multi - zigzag) | `wedge-and-flag-finder` | Trend | price | Trendoscope | most liked |
+| 1661 | Weierstrass Function (Fractal Cycles) | `weierstrass-function` | Oscillators | own | fract | batch 17 |
+| 1662 | Weighted percentile nearest rank | `weighted-percentile-nearest-rank` | Moving Averages | price | gorx1 | batch 10 |
+| 1663 | Weighted Regression Bands | `weighted-regression-bands` | Channels & Bands | price | Zeiierman | batch 5 |
+| 1664 | Weis Wave Candle | `weis-wave-candle` | Trend | own | Uncle_the_shooter | batch 34 |
+| 1665 | Weis Wave Volume | `weis-wave-volume` | Volume | own |  |  |
+| 1666 | Whale Activity Impact Oscillator | `whale-activity-impact-oscillator` | Volume | own | mdeacey | batch 18 |
+| 1667 | Whale Liquidity and Absorption Profile | `whale-liquidity-and-absorption-profile` | Volume | price | AlgoAlpha | most liked |
+| 1668 | Whale Volume Absorption & Aggression @MaxMaserati 3.0 | `whale-volume-absorption-aggression-maxmaserati-3-0` | Volume | own | MaxMaserati | batch 22 |
+| 1669 | Wick Volume Alert | `wick-volume-alert` | Candlestick Patterns | price | Shazam77 | batch 41 |
+| 1670 | WICK.ED Fractals | `wicked-fractals` | Oscillators | price | Mit Nayi (community) |  |
+| 1671 | Williams Alligator + Fractals | `williams-combo` | Trend | price | vlkvr (Pine v3) |  |
+| 1672 | Williams BBDiv Signal | `williams-bbdiv-signal` | Oscillators | own | trade_lexx | batch 20 |
+| 1673 | Williams Percent Range with Threshold | `williams-percent-range-with-threshold` | Oscillators | own | xdextra | batch 29 |
+| 1674 | Williams Vix Fix | `williams-vix-fix` | Volatility | own | ChrisMoody |  |
+| 1675 | WLSMA: fast approximation | `wlsma-fast-approximation` | Moving Averages | price | gorx1 | batch 33 |
+| 1676 | Wolfe Scanner (Multi - zigzag) | `wolfe-scanner` | Trend | price | Trendoscope | most liked |
+| 1677 | Wyckoff Effort vs. Result | `wyckoff-effort-vs-result` | Volume | price | TradeTechanalysis | batch 34 |
+| 1678 | x5-smooth-ema | `x5-smooth-ema` | Moving Averages | price | traderninezero | batch 19 |
+| 1679 | XAUUSD Buy/Sell Alerts with SL & TP | `xauusd-buy-sell-alerts-with-sl-tp` | Moving Averages | price | alexandrossolomou1 | batch 8 |
+| 1680 | XAUUSD Family Scalping (5min) | `xauusd-family-scalping` | Oscillators | price | cupra_inc | batch 8 |
+| 1681 | Z-Score | `z-score` | Oscillators | own | joecalledher | batch 21 |
+| 1682 | Z-Score Oscillator | `z-score-oscillator` | Oscillators | own | B3AR_Trades | batch 12 |
+| 1683 | Z-Score STDEMA Bands | `z-score-stdema-bands` | Oscillators | own | TiagoTF | batch 24 |
+| 1684 | Z-Score Trend Monitor | `z-score-trend-monitor` | Oscillators | own | EdgeTerminal | batch 31 |
+| 1685 | Zero Lag Liquidity | `zero-lag-liquidity` | Volume | price | AlgoAlpha | most liked |
+| 1686 | Zero Lag LSMA (ZLSMA) | `zlsma` | Moving Averages | price | veryfid |  |
+| 1687 | Zero Lag MACD | `zero-lag-macd` | Momentum | own | AC (based on Glaz) |  |
+| 1688 | Zero Lag Signals For Loop | `zero-lag-signals-for-loop` | Trend | price | QuantAlgo | batch 1 |
+| 1689 | Zero Lag Trend Signals (MTF) | `zero-lag-trend-signals` | Trend | price | AlgoAlpha | most liked |
+| 1690 | Zero-Lag GARCH Bands \| NAL | `zero-lag-garch-bands-nal` | Volatility | price | NordicAlphaLab | batch 12 |
+| 1691 | Zig Zag Channels | `zig-zag-channels` | Channels & Bands | price | LuxAlgo | most liked |
+| 1692 | ZigZag Multi Time Frame with Fibonacci Retracement | `zigzag-multi-time-frame-with-fibonacci` | Trend | price | LonesomeTheBlue | most liked |
+| 1693 | ZigZag Multiple Methods - Forecast - patterns - labels | `zigzag-multiple-methods-forecast-patterns` | Trend | price | RicardoSantos | most liked |
+| 1694 | ZigZag Percent Reversal - Forecast - patterns - labels | `zigzag-percent-reversal-forecast-patterns` | Trend | price | RicardoSantos | most liked |
+| 1695 | Zigzag Trend/Divergence Detector | `zigzag-trend-divergence-detector` | Trend | price | Trendoscope | most liked |
+| 1696 | ZigZag with Fibonacci Levels | `zigzag-fibonacci` | Trend | price | LonesomeTheBlue |  |
+| 1697 | Zone Shift | `zone-shift` | Trend | price | ChartPrime | most liked |
+| 1698 | ZVOL - Z-Score Volume Heatmap | `zvol-z-score-volume-heatmap` | Volume | own | TheLeadingIndicator | batch 28 |
+| 1699 | 🌊 ALMA Bands | `alma-bands` | Moving Averages | price | B3AR_Trades | batch 26 |
