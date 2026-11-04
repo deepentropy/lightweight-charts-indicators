@@ -7280,6 +7280,18 @@ export type { PivotHighLowAnalysisForecastInputs } from './community/pivot-high-
 import * as pocsAndVahsValsAllAndNonBrokenIndicator from './community/pocs-and-vahs-vals-all-and-non-broken';
 export { PocsAndVahsValsAllAndNonBroken, calculate as calculatePocsAndVahsValsAllAndNonBroken } from './community/pocs-and-vahs-vals-all-and-non-broken';
 export type { PocsAndVahsValsAllAndNonBrokenInputs } from './community/pocs-and-vahs-vals-all-and-non-broken';
+// Waindrops
+import * as waindropsIndicator from './community/waindrops';
+export { Waindrops, calculate as calculateWaindrops } from './community/waindrops';
+export type { WaindropsInputs } from './community/waindrops';
+// Moving Averages as Support Resistance MTF
+import * as movingAveragesAsSupportResistanceMtfIndicator from './community/moving-averages-as-support-resistance-mtf';
+export { MovingAveragesAsSupportResistanceMtf, calculate as calculateMovingAveragesAsSupportResistanceMtf } from './community/moving-averages-as-support-resistance-mtf';
+export type { MovingAveragesAsSupportResistanceMtfInputs } from './community/moving-averages-as-support-resistance-mtf';
+// Supply Demand Zones Pro
+import * as supplyDemandZonesProIndicator from './community/supply-demand-zones-pro';
+export { SupplyDemandZonesPro, calculate as calculateSupplyDemandZonesPro } from './community/supply-demand-zones-pro';
+export type { SupplyDemandZonesProInputs } from './community/supply-demand-zones-pro';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30095,6 +30107,8 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'moving-averages-as-support-resistance-mtf': movingAveragesAsSupportResistanceMtfIndicator,
+  'supply-demand-zones-pro': supplyDemandZonesProIndicator,
   'backtesting-trading-engine': backtestingTradingEngineIndicator,
   'wolfe-scanner': wolfeScannerIndicator,
   'fair-value-bands-flowly-indicators': fairValueBandsFlowlyIndicatorsIndicator,
@@ -31335,6 +31349,49 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: pocsAndVahsValsAllAndNonBrokenIndicator.drawingKinds,
     defaultInputs: { ...pocsAndVahsValsAllAndNonBrokenIndicator.defaultInputs },
     calculate: pocsAndVahsValsAllAndNonBrokenIndicator.calculate,
+  },
+  {
+    id: 'waindrops',
+    group: 'community',
+    name: 'Waindrops',
+    shortName: waindropsIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: waindropsIndicator.metadata,
+    inputConfig: waindropsIndicator.inputConfig as InputConfig[],
+    plotConfig: waindropsIndicator.plotConfig as PlotConfig[],
+    drawingKinds: waindropsIndicator.drawingKinds,
+    defaultInputs: { ...waindropsIndicator.defaultInputs },
+    calculate: waindropsIndicator.calculate,
+  },
+  {
+    id: 'moving-averages-as-support-resistance-mtf',
+    group: 'community',
+    name: 'Moving Averages as Support Resistance MTF',
+    shortName: movingAveragesAsSupportResistanceMtfIndicator.metadata.shortTitle,
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: movingAveragesAsSupportResistanceMtfIndicator.metadata,
+    inputConfig: movingAveragesAsSupportResistanceMtfIndicator.inputConfig as InputConfig[],
+    plotConfig: movingAveragesAsSupportResistanceMtfIndicator.plotConfig as PlotConfig[],
+    drawingKinds: movingAveragesAsSupportResistanceMtfIndicator.drawingKinds,
+    requiredSymbols: movingAveragesAsSupportResistanceMtfIndicator.requiredSymbols,
+    defaultInputs: { ...movingAveragesAsSupportResistanceMtfIndicator.defaultInputs },
+    calculate: movingAveragesAsSupportResistanceMtfIndicator.calculate,
+  },
+  {
+    id: 'supply-demand-zones-pro',
+    group: 'community',
+    name: 'Supply Demand Zones Pro',
+    shortName: supplyDemandZonesProIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: supplyDemandZonesProIndicator.metadata,
+    inputConfig: supplyDemandZonesProIndicator.inputConfig as InputConfig[],
+    plotConfig: supplyDemandZonesProIndicator.plotConfig as PlotConfig[],
+    drawingKinds: supplyDemandZonesProIndicator.drawingKinds,
+    defaultInputs: { ...supplyDemandZonesProIndicator.defaultInputs },
+    calculate: supplyDemandZonesProIndicator.calculate,
   },
 ];
 

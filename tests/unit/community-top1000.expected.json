@@ -1399,6 +1399,33 @@
    "labels": 8
   }
  },
+ "waindrops": {
+  "daily": {
+   "plots": {
+    "plot0": 1
+   },
+   "labels": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 1
+   },
+   "lines": 2,
+   "labels": 503
+  }
+ },
+ "supply-demand-zones-pro": {
+  "daily": {
+   "plots": {},
+   "boxes": 91,
+   "labels": 174
+  },
+  "m15": {
+   "plots": {},
+   "boxes": 103,
+   "labels": 201
+  }
+ },
  "machine-learning-gaussian-process-regression": {
   "daily": {
    "plots": {},
