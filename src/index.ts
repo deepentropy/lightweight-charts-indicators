@@ -7304,6 +7304,46 @@ export type { BullMarketSupportBandInputs } from './community/bull-market-suppor
 import * as doubleEmaWithPullbackBuySellSignalIndicator from './community/double-ema-with-pullback-buy-sell-signal';
 export { DoubleEmaWithPullbackBuySellSignal, calculate as calculateDoubleEmaWithPullbackBuySellSignal } from './community/double-ema-with-pullback-buy-sell-signal';
 export type { DoubleEmaWithPullbackBuySellSignalInputs } from './community/double-ema-with-pullback-buy-sell-signal';
+// Pro Scalper AI
+import * as proScalperAiIndicator from './community/pro-scalper-ai';
+export { ProScalperAi, calculate as calculateProScalperAi } from './community/pro-scalper-ai';
+export type { ProScalperAiInputs } from './community/pro-scalper-ai';
+// Footprint IQ Pro
+import * as footprintIqProIndicator from './community/footprint-iq-pro';
+export { FootprintIqPro, calculate as calculateFootprintIqPro } from './community/footprint-iq-pro';
+export type { FootprintIqProInputs } from './community/footprint-iq-pro';
+// Pullback Candles (Candlestick Analysis) Guaranteed Winners!!!!
+import * as pullbackCandlesGuaranteedWinnersIndicator from './community/pullback-candles-guaranteed-winners';
+export { PullbackCandlesGuaranteedWinners, calculate as calculatePullbackCandlesGuaranteedWinners } from './community/pullback-candles-guaranteed-winners';
+export type { PullbackCandlesInputs } from './community/pullback-candles-guaranteed-winners';
+// RSI Core Levels Heatmap
+import * as rsiCoreLevelsHeatmapIndicator from './community/rsi-core-levels-heatmap';
+export { RsiCoreLevelsHeatmap, calculate as calculateRsiCoreLevelsHeatmap } from './community/rsi-core-levels-heatmap';
+export type { RsiCoreLevelsHeatmapInputs } from './community/rsi-core-levels-heatmap';
+// Session Liquidity
+import * as sessionLiquidityIndicator from './community/session-liquidity';
+export { SessionLiquidity, calculate as calculateSessionLiquidity } from './community/session-liquidity';
+export type { SessionLiquidityInputs } from './community/session-liquidity';
+// Evasive SuperTrend
+import * as evasiveSupertrendIndicator from './community/evasive-supertrend';
+export { EvasiveSupertrend, calculate as calculateEvasiveSupertrend } from './community/evasive-supertrend';
+export type { EvasiveSupertrendInputs } from './community/evasive-supertrend';
+// Fibonacci + Support/Resistant + Trendline (Price action)
+import * as fibonacciSupportResistantTrendlineIndicator from './community/fibonacci-support-resistant-trendline';
+export { FibonacciSupportResistantTrendline, calculate as calculateFibonacciSupportResistantTrendline } from './community/fibonacci-support-resistant-trendline';
+export type { FibonacciSupportResistantTrendlineInputs } from './community/fibonacci-support-resistant-trendline';
+// Position Size Calculator
+import * as positionSizeCalculatorIndicator from './community/position-size-calculator';
+export { PositionSizeCalculator, calculate as calculatePositionSizeCalculator } from './community/position-size-calculator';
+export type { PositionSizeCalculatorInputs } from './community/position-size-calculator';
+// Reversal
+import * as reversalIndicator from './community/reversal';
+export { Reversal, calculate as calculateReversal } from './community/reversal';
+export type { ReversalInputs } from './community/reversal';
+// Algo Market Structure
+import * as algoMarketStructureIndicator from './community/algo-market-structure';
+export { AlgoMarketStructure, calculate as calculateAlgoMarketStructure } from './community/algo-market-structure';
+export type { AlgoMarketStructureInputs } from './community/algo-market-structure';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30119,6 +30159,10 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'reversal': reversalIndicator,
+  'fibonacci-support-resistant-trendline': fibonacciSupportResistantTrendlineIndicator,
+  'footprint-iq-pro': footprintIqProIndicator,
+  'pullback-candles-guaranteed-winners': pullbackCandlesGuaranteedWinnersIndicator,
   'nadaraya-watson-regression-liquidity-sweeps': nadarayaWatsonRegressionLiquiditySweepsIndicator,
   'double-ema-with-pullback-buy-sell-signal': doubleEmaWithPullbackBuySellSignalIndicator,
   'moving-averages-as-support-resistance-mtf': movingAveragesAsSupportResistanceMtfIndicator,
@@ -31451,6 +31495,158 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: doubleEmaWithPullbackBuySellSignalIndicator.drawingKinds,
     defaultInputs: { ...doubleEmaWithPullbackBuySellSignalIndicator.defaultInputs },
     calculate: doubleEmaWithPullbackBuySellSignalIndicator.calculate,
+  },
+  {
+    id: 'pro-scalper-ai',
+    group: 'community',
+    name: 'Pro Scalper AI',
+    shortName: proScalperAiIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: false,
+    metadata: proScalperAiIndicator.metadata,
+    inputConfig: proScalperAiIndicator.inputConfig as InputConfig[],
+    plotConfig: proScalperAiIndicator.plotConfig as PlotConfig[],
+    fillConfig: proScalperAiIndicator.fillConfig,
+    shapeConfig: proScalperAiIndicator.shapeConfig,
+    drawingKinds: proScalperAiIndicator.drawingKinds,
+    requiredSymbols: proScalperAiIndicator.requiredSymbols,
+    defaultInputs: { ...proScalperAiIndicator.defaultInputs },
+    calculate: proScalperAiIndicator.calculate,
+  },
+  {
+    id: 'footprint-iq-pro',
+    group: 'community',
+    name: 'Footprint IQ Pro',
+    shortName: footprintIqProIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: footprintIqProIndicator.metadata,
+    inputConfig: footprintIqProIndicator.inputConfig as InputConfig[],
+    plotConfig: footprintIqProIndicator.plotConfig as PlotConfig[],
+    drawingKinds: footprintIqProIndicator.drawingKinds,
+    requiredSymbols: footprintIqProIndicator.requiredSymbols,
+    defaultInputs: { ...footprintIqProIndicator.defaultInputs },
+    calculate: footprintIqProIndicator.calculate,
+  },
+  {
+    id: 'pullback-candles-guaranteed-winners',
+    group: 'community',
+    name: 'Pullback Candles (Candlestick Analysis) Guaranteed Winners!!!!',
+    shortName: pullbackCandlesGuaranteedWinnersIndicator.metadata.shortTitle,
+    category: 'Candlestick Patterns',
+    overlay: true,
+    metadata: pullbackCandlesGuaranteedWinnersIndicator.metadata,
+    inputConfig: pullbackCandlesGuaranteedWinnersIndicator.inputConfig as InputConfig[],
+    plotConfig: pullbackCandlesGuaranteedWinnersIndicator.plotConfig as PlotConfig[],
+    shapeConfig: pullbackCandlesGuaranteedWinnersIndicator.shapeConfig,
+    barColorConfig: pullbackCandlesGuaranteedWinnersIndicator.barColorConfig,
+    defaultInputs: { ...pullbackCandlesGuaranteedWinnersIndicator.defaultInputs },
+    calculate: pullbackCandlesGuaranteedWinnersIndicator.calculate,
+  },
+  {
+    id: 'rsi-core-levels-heatmap',
+    group: 'community',
+    name: 'RSI Core Levels Heatmap',
+    shortName: rsiCoreLevelsHeatmapIndicator.metadata.shortTitle,
+    category: 'Oscillators',
+    overlay: false,
+    metadata: rsiCoreLevelsHeatmapIndicator.metadata,
+    inputConfig: rsiCoreLevelsHeatmapIndicator.inputConfig as InputConfig[],
+    plotConfig: rsiCoreLevelsHeatmapIndicator.plotConfig as PlotConfig[],
+    hlineConfig: rsiCoreLevelsHeatmapIndicator.hlineConfig,
+    shapeConfig: rsiCoreLevelsHeatmapIndicator.shapeConfig,
+    drawingKinds: rsiCoreLevelsHeatmapIndicator.drawingKinds,
+    defaultInputs: { ...rsiCoreLevelsHeatmapIndicator.defaultInputs },
+    calculate: rsiCoreLevelsHeatmapIndicator.calculate,
+  },
+  {
+    id: 'session-liquidity',
+    group: 'community',
+    name: 'Session Liquidity',
+    shortName: sessionLiquidityIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: sessionLiquidityIndicator.metadata,
+    inputConfig: sessionLiquidityIndicator.inputConfig as InputConfig[],
+    plotConfig: sessionLiquidityIndicator.plotConfig as PlotConfig[],
+    drawingKinds: sessionLiquidityIndicator.drawingKinds,
+    defaultInputs: { ...sessionLiquidityIndicator.defaultInputs },
+    calculate: sessionLiquidityIndicator.calculate,
+  },
+  {
+    id: 'evasive-supertrend',
+    group: 'community',
+    name: 'Evasive SuperTrend',
+    shortName: evasiveSupertrendIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: evasiveSupertrendIndicator.metadata,
+    inputConfig: evasiveSupertrendIndicator.inputConfig as InputConfig[],
+    plotConfig: evasiveSupertrendIndicator.plotConfig as PlotConfig[],
+    fillConfig: evasiveSupertrendIndicator.fillConfig,
+    drawingKinds: evasiveSupertrendIndicator.drawingKinds,
+    defaultInputs: { ...evasiveSupertrendIndicator.defaultInputs },
+    calculate: evasiveSupertrendIndicator.calculate,
+  },
+  {
+    id: 'fibonacci-support-resistant-trendline',
+    group: 'community',
+    name: 'Fibonacci + Support/Resistant + Trendline (Price action)',
+    shortName: fibonacciSupportResistantTrendlineIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: fibonacciSupportResistantTrendlineIndicator.metadata,
+    inputConfig: fibonacciSupportResistantTrendlineIndicator.inputConfig as InputConfig[],
+    plotConfig: fibonacciSupportResistantTrendlineIndicator.plotConfig as PlotConfig[],
+    shapeConfig: fibonacciSupportResistantTrendlineIndicator.shapeConfig,
+    drawingKinds: fibonacciSupportResistantTrendlineIndicator.drawingKinds,
+    defaultInputs: { ...fibonacciSupportResistantTrendlineIndicator.defaultInputs },
+    calculate: fibonacciSupportResistantTrendlineIndicator.calculate,
+  },
+  {
+    id: 'position-size-calculator',
+    group: 'community',
+    name: 'Position Size Calculator',
+    shortName: positionSizeCalculatorIndicator.metadata.shortTitle,
+    category: 'Volatility',
+    overlay: true,
+    metadata: positionSizeCalculatorIndicator.metadata,
+    inputConfig: positionSizeCalculatorIndicator.inputConfig as InputConfig[],
+    plotConfig: positionSizeCalculatorIndicator.plotConfig as PlotConfig[],
+    fillConfig: positionSizeCalculatorIndicator.fillConfig,
+    drawingKinds: positionSizeCalculatorIndicator.drawingKinds,
+    defaultInputs: { ...positionSizeCalculatorIndicator.defaultInputs },
+    calculate: positionSizeCalculatorIndicator.calculate,
+  },
+  {
+    id: 'reversal',
+    group: 'community',
+    name: 'Reversal',
+    shortName: reversalIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: reversalIndicator.metadata,
+    inputConfig: reversalIndicator.inputConfig as InputConfig[],
+    plotConfig: reversalIndicator.plotConfig as PlotConfig[],
+    shapeConfig: reversalIndicator.shapeConfig,
+    defaultInputs: { ...reversalIndicator.defaultInputs },
+    calculate: reversalIndicator.calculate,
+  },
+  {
+    id: 'algo-market-structure',
+    group: 'community',
+    name: 'Algo Market Structure',
+    shortName: algoMarketStructureIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: algoMarketStructureIndicator.metadata,
+    inputConfig: algoMarketStructureIndicator.inputConfig as InputConfig[],
+    plotConfig: algoMarketStructureIndicator.plotConfig as PlotConfig[],
+    shapeConfig: algoMarketStructureIndicator.shapeConfig,
+    plotCandleConfig: algoMarketStructureIndicator.plotCandleConfig,
+    drawingKinds: algoMarketStructureIndicator.drawingKinds,
+    defaultInputs: { ...algoMarketStructureIndicator.defaultInputs },
+    calculate: algoMarketStructureIndicator.calculate,
   },
 ];
 

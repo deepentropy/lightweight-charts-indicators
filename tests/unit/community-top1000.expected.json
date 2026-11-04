@@ -1488,6 +1488,18 @@
    "plots": {}
   }
  },
+ "pullback-candles-guaranteed-winners": {
+  "daily": {
+   "plots": {},
+   "markers": 263,
+   "barColors": 263
+  },
+  "m15": {
+   "plots": {},
+   "markers": 336,
+   "barColors": 336
+  }
+ },
  "nadaraya-watson-regression-liquidity-sweeps": {
   "daily": {
    "plots": {
@@ -1544,6 +1556,128 @@
     "plot1": 3801
    },
    "labels": 73
+  }
+ },
+ "rsi-core-levels-heatmap": {
+  "daily": {
+   "plots": {
+    "plot0": 3186,
+    "plot1": 3173
+   },
+   "markers": 2606,
+   "lines": 156,
+   "labels": 4,
+   "tables": 1,
+   "hlines": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3986,
+    "plot1": 3973
+   },
+   "markers": 3306,
+   "lines": 197,
+   "labels": 3,
+   "tables": 1,
+   "hlines": 1
+  }
+ },
+ "session-liquidity": {
+  "daily": {
+   "plots": {}
+  },
+  "m15": {
+   "plots": {},
+   "lines": 46,
+   "labels": 4
+  }
+ },
+ "evasive-supertrend": {
+  "daily": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 3191,
+    "plot2": 2941,
+    "plot3": 250,
+    "plot4": 3200
+   },
+   "fills": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 3991,
+    "plot2": 3665,
+    "plot3": 326,
+    "plot4": 4000
+   },
+   "fills": 1
+  }
+ },
+ "fibonacci-support-resistant-trendline": {
+  "daily": {
+   "plots": {},
+   "markers": 287,
+   "lines": 504,
+   "labels": 7,
+   "linefills": 46
+  },
+  "m15": {
+   "plots": {},
+   "markers": 362,
+   "lines": 504,
+   "labels": 7,
+   "linefills": 46
+  }
+ },
+ "position-size-calculator": {
+  "daily": {
+   "plots": {
+    "plot0": 20,
+    "plot1": 20,
+    "plot2": 20
+   },
+   "labels": 4,
+   "fills": 2
+  },
+  "m15": {
+   "plots": {
+    "plot0": 20,
+    "plot1": 20,
+    "plot2": 20
+   },
+   "labels": 4,
+   "fills": 2
+  }
+ },
+ "reversal": {
+  "daily": {
+   "plots": {},
+   "markers": 65
+  },
+  "m15": {
+   "plots": {},
+   "markers": 79
+  }
+ },
+ "algo-market-structure": {
+  "daily": {
+   "plots": {},
+   "markers": 66,
+   "lines": 52,
+   "boxes": 8,
+   "labels": 300,
+   "tables": 1,
+   "plotCandles": 3200
+  },
+  "m15": {
+   "plots": {},
+   "markers": 186,
+   "lines": 119,
+   "boxes": 8,
+   "labels": 307,
+   "tables": 1,
+   "plotCandles": 4000
   }
  }
 }
