@@ -2335,6 +2335,94 @@
    "fills": 1
   }
  },
+ "buy-sell-volume-totals-for-period": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 3200
+   }
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 4000
+   }
+  }
+ },
+ "madrid-ma-ribbon-bar-v2": {
+  "daily": {
+   "plots": {
+    "plot0": 3200,
+    "plot1": 3200,
+    "plot2": 3200,
+    "plot3": 3200,
+    "plot4": 3200,
+    "plot5": 3200,
+    "plot6": 3200,
+    "plot7": 3200,
+    "plot8": 3200,
+    "plot9": 3200,
+    "plot10": 3200,
+    "plot11": 3200,
+    "plot12": 3200,
+    "plot13": 3200,
+    "plot14": 3200,
+    "plot15": 3200,
+    "plot16": 3200,
+    "plot17": 3200,
+    "plot18": 3200,
+    "plot19": 3200
+   }
+  },
+  "m15": {
+   "plots": {
+    "plot0": 4000,
+    "plot1": 4000,
+    "plot2": 4000,
+    "plot3": 4000,
+    "plot4": 4000,
+    "plot5": 4000,
+    "plot6": 4000,
+    "plot7": 4000,
+    "plot8": 4000,
+    "plot9": 4000,
+    "plot10": 4000,
+    "plot11": 4000,
+    "plot12": 4000,
+    "plot13": 4000,
+    "plot14": 4000,
+    "plot15": 4000,
+    "plot16": 4000,
+    "plot17": 4000,
+    "plot18": 4000,
+    "plot19": 4000
+   }
+  }
+ },
+ "dynamic-support-resistance-zones": {
+  "daily": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 0,
+    "plot2": 0
+   },
+   "lines": 9,
+   "boxes": 142,
+   "labels": 4,
+   "fills": 2
+  },
+  "m15": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 0,
+    "plot2": 0
+   },
+   "lines": 8,
+   "boxes": 130,
+   "labels": 9,
+   "fills": 2
+  }
+ },
  "rvol-relative-volume-intraday": {
   "daily": {
    "error": "Chart time frame must be less than 1 Day and greater/equal 1 minute"

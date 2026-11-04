@@ -2,7 +2,7 @@
 
 **[Live Demo](https://deepentropy.github.io/lightweight-charts-indicators/)**
 
-1845 technical analysis indicators for the lightweight-charts library — 117 standard indicators, 1683 community indicators, and 45 candlestick patterns. PineScript v6 compatible with full drawing primitive support (lines, boxes, labels, tables).
+1849 technical analysis indicators for the lightweight-charts library — 117 standard indicators, 1687 community indicators, and 45 candlestick patterns. PineScript v6 compatible with full drawing primitive support (lines, boxes, labels, tables).
 
 ## Installation
 
@@ -231,7 +231,7 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 });
 ```
 
-## Available Indicators (1,845)
+## Available Indicators (1,849)
 
 ### Moving Averages
 
@@ -391,7 +391,7 @@ chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 
 ### Community Indicators (1,551)
 
-1683 community indicators ported from PineScript sources, covering trend systems, divergence detectors, multi-MA strategies, volume analysis, market structure, and more. Full list in [docs/INDICATOR_INVENTORY_COMMUNITY.md](docs/INDICATOR_INVENTORY_COMMUNITY.md).
+1687 community indicators ported from PineScript sources, covering trend systems, divergence detectors, multi-MA strategies, volume analysis, market structure, and more. Full list in [docs/INDICATOR_INVENTORY_COMMUNITY.md](docs/INDICATOR_INVENTORY_COMMUNITY.md).
 
 Categories include: Hyper Trend, AlphaTrend, HalfTrend, QQE MOD, Hull Suite, SuperTrend variants, Market Structure Trailing Stop, Liquidity Levels, Order Blocks, ZigZag Fibonacci, Trendlines with Breaks, and many more.
 

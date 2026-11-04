@@ -7508,6 +7508,22 @@ export type { RvolRelativeVolumeIntradayInputs } from './community/rvol-relative
 import * as elliottImpulseEngineIndicator from './community/elliott-impulse-engine';
 export { ElliottImpulseEngine, calculate as calculateElliottImpulseEngine } from './community/elliott-impulse-engine';
 export type { ElliottImpulseEngineInputs } from './community/elliott-impulse-engine';
+// Buy/Sell Volume Totals for Period
+import * as buySellVolumeTotalsForPeriodIndicator from './community/buy-sell-volume-totals-for-period';
+export { BuySellVolumeTotalsForPeriod, calculate as calculateBuySellVolumeTotalsForPeriod } from './community/buy-sell-volume-totals-for-period';
+export type { BuySellVolumeTotalsForPeriodInputs } from './community/buy-sell-volume-totals-for-period';
+// Madrid MA Ribbon Bar v2
+import * as madridMaRibbonBarV2Indicator from './community/madrid-ma-ribbon-bar-v2';
+export { MadridMaRibbonBarV2, calculate as calculateMadridMaRibbonBarV2 } from './community/madrid-ma-ribbon-bar-v2';
+export type { MadridMaRibbonBarV2Inputs } from './community/madrid-ma-ribbon-bar-v2';
+// ATR Fibonacci Trend Envelopes
+import * as atrFibonacciTrendEnvelopesIndicator from './community/atr-fibonacci-trend-envelopes';
+export { AtrFibonacciTrendEnvelopes, calculate as calculateAtrFibonacciTrendEnvelopes } from './community/atr-fibonacci-trend-envelopes';
+export type { AtrFibonacciTrendEnvelopesInputs } from './community/atr-fibonacci-trend-envelopes';
+// Dynamic Support/Resistance Zones
+import * as dynamicSupportResistanceZonesIndicator from './community/dynamic-support-resistance-zones';
+export { DynamicSupportResistanceZones, calculate as calculateDynamicSupportResistanceZones } from './community/dynamic-support-resistance-zones';
+export type { DynamicSupportResistanceZonesInputs } from './community/dynamic-support-resistance-zones';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -32448,6 +32464,65 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: elliottImpulseEngineIndicator.drawingKinds,
     defaultInputs: { ...elliottImpulseEngineIndicator.defaultInputs },
     calculate: elliottImpulseEngineIndicator.calculate,
+  },
+  {
+    id: 'buy-sell-volume-totals-for-period',
+    group: 'community',
+    name: 'Buy/Sell Volume Totals for Period',
+    shortName: buySellVolumeTotalsForPeriodIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: false,
+    metadata: buySellVolumeTotalsForPeriodIndicator.metadata,
+    inputConfig: buySellVolumeTotalsForPeriodIndicator.inputConfig as InputConfig[],
+    plotConfig: buySellVolumeTotalsForPeriodIndicator.plotConfig as PlotConfig[],
+    shapeConfig: buySellVolumeTotalsForPeriodIndicator.shapeConfig,
+    barColorConfig: buySellVolumeTotalsForPeriodIndicator.barColorConfig,
+    defaultInputs: { ...buySellVolumeTotalsForPeriodIndicator.defaultInputs },
+    calculate: buySellVolumeTotalsForPeriodIndicator.calculate,
+  },
+  {
+    id: 'madrid-ma-ribbon-bar-v2',
+    group: 'community',
+    name: 'Madrid MA Ribbon Bar v2',
+    shortName: madridMaRibbonBarV2Indicator.metadata.shortTitle,
+    category: 'Moving Averages',
+    overlay: false,
+    metadata: madridMaRibbonBarV2Indicator.metadata,
+    inputConfig: madridMaRibbonBarV2Indicator.inputConfig as InputConfig[],
+    plotConfig: madridMaRibbonBarV2Indicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...madridMaRibbonBarV2Indicator.defaultInputs },
+    calculate: madridMaRibbonBarV2Indicator.calculate,
+  },
+  {
+    id: 'atr-fibonacci-trend-envelopes',
+    group: 'community',
+    name: 'ATR Fibonacci Trend Envelopes',
+    shortName: atrFibonacciTrendEnvelopesIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: atrFibonacciTrendEnvelopesIndicator.metadata,
+    inputConfig: atrFibonacciTrendEnvelopesIndicator.inputConfig as InputConfig[],
+    plotConfig: atrFibonacciTrendEnvelopesIndicator.plotConfig as PlotConfig[],
+    fillConfig: atrFibonacciTrendEnvelopesIndicator.fillConfig,
+    drawingKinds: atrFibonacciTrendEnvelopesIndicator.drawingKinds,
+    requiredSymbols: atrFibonacciTrendEnvelopesIndicator.requiredSymbols,
+    defaultInputs: { ...atrFibonacciTrendEnvelopesIndicator.defaultInputs },
+    calculate: atrFibonacciTrendEnvelopesIndicator.calculate,
+  },
+  {
+    id: 'dynamic-support-resistance-zones',
+    group: 'community',
+    name: 'Dynamic Support/Resistance Zones',
+    shortName: dynamicSupportResistanceZonesIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: dynamicSupportResistanceZonesIndicator.metadata,
+    inputConfig: dynamicSupportResistanceZonesIndicator.inputConfig as InputConfig[],
+    plotConfig: dynamicSupportResistanceZonesIndicator.plotConfig as PlotConfig[],
+    fillConfig: dynamicSupportResistanceZonesIndicator.fillConfig,
+    drawingKinds: dynamicSupportResistanceZonesIndicator.drawingKinds,
+    defaultInputs: { ...dynamicSupportResistanceZonesIndicator.defaultInputs },
+    calculate: dynamicSupportResistanceZonesIndicator.calculate,
   },
 ];
 
