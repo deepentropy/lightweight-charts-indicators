@@ -7,8 +7,9 @@
  * 3. Stochastic normalize result again, smooth with factor
  * The original is an overlay (drawn on the price chart) and draws its one STC plot only ('Schaff_TC', red,
  * width 1): no markers, bands, fills or middle line.
- * Pine semantics: the stochastics' lowest / highest are na until their window is full; meanwhile f1 / f2 keep their
- * previous value (0 at first), so the STC is 0 from the first bar until both windows are full.
+ * Pine semantics: the stochastics' lowest / highest are na for the first `length - 1` bars and skip the na values of
+ * their window (the MACD is na until the slow EMA starts); while they are na f1 / f2 keep their previous value (0 at
+ * first), so the STC is 0 until the MACD has its first values.
  *
  * Reference: "Schaff Trend Cycle" by LazyBear
  */
@@ -53,14 +54,15 @@ export const metadata = {
   overlay: true,
 };
 
-/** ta.lowest / ta.highest: na until the last `len` values all exist */
+/** ta.lowest / ta.highest: na for the first `len - 1` bars, else the extreme of the window's non-na values (na when
+ *  they are all na) */
 function windowExtreme(a: number[], i: number, len: number, max: boolean): number {
   if (i - len + 1 < 0) return NaN;
-  let out = a[i];
+  let out = NaN;
   for (let k = i - len + 1; k <= i; k++) {
     const v = a[k];
-    if (Number.isNaN(v)) return NaN;
-    if (max ? v > out : v < out) out = v;
+    if (Number.isNaN(v)) continue;
+    if (Number.isNaN(out) || (max ? v > out : v < out)) out = v;
   }
   return out;
 }
@@ -76,8 +78,7 @@ export function calculate(bars: Bar[], inputs: Partial<SchaffTrendCycleInputs> =
   const m = fastEMA.map((f, i) => (f ?? NaN) - (slowEMA[i] ?? NaN));
 
   // f1 = v2 > 0 ? (m - v1) / v2 * 100 : nz(f1[1]); pf = na(pf[1]) ? f1 : pf[1] + factor * (f1 - pf[1]);
-  // f2 / pff the same over pf. A na v2 / v4 (window not full) keeps the previous f1 / f2 (0 at first), so the
-  // STC is 0 from the first bar until both stochastics have their windows.
+  // f2 / pff the same over pf. A na v2 / v4 keeps the previous f1 / f2 (0 at first).
   const pf: number[] = new Array(n).fill(NaN);
   const stc: number[] = new Array(n).fill(NaN);
   let f1 = 0;

@@ -73,13 +73,12 @@ function atr(bars: Bar[], len: number): number[] {
     : Math.max(b.high - b.low, Math.abs(b.high - bars[i - 1].close), Math.abs(b.low - bars[i - 1].close))));
   return rma(tr, len);
 }
-/** lowest / highest: na until the window holds `len` non-na values */
+/** lowest / highest: na for the first `len - 1` bars, else the extreme of the window's non-na values */
 function extreme(x: number[], len: number, max: boolean): number[] {
   return x.map((_, i) => {
     if (i < len - 1) return NaN;
-    const w = x.slice(i - len + 1, i + 1);
-    if (w.some((v) => Number.isNaN(v))) return NaN;
-    return max ? Math.max(...w) : Math.min(...w);
+    const w = x.slice(i - len + 1, i + 1).filter((v) => !Number.isNaN(v));
+    return w.length ? (max ? Math.max(...w) : Math.min(...w)) : NaN;
   });
 }
 
@@ -565,6 +564,7 @@ describe('schaff-trend-cycle: the one Schaff_TC plot of the original', () => {
   it('STC from the original formulas, red, no bands / fills / hline', () => {
     const close = BARS.map((b) => b.close);
     const m = ema(close, 23).map((v, i) => v - ema(close, 50)[i]);
+    // lowest / highest of the original skip the na values of their window (the MACD is na before the slow EMA)
     const lo1 = extreme(m, 10, false), hi1 = extreme(m, 10, true);
     const f1: number[] = [], pf: number[] = [], f2: number[] = [], pff: number[] = [];
     for (let i = 0; i < close.length; i++) {
@@ -579,7 +579,10 @@ describe('schaff-trend-cycle: the one Schaff_TC plot of the original', () => {
     const res = stc.calculate(BARS);
     expectSeries(values(res.plots.plot0 as Pt[]), pff);
     expect(pff[0]).toBe(0);
-    expect(pff.slice(0, 58).every((v) => v === 0)).toBe(true);
+    // 0 until the MACD has two values (bar 50), not until its first full window (bar 58)
+    const first = m.findIndex((v) => !Number.isNaN(v));
+    expect(pff.slice(0, first + 1).every((v) => v === 0)).toBe(true);
+    expect(pff.slice(first + 1, 58).some((v) => v !== 0)).toBe(true);
     expect(Object.keys(res.plots)).toEqual(['plot0']);
     expect(res.fills ?? []).toHaveLength(0);
     expect(res.hlines ?? []).toHaveLength(0);
