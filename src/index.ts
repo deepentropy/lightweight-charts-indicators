@@ -7424,6 +7424,22 @@ export type { CdcActionzoneV32020Inputs } from './community/cdc-actionzone-v3-20
 import * as smartTraderEpisode06IsotropicTrendLinesIndicator from './community/smart-trader-episode-06-isotropic-trend-lines';
 export { SmartTraderEpisode06IsotropicTrendLines, calculate as calculateSmartTraderEpisode06IsotropicTrendLines } from './community/smart-trader-episode-06-isotropic-trend-lines';
 export type { SmartTraderEpisode06IsotropicTrendLinesInputs } from './community/smart-trader-episode-06-isotropic-trend-lines';
+// Moving Average Exponential x 4
+import * as movingAverageExponentialX4Indicator from './community/moving-average-exponential-x-4';
+export { MovingAverageExponentialX4, calculate as calculateMovingAverageExponentialX4 } from './community/moving-average-exponential-x-4';
+export type { MovingAverageExponentialX4Inputs } from './community/moving-average-exponential-x-4';
+// Saty Pivot Ribbon
+import * as satyPivotRibbonIndicator from './community/saty-pivot-ribbon';
+export { SatyPivotRibbon, calculate as calculateSatyPivotRibbon } from './community/saty-pivot-ribbon';
+export type { SatyPivotRibbonInputs } from './community/saty-pivot-ribbon';
+// Triangular Hull Moving Average + Volatility
+import * as triangularHullMovingAverageVolatilityIndicator from './community/triangular-hull-moving-average-volatility';
+export { TriangularHullMovingAverageVolatility, calculate as calculateTriangularHullMovingAverageVolatility } from './community/triangular-hull-moving-average-volatility';
+export type { TriangularHullMovingAverageVolatilityInputs } from './community/triangular-hull-moving-average-volatility';
+// Market Structure Inducements ICT CHoch BOS Sweeps
+import * as marketStructureInducementsIctChochBosIndicator from './community/market-structure-inducements-ict-choch-bos';
+export { MarketStructureInducementsIctChochBos, calculate as calculateMarketStructureInducementsIctChochBos } from './community/market-structure-inducements-ict-choch-bos';
+export type { MarketStructureInducementsIctChochBosInputs } from './community/market-structure-inducements-ict-choch-bos';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -32038,6 +32054,66 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: smartTraderEpisode06IsotropicTrendLinesIndicator.drawingKinds,
     defaultInputs: { ...smartTraderEpisode06IsotropicTrendLinesIndicator.defaultInputs },
     calculate: smartTraderEpisode06IsotropicTrendLinesIndicator.calculate,
+  },
+  {
+    id: 'moving-average-exponential-x-4',
+    group: 'community',
+    name: 'Moving Average Exponential x 4',
+    shortName: movingAverageExponentialX4Indicator.metadata.shortTitle,
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: movingAverageExponentialX4Indicator.metadata,
+    inputConfig: movingAverageExponentialX4Indicator.inputConfig as InputConfig[],
+    plotConfig: movingAverageExponentialX4Indicator.plotConfig as PlotConfig[],
+    defaultInputs: { ...movingAverageExponentialX4Indicator.defaultInputs },
+    calculate: movingAverageExponentialX4Indicator.calculate,
+  },
+  {
+    id: 'saty-pivot-ribbon',
+    group: 'community',
+    name: 'Saty Pivot Ribbon',
+    shortName: satyPivotRibbonIndicator.metadata.shortTitle,
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: satyPivotRibbonIndicator.metadata,
+    inputConfig: satyPivotRibbonIndicator.inputConfig as InputConfig[],
+    plotConfig: satyPivotRibbonIndicator.plotConfig as PlotConfig[],
+    fillConfig: satyPivotRibbonIndicator.fillConfig,
+    shapeConfig: satyPivotRibbonIndicator.shapeConfig,
+    plotCandleConfig: satyPivotRibbonIndicator.plotCandleConfig,
+    requiredSymbols: satyPivotRibbonIndicator.requiredSymbols,
+    defaultInputs: { ...satyPivotRibbonIndicator.defaultInputs },
+    calculate: satyPivotRibbonIndicator.calculate,
+  },
+  {
+    id: 'triangular-hull-moving-average-volatility',
+    group: 'community',
+    name: 'Triangular Hull Moving Average + Volatility',
+    shortName: triangularHullMovingAverageVolatilityIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: triangularHullMovingAverageVolatilityIndicator.metadata,
+    inputConfig: triangularHullMovingAverageVolatilityIndicator.inputConfig as InputConfig[],
+    plotConfig: triangularHullMovingAverageVolatilityIndicator.plotConfig as PlotConfig[],
+    shapeConfig: triangularHullMovingAverageVolatilityIndicator.shapeConfig,
+    plotCandleConfig: triangularHullMovingAverageVolatilityIndicator.plotCandleConfig,
+    drawingKinds: triangularHullMovingAverageVolatilityIndicator.drawingKinds,
+    defaultInputs: { ...triangularHullMovingAverageVolatilityIndicator.defaultInputs },
+    calculate: triangularHullMovingAverageVolatilityIndicator.calculate,
+  },
+  {
+    id: 'market-structure-inducements-ict-choch-bos',
+    group: 'community',
+    name: 'Market Structure Inducements ICT CHoch BOS Sweeps',
+    shortName: marketStructureInducementsIctChochBosIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: marketStructureInducementsIctChochBosIndicator.metadata,
+    inputConfig: marketStructureInducementsIctChochBosIndicator.inputConfig as InputConfig[],
+    plotConfig: marketStructureInducementsIctChochBosIndicator.plotConfig as PlotConfig[],
+    drawingKinds: marketStructureInducementsIctChochBosIndicator.drawingKinds,
+    defaultInputs: { ...marketStructureInducementsIctChochBosIndicator.defaultInputs },
+    calculate: marketStructureInducementsIctChochBosIndicator.calculate,
   },
 ];
 

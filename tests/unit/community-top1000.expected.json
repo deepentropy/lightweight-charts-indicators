@@ -1978,6 +1978,50 @@
    "tables": 1
   }
  },
+ "moving-average-exponential-x-4": {
+  "daily": {
+   "plots": {
+    "plot0": 3151,
+    "plot1": 3101,
+    "plot2": 3001,
+    "plot3": 2801
+   }
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3951,
+    "plot1": 3901,
+    "plot2": 3801,
+    "plot3": 3601
+   }
+  }
+ },
+ "triangular-hull-moving-average-volatility": {
+  "daily": {
+   "plots": {},
+   "markers": 220,
+   "tables": 1,
+   "plotCandles": 3120
+  },
+  "m15": {
+   "plots": {},
+   "markers": 260,
+   "tables": 1,
+   "plotCandles": 3920
+  }
+ },
+ "market-structure-inducements-ict-choch-bos": {
+  "daily": {
+   "plots": {},
+   "lines": 286,
+   "labels": 286
+  },
+  "m15": {
+   "plots": {},
+   "lines": 376,
+   "labels": 376
+  }
+ },
  "smart-trader-episode-06-isotropic-trend-lines": {
   "daily": {
    "plots": {
