@@ -1732,6 +1732,38 @@
    "fills": 2
   }
  },
+ "elliot-wave-impulse": {
+  "daily": {
+   "plots": {},
+   "lines": 55,
+   "labels": 7,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "lines": 69,
+   "labels": 7,
+   "tables": 1
+  }
+ },
+ "knn-market-architecture": {
+  "daily": {
+   "plots": {},
+   "barColors": 2593,
+   "lines": 198,
+   "boxes": 66,
+   "labels": 491,
+   "tables": 1
+  },
+  "m15": {
+   "plots": {},
+   "barColors": 3393,
+   "lines": 244,
+   "boxes": 75,
+   "labels": 501,
+   "tables": 1
+  }
+ },
  "two-pole-oscillator": {
   "daily": {
    "plots": {

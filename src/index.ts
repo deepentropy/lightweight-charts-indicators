@@ -7388,6 +7388,18 @@ export type { MarketStructureConfluenceInputs } from './community/market-structu
 import * as vwapSupplyDemandZonesProIndicator from './community/vwap-supply-demand-zones-pro';
 export { VwapSupplyDemandZonesPro, calculate as calculateVwapSupplyDemandZonesPro } from './community/vwap-supply-demand-zones-pro';
 export type { VwapSupplyDemandZonesProInputs } from './community/vwap-supply-demand-zones-pro';
+// Elliot Wave - Impulse
+import * as elliotWaveImpulseIndicator from './community/elliot-wave-impulse';
+export { ElliotWaveImpulse, calculate as calculateElliotWaveImpulse } from './community/elliot-wave-impulse';
+export type { ElliotWaveImpulseInputs } from './community/elliot-wave-impulse';
+// kNN Market Architecture
+import * as knnMarketArchitectureIndicator from './community/knn-market-architecture';
+export { KnnMarketArchitecture, calculate as calculateKnnMarketArchitecture } from './community/knn-market-architecture';
+export type { KnnMarketArchitectureInputs } from './community/knn-market-architecture';
+// Range Analysis - By Leviathan
+import * as rangeAnalysisByLeviathanIndicator from './community/range-analysis-by-leviathan';
+export { RangeAnalysisByLeviathan, calculate as calculateRangeAnalysisByLeviathan } from './community/range-analysis-by-leviathan';
+export type { RangeAnalysisByLeviathanInputs } from './community/range-analysis-by-leviathan';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -30203,6 +30215,7 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'elliot-wave-impulse': elliotWaveImpulseIndicator,
   'vwap-supply-demand-zones-pro': vwapSupplyDemandZonesProIndicator,
   'liquidity-sweep-hunter-algo': liquiditySweepHunterAlgoIndicator,
   'market-structure-confluence': marketStructureConfluenceIndicator,
@@ -31862,6 +31875,51 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: vwapSupplyDemandZonesProIndicator.drawingKinds,
     defaultInputs: { ...vwapSupplyDemandZonesProIndicator.defaultInputs },
     calculate: vwapSupplyDemandZonesProIndicator.calculate,
+  },
+  {
+    id: 'elliot-wave-impulse',
+    group: 'community',
+    name: 'Elliot Wave - Impulse',
+    shortName: elliotWaveImpulseIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: elliotWaveImpulseIndicator.metadata,
+    inputConfig: elliotWaveImpulseIndicator.inputConfig as InputConfig[],
+    plotConfig: elliotWaveImpulseIndicator.plotConfig as PlotConfig[],
+    drawingKinds: elliotWaveImpulseIndicator.drawingKinds,
+    defaultInputs: { ...elliotWaveImpulseIndicator.defaultInputs },
+    calculate: elliotWaveImpulseIndicator.calculate,
+  },
+  {
+    id: 'knn-market-architecture',
+    group: 'community',
+    name: 'kNN Market Architecture',
+    shortName: knnMarketArchitectureIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: knnMarketArchitectureIndicator.metadata,
+    inputConfig: knnMarketArchitectureIndicator.inputConfig as InputConfig[],
+    plotConfig: knnMarketArchitectureIndicator.plotConfig as PlotConfig[],
+    barColorConfig: knnMarketArchitectureIndicator.barColorConfig,
+    drawingKinds: knnMarketArchitectureIndicator.drawingKinds,
+    defaultInputs: { ...knnMarketArchitectureIndicator.defaultInputs },
+    calculate: knnMarketArchitectureIndicator.calculate,
+  },
+  {
+    id: 'range-analysis-by-leviathan',
+    group: 'community',
+    name: 'Range Analysis - By Leviathan',
+    shortName: rangeAnalysisByLeviathanIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: rangeAnalysisByLeviathanIndicator.metadata,
+    inputConfig: rangeAnalysisByLeviathanIndicator.inputConfig as InputConfig[],
+    plotConfig: rangeAnalysisByLeviathanIndicator.plotConfig as PlotConfig[],
+    fillConfig: rangeAnalysisByLeviathanIndicator.fillConfig,
+    drawingKinds: rangeAnalysisByLeviathanIndicator.drawingKinds,
+    requiredSymbols: rangeAnalysisByLeviathanIndicator.requiredSymbols,
+    defaultInputs: { ...rangeAnalysisByLeviathanIndicator.defaultInputs },
+    calculate: rangeAnalysisByLeviathanIndicator.calculate,
   },
 ];
 
