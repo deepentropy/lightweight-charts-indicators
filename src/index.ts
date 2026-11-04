@@ -7348,6 +7348,14 @@ export type { AlgoMarketStructureInputs } from './community/algo-market-structur
 import * as volumeFootprintMeasuringByMathGeometryIndicator from './community/volume-footprint-measuring-by-math-geometry';
 export { VolumeFootprintMeasuringByMathGeometry, calculate as calculateVolumeFootprintMeasuringByMathGeometry } from './community/volume-footprint-measuring-by-math-geometry';
 export type { VolumeFootprintMeasuringByMathGeometryInputs } from './community/volume-footprint-measuring-by-math-geometry';
+// Rolling VWAP
+import * as rollingVwapIndicator from './community/rolling-vwap';
+export { RollingVwap, calculate as calculateRollingVwap } from './community/rolling-vwap';
+export type { RollingVwapInputs } from './community/rolling-vwap';
+// Moving Average Shaded Fill Area Crossover EMA Color - Editable
+import * as movingAverageShadedFillAreaCrossoverEmaIndicator from './community/moving-average-shaded-fill-area-crossover-ema';
+export { MovingAverageShadedFillAreaCrossoverEma, calculate as calculateMovingAverageShadedFillAreaCrossoverEma } from './community/moving-average-shaded-fill-area-crossover-ema';
+export type { MovingAverageShadedFillAreaCrossoverEmaInputs } from './community/moving-average-shaded-fill-area-crossover-ema';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -31666,6 +31674,35 @@ const registryPart12: IndicatorRegistryEntry[] = [
     requiredSymbols: volumeFootprintMeasuringByMathGeometryIndicator.requiredSymbols,
     defaultInputs: { ...volumeFootprintMeasuringByMathGeometryIndicator.defaultInputs },
     calculate: volumeFootprintMeasuringByMathGeometryIndicator.calculate,
+  },
+  {
+    id: 'rolling-vwap',
+    group: 'community',
+    name: 'Rolling VWAP',
+    shortName: rollingVwapIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: rollingVwapIndicator.metadata,
+    inputConfig: rollingVwapIndicator.inputConfig as InputConfig[],
+    plotConfig: rollingVwapIndicator.plotConfig as PlotConfig[],
+    fillConfig: rollingVwapIndicator.fillConfig,
+    drawingKinds: rollingVwapIndicator.drawingKinds,
+    defaultInputs: { ...rollingVwapIndicator.defaultInputs },
+    calculate: rollingVwapIndicator.calculate,
+  },
+  {
+    id: 'moving-average-shaded-fill-area-crossover-ema',
+    group: 'community',
+    name: 'Moving Average Shaded Fill Area Crossover EMA Color - Editable',
+    shortName: movingAverageShadedFillAreaCrossoverEmaIndicator.metadata.shortTitle,
+    category: 'Moving Averages',
+    overlay: true,
+    metadata: movingAverageShadedFillAreaCrossoverEmaIndicator.metadata,
+    inputConfig: movingAverageShadedFillAreaCrossoverEmaIndicator.inputConfig as InputConfig[],
+    plotConfig: movingAverageShadedFillAreaCrossoverEmaIndicator.plotConfig as PlotConfig[],
+    fillConfig: movingAverageShadedFillAreaCrossoverEmaIndicator.fillConfig,
+    defaultInputs: { ...movingAverageShadedFillAreaCrossoverEmaIndicator.defaultInputs },
+    calculate: movingAverageShadedFillAreaCrossoverEmaIndicator.calculate,
   },
 ];
 

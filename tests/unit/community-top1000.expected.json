@@ -1679,5 +1679,49 @@
    "tables": 1,
    "plotCandles": 4000
   }
+ },
+ "rolling-vwap": {
+  "daily": {
+   "plots": {
+    "plot0": 3191,
+    "plot1": 0,
+    "plot2": 0,
+    "plot3": 0,
+    "plot4": 0,
+    "plot5": 0,
+    "plot6": 0
+   },
+   "tables": 1,
+   "fills": 3
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3991,
+    "plot1": 0,
+    "plot2": 0,
+    "plot3": 0,
+    "plot4": 0,
+    "plot5": 0,
+    "plot6": 0
+   },
+   "tables": 1,
+   "fills": 3
+  }
+ },
+ "moving-average-shaded-fill-area-crossover-ema": {
+  "daily": {
+   "plots": {
+    "plot0": 3180,
+    "plot1": 3146
+   },
+   "fills": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3980,
+    "plot1": 3946
+   },
+   "fills": 1
+  }
  }
 }
