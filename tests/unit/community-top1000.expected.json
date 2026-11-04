@@ -837,5 +837,73 @@
    "lines": 1,
    "tables": 1
   }
+ },
+ "machine-learning-logistic-regression": {
+  "daily": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 0,
+    "plot2": 333,
+    "plot3": 318
+   },
+   "markers": 448,
+   "labels": 1
+  },
+  "m15": {
+   "plots": {
+    "plot0": 0,
+    "plot1": 0,
+    "plot2": 410,
+    "plot3": 399
+   },
+   "markers": 562,
+   "labels": 1
+  }
+ },
+ "asiasessionhighlowmidlines": {
+  "daily": {
+   "plots": {},
+   "lines": 50,
+   "boxes": 51
+  },
+  "m15": {
+   "plots": {},
+   "lines": 50,
+   "boxes": 30
+  }
+ },
+ "fibonacci-entry-bands": {
+  "daily": {
+   "plots": {
+    "plot0": 3160,
+    "plot1": 1514,
+    "plot2": 1514,
+    "plot3": 1645,
+    "plot4": 1645,
+    "plot5": 1514,
+    "plot6": 1514,
+    "plot7": 1645,
+    "plot8": 1645
+   },
+   "markers": 512,
+   "barColors": 3159,
+   "fills": 2
+  },
+  "m15": {
+   "plots": {
+    "plot0": 3960,
+    "plot1": 1927,
+    "plot2": 1927,
+    "plot3": 2032,
+    "plot4": 2032,
+    "plot5": 1927,
+    "plot6": 1927,
+    "plot7": 2032,
+    "plot8": 2032
+   },
+   "markers": 636,
+   "barColors": 3959,
+   "fills": 2
+  }
  }
 }

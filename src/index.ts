@@ -7168,6 +7168,26 @@ export type { ThreeDrivePatternDetectorInputs } from './community/three-drive-pa
 import * as trendlines2xIndicator from './community/trendlines-2x';
 export { Trendlines2x, calculate as calculateTrendlines2x } from './community/trendlines-2x';
 export type { Trendlines2xInputs } from './community/trendlines-2x';
+// Whale Liquidity and Absorption Profile
+import * as whaleLiquidityAndAbsorptionProfileIndicator from './community/whale-liquidity-and-absorption-profile';
+export { WhaleLiquidityAndAbsorptionProfile, calculate as calculateWhaleLiquidityAndAbsorptionProfile } from './community/whale-liquidity-and-absorption-profile';
+export type { WhaleLiquidityAndAbsorptionProfileInputs } from './community/whale-liquidity-and-absorption-profile';
+// Machine Learning: Logistic Regression
+import * as machineLearningLogisticRegressionIndicator from './community/machine-learning-logistic-regression';
+export { MachineLearningLogisticRegression, calculate as calculateMachineLearningLogisticRegression } from './community/machine-learning-logistic-regression';
+export type { MachineLearningLogisticRegressionInputs } from './community/machine-learning-logistic-regression';
+// AsiaSessionHighLowMidLines
+import * as asiasessionhighlowmidlinesIndicator from './community/asiasessionhighlowmidlines';
+export { AsiaSessionHighLowMidLines, calculate as calculateAsiaSessionHighLowMidLines } from './community/asiasessionhighlowmidlines';
+export type { AsiaSessionHighLowMidLinesInputs } from './community/asiasessionhighlowmidlines';
+// Fibonacci Entry Bands
+import * as fibonacciEntryBandsIndicator from './community/fibonacci-entry-bands';
+export { FibonacciEntryBands, calculate as calculateFibonacciEntryBands } from './community/fibonacci-entry-bands';
+export type { FibonacciEntryBandsInputs } from './community/fibonacci-entry-bands';
+// Poor man's volume clusters
+import * as poorManSVolumeClustersIndicator from './community/poor-man-s-volume-clusters';
+export { PoorManSVolumeClusters, calculate as calculatePoorManSVolumeClusters } from './community/poor-man-s-volume-clusters';
+export type { PoorManSVolumeClustersInputs } from './community/poor-man-s-volume-clusters';
 // ── end of the community top-1000 ports ──
 
 export type IndicatorCategory =
@@ -29983,6 +30003,9 @@ const ALERT_MODULES: Record<string, { alertConditions?: { id: string; title: str
   'tdi-rsi': tdiRsiIndicator,
   'trend-trader': trendTraderIndicator,
   'volume-supertrend-ai': volumeSupertrendAiIndicator,
+  'whale-liquidity-and-absorption-profile': whaleLiquidityAndAbsorptionProfileIndicator,
+  'machine-learning-logistic-regression': machineLearningLogisticRegressionIndicator,
+  'fibonacci-entry-bands': fibonacciEntryBandsIndicator,
   'trendlines-2x': trendlines2xIndicator,
   'atr-trailing-stoploss': atrTrailingStoplossIndicator,
   'best-support-and-resistance-indicator-v1': bestSupportAndResistanceIndicatorV1Indicator,
@@ -30796,6 +30819,83 @@ const registryPart12: IndicatorRegistryEntry[] = [
     requiredSymbols: trendlines2xIndicator.requiredSymbols,
     defaultInputs: { ...trendlines2xIndicator.defaultInputs },
     calculate: trendlines2xIndicator.calculate,
+  },
+  {
+    id: 'whale-liquidity-and-absorption-profile',
+    group: 'community',
+    name: 'Whale Liquidity and Absorption Profile',
+    shortName: whaleLiquidityAndAbsorptionProfileIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: whaleLiquidityAndAbsorptionProfileIndicator.metadata,
+    inputConfig: whaleLiquidityAndAbsorptionProfileIndicator.inputConfig as InputConfig[],
+    plotConfig: whaleLiquidityAndAbsorptionProfileIndicator.plotConfig as PlotConfig[],
+    shapeConfig: whaleLiquidityAndAbsorptionProfileIndicator.shapeConfig,
+    drawingKinds: whaleLiquidityAndAbsorptionProfileIndicator.drawingKinds,
+    requiredSymbols: whaleLiquidityAndAbsorptionProfileIndicator.requiredSymbols,
+    defaultInputs: { ...whaleLiquidityAndAbsorptionProfileIndicator.defaultInputs },
+    calculate: whaleLiquidityAndAbsorptionProfileIndicator.calculate,
+  },
+  {
+    id: 'machine-learning-logistic-regression',
+    group: 'community',
+    name: 'Machine Learning: Logistic Regression',
+    shortName: machineLearningLogisticRegressionIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: machineLearningLogisticRegressionIndicator.metadata,
+    inputConfig: machineLearningLogisticRegressionIndicator.inputConfig as InputConfig[],
+    plotConfig: machineLearningLogisticRegressionIndicator.plotConfig as PlotConfig[],
+    shapeConfig: machineLearningLogisticRegressionIndicator.shapeConfig,
+    drawingKinds: machineLearningLogisticRegressionIndicator.drawingKinds,
+    defaultInputs: { ...machineLearningLogisticRegressionIndicator.defaultInputs },
+    calculate: machineLearningLogisticRegressionIndicator.calculate,
+  },
+  {
+    id: 'asiasessionhighlowmidlines',
+    group: 'community',
+    name: 'AsiaSessionHighLowMidLines',
+    shortName: asiasessionhighlowmidlinesIndicator.metadata.shortTitle,
+    category: 'Channels & Bands',
+    overlay: true,
+    metadata: asiasessionhighlowmidlinesIndicator.metadata,
+    inputConfig: asiasessionhighlowmidlinesIndicator.inputConfig as InputConfig[],
+    plotConfig: asiasessionhighlowmidlinesIndicator.plotConfig as PlotConfig[],
+    drawingKinds: asiasessionhighlowmidlinesIndicator.drawingKinds,
+    defaultInputs: { ...asiasessionhighlowmidlinesIndicator.defaultInputs },
+    calculate: asiasessionhighlowmidlinesIndicator.calculate,
+  },
+  {
+    id: 'fibonacci-entry-bands',
+    group: 'community',
+    name: 'Fibonacci Entry Bands',
+    shortName: fibonacciEntryBandsIndicator.metadata.shortTitle,
+    category: 'Trend',
+    overlay: true,
+    metadata: fibonacciEntryBandsIndicator.metadata,
+    inputConfig: fibonacciEntryBandsIndicator.inputConfig as InputConfig[],
+    plotConfig: fibonacciEntryBandsIndicator.plotConfig as PlotConfig[],
+    fillConfig: fibonacciEntryBandsIndicator.fillConfig,
+    shapeConfig: fibonacciEntryBandsIndicator.shapeConfig,
+    barColorConfig: fibonacciEntryBandsIndicator.barColorConfig,
+    defaultInputs: { ...fibonacciEntryBandsIndicator.defaultInputs },
+    calculate: fibonacciEntryBandsIndicator.calculate,
+  },
+  {
+    id: 'poor-man-s-volume-clusters',
+    group: 'community',
+    name: 'Poor man\'s volume clusters',
+    shortName: poorManSVolumeClustersIndicator.metadata.shortTitle,
+    category: 'Volume',
+    overlay: true,
+    metadata: poorManSVolumeClustersIndicator.metadata,
+    inputConfig: poorManSVolumeClustersIndicator.inputConfig as InputConfig[],
+    plotConfig: poorManSVolumeClustersIndicator.plotConfig as PlotConfig[],
+    shapeConfig: poorManSVolumeClustersIndicator.shapeConfig,
+    drawingKinds: poorManSVolumeClustersIndicator.drawingKinds,
+    requiredSymbols: poorManSVolumeClustersIndicator.requiredSymbols,
+    defaultInputs: { ...poorManSVolumeClustersIndicator.defaultInputs },
+    calculate: poorManSVolumeClustersIndicator.calculate,
   },
 ];
 
