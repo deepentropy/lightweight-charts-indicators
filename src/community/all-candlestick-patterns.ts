@@ -17,6 +17,8 @@
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AllCandlestickPatternsInputs {}
 
@@ -153,36 +155,57 @@ const PATTERNS: Pattern[] = (() => {
   ];
 })();
 
-export function calculate(bars: Bar[], _inputs: Partial<AllCandlestickPatternsInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const n = bars.length;
-  const markers: MarkerData[] = [];
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
 
-  const closePlot = bars.map((b) => ({ time: b.time, value: NaN }));
+interface AcpRun extends BarRunState<Record<string, never>> {
+  closePlot: { time: number; value: number }[];
+  markers: MarkerData[];
+}
 
-  for (let i = 0; i < n; i++) {
-    const at = (k: number, f: 'open' | 'high' | 'low' | 'close') => (i - k >= 0 ? bars[i - k][f] : NaN);
-    const o: Ohlc = (k) => at(k, 'open');
-    const h: Ohlc = (k) => at(k, 'high');
-    const l: Ohlc = (k) => at(k, 'low');
-    const c: Ohlc = (k) => at(k, 'close');
-    PATTERNS.forEach((p, k) => {
-      if (!p.cond(o, h, l, c)) return;
-      // plotshape(dataK, title, text, color = red / green / white, style = arrowdown / arrowup / circle,
-      //           location = abovebar / belowbar)
-      markers.push(p.circle
-        ? { id: `shape${k}`, time: bars[i].time, position: 'belowBar', shape: 'circle', color: WHITE, text: p.text }
-        : {
-          id: `shape${k}`, time: bars[i].time, position: p.bullish ? 'belowBar' : 'aboveBar',
-          shape: p.bullish ? 'arrowUp' : 'arrowDown', color: p.bullish ? GREEN : RED, text: p.text,
-        });
-    });
-  }
-
+function study(): BarStudy<AcpRun, Result> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': closePlot },
-    markers,
+    init() {
+      const s: AcpRun = { closePlot: [], markers: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.markers];
+      s.series = [s.closePlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      s.closePlot[i] = { time: bars[i].time, value: NaN };
+      const at = (k: number, f: 'open' | 'high' | 'low' | 'close') => (i - k >= 0 ? bars[i - k][f] : NaN);
+      const o: Ohlc = (k) => at(k, 'open');
+      const h: Ohlc = (k) => at(k, 'high');
+      const l: Ohlc = (k) => at(k, 'low');
+      const c: Ohlc = (k) => at(k, 'close');
+      PATTERNS.forEach((p, k) => {
+        if (!p.cond(o, h, l, c)) return;
+        // plotshape(dataK, title, text, color = red / green / white, style = arrowdown / arrowup / circle,
+        //           location = abovebar / belowbar)
+        s.markers.push(p.circle
+          ? { id: `shape${k}`, time: bars[i].time, position: 'belowBar', shape: 'circle', color: WHITE, text: p.text }
+          : {
+            id: `shape${k}`, time: bars[i].time, position: p.bullish ? 'belowBar' : 'aboveBar',
+            shape: p.bullish ? 'arrowUp' : 'arrowDown', color: p.bullish ? GREEN : RED, text: p.text,
+          });
+      });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.closePlot.slice() },
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const AllCandlestickPatterns = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<AllCandlestickPatternsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<AllCandlestickPatternsInputs> = {}): Result {
+  return fullResult(createRun(_inputs).update(bars));
+}
+
+export const AllCandlestickPatterns = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

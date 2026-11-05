@@ -12,9 +12,11 @@
  * Original notice: © RWCS_LTD
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CandleSpreadOscillatorInputs {
   /** Smoothing period of the HMA */
@@ -39,44 +41,77 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CandleSpreadOscillatorInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface CsoRun extends BarRunState<Record<string, never>> {
+  hma: ReturnType<typeof taStep.hma>;
+  smoothed: number[];
+  plot0: Point[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<CandleSpreadOscillatorInputs>): BarStudy<CsoRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  // ta.hma(x, 1) is a Pine runtime error (wma length 0)
-  if (cfg.lookbackPeriod === 1) throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function");
-
-  // spread = (close - open) / (high - low): a plain division (x / 0 is +-infinity, 0 / 0 na); ta.hma skips them
-  const spread = bars.map((b) => (b.close - b.open) / (b.high - b.low));
-  const smoothed = A(ta.hma(Series.fromArray(bars, spread), cfg.lookbackPeriod));
-
   const bottom = String(color.new(color.fuchsia, 50));
   const top = String(color.new(color.aqua, 50));
-  const plot0: { time: number; value: number; color?: string }[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    const v = smoothed[i];
-    const t = bars[i].time;
-    // gradientColor = color.from_gradient(smoothedSpread, -0.1, 0.2, ...): na for an na value
-    if (isNaN(v)) {
-      plot0.push({ time: t, value: NaN });
-      continue;
-    }
-    const c = color.from_gradient(v, -0.1, 0.2, bottom, top);
-    plot0.push({ time: t, value: v, color: c });
-    bgColors.push({ time: t, color: c });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: [{ value: 0, options: { title: 'Midline', color: color.gray, linestyle: 'dotted' } }],
-    bgColors,
-    // crossUp = ta.crossover(smoothedSpread, 0) / crossDown = ta.crossunder(smoothedSpread, 0)
-    alerts: alertStates(alertConditions, bars, [crossedOver(smoothed, 0), crossedUnder(smoothed, 0)]),
+    init() {
+      // ta.hma(x, 1) is a Pine runtime error (wma length 0)
+      if (cfg.lookbackPeriod === 1) throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function");
+      const hma = taStep.hma(cfg.lookbackPeriod);
+      const s: CsoRun = {
+        hma, smoothed: [], plot0: [], bgColors: [], flags: [[], []], times: [[], []],
+        steps: [hma], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors, ...s.times];
+      s.series = [s.smoothed, s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      // spread = (close - open) / (high - low): a plain division (x / 0 is +-infinity, 0 / 0 na); ta.hma skips them
+      const v = s.hma.step((b.close - b.open) / (b.high - b.low));
+      s.smoothed[i] = v;
+      // gradientColor = color.from_gradient(smoothedSpread, -0.1, 0.2, ...): na for an na value
+      if (isNaN(v)) {
+        s.plot0[i] = { time: t, value: NaN };
+      } else {
+        const c = color.from_gradient(v, -0.1, 0.2, bottom, top);
+        s.plot0[i] = { time: t, value: v, color: c };
+        s.bgColors.push({ time: t, color: c });
+      }
+      // crossUp = ta.crossover(smoothedSpread, 0) / crossDown = ta.crossunder(smoothedSpread, 0)
+      const pv = i > 0 ? s.smoothed[i - 1] : NaN;
+      const flags = [v > 0 && pv <= 0, v < 0 && pv >= 0];
+      for (let k = 0; k < 2; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [{ value: 0, options: { title: 'Midline', color: color.gray, linestyle: 'dotted' } }],
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CandleSpreadOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CandleSpreadOscillatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -87,6 +122,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const CandleSpreadOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

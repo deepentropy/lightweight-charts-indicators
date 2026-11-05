@@ -46,8 +46,9 @@
  */
 
 import { array, color, math, str, timeframe, time as pineTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { chartTimeframe, periodChanges } from '../anchor-period';
+import { chartTimeframe, hasCalendar, periodChanges } from '../anchor-period';
 import { backgroundColorOf, foregroundColorOf, mintickOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type {
   AlertCall, BoxData, LabelData, LabelStyle, LineDrawingData, MarkerData, PineSize, TableCellData, TableData, TablePosition,
 } from '../types';
@@ -348,6 +349,7 @@ const TRANSPARENT = '#ffffff00';
 const DEFAULT_TRANSPARENCY = 60;
 const T_TXT = '🟩';
 const F_TXT = '🟥';
+const DAY_MS = 86400000;
 const DAY_NAMES = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
 
 type LineStyle = 'solid' | 'dotted' | 'dashed';
@@ -468,31 +470,58 @@ function getColor<D extends string | null>(raw: string, def: D): string | D {
   return cs.split(' ').join('').length > 0 ? strToColor(cs, def) : def;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<IctKillzonesPivotsTfoInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & {
+type Result = IndicatorResult & {
   lines: LineDrawingData[]; boxes: BoxData[]; labels: LabelData[]; tables: TableData[]; markers: MarkerData[];
   alertCalls: AlertCall[];
-} {
+};
+
+interface DwmSet {
+  tf: 'D' | 'W' | 'M'; period: string; open: boolean; hl: boolean; mid: boolean; sep: boolean; col: string;
+  info: DwmInfo; data: DwmHl; sepLines: Ln[]; openLines: Ln[]; openLabels: Lb[];
+}
+
+/** The state of the script: plain data (the drawings are shared by the registries and the arrays of the script) */
+interface IctVars {
+  lines: Live<Ln>;
+  boxes: Live<Bx>;
+  labels: Live<Lb>;
+  kzs: Kz[];
+  dwmSets: DwmSet[];
+  hzs: Hz[];
+  vlLines: Ln[];
+  vlOwner: number[];
+  // In the loops over the lists, the previous bar value is the one of the last entry of the list
+  lastStampPrev: boolean;
+  lastHzPrev: boolean;
+  dowPrev: number;
+}
+
+interface IctRun extends BarRunState<IctVars> {
+  markers: MarkerData[];
+  alertCalls: AlertCall[];
+  tables: TableData[];
+}
+
+/** A copy of the state: one structured clone keeps the drawings shared between the registries and the arrays */
+function copyIctVars(v: IctVars): IctVars {
+  const c = structuredClone(v);
+  for (const r of [c.lines, c.boxes, c.labels]) Object.setPrototypeOf(r, Live.prototype);
+  return c;
+}
+
+function study(inputs: Partial<IctKillzonesPivotsTfoInputs>): BarStudy<IctRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  // syminfo.mintick, chart.fg_color, chart.bg_color
-  const mintick = mintickOf(chart);
-  const chartFg = foregroundColorOf(chart);
-  const chartBg = backgroundColorOf(chart);
-  const n = bars.length;
-  const ms = n > 0 && bars[0].time >= 1e12;
-  const tMs = bars.map((b) => (ms ? b.time : b.time * 1000));
+  // syminfo.mintick, chart.fg_color, chart.bg_color, the chart timeframe (set by init)
+  let mintick = 0.01;
+  let chartFg = '';
+  let chartBg = '';
+  let ms = false;
   const tz = cfg.gmt_tz;
-  const tfName = chartTimeframe(bars, chart);
-  const chartSec = tfName === '' ? NaN : timeframe.in_seconds(tfName);
-  // bar duration for the session test on the days around a clock change
-  const barMs = Number.isNaN(chartSec) ? undefined : chartSec * 1000;
-  const limitSec = cfg.tf_limit.trim() === '' ? chartSec : timeframe.in_seconds(cfg.tf_limit);
-  // timeframe.in_seconds("") <= timeframe.in_seconds(tf_limit)
-  const tfOK = chartSec <= limitSec;
-  const isIntraday = tfName !== '' && timeframe.info(tfName).isintraday;
+  let barMs: number | undefined;
+  let tfOK = false;
+  let isIntraday = false;
+  /** The chart context of the period changes, with the chart timeframe of the whole bar set */
+  let calChart: ChartContext | undefined;
 
   const { max_days: maxDays, show_pivots: showPivots, show_midpoints: showMidpoints, show_labels: showLabels, data_lookback: lookback } = cfg;
   const labelRight = cfg.label_right === 'Right';
@@ -520,17 +549,7 @@ export function calculate(
   const fmtDate = (t: number) => str.format_time(t, 'M/d/yyyy', tz);
   const roundTick = (v: number) => math.round_to_mintick(v, mintick) as number;
 
-  const lines = new Live<Ln>();
-  const boxes = new Live<Bx>();
-  const labels = new Live<Lb>();
-  const markers: MarkerData[] = [];
-  const alertCalls: AlertCall[] = [];
-  const newLine = (x1: number, y1: number, x2: number, y2: number, byTime: boolean, css: string, style: LineStyle, width: number, extend?: 'both') =>
-    lines.add({ x1, y1, x2, y2, byTime, color: css, style, width, extend, dead: false });
-  const newLabel = (x: number, y: number, byTime: boolean, text: string, textColor: string, style: LabelStyle, tooltip: string) =>
-    labels.add({ x, y, byTime, text, color: TRANSPARENT, textColor, style, size: lblSize, tooltip, dead: false });
-
-  const kzs: Kz[] = ([1, 2, 3, 4, 5, 6] as const).map((k) => ({
+  const newKzs = (): Kz[] => ([1, 2, 3, 4, 5, 6] as const).map((k) => ({
     title: cfg[`kz${k}_txt`], kzColor: cfg[`kz${k}_color`], use: cfg[`use_kz${k}`], session: cfg[`kz${k}_session`],
     startTime: [], box: [], hiLine: [], mdLine: [], loLine: [], hiLabel: [], loLabel: [],
     hiValid: [], mdValid: [], loValid: [], extStop: [], rangeStore: [], hitHi: newTrack(), hitLo: newTrack(),
@@ -554,14 +573,11 @@ export function calculate(
     hitHigh: false, hitLow: false,
   });
   const newInfo = (tf: 'D' | 'W' | 'M'): DwmInfo => ({ tf, o: NaN, h: NaN, l: NaN, ph: NaN, pl: NaN, t: NaN, pt: NaN });
-  const dwmSets = [
+  const newDwmSets = (): DwmSet[] => [
     { tf: 'D' as const, period: 'Day', open: cfg.show_d_open, hl: cfg.dhl, mid: cfg.dmid, sep: cfg.ds, col: cfg.d_color },
     { tf: 'W' as const, period: 'Week', open: cfg.show_w_open, hl: cfg.whl, mid: cfg.wmid, sep: cfg.ws, col: cfg.w_color },
     { tf: 'M' as const, period: 'Month', open: cfg.show_m_open, hl: cfg.mhl, mid: cfg.mmid, sep: cfg.ms, col: cfg.m_color },
-  ].map((d) => ({
-    ...d, info: newInfo(d.tf), data: newHl(), sepLines: [] as Ln[], openLines: [] as Ln[], openLabels: [] as Lb[],
-    changes: periodChanges(bars, d.tf, chart),
-  }));
+  ].map((d) => ({ ...d, info: newInfo(d.tf), data: newHl(), sepLines: [], openLines: [], openLabels: [] }));
   const dwmLimit = dwmRecent ? 1 : maxDays;
   const dwmTip = (period: string, what: string, price: number, t0: number, T: Track | null) => {
     let s = str.format('Previous {0} {1}: {2}', period, what, price);
@@ -582,7 +598,7 @@ export function calculate(
       stampCols.push(getColor(lineStr, cfg.def_vl_color));
     } else if (lineStr.trim().length > 0) badStamps += 1;
   }
-  const hzs: Hz[] = [];
+  const hzInputs: Array<Omit<Hz, 'LN' | 'LB' | 'CO'>> = [];
   let badOpens = 0;
   for (const lineStr of cfg.opens_input.split('\n')) {
     if (lineStr.trim().startsWith('//')) continue;
@@ -597,628 +613,695 @@ export function calculate(
     if (sess !== null) {
       const txt = lRaw.trim();
       const tip = txt.length > 0 ? txt : (tok.length === 3 ? '0' + tok : tok) + ' Open';
-      hzs.push({ LN: [], LB: [], CO: [], session: sess, col: strToColor(cRaw, cfg.def_hz_color), txt, tip });
+      hzInputs.push({ session: sess, col: strToColor(cRaw, cfg.def_hz_color), txt, tip });
     } else if (lineStr.trim().length > 0) badOpens += 1;
   }
+  const levelInputs: Array<{ mult: number; col: string | null }> = [];
   let badLevels = 0;
   for (const lineStr of cfg.levels_input.split('\n')) {
     if (lineStr.trim().startsWith('//')) continue;
     const mult = toNumber(getHHMM(lineStr));
-    if (!Number.isNaN(mult) && mult > 0) {
-      const c = getColor(lineStr, null);
-      for (const k of kzs) {
-        k.levels.push({
-          mult, col: c === null ? k.kzColor : c, hiLine: [], loLine: [], hiLabel: [], loLabel: [],
-          hitHi: newTrack(), hitLo: newTrack(), hiValid: false, loValid: false, active: false,
-        });
-      }
-    } else if (lineStr.trim().length > 0) badLevels += 1;
+    if (!Number.isNaN(mult) && mult > 0) levelInputs.push({ mult, col: getColor(lineStr, null) });
+    else if (lineStr.trim().length > 0) badLevels += 1;
   }
-  const vlLines: Ln[] = [];
-  const vlOwner: number[] = [];
-  // In the loops over the lists, the previous bar value is the one of the last entry of the list
-  let lastStampPrev = false;
-  let lastHzPrev = false;
-  let dowPrev = NaN;
   const lvlTip = (k: Kz, txt: string, T: Track) => str.format(
     "{0}: {1}\nDate: {2}\n{3,number,percent} hit rate over {4} sessions (counted during the level''s session only), dating back to {5}\n\nLevels calculated using the {6} of the last {7} sessions",
     k.title + ' ' + txt, T.price, fmtDate(k.startTime[0]), T.success / T.total, T.total, fmtDate(k.startTime[k.startTime.length - 1]), measurement, lookback);
   const multText = (l: Lvl) => str.tostring(l.mult) + lvlSuffix;
 
   const live = <X extends { dead: boolean }>(o: X | undefined): o is X => o !== undefined && !o.dead;
-  const tables: TableData[] = [];
 
-  for (let i = 0; i < n; i++) {
-    const bar = bars[i];
-    const { open, high, low, close } = bar;
-    const t = tMs[i];
-    const tCo = cfg.use_cutoff && pineTime.inSession(t, cfg.cutoff, tz, barMs);
-    const last = i === n - 1;
-
-    // Killzones
-    for (const kz of kzs) {
-      kz.t1 = kz.t;
-      kz.t = pineTime.inSession(t, kz.session, tz, barMs);
-    }
-    for (const kz of kzs) {
-      if (!(tfOK && kz.use)) continue;
-      const inKz = kz.t;
-      if (inKz && !kz.t1) {
-        const c = kz.kzColor;
-        const cOpaque = opaque(c);
-        kz.box.unshift(boxes.add({ left: t, top: high, right: t, bottom: low, border: cfg.show_kz ? c : NA_COLOR, bg: cfg.show_kz ? c : NA_COLOR, dead: false }));
-        kz.startTime.unshift(t);
-        if (kz.sdCurrent.length > 0) {
-          kz.sdSizes.push(kz.sdCurrent.length);
-          kz.sdPool.push(...kz.sdCurrent);
-          kz.sdCurrent = [];
-          while (kz.sdSizes.length > lookback) kz.sdPool.splice(0, kz.sdSizes.shift()!);
-        }
-        kz.sessionOpen = open;
-        kz.sdValue = kz.sdPool.length > 1 ? array.stdev(kz.sdPool) : NaN;
-        if (showPivots) {
-          kz.hiLine.unshift(newLine(t, high, t, high, true, cOpaque, kzpStyle, cfg.kzp_width));
-          kz.loLine.unshift(newLine(t, low, t, low, true, cOpaque, kzpStyle, cfg.kzp_width));
-          setTrack(kz.hitHi);
-          setTrack(kz.hitLo);
-          if (showMidpoints) {
-            kz.mdLine.unshift(newLine(t, (high + low) / 2, t, (high + low) / 2, true, cOpaque, kzmStyle, cfg.kzm_width));
-            kz.mdValid.unshift(true);
-          }
-          kz.hiValid.unshift(true);
-          kz.loValid.unshift(true);
-          kz.extStop.unshift(false);
-          if (showLabels) {
-            kz.hiLabel.unshift(newLabel(t, high, true, kz.title + ' High', cOpaque, labelRight ? 'label_left' : 'label_down', pivotTip(kz, ' High', high, kz.hitHi)));
-            kz.loLabel.unshift(newLabel(t, low, true, kz.title + ' Low', cOpaque, labelRight ? 'label_left' : 'label_up', pivotTip(kz, ' Low', low, kz.hitLo)));
-          }
-        }
-        // del_kz
-        if (kz.box.length > maxDays) boxes.del(kz.box.pop());
-        if (kz.hiLine.length > maxDays) {
-          lines.del(kz.hiLine.pop());
-          lines.del(kz.loLine.pop());
-          kz.hiValid.pop();
-          kz.loValid.pop();
-          kz.extStop.pop();
-          if (showMidpoints) {
-            lines.del(kz.mdLine.pop());
-            kz.mdValid.pop();
-          }
-        }
-        if (kz.hiLabel.length > maxDays) {
-          labels.del(kz.hiLabel.pop());
-          labels.del(kz.loLabel.pop());
-        }
-      }
-
-      // adjust_in_kz
-      if (inKz) {
-        const bx = kz.box[0];
-        if (live(bx)) {
-          bx.right = t;
-          bx.top = Math.max(bx.top, high);
-          bx.bottom = Math.min(bx.bottom, low);
-        }
-        kz.rangeCurrent = live(bx) ? bx.top - bx.bottom : NaN;
-        if (showPivots && kz.hiLine.length > 0) {
-          const hi = kz.hiLine[0];
-          const lo = kz.loLine[0];
-          if (live(hi)) {
-            hi.x2 = t;
-            if (high > hi.y1) {
-              hi.x1 = t;
-              hi.y1 = high;
-              hi.x2 = t;
-              hi.y2 = high;
-            }
-          }
-          if (live(lo)) {
-            lo.x2 = t;
-            if (low < lo.y1) {
-              lo.x1 = t;
-              lo.y1 = low;
-              lo.x2 = t;
-              lo.y2 = low;
-            }
-          }
-          if (showMidpoints) {
-            const md = kz.mdLine[0];
-            const mid = ((live(hi) ? hi.y2 : NaN) + (live(lo) ? lo.y2 : NaN)) / 2;
-            if (live(md)) {
-              md.x1 = t;
-              md.y1 = mid;
-              md.x2 = t;
-              md.y2 = mid;
-            }
-          }
-        }
-        if (showLabels && kz.hiLabel.length > 0) {
-          const hi = kz.hiLabel[0];
-          const lo = kz.loLabel[0];
-          if (labelRight) {
-            if (live(hi)) hi.x = t;
-            if (live(lo)) lo.x = t;
-          }
-          if (live(hi) && high > hi.y) {
-            hi.x = t;
-            hi.y = high;
-            hi.tooltip = pivotTip(kz, ' High', high, kz.hitHi);
-          }
-          if (live(lo) && low < lo.y) {
-            lo.x = t;
-            lo.y = low;
-            lo.tooltip = pivotTip(kz, ' Low', low, kz.hitLo);
-          }
-        }
-      }
-
-      // adjust_out_kz
-      if (!inKz && kz.box.length > 0 && kz.t1) {
-        kz.rangeStore.unshift(kz.rangeCurrent);
-        if (kz.rangeStore.length > lookback) kz.rangeStore.pop();
-      }
-      if (kz.box.length > 0 && showPivots) {
-        for (let k = 0; k < kz.box.length; k++) {
-          if (extCurrent && k !== 0) continue;
-          const side = (ln: Ln[], lb: Lb[], valid: boolean[], track: Track, hit: (y: number) => boolean, hitStyle: LabelStyle,
-            what: string) => {
-            if ((extPast || valid[k] === true) && !kz.extStop[k]) {
-              if (live(ln[k])) ln[k].x2 = t;
-              if (showLabels && labelRight && live(lb[k])) lb[k].x = t;
-            }
-            if (hit(live(ln[k]) ? ln[k].y1 : NaN) && valid[k] === true) {
-              // if use_alerts and i == 0: alert("Broke " + kz._title + " High" / " Low", alert.freq_once_per_bar)
-              if (cfg.use_alerts && k === 0) alertCalls.push({ time: bar.time, message: 'Broke ' + kz.title + what, freq: 'once_per_bar' });
-              valid[k] = false;
-              track.success += 1;
-              track.hitLevel = true;
-              track.history[k] = true;
-              if (showLabels && labelRight && live(lb[0])) lb[0].style = hitStyle;
-            } else if (tCo) valid[k] = false;
-          };
-          side(kz.hiLine, kz.hiLabel, kz.hiValid, kz.hitHi, (y) => high > y, 'label_down', ' High');
-          side(kz.loLine, kz.loLabel, kz.loValid, kz.hitLo, (y) => low < y, 'label_up', ' Low');
-          if (showMidpoints && !inKz && !kz.extStop[k]) {
-            const md = kz.mdLine[k];
-            if (live(md)) md.x2 = t;
-            const y = live(md) ? md.y1 : NaN;
-            if (kz.mdValid[k] === true && low <= y && high >= y) kz.mdValid[k] = false;
-          }
-          if (tCo) kz.extStop[k] = true;
-        }
-      }
-      if (inKz && !Number.isNaN(kz.sessionOpen)) kz.sdCurrent.push(close - kz.sessionOpen);
-    }
-
-    // Day / week / month
-    const changes = dwmSets.map((d) => d.changes[i]);
-    dwmSets.forEach((d, k) => {
-      if (!(d.hl || d.open)) return;
-      const nfo = d.info;
-      if (changes[k]) {
-        nfo.ph = nfo.h;
-        nfo.pl = nfo.l;
-        nfo.o = open;
-        nfo.h = high;
-        nfo.l = low;
-        nfo.pt = nfo.t;
-        nfo.t = t;
-      } else {
-        nfo.h = Number.isNaN(nfo.h) ? NaN : Math.max(high, nfo.h);
-        nfo.l = Number.isNaN(nfo.l) ? NaN : Math.min(low, nfo.l);
-      }
-    });
-    if (tfOK) {
-      // Separators
-      dwmSets.forEach((d, k) => {
-        if (d.sep && changes[k]) {
-          d.sepLines.unshift(newLine(i, high * 1.0001, i, low, false, d.col, htfStyle, cfg.htf_width, 'both'));
-          if (!sepUnlimited && d.sepLines.length > dwmLimit) lines.del(d.sepLines.pop());
-        }
-      });
-      // Open lines
-      dwmSets.forEach((d, k) => {
-        if (!d.open) return;
-        if (d.openLines.length > 0) {
-          if (live(d.openLines[0])) d.openLines[0].x2 = t;
-          if (live(d.openLabels[0])) d.openLabels[0].x = t;
-        }
-        if (changes[k]) {
-          const o = d.info.o;
-          d.openLines.unshift(newLine(t, o, t, o, true, d.col, htfStyle, cfg.htf_width));
-          d.openLabels.unshift(newLabel(t, o, true, d.tf + ' OPEN', opaque(d.col), 'label_left',
-            str.format('{0} Open: {1}\nDate: {2}', d.period, o, fmtDate(t))));
-          if (!sepUnlimited && d.openLines.length > dwmLimit) {
-            lines.del(d.openLines.pop());
-            labels.del(d.openLabels.pop());
-          }
-        }
-      });
-      // Highs and lows
-      dwmSets.forEach((d, k) => {
-        if (!d.hl) return;
-        const hl = d.data;
-        const nfo = d.info;
-        if (hl.hiLine.length > 0) {
-          if (live(hl.hiLine[0])) hl.hiLine[0].x2 = t;
-          if (live(hl.loLine[0])) hl.loLine[0].x2 = t;
-          if (live(hl.hiLabel[0])) hl.hiLabel[0].x = t;
-          if (live(hl.loLabel[0])) hl.loLabel[0].x = t;
-        }
-        if (d.mid && hl.mdLine.length > 0) {
-          if (live(hl.mdLine[0])) hl.mdLine[0].x2 = t;
-          if (live(hl.mdLabel[0])) hl.mdLabel[0].x = t;
-        }
-        if (changes[k]) {
-          const tc = opaque(d.col);
-          hl.hiLine.unshift(newLine(t, nfo.ph, t, nfo.ph, true, d.col, htfStyle, cfg.htf_width));
-          hl.loLine.unshift(newLine(t, nfo.pl, t, nfo.pl, true, d.col, htfStyle, cfg.htf_width));
-          hl.hiLabel.unshift(newLabel(t, nfo.ph, true, 'P' + d.tf + 'H', tc, 'label_left', ''));
-          hl.loLabel.unshift(newLabel(t, nfo.pl, true, 'P' + d.tf + 'L', tc, 'label_left', ''));
-          if (d.mid) {
-            const m = (nfo.ph + nfo.pl) / 2;
-            hl.mdLine.unshift(newLine(t, m, t, m, true, d.col, htfStyle, cfg.htf_width));
-            hl.mdLabel.unshift(newLabel(t, m, true, 'P' + d.tf + 'M', tc, 'label_left', dwmTip(d.period, 'Midline', m, nfo.pt, null)));
-          }
-          hl.hitHigh = false;
-          hl.hitLow = false;
-          if (!Number.isNaN(nfo.ph)) {
-            setTrack(hl.trackHi, nfo.ph);
-            setTrack(hl.trackLo, nfo.pl);
-          }
-          hl.hiLabel[0].tooltip = dwmTip(d.period, 'High', nfo.ph, nfo.pt, hl.trackHi);
-          hl.loLabel[0].tooltip = dwmTip(d.period, 'Low', nfo.pl, nfo.pt, hl.trackLo);
-          if (!sepUnlimited && hl.hiLine.length > dwmLimit) {
-            lines.del(hl.hiLine.pop());
-            lines.del(hl.loLine.pop());
-            labels.del(hl.hiLabel.pop());
-            labels.del(hl.loLabel.pop());
-          }
-          if (!sepUnlimited && hl.mdLine.length > dwmLimit) {
-            lines.del(hl.mdLine.pop());
-            labels.del(hl.mdLabel.pop());
-          }
-        }
-        if (hl.hiLine.length > 0) {
-          const hiY = live(hl.hiLine[0]) ? hl.hiLine[0].y1 : NaN;
-          const loY = live(hl.loLine[0]) ? hl.loLine[0].y1 : NaN;
-          if (!hl.hitHigh && high > hiY) {
-            hl.hitHigh = true;
-            if (hl.trackHi.history.length > 0) {
-              hl.trackHi.success += 1;
-              hl.trackHi.hitLevel = true;
-              hl.trackHi.history[0] = true;
-              if (live(hl.hiLabel[0])) hl.hiLabel[0].tooltip = dwmTip(d.period, 'High', hiY, nfo.pt, hl.trackHi);
-            }
-            // if alert_HL: alert(str.format("Hit P{0}H", tf))
-            if (cfg.alert_HL) alertCalls.push({ time: bar.time, message: 'Hit P' + d.tf + 'H', freq: 'once_per_bar' });
-          }
-          if (!hl.hitLow && low < loY) {
-            hl.hitLow = true;
-            if (hl.trackLo.history.length > 0) {
-              hl.trackLo.success += 1;
-              hl.trackLo.hitLevel = true;
-              hl.trackLo.history[0] = true;
-              if (live(hl.loLabel[0])) hl.loLabel[0].tooltip = dwmTip(d.period, 'Low', loY, nfo.pt, hl.trackLo);
-            }
-            if (cfg.alert_HL) alertCalls.push({ time: bar.time, message: 'Hit P' + d.tf + 'L', freq: 'once_per_bar' });
-          }
-        }
-      });
-    }
-
-    // Labels at the same price are merged on the last bar
-    if (last) {
-      const mg: Array<{ lb: Lb | undefined; txt: string; tip: string }> = [];
-      for (const d of dwmSets) {
-        const hl = d.data;
-        const nfo = d.info;
-        const y = (lb: Lb | undefined) => (live(lb) ? lb.y : NaN);
-        if (d.open && d.openLabels.length > 0) {
-          mg.push({ lb: d.openLabels[0], txt: d.tf + ' OPEN', tip: str.format('{0} Open: {1}\nDate: {2}', d.period, nfo.o, fmtDate(nfo.t)) });
-        }
-        if (d.hl && hl.hiLabel.length > 0) {
-          mg.push({ lb: hl.hiLabel[0], txt: 'P' + d.tf + 'H', tip: dwmTip(d.period, 'High', y(hl.hiLabel[0]), nfo.pt, hl.trackHi) });
-          mg.push({ lb: hl.loLabel[0], txt: 'P' + d.tf + 'L', tip: dwmTip(d.period, 'Low', y(hl.loLabel[0]), nfo.pt, hl.trackLo) });
-          if (d.mid && hl.mdLabel.length > 0) {
-            mg.push({ lb: hl.mdLabel[0], txt: 'P' + d.tf + 'M', tip: dwmTip(d.period, 'Midline', y(hl.mdLabel[0]), nfo.pt, null) });
-          }
-        }
-      }
-      const setText = (lb: Lb | undefined, txt: string, tip: string) => {
-        if (live(lb)) {
-          lb.text = txt;
-          lb.tooltip = tip;
-        }
-      };
-      for (const m of mg) setText(m.lb, m.txt, m.tip);
-      const consumed = mg.map(() => false);
-      const priceOf = (lb: Lb | undefined) => roundTick(live(lb) ? lb.y : NaN);
-      for (let a = 0; a < mg.length - 1; a++) {
-        if (consumed[a]) continue;
-        let txt = mg[a].txt;
-        let tip = mg[a].tip;
-        let merged = false;
-        for (let b = a + 1; b < mg.length; b++) {
-          // Pine `==`: equal within 1e-10, false with na
-          if (!consumed[b] && Math.abs(priceOf(mg[a].lb) - priceOf(mg[b].lb)) <= 1e-10) {
-            merged = true;
-            consumed[b] = true;
-            txt += ' / ' + mg[b].txt;
-            tip += '\n\n' + mg[b].tip;
-            setText(mg[b].lb, '', '');
-          }
-        }
-        if (merged) setText(mg[a].lb, txt, tip);
-      }
-    }
-
-    // Day of week labels: plotchar with an empty character and the day name as text
-    const dowTime = cfg.dow_xloc === 'Midday' ? t - (timeframe.in_seconds('D') / 2) * 1000 : t;
-    const dow = pineTime.dayofweek(dowTime, tz);
-    const newDay = i > 0 && dow !== dowPrev;
-    dowPrev = dow;
-    if (cfg.dow_labels && isIntraday && newDay && !((dow === 1 || dow === 7) && cfg.dow_hide_wknd)) {
-      // ids: the original's plotchar() per day, char0 (Sunday) .. char6 (Saturday)
-      markers.push({
-        time: bar.time, position: cfg.dow_yloc === 'Top' ? 'top' : 'bottom', shape: 'square', color: NA_COLOR,
-        text: DAY_NAMES[dow - 1], textColor: chartFg, id: `char${dow - 1}`,
-      });
-    }
-
-    // Timestamps
-    if (cfg.show_timestamps && tfOK && stampSessions.length > 0) {
-      const t1 = i === 0 ? true : lastStampPrev;
-      for (let k = 0; k < stampSessions.length; k++) {
-        const inStamp = pineTime.inSession(t, stampSessions[k], tz, barMs);
-        if (inStamp && !t1) {
-          vlLines.unshift(newLine(i, high * 1.0001, i, low, false, stampCols[k], vlStyle, cfg.vl_width, 'both'));
-          vlOwner.unshift(k);
-          if (!vUnlimited && vlOwner.filter((o) => o === k).length > (vRecent ? 1 : maxDays)) {
-            const j = vlOwner.lastIndexOf(k);
-            lines.del(vlLines[j]);
-            vlLines.splice(j, 1);
-            vlOwner.splice(j, 1);
-          }
-        }
-        if (k === stampSessions.length - 1) lastStampPrev = inStamp;
-      }
-    }
-
-    // Opening prices
-    if (cfg.show_opens && tfOK && hzs.length > 0) {
-      const tPrev = lastHzPrev;
-      for (let k = 0; k < hzs.length; k++) {
-        const h = hzs[k];
-        const inOpen = pineTime.inSession(t, h.session, tz, barMs);
-        if (inOpen && !tPrev) {
-          h.LN.unshift(newLine(i, open, i, open, false, h.col, hzStyle, cfg.hz_width));
-          h.LB.unshift(newLabel(i, open, false, h.txt, opaque(h.col), 'label_left', str.format('{0}: {1}\nDate: {2}', h.tip, open, fmtDate(t))));
-          h.CO.unshift(false);
-          if (!openUnlimited && h.LN.length > (openRecent ? 1 : maxDays)) {
-            lines.del(h.LN.pop());
-            labels.del(h.LB.pop());
-            h.CO.pop();
-          }
-        }
-        if (!inOpen && h.CO.length > 0 && !h.CO[0]) {
-          if (live(h.LN[0])) h.LN[0].x2 = i;
-          if (live(h.LB[0])) h.LB[0].x = i;
-          if (tCo) h.CO[0] = true;
-        }
-        if (k === hzs.length - 1) lastHzPrev = inOpen;
-      }
-    }
-
-    // Range levels
-    for (const kz of kzs) {
-      if (!(tfOK && kz.use && cfg.show_levels && kz.levels.length > 0)) continue;
-      if (kz.t && !kz.t1) {
-        const m = rangeValue(kz);
-        const ready = !Number.isNaN(m) && m > 0;
-        for (const l of kz.levels) {
-          l.active = ready;
-          if (!ready) continue;
-          const c = opaque(l.col);
-          const hiTxt = '+' + multText(l);
-          const loTxt = '-' + multText(l);
-          setTrack(l.hitHi, open + l.mult * m);
-          setTrack(l.hitLo, open - l.mult * m);
-          l.hiValid = true;
-          l.loValid = true;
-          l.hiLine.unshift(newLine(t, l.hitHi.price, t, l.hitHi.price, true, c, lvStyle, cfg.lv_width));
-          l.loLine.unshift(newLine(t, l.hitLo.price, t, l.hitLo.price, true, c, lvStyle, cfg.lv_width));
-          l.hiLabel.unshift(newLabel(t, l.hitHi.price, true, hiTxt, c, 'label_left', lvlTip(kz, hiTxt, l.hitHi)));
-          l.loLabel.unshift(newLabel(t, l.hitLo.price, true, loTxt, c, 'label_left', lvlTip(kz, loTxt, l.hitLo)));
-          if (l.hiLine.length > maxDays) {
-            lines.del(l.hiLine.pop());
-            lines.del(l.loLine.pop());
-            labels.del(l.hiLabel.pop());
-            labels.del(l.loLabel.pop());
-          }
-        }
-      }
-      if (kz.t) {
-        for (const l of kz.levels) {
-          if (!l.active) continue;
-          if (live(l.hiLine[0])) l.hiLine[0].x2 = t;
-          if (live(l.loLine[0])) l.loLine[0].x2 = t;
-          if (live(l.hiLabel[0])) l.hiLabel[0].x = t;
-          if (live(l.loLabel[0])) l.loLabel[0].x = t;
-          if (l.hiValid && high >= l.hitHi.price) {
-            l.hiValid = false;
-            l.hitHi.success += 1;
-            l.hitHi.hitLevel = true;
-            l.hitHi.history[0] = true;
-            if (live(l.hiLabel[0])) l.hiLabel[0].tooltip = lvlTip(kz, '+' + multText(l), l.hitHi);
-          }
-          if (l.loValid && low <= l.hitLo.price) {
-            l.loValid = false;
-            l.hitLo.success += 1;
-            l.hitLo.hitLevel = true;
-            l.hitLo.history[0] = true;
-            if (live(l.loLabel[0])) l.loLabel[0].tooltip = lvlTip(kz, '-' + multText(l), l.hitLo);
-          }
-          if (tCo) {
-            l.active = false;
-            l.hiValid = false;
-            l.loValid = false;
-          }
-        }
-      }
-    }
-
-    // Data table and input warnings (last bar)
-    if (last) {
-      const statsPivots = cfg.show_pivot_stats && showPivots;
-      const statsDwm = cfg.show_dwm_stats && (cfg.dhl || cfg.whl || cfg.mhl);
-      const statsLevels = cfg.show_level_stats && cfg.show_levels;
-      const lastInstances = (B: boolean[]) => {
-        let txt = '';
-        const len = Math.min(B.length, lookback) - 1;
-        if (B.length > 0) {
-          for (let k = 0; k <= len; k++) {
-            txt += B[len - k] ? T_TXT : F_TXT;
-            if ((k + 1) % 10 === 0) txt += '\n';
-          }
-        }
-        return txt.trim();
-      };
-      const pct = (v: number) => str.format('{0,number,percent}', v);
-      if (cfg.show_data) {
-        const cells = new Map<string, TableCellData>();
-        const cell = (column: number, row: number, text: string, bg?: string, tooltip?: string) => {
-          cells.set(`${column},${row}`, {
-            row, column, text, textSize: dataSize, textColor: chartFg,
-            ...(bg !== undefined ? { bgColor: bg } : {}), ...(tooltip !== undefined ? { tooltip } : {}),
-          });
-        };
-        let c = 1;
-        cell(c, 0, 'Range');
-        c += 1;
-        if (statsPivots || statsDwm) {
-          cell(c, 0, 'High');
-          c += 1;
-          cell(c, 0, 'Low');
-          c += 1;
-        }
-        if (statsLevels) {
-          for (const l of kzs[0].levels) {
-            if (c < 20) {
-              cell(c, 0, '±' + multText(l));
-              c += 1;
-            }
-          }
-        }
-        kzs.forEach((kz, k) => {
-          const row = k + 1;
-          if (!(kz.use && kz.box.length > 0)) return;
-          let col = 0;
-          const avg = roundTick(rangeValue(kz));
-          const ratio = kz.rangeCurrent / avg;
-          cell(col, row, kz.title, kz.kzColor);
-          col += 1;
-          const rangeTip = Number.isNaN(avg)
-            ? str.format('Current range is {0,number}\n\nNot enough completed sessions to calculate the {1} yet', kz.rangeCurrent, measurement)
-            : str.format('Current range is {0,number}, or {1,number,percent} of the {2} ({3,number}) calculated using the last {4} sessions\n\nA colored cell indicates that the current day has exceeded the measured value', kz.rangeCurrent, ratio, measurement, avg, lookback);
-          cell(col, row, str.format('{0,number}', kz.rangeCurrent), ratio >= 1.0 ? kz.kzColor : undefined, rangeTip);
-          col += 1;
-          const stat = (column: number, T: Track) => {
-            if (T.total > 0) {
-              cell(column, row, pct(T.success / T.total), T.hitLevel ? kz.kzColor : undefined, str.format(
-                '{0,number,percent} hit rate over {1} sessions (counted after each session ends), dating back to {2}\n\nLast {3} events (least to most recent):\n{4}',
-                T.success / T.total, T.total, fmtDate(kz.startTime[kz.startTime.length - 1]), lookback, lastInstances(T.history)));
-            } else cell(column, row, '-');
-          };
-          if (statsPivots) {
-            stat(col, kz.hitHi);
-            col += 1;
-            stat(col, kz.hitLo);
-            col += 1;
-          } else if (statsDwm) col += 2;
-          if (statsLevels) {
-            for (const l of kz.levels) {
-              if (col >= 20) continue;
-              if (l.hitHi.total > 0) {
-                cell(col, row, str.format('{0,number,percent}\n{1,number,percent}', l.hitHi.success / l.hitHi.total, l.hitLo.success / l.hitLo.total),
-                  l.hitHi.hitLevel || l.hitLo.hitLevel ? kz.kzColor : undefined, str.format(
-                    '+{0}: {1,number,percent} hit rate over {2} sessions\nLast {3} events (least to most recent):\n{4}\n\n-{0}: {5,number,percent} hit rate over {6} sessions\nLast {3} events (least to most recent):\n{7}\n\nA colored cell indicates that a level was hit during the current session',
-                    multText(l), l.hitHi.success / l.hitHi.total, l.hitHi.total, lookback, lastInstances(l.hitHi.history),
-                    l.hitLo.success / l.hitLo.total, l.hitLo.total, lastInstances(l.hitLo.history)));
-              } else cell(col, row, '-');
-              col += 1;
-            }
-          }
-        });
-        dwmSets.forEach((d, k) => {
-          const row = 7 + k;
-          const hl = d.data;
-          if (!(cfg.show_dwm_stats && d.hl && hl.trackHi.total > 0)) return;
-          const col = String(color.new(d.col, DEFAULT_TRANSPARENCY));
-          const period = d.period.toLowerCase();
-          const curRange = d.info.h - d.info.l;
-          const prevRange = d.info.ph - d.info.pl;
-          const ratio = curRange / prevRange;
-          cell(0, row, 'P' + d.tf, col);
-          cell(1, row, str.format('{0,number}', curRange), ratio >= 1.0 ? col : undefined, str.format(
-            'Current range is {0,number}, or {1,number,percent} of the previous {2} range ({3,number})\n\nA colored cell indicates that the current {2} has exceeded the previous {2} range',
-            curRange, ratio, period, prevRange));
-          const stat = (column: number, T: Track, txt: string) => {
-            cell(column, row, pct(T.success / T.total), T.hitLevel ? col : undefined, str.format(
-              '{0}: {1,number,percent} hit rate over {2} {3}\n\nLast {4} events (least to most recent):\n{5}',
-              txt, T.success / T.total, T.total, period + 's', lookback, lastInstances(T.history)));
-          };
-          stat(2, hl.trackHi, 'P' + d.tf + 'H');
-          stat(3, hl.trackLo, 'P' + d.tf + 'L');
-        });
-        tables.push({
-          position: cfg.data_loc.toLowerCase().replace(' ', '_') as TablePosition, columns: 20, rows: 20, cells: [...cells.values()],
-          bgColor: chartBg, frameColor: chartFg, frameWidth: 2, borderColor: chartFg, borderWidth: 1,
-        });
-      }
-      if (badOpens + badStamps + badLevels > 0) {
-        let msg = 'Some settings could not be read:';
-        const entries = (count: number) => (count === 1 ? 'entry' : 'entries');
-        if (badOpens > 0) msg += str.format('\n- {0} Opening Prices {1}', badOpens, entries(badOpens));
-        if (badStamps > 0) msg += str.format('\n- {0} Timestamps {1}', badStamps, entries(badStamps));
-        if (badLevels > 0) msg += str.format('\n- {0} Range Levels {1}', badLevels, entries(badLevels));
-        msg += "\n\nExpected formats (one per line):\nOpening Prices: 'Time, Color, Label' - ex. '0930, red, NY Open'\nTimestamps: 'Time, Color' - ex. '1200, black'\nRange Levels: 'Multiplier, Color' - ex. '1.5, purple'\n\nColor and label fields are optional. Times accept 0930, 930, or 09:30. Lines starting with '//' are skipped";
-        tables.push({
-          position: 'bottom_right', columns: 1, rows: 1,
-          cells: [{ row: 0, column: 0, text: '⚠ Settings', textSize: 'small', textColor: chartFg, tooltip: msg }],
-          bgColor: String(color.new(color.red, 80)), frameColor: chartFg, frameWidth: 1, borderColor: chartFg, borderWidth: 1,
-        });
-      }
-    }
-  }
-
-  // Output (drawings with an na coordinate are not drawn)
-  const t2bar = new Map(tMs.map((t, k) => [t, k]));
-  const X = (x: number, byTime: boolean) => bars[byTime ? t2bar.get(x)! : x].time;
-  const drawn = (...v: number[]) => v.every((x) => !Number.isNaN(x));
-  const outLines: LineDrawingData[] = lines.list.filter((l) => drawn(l.x1, l.y1, l.x2, l.y2)).map((l) => ({
-    time1: X(l.x1, l.byTime), price1: l.y1, time2: X(l.x2, l.byTime), price2: l.y2, color: l.color, width: l.width, style: l.style,
-    ...(l.extend ? { extend: l.extend } : {}),
-  }));
-  const outBoxes: BoxData[] = boxes.list.filter((b) => drawn(b.left, b.top, b.right, b.bottom)).map((b) => ({
-    time1: X(b.left, true), price1: b.top, time2: X(b.right, true), price2: b.bottom, borderColor: b.border, bgColor: b.bg,
-  }));
-  const outLabels: LabelData[] = labels.list.filter((l) => drawn(l.x, l.y)).map((l) => ({
-    time: X(l.x, l.byTime), price: l.y, text: l.text, color: l.color, style: l.style, textColor: l.textColor, size: l.size,
-    ...(l.tooltip !== '' ? { tooltip: l.tooltip } : {}),
-  }));
+  /**
+   * periodChanges(bars, tf, chart)[i]: with the exchange calendar, the one of bars i - 1 and i (the calendar reads the
+   * chart timeframe of the whole set); else a new UTC calendar period (the rule of periodStarts for D / W / M)
+   */
+  const periodChange = (bars: Bar[], i: number, tf: 'D' | 'W' | 'M'): boolean => {
+    if (hasCalendar(calChart)) return periodChanges([bars[i - 1], bars[i]], tf, calChart)[1];
+    const key = (time: number) => {
+      const t = ms ? time : time * 1000;
+      const day = Math.floor(t / DAY_MS) * DAY_MS;
+      if (tf === 'D') return day;
+      const d = new Date(day);
+      if (tf === 'W') return day - ((d.getUTCDay() + 6) % 7) * DAY_MS;
+      return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+    };
+    return key(bars[i].time) !== key(bars[i - 1].time);
+  };
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    lines: outLines,
-    boxes: outBoxes,
-    labels: outLabels,
-    tables,
-    markers,
-    alertCalls,
+    // the chart timeframe comes from the bar gaps (or the context), the time unit from the first bar
+    key: (bars, chart) => `${chartTimeframe(bars, chart)}|${bars.length > 0 && bars[0].time >= 1e12}`,
+    init(bars, chart) {
+      mintick = mintickOf(chart);
+      chartFg = foregroundColorOf(chart);
+      chartBg = backgroundColorOf(chart);
+      ms = bars.length > 0 && bars[0].time >= 1e12;
+      const tfName = chartTimeframe(bars, chart);
+      const chartSec = tfName === '' ? NaN : timeframe.in_seconds(tfName);
+      // bar duration for the session test on the days around a clock change
+      barMs = Number.isNaN(chartSec) ? undefined : chartSec * 1000;
+      const limitSec = cfg.tf_limit.trim() === '' ? chartSec : timeframe.in_seconds(cfg.tf_limit);
+      // timeframe.in_seconds("") <= timeframe.in_seconds(tf_limit)
+      tfOK = chartSec <= limitSec;
+      isIntraday = tfName !== '' && timeframe.info(tfName).isintraday;
+      // periodChanges of two bars equals the one of the whole set when the calendar reads the same chart timeframe
+      calChart = tfName === '' || chart.timeframe ? chart : { ...chart, timeframe: tfName };
+
+      const kzs = newKzs();
+      for (const { mult, col: c } of levelInputs) {
+        for (const k of kzs) {
+          k.levels.push({
+            mult, col: c === null ? k.kzColor : c, hiLine: [], loLine: [], hiLabel: [], loLabel: [],
+            hitHi: newTrack(), hitLo: newTrack(), hiValid: false, loValid: false, active: false,
+          });
+        }
+      }
+      const s: IctRun = {
+        markers: [], alertCalls: [], tables: [], steps: [],
+        vars: {
+          lines: new Live<Ln>(), boxes: new Live<Bx>(), labels: new Live<Lb>(), kzs, dwmSets: newDwmSets(),
+          hzs: hzInputs.map((h) => ({ ...h, LN: [], LB: [], CO: [] })), vlLines: [], vlOwner: [],
+          lastStampPrev: false, lastHzPrev: false, dowPrev: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, s.alertCalls, s.tables];
+      return s;
+    },
+    copyVars: copyIctVars,
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { lines, boxes, labels, kzs, dwmSets, hzs, vlLines, vlOwner } = v;
+      let { lastStampPrev, lastHzPrev, dowPrev } = v;
+      const newLine = (x1: number, y1: number, x2: number, y2: number, byTime: boolean, css: string, style: LineStyle, width: number, extend?: 'both') =>
+        lines.add({ x1, y1, x2, y2, byTime, color: css, style, width, extend, dead: false });
+      const newLabel = (x: number, y: number, byTime: boolean, text: string, textColor: string, style: LabelStyle, tooltip: string) =>
+        labels.add({ x, y, byTime, text, color: TRANSPARENT, textColor, style, size: lblSize, tooltip, dead: false });
+      const bar = bars[i];
+      const { open, high, low, close } = bar;
+      const t = ms ? bar.time : bar.time * 1000;
+      const tCo = cfg.use_cutoff && pineTime.inSession(t, cfg.cutoff, tz, barMs);
+      const last = i === bars.length - 1;
+
+      // Killzones
+      for (const kz of kzs) {
+        kz.t1 = kz.t;
+        kz.t = pineTime.inSession(t, kz.session, tz, barMs);
+      }
+      for (const kz of kzs) {
+        if (!(tfOK && kz.use)) continue;
+        const inKz = kz.t;
+        if (inKz && !kz.t1) {
+          const c = kz.kzColor;
+          const cOpaque = opaque(c);
+          kz.box.unshift(boxes.add({ left: t, top: high, right: t, bottom: low, border: cfg.show_kz ? c : NA_COLOR, bg: cfg.show_kz ? c : NA_COLOR, dead: false }));
+          kz.startTime.unshift(t);
+          if (kz.sdCurrent.length > 0) {
+            kz.sdSizes.push(kz.sdCurrent.length);
+            kz.sdPool.push(...kz.sdCurrent);
+            kz.sdCurrent = [];
+            while (kz.sdSizes.length > lookback) kz.sdPool.splice(0, kz.sdSizes.shift()!);
+          }
+          kz.sessionOpen = open;
+          kz.sdValue = kz.sdPool.length > 1 ? array.stdev(kz.sdPool) : NaN;
+          if (showPivots) {
+            kz.hiLine.unshift(newLine(t, high, t, high, true, cOpaque, kzpStyle, cfg.kzp_width));
+            kz.loLine.unshift(newLine(t, low, t, low, true, cOpaque, kzpStyle, cfg.kzp_width));
+            setTrack(kz.hitHi);
+            setTrack(kz.hitLo);
+            if (showMidpoints) {
+              kz.mdLine.unshift(newLine(t, (high + low) / 2, t, (high + low) / 2, true, cOpaque, kzmStyle, cfg.kzm_width));
+              kz.mdValid.unshift(true);
+            }
+            kz.hiValid.unshift(true);
+            kz.loValid.unshift(true);
+            kz.extStop.unshift(false);
+            if (showLabels) {
+              kz.hiLabel.unshift(newLabel(t, high, true, kz.title + ' High', cOpaque, labelRight ? 'label_left' : 'label_down', pivotTip(kz, ' High', high, kz.hitHi)));
+              kz.loLabel.unshift(newLabel(t, low, true, kz.title + ' Low', cOpaque, labelRight ? 'label_left' : 'label_up', pivotTip(kz, ' Low', low, kz.hitLo)));
+            }
+          }
+          // del_kz
+          if (kz.box.length > maxDays) boxes.del(kz.box.pop());
+          if (kz.hiLine.length > maxDays) {
+            lines.del(kz.hiLine.pop());
+            lines.del(kz.loLine.pop());
+            kz.hiValid.pop();
+            kz.loValid.pop();
+            kz.extStop.pop();
+            if (showMidpoints) {
+              lines.del(kz.mdLine.pop());
+              kz.mdValid.pop();
+            }
+          }
+          if (kz.hiLabel.length > maxDays) {
+            labels.del(kz.hiLabel.pop());
+            labels.del(kz.loLabel.pop());
+          }
+        }
+
+        // adjust_in_kz
+        if (inKz) {
+          const bx = kz.box[0];
+          if (live(bx)) {
+            bx.right = t;
+            bx.top = Math.max(bx.top, high);
+            bx.bottom = Math.min(bx.bottom, low);
+          }
+          kz.rangeCurrent = live(bx) ? bx.top - bx.bottom : NaN;
+          if (showPivots && kz.hiLine.length > 0) {
+            const hi = kz.hiLine[0];
+            const lo = kz.loLine[0];
+            if (live(hi)) {
+              hi.x2 = t;
+              if (high > hi.y1) {
+                hi.x1 = t;
+                hi.y1 = high;
+                hi.x2 = t;
+                hi.y2 = high;
+              }
+            }
+            if (live(lo)) {
+              lo.x2 = t;
+              if (low < lo.y1) {
+                lo.x1 = t;
+                lo.y1 = low;
+                lo.x2 = t;
+                lo.y2 = low;
+              }
+            }
+            if (showMidpoints) {
+              const md = kz.mdLine[0];
+              const mid = ((live(hi) ? hi.y2 : NaN) + (live(lo) ? lo.y2 : NaN)) / 2;
+              if (live(md)) {
+                md.x1 = t;
+                md.y1 = mid;
+                md.x2 = t;
+                md.y2 = mid;
+              }
+            }
+          }
+          if (showLabels && kz.hiLabel.length > 0) {
+            const hi = kz.hiLabel[0];
+            const lo = kz.loLabel[0];
+            if (labelRight) {
+              if (live(hi)) hi.x = t;
+              if (live(lo)) lo.x = t;
+            }
+            if (live(hi) && high > hi.y) {
+              hi.x = t;
+              hi.y = high;
+              hi.tooltip = pivotTip(kz, ' High', high, kz.hitHi);
+            }
+            if (live(lo) && low < lo.y) {
+              lo.x = t;
+              lo.y = low;
+              lo.tooltip = pivotTip(kz, ' Low', low, kz.hitLo);
+            }
+          }
+        }
+
+        // adjust_out_kz
+        if (!inKz && kz.box.length > 0 && kz.t1) {
+          kz.rangeStore.unshift(kz.rangeCurrent);
+          if (kz.rangeStore.length > lookback) kz.rangeStore.pop();
+        }
+        if (kz.box.length > 0 && showPivots) {
+          for (let k = 0; k < kz.box.length; k++) {
+            if (extCurrent && k !== 0) continue;
+            const side = (ln: Ln[], lb: Lb[], valid: boolean[], track: Track, hit: (y: number) => boolean, hitStyle: LabelStyle,
+              what: string) => {
+              if ((extPast || valid[k] === true) && !kz.extStop[k]) {
+                if (live(ln[k])) ln[k].x2 = t;
+                if (showLabels && labelRight && live(lb[k])) lb[k].x = t;
+              }
+              if (hit(live(ln[k]) ? ln[k].y1 : NaN) && valid[k] === true) {
+                // if use_alerts and i == 0: alert("Broke " + kz._title + " High" / " Low", alert.freq_once_per_bar)
+                if (cfg.use_alerts && k === 0) s.alertCalls.push({ time: bar.time, message: 'Broke ' + kz.title + what, freq: 'once_per_bar' });
+                valid[k] = false;
+                track.success += 1;
+                track.hitLevel = true;
+                track.history[k] = true;
+                if (showLabels && labelRight && live(lb[0])) lb[0].style = hitStyle;
+              } else if (tCo) valid[k] = false;
+            };
+            side(kz.hiLine, kz.hiLabel, kz.hiValid, kz.hitHi, (y) => high > y, 'label_down', ' High');
+            side(kz.loLine, kz.loLabel, kz.loValid, kz.hitLo, (y) => low < y, 'label_up', ' Low');
+            if (showMidpoints && !inKz && !kz.extStop[k]) {
+              const md = kz.mdLine[k];
+              if (live(md)) md.x2 = t;
+              const y = live(md) ? md.y1 : NaN;
+              if (kz.mdValid[k] === true && low <= y && high >= y) kz.mdValid[k] = false;
+            }
+            if (tCo) kz.extStop[k] = true;
+          }
+        }
+        if (inKz && !Number.isNaN(kz.sessionOpen)) kz.sdCurrent.push(close - kz.sessionOpen);
+      }
+
+      // Day / week / month
+      // timeframe.change("D" / "W" / "M"): read from this bar and the bar before
+      const changes = dwmSets.map((d) => (d.hl || d.open || d.sep) && i > 0 && periodChange(bars, i, d.tf));
+      dwmSets.forEach((d, k) => {
+        if (!(d.hl || d.open)) return;
+        const nfo = d.info;
+        if (changes[k]) {
+          nfo.ph = nfo.h;
+          nfo.pl = nfo.l;
+          nfo.o = open;
+          nfo.h = high;
+          nfo.l = low;
+          nfo.pt = nfo.t;
+          nfo.t = t;
+        } else {
+          nfo.h = Number.isNaN(nfo.h) ? NaN : Math.max(high, nfo.h);
+          nfo.l = Number.isNaN(nfo.l) ? NaN : Math.min(low, nfo.l);
+        }
+      });
+      if (tfOK) {
+        // Separators
+        dwmSets.forEach((d, k) => {
+          if (d.sep && changes[k]) {
+            d.sepLines.unshift(newLine(i, high * 1.0001, i, low, false, d.col, htfStyle, cfg.htf_width, 'both'));
+            if (!sepUnlimited && d.sepLines.length > dwmLimit) lines.del(d.sepLines.pop());
+          }
+        });
+        // Open lines
+        dwmSets.forEach((d, k) => {
+          if (!d.open) return;
+          if (d.openLines.length > 0) {
+            if (live(d.openLines[0])) d.openLines[0].x2 = t;
+            if (live(d.openLabels[0])) d.openLabels[0].x = t;
+          }
+          if (changes[k]) {
+            const o = d.info.o;
+            d.openLines.unshift(newLine(t, o, t, o, true, d.col, htfStyle, cfg.htf_width));
+            d.openLabels.unshift(newLabel(t, o, true, d.tf + ' OPEN', opaque(d.col), 'label_left',
+              str.format('{0} Open: {1}\nDate: {2}', d.period, o, fmtDate(t))));
+            if (!sepUnlimited && d.openLines.length > dwmLimit) {
+              lines.del(d.openLines.pop());
+              labels.del(d.openLabels.pop());
+            }
+          }
+        });
+        // Highs and lows
+        dwmSets.forEach((d, k) => {
+          if (!d.hl) return;
+          const hl = d.data;
+          const nfo = d.info;
+          if (hl.hiLine.length > 0) {
+            if (live(hl.hiLine[0])) hl.hiLine[0].x2 = t;
+            if (live(hl.loLine[0])) hl.loLine[0].x2 = t;
+            if (live(hl.hiLabel[0])) hl.hiLabel[0].x = t;
+            if (live(hl.loLabel[0])) hl.loLabel[0].x = t;
+          }
+          if (d.mid && hl.mdLine.length > 0) {
+            if (live(hl.mdLine[0])) hl.mdLine[0].x2 = t;
+            if (live(hl.mdLabel[0])) hl.mdLabel[0].x = t;
+          }
+          if (changes[k]) {
+            const tc = opaque(d.col);
+            hl.hiLine.unshift(newLine(t, nfo.ph, t, nfo.ph, true, d.col, htfStyle, cfg.htf_width));
+            hl.loLine.unshift(newLine(t, nfo.pl, t, nfo.pl, true, d.col, htfStyle, cfg.htf_width));
+            hl.hiLabel.unshift(newLabel(t, nfo.ph, true, 'P' + d.tf + 'H', tc, 'label_left', ''));
+            hl.loLabel.unshift(newLabel(t, nfo.pl, true, 'P' + d.tf + 'L', tc, 'label_left', ''));
+            if (d.mid) {
+              const m = (nfo.ph + nfo.pl) / 2;
+              hl.mdLine.unshift(newLine(t, m, t, m, true, d.col, htfStyle, cfg.htf_width));
+              hl.mdLabel.unshift(newLabel(t, m, true, 'P' + d.tf + 'M', tc, 'label_left', dwmTip(d.period, 'Midline', m, nfo.pt, null)));
+            }
+            hl.hitHigh = false;
+            hl.hitLow = false;
+            if (!Number.isNaN(nfo.ph)) {
+              setTrack(hl.trackHi, nfo.ph);
+              setTrack(hl.trackLo, nfo.pl);
+            }
+            hl.hiLabel[0].tooltip = dwmTip(d.period, 'High', nfo.ph, nfo.pt, hl.trackHi);
+            hl.loLabel[0].tooltip = dwmTip(d.period, 'Low', nfo.pl, nfo.pt, hl.trackLo);
+            if (!sepUnlimited && hl.hiLine.length > dwmLimit) {
+              lines.del(hl.hiLine.pop());
+              lines.del(hl.loLine.pop());
+              labels.del(hl.hiLabel.pop());
+              labels.del(hl.loLabel.pop());
+            }
+            if (!sepUnlimited && hl.mdLine.length > dwmLimit) {
+              lines.del(hl.mdLine.pop());
+              labels.del(hl.mdLabel.pop());
+            }
+          }
+          if (hl.hiLine.length > 0) {
+            const hiY = live(hl.hiLine[0]) ? hl.hiLine[0].y1 : NaN;
+            const loY = live(hl.loLine[0]) ? hl.loLine[0].y1 : NaN;
+            if (!hl.hitHigh && high > hiY) {
+              hl.hitHigh = true;
+              if (hl.trackHi.history.length > 0) {
+                hl.trackHi.success += 1;
+                hl.trackHi.hitLevel = true;
+                hl.trackHi.history[0] = true;
+                if (live(hl.hiLabel[0])) hl.hiLabel[0].tooltip = dwmTip(d.period, 'High', hiY, nfo.pt, hl.trackHi);
+              }
+              // if alert_HL: alert(str.format("Hit P{0}H", tf))
+              if (cfg.alert_HL) s.alertCalls.push({ time: bar.time, message: 'Hit P' + d.tf + 'H', freq: 'once_per_bar' });
+            }
+            if (!hl.hitLow && low < loY) {
+              hl.hitLow = true;
+              if (hl.trackLo.history.length > 0) {
+                hl.trackLo.success += 1;
+                hl.trackLo.hitLevel = true;
+                hl.trackLo.history[0] = true;
+                if (live(hl.loLabel[0])) hl.loLabel[0].tooltip = dwmTip(d.period, 'Low', loY, nfo.pt, hl.trackLo);
+              }
+              if (cfg.alert_HL) s.alertCalls.push({ time: bar.time, message: 'Hit P' + d.tf + 'L', freq: 'once_per_bar' });
+            }
+          }
+        });
+      }
+
+      // Labels at the same price are merged on the last bar
+      if (last) {
+        const mg: Array<{ lb: Lb | undefined; txt: string; tip: string }> = [];
+        for (const d of dwmSets) {
+          const hl = d.data;
+          const nfo = d.info;
+          const y = (lb: Lb | undefined) => (live(lb) ? lb.y : NaN);
+          if (d.open && d.openLabels.length > 0) {
+            mg.push({ lb: d.openLabels[0], txt: d.tf + ' OPEN', tip: str.format('{0} Open: {1}\nDate: {2}', d.period, nfo.o, fmtDate(nfo.t)) });
+          }
+          if (d.hl && hl.hiLabel.length > 0) {
+            mg.push({ lb: hl.hiLabel[0], txt: 'P' + d.tf + 'H', tip: dwmTip(d.period, 'High', y(hl.hiLabel[0]), nfo.pt, hl.trackHi) });
+            mg.push({ lb: hl.loLabel[0], txt: 'P' + d.tf + 'L', tip: dwmTip(d.period, 'Low', y(hl.loLabel[0]), nfo.pt, hl.trackLo) });
+            if (d.mid && hl.mdLabel.length > 0) {
+              mg.push({ lb: hl.mdLabel[0], txt: 'P' + d.tf + 'M', tip: dwmTip(d.period, 'Midline', y(hl.mdLabel[0]), nfo.pt, null) });
+            }
+          }
+        }
+        const setText = (lb: Lb | undefined, txt: string, tip: string) => {
+          if (live(lb)) {
+            lb.text = txt;
+            lb.tooltip = tip;
+          }
+        };
+        for (const m of mg) setText(m.lb, m.txt, m.tip);
+        const consumed = mg.map(() => false);
+        const priceOf = (lb: Lb | undefined) => roundTick(live(lb) ? lb.y : NaN);
+        for (let a = 0; a < mg.length - 1; a++) {
+          if (consumed[a]) continue;
+          let txt = mg[a].txt;
+          let tip = mg[a].tip;
+          let merged = false;
+          for (let b = a + 1; b < mg.length; b++) {
+            // Pine `==`: equal within 1e-10, false with na
+            if (!consumed[b] && Math.abs(priceOf(mg[a].lb) - priceOf(mg[b].lb)) <= 1e-10) {
+              merged = true;
+              consumed[b] = true;
+              txt += ' / ' + mg[b].txt;
+              tip += '\n\n' + mg[b].tip;
+              setText(mg[b].lb, '', '');
+            }
+          }
+          if (merged) setText(mg[a].lb, txt, tip);
+        }
+      }
+
+      // Day of week labels: plotchar with an empty character and the day name as text
+      const dowTime = cfg.dow_xloc === 'Midday' ? t - (timeframe.in_seconds('D') / 2) * 1000 : t;
+      const dow = pineTime.dayofweek(dowTime, tz);
+      const newDay = i > 0 && dow !== dowPrev;
+      dowPrev = dow;
+      if (cfg.dow_labels && isIntraday && newDay && !((dow === 1 || dow === 7) && cfg.dow_hide_wknd)) {
+        // ids: the original's plotchar() per day, char0 (Sunday) .. char6 (Saturday)
+        s.markers.push({
+          time: bar.time, position: cfg.dow_yloc === 'Top' ? 'top' : 'bottom', shape: 'square', color: NA_COLOR,
+          text: DAY_NAMES[dow - 1], textColor: chartFg, id: `char${dow - 1}`,
+        });
+      }
+
+      // Timestamps
+      if (cfg.show_timestamps && tfOK && stampSessions.length > 0) {
+        const t1 = i === 0 ? true : lastStampPrev;
+        for (let k = 0; k < stampSessions.length; k++) {
+          const inStamp = pineTime.inSession(t, stampSessions[k], tz, barMs);
+          if (inStamp && !t1) {
+            vlLines.unshift(newLine(i, high * 1.0001, i, low, false, stampCols[k], vlStyle, cfg.vl_width, 'both'));
+            vlOwner.unshift(k);
+            if (!vUnlimited && vlOwner.filter((o) => o === k).length > (vRecent ? 1 : maxDays)) {
+              const j = vlOwner.lastIndexOf(k);
+              lines.del(vlLines[j]);
+              vlLines.splice(j, 1);
+              vlOwner.splice(j, 1);
+            }
+          }
+          if (k === stampSessions.length - 1) lastStampPrev = inStamp;
+        }
+      }
+
+      // Opening prices
+      if (cfg.show_opens && tfOK && hzs.length > 0) {
+        const tPrev = lastHzPrev;
+        for (let k = 0; k < hzs.length; k++) {
+          const h = hzs[k];
+          const inOpen = pineTime.inSession(t, h.session, tz, barMs);
+          if (inOpen && !tPrev) {
+            h.LN.unshift(newLine(i, open, i, open, false, h.col, hzStyle, cfg.hz_width));
+            h.LB.unshift(newLabel(i, open, false, h.txt, opaque(h.col), 'label_left', str.format('{0}: {1}\nDate: {2}', h.tip, open, fmtDate(t))));
+            h.CO.unshift(false);
+            if (!openUnlimited && h.LN.length > (openRecent ? 1 : maxDays)) {
+              lines.del(h.LN.pop());
+              labels.del(h.LB.pop());
+              h.CO.pop();
+            }
+          }
+          if (!inOpen && h.CO.length > 0 && !h.CO[0]) {
+            if (live(h.LN[0])) h.LN[0].x2 = i;
+            if (live(h.LB[0])) h.LB[0].x = i;
+            if (tCo) h.CO[0] = true;
+          }
+          if (k === hzs.length - 1) lastHzPrev = inOpen;
+        }
+      }
+
+      // Range levels
+      for (const kz of kzs) {
+        if (!(tfOK && kz.use && cfg.show_levels && kz.levels.length > 0)) continue;
+        if (kz.t && !kz.t1) {
+          const m = rangeValue(kz);
+          const ready = !Number.isNaN(m) && m > 0;
+          for (const l of kz.levels) {
+            l.active = ready;
+            if (!ready) continue;
+            const c = opaque(l.col);
+            const hiTxt = '+' + multText(l);
+            const loTxt = '-' + multText(l);
+            setTrack(l.hitHi, open + l.mult * m);
+            setTrack(l.hitLo, open - l.mult * m);
+            l.hiValid = true;
+            l.loValid = true;
+            l.hiLine.unshift(newLine(t, l.hitHi.price, t, l.hitHi.price, true, c, lvStyle, cfg.lv_width));
+            l.loLine.unshift(newLine(t, l.hitLo.price, t, l.hitLo.price, true, c, lvStyle, cfg.lv_width));
+            l.hiLabel.unshift(newLabel(t, l.hitHi.price, true, hiTxt, c, 'label_left', lvlTip(kz, hiTxt, l.hitHi)));
+            l.loLabel.unshift(newLabel(t, l.hitLo.price, true, loTxt, c, 'label_left', lvlTip(kz, loTxt, l.hitLo)));
+            if (l.hiLine.length > maxDays) {
+              lines.del(l.hiLine.pop());
+              lines.del(l.loLine.pop());
+              labels.del(l.hiLabel.pop());
+              labels.del(l.loLabel.pop());
+            }
+          }
+        }
+        if (kz.t) {
+          for (const l of kz.levels) {
+            if (!l.active) continue;
+            if (live(l.hiLine[0])) l.hiLine[0].x2 = t;
+            if (live(l.loLine[0])) l.loLine[0].x2 = t;
+            if (live(l.hiLabel[0])) l.hiLabel[0].x = t;
+            if (live(l.loLabel[0])) l.loLabel[0].x = t;
+            if (l.hiValid && high >= l.hitHi.price) {
+              l.hiValid = false;
+              l.hitHi.success += 1;
+              l.hitHi.hitLevel = true;
+              l.hitHi.history[0] = true;
+              if (live(l.hiLabel[0])) l.hiLabel[0].tooltip = lvlTip(kz, '+' + multText(l), l.hitHi);
+            }
+            if (l.loValid && low <= l.hitLo.price) {
+              l.loValid = false;
+              l.hitLo.success += 1;
+              l.hitLo.hitLevel = true;
+              l.hitLo.history[0] = true;
+              if (live(l.loLabel[0])) l.loLabel[0].tooltip = lvlTip(kz, '-' + multText(l), l.hitLo);
+            }
+            if (tCo) {
+              l.active = false;
+              l.hiValid = false;
+              l.loValid = false;
+            }
+          }
+        }
+      }
+
+      // Data table and input warnings (last bar)
+      if (last) {
+        const statsPivots = cfg.show_pivot_stats && showPivots;
+        const statsDwm = cfg.show_dwm_stats && (cfg.dhl || cfg.whl || cfg.mhl);
+        const statsLevels = cfg.show_level_stats && cfg.show_levels;
+        const lastInstances = (B: boolean[]) => {
+          let txt = '';
+          const len = Math.min(B.length, lookback) - 1;
+          if (B.length > 0) {
+            for (let k = 0; k <= len; k++) {
+              txt += B[len - k] ? T_TXT : F_TXT;
+              if ((k + 1) % 10 === 0) txt += '\n';
+            }
+          }
+          return txt.trim();
+        };
+        const pct = (v: number) => str.format('{0,number,percent}', v);
+        if (cfg.show_data) {
+          const cells = new Map<string, TableCellData>();
+          const cell = (column: number, row: number, text: string, bg?: string, tooltip?: string) => {
+            cells.set(`${column},${row}`, {
+              row, column, text, textSize: dataSize, textColor: chartFg,
+              ...(bg !== undefined ? { bgColor: bg } : {}), ...(tooltip !== undefined ? { tooltip } : {}),
+            });
+          };
+          let c = 1;
+          cell(c, 0, 'Range');
+          c += 1;
+          if (statsPivots || statsDwm) {
+            cell(c, 0, 'High');
+            c += 1;
+            cell(c, 0, 'Low');
+            c += 1;
+          }
+          if (statsLevels) {
+            for (const l of kzs[0].levels) {
+              if (c < 20) {
+                cell(c, 0, '±' + multText(l));
+                c += 1;
+              }
+            }
+          }
+          kzs.forEach((kz, k) => {
+            const row = k + 1;
+            if (!(kz.use && kz.box.length > 0)) return;
+            let col = 0;
+            const avg = roundTick(rangeValue(kz));
+            const ratio = kz.rangeCurrent / avg;
+            cell(col, row, kz.title, kz.kzColor);
+            col += 1;
+            const rangeTip = Number.isNaN(avg)
+              ? str.format('Current range is {0,number}\n\nNot enough completed sessions to calculate the {1} yet', kz.rangeCurrent, measurement)
+              : str.format('Current range is {0,number}, or {1,number,percent} of the {2} ({3,number}) calculated using the last {4} sessions\n\nA colored cell indicates that the current day has exceeded the measured value', kz.rangeCurrent, ratio, measurement, avg, lookback);
+            cell(col, row, str.format('{0,number}', kz.rangeCurrent), ratio >= 1.0 ? kz.kzColor : undefined, rangeTip);
+            col += 1;
+            const stat = (column: number, T: Track) => {
+              if (T.total > 0) {
+                cell(column, row, pct(T.success / T.total), T.hitLevel ? kz.kzColor : undefined, str.format(
+                  '{0,number,percent} hit rate over {1} sessions (counted after each session ends), dating back to {2}\n\nLast {3} events (least to most recent):\n{4}',
+                  T.success / T.total, T.total, fmtDate(kz.startTime[kz.startTime.length - 1]), lookback, lastInstances(T.history)));
+              } else cell(column, row, '-');
+            };
+            if (statsPivots) {
+              stat(col, kz.hitHi);
+              col += 1;
+              stat(col, kz.hitLo);
+              col += 1;
+            } else if (statsDwm) col += 2;
+            if (statsLevels) {
+              for (const l of kz.levels) {
+                if (col >= 20) continue;
+                if (l.hitHi.total > 0) {
+                  cell(col, row, str.format('{0,number,percent}\n{1,number,percent}', l.hitHi.success / l.hitHi.total, l.hitLo.success / l.hitLo.total),
+                    l.hitHi.hitLevel || l.hitLo.hitLevel ? kz.kzColor : undefined, str.format(
+                      '+{0}: {1,number,percent} hit rate over {2} sessions\nLast {3} events (least to most recent):\n{4}\n\n-{0}: {5,number,percent} hit rate over {6} sessions\nLast {3} events (least to most recent):\n{7}\n\nA colored cell indicates that a level was hit during the current session',
+                      multText(l), l.hitHi.success / l.hitHi.total, l.hitHi.total, lookback, lastInstances(l.hitHi.history),
+                      l.hitLo.success / l.hitLo.total, l.hitLo.total, lastInstances(l.hitLo.history)));
+                } else cell(col, row, '-');
+                col += 1;
+              }
+            }
+          });
+          dwmSets.forEach((d, k) => {
+            const row = 7 + k;
+            const hl = d.data;
+            if (!(cfg.show_dwm_stats && d.hl && hl.trackHi.total > 0)) return;
+            const col = String(color.new(d.col, DEFAULT_TRANSPARENCY));
+            const period = d.period.toLowerCase();
+            const curRange = d.info.h - d.info.l;
+            const prevRange = d.info.ph - d.info.pl;
+            const ratio = curRange / prevRange;
+            cell(0, row, 'P' + d.tf, col);
+            cell(1, row, str.format('{0,number}', curRange), ratio >= 1.0 ? col : undefined, str.format(
+              'Current range is {0,number}, or {1,number,percent} of the previous {2} range ({3,number})\n\nA colored cell indicates that the current {2} has exceeded the previous {2} range',
+              curRange, ratio, period, prevRange));
+            const stat = (column: number, T: Track, txt: string) => {
+              cell(column, row, pct(T.success / T.total), T.hitLevel ? col : undefined, str.format(
+                '{0}: {1,number,percent} hit rate over {2} {3}\n\nLast {4} events (least to most recent):\n{5}',
+                txt, T.success / T.total, T.total, period + 's', lookback, lastInstances(T.history)));
+            };
+            stat(2, hl.trackHi, 'P' + d.tf + 'H');
+            stat(3, hl.trackLo, 'P' + d.tf + 'L');
+          });
+          s.tables.push({
+            position: cfg.data_loc.toLowerCase().replace(' ', '_') as TablePosition, columns: 20, rows: 20, cells: [...cells.values()],
+            bgColor: chartBg, frameColor: chartFg, frameWidth: 2, borderColor: chartFg, borderWidth: 1,
+          });
+        }
+        if (badOpens + badStamps + badLevels > 0) {
+          let msg = 'Some settings could not be read:';
+          const entries = (count: number) => (count === 1 ? 'entry' : 'entries');
+          if (badOpens > 0) msg += str.format('\n- {0} Opening Prices {1}', badOpens, entries(badOpens));
+          if (badStamps > 0) msg += str.format('\n- {0} Timestamps {1}', badStamps, entries(badStamps));
+          if (badLevels > 0) msg += str.format('\n- {0} Range Levels {1}', badLevels, entries(badLevels));
+          msg += "\n\nExpected formats (one per line):\nOpening Prices: 'Time, Color, Label' - ex. '0930, red, NY Open'\nTimestamps: 'Time, Color' - ex. '1200, black'\nRange Levels: 'Multiplier, Color' - ex. '1.5, purple'\n\nColor and label fields are optional. Times accept 0930, 930, or 09:30. Lines starting with '//' are skipped";
+          s.tables.push({
+            position: 'bottom_right', columns: 1, rows: 1,
+            cells: [{ row: 0, column: 0, text: '⚠ Settings', textSize: 'small', textColor: chartFg, tooltip: msg }],
+            bgColor: String(color.new(color.red, 80)), frameColor: chartFg, frameWidth: 1, borderColor: chartFg, borderWidth: 1,
+          });
+        }
+      }
+      v.lastStampPrev = lastStampPrev;
+      v.lastHzPrev = lastHzPrev;
+      v.dowPrev = dowPrev;
+    },
+    result(s, bars) {
+      const { lines, boxes, labels } = s.vars;
+      // Output (drawings with an na coordinate are not drawn); a time x is the time (ms) of a bar
+      const X = (x: number, byTime: boolean) => (byTime ? (ms ? x : x / 1000) : bars[x].time);
+      const drawn = (...v: number[]) => v.every((x) => !Number.isNaN(x));
+      const outLines: LineDrawingData[] = lines.list.filter((l) => drawn(l.x1, l.y1, l.x2, l.y2)).map((l) => ({
+        time1: X(l.x1, l.byTime), price1: l.y1, time2: X(l.x2, l.byTime), price2: l.y2, color: l.color, width: l.width, style: l.style,
+        ...(l.extend ? { extend: l.extend } : {}),
+      }));
+      const outBoxes: BoxData[] = boxes.list.filter((b) => drawn(b.left, b.top, b.right, b.bottom)).map((b) => ({
+        time1: X(b.left, true), price1: b.top, time2: X(b.right, true), price2: b.bottom, borderColor: b.border, bgColor: b.bg,
+      }));
+      const outLabels: LabelData[] = labels.list.filter((l) => drawn(l.x, l.y)).map((l) => ({
+        time: X(l.x, l.byTime), price: l.y, text: l.text, color: l.color, style: l.style, textColor: l.textColor, size: l.size,
+        ...(l.tooltip !== '' ? { tooltip: l.tooltip } : {}),
+      }));
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        lines: outLines,
+        boxes: outBoxes,
+        labels: outLabels,
+        tables: s.tables.slice(),
+        markers: s.markers.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
 }
 
-export const IctKillzonesPivotsTfo = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IctKillzonesPivotsTfoInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IctKillzonesPivotsTfoInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const IctKillzonesPivotsTfo = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hasAlertFunction };

@@ -16,6 +16,8 @@
  */
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SuperBandsInputs {
   /** Trail smoothing period of the bullish leg */
@@ -128,36 +130,43 @@ const withTransp = (c: PineColor, t: number): string => String(color.new((c ?? '
 
 /**
  * superbands(direction, atr_period, multiplier, smoothing, color_lo, color_hi): trail price and colour of one leg
- * (its own `var` SuperTrend object, ATR and trend_atr state).
+ * (its own `var` SuperTrend object, ATR and trend_atr state), one bar at a time. A class so that a live run can copy
+ * its state at the end of the last confirmed bar.
  */
-function superbands(
-  bars: Bar[], direction: 'up' | 'down', atrPeriod: number, multiplier: number, smoothing: number,
-  colorLo: string, colorHi: string,
-): { price: number[]; col: PineColor[] } {
-  const n = bars.length;
-  const price: number[] = new Array(n);
-  const col: PineColor[] = new Array(n);
-
+class Leg {
   // var SuperTrend trend = SuperTrend.new()
-  let stDirection: Direction = 'nan';
-  let stLastDirection: Direction = 'nan';
-  let current = NaN;
-  let last = NaN;
-  let active = false;
+  stDirection: Direction = 'nan';
+  stLastDirection: Direction = 'nan';
+  current = NaN;
+  last = NaN;
+  active = false;
+  trendAtr = 0; // var float trend_atr = 0
+  rma = NaN;
+  /** The trail price and colour of the last bar calculated */
+  price = NaN;
+  col: PineColor = null;
 
-  let trendAtr = 0; // var float trend_atr = 0
-  const alphaT = 2 / (smoothing * 2 + 1);
-  const betaT = 1 - alphaT;
-  // rma(tr(), atr_period): var float rma = nz(source); rma := source * beta + nz(rma[1], rma) * alpha
-  const rmaBeta = 1 / atrPeriod;
-  const rmaAlpha = 1 - rmaBeta;
-  let rma = NaN;
-  const gradMin = direction === 'up' ? 0 : -65;
-  const gradMax = direction === 'up' ? 65 : 0;
-  const stAlpha = 2 / (1 + smoothing);
-  const stBeta = 1 - stAlpha;
+  constructor(
+    private readonly direction: 'up' | 'down', private readonly atrPeriod: number, private readonly multiplier: number,
+    private readonly smoothing: number, private readonly colorLo: string, private readonly colorHi: string,
+  ) {}
 
-  for (let i = 0; i < n; i++) {
+  clone(): Leg {
+    return Object.assign(new Leg(this.direction, this.atrPeriod, this.multiplier, this.smoothing, this.colorLo, this.colorHi), this);
+  }
+
+  step(bars: Bar[], i: number): void {
+    const { direction, atrPeriod, multiplier, smoothing, colorLo, colorHi } = this;
+    const alphaT = 2 / (smoothing * 2 + 1);
+    const betaT = 1 - alphaT;
+    // rma(tr(), atr_period): var float rma = nz(source); rma := source * beta + nz(rma[1], rma) * alpha
+    const rmaBeta = 1 / atrPeriod;
+    const rmaAlpha = 1 - rmaBeta;
+    const gradMin = direction === 'up' ? 0 : -65;
+    const gradMax = direction === 'up' ? 65 : 0;
+    const stAlpha = 2 / (1 + smoothing);
+    const stBeta = 1 - stAlpha;
+
     const { high, low, open, close } = bars[i];
     const prevClose = i > 0 ? bars[i - 1].close : NaN;
     const tr = Math.max(
@@ -165,116 +174,173 @@ function superbands(
       Math.abs(high - (isNaN(prevClose) ? Math.max(open, close) : prevClose)),
       Math.abs(low - (isNaN(prevClose) ? Math.min(open, close) : prevClose)),
     );
-    if (i === 0) rma = isNaN(tr) ? 0 : tr;
-    rma = tr * rmaBeta + rma * rmaAlpha;
-    const legAtr = rma * multiplier;
+    if (i === 0) this.rma = isNaN(tr) ? 0 : tr;
+    this.rma = tr * rmaBeta + this.rma * rmaAlpha;
+    const legAtr = this.rma * multiplier;
 
     // update_state(direction)
-    if (active && stDirection === direction) {
-      const ref = isNaN(last) ? close : last;
-      active = direction === 'up' ? !lt(close, ref) : !gt(close, ref);
-      if (!active) {
+    if (this.active && this.stDirection === direction) {
+      const ref = isNaN(this.last) ? close : this.last;
+      this.active = direction === 'up' ? !lt(close, ref) : !gt(close, ref);
+      if (!this.active) {
         // reset()
-        stDirection = 'nan';
-        last = NaN;
-        current = NaN;
+        this.stDirection = 'nan';
+        this.last = NaN;
+        this.current = NaN;
       }
     }
     // update_last_direction()
-    stLastDirection = stDirection;
+    this.stLastDirection = this.stDirection;
     // update_direction(direction)
-    if (!active) stDirection = direction;
+    if (!this.active) this.stDirection = direction;
     // check_new()
-    if (stLastDirection !== stDirection && !active) active = true;
+    if (this.stLastDirection !== this.stDirection && !this.active) this.active = true;
     // add_new_point(atr, period)
-    if (active) {
-      let trend = stDirection === 'up'
+    const current = this.current;
+    if (this.active) {
+      let trend = this.stDirection === 'up'
         ? Math.max(low - legAtr, isNaN(current) ? low - legAtr : current)
-        : stDirection === 'down'
+        : this.stDirection === 'down'
           ? Math.min(high + legAtr, isNaN(current) ? high + legAtr : current)
           : NaN;
       trend = trend * stAlpha + (isNaN(current) ? trend : current) * stBeta;
-      last = isNaN(current) ? trend : current;
-      current = trend;
+      this.last = isNaN(current) ? trend : current;
+      this.current = trend;
     }
 
-    const delta = current - last;
-    if (!isNaN(delta)) trendAtr = Math.abs(delta) * alphaT + trendAtr * betaT;
+    const delta = this.current - this.last;
+    if (!isNaN(delta)) this.trendAtr = Math.abs(delta) * alphaT + this.trendAtr * betaT;
     // to_oscilator(fixnan(nz(delta)), trend_atr): x / 0 is na
     const d = isNaN(delta) ? 0 : delta;
-    const angle = trendAtr === 0 ? NaN : ((Math.atan(d / trendAtr) * 180) / Math.PI) * (10 / 9);
-    col[i] = gradient(angle, gradMin, gradMax, colorLo, colorHi);
-    price[i] = current;
+    const angle = this.trendAtr === 0 ? NaN : ((Math.atan(d / this.trendAtr) * 180) / Math.PI) * (10 / 9);
+    this.col = gradient(angle, gradMin, gradMax, colorLo, colorHi);
+    this.price = this.current;
   }
-  return { price, col };
+}
+
+type Point = { time: number; value: number; color?: string };
+
+interface SuperBandsVars {
+  up: Leg;
+  down: Leg;
+}
+
+interface SuperBandsRun extends BarRunState<SuperBandsVars> {
+  center: number[];
+  plots: Point[][];
+  upTop: number[];
+  upBottom: number[];
+  upTopColor: string[];
+  upBottomColor: string[];
+  downTop: number[];
+  downBottom: number[];
+  downTopColor: string[];
+  downBottomColor: string[];
+}
+
+function study(inputs: Partial<SuperBandsInputs>): BarStudy<SuperBandsRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const shadow = '#0000001a';
+  return {
+    init() {
+      const s: SuperBandsRun = {
+        center: [], plots: Array.from({ length: 9 }, () => []),
+        upTop: [], upBottom: [], upTopColor: [], upBottomColor: [],
+        downTop: [], downBottom: [], downTopColor: [], downBottomColor: [],
+        steps: [],
+        vars: {
+          up: new Leg('up', cfg.bullAtrPeriod, cfg.bullMultiplier, cfg.bullSmoothing, cfg.bullDownColor, cfg.bullUpColor),
+          down: new Leg('down', cfg.bearAtrPeriod, cfg.bearMultiplier, cfg.bearSmoothing, cfg.bearDownColor, cfg.bearUpColor),
+        },
+        lists: [], series: [],
+      };
+      s.series = [
+        s.center, ...s.plots, s.upTop, s.upBottom, s.upTopColor, s.upBottomColor, s.downTop, s.downBottom,
+        s.downTopColor, s.downBottomColor,
+      ];
+      return s;
+    },
+    copyVars: (v) => ({ up: v.up.clone(), down: v.down.clone() }),
+    bar(s, i, bars) {
+      const { up, down } = s.vars;
+      up.step(bars, i);
+      down.step(bars, i);
+      const b = bars[i];
+      const time = b.time;
+
+      const center = (up.price + down.price) / 2;
+      s.center[i] = center;
+      const prev = i > 0 && !isNaN(s.center[i - 1]) ? s.center[i - 1] : center;
+      const centerDelta = center - prev;
+      const centerColor = gt(centerDelta, 0) ? up.col
+        : lt(centerDelta, 0) ? down.col
+          : gradient(0.5, 0, 1, down.col, up.col);
+
+      const hl2 = (b.high + b.low) / 2;
+      const p = s.plots;
+      p[0][i] = { time, value: center, color: centerColor ?? 'transparent' };
+      p[1][i] = { time, value: up.price, color: withTransp(up.col, 80) };
+      p[2][i] = { time, value: down.price, color: withTransp(down.col, 80) };
+      p[3][i] = { time, value: up.price, color: withTransp(up.col, 60) };
+      p[4][i] = { time, value: down.price, color: withTransp(down.col, 60) };
+      p[5][i] = { time, value: up.price, color: withTransp(up.col, 5) };
+      p[6][i] = { time, value: down.price, color: withTransp(down.col, 5) };
+      // plot(not na(down_price) ? hl2 : na, "High", ...), plot(not na(up_price) ? hl2 : na, "Low", ...)
+      p[7][i] = { time, value: isNaN(down.price) ? NaN : hl2, color: shadow };
+      p[8][i] = { time, value: isNaN(up.price) ? NaN : hl2, color: shadow };
+
+      // fill(up_p, low_p, high, up_price, color.new(bull_up_color, bull_end_alpha), color.new(up_trend_color, bull_start_alpha))
+      s.upTop[i] = b.high;
+      s.upBottom[i] = up.price;
+      s.upTopColor[i] = withTransp(cfg.bullUpColor, cfg.bullEndAlpha);
+      s.upBottomColor[i] = withTransp(up.col, cfg.bullStartAlpha);
+      // fill(down_p, high_p, down_price, low, color.new(down_trend_color, bear_start_alpha), color.new(bear_down_color, bear_end_alpha))
+      s.downTop[i] = down.price;
+      s.downBottom[i] = b.low;
+      s.downTopColor[i] = withTransp(down.col, cfg.bearStartAlpha);
+      s.downBottomColor[i] = withTransp(cfg.bearDownColor, cfg.bearEndAlpha);
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(), plot6: p[6].slice(), plot7: p[7].slice(), plot8: p[8].slice(),
+        },
+        fills: [
+          {
+            plot1: 'plot5', plot2: 'plot8',
+            gradient: {
+              topValue: s.upTop.slice(), bottomValue: s.upBottom.slice(),
+              topColor: s.upTopColor.slice(), bottomColor: s.upBottomColor.slice(),
+            },
+          },
+          {
+            plot1: 'plot6', plot2: 'plot7',
+            gradient: {
+              topValue: s.downTop.slice(), bottomValue: s.downBottom.slice(),
+              topColor: s.downTopColor.slice(), bottomColor: s.downBottomColor.slice(),
+            },
+          },
+        ],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SuperBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(bars: Bar[], inputs: Partial<SuperBandsInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const up = superbands(bars, 'up', cfg.bullAtrPeriod, cfg.bullMultiplier, cfg.bullSmoothing,
-    cfg.bullDownColor, cfg.bullUpColor);
-  const down = superbands(bars, 'down', cfg.bearAtrPeriod, cfg.bearMultiplier, cfg.bearSmoothing,
-    cfg.bearDownColor, cfg.bearUpColor);
-
-  const center: number[] = new Array(n);
-  const centerColor: PineColor[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    center[i] = (up.price[i] + down.price[i]) / 2;
-    const prev = i > 0 && !isNaN(center[i - 1]) ? center[i - 1] : center[i];
-    const centerDelta = center[i] - prev;
-    centerColor[i] = gt(centerDelta, 0) ? up.col[i]
-      : lt(centerDelta, 0) ? down.col[i]
-        : gradient(0.5, 0, 1, down.col[i], up.col[i]);
-  }
-
-  const t = (i: number) => bars[i].time;
-  const line = (v: number[], c: (i: number) => string) => bars.map((_b, i) => ({ time: t(i), value: v[i], color: c(i) }));
-  const hl2 = bars.map((b) => (b.high + b.low) / 2);
-  const shadow = '#0000001a';
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(center, (i) => centerColor[i] ?? 'transparent'),
-      plot1: line(up.price, (i) => withTransp(up.col[i], 80)),
-      plot2: line(down.price, (i) => withTransp(down.col[i], 80)),
-      plot3: line(up.price, (i) => withTransp(up.col[i], 60)),
-      plot4: line(down.price, (i) => withTransp(down.col[i], 60)),
-      plot5: line(up.price, (i) => withTransp(up.col[i], 5)),
-      plot6: line(down.price, (i) => withTransp(down.col[i], 5)),
-      // plot(not na(down_price) ? hl2 : na, "High", ...), plot(not na(up_price) ? hl2 : na, "Low", ...)
-      plot7: line(down.price.map((p, i) => (isNaN(p) ? NaN : hl2[i])), () => shadow),
-      plot8: line(up.price.map((p, i) => (isNaN(p) ? NaN : hl2[i])), () => shadow),
-    },
-    fills: [
-      // fill(up_p, low_p, high, up_price, color.new(bull_up_color, bull_end_alpha), color.new(up_trend_color, bull_start_alpha))
-      {
-        plot1: 'plot5', plot2: 'plot8',
-        gradient: {
-          topValue: bars.map((b) => b.high),
-          bottomValue: up.price.slice(),
-          topColor: bars.map(() => withTransp(cfg.bullUpColor, cfg.bullEndAlpha)),
-          bottomColor: up.col.map((c) => withTransp(c, cfg.bullStartAlpha)),
-        },
-      },
-      // fill(down_p, high_p, down_price, low, color.new(down_trend_color, bear_start_alpha), color.new(bear_down_color, bear_end_alpha))
-      {
-        plot1: 'plot6', plot2: 'plot7',
-        gradient: {
-          topValue: down.price.slice(),
-          bottomValue: bars.map((b) => b.low),
-          topColor: down.col.map((c) => withTransp(c, cfg.bearStartAlpha)),
-          bottomColor: bars.map(() => withTransp(cfg.bearDownColor, cfg.bearEndAlpha)),
-        },
-      },
-    ],
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const SuperBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

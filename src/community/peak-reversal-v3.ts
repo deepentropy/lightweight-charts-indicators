@@ -15,8 +15,10 @@
  * Original notice: © Zettt 2021
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PeakReversalV3Inputs {
   /** MA type of the Keltner basis */
@@ -128,136 +130,176 @@ const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PeakReversalV3Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+
+interface PeakVars {
+  /** ta.barssince(firstFreeBarUp) / ta.barssince(firstFreeBarDown) */
+  numFreeBarsUp: number;
+  numFreeBarsDown: number;
+  /** longCross[1] / shortCross[1] */
+  prevLongCross: boolean;
+  prevShortCross: boolean;
+}
+
+interface PeakRun extends BarRunState<PeakVars> {
+  basis: { step(v: number, volume: number): number; commit(): void } | null;
+  atr: ReturnType<typeof taStep.atr>;
+  rank: ReturnType<typeof taStep.percentrank>;
+  plots: Point[][];
+  innerFill: string[];
+  outerFill: string[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<PeakReversalV3Inputs>): BarStudy<PeakRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
   const len = cfg.keltnerEMAlength;
-
-  // Keltner basis: only the branch of the selected MA type runs
-  let basis: number[];
-  switch (cfg.maType) {
-    case 'EMA': basis = A(ta.ema(close, len)); break;
-    case 'SMA': basis = A(ta.sma(close, len)); break;
-    case 'RMA': basis = A(ta.rma(close, len)); break;
-    case 'VMA': basis = A(ta.vwma(close, len, S(bars.map((b) => b.volume ?? NaN)))); break;
-    case 'HMA':
-      if (len === 1 && n > 0) {
-        throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
-      }
-      basis = A(ta.hma(close, len));
-      break;
-    default: basis = new Array(n).fill(NaN);
-  }
-  const atrRange = A(ta.atr(bars, cfg.atrLength));
-  const upInner = basis.map((v, i) => v + atrRange[i] * cfg.innerBandMultiplier);
-  const downInner = basis.map((v, i) => v - atrRange[i] * cfg.innerBandMultiplier);
-  const upOuter = basis.map((v, i) => v + atrRange[i] * cfg.outerBandMultiplier);
-  const downOuter = basis.map((v, i) => v - atrRange[i] * cfg.outerBandMultiplier);
   const inner = cfg.signalBand === 'Inner';
-
-  // Squeeze: percent rank of the band width / basis (plain division)
-  const bandwidth = basis.map((v, i) => (inner ? (upInner[i] - downInner[i]) / v : (upOuter[i] - downOuter[i]) / v));
-  const bandwidthRank = A(ta.percentrank(S(bandwidth), cfg.squeezeLength));
   const startColor = String(color.new(color.black, 100));
-  const innerFill: string[] = new Array(n);
-  const outerFill: string[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const inSqueeze = le(bandwidthRank[i], cfg.squeezeThresh);
-    const squeezeColor = color.from_gradient(bandwidthRank[i], 0, cfg.squeezeThresh, cfg.squeezeColorInput, startColor);
-    innerFill[i] = cfg.showSqueeze && inSqueeze && !cfg.showOuterBand ? squeezeColor : 'transparent';
-    outerFill[i] = cfg.showSqueeze && inSqueeze && cfg.showOuterBand ? squeezeColor : 'transparent';
-  }
-
-  const upBand = inner ? upInner : upOuter;
-  const downBand = inner ? downInner : downOuter;
   const upFaint = String(color.new(cfg.upMomentumColor, 80));
   const downFaint = String(color.new(cfg.downMomentumColor, 80));
   const upSignal = String(color.new(cfg.upMomentumColor, 50));
   const downSignal = String(color.new(cfg.downMomentumColor, 50));
 
-  const barColors: BarColorData[] = [];
-  const markers: MarkerData[] = [];
-  let numFreeBarsUp = NaN; // ta.barssince(firstFreeBarUp)
-  let numFreeBarsDown = NaN; // ta.barssince(firstFreeBarDown)
-  let prevLongCross = false;
-  let prevShortCross = false;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const u = upBand[i];
-    const d = downBand[i];
-
-    // Mean deviations
-    const firstFreeBarUp = le(b.high, u) && le(b.close, u);
-    numFreeBarsUp = firstFreeBarUp ? 0 : isNaN(numFreeBarsUp) ? NaN : numFreeBarsUp + 1;
-    const colorBarUp = color.from_gradient(numFreeBarsUp, 0, cfg.maxMomentumBars, upFaint, cfg.upMomentumColor);
-    const firstFreeBarDown = ge(b.low, d) && ge(b.close, d);
-    numFreeBarsDown = firstFreeBarDown ? 0 : isNaN(numFreeBarsDown) ? NaN : numFreeBarsDown + 1;
-    const colorBarDown = color.from_gradient(numFreeBarsDown, 0, cfg.maxMomentumBars, downFaint, cfg.downMomentumColor);
-    // barcolor(Mean Deviations Up) then barcolor(Mean Deviations Down): the later non-na colour is drawn
-    const up = cfg.showDeviations && gt(numFreeBarsUp, 0) ? colorBarUp : null;
-    const down = cfg.showDeviations && gt(numFreeBarsDown, 0) ? colorBarDown : null;
-    if (up) barColors.push({ id: 'barcolor0', time: b.time, color: up });
-    if (down) barColors.push({ id: 'barcolor1', time: b.time, color: down });
-
-    // Band crosses (every historical bar is confirmed)
-    const longCrossCandle = cfg.signalSource === 'Wick' ? b.high : b.close;
-    const shortCrossCandle = cfg.signalSource === 'Wick' ? b.low : b.close;
-    const longCross = ge(longCrossCandle, u);
-    const shortCross = le(shortCrossCandle, d);
-    const showLongCross = cfg.showOnlyFirstSignal ? longCross && !prevLongCross : longCross;
-    const showShortCross = cfg.showOnlyFirstSignal ? shortCross && !prevShortCross : shortCross;
-    prevLongCross = longCross;
-    prevShortCross = shortCross;
-    if (cfg.showBandCross && showLongCross) {
-      markers.push({ id: 'shape0', time: b.time, position: 'aboveBar', shape: 'triangleDown', color: upSignal, size: 'tiny' });
+  // Keltner basis: only the branch of the selected MA type runs
+  const basisStep = (): PeakRun['basis'] => {
+    switch (cfg.maType) {
+      case 'EMA': { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMA': { const m = taStep.sma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      case 'RMA': { const m = taStep.rma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'VMA': { const m = taStep.vwma(len); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+      case 'HMA': {
+        if (len === 1) return null;
+        const m = taStep.hma(len);
+        return { step: (v) => m.step(v), commit: () => m.commit() };
+      }
+      default: return { step: () => NaN, commit: () => {} };
     }
-    if (cfg.showBandCross && showShortCross) {
-      markers.push({ id: 'shape1', time: b.time, position: 'belowBar', shape: 'triangleUp', color: downSignal, size: 'tiny' });
-    }
-
-    // Free bars; the Pine source uses the inner lower band for shortFreeBar with both signal bands
-    const longFreeBar = ge(b.low, u);
-    const shortFreeBar = le(b.high, downInner[i]);
-    // plotchar('★', size.tiny): the character as text in the plotchar colour
-    if (cfg.showFreeBars && longFreeBar) {
-      markers.push({ id: 'char2', time: b.time, position: 'aboveBar', shape: 'circle', color: 'transparent', text: '★',
-        textColor: upSignal, size: 'tiny' });
-    }
-    if (cfg.showFreeBars && shortFreeBar) {
-      markers.push({ id: 'char3', time: b.time, position: 'belowBar', shape: 'circle', color: 'transparent', text: '★',
-        textColor: downSignal, size: 'tiny' });
-    }
-  }
-
-  const line = (on: boolean, values: number[], c: string) =>
-    bars.map((b, i) => ({ time: b.time, value: on ? values[i] : NaN, color: c }));
+  };
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(cfg.showMeanEMA, basis, MEAN_COLOR),
-      plot1: line(cfg.showInnerBand, upInner, INNER_COLOR),
-      plot2: line(cfg.showInnerBand, downInner, INNER_COLOR),
-      plot3: line(cfg.showOuterBand, upOuter, OUTER_COLOR),
-      plot4: line(cfg.showOuterBand, downOuter, OUTER_COLOR),
+    init() {
+      const s: PeakRun = {
+        basis: basisStep(), atr: taStep.atr(cfg.atrLength), rank: taStep.percentrank(cfg.squeezeLength),
+        plots: Array.from({ length: 5 }, () => []), innerFill: [], outerFill: [], markers: [], barColors: [],
+        steps: [],
+        vars: { numFreeBarsUp: NaN, numFreeBarsDown: NaN, prevLongCross: false, prevShortCross: false },
+        lists: [], series: [],
+      };
+      s.steps = [...(s.basis ? [s.basis] : []), s.atr, s.rank];
+      s.lists = [s.markers, s.barColors];
+      s.series = [...s.plots, s.innerFill, s.outerFill];
+      return s;
     },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot2', options: { title: 'Inner Band Squeeze Fill' }, colors: innerFill },
-      { plot1: 'plot3', plot2: 'plot4', options: { title: 'Outer Band Squeeze Fill' }, colors: outerFill },
-    ],
-    markers,
-    barColors,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      if (!s.basis) throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
+      const basis = s.basis.step(b.close, b.volume ?? NaN);
+      const atrRange = s.atr.step(b.high, b.low, b.close);
+      const upInner = basis + atrRange * cfg.innerBandMultiplier;
+      const downInner = basis - atrRange * cfg.innerBandMultiplier;
+      const upOuter = basis + atrRange * cfg.outerBandMultiplier;
+      const downOuter = basis - atrRange * cfg.outerBandMultiplier;
+
+      // Squeeze: percent rank of the band width / basis (plain division)
+      const bandwidth = inner ? (upInner - downInner) / basis : (upOuter - downOuter) / basis;
+      const bandwidthRank = s.rank.step(bandwidth);
+      const inSqueeze = le(bandwidthRank, cfg.squeezeThresh);
+      const squeezeColor = color.from_gradient(bandwidthRank, 0, cfg.squeezeThresh, cfg.squeezeColorInput, startColor);
+      s.innerFill[i] = cfg.showSqueeze && inSqueeze && !cfg.showOuterBand ? squeezeColor : 'transparent';
+      s.outerFill[i] = cfg.showSqueeze && inSqueeze && cfg.showOuterBand ? squeezeColor : 'transparent';
+
+      const u = inner ? upInner : upOuter;
+      const d = inner ? downInner : downOuter;
+      const v = s.vars;
+
+      // Mean deviations
+      const firstFreeBarUp = le(b.high, u) && le(b.close, u);
+      v.numFreeBarsUp = firstFreeBarUp ? 0 : isNaN(v.numFreeBarsUp) ? NaN : v.numFreeBarsUp + 1;
+      const colorBarUp = color.from_gradient(v.numFreeBarsUp, 0, cfg.maxMomentumBars, upFaint, cfg.upMomentumColor);
+      const firstFreeBarDown = ge(b.low, d) && ge(b.close, d);
+      v.numFreeBarsDown = firstFreeBarDown ? 0 : isNaN(v.numFreeBarsDown) ? NaN : v.numFreeBarsDown + 1;
+      const colorBarDown = color.from_gradient(v.numFreeBarsDown, 0, cfg.maxMomentumBars, downFaint, cfg.downMomentumColor);
+      // barcolor(Mean Deviations Up) then barcolor(Mean Deviations Down): the later non-na colour is drawn
+      const up = cfg.showDeviations && gt(v.numFreeBarsUp, 0) ? colorBarUp : null;
+      const down = cfg.showDeviations && gt(v.numFreeBarsDown, 0) ? colorBarDown : null;
+      if (up) s.barColors.push({ id: 'barcolor0', time, color: up });
+      if (down) s.barColors.push({ id: 'barcolor1', time, color: down });
+
+      // Band crosses (every historical bar is confirmed)
+      const longCrossCandle = cfg.signalSource === 'Wick' ? b.high : b.close;
+      const shortCrossCandle = cfg.signalSource === 'Wick' ? b.low : b.close;
+      const longCross = ge(longCrossCandle, u);
+      const shortCross = le(shortCrossCandle, d);
+      const showLongCross = cfg.showOnlyFirstSignal ? longCross && !v.prevLongCross : longCross;
+      const showShortCross = cfg.showOnlyFirstSignal ? shortCross && !v.prevShortCross : shortCross;
+      v.prevLongCross = longCross;
+      v.prevShortCross = shortCross;
+      if (cfg.showBandCross && showLongCross) {
+        s.markers.push({ id: 'shape0', time, position: 'aboveBar', shape: 'triangleDown', color: upSignal, size: 'tiny' });
+      }
+      if (cfg.showBandCross && showShortCross) {
+        s.markers.push({ id: 'shape1', time, position: 'belowBar', shape: 'triangleUp', color: downSignal, size: 'tiny' });
+      }
+
+      // Free bars; the Pine source uses the inner lower band for shortFreeBar with both signal bands
+      const longFreeBar = ge(b.low, u);
+      const shortFreeBar = le(b.high, downInner);
+      // plotchar('★', size.tiny): the character as text in the plotchar colour
+      if (cfg.showFreeBars && longFreeBar) {
+        s.markers.push({ id: 'char2', time, position: 'aboveBar', shape: 'circle', color: 'transparent', text: '★',
+          textColor: upSignal, size: 'tiny' });
+      }
+      if (cfg.showFreeBars && shortFreeBar) {
+        s.markers.push({ id: 'char3', time, position: 'belowBar', shape: 'circle', color: 'transparent', text: '★',
+          textColor: downSignal, size: 'tiny' });
+      }
+
+      s.plots[0][i] = { time, value: cfg.showMeanEMA ? basis : NaN, color: MEAN_COLOR };
+      s.plots[1][i] = { time, value: cfg.showInnerBand ? upInner : NaN, color: INNER_COLOR };
+      s.plots[2][i] = { time, value: cfg.showInnerBand ? downInner : NaN, color: INNER_COLOR };
+      s.plots[3][i] = { time, value: cfg.showOuterBand ? upOuter : NaN, color: OUTER_COLOR };
+      s.plots[4][i] = { time, value: cfg.showOuterBand ? downOuter : NaN, color: OUTER_COLOR };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+        },
+        fills: [
+          { plot1: 'plot1', plot2: 'plot2', options: { title: 'Inner Band Squeeze Fill' }, colors: s.innerFill.slice() },
+          { plot1: 'plot3', plot2: 'plot4', options: { title: 'Outer Band Squeeze Fill' }, colors: s.outerFill.slice() },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PeakReversalV3Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<PeakReversalV3Inputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PeakReversalV3 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

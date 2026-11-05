@@ -14,6 +14,8 @@
  */
 
 import { array, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AnchoredBollingerBandRangeInputs {
   /** Start of the range (UNIX ms, Pine input.time) */
@@ -75,69 +77,89 @@ export const metadata = {
 /** Number of bars before the current bar scanned by `for i = 0 to 1000` */
 const LOOKBACK = 1000;
 
-export function calculate(bars: Bar[], inputs: Partial<AnchoredBollingerBandRangeInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface AnchoredRun extends BarRunState<Record<string, never>> {
+  /** One list of points per plot of PLOT_SPECS */
+  plots: Point[][];
+}
+
+function study(inputs: Partial<AnchoredBollingerBandRangeInputs>): BarStudy<AnchoredRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const hi: number[][] = [[], [], [], []];
-  const lo: number[][] = [[], [], [], []];
-  const obr: number[] = new Array(n);
-  for (let k = 0; k < 4; k++) {
-    hi[k] = new Array(n);
-    lo[k] = new Array(n);
-  }
-
-  for (let b = 0; b < n; b++) {
-    const hiAr = array.new_float(0);
-    const loAr = array.new_float(0);
-    // for i = 0 to 1000: time[i] >= start_time and time[i] <= end_time (time[i] is na before the first bar)
-    for (let i = 0; i <= LOOKBACK && b - i >= 0; i++) {
-      const t = bars[b - i].time * 1000;
-      if (t >= cfg.startTime && t <= cfg.endTime) {
-        array.push(hiAr, bars[b - i].high);
-        array.push(loAr, bars[b - i].low);
-      }
-    }
-    const lastHigh = array.size(hiAr) > 0 ? array.get(hiAr, 0) : 0;
-    const lastLow = array.size(loAr) > 0 ? array.get(loAr, 0) : 0;
-    const hiSd = array.stdev(hiAr);
-    const loSd = array.stdev(loAr);
-    for (let k = 0; k < 4; k++) {
-      hi[k][b] = lastHigh + hiSd * (k + 1);
-      lo[k][b] = lastLow - loSd * (k + 1);
-    }
-    obr[b] = (array.avg(hiAr) + array.avg(loAr)) / 2;
-  }
-
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const plots: IndicatorResult['plots'] = {};
-  PLOT_SPECS.forEach((p, idx) => {
-    const src = p.side === 'hi' ? hi[p.level - 1] : p.side === 'lo' ? lo[p.level - 1] : obr;
-    const shown = p.side !== 'obr' || cfg.ma;
-    plots[`plot${idx}`] = bars.map((b, i) => ({ time: b.time, value: shown ? fin(src[i]) : NaN, color: p.color }));
-  });
-
-  // Fills between the widest glow plots (plot index = 8 * (k - 1) + 6 for High Tgt k, + 7 for Low Tgt k)
-  const hiPlot = (k: number) => `plot${8 * (k - 1) + 6}`;
-  const loPlot = (k: number) => `plot${8 * (k - 1) + 7}`;
-  const fillColors = (c: string, tr: number) =>
-    new Array<string>(n).fill(cfg.fills ? String(color.new(c, tr)) : 'transparent');
+  const hi = new Array<number>(4);
+  const lo = new Array<number>(4);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills: [
-      { plot1: hiPlot(1), plot2: hiPlot(2), colors: fillColors('#02ed12', 85) },
-      { plot1: loPlot(1), plot2: loPlot(2), colors: fillColors('#ff005d', 85) },
-      { plot1: hiPlot(2), plot2: hiPlot(3), colors: fillColors('#02ed12', 90) },
-      { plot1: loPlot(3), plot2: loPlot(2), colors: fillColors('#ff005d', 90) },
-      { plot1: hiPlot(3), plot2: hiPlot(4), colors: fillColors('#02ed12', 95) },
-      { plot1: loPlot(3), plot2: loPlot(4), colors: fillColors('#ff005d', 92) },
-    ],
+    init() {
+      const plots: Point[][] = PLOT_SPECS.map(() => []);
+      return { plots, steps: [], vars: {}, lists: [], series: plots };
+    },
+    bar(s, b, bars) {
+      const hiAr = array.new_float(0);
+      const loAr = array.new_float(0);
+      // for i = 0 to 1000: time[i] >= start_time and time[i] <= end_time (time[i] is na before the first bar)
+      for (let i = 0; i <= LOOKBACK && b - i >= 0; i++) {
+        const t = bars[b - i].time * 1000;
+        if (t >= cfg.startTime && t <= cfg.endTime) {
+          array.push(hiAr, bars[b - i].high);
+          array.push(loAr, bars[b - i].low);
+        }
+      }
+      const lastHigh = array.size(hiAr) > 0 ? array.get(hiAr, 0) : 0;
+      const lastLow = array.size(loAr) > 0 ? array.get(loAr, 0) : 0;
+      const hiSd = array.stdev(hiAr);
+      const loSd = array.stdev(loAr);
+      for (let k = 0; k < 4; k++) {
+        hi[k] = lastHigh + hiSd * (k + 1);
+        lo[k] = lastLow - loSd * (k + 1);
+      }
+      const obr = (array.avg(hiAr) + array.avg(loAr)) / 2;
+      const time = bars[b].time;
+      for (let idx = 0; idx < PLOT_SPECS.length; idx++) {
+        const p = PLOT_SPECS[idx];
+        const v = p.side === 'hi' ? hi[p.level - 1] : p.side === 'lo' ? lo[p.level - 1] : obr;
+        const shown = p.side !== 'obr' || cfg.ma;
+        s.plots[idx][b] = { time, value: shown ? fin(v) : NaN, color: p.color };
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: IndicatorResult['plots'] = {};
+      PLOT_SPECS.forEach((_p, idx) => { plots[`plot${idx}`] = s.plots[idx].slice(); });
+
+      // Fills between the widest glow plots (plot index = 8 * (k - 1) + 6 for High Tgt k, + 7 for Low Tgt k)
+      const hiPlot = (k: number) => `plot${8 * (k - 1) + 6}`;
+      const loPlot = (k: number) => `plot${8 * (k - 1) + 7}`;
+      const fillColors = (c: string, tr: number) =>
+        new Array<string>(n).fill(cfg.fills ? String(color.new(c, tr)) : 'transparent');
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          { plot1: hiPlot(1), plot2: hiPlot(2), colors: fillColors('#02ed12', 85) },
+          { plot1: loPlot(1), plot2: loPlot(2), colors: fillColors('#ff005d', 85) },
+          { plot1: hiPlot(2), plot2: hiPlot(3), colors: fillColors('#02ed12', 90) },
+          { plot1: loPlot(3), plot2: loPlot(2), colors: fillColors('#ff005d', 90) },
+          { plot1: hiPlot(3), plot2: hiPlot(4), colors: fillColors('#02ed12', 95) },
+          { plot1: loPlot(3), plot2: loPlot(4), colors: fillColors('#ff005d', 92) },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AnchoredBollingerBandRangeInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AnchoredBollingerBandRangeInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AnchoredBollingerBandRange = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

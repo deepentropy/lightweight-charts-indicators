@@ -14,11 +14,13 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type HeatmapPalette = 'Viridis' | 'Jet' | 'Plasma' | 'Custom Heat' | 'Gray' | 'Cividis' | 'Inferno' | 'Magma'
   | 'Turbo' | 'Rainbow';
@@ -121,66 +123,100 @@ function coloring(v: number, type: HeatmapPalette): string {
   return cols[cols.length - 1];
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RelativeStrengthHeatmapInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface HeatmapRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>[];
+  plots: Point[][];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RelativeStrengthHeatmapInputs>): BarStudy<HeatmapRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = Series.fromArray(bars, getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN));
-
-  // rsK = ta.rsi(src, int(math.round((len + step * k) * mult)))
-  const rs: number[][] = [];
-  for (let k = 0; k < 20; k++) {
-    const length = Math.trunc(Math.round((cfg.len + cfg.step * k) * cfg.mult));
-    rs.push(ta.rsi(src, length).toArray().map((v) => v ?? NaN));
-  }
-
+  const value = barSource(cfg.src);
   const shows = [cfg.show1, cfg.show2, cfg.show3, cfg.show4];
-  const plots: Record<string, { time: number; value: number; color?: string }[]> = {};
-  // plot(series = showG ? k + 1 : na, title = "RSI k+1", color = coloring(rsK, pal_type), style.area, histbase = k)
-  for (let k = 0; k < 20; k++) {
-    const on = shows[Math.floor(k / 5)];
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: on ? k + 1 : NaN, color: coloring(rs[k][i], cfg.palType) }));
-  }
-
-  const bullCount: number[] = new Array(n);
-  const bearCount: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    let bull = 0;
-    let bear = 0;
-    for (let k = 0; k < 20; k++) {
-      bull += gt(rs[k][i], 70) ? 1 : 0;
-      bear += lt(rs[k][i], 30) ? 1 : 0;
-    }
-    bullCount[i] = bull;
-    bearCount[i] = bear;
-  }
-  plots.plot20 = bars.map((b, i) => ({ time: b.time, value: cfg.showCount ? bullCount[i] : NaN }));
-  plots.plot21 = bars.map((b, i) => ({ time: b.time, value: cfg.showCount ? bearCount[i] : NaN }));
-
-  // bgcolor(strongBull ? color.new(coloring(rs1), 90) : na, force_overlay = true) twice, then the same for
-  // strongBear with rs20: four layers in the Pine order
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    if (bullCount[i] >= 10) {
-      const c = String(color.new(coloring(rs[0][i], cfg.palType), 90));
-      bgColors.push({ time: t, color: c, forceOverlay: true, id: 'bgcolor0' }, { time: t, color: c, forceOverlay: true, id: 'bgcolor1' });
-    }
-    if (bearCount[i] >= 10) {
-      const c = String(color.new(coloring(rs[19][i], cfg.palType), 90));
-      bgColors.push({ time: t, color: c, forceOverlay: true, id: 'bgcolor2' }, { time: t, color: c, forceOverlay: true, id: 'bgcolor3' });
-    }
-  }
-
+  // the RSI values of the bar (written in full on each bar)
+  const rs = new Array<number>(20);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    bgColors,
-    // strongBull = bullCount >= 10, strongBear = bearCount >= 10
-    alerts: alertStates(alertConditions, bars, [bullCount.map((c) => c >= 10), bearCount.map((c) => c >= 10)]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: HeatmapRun = {
+        rsi: [], plots: Array.from({ length: 22 }, () => []), bgColors: [], flags: [[], []], times: [[], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      // rsK = ta.rsi(src, int(math.round((len + step * k) * mult)))
+      for (let k = 0; k < 20; k++) {
+        const length = Math.trunc(Math.round((cfg.len + cfg.step * k) * cfg.mult));
+        s.rsi.push(taStep.rsi(length));
+      }
+      s.steps = s.rsi;
+      s.lists = [s.bgColors, ...s.times];
+      s.series = [...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const v = value(b);
+      for (let k = 0; k < 20; k++) rs[k] = s.rsi[k].step(v);
+
+      // plot(series = showG ? k + 1 : na, title = "RSI k+1", color = coloring(rsK, pal_type), style.area, histbase = k)
+      for (let k = 0; k < 20; k++) {
+        const on = shows[Math.floor(k / 5)];
+        s.plots[k][i] = { time: t, value: on ? k + 1 : NaN, color: coloring(rs[k], cfg.palType) };
+      }
+
+      let bull = 0;
+      let bear = 0;
+      for (let k = 0; k < 20; k++) {
+        bull += gt(rs[k], 70) ? 1 : 0;
+        bear += lt(rs[k], 30) ? 1 : 0;
+      }
+      s.plots[20][i] = { time: t, value: cfg.showCount ? bull : NaN };
+      s.plots[21][i] = { time: t, value: cfg.showCount ? bear : NaN };
+
+      // bgcolor(strongBull ? color.new(coloring(rs1), 90) : na, force_overlay = true) twice, then the same for
+      // strongBear with rs20: four layers in the Pine order
+      if (bull >= 10) {
+        const c = String(color.new(coloring(rs[0], cfg.palType), 90));
+        s.bgColors.push({ time: t, color: c, forceOverlay: true, id: 'bgcolor0' }, { time: t, color: c, forceOverlay: true, id: 'bgcolor1' });
+      }
+      if (bear >= 10) {
+        const c = String(color.new(coloring(rs[19], cfg.palType), 90));
+        s.bgColors.push({ time: t, color: c, forceOverlay: true, id: 'bgcolor2' }, { time: t, color: c, forceOverlay: true, id: 'bgcolor3' });
+      }
+      // strongBull = bullCount >= 10, strongBear = bearCount >= 10
+      const strongBull = bull >= 10;
+      const strongBear = bear >= 10;
+      s.flags[0][i] = strongBull;
+      s.flags[1][i] = strongBear;
+      if (strongBull) s.times[0].push(t as number);
+      if (strongBear) s.times[1].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RelativeStrengthHeatmapInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RelativeStrengthHeatmapInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -191,6 +227,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RelativeStrengthHeatmap = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

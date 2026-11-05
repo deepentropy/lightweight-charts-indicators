@@ -11,6 +11,8 @@
 
 import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type ArrowData } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IntradayTSBBInputs {
   bbLen: number;
@@ -74,428 +76,411 @@ export const metadata = {
   overlay: true,
 };
 
-function stdev(arr: number[], len: number): number[] {
-  const n = arr.length;
-  const out: number[] = new Array(n).fill(NaN);
-  for (let i = len - 1; i < n; i++) {
-    let sum = 0;
-    for (let j = 0; j < len; j++) sum += arr[i - j];
-    const mean = sum / len;
-    let sumSq = 0;
-    for (let j = 0; j < len; j++) sumSq += (arr[i - j] - mean) ** 2;
-    out[i] = Math.sqrt(sumSq / len);
-  }
-  return out;
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; arrows: ArrowData[] };
+
+/** The running state of the rma() helper: the sum of the first `len` values, then the last average */
+interface RmaState { sum: number; prev: number }
+
+interface ItsbbVars {
+  /** Running sums of the sma() helper: BB basis, squeeze BB basis, squeeze KC basis, squeeze KC range */
+  sumBB: number;
+  sumSqzBB: number;
+  sumKC: number;
+  sumRange: number;
+  trRma: RmaState;
+  plusRma: RmaState;
+  minusRma: RmaState;
+  adxRma: RmaState;
+  lastHighRange: number;
+  lastLowRange: number;
+  lastBblow: number;
+  lastBbhigh: number;
 }
 
-function sma(arr: number[], len: number): number[] {
-  const n = arr.length;
-  const out: number[] = new Array(n).fill(NaN);
+interface ItsbbRun extends BarRunState<ItsbbVars> {
+  isOverBBTop: boolean[];
+  isUnderBBBottom: boolean[];
+  highRange: number[];
+  lowRange: number[];
+  trArr: number[];
+  sqzSrc: number[];
+  sqzVal: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+  arrows: ArrowData[];
+  barColors: BarColorData[];
+}
+
+/** One step of the stdev() helper over the closes of bars i - len + 1 .. i (NaN before) */
+function stdevAt(bars: Bar[], i: number, len: number): number {
+  if (i < len - 1) return NaN;
   let sum = 0;
-  for (let i = 0; i < n; i++) {
-    sum += arr[i];
-    if (i >= len) sum -= arr[i - len];
-    if (i >= len - 1) out[i] = sum / len;
-  }
-  return out;
+  for (let j = 0; j < len; j++) sum += bars[i - j].close;
+  const mean = sum / len;
+  let sumSq = 0;
+  for (let j = 0; j < len; j++) sumSq += (bars[i - j].close - mean) ** 2;
+  return Math.sqrt(sumSq / len);
 }
 
-function rma(arr: number[], len: number): number[] {
-  const out: number[] = new Array(arr.length).fill(NaN);
-  let sum = 0;
-  for (let i = 0; i < len && i < arr.length; i++) sum += arr[i];
-  if (len <= arr.length) out[len - 1] = sum / len;
-  const alpha = 1 / len;
-  for (let i = len; i < arr.length; i++) {
-    out[i] = alpha * arr[i] + (1 - alpha) * out[i - 1];
-  }
-  return out;
-}
-
-function linreg(arr: number[], len: number, offset: number): number[] {
-  const n = arr.length;
-  const out: number[] = new Array(n).fill(NaN);
-  for (let i = len - 1 + offset; i < n; i++) {
-    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-    for (let j = 0; j < len; j++) {
-      const x = j;
-      const y = arr[i - offset - (len - 1 - j)];
-      if (isNaN(y)) { sumX = NaN; break; }
-      sumX += x; sumY += y; sumXY += x * y; sumX2 += x * x;
+/** One step of the rma() helper on bar i with value x */
+function rmaAt(st: RmaState, i: number, len: number, x: number): number {
+  if (i < len) {
+    st.sum += x;
+    if (i === len - 1) {
+      st.prev = st.sum / len;
+      return st.prev;
     }
-    if (isNaN(sumX)) continue;
-    const slope = (len * sumXY - sumX * sumY) / (len * sumX2 - sumX * sumX);
-    const intercept = (sumY - slope * sumX) / len;
-    out[i] = intercept + slope * (len - 1);
+    return NaN;
   }
-  return out;
+  const alpha = 1 / len;
+  st.prev = alpha * x + (1 - alpha) * st.prev;
+  return st.prev;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<IntradayTSBBInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; arrows: ArrowData[] } {
+const PLOT_IDS = ['upperBB', 'lowerBB', 'buyEntry', 'sellEntry', 'slBuy', 'slSell', 'tpBuy', 'tpSell', 'tp2Buy', 'tp2Sell', 'sqzMom', 'sqzState'];
+
+function study(inputs: Partial<IntradayTSBBInputs>): BarStudy<ItsbbRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { bbLen, bbStdev, tp, sqzBBLen, sqzBBMult, sqzKCLen, sqzKCMult, useTrueRange, diLen, adxSmooth, adxThresh } = cfg;
-  const n = bars.length;
-
-  const closeArr = bars.map(b => b.close);
-  const highArr = bars.map(b => b.high);
-  const lowArr = bars.map(b => b.low);
-
-  // === BB (main overlay) ===
-  const basisArr = sma(closeArr, bbLen);
-  const stdevArr = stdev(closeArr, bbLen);
-  const upperArr: number[] = new Array(n).fill(NaN);
-  const lowerArr: number[] = new Array(n).fill(NaN);
-  const midArr: number[] = new Array(n).fill(NaN);
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(basisArr[i]) && !isNaN(stdevArr[i])) {
-      upperArr[i] = basisArr[i] + bbStdev * stdevArr[i];
-      lowerArr[i] = basisArr[i] - bbStdev * stdevArr[i];
-      midArr[i] = (upperArr[i] + lowerArr[i]) / 2;
-    }
-  }
-
-  // === isOverBBTop / isUnderBBBottom ===
-  const isOverBBTop: boolean[] = new Array(n).fill(false);
-  const isUnderBBBottom: boolean[] = new Array(n).fill(false);
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(upperArr[i])) isOverBBTop[i] = bars[i].low > upperArr[i];
-    if (!isNaN(lowerArr[i])) isUnderBBBottom[i] = bars[i].high < lowerArr[i];
-  }
-
-  // === State transitions ===
-  const newIsOverBBTop: boolean[] = new Array(n).fill(false);
-  const newIsUnderBBBottom: boolean[] = new Array(n).fill(false);
-  for (let i = 1; i < n; i++) {
-    newIsOverBBTop[i] = isOverBBTop[i] !== isOverBBTop[i - 1];
-    newIsUnderBBBottom[i] = isUnderBBBottom[i] !== isUnderBBBottom[i - 1];
-  }
-
-  // === valuewhen logic ===
-  // high_range = valuewhen(newIsOverBBTop, high, 0)
-  // low_range = valuewhen(newIsUnderBBBottom, low, 0)
-  // bblow = valuewhen(newIsOverBBTop, (lowerBB/0.00005)*0.00005, 0)
-  // bbhigh = valuewhen(newIsUnderBBBottom, ((upperBB*1000)/5+5)*5/1000, 0)
-  const highRange: number[] = new Array(n).fill(NaN);
-  const lowRange: number[] = new Array(n).fill(NaN);
-  const bblow: number[] = new Array(n).fill(NaN);
-  const bbhigh: number[] = new Array(n).fill(NaN);
-  let lastHighRange = NaN;
-  let lastLowRange = NaN;
-  let lastBblow = NaN;
-  let lastBbhigh = NaN;
-  for (let i = 0; i < n; i++) {
-    if (newIsOverBBTop[i]) {
-      lastHighRange = bars[i].high;
-      lastBblow = Math.floor(lowerArr[i] / 0.00005) * 0.00005;
-    }
-    if (newIsUnderBBBottom[i]) {
-      lastLowRange = bars[i].low;
-      lastBbhigh = (Math.floor((upperArr[i] * 1000) / 5) + 5) * 5 / 1000;
-    }
-    highRange[i] = lastHighRange;
-    lowRange[i] = lastLowRange;
-    bblow[i] = lastBblow;
-    bbhigh[i] = lastBbhigh;
-  }
-
-  // === Entry / SL / TP levels ===
-  const buyEntry: number[] = new Array(n).fill(NaN);
-  const sellEntry: number[] = new Array(n).fill(NaN);
-  const slBuy: number[] = new Array(n).fill(NaN);
-  const slSell: number[] = new Array(n).fill(NaN);
-  const tpBuy: number[] = new Array(n).fill(NaN);
-  const tpSell: number[] = new Array(n).fill(NaN);
-  const tp2Buy: number[] = new Array(n).fill(NaN);
-  const tp2Sell: number[] = new Array(n).fill(NaN);
-  for (let i = 1; i < n; i++) {
-    if (isOverBBTop[i] && highRange[i] === highRange[i - 1] && !isNaN(highRange[i])) {
-      const entry = highRange[i] + 0.001;
-      buyEntry[i] = entry;
-      slBuy[i] = bblow[i];
-      const tp1 = (entry + entry - bblow[i]) + (entry + entry - bblow[i]) * tp / 500;
-      tpBuy[i] = tp1;
-      const tp2 = entry + 2 * (entry - bblow[i]) + (entry + 2 * (entry - bblow[i])) * tp / 500;
-      tp2Buy[i] = tp2;
-    }
-    if (isUnderBBBottom[i] && lowRange[i] === lowRange[i - 1] && !isNaN(lowRange[i])) {
-      const entry = lowRange[i] - 0.001;
-      sellEntry[i] = entry;
-      slSell[i] = bbhigh[i];
-      const tp1 = (entry - (bbhigh[i] - entry)) - (entry - (bbhigh[i] - entry)) * tp / 500;
-      tpSell[i] = tp1;
-      const tp2 = entry - 2 * (bbhigh[i] - entry) - (entry - 2 * (bbhigh[i] - entry)) * tp / 500;
-      tp2Sell[i] = tp2;
-    }
-  }
-
-  // === Squeeze Momentum ===
-  const sqzBasis = sma(closeArr, sqzBBLen);
-  const sqzDev = stdev(closeArr, sqzBBLen);
-  const sqzUpperBB: number[] = new Array(n).fill(NaN);
-  const sqzLowerBB: number[] = new Array(n).fill(NaN);
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(sqzBasis[i]) && !isNaN(sqzDev[i])) {
-      sqzUpperBB[i] = sqzBasis[i] + sqzBBMult * sqzDev[i];
-      sqzLowerBB[i] = sqzBasis[i] - sqzBBMult * sqzDev[i];
-    }
-  }
-
-  // KC
-  const sqzMA = sma(closeArr, sqzKCLen);
-  const trArr: number[] = new Array(n).fill(0);
-  trArr[0] = highArr[0] - lowArr[0];
-  for (let i = 1; i < n; i++) {
-    if (useTrueRange) {
-      trArr[i] = Math.max(highArr[i] - lowArr[i], Math.abs(highArr[i] - closeArr[i - 1]), Math.abs(lowArr[i] - closeArr[i - 1]));
-    } else {
-      trArr[i] = highArr[i] - lowArr[i];
-    }
-  }
-  const rangema = sma(trArr, sqzKCLen);
-  const sqzUpperKC: number[] = new Array(n).fill(NaN);
-  const sqzLowerKC: number[] = new Array(n).fill(NaN);
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(sqzMA[i]) && !isNaN(rangema[i])) {
-      sqzUpperKC[i] = sqzMA[i] + rangema[i] * sqzKCMult;
-      sqzLowerKC[i] = sqzMA[i] - rangema[i] * sqzKCMult;
-    }
-  }
-
-  // Squeeze states
-  const sqzOn: boolean[] = new Array(n).fill(false);
-  const sqzOff: boolean[] = new Array(n).fill(false);
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(sqzLowerBB[i]) && !isNaN(sqzLowerKC[i])) {
-      sqzOn[i] = sqzLowerBB[i] > sqzLowerKC[i] && sqzUpperBB[i] < sqzUpperKC[i];
-      sqzOff[i] = sqzLowerBB[i] < sqzLowerKC[i] && sqzUpperBB[i] > sqzUpperKC[i];
-    }
-  }
-
-  // Squeeze momentum value = linreg(source - avg(avg(highest(high,KC), lowest(low,KC)), sma(close,KC)), KC, 0)
-  const highestKC: number[] = new Array(n).fill(NaN);
-  const lowestKC: number[] = new Array(n).fill(NaN);
-  for (let i = sqzKCLen - 1; i < n; i++) {
-    let hh = -Infinity, ll = Infinity;
-    for (let j = 0; j < sqzKCLen; j++) {
-      hh = Math.max(hh, highArr[i - j]);
-      ll = Math.min(ll, lowArr[i - j]);
-    }
-    highestKC[i] = hh;
-    lowestKC[i] = ll;
-  }
-  const smaKC = sma(closeArr, sqzKCLen);
-  const sqzSrc: number[] = new Array(n).fill(NaN);
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(highestKC[i]) && !isNaN(lowestKC[i]) && !isNaN(smaKC[i])) {
-      const avgHL = (highestKC[i] + lowestKC[i]) / 2;
-      const avgAll = (avgHL + smaKC[i]) / 2;
-      sqzSrc[i] = closeArr[i] - avgAll;
-    }
-  }
-  const sqzVal = linreg(sqzSrc, sqzKCLen, 0);
-
-  // === DMI / ADX ===
-  const dmiTR: number[] = new Array(n).fill(0);
-  const plusDM: number[] = new Array(n).fill(0);
-  const minusDM: number[] = new Array(n).fill(0);
-  for (let i = 1; i < n; i++) {
-    const h = bars[i].high;
-    const l = bars[i].low;
-    const pc = bars[i - 1].close;
-    dmiTR[i] = Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
-    const up = h - bars[i - 1].high;
-    const dn = bars[i - 1].low - l;
-    plusDM[i] = up > dn && up > 0 ? up : 0;
-    minusDM[i] = dn > up && dn > 0 ? dn : 0;
-  }
-  const trRma = rma(dmiTR, diLen);
-  const plusRma = rma(plusDM, diLen);
-  const minusRma = rma(minusDM, diLen);
-  const plusDI: number[] = new Array(n).fill(NaN);
-  const minusDI: number[] = new Array(n).fill(NaN);
-  const dx: number[] = new Array(n).fill(0);
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(trRma[i]) && trRma[i] !== 0) {
-      plusDI[i] = 100 * plusRma[i] / trRma[i];
-      minusDI[i] = 100 * minusRma[i] / trRma[i];
-      const s = plusDI[i] + minusDI[i];
-      dx[i] = s === 0 ? 0 : 100 * Math.abs(plusDI[i] - minusDI[i]) / s;
-    }
-  }
-  const adxRma = rma(dx, adxSmooth);
-  const adxArr: number[] = new Array(n).fill(NaN);
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(adxRma[i])) adxArr[i] = adxRma[i];
-  }
-
   // === Build plots ===
   const warmup = Math.max(bbLen, sqzKCLen + sqzKCLen, diLen + adxSmooth);
-
-  const mkPlot = (arr: number[]) =>
-    arr.map((v, i) => ({ time: bars[i].time, value: i < warmup || isNaN(v) ? NaN : v }));
-
-  // BB upper/lower with conditional color
-  const upperBBPlot = upperArr.map((v, i) => {
-    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: v, color: isOverBBTop[i] ? '#00FF00' : '#00FFFF' };
-  });
-  const lowerBBPlot = lowerArr.map((v, i) => {
-    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: v, color: isUnderBBBottom[i] ? '#00FF00' : '#00FFFF' };
-  });
-
-  // Buy/Sell entry (blue/red with transp=80 => 20% opacity)
-  const buyEntryPlot = mkPlot(buyEntry);
-  const sellEntryPlot = mkPlot(sellEntry);
-
-  // Stop loss (maroon circles)
-  const slBuyPlot = mkPlot(slBuy);
-  const slSellPlot = mkPlot(slSell);
-
-  // TP plots with dynamic color: lime when target hit, fuchsia otherwise
-  const tpBuyPlot = tpBuy.map((v, i) => {
-    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
-    const color = closeArr[i] >= v ? '#00FF00' : '#FF00FF';
-    return { time: bars[i].time, value: v, color };
-  });
-  const tpSellPlot = tpSell.map((v, i) => {
-    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
-    const color = closeArr[i] <= v ? '#00FF00' : '#FF00FF';
-    return { time: bars[i].time, value: v, color };
-  });
-  const tp2BuyPlot = tp2Buy.map((v, i) => {
-    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
-    const color = closeArr[i] >= v ? '#00FF00' : '#FF00FF';
-    return { time: bars[i].time, value: v, color };
-  });
-  const tp2SellPlot = tp2Sell.map((v, i) => {
-    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
-    const color = closeArr[i] <= v ? '#00FF00' : '#FF00FF';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // Squeeze momentum plotted at midBB, color = bcolor (momentum direction)
-  // bcolor: val > 0 ? (val > val[1] ? lime : green) : (val < val[1] ? red : maroon)
-  const sqzMomPlot = midArr.map((v, i) => {
-    if (i < warmup || isNaN(v) || isNaN(sqzVal[i])) return { time: bars[i].time, value: NaN };
-    const val = sqzVal[i];
-    const prevVal = i > 0 ? sqzVal[i - 1] : 0;
-    let color: string;
-    if (val > 0) {
-      color = val > prevVal ? '#00FF00' : '#008000'; // lime : green
-    } else {
-      color = val < prevVal ? '#FF0000' : '#800000'; // red : maroon
-    }
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // Squeeze state dots plotted at midBB, color = scolor
-  // noSqz ? blue : sqzOn ? black : gray
-  const sqzStatePlot = midArr.map((v, i) => {
-    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
-    const noSqz = !sqzOn[i] && !sqzOff[i];
-    let color: string;
-    if (noSqz) color = '#0000FF'; // blue
-    else if (sqzOn[i]) color = '#000000'; // black
-    else color = '#808080'; // gray
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // === Markers ===
-  const markers: MarkerData[] = [];
-
-  // plotarrow: codiff (buy arrows when compra==1) and codiff2 (sell arrows when vendi==1)
-  // compra = isOverBBTop ? (highRange == highRange[1] ? highRange+0.001 : 1) : 0
-  // codiff = compra == 1 ? compra : 0  => arrow when compra exactly equals 1 (state just started)
-  // vendi = isUnderBBBottom ? (lowRange == lowRange[1] ? lowRange-0.001 : 1) : 0
-  // codiff2 = vendi == 1 ? vendi : 0
-  // plotarrow(codiff, colorup = green, transp = 40) / plotarrow(codiff2 * -1, colordown = orange, transp = 40)
-  const arrows: ArrowData[] = [];
   const arrowUp = String(color.new('#008000', 40));
   const arrowDown = String(color.new('#FFA500', 40));
-  for (let i = warmup; i < n; i++) {
-    let compra = 0;
-    if (isOverBBTop[i]) {
-      compra = (i > 0 && highRange[i] === highRange[i - 1] && !isNaN(highRange[i])) ? highRange[i] + 0.001 : 1;
-    }
-    if (compra === 1) {
-      arrows.push({ time: bars[i].time, id: 'arrow0', value: 1, color: arrowUp });
-    }
-
-    let vendi = 0;
-    if (isUnderBBBottom[i]) {
-      vendi = (i > 0 && lowRange[i] === lowRange[i - 1] && !isNaN(lowRange[i])) ? lowRange[i] - 0.001 : 1;
-    }
-    if (vendi === 1) {
-      arrows.push({ time: bars[i].time, id: 'arrow1', value: -1, color: arrowDown });
-    }
-
-    // DMI plotshape
-    if (!isNaN(plusDI[i]) && !isNaN(minusDI[i]) && !isNaN(adxArr[i])) {
-      if (plusDI[i] >= minusDI[i] && adxArr[i] >= adxThresh) {
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleUp', color: '#008000', text: '' });
-      }
-      if (minusDI[i] >= plusDI[i] && adxArr[i] >= adxThresh) {
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleDown', color: '#800000', text: '' });
-      }
-      if (adxArr[i] <= 20) {
-        markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'diamond', color: '#FF0000', text: '' });
-      }
-    }
-  }
-
-  // === Bar colors ===
-  // Priority order (last applied wins in Pine):
-  // 1. aqua: high >= lowerBB and low <= upperBB (inside bands)
-  // 2. orange: between sell_limit_entry and take_profit_sell, or between buy_limit_entry and take_profit_buy
-  // 3. fuchsia: hit take_profit_buy or take_profit_sell
-  const barColors: BarColorData[] = [];
-  for (let i = warmup; i < n; i++) {
-    let color: string | null = null;
-    // aqua: bar touches both bands
-    if (!isNaN(upperArr[i]) && !isNaN(lowerArr[i]) && bars[i].high >= lowerArr[i] && bars[i].low <= upperArr[i]) {
-      color = '#00FFFF';
-    }
-    // orange: between short entry and sell TP
-    if (!isNaN(sellEntry[i]) && !isNaN(tpSell[i]) && bars[i].high < sellEntry[i] && bars[i].low > tpSell[i]) {
-      color = '#FFA500';
-    }
-    // orange: between buy entry and buy TP
-    if (!isNaN(buyEntry[i]) && !isNaN(tpBuy[i]) && bars[i].low > buyEntry[i] && bars[i].high < tpBuy[i]) {
-      color = '#FFA500';
-    }
-    // fuchsia: hit buy TP or sell TP
-    if (!isNaN(buyEntry[i]) && bars[i].high >= tpBuy[i]) {
-      color = '#FF00FF';
-    } else if (!isNaN(sellEntry[i]) && bars[i].low <= tpSell[i]) {
-      color = '#FF00FF';
-    }
-    if (color) barColors.push({ time: bars[i].time, color });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      upperBB: upperBBPlot,
-      lowerBB: lowerBBPlot,
-      buyEntry: buyEntryPlot,
-      sellEntry: sellEntryPlot,
-      slBuy: slBuyPlot,
-      slSell: slSellPlot,
-      tpBuy: tpBuyPlot,
-      tpSell: tpSellPlot,
-      tp2Buy: tp2BuyPlot,
-      tp2Sell: tp2SellPlot,
-      sqzMom: sqzMomPlot,
-      sqzState: sqzStatePlot,
+    init() {
+      const s: ItsbbRun = {
+        isOverBBTop: [], isUnderBBBottom: [], highRange: [], lowRange: [], trArr: [], sqzSrc: [], sqzVal: [],
+        plots: PLOT_IDS.map(() => []), markers: [], arrows: [], barColors: [],
+        steps: [], lists: [], series: [],
+        vars: {
+          sumBB: 0, sumSqzBB: 0, sumKC: 0, sumRange: 0,
+          trRma: { sum: 0, prev: NaN }, plusRma: { sum: 0, prev: NaN }, minusRma: { sum: 0, prev: NaN },
+          adxRma: { sum: 0, prev: NaN },
+          lastHighRange: NaN, lastLowRange: NaN, lastBblow: NaN, lastBbhigh: NaN,
+        },
+      };
+      s.lists = [s.markers, s.arrows, s.barColors];
+      s.series = [s.isOverBBTop, s.isUnderBBBottom, s.highRange, s.lowRange, s.trArr, s.sqzSrc, s.sqzVal, ...s.plots];
+      return s;
     },
-    fills: [
-      { plot1: 'upperBB', plot2: 'lowerBB', options: { color: 'rgba(0, 255, 255, 0.13)' } },
-    ],
-    markers,
-    barColors,
-    arrows,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const t = b.time;
+      const close = b.close;
+      // sma(arr, len) helper: sum += arr[i]; sum -= arr[i - len]; the mean from bar len - 1
+      const sma = (sum: number, len: number) => (i >= len - 1 ? sum / len : NaN);
+
+      // === BB (main overlay) ===
+      v.sumBB += close;
+      if (i >= bbLen) v.sumBB -= bars[i - bbLen].close;
+      const basis = sma(v.sumBB, bbLen);
+      const sd = stdevAt(bars, i, bbLen);
+      let upper = NaN;
+      let lower = NaN;
+      let mid = NaN;
+      if (!isNaN(basis) && !isNaN(sd)) {
+        upper = basis + bbStdev * sd;
+        lower = basis - bbStdev * sd;
+        mid = (upper + lower) / 2;
+      }
+
+      // === isOverBBTop / isUnderBBBottom ===
+      const isOver = !isNaN(upper) ? b.low > upper : false;
+      const isUnder = !isNaN(lower) ? b.high < lower : false;
+      s.isOverBBTop[i] = isOver;
+      s.isUnderBBBottom[i] = isUnder;
+
+      // === State transitions ===
+      const newIsOverBBTop = i >= 1 && isOver !== s.isOverBBTop[i - 1];
+      const newIsUnderBBBottom = i >= 1 && isUnder !== s.isUnderBBBottom[i - 1];
+
+      // === valuewhen logic ===
+      // high_range = valuewhen(newIsOverBBTop, high, 0)
+      // low_range = valuewhen(newIsUnderBBBottom, low, 0)
+      // bblow = valuewhen(newIsOverBBTop, (lowerBB/0.00005)*0.00005, 0)
+      // bbhigh = valuewhen(newIsUnderBBBottom, ((upperBB*1000)/5+5)*5/1000, 0)
+      if (newIsOverBBTop) {
+        v.lastHighRange = b.high;
+        v.lastBblow = Math.floor(lower / 0.00005) * 0.00005;
+      }
+      if (newIsUnderBBBottom) {
+        v.lastLowRange = b.low;
+        v.lastBbhigh = (Math.floor((upper * 1000) / 5) + 5) * 5 / 1000;
+      }
+      const highRange = v.lastHighRange;
+      const lowRange = v.lastLowRange;
+      const bblow = v.lastBblow;
+      const bbhigh = v.lastBbhigh;
+      s.highRange[i] = highRange;
+      s.lowRange[i] = lowRange;
+
+      // === Entry / SL / TP levels ===
+      let buyEntry = NaN, sellEntry = NaN, slBuy = NaN, slSell = NaN, tpBuy = NaN, tpSell = NaN, tp2Buy = NaN, tp2Sell = NaN;
+      if (i >= 1) {
+        if (isOver && highRange === s.highRange[i - 1] && !isNaN(highRange)) {
+          const entry = highRange + 0.001;
+          buyEntry = entry;
+          slBuy = bblow;
+          tpBuy = (entry + entry - bblow) + (entry + entry - bblow) * tp / 500;
+          tp2Buy = entry + 2 * (entry - bblow) + (entry + 2 * (entry - bblow)) * tp / 500;
+        }
+        if (isUnder && lowRange === s.lowRange[i - 1] && !isNaN(lowRange)) {
+          const entry = lowRange - 0.001;
+          sellEntry = entry;
+          slSell = bbhigh;
+          tpSell = (entry - (bbhigh - entry)) - (entry - (bbhigh - entry)) * tp / 500;
+          tp2Sell = entry - 2 * (bbhigh - entry) - (entry - 2 * (bbhigh - entry)) * tp / 500;
+        }
+      }
+
+      // === Squeeze Momentum ===
+      v.sumSqzBB += close;
+      if (i >= sqzBBLen) v.sumSqzBB -= bars[i - sqzBBLen].close;
+      const sqzBasis = sma(v.sumSqzBB, sqzBBLen);
+      const sqzDev = stdevAt(bars, i, sqzBBLen);
+      let sqzUpperBB = NaN;
+      let sqzLowerBB = NaN;
+      if (!isNaN(sqzBasis) && !isNaN(sqzDev)) {
+        sqzUpperBB = sqzBasis + sqzBBMult * sqzDev;
+        sqzLowerBB = sqzBasis - sqzBBMult * sqzDev;
+      }
+
+      // KC
+      v.sumKC += close;
+      if (i >= sqzKCLen) v.sumKC -= bars[i - sqzKCLen].close;
+      const sqzMA = sma(v.sumKC, sqzKCLen);
+      let tr: number;
+      if (i === 0) tr = b.high - b.low;
+      else if (useTrueRange) {
+        const pc = bars[i - 1].close;
+        tr = Math.max(b.high - b.low, Math.abs(b.high - pc), Math.abs(b.low - pc));
+      } else {
+        tr = b.high - b.low;
+      }
+      s.trArr[i] = tr;
+      v.sumRange += tr;
+      if (i >= sqzKCLen) v.sumRange -= s.trArr[i - sqzKCLen];
+      const rangema = sma(v.sumRange, sqzKCLen);
+      let sqzUpperKC = NaN;
+      let sqzLowerKC = NaN;
+      if (!isNaN(sqzMA) && !isNaN(rangema)) {
+        sqzUpperKC = sqzMA + rangema * sqzKCMult;
+        sqzLowerKC = sqzMA - rangema * sqzKCMult;
+      }
+
+      // Squeeze states
+      let sqzOn = false;
+      let sqzOff = false;
+      if (!isNaN(sqzLowerBB) && !isNaN(sqzLowerKC)) {
+        sqzOn = sqzLowerBB > sqzLowerKC && sqzUpperBB < sqzUpperKC;
+        sqzOff = sqzLowerBB < sqzLowerKC && sqzUpperBB > sqzUpperKC;
+      }
+
+      // Squeeze momentum value = linreg(source - avg(avg(highest(high,KC), lowest(low,KC)), sma(close,KC)), KC, 0)
+      let highestKC = NaN;
+      let lowestKC = NaN;
+      if (i >= sqzKCLen - 1) {
+        let hh = -Infinity, ll = Infinity;
+        for (let j = 0; j < sqzKCLen; j++) {
+          hh = Math.max(hh, bars[i - j].high);
+          ll = Math.min(ll, bars[i - j].low);
+        }
+        highestKC = hh;
+        lowestKC = ll;
+      }
+      // smaKC = sma(close, sqzKCLen): the values of sqzMA
+      const smaKC = sqzMA;
+      let sqzSrc = NaN;
+      if (!isNaN(highestKC) && !isNaN(lowestKC) && !isNaN(smaKC)) {
+        const avgHL = (highestKC + lowestKC) / 2;
+        const avgAll = (avgHL + smaKC) / 2;
+        sqzSrc = close - avgAll;
+      }
+      s.sqzSrc[i] = sqzSrc;
+      // linreg(sqzSrc, sqzKCLen, 0)
+      let sqzVal = NaN;
+      const len = sqzKCLen;
+      if (i >= len - 1) {
+        let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+        for (let j = 0; j < len; j++) {
+          const x = j;
+          const y = s.sqzSrc[i - (len - 1 - j)];
+          if (isNaN(y)) { sumX = NaN; break; }
+          sumX += x; sumY += y; sumXY += x * y; sumX2 += x * x;
+        }
+        if (!isNaN(sumX)) {
+          const slope = (len * sumXY - sumX * sumY) / (len * sumX2 - sumX * sumX);
+          const intercept = (sumY - slope * sumX) / len;
+          sqzVal = intercept + slope * (len - 1);
+        }
+      }
+      s.sqzVal[i] = sqzVal;
+
+      // === DMI / ADX ===
+      let dmiTR = 0;
+      let plusDM = 0;
+      let minusDM = 0;
+      if (i >= 1) {
+        const h = b.high;
+        const l = b.low;
+        const pc = bars[i - 1].close;
+        dmiTR = Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+        const up = h - bars[i - 1].high;
+        const dn = bars[i - 1].low - l;
+        plusDM = up > dn && up > 0 ? up : 0;
+        minusDM = dn > up && dn > 0 ? dn : 0;
+      }
+      const trRma = rmaAt(v.trRma, i, diLen, dmiTR);
+      const plusRma = rmaAt(v.plusRma, i, diLen, plusDM);
+      const minusRma = rmaAt(v.minusRma, i, diLen, minusDM);
+      let plusDI = NaN;
+      let minusDI = NaN;
+      let dx = 0;
+      if (!isNaN(trRma) && trRma !== 0) {
+        plusDI = 100 * plusRma / trRma;
+        minusDI = 100 * minusRma / trRma;
+        const sum = plusDI + minusDI;
+        dx = sum === 0 ? 0 : 100 * Math.abs(plusDI - minusDI) / sum;
+      }
+      const adxRma = rmaAt(v.adxRma, i, adxSmooth, dx);
+      const adx = !isNaN(adxRma) ? adxRma : NaN;
+
+      const plots = s.plots;
+      const early = i < warmup;
+      const plain = (x: number): Point => ({ time: t, value: early || isNaN(x) ? NaN : x });
+      // BB upper/lower with conditional color
+      plots[0][i] = early || isNaN(upper) ? { time: t, value: NaN } : { time: t, value: upper, color: isOver ? '#00FF00' : '#00FFFF' };
+      plots[1][i] = early || isNaN(lower) ? { time: t, value: NaN } : { time: t, value: lower, color: isUnder ? '#00FF00' : '#00FFFF' };
+      // Buy/Sell entry (blue/red with transp=80 => 20% opacity)
+      plots[2][i] = plain(buyEntry);
+      plots[3][i] = plain(sellEntry);
+      // Stop loss (maroon circles)
+      plots[4][i] = plain(slBuy);
+      plots[5][i] = plain(slSell);
+      // TP plots with dynamic color: lime when target hit, fuchsia otherwise
+      plots[6][i] = early || isNaN(tpBuy) ? { time: t, value: NaN } : { time: t, value: tpBuy, color: close >= tpBuy ? '#00FF00' : '#FF00FF' };
+      plots[7][i] = early || isNaN(tpSell) ? { time: t, value: NaN } : { time: t, value: tpSell, color: close <= tpSell ? '#00FF00' : '#FF00FF' };
+      plots[8][i] = early || isNaN(tp2Buy) ? { time: t, value: NaN } : { time: t, value: tp2Buy, color: close >= tp2Buy ? '#00FF00' : '#FF00FF' };
+      plots[9][i] = early || isNaN(tp2Sell) ? { time: t, value: NaN } : { time: t, value: tp2Sell, color: close <= tp2Sell ? '#00FF00' : '#FF00FF' };
+
+      // Squeeze momentum plotted at midBB, color = bcolor (momentum direction)
+      // bcolor: val > 0 ? (val > val[1] ? lime : green) : (val < val[1] ? red : maroon)
+      if (early || isNaN(mid) || isNaN(sqzVal)) plots[10][i] = { time: t, value: NaN };
+      else {
+        const prevVal = i > 0 ? s.sqzVal[i - 1] : 0;
+        let c: string;
+        if (sqzVal > 0) {
+          c = sqzVal > prevVal ? '#00FF00' : '#008000'; // lime : green
+        } else {
+          c = sqzVal < prevVal ? '#FF0000' : '#800000'; // red : maroon
+        }
+        plots[10][i] = { time: t, value: mid, color: c };
+      }
+
+      // Squeeze state dots plotted at midBB, color = scolor
+      // noSqz ? blue : sqzOn ? black : gray
+      if (early || isNaN(mid)) plots[11][i] = { time: t, value: NaN };
+      else {
+        const noSqz = !sqzOn && !sqzOff;
+        let c: string;
+        if (noSqz) c = '#0000FF'; // blue
+        else if (sqzOn) c = '#000000'; // black
+        else c = '#808080'; // gray
+        plots[11][i] = { time: t, value: mid, color: c };
+      }
+
+      if (early) return;
+      // === Markers ===
+      // plotarrow: codiff (buy arrows when compra==1) and codiff2 (sell arrows when vendi==1)
+      // compra = isOverBBTop ? (highRange == highRange[1] ? highRange+0.001 : 1) : 0
+      // codiff = compra == 1 ? compra : 0  => arrow when compra exactly equals 1 (state just started)
+      // vendi = isUnderBBBottom ? (lowRange == lowRange[1] ? lowRange-0.001 : 1) : 0
+      // codiff2 = vendi == 1 ? vendi : 0
+      // plotarrow(codiff, colorup = green, transp = 40) / plotarrow(codiff2 * -1, colordown = orange, transp = 40)
+      let compra = 0;
+      if (isOver) {
+        compra = (i > 0 && highRange === s.highRange[i - 1] && !isNaN(highRange)) ? highRange + 0.001 : 1;
+      }
+      if (compra === 1) {
+        s.arrows.push({ time: t, id: 'arrow0', value: 1, color: arrowUp });
+      }
+
+      let vendi = 0;
+      if (isUnder) {
+        vendi = (i > 0 && lowRange === s.lowRange[i - 1] && !isNaN(lowRange)) ? lowRange - 0.001 : 1;
+      }
+      if (vendi === 1) {
+        s.arrows.push({ time: t, id: 'arrow1', value: -1, color: arrowDown });
+      }
+
+      // DMI plotshape
+      if (!isNaN(plusDI) && !isNaN(minusDI) && !isNaN(adx)) {
+        if (plusDI >= minusDI && adx >= adxThresh) {
+          s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleUp', color: '#008000', text: '' });
+        }
+        if (minusDI >= plusDI && adx >= adxThresh) {
+          s.markers.push({ time: t, position: 'belowBar', shape: 'triangleDown', color: '#800000', text: '' });
+        }
+        if (adx <= 20) {
+          s.markers.push({ time: t, position: 'aboveBar', shape: 'diamond', color: '#FF0000', text: '' });
+        }
+      }
+
+      // === Bar colors ===
+      // Priority order (last applied wins in Pine):
+      // 1. aqua: high >= lowerBB and low <= upperBB (inside bands)
+      // 2. orange: between sell_limit_entry and take_profit_sell, or between buy_limit_entry and take_profit_buy
+      // 3. fuchsia: hit take_profit_buy or take_profit_sell
+      let c: string | null = null;
+      // aqua: bar touches both bands
+      if (!isNaN(upper) && !isNaN(lower) && b.high >= lower && b.low <= upper) {
+        c = '#00FFFF';
+      }
+      // orange: between short entry and sell TP
+      if (!isNaN(sellEntry) && !isNaN(tpSell) && b.high < sellEntry && b.low > tpSell) {
+        c = '#FFA500';
+      }
+      // orange: between buy entry and buy TP
+      if (!isNaN(buyEntry) && !isNaN(tpBuy) && b.low > buyEntry && b.high < tpBuy) {
+        c = '#FFA500';
+      }
+      // fuchsia: hit buy TP or sell TP
+      if (!isNaN(buyEntry) && b.high >= tpBuy) {
+        c = '#FF00FF';
+      } else if (!isNaN(sellEntry) && b.low <= tpSell) {
+        c = '#FF00FF';
+      }
+      if (c) s.barColors.push({ time: t, color: c });
+    },
+    copyVars: (v) => ({
+      ...v, trRma: { ...v.trRma }, plusRma: { ...v.plusRma }, minusRma: { ...v.minusRma }, adxRma: { ...v.adxRma },
+    }),
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      PLOT_IDS.forEach((id, k) => { plots[id] = s.plots[k].slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          { plot1: 'upperBB', plot2: 'lowerBB', options: { color: 'rgba(0, 255, 255, 0.13)' } },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        arrows: s.arrows.slice(),
+      };
+    },
   };
 }
 
-export const IntradayTSBB = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IntradayTSBBInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IntradayTSBBInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const IntradayTSBB = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

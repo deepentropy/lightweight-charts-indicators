@@ -77,13 +77,16 @@ export function liveRunSuite(shard: number, shards: number): void {
         }
         // the forming bars: three prices each, then the next bar
         for (let k = HISTORY; k < all.length; k++) {
-          for (const tick of ticks(all[k])) {
+          ticks(all[k]).forEach((tick, t) => {
             const bars = [...all.slice(0, k), tick];
             const { from, ...got } = run.update(bars);
-            expect(from).toBeGreaterThan(0);
+            // a new price of the forming bar resumes; a new bar resumes too, or runs in full when the study's key
+            // follows the bar count (e.g. a window of the last bars)
+            if (t > 0) expect(from).toBe(k);
+            else expect([0, k - 1]).toContain(from);
             const d = diff(got, entry.calculate(bars, inputs));
             if (d) throw new Error(`k=${k}: ${d}`);
-          }
+          });
         }
         // an edited history bar: a full run, equal to calculate
         const edited = all.slice();

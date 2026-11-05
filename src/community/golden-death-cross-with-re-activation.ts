@@ -14,8 +14,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, compare, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type MaType = 'SMA' | 'EMA' | 'WMA' | 'HMA' | 'RMA';
 
@@ -139,172 +141,235 @@ const alphaFromStrength = (s: number, isCooling: boolean) => {
   return Math.max(40, Math.min(95, a));
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<GoldenDeathCrossWithReActivationInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+type MaStep = { step(value: number): number; commit(): void };
 
-  // calc_ma(type, close, len): the type is a constant input, so one branch runs on every bar
-  const calcMa = (type: MaType, len: number) => {
-    switch (type) {
-      case 'SMA': return A(ta.sma(close, len));
-      case 'EMA': return A(ta.ema(close, len));
-      case 'WMA': return A(ta.wma(close, len));
-      case 'HMA':
-        // ta.hma(x, 1) calls ta.wma(x, 0): a Pine runtime error
-        if (Math.floor(len / 2) < 1 && n > 0) {
-          throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
-        }
-        return A(ta.hma(close, len));
-      default: return A(ta.rma(close, len));
-    }
-  };
-  const ma1 = calcMa(cfg.maType1, cfg.maLen1);
-  const ma2 = calcMa(cfg.maType2, cfg.maLen2);
-  const distanza = ma1.map((v, i) => v - ma2[i]);
-  const distS = S(distanza);
-
-  const atr = A(ta.atr(bars, cfg.atrLen));
-  const rsi = A(ta.rsi(close, cfg.rsiLen));
-  const B = (s: Series) => s.toArray().map((v) => v === 1);
-  const distFalling2 = B(ta.falling(distS, 2));
-  const distRising2 = B(ta.rising(distS, 2));
-  const goldenCross = B(ta.crossover(S(ma1), S(ma2)));
-  const deathCross = B(ta.crossunder(S(ma1), S(ma2)));
-
-  // Bollinger ribbon anchors
-  const basis = A(ta.sma(close, cfg.bbLen));
-  const dev = A(ta.stdev(close, cfg.bbLen)).map((v) => cfg.bbMult * v);
-  const bbUpper = basis.map((v, i) => v + dev[i]);
-  const bbLower = basis.map((v, i) => v - dev[i]);
-  const laneFrac = 0.32;
-  const ribShortTop = bbUpper;
-  const ribShortBot = bbUpper.map((v, i) => v - (v - basis[i]) * laneFrac);
-  const ribLongBot = bbLower;
-  const ribLongTop = bbLower.map((v, i) => v + (basis[i] - v) * laneFrac);
-
-  const colLong: string[] = new Array(n);
-  const colShort: string[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const t = cfg.treshold;
-
-  let longAttivo = false;
-  let shortAttivo = false;
-  let massimoLocaleLong = NaN;
-  let minimoLocaleShort = NaN;
-  for (let i = 0; i < n; i++) {
-    const d = distanza[i];
-    if (goldenCross[i]) {
-      longAttivo = true;
-      shortAttivo = false;
-      massimoLocaleLong = d;
-    }
-    if (deathCross[i]) {
-      shortAttivo = true;
-      longAttivo = false;
-      minimoLocaleShort = d;
-    }
-    // Pine math.max / math.min: na when an argument is na
-    if (longAttivo) massimoLocaleLong = Math.max(nz(massimoLocaleLong, d), d);
-    if (shortAttivo) minimoLocaleShort = Math.min(nz(minimoLocaleShort, d), d);
-    if (longAttivo && distFalling2[i]) longAttivo = false;
-    if (shortAttivo && distRising2[i]) shortAttivo = false;
-
-    const coolingLong = !longAttivo && distFalling2[i];
-    const coolingShort = !shortAttivo && distRising2[i];
-    const canReactivateLong = !longAttivo && gt(d, nz(massimoLocaleLong, d) + t) && distRising2[i];
-    const canReactivateShort = !shortAttivo && lt(d, nz(minimoLocaleShort, d) - t) && distFalling2[i];
-    let justReactLong = false;
-    let justReactShort = false;
-    if (canReactivateLong) {
-      longAttivo = true;
-      justReactLong = true;
-    }
-    if (canReactivateShort) {
-      shortAttivo = true;
-      justReactShort = true;
-    }
-
-    // Strength
-    const atrVal = atr[i];
-    let distNorm = 0.0;
-    if (gt(atrVal, 0.0)) distNorm = clamp01(Math.abs(d) / atrVal);
-    const rsiLong = clamp01((50.0 - rsi[i]) / 20.0);
-    const rsiShort = clamp01((rsi[i] - 50.0) / 20.0);
-    const baseLong = clamp01(0.65 * distNorm + 0.35 * rsiLong);
-    const baseShort = clamp01(0.65 * distNorm + 0.35 * rsiShort);
-    let reactEdgeLong = 0.0;
-    let reactEdgeShort = 0.0;
-    if (gt(atrVal, 0.0)) {
-      reactEdgeLong = clamp01((d - (nz(massimoLocaleLong, d) + t)) / atrVal);
-      reactEdgeShort = clamp01((nz(minimoLocaleShort, d) - t - d) / atrVal);
-    }
-    const reactLong = clamp01(0.55 * reactEdgeLong + 0.45 * rsiLong);
-    const reactShort = clamp01(0.55 * reactEdgeShort + 0.45 * rsiShort);
-
-    let sLong = NaN;
-    let sShort = NaN;
-    if (justReactLong) sLong = reactLong;
-    else if (longAttivo) sLong = baseLong;
-    else if (coolingLong) sLong = 0.35 * baseLong;
-    if (justReactShort) sShort = reactShort;
-    else if (shortAttivo) sShort = baseShort;
-    else if (coolingShort) sShort = 0.35 * baseShort;
-
-    // Colours
-    const hueLong = color.from_gradient(nz(sLong, 0.0), 0.0, 1.0, C_AQUA_LO, C_AQUA_HI);
-    const hueShort = color.from_gradient(nz(sShort, 0.0), 0.0, 1.0, C_TIT_LO, C_TIT_HI);
-    const aLong = alphaFromStrength(sLong, coolingLong && !longAttivo && !justReactLong);
-    const aShort = alphaFromStrength(sShort, coolingShort && !shortAttivo && !justReactShort);
-    colLong[i] = cfg.showRibbon && !isNaN(sLong) ? String(color.new(hueLong, aLong)) : 'transparent';
-    colShort[i] = cfg.showRibbon && !isNaN(sShort) ? String(color.new(hueShort, aShort)) : 'transparent';
-
-    // Cross dots
-    if (goldenCross[i]) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'circle', color: COL_GOLDEN, size: 'tiny' });
-    }
-    if (deathCross[i]) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'circle', color: COL_DEATH, size: 'tiny' });
-    }
+/**
+ * ta.rising(source, length) / ta.falling(source, length) of the library, one bar at a time: a counter of rises (falls)
+ * from the bar before beyond the 1e-10 tolerance, reset by any other step, unchanged by a step from or to na
+ */
+class MonotonicStep {
+  private count = 0;
+  private prev = NaN;
+  private nextCount = 0;
+  private nextPrev = NaN;
+  constructor(private readonly length: number, private readonly test: (a: number, b: number) => boolean) {}
+  step(v: number): boolean {
+    let count = this.count;
+    if (Number.isFinite(v) && Number.isFinite(this.prev)) count = this.test(v, this.prev) ? count + 1 : 0;
+    this.nextCount = count;
+    this.nextPrev = v;
+    return count >= this.length;
   }
+  commit(): void {
+    this.count = this.nextCount;
+    this.prev = this.nextPrev;
+  }
+}
 
-  const P = (vals: number[], show: boolean, c?: string) => bars.map((b, i) => {
-    const v = show ? vals[i] : NaN;
-    return c === undefined
-      ? { time: b.time, value: Number.isFinite(v) ? v : NaN }
-      : { time: b.time, value: Number.isFinite(v) ? v : NaN, color: c };
-  });
+/** calc_ma(type, close, len): the type is a constant input, so one branch runs on every bar */
+function maStep(type: MaType, len: number): MaStep {
+  switch (type) {
+    case 'SMA': { const m = taStep.sma(); return { step: (x) => m.step(x, len), commit: () => m.commit() }; }
+    case 'EMA': return taStep.ema(len);
+    case 'WMA': { const m = taStep.wma(); return { step: (x) => m.step(x, len), commit: () => m.commit() }; }
+    case 'HMA': return taStep.hma(len);
+    default: return taStep.rma(len);
+  }
+}
 
+interface GdVars {
+  longAttivo: boolean;
+  shortAttivo: boolean;
+  massimoLocaleLong: number;
+  minimoLocaleShort: number;
+}
+
+interface GdRun extends BarRunState<GdVars> {
+  ma1: MaStep;
+  ma2: MaStep;
+  atr: ReturnType<typeof taStep.atr>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  falling: MonotonicStep;
+  rising: MonotonicStep;
+  golden: ReturnType<typeof taStep.crossover>;
+  death: ReturnType<typeof taStep.crossunder>;
+  basis: ReturnType<typeof taStep.sma>;
+  dev: ReturnType<typeof taStep.stdev>;
+  plots: Point[][];
+  colLong: string[];
+  colShort: string[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<GoldenDeathCrossWithReActivationInputs>): BarStudy<GdRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const t = cfg.treshold;
+  const laneFrac = 0.32;
+  // ta.hma(x, 1) calls ta.wma(x, 0): a Pine runtime error
+  const hmaError = (cfg.maType1 === 'HMA' && Math.floor(cfg.maLen1 / 2) < 1) ||
+    (cfg.maType2 === 'HMA' && Math.floor(cfg.maLen2 / 2) < 1);
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P(ribShortTop, cfg.showRibbon),
-      plot1: P(ribShortBot, cfg.showRibbon),
-      plot2: P(ribLongBot, cfg.showRibbon),
-      plot3: P(ribLongTop, cfg.showRibbon),
-      plot4: P(bbUpper, cfg.showBBLines, COL_EDGE),
-      plot5: P(bbLower, cfg.showBBLines, COL_EDGE),
-      plot6: P(basis, cfg.showBasis, COL_BASIS),
-      plot7: P(ma1, cfg.showGlow, COL_GLOW1),
-      plot8: P(ma2, cfg.showGlow, COL_GLOW2),
-      plot9: P(ma1, true, COL_MA1),
-      plot10: P(ma2, true, COL_MA2),
+    init() {
+      const s: GdRun = {
+        ma1: maStep(cfg.maType1, cfg.maLen1), ma2: maStep(cfg.maType2, cfg.maLen2), atr: taStep.atr(cfg.atrLen),
+        rsi: taStep.rsi(cfg.rsiLen), falling: new MonotonicStep(2, compare.lt), rising: new MonotonicStep(2, compare.gt),
+        golden: taStep.crossover(), death: taStep.crossunder(), basis: taStep.sma(), dev: taStep.stdev(),
+        plots: Array.from({ length: 11 }, () => []), colLong: [], colShort: [], markers: [],
+        steps: [],
+        vars: { longAttivo: false, shortAttivo: false, massimoLocaleLong: NaN, minimoLocaleShort: NaN },
+        lists: [], series: [],
+      };
+      s.steps = [s.ma1, s.ma2, s.atr, s.rsi, s.falling, s.rising, s.golden, s.death, s.basis, s.dev];
+      s.lists = [s.markers];
+      s.series = [...s.plots, s.colLong, s.colShort];
+      return s;
     },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', colors: colShort, options: { title: 'BB Upper Ribbon (SHORT)' } },
-      { plot1: 'plot3', plot2: 'plot2', colors: colLong, options: { title: 'BB Lower Ribbon (LONG)' } },
-    ],
-    markers,
+    bar(s, i, bars) {
+      if (hmaError) throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function. It must be > 0.");
+      const b = bars[i];
+      const v = s.vars;
+      const close = b.close;
+      const ma1 = s.ma1.step(close);
+      const ma2 = s.ma2.step(close);
+      const d = ma1 - ma2;
+
+      const atrVal = s.atr.step(b.high, b.low, b.close);
+      const rsi = s.rsi.step(close);
+      const distFalling2 = s.falling.step(d);
+      const distRising2 = s.rising.step(d);
+      const goldenCross = s.golden.step(ma1, ma2);
+      const deathCross = s.death.step(ma1, ma2);
+
+      // Bollinger ribbon anchors
+      const basis = s.basis.step(close, cfg.bbLen);
+      const dev = cfg.bbMult * s.dev.step(close, cfg.bbLen);
+      const bbUpper = basis + dev;
+      const bbLower = basis - dev;
+      const ribShortTop = bbUpper;
+      const ribShortBot = bbUpper - (bbUpper - basis) * laneFrac;
+      const ribLongBot = bbLower;
+      const ribLongTop = bbLower + (basis - bbLower) * laneFrac;
+
+      if (goldenCross) {
+        v.longAttivo = true;
+        v.shortAttivo = false;
+        v.massimoLocaleLong = d;
+      }
+      if (deathCross) {
+        v.shortAttivo = true;
+        v.longAttivo = false;
+        v.minimoLocaleShort = d;
+      }
+      // Pine math.max / math.min: na when an argument is na
+      if (v.longAttivo) v.massimoLocaleLong = Math.max(nz(v.massimoLocaleLong, d), d);
+      if (v.shortAttivo) v.minimoLocaleShort = Math.min(nz(v.minimoLocaleShort, d), d);
+      if (v.longAttivo && distFalling2) v.longAttivo = false;
+      if (v.shortAttivo && distRising2) v.shortAttivo = false;
+
+      const coolingLong = !v.longAttivo && distFalling2;
+      const coolingShort = !v.shortAttivo && distRising2;
+      const canReactivateLong = !v.longAttivo && gt(d, nz(v.massimoLocaleLong, d) + t) && distRising2;
+      const canReactivateShort = !v.shortAttivo && lt(d, nz(v.minimoLocaleShort, d) - t) && distFalling2;
+      let justReactLong = false;
+      let justReactShort = false;
+      if (canReactivateLong) {
+        v.longAttivo = true;
+        justReactLong = true;
+      }
+      if (canReactivateShort) {
+        v.shortAttivo = true;
+        justReactShort = true;
+      }
+
+      // Strength
+      let distNorm = 0.0;
+      if (gt(atrVal, 0.0)) distNorm = clamp01(Math.abs(d) / atrVal);
+      const rsiLong = clamp01((50.0 - rsi) / 20.0);
+      const rsiShort = clamp01((rsi - 50.0) / 20.0);
+      const baseLong = clamp01(0.65 * distNorm + 0.35 * rsiLong);
+      const baseShort = clamp01(0.65 * distNorm + 0.35 * rsiShort);
+      let reactEdgeLong = 0.0;
+      let reactEdgeShort = 0.0;
+      if (gt(atrVal, 0.0)) {
+        reactEdgeLong = clamp01((d - (nz(v.massimoLocaleLong, d) + t)) / atrVal);
+        reactEdgeShort = clamp01((nz(v.minimoLocaleShort, d) - t - d) / atrVal);
+      }
+      const reactLong = clamp01(0.55 * reactEdgeLong + 0.45 * rsiLong);
+      const reactShort = clamp01(0.55 * reactEdgeShort + 0.45 * rsiShort);
+
+      let sLong = NaN;
+      let sShort = NaN;
+      if (justReactLong) sLong = reactLong;
+      else if (v.longAttivo) sLong = baseLong;
+      else if (coolingLong) sLong = 0.35 * baseLong;
+      if (justReactShort) sShort = reactShort;
+      else if (v.shortAttivo) sShort = baseShort;
+      else if (coolingShort) sShort = 0.35 * baseShort;
+
+      // Colours
+      const hueLong = color.from_gradient(nz(sLong, 0.0), 0.0, 1.0, C_AQUA_LO, C_AQUA_HI);
+      const hueShort = color.from_gradient(nz(sShort, 0.0), 0.0, 1.0, C_TIT_LO, C_TIT_HI);
+      const aLong = alphaFromStrength(sLong, coolingLong && !v.longAttivo && !justReactLong);
+      const aShort = alphaFromStrength(sShort, coolingShort && !v.shortAttivo && !justReactShort);
+      s.colLong[i] = cfg.showRibbon && !isNaN(sLong) ? String(color.new(hueLong, aLong)) : 'transparent';
+      s.colShort[i] = cfg.showRibbon && !isNaN(sShort) ? String(color.new(hueShort, aShort)) : 'transparent';
+
+      // Cross dots
+      if (goldenCross) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'circle', color: COL_GOLDEN, size: 'tiny' });
+      }
+      if (deathCross) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'circle', color: COL_DEATH, size: 'tiny' });
+      }
+
+      const time = b.time;
+      const p = s.plots;
+      p[0][i] = { time, value: fin(cfg.showRibbon ? ribShortTop : NaN) };
+      p[1][i] = { time, value: fin(cfg.showRibbon ? ribShortBot : NaN) };
+      p[2][i] = { time, value: fin(cfg.showRibbon ? ribLongBot : NaN) };
+      p[3][i] = { time, value: fin(cfg.showRibbon ? ribLongTop : NaN) };
+      p[4][i] = { time, value: fin(cfg.showBBLines ? bbUpper : NaN), color: COL_EDGE };
+      p[5][i] = { time, value: fin(cfg.showBBLines ? bbLower : NaN), color: COL_EDGE };
+      p[6][i] = { time, value: fin(cfg.showBasis ? basis : NaN), color: COL_BASIS };
+      p[7][i] = { time, value: fin(cfg.showGlow ? ma1 : NaN), color: COL_GLOW1 };
+      p[8][i] = { time, value: fin(cfg.showGlow ? ma2 : NaN), color: COL_GLOW2 };
+      p[9][i] = { time, value: fin(ma1), color: COL_MA1 };
+      p[10][i] = { time, value: fin(ma2), color: COL_MA2 };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(), plot6: p[6].slice(), plot7: p[7].slice(), plot8: p[8].slice(), plot9: p[9].slice(),
+          plot10: p[10].slice(),
+        },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', colors: s.colShort.slice(), options: { title: 'BB Upper Ribbon (SHORT)' } },
+          { plot1: 'plot3', plot2: 'plot2', colors: s.colLong.slice(), options: { title: 'BB Lower Ribbon (LONG)' } },
+        ],
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GoldenDeathCrossWithReActivationInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GoldenDeathCrossWithReActivationInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const GoldenDeathCrossWithReActivation = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -26,6 +26,7 @@ import {
 import type { BgColorData } from '../types';
 import { timezoneOf, type ChartContext } from '../chart-context';
 import { chartTimeframe } from '../anchor-period';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CodeForAll4ForexSessionsInputs {
   /** NY open window (08:00-08:10) */
@@ -113,11 +114,13 @@ const withTransp = (hex: string, transp: number): string => {
 /** Session strings without days: Monday to Friday in this version of the language */
 const WEEKDAYS = ':23456';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CodeForAll4ForexSessionsInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface ForexSessionsRun extends BarRunState<Record<string, never>> {
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<CodeForAll4ForexSessionsInputs>): BarStudy<ForexSessionsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const windows: { on: boolean; session: string; color: string }[] = [
     { on: cfg.doNYOpen, session: '0800-0810', color: withTransp(WHITE, 20) },
@@ -133,27 +136,50 @@ export function calculate(
     { on: cfg.doEurSession, session: '0300-1200', color: withTransp(EUROPE, 75) },
     { on: cfg.doEurClose, session: '1150-1200', color: withTransp(EUROPE, 20) },
   ];
-
-  // time(period, session) != 0: the bar is in the session (na compares false), in the exchange time zone
-  const timezone = timezoneOf(chart);
-  const tf = chartTimeframe(bars, chart);
-  const barMs = tf === '' ? undefined : timeframe.in_seconds(tf) * 1000;
-
-  const bgColors: BgColorData[] = [];
-  for (const bar of bars) {
-    const tMs = bar.time * 1000;
-    windows.forEach((w, k) => {
-      if (w.on && pineTime.inSession(tMs, w.session + WEEKDAYS, timezone, barMs)) {
-        bgColors.push({ id: `bgcolor${k}`, time: bar.time, color: w.color });
-      }
-    });
-  }
-
+  let timezone = 'UTC';
+  let barMs: number | undefined;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    bgColors,
+    // the chart timeframe comes from the context, else from the bar gaps
+    key: (bars, chart) => chartTimeframe(bars, chart),
+    init(bars, chart) {
+      // time(period, session) != 0: the bar is in the session (na compares false), in the exchange time zone
+      timezone = timezoneOf(chart);
+      const tf = chartTimeframe(bars, chart);
+      barMs = tf === '' ? undefined : timeframe.in_seconds(tf) * 1000;
+      const s: ForexSessionsRun = { bgColors: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.bgColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const tMs = bar.time * 1000;
+      windows.forEach((w, k) => {
+        if (w.on && pineTime.inSession(tMs, w.session + WEEKDAYS, timezone, barMs)) {
+          s.bgColors.push({ id: `bgcolor${k}`, time: bar.time, color: w.color });
+        }
+      });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
 }
 
-export const CodeForAll4ForexSessions = { calculate, metadata, defaultInputs, inputConfig, plotConfig, barColorConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CodeForAll4ForexSessionsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<CodeForAll4ForexSessionsInputs> = {},
+  chart?: ChartContext,
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const CodeForAll4ForexSessions = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, barColorConfig };

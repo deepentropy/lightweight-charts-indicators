@@ -15,9 +15,11 @@
  * Original notice: © sgbpulse
  */
 
-import { ta, math, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeWeightedMoneyFlowInputs {
   /** Weight of the OBV (%) */
@@ -100,106 +102,165 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
 const CENTER = 50.0;
 
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface VwmfVars {
+  /** ta.accdist: the running sum */
+  ad: number;
+}
+
+interface VwmfRun extends BarRunState<VwmfVars> {
+  mfi: ReturnType<typeof taStep.mfi>;
+  obv: ReturnType<typeof taStep.obv>;
+  pvt: ReturnType<typeof taStep.cum>;
+  sumMfv: ReturnType<typeof taStep.sum>;
+  sumVol: ReturnType<typeof taStep.sum>;
+  /** ma() of OBV, PVT and A/D */
+  mas: Array<{ step(v: number): number; commit(): void }>;
+  /** ta.highest / ta.lowest of the three differences (normalizeCentered) */
+  his: Array<ReturnType<typeof taStep.highest>>;
+  los: Array<ReturnType<typeof taStep.lowest>>;
+  combined: number[];
+  plots: Point[][];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<VolumeWeightedMoneyFlowInputs>): BarStudy<VwmfRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const len = cfg.volumeFlowMaLength;
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  const totalWeight = cfg.wObv + cfg.wPvt + cfg.wAccDist + cfg.wMfi + cfg.wCmf;
+  const sideColor = (v: number) => (gt(v, CENTER) ? cfg.bullishColor : cfg.bearishColor);
+
+  // ma(type, source, length): SMA or EMA
+  const maStep = (): VwmfRun['mas'][number] => {
+    if (cfg.maType === 'SMA') { const m = taStep.sma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+    return taStep.ema(len);
+  };
+
+  return {
+    init() {
+      const s: VwmfRun = {
+        mfi: taStep.mfi(cfg.mfiLength), obv: taStep.obv(), pvt: taStep.cum(), sumMfv: taStep.sum(), sumVol: taStep.sum(),
+        mas: [maStep(), maStep(), maStep()],
+        his: [taStep.highest(), taStep.highest(), taStep.highest()],
+        los: [taStep.lowest(), taStep.lowest(), taStep.lowest()],
+        combined: [],
+        plots: Array.from({ length: 8 }, () => []),
+        bgColors: [],
+        flags: Array.from({ length: 6 }, () => []),
+        times: Array.from({ length: 6 }, () => []),
+        steps: [], vars: { ad: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.mfi, s.obv, s.pvt, s.sumMfv, s.sumVol, ...s.mas, ...s.his, ...s.los];
+      s.lists = [s.bgColors, ...s.times];
+      s.series = [s.combined, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const c = b.close;
+      const h = b.high;
+      const l = b.low;
+      const hlc3 = (b.high + b.low + b.close) / 3;
+      const vol = b.volume ?? NaN;
+      const stdMfi = s.mfi.step(hlc3, vol);
+      const stdObv = s.obv.step(c, vol);
+      const pc = i > 0 ? bars[i - 1].close : NaN;
+      const stdPvt = s.pvt.step(i === 0 ? NaN : ((c - pc) / pc) * vol);
+      // ta.accdist: a bar whose money flow volume is na adds nothing
+      const adMfv = (((c - l) - (h - c)) / (h - l)) * vol;
+      if (Number.isFinite(adMfv)) s.vars.ad += adMfv;
+      const stdAccumDist = s.vars.ad;
+      // close == high and close == low or high == low ? 0 : ((2 * close - low - high) / (high - low)) * volume
+      const mfv = (eq(c, h) && eq(c, l)) || eq(h, l) ? 0 : ((2 * c - l - h) / (h - l)) * vol;
+      const stdCmf = s.sumMfv.step(mfv, len) / s.sumVol.step(vol, len);
+
+      // normalizeCentered(source - ma(source), length): max(|highest|, |lowest|); 50 when it is 0 or na
+      const normalizeCentered = (k: number, src: number) => {
+        const v = src - s.mas[k].step(src);
+        const maxAbs = Math.max(Math.abs(s.his[k].step(v, len)), Math.abs(s.los[k].step(v, len)));
+        return ne(maxAbs, 0) ? (v / maxAbs) * CENTER + CENTER : CENTER;
+      };
+      const normalizedMfi = stdMfi;
+      const normalizedObv = normalizeCentered(0, stdObv);
+      const normalizedPvt = normalizeCentered(1, stdPvt);
+      const normalizedAccDist = normalizeCentered(2, stdAccumDist);
+      const normalizedCmf = (stdCmf + 1) * CENTER;
+
+      let cv = normalizedMfi * cfg.wMfi + normalizedObv * cfg.wObv + normalizedPvt * cfg.wPvt
+        + normalizedAccDist * cfg.wAccDist + normalizedCmf * cfg.wCmf;
+      if (ne(totalWeight, 0)) cv = cv / totalWeight;
+      s.combined[i] = cv;
+      let bullishCount = 0;
+      let bearishCount = 0;
+      for (const v of [normalizedMfi, normalizedObv, normalizedPvt, normalizedAccDist, normalizedCmf]) {
+        if (gt(v, CENTER)) bullishCount++;
+        if (lt(v, CENTER)) bearishCount++;
+      }
+      const bullStrength = (bullishCount / 5.0) * 100;
+      const bearStrength = 100.0 - bullStrength;
+      const active = cfg.bgColorLogic === 'Weighted Value' ? cv : bullStrength;
+      if (gt(active, CENTER)) {
+        s.bgColors.push({ time, color: String(color.new(cfg.bullishColor, 100 - bullishCount * 15)) });
+      } else if (lt(active, CENTER)) {
+        s.bgColors.push({ time, color: String(color.new(cfg.bearishColor, 100 - bearishCount * 15)) });
+      }
+
+      // The alertconditions of the original
+      const prev = i > 0 ? s.combined[i - 1] : NaN;
+      const flags = [
+        gt(cv, CENTER) && le(prev, CENTER),
+        lt(cv, CENTER) && ge(prev, CENTER),
+        ge(bullStrength, 60) && lt(bullStrength, 100),
+        ge(bullStrength, 100),
+        ge(bearStrength, 60) && lt(bearStrength, 100),
+        ge(bearStrength, 100),
+      ];
+      flags.forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(time as number);
+      });
+
+      const comp = (v: number): Point => ({ time, value: fin(v), color: sideColor(v) });
+      s.plots[0][i] = { time, value: fin(cv), color: cfg.oscillatorColor };
+      s.plots[1][i] = { time, value: bullStrength };
+      s.plots[2][i] = { time, value: bearStrength };
+      s.plots[3][i] = comp(normalizedObv);
+      s.plots[4][i] = comp(normalizedPvt);
+      s.plots[5][i] = comp(normalizedAccDist);
+      s.plots[6][i] = comp(normalizedCmf);
+      s.plots[7][i] = comp(normalizedMfi);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        hlines: [{ value: CENTER, options: { title: 'Center Line', color: color.gray, linestyle: 'dashed' } }],
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeWeightedMoneyFlowInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VolumeWeightedMoneyFlowInputs> = {},
 ): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const len = cfg.volumeFlowMaLength;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-
-  // ma(type, source, length): SMA or EMA
-  const ma = (src: number[]) => A(cfg.maType === 'SMA' ? ta.sma(S(src), len) : ta.ema(S(src), len));
-
-  // normalizeCentered(source, length): max(|highest|, |lowest|); 50 when it is 0 or na
-  const normalizeCentered = (src: number[]) => {
-    const hi = A(ta.highest(S(src), len));
-    const lo = A(ta.lowest(S(src), len));
-    return src.map((v, i) => {
-      const maxAbs = Math.max(Math.abs(hi[i]), Math.abs(lo[i]));
-      return ne(maxAbs, 0) ? (v / maxAbs) * CENTER + CENTER : CENTER;
-    });
-  };
-
-  const hlc3 = bars.map((b) => (b.high + b.low + b.close) / 3);
-  const vol = bars.map((b) => b.volume ?? NaN);
-  const stdMfi = A(ta.mfi(S(hlc3), cfg.mfiLength, S(vol)));
-  const stdObv = A(ta.obv(bars));
-  const stdPvt = A(ta.pvt(bars));
-  const stdAccumDist = A(ta.accdist(bars));
-  // close == high and close == low or high == low ? 0 : ((2 * close - low - high) / (high - low)) * volume
-  const mfv = bars.map((b, i) => ((eq(b.close, b.high) && eq(b.close, b.low)) || eq(b.high, b.low)
-    ? 0 : ((2 * b.close - b.low - b.high) / (b.high - b.low)) * vol[i]));
-  const sumMfv = A(math.sum(S(mfv), len) as Series);
-  const sumVol = A(math.sum(S(vol), len) as Series);
-  const stdCmf = sumMfv.map((v, i) => v / sumVol[i]);
-
-  const obvMa = ma(stdObv);
-  const pvtMa = ma(stdPvt);
-  const adMa = ma(stdAccumDist);
-
-  const normalizedMfi = stdMfi;
-  const normalizedObv = normalizeCentered(stdObv.map((v, i) => v - obvMa[i]));
-  const normalizedPvt = normalizeCentered(stdPvt.map((v, i) => v - pvtMa[i]));
-  const normalizedAccDist = normalizeCentered(stdAccumDist.map((v, i) => v - adMa[i]));
-  const normalizedCmf = stdCmf.map((v) => (v + 1) * CENTER);
-
-  const totalWeight = cfg.wObv + cfg.wPvt + cfg.wAccDist + cfg.wMfi + cfg.wCmf;
-  const combined: number[] = new Array(n);
-  const bullStrength: number[] = new Array(n);
-  const bearStrength: number[] = new Array(n);
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const comps = [normalizedMfi[i], normalizedObv[i], normalizedPvt[i], normalizedAccDist[i], normalizedCmf[i]];
-    let c = normalizedMfi[i] * cfg.wMfi + normalizedObv[i] * cfg.wObv + normalizedPvt[i] * cfg.wPvt
-      + normalizedAccDist[i] * cfg.wAccDist + normalizedCmf[i] * cfg.wCmf;
-    if (ne(totalWeight, 0)) c = c / totalWeight;
-    combined[i] = c;
-    const bullishCount = comps.filter((v) => gt(v, CENTER)).length;
-    const bearishCount = comps.filter((v) => lt(v, CENTER)).length;
-    bullStrength[i] = (bullishCount / 5.0) * 100;
-    bearStrength[i] = 100.0 - bullStrength[i];
-    const active = cfg.bgColorLogic === 'Weighted Value' ? c : bullStrength[i];
-    if (gt(active, CENTER)) {
-      bgColors.push({ time: bars[i].time, color: String(color.new(cfg.bullishColor, 100 - bullishCount * 15)) });
-    } else if (lt(active, CENTER)) {
-      bgColors.push({ time: bars[i].time, color: String(color.new(cfg.bearishColor, 100 - bearishCount * 15)) });
-    }
-  }
-
-  // The alertconditions of the original
-  const prevOf = (i: number) => (i > 0 ? combined[i - 1] : NaN);
-  const crossAbove = combined.map((v, i) => gt(v, CENTER) && le(prevOf(i), CENTER));
-  const crossBelow = combined.map((v, i) => lt(v, CENTER) && ge(prevOf(i), CENTER));
-  const bullHigh = bullStrength.map((v) => ge(v, 60) && lt(v, 100));
-  const bullAll = bullStrength.map((v) => ge(v, 100));
-  const bearHigh = bearStrength.map((v) => ge(v, 60) && lt(v, 100));
-  const bearAll = bearStrength.map((v) => ge(v, 100));
-
-  const t = (i: number) => bars[i].time;
-  const sideColor = (v: number) => (gt(v, CENTER) ? cfg.bullishColor : cfg.bearishColor);
-  const comp = (arr: number[]) => arr.map((v, i) => ({ time: t(i), value: fin(v), color: sideColor(v) }));
-  const plots = {
-    plot0: combined.map((v, i) => ({ time: t(i), value: fin(v), color: cfg.oscillatorColor })),
-    plot1: bullStrength.map((v, i) => ({ time: t(i), value: v })),
-    plot2: bearStrength.map((v, i) => ({ time: t(i), value: v })),
-    plot3: comp(normalizedObv),
-    plot4: comp(normalizedPvt),
-    plot5: comp(normalizedAccDist),
-    plot6: comp(normalizedCmf),
-    plot7: comp(normalizedMfi),
-  };
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines: [{ value: CENTER, options: { title: 'Center Line', color: color.gray, linestyle: 'dashed' } }],
-    bgColors,
-    alerts: alertStates(alertConditions, bars, [crossAbove, crossBelow, bullHigh, bullAll, bearHigh, bearAll]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -214,6 +275,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const VolumeWeightedMoneyFlow = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

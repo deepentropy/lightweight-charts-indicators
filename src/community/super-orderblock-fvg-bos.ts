@@ -21,9 +21,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, compare, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, compare, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, BoxData, MarkerData, PineSize } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type BorderStyle = 'dashed' | 'dotted' | 'solid';
 
@@ -290,269 +292,309 @@ const RJB = 3;
 const BOS = 4;
 const MAX_BOXES = 500;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SuperOrderblockFvgBosInputs> = {},
-): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; boxes: BoxData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; boxes: BoxData[] };
+
+interface SobVars {
+  /** The boxes made, in creation order (the deleted ones until the next clean-up of max_boxes_count) */
+  alive: ScriptBox[];
+  /** bearOB, bullOB, bearFVG, bullFVG, bearRJB, bullRJB, bearBOS, bullBOS: a slot can hold na (no box made) */
+  kinds: Array<ScriptBox | null>[];
+}
+
+interface SobRun extends BarRunState<SobVars> {
+  hih: PivotStep;
+  lol: PivotStep;
+  bosUp: ReturnType<typeof taStep.crossover>;
+  bosDown: ReturnType<typeof taStep.crossunder>;
+  volEma: ReturnType<typeof taStep.ema>;
+  top: number[];
+  bottom: number[];
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+/** The boxes cloned (they are changed in place), the arrays of each kind pointing to the clones */
+function copySobVars(v: SobVars): SobVars {
+  const clones = new Map<ScriptBox, ScriptBox>();
+  const alive = v.alive.map((b) => {
+    const c = { ...b };
+    clones.set(b, c);
+    return c;
+  });
+  const kinds = v.kinds.map((arr) => arr.map((b) => (b ? clones.get(b) ?? { ...b } : null)));
+  return { alive, kinds };
+}
+
+function study(inputs: Partial<SuperOrderblockFvgBosInputs>): BarStudy<SobRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const interval = barInterval(bars);
   const { gt, lt, ne } = compare;
-
-  // History reads: na before the first bar
-  const O = (i: number) => (i >= 0 ? bars[i].open : NaN);
-  const H = (i: number) => (i >= 0 ? bars[i].high : NaN);
-  const L = (i: number) => (i >= 0 ? bars[i].low : NaN);
-  const C = (i: number) => (i >= 0 ? bars[i].close : NaN);
-
-  const isUp = (i: number) => gt(C(i), O(i));
-  const isDown = (i: number) => lt(C(i), O(i));
-  const isObUp = (i: number) => isDown(i - 1) && isUp(i) && gt(C(i), H(i - 1));
-  const isObDown = (i: number) => isUp(i - 1) && isDown(i) && lt(C(i), L(i - 1));
-  const isFvgUp = (i: number) => gt(L(i), H(i - 2));
-  const isFvgDown = (i: number) => lt(H(i), L(i - 2));
-
-  // Pivots: top = ta.valuewhen(hih, high[pivotLookup], 0) (hih as a condition: not na and not 0)
   const look = cfg.pivotLookup;
-  const highS = new Series(bars, (b) => b.high);
-  const lowS = new Series(bars, (b) => b.low);
-  const closeS = new Series(bars, (b) => b.close);
-  const hih = ta.pivothigh(highS, look, look).toArray();
-  const lol = ta.pivotlow(lowS, look, look).toArray();
-  const isTrue = (v: number | null | undefined) => v != null && !Number.isNaN(v) && v !== 0;
-  const top: number[] = new Array(n).fill(NaN);
-  const bottom: number[] = new Array(n).fill(NaN);
-  for (let i = 0; i < n; i++) {
-    top[i] = isTrue(hih[i]) ? H(i - look) : i > 0 ? top[i - 1] : NaN;
-    bottom[i] = isTrue(lol[i]) ? L(i - look) : i > 0 ? bottom[i - 1] : NaN;
-  }
-  const at = (a: number[], i: number) => (i >= 0 ? a[i] : NaN);
-
-  // plot(top, offset = -pivotLookup, color = top != top[1] ? na : (plotPVT ? pvtTopColor : na)): the value and
-  // the colour of bar i are drawn on bar i - pivotLookup
-  type Point = { time: number; value: number; color?: string };
-  const plot0: Point[] = [];
-  const plot1: Point[] = [];
-  for (let i = look; i < n; i++) {
-    const time = barTime(bars, i - look, interval);
-    plot0.push({ time, value: top[i], color: ne(top[i], at(top, i - 1)) || !cfg.plotPVT ? 'transparent' : cfg.pvtTopColor });
-    plot1.push({ time, value: bottom[i], color: ne(bottom[i], at(bottom, i - 1)) || !cfg.plotPVT ? 'transparent' : cfg.pvtBottomColor });
-  }
-
-  // Break of structure crossings (the calls are inside `if plotBOS`: an input, so they run on every bar or never)
-  const topS = Series.fromArray(bars, top);
-  const bottomS = Series.fromArray(bars, bottom);
-  const bosUp = cfg.plotBOS ? ta.crossover(cfg.useHighLowForBullishBoS ? highS : closeS, topS).toArray() : [];
-  const bosDown = cfg.plotBOS ? ta.crossunder(cfg.useHighLowForBearishBoS ? lowS : closeS, bottomS).toArray() : [];
-
-  // High volume bars
-  const volS = new Series(bars, (b) => b.volume ?? NaN);
-  const volEma = ta.ema(volS, cfg.hvbEMAPeriod).toArray();
-
-  const allBoxes: ScriptBox[] = [];
-  let alive: ScriptBox[] = [];
-  const newBox = (
-    left: number, top_: number, right: number, bottom_: number, bg: string, borderTransp: number, style: BorderStyle,
-    text: string, size: PineSize, textColor: string,
-  ): ScriptBox => {
-    const b: ScriptBox = {
-      left, top: top_, right, bottom: bottom_, bgColor: bg, borderColor: String(color.new_color(bg, borderTransp)),
-      borderStyle: style, text, textSize: size, textColor, deleted: false,
-    };
-    allBoxes.push(b);
-    // max_boxes_count = 500: when a new box brings the count above 505, the oldest are deleted until 500 remain
-    alive.push(b);
-    if (alive.length > MAX_BOXES + 5) {
-      alive = alive.filter((x) => !x.deleted);
-      if (alive.length > MAX_BOXES + 5) {
-        for (const old of alive.splice(0, alive.length - MAX_BOXES)) old.deleted = true;
-      }
-    }
-    return b;
-  };
-  // if array.size(arr) > max: box.delete(array.shift(arr)); array.push(arr, box). A slot can hold na (no box made).
-  const keep = (arr: Array<ScriptBox | null>, max: number, b: ScriptBox | null) => {
-    if (arr.length > max) {
-      const old = arr.shift();
-      if (old) old.deleted = true;
-    }
-    arr.push(b);
-  };
-
-  const bearOB: Array<ScriptBox | null> = [];
-  const bullOB: Array<ScriptBox | null> = [];
-  const bearFVG: Array<ScriptBox | null> = [];
-  const bullFVG: Array<ScriptBox | null> = [];
-  const bearRJB: Array<ScriptBox | null> = [];
-  const bullRJB: Array<ScriptBox | null> = [];
-  const bearBOS: Array<ScriptBox | null> = [];
-  const bullBOS: Array<ScriptBox | null> = [];
-
-  // _controlBox: a box whose right edge is on the current bar grows one bar, unless the bar crosses its bottom
-  // or its top
-  const controlBox = (arr: Array<ScriptBox | null>, i: number, type: number) => {
-    const high = H(i);
-    const low = L(i);
-    for (let k = arr.length - 1; k >= 0; k--) {
-      const b = arr[k];
-      if (!b || b.deleted) continue;
-      const crossed = (gt(high, b.bottom) && lt(low, b.bottom)) || (gt(high, b.top) && lt(low, b.top));
-      if (cfg.bosBoxFlag && type === BOS) {
-        if (i + cfg.bosBoxLength - 1 === b.right && !crossed) b.right = i + cfg.bosBoxLength - 1;
-      } else if ((cfg.filterMitOB && type === OB) || (cfg.filterMitFVG && type === FVG) || (cfg.filterMitRJB && type === RJB)) {
-        if (i === b.right && !crossed) {
-          b.right = i + 1;
-        } else {
-          const mit = type === OB ? cfg.mitOBColor : type === FVG ? cfg.mitFVGColor : cfg.mitRJBColor;
-          b.bgColor = mit;
-          b.borderColor = mit;
-        }
-      } else if (i === b.right && !crossed) {
-        b.right = i + 1;
-      }
-    }
-  };
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-
-    // Order blocks
-    if (isObUp(i - 1) && cfg.plotOB) {
-      keep(bullOB, cfg.obMaxBoxSet, newBox(i - 2, H(i - 2), i, Math.min(L(i - 2), L(i - 1)), cfg.obBullColor,
-        cfg.obBorderTransparency, cfg.obBoxBorder, cfg.plotLabelOB ? 'OB+' : '', cfg.obLabelSize, cfg.obLabelColor));
-    }
-    if (isObDown(i - 1) && cfg.plotOB) {
-      keep(bearOB, cfg.obMaxBoxSet, newBox(i - 2, Math.max(H(i - 2), H(i - 1)), i, L(i - 2), cfg.obBearColor,
-        cfg.obBorderTransparency, cfg.obBoxBorder, cfg.plotLabelOB ? 'OB-' : '', cfg.obLabelSize, cfg.obLabelColor));
-    }
-    if (cfg.plotOB) {
-      controlBox(bearOB, i, OB);
-      controlBox(bullOB, i, OB);
-    }
-
-    // Fair value gaps
-    const fvgText = (sign: string) => (cfg.plotLabelFVG ? `FVG${sign}` : '');
-    if (isFvgUp(i)) {
-      let b: ScriptBox | null = null;
-      const t = top[i];
-      const structure = cfg.plotStructureBreakingFVG && gt(C(i - 1), t) && lt(L(i - 1), t) && lt(H(i - 2), t) && gt(L(i), t);
-      if (structure || cfg.plotFVG) {
-        b = newBox(i - 2, L(i), i, H(i - 2), structure ? cfg.fvgStructBreakingColor : cfg.fvgBullColor,
-          cfg.fvgBorderTransparency, cfg.fvgBoxBorder, fvgText('+'), cfg.fvgLabelSize, cfg.fvgLabelColor);
-      }
-      keep(bullFVG, cfg.fvgMaxBoxSet, b);
-    }
-    if (isFvgDown(i)) {
-      let b: ScriptBox | null = null;
-      const bt = bottom[i];
-      const structure = cfg.plotStructureBreakingFVG && lt(C(i - 1), bt) && gt(H(i - 1), bt) && gt(L(i - 2), bt) && lt(H(i), bt);
-      if (structure || cfg.plotFVG) {
-        b = newBox(i - 2, L(i - 2), i, H(i), structure ? cfg.fvgStructBreakingColor : cfg.fvgBearColor,
-          cfg.fvgBorderTransparency, cfg.fvgBoxBorder, fvgText('-'), cfg.fvgLabelSize, cfg.fvgLabelColor);
-      }
-      keep(bearFVG, cfg.fvgMaxBoxSet, b);
-    }
-    if (cfg.plotFVG || cfg.plotStructureBreakingFVG) {
-      controlBox(bearFVG, i, FVG);
-      controlBox(bullFVG, i, FVG);
-    }
-
-    // Rejection blocks
-    if (cfg.plotRJB) {
-      const rjbBox = (left: number, top_: number, bottom_: number, bg: string, sign: string) =>
-        newBox(left, top_, i, bottom_, bg, cfg.rjbBorderTransparency, cfg.rjbBoxBorder,
-          cfg.plotLabelRJB ? `RJB${sign}` : '', cfg.rjbLabelSize, cfg.rjbLabelColor);
-      const downOb = isObDown(i - 1);
-      // on the wick of the trapped bar / on the wick of the signal bar
-      if (downOb && lt(H(i - 1), C(i - 2) + 0.2 * (H(i - 2) - C(i - 2)))) {
-        keep(bearRJB, cfg.rjbMaxBoxSet, rjbBox(i - 2, H(i - 2), C(i - 2), cfg.rjbBearColor, '-'));
-      }
-      if (downOb && gt(H(i - 1), H(i - 2))) {
-        keep(bearRJB, cfg.rjbMaxBoxSet, rjbBox(i - 1, H(i - 1), O(i - 1), cfg.rjbBearColor, '-'));
-      }
-      const upOb = isObUp(i - 1);
-      if (upOb && gt(L(i - 1), C(i - 2) - 0.2 * (C(i - 2) - L(i - 2)))) {
-        keep(bullRJB, cfg.rjbMaxBoxSet, rjbBox(i - 2, C(i - 2), L(i - 2), cfg.rjbBullColor, '+'));
-      }
-      if (upOb && lt(L(i - 1), L(i - 2))) {
-        keep(bullRJB, cfg.rjbMaxBoxSet, rjbBox(i - 1, O(i - 1), L(i - 1), cfg.rjbBullColor, '+'));
-      }
-      controlBox(bearRJB, i, RJB);
-      controlBox(bullRJB, i, RJB);
-    }
-
-    // Breaks of structure
-    if (cfg.plotBOS) {
-      const right = cfg.bosBoxFlag ? i + cfg.bosBoxLength : i + 1;
-      if (bosUp[i]) {
-        keep(bullBOS, cfg.bosMaxBoxSet, newBox(i, top[i], right, bottom[i], cfg.bosBullColor, cfg.bosBorderTransparency,
-          cfg.bosBoxBorder, cfg.plotLabelBOS ? 'BoS+' : '', cfg.bosLabelSize, cfg.bosLabelColor));
-      }
-      if (bosDown[i]) {
-        keep(bearBOS, cfg.bosMaxBoxSet, newBox(i, top[i], right, bottom[i], cfg.bosBearColor, cfg.bosBorderTransparency,
-          cfg.bosBoxBorder, cfg.plotLabelBOS ? 'BoS-' : '', cfg.bosLabelSize, cfg.bosLabelColor));
-      }
-      controlBox(bearBOS, i, BOS);
-      controlBox(bullBOS, i, BOS);
-    }
-
-    // Premium Premium / Discount Discount
-    const t0 = top[i];
-    const t1 = at(top, i - 1);
-    const b0 = bottom[i];
-    const b1 = at(bottom, i - 1);
-    const maxH = Math.max(H(i), H(i - 1));
-    const minL = Math.min(L(i), L(i - 1));
-    const sweptTop = (gt(maxH, t0) && lt(C(i), t0)) || (gt(maxH, t1) && lt(C(i), t1));
-    const sweptBottom = (lt(minL, b0) && gt(C(i), b0)) || (lt(minL, b1) && gt(C(i), b1));
-    const premiumPremium = cfg.plotPPDD && isObDown(i) && sweptTop;
-    const discountDiscount = cfg.plotPPDD && isObUp(i) && sweptBottom;
-    const premiumPremium1 = cfg.plotPPDD && isUp(i - 1) && isDown(i) && lt(C(i), O(i - 1)) && sweptTop && !premiumPremium;
-    const discountDiscount1 = cfg.plotPPDD && isDown(i - 1) && isUp(i) && gt(C(i), O(i - 1)) && sweptBottom && !discountDiscount;
-    if (premiumPremium) markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: cfg.ppddBearColor, size: 'tiny' });
-    if (discountDiscount) markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: cfg.ppddBullColor, size: 'tiny' });
-    if (premiumPremium1) markers.push({ time, position: 'aboveBar', shape: 'xcross', color: cfg.ppddBearColor, size: 'tiny' });
-    if (discountDiscount1) markers.push({ time, position: 'belowBar', shape: 'xcross', color: cfg.ppddBullColor, size: 'tiny' });
-
-    // High volume bars: barcolor(bull), then barcolor(bear)
-    const vol = bars[i].volume ?? NaN;
-    const isHighVolume = gt(vol, cfg.hvbMultiplier * (volEma[i] ?? NaN));
-    if (cfg.plotHVB && isHighVolume) {
-      // barcolor(... isUp(0) and isHighVolume ? hvbBullColor : na, title = "Bullish HVB") / "Bearish HVB"
-      if (isUp(i)) barColors.push({ time, color: cfg.hvbBullColor, id: 'barcolor0' });
-      else if (isDown(i)) barColors.push({ time, color: cfg.hvbBearColor, id: 'barcolor1' });
-    }
-
-    // Stacked OB + FVG
-    if (cfg.plotOBFVG && isFvgDown(i) && isObDown(i - 1)) {
-      markers.push({ time, position: 'aboveBar', shape: 'diamond', color: cfg.obfvgBearColor, size: 'tiny' });
-    }
-    if (cfg.plotOBFVG && isFvgUp(i) && isObUp(i - 1)) {
-      markers.push({ time, position: 'belowBar', shape: 'diamond', color: cfg.obfvgBullColor, size: 'tiny' });
-    }
-  }
-
-  // Boxes alive after the last bar; a box with an na point (or a left edge before the first bar) is not drawn
-  const boxes: BoxData[] = [];
-  for (const b of allBoxes) {
-    if (b.deleted || b.left < 0 || Number.isNaN(b.top) || Number.isNaN(b.bottom)) continue;
-    boxes.push({
-      time1: barTime(bars, b.left, interval), price1: b.top, time2: barTime(bars, b.right, interval), price2: b.bottom,
-      bgColor: b.bgColor, borderColor: b.borderColor, borderWidth: 1, borderStyle: b.borderStyle,
-      text: b.text, textSize: b.textSize, textColor: b.textColor, textHAlign: 'right', textVAlign: 'bottom',
-    });
-  }
+  // isTrue(hih): as a condition, not na and not 0
+  const isTrue = (v: number) => !Number.isNaN(v) && v !== 0;
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    barColors,
-    boxes,
+    init() {
+      const s: SobRun = {
+        hih: new PivotStep(look, look, true), lol: new PivotStep(look, look, false), bosUp: taStep.crossover(),
+        bosDown: taStep.crossunder(), volEma: taStep.ema(cfg.hvbEMAPeriod),
+        top: [], bottom: [], plot0: [], plot1: [], markers: [], barColors: [],
+        steps: [], vars: { alive: [], kinds: Array.from({ length: 8 }, () => []) }, lists: [], series: [],
+      };
+      s.steps = [s.hih, s.lol, s.bosUp, s.bosDown, s.volEma];
+      // plot0 / plot1 start pivotLookup bars after the first bar: one point per bar from there
+      s.lists = [s.plot0, s.plot1, s.markers, s.barColors];
+      s.series = [s.top, s.bottom];
+      return s;
+    },
+    copyVars: copySobVars,
+    bar(s, i, bars) {
+      const v = s.vars;
+      const [bearOB, bullOB, bearFVG, bullFVG, bearRJB, bullRJB, bearBOS, bullBOS] = v.kinds;
+      // History reads: na before the first bar
+      const O = (k: number) => (k >= 0 ? bars[k].open : NaN);
+      const H = (k: number) => (k >= 0 ? bars[k].high : NaN);
+      const L = (k: number) => (k >= 0 ? bars[k].low : NaN);
+      const C = (k: number) => (k >= 0 ? bars[k].close : NaN);
+
+      const isUp = (k: number) => gt(C(k), O(k));
+      const isDown = (k: number) => lt(C(k), O(k));
+      const isObUp = (k: number) => isDown(k - 1) && isUp(k) && gt(C(k), H(k - 1));
+      const isObDown = (k: number) => isUp(k - 1) && isDown(k) && lt(C(k), L(k - 1));
+      const isFvgUp = (k: number) => gt(L(k), H(k - 2));
+      const isFvgDown = (k: number) => lt(H(k), L(k - 2));
+
+      // Pivots: top = ta.valuewhen(hih, high[pivotLookup], 0) (hih as a condition: not na and not 0)
+      const b = bars[i];
+      const hih = s.hih.step(i, b.high);
+      const lol = s.lol.step(i, b.low);
+      const top = isTrue(hih) ? H(i - look) : i > 0 ? s.top[i - 1] : NaN;
+      const bottom = isTrue(lol) ? L(i - look) : i > 0 ? s.bottom[i - 1] : NaN;
+      s.top[i] = top;
+      s.bottom[i] = bottom;
+      const t1 = i > 0 ? s.top[i - 1] : NaN;
+      const b1 = i > 0 ? s.bottom[i - 1] : NaN;
+
+      // plot(top, offset = -pivotLookup, color = top != top[1] ? na : (plotPVT ? pvtTopColor : na)): the value and
+      // the colour of bar i are drawn on bar i - pivotLookup
+      if (i >= look) {
+        const time = barTime(bars, i - look);
+        s.plot0.push({ time, value: top, color: ne(top, t1) || !cfg.plotPVT ? 'transparent' : cfg.pvtTopColor });
+        s.plot1.push({ time, value: bottom, color: ne(bottom, b1) || !cfg.plotPVT ? 'transparent' : cfg.pvtBottomColor });
+      }
+
+      // Break of structure crossings (the calls are inside `if plotBOS`: an input, so they run on every bar or never)
+      const bosUp = cfg.plotBOS && s.bosUp.step(cfg.useHighLowForBullishBoS ? b.high : b.close, top);
+      const bosDown = cfg.plotBOS && s.bosDown.step(cfg.useHighLowForBearishBoS ? b.low : b.close, bottom);
+
+      // High volume bars
+      const vol = b.volume ?? NaN;
+      const volEma = s.volEma.step(vol);
+
+      const newBox = (
+        left: number, top_: number, right: number, bottom_: number, bg: string, borderTransp: number, style: BorderStyle,
+        text: string, size: PineSize, textColor: string,
+      ): ScriptBox => {
+        const nb: ScriptBox = {
+          left, top: top_, right, bottom: bottom_, bgColor: bg, borderColor: String(color.new_color(bg, borderTransp)),
+          borderStyle: style, text, textSize: size, textColor, deleted: false,
+        };
+        // max_boxes_count = 500: when a new box brings the count above 505, the oldest are deleted until 500 remain
+        v.alive.push(nb);
+        if (v.alive.length > MAX_BOXES + 5) {
+          v.alive = v.alive.filter((x) => !x.deleted);
+          if (v.alive.length > MAX_BOXES + 5) {
+            for (const old of v.alive.splice(0, v.alive.length - MAX_BOXES)) old.deleted = true;
+          }
+        }
+        return nb;
+      };
+      // if array.size(arr) > max: box.delete(array.shift(arr)); array.push(arr, box). A slot can hold na (no box made).
+      const keep = (arr: Array<ScriptBox | null>, max: number, nb: ScriptBox | null) => {
+        if (arr.length > max) {
+          const old = arr.shift();
+          if (old) old.deleted = true;
+        }
+        arr.push(nb);
+      };
+
+      // _controlBox: a box whose right edge is on the current bar grows one bar, unless the bar crosses its bottom
+      // or its top
+      const controlBox = (arr: Array<ScriptBox | null>, type: number) => {
+        const high = H(i);
+        const low = L(i);
+        for (let k = arr.length - 1; k >= 0; k--) {
+          const bx = arr[k];
+          if (!bx || bx.deleted) continue;
+          const crossed = (gt(high, bx.bottom) && lt(low, bx.bottom)) || (gt(high, bx.top) && lt(low, bx.top));
+          if (cfg.bosBoxFlag && type === BOS) {
+            if (i + cfg.bosBoxLength - 1 === bx.right && !crossed) bx.right = i + cfg.bosBoxLength - 1;
+          } else if ((cfg.filterMitOB && type === OB) || (cfg.filterMitFVG && type === FVG) || (cfg.filterMitRJB && type === RJB)) {
+            if (i === bx.right && !crossed) {
+              bx.right = i + 1;
+            } else {
+              const mit = type === OB ? cfg.mitOBColor : type === FVG ? cfg.mitFVGColor : cfg.mitRJBColor;
+              bx.bgColor = mit;
+              bx.borderColor = mit;
+            }
+          } else if (i === bx.right && !crossed) {
+            bx.right = i + 1;
+          }
+        }
+      };
+
+      const time = b.time;
+
+      // Order blocks
+      if (isObUp(i - 1) && cfg.plotOB) {
+        keep(bullOB, cfg.obMaxBoxSet, newBox(i - 2, H(i - 2), i, Math.min(L(i - 2), L(i - 1)), cfg.obBullColor,
+          cfg.obBorderTransparency, cfg.obBoxBorder, cfg.plotLabelOB ? 'OB+' : '', cfg.obLabelSize, cfg.obLabelColor));
+      }
+      if (isObDown(i - 1) && cfg.plotOB) {
+        keep(bearOB, cfg.obMaxBoxSet, newBox(i - 2, Math.max(H(i - 2), H(i - 1)), i, L(i - 2), cfg.obBearColor,
+          cfg.obBorderTransparency, cfg.obBoxBorder, cfg.plotLabelOB ? 'OB-' : '', cfg.obLabelSize, cfg.obLabelColor));
+      }
+      if (cfg.plotOB) {
+        controlBox(bearOB, OB);
+        controlBox(bullOB, OB);
+      }
+
+      // Fair value gaps
+      const fvgText = (sign: string) => (cfg.plotLabelFVG ? `FVG${sign}` : '');
+      if (isFvgUp(i)) {
+        let nb: ScriptBox | null = null;
+        const t = top;
+        const structure = cfg.plotStructureBreakingFVG && gt(C(i - 1), t) && lt(L(i - 1), t) && lt(H(i - 2), t) && gt(L(i), t);
+        if (structure || cfg.plotFVG) {
+          nb = newBox(i - 2, L(i), i, H(i - 2), structure ? cfg.fvgStructBreakingColor : cfg.fvgBullColor,
+            cfg.fvgBorderTransparency, cfg.fvgBoxBorder, fvgText('+'), cfg.fvgLabelSize, cfg.fvgLabelColor);
+        }
+        keep(bullFVG, cfg.fvgMaxBoxSet, nb);
+      }
+      if (isFvgDown(i)) {
+        let nb: ScriptBox | null = null;
+        const bt = bottom;
+        const structure = cfg.plotStructureBreakingFVG && lt(C(i - 1), bt) && gt(H(i - 1), bt) && gt(L(i - 2), bt) && lt(H(i), bt);
+        if (structure || cfg.plotFVG) {
+          nb = newBox(i - 2, L(i - 2), i, H(i), structure ? cfg.fvgStructBreakingColor : cfg.fvgBearColor,
+            cfg.fvgBorderTransparency, cfg.fvgBoxBorder, fvgText('-'), cfg.fvgLabelSize, cfg.fvgLabelColor);
+        }
+        keep(bearFVG, cfg.fvgMaxBoxSet, nb);
+      }
+      if (cfg.plotFVG || cfg.plotStructureBreakingFVG) {
+        controlBox(bearFVG, FVG);
+        controlBox(bullFVG, FVG);
+      }
+
+      // Rejection blocks
+      if (cfg.plotRJB) {
+        const rjbBox = (left: number, top_: number, bottom_: number, bg: string, sign: string) =>
+          newBox(left, top_, i, bottom_, bg, cfg.rjbBorderTransparency, cfg.rjbBoxBorder,
+            cfg.plotLabelRJB ? `RJB${sign}` : '', cfg.rjbLabelSize, cfg.rjbLabelColor);
+        const downOb = isObDown(i - 1);
+        // on the wick of the trapped bar / on the wick of the signal bar
+        if (downOb && lt(H(i - 1), C(i - 2) + 0.2 * (H(i - 2) - C(i - 2)))) {
+          keep(bearRJB, cfg.rjbMaxBoxSet, rjbBox(i - 2, H(i - 2), C(i - 2), cfg.rjbBearColor, '-'));
+        }
+        if (downOb && gt(H(i - 1), H(i - 2))) {
+          keep(bearRJB, cfg.rjbMaxBoxSet, rjbBox(i - 1, H(i - 1), O(i - 1), cfg.rjbBearColor, '-'));
+        }
+        const upOb = isObUp(i - 1);
+        if (upOb && gt(L(i - 1), C(i - 2) - 0.2 * (C(i - 2) - L(i - 2)))) {
+          keep(bullRJB, cfg.rjbMaxBoxSet, rjbBox(i - 2, C(i - 2), L(i - 2), cfg.rjbBullColor, '+'));
+        }
+        if (upOb && lt(L(i - 1), L(i - 2))) {
+          keep(bullRJB, cfg.rjbMaxBoxSet, rjbBox(i - 1, O(i - 1), L(i - 1), cfg.rjbBullColor, '+'));
+        }
+        controlBox(bearRJB, RJB);
+        controlBox(bullRJB, RJB);
+      }
+
+      // Breaks of structure
+      if (cfg.plotBOS) {
+        const right = cfg.bosBoxFlag ? i + cfg.bosBoxLength : i + 1;
+        if (bosUp) {
+          keep(bullBOS, cfg.bosMaxBoxSet, newBox(i, top, right, bottom, cfg.bosBullColor, cfg.bosBorderTransparency,
+            cfg.bosBoxBorder, cfg.plotLabelBOS ? 'BoS+' : '', cfg.bosLabelSize, cfg.bosLabelColor));
+        }
+        if (bosDown) {
+          keep(bearBOS, cfg.bosMaxBoxSet, newBox(i, top, right, bottom, cfg.bosBearColor, cfg.bosBorderTransparency,
+            cfg.bosBoxBorder, cfg.plotLabelBOS ? 'BoS-' : '', cfg.bosLabelSize, cfg.bosLabelColor));
+        }
+        controlBox(bearBOS, BOS);
+        controlBox(bullBOS, BOS);
+      }
+
+      // Premium Premium / Discount Discount
+      const t0 = top;
+      const b0 = bottom;
+      const maxH = Math.max(H(i), H(i - 1));
+      const minL = Math.min(L(i), L(i - 1));
+      const sweptTop = (gt(maxH, t0) && lt(C(i), t0)) || (gt(maxH, t1) && lt(C(i), t1));
+      const sweptBottom = (lt(minL, b0) && gt(C(i), b0)) || (lt(minL, b1) && gt(C(i), b1));
+      const premiumPremium = cfg.plotPPDD && isObDown(i) && sweptTop;
+      const discountDiscount = cfg.plotPPDD && isObUp(i) && sweptBottom;
+      const premiumPremium1 = cfg.plotPPDD && isUp(i - 1) && isDown(i) && lt(C(i), O(i - 1)) && sweptTop && !premiumPremium;
+      const discountDiscount1 = cfg.plotPPDD && isDown(i - 1) && isUp(i) && gt(C(i), O(i - 1)) && sweptBottom && !discountDiscount;
+      if (premiumPremium) s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: cfg.ppddBearColor, size: 'tiny' });
+      if (discountDiscount) s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: cfg.ppddBullColor, size: 'tiny' });
+      if (premiumPremium1) s.markers.push({ time, position: 'aboveBar', shape: 'xcross', color: cfg.ppddBearColor, size: 'tiny' });
+      if (discountDiscount1) s.markers.push({ time, position: 'belowBar', shape: 'xcross', color: cfg.ppddBullColor, size: 'tiny' });
+
+      // High volume bars: barcolor(bull), then barcolor(bear)
+      const isHighVolume = gt(vol, cfg.hvbMultiplier * (volEma ?? NaN));
+      if (cfg.plotHVB && isHighVolume) {
+        // barcolor(... isUp(0) and isHighVolume ? hvbBullColor : na, title = "Bullish HVB") / "Bearish HVB"
+        if (isUp(i)) s.barColors.push({ time, color: cfg.hvbBullColor, id: 'barcolor0' });
+        else if (isDown(i)) s.barColors.push({ time, color: cfg.hvbBearColor, id: 'barcolor1' });
+      }
+
+      // Stacked OB + FVG
+      if (cfg.plotOBFVG && isFvgDown(i) && isObDown(i - 1)) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'diamond', color: cfg.obfvgBearColor, size: 'tiny' });
+      }
+      if (cfg.plotOBFVG && isFvgUp(i) && isObUp(i - 1)) {
+        s.markers.push({ time, position: 'belowBar', shape: 'diamond', color: cfg.obfvgBullColor, size: 'tiny' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // a box edge after the last bar: the time of a future bar (the bar interval of the whole set)
+      let interval: number | undefined;
+      const timeOf = (k: number) => {
+        if (k >= n && interval === undefined) interval = barInterval(bars);
+        return barTime(bars, k, interval);
+      };
+      // Boxes alive after the last bar; a box with an na point (or a left edge before the first bar) is not drawn
+      const boxes: BoxData[] = [];
+      for (const b of s.vars.alive) {
+        if (b.deleted || b.left < 0 || Number.isNaN(b.top) || Number.isNaN(b.bottom)) continue;
+        boxes.push({
+          time1: timeOf(b.left), price1: b.top, time2: timeOf(b.right), price2: b.bottom,
+          bgColor: b.bgColor, borderColor: b.borderColor, borderWidth: 1, borderStyle: b.borderStyle,
+          text: b.text, textSize: b.textSize, textColor: b.textColor, textHAlign: 'right', textVAlign: 'bottom',
+        });
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        boxes,
+      };
+    },
   };
 }
 
-export const SuperOrderblockFvgBos = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SuperOrderblockFvgBosInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SuperOrderblockFvgBosInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const SuperOrderblockFvgBos = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

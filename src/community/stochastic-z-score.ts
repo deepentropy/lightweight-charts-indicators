@@ -20,10 +20,8 @@
  */
 
 import {
-  ta,
+  taStep,
   color,
-  Series,
-  getSourceSeries,
   type Bar,
   type FillConfig,
   type FillData,
@@ -35,7 +33,8 @@ import {
   type SourceType,
 } from 'oakscriptjs';
 import { foregroundColorOf, backgroundColorOf, type ChartContext } from '../chart-context';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface StochasticZScoreInputs {
   /** Price series of all the calculations */
@@ -130,153 +129,229 @@ const lt = (a: number, b: number) => b - a > EPS;
 
 type Point = { time: number; value: number; color?: string };
 
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface StochZRun extends BarRunState<Record<string, never>> {
+  basis: ReturnType<typeof taStep.sma>;
+  dev: ReturnType<typeof taStep.stdev>;
+  stoch: ReturnType<typeof taStep.stoch>;
+  hma: ReturnType<typeof taStep.hma>;
+  crossAny: ReturnType<typeof taStep.cross>;
+  crossUp: ReturnType<typeof taStep.crossover>;
+  crossDown: ReturnType<typeof taStep.crossunder>;
+  crossZeroUp: ReturnType<typeof taStep.crossover>;
+  crossZeroDown: ReturnType<typeof taStep.crossunder>;
+  ltmUp: ReturnType<typeof taStep.crossover>;
+  ltmDown: ReturnType<typeof taStep.crossunder>;
+  zscore: number[];
+  ss: number[];
+  plots: Point[][];
+  fill0Top: string[];
+  fill0Bottom: string[];
+  fill1Top: string[];
+  fill1Bottom: string[];
+  fill2: string[];
+  fill3TopValue: number[];
+  fill3Top: string[];
+  fill3Bottom: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<StochasticZScoreInputs>): BarStudy<StochZRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { len, green, red } = cfg;
+  const value = barSource(cfg.src);
+  let CHART_FG = '';
+  let CHART_BG = '';
+  // ta.alma(zscore, len, 0, 0.1): the weights of the library function
+  let weights: number[] = [];
+  const C = (c: unknown) => String(c);
+  const num = (v: number) => (Number.isFinite(v) ? v : NaN);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init(_bars, chart) {
+      // chart.fg_color / chart.bg_color
+      CHART_FG = foregroundColorOf(chart);
+      CHART_BG = backgroundColorOf(chart);
+      const m = 0 * (len - 1);
+      const sg = len / 0.1;
+      weights = [];
+      let weightSum = 0;
+      for (let i = 0; i < len; i++) {
+        const weight = Math.exp(-1 * Math.pow(i - m, 2) / (2 * Math.pow(sg, 2)));
+        weights.push(weight);
+        weightSum += weight;
+      }
+      for (let i = 0; i < len; i++) weights[i] /= weightSum;
+      const s: StochZRun = {
+        basis: taStep.sma(), dev: taStep.stdev(), stoch: taStep.stoch(len), hma: taStep.hma(len),
+        crossAny: taStep.cross(), crossUp: taStep.crossover(), crossDown: taStep.crossunder(),
+        crossZeroUp: taStep.crossover(), crossZeroDown: taStep.crossunder(), ltmUp: taStep.crossover(),
+        ltmDown: taStep.crossunder(),
+        zscore: [], ss: [], plots: Array.from({ length: 9 }, () => []),
+        fill0Top: [], fill0Bottom: [], fill1Top: [], fill1Bottom: [], fill2: [], fill3TopValue: [], fill3Top: [],
+        fill3Bottom: [], markers: [], flags: Array.from({ length: 9 }, () => []), times: Array.from({ length: 9 }, () => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.basis, s.dev, s.stoch, s.hma, s.crossAny, s.crossUp, s.crossDown, s.crossZeroUp, s.crossZeroDown, s.ltmUp, s.ltmDown];
+      s.lists = [s.markers, ...s.times];
+      s.series = [
+        s.zscore, s.ss, ...s.plots, s.fill0Top, s.fill0Bottom, s.fill1Top, s.fill1Bottom, s.fill2, s.fill3TopValue,
+        s.fill3Top, s.fill3Bottom, ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time as number;
+      // basis = ta.sma(src, len); zscore = (src - basis) / ta.stdev(src, len)
+      const src = value(bars[i]) ?? NaN;
+      const basis = s.basis.step(src, len) ?? NaN;
+      const dev = s.dev.step(src, len) ?? NaN;
+      const zscore = (src - basis) / dev;
+      s.zscore[i] = zscore;
+      // stochZ = ta.stoch(zscore, zscore, zscore, len); scaledSZ = stochZ / 25 - 2
+      const stochZ = s.stoch.step(zscore, zscore, zscore) ?? NaN;
+      const scaled = stochZ / 25 - 2;
+      // smoothed_scaled = ta.hma(scaledSZ, len); ltm = ta.alma(zscore, len, 0, 0.1)
+      const ss = s.hma.step(scaled) ?? NaN;
+      s.ss[i] = ss;
+      let ltm = NaN;
+      if (!(i < len - 1)) {
+        ltm = 0;
+        for (let j = 0; j < len; j++) ltm += s.zscore[i - len + 1 + j] * weights[j];
+      }
+      const prev = i > 0 ? s.ss[i - 1] : NaN;
+
+      const rising = gt(ss, prev);
+      const mx0 = Math.max(0, ss);
+      const mn0 = Math.min(0, ss);
+      const ltmColor = C(color.new(gt(ltm, 0) ? green : red, 70));
+      // zscore_color: the transparency max(min(int((1 - abs(zscore) / 4) * 100), 70), 70) is 70, na when zscore is na
+      // (color.new with an na transparency gives no colour)
+      const zTransp = Math.max(Math.min(Math.trunc((1 - Math.abs(zscore) / 4) * 100), 70), 70);
+      const p = s.plots;
+      p[0][i] = { time: t, value: num(zscore), color: C(color.new(color.from_gradient(zscore, -2, 2, red, green), zTransp)) };
+      p[1][i] = { time: t, value: num(ss), color: C(color.new(GRAY, rising ? 0 : 50)) };
+      p[2][i] = { time: t, value: num(prev), color: C(color.new(GRAY, rising ? 20 : 70)) };
+      p[3][i] = { time: t, value: num(ltm), color: ltmColor };
+      p[4][i] = { time: t, value: 0, color: '#2962FF' };
+      p[5][i] = { time: t, value: 2, color: C(color.new(color.from_gradient(mx0, 0, 2, GRAY, red), 70)) };
+      p[6][i] = { time: t, value: -2, color: C(color.new(color.from_gradient(mn0, -2, 0, green, GRAY), 70)) };
+      p[7][i] = { time: t, value: 2.5, color: C(color.from_gradient(mx0, 0, 2.5, GRAY, red)) };
+      p[8][i] = { time: t, value: -2.5, color: C(color.from_gradient(mn0, -2.5, 0, green, GRAY)) };
+
+      // Crossings: one ta.* call per Pine call site (same values, so the shared results are equal)
+      const crossAny = !!s.crossAny.step(ss, prev);
+      const crossUp = !!s.crossUp.step(ss, prev);
+      const crossDown = !!s.crossDown.step(ss, prev);
+      const bullRev = crossUp && gt(ltm, 0) && lt(prev, -2);
+      const bearRev = crossDown && lt(ltm, 0) && gt(prev, 2);
+
+      // plotchar(ta.cross(ss, prev) ? prev : na, "Momentum Shift", "●", location.absolute, chart.fg_color, size.tiny)
+      if (crossAny && Number.isFinite(prev)) {
+        s.markers.push({ id: 'char0', time: t, position: 'atPriceMiddle', price: prev, shape: 'circle', char: '●',
+          color: CHART_FG, size: 'tiny' });
+      }
+      // plotchar(bullish reversal ? -3 : na, "Bullish Reversal", "▲", location.absolute, green, size.tiny)
+      if (bullRev) {
+        s.markers.push({ id: 'char1', time: t, position: 'atPriceMiddle', price: -3, shape: 'circle', char: '▲', color: green, size: 'tiny' });
+      }
+      // plotchar(bearish reversal ? 3 : na, "Bearish Reversal", "▼", location.absolute, red, size.tiny)
+      if (bearRev) {
+        s.markers.push({ id: 'char2', time: t, position: 'atPriceMiddle', price: 3, shape: 'circle', char: '▼', color: red, size: 'tiny' });
+      }
+      // plotshape(..., "Bullish Trend", shape.labelup, location.belowbar, color.new(green, 50), text = "▲",
+      //   textcolor = chart.fg_color, size = size.small, force_overlay = true)
+      if (bullRev) {
+        s.markers.push({ id: 'shape0', time: t, position: 'belowBar', shape: 'labelUp', color: C(color.new(green, 50)),
+          text: '▲', textColor: CHART_FG, size: 'small', forceOverlay: true });
+      }
+      if (bearRev) {
+        s.markers.push({ id: 'shape1', time: t, position: 'aboveBar', shape: 'labelDown', color: C(color.new(red, 50)),
+          text: '▼', textColor: CHART_FG, size: 'small', forceOverlay: true });
+      }
+
+      // fill(u1, u, 2.5, 2, upper_fill_color, upper_fill_color_100, "Upper Fill")
+      s.fill0Top[i] = C(color.new(color.from_gradient(mx0, 0, 2, CHART_BG, red), 50));
+      s.fill0Bottom[i] = C(color.new(color.from_gradient(mx0, 0, 2, CHART_BG, red), 100));
+      // fill(d, d1, -2, -2.5, lower_fill_color, lower_fill_color_50, "Lower Fill")
+      s.fill1Top[i] = C(color.new(color.from_gradient(mn0, -2, 0, green, CHART_BG), 100));
+      s.fill1Bottom[i] = C(color.new(color.from_gradient(mn0, -2, 0, green, CHART_BG), 50));
+      // fill(main, main1, color.new(color.gray, ss > prev ? 20 : 70), "Oscillator Fill")
+      s.fill2[i] = C(color.new(GRAY, rising ? 20 : 70));
+      // fill(longtm, mid, ltm, 0, ltm_color, color.new(ltm > 0 ? green : red, 90))
+      s.fill3TopValue[i] = num(ltm);
+      s.fill3Top[i] = ltmColor;
+      s.fill3Bottom[i] = C(color.new(gt(ltm, 0) ? green : red, 90));
+
+      const crossZeroUp = !!s.crossZeroUp.step(ss, 0);
+      const crossZeroDown = !!s.crossZeroDown.step(ss, 0);
+      const ltmUp = !!s.ltmUp.step(ltm, 0);
+      const ltmDown = !!s.ltmDown.step(ltm, 0);
+      const f = s.flags;
+      const flag = (k: number, v: boolean) => {
+        f[k][i] = v;
+        if (v) s.times[k].push(t);
+      };
+      flag(0, crossAny);
+      flag(1, bullRev);
+      flag(2, bearRev);
+      flag(3, crossZeroUp);
+      flag(4, crossZeroDown);
+      flag(5, ltmUp);
+      flag(6, ltmDown);
+      flag(7, gt(ss, 2.5));
+      flag(8, lt(ss, -2.5));
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const constant = <T>(v: T): T[] => new Array(n).fill(v);
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      const fills: FillData[] = [
+        {
+          id: 'fill0', plot1: 'plot7', plot2: 'plot5', options: { title: 'Upper Fill' },
+          gradient: { topValue: constant(2.5), bottomValue: constant(2), topColor: s.fill0Top.slice(), bottomColor: s.fill0Bottom.slice() },
+        },
+        {
+          id: 'fill1', plot1: 'plot6', plot2: 'plot8', options: { title: 'Lower Fill' },
+          gradient: { topValue: constant(-2), bottomValue: constant(-2.5), topColor: s.fill1Top.slice(), bottomColor: s.fill1Bottom.slice() },
+        },
+        { id: 'fill2', plot1: 'plot1', plot2: 'plot2', options: { title: 'Oscillator Fill' }, colors: s.fill2.slice() },
+        {
+          id: 'fill3', plot1: 'plot3', plot2: 'plot4', options: { title: 'Plots Background' },
+          gradient: { topValue: s.fill3TopValue.slice(), bottomValue: constant(0), topColor: s.fill3Top.slice(), bottomColor: s.fill3Bottom.slice() },
+        },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<StochasticZScoreInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<StochasticZScoreInputs> = {},
   chart?: ChartContext,
-): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const { len, green, red } = cfg;
-  // chart.fg_color / chart.bg_color
-  const CHART_FG = foregroundColorOf(chart);
-  const CHART_BG = backgroundColorOf(chart);
-  const A = (s: Series) => s.toArray().map((v) => (v == null ? NaN : v));
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const B = (s: Series) => s.toArray().map((v) => !!v);
-
-  // basis = ta.sma(src, len); zscore = (src - basis) / ta.stdev(src, len)
-  const srcS = getSourceSeries(bars, cfg.src);
-  const src = A(srcS);
-  const basis = A(ta.sma(srcS, len));
-  const dev = A(ta.stdev(srcS, len));
-  const zscore = src.map((v, i) => (v - basis[i]) / dev[i]);
-  const zS = S(zscore);
-  // stochZ = ta.stoch(zscore, zscore, zscore, len); scaledSZ = stochZ / 25 - 2
-  const stochZ = A(ta.stoch(zS, zS, zS, len));
-  const scaled = stochZ.map((v) => v / 25 - 2);
-  // smoothed_scaled = ta.hma(scaledSZ, len); ltm = ta.alma(zscore, len, 0, 0.1)
-  const ss = A(ta.hma(S(scaled), len));
-  const ltm = A(ta.alma(zS, len, 0, 0.1));
-  const prev = ss.map((_v, i) => (i > 0 ? ss[i - 1] : NaN));
-  const ssS = S(ss);
-  const prevS = S(prev);
-
-  const t = (i: number) => bars[i].time as number;
-  const num = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const C = (c: unknown) => String(c);
-  const constant = (v: number, colorAt: (i: number) => string): Point[] =>
-    bars.map((_b, i) => ({ time: t(i), value: v, color: colorAt(i) }));
-
-  const rising = (i: number) => gt(ss[i], prev[i]);
-  const mx0 = (i: number) => Math.max(0, ss[i]);
-  const mn0 = (i: number) => Math.min(0, ss[i]);
-  const ltmColor = (i: number) => C(color.new(gt(ltm[i], 0) ? green : red, 70));
-
-  // zscore_color: the transparency max(min(int((1 - abs(zscore) / 4) * 100), 70), 70) is 70, na when zscore is na
-  // (color.new with an na transparency gives no colour)
-  const zTransp = (i: number) => Math.max(Math.min(Math.trunc((1 - Math.abs(zscore[i]) / 4) * 100), 70), 70);
-  const plots: Record<string, Point[]> = {
-    plot0: bars.map((_b, i) => ({ time: t(i), value: num(zscore[i]), color: C(color.new(color.from_gradient(zscore[i], -2, 2, red, green), zTransp(i))) })),
-    plot1: bars.map((_b, i) => ({ time: t(i), value: num(ss[i]), color: C(color.new(GRAY, rising(i) ? 0 : 50)) })),
-    plot2: bars.map((_b, i) => ({ time: t(i), value: num(prev[i]), color: C(color.new(GRAY, rising(i) ? 20 : 70)) })),
-    plot3: bars.map((_b, i) => ({ time: t(i), value: num(ltm[i]), color: ltmColor(i) })),
-    plot4: constant(0, () => '#2962FF'),
-    plot5: constant(2, (i) => C(color.new(color.from_gradient(mx0(i), 0, 2, GRAY, red), 70))),
-    plot6: constant(-2, (i) => C(color.new(color.from_gradient(mn0(i), -2, 0, green, GRAY), 70))),
-    plot7: constant(2.5, (i) => C(color.from_gradient(mx0(i), 0, 2.5, GRAY, red))),
-    plot8: constant(-2.5, (i) => C(color.from_gradient(mn0(i), -2.5, 0, green, GRAY))),
-  };
-
-  // Crossings: one ta.* call per Pine call site (same values, so the shared results are equal)
-  const crossAny = B(ta.cross(ssS, prevS));
-  const crossUp = B(ta.crossover(ssS, prevS));
-  const crossDown = B(ta.crossunder(ssS, prevS));
-  const bullRev = bars.map((_b, i) => crossUp[i] && gt(ltm[i], 0) && lt(prev[i], -2));
-  const bearRev = bars.map((_b, i) => crossDown[i] && lt(ltm[i], 0) && gt(prev[i], 2));
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    // plotchar(ta.cross(ss, prev) ? prev : na, "Momentum Shift", "●", location.absolute, chart.fg_color, size.tiny)
-    if (crossAny[i] && Number.isFinite(prev[i])) {
-      markers.push({ id: 'char0', time: t(i), position: 'atPriceMiddle', price: prev[i], shape: 'circle', char: '●',
-        color: CHART_FG, size: 'tiny' });
-    }
-    // plotchar(bullish reversal ? -3 : na, "Bullish Reversal", "▲", location.absolute, green, size.tiny)
-    if (bullRev[i]) {
-      markers.push({ id: 'char1', time: t(i), position: 'atPriceMiddle', price: -3, shape: 'circle', char: '▲', color: green, size: 'tiny' });
-    }
-    // plotchar(bearish reversal ? 3 : na, "Bearish Reversal", "▼", location.absolute, red, size.tiny)
-    if (bearRev[i]) {
-      markers.push({ id: 'char2', time: t(i), position: 'atPriceMiddle', price: 3, shape: 'circle', char: '▼', color: red, size: 'tiny' });
-    }
-    // plotshape(..., "Bullish Trend", shape.labelup, location.belowbar, color.new(green, 50), text = "▲",
-    //   textcolor = chart.fg_color, size = size.small, force_overlay = true)
-    if (bullRev[i]) {
-      markers.push({ id: 'shape0', time: t(i), position: 'belowBar', shape: 'labelUp', color: C(color.new(green, 50)),
-        text: '▲', textColor: CHART_FG, size: 'small', forceOverlay: true });
-    }
-    if (bearRev[i]) {
-      markers.push({ id: 'shape1', time: t(i), position: 'aboveBar', shape: 'labelDown', color: C(color.new(red, 50)),
-        text: '▼', textColor: CHART_FG, size: 'small', forceOverlay: true });
-    }
-  }
-
-  const per = <T>(f: (i: number) => T): T[] => bars.map((_b, i) => f(i));
-  const fills: FillData[] = [
-    // fill(u1, u, 2.5, 2, upper_fill_color, upper_fill_color_100, "Upper Fill")
-    {
-      id: 'fill0', plot1: 'plot7', plot2: 'plot5', options: { title: 'Upper Fill' },
-      gradient: {
-        topValue: per(() => 2.5), bottomValue: per(() => 2),
-        topColor: per((i) => C(color.new(color.from_gradient(mx0(i), 0, 2, CHART_BG, red), 50))),
-        bottomColor: per((i) => C(color.new(color.from_gradient(mx0(i), 0, 2, CHART_BG, red), 100))),
-      },
-    },
-    // fill(d, d1, -2, -2.5, lower_fill_color, lower_fill_color_50, "Lower Fill")
-    {
-      id: 'fill1', plot1: 'plot6', plot2: 'plot8', options: { title: 'Lower Fill' },
-      gradient: {
-        topValue: per(() => -2), bottomValue: per(() => -2.5),
-        topColor: per((i) => C(color.new(color.from_gradient(mn0(i), -2, 0, green, CHART_BG), 100))),
-        bottomColor: per((i) => C(color.new(color.from_gradient(mn0(i), -2, 0, green, CHART_BG), 50))),
-      },
-    },
-    // fill(main, main1, color.new(color.gray, ss > prev ? 20 : 70), "Oscillator Fill")
-    {
-      id: 'fill2', plot1: 'plot1', plot2: 'plot2', options: { title: 'Oscillator Fill' },
-      colors: per((i) => C(color.new(GRAY, rising(i) ? 20 : 70))),
-    },
-    // fill(longtm, mid, ltm, 0, ltm_color, color.new(ltm > 0 ? green : red, 90))
-    {
-      id: 'fill3', plot1: 'plot3', plot2: 'plot4', options: { title: 'Plots Background' },
-      gradient: {
-        topValue: per((i) => num(ltm[i])), bottomValue: per(() => 0),
-        topColor: per(ltmColor), bottomColor: per((i) => C(color.new(gt(ltm[i], 0) ? green : red, 90))),
-      },
-    },
-  ];
-
-  const crossZeroUp = B(ta.crossover(ssS, 0));
-  const crossZeroDown = B(ta.crossunder(ssS, 0));
-  const ltmS = S(ltm);
-  const ltmUp = B(ta.crossover(ltmS, 0));
-  const ltmDown = B(ta.crossunder(ltmS, 0));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers,
-    alerts: alertStates(alertConditions, bars, [
-      crossAny, bullRev, bearRev, crossZeroUp, crossZeroDown, ltmUp, ltmDown,
-      per((i) => gt(ss[i], 2.5)), per((i) => lt(ss[i], -2.5)),
-    ]),
-  };
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const StochasticZScore = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

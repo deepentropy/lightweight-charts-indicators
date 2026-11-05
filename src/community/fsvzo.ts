@@ -16,10 +16,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
-import { barInterval, barTime } from '../bar-time';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type FsvzoGradientStyle = 'Modern' | 'Ocean' | 'Sunset' | 'Aurora' | 'Neon';
 
@@ -156,66 +157,62 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FsvzoInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
 
-  // ── VZO ──
-  // adf_trend_filter(close, adfWindow): 1 + clamp((sma(close, window / 3) - sma(close, window)) / stdev * 0.2, +/-0.1)
-  let trend: number[];
-  if (cfg.adfWindow > 10) {
-    // window / 3: a fractional length is truncated (checked: 50 / 3 gives the SMA of 16 bars)
-    const smaShort = A(ta.sma(S(close), Math.max(1, Math.trunc(cfg.adfWindow / 3))));
-    const smaLong = A(ta.sma(S(close), cfg.adfWindow));
-    const vol = A(ta.stdev(S(close), cfg.adfWindow));
-    trend = bars.map((_b, i) => {
-      const strength = gt(vol[i], 0) ? (smaShort[i] - smaLong[i]) / vol[i] : 0;
-      return 1.0 + Math.max(-0.1, Math.min(0.1, strength * 0.2));
-    });
-  } else {
-    trend = new Array(n).fill(1.0);
-  }
-  const volSma = A(ta.sma(S(bars.map((b) => b.volume ?? NaN)), cfg.length));
-  // rel_volume = volume / ta.sma(volume, length): a plain division (x / 0 is +-infinity, 0 / 0 NaN)
-  const relVolume = bars.map((b, i) => (b.volume ?? NaN) / volSma[i]);
-  const smoothedVol = A(ta.ema(S(relVolume), cfg.smoothingLength));
-  const priceChange = bars.map((b, i) => (i > 0 ? b.close - bars[i - 1].close : NaN));
-  const smoothedChange = A(ta.ema(S(priceChange), cfg.smoothingLength));
-  const baseMomentum = A(ta.ema(S(bars.map((_b, i) => smoothedChange[i] * smoothedVol[i])), cfg.smoothingLength));
-  const trendMomentum = A(ta.ema(S(bars.map((_b, i) => smoothedChange[i] * smoothedVol[i] * trend[i])), cfg.smoothingLength));
-  const momentum = bars.map((_b, i) => baseMomentum[i] * 0.7 + trendMomentum[i] * 0.3);
-  // math.max(na, 0) is na
-  const posMom = A(ta.ema(S(momentum.map((m) => (isNaN(m) ? NaN : Math.max(m, 0)))), cfg.length));
-  const negMom = A(ta.ema(S(momentum.map((m) => (isNaN(m) ? NaN : Math.abs(Math.min(m, 0))))), cfg.length));
-  const vzoRaw = bars.map((_b, i) => {
-    const ratio = gt(negMom[i], 0.00001) ? posMom[i] / negMom[i] : gt(posMom[i], 0.00001) ? 100.0 : 1.0;
-    return (100.0 * (ratio - 1.0)) / (ratio + 1.0);
-  });
-  const emaRaw = A(ta.ema(S(vzoRaw), cfg.smoothingLength));
-  const vzo = bars.map((_b, i) => {
-    let finalVzo: number;
-    if (cfg.fourierLength >= 5) {
-      // fourier_smooth(vzo_raw, fourierLength): weights exp(-k / (length * 0.3)), vzo_raw[k] na before the first bar
-      let sum = 0;
-      let weightSum = 0;
-      for (let k = 0; k < cfg.fourierLength; k++) {
-        const weight = Math.exp(-k / (cfg.fourierLength * 0.3));
-        sum = sum + (i - k >= 0 ? vzoRaw[i - k] : NaN) * weight;
-        weightSum = weightSum + weight;
-      }
-      finalVzo = emaRaw[i] * 0.6 + (sum / weightSum) * 0.4;
-    } else {
-      finalVzo = emaRaw[i];
-    }
-    return Math.min(Math.max(finalVzo, -100), 100);
-  });
-  const signal = A(ta.sma(S(vzo), cfg.signalLength));
+interface FsvzoVars {
+  /** ta.valuewhen(pivot, x, 1) histories: the last two values (older first) */
+  plO: readonly number[];
+  plL: readonly number[];
+  phO: readonly number[];
+  phH: readonly number[];
+  /** Calls of the four ta.barssince of validate_range (Pine v6 `and` is lazy), changed in place */
+  calls: number[];
+}
+
+interface FsvzoRun extends BarRunState<FsvzoVars> {
+  smaShort: ReturnType<typeof taStep.sma>;
+  smaLong: ReturnType<typeof taStep.sma>;
+  stdev: ReturnType<typeof taStep.stdev>;
+  volSma: ReturnType<typeof taStep.sma>;
+  smoothedVol: ReturnType<typeof taStep.ema>;
+  smoothedChange: ReturnType<typeof taStep.ema>;
+  baseMomentum: ReturnType<typeof taStep.ema>;
+  trendMomentum: ReturnType<typeof taStep.ema>;
+  posMom: ReturnType<typeof taStep.ema>;
+  negMom: ReturnType<typeof taStep.ema>;
+  emaRaw: ReturnType<typeof taStep.ema>;
+  signal: ReturnType<typeof taStep.sma>;
+  change3: ReturnType<typeof taStep.change>;
+  maxStrength: ReturnType<typeof taStep.highest>;
+  vzoEma: ReturnType<typeof taStep.ema>;
+  pl: PivotStep;
+  ph: PivotStep;
+  vzoRaw: number[];
+  vzo: number[];
+  signalArr: number[];
+  rising: boolean[];
+  lowPivot: boolean[];
+  highPivot: boolean[];
+  /** plot0..plot8 */
+  plots: Point[][];
+  /** plot9..plot12: one point per bar from bar pivot_bars_right (the point of bar i - pivot_bars_right) */
+  divPlots: Point[][];
+  fill0: string[];
+  fill1: { top: number[]; bottom: number[]; topColor: string[]; bottomColor: string[] };
+  fill2: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/** ta.valuewhen(cond, source, 1) history: the value added on a bar where the condition is true */
+const pushed = (h: readonly number[], v: number): readonly number[] => (h.length < 2 ? [...h, v] : [h[1]!, v]);
+/** occurrence 1 of the history (na before two values) */
+const second = (h: readonly number[]): number => (h.length === 2 ? h[0]! : NaN);
+
+function study(inputs: Partial<FsvzoInputs>): BarStudy<FsvzoRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const rb = cfg.pivotBarsRight;
 
   // ── Colours ──
   const pal = PALETTES[cfg.gradientStyle] ?? PALETTES.Modern;
@@ -226,11 +223,6 @@ export function calculate(
   const neutralPrimary = pal[4];
   const neutralSecondary = pal[5];
 
-  // intensity = max_strength > 0 ? momentum_strength / max_strength : 0
-  const momentumStrength = A(ta.change(S(vzo), 3)).map((v) => Math.abs(v));
-  const maxStrength = A(ta.highest(S(momentumStrength), 50));
-  const intensity = bars.map((_b, i) => (gt(maxStrength[i], 0) ? momentumStrength[i] / maxStrength[i] : 0));
-
   // get_dynamic_color: RGB between the primary and the secondary colour (math.round of na is na: channel 0)
   const dynColor = (isBullish: boolean, strength: number): string => {
     const c1 = isBullish ? bullPrimary : bearPrimary;
@@ -239,209 +231,295 @@ export function calculate(
     return String(color.rgb(mix(color.r(c1), color.r(c2)), mix(color.g(c1), color.g(c2)), mix(color.b(c1), color.b(c2))));
   };
 
-  const rising = bars.map((_b, i) => i > 0 && gt(vzo[i], vzo[i - 1])); // vzoRising = vzo > vzo[1]
-  // flow_momentum = (volume_oscillator - ta.ema(volume_oscillator, momentum_lookback)) * 0.5
-  const vzoEma = A(ta.ema(S(vzo), cfg.momentumLookback));
-  const flow = bars.map((_b, i) => (vzo[i] - vzoEma[i]) * 0.5);
-
-  const t = (i: number) => bars[i].time;
-  const interval = barInterval(bars);
   const transparent = String(color.new(color.white, 100));
-  const P = (value: (i: number) => number, col?: (i: number) => string): Point[] =>
-    bars.map((_b, i) => (col ? { time: t(i), value: value(i), color: col(i) } : { time: t(i), value: value(i) }));
-
   const zeroColor = String(color.new(neutralSecondary, 70));
-  const plots: Record<string, Point[]> = {};
-  plots.plot0 = P(() => 0, () => zeroColor);
-  // flow_color = flow_momentum > 0 ? color.new(get_dynamic_color(true, intensity), 60) : color.new(..(false..), 60)
-  plots.plot1 = P((i) => (cfg.enableFlowMomentum ? flow[i] : NaN),
-    (i) => String(color.new(dynColor(gt(flow[i], 0), intensity[i]), 60)));
-  plots.plot2 = P((i) => (cfg.enableVolumeDynamics ? vzo[i] : NaN), (i) => dynColor(rising[i], intensity[i]));
-  plots.plot3 = P((i) => (cfg.enableVolumeDynamics ? signal[i] : NaN),
-    (i) => String(color.new(gt(vzo[i], signal[i]) ? bullSecondary : bearSecondary, 40)));
-  // boundary: vzo >= 0 ? math.min(vzo, signal) : math.max(vzo, signal) (display.none)
-  plots.plot4 = P((i) => (!cfg.enableVolumeDynamics ? NaN
-    : ge(vzo[i], 0) ? Math.min(vzo[i], signal[i]) : Math.max(vzo[i], signal[i])));
-  plots.plot5 = P(() => 120);
-  plots.plot6 = P(() => -120);
-  plots.plot7 = P(() => 80);
-  plots.plot8 = P(() => -80);
-
-  // ── Divergences ──
-  const rb = cfg.pivotBarsRight;
-  const plOsc = A(ta.pivotlow(S(vzo), cfg.pivotBarsLeft, rb));
-  const phOsc = A(ta.pivothigh(S(vzo), cfg.pivotBarsLeft, rb));
-  const lowPivot = plOsc.map((v) => !isNaN(v));
-  const highPivot = phOsc.map((v) => !isNaN(v));
-  const vzoR = (i: number) => (i - rb >= 0 ? vzo[i - rb] : NaN);
-  const bullDiv: boolean[] = new Array(n).fill(false);
-  const hiddenBullDiv: boolean[] = new Array(n).fill(false);
-  const bearDiv: boolean[] = new Array(n).fill(false);
-  const hiddenBearDiv: boolean[] = new Array(n).fill(false);
-  {
-    // ta.valuewhen(pivot, x, 1): x on the pivot bar before the latest one (the latest can be the current bar)
-    const plO: number[] = [];
-    const plL: number[] = [];
-    const phO: number[] = [];
-    const phH: number[] = [];
-    // validate_range(pivot[1]) = 0 <= ta.barssince(pivot[1]) <= 80. Pine v6 `and` is lazy: the barssince of each
-    // of the four call sites only runs on the bars where the left side of its `and` is true (its own history).
-    const calls = [NaN, NaN, NaN, NaN];
-    const validate = (k: number, cond: boolean) => {
-      if (cond) calls[k] = 0;
-      else if (!isNaN(calls[k])) calls[k]++;
-      return -80 <= calls[k] && calls[k] <= 80;
-    };
-    for (let i = 0; i < n; i++) {
-      const o = vzoR(i);
-      const lowR = i - rb >= 0 ? bars[i - rb].low : NaN;
-      const highR = i - rb >= 0 ? bars[i - rb].high : NaN;
-      const prevLow = i > 0 && lowPivot[i - 1];
-      const prevHigh = i > 0 && highPivot[i - 1];
-      if (lowPivot[i]) {
-        plO.push(o);
-        plL.push(lowR);
-      }
-      if (highPivot[i]) {
-        phO.push(o);
-        phH.push(highR);
-      }
-      const vwPlO = plO.length >= 2 ? plO[plO.length - 2] : NaN;
-      const vwPlL = plL.length >= 2 ? plL[plL.length - 2] : NaN;
-      const vwPhO = phO.length >= 2 ? phO[phO.length - 2] : NaN;
-      const vwPhH = phH.length >= 2 ? phH[phH.length - 2] : NaN;
-
-      const oscHigherLow = gt(o, vwPlO) && validate(0, prevLow);
-      bullDiv[i] = cfg.enableStandardBullDiv && lt(lowR, vwPlL) && oscHigherLow && lowPivot[i];
-      const oscLowerLow = lt(o, vwPlO) && validate(1, prevLow);
-      hiddenBullDiv[i] = cfg.enableHiddenBullDiv && gt(lowR, vwPlL) && oscLowerLow && lowPivot[i];
-      const oscLowerHigh = lt(o, vwPhO) && validate(2, prevHigh);
-      bearDiv[i] = cfg.enableStandardBearDiv && gt(highR, vwPhH) && oscLowerHigh && highPivot[i];
-      const oscHigherHigh = gt(o, vwPhO) && validate(3, prevHigh);
-      hiddenBearDiv[i] = cfg.enableHiddenBearDiv && lt(highR, vwPhH) && oscHigherHigh && highPivot[i];
-    }
-  }
   const hiddenBullColor = String(color.new(bullPrimary, 50));
   const hiddenBearColor = String(color.new(bearPrimary, 50));
   const bullDivColor = dynColor(true, 0.8);
   const bearDivColor = dynColor(false, 0.8);
-  // plot(pivot ? volume_oscillator[pivot_bars_right] : na, offset = -pivot_bars_right): value of bar i on bar i - rb
-  const divPlot = (pivot: boolean[], on: boolean[], col: string): Point[] => {
-    const out: Point[] = [];
-    for (let i = rb; i < n; i++) {
-      out.push({ time: barTime(bars, i - rb, interval), value: pivot[i] ? vzoR(i) : NaN, color: on[i] ? col : transparent });
-    }
-    return out;
-  };
-  plots.plot9 = divPlot(lowPivot, bullDiv, bullDivColor);
-  plots.plot10 = divPlot(lowPivot, hiddenBullDiv, hiddenBullColor);
-  plots.plot11 = divPlot(highPivot, bearDiv, bearDivColor);
-  plots.plot12 = divPlot(highPivot, hiddenBearDiv, hiddenBearColor);
-
-  // ── Fills ──
-  const fills = [
-    // fill(main_plot, signal_plot, color.new(get_dynamic_color(vzo > signal, intensity * 0.7), math.round(70 + 20 * (1 - intensity))))
-    { plot1: 'plot2', plot2: 'plot3', options: { title: 'Enhanced Dynamic Fill' },
-      colors: bars.map((_b, i) => String(color.new(dynColor(gt(vzo[i], signal[i]), intensity[i] * 0.7),
-        Math.round(70 + 20 * (1 - intensity[i]))))) },
-    // fill(boundary_plot, zero_line, top_value, bottom_value, top_color, bottom_color)
-    { plot1: 'plot4', plot2: 'plot0',
-      gradient: {
-        topValue: signal.map((s) => (gt(s, 0) ? s : 0)),
-        bottomValue: signal.map((s) => (gt(s, 0) ? 0 : s)),
-        topColor: signal.map((s) => (gt(s, 0) ? String(color.new(dynColor(true, 0.5), 85)) : '#00000000')),
-        bottomColor: signal.map((s) => (gt(s, 0) ? '#00000000' : String(color.new(dynColor(false, 0.5), 85)))),
-      } },
-    // fill(flow_plot, zero_line, color.new(color.from_gradient(+/-flow / 50, 0, 1, neutral_primary, bull / bear primary), 80))
-    { plot1: 'plot1', plot2: 'plot0', options: { title: 'Enhanced Flow Fill' },
-      colors: flow.map((f) => String(color.new(gt(f, 0)
-        ? color.from_gradient(f / 50, 0, 1, neutralPrimary, bullPrimary)
-        : color.from_gradient(f / -50, 0, 1, neutralPrimary, bearPrimary), 80))) },
-    { plot1: 'plot5', plot2: 'plot7', options: { title: 'Enhanced Overbought Zone' },
-      gradient: {
-        topValue: new Array<number>(n).fill(120), bottomValue: new Array<number>(n).fill(80),
-        topColor: new Array<string>(n).fill(String(color.new(bearPrimary, 60))),
-        bottomColor: new Array<string>(n).fill(String(color.new(bearSecondary, 85))),
-      } },
-    { plot1: 'plot6', plot2: 'plot8', options: { title: 'Enhanced Oversold Zone' },
-      gradient: {
-        topValue: new Array<number>(n).fill(-80), bottomValue: new Array<number>(n).fill(-120),
-        topColor: new Array<string>(n).fill(String(color.new(bullSecondary, 85))),
-        bottomColor: new Array<string>(n).fill(String(color.new(bullPrimary, 60))),
-      } },
-  ];
-
-  // Alerts: ta.crossover / ta.crossunder(volume_oscillator, oscillator_ema)
-  const bullFlow = crossedOver(vzo, signal);
-  const bearFlow = crossedUnder(vzo, signal);
-
-  // ── Markers ──
-  const markers: MarkerData[] = [];
   const showFlips = cfg.enableVolumeDynamics && cfg.enableSignalMarkers;
   const white80 = String(color.new(color.white, 20));
   const bullFull = dynColor(true, 1.0);
   const bearFull = dynColor(false, 1.0);
   const bullLabel = dynColor(true, 0.9);
   const bearLabel = dynColor(false, 0.9);
-  for (let i = 0; i < n; i++) {
-    // flip_to_bull_bar = bullish and not bullish[1]; flip_to_bear_bar = bearish and not bearish[1] (bearish =
-    // not bullish; a bool [1] is false on the first bar). Drawn at vzo[1] with offset -1.
-    const bullish = rising[i];
-    const bearish = !rising[i];
-    const prevBullish = i > 0 && rising[i - 1];
-    const prevBearish = i > 0 && !rising[i - 1];
-    const flipBull = bullish && !prevBullish;
-    const flipBear = bearish && !prevBearish;
-    if (showFlips && i > 0 && !isNaN(vzo[i - 1])) {
-      if (flipBull) {
-        markers.push({ time: t(i - 1), position: 'atPriceMiddle', price: vzo[i - 1], shape: 'circle',
-          color: dynColor(true, intensity[i]), size: 'tiny', id: 'shape0' });
-      }
-      if (flipBear) {
-        markers.push({ time: t(i - 1), position: 'atPriceMiddle', price: vzo[i - 1], shape: 'circle',
-          color: dynColor(false, intensity[i]), size: 'tiny', id: 'shape1' });
-      }
-    }
-    // bull_signal = ta.crossover(vzo, vzo[1]); bear_signal = ta.crossover(vzo[1], vzo)
-    // (exact comparisons, no 1e-10 tolerance; na gives false)
-    const v0 = vzo[i];
-    const v1 = i > 0 ? vzo[i - 1] : NaN;
-    const v2 = i > 1 ? vzo[i - 2] : NaN;
-    const bullSignal = v0 > v1 && v1 <= v2;
-    const bearSignal = v1 > v0 && v2 <= v1;
-    // plotchar outputs char2..char5
-    const char = (price: number, text: string, textColor: string, id: string) => markers.push({ time: t(i),
-      position: 'atPriceMiddle', price, shape: 'circle', color: 'transparent', text, textColor, size: 'tiny', id });
-    if (bullSignal && gt(v0, 90)) char(125, '×', white80, 'char2');
-    if (bearSignal && lt(v0, -90)) char(-125, '×', white80, 'char3');
-    if (bullSignal && lt(v0, -90)) char(-125, '▲', bullFull, 'char4');
-    if (bearSignal && gt(v0, 90)) char(125, '▼', bearFull, 'char5');
-    // divergence labels (offset = -pivot_bars_right, at volume_oscillator[pivot_bars_right])
-    const o = vzoR(i);
-    if (i - rb >= 0 && !isNaN(o)) {
-      const lt0 = barTime(bars, i - rb, interval);
-      if (bullDiv[i]) markers.push({ time: lt0, position: 'atPriceBottom', price: o, shape: 'labelUp', color: bullLabel,
-        text: ' BULL ', textColor: color.white, size: 'tiny', id: 'shape6' });
-      if (hiddenBullDiv[i]) markers.push({ time: lt0, position: 'atPriceBottom', price: o, shape: 'labelUp',
-        color: hiddenBullColor, text: ' H.BULL ', textColor: color.white, size: 'tiny', id: 'shape7' });
-      if (bearDiv[i]) markers.push({ time: lt0, position: 'atPriceTop', price: o, shape: 'labelDown', color: bearLabel,
-        text: ' BEAR ', textColor: color.white, size: 'tiny', id: 'shape8' });
-      if (hiddenBearDiv[i]) markers.push({ time: lt0, position: 'atPriceTop', price: o, shape: 'labelDown',
-        color: hiddenBearColor, text: ' H.BEAR ', textColor: color.white, size: 'tiny', id: 'shape9' });
-    }
-  }
+  const fill1Top = String(color.new(dynColor(true, 0.5), 85));
+  const fill1Bottom = String(color.new(dynColor(false, 0.5), 85));
+  const fourierWeights: number[] = [];
+  for (let k = 0; k < cfg.fourierLength; k++) fourierWeights.push(Math.exp(-k / (cfg.fourierLength * 0.3)));
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers,
-    // alertcondition(ta.crossover(volume_oscillator, oscillator_ema)) / crossunder(...) / crossover(...) and
-    // volume_oscillator < -80 / crossunder(...) and volume_oscillator > 80
-    alerts: alertStates(alertConditions, bars, [
-      bullFlow, bearFlow, bullFlow.map((c, i) => c && lt(vzo[i], -80)), bearFlow.map((c, i) => c && gt(vzo[i], 80)),
-    ]),
+    init() {
+      const s: FsvzoRun = {
+        smaShort: taStep.sma(), smaLong: taStep.sma(), stdev: taStep.stdev(), volSma: taStep.sma(),
+        smoothedVol: taStep.ema(cfg.smoothingLength), smoothedChange: taStep.ema(cfg.smoothingLength),
+        baseMomentum: taStep.ema(cfg.smoothingLength), trendMomentum: taStep.ema(cfg.smoothingLength),
+        posMom: taStep.ema(cfg.length), negMom: taStep.ema(cfg.length), emaRaw: taStep.ema(cfg.smoothingLength),
+        signal: taStep.sma(), change3: taStep.change(3), maxStrength: taStep.highest(),
+        vzoEma: taStep.ema(cfg.momentumLookback),
+        pl: new PivotStep(cfg.pivotBarsLeft, rb, false), ph: new PivotStep(cfg.pivotBarsLeft, rb, true),
+        vzoRaw: [], vzo: [], signalArr: [], rising: [], lowPivot: [], highPivot: [],
+        plots: Array.from({ length: 9 }, () => []), divPlots: Array.from({ length: 4 }, () => []),
+        fill0: [], fill1: { top: [], bottom: [], topColor: [], bottomColor: [] }, fill2: [], markers: [],
+        flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [], vars: { plO: [], plL: [], phO: [], phH: [], calls: [NaN, NaN, NaN, NaN] }, lists: [], series: [],
+      };
+      s.steps = [
+        s.smaShort, s.smaLong, s.stdev, s.volSma, s.smoothedVol, s.smoothedChange, s.baseMomentum, s.trendMomentum,
+        s.posMom, s.negMom, s.emaRaw, s.signal, s.change3, s.maxStrength, s.vzoEma, s.pl, s.ph,
+      ];
+      s.lists = [...s.divPlots, s.markers, ...s.times];
+      s.series = [
+        s.vzoRaw, s.vzo, s.signalArr, s.rising, s.lowPivot, s.highPivot, ...s.plots, s.fill0, s.fill1.top,
+        s.fill1.bottom, s.fill1.topColor, s.fill1.bottomColor, s.fill2, ...s.flags,
+      ];
+      return s;
+    },
+    copyVars: (v) => ({ ...v, calls: v.calls.slice() }),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const close = b.close;
+
+      // ── VZO ──
+      // adf_trend_filter(close, adfWindow): 1 + clamp((sma(close, window / 3) - sma(close, window)) / stdev * 0.2, +/-0.1)
+      let trend = 1.0;
+      if (cfg.adfWindow > 10) {
+        // window / 3: a fractional length is truncated (checked: 50 / 3 gives the SMA of 16 bars)
+        const smaShort = s.smaShort.step(close, Math.max(1, Math.trunc(cfg.adfWindow / 3)));
+        const smaLong = s.smaLong.step(close, cfg.adfWindow);
+        const vol = s.stdev.step(close, cfg.adfWindow);
+        const strength = gt(vol, 0) ? (smaShort - smaLong) / vol : 0;
+        trend = 1.0 + Math.max(-0.1, Math.min(0.1, strength * 0.2));
+      }
+      const volSma = s.volSma.step(b.volume ?? NaN, cfg.length);
+      // rel_volume = volume / ta.sma(volume, length): a plain division (x / 0 is +-infinity, 0 / 0 NaN)
+      const relVolume = (b.volume ?? NaN) / volSma;
+      const smoothedVol = s.smoothedVol.step(relVolume);
+      const priceChange = i > 0 ? close - bars[i - 1].close : NaN;
+      const smoothedChange = s.smoothedChange.step(priceChange);
+      const baseMomentum = s.baseMomentum.step(smoothedChange * smoothedVol);
+      const trendMomentum = s.trendMomentum.step(smoothedChange * smoothedVol * trend);
+      const momentum = baseMomentum * 0.7 + trendMomentum * 0.3;
+      // math.max(na, 0) is na
+      const posMom = s.posMom.step(isNaN(momentum) ? NaN : Math.max(momentum, 0));
+      const negMom = s.negMom.step(isNaN(momentum) ? NaN : Math.abs(Math.min(momentum, 0)));
+      const ratio = gt(negMom, 0.00001) ? posMom / negMom : gt(posMom, 0.00001) ? 100.0 : 1.0;
+      const vzoRaw = (100.0 * (ratio - 1.0)) / (ratio + 1.0);
+      s.vzoRaw[i] = vzoRaw;
+      const emaRaw = s.emaRaw.step(vzoRaw);
+      let finalVzo: number;
+      if (cfg.fourierLength >= 5) {
+        // fourier_smooth(vzo_raw, fourierLength): weights exp(-k / (length * 0.3)), vzo_raw[k] na before the first bar
+        let sum = 0;
+        let weightSum = 0;
+        for (let k = 0; k < cfg.fourierLength; k++) {
+          const weight = fourierWeights[k];
+          sum = sum + (i - k >= 0 ? s.vzoRaw[i - k] : NaN) * weight;
+          weightSum = weightSum + weight;
+        }
+        finalVzo = emaRaw * 0.6 + (sum / weightSum) * 0.4;
+      } else {
+        finalVzo = emaRaw;
+      }
+      const vzo = Math.min(Math.max(finalVzo, -100), 100);
+      s.vzo[i] = vzo;
+      const signal = s.signal.step(vzo, cfg.signalLength);
+      s.signalArr[i] = signal;
+
+      // intensity = max_strength > 0 ? momentum_strength / max_strength : 0
+      const momentumStrength = Math.abs(s.change3.step(vzo));
+      const maxStrength = s.maxStrength.step(momentumStrength, 50);
+      const intensity = gt(maxStrength, 0) ? momentumStrength / maxStrength : 0;
+
+      const rising = i > 0 && gt(vzo, s.vzo[i - 1]); // vzoRising = vzo > vzo[1]
+      s.rising[i] = rising;
+      // flow_momentum = (volume_oscillator - ta.ema(volume_oscillator, momentum_lookback)) * 0.5
+      const flow = (vzo - s.vzoEma.step(vzo)) * 0.5;
+
+      const P = s.plots;
+      P[0][i] = { time, value: 0, color: zeroColor };
+      // flow_color = flow_momentum > 0 ? color.new(get_dynamic_color(true, intensity), 60) : color.new(..(false..), 60)
+      P[1][i] = { time, value: cfg.enableFlowMomentum ? flow : NaN, color: String(color.new(dynColor(gt(flow, 0), intensity), 60)) };
+      P[2][i] = { time, value: cfg.enableVolumeDynamics ? vzo : NaN, color: dynColor(rising, intensity) };
+      P[3][i] = { time, value: cfg.enableVolumeDynamics ? signal : NaN,
+        color: String(color.new(gt(vzo, signal) ? bullSecondary : bearSecondary, 40)) };
+      // boundary: vzo >= 0 ? math.min(vzo, signal) : math.max(vzo, signal) (display.none)
+      P[4][i] = { time, value: !cfg.enableVolumeDynamics ? NaN
+        : ge(vzo, 0) ? Math.min(vzo, signal) : Math.max(vzo, signal) };
+      P[5][i] = { time, value: 120 };
+      P[6][i] = { time, value: -120 };
+      P[7][i] = { time, value: 80 };
+      P[8][i] = { time, value: -80 };
+
+      // ── Divergences ──
+      const v = s.vars;
+      const lowPivot = !isNaN(s.pl.step(i, vzo));
+      const highPivot = !isNaN(s.ph.step(i, vzo));
+      s.lowPivot[i] = lowPivot;
+      s.highPivot[i] = highPivot;
+      const o = i - rb >= 0 ? s.vzo[i - rb] : NaN;
+      const lowR = i - rb >= 0 ? bars[i - rb].low : NaN;
+      const highR = i - rb >= 0 ? bars[i - rb].high : NaN;
+      const prevLow = i > 0 && s.lowPivot[i - 1];
+      const prevHigh = i > 0 && s.highPivot[i - 1];
+      // ta.valuewhen(pivot, x, 1): x on the pivot bar before the latest one (the latest can be the current bar)
+      if (lowPivot) {
+        v.plO = pushed(v.plO, o);
+        v.plL = pushed(v.plL, lowR);
+      }
+      if (highPivot) {
+        v.phO = pushed(v.phO, o);
+        v.phH = pushed(v.phH, highR);
+      }
+      const vwPlO = second(v.plO);
+      const vwPlL = second(v.plL);
+      const vwPhO = second(v.phO);
+      const vwPhH = second(v.phH);
+      // validate_range(pivot[1]) = 0 <= ta.barssince(pivot[1]) <= 80. Pine v6 `and` is lazy: the barssince of each
+      // of the four call sites only runs on the bars where the left side of its `and` is true (its own history).
+      const calls = v.calls;
+      const validate = (k: number, cond: boolean) => {
+        if (cond) calls[k] = 0;
+        else if (!isNaN(calls[k])) calls[k]++;
+        return -80 <= calls[k] && calls[k] <= 80;
+      };
+      const oscHigherLow = gt(o, vwPlO) && validate(0, prevLow);
+      const bullDiv = cfg.enableStandardBullDiv && lt(lowR, vwPlL) && oscHigherLow && lowPivot;
+      const oscLowerLow = lt(o, vwPlO) && validate(1, prevLow);
+      const hiddenBullDiv = cfg.enableHiddenBullDiv && gt(lowR, vwPlL) && oscLowerLow && lowPivot;
+      const oscLowerHigh = lt(o, vwPhO) && validate(2, prevHigh);
+      const bearDiv = cfg.enableStandardBearDiv && gt(highR, vwPhH) && oscLowerHigh && highPivot;
+      const oscHigherHigh = gt(o, vwPhO) && validate(3, prevHigh);
+      const hiddenBearDiv = cfg.enableHiddenBearDiv && lt(highR, vwPhH) && oscHigherHigh && highPivot;
+
+      // plot(pivot ? volume_oscillator[pivot_bars_right] : na, offset = -pivot_bars_right): value of bar i on bar i - rb
+      if (i >= rb) {
+        const dt = bars[i - rb].time;
+        s.divPlots[0].push({ time: dt, value: lowPivot ? o : NaN, color: bullDiv ? bullDivColor : transparent });
+        s.divPlots[1].push({ time: dt, value: lowPivot ? o : NaN, color: hiddenBullDiv ? hiddenBullColor : transparent });
+        s.divPlots[2].push({ time: dt, value: highPivot ? o : NaN, color: bearDiv ? bearDivColor : transparent });
+        s.divPlots[3].push({ time: dt, value: highPivot ? o : NaN, color: hiddenBearDiv ? hiddenBearColor : transparent });
+      }
+
+      // ── Fills ──
+      // fill(main_plot, signal_plot, color.new(get_dynamic_color(vzo > signal, intensity * 0.7), math.round(70 + 20 * (1 - intensity))))
+      s.fill0[i] = String(color.new(dynColor(gt(vzo, signal), intensity * 0.7), Math.round(70 + 20 * (1 - intensity))));
+      // fill(boundary_plot, zero_line, top_value, bottom_value, top_color, bottom_color)
+      const sPos = gt(signal, 0);
+      s.fill1.top[i] = sPos ? signal : 0;
+      s.fill1.bottom[i] = sPos ? 0 : signal;
+      s.fill1.topColor[i] = sPos ? fill1Top : '#00000000';
+      s.fill1.bottomColor[i] = sPos ? '#00000000' : fill1Bottom;
+      // fill(flow_plot, zero_line, color.new(color.from_gradient(+/-flow / 50, 0, 1, neutral_primary, bull / bear primary), 80))
+      s.fill2[i] = String(color.new(gt(flow, 0)
+        ? color.from_gradient(flow / 50, 0, 1, neutralPrimary, bullPrimary)
+        : color.from_gradient(flow / -50, 0, 1, neutralPrimary, bearPrimary), 80));
+
+      // Alerts: ta.crossover / ta.crossunder(volume_oscillator, oscillator_ema)
+      const pv = i > 0 ? s.vzo[i - 1] : NaN;
+      const pw = i > 0 ? s.signalArr[i - 1] : NaN;
+      const bullFlow = vzo > signal && pv <= pw;
+      const bearFlow = vzo < signal && pv >= pw;
+      const flags = [bullFlow, bearFlow, bullFlow && lt(vzo, -80), bearFlow && gt(vzo, 80)];
+      for (let k = 0; k < 4; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+
+      // ── Markers ──
+      const markers = s.markers;
+      // flip_to_bull_bar = bullish and not bullish[1]; flip_to_bear_bar = bearish and not bearish[1] (bearish =
+      // not bullish; a bool [1] is false on the first bar). Drawn at vzo[1] with offset -1.
+      const bullish = rising;
+      const bearish = !rising;
+      const prevBullish = i > 0 && s.rising[i - 1];
+      const prevBearish = i > 0 && !s.rising[i - 1];
+      const flipBull = bullish && !prevBullish;
+      const flipBear = bearish && !prevBearish;
+      if (showFlips && i > 0 && !isNaN(s.vzo[i - 1])) {
+        if (flipBull) {
+          markers.push({ time: bars[i - 1].time, position: 'atPriceMiddle', price: s.vzo[i - 1], shape: 'circle',
+            color: dynColor(true, intensity), size: 'tiny', id: 'shape0' });
+        }
+        if (flipBear) {
+          markers.push({ time: bars[i - 1].time, position: 'atPriceMiddle', price: s.vzo[i - 1], shape: 'circle',
+            color: dynColor(false, intensity), size: 'tiny', id: 'shape1' });
+        }
+      }
+      // bull_signal = ta.crossover(vzo, vzo[1]); bear_signal = ta.crossover(vzo[1], vzo)
+      // (exact comparisons, no 1e-10 tolerance; na gives false)
+      const v0 = vzo;
+      const v1 = i > 0 ? s.vzo[i - 1] : NaN;
+      const v2 = i > 1 ? s.vzo[i - 2] : NaN;
+      const bullSignal = v0 > v1 && v1 <= v2;
+      const bearSignal = v1 > v0 && v2 <= v1;
+      // plotchar outputs char2..char5
+      const char = (price: number, text: string, textColor: string, id: string) => markers.push({ time,
+        position: 'atPriceMiddle', price, shape: 'circle', color: 'transparent', text, textColor, size: 'tiny', id });
+      if (bullSignal && gt(v0, 90)) char(125, '×', white80, 'char2');
+      if (bearSignal && lt(v0, -90)) char(-125, '×', white80, 'char3');
+      if (bullSignal && lt(v0, -90)) char(-125, '▲', bullFull, 'char4');
+      if (bearSignal && gt(v0, 90)) char(125, '▼', bearFull, 'char5');
+      // divergence labels (offset = -pivot_bars_right, at volume_oscillator[pivot_bars_right])
+      if (i - rb >= 0 && !isNaN(o)) {
+        const lt0 = bars[i - rb].time;
+        if (bullDiv) markers.push({ time: lt0, position: 'atPriceBottom', price: o, shape: 'labelUp', color: bullLabel,
+          text: ' BULL ', textColor: color.white, size: 'tiny', id: 'shape6' });
+        if (hiddenBullDiv) markers.push({ time: lt0, position: 'atPriceBottom', price: o, shape: 'labelUp',
+          color: hiddenBullColor, text: ' H.BULL ', textColor: color.white, size: 'tiny', id: 'shape7' });
+        if (bearDiv) markers.push({ time: lt0, position: 'atPriceTop', price: o, shape: 'labelDown', color: bearLabel,
+          text: ' BEAR ', textColor: color.white, size: 'tiny', id: 'shape8' });
+        if (hiddenBearDiv) markers.push({ time: lt0, position: 'atPriceTop', price: o, shape: 'labelDown',
+          color: hiddenBearColor, text: ' H.BEAR ', textColor: color.white, size: 'tiny', id: 'shape9' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      for (let k = 0; k < 9; k++) plots[`plot${k}`] = s.plots[k].slice();
+      for (let k = 0; k < 4; k++) plots[`plot${9 + k}`] = s.divPlots[k].slice();
+      const fills = [
+        { plot1: 'plot2', plot2: 'plot3', options: { title: 'Enhanced Dynamic Fill' }, colors: s.fill0.slice() },
+        { plot1: 'plot4', plot2: 'plot0',
+          gradient: {
+            topValue: s.fill1.top.slice(), bottomValue: s.fill1.bottom.slice(),
+            topColor: s.fill1.topColor.slice(), bottomColor: s.fill1.bottomColor.slice(),
+          } },
+        { plot1: 'plot1', plot2: 'plot0', options: { title: 'Enhanced Flow Fill' }, colors: s.fill2.slice() },
+        { plot1: 'plot5', plot2: 'plot7', options: { title: 'Enhanced Overbought Zone' },
+          gradient: {
+            topValue: new Array<number>(n).fill(120), bottomValue: new Array<number>(n).fill(80),
+            topColor: new Array<string>(n).fill(String(color.new(bearPrimary, 60))),
+            bottomColor: new Array<string>(n).fill(String(color.new(bearSecondary, 85))),
+          } },
+        { plot1: 'plot6', plot2: 'plot8', options: { title: 'Enhanced Oversold Zone' },
+          gradient: {
+            topValue: new Array<number>(n).fill(-80), bottomValue: new Array<number>(n).fill(-120),
+            topColor: new Array<string>(n).fill(String(color.new(bullSecondary, 85))),
+            bottomColor: new Array<string>(n).fill(String(color.new(bullPrimary, 60))),
+          } },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        markers: s.markers.slice(),
+        // alertcondition(ta.crossover(volume_oscillator, oscillator_ema)) / crossunder(...) / crossover(...) and
+        // volume_oscillator < -80 / crossunder(...) and volume_oscillator > 80
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FsvzoInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FsvzoInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -454,6 +532,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const Fsvzo = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

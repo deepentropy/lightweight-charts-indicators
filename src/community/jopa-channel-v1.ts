@@ -20,9 +20,11 @@
  * Original notice: Copyright (c) 2025 JopAlgo. © 2025 JopAlgo [JopAlgo]
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type TrackMode = 'Base' | 'Parallel-Lock' | 'Slope-Lock' | 'Forecast-Lock';
 
@@ -174,168 +176,258 @@ const nz = (x: number) => (Number.isFinite(x) ? x : 0);
 const clamp = (x: number, lo: number, hi: number) => Math.min(Math.max(x, lo), hi);
 const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<JopaChannelV1Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = A(getSourceSeries(bars, cfg.src));
-  const volume = bars.map((b) => b.volume ?? NaN);
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Step = ReturnType<typeof taStep.sma>;
 
-  // f_z(x, l): na(sd) or sd == 0 ? 0 : (x - sma(x, l)) / stdev(x, l)
-  const fz = (x: number[], l: number) => {
-    const ma = A(ta.sma(S(x), l));
-    const sd = A(ta.stdev(S(x), l));
-    return x.map((v, i) => (isNaN(sd[i]) || !ne(sd[i], 0) ? 0.0 : (v - ma[i]) / sd[i]));
-  };
-  // f_rollsum(x, l): cs = ta.cum(x); not na(cs[l]) ? cs - cs[l] : na
-  const rollsum = (x: number[], l: number) => {
-    const cs = A(ta.cum(S(x)));
-    return cs.map((c, i) => (i >= l && !isNaN(cs[i - l]) ? c - cs[i - l] : NaN));
-  };
-
-  // Rolling VWAP (centre)
-  const num = rollsum(src.map((s, i) => s * volume[i]), cfg.lenVWAP);
-  const den = rollsum(volume, cfg.lenVWAP);
-  const rvwap = den.map((d, i) => (ne(d, 0) && !isNaN(d) ? num[i] / d : NaN));
-
-  // Inner value-band width
-  const residual = src.map((s, i) => s - rvwap[i]);
-  const stdRes = A(ta.stdev(S(residual), cfg.lenSTD));
-  const atrV = A(ta.atr(bars, cfg.lenATR));
-  const madRes = A(ta.sma(S(residual.map((r) => Math.abs(r))), cfg.lenMAD));
-  const baseWidth = bars.map((_b, i) => cfg.kSTD * nz(stdRes[i]) + cfg.kATR * nz(atrV[i]) + cfg.kMAD * nz(madRes[i]));
-
-  const volSma = A(ta.sma(S(volume), cfg.lenVol));
-  const rvol = volume.map((v, i) => v / volSma[i]);
-  const zDVal = fz(volume.map((v, i) => v * src[i]), cfg.lenDVal);
-  const volFac = rvol.map((r, i) => clamp(
-    Math.pow(Math.max(r, 0.0001), cfg.betaRVOL) * (1.0 + cfg.betaDVal * nz(zDVal[i])), 0.25, 3.0));
-
-  const change = A(ta.change(S(src)));
-  const erDen = rollsum(change.map((c) => Math.abs(c)), cfg.lenER);
-  const erFac = src.map((s, i) => {
-    const erNum = Math.abs(s - (i >= cfg.lenER ? src[i - cfg.lenER] : NaN));
-    let er = !isNaN(erDen[i]) && ne(erDen[i], 0) ? erNum / erDen[i] : 0.0;
-    er = clamp(er, 0.0, 1.0);
-    return cfg.erMin + (cfg.erMax - cfg.erMin) * (1.0 - er);
-  });
-
-  const obv = A(ta.cum(S(volume.map((v, i) => v * Math.sign(change[i])))));
-  const obvSlp = obv.map((o, i) => o - (i >= 1 ? obv[i - 1] : NaN));
-  const obvZ = fz(obvSlp, cfg.lenOBV);
-  const tiltN = obvZ.map((z) => (cfg.useTilt ? clamp(z * cfg.tiltGain, -1.0, 1.0) : 0.0));
-
-  const wBase = baseWidth.map((w, i) => w * volFac[i] * erFac[i]);
-  const upperBase = rvwap.map((r, i) => r + wBase[i] * (1.0 + tiltN[i]));
-  const lowerBase = rvwap.map((r, i) => r - wBase[i] * (1.0 - tiltN[i]));
-
-  // Tracking of the inner bands
-  const rvwapS = A(ta.ema(S(rvwap), cfg.trackLen));
-  const wS = A(ta.ema(S(wBase), cfg.trackLen));
-  const lrLen = Math.trunc(Math.max(2, cfg.trackLen));
-  const rvwapF = A(ta.linreg(S(rvwap), lrLen, -cfg.leadBars));
-  const attachClamped = clamp(cfg.attach, 0.0, 1.0);
-  const upperValue: number[] = new Array(n);
-  const lowerValue: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const up = wS[i] * (1.0 + tiltN[i]);
-    const dn = wS[i] * (1.0 - tiltN[i]);
-    const slope = rvwapS[i] - (i >= 1 ? rvwapS[i - 1] : NaN);
-    let upperRaw: number;
-    let lowerRaw: number;
-    if (cfg.trackMode === 'Parallel-Lock') {
-      upperRaw = rvwapS[i] + up;
-      lowerRaw = rvwapS[i] - dn;
-    } else if (cfg.trackMode === 'Slope-Lock') {
-      upperRaw = rvwapS[i] + up + cfg.slopeGain * slope;
-      lowerRaw = rvwapS[i] - dn + cfg.slopeGain * slope;
-    } else if (cfg.trackMode === 'Forecast-Lock') {
-      upperRaw = rvwapF[i] + up;
-      lowerRaw = rvwapF[i] - dn;
-    } else {
-      upperRaw = upperBase[i];
-      lowerRaw = lowerBase[i];
-    }
-    upperValue[i] = attachClamped * upperRaw + (1.0 - attachClamped) * upperBase[i];
-    lowerValue[i] = attachClamped * lowerRaw + (1.0 - attachClamped) * lowerBase[i];
+/**
+ * f_z(x, l) = na(sd) or sd == 0 ? 0 : (x - ta.sma(x, l)) / ta.stdev(x, l), the sma and the stdev from the same window
+ * sums (the sums of taStep.sma / taStep.stdev: same doubles)
+ */
+class ZStep {
+  private readonly sums = taStep.sum();
+  private readonly squares = taStep.sum();
+  constructor(private readonly length: number) {}
+  step(x: number): number {
+    const len = Math.floor(this.length);
+    const sum = this.sums.step(x, len);
+    const sq = this.squares.step(Number.isFinite(x) ? x * x : NaN, len);
+    const ma = sum / len;
+    const variance = len <= 0 ? NaN : sq / len - ma * ma;
+    const sd = Number.isNaN(variance) ? NaN : variance > 0 ? Math.sqrt(variance) : 0;
+    return isNaN(sd) || !ne(sd, 0) ? 0.0 : (x - ma) / sd;
   }
+  commit(): void {
+    this.sums.commit();
+    this.squares.commit();
+  }
+}
 
-  // Outer containment bands
-  const resHi = A(ta.ema(ta.highest(S(residual), cfg.lenExt), cfg.smoothExt));
-  const resLo = A(ta.ema(ta.lowest(S(residual), cfg.lenExt), cfg.smoothExt));
-  const upperContain = rvwap.map((r, i) => r + resHi[i] + cfg.marginK * wS[i]);
-  const lowerContain = rvwap.map((r, i) => r + resLo[i] - cfg.marginK * wS[i]);
+interface JopaVars {
+  /** obv, rvwapS of the bar before */
+  prevObv: number;
+  prevRvwapS: number;
+}
 
-  // Squeeze
-  const wAvg = A(ta.sma(S(wBase), cfg.sqLen));
-  const squeeze = wBase.map((w, i) => (!isNaN(wAvg[i]) && ne(wAvg[i], 0) ? le(w / wAvg[i], cfg.sqThresh) : false));
+interface JopaRun extends BarRunState<JopaVars> {
+  csNum: ReturnType<typeof taStep.cum>;
+  csDen: ReturnType<typeof taStep.cum>;
+  csEr: ReturnType<typeof taStep.cum>;
+  cumObv: ReturnType<typeof taStep.cum>;
+  stdRes: ReturnType<typeof taStep.stdev>;
+  atr: ReturnType<typeof taStep.atr>;
+  madRes: Step;
+  volSma: Step;
+  zDVal: ZStep;
+  change: ReturnType<typeof taStep.change>;
+  /** null when the result is not read (no tilt) */
+  obvZ: ZStep | null;
+  rvwapEma: ReturnType<typeof taStep.ema>;
+  wEma: ReturnType<typeof taStep.ema>;
+  /** null when the result is not read (other tracking modes) */
+  rvwapLr: ReturnType<typeof taStep.linreg> | null;
+  resHighest: ReturnType<typeof taStep.highest>;
+  resLowest: ReturnType<typeof taStep.lowest>;
+  resHiEma: ReturnType<typeof taStep.ema>;
+  resLoEma: ReturnType<typeof taStep.ema>;
+  /** null when the result is not read (no squeeze dots) */
+  wAvg: Step | null;
+  /** values of earlier bars: source, the cumulative sums, rvwap */
+  src: number[];
+  numCs: number[];
+  denCs: number[];
+  erCs: number[];
+  rvwap: number[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
 
-  // Plots
+function study(inputs: Partial<JopaChannelV1Inputs>): BarStudy<JopaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  const lrLen = Math.trunc(Math.max(2, cfg.trackLen));
+  const attachClamped = clamp(cfg.attach, 0.0, 1.0);
   const teal = color.teal;
   const purple = color.purple;
-  const P = (f: (i: number) => { value: number; color: string }) =>
-    bars.map((b, i) => {
-      const p = f(i);
-      return { time: b.time, value: fin(p.value), color: p.color };
-    });
-  const plot0 = P((i) => ({ value: rvwap[i], color: i >= 1 && gt(rvwap[i], rvwap[i - 1]) ? teal : purple }));
-  const plot1 = P((i) => ({ value: cfg.showValueRails ? upperValue[i] : NaN, color: color.green }));
-  const plot2 = P((i) => ({ value: cfg.showValueRails ? lowerValue[i] : NaN, color: color.red }));
-  const plot3 = P((i) => ({ value: cfg.useContain ? upperContain[i] : NaN, color: color.green }));
-  const plot4 = P((i) => ({ value: cfg.useContain ? lowerContain[i] : NaN, color: color.red }));
-  // rngGuides = (useContain ? upperContain : upperValue) - (useContain ? lowerContain : lowerValue)
-  const top = cfg.useContain ? upperContain : upperValue;
-  const bottom = cfg.useContain ? lowerContain : lowerValue;
-  const guide = (f: number) => (i: number) => {
-    const rng = top[i] - bottom[i];
-    return cfg.showGuides && !isNaN(rng) ? bottom[i] + f * rng : NaN;
-  };
-  const g20 = guide(0.2);
-  const g80 = guide(0.8);
-  const plot5 = P((i) => ({ value: g20(i), color: GUIDE20 }));
-  const plot6 = P((i) => ({ value: g80(i), color: GUIDE80 }));
-
-  const innerFill = cfg.showValueFill ? String(color.new(color.gray, 88)) : 'transparent';
-  const containFill = cfg.showContainFill && cfg.useContain ? String(color.new(color.gray, 85)) : 'transparent';
-
-  // plotshape(showSqueeze and squeeze, style = shape.circle, size.tiny, color.orange, location.belowbar)
-  const markers: MarkerData[] = [];
-  if (cfg.showSqueeze) {
-    for (let i = 0; i < n; i++) {
-      if (squeeze[i]) {
-        markers.push({ time: bars[i].time, position: 'belowBar', shape: 'circle', color: color.orange, size: 'tiny' });
-      }
-    }
-  }
-
-  // Alerts: breakoutUp_val = close > upperValue and rvol >= rvolMinBr (breakoutDown_val: close < lowerValue);
-  // inTopZone = showGuides and not na(rngGuides) and close >= line80 (inBottomZone: close <= line20)
-  const breakUp: boolean[] = [], breakDown: boolean[] = [], topZone: boolean[] = [], bottomZone: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    const rvolOk = ge(fin(rvol[i]), cfg.rvolMinBr);
-    breakUp.push(gt(close, fin(upperValue[i])) && rvolOk);
-    breakDown.push(lt(close, fin(lowerValue[i])) && rvolOk);
-    const valid = cfg.showGuides && !isNaN(fin(top[i] - bottom[i]));
-    topZone.push(valid && ge(close, fin(g80(i))));
-    bottomZone.push(valid && le(close, fin(g20(i))));
-  }
-
+  // f_rollsum(x, l): cs = ta.cum(x); not na(cs[l]) ? cs - cs[l] : na
+  const rollsum = (cs: number[], i: number, l: number) => (i >= l && !isNaN(cs[i - l]) ? cs[i] - cs[i - l] : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4, plot5, plot6 },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot2', options: { title: 'Inner Fill' }, colors: new Array<string>(n).fill(innerFill) },
-      { plot1: 'plot3', plot2: 'plot4', options: { title: 'Containment Fill' },
-        colors: new Array<string>(n).fill(containFill) },
-    ],
-    markers,
-    alerts: alertStates(alertConditions, bars, [breakUp, breakDown, topZone, bottomZone]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: JopaRun = {
+        csNum: taStep.cum(), csDen: taStep.cum(), csEr: taStep.cum(), cumObv: taStep.cum(),
+        stdRes: taStep.stdev(), atr: taStep.atr(cfg.lenATR), madRes: taStep.sma(), volSma: taStep.sma(),
+        zDVal: new ZStep(cfg.lenDVal), change: taStep.change(), obvZ: cfg.useTilt ? new ZStep(cfg.lenOBV) : null,
+        rvwapEma: taStep.ema(cfg.trackLen), wEma: taStep.ema(cfg.trackLen),
+        rvwapLr: cfg.trackMode === 'Forecast-Lock' ? taStep.linreg(lrLen, -cfg.leadBars) : null,
+        resHighest: taStep.highest(), resLowest: taStep.lowest(), resHiEma: taStep.ema(cfg.smoothExt),
+        resLoEma: taStep.ema(cfg.smoothExt), wAvg: cfg.showSqueeze ? taStep.sma() : null,
+        src: [], numCs: [], denCs: [], erCs: [], rvwap: [],
+        plots: Array.from({ length: 7 }, () => []), flags: [[], [], [], []], times: [[], [], [], []], markers: [],
+        steps: [], vars: { prevObv: NaN, prevRvwapS: NaN }, lists: [], series: [],
+      };
+      s.steps = [
+        s.csNum, s.csDen, s.csEr, s.cumObv, s.stdRes, s.atr, s.madRes, s.volSma, s.zDVal, s.change, s.rvwapEma,
+        s.wEma, s.resHighest, s.resLowest, s.resHiEma, s.resLoEma,
+        ...(s.obvZ ? [s.obvZ] : []), ...(s.rvwapLr ? [s.rvwapLr] : []), ...(s.wAvg ? [s.wAvg] : []),
+      ];
+      s.lists = [...s.times, s.markers];
+      s.series = [s.src, s.numCs, s.denCs, s.erCs, s.rvwap, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const time = b.time;
+      const src = value(b);
+      const volume = b.volume ?? NaN;
+      s.src[i] = src;
+
+      // Rolling VWAP (centre)
+      s.numCs[i] = s.csNum.step(src * volume);
+      s.denCs[i] = s.csDen.step(volume);
+      const num = rollsum(s.numCs, i, cfg.lenVWAP);
+      const den = rollsum(s.denCs, i, cfg.lenVWAP);
+      const rvwap = ne(den, 0) && !isNaN(den) ? num / den : NaN;
+      s.rvwap[i] = rvwap;
+
+      // Inner value-band width
+      const residual = src - rvwap;
+      const stdRes = s.stdRes.step(residual, cfg.lenSTD);
+      const atrV = s.atr.step(b.high, b.low, b.close);
+      const madRes = s.madRes.step(Math.abs(residual), cfg.lenMAD);
+      const baseWidth = cfg.kSTD * nz(stdRes) + cfg.kATR * nz(atrV) + cfg.kMAD * nz(madRes);
+
+      const volSma = s.volSma.step(volume, cfg.lenVol);
+      const rvol = volume / volSma;
+      const dVal = volume * src;
+      const zDVal = s.zDVal.step(dVal);
+      const volFac = clamp(Math.pow(Math.max(rvol, 0.0001), cfg.betaRVOL) * (1.0 + cfg.betaDVal * nz(zDVal)), 0.25, 3.0);
+
+      const change = s.change.step(src);
+      s.erCs[i] = s.csEr.step(Math.abs(change));
+      const erDen = rollsum(s.erCs, i, cfg.lenER);
+      const erNum = Math.abs(src - (i >= cfg.lenER ? s.src[i - cfg.lenER] : NaN));
+      let er = !isNaN(erDen) && ne(erDen, 0) ? erNum / erDen : 0.0;
+      er = clamp(er, 0.0, 1.0);
+      const erFac = cfg.erMin + (cfg.erMax - cfg.erMin) * (1.0 - er);
+
+      const obv = s.cumObv.step(volume * Math.sign(change));
+      const obvSlp = obv - (i >= 1 ? v.prevObv : NaN);
+      v.prevObv = obv;
+      const tiltN = s.obvZ ? clamp(s.obvZ.step(obvSlp) * cfg.tiltGain, -1.0, 1.0) : 0.0;
+
+      const wBase = baseWidth * volFac * erFac;
+      const upperBase = rvwap + wBase * (1.0 + tiltN);
+      const lowerBase = rvwap - wBase * (1.0 - tiltN);
+
+      // Tracking of the inner bands
+      const rvwapS = s.rvwapEma.step(rvwap);
+      const wS = s.wEma.step(wBase);
+      const rvwapF = s.rvwapLr ? s.rvwapLr.step(rvwap) : NaN;
+      const up = wS * (1.0 + tiltN);
+      const dn = wS * (1.0 - tiltN);
+      const slope = rvwapS - (i >= 1 ? v.prevRvwapS : NaN);
+      v.prevRvwapS = rvwapS;
+      let upperRaw: number;
+      let lowerRaw: number;
+      if (cfg.trackMode === 'Parallel-Lock') {
+        upperRaw = rvwapS + up;
+        lowerRaw = rvwapS - dn;
+      } else if (cfg.trackMode === 'Slope-Lock') {
+        upperRaw = rvwapS + up + cfg.slopeGain * slope;
+        lowerRaw = rvwapS - dn + cfg.slopeGain * slope;
+      } else if (cfg.trackMode === 'Forecast-Lock') {
+        upperRaw = rvwapF + up;
+        lowerRaw = rvwapF - dn;
+      } else {
+        upperRaw = upperBase;
+        lowerRaw = lowerBase;
+      }
+      const upperValue = attachClamped * upperRaw + (1.0 - attachClamped) * upperBase;
+      const lowerValue = attachClamped * lowerRaw + (1.0 - attachClamped) * lowerBase;
+
+      // Outer containment bands
+      const resHi = s.resHiEma.step(s.resHighest.step(residual, cfg.lenExt));
+      const resLo = s.resLoEma.step(s.resLowest.step(residual, cfg.lenExt));
+      const upperContain = rvwap + resHi + cfg.marginK * wS;
+      const lowerContain = rvwap + resLo - cfg.marginK * wS;
+
+      // Squeeze
+      const wAvg = s.wAvg ? s.wAvg.step(wBase, cfg.sqLen) : NaN;
+      const squeeze = !isNaN(wAvg) && ne(wAvg, 0) ? le(wBase / wAvg, cfg.sqThresh) : false;
+
+      // Plots
+      const p = s.plots;
+      p[0][i] = { time, value: fin(rvwap), color: i >= 1 && gt(rvwap, s.rvwap[i - 1]) ? teal : purple };
+      p[1][i] = { time, value: fin(cfg.showValueRails ? upperValue : NaN), color: color.green };
+      p[2][i] = { time, value: fin(cfg.showValueRails ? lowerValue : NaN), color: color.red };
+      p[3][i] = { time, value: fin(cfg.useContain ? upperContain : NaN), color: color.green };
+      p[4][i] = { time, value: fin(cfg.useContain ? lowerContain : NaN), color: color.red };
+      // rngGuides = (useContain ? upperContain : upperValue) - (useContain ? lowerContain : lowerValue)
+      const top = cfg.useContain ? upperContain : upperValue;
+      const bottom = cfg.useContain ? lowerContain : lowerValue;
+      const rng = top - bottom;
+      const g20 = cfg.showGuides && !isNaN(rng) ? bottom + 0.2 * rng : NaN;
+      const g80 = cfg.showGuides && !isNaN(rng) ? bottom + 0.8 * rng : NaN;
+      p[5][i] = { time, value: fin(g20), color: GUIDE20 };
+      p[6][i] = { time, value: fin(g80), color: GUIDE80 };
+
+      // plotshape(showSqueeze and squeeze, style = shape.circle, size.tiny, color.orange, location.belowbar)
+      if (cfg.showSqueeze && squeeze) {
+        s.markers.push({ time, position: 'belowBar', shape: 'circle', color: color.orange, size: 'tiny' });
+      }
+
+      // Alerts: breakoutUp_val = close > upperValue and rvol >= rvolMinBr (breakoutDown_val: close < lowerValue);
+      // inTopZone = showGuides and not na(rngGuides) and close >= line80 (inBottomZone: close <= line20)
+      const close = b.close;
+      const rvolOk = ge(fin(rvol), cfg.rvolMinBr);
+      const valid = cfg.showGuides && !isNaN(fin(rng));
+      const f0 = gt(close, fin(upperValue)) && rvolOk;
+      const f1 = lt(close, fin(lowerValue)) && rvolOk;
+      const f2 = valid && ge(close, fin(g80));
+      const f3 = valid && le(close, fin(g20));
+      s.flags[0][i] = f0;
+      s.flags[1][i] = f1;
+      s.flags[2][i] = f2;
+      s.flags[3][i] = f3;
+      if (f0) s.times[0].push(time as number);
+      if (f1) s.times[1].push(time as number);
+      if (f2) s.times[2].push(time as number);
+      if (f3) s.times[3].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const innerFill = cfg.showValueFill ? String(color.new(color.gray, 88)) : 'transparent';
+      const containFill = cfg.showContainFill && cfg.useContain ? String(color.new(color.gray, 85)) : 'transparent';
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(), plot6: p[6].slice(),
+        },
+        fills: [
+          { plot1: 'plot1', plot2: 'plot2', options: { title: 'Inner Fill' }, colors: new Array<string>(n).fill(innerFill) },
+          { plot1: 'plot3', plot2: 'plot4', options: { title: 'Containment Fill' },
+            colors: new Array<string>(n).fill(containFill) },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<JopaChannelV1Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<JopaChannelV1Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -348,6 +440,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const JopaChannelV1 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

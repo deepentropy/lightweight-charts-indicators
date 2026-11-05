@@ -14,9 +14,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, array, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, array, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EnhancedVfiBuyerSellerPressureInputs {
   /** Pressure threshold of a strong buyer / seller bar */
@@ -77,17 +79,32 @@ const max = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.max(a, 
 /** Plots show +-infinity as na */
 const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EnhancedVfiBuyerSellerPressureInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const th = cfg.pressureThreshold;
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
 
-  // Buyer / seller pressure (plain division: x / 0 is +-infinity, 0 / 0 na)
+interface VfiRun extends BarRunState<Record<string, never>> {
+  stdev: ReturnType<typeof taStep.stdev>;
+  smaVol: ReturnType<typeof taStep.sma>;
+  smooth: ReturnType<typeof taStep.sma>;
+  ema: ReturnType<typeof taStep.ema>;
+  over: ReturnType<typeof taStep.crossover>;
+  under: ReturnType<typeof taStep.crossunder>;
+  typical: number[];
+  smaVolArr: number[];
+  vcp: number[];
+  buyerPlot: Point[];
+  sellerPlot: Point[];
+  vfiPlot: Point[];
+  vfimaPlot: Point[];
+  bgColors: BgColorData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<EnhancedVfiBuyerSellerPressureInputs>): BarStudy<VfiRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const th = cfg.pressureThreshold;
   const buyGreen = color.green;
   const buyFaded = String(color.new(color.green, 70));
   const sellRed = color.red;
@@ -95,91 +112,105 @@ export function calculate(
   const bgBuy = String(color.new(color.green, 85));
   const bgSell = String(color.new(color.red, 85));
   const bgNeutral = String(color.new(color.gray, 95));
-  const bgColors: BgColorData[] = [];
-  const buyerPlot: { time: number; value: number; color: string }[] = [];
-  const sellerPlot: { time: number; value: number; color: string }[] = [];
-  const strongBuyFlags: boolean[] = [], strongSellFlags: boolean[] = [], neutralFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const buyerPressure = (b.close - b.open) / (b.high - b.low);
-    const sellerPressure = (b.open - b.close) / (b.high - b.low);
-    const strongBuy = ge(buyerPressure, th);
-    const strongSell = ge(sellerPressure, th);
-    const neutral = !strongBuy && !strongSell;
-    // alertcondition(buyer_pressure > pressure_threshold) / (seller_pressure > pressure_threshold) / (neutral_signal)
-    strongBuyFlags.push(gt(buyerPressure, th));
-    strongSellFlags.push(gt(sellerPressure, th));
-    neutralFlags.push(neutral);
-    bgColors.push({ time: b.time, color: strongBuy ? bgBuy : strongSell ? bgSell : bgNeutral });
-    const maxPressure = max(max(buyerPressure, sellerPressure), th);
-    const histogramScale = gt(maxPressure, 0) ? 100 / maxPressure : 1;
-    buyerPlot.push({
-      time: b.time, value: fin(buyerPressure * histogramScale),
-      color: strongBuy ? buyGreen : neutral ? color.gray : buyFaded,
-    });
-    sellerPlot.push({
-      time: b.time, value: fin(sellerPressure * histogramScale),
-      color: strongSell ? sellRed : neutral ? color.gray : sellFaded,
-    });
-  }
-
-  // VFI
-  const typical = bars.map((b) => (b.high + b.low + b.close) / 3);
-  const inter = typical.map((t, i) => (i > 0 ? Math.log(t) - Math.log(typical[i - 1]) : NaN));
-  const vinter = A(ta.stdev(S(inter), 30));
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const smaVol = A(ta.sma(S(volume), cfg.vfiLength));
-  const vcp: number[] = new Array(n);
-  const raw: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const cutoff = cfg.coef * vinter[i] * bars[i].close;
-    const vave = i > 0 ? smaVol[i - 1] : NaN; // ta.sma(volume, vfi_length)[1]
-    const vmax = vave * cfg.vcoef;
-    const vc = lt(volume[i], vmax) ? volume[i] : vmax;
-    const mf = i > 0 ? typical[i] - typical[i - 1] : NaN;
-    vcp[i] = gt(mf, cutoff) ? vc : lt(mf, -cutoff) ? -vc : 0;
-    // sum_vcp = array.new_float(vfi_length, 0.0); array.set(sum_vcp, k, vcp[k]) for k = 0 .. vfi_length - 1
-    const sumVcp: number[] = new Array(cfg.vfiLength).fill(0);
-    for (let k = 0; k <= cfg.vfiLength - 1; k++) array.set(sumVcp, k, i - k >= 0 ? vcp[i - k] : NaN);
-    raw[i] = array.sum(sumVcp) / vave;
-  }
-  // ma(x, y) => smooth_vfi ? ta.sma(x, y) : x
-  const vfi = cfg.smoothVfi ? A(ta.sma(S(raw), 3)) : raw;
-  const vfiS = S(vfi);
-  const vfimaS = ta.ema(vfiS, cfg.signalLength);
-  const vfima = A(vfimaS);
-  const crossoverVfi = A(ta.crossover(vfiS, vfimaS));
-  const crossunderVfi = A(ta.crossunder(vfiS, vfimaS));
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const v = vfi[i];
-    if (!Number.isFinite(v)) continue;
-    // plotshape(crossover_vfi ? vfi : na, "VFI Crossover", shape.circle, location.absolute, color.aqua, size.auto)
-    if (crossoverVfi[i] === 1) {
-      markers.push({ time: bars[i].time, position: 'atPriceMiddle', price: v, shape: 'circle', color: color.aqua, size: 'auto', id: 'shape0' });
-    }
-    // plotshape(crossunder_vfi ? vfi : na, "VFI Crossunder", shape.circle, location.absolute, color.yellow, size.auto)
-    if (crossunderVfi[i] === 1) {
-      markers.push({ time: bars[i].time, position: 'atPriceMiddle', price: v, shape: 'circle', color: color.yellow, size: 'auto', id: 'shape1' });
-    }
-  }
-
+  /** The array of the vfi_length last vcp values, filled again on each bar */
+  let sumVcp: number[] = [];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: buyerPlot,
-      plot1: sellerPlot,
-      plot2: bars.map((b, i) => ({ time: b.time, value: fin(vfi[i]), color: VFI_COL })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: fin(vfima[i]), color: VFIMA_COL })),
+    init() {
+      sumVcp = new Array(cfg.vfiLength).fill(0);
+      const s: VfiRun = {
+        stdev: taStep.stdev(), smaVol: taStep.sma(), smooth: taStep.sma(), ema: taStep.ema(cfg.signalLength),
+        over: taStep.crossover(), under: taStep.crossunder(),
+        typical: [], smaVolArr: [], vcp: [], buyerPlot: [], sellerPlot: [], vfiPlot: [], vfimaPlot: [], bgColors: [],
+        markers: [], flags: [[], [], [], [], []], times: [[], [], [], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.stdev, s.smaVol, s.smooth, s.ema, s.over, s.under];
+      s.lists = [s.bgColors, s.markers, ...s.times];
+      s.series = [s.typical, s.smaVolArr, s.vcp, s.buyerPlot, s.sellerPlot, s.vfiPlot, s.vfimaPlot, ...s.flags];
+      return s;
     },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dotted', linewidth: 1 } }],
-    markers,
-    bgColors,
-    alerts: alertStates(alertConditions, bars, [
-      crossoverVfi.map((v) => v === 1), crossunderVfi.map((v) => v === 1), strongBuyFlags, strongSellFlags, neutralFlags,
-    ]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      // Buyer / seller pressure (plain division: x / 0 is +-infinity, 0 / 0 na)
+      const buyerPressure = (b.close - b.open) / (b.high - b.low);
+      const sellerPressure = (b.open - b.close) / (b.high - b.low);
+      const strongBuy = ge(buyerPressure, th);
+      const strongSell = ge(sellerPressure, th);
+      const neutral = !strongBuy && !strongSell;
+      s.bgColors.push({ time: b.time, color: strongBuy ? bgBuy : strongSell ? bgSell : bgNeutral });
+      const maxPressure = max(max(buyerPressure, sellerPressure), th);
+      const histogramScale = gt(maxPressure, 0) ? 100 / maxPressure : 1;
+      s.buyerPlot[i] = {
+        time: b.time, value: fin(buyerPressure * histogramScale),
+        color: strongBuy ? buyGreen : neutral ? color.gray : buyFaded,
+      };
+      s.sellerPlot[i] = {
+        time: b.time, value: fin(sellerPressure * histogramScale),
+        color: strongSell ? sellRed : neutral ? color.gray : sellFaded,
+      };
+
+      // VFI
+      const typical = (b.high + b.low + b.close) / 3;
+      s.typical[i] = typical;
+      const inter = i > 0 ? Math.log(typical) - Math.log(s.typical[i - 1]) : NaN;
+      const vinter = s.stdev.step(inter, 30);
+      const volume = b.volume ?? NaN;
+      s.smaVolArr[i] = s.smaVol.step(volume, cfg.vfiLength);
+      const cutoff = cfg.coef * vinter * b.close;
+      const vave = i > 0 ? s.smaVolArr[i - 1] : NaN; // ta.sma(volume, vfi_length)[1]
+      const vmax = vave * cfg.vcoef;
+      const vc = lt(volume, vmax) ? volume : vmax;
+      const mf = i > 0 ? typical - s.typical[i - 1] : NaN;
+      s.vcp[i] = gt(mf, cutoff) ? vc : lt(mf, -cutoff) ? -vc : 0;
+      // sum_vcp = array.new_float(vfi_length, 0.0); array.set(sum_vcp, k, vcp[k]) for k = 0 .. vfi_length - 1
+      for (let k = 0; k <= cfg.vfiLength - 1; k++) array.set(sumVcp, k, i - k >= 0 ? s.vcp[i - k] : NaN);
+      const raw = array.sum(sumVcp) / vave;
+      // ma(x, y) => smooth_vfi ? ta.sma(x, y) : x
+      const vfi = cfg.smoothVfi ? s.smooth.step(raw, 3) : raw;
+      const vfima = s.ema.step(vfi);
+      const crossoverVfi = s.over.step(vfi, vfima);
+      const crossunderVfi = s.under.step(vfi, vfima);
+      s.vfiPlot[i] = { time: b.time, value: fin(vfi), color: VFI_COL };
+      s.vfimaPlot[i] = { time: b.time, value: fin(vfima), color: VFIMA_COL };
+      if (Number.isFinite(vfi)) {
+        // plotshape(crossover_vfi ? vfi : na, "VFI Crossover", shape.circle, location.absolute, color.aqua, size.auto)
+        if (crossoverVfi) {
+          s.markers.push({ time: b.time, position: 'atPriceMiddle', price: vfi, shape: 'circle', color: color.aqua, size: 'auto', id: 'shape0' });
+        }
+        // plotshape(crossunder_vfi ? vfi : na, "VFI Crossunder", shape.circle, location.absolute, color.yellow, size.auto)
+        if (crossunderVfi) {
+          s.markers.push({ time: b.time, position: 'atPriceMiddle', price: vfi, shape: 'circle', color: color.yellow, size: 'auto', id: 'shape1' });
+        }
+      }
+      // alertcondition(crossover_vfi) / (crossunder_vfi) / (buyer_pressure > pressure_threshold) /
+      //   (seller_pressure > pressure_threshold) / (neutral_signal)
+      const flags = [crossoverVfi, crossunderVfi, gt(buyerPressure, th), gt(sellerPressure, th), neutral];
+      for (let k = 0; k < 5; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(b.time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.buyerPlot.slice(), plot1: s.sellerPlot.slice(), plot2: s.vfiPlot.slice(), plot3: s.vfimaPlot.slice() },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dotted', linewidth: 1 } }],
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EnhancedVfiBuyerSellerPressureInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EnhancedVfiBuyerSellerPressureInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -193,6 +224,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const EnhancedVfiBuyerSellerPressure = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

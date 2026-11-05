@@ -14,8 +14,10 @@
  * Original notice: © tanayroy
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface IchimokuScoreIndicatorInputs {
   tenkanSenPeriod: number;
@@ -118,168 +120,403 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 /** `==`: false with na and with +-infinity */
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<IchimokuScoreIndicatorInputs> = {}): IndicatorResult {
+/**
+ * `ta.highest(source, length)` / `ta.lowest` with a constant length, one bar at a time, in constant time per bar (a
+ * queue of the values that can still be the extreme): the extreme of the last `length` non-na values, na before bar
+ * `length - 1`; +0 wins over -0 for the highest, -0 for the lowest (the doubles of taStep.highest / lowest).
+ */
+class WindowExtreme implements Committable {
+  private vals: number[] = [];
+  private ids: number[] = [];
+  private head = 0;
+  /** Non-na values committed */
+  private kept = 0;
+  private bars = 0;
+  private pending = NaN;
+  private stepped = false;
+  private readonly len: number;
+
+  constructor(private readonly lowest: boolean, length: number) {
+    this.len = Math.trunc(length);
+  }
+
+  /** `b` (newer) replaces `a` in the queue: it is as extreme (the preferred zero is kept) */
+  private replaces(a: number, b: number): boolean {
+    if (this.lowest) return a > b || (a === b && !(Object.is(a, -0) && Object.is(b, 0)));
+    return a < b || (a === b && !(Object.is(a, 0) && Object.is(b, -0)));
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    this.pending = value;
+    const own = Number.isFinite(value);
+    const total = this.kept + (own ? 1 : 0);
+    if (this.bars < this.len - 1 || total === 0) return NaN;
+    const from = total - this.len;
+    let h = this.head;
+    while (h < this.ids.length && this.ids[h]! < from) h++;
+    if (h >= this.ids.length) return value;
+    const q = this.vals[h]!;
+    if (!own) return q;
+    return this.lowest ? Math.min(q, value) : Math.max(q, value);
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.bars++;
+    const v = this.pending;
+    if (!Number.isFinite(v)) return;
+    const id = this.kept++;
+    while (this.vals.length > this.head && this.replaces(this.vals[this.vals.length - 1]!, v)) {
+      this.vals.pop();
+      this.ids.pop();
+    }
+    this.vals.push(v);
+    this.ids.push(id);
+    // the values out of the window of the next bars
+    while (this.ids[this.head]! < this.kept - this.len) this.head++;
+    if (this.head > 1024 && this.head * 2 > this.ids.length) {
+      this.vals = this.vals.slice(this.head);
+      this.ids = this.ids.slice(this.head);
+      this.head = 0;
+    }
+  }
+}
+
+/**
+ * `math.sum(source, length)` with a constant length, one bar at a time: the correctly rounded sum of the last `length`
+ * non-na values (exact partials, as the oakscriptjs window sums: the same doubles), the previous result on a bar with
+ * an na value. The kept partials are copied into a second buffer on a step (no allocation per bar).
+ */
+class WindowSum implements Committable {
+  private values: number[] = [];
+  private p = new Float64Array(16);
+  private n = 0;
+  private q = new Float64Array(16);
+  private qn = 0;
+  private last = NaN;
+  private next = NaN;
+  private pending = NaN;
+  private stepped = false;
+  private readonly len: number;
+
+  constructor(length: number) {
+    this.len = Math.floor(length);
+  }
+
+  /** Adds `x` to the partials of `q` exactly (Shewchuk) */
+  private add(x: number): void {
+    let q = this.q;
+    const n = this.qn;
+    let i = 0;
+    for (let j = 0; j < n; j++) {
+      let y = q[j]!;
+      if (Math.abs(x) < Math.abs(y)) {
+        const t = x;
+        x = y;
+        y = t;
+      }
+      const hi = x + y;
+      const lo = y - (hi - x);
+      if (lo !== 0) q[i++] = lo;
+      x = hi;
+    }
+    if (i === q.length) {
+      const grown = new Float64Array(q.length * 2);
+      grown.set(q);
+      this.q = q = grown;
+    }
+    q[i] = x;
+    this.qn = i + 1;
+  }
+
+  /** The exact sum of the partials of `q` rounded once (round half to even) */
+  private round(): number {
+    const p = this.q;
+    let n = this.qn;
+    if (n === 0) return 0;
+    let hi = p[--n]!;
+    while (n > 0) {
+      const x = hi;
+      const y = p[--n]!;
+      hi = x + y;
+      const lo = y - (hi - x);
+      if (lo !== 0) {
+        if (n > 0 && ((lo < 0 && p[n - 1]! < 0) || (lo > 0 && p[n - 1]! > 0))) {
+          const y2 = lo * 2;
+          const x2 = hi + y2;
+          if (y2 === x2 - hi) hi = x2;
+        }
+        break;
+      }
+    }
+    return hi;
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    if (!(this.len >= 1)) { this.pending = NaN; this.next = NaN; return NaN; }
+    if (value === undefined || value === null || !Number.isFinite(value)) {
+      this.pending = NaN;
+      this.next = this.last;
+      return this.last;
+    }
+    if (this.q.length < this.p.length) this.q = new Float64Array(this.p.length);
+    this.q.set(this.p.subarray(0, this.n));
+    this.qn = this.n;
+    const count = this.values.length;
+    if (count >= this.len) this.add(-this.values[count - this.len]!);
+    this.add(value);
+    this.pending = value;
+    this.next = count + 1 >= this.len ? this.round() : NaN;
+    return this.next;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.last = this.next;
+    if (Number.isNaN(this.pending)) return;
+    const p = this.p;
+    this.p = this.q;
+    this.n = this.qn;
+    this.q = p;
+    this.values.push(this.pending);
+    if (this.values.length > this.len * 2 + 1024) this.values = this.values.slice(-this.len);
+  }
+}
+
+/** `ta.sma(source, length)` with a constant length: {@link WindowSum} divided by the length */
+class WindowSma extends WindowSum {
+  private readonly div: number;
+
+  constructor(length: number) {
+    super(length);
+    this.div = Math.floor(length);
+  }
+
+  override step(value: number): number {
+    return super.step(value) / this.div;
+  }
+}
+
+type Point = { time: number; value: number; color: string };
+
+interface IchiRun extends BarRunState<Record<string, never>> {
+  /** donchian(len): ta.lowest(low) / ta.highest(high) of the Tenkan, Kijun and Senkou B lengths */
+  lows: WindowExtreme[];
+  highs: WindowExtreme[];
+  /** Cloud shadow windows of senkou_a[displacement] / senkou_b[displacement] */
+  highestA: WindowExtreme;
+  lowestA: WindowExtreme;
+  highestB: WindowExtreme;
+  lowestB: WindowExtreme;
+  smooth: WindowSma;
+  tenkan: number[];
+  kijun: number[];
+  senkouA: number[];
+  senkouB: number[];
+  plot0: Point[];
+  plot1: Point[];
+  /** plot(close, offset = -displacement): slot i - displacement, written by bar i */
+  plot2: Point[];
+  /** plot(senkou_a, offset = displacement) / plot(senkou_b, offset = 26): the point drawn on bar i (of bar i - k) */
+  plot3: Point[];
+  plot4: Point[];
+  plot5: Point[];
+  plot6: Point[];
+  cloud: string[];
+}
+
+function study(inputs: Partial<IchimokuScoreIndicatorInputs>): BarStudy<IchiRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const d = cfg.displacement;
-  const highS = S(bars.map((b) => b.high));
-  const lowS = S(bars.map((b) => b.low));
-  const close = bars.map((b) => b.close);
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  /** x[k]: na before the first bar */
-  const at = (x: number[], i: number) => (i >= 0 ? x[i] : NaN);
-
-  // donchian(len) = math.avg(ta.lowest(len), ta.highest(len))
-  const donchian = (len: number) => {
-    const lo = A(ta.lowest(lowS, len));
-    const hi = A(ta.highest(highS, len));
-    return lo.map((l, i) => (l + hi[i]) / 2);
-  };
-  const tenkan = donchian(cfg.tenkanSenPeriod);
-  const kijun = donchian(cfg.kijunSenPeriod);
-  const senkouA = tenkan.map((t, i) => (t + kijun[i]) / 2);
-  const senkouB = donchian(cfg.senkouBLen);
-
-  // Cloud shadow: highest / lowest of senkou_a[displacement] and senkou_b[displacement] over kumoShadowPeriod bars
-  const senkouAd = senkouA.map((_v, i) => at(senkouA, i - d));
-  const senkouBd = senkouB.map((_v, i) => at(senkouB, i - d));
-  const highestA = A(ta.highest(S(senkouAd), cfg.kumoShadowPeriod));
-  const lowestA = A(ta.lowest(S(senkouAd), cfg.kumoShadowPeriod));
-  const highestB = A(ta.highest(S(senkouBd), cfg.kumoShadowPeriod));
-  const lowestB = A(ta.lowest(S(senkouBd), cfg.kumoShadowPeriod));
-
   // for i = displacement - 1 to displacement - chikouspan_consolidation_bar: history offsets of the loops
   const kFrom = Math.min(d - 1, d - cfg.chikouspanConsolidationBar);
   const kTo = Math.max(d - 1, d - cfg.chikouspanConsolidationBar);
-  if (kFrom < 0) throw new Error('Invalid history reference: negative offset (displacement - chikou consolidation bar < 0)');
-
-  // ta.change(x) / x: plain divisions
-  const slope = (x: number[]) => x.map((v, i) => (i > 0 ? v - x[i - 1] : NaN) / v);
-  const senkouASlp = slope(senkouA);
-  const senkouBSlp = slope(senkouB);
-  const tenkanSlp = slope(tenkan);
-  const kijunSlp = slope(kijun);
-
-  const score: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const c = close[i];
-    let s = 0.0;
-    const aD = at(senkouA, i - d);
-    const bD = at(senkouB, i - d);
-    const kumoUp = ge(aD, bD) ? aD : bD;
-    const kumoDown = ge(aD, bD) ? bD : aD;
-    const highestCloud = ge(highestA[i], highestB[i]) ? highestA[i] : highestB[i];
-    const lowestCloud = le(lowestA[i], lowestB[i]) ? lowestA[i] : lowestB[i];
-    const a2d = at(senkouA, i - 2 * d);
-    const b2d = at(senkouB, i - 2 * d);
-    const kumoUpChikou = ge(a2d, b2d) ? a2d : b2d;
-    let chikouHigh = 0.0;
-    let chikouLow = at(low, i - (d - 1));
-    for (let k = kFrom; k <= kTo; k++) {
-      chikouHigh = Math.max(at(high, i - k), chikouHigh);
-      chikouLow = Math.min(at(low, i - k), chikouLow);
-    }
-
-    // Close vs. kumo and kumo shadow
-    if (gt(c, kumoUp)) {
-      s += cfg.priceKumoScore;
-      s = lt(c, highestCloud) ? s - cfg.priceKumoShadowScore : s + cfg.priceKumoShadowScore;
-    } else if (lt(c, kumoDown)) {
-      s -= cfg.priceKumoScore;
-      s = gt(c, lowestCloud) ? s + cfg.priceKumoShadowScore : s - cfg.priceKumoShadowScore;
-    }
-
-    // Tenkan vs. Kijun
-    const t = tenkan[i];
-    const kj = kijun[i];
-    if (gt(t, kj)) {
-      s += cfg.tenkanSenKijunSenScore;
-      s = gt(t, kumoUp) ? s + cfg.tenkanSenKumoScore : s - cfg.tenkanSenKumoScore;
-      s = gt(kj, kumoUp) ? s + cfg.kijunSenKumoScore : s - cfg.kijunSenKumoScore;
-      s = gt(kijunSlp[i], 0) ? s + cfg.kijunSenSlopeScore : s - cfg.kijunSenSlopeScore;
-      s = gt(tenkanSlp[i], 0) ? s + cfg.tenkanSenSlopeScore : s - cfg.tenkanSenSlopeScore;
-    } else if (lt(t, kj)) {
-      s -= 2.0; // the Pine script removes a constant 2.0 here (not the input score)
-      s = lt(t, kumoUp) ? s - cfg.tenkanSenKumoScore : s + cfg.tenkanSenKumoScore;
-      s = lt(kj, kumoUp) ? s - cfg.kijunSenKumoScore : s + cfg.kijunSenKumoScore;
-      s = lt(kijunSlp[i], 0) ? s - cfg.kijunSenSlopeScore : s + cfg.kijunSenSlopeScore;
-      s = lt(tenkanSlp[i], 0) ? s - cfg.tenkanSenSlopeScore : s + cfg.tenkanSenSlopeScore;
-    }
-
-    // Chikou: close vs. close[26] (a constant 26 in the Pine script)
-    if (gt(c, at(close, i - 26))) {
-      s += cfg.chikouSpanScore;
-      s = gt(c, kumoUpChikou) ? s + cfg.chikouKumoScore : s - cfg.chikouKumoScore;
-      s = le(c, chikouHigh) ? s - cfg.chikouConsolidationScore : s + cfg.chikouConsolidationScore;
-    } else {
-      s -= cfg.chikouSpanScore;
-      s = le(c, kumoUpChikou) ? s - cfg.chikouKumoScore : s + cfg.chikouKumoScore;
-      s = ge(c, chikouLow) ? s + cfg.chikouConsolidationScore : s - cfg.chikouConsolidationScore;
-    }
-
-    // Span A vs. Span B and the cloud slopes
-    const sa = senkouASlp[i];
-    const sb = senkouBSlp[i];
-    if (gt(senkouA[i], senkouB[i])) {
-      s += cfg.senkouASenkouBScore;
-      if (gt(sa, 0) && eq(sb, 0)) s += cfg.kumoSlopeScore;
-      else if (lt(sa, 0) && eq(sb, 0)) s -= cfg.kumoSlopeScore;
-      else if (gt(sa, 0) && gt(sb, 0)) s += cfg.kumoSlopeScore;
-      else if (lt(sa, 0) && gt(sb, 0)) s -= cfg.kumoSlopeScore;
-    } else if (lt(senkouA[i], senkouB[i])) {
-      s -= cfg.senkouASenkouBScore;
-      if (lt(sa, 0) && eq(sb, 0)) s -= cfg.kumoSlopeScore;
-      else if (gt(sa, 0) && eq(sb, 0)) s += cfg.kumoSlopeScore;
-      else if (lt(sa, 0) && lt(sb, 0)) s -= cfg.kumoSlopeScore;
-      else if (gt(sa, 0) && lt(sb, 0)) s += cfg.kumoSlopeScore;
-    }
-
-    // Close vs. Tenkan and Kijun
-    s = gt(c, t) ? s + cfg.priceTenkanScore : s - cfg.priceTenkanScore;
-    s = gt(c, kj) ? s + cfg.priceKijunScore : s - cfg.priceKijunScore;
-    score[i] = s;
-  }
-  const smooth = A(ta.sma(S(score), cfg.smaPeriod));
-
-  const interval = barInterval(bars);
-  /** plot(..., offset = k): the value of bar i is drawn on bar i + k (future bars with barTime; none before bar 0) */
-  const shifted = (vals: number[], k: number, col: string) => {
-    const out: { time: number; value: number; color: string }[] = [];
-    for (let i = 0; i < n; i++) {
-      if (i + k >= 0) out.push({ time: barTime(bars, i + k, interval), value: vals[i], color: col });
-    }
-    return out;
-  };
   // fill(p1, p2, color = senkou_a > senkou_b ? color.new(color.yellow, 70) : color.new(color.red, 70));
   // the colour of bar i goes with the plot points of bar i
   const bullCloud = String(color.new(color.yellow, 70));
   const bearCloud = String(color.new(color.red, 70));
-  const cloud = senkouA.map((a, i) => (gt(a, senkouB[i]) ? bullCloud : bearCloud));
-
+  const lengths = [cfg.tenkanSenPeriod, cfg.kijunSenPeriod, cfg.senkouBLen];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: tenkan[i], color: color.red })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: kijun[i], color: color.green })),
-      // plot(close, offset = -displacement)
-      plot2: shifted(close, -d, color.purple),
-      // plot(senkou_a, offset = displacement); plot(senkou_b, offset = 26)
-      plot3: shifted(senkouA, d, color.blue),
-      plot4: shifted(senkouB, 26, color.maroon),
-      plot5: bars.map((b, i) => ({ time: b.time, value: score[i], color: color.green })),
-      plot6: bars.map((b, i) => ({ time: b.time, value: cfg.showSmoothLine ? smooth[i] : NaN, color: color.red })),
+    init() {
+      if (kFrom < 0) throw new Error('Invalid history reference: negative offset (displacement - chikou consolidation bar < 0)');
+      const s: IchiRun = {
+        lows: lengths.map((l) => new WindowExtreme(true, l)),
+        highs: lengths.map((l) => new WindowExtreme(false, l)),
+        highestA: new WindowExtreme(false, cfg.kumoShadowPeriod), lowestA: new WindowExtreme(true, cfg.kumoShadowPeriod),
+        highestB: new WindowExtreme(false, cfg.kumoShadowPeriod), lowestB: new WindowExtreme(true, cfg.kumoShadowPeriod),
+        smooth: new WindowSma(cfg.smaPeriod),
+        tenkan: [], kijun: [], senkouA: [], senkouB: [],
+        plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], plot5: [], plot6: [], cloud: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [...s.lows, ...s.highs, s.highestA, s.lowestA, s.highestB, s.lowestB, s.smooth];
+      s.series = [
+        s.tenkan, s.kijun, s.senkouA, s.senkouB, s.plot0, s.plot1, s.plot2, s.plot3, s.plot4, s.plot5, s.plot6, s.cloud,
+      ];
+      return s;
     },
-    // hline(0, title = "Score Line"): Pine default colour #787B86, dashed
-    hlines: [{ value: 0, options: { title: 'Score Line', color: '#787B86', linestyle: 'dashed' } }],
-    fills: [{ plot1: 'plot3', plot2: 'plot4', options: { title: 'Plots Background' }, colors: cloud }],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      /** x[k]: na before the first bar */
+      const at = (x: number[], j: number) => (j >= 0 ? x[j] : NaN);
+      // donchian(len) = math.avg(ta.lowest(len), ta.highest(len))
+      const donchian = (k: number) => (s.lows[k].step(b.low) + s.highs[k].step(b.high)) / 2;
+      const t = donchian(0);
+      const kj = donchian(1);
+      const senkouA = (t + kj) / 2;
+      const senkouB = donchian(2);
+      s.tenkan[i] = t;
+      s.kijun[i] = kj;
+      s.senkouA[i] = senkouA;
+      s.senkouB[i] = senkouB;
+
+      // Cloud shadow: highest / lowest of senkou_a[displacement] and senkou_b[displacement] over kumoShadowPeriod bars
+      const aD = at(s.senkouA, i - d);
+      const bD = at(s.senkouB, i - d);
+      const highestA = s.highestA.step(aD);
+      const lowestA = s.lowestA.step(aD);
+      const highestB = s.highestB.step(bD);
+      const lowestB = s.lowestB.step(bD);
+
+      // ta.change(x) / x: plain divisions
+      const slope = (x: number[]) => (i > 0 ? x[i] - x[i - 1] : NaN) / x[i];
+      const senkouASlp = slope(s.senkouA);
+      const senkouBSlp = slope(s.senkouB);
+      const tenkanSlp = slope(s.tenkan);
+      const kijunSlp = slope(s.kijun);
+
+      const c = b.close;
+      let sc = 0.0;
+      const kumoUp = ge(aD, bD) ? aD : bD;
+      const kumoDown = ge(aD, bD) ? bD : aD;
+      const highestCloud = ge(highestA, highestB) ? highestA : highestB;
+      const lowestCloud = le(lowestA, lowestB) ? lowestA : lowestB;
+      const a2d = at(s.senkouA, i - 2 * d);
+      const b2d = at(s.senkouB, i - 2 * d);
+      const kumoUpChikou = ge(a2d, b2d) ? a2d : b2d;
+      const highAt = (j: number) => (j >= 0 ? bars[j].high : NaN);
+      const lowAt = (j: number) => (j >= 0 ? bars[j].low : NaN);
+      let chikouHigh = 0.0;
+      let chikouLow = lowAt(i - (d - 1));
+      for (let k = kFrom; k <= kTo; k++) {
+        chikouHigh = Math.max(highAt(i - k), chikouHigh);
+        chikouLow = Math.min(lowAt(i - k), chikouLow);
+      }
+
+      // Close vs. kumo and kumo shadow
+      if (gt(c, kumoUp)) {
+        sc += cfg.priceKumoScore;
+        sc = lt(c, highestCloud) ? sc - cfg.priceKumoShadowScore : sc + cfg.priceKumoShadowScore;
+      } else if (lt(c, kumoDown)) {
+        sc -= cfg.priceKumoScore;
+        sc = gt(c, lowestCloud) ? sc + cfg.priceKumoShadowScore : sc - cfg.priceKumoShadowScore;
+      }
+
+      // Tenkan vs. Kijun
+      if (gt(t, kj)) {
+        sc += cfg.tenkanSenKijunSenScore;
+        sc = gt(t, kumoUp) ? sc + cfg.tenkanSenKumoScore : sc - cfg.tenkanSenKumoScore;
+        sc = gt(kj, kumoUp) ? sc + cfg.kijunSenKumoScore : sc - cfg.kijunSenKumoScore;
+        sc = gt(kijunSlp, 0) ? sc + cfg.kijunSenSlopeScore : sc - cfg.kijunSenSlopeScore;
+        sc = gt(tenkanSlp, 0) ? sc + cfg.tenkanSenSlopeScore : sc - cfg.tenkanSenSlopeScore;
+      } else if (lt(t, kj)) {
+        sc -= 2.0; // the Pine script removes a constant 2.0 here (not the input score)
+        sc = lt(t, kumoUp) ? sc - cfg.tenkanSenKumoScore : sc + cfg.tenkanSenKumoScore;
+        sc = lt(kj, kumoUp) ? sc - cfg.kijunSenKumoScore : sc + cfg.kijunSenKumoScore;
+        sc = lt(kijunSlp, 0) ? sc - cfg.kijunSenSlopeScore : sc + cfg.kijunSenSlopeScore;
+        sc = lt(tenkanSlp, 0) ? sc - cfg.tenkanSenSlopeScore : sc + cfg.tenkanSenSlopeScore;
+      }
+
+      // Chikou: close vs. close[26] (a constant 26 in the Pine script)
+      if (gt(c, i - 26 >= 0 ? bars[i - 26].close : NaN)) {
+        sc += cfg.chikouSpanScore;
+        sc = gt(c, kumoUpChikou) ? sc + cfg.chikouKumoScore : sc - cfg.chikouKumoScore;
+        sc = le(c, chikouHigh) ? sc - cfg.chikouConsolidationScore : sc + cfg.chikouConsolidationScore;
+      } else {
+        sc -= cfg.chikouSpanScore;
+        sc = le(c, kumoUpChikou) ? sc - cfg.chikouKumoScore : sc + cfg.chikouKumoScore;
+        sc = ge(c, chikouLow) ? sc + cfg.chikouConsolidationScore : sc - cfg.chikouConsolidationScore;
+      }
+
+      // Span A vs. Span B and the cloud slopes
+      const sa = senkouASlp;
+      const sb = senkouBSlp;
+      if (gt(senkouA, senkouB)) {
+        sc += cfg.senkouASenkouBScore;
+        if (gt(sa, 0) && eq(sb, 0)) sc += cfg.kumoSlopeScore;
+        else if (lt(sa, 0) && eq(sb, 0)) sc -= cfg.kumoSlopeScore;
+        else if (gt(sa, 0) && gt(sb, 0)) sc += cfg.kumoSlopeScore;
+        else if (lt(sa, 0) && gt(sb, 0)) sc -= cfg.kumoSlopeScore;
+      } else if (lt(senkouA, senkouB)) {
+        sc -= cfg.senkouASenkouBScore;
+        if (lt(sa, 0) && eq(sb, 0)) sc -= cfg.kumoSlopeScore;
+        else if (gt(sa, 0) && eq(sb, 0)) sc += cfg.kumoSlopeScore;
+        else if (lt(sa, 0) && lt(sb, 0)) sc -= cfg.kumoSlopeScore;
+        else if (gt(sa, 0) && lt(sb, 0)) sc += cfg.kumoSlopeScore;
+      }
+
+      // Close vs. Tenkan and Kijun
+      sc = gt(c, t) ? sc + cfg.priceTenkanScore : sc - cfg.priceTenkanScore;
+      sc = gt(c, kj) ? sc + cfg.priceKijunScore : sc - cfg.priceKijunScore;
+      const smooth = s.smooth.step(sc);
+
+      s.plot0[i] = { time, value: t, color: color.red };
+      s.plot1[i] = { time, value: kj, color: color.green };
+      // plot(close, offset = -displacement): bar i is the only writer of slot i - displacement
+      if (i - d >= 0) s.plot2[i - d] = { time: bars[i - d].time, value: c, color: color.purple };
+      if (i - d >= 0) s.plot3[i] = { time, value: s.senkouA[i - d], color: color.blue };
+      if (i - 26 >= 0) s.plot4[i] = { time, value: s.senkouB[i - 26], color: color.maroon };
+      s.plot5[i] = { time, value: sc, color: color.green };
+      s.plot6[i] = { time, value: cfg.showSmoothLine ? smooth : NaN, color: color.red };
+      s.cloud[i] = gt(senkouA, senkouB) ? bullCloud : bearCloud;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // plot(..., offset = k): the value of bar i is drawn on bar i + k (future bars with barTime)
+      const interval = barInterval(bars);
+      const forward = (slots: Point[], vals: number[], k: number, col: string) => {
+        const out = n > k ? slots.slice(k, n) : [];
+        for (let i = Math.max(0, n - k); i < n; i++) out.push({ time: barTime(bars, i + k, interval), value: vals[i], color: col });
+        return out;
+      };
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plot0.slice(),
+          plot1: s.plot1.slice(),
+          // plot(close, offset = -displacement)
+          plot2: s.plot2.slice(0, Math.max(0, n - d)),
+          // plot(senkou_a, offset = displacement); plot(senkou_b, offset = 26)
+          plot3: forward(s.plot3, s.senkouA, d, color.blue),
+          plot4: forward(s.plot4, s.senkouB, 26, color.maroon),
+          plot5: s.plot5.slice(),
+          plot6: s.plot6.slice(),
+        },
+        // hline(0, title = "Score Line"): Pine default colour #787B86, dashed
+        hlines: [{ value: 0, options: { title: 'Score Line', color: '#787B86', linestyle: 'dashed' } }],
+        fills: [{ plot1: 'plot3', plot2: 'plot4', options: { title: 'Plots Background' }, colors: s.cloud.slice() }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IchimokuScoreIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IchimokuScoreIndicatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const IchimokuScoreIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -15,8 +15,10 @@
  * Original notice: © NordicAlphaLab
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ZeroLagGarchBandsNalInputs {
   /** Colour mode: Standard, Nordic or Simple */
@@ -72,17 +74,42 @@ const EPS = 1e-10;
 const gt = (a: number, b: number): boolean => a - b > EPS;
 const lt = (a: number, b: number): boolean => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ZeroLagGarchBandsNalInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> };
+
+interface GarchVars {
+  /** score := close > upperBand ? 1 : close < lowerBand ? -1 : nz(score[1], 0) */
+  score: number;
+}
+
+interface GarchRun extends BarRunState<GarchVars> {
+  laggedVar: ReturnType<typeof taStep.variance>;
+  realizedSma: ReturnType<typeof taStep.sma>;
+  longRunSma: ReturnType<typeof taStep.sma>;
+  lambdaSum: LoopSum;
+  gammaSum: LoopSum;
+  ema10: ReturnType<typeof taStep.ema>;
+  baselineEma: ReturnType<typeof taStep.ema>;
+  projectedEma: ReturnType<typeof taStep.ema>;
+  close: number[];
+  /** ta.ema(src, 10) and the GARCH variance: the sources of the two zero-lag EMAs */
+  ema10Arr: number[];
+  variance: number[];
+  upper: number[];
+  lower: number[];
+  mid: number[];
+  plotColor: string[];
+  top: string[];
+  bottom: string[];
+  plots: Point[][];
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<ZeroLagGarchBandsNalInputs>): BarStudy<GarchRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const lookback = cfg.garchLookback;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const nz = (v: number, r: number) => (isNaN(v) ? r : v);
-  const close = bars.map((b) => b.close);
+  const srcOf = barSource(cfg.baselineSrc);
 
   const [colUp, colDn, colNu] = cfg.colMode === 'Nordic'
     ? [String(color.rgb(46, 161, 255)), String(color.rgb(150, 154, 169)), color.gray]
@@ -90,107 +117,136 @@ export function calculate(
       ? [color.lime, color.red, color.gray]
       : [STANDARD_UP, String(color.rgb(32, 94, 144)), color.gray];
 
-  // Lagged return / variance components
-  const logReturn = close.map((_c, i) => {
-    const c1 = i >= 1 ? close[i - 1] : NaN;
-    const c2 = i >= 2 ? close[i - 2] : NaN;
-    return !isNaN(c2) && gt(c1, 0.0) && gt(c2, 0.0) ? Math.log(c1 / c2) : 0.0;
-  });
-  // nz(ta.variance(close[1], 1), 0.0): the variance of one value (running sums, as Pine)
-  const laggedVariance = A(ta.variance(S(close.map((_c, i) => (i >= 1 ? close[i - 1] : NaN))), 1)).map((v) => nz(v, 0.0));
-  const squaredLogReturn = logReturn.map((r) => Math.pow(r, 2.0));
-  const realizedVariance = A(ta.sma(S(squaredLogReturn), lookback)).map((v, i) => nz(v, squaredLogReturn[i]));
-  const longRunVariance = A(ta.sma(S(laggedVariance), lookback)).map((v, i) => nz(v, laggedVariance[i]));
-
-  // math.sum(x, lookback) inside the two loops: one call site each. Its history has one value per bar (the value of
-  // its last call in that bar), so each call gives x + the last values of the lookback - 1 previous bars.
-  const lambdaSum = new LoopSum(lookback);
-  const gammaSum = new LoopSum(lookback);
-  const variance: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const lagged = laggedVariance[i];
-    const sq = squaredLogReturn[i];
-    const realized = realizedVariance[i];
-    const lambdaSse: number[] = [];
-    for (let c = 1; c <= 99; c++) {
-      const w = c / 100.0;
-      const est = w * lagged + (1.0 - w) * sq;
-      lambdaSse.push(lambdaSum.call(Math.pow(est - realized, 2.0)));
-    }
-    lambdaSum.commit();
-    const betaIndex = indexOfMin(lambdaSse) + 1;
-
-    const gammaSse: number[] = [];
-    for (let g = 1; g <= 100 - betaIndex; g++) {
-      const bw = betaIndex / 100.0;
-      const gw = g / 100.0;
-      const aw = 1.0 - bw - gw;
-      const est = gw * longRunVariance[i] + aw * sq + bw * lagged;
-      gammaSse.push(gammaSum.call(Math.pow(est - realized, 2.0)));
-    }
-    gammaSum.commit();
-    const gammaIndex = indexOfMin(gammaSse) + 1;
-
-    const beta = betaIndex / 100.0;
-    const gamma = gammaIndex / 100.0;
-    const alpha = 1.0 - beta - gamma;
-    variance[i] = gamma * longRunVariance[i] + alpha * sq + beta * lagged;
-  }
-
   // f_zlema(source, len) = ta.ema(source + (source - source[lag]), len), lag = floor((len - 1) / 2)
-  const zlema = (x: number[], len: number) => {
-    const lag = Math.floor((len - 1) / 2);
-    return A(ta.ema(S(x.map((v, i) => (i >= lag ? v + (v - x[i - lag]) : NaN))), len));
-  };
-  const src = A(getSourceSeries(bars, cfg.baselineSrc));
-  const baseline = zlema(A(ta.ema(S(src), 10)), cfg.baselineLen);
-  const projected = zlema(variance, cfg.garchSmoothLen);
+  const baselineLag = Math.floor((cfg.baselineLen - 1) / 2);
+  const projectedLag = Math.floor((cfg.garchSmoothLen - 1) / 2);
+  const zlemaInput = (x: number[], i: number, lag: number) => (i >= lag ? x[i] + (x[i] - x[i - lag]) : NaN);
 
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  const mid: number[] = new Array(n);
-  const plotColor: string[] = new Array(n);
-  let score = 0;
-  for (let i = 0; i < n; i++) {
-    const volMult = Math.sqrt(Math.max(projected[i], 0.0)) * 100.0;
-    upper[i] = baseline[i] + (src[i] / cfg.bandPressure) * volMult;
-    lower[i] = baseline[i] - (src[i] / cfg.bandPressure) * volMult;
-    // score := close > upperBand ? 1 : close < lowerBand ? -1 : nz(score[1], 0)
-    score = gt(close[i], upper[i]) ? 1 : lt(close[i], lower[i]) ? -1 : score;
-    // previousPlotColor = na(plotColor[1]) ? col_nu : plotColor[1]
-    const prev = i > 0 ? plotColor[i - 1] : colNu;
-    plotColor[i] = score === 1 ? colUp : score === -1 ? colDn : prev;
-    mid[i] = (upper[i] + lower[i]) / 2;
-  }
-
-  const glow = plotColor.map((c) => String(color.new(c, 50)));
-  const top = plotColor.map((c) => String(color.new(c, 30)));
-  const bottom = plotColor.map((c) => String(color.new(c, 100)));
-  const candles: PlotCandleData[] = bars.map((b, i) => ({
-    time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-    color: plotColor[i], wickColor: plotColor[i], borderColor: plotColor[i], forceOverlay: true,
-  }));
+  const lambdaSse: number[] = new Array(99);
+  const gammaSse: number[] = [];
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: upper[i], color: plotColor[i] })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: lower[i], color: plotColor[i] })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: mid[i], color: color.white })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: upper[i], color: glow[i] })),
-      plot4: bars.map((b, i) => ({ time: b.time, value: lower[i], color: glow[i] })),
+    fullRunReason: () => (isBarSource(cfg.baselineSrc) ? null : 'source of another study'),
+    init() {
+      const s: GarchRun = {
+        laggedVar: taStep.variance(), realizedSma: taStep.sma(), longRunSma: taStep.sma(),
+        // math.sum(x, lookback) inside the two loops: one call site each. Its history has one value per bar (the value
+        // of its last call in that bar), so each call gives x + the last values of the lookback - 1 previous bars.
+        lambdaSum: new LoopSum(lookback), gammaSum: new LoopSum(lookback),
+        ema10: taStep.ema(10), baselineEma: taStep.ema(cfg.baselineLen), projectedEma: taStep.ema(cfg.garchSmoothLen),
+        close: [], ema10Arr: [], variance: [], upper: [], lower: [], mid: [], plotColor: [], top: [], bottom: [],
+        plots: Array.from({ length: 5 }, () => []), candles: [],
+        steps: [], vars: { score: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.laggedVar, s.realizedSma, s.longRunSma, s.lambdaSum, s.gammaSum, s.ema10, s.baselineEma, s.projectedEma];
+      s.series = [
+        s.close, s.ema10Arr, s.variance, s.upper, s.lower, s.mid, s.plotColor, s.top, s.bottom, ...s.plots, s.candles,
+      ];
+      return s;
     },
-    // fill(upperPlot, midPlot, upperBand, midLine, color.new(plotColor, 30), color.new(plotColor, 100)); same below
-    fills: [
-      { plot1: 'plot0', plot2: 'plot2', options: { title: 'Plots Background' },
-        gradient: { topValue: upper.slice(), bottomValue: mid.slice(), topColor: top, bottomColor: bottom } },
-      { plot1: 'plot1', plot2: 'plot2', options: { title: 'Plots Background' },
-        gradient: { topValue: lower.slice(), bottomValue: mid.slice(), topColor: top.slice(), bottomColor: bottom.slice() } },
-    ],
-    // plotcandle(open, high, low, close, "Bar Color", plotColor, plotColor, bordercolor = plotColor,
-    //            display = display.pane, force_overlay = true)
-    plotCandles: { barColor: candles },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = s.close;
+      close[i] = b.close;
+
+      // Lagged return / variance components
+      const c1 = i >= 1 ? close[i - 1] : NaN;
+      const c2 = i >= 2 ? close[i - 2] : NaN;
+      const logReturn = !isNaN(c2) && gt(c1, 0.0) && gt(c2, 0.0) ? Math.log(c1 / c2) : 0.0;
+      // nz(ta.variance(close[1], 1), 0.0): the variance of one value (running sums, as Pine)
+      const lagged = nz(s.laggedVar.step(i >= 1 ? close[i - 1] : NaN, 1), 0.0);
+      const sq = Math.pow(logReturn, 2.0);
+      const realized = nz(s.realizedSma.step(sq, lookback), sq);
+      const longRun = nz(s.longRunSma.step(lagged, lookback), lagged);
+
+      for (let c = 1; c <= 99; c++) {
+        const w = c / 100.0;
+        const est = w * lagged + (1.0 - w) * sq;
+        lambdaSse[c - 1] = s.lambdaSum.call(Math.pow(est - realized, 2.0));
+      }
+      const betaIndex = indexOfMin(lambdaSse) + 1;
+
+      gammaSse.length = 0;
+      for (let g = 1; g <= 100 - betaIndex; g++) {
+        const bw = betaIndex / 100.0;
+        const gw = g / 100.0;
+        const aw = 1.0 - bw - gw;
+        const est = gw * longRun + aw * sq + bw * lagged;
+        gammaSse.push(s.gammaSum.call(Math.pow(est - realized, 2.0)));
+      }
+      const gammaIndex = indexOfMin(gammaSse) + 1;
+
+      const beta = betaIndex / 100.0;
+      const gamma = gammaIndex / 100.0;
+      const alpha = 1.0 - beta - gamma;
+      s.variance[i] = gamma * longRun + alpha * sq + beta * lagged;
+
+      const src = srcOf(b);
+      s.ema10Arr[i] = s.ema10.step(src);
+      const baseline = s.baselineEma.step(zlemaInput(s.ema10Arr, i, baselineLag));
+      const projected = s.projectedEma.step(zlemaInput(s.variance, i, projectedLag));
+
+      const volMult = Math.sqrt(Math.max(projected, 0.0)) * 100.0;
+      const upper = baseline + (src / cfg.bandPressure) * volMult;
+      const lower = baseline - (src / cfg.bandPressure) * volMult;
+      // score := close > upperBand ? 1 : close < lowerBand ? -1 : nz(score[1], 0)
+      const score = gt(close[i], upper) ? 1 : lt(close[i], lower) ? -1 : s.vars.score;
+      s.vars.score = score;
+      // previousPlotColor = na(plotColor[1]) ? col_nu : plotColor[1]
+      const prev = i > 0 ? s.plotColor[i - 1] : colNu;
+      const plotColor = score === 1 ? colUp : score === -1 ? colDn : prev;
+      const mid = (upper + lower) / 2;
+      s.upper[i] = upper;
+      s.lower[i] = lower;
+      s.mid[i] = mid;
+      s.plotColor[i] = plotColor;
+
+      const glow = String(color.new(plotColor, 50));
+      s.top[i] = String(color.new(plotColor, 30));
+      s.bottom[i] = String(color.new(plotColor, 100));
+      const time = b.time;
+      s.plots[0][i] = { time, value: upper, color: plotColor };
+      s.plots[1][i] = { time, value: lower, color: plotColor };
+      s.plots[2][i] = { time, value: mid, color: color.white };
+      s.plots[3][i] = { time, value: upper, color: glow };
+      s.plots[4][i] = { time, value: lower, color: glow };
+      s.candles[i] = {
+        time, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: plotColor, wickColor: plotColor, borderColor: plotColor, forceOverlay: true,
+      };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+        },
+        // fill(upperPlot, midPlot, upperBand, midLine, color.new(plotColor, 30), color.new(plotColor, 100)); same below
+        fills: [
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'Plots Background' },
+            gradient: { topValue: s.upper.slice(), bottomValue: s.mid.slice(), topColor: s.top.slice(), bottomColor: s.bottom.slice() } },
+          { plot1: 'plot1', plot2: 'plot2', options: { title: 'Plots Background' },
+            gradient: { topValue: s.lower.slice(), bottomValue: s.mid.slice(), topColor: s.top.slice(), bottomColor: s.bottom.slice() } },
+        ],
+        // plotcandle(open, high, low, close, "Bar Color", plotColor, plotColor, bordercolor = plotColor,
+        //            display = display.pane, force_overlay = true)
+        plotCandles: { barColor: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ZeroLagGarchBandsNalInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ZeroLagGarchBandsNalInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /**
@@ -209,7 +265,7 @@ function indexOfMin(values: number[]): number {
  * of the len - 1 previous bars where it ran (na before); the value kept for a bar is the one of its last call.
  */
 class LoopSum {
-  private hist: number[] = [];
+  private readonly hist: number[] = [];
   private last = NaN;
   constructor(private readonly len: number) {}
   call(x: number): number {
@@ -228,6 +284,7 @@ class LoopSum {
 
 export const ZeroLagGarchBandsNal = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

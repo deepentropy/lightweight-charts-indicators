@@ -18,12 +18,17 @@
  */
 
 import {
-  ta, Series, color, str, math, getSourceSeries,
+  taStep, color, str, math,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { ArrowData } from 'oakscriptjs';
 import type { MarkerData, BarColorData, TableData, TableCellData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates,
+  type BarRunState, type BarStudy, type Committable, type IndicatorRun,
+} from '../live-run';
 
 type DisplayMode = 'Baseline Only' | 'Baseline + SSL' | 'SSL Only' | 'Entry/Exit Only' | 'Full Display';
 type MaType =
@@ -194,233 +199,261 @@ const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 const nz = (x: number, y = 0) => (Number.isFinite(x) ? x : y);
 
 type Point = { time: number; value: number; color?: string };
-
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SslHybridInputs> = {},
-): Omit<IndicatorResult, 'markers' | 'barColors' | 'tables'> & {
+type Result = Omit<IndicatorResult, 'markers' | 'barColors' | 'tables'> & {
   markers: MarkerData[]; arrows: ArrowData[]; barColors: BarColorData[]; tables: TableData[]; alerts: AlertConditionState[];
-} {
+};
+
+/**
+ * One moving average call, one bar at a time: `step(i, value, bar)` on bar i (again on the same bar for a live update).
+ * Its recursive values are kept by bar (written again on the forming bar), its ta.* machines are in the run's steps.
+ */
+interface MaCall {
+  step(i: number, value: number, bar: Bar): number;
+}
+
+const prevOf = (a: number[], i: number, k = 1) => (i >= k ? a[i - k] : NaN);
+
+interface SslVars {
+  /** Hlv of the three SSL lines */
+  hlv1: number;
+  hlv2: number;
+  hlv3: number;
+}
+
+interface SslRun extends BarRunState<SslVars> {
+  bbmc: MaCall;
+  keltMa: MaCall;
+  emaHigh: MaCall;
+  emaLow: MaCall;
+  maHigh: MaCall;
+  maLow: MaCall;
+  exitHigh: MaCall;
+  exitLow: MaCall;
+  trueRange: ReturnType<typeof taStep.tr>;
+  atrMa: { step(v: number): number };
+  atrPercentile: ReturnType<typeof taStep.percentrank>;
+  rangeTr: ReturnType<typeof taStep.tr>;
+  rangeMa: ReturnType<typeof taStep.ema>;
+  crossLong: ReturnType<typeof taStep.crossover>;
+  crossShort: ReturnType<typeof taStep.crossover>;
+  close: number[];
+  bbmcArr: number[];
+  atrArr: number[];
+  pctArr: number[];
+  sslExit: number[];
+  upperKs: number[];
+  lowerKs: number[];
+  buyAtrs: boolean[];
+  sellAtrs: boolean[];
+  plots: Point[][];
+  fillColors: string[];
+  markers: MarkerData[];
+  arrows: ArrowData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SslHybridInputs>): BarStudy<SslRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const highSeries = S(high);
-  const lowSeries = S(low);
+  const srcOf = barSource(cfg.src);
 
   // ---- Moving averages (each call has its own state)
-  const ema = (src: number[], len: number) => A(ta.ema(S(src), len));
-  const superSmoother = (src: number[]): number[] => {
-    const PI = 2 * Math.asin(1);
-    const out: number[] = new Array(n);
-    if (cfg.ssfPoles === 2) {
-      const arg = (Math.sqrt(2) * PI) / cfg.ssfLength;
-      const a1 = Math.exp(-arg);
-      const b1 = 2 * a1 * Math.cos(arg);
-      const c2 = b1;
-      const c3 = -Math.pow(a1, 2);
-      const c1 = 1 - c2 - c3;
-      for (let i = 0; i < n; i++) {
-        out[i] = c1 * src[i] + c2 * nz(i >= 1 ? out[i - 1] : NaN) + c3 * nz(i >= 2 ? out[i - 2] : NaN);
-      }
-    } else {
-      const arg = PI / cfg.ssfLength;
-      const a1 = Math.exp(-arg);
-      const b1 = 2 * a1 * Math.cos(1.738 * arg);
-      const c1 = Math.pow(a1, 2);
-      const coef2 = b1 + c1;
-      const coef3 = -(c1 + b1 * c1);
-      const coef4 = Math.pow(c1, 2);
-      const coef1 = 1 - coef2 - coef3 - coef4;
-      for (let i = 0; i < n; i++) {
-        out[i] = coef1 * src[i] + coef2 * nz(i >= 1 ? out[i - 1] : NaN) + coef3 * nz(i >= 2 ? out[i - 2] : NaN)
-          + coef4 * nz(i >= 3 ? out[i - 3] : NaN);
-      }
-    }
-    return out;
-  };
-
-  const ma = (type: MaType, src: number[], len: number): number[] => {
+  const ma = (type: MaType, len: number, steps: Committable[]): MaCall => {
+    const add = <T extends Committable>(m: T): T => { steps.push(m); return m; };
     switch (type) {
-      case 'TMA':
-        return A(ta.sma(ta.sma(S(src), Math.ceil(len / 2)), Math.floor(len / 2) + 1));
+      case 'TMA': {
+        const s1 = add(taStep.sma());
+        const s2 = add(taStep.sma());
+        return { step: (_i, v) => s2.step(s1.step(v, Math.ceil(len / 2)), Math.floor(len / 2) + 1) };
+      }
       case 'MF': {
         // Modular filter
-        const out: number[] = new Array(n);
         const alpha = 2 / (len + 1);
-        let b = NaN;
-        let c = NaN;
-        let os = NaN;
-        let ts = NaN;
-        for (let i = 0; i < n; i++) {
-          const a = cfg.feedback ? cfg.z * src[i] + (1 - cfg.z) * nz(ts, src[i]) : src[i];
-          const up = alpha * a + (1 - alpha) * nz(b, a);
-          b = gt(a, up) ? a : up;
-          const dn = alpha * a + (1 - alpha) * nz(c, a);
-          c = lt(a, dn) ? a : dn;
-          os = eq(a, b) ? 1 : eq(a, c) ? 0 : os;
-          const upper = cfg.beta * b + (1 - cfg.beta) * c;
-          const lower = cfg.beta * c + (1 - cfg.beta) * b;
-          ts = os * upper + (1 - os) * lower;
-          out[i] = ts;
-        }
-        return out;
+        const bA: number[] = [];
+        const cA: number[] = [];
+        const osA: number[] = [];
+        const tsA: number[] = [];
+        return {
+          step: (i, v) => {
+            const ts1 = prevOf(tsA, i);
+            const a = cfg.feedback ? cfg.z * v + (1 - cfg.z) * nz(ts1, v) : v;
+            const up = alpha * a + (1 - alpha) * nz(prevOf(bA, i), a);
+            const b = gt(a, up) ? a : up;
+            const dn = alpha * a + (1 - alpha) * nz(prevOf(cA, i), a);
+            const c = lt(a, dn) ? a : dn;
+            const os = eq(a, b) ? 1 : eq(a, c) ? 0 : prevOf(osA, i);
+            const upper = cfg.beta * b + (1 - cfg.beta) * c;
+            const lower = cfg.beta * c + (1 - cfg.beta) * b;
+            const ts = os * upper + (1 - os) * lower;
+            bA[i] = b;
+            cA[i] = c;
+            osA[i] = os;
+            tsA[i] = ts;
+            return ts;
+          },
+        };
       }
-      case 'LSMA':
-        return A(ta.linreg(S(src), len, 0));
-      case 'SMA':
-        return A(ta.sma(S(src), len));
-      case 'EMA':
-        return ema(src, len);
+      case 'LSMA': {
+        const m = add(taStep.linreg(len, 0));
+        return { step: (_i, v) => m.step(v) };
+      }
+      case 'SMA': {
+        const m = add(taStep.sma());
+        return { step: (_i, v) => m.step(v, len) };
+      }
+      case 'EMA': {
+        const m = add(taStep.ema(len));
+        return { step: (_i, v) => m.step(v) };
+      }
       case 'DEMA': {
-        const e = ema(src, len);
-        const e2 = ema(e, len);
-        return e.map((v, i) => 2 * v - e2[i]);
+        const m1 = add(taStep.ema(len));
+        const m2 = add(taStep.ema(len));
+        return { step: (_i, v) => { const e = m1.step(v); return 2 * e - m2.step(e); } };
       }
       case 'TEMA': {
-        const e = ema(src, len);
-        const e2 = ema(e, len);
-        const e3 = ema(e2, len);
-        return e.map((v, i) => 3 * (v - e2[i]) + e3[i]);
+        const m1 = add(taStep.ema(len));
+        const m2 = add(taStep.ema(len));
+        const m3 = add(taStep.ema(len));
+        return { step: (_i, v) => { const e = m1.step(v); const e2 = m2.step(e); return 3 * (e - e2) + m3.step(e2); } };
       }
-      case 'WMA':
-        return A(ta.wma(S(src), len));
+      case 'WMA': {
+        const m = add(taStep.wma());
+        return { step: (_i, v) => m.step(v, len) };
+      }
       case 'VAMA': {
         // Volatility adjusted moving average
-        const mid = ema(src, len);
-        const dev = S(src.map((v, i) => v - mid[i]));
-        const volUp = A(ta.highest(dev, cfg.volatilityLookback));
-        const volDown = A(ta.lowest(dev, cfg.volatilityLookback));
-        return mid.map((v, i) => v + (volUp[i] + volDown[i]) / 2);
+        const mid = add(taStep.ema(len));
+        const hi = add(taStep.highest());
+        const lo = add(taStep.lowest());
+        return {
+          step: (_i, v) => {
+            const m = mid.step(v);
+            const dev = v - m;
+            return m + (hi.step(dev, cfg.volatilityLookback) + lo.step(dev, cfg.volatilityLookback)) / 2;
+          },
+        };
       }
       case 'HMA': {
         // len / 2 is a float in Pine v6: the length argument takes its integer part
-        const half = A(ta.wma(S(src), Math.trunc(len / 2)));
-        const full = A(ta.wma(S(src), len));
-        return A(ta.wma(S(half.map((v, i) => 2 * v - full[i])), math.round(Math.sqrt(len)) as number));
+        const half = add(taStep.wma());
+        const full = add(taStep.wma());
+        const outer = add(taStep.wma());
+        const sqrtLen = math.round(Math.sqrt(len)) as number;
+        return { step: (_i, v) => outer.step(2 * half.step(v, Math.trunc(len / 2)) - full.step(v, len), sqrtLen) };
       }
       case 'JMA': {
         const phase = cfg.jurikPhase;
         const phaseRatio = phase < -100 ? 0.5 : phase > 100 ? 2.5 : phase / 100 + 1.5;
         const beta = (0.45 * (len - 1)) / (0.45 * (len - 1) + 2);
         const alpha = Math.pow(beta, cfg.jurikPower);
-        const out: number[] = new Array(n);
-        let e0 = NaN;
-        let e1 = NaN;
-        let e2 = NaN;
-        let jma = NaN;
-        for (let i = 0; i < n; i++) {
-          e0 = (1 - alpha) * src[i] + alpha * nz(e0);
-          e1 = (src[i] - e0) * (1 - beta) + beta * nz(e1);
-          e2 = (e0 + phaseRatio * e1 - nz(jma)) * Math.pow(1 - alpha, 2) + Math.pow(alpha, 2) * nz(e2);
-          jma = e2 + nz(jma);
-          out[i] = jma;
-        }
-        return out;
+        const e0A: number[] = [];
+        const e1A: number[] = [];
+        const e2A: number[] = [];
+        const jA: number[] = [];
+        return {
+          step: (i, v) => {
+            const jma1 = prevOf(jA, i);
+            const e0 = (1 - alpha) * v + alpha * nz(prevOf(e0A, i));
+            const e1 = (v - e0) * (1 - beta) + beta * nz(prevOf(e1A, i));
+            const e2 = (e0 + phaseRatio * e1 - nz(jma1)) * Math.pow(1 - alpha, 2) + Math.pow(alpha, 2) * nz(prevOf(e2A, i));
+            const jma = e2 + nz(jma1);
+            e0A[i] = e0;
+            e1A[i] = e1;
+            e2A[i] = e2;
+            jA[i] = jma;
+            return jma;
+          },
+        };
       }
       case 'Kijun v2': {
         // Uses the low and the high of the bars, whatever the source
-        const kijunLow = A(ta.lowest(lowSeries, len));
-        const kijunHigh = A(ta.highest(highSeries, len));
+        const kLow = add(taStep.lowest());
+        const kHigh = add(taStep.highest());
         // len / kidiv is a float in Pine v6: ta.lowest / ta.highest take its integer part
         const convLen = len / cfg.kidiv;
-        const convLow = A(ta.lowest(lowSeries, convLen));
-        const convHigh = A(ta.highest(highSeries, convLen));
-        return kijunLow.map((v, i) => ((v + kijunHigh[i]) / 2 + (convLow[i] + convHigh[i]) / 2) / 2);
+        const cLow = add(taStep.lowest());
+        const cHigh = add(taStep.highest());
+        return {
+          step: (_i, _v, b) => ((kLow.step(b.low, len) + kHigh.step(b.high, len)) / 2
+            + (cLow.step(b.low, convLen) + cHigh.step(b.high, convLen)) / 2) / 2,
+        };
       }
       case 'McGinley': {
         // mg := na(mg[1]) ? ta.ema(src, len) : mg[1] + (src - mg[1]) / (len * math.pow(src / mg[1], 4))
         // The EMA only runs on the bars where the previous value is na: its history is those bars
-        const out: number[] = new Array(n);
-        const full = ema(src, len);
-        const called: number[] = [];
-        let mg = NaN;
-        for (let i = 0; i < n; i++) {
-          if (Number.isNaN(mg)) {
-            called.push(src[i]);
-            if (called.length === i + 1) mg = full[i];
-            else {
-              const part = ta.ema(Series.fromArray(bars.slice(0, called.length), called), len).toArray();
-              mg = part[part.length - 1] ?? NaN;
-            }
-          } else {
-            mg = mg + (src[i] - mg) / (len * Math.pow(src[i] / mg, 4));
-          }
-          out[i] = mg;
-        }
-        return out;
+        const m = add(taStep.ema(len));
+        const mgA: number[] = [];
+        return {
+          step: (i, v) => {
+            const mg1 = prevOf(mgA, i);
+            const mg = Number.isNaN(mg1) ? m.step(v) : mg1 + (v - mg1) / (len * Math.pow(v / mg1, 4));
+            mgA[i] = mg;
+            return mg;
+          },
+        };
       }
       case 'EDSMA': {
         // Ehlers deviation scaled moving average
-        const zeros = src.map((v, i) => v - nz(i >= 2 ? src[i - 2] : NaN));
-        const avgZeros = zeros.map((v, i) => (v + (i >= 1 ? zeros[i - 1] : NaN)) / 2);
-        const ssf = superSmoother(avgZeros);
-        const stdev = A(ta.stdev(S(ssf), len));
-        const out: number[] = new Array(n);
-        let edsma = NaN;
-        for (let i = 0; i < n; i++) {
-          // stdev != 0 (false for na)
-          const scaledFilter = Math.abs(stdev[i]) > EPS ? ssf[i] / stdev[i] : 0;
-          const alpha = (5 * Math.abs(scaledFilter)) / len;
-          edsma = alpha * src[i] + (1 - alpha) * nz(edsma);
-          out[i] = edsma;
+        const srcA: number[] = [];
+        const zeros: number[] = [];
+        const ssfA: number[] = [];
+        const edA: number[] = [];
+        const dev = add(taStep.stdev());
+        const PI = 2 * Math.asin(1);
+        // superSmoother(avgZeros)
+        let ssfStep: (i: number, x: number) => number;
+        if (cfg.ssfPoles === 2) {
+          const arg = (Math.sqrt(2) * PI) / cfg.ssfLength;
+          const a1 = Math.exp(-arg);
+          const b1 = 2 * a1 * Math.cos(arg);
+          const c2 = b1;
+          const c3 = -Math.pow(a1, 2);
+          const c1 = 1 - c2 - c3;
+          ssfStep = (i, x) => c1 * x + c2 * nz(prevOf(ssfA, i)) + c3 * nz(prevOf(ssfA, i, 2));
+        } else {
+          const arg = PI / cfg.ssfLength;
+          const a1 = Math.exp(-arg);
+          const b1 = 2 * a1 * Math.cos(1.738 * arg);
+          const c1 = Math.pow(a1, 2);
+          const coef2 = b1 + c1;
+          const coef3 = -(c1 + b1 * c1);
+          const coef4 = Math.pow(c1, 2);
+          const coef1 = 1 - coef2 - coef3 - coef4;
+          ssfStep = (i, x) => coef1 * x + coef2 * nz(prevOf(ssfA, i)) + coef3 * nz(prevOf(ssfA, i, 2))
+            + coef4 * nz(prevOf(ssfA, i, 3));
         }
-        return out;
+        return {
+          step: (i, v) => {
+            srcA[i] = v;
+            const zero = v - nz(prevOf(srcA, i, 2));
+            zeros[i] = zero;
+            const avgZeros = (zero + prevOf(zeros, i)) / 2;
+            const ssf = ssfStep(i, avgZeros);
+            ssfA[i] = ssf;
+            const stdev = dev.step(ssf, len);
+            // stdev != 0 (false for na)
+            const scaledFilter = Math.abs(stdev) > EPS ? ssf / stdev : 0;
+            const alpha = (5 * Math.abs(scaledFilter)) / len;
+            const edsma = alpha * v + (1 - alpha) * nz(prevOf(edA, i));
+            edA[i] = edsma;
+            return edsma;
+          },
+        };
       }
       default:
-        return new Array(n).fill(NaN);
+        return { step: () => NaN };
     }
   };
 
-  // ---- ATR and risk
-  const trueRange = ta.tr(bars, true);
-  const atr = A(cfg.smoothing === 'RMA' ? ta.rma(trueRange, cfg.atrLen)
-    : cfg.smoothing === 'SMA' ? ta.sma(trueRange, cfg.atrLen)
-      : cfg.smoothing === 'EMA' ? ta.ema(trueRange, cfg.atrLen) : ta.wma(trueRange, cfg.atrLen));
-  const atrPercentile = A(ta.percentrank(S(atr), cfg.riskLookback));
   /** Transparency of the bullish / bearish colours: grows with the ATR percentile */
-  const riskSaturation = (i: number): number => {
+  const riskSaturation = (pct: number): number => {
     if (!cfg.enableRiskGradient) return 0;
-    const adjusted = Math.pow(atrPercentile[i] / 100, cfg.riskSensitivity) * 100;
+    const adjusted = Math.pow(pct / 100, cfg.riskSensitivity) * 100;
     if (le(adjusted, 25)) return 0;
     if (le(adjusted, 50)) return 10;
     return math.round(25 + ((adjusted - 50) / 50) * 25) as number;
   };
-
-  // ---- Baseline, SSL lines
-  const srcArr = A(getSourceSeries(bars, cfg.src));
-  const bbmc = ma(cfg.maType, close, cfg.len);
-  const keltMa = ma(cfg.maType, srcArr, cfg.len);
-  const rangeValue = cfg.useTrueRange ? ta.tr(bars, false) : S(bars.map((b) => b.high - b.low));
-  const rangeMa = A(ta.ema(rangeValue, cfg.len));
-  const emaHigh = ma(cfg.maType, high, cfg.len);
-  const emaLow = ma(cfg.maType, low, cfg.len);
-  const maHigh = ma(cfg.ssl2Type, high, cfg.len2);
-  const maLow = ma(cfg.ssl2Type, low, cfg.len2);
-  const exitHigh = ma(cfg.ssl3Type, high, cfg.len3);
-  const exitLow = ma(cfg.ssl3Type, low, cfg.len3);
-  /** Hlv := close > hi ? 1 : close < lo ? -1 : Hlv[1]; the line is the high average while Hlv < 0, else the low one */
-  const sslLine = (hi: number[], lo: number[]): number[] => {
-    const out: number[] = new Array(n);
-    let hlv = NaN;
-    for (let i = 0; i < n; i++) {
-      hlv = gt(close[i], hi[i]) ? 1 : lt(close[i], lo[i]) ? -1 : hlv;
-      out[i] = hlv < 0 ? hi[i] : lo[i];
-    }
-    return out;
-  };
-  const sslDown = sslLine(emaHigh, emaLow);
-  const sslDown2 = sslLine(maHigh, maLow);
-  const sslExit = sslLine(exitHigh, exitLow);
-
-  // ---- Signals
-  const closeSeries = S(close);
-  const exitSeries = S(sslExit);
-  const crossLong = A(ta.crossover(closeSeries, exitSeries));
-  const crossShort = A(ta.crossover(exitSeries, closeSeries));
 
   const mode = cfg.displayMode;
   const showBaseline = mode === 'Baseline Only' || mode === 'Baseline + SSL' || mode === 'Full Display';
@@ -428,139 +461,221 @@ export function calculate(
   const showSsl2 = mode === 'SSL Only' || mode === 'Full Display';
   const showExit = mode === 'Entry/Exit Only' || mode === 'Full Display';
   const showChannel = showBaseline && cfg.showBaselineChannel;
-
-  const plots: Record<string, Point[]> = { plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], plot5: [], plot6: [] };
-  const fillColors: string[] = [];
-  const markers: MarkerData[] = [];
-  const arrows: ArrowData[] = [];
-  const barColors: BarColorData[] = [];
-  // Alert flags computed in the bar loop
-  const upperKs: number[] = [];
-  const lowerKs: number[] = [];
-  const buyAtrs: boolean[] = [];
-  const sellAtrs: boolean[] = [];
-  const violations: boolean[] = [];
   const white = String(color.white);
   const transparentNeutral = String(color.new('#666666', 80));
-  let bullishColor = NEUTRAL;
-  let bearishColor = NEUTRAL;
-
-  for (let i = 0; i < n; i++) {
-    const { time, open } = bars[i];
-    const c = close[i];
-    const saturation = riskSaturation(i);
-    bullishColor = String(color.new(cfg.bullishColor, saturation));
-    bearishColor = String(color.new(cfg.bearishColor, saturation));
-    const transparentBull = String(color.new(cfg.bullishColor, Math.max(80, saturation + 20)));
-    const transparentBear = String(color.new(cfg.bearishColor, Math.max(80, saturation + 20)));
-
-    const upperBand = atr[i] * cfg.mult + c;
-    const lowerBand = c - atr[i] * cfg.mult;
-    const upperK = keltMa[i] + rangeMa[i] * cfg.multy;
-    const lowerK = keltMa[i] - rangeMa[i] * cfg.multy;
-
-    // Baseline violation candle: larger than the ATR, with the baseline inside the ATR bands
-    const atrViolation = gt(Math.abs(c - open), atr[i]);
-    const inRange = gt(upperBand, bbmc[i]) && lt(lowerBand, bbmc[i]);
-    const candleSizeViolation = atrViolation && inRange;
-
-    // SSL2 continuation
-    const upperHalf = atr[i] * cfg.atrCrit + c;
-    const lowerHalf = c - atr[i] * cfg.atrCrit;
-    const sellAtr = gt(upperHalf, sslDown2[i]) && lt(c, bbmc[i]) && lt(c, sslDown2[i]);
-    const buyAtr = lt(lowerHalf, sslDown2[i]) && gt(c, bbmc[i]) && gt(c, sslDown2[i]);
-
-    const baselineColor = gt(c, upperK) ? bullishColor : lt(c, lowerK) ? bearishColor : NEUTRAL;
-    const sslColor = gt(c, sslDown[i]) ? bullishColor : lt(c, sslDown[i]) ? bearishColor : NEUTRAL;
-    const ssl2Color = buyAtr ? bullishColor : sellAtr ? bearishColor : NEUTRAL;
-    const channelFillColor = gt(c, upperK) ? transparentBull : lt(c, lowerK) ? transparentBear : transparentNeutral;
-
-    plots.plot0.push({ time, value: showBaseline ? bbmc[i] : NaN, color: baselineColor });
-    plots.plot1.push({ time, value: showChannel ? upperK : NaN, color: baselineColor });
-    plots.plot2.push({ time, value: showChannel ? lowerK : NaN, color: baselineColor });
-    fillColors.push(showChannel ? channelFillColor : 'transparent');
-    plots.plot3.push({ time, value: showSsl1 ? sslDown[i] : NaN, color: sslColor });
-    plots.plot4.push({ time, value: showSsl2 ? sslDown2[i] : NaN, color: ssl2Color });
-    plots.plot5.push({ time, value: cfg.showAtrBands ? upperBand : NaN });
-    plots.plot6.push({ time, value: cfg.showAtrBands ? lowerBand : NaN });
-
-    // plotarrow(show_exit ? codiff : na, colorup = bullish_color, colordown = bearish_color, maxheight = 20)
-    if (showExit) {
-      if (crossLong[i] === 1) arrows.push({ time, id: 'arrow0', value: 1, color: bullishColor });
-      else if (crossShort[i] === 1) arrows.push({ time, id: 'arrow0', value: -1, color: bearishColor });
-    }
-    // plotshape(show_signals and candlesize_violation, ..., title = "Signal Diamonds")
-    if (cfg.showSignals && candleSizeViolation) {
-      markers.push({ time, position: 'top', shape: 'diamond', color: white, size: 'tiny', id: 'shape0' });
-    }
-    upperKs.push(upperK);
-    lowerKs.push(lowerK);
-    buyAtrs.push(buyAtr);
-    sellAtrs.push(sellAtr);
-    violations.push(candleSizeViolation);
-    if (cfg.colorBars) barColors.push({ time, color: baselineColor });
-  }
-
-  // ---- Risk table (last bar)
-  const tables: TableData[] = [];
-  if (n > 0 && cfg.showRiskTable) {
-    const last = n - 1;
-    const percentile = atrPercentile[last];
-    const distance = Math.abs(close[last] - bbmc[last]) / atr[last];
-    const entryDistance = lt(distance, 1) ? 'Near' : lt(distance, 2) ? 'Extended' : 'Far';
-    const riskLevel = gt(percentile, 75) ? 'High' : lt(percentile, 25) ? 'Low' : 'Normal';
-    const cells: TableCellData[] = [];
-    const cell = (column: number, row: number, text: string, textColor: string) => {
-      cells.push({ column, row, text, textColor, textSize: 'small' });
-    };
-    cell(0, 0, 'Risk Level', white);
-    cell(1, 0, riskLevel, riskLevel === 'High' ? bearishColor : riskLevel === 'Low' ? bullishColor : NEUTRAL);
-    cell(0, 1, 'Entry Distance', white);
-    cell(1, 1, entryDistance, entryDistance === 'Near' ? bullishColor : entryDistance === 'Extended' ? String(color.yellow) : bearishColor);
-    cell(0, 2, 'Vol %ile', white);
-    cell(1, 2, str.tostring(math.round(percentile, 1)) + '%', white);
-    cell(0, 3, 'ATR', white);
-    cell(1, 3, str.tostring(atr[last], '#.####'), white);
-    tables.push({
-      position: 'bottom_right', columns: 2, rows: 4, cells, bgColor: String(color.new('#1a1a1a', 5)), borderWidth: 1,
-    });
-  }
+  const flagsNow = new Array<boolean>(11);
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    // fill(upper_channel, lower_channel, title = "Baseline Channel")
-    fills: [{ plot1: 'plot1', plot2: 'plot2', colors: fillColors }],
-    markers,
-    arrows,
-    barColors,
-    tables,
-    alerts: alertStates(alertConditions, bars, alertFlags()),
-  };
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const steps: Committable[] = [];
+      // ---- ATR and risk
+      const trueRange = taStep.tr(true);
+      steps.push(trueRange);
+      const atrMa = ((): SslRun['atrMa'] => {
+        switch (cfg.smoothing) {
+          case 'RMA': { const m = taStep.rma(cfg.atrLen); steps.push(m); return { step: (v) => m.step(v) }; }
+          case 'SMA': { const m = taStep.sma(); steps.push(m); return { step: (v) => m.step(v, cfg.atrLen) }; }
+          case 'EMA': { const m = taStep.ema(cfg.atrLen); steps.push(m); return { step: (v) => m.step(v) }; }
+          default: { const m = taStep.wma(); steps.push(m); return { step: (v) => m.step(v, cfg.atrLen) }; }
+        }
+      })();
+      const atrPercentile = taStep.percentrank(cfg.riskLookback);
+      const rangeTr = taStep.tr(false);
+      const rangeMa = taStep.ema(cfg.len);
+      const crossLong = taStep.crossover();
+      const crossShort = taStep.crossover();
+      steps.push(atrPercentile, rangeTr, rangeMa, crossLong, crossShort);
+      const s: SslRun = {
+        // ---- Baseline, SSL lines
+        bbmc: ma(cfg.maType, cfg.len, steps),
+        keltMa: ma(cfg.maType, cfg.len, steps),
+        emaHigh: ma(cfg.maType, cfg.len, steps),
+        emaLow: ma(cfg.maType, cfg.len, steps),
+        maHigh: ma(cfg.ssl2Type, cfg.len2, steps),
+        maLow: ma(cfg.ssl2Type, cfg.len2, steps),
+        exitHigh: ma(cfg.ssl3Type, cfg.len3, steps),
+        exitLow: ma(cfg.ssl3Type, cfg.len3, steps),
+        trueRange, atrMa, atrPercentile, rangeTr, rangeMa, crossLong, crossShort,
+        close: [], bbmcArr: [], atrArr: [], pctArr: [], sslExit: [], upperKs: [], lowerKs: [], buyAtrs: [], sellAtrs: [],
+        plots: Array.from({ length: 7 }, () => []), fillColors: [], markers: [], arrows: [], barColors: [],
+        flags: Array.from({ length: 11 }, () => []), times: Array.from({ length: 11 }, () => []),
+        steps, vars: { hlv1: NaN, hlv2: NaN, hlv3: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.arrows, s.barColors, ...s.times];
+      s.series = [
+        s.close, s.bbmcArr, s.atrArr, s.pctArr, s.sslExit, s.upperKs, s.lowerKs, s.buyAtrs, s.sellAtrs, ...s.plots,
+        s.fillColors, ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const { time, open } = bar;
+      const v = s.vars;
+      const c = bar.close;
+      s.close[i] = c;
 
-  /** One flag per bar for each alertcondition of the original */
-  function alertFlags(): boolean[][] {
-    // exit_long = ta.crossunder(close, sslExit); exit_short = ta.crossover(close, sslExit)
-    const exitLong = crossedUnder(close, sslExit);
-    const exitShort = crossedOver(close, sslExit);
-    // ssl2_buy_signal = buy_atr and not buy_atr[1] (the same for sell)
-    const ssl2Buy = buyAtrs.map((v, i) => v && !(i > 0 && buyAtrs[i - 1]));
-    const ssl2Sell = sellAtrs.map((v, i) => v && !(i > 0 && sellAtrs[i - 1]));
-    // baseline_bullish = ta.crossover(close, upperk); baseline_bearish = ta.crossunder(close, lowerk)
-    const baselineBullish = crossedOver(close, upperKs);
-    const baselineBearish = crossedUnder(close, lowerKs);
-    // price_above_baseline = close > BBMC and close[1] <= BBMC (the same for below)
-    const above = close.map((c, i) => i > 0 && gt(c, bbmc[i]) && le(close[i - 1], bbmc[i]));
-    const below = close.map((c, i) => i > 0 && lt(c, bbmc[i]) && ge(close[i - 1], bbmc[i]));
-    // high_risk_entry = risk_level == "High" and entry_distance == "Far" (a na distance is "Far")
-    const highRisk = close.map((c, i) => {
-      const distance = Math.abs(c - bbmc[i]) / atr[i];
-      return gt(atrPercentile[i], 75) && !lt(distance, 1) && !lt(distance, 2);
-    });
-    // extreme_volatility = atr_percentile > 90
-    const extreme = atrPercentile.map((p) => gt(p, 90));
-    return [exitLong, exitShort, ssl2Buy, ssl2Sell, baselineBullish, baselineBearish, above, below, highRisk, violations, extreme];
-  }
+      const atr = s.atrMa.step(s.trueRange.step(bar.high, bar.low, c));
+      s.atrArr[i] = atr;
+      const pct = s.atrPercentile.step(atr);
+      s.pctArr[i] = pct;
+
+      const bbmc = s.bbmc.step(i, c, bar);
+      s.bbmcArr[i] = bbmc;
+      const keltMa = s.keltMa.step(i, srcOf(bar), bar);
+      const rangeValue = cfg.useTrueRange ? s.rangeTr.step(bar.high, bar.low, c) : bar.high - bar.low;
+      const rangeMa = s.rangeMa.step(rangeValue);
+      const emaHigh = s.emaHigh.step(i, bar.high, bar);
+      const emaLow = s.emaLow.step(i, bar.low, bar);
+      const maHigh = s.maHigh.step(i, bar.high, bar);
+      const maLow = s.maLow.step(i, bar.low, bar);
+      const exitHigh = s.exitHigh.step(i, bar.high, bar);
+      const exitLow = s.exitLow.step(i, bar.low, bar);
+      /** Hlv := close > hi ? 1 : close < lo ? -1 : Hlv[1]; the line is the high average while Hlv < 0, else the low one */
+      v.hlv1 = gt(c, emaHigh) ? 1 : lt(c, emaLow) ? -1 : v.hlv1;
+      const sslDown = v.hlv1 < 0 ? emaHigh : emaLow;
+      v.hlv2 = gt(c, maHigh) ? 1 : lt(c, maLow) ? -1 : v.hlv2;
+      const sslDown2 = v.hlv2 < 0 ? maHigh : maLow;
+      v.hlv3 = gt(c, exitHigh) ? 1 : lt(c, exitLow) ? -1 : v.hlv3;
+      const sslExit = v.hlv3 < 0 ? exitHigh : exitLow;
+      s.sslExit[i] = sslExit;
+
+      // ---- Signals
+      const crossLong = s.crossLong.step(c, sslExit);
+      const crossShort = s.crossShort.step(sslExit, c);
+
+      const saturation = riskSaturation(pct);
+      const bullishColor = String(color.new(cfg.bullishColor, saturation));
+      const bearishColor = String(color.new(cfg.bearishColor, saturation));
+      const transparentBull = String(color.new(cfg.bullishColor, Math.max(80, saturation + 20)));
+      const transparentBear = String(color.new(cfg.bearishColor, Math.max(80, saturation + 20)));
+
+      const upperBand = atr * cfg.mult + c;
+      const lowerBand = c - atr * cfg.mult;
+      const upperK = keltMa + rangeMa * cfg.multy;
+      const lowerK = keltMa - rangeMa * cfg.multy;
+
+      // Baseline violation candle: larger than the ATR, with the baseline inside the ATR bands
+      const atrViolation = gt(Math.abs(c - open), atr);
+      const inRange = gt(upperBand, bbmc) && lt(lowerBand, bbmc);
+      const candleSizeViolation = atrViolation && inRange;
+
+      // SSL2 continuation
+      const upperHalf = atr * cfg.atrCrit + c;
+      const lowerHalf = c - atr * cfg.atrCrit;
+      const sellAtr = gt(upperHalf, sslDown2) && lt(c, bbmc) && lt(c, sslDown2);
+      const buyAtr = lt(lowerHalf, sslDown2) && gt(c, bbmc) && gt(c, sslDown2);
+
+      const baselineColor = gt(c, upperK) ? bullishColor : lt(c, lowerK) ? bearishColor : NEUTRAL;
+      const sslColor = gt(c, sslDown) ? bullishColor : lt(c, sslDown) ? bearishColor : NEUTRAL;
+      const ssl2Color = buyAtr ? bullishColor : sellAtr ? bearishColor : NEUTRAL;
+      const channelFillColor = gt(c, upperK) ? transparentBull : lt(c, lowerK) ? transparentBear : transparentNeutral;
+
+      const P = s.plots;
+      P[0][i] = { time, value: showBaseline ? bbmc : NaN, color: baselineColor };
+      P[1][i] = { time, value: showChannel ? upperK : NaN, color: baselineColor };
+      P[2][i] = { time, value: showChannel ? lowerK : NaN, color: baselineColor };
+      s.fillColors[i] = showChannel ? channelFillColor : 'transparent';
+      P[3][i] = { time, value: showSsl1 ? sslDown : NaN, color: sslColor };
+      P[4][i] = { time, value: showSsl2 ? sslDown2 : NaN, color: ssl2Color };
+      P[5][i] = { time, value: cfg.showAtrBands ? upperBand : NaN };
+      P[6][i] = { time, value: cfg.showAtrBands ? lowerBand : NaN };
+
+      // plotarrow(show_exit ? codiff : na, colorup = bullish_color, colordown = bearish_color, maxheight = 20)
+      if (showExit) {
+        if (crossLong) s.arrows.push({ time, id: 'arrow0', value: 1, color: bullishColor });
+        else if (crossShort) s.arrows.push({ time, id: 'arrow0', value: -1, color: bearishColor });
+      }
+      // plotshape(show_signals and candlesize_violation, ..., title = "Signal Diamonds")
+      if (cfg.showSignals && candleSizeViolation) {
+        s.markers.push({ time, position: 'top', shape: 'diamond', color: white, size: 'tiny', id: 'shape0' });
+      }
+      s.upperKs[i] = upperK;
+      s.lowerKs[i] = lowerK;
+      s.buyAtrs[i] = buyAtr;
+      s.sellAtrs[i] = sellAtr;
+      if (cfg.colorBars) s.barColors.push({ time, color: baselineColor });
+
+      // ---- One flag per bar for each alertcondition of the original
+      const pc = i > 0 ? s.close[i - 1] : NaN;
+      const pExit = i > 0 ? s.sslExit[i - 1] : NaN;
+      // exit_long = ta.crossunder(close, sslExit); exit_short = ta.crossover(close, sslExit)
+      flagsNow[0] = c < sslExit && pc >= pExit;
+      flagsNow[1] = c > sslExit && pc <= pExit;
+      // ssl2_buy_signal = buy_atr and not buy_atr[1] (the same for sell)
+      flagsNow[2] = buyAtr && !(i > 0 && s.buyAtrs[i - 1]);
+      flagsNow[3] = sellAtr && !(i > 0 && s.sellAtrs[i - 1]);
+      // baseline_bullish = ta.crossover(close, upperk); baseline_bearish = ta.crossunder(close, lowerk)
+      flagsNow[4] = c > upperK && pc <= (i > 0 ? s.upperKs[i - 1] : NaN);
+      flagsNow[5] = c < lowerK && pc >= (i > 0 ? s.lowerKs[i - 1] : NaN);
+      // price_above_baseline = close > BBMC and close[1] <= BBMC (the same for below)
+      flagsNow[6] = i > 0 && gt(c, bbmc) && le(pc, bbmc);
+      flagsNow[7] = i > 0 && lt(c, bbmc) && ge(pc, bbmc);
+      // high_risk_entry = risk_level == "High" and entry_distance == "Far" (a na distance is "Far")
+      const distance = Math.abs(c - bbmc) / atr;
+      flagsNow[8] = gt(pct, 75) && !lt(distance, 1) && !lt(distance, 2);
+      flagsNow[9] = candleSizeViolation;
+      // extreme_volatility = atr_percentile > 90
+      flagsNow[10] = gt(pct, 90);
+      for (let k = 0; k < 11; k++) {
+        s.flags[k][i] = flagsNow[k];
+        if (flagsNow[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // ---- Risk table (last bar)
+      const tables: TableData[] = [];
+      if (n > 0 && cfg.showRiskTable) {
+        const last = n - 1;
+        const saturation = riskSaturation(s.pctArr[last]);
+        const bullishColor = String(color.new(cfg.bullishColor, saturation));
+        const bearishColor = String(color.new(cfg.bearishColor, saturation));
+        const percentile = s.pctArr[last];
+        const distance = Math.abs(s.close[last] - s.bbmcArr[last]) / s.atrArr[last];
+        const entryDistance = lt(distance, 1) ? 'Near' : lt(distance, 2) ? 'Extended' : 'Far';
+        const riskLevel = gt(percentile, 75) ? 'High' : lt(percentile, 25) ? 'Low' : 'Normal';
+        const cells: TableCellData[] = [];
+        const cell = (column: number, row: number, text: string, textColor: string) => {
+          cells.push({ column, row, text, textColor, textSize: 'small' });
+        };
+        cell(0, 0, 'Risk Level', white);
+        cell(1, 0, riskLevel, riskLevel === 'High' ? bearishColor : riskLevel === 'Low' ? bullishColor : NEUTRAL);
+        cell(0, 1, 'Entry Distance', white);
+        cell(1, 1, entryDistance, entryDistance === 'Near' ? bullishColor : entryDistance === 'Extended' ? String(color.yellow) : bearishColor);
+        cell(0, 2, 'Vol %ile', white);
+        cell(1, 2, str.tostring(math.round(percentile, 1)) + '%', white);
+        cell(0, 3, 'ATR', white);
+        cell(1, 3, str.tostring(s.atrArr[last], '#.####'), white);
+        tables.push({
+          position: 'bottom_right', columns: 2, rows: 4, cells, bgColor: String(color.new('#1a1a1a', 5)), borderWidth: 1,
+        });
+      }
+      const plots: Record<string, Point[]> = {};
+      for (let k = 0; k < 7; k++) plots[`plot${k}`] = s.plots[k].slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        // fill(upper_channel, lower_channel, title = "Baseline Channel")
+        fills: [{ plot1: 'plot1', plot2: 'plot2', colors: s.fillColors.slice() }],
+        markers: s.markers.slice(),
+        arrows: s.arrows.slice(),
+        barColors: s.barColors.slice(),
+        tables,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SslHybridInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SslHybridInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -580,6 +695,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const SslHybrid = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

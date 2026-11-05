@@ -15,10 +15,11 @@
  * Original notice: © Uncle_the_shooter
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
-import { barInterval, barTime } from '../bar-time';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ForcePulseInputs {
   /** Calculation period (bars of the force sums) */
@@ -163,175 +164,56 @@ const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ForcePulseInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+/** ta.valuewhen(found, x, 1) history: the value added on a found bar (the last two, older first) */
+const pushed = (h: readonly number[], v: number): readonly number[] => (h.length < 2 ? [...h, v] : [h[1]!, v]);
+const second = (h: readonly number[]): number => (h.length === 2 ? h[0]! : NaN);
+
+interface ForcePulseVars {
+  plOsc: readonly number[];
+  plLow: readonly number[];
+  phOsc: readonly number[];
+  phHigh: readonly number[];
+  /** Calls of the ta.barssince in _inRange (Pine v6 `and` is lazy) */
+  plCalls: number;
+  phCalls: number;
+  /** var bool plFound = false / var bool phFound = false */
+  plFound: boolean;
+  phFound: boolean;
+  /** cpo, maCpo of the bar before */
+  prevCpo: number;
+  prevMa: number;
+}
+
+interface ForcePulseRun extends BarRunState<ForcePulseVars> {
+  avgBody: ReturnType<typeof taStep.sma>;
+  cumBullStep: ReturnType<typeof taStep.cum>;
+  cumBearStep: ReturnType<typeof taStep.cum>;
+  ema: ReturnType<typeof taStep.ema>;
+  ma: ReturnType<typeof taStep.sma>;
+  pivotLow: PivotStep;
+  pivotHigh: PivotStep;
+  cumBull: number[];
+  cumBear: number[];
+  cpo: number[];
+  plots: (Point | null)[][];
+  layers: string[][];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<ForcePulseInputs>): BarStudy<ForcePulseRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const rangeUpper = 60;
   const rangeLower = 5;
-
-  // Force Pulse calculation
-  const body = bars.map((b) => Math.abs(b.close - b.open));
-  const avgBody = A(ta.sma(S(body), 20));
-  const up = bars.map((b) => ge(b.close, b.open)); // close >= open
-  const down = bars.map((b) => lt(b.close, b.open)); // close < open
   const avg = cfg.mode === 'AVG Body';
-  const bullForce = bars.map((_b, i) => (avg ? (up[i] ? avgBody[i] : 0) : (up[i] ? body[i] : 0)));
-  const bearForce = bars.map((_b, i) => (avg ? (down[i] ? avgBody[i] : 0) : (down[i] ? body[i] : 0)));
-  // bullSum = ta.cum(bullForce) - ta.cum(bullForce)[lookback]
-  const cumBull = A(ta.cum(S(bullForce)));
-  const cumBear = A(ta.cum(S(bearForce)));
   const lb = cfg.lookback;
-  const norm = new Array<number>(n);
-  for (let i = 0; i < n; i++) {
-    const bullSum = i - lb >= 0 ? cumBull[i] - cumBull[i - lb] : NaN;
-    const bearSum = i - lb >= 0 ? cumBear[i] - cumBear[i - lb] : NaN;
-    const total = bullSum + bearSum;
-    // A plain division (as Pine): x / 0 is +-infinity, 0 / 0 is na
-    const imbalance = eq(total, 0) ? 0 : (bullSum - bearSum) / total;
-    const v = (imbalance + 1) * 50;
-    // norm := math.max(math.min(norm, 100), 0) (na stays na)
-    norm[i] = isNaN(v) ? NaN : Math.max(Math.min(v, 100), 0);
-  }
-  const cpo = A(ta.ema(S(norm), cfg.smoothLen));
-  const maCpo = A(ta.sma(S(cpo), cfg.maLength));
-
-  // Divergence detection
   const pr = cfg.pivotLength;
-  const pivotLowOsc = A(ta.pivotlow(S(cpo), pr, pr));
-  const pivotHighOsc = A(ta.pivothigh(S(cpo), pr, pr));
-  const plFound: boolean[] = new Array(n).fill(false);
-  const phFound: boolean[] = new Array(n).fill(false);
-  const bullCond: boolean[] = new Array(n).fill(false);
-  const bearCond: boolean[] = new Array(n).fill(false);
-  const oscLbr = (i: number) => (i - pr >= 0 ? cpo[i - pr] : NaN);
-  if (cfg.calculateDivergence) {
-    // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
-    const plOsc: number[] = [];
-    const plLow: number[] = [];
-    const phOsc: number[] = [];
-    const phHigh: number[] = [];
-    // Pine v6 `and` is lazy: the ta.barssince inside _inRange(...) only runs on the bars where the left side
-    // (oscLbr > ta.valuewhen(...)) is true, so it counts those calls. One state per call site.
-    let plCalls = NaN;
-    let phCalls = NaN;
-    let plFoundVar = false; // var bool plFound = false
-    let phFoundVar = false; // var bool phFound = false
-    for (let i = 0; i < n; i++) {
-      const o = oscLbr(i);
-      const lowLbr = i - pr >= 0 ? bars[i - pr].low : NaN;
-      const highLbr = i - pr >= 0 ? bars[i - pr].high : NaN;
-
-      const prevPlFound = plFoundVar; // plFound[1]
-      plFoundVar = !isNaN(pivotLowOsc[i]);
-      if (plFoundVar) {
-        plOsc.push(o);
-        plLow.push(lowLbr);
-      }
-      const vwPlOsc = plOsc.length >= 2 ? plOsc[plOsc.length - 2] : NaN;
-      const vwPlLow = plLow.length >= 2 ? plLow[plLow.length - 2] : NaN;
-      let oscHl = false;
-      if (gt(o, vwPlOsc)) {
-        if (prevPlFound) plCalls = 0;
-        else if (!isNaN(plCalls)) plCalls++;
-        oscHl = rangeLower <= plCalls && plCalls <= rangeUpper;
-      }
-      const priceLl = lt(lowLbr, vwPlLow);
-      bullCond[i] = priceLl && oscHl && plFoundVar;
-      plFound[i] = plFoundVar;
-
-      const prevPhFound = phFoundVar; // phFound[1]
-      phFoundVar = !isNaN(pivotHighOsc[i]);
-      if (phFoundVar) {
-        phOsc.push(o);
-        phHigh.push(highLbr);
-      }
-      const vwPhOsc = phOsc.length >= 2 ? phOsc[phOsc.length - 2] : NaN;
-      const vwPhHigh = phHigh.length >= 2 ? phHigh[phHigh.length - 2] : NaN;
-      let oscLh = false;
-      if (lt(o, vwPhOsc)) {
-        if (prevPhFound) phCalls = 0;
-        else if (!isNaN(phCalls)) phCalls++;
-        oscLh = rangeLower <= phCalls && phCalls <= rangeUpper;
-      }
-      const priceHh = gt(highLbr, vwPhHigh);
-      bearCond[i] = priceHh && oscLh && phFoundVar;
-      phFound[i] = phFoundVar;
-    }
-  }
-
-  // Colours
-  const plotColor = (i: number) => (ge(cpo[i], 50) ? cfg.oscColorPositive : cfg.oscColorNegative);
   const noDiv = String(color.new(color.white, 100));
-  const interval = barInterval(bars);
-
-  const plots: Record<string, Point[]> = {};
-  const P = (f: (i: number) => Point | null): Point[] => {
-    const out: Point[] = [];
-    for (let i = 0; i < n; i++) {
-      const p = f(i);
-      if (p) out.push(p);
-    }
-    return out;
-  };
-  const t = (i: number) => bars[i].time;
   const midGrad = String(color.new(cfg.zeroLineColor, cfg.bandTransparency));
-  // plot(showZeroLineGradient ? 50 : na, color.new(zeroLineColor, bandTransparency), linewidth = 2)
-  plots.plot0 = P((i) => ({ time: t(i), value: cfg.showZeroLineGradient ? 50 : NaN, color: midGrad }));
-  // plot(showOverboughtGradient ? overbought : na,
-  //      color.new(maCpo >= maOverbought ? overboughtColor : zeroLineColor, bandTransparency), linewidth = 10)
-  plots.plot1 = P((i) => ({
-    time: t(i), value: cfg.showOverboughtGradient ? cfg.overbought : NaN,
-    color: String(color.new(ge(maCpo[i], cfg.maOverbought) ? cfg.overboughtColor : cfg.zeroLineColor, cfg.bandTransparency)),
-  }));
-  plots.plot2 = P((i) => ({
-    time: t(i), value: cfg.showOversoldGradient ? cfg.oversold : NaN,
-    color: String(color.new(le(maCpo[i], cfg.maOversold) ? cfg.oversoldColor : cfg.zeroLineColor, cfg.bandTransparency)),
-  }));
-  plots.plot3 = P((i) => ({ time: t(i), value: cpo[i], color: plotColor(i) }));
-  plots.plot4 = P((i) => ({
-    time: t(i), value: cfg.showOscillatorGradient ? cpo[i] : NaN, color: String(color.new(plotColor(i), 85)),
-  }));
-  plots.plot5 = P((i) => ({
-    time: t(i), value: cfg.showOscillatorGradient ? cpo[i] : NaN, color: String(color.new(plotColor(i), 94)),
-  }));
-  plots.plot6 = P((i) => ({ time: t(i), value: cfg.showMa ? maCpo[i] : NaN, color: cfg.maColor }));
   const maGrad = String(color.new(cfg.maColor, 85));
-  plots.plot7 = P((i) => ({ time: t(i), value: cfg.showMa && cfg.showMaGradient ? maCpo[i] : NaN, color: maGrad }));
-  plots.plot8 = P((i) => ({ time: t(i), value: cpo[i] * 0.8 + 50 * 0.2 }));
-  plots.plot9 = P((i) => ({ time: t(i), value: cpo[i] * 0.6 + 50 * 0.4 }));
-  plots.plot10 = P((i) => ({ time: t(i), value: cpo[i] * 0.4 + 50 * 0.6 }));
-  plots.plot11 = P((i) => ({ time: t(i), value: cpo[i] * 0.2 + 50 * 0.8 }));
-  plots.plot12 = P((i) => ({ time: t(i), value: 50 }));
-  // plot(calculateDivergence and plFound ? oscLbr : na, offset = -lookbackRight,
-  //      color = bullCond ? bullDivColor : color.new(color.white, 100)): the value of bar i is drawn on bar i - pr
-  plots.plot13 = P((i) => (i - pr < 0 ? null : {
-    time: barTime(bars, i - pr, interval),
-    value: cfg.calculateDivergence && plFound[i] ? oscLbr(i) : NaN,
-    color: bullCond[i] ? cfg.bullDivColor : noDiv,
-  }));
-  plots.plot14 = P((i) => (i - pr < 0 ? null : {
-    time: barTime(bars, i - pr, interval),
-    value: cfg.calculateDivergence && phFound[i] ? oscLbr(i) : NaN,
-    color: bearCond[i] ? cfg.bearDivColor : noDiv,
-  }));
-
-  // fill(p1, p_mid1, fillEnabled ? color.new(plotColor, fillTransparency) : na) ... + 5, + 10, + 15, + 20
-  const layer = (k: number) => bars.map((_b, i) => (cfg.fillEnabled
-    ? String(color.new(plotColor(i), cfg.fillTransparency + k)) : 'transparent'));
-  const fills = [
-    { plot1: 'plot3', plot2: 'plot8', colors: layer(0) },
-    { plot1: 'plot8', plot2: 'plot9', colors: layer(5) },
-    { plot1: 'plot9', plot2: 'plot10', colors: layer(10) },
-    { plot1: 'plot10', plot2: 'plot11', colors: layer(15) },
-    { plot1: 'plot11', plot2: 'plot12', colors: layer(20) },
-  ];
-
-  const markers: MarkerData[] = [];
   const bullLabel = String(color.new(cfg.bullDivColor, cfg.bandTransparency));
   const bearLabel = String(color.new(cfg.bearDivColor, cfg.bandTransparency));
   const showObos = cfg.signalType === 'Overbought/Oversold' || cfg.signalType === 'All';
@@ -339,60 +221,228 @@ export function calculate(
   const showMaZero = cfg.signalType === 'MA Midline' || cfg.signalType === 'All';
   // ta.crossover(a, b): a > b and a[1] <= b[1]; ta.crossunder(a, b): a < b and a[1] >= b[1]; both compare exactly
   // (no 1e-10 tolerance; na compares false)
-  const crossover = (a: number[], b: number, i: number) => i > 0 && a[i] > b && a[i - 1] <= b;
-  const crossunder = (a: number[], b: number, i: number) => i > 0 && a[i] < b && a[i - 1] >= b;
-  const flags: boolean[][] = Array.from({ length: 8 }, () => []);
-  for (let i = 0; i < n; i++) {
-    // Signal triangles: location.bottom (long) / location.top (short), size.tiny
-    // (ids shape0..shape5: the plotshapes in the original's order)
-    const buy = (on: boolean, id: string) => {
-      if (on) markers.push({ time: t(i), position: 'bottom', shape: 'triangleUp', color: cfg.oversoldColor, size: 'tiny', id });
-    };
-    const sell = (on: boolean, id: string) => {
-      if (on) markers.push({ time: t(i), position: 'top', shape: 'triangleDown', color: cfg.overboughtColor, size: 'tiny', id });
-    };
-    const sig = [
-      crossover(cpo, cfg.oversold, i), crossunder(cpo, cfg.overbought, i), crossover(cpo, 50, i),
-      crossunder(cpo, 50, i), crossover(maCpo, 50, i), crossunder(maCpo, 50, i),
-    ];
-    sig.forEach((on, k) => flags[k].push(on));
-    flags[6].push(bullCond[i]);
-    flags[7].push(bearCond[i]);
-    buy(showObos && sig[0], 'shape0');
-    sell(showObos && sig[1], 'shape1');
-    buy(showZero && sig[2], 'shape2');
-    sell(showZero && sig[3], 'shape3');
-    buy(showMaZero && sig[4], 'shape4');
-    sell(showMaZero && sig[5], 'shape5');
-    // plotshape(bullCond ? oscLbr : na, offset = -lookbackRight, text = ' Bull ', shape.labelup, location.absolute,
-    //   color.new(bullDivColor, bandTransparency), textcolor = textColor, size.small)
-    if (i - pr >= 0) {
-      const price = oscLbr(i);
-      if (bullCond[i] && !isNaN(price)) {
-        markers.push({ time: barTime(bars, i - pr, interval), position: 'atPriceBottom', price, shape: 'labelUp',
-          color: bullLabel, text: ' Bull ', textColor: cfg.textColor, size: 'small', id: 'shape6' });
-      }
-      if (bearCond[i] && !isNaN(price)) {
-        markers.push({ time: barTime(bars, i - pr, interval), position: 'atPriceTop', price, shape: 'labelDown',
-          color: bearLabel, text: ' Bear ', textColor: cfg.textColor, size: 'small', id: 'shape7' });
-      }
-    }
-  }
-
+  const crossover = (a: number, a1: number, b: number, i: number) => i > 0 && a > b && a1 <= b;
+  const crossunder = (a: number, a1: number, b: number, i: number) => i > 0 && a < b && a1 >= b;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
-    plots,
-    hlines: [
-      { value: 50, options: { title: 'Midline', color: cfg.zeroLineColor, linestyle: 'dashed' } },
-      { value: cfg.overbought, options: { title: 'Overbought', color: cfg.overboughtColor, linestyle: 'dashed' } },
-      { value: cfg.oversold, options: { title: 'Oversold', color: cfg.oversoldColor, linestyle: 'dashed' } },
-    ],
-    fills,
-    markers,
-    // alertcondition(longSignalObos / shortSignalObos / longSignalZero / shortSignalZero / longSignalMaZero /
-    // shortSignalMaZero / bullCond / bearCond)
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      const s: ForcePulseRun = {
+        avgBody: taStep.sma(), cumBullStep: taStep.cum(), cumBearStep: taStep.cum(), ema: taStep.ema(cfg.smoothLen),
+        ma: taStep.sma(), pivotLow: new PivotStep(pr, pr, false), pivotHigh: new PivotStep(pr, pr, true),
+        cumBull: [], cumBear: [], cpo: [], plots: Array.from({ length: 15 }, () => []),
+        layers: Array.from({ length: 5 }, () => []), flags: alertConditions.map(() => []),
+        times: alertConditions.map(() => []), markers: [],
+        steps: [],
+        vars: {
+          plOsc: [], plLow: [], phOsc: [], phHigh: [], plCalls: NaN, phCalls: NaN, plFound: false, phFound: false,
+          prevCpo: NaN, prevMa: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [
+        s.avgBody, s.cumBullStep, s.cumBearStep, s.ema, s.ma,
+        ...(cfg.calculateDivergence ? [s.pivotLow, s.pivotHigh] : []),
+      ];
+      s.lists = [...s.times, s.markers];
+      s.series = [s.cumBull, s.cumBear, s.cpo, ...s.plots, ...s.layers, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const time = b.time;
+
+      // Force Pulse calculation
+      const body = Math.abs(b.close - b.open);
+      const avgBody = s.avgBody.step(body, 20);
+      const up = ge(b.close, b.open); // close >= open
+      const down = lt(b.close, b.open); // close < open
+      const bullForce = avg ? (up ? avgBody : 0) : (up ? body : 0);
+      const bearForce = avg ? (down ? avgBody : 0) : (down ? body : 0);
+      // bullSum = ta.cum(bullForce) - ta.cum(bullForce)[lookback]
+      const cumBull = s.cumBull;
+      const cumBear = s.cumBear;
+      cumBull[i] = s.cumBullStep.step(bullForce);
+      cumBear[i] = s.cumBearStep.step(bearForce);
+      const bullSum = i - lb >= 0 ? cumBull[i] - cumBull[i - lb] : NaN;
+      const bearSum = i - lb >= 0 ? cumBear[i] - cumBear[i - lb] : NaN;
+      const total = bullSum + bearSum;
+      // A plain division (as Pine): x / 0 is +-infinity, 0 / 0 is na
+      const imbalance = eq(total, 0) ? 0 : (bullSum - bearSum) / total;
+      const nv = (imbalance + 1) * 50;
+      // norm := math.max(math.min(norm, 100), 0) (na stays na)
+      const norm = isNaN(nv) ? NaN : Math.max(Math.min(nv, 100), 0);
+      const cpo = s.ema.step(norm);
+      s.cpo[i] = cpo;
+      const maCpo = s.ma.step(cpo, cfg.maLength);
+
+      // Divergence detection
+      const o = i - pr >= 0 ? s.cpo[i - pr] : NaN;
+      let plFound = false;
+      let phFound = false;
+      let bullCond = false;
+      let bearCond = false;
+      if (cfg.calculateDivergence) {
+        const lowLbr = i - pr >= 0 ? bars[i - pr].low : NaN;
+        const highLbr = i - pr >= 0 ? bars[i - pr].high : NaN;
+        const pivotLowOsc = s.pivotLow.step(i, cpo);
+        const pivotHighOsc = s.pivotHigh.step(i, cpo);
+
+        // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
+        // Pine v6 `and` is lazy: the ta.barssince inside _inRange(...) only runs on the bars where the left side
+        // (oscLbr > ta.valuewhen(...)) is true, so it counts those calls. One state per call site.
+        const prevPlFound = v.plFound; // plFound[1]
+        v.plFound = !isNaN(pivotLowOsc);
+        if (v.plFound) {
+          v.plOsc = pushed(v.plOsc, o);
+          v.plLow = pushed(v.plLow, lowLbr);
+        }
+        let oscHl = false;
+        if (gt(o, second(v.plOsc))) {
+          if (prevPlFound) v.plCalls = 0;
+          else if (!isNaN(v.plCalls)) v.plCalls++;
+          oscHl = rangeLower <= v.plCalls && v.plCalls <= rangeUpper;
+        }
+        const priceLl = lt(lowLbr, second(v.plLow));
+        bullCond = priceLl && oscHl && v.plFound;
+        plFound = v.plFound;
+
+        const prevPhFound = v.phFound; // phFound[1]
+        v.phFound = !isNaN(pivotHighOsc);
+        if (v.phFound) {
+          v.phOsc = pushed(v.phOsc, o);
+          v.phHigh = pushed(v.phHigh, highLbr);
+        }
+        let oscLh = false;
+        if (lt(o, second(v.phOsc))) {
+          if (prevPhFound) v.phCalls = 0;
+          else if (!isNaN(v.phCalls)) v.phCalls++;
+          oscLh = rangeLower <= v.phCalls && v.phCalls <= rangeUpper;
+        }
+        const priceHh = gt(highLbr, second(v.phHigh));
+        bearCond = priceHh && oscLh && v.phFound;
+        phFound = v.phFound;
+      }
+
+      // Colours
+      const plotColor = ge(cpo, 50) ? cfg.oscColorPositive : cfg.oscColorNegative;
+      const p = s.plots;
+      // plot(showZeroLineGradient ? 50 : na, color.new(zeroLineColor, bandTransparency), linewidth = 2)
+      p[0][i] = { time, value: cfg.showZeroLineGradient ? 50 : NaN, color: midGrad };
+      // plot(showOverboughtGradient ? overbought : na,
+      //      color.new(maCpo >= maOverbought ? overboughtColor : zeroLineColor, bandTransparency), linewidth = 10)
+      p[1][i] = {
+        time, value: cfg.showOverboughtGradient ? cfg.overbought : NaN,
+        color: String(color.new(ge(maCpo, cfg.maOverbought) ? cfg.overboughtColor : cfg.zeroLineColor, cfg.bandTransparency)),
+      };
+      p[2][i] = {
+        time, value: cfg.showOversoldGradient ? cfg.oversold : NaN,
+        color: String(color.new(le(maCpo, cfg.maOversold) ? cfg.oversoldColor : cfg.zeroLineColor, cfg.bandTransparency)),
+      };
+      p[3][i] = { time, value: cpo, color: plotColor };
+      p[4][i] = { time, value: cfg.showOscillatorGradient ? cpo : NaN, color: String(color.new(plotColor, 85)) };
+      p[5][i] = { time, value: cfg.showOscillatorGradient ? cpo : NaN, color: String(color.new(plotColor, 94)) };
+      p[6][i] = { time, value: cfg.showMa ? maCpo : NaN, color: cfg.maColor };
+      p[7][i] = { time, value: cfg.showMa && cfg.showMaGradient ? maCpo : NaN, color: maGrad };
+      p[8][i] = { time, value: cpo * 0.8 + 50 * 0.2 };
+      p[9][i] = { time, value: cpo * 0.6 + 50 * 0.4 };
+      p[10][i] = { time, value: cpo * 0.4 + 50 * 0.6 };
+      p[11][i] = { time, value: cpo * 0.2 + 50 * 0.8 };
+      p[12][i] = { time, value: 50 };
+      // plot(calculateDivergence and plFound ? oscLbr : na, offset = -lookbackRight,
+      //      color = bullCond ? bullDivColor : color.new(color.white, 100)): the value of bar i is drawn on bar i - pr
+      //      (slot i here, the first pr slots dropped in the result)
+      if (i - pr < 0) {
+        p[13][i] = null;
+        p[14][i] = null;
+      } else {
+        const lbrTime = bars[i - pr].time;
+        p[13][i] = { time: lbrTime, value: cfg.calculateDivergence && plFound ? o : NaN, color: bullCond ? cfg.bullDivColor : noDiv };
+        p[14][i] = { time: lbrTime, value: cfg.calculateDivergence && phFound ? o : NaN, color: bearCond ? cfg.bearDivColor : noDiv };
+      }
+
+      // fill(p1, p_mid1, fillEnabled ? color.new(plotColor, fillTransparency) : na) ... + 5, + 10, + 15, + 20
+      for (let k = 0; k < 5; k++) {
+        s.layers[k][i] = cfg.fillEnabled ? String(color.new(plotColor, cfg.fillTransparency + 5 * k)) : 'transparent';
+      }
+
+      // Signal triangles: location.bottom (long) / location.top (short), size.tiny
+      // (ids shape0..shape5: the plotshapes in the original's order)
+      const markers = s.markers;
+      const buy = (on: boolean, id: string) => {
+        if (on) markers.push({ time, position: 'bottom', shape: 'triangleUp', color: cfg.oversoldColor, size: 'tiny', id });
+      };
+      const sell = (on: boolean, id: string) => {
+        if (on) markers.push({ time, position: 'top', shape: 'triangleDown', color: cfg.overboughtColor, size: 'tiny', id });
+      };
+      const sig = [
+        crossover(cpo, v.prevCpo, cfg.oversold, i), crossunder(cpo, v.prevCpo, cfg.overbought, i),
+        crossover(cpo, v.prevCpo, 50, i), crossunder(cpo, v.prevCpo, 50, i),
+        crossover(maCpo, v.prevMa, 50, i), crossunder(maCpo, v.prevMa, 50, i), bullCond, bearCond,
+      ];
+      v.prevCpo = cpo;
+      v.prevMa = maCpo;
+      for (let k = 0; k < 8; k++) {
+        s.flags[k][i] = sig[k];
+        if (sig[k]) s.times[k].push(time as number);
+      }
+      buy(showObos && sig[0], 'shape0');
+      sell(showObos && sig[1], 'shape1');
+      buy(showZero && sig[2], 'shape2');
+      sell(showZero && sig[3], 'shape3');
+      buy(showMaZero && sig[4], 'shape4');
+      sell(showMaZero && sig[5], 'shape5');
+      // plotshape(bullCond ? oscLbr : na, offset = -lookbackRight, text = ' Bull ', shape.labelup, location.absolute,
+      //   color.new(bullDivColor, bandTransparency), textcolor = textColor, size.small)
+      if (i - pr >= 0) {
+        const price = o;
+        if (bullCond && !isNaN(price)) {
+          markers.push({ time: bars[i - pr].time, position: 'atPriceBottom', price, shape: 'labelUp',
+            color: bullLabel, text: ' Bull ', textColor: cfg.textColor, size: 'small', id: 'shape6' });
+        }
+        if (bearCond && !isNaN(price)) {
+          markers.push({ time: bars[i - pr].time, position: 'atPriceTop', price, shape: 'labelDown',
+            color: bearLabel, text: ' Bear ', textColor: cfg.textColor, size: 'small', id: 'shape7' });
+        }
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((pl, k) => {
+        plots[`plot${k}`] = (k === 13 || k === 14 ? pl.slice(Math.min(Math.max(pr, 0), n)) : pl.slice()) as Point[];
+      });
+      const fills = [
+        { plot1: 'plot3', plot2: 'plot8', colors: s.layers[0].slice() },
+        { plot1: 'plot8', plot2: 'plot9', colors: s.layers[1].slice() },
+        { plot1: 'plot9', plot2: 'plot10', colors: s.layers[2].slice() },
+        { plot1: 'plot10', plot2: 'plot11', colors: s.layers[3].slice() },
+        { plot1: 'plot11', plot2: 'plot12', colors: s.layers[4].slice() },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
+        plots,
+        hlines: [
+          { value: 50, options: { title: 'Midline', color: cfg.zeroLineColor, linestyle: 'dashed' } },
+          { value: cfg.overbought, options: { title: 'Overbought', color: cfg.overboughtColor, linestyle: 'dashed' } },
+          { value: cfg.oversold, options: { title: 'Oversold', color: cfg.oversoldColor, linestyle: 'dashed' } },
+        ],
+        fills,
+        markers: s.markers.slice(),
+        // alertcondition(longSignalObos / shortSignalObos / longSignalZero / shortSignalZero / longSignalMaZero /
+        // shortSignalMaZero / bullCond / bearCond)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ForcePulseInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ForcePulseInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -409,6 +459,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const ForcePulse = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -15,9 +15,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, BgColorData, MarkerData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export type ZChannelTheme = 'Modern' | 'Classic' | 'Neon' | 'Monochrome' | 'Sunset' | 'Ocean';
 export type ZChannelSmoothing = 'LinReg' | 'Hull MA' | 'Super Smoother' | 'Two-Pole Gaussian';
@@ -167,16 +169,107 @@ const nz = (x: number, y = 0) => (isNaN(x) ? y : x);
 
 type Point = { time: number; value: number; color: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdaptiveRollingZScoreChannelInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
-  & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
+  & { alerts: AlertConditionState[] };
+
+/**
+ * `ta.percentile_linear_interpolation(source, length, percentage)` one bar at a time, with the sorted window of the
+ * library function (the new value inserted before the first value `>=` it, then the value of the bar leaving the
+ * window removed): the same doubles. `step` reads the window with the new value without changing it.
+ */
+class PercentileLinear implements Committable {
+  private readonly values: number[] = [];
+  private readonly bars: number[] = [];
+  private count = 0;
+  private pending = NaN;
+  private stepped = false;
+
+  constructor(private readonly length: number, private readonly percentage: number) {}
+
+  step(v: number): number {
+    this.stepped = true;
+    this.pending = v;
+    const { values, bars, length } = this;
+    const i = this.count;
+    if (i < length - 1) return NaN;
+    let k = 0;
+    while (k < values.length && !(values[k] >= v)) k++;
+    // index in the window after the insertion of the bar that leaves it (-1: none)
+    let old = -1;
+    if (i >= length) {
+      const r = bars.indexOf(i - length);
+      old = r < k ? r : r + 1;
+    }
+    const inserted = (j: number) => (j < k ? values[j] : j === k ? v : values[j - 1]);
+    const at = (j: number) => (old < 0 || j < old ? inserted(j) : inserted(j + 1));
+    const pos = (this.percentage / 100) * length - 0.5;
+    if (pos <= 0) return at(0);
+    if (pos >= length - 1) return at(length - 1);
+    const lo = Math.floor(pos);
+    return at(lo) + (pos - lo) * (at(lo + 1) - at(lo));
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    const { values, bars, length } = this;
+    const v = this.pending;
+    const i = this.count++;
+    let k = 0;
+    while (k < values.length && !(values[k] >= v)) k++;
+    values.splice(k, 0, v);
+    bars.splice(k, 0, i);
+    if (i >= length) {
+      const old = bars.indexOf(i - length);
+      values.splice(old, 1);
+      bars.splice(old, 1);
+    }
+  }
+}
+
+/** The four smoothers of a series (each Pine call keeps its own history), the selected one stepped */
+interface Smoother {
+  x: number[];
+  ss: number[];
+  gs: number[];
+  lin: ReturnType<typeof taStep.linreg> | null;
+  hma: ReturnType<typeof taStep.hma> | null;
+}
+
+interface ZChannelVars {
+  /** ta.crossover(src, lower) / ta.crossunder(src, upper): the last bar where both values were not na */
+  prevLoSrc: number;
+  prevLo: number;
+  hasPrevLo: boolean;
+  prevUpSrc: number;
+  prevUp: number;
+  hasPrevUp: boolean;
+}
+
+interface ZChannelRun extends BarRunState<ZChannelVars> {
+  loc: ReturnType<typeof taStep.sma>;
+  disp: ReturnType<typeof taStep.stdev>;
+  smZ: Smoother | null;
+  smU: Smoother | null;
+  smD: Smoother | null;
+  pcts: PercentileLinear[];
+  src: number[];
+  plots: Point[][];
+  upperArr: number[];
+  lowerArr: number[];
+  basisArr: number[];
+  brkUp: string[];
+  brkDn: string[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<AdaptiveRollingZScoreChannelInputs>): BarStudy<ZChannelRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = A(getSourceSeries(bars, cfg.src));
+  const value = barSource(cfg.src);
   const len = cfg.smoothLength;
 
   // Theme palettes (Modern when the theme is not listed)
@@ -195,55 +288,30 @@ export function calculate(
   const gsOm2 = gsOm * gsOm;
   const stId = cfg.smoothType === 'Two-Pole Gaussian' ? 3 : cfg.smoothType === 'Super Smoother' ? 2
     : cfg.smoothType === 'Hull MA' ? 1 : 0;
-
-  // The four smoothers of a series (each Pine call keeps its own history; all run on every bar)
-  const smooth = (x: number[]): number[] => {
-    const ss: number[] = new Array(n);
-    const gs: number[] = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const x1 = i > 0 ? x[i - 1] : NaN;
-      const s1 = i > 0 ? ss[i - 1] : NaN;
-      const s2 = i > 1 ? ss[i - 2] : NaN;
-      ss[i] = ssC1 * (x[i] + nz(x1)) / 2 + ssC2 * nz(s1) + ssC3 * nz(s2);
-      const g1 = i > 0 ? gs[i - 1] : NaN;
-      const g2 = i > 1 ? gs[i - 2] : NaN;
-      gs[i] = gsA2 * x[i] + 2 * gsOm * nz(g1) - gsOm2 * nz(g2);
+  const smoother = (): Smoother => ({
+    x: [], ss: [], gs: [],
+    lin: stId === 0 ? taStep.linreg(len, 0) : null,
+    hma: stId === 1 ? taStep.hma(len) : null,
+  });
+  const smooth = (sm: Smoother, i: number, xi: number): number => {
+    sm.x[i] = xi;
+    if (stId === 0) return sm.lin!.step(xi) ?? NaN;
+    if (stId === 1) return sm.hma!.step(xi) ?? NaN;
+    if (stId === 2) {
+      const x1 = i > 0 ? sm.x[i - 1] : NaN;
+      const s1 = i > 0 ? sm.ss[i - 1] : NaN;
+      const s2 = i > 1 ? sm.ss[i - 2] : NaN;
+      sm.ss[i] = ssC1 * (xi + nz(x1)) / 2 + ssC2 * nz(s1) + ssC3 * nz(s2);
+      return sm.ss[i];
     }
-    const lin = A(ta.linreg(S(x), len, 0));
-    const hma = A(ta.hma(S(x), len));
-    return x.map((_v, i) => (stId === 1 ? hma[i] : stId === 2 ? ss[i] : stId === 3 ? gs[i] : lin[i]));
+    const g1 = i > 0 ? sm.gs[i - 1] : NaN;
+    const g2 = i > 1 ? sm.gs[i - 2] : NaN;
+    sm.gs[i] = gsA2 * xi + 2 * gsOm * nz(g1) - gsOm2 * nz(g2);
+    return sm.gs[i];
   };
 
-  // Location and dispersion
-  const locationEst = A(ta.sma(S(src), cfg.rollWin));
-  const dispersion = A(ta.stdev(S(src), cfg.rollWin, false));
-  const zRaw = src.map((s, i) => (gt(dispersion[i], 0) ? (s - locationEst[i]) / dispersion[i] : 0.0));
-  const smZ = smooth(zRaw);
-  const zScore = cfg.smoothZ ? smZ : zRaw;
-
-  // Percentile band levels in z units: equal weights of the 50, 100 and 200 bar percentiles
-  const zS = S(zScore);
-  const pct = (length: number, p: number) => A(ta.percentile_linear_interpolation(zS, length, p));
-  const thUpS = pct(50, cfg.pctUpper);
-  const thUpM = pct(100, cfg.pctUpper);
-  const thUpL = pct(200, cfg.pctUpper);
-  const thDnS = pct(50, cfg.pctLower);
-  const thDnM = pct(100, cfg.pctLower);
-  const thDnL = pct(200, cfg.pctLower);
   const wSum = 1.0 + 1.0 + 1.0;
   const isFixed = cfg.bandMode === 'Fixed Z-Score';
-  const zUpFlr: number[] = new Array(n);
-  const zDnFlr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const upWsum = thUpS[i] * 1.0 + thUpM[i] * 1.0 + thUpL[i] * 1.0;
-    const dnWsum = thDnS[i] * 1.0 + thDnM[i] * 1.0 + thDnL[i] * 1.0;
-    const zUpSel = isFixed ? cfg.fixedZUp : upWsum / wSum;
-    const zDnSel = isFixed ? cfg.fixedZDn : dnWsum / wSum;
-    zUpFlr[i] = Math.max(nz(zUpSel, cfg.minBandZ), cfg.minBandZ);
-    zDnFlr[i] = Math.min(nz(zDnSel, -cfg.minBandZ), -cfg.minBandZ);
-  }
-  const smU = smooth(zUpFlr);
-  const smD = smooth(zDnFlr);
 
   // Colours
   const fNear = Math.trunc(Math.max(cfg.fillTransp - 12, 0));
@@ -256,135 +324,199 @@ export function calculate(
   const dnFillTop = fillOff ? C(themeBull, 100) : C(themeBull, fOuter);
   const dnFillBot = fillOff ? C(themeBull, 100) : C(themeBull, fNear);
   const NA = 'transparent';
-
-  const plots: Record<string, Point[]> = {};
-  for (let k = 0; k <= 16; k++) plots[`plot${k}`] = [];
-  const push = (k: number, time: number, value: number, col: string) => {
-    plots[`plot${k}`].push({ time, value: Number.isFinite(value) ? value : NaN, color: col });
-  };
-  const upperArr: number[] = new Array(n);
-  const lowerArr: number[] = new Array(n);
-  const basisArr: number[] = new Array(n);
-  const brkUp: string[] = new Array(n);
-  const brkDn: string[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
   const anchorCol = C(color.white, 100);
   const pineBlue = PINE_BLUE;
-  // ta.crossover(src, lower) / ta.crossunder(src, upper): exact comparisons with the last bar where both values
-  // were not na
-  let prevLo: [number, number] | null = null;
-  let prevUp: [number, number] | null = null;
-
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const zUpPre = cfg.smoothBands ? smU[i] : zUpFlr[i];
-    const zDnPre = cfg.smoothBands ? smD[i] : zDnFlr[i];
-    const symMag = Math.max(Math.abs(zUpPre), Math.abs(zDnPre));
-    const zUp = cfg.symmetricBands ? symMag : zUpPre;
-    const zDn = cfg.symmetricBands ? -symMag : zDnPre;
-
-    // Inversion back to price
-    const loc = locationEst[i];
-    const disp = dispersion[i];
-    const basis = loc;
-    const upper = loc + zUp * disp;
-    const lower = loc + zDn * disp;
-    const innerUp = loc + zUp * cfg.innerFrac * disp;
-    const innerDn = loc + zDn * cfg.innerFrac * disp;
-    upperArr[i] = upper;
-    lowerArr[i] = lower;
-    basisArr[i] = basis;
-    const inOb = !isNaN(upper) && gt(src[i], upper);
-    const inOs = !isNaN(lower) && lt(src[i], lower);
-
-    // Gradient colour of the basis
-    const z = zScore[i];
-    const gradTop = Math.max(zUp, 0.01);
-    const gradBot = Math.min(zDn, -0.01);
-    const gradColor = ge(z, 0)
-      ? String(color.from_gradient(z, 0, gradTop, themeNeutral, themeBear))
-      : String(color.from_gradient(z, gradBot, 0, themeBull, themeNeutral));
-    const basisColor = cfg.useGradient ? gradColor : themeNeutral;
-
-    brkUp[i] = cfg.showBreakout && inOb ? C(themeBear, 75) : NA;
-    brkDn[i] = cfg.showBreakout && inOs ? C(themeBull, 75) : NA;
-    const glow = (c: string, tr: number) => (cfg.showGlow ? C(c, tr) : NA);
-
-    // bgcolor(show_bg_tint ? (in_ob ? bg_ob : in_os ? bg_os : na) : na)
-    if (cfg.showBgTint && (inOb || inOs)) bgColors.push({ time: t, color: C(inOb ? themeBear : themeBull, 92) });
-
-    const basisPlot = cfg.showBasis ? basis : NaN;
-    push(0, t, src[i], anchorCol);
-    push(1, t, upper, glow(themeBear, inOb ? 88 : 94));
-    push(2, t, upper, glow(themeBear, inOb ? 80 : 90));
-    push(3, t, upper, glow(themeBear, inOb ? 68 : 84));
-    push(4, t, lower, glow(themeBull, inOs ? 88 : 94));
-    push(5, t, lower, glow(themeBull, inOs ? 80 : 90));
-    push(6, t, lower, glow(themeBull, inOs ? 68 : 84));
-    push(7, t, basisPlot, glow(basisColor, 90));
-    push(8, t, basisPlot, glow(basisColor, 80));
-    push(9, t, upper, C(themeBear, 10));
-    push(10, t, lower, C(themeBull, 10));
-    push(11, t, cfg.showInner ? innerUp : NaN, C(themeBear, 55));
-    push(12, t, cfg.showInner ? innerDn : NaN, C(themeBull, 55));
-    push(13, t, basisPlot, basisColor);
-
-    // barcolor(color_bars ? (in_ob ? theme_bear : in_os ? theme_bull : base_bar) : na)
-    if (cfg.colorBars) barColors.push({ time: t, color: inOb ? themeBear : inOs ? themeBull : basisColor });
-
-    push(14, t, z, pineBlue);
-    push(15, t, zUp, pineBlue);
-    push(16, t, zDn, pineBlue);
-
-    let reentryUp = false;
-    if (!isNaN(src[i]) && !isNaN(lower)) {
-      reentryUp = prevLo !== null && src[i] > lower && prevLo[0] <= prevLo[1];
-      prevLo = [src[i], lower];
-    }
-    let reentryDn = false;
-    if (!isNaN(src[i]) && !isNaN(upper)) {
-      reentryDn = prevUp !== null && src[i] < upper && prevUp[0] >= prevUp[1];
-      prevUp = [src[i], upper];
-    }
-    if (cfg.showSignals && reentryUp) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: themeBull, size: 'tiny' });
-    }
-    if (cfg.showSignals && reentryDn) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: themeBear, size: 'tiny' });
-    }
-  }
-
-  const fills = [
-    // fill(p_upper, p_basis, upper, basis, up_fill_top, up_fill_bot, title = "Upper Zone")
-    { plot1: 'plot9', plot2: 'plot13', options: { title: 'Upper Zone' }, gradient: { topValue: upperArr, bottomValue: basisArr,
-      topColor: new Array(n).fill(upFillTop), bottomColor: new Array(n).fill(upFillBot) } },
-    // fill(p_basis, p_lower, basis, lower, dn_fill_top, dn_fill_bot, title = "Lower Zone")
-    { plot1: 'plot13', plot2: 'plot10', options: { title: 'Lower Zone' }, gradient: { topValue: basisArr, bottomValue: lowerArr,
-      topColor: new Array(n).fill(dnFillTop), bottomColor: new Array(n).fill(dnFillBot) } },
-    // fill(p_src, p_upper, color = brk_up_col, title = "Breakout Above")
-    { plot1: 'plot0', plot2: 'plot9', options: { title: 'Breakout Above' }, colors: brkUp },
-    // fill(p_src, p_lower, color = brk_dn_col, title = "Breakdown Below")
-    { plot1: 'plot0', plot2: 'plot10', options: { title: 'Breakdown Below' }, colors: brkDn },
-  ];
-
-  // alertcondition(ta.crossover(src, upper)), (ta.crossunder(src, lower)), (reentry_dn = ta.crossunder(src, upper)),
-  // (reentry_up = ta.crossover(src, lower)), (ta.crossover(src, basis)), (ta.crossunder(src, basis))
-  const alertFlags = [
-    crossedOver(src, upperArr), crossedUnder(src, lowerArr), crossedUnder(src, upperArr), crossedOver(src, lowerArr),
-    crossedOver(src, basisArr), crossedUnder(src, basisArr),
-  ];
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers,
-    barColors,
-    bgColors,
-    alerts: alertStates(alertConditions, bars, alertFlags),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: ZChannelRun = {
+        loc: taStep.sma(), disp: taStep.stdev(),
+        smZ: cfg.smoothZ ? smoother() : null,
+        smU: cfg.smoothBands ? smoother() : null,
+        smD: cfg.smoothBands ? smoother() : null,
+        // Percentile band levels in z units: equal weights of the 50, 100 and 200 bar percentiles
+        pcts: [
+          new PercentileLinear(50, cfg.pctUpper), new PercentileLinear(100, cfg.pctUpper), new PercentileLinear(200, cfg.pctUpper),
+          new PercentileLinear(50, cfg.pctLower), new PercentileLinear(100, cfg.pctLower), new PercentileLinear(200, cfg.pctLower),
+        ],
+        src: [], plots: Array.from({ length: 17 }, () => []), upperArr: [], lowerArr: [], basisArr: [], brkUp: [], brkDn: [],
+        flags: Array.from({ length: 6 }, () => []), times: Array.from({ length: 6 }, () => []),
+        markers: [], barColors: [], bgColors: [],
+        steps: [],
+        vars: { prevLoSrc: NaN, prevLo: NaN, hasPrevLo: false, prevUpSrc: NaN, prevUp: NaN, hasPrevUp: false },
+        lists: [], series: [],
+      };
+      const sms = [s.smZ, s.smU, s.smD].filter((m): m is Smoother => m !== null);
+      s.steps = [s.loc, s.disp, ...s.pcts];
+      for (const m of sms) {
+        if (m.lin) s.steps.push(m.lin);
+        if (m.hma) s.steps.push(m.hma);
+      }
+      s.lists = [s.markers, s.barColors, s.bgColors, ...s.times];
+      s.series = [
+        s.src, ...s.plots, s.upperArr, s.lowerArr, s.basisArr, s.brkUp, s.brkDn, ...s.flags,
+        ...sms.flatMap((m) => [m.x, m.ss, m.gs]),
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      const src = value(bars[i]) ?? NaN;
+      s.src[i] = src;
+
+      // Location and dispersion
+      const loc = s.loc.step(src, cfg.rollWin) ?? NaN;
+      const disp = s.disp.step(src, cfg.rollWin, false) ?? NaN;
+      const zRaw = gt(disp, 0) ? (src - loc) / disp : 0.0;
+      const z = s.smZ ? smooth(s.smZ, i, zRaw) : zRaw;
+
+      const p = s.pcts;
+      const thUpS = p[0].step(z) ?? NaN;
+      const thUpM = p[1].step(z) ?? NaN;
+      const thUpL = p[2].step(z) ?? NaN;
+      const thDnS = p[3].step(z) ?? NaN;
+      const thDnM = p[4].step(z) ?? NaN;
+      const thDnL = p[5].step(z) ?? NaN;
+      const upWsum = thUpS * 1.0 + thUpM * 1.0 + thUpL * 1.0;
+      const dnWsum = thDnS * 1.0 + thDnM * 1.0 + thDnL * 1.0;
+      const zUpSel = isFixed ? cfg.fixedZUp : upWsum / wSum;
+      const zDnSel = isFixed ? cfg.fixedZDn : dnWsum / wSum;
+      const zUpFlr = Math.max(nz(zUpSel, cfg.minBandZ), cfg.minBandZ);
+      const zDnFlr = Math.min(nz(zDnSel, -cfg.minBandZ), -cfg.minBandZ);
+
+      const zUpPre = s.smU ? smooth(s.smU, i, zUpFlr) : zUpFlr;
+      const zDnPre = s.smD ? smooth(s.smD, i, zDnFlr) : zDnFlr;
+      const symMag = Math.max(Math.abs(zUpPre), Math.abs(zDnPre));
+      const zUp = cfg.symmetricBands ? symMag : zUpPre;
+      const zDn = cfg.symmetricBands ? -symMag : zDnPre;
+
+      // Inversion back to price
+      const basis = loc;
+      const upper = loc + zUp * disp;
+      const lower = loc + zDn * disp;
+      const innerUp = loc + zUp * cfg.innerFrac * disp;
+      const innerDn = loc + zDn * cfg.innerFrac * disp;
+      s.upperArr[i] = upper;
+      s.lowerArr[i] = lower;
+      s.basisArr[i] = basis;
+
+      const inOb = !isNaN(upper) && gt(src, upper);
+      const inOs = !isNaN(lower) && lt(src, lower);
+
+      // Gradient colour of the basis
+      const gradTop = Math.max(zUp, 0.01);
+      const gradBot = Math.min(zDn, -0.01);
+      const gradColor = ge(z, 0)
+        ? String(color.from_gradient(z, 0, gradTop, themeNeutral, themeBear))
+        : String(color.from_gradient(z, gradBot, 0, themeBull, themeNeutral));
+      const basisColor = cfg.useGradient ? gradColor : themeNeutral;
+
+      s.brkUp[i] = cfg.showBreakout && inOb ? C(themeBear, 75) : NA;
+      s.brkDn[i] = cfg.showBreakout && inOs ? C(themeBull, 75) : NA;
+      const glow = (c: string, tr: number) => (cfg.showGlow ? C(c, tr) : NA);
+
+      // bgcolor(show_bg_tint ? (in_ob ? bg_ob : in_os ? bg_os : na) : na)
+      if (cfg.showBgTint && (inOb || inOs)) s.bgColors.push({ time: t, color: C(inOb ? themeBear : themeBull, 92) });
+
+      const basisPlot = cfg.showBasis ? basis : NaN;
+      const plots = s.plots;
+      const put = (k: number, v: number, col: string) => {
+        plots[k][i] = { time: t, value: Number.isFinite(v) ? v : NaN, color: col };
+      };
+      put(0, src, anchorCol);
+      put(1, upper, glow(themeBear, inOb ? 88 : 94));
+      put(2, upper, glow(themeBear, inOb ? 80 : 90));
+      put(3, upper, glow(themeBear, inOb ? 68 : 84));
+      put(4, lower, glow(themeBull, inOs ? 88 : 94));
+      put(5, lower, glow(themeBull, inOs ? 80 : 90));
+      put(6, lower, glow(themeBull, inOs ? 68 : 84));
+      put(7, basisPlot, glow(basisColor, 90));
+      put(8, basisPlot, glow(basisColor, 80));
+      put(9, upper, C(themeBear, 10));
+      put(10, lower, C(themeBull, 10));
+      put(11, cfg.showInner ? innerUp : NaN, C(themeBear, 55));
+      put(12, cfg.showInner ? innerDn : NaN, C(themeBull, 55));
+      put(13, basisPlot, basisColor);
+      // barcolor(color_bars ? (in_ob ? theme_bear : in_os ? theme_bull : base_bar) : na)
+      if (cfg.colorBars) s.barColors.push({ time: t, color: inOb ? themeBear : inOs ? themeBull : basisColor });
+      put(14, z, pineBlue);
+      put(15, zUp, pineBlue);
+      put(16, zDn, pineBlue);
+
+      const v = s.vars;
+      let reentryUp = false;
+      if (!isNaN(src) && !isNaN(lower)) {
+        reentryUp = v.hasPrevLo && src > lower && v.prevLoSrc <= v.prevLo;
+        v.hasPrevLo = true;
+        v.prevLoSrc = src;
+        v.prevLo = lower;
+      }
+      let reentryDn = false;
+      if (!isNaN(src) && !isNaN(upper)) {
+        reentryDn = v.hasPrevUp && src < upper && v.prevUpSrc >= v.prevUp;
+        v.hasPrevUp = true;
+        v.prevUpSrc = src;
+        v.prevUp = upper;
+      }
+      if (cfg.showSignals && reentryUp) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: themeBull, size: 'tiny' });
+      }
+      if (cfg.showSignals && reentryDn) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: themeBear, size: 'tiny' });
+      }
+
+      // alertcondition(ta.crossover(src, upper)), (ta.crossunder(src, lower)), (reentry_dn = ta.crossunder(src, upper)),
+      // (reentry_up = ta.crossover(src, lower)), (ta.crossover(src, basis)), (ta.crossunder(src, basis))
+      const ps = i > 0 ? s.src[i - 1] : NaN;
+      const pu = i > 0 ? s.upperArr[i - 1] : NaN;
+      const pl = i > 0 ? s.lowerArr[i - 1] : NaN;
+      const pb = i > 0 ? s.basisArr[i - 1] : NaN;
+      const f = s.flags;
+      f[0][i] = src > upper && ps <= pu;
+      f[1][i] = src < lower && ps >= pl;
+      f[2][i] = src < upper && ps >= pu;
+      f[3][i] = src > lower && ps <= pl;
+      f[4][i] = src > basis && ps <= pb;
+      f[5][i] = src < basis && ps >= pb;
+      for (let k = 0; k < 6; k++) if (f[k][i]) s.times[k].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      const fills = [
+        // fill(p_upper, p_basis, upper, basis, up_fill_top, up_fill_bot, title = "Upper Zone")
+        { plot1: 'plot9', plot2: 'plot13', options: { title: 'Upper Zone' }, gradient: { topValue: s.upperArr.slice(), bottomValue: s.basisArr.slice(),
+          topColor: new Array(n).fill(upFillTop), bottomColor: new Array(n).fill(upFillBot) } },
+        // fill(p_basis, p_lower, basis, lower, dn_fill_top, dn_fill_bot, title = "Lower Zone")
+        { plot1: 'plot13', plot2: 'plot10', options: { title: 'Lower Zone' }, gradient: { topValue: s.basisArr.slice(), bottomValue: s.lowerArr.slice(),
+          topColor: new Array(n).fill(dnFillTop), bottomColor: new Array(n).fill(dnFillBot) } },
+        // fill(p_src, p_upper, color = brk_up_col, title = "Breakout Above")
+        { plot1: 'plot0', plot2: 'plot9', options: { title: 'Breakout Above' }, colors: s.brkUp.slice() },
+        // fill(p_src, p_lower, color = brk_dn_col, title = "Breakdown Below")
+        { plot1: 'plot0', plot2: 'plot10', options: { title: 'Breakdown Below' }, colors: s.brkDn.slice() },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdaptiveRollingZScoreChannelInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdaptiveRollingZScoreChannelInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -399,6 +531,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AdaptiveRollingZScoreChannel = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

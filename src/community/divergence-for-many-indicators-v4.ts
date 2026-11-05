@@ -17,9 +17,11 @@
  * Original notice: © LonesomeTheBlue
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, LineDrawingData, LabelData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, isBarSource, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 type LineStyleName = 'Solid' | 'Dashed' | 'Dotted';
 
@@ -200,48 +202,207 @@ class Registry<T> {
   }
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DivergenceForManyIndicatorsV4Inputs> = {},
-): Omit<IndicatorResult, 'markers' | 'lines' | 'labels'> & { markers: MarkerData[]; lines: LineDrawingData[]; labels: LabelData[] }
-  & { alerts: AlertConditionState[] } {
+/** Adds `x` exactly to the `n` non-overlapping partials `p` (Shewchuk's algorithm); the new count */
+function addExact(p: Float64Array, n: number, x: number): number {
+  let i = 0;
+  for (let j = 0; j < n; j++) {
+    let y = p[j];
+    if (Math.abs(x) < Math.abs(y)) {
+      const t = x;
+      x = y;
+      y = t;
+    }
+    const hi = x + y;
+    const lo = y - (hi - x);
+    if (lo !== 0) p[i++] = lo;
+    x = hi;
+  }
+  p[i] = x;
+  return i + 1;
+}
+
+/** The exact sum of the partials rounded once (round half to even), as Python `math.fsum` */
+function roundExact(p: Float64Array, count: number): number {
+  let n = count;
+  if (n === 0) return 0;
+  let hi = p[--n];
+  while (n > 0) {
+    const x = hi;
+    const y = p[--n];
+    hi = x + y;
+    const lo = y - (hi - x);
+    if (lo !== 0) {
+      // half-way case: the rest has the same sign, so round away from the tie
+      if (n > 0 && ((lo < 0 && p[n - 1] < 0) || (lo > 0 && p[n - 1] > 0))) {
+        const y2 = lo * 2;
+        const x2 = hi + y2;
+        if (y2 === x2 - hi) hi = x2;
+      }
+      break;
+    }
+  }
+  return hi;
+}
+
+/** Exact window sum partials with a committed state and the state of the current step */
+class Partials {
+  p = new Float64Array(64);
+  n = 0;
+  q = new Float64Array(64);
+  m = 0;
+
+  /** The partials with `out` removed (unless NaN) and `x` added, from the committed state, rounded */
+  step(out: number, x: number): number {
+    if (this.q.length < this.n + 3) this.q = new Float64Array(this.q.length * 2);
+    this.q.set(this.p.subarray(0, this.n));
+    let m = this.n;
+    if (!Number.isNaN(out)) m = addExact(this.q, m, -out);
+    m = addExact(this.q, m, x);
+    this.m = m;
+    return roundExact(this.q, m);
+  }
+
+  commit(): void {
+    const t = this.p;
+    this.p = this.q;
+    this.q = t;
+    this.n = this.m;
+  }
+}
+
+/**
+ * The window sum of `ta.sma` / `ta.vwma` (the correctly rounded sum of the last `length` non-na values, the doubles of
+ * the library functions), one bar at a time with a constant length; a bar with an na value keeps the previous sum.
+ */
+class WindowSum implements Committable {
+  private readonly values: number[] = [];
+  private readonly sums = new Partials();
+  private last = NaN;
+  private next = NaN;
+  private pending = NaN;
+  private stepped = false;
+
+  constructor(private readonly len: number) {}
+
+  step(x: number): number {
+    this.stepped = true;
+    this.pending = x;
+    if (!Number.isFinite(x)) return (this.next = this.last);
+    const count = this.values.length;
+    const sum = this.sums.step(count >= this.len ? this.values[count - this.len] : NaN, x);
+    return (this.next = count + 1 >= this.len ? sum : NaN);
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.last = this.next;
+    if (!Number.isFinite(this.pending)) return;
+    this.values.push(this.pending);
+    this.sums.commit();
+  }
+}
+
+/** ta.sma(source, length): the window sum divided by the length */
+class WindowSma implements Committable {
+  private readonly sum: WindowSum;
+
+  constructor(private readonly len: number) {
+    this.sum = new WindowSum(len);
+  }
+
+  step(x: number): number {
+    return this.sum.step(x) / this.len;
+  }
+
+  commit(): void {
+    this.sum.commit();
+  }
+}
+
+/** ta.vwma(source, length): sma(source * volume) / sma(volume), na when the volume average is 0 or na */
+class WindowVwma implements Committable {
+  private readonly num: WindowSum;
+  private readonly den: WindowSum;
+
+  constructor(private readonly len: number) {
+    this.num = new WindowSum(len);
+    this.den = new WindowSum(len);
+  }
+
+  step(value: number, volume: number): number {
+    const num = this.num.step(value * volume) / this.len;
+    const den = this.den.step(volume) / this.len;
+    return den === 0 || Number.isNaN(den) ? NaN : num / den;
+  }
+
+  commit(): void {
+    this.num.commit();
+    this.den.commit();
+  }
+}
+
+type Result = Omit<IndicatorResult, 'markers' | 'lines' | 'labels'> & { markers: MarkerData[]; lines: LineDrawingData[]; labels: LabelData[] }
+  & { alerts: AlertConditionState[] };
+type LineObj = Drawn<LineDrawingData> | null;
+type LabelObj = Drawn<LabelData>;
+type Point = { time: number; value: number; color?: string };
+
+interface DivergenceVars {
+  /** Positions (bar of the confirmation) and values of the pivots, newest first */
+  phPositions: number[];
+  plPositions: number[];
+  phVals: number[];
+  plVals: number[];
+  lineRegistry: Registry<LineDrawingData>;
+  labelRegistry: Registry<LabelData>;
+  posDivLines: LineObj[];
+  negDivLines: LineObj[];
+  posDivLabels: LabelObj[];
+  negDivLabels: LabelObj[];
+  lastPosDivLines: number;
+  lastNegDivLines: number;
+  removeLastPosDivs: boolean;
+  removeLastNegDivs: boolean;
+}
+
+interface DivergenceRun extends BarRunState<DivergenceVars> {
+  rsiStep: ReturnType<typeof taStep.rsi>;
+  macdStep: ReturnType<typeof taStep.macd>;
+  momStep: ReturnType<typeof taStep.mom>;
+  cciStep: ReturnType<typeof taStep.cci>;
+  obvStep: ReturnType<typeof taStep.obv>;
+  stochStep: ReturnType<typeof taStep.stoch>;
+  stkStep: WindowSma;
+  fastStep: WindowVwma;
+  slowStep: WindowVwma;
+  cmfNumStep: WindowSma;
+  cmfDenStep: WindowSma;
+  mfiStep: ReturnType<typeof taStep.mfi>;
+  ma1Step: WindowSma | null;
+  ma2Step: WindowSma | null;
+  phStep: PivotStep;
+  plStep: PivotStep;
+  close: number[];
+  high: number[];
+  low: number[];
+  /** The values of the 11 indicators (MACD, Hist, RSI, Stoch, CCI, MOM, OBV, VWMACD, CMF, MFI, external) */
+  ind: number[][];
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  /** pos_reg_div_detected / neg_reg_div_detected / pos_hid_div_detected / neg_hid_div_detected per bar */
+  detected: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<DivergenceForManyIndicatorsV4Inputs>): BarStudy<DivergenceRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const prd = cfg.pivotPeriod;
   const maxpp = cfg.maxPivotPoints;
   const maxbars = cfg.maxBars;
   const useClose = cfg.source === 'Close';
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const closeSeries = new Series(bars, (b) => b.close);
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const volumeSeries = new Series(bars, (b) => b.volume ?? NaN);
-  const close = bars.map((b) => b.close);
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  // Indicators
-  const rsi = A(ta.rsi(closeSeries, 14));
-  const [macdS, , histS] = ta.macd(closeSeries, 12, 26, 9);
-  const macd = A(macdS);
-  const deltamacd = A(histS);
-  const moment = A(ta.mom(closeSeries, 10));
-  const cci = A(ta.cci(closeSeries, 10));
-  const obv = A(ta.obv(bars));
-  const stk = A(ta.sma(ta.stoch(closeSeries, highSeries, lowSeries, 14), 3));
-  const maFast = A(ta.vwma(closeSeries, 12, volumeSeries));
-  const maSlow = A(ta.vwma(closeSeries, 26, volumeSeries));
-  const vwmacd = maFast.map((v, i) => v - maSlow[i]);
-  // Chaikin money flow: ((close - low) - (high - close)) / (high - low) * volume
-  const cmfv = bars.map((_b, i) => ((close[i] - low[i] - (high[i] - close[i])) / (high[i] - low[i])) * volume[i]);
-  const cmfNum = A(ta.sma(S(cmfv), 21));
-  const cmfDen = A(ta.sma(volumeSeries, 21));
-  const cmf = cmfNum.map((v, i) => v / cmfDen[i]);
-  const mfi = A(ta.mfi(closeSeries, 14, volumeSeries));
-  const external = bars.map((b) => {
+  const external = (b: Bar): number => {
     switch (cfg.externalSource) {
       case 'open': return b.open;
       case 'high': return b.high;
@@ -253,53 +414,46 @@ export function calculate(
       case 'volume': return b.volume ?? NaN;
       default: return b.close;
     }
-  });
-  const indicators: Array<[boolean, number[]]> = [
-    [cfg.calcMacd, macd], [cfg.calcMacdHist, deltamacd], [cfg.calcRsi, rsi], [cfg.calcStoch, stk], [cfg.calcCci, cci],
-    [cfg.calcMom, moment], [cfg.calcObv, obv], [cfg.calcVwmacd, vwmacd], [cfg.calcCmf, cmf], [cfg.calcMfi, mfi],
-    [cfg.calcExternal, external],
+  };
+  const enabled = [
+    cfg.calcMacd, cfg.calcMacdHist, cfg.calcRsi, cfg.calcStoch, cfg.calcCci, cfg.calcMom, cfg.calcObv, cfg.calcVwmacd,
+    cfg.calcCmf, cfg.calcMfi, cfg.calcExternal,
   ];
-
   const names = cfg.showNames === 'Full' ? FULL_NAMES : SHORT_NAMES;
   const divColors = [cfg.posRegColor, cfg.negRegColor, cfg.posHidColor, cfg.negHidColor];
   const regStyle = LINE_STYLE[cfg.regLineStyle] ?? 'dotted';
   const hidStyle = LINE_STYLE[cfg.hidLineStyle] ?? 'dotted';
   const searchRegular = cfg.divergenceType === 'Regular' || cfg.divergenceType === 'Regular/Hidden';
   const searchHidden = cfg.divergenceType === 'Hidden' || cfg.divergenceType === 'Regular/Hidden';
-
-  // Pivots of the price
-  const ph = A(ta.pivothigh(useClose ? closeSeries : highSeries, prd, prd));
-  const pl = A(ta.pivotlow(useClose ? closeSeries : lowSeries, prd, prd));
   const isPivot = (v: number) => !isNaN(v) && v !== 0; // `if ph`
   const maxArraySize = 20;
-  const phPositions: number[] = new Array(maxArraySize).fill(0);
-  const plPositions: number[] = new Array(maxArraySize).fill(0);
-  const phVals: number[] = new Array(maxArraySize).fill(0);
-  const plVals: number[] = new Array(maxArraySize).fill(0);
-
   const startpoint = cfg.dontConfirm ? 0 : 1; // the last candle is not checked without the option
-  /** x[k] on bar i */
-  const at = (a: number[], i: number, k: number) => (i - k >= 0 ? a[i - k] : NaN);
+  const namesShown = cfg.showNames !== "Don't Show";
+  const allDivergences: number[] = new Array(44).fill(NaN); // 11 indicators * 4 divergence types (values of the bar)
+
+  // x[k] on bar i is written (i - k >= 0 ? x[i - k] : NaN) in the searches below (a helper is not inlined there)
 
   // Positive regular (cond 1) or negative hidden (cond 2) divergence on pivot lows: the length back to the pivot
-  const positiveDivergence = (src: number[], cond: 1 | 2, i: number): number => {
-    const prsc = useClose ? close : low;
-    if (!(cfg.dontConfirm || gt(src[i], at(src, i, 1)) || gt(close[i], at(close, i, 1)))) return 0;
+  const positiveDivergence = (s: DivergenceRun, src: number[], cond: 1 | 2, i: number): number => {
+    const { close } = s;
+    const { plPositions, plVals } = s.vars;
+    const prsc = useClose ? close : s.low;
+    if (!(cfg.dontConfirm || gt(src[i], (i - 1 >= 0 ? src[i - 1] : NaN)) || gt(close[i], (i - 1 >= 0 ? close[i - 1] : NaN)))) return 0;
     for (let x = 0; x <= maxpp - 1; x++) {
       const len = i - plPositions[x] + prd;
       // an empty array element or a pivot too far back ends the search
       if (plPositions[x] === 0 || len > maxbars) break;
-      const s0 = at(src, i, startpoint);
-      const sLen = at(src, i, len);
-      const p0 = at(prsc, i, startpoint);
+      const s0 = (i - startpoint >= 0 ? src[i - startpoint] : NaN);
+      const sLen = (i - len >= 0 ? src[i - len] : NaN);
+      const p0 = (i - startpoint >= 0 ? prsc[i - startpoint] : NaN);
       if (len > 5 && ((cond === 1 && gt(s0, sLen) && lt(p0, nz(plVals[x]))) || (cond === 2 && lt(s0, sLen) && gt(p0, nz(plVals[x]))))) {
         const slope1 = (s0 - sLen) / (len - startpoint);
         let virtualLine1 = s0 - slope1;
-        const slope2 = (at(close, i, startpoint) - at(close, i, len)) / (len - startpoint);
-        let virtualLine2 = at(close, i, startpoint) - slope2;
+        const slope2 = ((i - startpoint >= 0 ? close[i - startpoint] : NaN) - (i - len >= 0 ? close[i - len] : NaN)) / (len - startpoint);
+        let virtualLine2 = (i - startpoint >= 0 ? close[i - startpoint] : NaN) - slope2;
         let arrived = true;
         for (let y = 1 + startpoint; y <= len - 1; y++) {
-          if (lt(at(src, i, y), virtualLine1) || lt(nz(at(close, i, y)), virtualLine2)) {
+          if (lt((i - y >= 0 ? src[i - y] : NaN), virtualLine1) || lt(nz((i - y >= 0 ? close[i - y] : NaN)), virtualLine2)) {
             arrived = false;
             break;
           }
@@ -313,23 +467,25 @@ export function calculate(
   };
 
   // Negative regular (cond 1) or positive hidden (cond 2) divergence on pivot highs
-  const negativeDivergence = (src: number[], cond: 1 | 2, i: number): number => {
-    const prsc = useClose ? close : high;
-    if (!(cfg.dontConfirm || lt(src[i], at(src, i, 1)) || lt(close[i], at(close, i, 1)))) return 0;
+  const negativeDivergence = (s: DivergenceRun, src: number[], cond: 1 | 2, i: number): number => {
+    const { close } = s;
+    const { phPositions, phVals } = s.vars;
+    const prsc = useClose ? close : s.high;
+    if (!(cfg.dontConfirm || lt(src[i], (i - 1 >= 0 ? src[i - 1] : NaN)) || lt(close[i], (i - 1 >= 0 ? close[i - 1] : NaN)))) return 0;
     for (let x = 0; x <= maxpp - 1; x++) {
       const len = i - phPositions[x] + prd;
       if (phPositions[x] === 0 || len > maxbars) break;
-      const s0 = at(src, i, startpoint);
-      const sLen = at(src, i, len);
-      const p0 = at(prsc, i, startpoint);
+      const s0 = (i - startpoint >= 0 ? src[i - startpoint] : NaN);
+      const sLen = (i - len >= 0 ? src[i - len] : NaN);
+      const p0 = (i - startpoint >= 0 ? prsc[i - startpoint] : NaN);
       if (len > 5 && ((cond === 1 && lt(s0, sLen) && gt(p0, nz(phVals[x]))) || (cond === 2 && gt(s0, sLen) && lt(p0, nz(phVals[x]))))) {
         const slope1 = (s0 - sLen) / (len - startpoint);
         let virtualLine1 = s0 - slope1;
-        const slope2 = (at(close, i, startpoint) - nz(at(close, i, len))) / (len - startpoint);
-        let virtualLine2 = at(close, i, startpoint) - slope2;
+        const slope2 = ((i - startpoint >= 0 ? close[i - startpoint] : NaN) - nz((i - len >= 0 ? close[i - len] : NaN))) / (len - startpoint);
+        let virtualLine2 = (i - startpoint >= 0 ? close[i - startpoint] : NaN) - slope2;
         let arrived = true;
         for (let y = 1 + startpoint; y <= len - 1; y++) {
-          if (gt(at(src, i, y), virtualLine1) || gt(nz(at(close, i, y)), virtualLine2)) {
+          if (gt((i - y >= 0 ? src[i - y] : NaN), virtualLine1) || gt(nz((i - y >= 0 ? close[i - y] : NaN)), virtualLine2)) {
             arrived = false;
             break;
           }
@@ -342,200 +498,297 @@ export function calculate(
     return 0;
   };
 
-  // Drawings
-  type LineObj = Drawn<LineDrawingData> | null;
-  type LabelObj = Drawn<LabelData>;
-  const lineRegistry = new Registry<LineDrawingData>(MAX_LINES);
-  const labelRegistry = new Registry<LabelData>(MAX_LABELS);
-  const posDivLines: LineObj[] = [];
-  const negDivLines: LineObj[] = [];
-  const posDivLabels: LabelObj[] = [];
-  const negDivLabels: LabelObj[] = [];
-  const deleteOld = (lines: LineObj[]) => {
-    for (const l of lines) lineRegistry.delete(l);
-    lines.length = 0;
-  };
-  const deleteOldLabels = (labels: LabelObj[]) => {
-    for (const l of labels) labelRegistry.delete(l);
-    labels.length = 0;
-  };
-  // Deletes the lines and the label of the last signal, until a new pivot is met
-  const deleteLast = (count: number, lines: LineObj[], labels: LabelObj[]) => {
-    if (count > 0 && lines.length >= count) {
-      for (let j = 1; j <= count; j++) lineRegistry.delete(lines.pop() ?? null);
-      if (labels.length > 0) labelRegistry.delete(labels.pop() ?? null);
-    }
-  };
-  let lastPosDivLines = 0;
-  let lastNegDivLines = 0;
-  let removeLastPosDivs = false;
-  let removeLastNegDivs = false;
+  return {
+    fullRunReason: () => (!cfg.calcExternal || isBarSource(cfg.externalSource) ? null : 'source of another study'),
+    init() {
+      const s: DivergenceRun = {
+        rsiStep: taStep.rsi(14), macdStep: taStep.macd(12, 26, 9), momStep: taStep.mom(10), cciStep: taStep.cci(10),
+        obvStep: taStep.obv(), stochStep: taStep.stoch(14), stkStep: new WindowSma(3), fastStep: new WindowVwma(12),
+        slowStep: new WindowVwma(26), cmfNumStep: new WindowSma(21), cmfDenStep: new WindowSma(21), mfiStep: taStep.mfi(14),
+        ma1Step: cfg.showMas ? new WindowSma(50) : null, ma2Step: cfg.showMas ? new WindowSma(200) : null,
+        phStep: new PivotStep(prd, prd, true), plStep: new PivotStep(prd, prd, false),
+        close: [], high: [], low: [], ind: Array.from({ length: 11 }, () => []), plot0: [], plot1: [], markers: [],
+        detected: [[], [], [], []], times: Array.from({ length: 6 }, () => []),
+        steps: [],
+        vars: {
+          phPositions: new Array(maxArraySize).fill(0), plPositions: new Array(maxArraySize).fill(0),
+          phVals: new Array(maxArraySize).fill(0), plVals: new Array(maxArraySize).fill(0),
+          lineRegistry: new Registry<LineDrawingData>(MAX_LINES), labelRegistry: new Registry<LabelData>(MAX_LABELS),
+          posDivLines: [], negDivLines: [], posDivLabels: [], negDivLabels: [],
+          lastPosDivLines: 0, lastNegDivLines: 0, removeLastPosDivs: false, removeLastNegDivs: false,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [
+        s.rsiStep, s.macdStep, s.momStep, s.cciStep, s.obvStep, s.stochStep, s.stkStep, s.fastStep, s.slowStep,
+        s.cmfNumStep, s.cmfDenStep, s.mfiStep, ...(s.ma1Step ? [s.ma1Step] : []), ...(s.ma2Step ? [s.ma2Step] : []),
+        s.phStep, s.plStep,
+      ];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.close, s.high, s.low, ...s.ind, s.plot0, s.plot1, ...s.detected];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      const high = b.high;
+      const low = b.low;
+      const volume = b.volume ?? NaN;
+      s.close[i] = close;
+      s.high[i] = high;
+      s.low[i] = low;
 
-  const markers: MarkerData[] = [];
-  // pos_reg_div_detected / neg_reg_div_detected / pos_hid_div_detected / neg_hid_div_detected per bar
-  const detected: boolean[][] = [[], [], [], []];
-  const allDivergences: number[] = new Array(44).fill(NaN); // 11 indicators * 4 divergence types
-  const namesShown = cfg.showNames !== "Don't Show";
+      // Indicators
+      const ind = s.ind;
+      const [macd, , hist] = s.macdStep.step(close);
+      ind[0][i] = macd ?? NaN;
+      ind[1][i] = hist ?? NaN;
+      ind[2][i] = s.rsiStep.step(close) ?? NaN;
+      ind[3][i] = s.stkStep.step(s.stochStep.step(close, high, low) ?? NaN);
+      ind[4][i] = s.cciStep.step(close) ?? NaN;
+      ind[5][i] = s.momStep.step(close) ?? NaN;
+      ind[6][i] = s.obvStep.step(close, volume) ?? NaN;
+      const maFast = s.fastStep.step(close, volume) ?? NaN;
+      const maSlow = s.slowStep.step(close, volume) ?? NaN;
+      ind[7][i] = maFast - maSlow;
+      // Chaikin money flow: ((close - low) - (high - close)) / (high - low) * volume
+      const cmfv = ((close - low - (high - close)) / (high - low)) * volume;
+      const cmfNum = s.cmfNumStep.step(cmfv);
+      const cmfDen = s.cmfDenStep.step(volume);
+      ind[8][i] = cmfNum / cmfDen;
+      ind[9][i] = s.mfiStep.step(close, volume) ?? NaN;
+      ind[10][i] = external(b);
 
-  for (let i = 0; i < n; i++) {
-    const isPh = isPivot(ph[i]);
-    const isPl = isPivot(pl[i]);
-    // plotshape(ph and showpivot, text = "H", style = shape.labeldown, offset = -prd), and "L" for the lows
-    if (cfg.showPivot && i - prd >= 0) {
+      // Pivots of the price
+      const ph = s.phStep.step(i, useClose ? close : high);
+      const pl = s.plStep.step(i, useClose ? close : low);
+      const isPh = isPivot(ph);
+      const isPl = isPivot(pl);
+      const v = s.vars;
+
+      // plotshape(ph and showpivot, text = "H", style = shape.labeldown, offset = -prd), and "L" for the lows
+      if (cfg.showPivot && i - prd >= 0) {
+        if (isPh) {
+          s.markers.push({ time: bars[i - prd].time, position: 'aboveBar', shape: 'labelDown', color: 'rgba(255, 255, 255, 0)', text: 'H', textColor: '#FF5252' });
+        }
+        if (isPl) {
+          s.markers.push({ time: bars[i - prd].time, position: 'belowBar', shape: 'labelUp', color: 'rgba(255, 255, 255, 0)', text: 'L', textColor: '#00E676' });
+        }
+      }
+
+      // Positions (bar of the confirmation) and values of the pivots, newest first
       if (isPh) {
-        markers.push({ time: bars[i - prd].time, position: 'aboveBar', shape: 'labelDown', color: 'rgba(255, 255, 255, 0)', text: 'H', textColor: '#FF5252' });
+        v.phPositions.unshift(i);
+        v.phVals.unshift(ph);
+        if (v.phPositions.length > maxArraySize) {
+          v.phPositions.pop();
+          v.phVals.pop();
+        }
       }
       if (isPl) {
-        markers.push({ time: bars[i - prd].time, position: 'belowBar', shape: 'labelUp', color: 'rgba(255, 255, 255, 0)', text: 'L', textColor: '#00E676' });
-      }
-    }
-    // Positions (bar of the confirmation) and values of the pivots, newest first
-    if (isPh) {
-      phPositions.unshift(i);
-      phVals.unshift(ph[i]);
-      if (phPositions.length > maxArraySize) {
-        phPositions.pop();
-        phVals.pop();
-      }
-    }
-    if (isPl) {
-      plPositions.unshift(i);
-      plVals.unshift(pl[i]);
-      if (plPositions.length > maxArraySize) {
-        plPositions.pop();
-        plVals.pop();
-      }
-    }
-
-    // The four divergence types of each indicator
-    for (let k = 0; k < indicators.length; k++) {
-      const [on, src] = indicators[k];
-      allDivergences[k * 4] = on && searchRegular ? positiveDivergence(src, 1, i) : 0;
-      allDivergences[k * 4 + 1] = on && searchRegular ? negativeDivergence(src, 1, i) : 0;
-      allDivergences[k * 4 + 2] = on && searchHidden ? positiveDivergence(src, 2, i) : 0;
-      allDivergences[k * 4 + 3] = on && searchHidden ? negativeDivergence(src, 2, i) : 0;
-    }
-    // Fewer divergences than the minimum: none is shown
-    let totalDiv = 0;
-    for (const d of allDivergences) totalDiv += Math.round(Math.sign(d));
-    if (totalDiv < cfg.showLimit) allDivergences.fill(0);
-
-    if (isPl) {
-      removeLastPosDivs = false;
-      lastPosDivLines = 0;
-    }
-    if (isPh) {
-      removeLastNegDivs = false;
-      lastNegDivLines = 0;
-    }
-
-    // Lines
-    let textTop = '';
-    let textBottom = '';
-    const distances: number[] = [];
-    let numTop = 0;
-    let numBottom = 0;
-    let topLabelColor = '#FFFFFF';
-    let bottomLabelColor = '#FFFFFF';
-    let oldPosDivsCanBeRemoved = true;
-    let oldNegDivsCanBeRemoved = true;
-    for (let y = 0; y <= 3; y++) detected[y].push(false);
-    for (let x = 0; x <= 10; x++) {
-      let divType = -1;
-      for (let y = 0; y <= 3; y++) {
-        const d = allDivergences[x * 4 + y];
-        if (!(d > 0)) continue;
-        divType = y;
-        detected[y][i] = true;
-        const bottomSide = y % 2 === 0;
-        if (bottomSide) {
-          numBottom++;
-          bottomLabelColor = divColors[y];
-        } else {
-          numTop++;
-          topLabelColor = divColors[y];
-        }
-        if (distances.includes(d)) continue; // one line per length
-        distances.push(d);
-        const price = useClose ? close : bottomSide ? low : high;
-        const newLine: LineObj = cfg.showLines ? lineRegistry.create({
-          time1: bars[i - d].time, price1: price[i - d], time2: bars[i - startpoint].time, price2: price[i - startpoint],
-          color: divColors[y], style: y < 2 ? regStyle : hidStyle, width: y < 2 ? cfg.regLineWidth : cfg.hidLineWidth,
-        }) : null;
-        if (bottomSide) {
-          if (oldPosDivsCanBeRemoved) {
-            oldPosDivsCanBeRemoved = false;
-            if (!cfg.showLast && removeLastPosDivs) {
-              deleteLast(lastPosDivLines, posDivLines, posDivLabels);
-              lastPosDivLines = 0;
-            }
-            if (cfg.showLast) deleteOld(posDivLines);
-          }
-          posDivLines.push(newLine);
-          lastPosDivLines++;
-          removeLastPosDivs = true;
-        } else {
-          if (oldNegDivsCanBeRemoved) {
-            oldNegDivsCanBeRemoved = false;
-            if (!cfg.showLast && removeLastNegDivs) {
-              deleteLast(lastNegDivLines, negDivLines, negDivLabels);
-              lastNegDivLines = 0;
-            }
-            if (cfg.showLast) deleteOld(negDivLines);
-          }
-          negDivLines.push(newLine);
-          lastNegDivLines++;
-          removeLastNegDivs = true;
+        v.plPositions.unshift(i);
+        v.plVals.unshift(pl);
+        if (v.plPositions.length > maxArraySize) {
+          v.plPositions.pop();
+          v.plVals.pop();
         }
       }
-      // Label text: the indicator goes to the side of its last divergence type
-      if (divType >= 0 && namesShown) {
-        if (divType % 2 === 1) textTop += names[x] + '\n';
-        else textBottom += names[x] + '\n';
-      }
-    }
 
-    // Labels
-    if (namesShown || cfg.showNumber) {
-      if (cfg.showNumber && numTop > 0) textTop += String(numTop);
-      if (cfg.showNumber && numBottom > 0) textBottom += String(numBottom);
-      if (textTop !== '') {
-        if (cfg.showLast) deleteOldLabels(negDivLabels);
-        negDivLabels.push(labelRegistry.create({
-          time: bars[i].time, price: i > 0 ? Math.max(high[i], high[i - 1]) : NaN, text: textTop,
-          color: topLabelColor, textColor: cfg.negTextColor, style: 'label_down',
-        }));
+      // The four divergence types of each indicator
+      for (let k = 0; k < 11; k++) {
+        const on = enabled[k];
+        const src = ind[k];
+        allDivergences[k * 4] = on && searchRegular ? positiveDivergence(s, src, 1, i) : 0;
+        allDivergences[k * 4 + 1] = on && searchRegular ? negativeDivergence(s, src, 1, i) : 0;
+        allDivergences[k * 4 + 2] = on && searchHidden ? positiveDivergence(s, src, 2, i) : 0;
+        allDivergences[k * 4 + 3] = on && searchHidden ? negativeDivergence(s, src, 2, i) : 0;
       }
-      if (textBottom !== '') {
-        if (cfg.showLast) deleteOldLabels(posDivLabels);
-        posDivLabels.push(labelRegistry.create({
-          time: bars[i].time, price: i > 0 ? Math.min(low[i], low[i - 1]) : NaN, text: textBottom,
-          color: bottomLabelColor, textColor: cfg.posTextColor, style: 'label_up',
-        }));
-      }
-    }
-  }
 
-  // plot(showmas ? sma(close, 50) : na, color = showmas ? cma1col : na), and the same with 200
-  const ma1 = cfg.showMas ? A(ta.sma(closeSeries, 50)) : null;
-  const ma2 = cfg.showMas ? A(ta.sma(closeSeries, 200)) : null;
-  const plots = {
-    plot0: bars.map((b, i) => (ma1 ? { time: b.time, value: ma1[i], color: cfg.ma1Color } : { time: b.time, value: NaN })),
-    plot1: bars.map((b, i) => (ma2 ? { time: b.time, value: ma2[i], color: cfg.ma2Color } : { time: b.time, value: NaN })),
+      // Fewer divergences than the minimum: none is shown
+      let totalDiv = 0;
+      for (const d of allDivergences) totalDiv += Math.round(Math.sign(d));
+      if (totalDiv < cfg.showLimit) allDivergences.fill(0);
+
+      if (isPl) {
+        v.removeLastPosDivs = false;
+        v.lastPosDivLines = 0;
+      }
+      if (isPh) {
+        v.removeLastNegDivs = false;
+        v.lastNegDivLines = 0;
+      }
+
+      // Drawings
+      const { lineRegistry, labelRegistry, posDivLines, negDivLines, posDivLabels, negDivLabels } = v;
+      const deleteOld = (lines: LineObj[]) => {
+        for (const l of lines) lineRegistry.delete(l);
+        lines.length = 0;
+      };
+      const deleteOldLabels = (labels: LabelObj[]) => {
+        for (const l of labels) labelRegistry.delete(l);
+        labels.length = 0;
+      };
+      // Deletes the lines and the label of the last signal, until a new pivot is met
+      const deleteLast = (count: number, lines: LineObj[], labels: LabelObj[]) => {
+        if (count > 0 && lines.length >= count) {
+          for (let j = 1; j <= count; j++) lineRegistry.delete(lines.pop() ?? null);
+          if (labels.length > 0) labelRegistry.delete(labels.pop() ?? null);
+        }
+      };
+
+      // Lines
+      let textTop = '';
+      let textBottom = '';
+      const distances: number[] = [];
+      let numTop = 0;
+      let numBottom = 0;
+      let topLabelColor = '#FFFFFF';
+      let bottomLabelColor = '#FFFFFF';
+      let oldPosDivsCanBeRemoved = true;
+      let oldNegDivsCanBeRemoved = true;
+      const detected = s.detected;
+      for (let y = 0; y <= 3; y++) detected[y][i] = false;
+      for (let x = 0; x <= 10; x++) {
+        let divType = -1;
+        for (let y = 0; y <= 3; y++) {
+          const d = allDivergences[x * 4 + y];
+          if (!(d > 0)) continue;
+          divType = y;
+          detected[y][i] = true;
+          const bottomSide = y % 2 === 0;
+          if (bottomSide) {
+            numBottom++;
+            bottomLabelColor = divColors[y];
+          } else {
+            numTop++;
+            topLabelColor = divColors[y];
+          }
+          if (distances.includes(d)) continue; // one line per length
+          distances.push(d);
+          const price = useClose ? s.close : bottomSide ? s.low : s.high;
+          const newLine: LineObj = cfg.showLines ? lineRegistry.create({
+            time1: bars[i - d].time, price1: price[i - d], time2: bars[i - startpoint].time, price2: price[i - startpoint],
+            color: divColors[y], style: y < 2 ? regStyle : hidStyle, width: y < 2 ? cfg.regLineWidth : cfg.hidLineWidth,
+          }) : null;
+          if (bottomSide) {
+            if (oldPosDivsCanBeRemoved) {
+              oldPosDivsCanBeRemoved = false;
+              if (!cfg.showLast && v.removeLastPosDivs) {
+                deleteLast(v.lastPosDivLines, posDivLines, posDivLabels);
+                v.lastPosDivLines = 0;
+              }
+              if (cfg.showLast) deleteOld(posDivLines);
+            }
+            posDivLines.push(newLine);
+            v.lastPosDivLines++;
+            v.removeLastPosDivs = true;
+          } else {
+            if (oldNegDivsCanBeRemoved) {
+              oldNegDivsCanBeRemoved = false;
+              if (!cfg.showLast && v.removeLastNegDivs) {
+                deleteLast(v.lastNegDivLines, negDivLines, negDivLabels);
+                v.lastNegDivLines = 0;
+              }
+              if (cfg.showLast) deleteOld(negDivLines);
+            }
+            negDivLines.push(newLine);
+            v.lastNegDivLines++;
+            v.removeLastNegDivs = true;
+          }
+        }
+        // Label text: the indicator goes to the side of its last divergence type
+        if (divType >= 0 && namesShown) {
+          if (divType % 2 === 1) textTop += names[x] + '\n';
+          else textBottom += names[x] + '\n';
+        }
+      }
+
+      // Labels
+      if (namesShown || cfg.showNumber) {
+        if (cfg.showNumber && numTop > 0) textTop += String(numTop);
+        if (cfg.showNumber && numBottom > 0) textBottom += String(numBottom);
+        if (textTop !== '') {
+          if (cfg.showLast) deleteOldLabels(negDivLabels);
+          negDivLabels.push(labelRegistry.create({
+            time: b.time, price: i > 0 ? Math.max(high, s.high[i - 1]) : NaN, text: textTop,
+            color: topLabelColor, textColor: cfg.negTextColor, style: 'label_down',
+          }));
+        }
+        if (textBottom !== '') {
+          if (cfg.showLast) deleteOldLabels(posDivLabels);
+          posDivLabels.push(labelRegistry.create({
+            time: b.time, price: i > 0 ? Math.min(low, s.low[i - 1]) : NaN, text: textBottom,
+            color: bottomLabelColor, textColor: cfg.posTextColor, style: 'label_up',
+          }));
+        }
+      }
+
+      // Alerts: the four types, then either positive or either negative type
+      const f = [detected[0][i], detected[1][i], detected[2][i], detected[3][i], detected[0][i] || detected[2][i], detected[1][i] || detected[3][i]];
+      for (let k = 0; k < 6; k++) if (f[k]) s.times[k].push(b.time as number);
+
+      // plot(showmas ? sma(close, 50) : na, color = showmas ? cma1col : na), and the same with 200
+      s.plot0[i] = s.ma1Step ? { time: b.time, value: s.ma1Step.step(close), color: cfg.ma1Color } : { time: b.time, value: NaN };
+      s.plot1[i] = s.ma2Step ? { time: b.time, value: s.ma2Step.step(close), color: cfg.ma2Color } : { time: b.time, value: NaN };
+    },
+    copyVars(v) {
+      // the drawings are changed in place (deleted flags, registries): a copy keeps the objects shared by the lists
+      const lines = new Map<Drawn<LineDrawingData>, Drawn<LineDrawingData>>();
+      const labels = new Map<Drawn<LabelData>, Drawn<LabelData>>();
+      const line = (d: LineObj): LineObj => {
+        if (!d) return null;
+        let c = lines.get(d);
+        if (!c) {
+          c = { data: d.data, deleted: d.deleted };
+          lines.set(d, c);
+        }
+        return c;
+      };
+      const label = (d: LabelObj): LabelObj => {
+        let c = labels.get(d);
+        if (!c) {
+          c = { data: d.data, deleted: d.deleted };
+          labels.set(d, c);
+        }
+        return c;
+      };
+      const lineRegistry = new Registry<LineDrawingData>(MAX_LINES);
+      lineRegistry.live = v.lineRegistry.live.map((d) => line(d)!);
+      const labelRegistry = new Registry<LabelData>(MAX_LABELS);
+      labelRegistry.live = v.labelRegistry.live.map(label);
+      return {
+        ...v,
+        phPositions: v.phPositions.slice(), plPositions: v.plPositions.slice(),
+        phVals: v.phVals.slice(), plVals: v.plVals.slice(),
+        lineRegistry, labelRegistry,
+        posDivLines: v.posDivLines.map(line), negDivLines: v.negDivLines.map(line),
+        posDivLabels: v.posDivLabels.map(label), negDivLabels: v.negDivLabels.map(label),
+      };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const detected = s.detected;
+      const last = [0, 1, 2, 3].map((k) => n > 0 && detected[k][n - 1]);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        lines: s.vars.lineRegistry.live.map((l) => l.data),
+        // a label with an na price is not drawn
+        labels: s.vars.labelRegistry.live.map((l) => l.data).filter((l) => !isNaN(l.price)),
+        alerts: liveAlertStates(alertConditions, s.times, [...last, last[0] || last[2], last[1] || last[3]]),
+      };
+    },
   };
+}
 
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    markers,
-    lines: lineRegistry.live.map((l) => l.data),
-    // a label with an na price is not drawn
-    labels: labelRegistry.live.map((l) => l.data).filter((l) => !isNaN(l.price)),
-    alerts: alertStates(alertConditions, bars, [
-      detected[0], detected[1], detected[2], detected[3],
-      detected[0].map((v, i) => v || detected[2][i]), detected[1].map((v, i) => v || detected[3][i]),
-    ]),
-  };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DivergenceForManyIndicatorsV4Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DivergenceForManyIndicatorsV4Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -550,6 +803,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const DivergenceForManyIndicatorsV4 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

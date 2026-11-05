@@ -14,9 +14,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, fixnan, getSourceSeries, type InputConfig, type PlotConfig, type Bar, type IndicatorResult, type SourceType } from 'oakscriptjs';
+import { taStep, type InputConfig, type PlotConfig, type Bar, type IndicatorResult, type SourceType } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface PerfectRsiInputs {
   /** RSI length (Regular) - 1 */
@@ -169,106 +171,188 @@ const min = (a: number, b: number) => (isNaN(a) || isNaN(b) ? NaN : Math.min(a, 
 const CC = 0.972741476;
 const CORRELATION_THRESHOLD = 0.95;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PerfectRsiInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = (s: SourceType) => A(getSourceSeries(bars, s));
-  const rsi = (a: number[], len: number) => A(ta.rsi(S(a), len));
-  const ema = (a: number[], len: number) => A(ta.ema(S(a), len));
-  const at = (a: number[], i: number, k: number) => (i - k >= 0 ? a[i - k] : NaN);
-  const change = (a: number[]) => a.map((v, i) => v - at(a, i, 1));
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+type Price = (b: Bar) => number;
+type Rsi = ReturnType<typeof taStep.rsi>;
+type Ema = ReturnType<typeof taStep.ema>;
+/** One RSI variant: its machines and its value on a bar */
+type Variant = { steps: Committable[]; step(bars: Bar[], i: number): number };
 
-  const close = bars.map((b) => b.close);
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const hlcc4 = bars.map((b) => (b.high + b.low + b.close + b.close) / 4);
-  const tr = A(ta.tr(bars, false));
+const hlcc4Of: Price = (b) => (b.high + b.low + b.close + b.close) / 4;
+const closeOf: Price = (b) => b.close;
 
-  // Dynamic RSI: priceDiff = p[1] - p; priceDiff > 0 ? rsi((high + p) / 2) : rsi((low + p) / 2)
-  const dynamic = (p: number[], len: number) => {
-    const rHigh = rsi(p.map((v, i) => (high[i] + v) / 2), len);
-    const rLow = rsi(p.map((v, i) => (low[i] + v) / 2), len);
-    return p.map((v, i) => (gt(at(p, i, 1) - v, 0) ? rHigh[i] : rLow[i]));
-  };
-  // Wilder's RSI: EMA of the gains / losses, 100 - 100 / (1 + avgGains / avgLosses) (plain division)
-  const wilder = (p: number[], len: number) => {
-    const d = change(p);
-    const avgGains = ema(d.map((v) => max(v, 0)), len);
-    const avgLosses = ema(d.map((v) => Math.abs(min(v, 0))), len);
-    return avgGains.map((g, i) => 100 - 100 / (1 + g / avgLosses[i]));
-  };
-  // TSI RSI: tsi = 100 * ema(ema(pc, long), short) / ema(ema(|pc|, long), short); rsi(tsi, short)
-  const tsiRsi = (p: number[], long: number, short: number) => {
-    const pc = change(p);
-    const num = ema(ema(pc, long), short);
-    const den = ema(ema(pc.map((v) => Math.abs(v)), long), short);
-    return rsi(num.map((v, i) => 100 * (v / den[i])), short);
-  };
-  // Momentum RSI: rsi(p - p[len], len)
-  const momRsi = (p: number[], len: number) => rsi(p.map((v, i) => v - at(p, i, len)), len);
-  // DMI RSI (+DI): plusDM on the changes of p, plus = fixnan(100 * rma(plusDM, len) / rma(ta.tr, len)); rsi(plus, len)
-  const dmiPlusRsi = (p: number[], len: number) => {
-    const up = change(p);
-    const plusDM = up.map((u) => (isNaN(u) ? NaN : gt(u, -u) && gt(u, 0) ? u : 0));
-    const trur = A(ta.rma(S(tr), len));
-    const rmaPlus = A(ta.rma(S(plusDM), len));
-    const plus = fixnan(rmaPlus.map((v, i) => (100 * v) / trur[i]));
-    return rsi(plus, len);
-  };
-
-  // Set 1
-  const rsiValue = rsi(src(cfg.src), cfg.len);
-  const rsiPlusDynamic = dynamic(close, cfg.rsiLength);
-  const rsi2Advanced = wilder(close, cfg.rsiLength2);
-  const RSITSI = tsiRsi(close, cfg.long, cfg.short);
-  const rsimom = momRsi(src(cfg.src2), cfg.len4);
-  const rsiPpo = rsi(close, cfg.lengthRsi);
-  // Set 2
-  const rsiValue1 = rsi(src(cfg.src_1), cfg.len3_1);
-  const rsiPlusDynamic2 = dynamic(hlcc4, cfg.rsiLength_2);
-  const rsiPlus1 = dmiPlusRsi(hlcc4, cfg.len_3);
-  const rsi2Advanced2 = wilder(hlcc4, cfg.rsiLength2_2);
-  const RSITSI3 = tsiRsi(hlcc4, cfg.long_3, cfg.short_3);
-  const rsimom4 = momRsi(src(cfg.src4_4), cfg.len4_4);
-  const rsiPpo5 = rsi(hlcc4, cfg.lengthRsi_5);
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const bgColors: BgColorData[] = [];
-  const osFlags: boolean[] = [], obFlags: boolean[] = [];
-  const lineColor = 'rgb(246, 249, 252)';
-  for (let i = 0; i < n; i++) {
-    const RSI1 = (rsiPlusDynamic[i] + rsi2Advanced[i] + rsimom[i] + rsiPpo[i] + RSITSI[i] + rsiValue[i]) / 6;
-    const RSI2 = (rsiValue1[i] + rsiPlusDynamic2[i] + rsimom4[i] + rsiPpo5[i] + RSITSI3[i] + rsi2Advanced2[i] + rsiPlus1[i]) / 7;
-    const RSI = (RSI1 + RSI2) / 2;
-    const rsiDiff = Math.abs(RSI - RSITSI[i]);
-    const overboughtLevel = max(cfg.ob - rsiDiff * (CC - CORRELATION_THRESHOLD), 0);
-    const oversoldLevel = min(cfg.os + rsiDiff * (CC - CORRELATION_THRESHOLD), 100);
-    const overboughtZone = gt(RSI, overboughtLevel);
-    const oversoldZone = lt(RSI, oversoldLevel);
-    obFlags.push(overboughtZone);
-    osFlags.push(oversoldZone);
-    // bgcolor(overboughtZone ? #ff000080 : oversoldZone ? #00ff0880 : na)
-    if (overboughtZone) bgColors.push({ time: bars[i].time, color: '#ff000080' });
-    else if (oversoldZone) bgColors.push({ time: bars[i].time, color: '#00ff0880' });
-    plot0.push({ time: bars[i].time, value: Number.isFinite(RSI) ? RSI : NaN, color: lineColor });
-  }
-
+/** Dynamic RSI: priceDiff = p[1] - p; priceDiff > 0 ? rsi((high + p) / 2) : rsi((low + p) / 2) */
+function dynamicRsi(p: Price, len: number) {
+  const rHigh = taStep.rsi(len);
+  const rLow = taStep.rsi(len);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    hlines: [
-      { value: cfg.ob, options: { title: 'Overbought', color: '#6a00ff', linestyle: 'dashed' } },
-      { value: cfg.os, options: { title: 'Oversold', color: '#6a00ff', linestyle: 'dashed' } },
-    ],
-    bgColors,
-    // alertcondition(oversoldZone, 'RSI Oversold') / alertcondition(overboughtZone, 'RSI Overbought')
-    alerts: alertStates(alertConditions, bars, [osFlags, obFlags]),
+    steps: [rHigh, rLow],
+    step(bars: Bar[], i: number): number {
+      const b = bars[i];
+      const v = p(b);
+      const h = rHigh.step((b.high + v) / 2);
+      const l = rLow.step((b.low + v) / 2);
+      return gt((i >= 1 ? p(bars[i - 1]) : NaN) - v, 0) ? h : l;
+    },
   };
+}
+
+/** Wilder's RSI: EMA of the gains / losses, 100 - 100 / (1 + avgGains / avgLosses) (plain division) */
+function wilderRsi(p: Price, len: number) {
+  const gains: Ema = taStep.ema(len);
+  const losses: Ema = taStep.ema(len);
+  return {
+    steps: [gains, losses],
+    step(bars: Bar[], i: number): number {
+      const d = p(bars[i]) - (i >= 1 ? p(bars[i - 1]) : NaN);
+      const g = gains.step(max(d, 0));
+      return 100 - 100 / (1 + g / losses.step(Math.abs(min(d, 0))));
+    },
+  };
+}
+
+/** TSI RSI: tsi = 100 * ema(ema(pc, long), short) / ema(ema(|pc|, long), short); rsi(tsi, short) */
+function tsiRsi(p: Price, long: number, short: number) {
+  const num1 = taStep.ema(long);
+  const num2 = taStep.ema(short);
+  const den1 = taStep.ema(long);
+  const den2 = taStep.ema(short);
+  const rsi: Rsi = taStep.rsi(short);
+  return {
+    steps: [num1, num2, den1, den2, rsi],
+    step(bars: Bar[], i: number): number {
+      const pc = p(bars[i]) - (i >= 1 ? p(bars[i - 1]) : NaN);
+      const num = num2.step(num1.step(pc));
+      const den = den2.step(den1.step(Math.abs(pc)));
+      return rsi.step(100 * (num / den));
+    },
+  };
+}
+
+/** Momentum RSI: rsi(p - p[len], len) */
+function momRsi(p: Price, len: number) {
+  const rsi: Rsi = taStep.rsi(len);
+  return {
+    steps: [rsi],
+    step(bars: Bar[], i: number): number {
+      return rsi.step(p(bars[i]) - (i - len >= 0 ? p(bars[i - len]) : NaN));
+    },
+  };
+}
+
+/** One RSI of a price */
+function plainRsi(p: Price, len: number) {
+  const rsi: Rsi = taStep.rsi(len);
+  return { steps: [rsi], step: (bars: Bar[], i: number): number => rsi.step(p(bars[i])) };
+}
+
+interface PerfectRsiVars {
+  /** fixnan of the +DI of set 2: the last value that was not na */
+  lastPlus: number;
+}
+
+interface PerfectRsiRun extends BarRunState<PerfectRsiVars> {
+  tr: ReturnType<typeof taStep.tr>;
+  trur: ReturnType<typeof taStep.rma>;
+  rmaPlus: ReturnType<typeof taStep.rma>;
+  plusRsi: Rsi;
+  plot0: { time: number; value: number; color: string }[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<PerfectRsiInputs>): BarStudy<PerfectRsiRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const lineColor = 'rgb(246, 249, 252)';
+  let set1: Variant[] = [];
+  let set2: Variant[] = [];
+  return {
+    fullRunReason: () =>
+      ([cfg.src, cfg.src2, cfg.src_1, cfg.src4_4].every(isBarSource) ? null : 'source of another study'),
+    init() {
+      // Set 1: rsiValue, rsiPlusDynamic, rsi2Advanced, RSITSI, rsimom, rsiPpo
+      set1 = [
+        plainRsi(barSource(cfg.src), cfg.len),
+        dynamicRsi(closeOf, cfg.rsiLength),
+        wilderRsi(closeOf, cfg.rsiLength2),
+        tsiRsi(closeOf, cfg.long, cfg.short),
+        momRsi(barSource(cfg.src2), cfg.len4),
+        plainRsi(closeOf, cfg.lengthRsi),
+      ];
+      // Set 2: rsiValue1, rsiPlusDynamic2, rsi2Advanced2, RSITSI3, rsimom4, rsiPpo5 (rsiPlus1: below)
+      set2 = [
+        plainRsi(barSource(cfg.src_1), cfg.len3_1),
+        dynamicRsi(hlcc4Of, cfg.rsiLength_2),
+        wilderRsi(hlcc4Of, cfg.rsiLength2_2),
+        tsiRsi(hlcc4Of, cfg.long_3, cfg.short_3),
+        momRsi(barSource(cfg.src4_4), cfg.len4_4),
+        plainRsi(hlcc4Of, cfg.lengthRsi_5),
+      ];
+      const s: PerfectRsiRun = {
+        tr: taStep.tr(false), trur: taStep.rma(cfg.len_3), rmaPlus: taStep.rma(cfg.len_3), plusRsi: taStep.rsi(cfg.len_3),
+        plot0: [], bgColors: [], flags: [[], []], times: [[], []],
+        steps: [], vars: { lastPlus: NaN }, lists: [], series: [],
+      };
+      s.steps = [...set1.flatMap((x) => x.steps), ...set2.flatMap((x) => x.steps), s.tr, s.trur, s.rmaPlus, s.plusRsi];
+      s.lists = [s.bgColors, ...s.times];
+      s.series = [s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const tr = s.tr.step(b.high, b.low, b.close);
+      const [rsiValue, rsiPlusDynamic, rsi2Advanced, RSITSI, rsimom, rsiPpo] = set1.map((x) => x.step(bars, i));
+      const [rsiValue1, rsiPlusDynamic2, rsi2Advanced2, RSITSI3, rsimom4, rsiPpo5] = set2.map((x) => x.step(bars, i));
+      // DMI RSI (+DI): plusDM on the changes of p, plus = fixnan(100 * rma(plusDM, len) / rma(ta.tr, len)); rsi(plus, len)
+      const u = hlcc4Of(b) - (i >= 1 ? hlcc4Of(bars[i - 1]) : NaN);
+      const plusDM = isNaN(u) ? NaN : gt(u, -u) && gt(u, 0) ? u : 0;
+      const trur = s.trur.step(tr);
+      const pv = (100 * s.rmaPlus.step(plusDM)) / trur;
+      if (!Number.isNaN(pv)) s.vars.lastPlus = pv;
+      const rsiPlus1 = s.plusRsi.step(Number.isNaN(pv) ? s.vars.lastPlus : pv);
+
+      const RSI1 = (rsiPlusDynamic + rsi2Advanced + rsimom + rsiPpo + RSITSI + rsiValue) / 6;
+      const RSI2 = (rsiValue1 + rsiPlusDynamic2 + rsimom4 + rsiPpo5 + RSITSI3 + rsi2Advanced2 + rsiPlus1) / 7;
+      const RSI = (RSI1 + RSI2) / 2;
+      const rsiDiff = Math.abs(RSI - RSITSI);
+      const overboughtLevel = max(cfg.ob - rsiDiff * (CC - CORRELATION_THRESHOLD), 0);
+      const oversoldLevel = min(cfg.os + rsiDiff * (CC - CORRELATION_THRESHOLD), 100);
+      const overboughtZone = gt(RSI, overboughtLevel);
+      const oversoldZone = lt(RSI, oversoldLevel);
+      s.flags[0][i] = oversoldZone;
+      s.flags[1][i] = overboughtZone;
+      if (oversoldZone) s.times[0].push(b.time as number);
+      if (overboughtZone) s.times[1].push(b.time as number);
+      // bgcolor(overboughtZone ? #ff000080 : oversoldZone ? #00ff0880 : na)
+      if (overboughtZone) s.bgColors.push({ time: b.time, color: '#ff000080' });
+      else if (oversoldZone) s.bgColors.push({ time: b.time, color: '#00ff0880' });
+      s.plot0[i] = { time: b.time, value: Number.isFinite(RSI) ? RSI : NaN, color: lineColor };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [
+          { value: cfg.ob, options: { title: 'Overbought', color: '#6a00ff', linestyle: 'dashed' } },
+          { value: cfg.os, options: { title: 'Oversold', color: '#6a00ff', linestyle: 'dashed' } },
+        ],
+        bgColors: s.bgColors.slice(),
+        // alertcondition(oversoldZone, 'RSI Oversold') / alertcondition(overboughtZone, 'RSI Overbought')
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PerfectRsiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PerfectRsiInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -279,6 +363,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const PerfectRsi = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

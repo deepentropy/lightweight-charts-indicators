@@ -16,9 +16,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DirectionalLogisticOscillatorInputs {
   /** DMI DI length (also the ADX smoothing) */
@@ -91,137 +93,285 @@ const gt = (a: number, b: number) => a - b > 1e-10;
 /** Pine a < b */
 const lt = (a: number, b: number) => b - a > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DirectionalLogisticOscillatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
-  & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
+  & { alerts: AlertConditionState[] };
+
+/**
+ * `ta.percentile_nearest_rank(source, length, percentage)` one bar at a time: the sorted window of the oakscriptjs
+ * function (values inserted before the first value >= them, the value of `length` bars back removed), its value at
+ * rank `ceil(percentage / 100 * length)`. A new step on the same bar first undoes the step not committed.
+ */
+class PercentileNearestRankStep {
+  private readonly values: number[] = [];
+  private readonly bars: number[] = [];
+  private readonly rank: number;
+  /** The step not committed: where it inserted, where it removed (-1: none) and what */
+  private pending: { k: number; old: number; value: number; bar: number } | null = null;
+
+  constructor(private readonly length: number, percentage: number) {
+    this.rank = Math.min(length, Math.max(1, Math.ceil((percentage / 100) * length)));
+  }
+
+  step(i: number, v: number): number {
+    const { values, bars, length } = this;
+    const p = this.pending;
+    if (p) {
+      if (p.old >= 0) {
+        values.splice(p.old, 0, p.value);
+        bars.splice(p.old, 0, p.bar);
+      }
+      values.splice(p.k, 1);
+      bars.splice(p.k, 1);
+    }
+    let k = 0;
+    while (k < values.length && !(values[k]! >= v)) k++;
+    values.splice(k, 0, v);
+    bars.splice(k, 0, i);
+    let old = -1;
+    let value = NaN;
+    let bar = -1;
+    if (i >= length) {
+      old = bars.indexOf(i - length);
+      value = values[old]!;
+      bar = bars[old]!;
+      values.splice(old, 1);
+      bars.splice(old, 1);
+    }
+    this.pending = { k, old, value, bar };
+    return i < length - 1 ? NaN : values[this.rank - 1]!;
+  }
+
+  commit(): void {
+    this.pending = null;
+  }
+}
+
+/**
+ * logistic_prob(series): mean = ta.sma(series, mean_lb); z = (series - mean) * slope;
+ * prob_raw = 1.0 / (1.0 + math.exp(-z)); ta.ema(prob_raw, smooth_len)
+ */
+class LogisticProb {
+  readonly mean = taStep.sma();
+  readonly ema: ReturnType<typeof taStep.ema>;
+
+  constructor(private readonly meanLookback: number, private readonly slope: number, smoothLength: number) {
+    this.ema = taStep.ema(smoothLength);
+  }
+
+  step(v: number): number {
+    const mean = this.mean.step(v, this.meanLookback) ?? NaN;
+    const probRaw = 1.0 / (1.0 + Math.exp(-((v - mean) * this.slope)));
+    return this.ema.step(probRaw) ?? NaN;
+  }
+
+  commit(): void {
+    this.mean.commit();
+    this.ema.commit();
+  }
+}
+
+interface DloRun extends BarRunState<Record<string, never>> {
+  dmi: ReturnType<typeof taStep.dmi>;
+  probPlus: LogisticProb;
+  probMinus: LogisticProb;
+  probAdx: LogisticProb;
+  strengthEma: ReturnType<typeof taStep.ema>;
+  sSmaStep: ReturnType<typeof taStep.sma>;
+  sEmaStep: ReturnType<typeof taStep.ema>;
+  cycleEma: ReturnType<typeof taStep.ema>;
+  pLowerSma: PercentileNearestRankStep;
+  pUpperSma: PercentileNearestRankStep;
+  pLowerEma: PercentileNearestRankStep;
+  pUpperEma: PercentileNearestRankStep;
+  strength: number[];
+  sSma: number[];
+  sEma: number[];
+  sSmaCycle: number[];
+  lowerSma: number[];
+  upperSma: number[];
+  lowerEma: number[];
+  upperEma: number[];
+  mrBuy: boolean[];
+  mrSell: boolean[];
+  revUp: boolean[];
+  revDn: boolean[];
+  strengthPlot: { time: number; value: number; color: string }[];
+  maPlot: { time: number; value: number }[];
+  barColors: BarColorData[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<DirectionalLogisticOscillatorInputs>): BarStudy<DloRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const upStrong = cfg.buyColor;
   const dnStrong = cfg.sellColor;
+  const upWeak = String(color.new(upStrong, 70));
+  const dnWeak = String(color.new(dnStrong, 70));
+  const upBg = String(color.new(upStrong, 95));
+  const dnBg = String(color.new(dnStrong, 95));
 
   // tanh(x) of the script: e2x = math.exp(2 * x); (e2x - 1) / (e2x + 1)
   const tanh = (x: number) => {
     const e2x = Math.exp(2 * x);
     return (e2x - 1) / (e2x + 1);
   };
-  // logistic_prob(series): mean = ta.sma(series, mean_lb); z = (series - mean) * slope;
-  // prob_raw = 1.0 / (1.0 + math.exp(-z)); ta.ema(prob_raw, smooth_len)
-  const logisticProb = (series: number[]) => {
-    const mean = A(ta.sma(S(series), cfg.meanLookback));
-    const probRaw = series.map((v, k) => 1.0 / (1.0 + Math.exp(-((v - mean[k]) * cfg.slope))));
-    return A(ta.ema(S(probRaw), cfg.smoothLength));
-  };
-
-  // [plus_di, minus_di, adx] = ta.dmi(di_len, di_len)
-  const [plusS, minusS, adxS] = ta.dmi(bars, cfg.diLength, cfg.diLength);
-  const probPlus = logisticProb(A(plusS));
-  const probMinus = logisticProb(A(minusS));
-  const probAdx = logisticProb(A(adxS));
-
-  // strength = ta.ema(tanh((prob_plus - prob_minus) * prob_adx * osc_scale), smooth_len)
-  const bounded = probPlus.map((p, k) => tanh((p - probMinus[k]) * probAdx[k] * cfg.oscScale));
-  const strength = A(ta.ema(S(bounded), cfg.smoothLength));
-
-  // s_sma = ta.sma(strength, osc_smooth_len); s_ema = ta.ema(...); s_sma_cycle = ta.ema(s_sma, math.ceil(len / 2))
-  const sSma = A(ta.sma(S(strength), cfg.oscSmoothLength));
-  const sEma = A(ta.ema(S(strength), cfg.oscSmoothLength));
-  const sSmaCycle = A(ta.ema(S(sSma), Math.ceil(cfg.oscSmoothLength / 2)));
-
-  // percentile thresholds over mean_lb bars
-  const lowerSma = A(ta.percentile_nearest_rank(S(sSma), cfg.meanLookback, 10));
-  const upperSma = A(ta.percentile_nearest_rank(S(sSma), cfg.meanLookback, 90));
-  const lowerEma = A(ta.percentile_nearest_rank(S(sEma), cfg.meanLookback, 5));
-  const upperEma = A(ta.percentile_nearest_rank(S(sEma), cfg.meanLookback, 95));
-
   // ta.crossover(a, b): a > b and a[1] <= b[1]; ta.crossunder(a, b): a < b and a[1] >= b[1]
   // (exact comparisons: ta.crossover / ta.crossunder do not use the 1e-10 tolerance of the operators)
   const crossover = (a: number[], b: number[], k: number) =>
     k > 0 && a[k] > b[k] && !isNaN(a[k - 1]) && !isNaN(b[k - 1]) && !(a[k - 1] > b[k - 1]);
   const crossunder = (a: number[], b: number[], k: number) =>
     k > 0 && a[k] < b[k] && !isNaN(a[k - 1]) && !isNaN(b[k - 1]) && !(a[k - 1] < b[k - 1]);
-  const cyc = (k: number) => (k >= 0 ? sSmaCycle[k] : NaN);
-
-  const mrBuy: boolean[] = new Array(n);
-  const mrSell: boolean[] = new Array(n);
-  const revUp: boolean[] = new Array(n);
-  const revDn: boolean[] = new Array(n);
-  for (let k = 0; k < n; k++) {
-    mrBuy[k] = crossover(sSma, lowerSma, k) || crossover(sEma, lowerEma, k);
-    mrSell[k] = crossunder(sSma, upperSma, k) || crossunder(sEma, upperEma, k);
-    // rev_up_c = s_sma_cycle > s_sma_cycle[1] and not (s_sma_cycle[1] > s_sma_cycle[2])
-    revUp[k] = gt(cyc(k), cyc(k - 1)) && !gt(cyc(k - 1), cyc(k - 2));
-    revDn[k] = lt(cyc(k), cyc(k - 1)) && !lt(cyc(k - 1), cyc(k - 2));
-  }
-
-  const upWeak = String(color.new(upStrong, 70));
-  const dnWeak = String(color.new(dnStrong, 70));
   // i = intrabar ? 0 : 1: every output reads its series i bars back (na / false before the first bar)
   const off = cfg.intrabar ? 0 : 1;
   const num = (a: number[], k: number) => (k - off >= 0 ? a[k - off] : NaN);
   const flag = (a: boolean[], k: number) => k - off >= 0 && a[k - off];
 
-  const strengthPlot: { time: number; value: number; color: string }[] = [];
-  const maPlot: { time: number; value: number }[] = [];
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let k = 0; k < n; k++) {
-    const t = bars[k].time;
-    const s = num(strength, k);
-    const e = num(sEma, k);
-    // strength_col = strength[i] > 0 ? (strength[i] > s_ema[i] ? up_strong : up_weak)
-    //                                : (strength[i] < s_ema[i] ? dn_strong : dn_weak)   (na: dn_weak)
-    const col = gt(s, 0) ? (gt(s, e) ? upStrong : upWeak) : lt(s, e) ? dnStrong : dnWeak;
-    strengthPlot.push({ time: t, value: s, color: col });
-    // plot(plot_ma ? s_sma[i] : na, "Osc MA")
-    maPlot.push({ time: t, value: cfg.plotMA ? num(sSma, k) : NaN });
-
-    // plotchar(..., location.belowbar / abovebar, size = size.tiny, force_overlay = true)
-    if (cfg.plotMeanReversion && flag(mrBuy, k)) {
-      markers.push({ time: t, position: 'belowBar', shape: 'circle', color: 'transparent', text: '▲',
-        textColor: upStrong, size: 'tiny', forceOverlay: true });
-    }
-    if (cfg.plotMeanReversion && flag(mrSell, k)) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: 'transparent', text: '▼',
-        textColor: dnStrong, size: 'tiny', forceOverlay: true });
-    }
-    if (cfg.plotReversion && flag(revUp, k)) {
-      markers.push({ time: t, position: 'belowBar', shape: 'circle', color: 'transparent', text: '⬆',
-        textColor: upStrong, size: 'tiny', forceOverlay: true });
-    }
-    if (cfg.plotReversion && flag(revDn, k)) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: 'transparent', text: '⬇',
-        textColor: dnStrong, size: 'tiny', forceOverlay: true });
-    }
-
-    // bgcolor(strength[i] > 0.5 and s_ema[i] > 0.5 ? color.new(up, 95) : strength[i] < -0.5 and s_ema[i] < -0.5 ? ...)
-    if (gt(s, 0.5) && gt(e, 0.5)) bgColors.push({ time: t, color: String(color.new(upStrong, 95)) });
-    else if (lt(s, -0.5) && lt(e, -0.5)) bgColors.push({ time: t, color: String(color.new(dnStrong, 95)) });
-    // barcolor(strength_col)
-    barColors.push({ time: t, color: col });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: strengthPlot, plot1: maPlot },
-    hlines: [
-      { value: 0, options: { title: 'Zero', color: color.gray, linestyle: 'dashed' } },
-      { value: 0.5, options: { title: 'Strong +', color: upWeak, linestyle: 'dotted' } },
-      { value: -0.5, options: { title: 'Strong -', color: dnWeak, linestyle: 'dotted' } },
-    ],
-    markers,
-    barColors,
-    bgColors,
-    // alertcondition(rev_up_c) / (rev_dn_c) / (bc1 or bc2) / (sc1 or sc2) / (ta.crossover(strength, 0)) /
-    // (ta.crossunder(strength, 0))
-    alerts: alertStates(alertConditions, bars, [
-      revUp, revDn, mrBuy, mrSell, crossedOver(strength, 0), crossedUnder(strength, 0),
-    ]),
+    init() {
+      // [plus_di, minus_di, adx] = ta.dmi(di_len, di_len)
+      const dmi = taStep.dmi(cfg.diLength, cfg.diLength);
+      const probPlus = new LogisticProb(cfg.meanLookback, cfg.slope, cfg.smoothLength);
+      const probMinus = new LogisticProb(cfg.meanLookback, cfg.slope, cfg.smoothLength);
+      const probAdx = new LogisticProb(cfg.meanLookback, cfg.slope, cfg.smoothLength);
+      const strengthEma = taStep.ema(cfg.smoothLength);
+      const sSmaStep = taStep.sma();
+      const sEmaStep = taStep.ema(cfg.oscSmoothLength);
+      const cycleEma = taStep.ema(Math.ceil(cfg.oscSmoothLength / 2));
+      // percentile thresholds over mean_lb bars
+      const pLowerSma = new PercentileNearestRankStep(cfg.meanLookback, 10);
+      const pUpperSma = new PercentileNearestRankStep(cfg.meanLookback, 90);
+      const pLowerEma = new PercentileNearestRankStep(cfg.meanLookback, 5);
+      const pUpperEma = new PercentileNearestRankStep(cfg.meanLookback, 95);
+      const s: DloRun = {
+        dmi, probPlus, probMinus, probAdx, strengthEma, sSmaStep, sEmaStep, cycleEma, pLowerSma, pUpperSma, pLowerEma,
+        pUpperEma, strength: [], sSma: [], sEma: [], sSmaCycle: [], lowerSma: [], upperSma: [], lowerEma: [],
+        upperEma: [], mrBuy: [], mrSell: [], revUp: [], revDn: [], strengthPlot: [], maPlot: [], barColors: [],
+        markers: [], bgColors: [], flags: Array.from({ length: 6 }, () => []), times: Array.from({ length: 6 }, () => []),
+        steps: [
+          dmi, probPlus, probMinus, probAdx, strengthEma, sSmaStep, sEmaStep, cycleEma, pLowerSma, pUpperSma, pLowerEma,
+          pUpperEma,
+        ],
+        vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [
+        s.strength, s.sSma, s.sEma, s.sSmaCycle, s.lowerSma, s.upperSma, s.lowerEma, s.upperEma, s.mrBuy, s.mrSell,
+        s.revUp, s.revDn, s.strengthPlot, s.maPlot, s.barColors, ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, k, bars) {
+      const b = bars[k];
+      const t = b.time;
+      const [plusDi, minusDi, adx] = s.dmi.step(b.high, b.low, b.close);
+      const probPlus = s.probPlus.step(plusDi ?? NaN);
+      const probMinus = s.probMinus.step(minusDi ?? NaN);
+      const probAdx = s.probAdx.step(adx ?? NaN);
+
+      // strength = ta.ema(tanh((prob_plus - prob_minus) * prob_adx * osc_scale), smooth_len)
+      const bounded = tanh((probPlus - probMinus) * probAdx * cfg.oscScale);
+      const strengthK = s.strengthEma.step(bounded) ?? NaN;
+      s.strength[k] = strengthK;
+
+      // s_sma = ta.sma(strength, osc_smooth_len); s_ema = ta.ema(...); s_sma_cycle = ta.ema(s_sma, math.ceil(len / 2))
+      const sSmaK = s.sSmaStep.step(strengthK, cfg.oscSmoothLength) ?? NaN;
+      const sEmaK = s.sEmaStep.step(strengthK) ?? NaN;
+      s.sSma[k] = sSmaK;
+      s.sEma[k] = sEmaK;
+      s.sSmaCycle[k] = s.cycleEma.step(sSmaK) ?? NaN;
+
+      // percentile thresholds over mean_lb bars
+      s.lowerSma[k] = s.pLowerSma.step(k, sSmaK) ?? NaN;
+      s.upperSma[k] = s.pUpperSma.step(k, sSmaK) ?? NaN;
+      s.lowerEma[k] = s.pLowerEma.step(k, sEmaK) ?? NaN;
+      s.upperEma[k] = s.pUpperEma.step(k, sEmaK) ?? NaN;
+
+      const cyc = (j: number) => (j >= 0 ? s.sSmaCycle[j] : NaN);
+      s.mrBuy[k] = crossover(s.sSma, s.lowerSma, k) || crossover(s.sEma, s.lowerEma, k);
+      s.mrSell[k] = crossunder(s.sSma, s.upperSma, k) || crossunder(s.sEma, s.upperEma, k);
+      // rev_up_c = s_sma_cycle > s_sma_cycle[1] and not (s_sma_cycle[1] > s_sma_cycle[2])
+      s.revUp[k] = gt(cyc(k), cyc(k - 1)) && !gt(cyc(k - 1), cyc(k - 2));
+      s.revDn[k] = lt(cyc(k), cyc(k - 1)) && !lt(cyc(k - 1), cyc(k - 2));
+
+      const sv = num(s.strength, k);
+      const e = num(s.sEma, k);
+      // strength_col = strength[i] > 0 ? (strength[i] > s_ema[i] ? up_strong : up_weak)
+      //                                : (strength[i] < s_ema[i] ? dn_strong : dn_weak)   (na: dn_weak)
+      const col = gt(sv, 0) ? (gt(sv, e) ? upStrong : upWeak) : lt(sv, e) ? dnStrong : dnWeak;
+      s.strengthPlot[k] = { time: t, value: sv, color: col };
+      // plot(plot_ma ? s_sma[i] : na, "Osc MA")
+      s.maPlot[k] = { time: t, value: cfg.plotMA ? num(s.sSma, k) : NaN };
+
+      // plotchar(..., location.belowbar / abovebar, size = size.tiny, force_overlay = true)
+      const markers = s.markers;
+      if (cfg.plotMeanReversion && flag(s.mrBuy, k)) {
+        markers.push({ time: t, position: 'belowBar', shape: 'circle', color: 'transparent', text: '▲',
+          textColor: upStrong, size: 'tiny', forceOverlay: true });
+      }
+      if (cfg.plotMeanReversion && flag(s.mrSell, k)) {
+        markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: 'transparent', text: '▼',
+          textColor: dnStrong, size: 'tiny', forceOverlay: true });
+      }
+      if (cfg.plotReversion && flag(s.revUp, k)) {
+        markers.push({ time: t, position: 'belowBar', shape: 'circle', color: 'transparent', text: '⬆',
+          textColor: upStrong, size: 'tiny', forceOverlay: true });
+      }
+      if (cfg.plotReversion && flag(s.revDn, k)) {
+        markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: 'transparent', text: '⬇',
+          textColor: dnStrong, size: 'tiny', forceOverlay: true });
+      }
+
+      // bgcolor(strength[i] > 0.5 and s_ema[i] > 0.5 ? color.new(up, 95) : strength[i] < -0.5 and s_ema[i] < -0.5 ? ...)
+      if (gt(sv, 0.5) && gt(e, 0.5)) s.bgColors.push({ time: t, color: upBg });
+      else if (lt(sv, -0.5) && lt(e, -0.5)) s.bgColors.push({ time: t, color: dnBg });
+      // barcolor(strength_col)
+      s.barColors[k] = { time: t, color: col };
+
+      // alertcondition(rev_up_c) / (rev_dn_c) / (bc1 or bc2) / (sc1 or sc2) / (ta.crossover(strength, 0)) /
+      // (ta.crossunder(strength, 0))
+      const prevStrength = k > 0 ? s.strength[k - 1] : NaN;
+      const flags = [
+        s.revUp[k], s.revDn[k], s.mrBuy[k], s.mrSell[k], strengthK > 0 && prevStrength <= 0,
+        strengthK < 0 && prevStrength >= 0,
+      ];
+      for (let j = 0; j < 6; j++) {
+        s.flags[j][k] = flags[j];
+        if (flags[j]) s.times[j].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.strengthPlot.slice(), plot1: s.maPlot.slice() },
+        hlines: [
+          { value: 0, options: { title: 'Zero', color: color.gray, linestyle: 'dashed' } },
+          { value: 0.5, options: { title: 'Strong +', color: upWeak, linestyle: 'dotted' } },
+          { value: -0.5, options: { title: 'Strong -', color: dnWeak, linestyle: 'dotted' } },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DirectionalLogisticOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<DirectionalLogisticOscillatorInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
+  & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -236,6 +386,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const DirectionalLogisticOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

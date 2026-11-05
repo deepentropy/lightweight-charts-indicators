@@ -21,9 +21,11 @@
  * Original notice: © Jonny86FXPro
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AiInfinityInputs {
   enableBarColor: boolean;
@@ -256,198 +258,251 @@ function gradient(start: string, midC: string, end: string): string[] {
   return out;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AiInfinityInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const closeS = S(bars.map((b) => b.close));
-  const highS = S(bars.map((b) => b.high));
-  const lowS = S(bars.map((b) => b.low));
-  const t = (i: number) => bars[i].time;
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { barColors: BarColorData[] } & { alerts: AlertConditionState[] };
 
-  // Section 1: candle colouring
-  const [macdS, signalS] = ta.macd(closeS, 12, 26, 9);
-  const macdLine = A(macdS);
-  const signalLine = A(signalS);
-  const k = A(ta.sma(ta.stoch(closeS, highS, lowS, 14), 3));
-  const dd = A(ta.sma(S(k), 3));
+interface AiInfinityVars {
+  /** var smmaVal of the jaw, teeth and lips calls */
+  smma: number[];
+}
+
+interface AiInfinityRun extends BarRunState<AiInfinityVars> {
+  macd: ReturnType<typeof taStep.macd>;
+  stoch: ReturnType<typeof taStep.stoch>;
+  kSma: ReturnType<typeof taStep.sma>;
+  dSma: ReturnType<typeof taStep.sma>;
+  vol: ReturnType<typeof taStep.stdev>;
+  highest: ReturnType<typeof taStep.highest>;
+  lowest: ReturnType<typeof taStep.lowest>;
+  atr: ReturnType<typeof taStep.atr>;
+  ema2050: ReturnType<typeof taStep.ema> | null;
+  ema100: ReturnType<typeof taStep.ema> | null;
+  ema200: ReturnType<typeof taStep.ema> | null;
+  rsi: ReturnType<typeof taStep.rsi>;
+  macdLine: number[];
+  signalLine: number[];
+  rsiArr: number[];
+  hl2: number[];
+  /** smma(hl2, len) of the jaw, teeth and lips */
+  smmaS: number[][];
+  plots: Point[][];
+  fillCols: string[][];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AiInfinityInputs>): BarStudy<AiInfinityRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const bullGrad = gradient(cfg.bullColorStart, cfg.bullColorMid, cfg.bullColorEnd);
   const bearGrad = gradient(cfg.bearColorStart, cfg.bearColorMid, cfg.bearColorEnd);
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const macdStrength = Math.abs(macdLine[i] - signalLine[i]) / Math.max(Math.abs(signalLine[i]), 1e-10);
-    const isMacdPositive = gt(macdLine[i], signalLine[i]);
-    const ob = gt(k[i], 80) && gt(dd[i], 80);
-    const os = lt(k[i], 20) && lt(dd[i], 20);
-    const bodyChange = Math.abs(b.close - b.open) / Math.max(b.high - b.low, 1e-10);
-    const baseTransparency2 = 20 - bodyChange * (20 - 5);
-    const finalTransparency = Math.min(baseTransparency2 + (ob || os ? 10 : 0), 100);
-    // index = math.min(math.floor(macdStrength * 150), 149); array.get(..., na) is na
-    const index = Math.min(Math.floor(macdStrength * 150), 150 - 1);
-    const smoothBull = isNaN(index) ? NA_COLOR : bullGrad[index];
-    const smoothBear = isNaN(index) ? NA_COLOR : bearGrad[index];
-    const gradientMode = cfg.colorMode === 'Gradient';
-    const bull = gradientMode ? smoothBull : cfg.bullColorSimple;
-    const bear = gradientMode ? smoothBear : cfg.bearColorSimple;
-    const fixed = gradientMode ? 20 : 15;
-    let finalColor: string;
-    if (isMacdPositive && !ob) finalColor = String(color.new(bull, finalTransparency));
-    else if (isMacdPositive && ob) finalColor = String(color.new(bull, fixed));
-    else if (!isMacdPositive && !os) finalColor = String(color.new(bear, finalTransparency));
-    else finalColor = String(color.new(bear, fixed));
-    if (cfg.enableBarColor) barColors.push({ time: b.time, color: finalColor });
-  }
-
-  // Section 2: Alligator lines
-  const rawVolatility = A(ta.stdev(closeS, 20));
-  const hl2 = bars.map((b) => (b.high + b.low) / 2);
+  const dt = cfg.glowMode === 'Dynamic Transparency';
+  // EMAs (ta.ema only runs when enabled: the enable inputs are constant)
+  const emaLen = cfg.chooseEmaLength === '20' ? 20 : 50;
+  const line60Color = String(color.new(cfg.colorLine60, cfg.transparency60));
+  const line40Color = String(color.new(cfg.colorLine40, cfg.transparency40));
   // smma(src, length): var smmaVal; ta.sma(src, length) with a series length. The call is in the true branch of
   // `has_enough_data ? smma(hl2, len)[8] : na` but Pine runs it on every bar (the Alligator values exist
   // from bar 21, i.e. smma values of bar 13 / 16 / 18): on bars 0..20 its length is the constant 13 / 8 / 5.
-  const smma = (base: number, lenOf: (vf: number) => number): number[] => {
-    const out: number[] = new Array(n).fill(NaN);
-    let smmaVal = NaN;
-    for (let i = 0; i < n; i++) {
-      const hasEnoughData = i > 20;
-      const volatilityFactor = hasEnoughData ? (rawVolatility[i] / bars[i].close) * 100 : 0;
-      const length = hasEnoughData ? lenOf(volatilityFactor) : base;
-      let sma = NaN;
-      if (i - length + 1 >= 0) {
-        let sum = 0;
-        for (let j = 0; j < length; j++) sum += hl2[i - j];
-        sma = sum / length;
-      }
-      smmaVal = isNaN(smmaVal) ? sma : (smmaVal * (length - 1) + hl2[i]) / length;
-      out[i] = smmaVal;
-    }
-    return out;
-  };
-  const jawS = smma(13, (vf) => Math.max(Math.round(13 + vf), 1));
-  const teethS = smma(8, (vf) => Math.max(Math.round(8 + vf / 2), 1));
-  const lipsS = smma(5, (vf) => Math.max(Math.round(5 + vf / 3), 1));
-  // jaw = has_enough_data ? smma(...)[8] : na
-  const back = (s: number[], i: number, k2: number) => (i > 20 && i - k2 >= 0 ? s[i - k2] : NaN);
-
-  // Section 3: RSI lines on the 100-bar price range
-  const highestPrice = A(ta.highest(highS, 100));
-  const lowestPrice = A(ta.lowest(lowS, 100));
-  const atrValue = A(ta.atr(bars, cfg.atrLength));
-  const dt = cfg.glowMode === 'Dynamic Transparency';
-
-  // EMAs (ta.ema only runs when enabled: the enable inputs are constant)
-  const emaLen = cfg.chooseEmaLength === '20' ? 20 : 50;
-  const nanArr = new Array(n).fill(NaN);
-  const ema2050 = cfg.enableEma2050 ? A(ta.ema(closeS, emaLen)) : nanArr;
-  const ema100 = cfg.enableEma100 ? A(ta.ema(closeS, 100)) : nanArr;
-  const ema200 = cfg.enableEma200 ? A(ta.ema(closeS, 200)) : nanArr;
-
-  type Point = { time: number; value: number; color?: string };
-  const plots: Record<string, Point[]> = {};
-  for (let p = 0; p <= 20; p++) plots[`plot${p}`] = [];
-  const fillCols: string[][] = [[], [], [], [], [], []];
-  const line60Color = String(color.new(cfg.colorLine60, cfg.transparency60));
-  const line40Color = String(color.new(cfg.colorLine40, cfg.transparency40));
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const close = b.close;
-    const hh = highestPrice[i];
-    const ll = lowestPrice[i];
-    const pos = (pct: number) => ll + (pct / 100.0) * (hh - ll);
-    const line100Pos = pos(100.0);
-    const line90Pos = pos(90.0);
-    const line50Pos = pos(50.0);
-    const line10Pos = pos(10.0);
-    const line0Pos = pos(0.0);
-    const line60Pos = pos(60.0);
-    const line40Pos = pos(40.0);
-    const isAbove50 = gt(close, line50Pos);
-    const line100Color = isAbove50 ? cfg.line100LongColor : cfg.line100ShortColor;
-    const line90Color = isAbove50 ? cfg.line90LongColor : cfg.line90ShortColor;
-    const line50Color = isAbove50 ? cfg.line50LongColor : cfg.line50ShortColor;
-    const line10Color = isAbove50 ? cfg.line10LongColor : cfg.line10ShortColor;
-    const line0Color = isAbove50 ? cfg.line0LongColor : cfg.line0ShortColor;
-    // getTransparency(linePos): a plain division by the range (x / 0 is +-infinity)
-    const getTransparency = (linePos: number) => {
-      const dist = Math.abs(close - linePos) / (hh - ll);
-      const baseTransparency = min(80, dist * 100);
-      return lt(dist, 0.05) ? baseTransparency / 2 : baseTransparency;
-    };
-
-    // Alligator
-    const has = i > 20;
-    const jaw = has ? back(jawS, i, 8) : NaN;
-    const teeth = has ? back(teethS, i, 5) : NaN;
-    const lips = has ? back(lipsS, i, 3) : NaN;
-    plots.plot0.push({ time: t(i), value: cfg.enableAllLines && cfg.enableJaw ? jaw : NaN, color: cfg.jawColor });
-    plots.plot1.push({ time: t(i), value: cfg.enableAllLines && cfg.enableTeeth ? teeth : NaN, color: cfg.teethColor });
-    plots.plot2.push({ time: t(i), value: cfg.enableAllLines && cfg.enableLips ? lips : NaN, color: cfg.lipsColor });
-
-    plots.plot3.push({ time: t(i), value: line100Pos, color: String(color.new(line100Color, getTransparency(line100Pos))) });
-    plots.plot4.push({ time: t(i), value: line90Pos, color: String(color.new(line90Color, getTransparency(line90Pos))) });
-    plots.plot5.push({ time: t(i), value: line50Pos, color: String(color.new(line50Color, getTransparency(line50Pos))) });
-    plots.plot6.push({ time: t(i), value: line10Pos, color: String(color.new(line10Color, getTransparency(line10Pos))) });
-    plots.plot7.push({ time: t(i), value: line0Pos, color: String(color.new(line0Color, getTransparency(line0Pos))) });
-    plots.plot8.push({ time: t(i), value: line60Pos, color: line60Color });
-    plots.plot9.push({ time: t(i), value: line40Pos, color: line40Color });
-
-    // Glow bands
-    const atr = atrValue[i];
-    // getDynamicTransparency(line, 75): distance = |close - line| / atr (a plain division)
-    const dynTransparency = (line: number) => {
-      const distance = Math.abs(close - line) / atr;
-      const distanceFact = clamp(1 - distance, 0, 1);
-      return clamp(75 + distanceFact * 20, 0, 100);
-    };
-    const up = dt ? [1.0, 0.8, 0.5] : [0.4, 0.8, 1.0];
-    const tr100 = dt ? dynTransparency(line100Pos) : 75;
-    const tr0 = dt ? dynTransparency(line0Pos) : 75;
-    const c100 = dt ? [line100Color, line100Color, line100Color] : [cfg.line100ColorDG, cfg.line100ColorMediumDG, cfg.line100ColorWeakDG];
-    const c0 = dt ? [line0Color, line0Color, line0Color] : [cfg.line0ColorDG, cfg.line0ColorMediumDG, cfg.line0ColorWeakDG];
-    for (let j = 0; j < 3; j++) {
-      plots[`plot${10 + j}`].push({ time: t(i), value: line100Pos + atr * up[j] });
-      plots[`plot${14 + j}`].push({ time: t(i), value: line0Pos - atr * up[j] });
-      fillCols[j].push(String(color.new(c100[j], tr100)));
-      fillCols[3 + j].push(String(color.new(c0[j], tr0)));
-    }
-    plots.plot13.push({ time: t(i), value: line100Pos, color: String(color.new(c100[0], tr100)) });
-    plots.plot17.push({ time: t(i), value: line0Pos, color: String(color.new(c0[0], tr0)) });
-
-    // EMAs: close > EMA ? up colour : down colour
-    plots.plot18.push({ time: t(i), value: ema2050[i], color: gt(close, ema2050[i]) ? cfg.ema2050UpColor : cfg.ema2050DownColor });
-    plots.plot19.push({ time: t(i), value: ema100[i], color: gt(close, ema100[i]) ? cfg.ema100UpColor : cfg.ema100DownColor });
-    plots.plot20.push({ time: t(i), value: ema200[i], color: gt(close, ema200[i]) ? cfg.ema200UpColor : cfg.ema200DownColor });
-  }
-
-  const fills = [
-    { plot1: 'plot13', plot2: 'plot10', colors: fillCols[0] },
-    { plot1: 'plot10', plot2: 'plot11', colors: fillCols[1] },
-    { plot1: 'plot11', plot2: 'plot12', colors: fillCols[2] },
-    { plot1: 'plot17', plot2: 'plot14', colors: fillCols[3] },
-    { plot1: 'plot14', plot2: 'plot15', colors: fillCols[4] },
-    { plot1: 'plot15', plot2: 'plot16', colors: fillCols[5] },
+  const smmaDefs: Array<[number, (vf: number) => number]> = [
+    [13, (vf) => Math.max(Math.round(13 + vf), 1)],
+    [8, (vf) => Math.max(Math.round(8 + vf / 2), 1)],
+    [5, (vf) => Math.max(Math.round(5 + vf / 3), 1)],
   ];
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    barColors,
-    // bullishMACDCross / bearishMACDCross = ta.crossover / ta.crossunder(macdLine, signalLine);
-    // rsiCrossAbove80 = ta.crossover(rsiValue, 80), rsiCrossBelow20 = ta.crossunder(rsiValue, 20)
-    alerts: (() => {
-      const rsi = A(ta.rsi(closeS, cfg.rsiLength));
-      return alertStates(alertConditions, bars, [
-        crossedOver(macdLine, signalLine), crossedUnder(macdLine, signalLine),
-        crossedOver(rsi, 80), crossedUnder(rsi, 20),
-      ]);
-    })(),
+    init() {
+      const s: AiInfinityRun = {
+        macd: taStep.macd(12, 26, 9), stoch: taStep.stoch(14), kSma: taStep.sma(), dSma: taStep.sma(),
+        vol: taStep.stdev(), highest: taStep.highest(), lowest: taStep.lowest(), atr: taStep.atr(cfg.atrLength),
+        ema2050: cfg.enableEma2050 ? taStep.ema(emaLen) : null,
+        ema100: cfg.enableEma100 ? taStep.ema(100) : null,
+        ema200: cfg.enableEma200 ? taStep.ema(200) : null,
+        rsi: taStep.rsi(cfg.rsiLength),
+        macdLine: [], signalLine: [], rsiArr: [], hl2: [], smmaS: [[], [], []],
+        plots: Array.from({ length: 21 }, () => []), fillCols: Array.from({ length: 6 }, () => []),
+        barColors: [], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [], vars: { smma: [NaN, NaN, NaN] }, lists: [], series: [],
+      };
+      s.steps = [
+        s.macd, s.stoch, s.kSma, s.dSma, s.vol, s.highest, s.lowest, s.atr,
+        ...[s.ema2050, s.ema100, s.ema200].filter((e) => e !== null), s.rsi,
+      ];
+      s.lists = [s.barColors, ...s.times];
+      s.series = [s.macdLine, s.signalLine, s.rsiArr, s.hl2, ...s.smmaS, ...s.plots, ...s.fillCols, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const close = b.close;
+
+      // Section 1: candle colouring
+      const [macdV, signalV] = s.macd.step(close);
+      const macd = macdV ?? NaN;
+      const signal = signalV ?? NaN;
+      s.macdLine[i] = macd;
+      s.signalLine[i] = signal;
+      const k = s.kSma.step(s.stoch.step(close, b.high, b.low) ?? NaN, 3) ?? NaN;
+      const dd = s.dSma.step(k, 3) ?? NaN;
+      const macdStrength = Math.abs(macd - signal) / Math.max(Math.abs(signal), 1e-10);
+      const isMacdPositive = gt(macd, signal);
+      const ob = gt(k, 80) && gt(dd, 80);
+      const os = lt(k, 20) && lt(dd, 20);
+      const bodyChange = Math.abs(b.close - b.open) / Math.max(b.high - b.low, 1e-10);
+      const baseTransparency2 = 20 - bodyChange * (20 - 5);
+      const finalTransparency = Math.min(baseTransparency2 + (ob || os ? 10 : 0), 100);
+      // index = math.min(math.floor(macdStrength * 150), 149); array.get(..., na) is na
+      const index = Math.min(Math.floor(macdStrength * 150), 150 - 1);
+      const smoothBull = isNaN(index) ? NA_COLOR : bullGrad[index];
+      const smoothBear = isNaN(index) ? NA_COLOR : bearGrad[index];
+      const gradientMode = cfg.colorMode === 'Gradient';
+      const bull = gradientMode ? smoothBull : cfg.bullColorSimple;
+      const bear = gradientMode ? smoothBear : cfg.bearColorSimple;
+      const fixed = gradientMode ? 20 : 15;
+      let finalColor: string;
+      if (isMacdPositive && !ob) finalColor = String(color.new(bull, finalTransparency));
+      else if (isMacdPositive && ob) finalColor = String(color.new(bull, fixed));
+      else if (!isMacdPositive && !os) finalColor = String(color.new(bear, finalTransparency));
+      else finalColor = String(color.new(bear, fixed));
+      if (cfg.enableBarColor) s.barColors.push({ time, color: finalColor });
+
+      // Section 2: Alligator lines
+      const rawVolatility = s.vol.step(close, 20) ?? NaN;
+      const hl2 = s.hl2;
+      hl2[i] = (b.high + b.low) / 2;
+      const hasEnoughData = i > 20;
+      const volatilityFactor = hasEnoughData ? (rawVolatility / close) * 100 : 0;
+      const smmaVals = s.vars.smma;
+      for (let m = 0; m < 3; m++) {
+        const [base, lenOf] = smmaDefs[m];
+        const length = hasEnoughData ? lenOf(volatilityFactor) : base;
+        let sma = NaN;
+        if (i - length + 1 >= 0) {
+          let sum = 0;
+          for (let j = 0; j < length; j++) sum += hl2[i - j];
+          sma = sum / length;
+        }
+        smmaVals[m] = isNaN(smmaVals[m]) ? sma : (smmaVals[m] * (length - 1) + hl2[i]) / length;
+        s.smmaS[m][i] = smmaVals[m];
+      }
+      // jaw = has_enough_data ? smma(...)[8] : na
+      const back = (m: number, k2: number) => (i > 20 && i - k2 >= 0 ? s.smmaS[m][i - k2] : NaN);
+
+      // Section 3: RSI lines on the 100-bar price range
+      const hh = s.highest.step(b.high, 100) ?? NaN;
+      const ll = s.lowest.step(b.low, 100) ?? NaN;
+      const atr = s.atr.step(b.high, b.low, close) ?? NaN;
+      const ema2050 = s.ema2050 ? s.ema2050.step(close) ?? NaN : NaN;
+      const ema100 = s.ema100 ? s.ema100.step(close) ?? NaN : NaN;
+      const ema200 = s.ema200 ? s.ema200.step(close) ?? NaN : NaN;
+
+      const pos = (pct: number) => ll + (pct / 100.0) * (hh - ll);
+      const line100Pos = pos(100.0);
+      const line90Pos = pos(90.0);
+      const line50Pos = pos(50.0);
+      const line10Pos = pos(10.0);
+      const line0Pos = pos(0.0);
+      const line60Pos = pos(60.0);
+      const line40Pos = pos(40.0);
+      const isAbove50 = gt(close, line50Pos);
+      const line100Color = isAbove50 ? cfg.line100LongColor : cfg.line100ShortColor;
+      const line90Color = isAbove50 ? cfg.line90LongColor : cfg.line90ShortColor;
+      const line50Color = isAbove50 ? cfg.line50LongColor : cfg.line50ShortColor;
+      const line10Color = isAbove50 ? cfg.line10LongColor : cfg.line10ShortColor;
+      const line0Color = isAbove50 ? cfg.line0LongColor : cfg.line0ShortColor;
+      // getTransparency(linePos): a plain division by the range (x / 0 is +-infinity)
+      const getTransparency = (linePos: number) => {
+        const dist = Math.abs(close - linePos) / (hh - ll);
+        const baseTransparency = min(80, dist * 100);
+        return lt(dist, 0.05) ? baseTransparency / 2 : baseTransparency;
+      };
+      // Alligator
+      const has = i > 20;
+      const jaw = has ? back(0, 8) : NaN;
+      const teeth = has ? back(1, 5) : NaN;
+      const lips = has ? back(2, 3) : NaN;
+      const p = s.plots;
+      p[0][i] = { time, value: cfg.enableAllLines && cfg.enableJaw ? jaw : NaN, color: cfg.jawColor };
+      p[1][i] = { time, value: cfg.enableAllLines && cfg.enableTeeth ? teeth : NaN, color: cfg.teethColor };
+      p[2][i] = { time, value: cfg.enableAllLines && cfg.enableLips ? lips : NaN, color: cfg.lipsColor };
+      p[3][i] = { time, value: line100Pos, color: String(color.new(line100Color, getTransparency(line100Pos))) };
+      p[4][i] = { time, value: line90Pos, color: String(color.new(line90Color, getTransparency(line90Pos))) };
+      p[5][i] = { time, value: line50Pos, color: String(color.new(line50Color, getTransparency(line50Pos))) };
+      p[6][i] = { time, value: line10Pos, color: String(color.new(line10Color, getTransparency(line10Pos))) };
+      p[7][i] = { time, value: line0Pos, color: String(color.new(line0Color, getTransparency(line0Pos))) };
+      p[8][i] = { time, value: line60Pos, color: line60Color };
+      p[9][i] = { time, value: line40Pos, color: line40Color };
+      // Glow bands
+      // getDynamicTransparency(line, 75): distance = |close - line| / atr (a plain division)
+      const dynTransparency = (line: number) => {
+        const distance = Math.abs(close - line) / atr;
+        const distanceFact = clamp(1 - distance, 0, 1);
+        return clamp(75 + distanceFact * 20, 0, 100);
+      };
+      const up = dt ? [1.0, 0.8, 0.5] : [0.4, 0.8, 1.0];
+      const tr100 = dt ? dynTransparency(line100Pos) : 75;
+      const tr0 = dt ? dynTransparency(line0Pos) : 75;
+      const c100 = dt ? [line100Color, line100Color, line100Color] : [cfg.line100ColorDG, cfg.line100ColorMediumDG, cfg.line100ColorWeakDG];
+      const c0 = dt ? [line0Color, line0Color, line0Color] : [cfg.line0ColorDG, cfg.line0ColorMediumDG, cfg.line0ColorWeakDG];
+      for (let j = 0; j < 3; j++) {
+        p[10 + j][i] = { time, value: line100Pos + atr * up[j] };
+        p[14 + j][i] = { time, value: line0Pos - atr * up[j] };
+        s.fillCols[j][i] = String(color.new(c100[j], tr100));
+        s.fillCols[3 + j][i] = String(color.new(c0[j], tr0));
+      }
+      p[13][i] = { time, value: line100Pos, color: String(color.new(c100[0], tr100)) };
+      p[17][i] = { time, value: line0Pos, color: String(color.new(c0[0], tr0)) };
+      // EMAs: close > EMA ? up colour : down colour
+      p[18][i] = { time, value: ema2050, color: gt(close, ema2050) ? cfg.ema2050UpColor : cfg.ema2050DownColor };
+      p[19][i] = { time, value: ema100, color: gt(close, ema100) ? cfg.ema100UpColor : cfg.ema100DownColor };
+      p[20][i] = { time, value: ema200, color: gt(close, ema200) ? cfg.ema200UpColor : cfg.ema200DownColor };
+
+      // bullishMACDCross / bearishMACDCross = ta.crossover / ta.crossunder(macdLine, signalLine);
+      // rsiCrossAbove80 = ta.crossover(rsiValue, 80), rsiCrossBelow20 = ta.crossunder(rsiValue, 20)
+      const rsi = s.rsi.step(close) ?? NaN;
+      s.rsiArr[i] = rsi;
+      const pm = i > 0 ? s.macdLine[i - 1] : NaN;
+      const ps = i > 0 ? s.signalLine[i - 1] : NaN;
+      const pr = i > 0 ? s.rsiArr[i - 1] : NaN;
+      const f = s.flags;
+      f[0][i] = macd > signal && pm <= ps;
+      f[1][i] = macd < signal && pm >= ps;
+      f[2][i] = rsi > 80 && pr <= 80;
+      f[3][i] = rsi < 20 && pr >= 20;
+      for (let a = 0; a < 4; a++) if (f[a][i]) s.times[a].push(time as number);
+    },
+    copyVars: (v) => ({ smma: v.smma.slice() }),
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      const fc = s.fillCols;
+      const fills = [
+        { plot1: 'plot13', plot2: 'plot10', colors: fc[0].slice() },
+        { plot1: 'plot10', plot2: 'plot11', colors: fc[1].slice() },
+        { plot1: 'plot11', plot2: 'plot12', colors: fc[2].slice() },
+        { plot1: 'plot17', plot2: 'plot14', colors: fc[3].slice() },
+        { plot1: 'plot14', plot2: 'plot15', colors: fc[4].slice() },
+        { plot1: 'plot15', plot2: 'plot16', colors: fc[5].slice() },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AiInfinityInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AiInfinityInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -460,6 +515,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AiInfinity = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -13,9 +13,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type DopeDpoMaType = 'SMA' | 'EMA' | 'WMA' | 'RMA';
 
@@ -117,187 +118,240 @@ const lt = (a: number, b: number) => b - a > EPS;
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DopeDpoInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const closeS = S(close);
-  const at = (a: number[], i: number) => (i >= 0 && i < n ? a[i] : NaN);
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+type Ma = { step(v: number): number; commit(): void };
 
+interface DpoVars {
+  /** ta.valuewhen(found, x, 1) histories: the last two values (older first) */
+  plDpo: readonly number[];
+  plLow: readonly number[];
+  phDpo: readonly number[];
+  phHigh: readonly number[];
+  /** Calls of the ta.barssince in _inRange (Pine `and` is lazy) */
+  plCalls: number;
+  phCalls: number;
+}
+
+interface DpoRun extends BarRunState<DpoVars> {
+  wmas1: ReturnType<typeof taStep.wma>[];
+  wmas2: ReturnType<typeof taStep.wma>[];
+  smooth1: ReturnType<typeof taStep.wma>;
+  smooth2: ReturnType<typeof taStep.wma>;
+  ma1: Ma | null;
+  ma2: Ma | null;
+  pl: PivotStep;
+  ph: PivotStep;
+  /** WMA values per period and bar */
+  mas1: number[][];
+  mas2: number[][];
+  smoothed: number[];
+  smoothed2: number[];
+  finalDpo2: number[];
+  histGreen: boolean[];
+  lineGreen: boolean[];
+  plFound: boolean[];
+  phFound: boolean[];
+  plot0: Point[];
+  plot1: Point[];
+  /** Divergence points of bar i (drawn on bar i - lookbackRight), from bar lookbackRight */
+  plot2: Point[];
+  plot3: Point[];
+  bgColors: BgColorData[];
+}
+
+/** ta.valuewhen(cond, source, 1) history: the value added on a bar where the condition is true */
+const pushed = (h: readonly number[], v: number): readonly number[] => (h.length < 2 ? [...h, v] : [h[1]!, v]);
+/** occurrence 1 of the history (NaN before two values) */
+const second = (h: readonly number[]): number => (h.length === 2 ? h[0]! : NaN);
+
+function study(inputs: Partial<DopeDpoInputs>): BarStudy<DpoRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   // barsback = period1 / 2 + 1 = 3.5 (Pine v6 int division keeps the fraction); a fractional history index is
   // truncated: ma[3.5] reads ma[3]. barsback2 = 10 / 2 + 1 = 6.
   const barsback = Math.trunc(5 / 2 + 1);
   const barsback2 = Math.trunc(10 / 2 + 1);
-  const ribbon = (periods: number[], back: number): number[] => {
-    const mas = periods.map((p) => A(ta.wma(closeS, p)));
-    // averageDpo = (dpo1 + ... + dpo10) / 10, dpo = close - ma[barsback]
-    return close.map((c, i) => {
-      let sum = 0;
-      for (const ma of mas) sum += c - at(ma, i - back);
-      return sum / 10;
-    });
-  };
-  const averageDpo = ribbon([5, 10, 15, 20, 25, 30, 35, 40, 45, 50], barsback);
-  const averageDpo2 = ribbon([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], barsback2);
-
-  const smoothed = A(ta.wma(S(averageDpo), cfg.smoothDpoLength));
-  const smoothed2 = A(ta.wma(S(averageDpo2), cfg.smoothDpoLength));
-
+  const periods1 = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
+  const periods2 = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+  const len = cfg.smoothDpoLength;
   // getMovingAverage(series, length, maType2): the type is an input, so the same branch runs on every bar
-  const getMa = (src: number[]): number[] => {
+  const getMa = (): Ma | null => {
     switch (cfg.maType2) {
-      case 'SMA': return A(ta.sma(S(src), cfg.smoothDpoLength));
-      case 'EMA': return A(ta.ema(S(src), cfg.smoothDpoLength));
-      case 'WMA': return A(ta.wma(S(src), cfg.smoothDpoLength));
-      case 'RMA': return A(ta.rma(S(src), cfg.smoothDpoLength));
-      default: return new Array(n).fill(NaN);
+      case 'SMA': { const m = taStep.sma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      case 'EMA': return taStep.ema(len);
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      case 'RMA': return taStep.rma(len);
+      default: return null;
     }
   };
-  const finalDpo = cfg.enableSmoothing ? getMa(averageDpo) : averageDpo;
-  const finalDpo2 = cfg.enableSmoothing ? getMa(averageDpo2) : averageDpo2;
-
-  // dpoColor = smoothedAverageDpo > smoothedAverageDpo[checkPeriod] ? green : red (lime / rgb(250, 123, 123))
-  const histGreen = smoothed.map((v, i) => gt(v, at(smoothed, i - cfg.checkPeriod)));
-  const lineGreen = smoothed2.map((v, i) => gt(v, at(smoothed2, i - cfg.checkPeriod2)));
-  const dpoColor = histGreen.map((g) => (g ? color.green : color.red));
-  const dpoColor2 = lineGreen.map((g) => (g ? color.lime : LINE2_DOWN));
-
-  // Divergence
   const lbR = cfg.lookbackRight;
-  const pl = A(ta.pivotlow(S(finalDpo2), cfg.lookbackLeft, lbR));
-  const ph = A(ta.pivothigh(S(finalDpo2), cfg.lookbackLeft, lbR));
-  const plFound: boolean[] = new Array(n).fill(false);
-  const phFound: boolean[] = new Array(n).fill(false);
-  const bullCond: boolean[] = new Array(n).fill(false);
-  const bearCond: boolean[] = new Array(n).fill(false);
-  // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
-  const plDpo: number[] = [];
-  const plLow: number[] = [];
-  const phDpo: number[] = [];
-  const phHigh: number[] = [];
-  // Pine `and` is lazy: the ta.barssince inside _inRange(...) only runs on the bars where the left side
-  // (finalDpo2[lookbackRight] > / < ta.valuewhen(...)) is true, so it counts those calls. One state per call site.
-  let plCalls = NaN;
-  let phCalls = NaN;
   const inRange = (bars_: number) => cfg.rangeLower <= bars_ && bars_ <= cfg.rangeUpper;
-  for (let i = 0; i < n; i++) {
-    const dpoLbr = at(finalDpo2, i - lbR);
-    const lowLbr = i - lbR >= 0 ? bars[i - lbR].low : NaN;
-    const highLbr = i - lbR >= 0 ? bars[i - lbR].high : NaN;
-    plFound[i] = !isNaN(pl[i]);
-    phFound[i] = !isNaN(ph[i]);
-    const prevPl = i > 0 && plFound[i - 1]; // plFound[1] (false before the first bar)
-    const prevPh = i > 0 && phFound[i - 1];
-
-    if (plFound[i]) {
-      plDpo.push(dpoLbr);
-      plLow.push(lowLbr);
-    }
-    const vwPlDpo = plDpo.length >= 2 ? plDpo[plDpo.length - 2] : NaN;
-    const vwPlLow = plLow.length >= 2 ? plLow[plLow.length - 2] : NaN;
-    // rsiHL = finalDpo2[lookbackRight] > ta.valuewhen(plFound, finalDpo2[lookbackRight], 1) and _inRange(plFound[1])
-    let rsiHL = false;
-    if (gt(dpoLbr, vwPlDpo)) {
-      if (prevPl) plCalls = 0;
-      else if (!isNaN(plCalls)) plCalls++;
-      rsiHL = inRange(plCalls);
-    }
-    // priceLL = low[lookbackRight] < ta.valuewhen(plFound, low[lookbackRight], 1)
-    const priceLL = lt(lowLbr, vwPlLow);
-    bullCond[i] = cfg.showDivergence && priceLL && rsiHL && plFound[i];
-
-    if (phFound[i]) {
-      phDpo.push(dpoLbr);
-      phHigh.push(highLbr);
-    }
-    const vwPhDpo = phDpo.length >= 2 ? phDpo[phDpo.length - 2] : NaN;
-    const vwPhHigh = phHigh.length >= 2 ? phHigh[phHigh.length - 2] : NaN;
-    // rsiLH = finalDpo2[lookbackRight] < ta.valuewhen(phFound, finalDpo2[lookbackRight], 1) and _inRange(phFound[1])
-    let rsiLH = false;
-    if (lt(dpoLbr, vwPhDpo)) {
-      if (prevPh) phCalls = 0;
-      else if (!isNaN(phCalls)) phCalls++;
-      rsiLH = inRange(phCalls);
-    }
-    // priceHH = high[lookbackRight] > ta.valuewhen(phFound, high[lookbackRight], 1)
-    const priceHH = gt(highLbr, vwPhHigh);
-    bearCond[i] = cfg.showDivergence && priceHH && rsiLH && phFound[i];
-  }
-
-  const interval = barInterval(bars);
-  const t = (i: number) => bars[i].time;
-  const plots: Record<string, Point[]> = {};
-  plots.plot0 = finalDpo.map((v, i) => ({ time: t(i), value: v, color: dpoColor[i] }));
-  plots.plot1 = finalDpo2.map((v, i) => ({ time: t(i), value: v, color: dpoColor2[i] }));
-  // plot(plFound ? finalDpo2[lookbackRight] : na, offset = -lookbackRight, color = bullCond ? bullColor : noneColor):
-  // the value of bar i is drawn on bar i - lookbackRight
-  const divPlot = (found: boolean[], cond: boolean[], c: string): Point[] => {
-    const out: Point[] = [];
-    for (let i = lbR; i < n; i++) {
-      out.push({ time: barTime(bars, i - lbR, interval), value: found[i] ? at(finalDpo2, i - lbR) : NaN,
-        color: cond[i] ? c : NONE_COLOR });
-    }
-    return out;
-  };
-  plots.plot2 = divPlot(plFound, bullCond, cfg.bullColor);
-  plots.plot3 = divPlot(phFound, bearCond, cfg.bearColor);
-
-  // Background: flip (histogram changes colour against the line) and sync (both agree after a change)
-  const bgColors: BgColorData[] = [];
   const flipGreenC = String(color.new(color.green, cfg.transpFlipBG));
   const flipRedC = String(color.new(color.red, cfg.transpFlipBG));
   const syncGreenC = String(color.new(color.green, cfg.transpSyncBG));
   const syncRedC = String(color.new(color.red, cfg.transpSyncBG));
   const low = cfg.enableBGFills && cfg.showLowConfidenceFills;
   const high = cfg.enableBGFills && cfg.showHighConfidenceFills;
-  for (let i = 0; i < n; i++) {
-    // histRed = dpoColor == color.red (= not histGreen); lineRed = dpoColor2 == rgb(250, 123, 123) (= not lineGreen);
-    // x[1] of a bool is false before the first bar
-    const hG = histGreen[i];
-    const lG = lineGreen[i];
-    const hR = dpoColor[i] === color.red;
-    const lR = dpoColor2[i] === LINE2_DOWN;
-    const hG1 = i > 0 && histGreen[i - 1];
-    const lG1 = i > 0 && lineGreen[i - 1];
-    const hR1 = i > 0 && dpoColor[i - 1] === color.red;
-    const lR1 = i > 0 && dpoColor2[i - 1] === LINE2_DOWN;
-    const flipToGreen = hG && !lG && !hG1;
-    const flipToRed = hR && !lR && !hR1;
-    const syncGreen = hG && lG && !(hG1 && lG1);
-    const syncRed = hR && lR && !(hR1 && lR1);
-    const layers: [boolean, boolean, string][] = [
-      [low, flipToGreen, flipGreenC],
-      [low, flipToRed, flipRedC],
-      [high, syncGreen, syncGreenC],
-      [high, syncRed, syncRedC],
-    ];
-    // bgcolor(pane...) x 4 (bgcolor0..3), then bgcolor(overlay..., force_overlay = true) x 4 (bgcolor4..7)
-    if (cfg.showPaneFills) {
-      layers.forEach(([on, cond, c], k) => {
-        if (on && cond) bgColors.push({ id: `bgcolor${k}`, time: t(i), color: c });
-      });
-    }
-    if (cfg.showOverlayFills) {
-      layers.forEach(([on, cond, c], k) => {
-        if (on && cond) bgColors.push({ id: `bgcolor${k + 4}`, time: t(i), color: c, forceOverlay: true });
-      });
-    }
-  }
-
+  const layerOn = [low, low, high, high];
+  const layerColor = [flipGreenC, flipRedC, syncGreenC, syncRedC];
+  const layerCond = [false, false, false, false];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    bgColors,
+    init() {
+      const s: DpoRun = {
+        wmas1: periods1.map(() => taStep.wma()), wmas2: periods2.map(() => taStep.wma()),
+        smooth1: taStep.wma(), smooth2: taStep.wma(),
+        ma1: cfg.enableSmoothing ? getMa() : null, ma2: cfg.enableSmoothing ? getMa() : null,
+        pl: new PivotStep(cfg.lookbackLeft, lbR, false), ph: new PivotStep(cfg.lookbackLeft, lbR, true),
+        mas1: periods1.map(() => []), mas2: periods2.map(() => []), smoothed: [], smoothed2: [], finalDpo2: [],
+        histGreen: [], lineGreen: [], plFound: [], phFound: [], plot0: [], plot1: [], plot2: [], plot3: [], bgColors: [],
+        steps: [], lists: [], series: [],
+        vars: { plDpo: [], plLow: [], phDpo: [], phHigh: [], plCalls: NaN, phCalls: NaN },
+      };
+      s.steps = [...s.wmas1, ...s.wmas2, s.smooth1, s.smooth2, ...(s.ma1 ? [s.ma1] : []), ...(s.ma2 ? [s.ma2] : []), s.pl, s.ph];
+      s.lists = [s.bgColors];
+      s.series = [...s.mas1, ...s.mas2, s.smoothed, s.smoothed2, s.finalDpo2, s.histGreen, s.lineGreen, s.plFound,
+        s.phFound, s.plot0, s.plot1, s.plot2, s.plot3];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const c = b.close;
+      const t = b.time;
+      // averageDpo = (dpo1 + ... + dpo10) / 10, dpo = close - ma[barsback]
+      let sum = 0;
+      for (let k = 0; k < 10; k++) {
+        s.mas1[k][i] = s.wmas1[k].step(c, periods1[k]);
+        sum += c - (i - barsback >= 0 ? s.mas1[k][i - barsback] : NaN);
+      }
+      const averageDpo = sum / 10;
+      let sum2 = 0;
+      for (let k = 0; k < 10; k++) {
+        s.mas2[k][i] = s.wmas2[k].step(c, periods2[k]);
+        sum2 += c - (i - barsback2 >= 0 ? s.mas2[k][i - barsback2] : NaN);
+      }
+      const averageDpo2 = sum2 / 10;
+
+      const smoothed = s.smooth1.step(averageDpo, len);
+      const smoothed2 = s.smooth2.step(averageDpo2, len);
+      s.smoothed[i] = smoothed;
+      s.smoothed2[i] = smoothed2;
+      const finalDpo = cfg.enableSmoothing ? (s.ma1 ? s.ma1.step(averageDpo) : NaN) : averageDpo;
+      const finalDpo2 = cfg.enableSmoothing ? (s.ma2 ? s.ma2.step(averageDpo2) : NaN) : averageDpo2;
+      s.finalDpo2[i] = finalDpo2;
+
+      // dpoColor = smoothedAverageDpo > smoothedAverageDpo[checkPeriod] ? green : red (lime / rgb(250, 123, 123)).
+      // A negative "Bars back" (a runtime error in the original: x[-n] reads no future bar) gives na here.
+      const back1 = i - cfg.checkPeriod;
+      const back2 = i - cfg.checkPeriod2;
+      const hG = gt(smoothed, back1 >= 0 && back1 < i ? s.smoothed[back1] : back1 === i ? smoothed : NaN);
+      const lG = gt(smoothed2, back2 >= 0 && back2 < i ? s.smoothed2[back2] : back2 === i ? smoothed2 : NaN);
+      s.histGreen[i] = hG;
+      s.lineGreen[i] = lG;
+      const dpoColor = hG ? color.green : color.red;
+      const dpoColor2 = lG ? color.lime : LINE2_DOWN;
+      s.plot0[i] = { time: t, value: finalDpo, color: dpoColor };
+      s.plot1[i] = { time: t, value: finalDpo2, color: dpoColor2 };
+
+      // Divergence
+      const plFound = !isNaN(s.pl.step(i, finalDpo2));
+      const phFound = !isNaN(s.ph.step(i, finalDpo2));
+      s.plFound[i] = plFound;
+      s.phFound[i] = phFound;
+      const dpoLbr = i - lbR >= 0 ? s.finalDpo2[i - lbR] : NaN;
+      const lowLbr = i - lbR >= 0 ? bars[i - lbR].low : NaN;
+      const highLbr = i - lbR >= 0 ? bars[i - lbR].high : NaN;
+      const prevPl = i > 0 && s.plFound[i - 1]; // plFound[1] (false before the first bar)
+      const prevPh = i > 0 && s.phFound[i - 1];
+
+      // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
+      if (plFound) {
+        v.plDpo = pushed(v.plDpo, dpoLbr);
+        v.plLow = pushed(v.plLow, lowLbr);
+      }
+      // rsiHL = finalDpo2[lookbackRight] > ta.valuewhen(plFound, finalDpo2[lookbackRight], 1) and _inRange(plFound[1])
+      // Pine `and` is lazy: the ta.barssince inside _inRange(...) only runs on the bars where the left side
+      // (finalDpo2[lookbackRight] > / < ta.valuewhen(...)) is true, so it counts those calls. One state per call site.
+      let rsiHL = false;
+      if (gt(dpoLbr, second(v.plDpo))) {
+        if (prevPl) v.plCalls = 0;
+        else if (!isNaN(v.plCalls)) v.plCalls++;
+        rsiHL = inRange(v.plCalls);
+      }
+      // priceLL = low[lookbackRight] < ta.valuewhen(plFound, low[lookbackRight], 1)
+      const priceLL = lt(lowLbr, second(v.plLow));
+      const bullCond = cfg.showDivergence && priceLL && rsiHL && plFound;
+
+      if (phFound) {
+        v.phDpo = pushed(v.phDpo, dpoLbr);
+        v.phHigh = pushed(v.phHigh, highLbr);
+      }
+      // rsiLH = finalDpo2[lookbackRight] < ta.valuewhen(phFound, finalDpo2[lookbackRight], 1) and _inRange(phFound[1])
+      let rsiLH = false;
+      if (lt(dpoLbr, second(v.phDpo))) {
+        if (prevPh) v.phCalls = 0;
+        else if (!isNaN(v.phCalls)) v.phCalls++;
+        rsiLH = inRange(v.phCalls);
+      }
+      // priceHH = high[lookbackRight] > ta.valuewhen(phFound, high[lookbackRight], 1)
+      const priceHH = gt(highLbr, second(v.phHigh));
+      const bearCond = cfg.showDivergence && priceHH && rsiLH && phFound;
+
+      // plot(plFound ? finalDpo2[lookbackRight] : na, offset = -lookbackRight, color = bullCond ? bullColor : noneColor):
+      // the value of bar i is drawn on bar i - lookbackRight
+      if (i >= lbR) {
+        const tb = bars[i - lbR].time;
+        s.plot2[i] = { time: tb, value: plFound ? dpoLbr : NaN, color: bullCond ? cfg.bullColor : NONE_COLOR };
+        s.plot3[i] = { time: tb, value: phFound ? dpoLbr : NaN, color: bearCond ? cfg.bearColor : NONE_COLOR };
+      }
+
+      // Background: flip (histogram changes colour against the line) and sync (both agree after a change)
+      // histRed = dpoColor == color.red (= not histGreen); lineRed = dpoColor2 == rgb(250, 123, 123) (= not lineGreen);
+      // x[1] of a bool is false before the first bar
+      const hR = dpoColor === color.red;
+      const lR = dpoColor2 === LINE2_DOWN;
+      const hG1 = i > 0 && s.histGreen[i - 1];
+      const lG1 = i > 0 && s.lineGreen[i - 1];
+      const hR1 = i > 0 && (s.histGreen[i - 1] ? color.green : color.red) === color.red;
+      const lR1 = i > 0 && (s.lineGreen[i - 1] ? color.lime : LINE2_DOWN) === LINE2_DOWN;
+      layerCond[0] = hG && !lG && !hG1; // flipToGreen
+      layerCond[1] = hR && !lR && !hR1; // flipToRed
+      layerCond[2] = hG && lG && !(hG1 && lG1); // syncGreen
+      layerCond[3] = hR && lR && !(hR1 && lR1); // syncRed
+      // bgcolor(pane...) x 4 (bgcolor0..3), then bgcolor(overlay..., force_overlay = true) x 4 (bgcolor4..7)
+      if (cfg.showPaneFills) {
+        for (let k = 0; k < 4; k++) {
+          if (layerOn[k] && layerCond[k]) s.bgColors.push({ id: `bgcolor${k}`, time: t, color: layerColor[k] });
+        }
+      }
+      if (cfg.showOverlayFills) {
+        for (let k = 0; k < 4; k++) {
+          if (layerOn[k] && layerCond[k]) s.bgColors.push({ id: `bgcolor${k + 4}`, time: t, color: layerColor[k], forceOverlay: true });
+        }
+      }
+    },
+    copyVars: (v) => ({ ...v }),
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(lbR), plot3: s.plot3.slice(lbR) },
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DopeDpoInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DopeDpoInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const DopeDpo = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

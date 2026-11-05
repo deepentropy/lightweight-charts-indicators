@@ -14,7 +14,9 @@
 
 import { time, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TimeBasedAlertsInputs {
   enableAlert1: boolean;
@@ -119,10 +121,16 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TimeBasedAlertsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface TimeAlertsRun extends BarRunState<Record<string, never>> {
+  markers: MarkerData[];
+  /** flags of the odd / even conditions, then of Alert 1 to Alert 12 */
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TimeBasedAlertsInputs>): BarStudy<TimeAlertsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const timezone = cfg.useCentralTime ? 'America/Chicago' : 'America/New_York';
   const green = String(color.green);
@@ -132,33 +140,57 @@ export function calculate(
     (cfg[`enableAlert${k}` as keyof TimeBasedAlertsInputs] as boolean)
     && h === cfg[`hour${k}` as keyof TimeBasedAlertsInputs]
     && m === cfg[`minute${k}` as keyof TimeBasedAlertsInputs];
-
-  const markers: MarkerData[] = [];
-  // flags of the odd / even conditions, then of Alert 1 to Alert 12
-  const flags: boolean[][] = Array.from({ length: 14 }, () => []);
-  for (const b of bars) {
-    // current_hour = hour(time, timezone), current_minute = minute(time, timezone): bar opening time
-    const ms = b.time * 1000;
-    const h = time.hour(ms, timezone);
-    const m = time.minute(ms, timezone);
-    const isAlertOdd = at(1, h, m) || at(3, h, m) || at(5, h, m) || at(7, h, m) || at(9, h, m) || at(11, h, m);
-    const isAlertEven = at(2, h, m) || at(4, h, m) || at(6, h, m) || at(8, h, m) || at(10, h, m) || at(12, h, m);
-    flags[0].push(isAlertOdd);
-    flags[1].push(isAlertEven);
-    for (const k of ALERTS) flags[k + 1].push(at(k, h, m));
-    if (isAlertOdd) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: green, size: 'small' });
-    }
-    if (isAlertEven) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: red, size: 'small' });
-    }
-  }
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      const s: TimeAlertsRun = {
+        markers: [], flags: Array.from({ length: 14 }, () => []), times: Array.from({ length: 14 }, () => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = s.flags;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // current_hour = hour(time, timezone), current_minute = minute(time, timezone): bar opening time
+      const ms = b.time * 1000;
+      const h = time.hour(ms, timezone);
+      const m = time.minute(ms, timezone);
+      const isAlertOdd = at(1, h, m) || at(3, h, m) || at(5, h, m) || at(7, h, m) || at(9, h, m) || at(11, h, m);
+      const isAlertEven = at(2, h, m) || at(4, h, m) || at(6, h, m) || at(8, h, m) || at(10, h, m) || at(12, h, m);
+      const flag = (k: number, f: boolean) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      };
+      flag(0, isAlertOdd);
+      flag(1, isAlertEven);
+      for (const k of ALERTS) flag(k + 1, at(k, h, m));
+      if (isAlertOdd) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: green, size: 'small' });
+      }
+      if (isAlertEven) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: red, size: 'small' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TimeBasedAlertsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TimeBasedAlertsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -169,5 +201,5 @@ export const alertConditions: AlertConditionDecl[] = [
 ];
 
 export const TimeBasedAlertsForTradingWindows = {
-  calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions,
+  calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions,
 };

@@ -11,7 +11,9 @@
  * Reference: "Automatic Support & Resistance by getmohsin.py" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AutoSupportResistanceInputs {
   left: number;
@@ -48,65 +50,91 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<AutoSupportResistanceInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface AutoSrRun extends BarRunState<Record<string, never>> {
+  ph: PivotStep;
+  pl: PivotStep;
+  qph: PivotStep;
+  qpl: PivotStep;
+  levels: ReturnType<typeof taStep.valuewhen>[];
+  plotData: Point[][];
+}
+
+const GREEN = '#26A69A';
+const RED = '#EF5350';
+
+function study(inputs: Partial<AutoSupportResistanceInputs>): BarStudy<AutoSrRun, IndicatorResult> {
   const { left, right, quickRight } = { ...defaultInputs, ...inputs };
-
-  // Pine default source is "Close" for pivots
-  const closeSeries = new Series(bars, (b) => b.close);
-
-  // Compute pivot highs and lows
-  const pivotHighArr = ta.pivothigh(closeSeries, left, right).toArray();
-  const pivotLowArr = ta.pivotlow(closeSeries, left, right).toArray();
-  const quickPivotHighArr = ta.pivothigh(closeSeries, left, quickRight).toArray();
-  const quickPivotLowArr = ta.pivotlow(closeSeries, left, quickRight).toArray();
-
-  // Convert pivot arrays to boolean condition Series (1 where pivot found, 0 otherwise)
-  const toBoolSeries = (arr: number[]) =>
-    Series.fromArray(bars, arr.map(v => isNaN(v) ? 0 : 1));
-
-  const pivotHighCond = toBoolSeries(pivotHighArr);
-  const pivotLowCond = toBoolSeries(pivotLowArr);
-  const quickPivotHighCond = toBoolSeries(quickPivotHighArr);
-  const quickPivotLowCond = toBoolSeries(quickPivotLowArr);
-
-  // Pine: valuewhen(pivot_cond, close[offset], occurrence)
-  // The pivot fires at the confirmation bar (offset bars after the pivot bar),
-  // so close[offset] there is the close of the pivot bar.
-  const closeQuick = closeSeries.offset(quickRight);
-  const closeRight = closeSeries.offset(right);
-  const level1Arr = ta.valuewhen(quickPivotHighCond, closeQuick, 0).toArray();
-  const level2Arr = ta.valuewhen(quickPivotLowCond, closeQuick, 0).toArray();
-  const level3Arr = ta.valuewhen(pivotHighCond, closeRight, 0).toArray();
-  const level4Arr = ta.valuewhen(pivotLowCond, closeRight, 0).toArray();
-  const level5Arr = ta.valuewhen(pivotHighCond, closeRight, 1).toArray();
-  const level6Arr = ta.valuewhen(pivotLowCond, closeRight, 1).toArray();
-  const level7Arr = ta.valuewhen(pivotHighCond, closeRight, 2).toArray();
-  const level8Arr = ta.valuewhen(pivotLowCond, closeRight, 2).toArray();
-
-  const GREEN = '#26A69A';
-  const RED = '#EF5350';
-
-  function makePlot(levelArr: number[]): { time: number; value: number; color?: string }[] {
-    return levelArr.map((v, i) => ({
-      time: bars[i].time,
-      value: isNaN(v) ? NaN : v,
-      color: !isNaN(v) ? (bars[i].close >= v ? GREEN : RED) : undefined,
-    }));
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      level1: makePlot(level1Arr),
-      level2: makePlot(level2Arr),
-      level3: makePlot(level3Arr),
-      level4: makePlot(level4Arr),
-      level5: makePlot(level5Arr),
-      level6: makePlot(level6Arr),
-      level7: makePlot(level7Arr),
-      level8: makePlot(level8Arr),
+    init() {
+      // Pine default source is "Close" for pivots
+      const ph = new PivotStep(left, right, true);
+      const pl = new PivotStep(left, right, false);
+      const qph = new PivotStep(left, quickRight, true);
+      const qpl = new PivotStep(left, quickRight, false);
+      // valuewhen occurrences of level1..level8
+      const levels = [0, 0, 0, 0, 1, 1, 2, 2].map((occ) => taStep.valuewhen(occ));
+      const s: AutoSrRun = {
+        ph, pl, qph, qpl, levels, plotData: levels.map(() => []),
+        steps: [ph, pl, qph, qpl, ...levels], vars: {}, lists: [], series: [],
+      };
+      s.series = s.plotData;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      // Pivot highs and lows as conditions (found where the pivot is not na)
+      const pivotHighCond = !isNaN(s.ph.step(i, close));
+      const pivotLowCond = !isNaN(s.pl.step(i, close));
+      const quickPivotHighCond = !isNaN(s.qph.step(i, close));
+      const quickPivotLowCond = !isNaN(s.qpl.step(i, close));
+
+      // Pine: valuewhen(pivot_cond, close[offset], occurrence)
+      // The pivot fires at the confirmation bar (offset bars after the pivot bar),
+      // so close[offset] there is the close of the pivot bar.
+      const closeQuick = i >= quickRight ? bars[i - quickRight].close : NaN;
+      const closeRight = i >= right ? bars[i - right].close : NaN;
+      const conds = [
+        quickPivotHighCond, quickPivotLowCond, pivotHighCond, pivotLowCond,
+        pivotHighCond, pivotLowCond, pivotHighCond, pivotLowCond,
+      ];
+      for (let k = 0; k < 8; k++) {
+        const v = s.levels[k].step(conds[k], k < 2 ? closeQuick : closeRight);
+        s.plotData[k][i] = {
+          time: b.time,
+          value: isNaN(v) ? NaN : v,
+          color: !isNaN(v) ? (close >= v ? GREEN : RED) : undefined,
+        };
+      }
+    },
+    result(s) {
+      const p = s.plotData;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          level1: p[0].slice(),
+          level2: p[1].slice(),
+          level3: p[2].slice(),
+          level4: p[3].slice(),
+          level5: p[4].slice(),
+          level6: p[5].slice(),
+          level7: p[6].slice(),
+          level8: p[7].slice(),
+        },
+      };
     },
   };
 }
 
-export const AutoSupportResistance = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AutoSupportResistanceInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AutoSupportResistanceInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const AutoSupportResistance = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

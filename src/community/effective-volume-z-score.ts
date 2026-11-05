@@ -11,9 +11,11 @@
  * Original notice: © eugencovaci
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { barInterval, barTime } from '../bar-time';
+import { barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EffectiveVolumeZScoreInputs {
   /** EMA length of the effective volume */
@@ -102,125 +104,164 @@ const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EffectiveVolumeZScoreInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+type Ma = { step(v: number): number; commit(): void };
+
+interface EvzsVars {
+  /** ta.valuewhen(found, x, 1): the latest two values of each (older first) and their count (at most 2) */
+  plO0: number; plO1: number; plC0: number; plC1: number; plN: number;
+  phO0: number; phO1: number; phC0: number; phC1: number; phN: number;
+  /** _inRange(found[1]): ta.barssince(found[1] == true), na before the first true */
+  plSince: number;
+  phSince: number;
+}
+
+interface EvzsRun extends BarRunState<EvzsVars> {
+  ema: ReturnType<typeof taStep.ema>;
+  sma: ReturnType<typeof taStep.sma>;
+  std: ReturnType<typeof taStep.stdev>;
+  avg: Ma;
+  pl: PivotStep;
+  ph: PivotStep;
+  score: number[];
+  plFound: boolean[];
+  phFound: boolean[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<EffectiveVolumeZScoreInputs>): BarStudy<EvzsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // effectiveVolume(): spread == 0 ? 0 : volume * (close - open) / spread
-  const ev = bars.map((b) => {
-    const spread = b.high - b.low;
-    return eq(spread, 0) ? 0 : ((b.volume ?? NaN) * (b.close - b.open)) / spread;
-  });
-  const maEv = A(ta.ema(S(ev), cfg.evSmoothing));
-  // length := length > bar_index + 1 ? bar_index + 1 : length (one length per bar)
-  const lens = bars.map((_b, i) => (cfg.length > i + 1 ? i + 1 : cfg.length));
-  const mean = A(ta.sma(S(maEv), S(lens)));
-  const std = A(ta.stdev(S(maEv), S(lens)));
-  // (src - mean) / std: a plain division (x / 0 is +-infinity, 0 / 0 na)
-  const score = maEv.map((x, i) => (x - mean[i]) / std[i]);
-  const scoreS = S(score);
-  const avgScore = A(cfg.maTypeInput === 'EMA' ? ta.ema(scoreS, cfg.smoothing)
-    : cfg.maTypeInput === 'SMMA (RMA)' ? ta.rma(scoreS, cfg.smoothing) : ta.sma(scoreS, cfg.smoothing));
-
-  // Divergences
   const { lbL, lbR, rangeLower, rangeUpper } = cfg;
-  const pl = A(ta.pivotlow(scoreS, lbL, lbR));
-  const ph = A(ta.pivothigh(scoreS, lbL, lbR));
-  const plFound = pl.map((v) => !isNaN(v));
-  const phFound = ph.map((v) => !isNaN(v));
-  const oscLbr = (i: number) => (i - lbR >= 0 ? score[i - lbR] : NaN);
-  const closeLbr = (i: number) => (i - lbR >= 0 ? bars[i - lbR].close : NaN);
-  const bullCond: boolean[] = new Array(n).fill(false);
-  const bearCond: boolean[] = new Array(n).fill(false);
-  // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
-  const plOsc: number[] = [];
-  const plClose: number[] = [];
-  const phOsc: number[] = [];
-  const phClose: number[] = [];
-  // _inRange(found[1]): ta.barssince(found[1] == true), na before the first true
-  let plSince = NaN;
-  let phSince = NaN;
-  for (let i = 0; i < n; i++) {
-    const o = oscLbr(i);
-    const c = closeLbr(i);
-    const plPrev = i > 0 && plFound[i - 1];
-    plSince = plPrev ? 0 : isNaN(plSince) ? NaN : plSince + 1;
-    const inRangePl = rangeLower <= plSince && plSince <= rangeUpper;
-    if (plFound[i]) {
-      plOsc.push(o);
-      plClose.push(c);
-    }
-    const vwPlOsc = plOsc.length >= 2 ? plOsc[plOsc.length - 2] : NaN;
-    const vwPlClose = plClose.length >= 2 ? plClose[plClose.length - 2] : NaN;
-    const oscHL = gt(o, vwPlOsc) && inRangePl;
-    const priceLL = lt(c, vwPlClose);
-    bullCond[i] = cfg.plotBull && priceLL && oscHL && plFound[i];
-
-    const phPrev = i > 0 && phFound[i - 1];
-    phSince = phPrev ? 0 : isNaN(phSince) ? NaN : phSince + 1;
-    const inRangePh = rangeLower <= phSince && phSince <= rangeUpper;
-    if (phFound[i]) {
-      phOsc.push(o);
-      phClose.push(c);
-    }
-    const vwPhOsc = phOsc.length >= 2 ? phOsc[phOsc.length - 2] : NaN;
-    const vwPhClose = phClose.length >= 2 ? phClose[phClose.length - 2] : NaN;
-    const oscLH = lt(o, vwPhOsc) && inRangePh;
-    const priceHH = gt(c, vwPhClose);
-    bearCond[i] = cfg.plotBear && priceHH && oscLH && phFound[i];
-  }
-
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const interval = barInterval(bars);
-  const t = (i: number) => bars[i].time;
-  const plots: Record<string, Point[]> = {
-    plot0: bars.map((_b, i) => ({ time: t(i), value: fin(score[i]), color: color.orange })),
-    plot1: bars.map((_b, i) => ({ time: t(i), value: fin(avgScore[i]), color: color.lime })),
-    plot2: [],
-    plot3: [],
+  const avgStep = (): Ma => {
+    if (cfg.maTypeInput === 'EMA') return taStep.ema(cfg.smoothing);
+    if (cfg.maTypeInput === 'SMMA (RMA)') return taStep.rma(cfg.smoothing);
+    const m = taStep.sma();
+    return { step: (v) => m.step(v, cfg.smoothing), commit: () => m.commit() };
   };
-  const markers: MarkerData[] = [];
-  // plot(found ? oscLbr : na, offset = -lbR, color = cond ? col : noneColor): the value of bar i is drawn on bar i - lbR
-  for (let i = 0; i < n; i++) {
-    if (i - lbR < 0) continue;
-    const time = barTime(bars, i - lbR, interval);
-    const o = fin(oscLbr(i));
-    plots.plot2.push({ time, value: plFound[i] ? o : NaN, color: bullCond[i] ? BULL_COL : NONE_COL });
-    plots.plot3.push({ time, value: phFound[i] ? o : NaN, color: bearCond[i] ? BEAR_COL : NONE_COL });
-    // plotshape(cond ? oscLbr : na, offset = -lbR, shape.labelup / labeldown, location.absolute)
-    if (bullCond[i] && !isNaN(o)) {
-      markers.push({ time, position: 'atPriceBottom', price: o, shape: 'labelUp', color: BULL_COL, text: ' Bull ',
-        textColor: color.white });
-    }
-    if (bearCond[i] && !isNaN(o)) {
-      markers.push({ time, position: 'atPriceTop', price: o, shape: 'labelDown', color: BEAR_COL, text: ' Bear ',
-        textColor: color.white });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
-    plots,
-    hlines: [
-      { value: 0, options: { title: 'Zero line', color: color.red, linestyle: 'dashed' } },
-      { value: cfg.upper, options: { title: 'Upper threshold', color: color.gray, linestyle: 'solid' } },
-      { value: cfg.lower, options: { title: 'Lower threshold', color: color.gray, linestyle: 'solid' } },
-    ],
-    fills: [
-      { plot1: 'hline_lower', plot2: 'hline_upper', options: { title: 'Hlines Background' },
-        colors: new Array<string>(n).fill(FILL_COL) },
-    ],
-    markers,
+    init() {
+      const s: EvzsRun = {
+        ema: taStep.ema(cfg.evSmoothing), sma: taStep.sma(), std: taStep.stdev(), avg: avgStep(),
+        pl: new PivotStep(lbL, lbR, false), ph: new PivotStep(lbL, lbR, true),
+        score: [], plFound: [], phFound: [], plot0: [], plot1: [], plot2: [], plot3: [], markers: [],
+        steps: [],
+        vars: {
+          plO0: NaN, plO1: NaN, plC0: NaN, plC1: NaN, plN: 0, phO0: NaN, phO1: NaN, phC0: NaN, phC1: NaN, phN: 0,
+          plSince: NaN, phSince: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.ema, s.sma, s.std, s.avg, s.pl, s.ph];
+      // plot2 / plot3 start lbR bars after the first bar: one point per bar from there
+      s.lists = [s.plot2, s.plot3, s.markers];
+      s.series = [s.score, s.plFound, s.phFound, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      // effectiveVolume(): spread == 0 ? 0 : volume * (close - open) / spread
+      const spread = b.high - b.low;
+      const ev = eq(spread, 0) ? 0 : ((b.volume ?? NaN) * (b.close - b.open)) / spread;
+      const maEv = s.ema.step(ev);
+      // length := length > bar_index + 1 ? bar_index + 1 : length (one length per bar)
+      const len = cfg.length > i + 1 ? i + 1 : cfg.length;
+      const mean = s.sma.step(maEv, len);
+      const std = s.std.step(maEv, len);
+      // (src - mean) / std: a plain division (x / 0 is +-infinity, 0 / 0 na)
+      const score = (maEv - mean) / std;
+      s.score[i] = score;
+      const avgScore = s.avg.step(score);
+      s.plot0[i] = { time: b.time, value: fin(score), color: color.orange };
+      s.plot1[i] = { time: b.time, value: fin(avgScore), color: color.lime };
+
+      // Divergences
+      const plFound = !isNaN(s.pl.step(i, score));
+      const phFound = !isNaN(s.ph.step(i, score));
+      s.plFound[i] = plFound;
+      s.phFound[i] = phFound;
+      const o = i - lbR >= 0 ? s.score[i - lbR] : NaN;
+      const c = i - lbR >= 0 ? bars[i - lbR].close : NaN;
+      // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
+      const plPrev = i > 0 && s.plFound[i - 1];
+      v.plSince = plPrev ? 0 : isNaN(v.plSince) ? NaN : v.plSince + 1;
+      const inRangePl = rangeLower <= v.plSince && v.plSince <= rangeUpper;
+      if (plFound) {
+        v.plO0 = v.plO1; v.plO1 = o; v.plC0 = v.plC1; v.plC1 = c;
+        if (v.plN < 2) v.plN++;
+      }
+      const vwPlOsc = v.plN >= 2 ? v.plO0 : NaN;
+      const vwPlClose = v.plN >= 2 ? v.plC0 : NaN;
+      const oscHL = gt(o, vwPlOsc) && inRangePl;
+      const priceLL = lt(c, vwPlClose);
+      const bullCond = cfg.plotBull && priceLL && oscHL && plFound;
+
+      const phPrev = i > 0 && s.phFound[i - 1];
+      v.phSince = phPrev ? 0 : isNaN(v.phSince) ? NaN : v.phSince + 1;
+      const inRangePh = rangeLower <= v.phSince && v.phSince <= rangeUpper;
+      if (phFound) {
+        v.phO0 = v.phO1; v.phO1 = o; v.phC0 = v.phC1; v.phC1 = c;
+        if (v.phN < 2) v.phN++;
+      }
+      const vwPhOsc = v.phN >= 2 ? v.phO0 : NaN;
+      const vwPhClose = v.phN >= 2 ? v.phC0 : NaN;
+      const oscLH = lt(o, vwPhOsc) && inRangePh;
+      const priceHH = gt(c, vwPhClose);
+      const bearCond = cfg.plotBear && priceHH && oscLH && phFound;
+
+      // plot(found ? oscLbr : na, offset = -lbR, color = cond ? col : noneColor): the value of bar i is drawn on bar i - lbR
+      if (i - lbR < 0) return;
+      const time = barTime(bars, i - lbR);
+      const fo = fin(o);
+      s.plot2.push({ time, value: plFound ? fo : NaN, color: bullCond ? BULL_COL : NONE_COL });
+      s.plot3.push({ time, value: phFound ? fo : NaN, color: bearCond ? BEAR_COL : NONE_COL });
+      // plotshape(cond ? oscLbr : na, offset = -lbR, shape.labelup / labeldown, location.absolute)
+      if (bullCond && !isNaN(fo)) {
+        s.markers.push({ time, position: 'atPriceBottom', price: fo, shape: 'labelUp', color: BULL_COL, text: ' Bull ',
+          textColor: color.white });
+      }
+      if (bearCond && !isNaN(fo)) {
+        s.markers.push({ time, position: 'atPriceTop', price: fo, shape: 'labelDown', color: BEAR_COL, text: ' Bear ',
+          textColor: color.white });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        hlines: [
+          { value: 0, options: { title: 'Zero line', color: color.red, linestyle: 'dashed' } },
+          { value: cfg.upper, options: { title: 'Upper threshold', color: color.gray, linestyle: 'solid' } },
+          { value: cfg.lower, options: { title: 'Lower threshold', color: color.gray, linestyle: 'solid' } },
+        ],
+        fills: [
+          { plot1: 'hline_lower', plot2: 'hline_upper', options: { title: 'Hlines Background' },
+            colors: new Array<string>(n).fill(FILL_COL) },
+        ],
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EffectiveVolumeZScoreInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EffectiveVolumeZScoreInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const EffectiveVolumeZScore = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

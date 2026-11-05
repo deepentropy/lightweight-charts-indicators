@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DynamicVolumeProfileOscillatorInputs {
   priceSrc: SourceType;
@@ -82,113 +84,166 @@ export const metadata = {
   overlay: false,
 };
 
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface DvpoVars {
+  /** calculate_volume_profile(): var arrays (replaced when refreshed, never changed in place) */
+  prices: number[];
+  profile: number[];
+}
+
+interface DvpoRun extends BarRunState<DvpoVars> {
+  svSma: ReturnType<typeof taStep.sma>;
+  lo: ReturnType<typeof taStep.lowest>;
+  hi: ReturnType<typeof taStep.highest>;
+  oscEma: ReturnType<typeof taStep.ema>;
+  midSma: ReturnType<typeof taStep.sma>;
+  sdStdev: ReturnType<typeof taStep.stdev>;
+  fastEma: ReturnType<typeof taStep.ema>;
+  slowEma: ReturnType<typeof taStep.ema>;
+  plotData: Point[][];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<DynamicVolumeProfileOscillatorInputs>): BarStudy<DvpoRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const priceOf = barSource(cfg.priceSrc);
+  const volOf = cfg.volumeSrc === 'volume' ? (b: Bar) => b.volume ?? NaN : barSource(cfg.volumeSrc);
+  return {
+    fullRunReason: () => (isBarSource(cfg.priceSrc) && isBarSource(cfg.volumeSrc) ? null : 'source of another study'),
+    init() {
+      const svSma = taStep.sma();
+      const lo = taStep.lowest();
+      const hi = taStep.highest();
+      const oscEma = taStep.ema(cfg.smoothing);
+      const midSma = taStep.sma();
+      const sdStdev = taStep.stdev();
+      const fastEma = taStep.ema(5);
+      const slowEma = taStep.ema(15);
+      const s: DvpoRun = {
+        svSma, lo, hi, oscEma, midSma, sdStdev, fastEma, slowEma,
+        plotData: Array.from({ length: 24 }, () => []), barColors: [],
+        steps: [...(cfg.meanReversion ? [] : [svSma, lo, hi]), oscEma, ...(cfg.useAdaptiveMidline ? [midSma] : []), sdStdev, fastEma, slowEma],
+        vars: { prices: [], profile: [] }, lists: [], series: [],
+      };
+      s.series = [...s.plotData, ...(cfg.colorBars ? [s.barColors] : [])];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const p = priceOf(b) ?? NaN;
+      const v = s.vars;
+      // calculate_volume_profile(): var arrays refreshed when empty or on bar_index % profile_periods == 0
+      if (v.profile.length === 0 || i % cfg.profilePeriods === 0) {
+        const prices: number[] = [];
+        const profile: number[] = [];
+        for (let k = 0; k <= Math.min(cfg.lookback - 1, i); k++) {
+          prices.push(priceOf(bars[i - k]) ?? NaN);
+          profile.push(volOf(bars[i - k]) ?? NaN);
+        }
+        v.prices = prices;
+        v.profile = profile;
+      }
+      const { prices, profile } = v;
+      const sumVol = profile.reduce((a, x) => a + x, 0);
+      let vwap: number;
+      let dev: number;
+      if (sumVol > 0) {
+        let spv = 0;
+        for (let k = 0; k < prices.length; k++) spv += prices[k] * profile[k];
+        const vw = spv / sumVol;
+        let sd = 0;
+        for (let k = 0; k < prices.length; k++) sd += Math.abs(prices[k] - vw) * (profile[k] / sumVol);
+        vwap = vw;
+        dev = sd;
+      } else {
+        vwap = p;
+        dev = 0;
+      }
+
+      let raw: number;
+      if (cfg.meanReversion) {
+        // A deviation of 0 (profile of one bar) gives +-Infinity in Pine (0 / 0: NaN). The value only feeds ta.ema,
+        // which skips an infinite value as na, so NaN gives the same result.
+        const d = dev * cfg.sensitivity;
+        raw = d === 0 ? NaN : 50 + ((p - vwap) / d) * 25;
+      } else {
+        // normalize(sma(volume), lowest(sma(volume), lookback), highest(sma(volume), lookback))
+        const sv = s.svSma.step(volOf(b) ?? NaN, cfg.smoothing) ?? NaN;
+        const lo = s.lo.step(sv, cfg.lookback) ?? NaN;
+        const hi = s.hi.step(sv, cfg.lookback) ?? NaN;
+        const range = hi - lo;
+        raw = range <= 0 ? 50 : Math.min(100, Math.max(0, ((sv - lo) / range) * 100));
+      }
+      const osc = s.oscEma.step(raw) ?? NaN;
+      const mid = cfg.useAdaptiveMidline ? s.midSma.step(osc, cfg.midlinePeriod) ?? NaN : 50;
+      const sd = (s.sdStdev.step(osc, cfg.midlinePeriod) ?? NaN) * cfg.zoneWidth;
+      const fast = s.fastEma.step(osc) ?? NaN;
+      const slow = s.slowEma.step(osc) ?? NaN;
+
+      const plots = s.plotData;
+      const bullish = osc > mid || fast > slow;
+      const main = bullish ? BULL : BEAR;
+      plots[0][i] = { time: t, value: osc, color: main };
+      plots[1][i] = { time: t, value: fast, color: c(main, 40) };
+      plots[2][i] = { time: t, value: slow, color: c(main, 70) };
+      plots[3][i] = { time: t, value: mid };
+      const upper = mid + sd;
+      const lower = mid - sd;
+      const upStep = (upper - mid) / 10;
+      const loStep = (mid - lower) / 10;
+      plots[4][i] = { time: t, value: upper };
+      plots[14][i] = { time: t, value: lower };
+      for (let k = 1; k <= 9; k++) {
+        plots[4 + k][i] = { time: t, value: upper - upStep * k };
+        plots[14 + k][i] = { time: t, value: lower + loStep * k };
+      }
+      if (cfg.colorBars) s.barColors[i] = { time: t, color: main };
+    },
+    copyVars: (v) => ({ ...v }),
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      for (let k = 0; k < 24; k++) plots[`plot${k}`] = s.plotData[k].slice();
+
+      // fill(gradK, gradK+1, color.new(zone colour, transparency of gradK+1)); fill(grad10, mid_line, transparency 99)
+      const fills: IndicatorResult['fills'] = [];
+      for (const [first, col] of [[4, BEAR], [14, BULL]] as const) {
+        for (let k = 0; k < 9; k++) {
+          fills.push({ plot1: `plot${first + k}`, plot2: `plot${first + k + 1}`, options: { color: c(col, GRAD_TRANSP[k]) } });
+        }
+        fills.push({ plot1: `plot${first + 9}`, plot2: 'plot3', options: { color: c(col, 99) } });
+      }
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        barColors: s.barColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<DynamicVolumeProfileOscillatorInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<DynamicVolumeProfileOscillatorInputs> = {},
 ): IndicatorResult & { barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const price = A(getSourceSeries(bars, cfg.priceSrc));
-  const vol = cfg.volumeSrc === 'volume' ? bars.map((b) => b.volume ?? NaN) : A(getSourceSeries(bars, cfg.volumeSrc));
-
-  // calculate_volume_profile(): var arrays refreshed when empty or on bar_index % profile_periods == 0
-  const vwap: number[] = new Array(n);
-  const dev: number[] = new Array(n);
-  let prices: number[] = [];
-  let profile: number[] = [];
-  for (let i = 0; i < n; i++) {
-    if (profile.length === 0 || i % cfg.profilePeriods === 0) {
-      prices = [];
-      profile = [];
-      for (let k = 0; k <= Math.min(cfg.lookback - 1, i); k++) {
-        prices.push(price[i - k]);
-        profile.push(vol[i - k]);
-      }
-    }
-    const sumVol = profile.reduce((a, v) => a + v, 0);
-    if (sumVol > 0) {
-      let spv = 0;
-      for (let k = 0; k < prices.length; k++) spv += prices[k] * profile[k];
-      const vw = spv / sumVol;
-      let sd = 0;
-      for (let k = 0; k < prices.length; k++) sd += Math.abs(prices[k] - vw) * (profile[k] / sumVol);
-      vwap[i] = vw;
-      dev[i] = sd;
-    } else {
-      vwap[i] = price[i];
-      dev[i] = 0;
-    }
-  }
-
-  let raw: number[];
-  if (cfg.meanReversion) {
-    // A deviation of 0 (profile of one bar) gives +-Infinity in Pine (0 / 0: NaN). The value only feeds ta.ema,
-    // which skips an infinite value as na, so NaN gives the same result.
-    raw = price.map((p, i) => {
-      const d = dev[i] * cfg.sensitivity;
-      return d === 0 ? NaN : 50 + ((p - vwap[i]) / d) * 25;
-    });
-  } else {
-    // normalize(sma(volume), lowest(sma(volume), lookback), highest(sma(volume), lookback))
-    const sv = A(ta.sma(S(vol), cfg.smoothing));
-    const lo = A(ta.lowest(S(sv), cfg.lookback));
-    const hi = A(ta.highest(S(sv), cfg.lookback));
-    raw = sv.map((v, i) => {
-      const range = hi[i] - lo[i];
-      return range <= 0 ? 50 : Math.min(100, Math.max(0, ((v - lo[i]) / range) * 100));
-    });
-  }
-  const osc = A(ta.ema(S(raw), cfg.smoothing));
-  const mid = cfg.useAdaptiveMidline ? A(ta.sma(S(osc), cfg.midlinePeriod)) : new Array(n).fill(50);
-  const sd = A(ta.stdev(S(osc), cfg.midlinePeriod)).map((v) => v * cfg.zoneWidth);
-  const fast = A(ta.ema(S(osc), 5));
-  const slow = A(ta.ema(S(osc), 15));
-
-  const plots: Record<string, { time: number; value: number; color?: string }[]> = {};
-  for (let k = 0; k < 24; k++) plots[`plot${k}`] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const bullish = osc[i] > mid[i] || fast[i] > slow[i];
-    const main = bullish ? BULL : BEAR;
-    plots.plot0.push({ time: t, value: osc[i], color: main });
-    plots.plot1.push({ time: t, value: fast[i], color: c(main, 40) });
-    plots.plot2.push({ time: t, value: slow[i], color: c(main, 70) });
-    plots.plot3.push({ time: t, value: mid[i] });
-    const upper = mid[i] + sd[i];
-    const lower = mid[i] - sd[i];
-    const upStep = (upper - mid[i]) / 10;
-    const loStep = (mid[i] - lower) / 10;
-    plots.plot4.push({ time: t, value: upper });
-    plots.plot14.push({ time: t, value: lower });
-    for (let k = 1; k <= 9; k++) {
-      plots[`plot${4 + k}`].push({ time: t, value: upper - upStep * k });
-      plots[`plot${14 + k}`].push({ time: t, value: lower + loStep * k });
-    }
-    if (cfg.colorBars) barColors.push({ time: t, color: main });
-  }
-
-  // fill(gradK, gradK+1, color.new(zone colour, transparency of gradK+1)); fill(grad10, mid_line, transparency 99)
-  const fills: IndicatorResult['fills'] = [];
-  for (const [first, col] of [[4, BEAR], [14, BULL]] as const) {
-    for (let k = 0; k < 9; k++) {
-      fills.push({ plot1: `plot${first + k}`, plot2: `plot${first + k + 1}`, options: { color: c(col, GRAD_TRANSP[k]) } });
-    }
-    fills.push({ plot1: `plot${first + 9}`, plot2: 'plot3', options: { color: c(col, 99) } });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    barColors,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const DynamicVolumeProfileOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,
