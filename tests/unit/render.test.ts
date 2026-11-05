@@ -188,6 +188,51 @@ describe('IndicatorRenderer', () => {
       });
     }
 
+    /** Data of the primitives that keep points (fills, line breaks...), series by series */
+    const primitiveData = (r: IndicatorRenderer) =>
+      r.series().map((s) => [...fake(s).primitives].map((p) => (p as { getData?: () => unknown }).getData?.() ?? null));
+    const freshPrimitives = (id: string, b: Bar[]) => {
+      const r = new IndicatorRenderer(fakeChart().chart, { paneIndex: 1 });
+      r.render(entry(id), entry(id).calculate(b, {}), b);
+      return primitiveData(r);
+    };
+
+    for (const id of ['rsi', 'bb', 'ichimoku', 'macd', 'supertrend', 'ma-ribbon']) {
+      it(`${id}: points kept from the previous render give the data of a fresh render (series and fills)`, () => {
+        const r = new IndicatorRenderer(fakeChart().chart, { paneIndex: 1 });
+        const e = entry(id);
+        r.render(e, e.calculate(bars, {}), bars);
+        let b = bars;
+        for (const step of [tick, tick, append, tick, append, append, tick]) {
+          b = step(b);
+          r.render(e, e.calculate(b, {}), b, { reuseSeries: true });
+          expect(r.series().map((s) => fake(s).data)).toEqual(freshData(id, b));
+          expect(primitiveData(r)).toEqual(freshPrimitives(id, b));
+        }
+      });
+    }
+
+    it('a result whose arrays change in place (the host applies the changes of a live update) is drawn as a fresh one', () => {
+      const r = new IndicatorRenderer(fakeChart().chart, { paneIndex: 1 });
+      const e = entry('bb');
+      const held = e.calculate(bars, {}) as { plots: Record<string, Array<{ time: number; value: number }>> };
+      r.render(e, held as never, bars);
+      let b = bars;
+      for (const step of [tick, append, tick]) {
+        b = step(b);
+        const next = e.calculate(b, {}) as typeof held;
+        // the host keeps its arrays: the shared prefix stays, the tail is replaced
+        for (const [k, list] of Object.entries(next.plots)) {
+          const mine = held.plots[k];
+          mine.length = Math.min(mine.length, list.length - 2);
+          for (let i = mine.length; i < list.length; i++) mine.push(list[i]);
+        }
+        r.render(e, held as never, b, { reuseSeries: true });
+        expect(r.series().map((s) => fake(s).data)).toEqual(freshData('bb', b));
+        expect(primitiveData(r)).toEqual(freshPrimitives('bb', b));
+      }
+    });
+
     it('gives a reused series its options again only when they changed', () => {
       const f = fakeChart();
       const r = new IndicatorRenderer(f.chart, { paneIndex: 1 });

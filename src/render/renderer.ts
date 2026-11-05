@@ -183,6 +183,9 @@ export class IndicatorRenderer {
   private reused = new Set<object>();
   /** Data last set on each series */
   private lastData = new WeakMap<object, readonly unknown[]>();
+  /** Points prepared by the last render, by output (see {@link points}); kept for the next reuseSeries render */
+  private prepared = new Map<string, Prepared>();
+  private preparedNow = new Map<string, Prepared>();
 
   constructor(private readonly chart: IChartApi, options: IndicatorRendererOptions = {}) {
     this.opts = { ...options };
@@ -218,7 +221,10 @@ export class IndicatorRenderer {
       this.clearOwned(options.reuseSeries === true);
       this.renderOpts = options;
       this.grid.setBars(bars);
+      if (options.reuseSeries !== true) this.prepared.clear();
+      this.preparedNow = new Map();
       if (bars.length) this.draw(entry, result as IndicatorResult & Record<string, any>, bars, pane);
+      this.prepared = this.preparedNow;
     } finally {
       // series of the previous render not taken again
       for (const p of this.pool.splice(0)) if (p) this.chart.removeSeries(p.series);
@@ -371,6 +377,60 @@ export class IndicatorRenderer {
     for (let i = from; i < data.length; i++) s.update(data[i] as never, i < old!.length - 1);
   }
 
+  /**
+   * Points made from `n` source points: `make(i)` reads point i of each of `sources` (and `sig`, whatever else it
+   * depends on) and gives a point or null (no point). A reuseSeries render keeps the points the previous render made
+   * under `key` up to the first source point that changed (`lookahead`: point i also reads point i + lookahead), so a
+   * live update makes the newest points only.
+   */
+  private points<T>(
+    key: string,
+    sig: string,
+    sources: ReadonlyArray<ArrayLike<unknown> | undefined>,
+    n: number,
+    make: (i: number) => T | null,
+    lookahead = 0
+  ): T[] {
+    const prev = this.prepared.get(key);
+    let k = 0;
+    if (prev && prev.sig === sig && prev.sources.length === sources.length) {
+      k = Math.min(n, prev.at.length - 1);
+      for (let j = 0; j < sources.length && k > 0; j++) k = Math.min(k, sharedPrefix(prev.sources[j], sources[j]));
+      k = Math.max(0, k - lookahead);
+    }
+    const out = (k > 0 ? prev!.out.slice(0, prev!.at[k]) : []) as T[];
+    const at = k > 0 ? prev!.at.slice(0, k) : [];
+    for (let i = k; i < n; i++) {
+      at.push(out.length);
+      const p = make(i);
+      if (p !== null) out.push(p);
+    }
+    at.push(out.length);
+    this.preparedNow.set(key, { sig, sources: sources.map((s) => (s ? Array.prototype.slice.call(s) : undefined)), out, at });
+    return out;
+  }
+
+  /** The points of `data` with a value (not na), see {@link points} */
+  private validPoints(key: string, data: PlotPoint[]): PlotPoint[] {
+    return this.points(key, '', [data], data.length, (i) => {
+      const d = data[i];
+      return d.value != null && !Number.isNaN(d.value) ? d : null;
+    });
+  }
+
+  /**
+   * Per-point colours of a simple line: PineScript colours the segment that leads into a point with the colour of that
+   * point, lightweight-charts the segment from a point with the colour of that point. So each point gets the colour of
+   * the next point. Unchanged without colours.
+   */
+  private segmentColors(key: string, data: PlotPoint[], base: string): PlotPoint[] {
+    if (!data.some((d) => d.color)) return data;
+    return this.points(key, base, [data], data.length, (i) => {
+      const next = data[i + 1];
+      return next ? { ...data[i], color: next.color ?? base } : data[i];
+    }, 1);
+  }
+
   private attach(series: ISeriesApi<SeriesType, Time>, primitive: ISeriesPrimitive<Time>): void {
     series.attachPrimitive(primitive);
     this.attached.push({ series, primitive });
@@ -396,7 +456,12 @@ export class IndicatorRenderer {
       const raw = r.plots?.[def.id] as PlotPoint[] | undefined;
       if (!raw?.length || !this.plotVisible(def, override, r)) continue;
       const palette = override.palette;
-      const data = palette ? raw.map((p) => (p.color && palette[p.color] ? { ...p, color: palette[p.color] } : p)) : raw;
+      const data = palette
+        ? this.points(`palette:${def.id}`, JSON.stringify(palette), [raw], raw.length, (i) => {
+          const p = raw[i];
+          return p.color && palette[p.color] ? { ...p, color: palette[p.color] } : p;
+        })
+        : raw;
       const color = override.color ?? def.color ?? '#2962FF';
       const lineWidth = override.lineWidth ?? def.lineWidth;
       const plotPane = def.forceOverlay ? 0 : pane;
@@ -467,9 +532,10 @@ export class IndicatorRenderer {
       ...this.plotOptions(title),
       ...this.scaleOptions(pane),
     }, pane), true);
-    const valid = data.filter((d) => d.value != null && !Number.isNaN(d.value)) as unknown as LineData<Time>[];
+    const slot = this.created.length - 1;
+    const valid = this.validPoints(`valid:${slot}`, data) as unknown as LineData<Time>[];
     const simpleLine = (o.lineType ?? LineType.Simple) === LineType.Simple && o.lineVisible !== false && !o.pointMarkersVisible;
-    this.setData(series, simpleLine ? segmentColors(valid, o.color) : valid);
+    this.setData(series, simpleLine ? this.segmentColors(`segments:${slot}`, valid as unknown as PlotPoint[], o.color) : valid);
     return series;
   }
 
@@ -482,12 +548,12 @@ export class IndicatorRenderer {
     const primitive = new PlotFillPrimitive();
     this.attach(series as unknown as ISeriesApi<SeriesType, Time>, primitive as ISeriesPrimitive<Time>);
     primitive.setData(
-      data
-        .filter((d) => d.value != null && !Number.isNaN(d.value))
-        .map((d) => {
-          const c = d.color ?? color;
-          return { time: d.time, v1: d.value, v2: base, color: isTransparent(c) ? null : withOpacity(c, 1) };
-        })
+      this.points(`area:${this.created.length - 1}`, `${color}|${base}`, [data], data.length, (i) => {
+        const d = data[i];
+        if (d.value == null || Number.isNaN(d.value)) return null;
+        const c = d.color ?? color;
+        return { time: d.time, v1: d.value, v2: base, color: isTransparent(c) ? null : withOpacity(c, 1) };
+      })
     );
   }
 
@@ -500,13 +566,12 @@ export class IndicatorRenderer {
       ...this.plotOptions(title),
       ...this.scaleOptions(pane),
     }, pane) as unknown as ISeriesApi<SeriesType, Time>, true);
-    this.setData(series, 
-      data.map((d) => {
-        const time = d.time as unknown as Time;
-        if (d.value == null || Number.isNaN(d.value)) return { time } as unknown as HistogramItem;
-        return d.color ? { time, value: d.value, fill: d.color } : { time, value: d.value };
-      })
-    );
+    this.setData(series, this.points(`histogram:${this.created.length - 1}`, '', [data], data.length, (i) => {
+      const d = data[i];
+      const time = d.time as unknown as Time;
+      if (d.value == null || Number.isNaN(d.value)) return { time } as unknown as HistogramItem;
+      return d.color ? { time, value: d.value, fill: d.color } : { time, value: d.value };
+    }));
   }
 
   /** plot.style_columns: bars of the bar slot width from histbase */
@@ -517,12 +582,12 @@ export class IndicatorRenderer {
       ...this.plotOptions(title),
       ...this.scaleOptions(pane),
     }, pane), true);
-    this.setData(series, data.filter((d) => d.value != null && !Number.isNaN(d.value)) as unknown as HistogramData<Time>[]);
+    this.setData(series, this.validPoints(`columns:${this.created.length - 1}`, data) as unknown as HistogramData<Time>[]);
   }
 
   private addCross(data: PlotPoint[], color: string, lineWidth: number | undefined, pane: number): void {
     const anchor = this.anchor(pane);
-    this.setData(anchor, data.filter((d) => d.value != null && !Number.isNaN(d.value)) as unknown as LineData<Time>[]);
+    this.setData(anchor, this.validPoints(`anchor:${this.created.length - 1}`, data) as unknown as LineData<Time>[]);
     const primitive = new CrossPlotPrimitive();
     this.attach(anchor as unknown as ISeriesApi<SeriesType, Time>, primitive as ISeriesPrimitive<Time>);
     primitive.setData(data, color, (lineWidth ?? 2) * 3);
@@ -531,7 +596,7 @@ export class IndicatorRenderer {
   /** linebr / steplinebr: a line that breaks at na values */
   private addLineBr(data: PlotPoint[], color: string, lineWidth: number | undefined, lineStyle: LineStyle, steps: boolean, pane: number): void {
     const anchor = this.anchor(pane);
-    this.setData(anchor, data.filter((d) => d.value != null && !Number.isNaN(d.value)) as unknown as LineData<Time>[]);
+    this.setData(anchor, this.validPoints(`anchor:${this.created.length - 1}`, data) as unknown as LineData<Time>[]);
     const primitive = new LineBrPrimitive();
     this.attach(anchor as unknown as ISeriesApi<SeriesType, Time>, primitive as ISeriesPrimitive<Time>);
     primitive.setData(data, color, lineWidth ?? 2, lineStyle, steps);
@@ -649,11 +714,10 @@ export class IndicatorRenderer {
     bars: Bar[],
     overlayPlots: Set<string>
   ): void {
-    const barIndex = new Map(bars.map((b, i) => [b.time, i]));
-    for (const fill of fills as Array<PlotFill & FillData>) {
+    (fills as Array<PlotFill & FillData>).forEach((fill, index) => {
       const p1 = plotData[fill.plot1];
       const p2 = plotData[fill.plot2];
-      if (!p1?.length || !p2?.length) continue;
+      if (!p1?.length || !p2?.length) return;
       const transp = fill.options?.transp;
       const opacity = transp != null ? 1 - transp / 100 : 1;
       // no colour in the result: renderer default (not a PineScript value)
@@ -668,26 +732,44 @@ export class IndicatorRenderer {
         }
         return c;
       };
-      const p2Map = new Map(p2.map((d) => [d.time, d.value]));
       const gradient = fill.gradient as FillGradientData | undefined;
-      const points: PlotFillPoint[] = p1.map((d1, i) => {
-        const v2 = p2Map.get(d1.time);
+      const n = p1.length;
+      // the two plots on the same times (and on the bars for a gradient, read by bar index): point i reads the points
+      // i of the sources, so a live update makes the newest points only (see points())
+      const aligned = sameTimes(p1, p2) && (!gradient || sameTimes(p1, bars));
+      let p2Map: Map<number, number> | null = null;
+      const v2At = (i: number): number | undefined =>
+        aligned ? p2[i].value : (p2Map ??= new Map(p2.map((d) => [d.time, d.value]))).get(p1[i].time);
+      const make = (i: number): PlotFillPoint => {
+        const d1 = p1[i];
+        const v2 = v2At(i);
         if (gradient) {
-          const bi = barIndex.get(d1.time);
+          const bi = this.grid.indexOf(d1.time);
           return { time: d1.time, v1: d1.value ?? NaN, v2: v2 ?? NaN, color: null, gradient: bi === undefined ? null : gradientAt(gradient, bi) };
         }
         const raw = fill.colors && i < fill.colors.length ? fill.colors[i] : staticColor;
         return { time: d1.time, v1: d1.value ?? NaN, v2: v2 ?? NaN, color: resolve(raw) };
+      };
+      const points: PlotFillPoint[] = aligned
+        ? this.points(`fill:${index}`, `${opacity}|${staticColor}|${gradient ? 'gradient' : ''}`, [
+          p1, p2, fill.colors, gradient?.topValue, gradient?.bottomValue, gradient?.topColor, gradient?.bottomColor,
+        ], n, make)
+        : Array.from({ length: n }, (_, i) => make(i));
+      const valid = this.points(`fill-valid:${index}`, '', [points], n, (i) => {
+        const p = points[i];
+        return Number.isFinite(p.v1) && Number.isFinite(p.v2) ? p : null;
       });
-      const valid = points.filter((p) => Number.isFinite(p.v1) && Number.isFinite(p.v2));
-      if (!valid.length) continue;
+      if (!valid.length) return;
       const bothOverlay = overlayPlots.has(String(fill.plot1)) && overlayPlots.has(String(fill.plot2));
       const anchor = this.anchor(bothOverlay ? 0 : pane);
-      this.setData(anchor, valid.map((p) => ({ time: p.time as unknown as Time, value: Math.max(p.v1, p.v2) })));
+      this.setData(anchor, this.points(`fill-anchor:${index}`, '', [valid], valid.length, (i) => ({
+        time: valid[i].time as unknown as Time,
+        value: Math.max(valid[i].v1, valid[i].v2),
+      })));
       const primitive = new PlotFillPrimitive();
       primitive.setData(points);
       this.attach(anchor as unknown as ISeriesApi<SeriesType, Time>, primitive as ISeriesPrimitive<Time>);
-    }
+    });
   }
 
   // ─── Markers, arrows, colours ─────────────────────────────────────────────
@@ -983,19 +1065,6 @@ export class IndicatorRenderer {
   }
 }
 
-/**
- * Per-point colours of a simple line: PineScript colours the segment that leads into a point with the colour of that
- * point, lightweight-charts the segment from a point with the colour of that point. So each point gets the colour of
- * the next point.
- */
-function segmentColors<T extends { color?: string }>(data: T[], base: string): T[] {
-  if (!data.some((d) => d.color)) return data;
-  return data.map((d, i) => {
-    const next = data[i + 1];
-    return next ? { ...d, color: next.color ?? base } : d;
-  });
-}
-
 /** Newest points a live update can change: the last bar and the one before it */
 const TAIL_POINTS = 2;
 
@@ -1011,6 +1080,65 @@ function changedTail(old: readonly unknown[], next: readonly unknown[]): number 
   if (i < m - TAIL_POINTS) return -1;
   for (let j = i; j < m; j++) if ((old[j] as { time: unknown }).time !== (next[j] as { time: unknown }).time) return -1;
   return i;
+}
+
+/** Points a render made from its sources (copies), with the point count before each source point (`at`) */
+interface Prepared {
+  sig: string;
+  sources: Array<unknown[] | undefined>;
+  out: unknown[];
+  at: number[];
+}
+
+/** Both lists have the same increasing times, index by index */
+function sameTimes(a: ArrayLike<{ time: number }>, b: ArrayLike<{ time: number }>): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const t = a[i].time;
+    if (t !== b[i].time || (i > 0 && !(t > a[i - 1].time))) return false;
+  }
+  return true;
+}
+
+/** Count of the first points that are the same in both (no limit when both are missing) */
+function sharedPrefix(prev: ArrayLike<unknown> | undefined, next: ArrayLike<unknown> | undefined): number {
+  if (prev === undefined || next === undefined) return prev === next ? Infinity : 0;
+  const m = Math.min(prev.length, next.length);
+  let k = 0;
+  while (k < m && sameItem(prev[k], next[k])) k++;
+  return k;
+}
+
+/** Same source point: the same object, the same value (NaN equal to NaN), or a point with the same fields */
+function sameItem(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return Number.isNaN(a) && Number.isNaN(b);
+  const x = a as Record<string, unknown>;
+  const y = b as Record<string, unknown>;
+  let n = 0;
+  for (const k in y) {
+    const u = x[k];
+    const v = y[k];
+    if (u !== v && !(Number.isNaN(u) && Number.isNaN(v))) {
+      // a nested value (a gradient part, a colour list): compared by its fields once more
+      if (u === null || v === null || typeof u !== 'object' || typeof v !== 'object' || !sameFlat(u, v)) return false;
+    }
+    n++;
+  }
+  for (const _ in x) n--;
+  return n === 0;
+}
+
+function sameFlat(a: object, b: object): boolean {
+  const x = a as Record<string, unknown>;
+  const y = b as Record<string, unknown>;
+  let n = 0;
+  for (const k in y) {
+    if (x[k] !== y[k] && !(Number.isNaN(x[k]) && Number.isNaN(y[k]))) return false;
+    n++;
+  }
+  for (const _ in x) n--;
+  return n === 0;
 }
 
 /** Same data point: the same fields with the same values */

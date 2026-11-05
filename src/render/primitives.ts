@@ -62,12 +62,93 @@ export class BarGrid {
   /** Host's count of the bar slots after the last bar of a script time (null: calendar time) */
   futureSlots: FutureSlots | null = null;
   private slotCache = new Map<number, number>();
+  /** The bars of the last setBars (a copy: the host may change its array in place) and their times */
+  private kept: Bar[] = [];
+  private keptTimes: number[] = [];
+  /** Count of each gap between two bars (barInterval: the most frequent one, ties to the smaller one) */
+  private gaps = new Map<number, number>();
+  /** Bar index by time */
+  private indexByTime = new Map<number, number>();
+  /** The kept bars have increasing times (else every call builds again) */
+  private ordered = false;
 
+  /**
+   * The chart's bars. A live update changes the newest bars only: the bars kept from the previous call (same objects,
+   * same times) are not read again.
+   */
   setBars(bars: Bar[]): void {
     this.bars = bars;
-    this.byTime = new Map(bars.map(b => [b.time, b]));
-    this.interval = barInterval(bars);
     this.slotCache.clear();
+    const kept = this.kept;
+    const m = kept.length;
+    let k = 0;
+    while (k < m && k < bars.length && kept[k] === bars[k] && this.keptTimes[k] === bars[k].time) k++;
+    if (!this.ordered || k < m - 8 || k === 0) {
+      this.rebuild(bars);
+      return;
+    }
+    // the bars from k on leave, the new ones from k on enter
+    for (let i = k; i < m; i++) {
+      this.byTime.delete(this.keptTimes[i]);
+      this.indexByTime.delete(this.keptTimes[i]);
+      if (i > 0) this.countGap(this.keptTimes[i] - this.keptTimes[i - 1], -1);
+    }
+    kept.length = k;
+    this.keptTimes.length = k;
+    for (let i = k; i < bars.length; i++) {
+      const t = bars[i].time;
+      // a time that does not increase (a repeated bar): the full build decides which bar keeps the time
+      if (i > 0 && !(t > bars[i - 1].time)) {
+        this.rebuild(bars);
+        return;
+      }
+      this.byTime.set(t, bars[i]);
+      this.indexByTime.set(t, i);
+      if (i > 0) this.countGap(t - bars[i - 1].time, 1);
+      kept.push(bars[i]);
+      this.keptTimes.push(t);
+    }
+    this.interval = this.mostFrequentGap();
+  }
+
+  /** Index of the bar of `time`, or undefined */
+  indexOf(time: number): number | undefined {
+    return this.indexByTime.get(time);
+  }
+
+  private rebuild(bars: Bar[]): void {
+    this.byTime = new Map(bars.map(b => [b.time, b]));
+    this.indexByTime = new Map(bars.map((b, i) => [b.time, i]));
+    this.interval = barInterval(bars);
+    this.kept = bars.slice();
+    this.keptTimes = bars.map((b) => b.time);
+    this.gaps.clear();
+    this.ordered = true;
+    for (let i = 1; i < bars.length; i++) {
+      const d = bars[i].time - bars[i - 1].time;
+      if (!(d > 0)) this.ordered = false;
+      this.countGap(d, 1);
+    }
+  }
+
+  private countGap(d: number, by: number): void {
+    if (!(d > 0)) return;
+    const c = (this.gaps.get(d) ?? 0) + by;
+    if (c > 0) this.gaps.set(d, c);
+    else this.gaps.delete(d);
+  }
+
+  /** barInterval of the kept bars from the gap counts */
+  private mostFrequentGap(): number {
+    let best = 0;
+    let bestCount = 0;
+    for (const [d, c] of this.gaps) {
+      if (c > bestCount || (c === bestCount && d < best)) {
+        best = d;
+        bestCount = c;
+      }
+    }
+    return best;
   }
 
   /** Count the slots of script times with `futureSlots` from now on (null: calendar time) */
