@@ -5,7 +5,9 @@
  * Volatility bands placed above and below a moving average, using standard deviation.
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /**
  * BB indicator input parameters
@@ -70,74 +72,65 @@ export const metadata = {
  * @param inputs - Indicator parameters (optional, uses defaults)
  * @returns Indicator result with plot data
  */
-export function calculate(bars: Bar[], inputs: Partial<BBInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface BbRun extends BarRunState<Record<string, never>> {
+  basis: { step(v: number, volume: number): number; commit(): void };
+  dev: ReturnType<typeof taStep.stdev>;
+  basisData: Point[];
+  upperData: Point[];
+  lowerData: Point[];
+}
+
+function study(inputs: Partial<BBInputs>): BarStudy<BbRun, IndicatorResult> {
   const { length, maType, src, mult } = { ...defaultInputs, ...inputs };
-
-  // Get source series
-  const source = getSourceSeries(bars, src);
-  const volume = new Series(bars, (bar) => bar.volume ?? 0);
-
-  // Calculate basis (moving average)
-  let basis: Series;
-  switch (maType) {
-    case 'EMA':
-      basis = ta.ema(source, length);
-      break;
-    case 'SMMA (RMA)':
-      basis = ta.rma(source, length);
-      break;
-    case 'WMA':
-      basis = ta.wma(source, length);
-      break;
-    case 'VWMA':
-      basis = ta.vwma(source, length, volume);
-      break;
-    case 'SMA':
-    default:
-      basis = ta.sma(source, length);
-      break;
-  }
-
-  // Calculate deviation
-  const dev = ta.stdev(source, length).mul(mult);
-
-  // Calculate upper and lower bands
-  const upper = basis.add(dev);
-  const lower = basis.sub(dev);
-
-  // Convert to plot format
-  const basisData = basis.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const upperData = upper.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const lowerData = lower.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const fills: FillData[] = [
-    { plot1: 'plot1', plot2: 'plot2', options: { color: '#2196F3', transp: 95, title: 'Background' } },
-  ];
-
-  return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
-    },
-    plots: {
-      'plot0': basisData,
-      'plot1': upperData,
-      'plot2': lowerData,
-    },
-    fills,
+  const value = barSource(src);
+  const basisStep = (): BbRun['basis'] => {
+    switch (maType) {
+      case 'EMA': { const m = taStep.ema(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMMA (RMA)': { const m = taStep.rma(length); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+      case 'VWMA': { const m = taStep.vwma(length); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+      case 'SMA':
+      default: { const m = taStep.sma(); return { step: (v) => m.step(v, length), commit: () => m.commit() }; }
+    }
   };
+  return {
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const basis = basisStep();
+      const dev = taStep.stdev();
+      const s: BbRun = { basis, dev, basisData: [], upperData: [], lowerData: [], steps: [basis, dev], vars: {}, lists: [], series: [] };
+      s.series = [s.basisData, s.upperData, s.lowerData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      const basis = s.basis.step(v, b.volume ?? 0);
+      // dev = mult * ta.stdev(src, length); upper = basis + dev; lower = basis - dev
+      const dev = s.dev.step(v, length) * mult;
+      s.basisData[i] = { time: b.time, value: basis };
+      s.upperData[i] = { time: b.time, value: basis + dev };
+      s.lowerData[i] = { time: b.time, value: basis - dev };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.basisData.slice(), 'plot1': s.upperData.slice(), 'plot2': s.lowerData.slice() },
+        fills: [{ plot1: 'plot1', plot2: 'plot2', options: { color: '#2196F3', transp: 95, title: 'Background' } }] as FillData[],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BBInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BBInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /**
@@ -145,6 +138,7 @@ export function calculate(bars: Bar[], inputs: Partial<BBInputs> = {}): Indicato
  */
 export const BollingerBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -19,8 +19,10 @@
  * Original notice: © Zeiierman
  */
 
-import { ta, taCore, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type FillData } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type FillData } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MlMomentumIndexInputs {
   /** Prediction Data (k): number of neighbours */
@@ -74,117 +76,170 @@ const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MlMomentumIndexInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Step2 = { step(a: number, b: number): boolean; commit(): void };
+
+interface MlmiRun extends BarRunState<Record<string, never>> {
+  maQuick: ReturnType<typeof taStep.wma>;
+  maSlow: ReturnType<typeof taStep.wma>;
+  rsi5: ReturnType<typeof taStep.rsi>;
+  rsi20: ReturnType<typeof taStep.rsi>;
+  wmaQuick: ReturnType<typeof taStep.wma>;
+  wmaSlow: ReturnType<typeof taStep.wma>;
+  pos: Step2;
+  neg: Step2;
+  predMa: ReturnType<typeof taStep.wma>;
+  highest: ReturnType<typeof taStep.highest>;
+  lowest: ReturnType<typeof taStep.lowest>;
+  stdev: ReturnType<typeof taStep.stdev>;
+  devEma: ReturnType<typeof taStep.ema>;
+  crosses: Step2[];
+  /** var data = Data.new(...): the stored trades (the first one (0, 0) of result 0) */
+  p1s: number[];
+  p2s: number[];
+  prices: number[];
+  results: number[];
+  prediction: Point[];
+  predictionMa: Point[];
+  upper: number[];
+  lower: number[];
+  upperEdge: number[];
+  lowerEdge: number[];
+  upperData: Point[];
+  lowerData: Point[];
+  zeroData: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<MlMomentumIndexInputs>): BarStudy<MlmiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-  const t = (i: number) => bars[i].time;
-
-  // Moving averages & RSI
-  const maQuick = A(ta.wma(close, 5));
-  const maSlow = A(ta.wma(close, 20));
-  const rsiQuick = A(ta.wma(ta.rsi(close, 5), cfg.momentumWindow));
-  const rsiSlow = A(ta.wma(ta.rsi(close, 20), cfg.momentumWindow));
-  const pos = taCore.crossover(maQuick, maSlow);
-  const neg = taCore.crossunder(maQuick, maSlow);
-
-  // var data = Data.new(array.new_float(1, 0) x 4)
-  const p1s: number[] = [0];
-  const p2s: number[] = [0];
-  const prices: number[] = [0];
-  const results: number[] = [0];
   const k = Math.max(0, Math.trunc(cfg.k));
-  const prediction: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const c = bars[i].close;
-    // if pos or neg: data.storePreviousTrade(rsi_slow, rsi_quick)
-    if (pos[i] || neg[i]) {
-      const last = p1s.length - 1;
-      p1s.push(p1s[last]);
-      p2s.push(p2s[last]);
-      prices.push(prices[last]);
-      results.push(ge(c, prices[last]) ? 1 : -1);
-      p1s[last + 1] = rsiSlow[i];
-      p2s[last + 1] = rsiQuick[i];
-      prices[last + 1] = c;
-    }
-    // knnPredict(rsi_slow, rsi_quick, k): distances to all the stored points; maxDist = the greatest of the k smallest
-    // (na sorted after the numbers, array.max skips na); the results of the points within maxDist are summed
-    const p1 = rsiSlow[i];
-    const p2 = rsiQuick[i];
-    const distances = p1s.map((v, j) => Math.sqrt(Math.pow(p1 - v, 2) + Math.pow(p2 - p2s[j], 2)));
-    const sorted = distances.filter((d) => !isNaN(d)).sort((a, b) => a - b);
-    const m = Math.min(k, distances.length, sorted.length);
-    const maxDist = m > 0 ? sorted[m - 1] : NaN;
-    let sum = 0;
-    let count = 0;
-    for (let j = 0; j < distances.length; j++) {
-      if (le(distances[j], maxDist)) {
-        sum += results[j];
-        count++;
-      }
-    }
-    // neighbors.sum(): na for no neighbour
-    prediction[i] = count ? sum : NaN;
-  }
-
-  const predSeries = S(prediction);
-  const predictionMa = A(ta.wma(predSeries, 20));
-
-  // Gradient fill channel
-  const upper = A(ta.highest(predSeries, 2000));
-  const lower = A(ta.lowest(predSeries, 2000));
-  const dev = A(ta.ema(ta.stdev(predSeries, 20), 20));
-  const upperEdge = upper.map((v, i) => v - dev[i]);
-  const lowerEdge = lower.map((v, i) => v + dev[i]);
-
-  const constant = <T>(v: T): T[] => new Array(n).fill(v);
-  const lime75 = String(color.new(color.lime, 75));
-  const red75 = String(color.new(color.red, 75));
-  const fills: FillData[] = [
-    // fill(channel_mid, channel_upper, top_value = upper, bottom_value = 0, bottom_color = na, top_color = lime 75)
-    { plot1: 'plot4', plot2: 'plot2', options: { title: 'Channel Gradient Fill' },
-      gradient: { topValue: upper, bottomValue: constant(0), topColor: constant(lime75), bottomColor: constant(null) } },
-    // fill(channel_mid, channel_lower, top_value = 0, bottom_value = lower, bottom_color = red 75, top_color = na)
-    { plot1: 'plot4', plot2: 'plot3', options: { title: 'Channel Gradient Fill' },
-      gradient: { topValue: constant(0), bottomValue: lower, topColor: constant(null), bottomColor: constant(red75) } },
-    // fill(prediction_, channel_mid, upper, upper_, top_color = lime 0, bottom_color = green 100)
-    { plot1: 'plot0', plot2: 'plot4', options: { title: 'Overbought Gradient Fill' },
-      gradient: { topValue: upper, bottomValue: upperEdge, topColor: constant(String(color.new(color.lime, 0))),
-        bottomColor: constant(String(color.new(color.green, 100))) } },
-    // fill(prediction_, channel_mid, lower_, lower, top_color = red 100, bottom_color = red 0)
-    { plot1: 'plot0', plot2: 'plot4', options: { title: 'Oversold Gradient Fill' },
-      gradient: { topValue: lowerEdge, bottomValue: lower, topColor: constant(String(color.new(color.red, 100))),
-        bottomColor: constant(String(color.new(color.red, 0))) } },
-  ];
-
-  // Alerts
-  const zero = constant(0);
-  const flags: boolean[][] = [
-    taCore.crossover(prediction, upperEdge),
-    taCore.crossunder(prediction, upperEdge),
-    taCore.crossover(prediction, lowerEdge),
-    taCore.crossunder(prediction, lowerEdge),
-    taCore.crossover(prediction, zero),
-    taCore.crossunder(prediction, zero),
-    taCore.crossover(prediction, predictionMa),
-    taCore.crossunder(prediction, predictionMa),
-  ];
-
-  const P = (a: number[]) => a.map((v, i) => ({ time: t(i), value: v }));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: P(prediction), plot1: P(predictionMa), plot2: P(upper), plot3: P(lower), plot4: P(zero) },
-    // hline(0, title = "Mid Level")
-    hlines: [{ value: 0, options: { title: 'Mid Level', color: '#787B86', linestyle: 'dashed', linewidth: 1 } }],
-    fills,
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      const crosses: Step2[] = Array.from({ length: 8 }, (_, j) => (j % 2 === 0 ? taStep.crossover() : taStep.crossunder()));
+      const s: MlmiRun = {
+        maQuick: taStep.wma(), maSlow: taStep.wma(), rsi5: taStep.rsi(5), rsi20: taStep.rsi(20), wmaQuick: taStep.wma(),
+        wmaSlow: taStep.wma(), pos: taStep.crossover(), neg: taStep.crossunder(), predMa: taStep.wma(),
+        highest: taStep.highest(), lowest: taStep.lowest(), stdev: taStep.stdev(), devEma: taStep.ema(20), crosses,
+        p1s: [0], p2s: [0], prices: [0], results: [0],
+        prediction: [], predictionMa: [], upper: [], lower: [], upperEdge: [], lowerEdge: [], upperData: [],
+        lowerData: [], zeroData: [], flags: crosses.map(() => []), times: crosses.map(() => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [
+        s.maQuick, s.maSlow, s.rsi5, s.rsi20, s.wmaQuick, s.wmaSlow, s.pos, s.neg, s.predMa, s.highest, s.lowest,
+        s.stdev, s.devEma, ...crosses,
+      ];
+      s.lists = [s.p1s, s.p2s, s.prices, s.results, ...s.times];
+      s.series = [
+        s.prediction, s.predictionMa, s.upper, s.lower, s.upperEdge, s.lowerEdge, s.upperData, s.lowerData,
+        s.zeroData, ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { time, close: c } = bars[i];
+      // Moving averages & RSI
+      const maQuick = s.maQuick.step(c, 5);
+      const maSlow = s.maSlow.step(c, 20);
+      const rsiQuick = s.wmaQuick.step(s.rsi5.step(c), cfg.momentumWindow);
+      const rsiSlow = s.wmaSlow.step(s.rsi20.step(c), cfg.momentumWindow);
+      const pos = s.pos.step(maQuick, maSlow);
+      const neg = s.neg.step(maQuick, maSlow);
+      // if pos or neg: data.storePreviousTrade(rsi_slow, rsi_quick)
+      if (pos || neg) {
+        const last = s.p1s.length - 1;
+        s.results.push(ge(c, s.prices[last]) ? 1 : -1);
+        s.p1s.push(rsiSlow);
+        s.p2s.push(rsiQuick);
+        s.prices.push(c);
+      }
+      // knnPredict(rsi_slow, rsi_quick, k): distances to all the stored points; maxDist = the greatest of the k smallest
+      // (na sorted after the numbers, array.max skips na); the results of the points within maxDist are summed
+      const distances = s.p1s.map((v, j) => Math.sqrt(Math.pow(rsiSlow - v, 2) + Math.pow(rsiQuick - s.p2s[j], 2)));
+      const sorted = distances.filter((d) => !isNaN(d)).sort((a, b) => a - b);
+      const m = Math.min(k, distances.length, sorted.length);
+      const maxDist = m > 0 ? sorted[m - 1] : NaN;
+      let sum = 0;
+      let count = 0;
+      for (let j = 0; j < distances.length; j++) {
+        if (le(distances[j], maxDist)) {
+          sum += s.results[j];
+          count++;
+        }
+      }
+      // neighbors.sum(): na for no neighbour
+      const prediction = count ? sum : NaN;
+      const predictionMa = s.predMa.step(prediction, 20);
+      // Gradient fill channel
+      const upper = s.highest.step(prediction, 2000);
+      const lower = s.lowest.step(prediction, 2000);
+      const dev = s.devEma.step(s.stdev.step(prediction, 20));
+      s.prediction[i] = { time, value: prediction };
+      s.predictionMa[i] = { time, value: predictionMa };
+      s.upper[i] = upper;
+      s.lower[i] = lower;
+      s.upperEdge[i] = upper - dev;
+      s.lowerEdge[i] = lower + dev;
+      s.upperData[i] = { time, value: upper };
+      s.lowerData[i] = { time, value: lower };
+      s.zeroData[i] = { time, value: 0 };
+      // Alerts
+      const against = [s.upperEdge[i], s.upperEdge[i], s.lowerEdge[i], s.lowerEdge[i], 0, 0, predictionMa, predictionMa];
+      s.crosses.forEach((x, j) => {
+        const f = x.step(prediction, against[j]);
+        s.flags[j][i] = f;
+        if (f) s.times[j].push(time as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const constant = <T>(v: T): T[] => new Array(n).fill(v);
+      const lime75 = String(color.new(color.lime, 75));
+      const red75 = String(color.new(color.red, 75));
+      const upper = s.upper.slice();
+      const lower = s.lower.slice();
+      const fills: FillData[] = [
+        // fill(channel_mid, channel_upper, top_value = upper, bottom_value = 0, bottom_color = na, top_color = lime 75)
+        { plot1: 'plot4', plot2: 'plot2', options: { title: 'Channel Gradient Fill' },
+          gradient: { topValue: upper, bottomValue: constant(0), topColor: constant(lime75), bottomColor: constant(null) } },
+        // fill(channel_mid, channel_lower, top_value = 0, bottom_value = lower, bottom_color = red 75, top_color = na)
+        { plot1: 'plot4', plot2: 'plot3', options: { title: 'Channel Gradient Fill' },
+          gradient: { topValue: constant(0), bottomValue: lower, topColor: constant(null), bottomColor: constant(red75) } },
+        // fill(prediction_, channel_mid, upper, upper_, top_color = lime 0, bottom_color = green 100)
+        { plot1: 'plot0', plot2: 'plot4', options: { title: 'Overbought Gradient Fill' },
+          gradient: { topValue: upper, bottomValue: s.upperEdge.slice(), topColor: constant(String(color.new(color.lime, 0))),
+            bottomColor: constant(String(color.new(color.green, 100))) } },
+        // fill(prediction_, channel_mid, lower_, lower, top_color = red 100, bottom_color = red 0)
+        { plot1: 'plot0', plot2: 'plot4', options: { title: 'Oversold Gradient Fill' },
+          gradient: { topValue: s.lowerEdge.slice(), bottomValue: lower, topColor: constant(String(color.new(color.red, 100))),
+            bottomColor: constant(String(color.new(color.red, 0))) } },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.prediction.slice(), plot1: s.predictionMa.slice(), plot2: s.upperData.slice(),
+          plot3: s.lowerData.slice(), plot4: s.zeroData.slice(),
+        },
+        // hline(0, title = "Mid Level")
+        hlines: [{ value: 0, options: { title: 'Mid Level', color: '#787B86', linestyle: 'dashed', linewidth: 1 } }],
+        fills,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
 
-export const MlMomentumIndex = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MlMomentumIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MlMomentumIndexInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+
+export const MlMomentumIndex = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

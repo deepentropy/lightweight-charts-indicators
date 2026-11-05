@@ -24,6 +24,8 @@ import {
 } from 'oakscriptjs';
 import { chartTimeframe } from '../anchor-period';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SessionsOnChartInputs {
   /** Fill the area between the session low and high instead of the background */
@@ -104,72 +106,114 @@ function sessionTime(session: string, tf: string, chartTf: string): (tMs: number
   return (tMs) => periodTime(tMs, tf, ctx, session, TIMEZONE);
 }
 
+type Point = { time: number; value: number };
+
+interface SessionsVars {
+  /** Per session: time(res, sess) of the bar before, the session low and high */
+  prevT: number[];
+  low: number[];
+  high: number[];
+}
+
+interface SessionsRun extends BarRunState<SessionsVars> {
+  plots: Point[][];
+  fill: string[][];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<SessionsOnChartInputs>): BarStudy<SessionsRun, IndicatorResult & { bgColors: BgColorData[] }> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const res = cfg.res.replace(/^1/, '');
+  let sessions: Array<{ show: boolean; col: string; sessionT: (t: number) => number; periodT: (t: number) => number }> = [];
+  let inMs = false;
+  return {
+    // the chart timeframe comes from the bar gaps, the time unit from the first bar
+    key: (bars) => `${chartTimeframe(bars) || '1D'}|${bars.length > 0 && bars[0].time >= 1e12}`,
+    init(bars) {
+      inMs = bars.length > 0 && bars[0].time >= 1e12;
+      const chartTf = chartTimeframe(bars) || '1D';
+      sessions = [
+        { hours: cfg.london, show: cfg.London, col: LONDON_COLOR },
+        { hours: cfg.ny, show: cfg.NY, col: NY_COLOR },
+        { hours: cfg.tokyo, show: cfg.Tokyo, col: ASIA_COLOR },
+        { hours: cfg.sydney, show: cfg.Sydney, col: SYDNEY_COLOR },
+      ].map((s) => ({
+        show: s.show,
+        col: s.col,
+        // is_session(): time(timeframe.period, sess, "America/New_York"); is_newbar(): time(res, sess, ...)
+        sessionT: sessionTime(s.hours, chartTf, chartTf),
+        periodT: sessionTime(s.hours, res, chartTf),
+      }));
+      const s: SessionsRun = {
+        plots: Array.from({ length: 8 }, () => []),
+        fill: sessions.map(() => []),
+        bgColors: [],
+        steps: [],
+        vars: { prevT: [NaN, NaN, NaN, NaN], low: [NaN, NaN, NaN, NaN], high: [NaN, NaN, NaN, NaN] },
+        lists: [],
+        series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [...s.plots, ...s.fill];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { time, high, low } = bars[i];
+      const tMs = inMs ? time : time * 1000;
+      // changed in place: copyVars copies them at the end of the last confirmed bar
+      const { prevT, low: lows, high: highs } = s.vars;
+      sessions.forEach((ss, k) => {
+        // is_session(): not na(time(timeframe.period, sess, "America/New_York"))
+        const inSession = !Number.isNaN(ss.sessionT(tMs));
+        // is_newbar(): t = time(res, sess, "America/New_York"); na(t[1]) and not na(t) or t[1] < t
+        const t = ss.periodT(tMs);
+        const newBar = (Number.isNaN(prevT[k]) && !Number.isNaN(t)) || prevT[k] < t;
+        prevT[k] = t;
+        // float low = na; low := if session (if newbar low else math.min(low[1], low)) else low
+        if (inSession) {
+          lows[k] = newBar ? low : Math.min(lows[k], low);
+          highs[k] = newBar ? high : Math.max(highs[k], high);
+        } else {
+          lows[k] = NaN;
+          highs[k] = NaN;
+        }
+        s.plots[2 * k][i] = { time, value: lows[k] };
+        s.plots[2 * k + 1][i] = { time, value: highs[k] };
+        const on = inSession && ss.show;
+        s.fill[k][i] = on && cfg.bgColor ? ss.col : 'transparent';
+        if (on && !cfg.bgColor) s.bgColors.push({ time, color: ss.col });
+      });
+    },
+    copyVars: (v) => ({ prevT: v.prevT.slice(), low: v.low.slice(), high: v.high.slice() }),
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: s.fill.map((f, k) => ({ plot1: `plot${2 * k}`, plot2: `plot${2 * k + 1}`, colors: f.slice() })),
+        bgColors: s.bgColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SessionsOnChartInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult & { bgColors: BgColorData[] }> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<SessionsOnChartInputs> = {},
 ): IndicatorResult & { bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const inMs = n > 0 && bars[0].time >= 1e12;
-  const res = cfg.res.replace(/^1/, '');
-  const chartTf = chartTimeframe(bars) || '1D';
-
-  const sessions = [
-    { hours: cfg.london, show: cfg.London, col: LONDON_COLOR },
-    { hours: cfg.ny, show: cfg.NY, col: NY_COLOR },
-    { hours: cfg.tokyo, show: cfg.Tokyo, col: ASIA_COLOR },
-    { hours: cfg.sydney, show: cfg.Sydney, col: SYDNEY_COLOR },
-  ].map((s) => ({
-    ...s,
-    // is_session(): time(timeframe.period, sess, "America/New_York"); is_newbar(): time(res, sess, ...)
-    sessionT: sessionTime(s.hours, chartTf, chartTf),
-    periodT: sessionTime(s.hours, res, chartTf),
-    prevT: NaN,
-    low: NaN,
-    high: NaN,
-    fill: [] as string[],
-  }));
-
-  const plots: Record<string, Array<{ time: number; value: number }>> = {};
-  for (let k = 0; k < 8; k++) plots[`plot${k}`] = [];
-  const bgColors: BgColorData[] = [];
-
-  for (let i = 0; i < n; i++) {
-    const { time, high, low } = bars[i];
-    const tMs = inMs ? time : time * 1000;
-    sessions.forEach((s, k) => {
-      // is_session(): not na(time(timeframe.period, sess, "America/New_York"))
-      const inSession = !Number.isNaN(s.sessionT(tMs));
-      // is_newbar(): t = time(res, sess, "America/New_York"); na(t[1]) and not na(t) or t[1] < t
-      const t = s.periodT(tMs);
-      const newBar = (Number.isNaN(s.prevT) && !Number.isNaN(t)) || s.prevT < t;
-      s.prevT = t;
-      // float low = na; low := if session (if newbar low else math.min(low[1], low)) else low
-      if (inSession) {
-        s.low = newBar ? low : Math.min(s.low, low);
-        s.high = newBar ? high : Math.max(s.high, high);
-      } else {
-        s.low = NaN;
-        s.high = NaN;
-      }
-      plots[`plot${2 * k}`].push({ time, value: s.low });
-      plots[`plot${2 * k + 1}`].push({ time, value: s.high });
-      const on = inSession && s.show;
-      s.fill.push(on && cfg.bgColor ? s.col : 'transparent');
-      if (on && !cfg.bgColor) bgColors.push({ time, color: s.col });
-    });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills: sessions.map((s, k) => ({ plot1: `plot${2 * k}`, plot2: `plot${2 * k + 1}`, colors: s.fill })),
-    bgColors,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
+
 
 export const SessionsOnChart = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

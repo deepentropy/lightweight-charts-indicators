@@ -15,7 +15,7 @@ import ts from 'typescript';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HELPERS_SPEC = 'lightweight-charts-indicators/helpers';
 /** Library modules a standard source may import, given to scripts by the helpers entry. */
-const HELPER_MODULES = new Set(['chart-context', 'anchor-period', 'other-symbol', 'lower-tf-volume', 'bar-time', 'alert-states']);
+const HELPER_MODULES = new Set(['chart-context', 'anchor-period', 'other-symbol', 'lower-tf-volume', 'bar-time', 'alert-states', 'live-run']);
 
 /** Registry id -> `src/standard/<file>.ts`, read from the registry in src/index.ts (entry `id` + its module alias). */
 export function standardFiles(indexSource) {

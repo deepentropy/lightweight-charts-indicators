@@ -9,8 +9,10 @@
  * (histogram sign changes) are not ported.
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type MACDMaType = 'EMA' | 'SMA';
 
@@ -70,39 +72,86 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const lt = (a: number, b: number) => b - a > EPS;
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<MACDInputs> = {}): IndicatorResult & { alerts: AlertConditionState[] } {
+type Ma = { step(v: number): number; commit(): void };
+
+/** One moving average of the MACD (SMA or EMA) stepped bar by bar */
+function maStep(length: number, maType: MACDMaType): Ma {
+  if (maType === 'SMA') {
+    const m = taStep.sma();
+    return { step: (v) => m.step(v, length), commit: () => m.commit() };
+  }
+  return taStep.ema(length);
+}
+
+type Point = { time: number; value: number; color?: string };
+
+interface MacdRun extends BarRunState<Record<string, never>> {
+  fast: Ma;
+  slow: Ma;
+  sig: Ma;
+  hist: number[];
+  histData: Point[];
+  macdData: Point[];
+  signalData: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<MACDInputs>): BarStudy<MacdRun, IndicatorResult & { alerts: AlertConditionState[] }> {
   const { src, fastLength, slowLength, signalLength, oscMaType, signalMaType } = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const ma = (source: Series, length: number, maType: MACDMaType) =>
-    maType === 'SMA' ? ta.sma(source, length) : ta.ema(source, length);
-  const source = getSourceSeries(bars, src);
-
-  // MACD line = fast MA - slow MA; signal line = MA of the MACD line; histogram = MACD - signal
-  const maFast = A(ma(source, fastLength, oscMaType));
-  const maSlow = A(ma(source, slowLength, oscMaType));
-  const macd = maFast.map((f, i) => f - maSlow[i]);
-  const signal = A(ma(Series.fromArray(bars, macd), signalLength, signalMaType));
-  const hist = macd.map((m, i) => m - signal[i]);
-
-  const histData = hist.map((h, i) => {
-    const prev = i > 0 ? hist[i - 1] : NaN;
-    const color = ge(h, 0) ? (gt(h, prev) ? '#26A69A' : '#B2DFDB') : gt(h, prev) ? '#FFCDD2' : '#FF5252';
-    return { time: bars[i].time, value: h, color };
-  });
-
+  const value = barSource(src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'plot0': histData,
-      'plot1': macd.map((value, i) => ({ time: bars[i].time, value })),
-      'plot2': signal.map((value, i) => ({ time: bars[i].time, value })),
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const fast = maStep(fastLength, oscMaType);
+      const slow = maStep(slowLength, oscMaType);
+      const sig = maStep(signalLength, signalMaType);
+      const s: MacdRun = {
+        fast, slow, sig, hist: [], histData: [], macdData: [], signalData: [], flags: [[], []], times: [[], []],
+        steps: [fast, slow, sig], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.hist, s.histData, s.macdData, s.signalData, ...s.flags];
+      return s;
     },
-    // alertcondition(hist[1] >= 0 and hist < 0) / (hist[1] <= 0 and hist > 0)
-    alerts: alertStates(alertConditions, bars, [
-      hist.map((h, i) => i > 0 && ge(hist[i - 1], 0) && lt(h, 0)),
-      hist.map((h, i) => i > 0 && le(hist[i - 1], 0) && gt(h, 0)),
-    ]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = value(b);
+      // MACD line = fast MA - slow MA; signal line = MA of the MACD line; histogram = MACD - signal
+      const macd = s.fast.step(v) - s.slow.step(v);
+      const signal = s.sig.step(macd);
+      const h = macd - signal;
+      const prev = i > 0 ? s.hist[i - 1] : NaN;
+      s.hist[i] = h;
+      const color = ge(h, 0) ? (gt(h, prev) ? '#26A69A' : '#B2DFDB') : gt(h, prev) ? '#FFCDD2' : '#FF5252';
+      s.histData[i] = { time: b.time, value: h, color };
+      s.macdData[i] = { time: b.time, value: macd };
+      s.signalData[i] = { time: b.time, value: signal };
+      // alertcondition(hist[1] >= 0 and hist < 0) / (hist[1] <= 0 and hist > 0)
+      const flags = [i > 0 && ge(prev, 0) && lt(h, 0), i > 0 && le(prev, 0) && gt(h, 0)];
+      flags.forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.histData.slice(), 'plot1': s.macdData.slice(), 'plot2': s.signalData.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MACDInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult & { alerts: AlertConditionState[] }> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MACDInputs> = {}): IndicatorResult & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** Reference alertconditions */
@@ -111,4 +160,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Falling to rising', message: 'The MACD histogram switched from a falling to rising state' },
 ];
 
-export const MACD = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, alertConditions };
+export const MACD = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, alertConditions };

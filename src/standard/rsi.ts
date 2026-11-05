@@ -5,9 +5,11 @@
  * Momentum oscillator measuring the speed and magnitude of price changes.
  */
 
-import { Series, ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type FillData, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, OutputDecl, OutputValues } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RSIInputs {
   length: number;
@@ -82,212 +84,221 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Regular Bearish Divergence', message: 'Found a new Regular Bearish Divergence, `Pivot Lookback Right` number of bars to the left of the current bar.' },
 ];
 
-export function calculate(bars: Bar[], inputs: Partial<RSIInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers?: MarkerData[]; outputValues: OutputValues; alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers?: MarkerData[]; outputValues: OutputValues; alerts: AlertConditionState[] };
+
+interface RsiVars {
+  /** ta.valuewhen(plFound, rsiLBR / low[lbR], 1): the last two values (older first) */
+  plRsi: readonly number[];
+  phRsi: readonly number[];
+  plLow: readonly number[];
+  phHigh: readonly number[];
+  /** Calls of the ta.barssince in _inRange (Pine v6 `and` is lazy) */
+  plCalls: number;
+  phCalls: number;
+}
+
+interface RsiRun extends BarRunState<RsiVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  ma: { step(v: number, volume: number): number; commit(): void } | null;
+  dev: ReturnType<typeof taStep.stdev> | null;
+  pl: PivotStep;
+  ph: PivotStep;
+  rsiArr: number[];
+  plFound: boolean[];
+  phFound: boolean[];
+  plotData: Point[];
+  maData: Point[];
+  bbUpperData: Point[];
+  bbLowerData: Point[];
+  midlineData: Point[];
+  bullLine: Point[];
+  bearLine: Point[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+  bullLabel: { time: number; value: number }[];
+  bearLabel: { time: number; value: number }[];
+}
+
+/** ta.valuewhen(cond, source, 1) history: the value added on a bar where the condition is true */
+const pushed = (h: readonly number[], v: number): readonly number[] => (h.length < 2 ? [...h, v] : [h[1]!, v]);
+/** occurrence 1 of the history (null before two values) */
+const second = (h: readonly number[]): number | null => (h.length === 2 ? h[0]! : null);
+
+function study(inputs: Partial<RSIInputs>): BarStudy<RsiRun, Result> {
   const { length, src, calculateDivergence, maType, maLength, bbMult } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-  const rsi = ta.rsi(source, length);
-  const rsiArr = rsi.toArray();
-
-  const plotData = rsiArr.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  // Smoothing MA
+  const value = barSource(src);
   const enableMA = maType !== 'None';
   const isBB = maType === 'SMA + Bollinger Bands';
-  let maData = bars.map(b => ({ time: b.time, value: NaN }));
-  let bbUpperData = bars.map(b => ({ time: b.time, value: NaN }));
-  let bbLowerData = bars.map(b => ({ time: b.time, value: NaN }));
-  const fills: FillData[] = [];
-
-  if (enableMA) {
-    let maSeries: Series;
+  const lookbackLeft = 5;
+  const lookbackRight = 5;
+  const rangeLower = 5;
+  const rangeUpper = 60;
+  const maStep = (): RsiRun['ma'] => {
     switch (maType) {
-      case 'EMA': maSeries = ta.ema(rsi, maLength); break;
-      case 'SMMA (RMA)': maSeries = ta.rma(rsi, maLength); break;
-      case 'WMA': maSeries = ta.wma(rsi, maLength); break;
-      case 'VWMA': maSeries = ta.vwma(rsi, maLength, new Series(bars, b => b.volume ?? 0)); break;
-      default: maSeries = ta.sma(rsi, maLength); break;
+      case 'None': return null;
+      case 'EMA': { const m = taStep.ema(maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMMA (RMA)': { const m = taStep.rma(maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, maLength), commit: () => m.commit() }; }
+      case 'VWMA': { const m = taStep.vwma(maLength); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+      default: { const m = taStep.sma(); return { step: (v) => m.step(v, maLength), commit: () => m.commit() }; }
     }
-    const maArr = maSeries.toArray();
-    maData = maArr.map((v, i) => ({ time: bars[i].time, value: v ?? NaN }));
-
-    if (isBB) {
-      const stdevArr = ta.stdev(rsi, maLength).toArray();
-      bbUpperData = maArr.map((v, i) => ({ time: bars[i].time, value: (v != null && stdevArr[i] != null) ? v + stdevArr[i]! * bbMult : NaN }));
-      bbLowerData = maArr.map((v, i) => ({ time: bars[i].time, value: (v != null && stdevArr[i] != null) ? v - stdevArr[i]! * bbMult : NaN }));
-      fills.push({ plot1: 'plot2', plot2: 'plot3', options: { color: '#089981', transp: 90, title: 'BB Background' } });
-    }
-  }
-
-  // Pine: midLinePlot = plot(50, display = display.none)
-  //   fill(rsiPlot, midLinePlot, 100, 70, top_color = color.new(color.green, 0), bottom_color = color.new(color.green, 100))
-  //   fill(rsiPlot, midLinePlot, 30, 0, top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0))
-  const midlineData = bars.map(b => ({ time: b.time, value: 50 }));
-  const n = bars.length;
-  const constant = <T>(v: T): T[] => new Array(n).fill(v);
-  fills.unshift(
-    {
-      plot1: 'plot0', plot2: 'plot6', options: { title: 'Overbought Gradient Fill' },
-      gradient: { topValue: constant(100), bottomValue: constant(70), topColor: constant('#4CAF50'), bottomColor: constant('#4CAF5000') },
-    },
-    {
-      plot1: 'plot0', plot2: 'plot6', options: { title: 'Oversold Gradient Fill' },
-      gradient: { topValue: constant(30), bottomValue: constant(0), topColor: constant('#F2364500'), bottomColor: constant('#F23645') },
-    },
-  );
-
-  // Divergence detection
-  const markers: MarkerData[] = [];
-  // Pine: plot(plFound ? rsiLBR : na, offset = -lookbackRight, color = bullCond ? bullColor : noneColor) and the
-  // bearish one; the labels' series (cond ? rsiLBR : na) on the bar they are computed on.
-  const bullLine: { time: number; value: number; color?: string }[] = bars.map((b) => ({ time: b.time, value: NaN }));
-  const bearLine: { time: number; value: number; color?: string }[] = bars.map((b) => ({ time: b.time, value: NaN }));
-  const labels: OutputValues = { bullLabel: [], bearLabel: [] };
-  // the alert conditions on the bar they are computed on
-  const bullAlert: boolean[] = bars.map(() => false);
-  const bearAlert: boolean[] = bars.map(() => false);
-
-  if (calculateDivergence) {
-    const lookbackLeft = 5;
-    const lookbackRight = 5;
-    const rangeLower = 5;
-    const rangeUpper = 60;
-
-    // Find pivot lows and highs in RSI
-    const plArr = ta.pivotlow(rsi, lookbackLeft, lookbackRight).toArray();
-    const phArr = ta.pivothigh(rsi, lookbackLeft, lookbackRight).toArray();
-
-    // Pivot conditions
-    // Pine: plFound = not na(ta.pivotlow(...)), true `lookbackRight` bars after the pivot bar
-    const plFound: boolean[] = plArr.map(v => v != null && !isNaN(v));
-    const phFound: boolean[] = phArr.map(v => v != null && !isNaN(v));
-
-    // Helper: value of source when condition was true, nth occurrence back
-    function valueWhen(cond: boolean[], source: number[], occurrence: number): (number | null)[] {
-      const result: (number | null)[] = [];
-      const history: number[] = [];
-      for (let i = 0; i < cond.length; i++) {
-        if (cond[i]) history.push(source[i]);
-        const idx = history.length - 1 - occurrence;
-        result.push(idx >= 0 ? history[idx] : null);
-      }
-      return result;
-    }
-
-    // RSI values shifted by lookbackRight
-    const rsiLBR: (number | null)[] = rsiArr.map((_, i) =>
-      i >= lookbackRight ? rsiArr[i - lookbackRight] ?? null : null
-    );
-    const lowLBR: number[] = bars.map((_, i) =>
-      i >= lookbackRight ? bars[i - lookbackRight].low : NaN
-    );
-    const highLBR: number[] = bars.map((_, i) =>
-      i >= lookbackRight ? bars[i - lookbackRight].high : NaN
-    );
-
-    // Use rsiLBR for valuewhen (value at lookbackRight bars ago when pivot found)
-    const plRsiVW = valueWhen(plFound, rsiLBR as number[], 1);
-    const phRsiVW = valueWhen(phFound, rsiLBR as number[], 1);
-    const plLowVW = valueWhen(plFound, lowLBR, 1);
-    const phHighVW = valueWhen(phFound, highLBR, 1);
-
-    // Pine v6 `and` is lazy: in `rsiHL = rsiLBR > ta.valuewhen(...) and _inRange(plFound[1])` the ta.barssince
-    // inside _inRange only runs on bars where the left side is true, so it counts those calls, not bars.
-    let plCalls = NaN;
-    let phCalls = NaN;
-
-    for (let i = lookbackRight; i < bars.length; i++) {
-      const rsiVal = rsiLBR[i];
-
-      // Regular Bullish: RSI higher low + price lower low at pivot low
-      const prevRsiL = plRsiVW[i];
-      let rsiHL = false;
-      if (rsiVal != null && prevRsiL != null && rsiVal > prevRsiL) {
-        if (plFound[i - 1]) plCalls = 0;
-        else if (!isNaN(plCalls)) plCalls++;
-        rsiHL = plCalls >= rangeLower && plCalls <= rangeUpper;
-      }
-      {
-        const prevLow = plLowVW[i];
-        const bull = plFound[i] && rsiHL && prevLow != null && lowLBR[i] < prevLow;
-        if (plFound[i] && rsiVal != null) bullLine[i - lookbackRight] = { time: bars[i - lookbackRight].time, value: rsiVal, color: bull ? '#4CAF50' : 'transparent' };
-        if (bull && rsiVal != null) labels.bullLabel.push({ time: bars[i].time as number, value: rsiVal });
-        bullAlert[i] = bull;
-      }
-      if (plFound[i] && rsiHL) {
-        const prevLow = plLowVW[i];
-        const priceLL = prevLow != null && lowLBR[i] < prevLow;
-
-        if (priceLL) {
-          // Pine: plotshape(bullCond ? rsiLBR : na, offset = -lookbackRight, text = " Bull ", shape.labelup,
-          //   location.absolute, color = bullColor, textcolor = textColor (white))
-          markers.push({
-            time: bars[i - lookbackRight].time,
-            position: 'atPriceBottom',
-            price: rsiVal!,
-            shape: 'labelUp',
-            color: '#4CAF50',
-            text: ' Bull ',
-            textColor: '#FFFFFF',
-            id: 'bullLabel',
-          });
-        }
-      }
-
-      // Regular Bearish: RSI lower high + price higher high at pivot high
-      const prevRsiH = phRsiVW[i];
-      let rsiLH = false;
-      if (rsiVal != null && prevRsiH != null && rsiVal < prevRsiH) {
-        if (phFound[i - 1]) phCalls = 0;
-        else if (!isNaN(phCalls)) phCalls++;
-        rsiLH = phCalls >= rangeLower && phCalls <= rangeUpper;
-      }
-      {
-        const prevHigh = phHighVW[i];
-        const bear = phFound[i] && rsiLH && prevHigh != null && highLBR[i] > prevHigh;
-        if (phFound[i] && rsiVal != null) bearLine[i - lookbackRight] = { time: bars[i - lookbackRight].time, value: rsiVal, color: bear ? '#FF5252' : 'transparent' };
-        if (bear && rsiVal != null) labels.bearLabel.push({ time: bars[i].time as number, value: rsiVal });
-        bearAlert[i] = bear;
-      }
-      if (phFound[i] && rsiLH) {
-        const prevHigh = phHighVW[i];
-        const priceHH = prevHigh != null && highLBR[i] > prevHigh;
-
-        if (priceHH) {
-          // Pine: plotshape(bearCond ? rsiLBR : na, ..., text = " Bear ", shape.labeldown, location.absolute)
-          markers.push({
-            time: bars[i - lookbackRight].time,
-            position: 'atPriceTop',
-            price: rsiVal!,
-            shape: 'labelDown',
-            color: '#FF5252',
-            text: ' Bear ',
-            textColor: '#FFFFFF',
-            id: 'bearLabel',
-          });
-        }
-      }
-    }
-  }
-
+  };
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'plot0': plotData,
-      'plot1': maData,
-      'plot2': bbUpperData,
-      'plot3': bbLowerData,
-      'plot6': midlineData,
-      'plot4': bullLine,
-      'plot5': bearLine,
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const rsi = taStep.rsi(length);
+      const ma = maStep();
+      const dev = isBB ? taStep.stdev() : null;
+      const pl = new PivotStep(lookbackLeft, lookbackRight, false);
+      const ph = new PivotStep(lookbackLeft, lookbackRight, true);
+      const s: RsiRun = {
+        rsi, ma, dev, pl, ph, rsiArr: [], plFound: [], phFound: [], plotData: [], maData: [], bbUpperData: [],
+        bbLowerData: [], midlineData: [], bullLine: [], bearLine: [], flags: [[], []], times: [[], []], markers: [],
+        bullLabel: [], bearLabel: [],
+        steps: [rsi, ...(ma ? [ma] : []), ...(dev ? [dev] : []), ...(calculateDivergence ? [pl, ph] : [])],
+        vars: { plRsi: [], phRsi: [], plLow: [], phHigh: [], plCalls: NaN, phCalls: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [...s.times, s.markers, s.bullLabel, s.bearLabel];
+      s.series = [
+        s.rsiArr, s.plFound, s.phFound, s.plotData, s.maData, s.bbUpperData, s.bbLowerData, s.midlineData, s.bullLine,
+        s.bearLine, ...s.flags,
+      ];
+      return s;
     },
-    fills,
-    markers: markers.length > 0 ? markers : undefined,
-    outputValues: labels,
-    alerts: alertStates(alertConditions, bars, [bullAlert, bearAlert]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const r = s.rsi.step(value(b));
+      s.rsiArr[i] = r;
+      s.plotData[i] = { time, value: r };
+      s.midlineData[i] = { time, value: 50 };
+      // Smoothing MA of the RSI (and the bands of its stdev)
+      const ma = s.ma ? s.ma.step(r, b.volume ?? 0) : NaN;
+      s.maData[i] = { time, value: ma };
+      const sd = s.dev ? s.dev.step(r, maLength) : NaN;
+      s.bbUpperData[i] = { time, value: isBB ? ma + sd * bbMult : NaN };
+      s.bbLowerData[i] = { time, value: isBB ? ma - sd * bbMult : NaN };
+
+      // Divergence detection: the lines are plotted lookbackRight bars back (offset = -lookbackRight); bar i sets
+      // its own point to na and the point of bar i - lookbackRight, so a new price of the forming bar writes both again
+      s.bullLine[i] = { time, value: NaN };
+      s.bearLine[i] = { time, value: NaN };
+      let bull = false;
+      let bear = false;
+      if (calculateDivergence) {
+        // plFound = not na(ta.pivotlow(rsi, lookbackLeft, lookbackRight)), lookbackRight bars after the pivot bar
+        s.plFound[i] = !Number.isNaN(s.pl.step(i, r));
+        s.phFound[i] = !Number.isNaN(s.ph.step(i, r));
+        if (i >= lookbackRight) {
+          const v = s.vars;
+          const back = bars[i - lookbackRight];
+          const rv = s.rsiArr[i - lookbackRight];
+          const rsiVal: number | null = rv ?? null;
+          const lowLBR = back.low;
+          const highLBR = back.high;
+          const plFound = s.plFound[i];
+          const phFound = s.phFound[i];
+          // ta.valuewhen(plFound, x, 1) includes the current bar
+          if (plFound) {
+            v.plRsi = pushed(v.plRsi, rsiVal as number);
+            v.plLow = pushed(v.plLow, lowLBR);
+          }
+          if (phFound) {
+            v.phRsi = pushed(v.phRsi, rsiVal as number);
+            v.phHigh = pushed(v.phHigh, highLBR);
+          }
+          // Regular Bullish: RSI higher low + price lower low at pivot low
+          const prevRsiL = second(v.plRsi);
+          let rsiHL = false;
+          if (rsiVal != null && prevRsiL != null && rsiVal > prevRsiL) {
+            if (s.plFound[i - 1]) v.plCalls = 0;
+            else if (!isNaN(v.plCalls)) v.plCalls++;
+            rsiHL = v.plCalls >= rangeLower && v.plCalls <= rangeUpper;
+          }
+          const prevLow = second(v.plLow);
+          bull = plFound && rsiHL && prevLow != null && lowLBR < prevLow;
+          if (plFound && rsiVal != null) s.bullLine[i - lookbackRight] = { time: back.time, value: rsiVal, color: bull ? '#4CAF50' : 'transparent' };
+          else s.bullLine[i - lookbackRight] = { time: back.time, value: NaN };
+          if (bull && rsiVal != null) s.bullLabel.push({ time: time as number, value: rsiVal });
+
+          // Regular Bearish: RSI lower high + price higher high at pivot high
+          const prevRsiH = second(v.phRsi);
+          let rsiLH = false;
+          if (rsiVal != null && prevRsiH != null && rsiVal < prevRsiH) {
+            if (s.phFound[i - 1]) v.phCalls = 0;
+            else if (!isNaN(v.phCalls)) v.phCalls++;
+            rsiLH = v.phCalls >= rangeLower && v.phCalls <= rangeUpper;
+          }
+          const prevHigh = second(v.phHigh);
+          bear = phFound && rsiLH && prevHigh != null && highLBR > prevHigh;
+          if (phFound && rsiVal != null) s.bearLine[i - lookbackRight] = { time: back.time, value: rsiVal, color: bear ? '#FF5252' : 'transparent' };
+          else s.bearLine[i - lookbackRight] = { time: back.time, value: NaN };
+          if (bear && rsiVal != null) s.bearLabel.push({ time: time as number, value: rsiVal });
+
+          // Pine: plotshape(bullCond ? rsiLBR : na, offset = -lookbackRight, text = " Bull ", shape.labelup,
+          //   location.absolute, color = bullColor, textcolor = textColor (white)), and the bearish one
+          if (bull) {
+            s.markers.push({ time: back.time, position: 'atPriceBottom', price: rsiVal!, shape: 'labelUp', color: '#4CAF50', text: ' Bull ', textColor: '#FFFFFF', id: 'bullLabel' });
+          }
+          if (bear) {
+            s.markers.push({ time: back.time, position: 'atPriceTop', price: rsiVal!, shape: 'labelDown', color: '#FF5252', text: ' Bear ', textColor: '#FFFFFF', id: 'bearLabel' });
+          }
+        }
+      }
+      [bull, bear].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(time as number);
+      });
+    },
+    copyVars: (v) => ({ ...v }),
+    result(s, bars) {
+      const n = bars.length;
+      const constant = <T>(v: T): T[] => new Array(n).fill(v);
+      // Pine: midLinePlot = plot(50, display = display.none)
+      //   fill(rsiPlot, midLinePlot, 100, 70, top_color = color.new(color.green, 0), bottom_color = color.new(color.green, 100))
+      //   fill(rsiPlot, midLinePlot, 30, 0, top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0))
+      const fills: FillData[] = [
+        {
+          plot1: 'plot0', plot2: 'plot6', options: { title: 'Overbought Gradient Fill' },
+          gradient: { topValue: constant(100), bottomValue: constant(70), topColor: constant('#4CAF50'), bottomColor: constant('#4CAF5000') },
+        },
+        {
+          plot1: 'plot0', plot2: 'plot6', options: { title: 'Oversold Gradient Fill' },
+          gradient: { topValue: constant(30), bottomValue: constant(0), topColor: constant('#F2364500'), bottomColor: constant('#F23645') },
+        },
+      ];
+      if (enableMA && isBB) fills.push({ plot1: 'plot2', plot2: 'plot3', options: { color: '#089981', transp: 90, title: 'BB Background' } });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'plot0': s.plotData.slice(),
+          'plot1': s.maData.slice(),
+          'plot2': s.bbUpperData.slice(),
+          'plot3': s.bbLowerData.slice(),
+          'plot6': s.midlineData.slice(),
+          'plot4': s.bullLine.slice(),
+          'plot5': s.bearLine.slice(),
+        },
+        fills,
+        markers: s.markers.length > 0 ? s.markers.slice() : undefined,
+        outputValues: { bullLabel: s.bullLabel.slice(), bearLabel: s.bearLabel.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
 
-export const RSI = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig, outputs, alertConditions };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RSIInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RSIInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+
+export const RSI = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig, outputs, alertConditions };

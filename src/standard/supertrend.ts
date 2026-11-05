@@ -12,8 +12,10 @@
  *   fill(bodyMiddle, downTrend, color = color.new(color.red,   90), fillgaps = false)
  */
 
-import { ta, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type FillData, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /**
  * Supertrend indicator input parameters
@@ -70,53 +72,73 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert2', title: 'Trend Change', message: 'The Supertrend value switched from Uptrend to Downtrend or vice versa' },
 ];
 
-export function calculate(bars: Bar[], inputs: Partial<SupertrendInputs> = {}): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface SupertrendRun extends BarRunState<Record<string, never>> {
+  st: ReturnType<typeof taStep.supertrend>;
+  dir: number[];
+  up: Point[];
+  down: Point[];
+  middle: Point[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SupertrendInputs>): BarStudy<SupertrendRun, Result> {
   const { atrPeriod, factor } = { ...defaultInputs, ...inputs };
-
-  const [supertrendSeries, directionSeries] = ta.supertrend(bars, factor, atrPeriod);
-  // supertrend := barstate.isfirst ? na : supertrend
-  const supertrendValues = supertrendSeries.toArray().map((v: number | null, i: number) => (i === 0 ? null : v));
-  const directions = directionSeries.toArray();
-
-  const upTrendData = supertrendValues.map((value: number | null, i: number) => ({
-    time: bars[i].time,
-    value: (directions[i] ?? 1) < 0 ? (value ?? NaN) : NaN,
-  }));
-
-  const downTrendData = supertrendValues.map((value: number | null, i: number) => ({
-    time: bars[i].time,
-    value: (directions[i] ?? 1) >= 0 ? (value ?? NaN) : NaN,
-  }));
-
-  const bodyMiddleData = bars.map((bar, i) => ({
-    time: bar.time,
-    value: i === 0 ? NaN : (bar.open + bar.close) / 2,
-  }));
-
-  const fills: FillData[] = [
-    { plot1: 'plot2', plot2: 'plot0', options: { color: '#089981', transp: 90, title: 'Uptrend background', fillgaps: false } },
-    { plot1: 'plot2', plot2: 'plot1', options: { color: '#F23645', transp: 90, title: 'Downtrend background', fillgaps: false } },
-  ];
-
   return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
+    init() {
+      const st = taStep.supertrend(factor, atrPeriod);
+      const s: SupertrendRun = {
+        st, dir: [], up: [], down: [], middle: [], flags: [[], [], []], times: [[], [], []],
+        steps: [st], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.dir, s.up, s.down, s.middle, ...s.flags];
+      return s;
     },
-    plots: {
-      'plot0': upTrendData,
-      'plot1': downTrendData,
-      'plot2': bodyMiddleData,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const [stValue, direction] = s.st.step(b.high, b.low, b.close);
+      // supertrend := barstate.isfirst ? na : supertrend
+      const value = i === 0 ? NaN : stValue;
+      const dir = direction ?? NaN;
+      s.dir[i] = dir;
+      const d = Number.isNaN(dir) ? 1 : dir;
+      s.up[i] = { time: b.time, value: d < 0 ? value : NaN };
+      s.down[i] = { time: b.time, value: d >= 0 ? value : NaN };
+      s.middle[i] = { time: b.time, value: i === 0 ? NaN : (b.open + b.close) / 2 };
+      // direction[1] > direction, direction[1] < direction, direction[1] != direction (na compares false)
+      const p = i > 0 ? s.dir[i - 1] : NaN;
+      const flags = [i > 0 && p > dir, i > 0 && p < dir, i > 0 && Number.isFinite(p) && Number.isFinite(dir) && p !== dir];
+      flags.forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      });
     },
-    fills,
-    // direction[1] > direction, direction[1] < direction, direction[1] != direction (na compares false)
-    alerts: (() => {
-      const d = (i: number) => directions[i] ?? NaN;
-      const at = (f: (a: number, b: number) => boolean) => bars.map((_, i) => i > 0 && f(d(i - 1), d(i)));
-      return alertStates(alertConditions, bars, [at((a, b) => a > b), at((a, b) => a < b), at((a, b) => Number.isFinite(a) && Number.isFinite(b) && a !== b)]);
-    })(),
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.up.slice(), 'plot1': s.down.slice(), 'plot2': s.middle.slice() },
+        fills: [
+          { plot1: 'plot2', plot2: 'plot0', options: { color: '#089981', transp: 90, title: 'Uptrend background', fillgaps: false } },
+          { plot1: 'plot2', plot2: 'plot1', options: { color: '#F23645', transp: 90, title: 'Downtrend background', fillgaps: false } },
+        ] as FillData[],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SupertrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SupertrendInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /**
@@ -124,6 +146,7 @@ export function calculate(bars: Bar[], inputs: Partial<SupertrendInputs> = {}): 
  */
 export const Supertrend = {
   calculate,
+  createRun,
   alertConditions,
   metadata,
   defaultInputs,

@@ -18,9 +18,11 @@
  * Original notice: © BOSWaves
  */
 
-import { ta, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AdaptiveMLTrailingStopInputs {
   /** KAMA length (efficiency ratio period) */
@@ -120,230 +122,280 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
  *   bar); the window of the last len bars is scanned again when the extreme is len bars old (the oldest bar wins
  *   a tie);
  * - an na source writes na, resets the extreme and returns na.
+ * A class (not a closure) so that a live run can copy its state at the end of the last confirmed bar.
  */
-function pineExtreme(len: number, isLow: boolean) {
-  const ring = len + 1;
-  const slot: number[] = new Array(ring).fill(NaN);
-  let ext = NaN;
-  let extBar = -1;
-  return (bar: number, x: number): number => {
+class PineExtreme {
+  private slot: number[];
+  private ext = NaN;
+  private extBar = -1;
+
+  constructor(private readonly len: number, private readonly isLow: boolean, slot?: number[]) {
+    this.slot = slot ?? new Array(len + 1).fill(NaN);
+  }
+
+  call(bar: number, x: number): number {
+    const { len, isLow, slot } = this;
+    const ring = len + 1;
     slot[bar % ring] = x;
     if (isNaN(x)) {
-      ext = NaN;
+      this.ext = NaN;
       return NaN;
     }
-    if (isNaN(ext) || bar - extBar >= len) {
-      ext = NaN;
+    if (isNaN(this.ext) || bar - this.extBar >= len) {
+      this.ext = NaN;
       for (let k = 0; k < len && bar - k >= 0; k++) {
         const v = slot[(bar - k) % ring];
-        if (!isNaN(v) && (isNaN(ext) || (isLow ? v <= ext : v >= ext))) {
-          ext = v;
-          extBar = bar - k;
+        if (!isNaN(v) && (isNaN(this.ext) || (isLow ? v <= this.ext : v >= this.ext))) {
+          this.ext = v;
+          this.extBar = bar - k;
         }
       }
-    } else if (isLow ? x < ext : x > ext) {
-      ext = x;
-      extBar = bar;
+    } else if (isLow ? x < this.ext : x > this.ext) {
+      this.ext = x;
+      this.extBar = bar;
     }
-    return bar < len - 1 ? NaN : ext;
+    return bar < len - 1 ? NaN : this.ext;
+  }
+
+  clone(): PineExtreme {
+    const c = new PineExtreme(this.len, this.isLow, this.slot.slice());
+    c.ext = this.ext;
+    c.extBar = this.extBar;
+    return c;
+  }
+}
+
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface AdaptiveVars {
+  hiCur: PineExtreme;
+  loCur: PineExtreme;
+  hiHist: PineExtreme;
+  loHist: PineExtreme;
+  /** var float knnPrediction = 0.5, var float knnConfidence = 0.0 */
+  prediction: number;
+  confidence: number;
+  smoothLong: number;
+  smoothShort: number;
+  /** var int trend = 0 */
+  trend: number;
+  lastLongDiamond: number;
+  lastShortDiamond: number;
+}
+
+interface AdaptiveRun extends BarRunState<AdaptiveVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  close: number[];
+  longStop: number[];
+  shortStop: number[];
+  plots: Point[][];
+  layers: string[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AdaptiveMLTrailingStopInputs>): BarStudy<AdaptiveRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const L = cfg.kamaLength;
+  const fastSC = 2.0 / (cfg.fastLength + 1);
+  const slowSC = 2.0 / (cfg.slowLength + 1);
+  const FL = cfg.knnFeatureLength;
+  const K = cfg.knnK;
+  const TRANSP = [85, 90, 95, 97];
+  return {
+    init() {
+      const s: AdaptiveRun = {
+        atr: taStep.atr(cfg.atrPeriod), close: [], longStop: [], shortStop: [],
+        plots: Array.from({ length: 7 }, () => []), layers: TRANSP.map(() => []), markers: [], barColors: [],
+        flags: [[], []], times: [[], []], steps: [],
+        vars: {
+          hiCur: new PineExtreme(FL, false), loCur: new PineExtreme(FL, true),
+          hiHist: new PineExtreme(FL, false), loHist: new PineExtreme(FL, true),
+          prediction: 0.5, confidence: 0.0, smoothLong: NaN, smoothShort: NaN, trend: 0,
+          lastLongDiamond: -999, lastShortDiamond: -999,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.atr];
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = [s.close, s.longStop, s.shortStop, ...s.plots, ...s.layers, ...s.flags];
+      return s;
+    },
+    copyVars: (v) => ({ ...v, hiCur: v.hiCur.clone(), loCur: v.loCur.clone(), hiHist: v.hiHist.clone(), loHist: v.loHist.clone() }),
+    bar(s, b, bars) {
+      const v = s.vars;
+      const bar = bars[b];
+      const close = s.close;
+      close[b] = bar.close;
+      const at = (a: number[], i: number) => (i >= 0 && i < a.length ? a[i] : NaN);
+
+      // KAMA efficiency ratio and smoothing constant
+      const change = Math.abs(close[b] - at(close, b - L));
+      // math.sum(math.abs(close - close[1]), kamaLength): na while the window holds bar 0 (close[1] na)
+      let volatility = NaN;
+      if (b >= L) {
+        volatility = 0;
+        for (let k = 0; k < L; k++) volatility += Math.abs(close[b - k] - close[b - k - 1]);
+      }
+      // volatility != 0 ? change / volatility : 0 (na != 0 is false)
+      const er = !isNaN(volatility) && Math.abs(volatility) > EPS ? change / volatility : 0;
+      const sc = Math.pow(er * (fastSC - slowSC) + slowSC, 2);
+
+      // KNN pattern matching. normalize(src, len): priceRange > 0 ? (src - lowest) / priceRange : 0.5
+      const normalize = (hi: PineExtreme, lo: PineExtreme, src: number) => {
+        const highest = hi.call(b, src);
+        const lowest = lo.call(b, src);
+        const priceRange = highest - lowest;
+        return gt(priceRange, 0) ? (src - lowest) / priceRange : 0.5;
+      };
+      if (cfg.knnEnabled && b > cfg.knnLookback) {
+        const distances: number[] = [];
+        const outcomes: number[] = [];
+        for (let offset = FL; offset <= cfg.knnLookback; offset++) {
+          // calcDistance(offset): Euclidean distance of the normalized patterns
+          let sum = 0.0;
+          for (let i = 0; i < FL; i++) {
+            const currentNorm = normalize(v.hiCur, v.loCur, at(close, b - i));
+            const historicalNorm = normalize(v.hiHist, v.loHist, at(close, b - i - offset));
+            const diff = currentNorm - historicalNorm;
+            sum += diff * diff;
+          }
+          const dist = Math.sqrt(sum);
+          if (lt(dist, 999999.0)) {
+            distances.push(dist);
+            const past = at(close, b - offset);
+            const futureReturn = (at(close, b - (offset - FL)) - past) / past;
+            outcomes.push(gt(futureReturn, 0) ? 1.0 : 0.0);
+          }
+        }
+        if (distances.length >= K) {
+          const last = Math.min(K - 1, distances.length - 1);
+          // selection sort of the K smallest distances
+          for (let i = 0; i <= last; i++) {
+            let minIdx = i;
+            for (let j = i + 1; j <= distances.length - 1; j++) if (lt(distances[j], distances[minIdx])) minIdx = j;
+            if (minIdx !== i) {
+              [distances[i], distances[minIdx]] = [distances[minIdx], distances[i]];
+              [outcomes[i], outcomes[minIdx]] = [outcomes[minIdx], outcomes[i]];
+            }
+          }
+          let totalWeight = 0.0;
+          let weightedSum = 0.0;
+          for (let i = 0; i <= last; i++) {
+            const w = gt(distances[i], 0) ? 1.0 / (distances[i] + 0.001) : 1.0;
+            weightedSum += outcomes[i] * w;
+            totalWeight += w;
+          }
+          v.prediction = gt(totalWeight, 0) ? weightedSum / totalWeight : 0.5;
+          let bullish = 0;
+          for (let i = 0; i <= Math.min(K - 1, outcomes.length - 1); i++) if (gt(outcomes[i], 0.5)) bullish += 1;
+          v.confidence = Math.abs(bullish / Math.min(K, outcomes.length) - 0.5) * 2;
+        }
+      }
+
+      // Adaptive trailing stop
+      const atr = s.atr.step(bar.high, bar.low, bar.close);
+      const adaptiveMultiplier = cfg.baseMultiplier * (1 + (1 - er) * cfg.adaptiveStrength);
+      const knnAdjustment = cfg.knnEnabled ? (v.prediction - 0.5) * cfg.knnWeight * v.confidence : 0.0;
+      const stopDistance = atr * adaptiveMultiplier;
+      const rawLong = close[b] - stopDistance * (1 - knnAdjustment);
+      const rawShort = close[b] + stopDistance * (1 + knnAdjustment);
+      v.smoothLong = isNaN(v.smoothLong) ? rawLong : v.smoothLong + sc * (rawLong - v.smoothLong);
+      v.smoothShort = isNaN(v.smoothShort) ? rawShort : v.smoothShort + sc * (rawShort - v.smoothShort);
+      const prevLong = at(s.longStop, b - 1);
+      const prevShort = at(s.shortStop, b - 1);
+      const close1 = at(close, b - 1);
+      // math.max / math.min with na give na
+      const longStop = gt(close1, prevLong) ? Math.max(v.smoothLong, prevLong) : v.smoothLong;
+      const shortStop = lt(close1, prevShort) ? Math.min(v.smoothShort, prevShort) : v.smoothShort;
+      s.longStop[b] = longStop;
+      s.shortStop[b] = shortStop;
+      const prevTrend = v.trend;
+      if (gt(close[b], prevShort)) v.trend = 1;
+      else if (lt(close[b], prevLong)) v.trend = -1;
+      const trend = v.trend;
+
+      // Plots
+      const time = bar.time;
+      const up = trend === 1;
+      const upperBand = cfg.showGradient ? (up ? close[b] : shortStop) : NaN;
+      const lowerBand = cfg.showGradient ? (up ? longStop : close[b]) : NaN;
+      const mid = (f: number) => (cfg.showGradient ? lowerBand + (upperBand - lowerBand) * f : NaN);
+      const p = s.plots;
+      // plot(trend == 1 ? longStop : na, "Long Stop", longColor, 3, plot.style_linebr)
+      p[0][b] = { time, value: up ? longStop : NaN, color: cfg.longColor };
+      // plot(trend == -1 ? shortStop : na, "Short Stop", shortColor, 3, plot.style_linebr)
+      p[1][b] = { time, value: trend === -1 ? shortStop : NaN, color: cfg.shortColor };
+      // gradPlot1..5 = plot(lowerBand / mid1 / mid2 / mid3 / upperBand, display = display.none)
+      p[2][b] = { time, value: lowerBand };
+      p[3][b] = { time, value: mid(0.25) };
+      p[4][b] = { time, value: mid(0.5) };
+      p[5][b] = { time, value: mid(0.75) };
+      p[6][b] = { time, value: upperBand };
+      TRANSP.forEach((transp, k) => {
+        s.layers[k][b] = cfg.showGradient ? String(color.new(up ? cfg.longColor : cfg.shortColor, transp)) : 'transparent';
+      });
+
+      // Markers: plotshape order Buy Signal, Sell Signal, Long Stop Touch, Short Stop Touch
+      const buy = trend === 1 && prevTrend === -1;
+      const sell = trend === -1 && prevTrend === 1;
+      // low <= longStop and low[1] > longStop[1] or math.abs(low - longStop) < atr * 0.5
+      const lowPrev = b > 0 ? bars[b - 1].low : NaN;
+      const highPrev = b > 0 ? bars[b - 1].high : NaN;
+      const longTouchRaw = trend === 1
+        && ((le(bar.low, longStop) && gt(lowPrev, prevLong)) || lt(Math.abs(bar.low - longStop), atr * 0.5));
+      const shortTouchRaw = trend === -1
+        && ((ge(bar.high, shortStop) && lt(highPrev, prevShort)) || lt(Math.abs(bar.high - shortStop), atr * 0.5));
+      const longTouch = longTouchRaw && b - v.lastLongDiamond >= cfg.diamondCooldown;
+      const shortTouch = shortTouchRaw && b - v.lastShortDiamond >= cfg.diamondCooldown;
+      if (longTouch) v.lastLongDiamond = b;
+      if (shortTouch) v.lastShortDiamond = b;
+      if (buy) s.markers.push({ time, position: 'belowBar', shape: 'circle', color: cfg.longColor, size: 'small' });
+      if (sell) s.markers.push({ time, position: 'aboveBar', shape: 'circle', color: cfg.shortColor, size: 'small' });
+      if (longTouch) s.markers.push({ time, position: 'belowBar', shape: 'diamond', color: cfg.longColor, size: 'small' });
+      if (shortTouch) s.markers.push({ time, position: 'aboveBar', shape: 'diamond', color: cfg.shortColor, size: 'small' });
+      // barcolor(trend == 1 ? longColor : shortColor, title = "Trend Candles")
+      s.barColors.push({ time, color: up ? cfg.longColor : cfg.shortColor });
+      // alertcondition(trend == 1 and prevTrend == -1, ...) / alertcondition(trend == -1 and prevTrend == 1, ...)
+      [buy, sell].forEach((f, k) => {
+        s.flags[k][b] = f;
+        if (f) s.times[k].push(time as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(), plot6: p[6].slice(),
+        },
+        // fill(gradPlot1, gradPlot2, ... 85), (2, 3, 90), (3, 4, 95), (4, 5, color.new(stopColor, 97))
+        fills: [
+          { plot1: 'plot2', plot2: 'plot3', colors: s.layers[0].slice() },
+          { plot1: 'plot3', plot2: 'plot4', colors: s.layers[1].slice() },
+          { plot1: 'plot4', plot2: 'plot5', colors: s.layers[2].slice() },
+          { plot1: 'plot5', plot2: 'plot6', colors: s.layers[3].slice() },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdaptiveMLTrailingStopInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const close = bars.map((b) => b.close);
-  const at = (a: number[], i: number) => (i >= 0 && i < a.length ? a[i] : NaN);
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdaptiveMLTrailingStopInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
 
-  // KAMA efficiency ratio and smoothing constant
-  const L = cfg.kamaLength;
-  const er: number[] = new Array(n);
-  const sc: number[] = new Array(n);
-  const fastSC = 2.0 / (cfg.fastLength + 1);
-  const slowSC = 2.0 / (cfg.slowLength + 1);
-  for (let i = 0; i < n; i++) {
-    const change = Math.abs(close[i] - at(close, i - L));
-    // math.sum(math.abs(close - close[1]), kamaLength): na while the window holds bar 0 (close[1] na)
-    let volatility = NaN;
-    if (i >= L) {
-      volatility = 0;
-      for (let k = 0; k < L; k++) volatility += Math.abs(close[i - k] - close[i - k - 1]);
-    }
-    // volatility != 0 ? change / volatility : 0 (na != 0 is false)
-    er[i] = !isNaN(volatility) && Math.abs(volatility) > EPS ? change / volatility : 0;
-    sc[i] = Math.pow(er[i] * (fastSC - slowSC) + slowSC, 2);
-  }
-
-  // KNN pattern matching
-  const FL = cfg.knnFeatureLength;
-  const hiCur = pineExtreme(FL, false);
-  const loCur = pineExtreme(FL, true);
-  const hiHist = pineExtreme(FL, false);
-  const loHist = pineExtreme(FL, true);
-  // normalize(src, len): priceRange > 0 ? (src - lowest) / priceRange : 0.5
-  const normalize = (hi: typeof hiCur, lo: typeof loCur, bar: number, src: number) => {
-    const highest = hi(bar, src);
-    const lowest = lo(bar, src);
-    const priceRange = highest - lowest;
-    return gt(priceRange, 0) ? (src - lowest) / priceRange : 0.5;
-  };
-  const knnPrediction: number[] = new Array(n);
-  const knnConfidence: number[] = new Array(n);
-  let prediction = 0.5; // var float knnPrediction = 0.5
-  let confidence = 0.0; // var float knnConfidence = 0.0
-  const K = cfg.knnK;
-  for (let b = 0; b < n; b++) {
-    if (cfg.knnEnabled && b > cfg.knnLookback) {
-      const distances: number[] = [];
-      const outcomes: number[] = [];
-      for (let offset = FL; offset <= cfg.knnLookback; offset++) {
-        // calcDistance(offset): Euclidean distance of the normalized patterns
-        let sum = 0.0;
-        for (let i = 0; i < FL; i++) {
-          const currentNorm = normalize(hiCur, loCur, b, at(close, b - i));
-          const historicalNorm = normalize(hiHist, loHist, b, at(close, b - i - offset));
-          const diff = currentNorm - historicalNorm;
-          sum += diff * diff;
-        }
-        const dist = Math.sqrt(sum);
-        if (lt(dist, 999999.0)) {
-          distances.push(dist);
-          const past = at(close, b - offset);
-          const futureReturn = (at(close, b - (offset - FL)) - past) / past;
-          outcomes.push(gt(futureReturn, 0) ? 1.0 : 0.0);
-        }
-      }
-      if (distances.length >= K) {
-        const last = Math.min(K - 1, distances.length - 1);
-        // selection sort of the K smallest distances
-        for (let i = 0; i <= last; i++) {
-          let minIdx = i;
-          for (let j = i + 1; j <= distances.length - 1; j++) if (lt(distances[j], distances[minIdx])) minIdx = j;
-          if (minIdx !== i) {
-            [distances[i], distances[minIdx]] = [distances[minIdx], distances[i]];
-            [outcomes[i], outcomes[minIdx]] = [outcomes[minIdx], outcomes[i]];
-          }
-        }
-        let totalWeight = 0.0;
-        let weightedSum = 0.0;
-        for (let i = 0; i <= last; i++) {
-          const w = gt(distances[i], 0) ? 1.0 / (distances[i] + 0.001) : 1.0;
-          weightedSum += outcomes[i] * w;
-          totalWeight += w;
-        }
-        prediction = gt(totalWeight, 0) ? weightedSum / totalWeight : 0.5;
-        let bullish = 0;
-        for (let i = 0; i <= Math.min(K - 1, outcomes.length - 1); i++) if (gt(outcomes[i], 0.5)) bullish += 1;
-        confidence = Math.abs(bullish / Math.min(K, outcomes.length) - 0.5) * 2;
-      }
-    }
-    knnPrediction[b] = prediction;
-    knnConfidence[b] = confidence;
-  }
-
-  // Adaptive trailing stop
-  const atr = ta.atr(bars, cfg.atrPeriod).toArray().map((v) => v ?? NaN);
-  const longStop: number[] = new Array(n);
-  const shortStop: number[] = new Array(n);
-  const trendArr: number[] = new Array(n);
-  const prevTrendArr: number[] = new Array(n);
-  let smoothLong = NaN;
-  let smoothShort = NaN;
-  let trend = 0; // var int trend = 0
-  for (let i = 0; i < n; i++) {
-    const adaptiveMultiplier = cfg.baseMultiplier * (1 + (1 - er[i]) * cfg.adaptiveStrength);
-    const knnAdjustment = cfg.knnEnabled ? (knnPrediction[i] - 0.5) * cfg.knnWeight * knnConfidence[i] : 0.0;
-    const stopDistance = atr[i] * adaptiveMultiplier;
-    const rawLong = close[i] - stopDistance * (1 - knnAdjustment);
-    const rawShort = close[i] + stopDistance * (1 + knnAdjustment);
-    smoothLong = isNaN(smoothLong) ? rawLong : smoothLong + sc[i] * (rawLong - smoothLong);
-    smoothShort = isNaN(smoothShort) ? rawShort : smoothShort + sc[i] * (rawShort - smoothShort);
-    const prevLong = at(longStop, i - 1);
-    const prevShort = at(shortStop, i - 1);
-    const close1 = at(close, i - 1);
-    // math.max / math.min with na give na
-    longStop[i] = gt(close1, prevLong) ? Math.max(smoothLong, prevLong) : smoothLong;
-    shortStop[i] = lt(close1, prevShort) ? Math.min(smoothShort, prevShort) : smoothShort;
-    prevTrendArr[i] = trend;
-    if (gt(close[i], prevShort)) trend = 1;
-    else if (lt(close[i], prevLong)) trend = -1;
-    trendArr[i] = trend;
-  }
-
-  // Plots
-  const t = (i: number) => bars[i].time;
-  const up = (i: number) => trendArr[i] === 1;
-  const upperBand = bars.map((_b, i) => (cfg.showGradient ? (up(i) ? close[i] : shortStop[i]) : NaN));
-  const lowerBand = bars.map((_b, i) => (cfg.showGradient ? (up(i) ? longStop[i] : close[i]) : NaN));
-  const mid = (f: number) => bars.map((_b, i) => (cfg.showGradient ? lowerBand[i] + (upperBand[i] - lowerBand[i]) * f : NaN));
-  const mid1 = mid(0.25);
-  const mid2 = mid(0.5);
-  const mid3 = mid(0.75);
-  const line = (vals: number[]) => bars.map((b, i) => ({ time: b.time, value: vals[i] }));
-
-  const layer = (transp: number) => bars.map((_b, i) => (cfg.showGradient
-    ? String(color.new(up(i) ? cfg.longColor : cfg.shortColor, transp)) : 'transparent'));
-
-  // Markers: plotshape order Buy Signal, Sell Signal, Long Stop Touch, Short Stop Touch
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
-  let lastLongDiamond = -999;
-  let lastShortDiamond = -999;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const buy = trendArr[i] === 1 && prevTrendArr[i] === -1;
-    const sell = trendArr[i] === -1 && prevTrendArr[i] === 1;
-    buyFlags.push(buy);
-    sellFlags.push(sell);
-    // low <= longStop and low[1] > longStop[1] or math.abs(low - longStop) < atr * 0.5
-    const lowPrev = i > 0 ? bars[i - 1].low : NaN;
-    const highPrev = i > 0 ? bars[i - 1].high : NaN;
-    const longTouchRaw = trendArr[i] === 1
-      && ((le(b.low, longStop[i]) && gt(lowPrev, at(longStop, i - 1))) || lt(Math.abs(b.low - longStop[i]), atr[i] * 0.5));
-    const shortTouchRaw = trendArr[i] === -1
-      && ((ge(b.high, shortStop[i]) && lt(highPrev, at(shortStop, i - 1))) || lt(Math.abs(b.high - shortStop[i]), atr[i] * 0.5));
-    const longTouch = longTouchRaw && i - lastLongDiamond >= cfg.diamondCooldown;
-    const shortTouch = shortTouchRaw && i - lastShortDiamond >= cfg.diamondCooldown;
-    if (longTouch) lastLongDiamond = i;
-    if (shortTouch) lastShortDiamond = i;
-    if (buy) markers.push({ time: t(i), position: 'belowBar', shape: 'circle', color: cfg.longColor, size: 'small' });
-    if (sell) markers.push({ time: t(i), position: 'aboveBar', shape: 'circle', color: cfg.shortColor, size: 'small' });
-    if (longTouch) markers.push({ time: t(i), position: 'belowBar', shape: 'diamond', color: cfg.longColor, size: 'small' });
-    if (shortTouch) markers.push({ time: t(i), position: 'aboveBar', shape: 'diamond', color: cfg.shortColor, size: 'small' });
-    // barcolor(trend == 1 ? longColor : shortColor, title = "Trend Candles")
-    barColors.push({ time: t(i), color: up(i) ? cfg.longColor : cfg.shortColor });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(trend == 1 ? longStop : na, "Long Stop", longColor, 3, plot.style_linebr)
-      plot0: bars.map((b, i) => ({ time: b.time, value: up(i) ? longStop[i] : NaN, color: cfg.longColor })),
-      // plot(trend == -1 ? shortStop : na, "Short Stop", shortColor, 3, plot.style_linebr)
-      plot1: bars.map((b, i) => ({ time: b.time, value: trendArr[i] === -1 ? shortStop[i] : NaN, color: cfg.shortColor })),
-      // gradPlot1..5 = plot(lowerBand / mid1 / mid2 / mid3 / upperBand, display = display.none)
-      plot2: line(lowerBand),
-      plot3: line(mid1),
-      plot4: line(mid2),
-      plot5: line(mid3),
-      plot6: line(upperBand),
-    },
-    // fill(gradPlot1, gradPlot2, ... 85), (2, 3, 90), (3, 4, 95), (4, 5, color.new(stopColor, 97))
-    fills: [
-      { plot1: 'plot2', plot2: 'plot3', colors: layer(85) },
-      { plot1: 'plot3', plot2: 'plot4', colors: layer(90) },
-      { plot1: 'plot4', plot2: 'plot5', colors: layer(95) },
-      { plot1: 'plot5', plot2: 'plot6', colors: layer(97) },
-    ],
-    markers,
-    barColors,
-    // alertcondition(trend == 1 and prevTrend == -1, ...) / alertcondition(trend == -1 and prevTrend == 1, ...)
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
-  };
+export function calculate(bars: Bar[], inputs: Partial<AdaptiveMLTrailingStopInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -354,6 +406,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AdaptiveMLTrailingStop = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

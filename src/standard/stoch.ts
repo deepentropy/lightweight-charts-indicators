@@ -5,7 +5,9 @@
  * Compares closing price to its price range over a given period.
  */
 
-import { Series, ta, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface StochasticInputs {
   periodK: number;
@@ -46,39 +48,51 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<StochasticInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface StochRun extends BarRunState<Record<string, never>> {
+  raw: ReturnType<typeof taStep.stoch>;
+  k: ReturnType<typeof taStep.sma>;
+  d: ReturnType<typeof taStep.sma>;
+  kData: Point[];
+  dData: Point[];
+}
+
+function study(inputs: Partial<StochasticInputs>): BarStudy<StochRun, IndicatorResult> {
   const { periodK, smoothK, periodD } = { ...defaultInputs, ...inputs };
-
-  const close = new Series(bars, (bar) => bar.close);
-  const high = new Series(bars, (bar) => bar.high);
-  const low = new Series(bars, (bar) => bar.low);
-
-  // Raw Stochastic %K = (close - lowest low) / (highest high - lowest low) * 100
-  const stochRaw = ta.stoch(close, high, low, periodK);
-
-  // Smooth %K with SMA
-  const k = ta.sma(stochRaw, smoothK);
-
-  // %D = SMA of %K
-  const d = ta.sma(k, periodD);
-
-  const kData = k.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const dData = d.toArray().map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'plot0': kData,
-      'plot1': dData,
+    init() {
+      const raw = taStep.stoch(periodK);
+      const k = taStep.sma();
+      const d = taStep.sma();
+      const s: StochRun = { raw, k, d, kData: [], dData: [], steps: [raw, k, d], vars: {}, lists: [], series: [] };
+      s.series = [s.kData, s.dData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // %K = ta.sma(ta.stoch(close, high, low, periodK), smoothK); %D = ta.sma(%K, periodD)
+      const k = s.k.step(s.raw.step(b.close, b.high, b.low), smoothK);
+      const d = s.d.step(k, periodD);
+      s.kData[i] = { time: b.time, value: k };
+      s.dData[i] = { time: b.time, value: d };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.kData.slice(), 'plot1': s.dData.slice() },
+      };
     },
   };
 }
 
-export const Stochastic = { calculate, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<StochasticInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<StochasticInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const Stochastic = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, hlineConfig, fillConfig };

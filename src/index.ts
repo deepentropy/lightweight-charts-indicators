@@ -11,6 +11,8 @@ import type { Bar, InputConfig, PlotConfig, HLineConfig, FillConfig, ArrowConfig
 import type { PlotCandleDecl } from './style-apply';
 import type { StudyDrawingKind } from './style-outputs';
 import type { ChartContext, SymbolRequest } from './chart-context';
+import type { IndicatorRun } from './live-run';
+export type { IndicatorRun } from './live-run';
 export type { InputConfig, PlotConfig, HLineConfig, FillConfig, ShapeConfig, BarColorConfig, CandleConfig } from 'oakscriptjs';
 
 // SMA - Simple Moving Average
@@ -7690,6 +7692,11 @@ export interface IndicatorRegistryEntry {
   hasAlertFunction?: boolean;
   /** `chart`: what the caller knows about the chart and its symbol (tick, time zone, ...), see ChartContext */
   calculate: (bars: Bar[], inputs?: any, chart?: ChartContext) => any;
+  /**
+   * A live run (optional): `update(bars)` gives the result of `calculate` on these bars and calculates only the bars
+   * from the forming bar of the previous update when the bars before it did not change (`from`: first bar calculated)
+   */
+  createRun?: (inputs?: any, chart?: ChartContext) => IndicatorRun;
 }
 
 /**
@@ -7790,6 +7797,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: bbIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...bbIndicator.defaultInputs },
     calculate: bbIndicator.calculate,
+    createRun: bbIndicator.createRun,
   },
   {
     id: 'bop',
@@ -7919,6 +7927,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     hlineConfig: macdIndicator.hlineConfig as HLineConfig[],
     defaultInputs: { ...macdIndicator.defaultInputs },
     calculate: macdIndicator.calculate,
+    createRun: macdIndicator.createRun,
   },
   {
     id: 'mass-index',
@@ -8006,6 +8015,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     fillConfig: rsiIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...rsiIndicator.defaultInputs },
     calculate: rsiIndicator.calculate,
+    createRun: rsiIndicator.createRun,
     outputs: rsiIndicator.outputs,
   },
   {
@@ -8023,6 +8033,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     fillConfig: stochIndicator.fillConfig as FillConfig[],
     defaultInputs: { ...stochIndicator.defaultInputs },
     calculate: stochIndicator.calculate,
+    createRun: stochIndicator.createRun,
   },
   {
     id: 'tema',
@@ -8107,6 +8118,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: supertrendIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...supertrendIndicator.defaultInputs },
     calculate: supertrendIndicator.calculate,
+    createRun: supertrendIndicator.createRun,
   },
   {
     id: 'adx',
@@ -11969,6 +11981,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: mlMomentumIndexIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...mlMomentumIndexIndicator.defaultInputs },
     calculate: mlMomentumIndexIndicator.calculate,
+    createRun: mlMomentumIndexIndicator.createRun,
   },
   {
     id: 'ml-moving-average',
@@ -12465,6 +12478,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: volumaticSRLevelsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...volumaticSRLevelsIndicator.defaultInputs },
     calculate: volumaticSRLevelsIndicator.calculate,
+    createRun: volumaticSRLevelsIndicator.createRun,
   },
   {
     id: 'vwap-mvwap-ema-crossover',
@@ -14297,6 +14311,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: adaptiveMlTrailingStopIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...adaptiveMlTrailingStopIndicator.defaultInputs },
     calculate: adaptiveMlTrailingStopIndicator.calculate,
+    createRun: adaptiveMlTrailingStopIndicator.createRun,
   },
 ];
 
@@ -20477,6 +20492,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: waveletFilterWithAdaptiveUpsamplingIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...waveletFilterWithAdaptiveUpsamplingIndicator.defaultInputs },
     calculate: waveletFilterWithAdaptiveUpsamplingIndicator.calculate,
+    createRun: waveletFilterWithAdaptiveUpsamplingIndicator.createRun,
   },
   {
     id: 'ema-cross-signals',
@@ -25643,6 +25659,7 @@ const registryPart7: IndicatorRegistryEntry[] = [
     plotConfig: sessionsOnChartIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...sessionsOnChartIndicator.defaultInputs },
     calculate: sessionsOnChartIndicator.calculate,
+    createRun: sessionsOnChartIndicator.createRun,
   },
   {
     id: 'market-structure-break-ob-probability-toolkit',

@@ -4,6 +4,7 @@
  * candle colours and drawing kinds. `calculate` then stamps the id of its declaration on the background / bar colours
  * and the fills between plots of its result, so a host can change or hide each of them.
  */
+import type { IndicatorRun } from './live-run';
 import type { ArrowConfig, BarColorConfig, CandleConfig, FillConfig, HLineConfig, PlotConfig } from 'oakscriptjs';
 import { STYLE_OUTPUTS, type StudyDrawingKind, type StyleOutputs, type StyleShapeConfig } from './style-outputs';
 
@@ -12,6 +13,8 @@ export type PlotCandleDecl = { id: string; title: string } & Partial<Omit<Candle
 
 interface StyleTarget {
   id: string;
+  /** Live run of the study (live-run.ts): its updates get the same ids as the results of calculate */
+  createRun?: (...args: any[]) => IndicatorRun;
   plotConfig: PlotConfig[];
   hlineConfig?: HLineConfig[];
   fillConfig?: FillConfig[];
@@ -139,6 +142,18 @@ export function withStyleOutputs<T extends StyleTarget>(entry: T): T {
   if (decl.barColors || decl.fills || decl.markerMatch || decl.resultHlines) {
     const calculate = entry.calculate;
     e.calculate = (...args: any[]) => stampIds(calculate(...args), decl);
+    const createRun = entry.createRun;
+    if (createRun) {
+      e.createRun = (...args: any[]) => {
+        const run = createRun(...args);
+        return {
+          update: (...u: Parameters<IndicatorRun['update']>) => stampIds(run.update(...u), decl),
+          get fullRunReason() {
+            return run.fullRunReason;
+          },
+        };
+      };
+    }
   }
   return e;
 }

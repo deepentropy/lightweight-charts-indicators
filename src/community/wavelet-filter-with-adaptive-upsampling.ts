@@ -14,7 +14,9 @@
  * Original notice: © BackQuant :)
  */
 
-import { array, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { array, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type WaveletUpsampleType = 'Sinusoidal Upsample' | 'Advanced Upsample' | 'Simple Upsample';
 
@@ -215,102 +217,138 @@ function advancedUpsample(srcarr: number[], npast: number, frqtol: number, upsam
   return out;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<WaveletFilterWithAdaptiveUpsamplingInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface WaveletVars {
+  /** var float reconstructed_equity = na */
+  reconstructed: number;
+  /** var float Series = 1.0 */
+  series: number;
+}
+
+interface WaveletRun extends BarRunState<WaveletVars> {
+  src: number[];
+  logRoc: number[];
+  high1: number[];
+  low1: number[];
+  high2: number[];
+  low2: number[];
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<WaveletFilterWithAdaptiveUpsamplingInputs>): BarStudy<WaveletRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const nBars = bars.length;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
   const npast = cfg.npast;
-
-  // LogRoC = math.log(src / src[1])
-  const logRoc = src.map((v, i) => (i > 0 ? Math.log(v / src[i - 1]) : NaN));
-  // The script decomposes the last min(bar_index, 5000) returns again on every bar, but each coefficient depends only
-  // on the bar it starts at: the level 1 pair (LogRoC[t], LogRoC[t - 1]) and the level 2 pair of the level 1 low pass
-  // values of bars t and t - 2. They are computed once here; a bar reads its downsampled arrays from them (every second
-  // bar back for level 1, every fourth for level 2) and only the element bar_index % size of the reconstruction.
-  const high1 = logRoc.map((x, t) => highPass(x, t > 0 ? logRoc[t - 1] : NaN));
-  const low1 = logRoc.map((x, t) => lowPass(x, t > 0 ? logRoc[t - 1] : NaN));
-  const high2 = low1.map((x, t) => highPass(x, t > 1 ? low1[t - 2] : NaN));
-  const low2 = low1.map((x, t) => lowPass(x, t > 1 ? low1[t - 2] : NaN));
-
-  const recon: number[] = new Array(nBars).fill(NaN);
-  const cum: number[] = new Array(nBars).fill(NaN);
-  let reconstructed = NaN; // var float reconstructed_equity = na
-  let series = 1.0; // var float Series = 1.0
-
-  for (let bi = 0; bi < nBars; bi++) {
-    if (bi > 0 && bi > npast) {
-      // for i = 0 to math.min(bar_index, 5000) - 1: high and low pass of LogRoC[i] and LogRoC[i + 1], downsampled
-      const size = Math.min(bi, 5000);
-      const downsampledHigh: number[] = [];
-      for (let i = 0; i < size; i += 2) downsampledHigh.push(high1[bi - i]);
-      const downsampledLowSize = downsampledHigh.length;
-
-      // Noise level of the level 1 detail; universal threshold
-      const noiseEstimate = array.stdev(downsampledHigh);
-      const n = downsampledHigh.length;
-      const adaptiveThreshold = noiseEstimate * Math.sqrt(2 * Math.log(n));
-
-      // Level 2: `for i = 0 to array.size(downsampledLow) - 2` counts down with one value and reads past its end
-      if (downsampledLowSize < 2) {
-        throw new Error(`In 'array.get()' function. Index 1 is out of bounds, array size is ${downsampledLowSize}.`);
-      }
-      const secondDownsampledHigh: number[] = [];
-      const secondDownsampledLow: number[] = [];
-      for (let i = 0; i < downsampledLowSize - 1; i += 2) {
-        secondDownsampledHigh.push(high2[bi - 2 * i]);
-        secondDownsampledLow.push(low2[bi - 2 * i]);
-      }
-      const secondNoiseEstimate = array.stdev(secondDownsampledHigh);
-      const secondN = secondDownsampledHigh.length;
-      const secondAdaptiveThreshold = secondNoiseEstimate * Math.sqrt(2 * Math.log(secondN));
-
-      // Upsampling and reconstruction
-      const firstReconSize = Math.min(secondDownsampledHigh.length, secondDownsampledLow.length);
-      const firstReconstruct = array.new_float(firstReconSize, NaN);
-      for (let j = 0; j < firstReconSize; j++) {
-        const hiVal = softThreshold(secondDownsampledHigh[j], secondAdaptiveThreshold);
-        const loVal = secondDownsampledLow[j];
-        if (!isNa(hiVal) && !isNa(loVal)) firstReconstruct[j] = hiVal + loVal;
-      }
-
-      const advanced = cfg.upsampleType === 'Advanced Upsample'
-        ? advancedUpsample(firstReconstruct, npast, cfg.freq, cfg.upp, bi)
-        : null;
-      const upSampledSize = advanced ? advanced.length : upsampledSize(firstReconSize);
-      if (upSampledSize > 0) {
-        const finalReconSize = Math.min(upSampledSize, n);
-        const k = bi % finalReconSize;
-        const approxVal = advanced
-          ? aget(advanced, k)
-          : cfg.upsampleType === 'Sinusoidal Upsample'
-            ? sinusoidalUpsampleAt(firstReconstruct, k, cfg.freq, cfg.phase)
-            : upsampleAt(firstReconstruct, k);
-        const detailVal = softThreshold(downsampledHigh[k], adaptiveThreshold);
-        reconstructed = !isNa(approxVal) && !isNa(detailVal) ? approxVal + detailVal : NaN;
-      }
-    }
-    // Historical bars are confirmed: Series := Series * (1 + reconstructed_equity)
-    if (bi > npast && !isNa(reconstructed)) series = series * (1 + reconstructed);
-    recon[bi] = reconstructed;
-    cum[bi] = series;
-  }
-
+  const source = barSource(cfg.src);
   const value = (x: number) => (Number.isFinite(x) ? x : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: WaveletRun = {
+        src: [], logRoc: [], high1: [], low1: [], high2: [], low2: [], plot0: [], plot1: [],
+        steps: [], vars: { reconstructed: NaN, series: 1.0 }, lists: [], series: [],
+      };
+      s.series = [s.src, s.logRoc, s.high1, s.low1, s.high2, s.low2, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, bi, bars) {
+      const v = s.vars;
+      const { src, logRoc, high1, low1, high2, low2 } = s;
+      src[bi] = source(bars[bi]);
+      // LogRoC = math.log(src / src[1])
+      logRoc[bi] = bi > 0 ? Math.log(src[bi] / src[bi - 1]) : NaN;
+      // The script decomposes the last min(bar_index, 5000) returns again on every bar, but each coefficient depends
+      // only on the bar it starts at: the level 1 pair (LogRoC[t], LogRoC[t - 1]) and the level 2 pair of the level 1
+      // low pass values of bars t and t - 2. Each bar computes its own; a bar reads its downsampled arrays from them
+      // (every second bar back for level 1, every fourth for level 2) and only the element bar_index % size of the
+      // reconstruction.
+      high1[bi] = highPass(logRoc[bi], bi > 0 ? logRoc[bi - 1] : NaN);
+      low1[bi] = lowPass(logRoc[bi], bi > 0 ? logRoc[bi - 1] : NaN);
+      high2[bi] = highPass(low1[bi], bi > 1 ? low1[bi - 2] : NaN);
+      low2[bi] = lowPass(low1[bi], bi > 1 ? low1[bi - 2] : NaN);
+
+      if (bi > 0 && bi > npast) {
+        // for i = 0 to math.min(bar_index, 5000) - 1: high and low pass of LogRoC[i] and LogRoC[i + 1], downsampled
+        const size = Math.min(bi, 5000);
+        const downsampledHigh: number[] = [];
+        for (let i = 0; i < size; i += 2) downsampledHigh.push(high1[bi - i]);
+        const downsampledLowSize = downsampledHigh.length;
+
+        // Noise level of the level 1 detail; universal threshold
+        const noiseEstimate = array.stdev(downsampledHigh);
+        const n = downsampledHigh.length;
+        const adaptiveThreshold = noiseEstimate * Math.sqrt(2 * Math.log(n));
+
+        // Level 2: `for i = 0 to array.size(downsampledLow) - 2` counts down with one value and reads past its end
+        if (downsampledLowSize < 2) {
+          throw new Error(`In 'array.get()' function. Index 1 is out of bounds, array size is ${downsampledLowSize}.`);
+        }
+        const secondDownsampledHigh: number[] = [];
+        const secondDownsampledLow: number[] = [];
+        for (let i = 0; i < downsampledLowSize - 1; i += 2) {
+          secondDownsampledHigh.push(high2[bi - 2 * i]);
+          secondDownsampledLow.push(low2[bi - 2 * i]);
+        }
+        const secondNoiseEstimate = array.stdev(secondDownsampledHigh);
+        const secondN = secondDownsampledHigh.length;
+        const secondAdaptiveThreshold = secondNoiseEstimate * Math.sqrt(2 * Math.log(secondN));
+
+        // Upsampling and reconstruction
+        const firstReconSize = Math.min(secondDownsampledHigh.length, secondDownsampledLow.length);
+        const firstReconstruct = array.new_float(firstReconSize, NaN);
+        for (let j = 0; j < firstReconSize; j++) {
+          const hiVal = softThreshold(secondDownsampledHigh[j], secondAdaptiveThreshold);
+          const loVal = secondDownsampledLow[j];
+          if (!isNa(hiVal) && !isNa(loVal)) firstReconstruct[j] = hiVal + loVal;
+        }
+
+        const advanced = cfg.upsampleType === 'Advanced Upsample'
+          ? advancedUpsample(firstReconstruct, npast, cfg.freq, cfg.upp, bi)
+          : null;
+        const upSampledSize = advanced ? advanced.length : upsampledSize(firstReconSize);
+        if (upSampledSize > 0) {
+          const finalReconSize = Math.min(upSampledSize, n);
+          const k = bi % finalReconSize;
+          const approxVal = advanced
+            ? aget(advanced, k)
+            : cfg.upsampleType === 'Sinusoidal Upsample'
+              ? sinusoidalUpsampleAt(firstReconstruct, k, cfg.freq, cfg.phase)
+              : upsampleAt(firstReconstruct, k);
+          const detailVal = softThreshold(downsampledHigh[k], adaptiveThreshold);
+          v.reconstructed = !isNa(approxVal) && !isNa(detailVal) ? approxVal + detailVal : NaN;
+        }
+      }
+      // Series := Series * (1 + reconstructed_equity) (on the forming bar from the value of the last confirmed bar)
+      if (bi > npast && !isNa(v.reconstructed)) v.series = v.series * (1 + v.reconstructed);
+      const time = bars[bi].time;
       // plot(showeq ? Series : na, title = "Cumulative Series", color = color.white)
-      plot0: bars.map((b, i) => ({ time: b.time, value: cfg.showeq ? value(cum[i]) : NaN, color: WHITE })),
+      s.plot0[bi] = { time, value: cfg.showeq ? value(v.series) : NaN, color: WHITE };
       // plot(showlr ? reconstructed_equity : na, style = plot.style_columns, color = reconstructed_equity > 0 ? #00ff00 : #ff0000)
-      plot1: bars.map((b, i) => ({
-        time: b.time, value: cfg.showlr ? value(recon[i]) : NaN, color: gt(recon[i], 0) ? UP : DOWN,
-      })),
+      s.plot1[bi] = { time, value: cfg.showlr ? value(v.reconstructed) : NaN, color: gt(v.reconstructed, 0) ? UP : DOWN };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WaveletFilterWithAdaptiveUpsamplingInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WaveletFilterWithAdaptiveUpsamplingInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+
 export const WaveletFilterWithAdaptiveUpsampling = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,
