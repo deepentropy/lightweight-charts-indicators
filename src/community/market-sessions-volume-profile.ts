@@ -167,6 +167,45 @@ function getVol(y11: number, y12: number, y21: number, y22: number, height: numb
   return Number.isFinite(r) ? r : 0;
 }
 
+/**
+ * The output data of the drawing objects of one kind, in creation order. The live objects of the registry keep the
+ * creation order, so they are read by walking both lists together (no map: a long history creates hundreds of
+ * thousands of boxes). The objects deleted by the maximum count are dropped each time the list has grown by `max`.
+ */
+function drawingData<T>(all: () => object[], max: number) {
+  const objs: object[] = [];
+  const data: T[] = [];
+  let room = 2 * max;
+  /** Keeps the live objects only */
+  const compact = () => {
+    const live = all();
+    let kept = 0;
+    for (let k = 0; k < objs.length && kept < live.length; k++) {
+      if (objs[k] === live[kept]) {
+        objs[kept] = objs[k];
+        data[kept] = data[k];
+        kept++;
+      }
+    }
+    objs.length = kept;
+    data.length = kept;
+  };
+  return {
+    set(obj: object, d: T) {
+      objs.push(obj);
+      data.push(d);
+      if (objs.length > room) {
+        compact();
+        room = objs.length + max;
+      }
+    },
+    live: () => {
+      compact();
+      return data;
+    },
+  };
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<MarketSessionsVolumeProfileInputs> = {},
@@ -203,11 +242,11 @@ export function calculate(
 
   // Drawings: library objects (bar index x) in the drawing registry, for the counts (a creation above max + 5
   // deletes the oldest until max remain, with the rules of the last bar) and the runtime error of a bar index more
-  // than 10,000 bars back; the output data of each object in a map
+  // than 10,000 bars back; the output data of each object in a list beside them
   resetDrawings({ box: MAX_BOXES, line: MAX_LINES, label: MAX_LABELS });
-  const lineData = new Map<object, LineDrawingData>();
-  const boxData = new Map<object, BoxData>();
-  const labelData = new Map<object, LabelData>();
+  const lineData = drawingData<LineDrawingData>(line.all, MAX_LINES);
+  const boxData = drawingData<BoxData>(box.all, MAX_BOXES);
+  const labelData = drawingData<LabelData>(label.all, MAX_LABELS);
   const lines = { add: (x1: number, x2: number, d: LineDrawingData) => lineData.set(line.new(x1, d.price1, x2, d.price2), d) };
   const boxes = { add: (x1: number, x2: number, d: BoxData) => boxData.set(box.new(x1, d.price1, x2, d.price2), d) };
   const labels = { add: (x: number, d: LabelData) => labelData.set(label.new(x, d.price), d) };
@@ -456,9 +495,9 @@ export function calculate(
   }
 
   // The live objects; a line with an na price (no point of control) is an object of the script but is not drawn
-  const drawn = line.all().map((l) => lineData.get(l)!).filter((l) => Number.isFinite(l.price1) && Number.isFinite(l.price2));
-  const liveBoxes = box.all().map((b) => boxData.get(b)!);
-  const liveLabels = label.all().map((l) => labelData.get(l)!);
+  const drawn = lineData.live().filter((l) => Number.isFinite(l.price1) && Number.isFinite(l.price2));
+  const liveBoxes = boxData.live();
+  const liveLabels = labelData.live();
   resetDrawings();
 
   return {
