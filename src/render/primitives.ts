@@ -266,12 +266,12 @@ export class LineBrRenderer implements IPrimitivePaneRenderer {
     const series = this._source.getSeries();
     if (!chart || !series) return;
 
-    const data = this._source.getData();
+    const timeScale = chart.timeScale();
+    const data = visiblePoints(this._source.getData(), timeScale);
     const defaultColor = this._source.getColor();
     const lineWidth = this._source.getLineWidth();
     const lineStyle = this._source.getLineStyle();
     const withSteps = this._source.getWithSteps();
-    const timeScale = chart.timeScale();
 
     target.useMediaCoordinateSpace(({ context: ctx }) => {
       ctx.lineWidth = lineWidth;
@@ -375,10 +375,10 @@ export class CrossPlotRenderer implements IPrimitivePaneRenderer {
     const series = this._source.getSeries();
     if (!chart || !series) return;
 
-    const data = this._source.getData();
+    const timeScale = chart.timeScale();
+    const data = visiblePoints(this._source.getData(), timeScale);
     const color = this._source.getColor();
     const halfSize = this._source.getSize();
-    const timeScale = chart.timeScale();
 
     target.useMediaCoordinateSpace(({ context: ctx }) => {
       ctx.strokeStyle = color;
@@ -405,14 +405,18 @@ export class CrossPlotRenderer implements IPrimitivePaneRenderer {
  */
 export class BgColorPrimitive extends BasePrimitive {
   private _data: BgColorData[] = [];
+  /** The colours are in time order (those of several bgcolor calls may not be): only then is the visible part found. */
+  private _sorted = true;
   private _views: IPrimitivePaneView[] = [new BgColorPaneView(this)];
 
   setData(data: BgColorData[]): void {
     this._data = data;
+    this._sorted = data.every((d, i) => i === 0 || data[i - 1].time <= d.time);
     this._requestUpdate?.();
   }
 
   getData() { return this._data; }
+  isSorted() { return this._sorted; }
   getChart() { return this._chart; }
   getSeries() { return this._series; }
 
@@ -440,8 +444,9 @@ export class BgColorRenderer implements IPrimitivePaneRenderer {
     const chart = this._source.getChart();
     if (!chart) return;
 
-    const data = this._source.getData();
     const timeScale = chart.timeScale();
+    const all = this._source.getData();
+    const data = this._source.isSorted() ? visiblePoints(all, timeScale) : all;
 
     target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
       const barWidth = getBarWidth(timeScale, mediaSize.width);
@@ -517,9 +522,10 @@ export class PlotFillRenderer implements IPrimitivePaneRenderer {
     const series = this._source.getSeries();
     if (!chart || !series) return;
 
-    const data = this._source.getData();
     const timeScale = chart.timeScale();
-    const isGradient = data.some(p => p.gradient !== undefined);
+    const all = this._source.getData();
+    const isGradient = all.some(p => p.gradient !== undefined);
+    const data = visiblePoints(all, timeScale);
 
     target.useMediaCoordinateSpace(({ context: ctx }) => {
       type Pt = { x: number; y1: number; y2: number };
@@ -583,7 +589,7 @@ export class PlotFillRenderer implements IPrimitivePaneRenderer {
    */
   private drawGradient(
     ctx: CanvasRenderingContext2D,
-    data: PlotFillPoint[],
+    data: readonly PlotFillPoint[],
     pointAt: (p: PlotFillPoint) => { x: number; y1: number; y2: number } | null,
     series: ISeriesApi<SeriesType>
   ): void {
@@ -1563,6 +1569,35 @@ export function buildTable(table: TableData, area: { width: number; height: numb
 /**
  * Estimate bar width from the time scale's visible range
  */
+/**
+ * Index range [start, end) of the points (sorted by time) on the visible bars, with `margin` points on each side (the
+ * parts leading into the first visible bar and out of the last one); the whole data when the visible range is not
+ * known. A paint converts only these to coordinates (the whole history on every frame stalled the chart).
+ */
+export function visibleSpan(data: ReadonlyArray<{ time: number }>, timeScale: ReturnType<IChartApi['timeScale']>, margin = 2): [number, number] {
+  const range = timeScale.getVisibleRange();
+  const from = range?.from as unknown;
+  const to = range?.to as unknown;
+  if (typeof from !== 'number' || typeof to !== 'number' || !data.length) return [0, data.length];
+  const firstAtOrAfter = (t: number) => {
+    let lo = 0;
+    let hi = data.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (data[mid].time < t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+  return [Math.max(0, firstAtOrAfter(from) - margin), Math.min(data.length, firstAtOrAfter(to) + 1 + margin)];
+}
+
+/** The points of `data` on the visible bars (visibleSpan). */
+function visiblePoints<T extends { time: number }>(data: readonly T[], timeScale: ReturnType<IChartApi['timeScale']>): readonly T[] {
+  const [start, end] = visibleSpan(data, timeScale);
+  return start === 0 && end === data.length ? data : data.slice(start, end);
+}
+
 export function getBarWidth(timeScale: ReturnType<IChartApi['timeScale']>, mediaWidth: number): number {
   const visibleRange = timeScale.getVisibleLogicalRange();
   if (!visibleRange) return 8;
@@ -1605,6 +1640,7 @@ export class BarColorPrimitive extends BasePrimitive {
   private _colors = new Map<number, string>();
   private _ohlc = new Map<number, Ohlc>();
   private _dataLength = -1;
+  private _lastBar: unknown = undefined;
   private _views: IPrimitivePaneView[];
 
   constructor(colors: Array<{ time: number; color: string }>) {
@@ -1623,7 +1659,8 @@ export class BarColorPrimitive extends BasePrimitive {
   /** OHLC of the main series by time, rebuilt when its data changed length */
   private ohlc(series: ISeriesApi<SeriesType, Time>): Map<number, Ohlc> {
     const data = series.data() as ReadonlyArray<Partial<Ohlc> & { time: Time }>;
-    if (data.length !== this._dataLength) {
+    // A live update replaces the newest bar: rebuilt then too.
+    if (data.length !== this._dataLength || data[data.length - 1] !== this._lastBar) {
       this._ohlc.clear();
       for (const d of data) {
         if (d.open != null && d.high != null && d.low != null && d.close != null) {
@@ -1631,6 +1668,7 @@ export class BarColorPrimitive extends BasePrimitive {
         }
       }
       this._dataLength = data.length;
+      this._lastBar = data[data.length - 1];
     }
     return this._ohlc;
   }
@@ -1645,8 +1683,13 @@ export class BarColorPrimitive extends BasePrimitive {
     const timeScale = chart.timeScale();
     const barSpacing = timeScale.options().barSpacing;
     const opts = series.options() as { thinBars?: boolean; openVisible?: boolean };
+    const range = timeScale.getVisibleRange();
+    const from = typeof range?.from === 'number' ? range.from : -Infinity;
+    const to = typeof range?.to === 'number' ? range.to : Infinity;
     target.useBitmapCoordinateSpace(({ context: ctx, horizontalPixelRatio: hpr, verticalPixelRatio: vpr }) => {
       for (const [time, color] of this._colors) {
+        // Bars out of view are not converted to coordinates.
+        if (time < from || time > to) continue;
         const bar = ohlc.get(time);
         const x = timeScale.timeToCoordinate(time as unknown as Time);
         if (!bar || x == null) continue;
