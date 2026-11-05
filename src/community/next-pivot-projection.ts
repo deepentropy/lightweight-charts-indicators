@@ -101,6 +101,8 @@ const MAROON = '#880E4F';
 const BLUE = '#2962FF';
 const BLACK = '#363A45';
 const WHITE = '#FFFFFF';
+/** Background of the projection labels: color.new(colour, 70) */
+const PROJECTION_BG = new Map([GREEN, LIME, YELLOW, RED, ORANGE].map((c) => [c, String(color.new(c, 70))]));
 
 export const plotConfig: PlotConfig[] = [
   { id: 'plot0', title: 'Plot', color: BLUE, lineWidth: 1, style: 'linebr' },
@@ -294,6 +296,19 @@ export function calculate(
   let tableMade = false;
   const zigzagLines: (Line | null)[] = [];
   const zigzagLabels: (Label | null)[] = [];
+  // The projection labels are drawn again on every bar and the earlier ones deleted: their texts are formatted after
+  // the last bar, for the labels still there (formatting them on every bar was most of the run time)
+  const projectionTexts = new Map<Label, () => [text: string, tooltip: string]>();
+  const projectionLabel = (x: number, y: number, colour: string, style: 'label_lower_left' | 'label_upper_left' | 'label_left',
+    texts: () => [text: string, tooltip: string]) => {
+    const lb = label.new(x, y, '', 'bar_index', 'price', PROJECTION_BG.get(colour), style, WHITE, 'small');
+    projectionTexts.set(lb, texts);
+    return lb;
+  };
+  const deleteProjection = (lb: Label) => {
+    label.delete(lb);
+    projectionTexts.delete(lb);
+  };
 
   const stPlot: number[] = new Array(n).fill(NaN);
   const stDirPlot: number[] = new Array(n).fill(NaN);
@@ -477,7 +492,7 @@ export function calculate(
         const highlight = si === hiSi;
         if (highlight) {
           for (const v of [hhLine, lhLine, htLine]) if (v.value) line.delete(v.value);
-          for (const v of [hhLabel, lhLabel, htLabel]) if (v.value) label.delete(v.value);
+          for (const v of [hhLabel, lhLabel, htLabel]) if (v.value) deleteProjection(v.value);
           const x1 = Math.sign(currentDir) < 0 ? currentBar : lastBar;
           const hhX2 = x1 + hhBars;
           const lhX2 = x1 + lhBars;
@@ -490,22 +505,25 @@ export function calculate(
           hhLine.value = line.new(x1, y1, hhX2, hhY2, 'bar_index', undefined, GREEN, 'arrow_right');
           lhLine.value = line.new(x1, y1, lhX2, lhY2, 'bar_index', undefined, LIME, 'arrow_right');
           htLine.value = line.new(x1, y1, tX2, tY2, 'bar_index', undefined, YELLOW, 'arrow_right');
-          const hhPercent = str.tostring((hhStats * 100) / tStats, 'percent');
-          const lhPercent = str.tostring((lhStats * 100) / tStats, 'percent');
-          const hhText = `Number of Historical References :${str.tostring(hhStats)}/${str.tostring(tStats)}`
-            + `\nProbability of Higher High :${hhPercent}\nAverage Higher High Ratio :${str.tostring(hhRatio)}`
-            + `\nAverage Higher High Bars :${str.tostring(hhBars)}`;
-          const lhText = `Number of Historical References :${str.tostring(lhStats)}/${str.tostring(tStats)}`
-            + `\nProbability of Lower High :${lhPercent}\nAverage Lower High Ratio :${str.tostring(lhRatio)}`
-            + `\nAverage Lower High Bars :${str.tostring(lhBars)}`;
-          const tText = `Number of Historical References :${str.tostring(tStats)}\nAverage Fib Ratio :${str.tostring(tRatio)}`
-            + `\nAverage Bars :${str.tostring(tBars)}`;
-          hhLabel.value = label.new(hhX2, hhY2, `${str.tostring(hhY2)} - ${hhPercent}`, 'bar_index', 'price',
-            String(color.new(GREEN, 70)), 'label_lower_left', WHITE, 'small', undefined, hhText);
-          lhLabel.value = label.new(lhX2, lhY2, `${str.tostring(lhY2)} - ${lhPercent}`, 'bar_index', 'price',
-            String(color.new(LIME, 70)), 'label_upper_left', WHITE, 'small', undefined, lhText);
-          htLabel.value = label.new(tX2, tY2, `${str.tostring(tY2)}@${str.tostring(tRatio)}`, 'bar_index', 'price',
-            String(color.new(YELLOW, 70)), 'label_left', WHITE, 'small', undefined, tText);
+          const hhPercent = () => str.tostring((hhStats * 100) / tStats, 'percent');
+          const lhPercent = () => str.tostring((lhStats * 100) / tStats, 'percent');
+          hhLabel.value = projectionLabel(hhX2, hhY2, GREEN, 'label_lower_left', () => [
+            `${str.tostring(hhY2)} - ${hhPercent()}`,
+            `Number of Historical References :${str.tostring(hhStats)}/${str.tostring(tStats)}`
+              + `\nProbability of Higher High :${hhPercent()}\nAverage Higher High Ratio :${str.tostring(hhRatio)}`
+              + `\nAverage Higher High Bars :${str.tostring(hhBars)}`,
+          ]);
+          lhLabel.value = projectionLabel(lhX2, lhY2, LIME, 'label_upper_left', () => [
+            `${str.tostring(lhY2)} - ${lhPercent()}`,
+            `Number of Historical References :${str.tostring(lhStats)}/${str.tostring(tStats)}`
+              + `\nProbability of Lower High :${lhPercent()}\nAverage Lower High Ratio :${str.tostring(lhRatio)}`
+              + `\nAverage Lower High Bars :${str.tostring(lhBars)}`,
+          ]);
+          htLabel.value = projectionLabel(tX2, tY2, YELLOW, 'label_left', () => [
+            `${str.tostring(tY2)}@${str.tostring(tRatio)}`,
+            `Number of Historical References :${str.tostring(tStats)}\nAverage Fib Ratio :${str.tostring(tRatio)}`
+              + `\nAverage Bars :${str.tostring(tBars)}`,
+          ]);
           hhValue = hhY2;
           lhValue = lhY2;
           hhProbability = (hhStats * 100) / tStats;
@@ -552,7 +570,7 @@ export function calculate(
         const highlight = si === loSi;
         if (highlight) {
           for (const v of [llLine, hlLine, ltLine]) if (v.value) line.delete(v.value);
-          for (const v of [llLabel, hlLabel, ltLabel]) if (v.value) label.delete(v.value);
+          for (const v of [llLabel, hlLabel, ltLabel]) if (v.value) deleteProjection(v.value);
           const x1 = Math.sign(currentDir) > 0 ? currentBar : lastBar;
           const llX2 = x1 + llBars;
           const hlX2 = x1 + hlBars;
@@ -565,22 +583,25 @@ export function calculate(
           llLine.value = line.new(x1, y1, llX2, llY2, 'bar_index', undefined, RED, 'arrow_right');
           hlLine.value = line.new(x1, y1, hlX2, hlY2, 'bar_index', undefined, ORANGE, 'arrow_right');
           ltLine.value = line.new(x1, y1, tX2, tY2, 'bar_index', undefined, YELLOW, 'arrow_right');
-          const llPercent = str.tostring((llStats * 100) / tStats, 'percent');
-          const hlPercent = str.tostring((hlStats * 100) / tStats, 'percent');
-          const llText = `Number of Historical References :${str.tostring(llStats)}/${str.tostring(tStats)}`
-            + `\nProbability of Lower Low :${llPercent}\nAverage Lower Low Ratio :${str.tostring(llRatio)}`
-            + `\nAverage Lower Low Bars :${str.tostring(llBars)}`;
-          const hlText = `Number of Historical References :${str.tostring(hlStats)}/${str.tostring(tStats)}`
-            + `\nProbability of Higher Low :${hlPercent}\nAverage Higher Low Ratio :${str.tostring(hlRatio)}`
-            + `\nAverage Higher Low Bars :${str.tostring(hlBars)}`;
-          const tText = `Number of Historical References :${str.tostring(tStats)}\nAverage Fib Ratio :${str.tostring(tRatio)}`
-            + `\nAverage Bars :${str.tostring(tBars)}`;
-          llLabel.value = label.new(llX2, llY2, `${str.tostring(llY2)} - ${llPercent}`, 'bar_index', 'price',
-            String(color.new(RED, 70)), 'label_upper_left', WHITE, 'small', undefined, llText);
-          hlLabel.value = label.new(hlX2, hlY2, `${str.tostring(hlY2)} - ${hlPercent}`, 'bar_index', 'price',
-            String(color.new(ORANGE, 70)), 'label_lower_left', WHITE, 'small', undefined, hlText);
-          ltLabel.value = label.new(tX2, tY2, `${str.tostring(tY2)}@${str.tostring(tRatio)}`, 'bar_index', 'price',
-            String(color.new(YELLOW, 70)), 'label_left', WHITE, 'small', undefined, tText);
+          const llPercent = () => str.tostring((llStats * 100) / tStats, 'percent');
+          const hlPercent = () => str.tostring((hlStats * 100) / tStats, 'percent');
+          llLabel.value = projectionLabel(llX2, llY2, RED, 'label_upper_left', () => [
+            `${str.tostring(llY2)} - ${llPercent()}`,
+            `Number of Historical References :${str.tostring(llStats)}/${str.tostring(tStats)}`
+              + `\nProbability of Lower Low :${llPercent()}\nAverage Lower Low Ratio :${str.tostring(llRatio)}`
+              + `\nAverage Lower Low Bars :${str.tostring(llBars)}`,
+          ]);
+          hlLabel.value = projectionLabel(hlX2, hlY2, ORANGE, 'label_lower_left', () => [
+            `${str.tostring(hlY2)} - ${hlPercent()}`,
+            `Number of Historical References :${str.tostring(hlStats)}/${str.tostring(tStats)}`
+              + `\nProbability of Higher Low :${hlPercent()}\nAverage Higher Low Ratio :${str.tostring(hlRatio)}`
+              + `\nAverage Higher Low Bars :${str.tostring(hlBars)}`,
+          ]);
+          ltLabel.value = projectionLabel(tX2, tY2, YELLOW, 'label_left', () => [
+            `${str.tostring(tY2)}@${str.tostring(tRatio)}`,
+            `Number of Historical References :${str.tostring(tStats)}\nAverage Fib Ratio :${str.tostring(tRatio)}`
+              + `\nAverage Bars :${str.tostring(tBars)}`,
+          ]);
           llValue = llY2;
           hlValue = hlY2;
           llProbability = (llStats * 100) / tStats;
@@ -658,6 +679,11 @@ export function calculate(
     llProb[i] = llProbability;
   }
   setDrawingBar(null);
+  for (const [lb, texts] of projectionTexts) {
+    const [text, tooltip] = texts();
+    label.set_text(lb, text);
+    label.set_tooltip(lb, tooltip);
+  }
 
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   const P = (vals: number[], show: boolean, colorOf?: (i: number) => string) =>

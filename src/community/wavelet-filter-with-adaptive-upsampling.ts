@@ -115,42 +115,27 @@ const lowPass = (a: number, b: number) => (a + b) * C;
 const softThreshold = (coeff: number, threshold: number) =>
   (gt(coeff, threshold) ? coeff - threshold : lt(coeff, -threshold) ? coeff + threshold : 0);
 
-/** Every second element (0, 2, 4, ...) */
-function downsample(arr: number[]): number[] {
-  const out = array.new_float(Math.ceil(arr.length / 2), NaN);
-  pineFor(0, arr.length - 1, 2, (i) => aset(out, i / 2, aget(arr, i)));
-  return out;
+/** Size of the linear and the sinusoidal upsample of an array of `size` values (an array of 0 or 1 value is kept) */
+const upsampledSize = (size: number) => (size <= 1 ? size : size * 2 - 1);
+
+/** Element k of the linear upsample: the original values with their midpoints between them */
+function upsampleAt(arr: number[], k: number): number {
+  if (arr.length <= 1) return aget(arr, k);
+  if (k % 2 === 0) return aget(arr, k / 2);
+  const a = aget(arr, (k - 1) / 2);
+  const b = aget(arr, (k + 1) / 2);
+  return (a + b) / 2;
 }
 
-/** Linear upsample: the original values with their midpoints between them */
-function upsample(arr: number[]): number[] {
-  if (arr.length <= 1) return arr;
-  const size = arr.length * 2 - 1;
-  const out = array.new_float(size, NaN);
-  pineFor(0, arr.length - 2, 1, (i) => {
-    const a = aget(arr, i);
-    const b = aget(arr, i + 1);
-    aset(out, i * 2, a);
-    aset(out, i * 2 + 1, (a + b) / 2);
-  });
-  aset(out, size - 1, aget(arr, arr.length - 1));
-  return out;
-}
-
-/** Sinusoidal upsample: amplitude * sin(pi * freq + phase) + midpoint between the original values */
-function sinusoidalUpsample(arr: number[], freq: number, phase: number): number[] {
-  if (arr.length <= 1) return arr;
-  const out: number[] = [];
-  pineFor(0, arr.length - 2, 1, (i) => {
-    const a = aget(arr, i);
-    const b = aget(arr, i + 1);
-    const amplitude = (b - a) / 2;
-    const midPoint = (a + b) / 2;
-    out.push(a);
-    out.push(amplitude * Math.sin(Math.PI * freq + phase) + midPoint);
-  });
-  out.push(aget(arr, arr.length - 1));
-  return out;
+/** Element k of the sinusoidal upsample: amplitude * sin(pi * freq + phase) + midpoint between the original values */
+function sinusoidalUpsampleAt(arr: number[], k: number, freq: number, phase: number): number {
+  if (arr.length <= 1) return aget(arr, k);
+  if (k % 2 === 0) return aget(arr, k / 2);
+  const a = aget(arr, (k - 1) / 2);
+  const b = aget(arr, (k + 1) / 2);
+  const amplitude = (b - a) / 2;
+  const midPoint = (a + b) / 2;
+  return amplitude * Math.sin(Math.PI * freq + phase) + midPoint;
 }
 
 /** Pine stops a loop that runs too long with a runtime error; a frequency estimate that does not converge throws */
@@ -238,6 +223,14 @@ export function calculate(bars: Bar[], inputs: Partial<WaveletFilterWithAdaptive
 
   // LogRoC = math.log(src / src[1])
   const logRoc = src.map((v, i) => (i > 0 ? Math.log(v / src[i - 1]) : NaN));
+  // The script decomposes the last min(bar_index, 5000) returns again on every bar, but each coefficient depends only
+  // on the bar it starts at: the level 1 pair (LogRoC[t], LogRoC[t - 1]) and the level 2 pair of the level 1 low pass
+  // values of bars t and t - 2. They are computed once here; a bar reads its downsampled arrays from them (every second
+  // bar back for level 1, every fourth for level 2) and only the element bar_index % size of the reconstruction.
+  const high1 = logRoc.map((x, t) => highPass(x, t > 0 ? logRoc[t - 1] : NaN));
+  const low1 = logRoc.map((x, t) => lowPass(x, t > 0 ? logRoc[t - 1] : NaN));
+  const high2 = low1.map((x, t) => highPass(x, t > 1 ? low1[t - 2] : NaN));
+  const low2 = low1.map((x, t) => lowPass(x, t > 1 ? low1[t - 2] : NaN));
 
   const recon: number[] = new Array(nBars).fill(NaN);
   const cum: number[] = new Array(nBars).fill(NaN);
@@ -246,68 +239,54 @@ export function calculate(bars: Bar[], inputs: Partial<WaveletFilterWithAdaptive
 
   for (let bi = 0; bi < nBars; bi++) {
     if (bi > 0 && bi > npast) {
-      const highFreqValues: number[] = [];
-      const lowFreqValues: number[] = [];
-      const highFreqValues2: number[] = [];
-      const lowFreqValues2: number[] = [];
-      // for i = 0 to math.min(bar_index, 5000) - 1: LogRoC[i] and LogRoC[i + 1]
-      pineFor(0, Math.min(bi, 5000) - 1, 1, (i) => {
-        const x = bi - i >= 0 ? logRoc[bi - i] : NaN;
-        const y = bi - i - 1 >= 0 ? logRoc[bi - i - 1] : NaN;
-        highFreqValues.push(highPass(x, y));
-        lowFreqValues.push(lowPass(x, y));
-      });
-
-      const downsampledLow = downsample(lowFreqValues);
-      const downsampledHigh = downsample(highFreqValues);
+      // for i = 0 to math.min(bar_index, 5000) - 1: high and low pass of LogRoC[i] and LogRoC[i + 1], downsampled
+      const size = Math.min(bi, 5000);
+      const downsampledHigh: number[] = [];
+      for (let i = 0; i < size; i += 2) downsampledHigh.push(high1[bi - i]);
+      const downsampledLowSize = downsampledHigh.length;
 
       // Noise level of the level 1 detail; universal threshold
       const noiseEstimate = array.stdev(downsampledHigh);
       const n = downsampledHigh.length;
       const adaptiveThreshold = noiseEstimate * Math.sqrt(2 * Math.log(n));
-      pineFor(0, n - 1, 1, (i) => aset(downsampledHigh, i, softThreshold(aget(downsampledHigh, i), adaptiveThreshold)));
 
-      // Level 2
-      pineFor(0, downsampledLow.length - 2, 1, (i) => {
-        const frst = aget(downsampledLow, i);
-        const scnd = aget(downsampledLow, i + 1);
-        highFreqValues2.push(highPass(frst, scnd));
-        lowFreqValues2.push(lowPass(frst, scnd));
-      });
-      const secondDownsampledLow = downsample(lowFreqValues2);
-      const secondDownsampledHigh = downsample(highFreqValues2);
+      // Level 2: `for i = 0 to array.size(downsampledLow) - 2` counts down with one value and reads past its end
+      if (downsampledLowSize < 2) {
+        throw new Error(`In 'array.get()' function. Index 1 is out of bounds, array size is ${downsampledLowSize}.`);
+      }
+      const secondDownsampledHigh: number[] = [];
+      const secondDownsampledLow: number[] = [];
+      for (let i = 0; i < downsampledLowSize - 1; i += 2) {
+        secondDownsampledHigh.push(high2[bi - 2 * i]);
+        secondDownsampledLow.push(low2[bi - 2 * i]);
+      }
       const secondNoiseEstimate = array.stdev(secondDownsampledHigh);
       const secondN = secondDownsampledHigh.length;
       const secondAdaptiveThreshold = secondNoiseEstimate * Math.sqrt(2 * Math.log(secondN));
-      pineFor(0, secondN - 1, 1, (i) =>
-        aset(secondDownsampledHigh, i, softThreshold(aget(secondDownsampledHigh, i), secondAdaptiveThreshold)));
 
       // Upsampling and reconstruction
-      if (secondDownsampledLow.length > 0) {
-        const firstReconSize = Math.min(secondDownsampledHigh.length, secondDownsampledLow.length);
-        const firstReconstruct = array.new_float(firstReconSize, NaN);
-        pineFor(0, firstReconSize - 1, 1, (j) => {
-          const hiVal = aget(secondDownsampledHigh, j);
-          const loVal = aget(secondDownsampledLow, j);
-          if (!isNa(hiVal) && !isNa(loVal)) aset(firstReconstruct, j, hiVal + loVal);
-        });
+      const firstReconSize = Math.min(secondDownsampledHigh.length, secondDownsampledLow.length);
+      const firstReconstruct = array.new_float(firstReconSize, NaN);
+      for (let j = 0; j < firstReconSize; j++) {
+        const hiVal = softThreshold(secondDownsampledHigh[j], secondAdaptiveThreshold);
+        const loVal = secondDownsampledLow[j];
+        if (!isNa(hiVal) && !isNa(loVal)) firstReconstruct[j] = hiVal + loVal;
+      }
 
-        const upSampledApprox = cfg.upsampleType === 'Sinusoidal Upsample'
-          ? sinusoidalUpsample(firstReconstruct, cfg.freq, cfg.phase)
-          : cfg.upsampleType === 'Advanced Upsample'
-            ? advancedUpsample(firstReconstruct, npast, cfg.freq, cfg.upp, bi)
-            : upsample(firstReconstruct);
-
-        if (upSampledApprox.length > 0) {
-          const finalReconSize = Math.min(upSampledApprox.length, downsampledHigh.length);
-          const finalRecon = array.new_float(finalReconSize, NaN);
-          pineFor(0, finalReconSize - 1, 1, (k) => {
-            const approxVal = aget(upSampledApprox, k);
-            const detailVal = aget(downsampledHigh, k);
-            if (!isNa(approxVal) && !isNa(detailVal)) aset(finalRecon, k, approxVal + detailVal);
-          });
-          reconstructed = finalRecon.length > 0 ? aget(finalRecon, bi % finalRecon.length) : NaN;
-        }
+      const advanced = cfg.upsampleType === 'Advanced Upsample'
+        ? advancedUpsample(firstReconstruct, npast, cfg.freq, cfg.upp, bi)
+        : null;
+      const upSampledSize = advanced ? advanced.length : upsampledSize(firstReconSize);
+      if (upSampledSize > 0) {
+        const finalReconSize = Math.min(upSampledSize, n);
+        const k = bi % finalReconSize;
+        const approxVal = advanced
+          ? aget(advanced, k)
+          : cfg.upsampleType === 'Sinusoidal Upsample'
+            ? sinusoidalUpsampleAt(firstReconstruct, k, cfg.freq, cfg.phase)
+            : upsampleAt(firstReconstruct, k);
+        const detailVal = softThreshold(downsampledHigh[k], adaptiveThreshold);
+        reconstructed = !isNa(approxVal) && !isNa(detailVal) ? approxVal + detailVal : NaN;
       }
     }
     // Historical bars are confirmed: Series := Series * (1 + reconstructed_equity)

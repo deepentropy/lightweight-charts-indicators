@@ -137,6 +137,40 @@ const lt = (a: number, b: number) => b - a > EPS;
 const TABLE_COLOR = '#160d0db3';
 const NO_COLOR = '#00000000';
 
+/**
+ * A ta.highest / ta.lowest call site with a fixed length, called several times per bar in a loop: the values of
+ * callsite.highestByBar / lowestByBar, with the extreme of the earlier bars taken once per bar instead of on every
+ * call (the loop calls it knnLookback times per bar). The site keeps the non-na value of the last call of each bar; a
+ * call gives the extreme of the value of its bar (its own, or the one an earlier call kept when it is na) and the last
+ * `length - 1` kept values of the earlier bars (`length` of them when its bar has none), the newest value winning a tie.
+ */
+function loopExtremeSite(isLowest: boolean, length: number): (barIndex: number, value: number) => number {
+  const kept: number[] = [];
+  const better = (a: number, b: number) => (isLowest ? a < b : a > b);
+  let bar = NaN;
+  let own = NaN; // value kept for the current bar
+  let before = NaN; // extreme of the last length - 1 kept values of the earlier bars
+  let beforeAll = NaN; // extreme of the last length kept values of the earlier bars
+  return (barIndex, value) => {
+    if (barIndex !== bar) {
+      if (!Number.isNaN(own)) kept.push(own);
+      bar = barIndex;
+      own = NaN;
+      before = NaN;
+      beforeAll = NaN;
+      for (let k = kept.length - 1, count = 0; k >= 0 && count < length; k--, count++) {
+        const v = kept[k];
+        if (count < length - 1 && (Number.isNaN(before) || better(v, before))) before = v;
+        if (Number.isNaN(beforeAll) || better(v, beforeAll)) beforeAll = v;
+      }
+    }
+    if (Number.isFinite(value)) own = value;
+    if (barIndex < length - 1) return NaN;
+    if (Number.isNaN(own)) return beforeAll;
+    return !Number.isNaN(before) && better(before, own) ? before : own;
+  };
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<MachineLearningRsiBullvisionInputs> = {},
@@ -234,9 +268,9 @@ export function calculate(
   // source is one call site, which keeps one value per bar (the one of its last call on that bar).
   /** normalize() called in the loop: one ta.highest and one ta.lowest call site */
   const loopNormalize = () => {
-    const hi = callsite.highestByBar();
-    const lo = callsite.lowestByBar();
-    return (bar: number, source: number) => scale(source, hi(bar, source, knnLookback), lo(bar, source, knnLookback));
+    const hi = loopExtremeSite(false, knnLookback);
+    const lo = loopExtremeSite(true, knnLookback);
+    return (bar: number, source: number) => scale(source, hi(bar, source), lo(bar, source));
   };
   /**
    * getMomentum() called in the loop: `source[length]` reads the history of the argument, which keeps one value per

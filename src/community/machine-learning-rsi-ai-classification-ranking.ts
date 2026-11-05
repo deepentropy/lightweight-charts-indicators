@@ -264,15 +264,12 @@ function autoFeatureWeights(bank: number[][], minRows: number, floor: number): n
       const o = row[8];
       if (gt(o, 0) || lt(o, 0)) {
         const isB = gt(o, 0);
+        const sum = isB ? sumB : sumBe;
+        const sq = isB ? sqB : sqBe;
         for (let j = 0; j < 8; j++) {
           const v = row[j];
-          if (isB) {
-            sumB[j] = sumB[j] + v;
-            sqB[j] = sqB[j] + v * v;
-          } else {
-            sumBe[j] = sumBe[j] + v;
-            sqBe[j] = sqBe[j] + v * v;
-          }
+          sum[j] = sum[j] + v;
+          sq[j] = sq[j] + v * v;
         }
         if (isB) cntB += 1;
         else cntBe += 1;
@@ -380,8 +377,7 @@ export function calculate(
     const bankN = bank.length;
     const scanEnd = Math.min(memoryDepth - 1, bankN - 1);
     if (bankN > 1) {
-      for (let idx = 0; idx <= scanEnd; idx++) {
-        if (idx % SPACING !== 0) continue;
+      for (let idx = 0; idx <= scanEnd; idx += SPACING) {
         const row = bank[idx];
         let g = w[0] * compress(cur[0] - row[0]);
         for (let j = 1; j < 8; j++) g = g + w[j] * compress(cur[j] - row[j]);

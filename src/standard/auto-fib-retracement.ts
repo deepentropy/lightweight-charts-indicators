@@ -236,6 +236,17 @@ export function calculate(
   const levelLabels = new Map<LevelKey, Label>();
   const alertCalls: AlertCall[] = [];
   const ticker = tickerOf(chart);
+  // The label text of a level only changes with its price: formatting it on every bar is most of the run time
+  const levelTexts = new Map<LevelKey, { r: number; text: string }>();
+  const levelText = (k: LevelKey, m: number, r: number) => {
+    const last = levelTexts.get(k);
+    if (last && Object.is(last.r, r)) return last.text;
+    const lv = cfg.levelsFormat === 'Values' ? str.tostring(m) : str.tostring(m * 100) + '%';
+    const txt = (cfg.levels ? lv : '') + (cfg.prices ? '(' + fmt(r) + ')' : '');
+    const text = (left ? txt : '       ' + txt) + LABEL_PAD;
+    levelTexts.set(k, { r, text });
+    return text;
+  };
 
   for (let i = 0; i < n; i++) {
     setDrawingBar(i, i === n - 1);
@@ -303,9 +314,7 @@ export function calculate(
       line.set_xy1(id, timeMs(s.time), r);
       line.set_xy2(id, timeMs(e.time), r);
       // _draw_label
-      const lv = cfg.levelsFormat === 'Values' ? str.tostring(m) : str.tostring(m * 100) + '%';
-      const txt = (cfg.levels ? lv : '') + (cfg.prices ? '(' + fmt(r) + ')' : '');
-      const text = (left ? txt : '       ' + txt) + LABEL_PAD;
+      const text = levelText(k, m, r);
       const x = timeMs(left ? s.time : !cfg.extendRight ? e.time : bars[i].time);
       let lb = levelLabels.get(k);
       if (!lb) {

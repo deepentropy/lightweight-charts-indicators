@@ -25,7 +25,7 @@
  */
 
 import {
-  ta, Series, color, str, math, label, line, box, polyline, table, chartPoint, resetDrawings, setDrawingBar,
+  color, str, math, label, line, box, polyline, table, chartPoint, resetDrawings, setDrawingBar,
   drawingOutputs,
   type Bar, type Box, type ChartPoint, type IndicatorResult, type InputConfig, type Label, type Line, type PlotConfig,
   type Polyline,
@@ -121,6 +121,39 @@ interface Drawing {
   labels: Label[];
 }
 
+/**
+ * ta.pivothigh(source, left, 1) (or ta.pivotlow) for each left length from `minLeft` to `maxLeft`: the window of a
+ * length is the window of the length before with one older value, so one scan back from each bar gives all the lengths
+ * (a call per length scans the whole window again, about a hundred times more work). Same rules as the library: the na
+ * values are skipped, the newest best value of the window must be on the bar before.
+ */
+function pivotsByLeft(source: number[], minLeft: number, maxLeft: number, isHigh: boolean): number[][] {
+  const n = source.length;
+  const values: number[] = [];
+  const barOf: number[] = [];
+  const out = Array.from({ length: maxLeft - minLeft + 1 }, () => new Array<number>(n).fill(NaN));
+  for (let i = 0; i < n; i++) {
+    if (Number.isFinite(source[i])) {
+      values.push(source[i]);
+      barOf.push(i);
+    }
+    // the last non-na value up to this bar
+    const k = values.length - 1;
+    if (k < 0) continue;
+    let best = k;
+    let j = k - 1;
+    for (let left = minLeft; left <= maxLeft && i >= left + 1; left++) {
+      for (; j >= 0 && j >= k - left - 1; j--) {
+        if (isHigh ? values[j] > values[best] : values[j] < values[best]) best = j;
+      }
+      // the best value only moves to older bars: once it is before the bar before, no longer length has a pivot
+      if (barOf[best] < i - 1) break;
+      if (barOf[best] === i - 1) out[left - minLeft][i] = values[best];
+    }
+  }
+  return out;
+}
+
 export function calculate(
   allBars: Bar[],
   inputs: Partial<ThreeDrivePatternDetectorInputs> = {},
@@ -146,15 +179,9 @@ export function calculate(
 
   const high = bars.map((b) => b.high);
   const low = bars.map((b) => b.low);
-  const highS = Series.fromBars(bars, 'high');
-  const lowS = Series.fromBars(bars, 'low');
   // ta.pivothigh(left, 1) / ta.pivotlow(left, 1) of each zigzag (stateless: they read the high / low history)
-  const phs: (number | null)[][] = [];
-  const pls: (number | null)[][] = [];
-  for (let i = 0; i < dif; i++) {
-    phs.push(ta.pivothigh(highS, stt + i, 1).toArray());
-    pls.push(ta.pivotlow(lowS, stt + i, 1).toArray());
-  }
+  const phs = pivotsByLeft(high, stt, num - 1, true);
+  const pls = pivotsByLeft(low, stt, num - 1, false);
 
   resetDrawings({ line: 500, label: 500, box: 500, polyline: 100 });
   const tb = table.new(tablePosition, 1, 1, '#1e222d', '#373a46', 1, '#373a46', 1);
@@ -203,8 +230,8 @@ export function calculate(
     // for i = dif - 1 to 0: arrayZZ.zigzag(i, stt + i, 1)
     for (let z = dif - 1; z >= 0; z--) {
       const piv = arrayZZ[z];
-      const ph = phs[z][i] ?? NaN;
-      const pl = pls[z][i] ?? NaN;
+      const ph = phs[z][i];
+      const pl = pls[z][i];
       if (!Number.isNaN(ph)) {
         const p = piv[0];
         const Dx = i - right;

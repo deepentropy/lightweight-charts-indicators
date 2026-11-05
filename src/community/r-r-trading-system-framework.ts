@@ -602,8 +602,11 @@ export function calculate(
     s.rrtAvgTslBars = math.round(s.tslBarsCount / gTslHitCount);
 
     const S = (x: number) => str.tostring(x);
+    // Each call writes the header and the whole row of its trade type (or clears the row), so the tables show what
+    // the last bar writes: the cells of the earlier bars are replaced and need not be built
+    const lastBar = i === n - 1;
 
-    if (cfg.rrtActivated && rrTable) {
+    if (cfg.rrtActivated && rrTable && lastBar) {
       const tb = rrTable;
       const size = cfg.rrtTextSize;
       const cell = (c: number, r: number, text: string, textColor: string, bg: string, tooltip: string, halign: 'left' | 'center' = 'center') =>
@@ -663,7 +666,7 @@ export function calculate(
       }
     }
 
-    if (cfg.tttActivated && ttTable) {
+    if (cfg.tttActivated && ttTable && lastBar) {
       const tb = ttTable;
       const size = cfg.tttTextSize;
       const cell = (c: number, r: number, text: string, textColor: string, bg: string, tooltip?: string, halign: 'left' | 'center' = 'center') =>

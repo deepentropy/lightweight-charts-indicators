@@ -27,7 +27,7 @@
  */
 
 import {
-  ta, str, math, color, timeframe, array, Series, label, table, resetDrawings, setDrawingBar, drawingOutputs,
+  ta, str, math, color, timeframe, Series, label, table, resetDrawings, setDrawingBar, drawingOutputs,
   type Bar, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type FillData, type BarColorConfig,
 } from 'oakscriptjs';
 import type { BarColorData } from '../types';
@@ -271,10 +271,49 @@ function sourceOf(name: Source, b: Bar): number {
   }
 }
 
-/** Pine array: remove the first element when the size is above the limit, then push */
-function pushLimited(list: number[], value: number, limit: number, push = true): void {
-  if (list.length > limit) list.shift();
-  if (push) list.push(value);
+/**
+ * A Pine array of up to `limit + 1` values with its array.median on every bar. Its non-na values are kept in the
+ * order array.median sorts them (stable sort by a - b: equal values in the order of the array), updated as values come
+ * and go, so that a bar does not sort the whole array again.
+ */
+class MedianList {
+  private readonly list: number[] = [];
+  private readonly sorted: number[] = [];
+
+  constructor(private readonly limit: number) {}
+
+  /** First position whose value sorts after x (`after`) or not before x */
+  private position(x: number, after: boolean): number {
+    let lo = 0;
+    let hi = this.sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const d = this.sorted[mid] - x; // NaN (two equal infinities) sorts as equal
+      if (after ? !(d > 0) : d < 0) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /** Remove the first element when the size is above the limit, then push */
+  pushLimited(value: number, push = true): void {
+    if (this.list.length > this.limit) {
+      const first = this.list.shift() as number;
+      // the oldest of its equal values is the first of them in the sorted order
+      if (!Number.isNaN(first)) this.sorted.splice(this.position(first, false), 1);
+    }
+    if (!push) return;
+    this.list.push(value);
+    if (!Number.isNaN(value)) this.sorted.splice(this.position(value, true), 0, value);
+  }
+
+  /** array.median: the middle value, or the mean of the two middle values for an even count; na without values */
+  median(): number {
+    const sorted = this.sorted;
+    if (!sorted.length) return NaN;
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+  }
 }
 
 export function calculate(
@@ -309,8 +348,8 @@ export function calculate(
   }
   const fair = basis.toArray().map(nan);
 
-  const devUpList: number[] = [];
-  const devDownList: number[] = [];
+  const devUpList = new MedianList(1000);
+  const devDownList = new MedianList(1000);
   const upperBand: number[] = new Array(n);
   const lowerBand: number[] = new Array(n);
   const upperBoosted: number[] = new Array(n);
@@ -323,10 +362,10 @@ export function calculate(
     const b = bars[i];
     const f = fair[i];
     const inside = lt(b.low, f) && gt(b.high, f);
-    pushLimited(devUpList, inside ? b.high / f : NaN, 1000);
-    pushLimited(devDownList, inside ? b.low / f : NaN, 1000);
-    upperBand[i] = f * array.median(devUpList);
-    lowerBand[i] = f * array.median(devDownList);
+    devUpList.pushLimited(inside ? b.high / f : NaN);
+    devDownList.pushLimited(inside ? b.low / f : NaN);
+    upperBand[i] = f * devUpList.median();
+    lowerBand[i] = f * devDownList.median();
     upperBoosted[i] = f + (upperBand[i] - f) * cfg.boost;
     lowerBoosted[i] = f - (f - lowerBand[i]) * cfg.boost;
     const prev = i > 0 ? fair[i - 1] : NaN;
@@ -341,8 +380,8 @@ export function calculate(
   const spread = Series.fromArray(bars, bars.map((b, i) => (b.open + b.high + b.low + b.close) / 4 / fair[i]));
   const pivotUp = ta.pivothigh(spread, 5, 5).toArray().map(nan);
   const pivotDown = ta.pivotlow(spread, 5, 5).toArray().map(nan);
-  const pivotUps: number[] = [];
-  const pivotDowns: number[] = [];
+  const pivotUps = new MedianList(2000);
+  const pivotDowns = new MedianList(2000);
   const band1Up: number[] = new Array(n);
   const band1Down: number[] = new Array(n);
   const band2Up: number[] = new Array(n);
@@ -354,10 +393,10 @@ export function calculate(
     const f = fair[i];
     const pushUp = gt(b.low, upperBand[i]);
     const pushDown = !pushUp && lt(b.high, lowerBand[i]);
-    pushLimited(pivotUps, pivotUp[i], 2000, pushUp);
-    pushLimited(pivotDowns, pivotDown[i], 2000, pushDown);
-    const upSpread = (f * array.median(pivotUps) - f) * cfg.bandBoost;
-    const downSpread = (f - f * array.median(pivotDowns)) * cfg.bandBoost;
+    pivotUps.pushLimited(pivotUp[i], pushUp);
+    pivotDowns.pushLimited(pivotDown[i], pushDown);
+    const upSpread = (f * pivotUps.median() - f) * cfg.bandBoost;
+    const downSpread = (f - f * pivotDowns.median()) * cfg.bandBoost;
     band1Up[i] = f + upSpread;
     band1Down[i] = f - downSpread;
     band2Up[i] = band1Up[i] + upSpread;

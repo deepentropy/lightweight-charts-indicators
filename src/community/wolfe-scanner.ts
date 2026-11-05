@@ -130,62 +130,82 @@ function addNewPivot(m: Row[], pivot: Row, max: number): void {
   if (m.length > max) m.pop();
 }
 
-/** rzigzag nextlevel(): the next level zigzag of a zigzag (empty when it has no fewer pivots) */
+/**
+ * addNewPivot() on a zigzag kept with its newest pivot last (the pivot is not copied: the callers pass their own copy)
+ */
+function pushPivot(m: Row[], pivot: Row, max: number): void {
+  const dir = Math.sign(pivot[3]);
+  const k = m.length;
+  if (k >= 1) {
+    if (Math.sign(m[k - 1][3]) === Math.sign(dir)) throw new Error('Direction mismatch');
+    if (k >= 2) {
+      const value = pivot[0];
+      const llastValue = m[k - 2][0];
+      pivot[3] = gt(dir * value, dir * llastValue) ? dir * 2 : dir;
+    }
+  }
+  m.push(pivot);
+  if (m.length > max) m.shift();
+}
+
+/**
+ * rzigzag nextlevel(): the next level zigzag of a zigzag (empty when it has no fewer pivots). It is built with its
+ * newest pivot last and reversed at the end: adding each pivot at the front moved the whole array every time.
+ */
 function nextLevel(m: Row[], max: number): Row[] {
-  let ml: Row[] = [];
+  const ml: Row[] = [];
   if (m.length > 0) {
-    const bullish: number[] = [];
-    const bearish: number[] = [];
-    const set = (target: number[], values: number[]) => {
-      target.length = 0;
-      target.push(...values);
+    // the highest high / lowest low since the last level pivot: rows of m, copied with the level count when added
+    let bullish: Row | null = null;
+    let bearish: Row | null = null;
+    const copy = (src: Row): Row => {
+      const row = src.slice();
+      row[4] = row[4] + 1;
+      return row;
     };
     for (let i = m.length - 1; i >= 0; i--) {
-      const row = m[i].slice();
-      const dir = row[3];
+      const src = m[i];
+      const dir = src[3];
       const newDir = Math.sign(dir);
-      const value = row[0];
-      row[4] = row[4] + 1;
+      const value = src[0];
       if (ml.length > 0) {
-        const lastDir = Math.sign(ml[0][3]);
-        const lastPivot = ml[0][0];
+        const lastDir = Math.sign(ml[ml.length - 1][3]);
+        const lastPivot = ml[ml.length - 1][0];
         if (Math.abs(dir) === 2) {
           if (lastDir === newDir) {
             if (lt(dir * lastPivot, dir * value)) {
-              ml.shift();
+              ml.pop();
             } else {
               const tempRow = newDir > 0 ? bearish : bullish;
-              if (tempRow.length > 0) addNewPivot(ml, tempRow.slice(), max);
+              if (tempRow) pushPivot(ml, copy(tempRow), max);
               else continue;
             }
           } else {
             const first = newDir > 0 ? bullish : bearish;
             const second = newDir > 0 ? bearish : bullish;
-            if (first.length > 0 && second.length > 0) {
-              if (gt(newDir * first[0], newDir * row[0])) {
-                addNewPivot(ml, first.slice(), max);
-                addNewPivot(ml, second.slice(), max);
+            if (first && second) {
+              if (gt(newDir * first[0], newDir * value)) {
+                pushPivot(ml, copy(first), max);
+                pushPivot(ml, copy(second), max);
               }
             }
           }
-          addNewPivot(ml, row, max);
-          bearish.length = 0;
-          bullish.length = 0;
+          pushPivot(ml, copy(src), max);
+          bearish = null;
+          bullish = null;
         } else {
           const tempRow = newDir > 0 ? bullish : bearish;
-          if (tempRow.length !== 0) {
-            if (gt(row[0] * dir, tempRow[0] * dir)) set(tempRow, row);
-          } else {
-            set(tempRow, row);
+          if (!tempRow || gt(value * dir, tempRow[0] * dir)) {
+            if (newDir > 0) bullish = src;
+            else bearish = src;
           }
         }
       } else if (Math.abs(dir) === 2) {
-        addNewPivot(ml, row, max);
+        pushPivot(ml, copy(src), max);
       }
     }
   }
-  if (ml.length >= m.length) ml = [];
-  return ml;
+  return ml.length >= m.length ? [] : ml.reverse();
 }
 
 export function calculate(bars: Bar[], inputs: Partial<WolfeScannerInputs> = {}): IndicatorResult & { alertCalls: AlertCall[] } {

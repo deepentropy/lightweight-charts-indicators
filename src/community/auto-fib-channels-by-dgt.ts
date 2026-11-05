@@ -211,6 +211,8 @@ export function calculate(
   const ext = cfg.extendL ? 'both' : 'right';
   const alertCalls: AlertCall[] = [];
   const ticker = tickerOf(chart);
+  /** Bar being calculated (bar_index) */
+  let barIdx = 0;
 
   // pivots(src, depth / 2, isHigh): the division keeps its fraction (5.5 for a depth of 11); the history index is
   // truncated and the loop runs from 0 to twice the length
@@ -295,24 +297,28 @@ export function calculate(
   };
   const tooltipText = (level: number, price: number, tool: string) => `${tool} Level ${str.tostring(level)} : ${priceText(price)}`;
 
-  // f_drawLabel(index, price, txt, colorx, txtColor, style, size, align, tooltip)
-  const drawLabel = (site: string, index: number, price: number, txt: string, colorx: string, txtColor: string,
-    style: 'label_left' | 'label_right' | 'circle', size: 'normal' | 'auto', align: 'left' | 'right', tooltip: string) => {
+  // f_drawLabel(index, price, txt, colorx, txtColor, style, size, align, tooltip): the calls depend on the inputs only,
+  // so they run on every bar and the texts of the last bar replace the earlier ones; the texts are formatted on the
+  // last bar only (formatting the prices of every bar was most of the run time)
+  const drawLabel = (site: string, index: number, price: number, txt: () => string, colorx: string, txtColor: string,
+    style: 'label_left' | 'label_right' | 'circle', size: 'normal' | 'auto', align: 'left' | 'right', tooltip: () => string) => {
+    const last = barIdx === n - 1;
     let v = varLabels.get(site);
     if (!v) {
       v = varDrawing<Label>();
-      v.value = label.new(index, price, txt, 'bar_index', 'price', colorx, style, txtColor, size, align);
+      v.value = label.new(index, price, last ? txt() : '', 'bar_index', 'price', colorx, style, txtColor, size, align);
       varLabels.set(site, v);
     }
     const id = v.value!;
     label.set_xy(id, index, price);
-    label.set_text(id, txt + ALIGN_PAD);
+    if (last) label.set_text(id, txt() + ALIGN_PAD);
     label.set_textcolor(id, txtColor);
-    label.set_tooltip(id, tooltip);
+    if (last) label.set_tooltip(id, tooltip());
   };
 
   for (let i = 0; i < n; i++) {
     setDrawingBar(i, i === n - 1);
+    barIdx = i;
     // f_crossingLevel(close, r): r > close and r < close[1] or r < close and r > close[1] (the calls run on every bar)
     const close = bars[i].close;
     const closePrev = i > 0 ? bars[i - 1].close : NaN;
@@ -370,9 +376,9 @@ export function calculate(
         // f_drawLineX(): only for a start before bar_index + 500
         if (iStart < i + 500) aLn.push(line.new(iStart, pStart, iEnd, pEnd, 'bar_index', ext, col, 'solid', 1));
         if (cfg.channelLevels) {
-          drawLabel(`${key}:chl`, i, pLastBar, labelText(value, pLastBar, 'CHL '), '#00000000', col, 'label_left', 'normal', 'left',
-            tooltipText(value, pLastBar, 'Fib Channel'));
-          drawLabel(`${key}:dot`, i, pLastBar, '', col, '#00000000', 'circle', 'auto', 'left', '');
+          drawLabel(`${key}:chl`, i, pLastBar, () => labelText(value, pLastBar, 'CHL '), '#00000000', col, 'label_left', 'normal',
+            'left', () => tooltipText(value, pLastBar, 'Fib Channel'));
+          drawLabel(`${key}:dot`, i, pLastBar, () => '', col, '#00000000', 'circle', 'auto', 'left', () => '');
         }
         if (crossing(pLastBar)) {
           alertCalls.push({ time: bars[i].time, message: 'AutoFibChannel: ' + ticker + ' crossing level ' + str.tostring(value), freq: 'once_per_bar' });
@@ -415,8 +421,8 @@ export function calculate(
             line.set_xy2(v.value!, line.get_x2(zz), r);
           }
           if (cfg.retExtLevels) {
-            drawLabel(`${key}:ret`, isExt ? iMidPivot : iStartBase, r, labelText(value, r, isExt ? 'EXT ' : 'RET '), '#00000000', col,
-              'label_right', 'normal', 'right', tooltipText(value, r, isExt ? 'Fib Extention' : 'Fib Retracement'));
+            drawLabel(`${key}:ret`, isExt ? iMidPivot : iStartBase, r, () => labelText(value, r, isExt ? 'EXT ' : 'RET '), '#00000000',
+              col, 'label_right', 'normal', 'right', () => tooltipText(value, r, isExt ? 'Fib Extention' : 'Fib Retracement'));
           }
           if (crossing(r)) {
             alertCalls.push({ time: bars[i].time, message: 'Autofib: ' + ticker + ' crossing level ' + str.tostring(value), freq: 'once_per_bar' });

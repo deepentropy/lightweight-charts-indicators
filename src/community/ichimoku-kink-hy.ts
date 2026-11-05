@@ -1176,7 +1176,17 @@ export function calculate(
     }
   };
 
-  const srText = (isRes: boolean, level: number) => str.format('{0} • {1}', isRes ? 'R' : 'S', rtm(level));
+  // A zone sets its label text again on every bar: each level is formatted once (0 is not kept, as -0 is the same key)
+  const srTexts = [new Map<number, string>(), new Map<number, string>()];
+  const srText = (isRes: boolean, level: number) => {
+    const memo = srTexts[isRes ? 0 : 1];
+    let text = memo.get(level);
+    if (text === undefined) {
+      text = str.format('{0} • {1}', isRes ? 'R' : 'S', rtm(level));
+      if (level !== 0) memo.set(level, text);
+    }
+    return text;
+  };
   const deleteSrZone = (idx: number) => {
     const z = srZones[idx];
     if (z.line) line.delete(z.line);

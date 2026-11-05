@@ -171,6 +171,24 @@ export function calculate(
   const hist = (b: number, k: number) => (b - k >= 0 ? close[b - k] : NaN);
   const { windowSize, bins, lgrLkb } = cfg;
 
+  /** Entropy of the two segments starting at log return i */
+  const pairEntropy = (logReturns: number[], i: number): number => {
+    const segment1: number[] = [];
+    const segment2: number[] = [];
+    pineFor(0, windowSize - 1, (j) => {
+      segment1.push(get(logReturns, i + j));
+      segment2.push(get(logReturns, i + windowSize + j));
+    });
+    const combined = persistenceDiagram(segment1).concat(persistenceDiagram(segment2));
+    return entropyOf(combined, bins);
+  };
+  // Return i of a bar is return i + 1 of the next bar, so the pair of segments starting at return i of bar b is the one
+  // starting at return i + 1 of bar b + 1: its entropy is computed once, on its first bar, keyed by b - i. This holds
+  // when the loops run forward; with other lengths the reversed Pine loops read other indices and nothing is shared.
+  const n = lgrLkb - 2 * windowSize + 1;
+  const forward = windowSize >= 1 && n >= 1;
+  const pairEntropies = new Map<number, number>();
+
   const smoothPe: number[] = new Array(nBars);
   for (let b = 0; b < nBars; b++) {
     // log_returns: for i = 1 to lgr_lkb: math.log(close[i] / close[i + 1])
@@ -179,17 +197,18 @@ export function calculate(
       logReturns.push(Math.log(hist(b, i) / hist(b, i + 1)));
     });
     // compute_persistent_entropy(log_returns, window_size)
-    const n = lgrLkb - 2 * windowSize + 1;
     const entropies: number[] = [];
     pineFor(0, n - 1, (i) => {
-      const segment1: number[] = [];
-      const segment2: number[] = [];
-      pineFor(0, windowSize - 1, (j) => {
-        segment1.push(get(logReturns, i + j));
-        segment2.push(get(logReturns, i + windowSize + j));
-      });
-      const combined = persistenceDiagram(segment1).concat(persistenceDiagram(segment2));
-      entropies.push(entropyOf(combined, bins));
+      if (!forward) {
+        entropies.push(pairEntropy(logReturns, i));
+        return;
+      }
+      let entropy = pairEntropies.get(b - i);
+      if (entropy === undefined) {
+        entropy = pairEntropy(logReturns, i);
+        pairEntropies.set(b - i, entropy);
+      }
+      entropies.push(entropy);
     });
     // smooth_pe = array.sum(entropies) / array.size(entropies)
     let sum = 0;

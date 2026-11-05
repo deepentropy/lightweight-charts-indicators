@@ -288,6 +288,19 @@ export function calculate(
     return true;
   };
 
+  // The stats labels are written again on every bar, mostly with the same numbers: each number is formatted once (an
+  // argument given as its text gives the same label text)
+  const memo = (format: (v: number) => string) => {
+    const texts = new Map<number, string>();
+    return (v: number) => {
+      let text = texts.get(v);
+      if (text === undefined) texts.set(v, (text = format(v)));
+      return text;
+    };
+  };
+  const volumeText = memo(formatVal);
+  const countText = memo((v) => str.format('{0}', v));
+
   for (let i = 0; i < n; i++) {
     setDrawingBar(i, i === n - 1);
     const b = bars[i];
@@ -500,7 +513,8 @@ export function calculate(
           }
 
           // Stats label
-          const txt = str.format('E:{0} | S:{1} | SW:{2} | V:{3} | D:{4}', l.entries, l.strength, l.sweeps, formatVal(l.tradedVolume), curD);
+          const txt = str.format('E:{0} | S:{1} | SW:{2} | V:{3} | D:{4}', countText(l.entries), countText(l.strength),
+            countText(l.sweeps), volumeText(l.tradedVolume), countText(curD));
           if (!l.statsLabel) {
             l.statsLabel = newLabel(endExt, avgY, false, txt, c, 'label_left', 'tiny');
           } else {

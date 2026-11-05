@@ -225,6 +225,10 @@ export const usesVisibleRange = true;
 
 /** indicator(max_boxes_count = 50, max_labels_count = 50, max_lines_count = 144) */
 const LIMITS = { box: 50, label: 50, line: 144, polyline: 50 };
+/** Visible bars at the end whose drawings can remain: a fan line lives 6 bars with one fan, a curve 7 with one curve */
+const LAST_DRAWING_BARS = 7;
+/** A drawing more than this many bars before the current bar throws */
+const MAX_BARS_BACK = 10000;
 
 /** Pine float comparisons: a >= b unless b - a > 1e-10 (na compares false) */
 const EPS = 1e-10;
@@ -251,6 +255,17 @@ export function calculate(
   const cperc = [cfg.curve1, cfg.curve2, cfg.curve3, cfg.curve4, cfg.curve5, cfg.curve6];
   const ccol = [cfg.curveCol1, cfg.curveCol2, cfg.curveCol3, cfg.curveCol4, cfg.curveCol5, cfg.curveCol6];
   const acol = cfg.angleCol;
+  // the same on every bar: built once
+  const boxBg = c.map((col) => String(color.new(col, 50)));
+  const boxBorder = c.map((col) => String(color.new(col, 80)));
+  const labelText = ['0', ...perc.map((p) => str.tostring(p)), '1'];
+  if (cfg.reverse) labelText.reverse();
+  const curveSin: number[] = [];
+  const curveCos: number[] = [];
+  for (let j = 0; j <= 90; j++) {
+    curveSin.push(math.sin(math.toradians(j)));
+    curveCos.push(math.cos(math.toradians(j)));
+  }
 
   resetDrawings(LIMITS);
   let hi = NaN;
@@ -267,11 +282,26 @@ export function calculate(
   // the time levels of each bar, for the alerts
   const levels: number[][] = [0, 1, 2, 3, 4, 5].map(() => new Array<number>(n).fill(NaN));
 
+  const isVisible = (i: number) => {
+    const t = bars[i].time * toMs;
+    return t >= range.leftTime && t <= range.rightTime;
+  };
+  // Each visible bar deletes the drawings of the bars before it and draws them again, and the counts stay below the
+  // maxima (36 boxes, 30 labels, 14 lines, 7 curves), so none is deleted by the count: what remains at the end is
+  // drawn on the last visible bars. The earlier visible bars draw only when a bar index is too far back, to throw.
+  // The angles keep two lines of each bar until the line limit deletes them: with them, every visible bar draws.
+  let drawFrom = cfg.showAngles ? 0 : n;
+  for (let i = n - 1, count = 0; !cfg.showAngles && i >= 0 && count < LAST_DRAWING_BARS; i--) {
+    if (isVisible(i)) {
+      drawFrom = i;
+      count++;
+    }
+  }
+
   for (let i = 0; i < n; i++) {
     setDrawingBar(i, i === n - 1);
     const b = bars[i];
-    const t = b.time * toMs;
-    const visible = t >= range.leftTime && t <= range.rightTime;
+    const visible = isVisible(i);
 
     // visible high and low
     if (visible && ge(b.high, isNaN(hi) ? b.high : hi)) {
@@ -300,9 +330,10 @@ export function calculate(
     x.push(x6);
     y.push(y6);
     for (let k = 0; k <= 5; k++) levels[k][i] = x[k];
+    const draw = visible && (i >= drawFrom || i - Math.min(...x) > MAX_BARS_BACK);
 
     // Gann box
-    if (cfg.showBox && visible) {
+    if (cfg.showBox && draw) {
       for (const bx of boxes) box.delete(bx);
       boxes = [];
       for (let k = 0; k <= 5; k++) {
@@ -310,8 +341,8 @@ export function calculate(
         const right = x[k + 1];
         for (let z = 0; z <= 5; z++) {
           if (boxbool[z]) {
-            const bx = box.new(left, y[z + 1], right, y[z], String(color.new(c[z], 50)), undefined, undefined,
-              undefined, undefined, String(color.new(c[z], 80)));
+            const bx = box.new(left, y[z + 1], right, y[z], boxBg[z], undefined, undefined,
+              undefined, undefined, boxBorder[z]);
             boxes.unshift(bx);
           }
         }
@@ -319,9 +350,8 @@ export function calculate(
     }
 
     // labels
-    if (cfg.showLabel && visible) {
-      const s = ['0', ...perc.map((p) => str.tostring(p)), '1'];
-      if (cfg.reverse) s.reverse();
+    if (cfg.showLabel && draw) {
+      const s = labelText;
       for (let k = 0; k <= 6; k++) {
         const xx = x[k];
         for (let z = 0; z <= 6; z++) {
@@ -345,7 +375,7 @@ export function calculate(
     }
 
     // Gann fan
-    if (cfg.showFan && visible) {
+    if (cfg.showFan && draw) {
       for (let k = 0; k <= 5; k++) {
         if (fperc[k]) {
           const l1 = line.new(x0, y0, x[k + 1], y6, 'bar_index', undefined, fcol[k]);
@@ -359,13 +389,13 @@ export function calculate(
     }
 
     // Gann curves
-    if (cfg.showCurve && visible) {
+    if (cfg.showCurve && draw) {
       for (let k = 1; k <= arr.length - 1; k++) {
         if (cperc[k - 1]) {
           const points = [];
           for (let j = 0; j <= 90; j++) {
-            const xx = x0 - (x0 - x[k]) * math.sin(math.toradians(j));
-            const yy = y0 + math.cos(math.toradians(j)) * (y[k] - y0);
+            const xx = x0 - (x0 - x[k]) * curveSin[j];
+            const yy = y0 + curveCos[j] * (y[k] - y0);
             points.push(chartPoint.from_index(math.round(xx), yy));
           }
           const poly = polyline.new(points, false, false, 'bar_index', ccol[k - 1]);
@@ -377,7 +407,7 @@ export function calculate(
     }
 
     // Gann angles
-    if (cfg.showAngles && visible) {
+    if (cfg.showAngles && draw) {
       for (let k = 0; k <= 6; k++) {
         const xx = x[k];
         const yy = y[k];

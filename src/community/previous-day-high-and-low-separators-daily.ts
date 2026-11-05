@@ -192,11 +192,20 @@ export function calculate(
     }
 
     if (isNewPivot && topBoxes.length > 0) {
+      // a box or label deleted by the maximum count is na for good (x getter na, setters do nothing): the pairs
+      // whose box and label are both gone are dropped, so that this loop does not grow with the history
+      let kept = 0;
       for (let k = 0; k < topBoxes.length; k++) {
+        if (Number.isNaN(box.get_left(topBoxes[k])) && Number.isNaN(label.get_x(bottomLabels[k]))) continue;
         box.set_top(topBoxes[k], boxTop[i]);
         box.set_bottom(topBoxes[k], boxBottom[i]);
         label.set_y(bottomLabels[k], labelLevel[i]);
+        topBoxes[kept] = topBoxes[k];
+        bottomLabels[kept] = bottomLabels[k];
+        kept++;
       }
+      topBoxes.length = kept;
+      bottomLabels.length = kept;
     }
 
     if (isNewWeek) {

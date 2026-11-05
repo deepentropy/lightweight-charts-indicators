@@ -252,8 +252,6 @@ export function calculate(
   for (let i = 0; i < n; i++) {
     setDrawingBar(i, i === n - 1);
     const b = bars[i];
-    const lines = line.all();
-    const labels = label.all();
 
     const back = i >= barsReq ? bars[i - barsReq] : null;
     const backLow = back ? back.low : NaN;
@@ -273,6 +271,9 @@ export function calculate(
 
     const bullish = lastDown && barsCount >= barsReq && gainCheck && (cfg.opposites ? !bu : true);
     const bearish = lastUp && barsCount >= barsReq && gainCheck && (cfg.opposites ? !be : true);
+    // line.all() / label.all() at the start of the bar (nothing is drawn before here), only read by a new block
+    const lines = bullish || bearish ? line.all() : [];
+    const labels = bullish || bearish ? label.all() : [];
 
     if (bullish) {
       for (const l of lines) line.delete(l);
@@ -353,8 +354,10 @@ export function calculate(
       }
     }
 
-    // order block management (runs for the inactive blocks too)
+    // order block management (runs for the inactive blocks too: an inactive block is already off and its box already
+    // deleted with 'Hide Old', so it changes nothing and is skipped)
     for (const o of obBoxArr) {
+      if (!o.a) continue;
       if (o.a) box.set_right(o.bx, i);
       const left = box.get_left(o.bx);
       if (o.bull) {

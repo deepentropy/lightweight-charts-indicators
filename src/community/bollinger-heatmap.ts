@@ -11,7 +11,7 @@
  * Original notice: © Quantitative
  */
 
-import { callsite, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taCore, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 
 const TOTAL_BARS = 30;
 const LINE_WIDTH = 4;
@@ -112,15 +112,17 @@ export function calculate(bars: Bar[], inputs: Partial<BollingerHeatmapInputs> =
   };
   const closeArr = bars.map((b) => b.close);
   // ta.bb(close, length, bbStd) inside `for i = 0 to TOTAL_BARS - 1`: one call site with a different length on each
-  // call (basis = ta.sma, dev = bbStd * ta.stdev); the loop call sites keep the last call of each bar
-  const avgSite = callsite.sma();
-  const devSite = callsite.stdev();
+  // call (basis = ta.sma, dev = bbStd * ta.stdev); the loop call sites keep the last call of each bar. Every call of a
+  // bar gets the same close, so the kept history is the closes and each call gives the correctly rounded window sums
+  // of the last `length` closes: the values of ta.sma / ta.stdev of the closes with that length, computed once here
+  const lengths = Array.from({ length: TOTAL_BARS }, (_x, k) => cfg[lengthKey(k)] as number);
+  const basisOf = lengths.map((length) => taCore.sma(closeArr, length));
+  const devOf = lengths.map((length) => taCore.stdev(closeArr, length));
   const pts: { time: number; value: number; color: string }[][] = Array.from({ length: TOTAL_BARS }, () => new Array(n));
   for (let i = 0; i < n; i++) {
     for (let k = 0; k < TOTAL_BARS; k++) {
-      const length = cfg[lengthKey(k)] as number;
-      const basis = avgSite(i, closeArr[i], length);
-      const dev = devSite(i, closeArr[i], length);
+      const basis = basisOf[k][i];
+      const dev = devOf[k][i];
       const u = basis + cfg.bbStd * dev;
       const l = basis - cfg.bbStd * dev;
       const bandRange = u - l;

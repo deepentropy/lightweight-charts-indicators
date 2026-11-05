@@ -1334,7 +1334,8 @@ export function calculate(
     let found = false;
     // point C: the confirmed pivot is the extreme of the bars since
     let extreme = NaN;
-    for (const i of range(0, len)) {
+    // plain loops instead of range(): this function runs 36 times per bar and the generator was a large part of it
+    for (let i = 0; i <= len; i++) {
       if (t) {
         if (na(extreme) || gt(H(i), extreme)) extreme = H(i);
         const cv = at(pv.confHigh, i);
@@ -1365,35 +1366,40 @@ export function calculate(
         if (lt(L(k), lSince) || eq(lSince, 0)) lSince = L(k);
       };
       // highest / lowest between C and the first potential pivot
-      for (const i of range(start, len)) track(i);
+      const trackStep = start <= len ? 1 : -1;
+      for (let i = start; trackStep > 0 ? i <= len : i >= len; i += trackStep) track(i);
       // In a bullish pattern B and X are pivot lows and A is a pivot high; a bearish pattern is the mirror.
       // `same`: pivots of the kind of the point looked for; `other`: pivots of the other kind.
-      for (const i of range(start, lb)) {
+      // pivots of the bar looked at (set before each test)
+      let ph = NaN;
+      let pl = NaN;
+      // looking for a low point (B and X of a bullish pattern, A of a bearish one)
+      const lowPoint = (ref: number): 'break' | 'skip' | number => {
+        if (gt(hSince, ref)) return 'break';
+        if (!na(ph)) return gt(ph, ref) ? 'break' : 'skip';
+        if (!na(pl)) {
+          if (gt(pl, ref)) return 'break';
+          if (lt(lSince, pl)) return 'break';
+          return pl;
+        }
+        return 'skip';
+      };
+      // looking for a high point (A of a bullish pattern, B and X of a bearish one)
+      const highPoint = (ref: number): 'break' | 'skip' | number => {
+        if (lt(lSince, ref)) return 'break';
+        if (!na(pl)) return lt(pl, ref) ? 'break' : 'skip';
+        if (!na(ph)) {
+          if (lt(ph, ref)) return 'break';
+          if (gt(hSince, ph)) return 'break';
+          return ph;
+        }
+        return 'skip';
+      };
+      const step = start <= lb ? 1 : -1;
+      for (let i = start; step > 0 ? i <= lb : i >= lb; i += step) {
         track(i + len);
-        const ph = at(pv.ph, i);
-        const pl = at(pv.pl, i);
-        // looking for a low point (B and X of a bullish pattern, A of a bearish one)
-        const lowPoint = (ref: number): 'break' | 'skip' | number => {
-          if (gt(hSince, ref)) return 'break';
-          if (!na(ph)) return gt(ph, ref) ? 'break' : 'skip';
-          if (!na(pl)) {
-            if (gt(pl, ref)) return 'break';
-            if (lt(lSince, pl)) return 'break';
-            return pl;
-          }
-          return 'skip';
-        };
-        // looking for a high point (A of a bullish pattern, B and X of a bearish one)
-        const highPoint = (ref: number): 'break' | 'skip' | number => {
-          if (lt(lSince, ref)) return 'break';
-          if (!na(pl)) return lt(pl, ref) ? 'break' : 'skip';
-          if (!na(ph)) {
-            if (lt(ph, ref)) return 'break';
-            if (gt(hSince, ph)) return 'break';
-            return ph;
-          }
-          return 'skip';
-        };
+        ph = at(pv.ph, i);
+        pl = at(pv.pl, i);
         if (b === -1) {
           const r = t ? lowPoint(cY) : highPoint(cY);
           if (r === 'break') break;

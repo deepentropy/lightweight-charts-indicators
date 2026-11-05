@@ -419,23 +419,27 @@ export function calculate(
 
   // get_lorentzian_distance(i, featureCount, featureSeries, featureArrays) on bar `bar`; the arrays hold the
   // bars 0 .. bar. A negative index counts from the end of the array, as Pine array.get
-  const distanceAt = (bar: number, i: number): number => {
+  const indexAt = (bar: number, i: number): number => {
     const size = bar + 1;
     const j = i < 0 ? size + i : i;
     if (j < 0 || j >= size) throw new Error(`Index ${i} is out of bounds, array size is ${size}`);
+    return j;
+  };
+  // Math.log is math.log of a number, without its Series test (millions of calls)
+  const distanceAt = (bar: number, j: number): number => {
     switch (featureCount) {
       case 5:
-        return math.log(1 + Math.abs(f1[bar] - f1[j])) + math.log(1 + Math.abs(f2[bar] - f2[j])) +
-          math.log(1 + Math.abs(f3[bar] - f3[j])) + math.log(1 + Math.abs(f4[bar] - f4[j])) +
-          math.log(1 + Math.abs(f5[bar] - f5[j]));
+        return Math.log(1 + Math.abs(f1[bar] - f1[j])) + Math.log(1 + Math.abs(f2[bar] - f2[j])) +
+          Math.log(1 + Math.abs(f3[bar] - f3[j])) + Math.log(1 + Math.abs(f4[bar] - f4[j])) +
+          Math.log(1 + Math.abs(f5[bar] - f5[j]));
       case 4:
-        return math.log(1 + Math.abs(f1[bar] - f1[j])) + math.log(1 + Math.abs(f2[bar] - f2[j])) +
-          math.log(1 + Math.abs(f3[bar] - f3[j])) + math.log(1 + Math.abs(f4[bar] - f4[j]));
+        return Math.log(1 + Math.abs(f1[bar] - f1[j])) + Math.log(1 + Math.abs(f2[bar] - f2[j])) +
+          Math.log(1 + Math.abs(f3[bar] - f3[j])) + Math.log(1 + Math.abs(f4[bar] - f4[j]));
       case 3:
-        return math.log(1 + Math.abs(f1[bar] - f1[j])) + math.log(1 + Math.abs(f2[bar] - f2[j])) +
-          math.log(1 + Math.abs(f3[bar] - f3[j]));
+        return Math.log(1 + Math.abs(f1[bar] - f1[j])) + Math.log(1 + Math.abs(f2[bar] - f2[j])) +
+          Math.log(1 + Math.abs(f3[bar] - f3[j]));
       case 2:
-        return math.log(1 + Math.abs(f1[bar] - f1[j])) + math.log(1 + Math.abs(f2[bar] - f2[j]));
+        return Math.log(1 + Math.abs(f1[bar] - f1[j])) + Math.log(1 + Math.abs(f2[bar] - f2[j]));
       default:
         return NaN;
     }
@@ -457,11 +461,13 @@ export function calculate(
       // for i = startIndex to sizeLoop: counts down when startIndex > sizeLoop
       const step = startIndex <= sizeLoop ? 1 : -1;
       for (let i = startIndex; step > 0 ? i <= sizeLoop : i >= sizeLoop; i += step) {
-        const d = distanceAt(bar, i);
-        if (ge(d, lastDistance) && i % 4 !== 0) {
+        const j = indexAt(bar, i);
+        // every fourth bar is skipped: its distance is not needed
+        if (i % 4 === 0) continue;
+        const d = distanceAt(bar, j);
+        if (ge(d, lastDistance)) {
           lastDistance = d;
           distances.push(d);
-          const j = i < 0 ? bar + 1 + i : i;
           predictions.push(math.round(yTrain[j]));
           if (predictions.length > neighborsCount) {
             if (quartileIndex >= distances.length) {

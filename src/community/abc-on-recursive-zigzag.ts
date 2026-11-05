@@ -149,9 +149,12 @@ interface Pivot {
   point: Point;
   dir: number;
   level: number;
+  /**
+   * Price ratio to the swing before, not rounded: the library rounds it to 3 decimals on every new pivot, here it is
+   * rounded where it is read (the next levels are built again on every new pivot and most ratios are never read). The
+   * size and bar ratios of the library are not kept: nothing reads them.
+   */
   ratio: number;
-  sizeRatio: number;
-  barRatio: number;
 }
 interface Zigzag {
   length: number;
@@ -161,7 +164,7 @@ interface Zigzag {
   newPivot: boolean;
 }
 
-const newPivot = (point: Point, dir: number): Pivot => ({ point, dir, level: 0, ratio: 1.0, sizeRatio: 1.0, barRatio: 1.0 });
+const newPivot = (point: Point, dir: number): Pivot => ({ point, dir, level: 0, ratio: 1.0 });
 const newZigzag = (length: number, numberOfPivots: number): Zigzag => ({ length, numberOfPivots, level: 0, pivots: [], newPivot: false });
 
 /** ZigzagLite addnewpivot(): direction (2 for a higher high / lower low) and ratios, then unshift with the depth */
@@ -176,13 +179,7 @@ function addNewPivot(z: Zigzag, pivot: Pivot): void {
       const value = pivot.point.price;
       const llastValue = llastPivot.point.price;
       pivot.dir = compare.gt(dir * value, dir * llastValue) ? dir * 2 : dir;
-      pivot.ratio = math.round(Math.abs(lastValue - value) / Math.abs(llastValue - lastValue), 3);
-      pivot.barRatio = math.round(Math.abs(lastPivot.point.index - pivot.point.index)
-        / Math.abs(llastPivot.point.index - lastPivot.point.index), 3);
-      if (z.pivots.length >= 3) {
-        const lllastValue = z.pivots[2].point.price;
-        pivot.sizeRatio = math.round(Math.abs(lastValue - value) / Math.abs(lllastValue - llastValue), 3);
-      }
+      pivot.ratio = Math.abs(lastValue - value) / Math.abs(llastValue - lastValue);
     }
   }
   z.pivots.unshift(pivot);
@@ -420,7 +417,8 @@ export function calculate(
       const conditionInLine = condition === 0 || (condition === 1 && aDir === 1 && bDir === 2)
         || (condition === 2 && aDir === 2 && bDir === 1) || (condition === 3 && aDir === 1 && bDir === 1)
         || (condition === 4 && aDir === 2 && bDir === 2);
-      const ratioInLine = ge(c.ratio, 0.618) && le(c.ratio, 0.786);
+      const ratio = math.round(c.ratio, 3);
+      const ratioInLine = ge(ratio, 0.618) && le(ratio, 0.786);
       if (ratioInLine && conditionInLine) {
         isAbc = true;
         for (const p of abcdPatterns) {

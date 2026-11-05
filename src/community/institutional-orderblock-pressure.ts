@@ -181,10 +181,21 @@ export function calculate(
     if ((wickStyle && isWick) || (avgStyle && isAverage) || fullStyle) return line.new(i, value, i, value);
     return null;
   };
+  // The zone labels get their text again on every bar from prices that do not change: each price is formatted once
+  // (-0 is not cached, the map does not tell it from 0)
+  const priceTexts = new Map<number, string>();
+  const priceText = (v: number) => {
+    let text = priceTexts.get(v);
+    if (text === undefined) {
+      text = str.tostring(math.round_to_mintick(v, mintick) as number);
+      if (!Object.is(v, -0)) priceTexts.set(v, text);
+    }
+    return text;
+  };
   // createPriceLabel()
   const priceLabel = (i: number, value: number, col: string, prefix: string): Label | null => {
     if (!(cfg.displaySupportResistance && cfg.displayPriceLevels)) return null;
-    const text = prefix + ' - ' + str.tostring(math.round_to_mintick(value, mintick) as number);
+    const text = prefix + ' - ' + priceText(value);
     return label.new(i, value, text, 'bar_index', 'price', undefined, 'none', col);
   };
   const y1 = (l: Line | null) => (l ? line.get_y1(l) : NaN);
@@ -243,13 +254,13 @@ export function calculate(
       const ref = bearish ? up : lo;
       if (wickStyle || fullStyle) {
         if (lHigh) {
-          label.set_text(lHigh, (bearish ? BEAR_PREFIX : BULL_PREFIX) + str.tostring(math.round_to_mintick(y1(ref), mintick) as number));
+          label.set_text(lHigh, (bearish ? BEAR_PREFIX : BULL_PREFIX) + priceText(y1(ref)));
           label.set_size(lHigh, 'small');
           label.set_x(lHigh, i);
         }
       } else if (avgStyle) {
         if (lMid) {
-          label.set_text(lMid, (bearish ? BEAR_PREFIX : BULL_PREFIX) + str.tostring(math.round_to_mintick(y1(mid), mintick) as number));
+          label.set_text(lMid, (bearish ? BEAR_PREFIX : BULL_PREFIX) + priceText(y1(mid)));
           label.set_size(lMid, 'small');
           label.set_x(lMid, i);
         }

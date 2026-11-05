@@ -211,6 +211,24 @@ function changeValues(): { update: (v: number) => void; get: (occurrence: number
   };
 }
 
+/**
+ * str.tostring kept per value: the labels are drawn again on every bar with the same few values, and formatting them
+ * is most of the run time
+ */
+function cachedText(format: (v: number) => string): (v: number) => string {
+  const texts = new Map<number, string>();
+  return (v) => {
+    // the map does not tell -0 from 0
+    if (Object.is(v, -0)) return format(v);
+    let s = texts.get(v);
+    if (s === undefined) {
+      s = format(v);
+      texts.set(v, s);
+    }
+    return s;
+  };
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<AutoFibSpeedResistanceFansByDgtInputs> = {},
@@ -221,7 +239,8 @@ export function calculate(
   const cfg = { ...defaultInputs, ...inputs };
   const n = bars.length;
   const tick = mintickOf(chart);
-  const priceText = (v: number) => str.tostring(v, 'mintick', tick);
+  const priceText = cachedText((v) => str.tostring(v, 'mintick', tick));
+  const levelText = cachedText((v) => str.tostring(v));
   const atr10 = ta.atr(bars, 10).toArray().map((v) => v ?? NaN);
   const lsize = cfg.lSize === 'Normal' ? 'normal' : cfg.lSize === 'Small' ? 'small' : 'large';
   const hist = Math.trunc(cfg.histPivot);
@@ -336,7 +355,7 @@ export function calculate(
     const c1 = barIdx > 0 ? bars[barIdx - 1].close : NaN;
     if ((gt(r, c0) && lt(r, c1)) || (lt(r, c0) && gt(r, c1))) {
       alertCalls.push({
-        time: bars[barIdx].time, message: 'AutoFibFan: ' + ticker + ' crossing ' + ptl + ' level ' + str.tostring(level),
+        time: bars[barIdx].time, message: 'AutoFibFan: ' + ticker + ' crossing ' + ptl + ' level ' + levelText(level),
         freq: 'once_per_bar',
       });
     }
@@ -347,8 +366,8 @@ export function calculate(
   };
 
   // f_drawLabelX()
-  const levelLabelText = (content: LabelContent, lb: number, y: number) => (content === 'Levels' ? str.tostring(lb)
-    : content === 'Prices' ? priceText(y) : str.tostring(lb) + ' (' + priceText(y) + ')');
+  const levelLabelText = (content: LabelContent, lb: number, y: number) => (content === 'Levels' ? levelText(lb)
+    : content === 'Prices' ? priceText(y) : levelText(lb) + ' (' + priceText(y) + ')');
   const drawLabelX = (x1: number, y1: number, x2: number, y2: number, c: string, lb: number, st: boolean) => {
     if (st) {
       if (cfg.lbRight !== 'None') {
@@ -361,10 +380,10 @@ export function calculate(
       }
     } else {
       if (cfg.tpLabel) {
-        aLb.push(label.new(x1, Math.max(y1, y2), str.tostring(lb), 'bar_index', 'price', '#00000000', 'label_down', c, lsize));
+        aLb.push(label.new(x1, Math.max(y1, y2), levelText(lb), 'bar_index', 'price', '#00000000', 'label_down', c, lsize));
       }
       if (cfg.btLabel) {
-        aLb.push(label.new(x1, Math.min(y1, y2), str.tostring(lb), 'bar_index', 'price', '#00000000', 'label_up', c, lsize));
+        aLb.push(label.new(x1, Math.min(y1, y2), levelText(lb), 'bar_index', 'price', '#00000000', 'label_up', c, lsize));
       }
     }
   };
