@@ -28,10 +28,12 @@
  * Original notice: © LonesomeTheBlue
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taCore, taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BoxData, LabelData, LabelStyle, LineDrawingData } from '../types';
 import { barInterval, barTime } from '../bar-time';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ThirdWaveInputs {
   /** ZigZag Period */
@@ -146,7 +148,7 @@ interface Bx { left: number; top: number; right: number; bottom: number; bg: str
 
 /** Live drawings of one kind: above max + 5 objects the oldest are deleted until max remain */
 class Live<T extends { dead: boolean }> {
-  readonly list: T[] = [];
+  list: T[] = [];
   constructor(private readonly max: number) {}
   add(o: T): T {
     this.list.push(o);
@@ -158,163 +160,249 @@ class Live<T extends { dead: boolean }> {
     o.dead = true;
     this.list.splice(this.list.indexOf(o), 1);
   }
+  /** A copy with copies of the live objects (`copies`: each object to its copy) */
+  clone(copies: Map<T, T>): Live<T> {
+    const c = new Live<T>(this.max);
+    c.list = this.list.map((o) => {
+      const k = { ...o };
+      copies.set(o, k);
+      return k;
+    });
+    return c;
+  }
+}
+
+/** ta.linreg(source, length, offset) on bar i, with the operations of the oakscriptjs array function (same doubles) */
+function linregAt(source: number[], i: number, length: number, offset: number): number {
+  // a length below 1 throws as ta.linreg does
+  if (Math.trunc(length) <= 0) taCore.linreg([], length, offset);
+  const len = Math.floor(length);
+  if (i < len - 1) return NaN;
+  for (let j = 0; j < len; j++) if (isNaN(source[i - j])) return NaN;
+  // Least squares as PineScript: x = 1 (oldest) .. len (newest), summed from the oldest value; the intercept is the
+  // fitted value at x = 1
+  let sumX = 0;
+  let sumY = 0;
+  let sumXY = 0;
+  let sumX2 = 0;
+  for (let j = 0; j < len; j++) {
+    const x = j + 1;
+    const y = source[i - (len - 1 - j)];
+    sumX += x;
+    sumY += y;
+    sumXY += x * y;
+    sumX2 += x * x;
+  }
+  const slope = (len * sumXY - sumX * sumY) / (len * sumX2 - sumX * sumX);
+  const intercept = sumY / len - (slope * sumX) / len + slope;
+  return intercept + slope * (len - 1 - offset);
+}
+
+type Result = IndicatorResult & { lines: LineDrawingData[]; labels: LabelData[]; boxes: BoxData[] } & { alerts: AlertConditionState[] };
+
+interface ThirdWaveVars {
+  zigzag: number[];
+  dir: number;
+  prevDir: number;
+  canCheckIt: boolean;
+  zzline: Ln | null;
+  lines: Live<Ln>;
+  labels: Live<Lb>;
+  boxes: Live<Bx>;
+}
+
+interface ThirdWaveRun extends BarRunState<ThirdWaveVars> {
+  hh: ReturnType<typeof taStep.highest>;
+  ll: ReturnType<typeof taStep.lowest>;
+  volume: number[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<ThirdWaveInputs>): BarStudy<ThirdWaveRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { upcol, dncol } = cfg;
+  return {
+    init() {
+      const s: ThirdWaveRun = {
+        hh: taStep.highest(), ll: taStep.lowest(), volume: [], flags: [[], []], times: [[], []],
+        steps: [],
+        vars: {
+          zigzag: [], dir: 0, prevDir: NaN, canCheckIt: true, zzline: null,
+          lines: new Live<Ln>(MAX_LINES), labels: new Live<Lb>(MAX_LABELS), boxes: new Live<Bx>(MAX_BOXES),
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.hh, s.ll];
+      s.lists = s.times;
+      s.series = [s.volume, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { zigzag, lines, labels, boxes } = v;
+      const { high, low } = bars[i];
+      s.volume[i] = bars[i].volume ?? NaN;
+      const oldzigzag = zigzag.slice();
+      let longFlag = false;
+      let shortFlag = false;
+
+      const addToZigzag = (value: number, bindex: number) => {
+        zigzag.unshift(bindex);
+        zigzag.unshift(value);
+        if (zigzag.length > MAX_ARRAY_SIZE) {
+          zigzag.pop();
+          zigzag.pop();
+        }
+      };
+
+      // ta.highestbars(high, prd) == 0 / ta.lowestbars(low, prd) == 0: the bar's value is kept (not na) and is the
+      // best of the window (the newest of equal values is this bar), from bar prd - 1
+      const hi = s.hh.step(high, cfg.prd);
+      const lo = s.ll.step(low, cfg.prd);
+      const full = i >= Math.trunc(cfg.prd) - 1;
+      // getZigzag()
+      const ph = full && Number.isFinite(high) && hi === high ? high : NaN;
+      const pl = full && Number.isFinite(low) && lo === low ? low : NaN;
+      if (truthy(ph) && isNaN(pl)) v.dir = 1;
+      else if (truthy(pl) && isNaN(ph)) v.dir = -1;
+      const dir = v.dir;
+      const dirChanged = ne(dir, v.prevDir);
+      v.prevDir = dir;
+      if (truthy(ph) || truthy(pl)) {
+        const value = dir === 1 ? ph : pl;
+        if (dirChanged) {
+          addToZigzag(value, i);
+        } else if (zigzag.length === 0) {
+          addToZigzag(value, i);
+        } else if ((dir === 1 && gt(value, zigzag[0])) || (dir === -1 && lt(value, zigzag[0]))) {
+          zigzag[0] = value;
+          zigzag[1] = i;
+        }
+      }
+
+      // showZigzag(): a new last leg; the leg before is deleted when it had the same start (the last point moved)
+      if (cfg.showzigzag && zigzag.length >= 4 && oldzigzag.length >= 4) {
+        if (ne(zigzag[0], oldzigzag[0]) || ne(zigzag[1], oldzigzag[1])) {
+          if (eq(zigzag[2], oldzigzag[2]) && eq(zigzag[3], oldzigzag[3])) lines.remove(v.zzline);
+          v.zzline = lines.add({
+            x1: Math.round(zigzag[1]), y1: zigzag[0], x2: Math.round(zigzag[3]), y2: zigzag[2],
+            color: dir === 1 ? upcol : dncol, width: 2, dead: false,
+          });
+        }
+      }
+
+      // ta.linreg(volume, len, 0) - ta.linreg(volume, len, 1) with a length that changes with the zigzag: ta.linreg
+      // keeps no state, so its value on bar i with length L is the value of the fixed-length series of length L on
+      // bar i; it is only computed on the bars that read it (a breakout)
+      const volSupport = () => {
+        if (!cfg.checkvolSupport) return true;
+        const len = zigzag.length >= 8 ? i - Math.round(zigzag[7]) : 1;
+        return gt(linregAt(s.volume, i, len, 0) - linregAt(s.volume, i, len, 1), 0);
+      };
+      if (dirChanged) v.canCheckIt = true;
+
+      // A possible 3rd wave: breakout of the end of wave 1 after a retracement inside the range
+      if (zigzag.length >= 8 && v.canCheckIt) {
+        const w12 = Math.abs(zigzag[2] - zigzag[4]) / Math.abs(zigzag[4] - zigzag[6]);
+        if (ge(w12, cfg.retRateMin) && le(w12, cfg.retRateMax)
+          && ((dir === 1 && gt(high, zigzag[4])) || (dir === -1 && lt(low, zigzag[4])))) {
+          v.canCheckIt = false;
+          if (volSupport()) {
+            // thereisbo := true: alertcondition(thereisbo and dir == 1) / alertcondition(thereisbo and dir == -1)
+            longFlag = dir === 1;
+            shortFlag = dir === -1;
+            const x7 = Math.round(zigzag[7]);
+            const x5 = Math.round(zigzag[5]);
+            const x3 = Math.round(zigzag[3]);
+            if (cfg.showbo) {
+              boxes.add({ left: x7, top: zigzag[4], right: i, bottom: zigzag[6], bg: dir === 1 ? cfg.bupcol : cfg.bdncol, dead: false });
+            }
+            if (cfg.showwave12) {
+              lines.add({ x1: x7, y1: zigzag[6], x2: x5, y2: zigzag[4], color: BLUE, dead: false });
+              lines.add({ x1: x5, y1: zigzag[4], x2: x3, y2: zigzag[2], color: BLUE, dead: false });
+              const a: LabelStyle = dir === 1 ? 'label_up' : 'label_down';
+              const b: LabelStyle = dir === 1 ? 'label_down' : 'label_up';
+              labels.add({ x: x7, y: zigzag[6], text: '0', color: NO_COLOR, textColor: BLUE, style: a, dead: false });
+              labels.add({ x: x5, y: zigzag[4], text: '1', color: NO_COLOR, textColor: BLUE, style: b, dead: false });
+              labels.add({ x: x3, y: zigzag[2], text: '2', color: NO_COLOR, textColor: BLUE, style: a, dead: false });
+            }
+            labels.add({
+              x: i, y: zigzag[6], text: '', color: dir === 1 ? upcol : dncol, textColor: LABEL_TEXT,
+              style: dir === 1 ? 'triangleup' : 'triangledown', size: 'small', dead: false,
+            });
+
+            const base = zigzag[2];
+            const wave1 = Math.abs(zigzag[4] - zigzag[6]);
+            const target = (enabled: boolean, ret: number) => {
+              if (!enabled) return;
+              const y = Math.max(base + dir * wave1 * ret, 0);
+              lines.add({ x1: i, y1: y, x2: x7, y2: y, color: BLUE, style: 'dashed', dead: false });
+            };
+            target(cfg.target1Enb, cfg.target1Ret);
+            target(cfg.target2Enb, cfg.target2Ret);
+            target(cfg.target3Enb, cfg.target3Ret);
+            target(cfg.target4Enb, cfg.target4Ret);
+          }
+        }
+      }
+      [longFlag, shortFlag].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(bars[i].time as number);
+      });
+    },
+    copyVars: (v) => {
+      const lineCopies = new Map<Ln, Ln>();
+      const lines = v.lines.clone(lineCopies);
+      return {
+        zigzag: v.zigzag.slice(),
+        dir: v.dir,
+        prevDir: v.prevDir,
+        canCheckIt: v.canCheckIt,
+        // a deleted line is not in the list: deleting it again does nothing, as for no line
+        zzline: v.zzline ? lineCopies.get(v.zzline) ?? null : null,
+        lines,
+        labels: v.labels.clone(new Map()),
+        boxes: v.boxes.clone(new Map()),
+      };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const { lines, labels, boxes } = s.vars;
+      const interval = barInterval(bars);
+      const T = (index: number) => barTime(bars, index, interval);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        lines: lines.list.map((l) => ({
+          time1: T(l.x1), price1: l.y1, time2: T(l.x2), price2: l.y2, color: l.color,
+          ...(l.width ? { width: l.width } : {}),
+          ...(l.style ? { style: l.style } : {}),
+        })),
+        labels: labels.list.map((l) => ({
+          time: T(l.x), price: l.y, text: l.text, color: l.color, textColor: l.textColor, style: l.style,
+          ...(l.size ? { size: l.size } : {}),
+        })),
+        boxes: boxes.list.map((b) => ({
+          time1: T(b.left), price1: b.top, time2: T(b.right), price2: b.bottom,
+          bgColor: b.bg, borderColor: BLUE, borderWidth: 1, borderStyle: 'dotted' as const,
+        })),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ThirdWaveInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<ThirdWaveInputs> = {},
 ): IndicatorResult & { lines: LineDrawingData[]; labels: LabelData[]; boxes: BoxData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const { upcol, dncol } = cfg;
-
-  const hb = A(ta.highestbars(new Series(bars, (b) => b.high), cfg.prd));
-  const lb = A(ta.lowestbars(new Series(bars, (b) => b.low), cfg.prd));
-  // ta.linreg(volume, len, 0) - ta.linreg(volume, len, 1) with a length that changes with the zigzag: ta.linreg keeps
-  // no state, so its value on bar i with length L is the value of the fixed-length series of length L on bar i
-  const volume = new Series(bars, (b) => b.volume ?? NaN);
-  const volumeLinreg = new Map<string, number[]>();
-  const linreg = (i: number, len: number, offset: number): number => {
-    const key = `${len}:${offset}`;
-    let r = volumeLinreg.get(key);
-    if (!r) {
-      r = A(ta.linreg(volume, len, offset));
-      volumeLinreg.set(key, r);
-    }
-    return r[i];
-  };
-
-  const lines = new Live<Ln>(MAX_LINES);
-  const labels = new Live<Lb>(MAX_LABELS);
-  const boxes = new Live<Bx>(MAX_BOXES);
-
-  const zigzag: number[] = [];
-  let dir = 0;
-  let prevDir = NaN;
-  let canCheckIt = true;
-  let zzline: Ln | null = null;
-  const longFlags: boolean[] = new Array(n).fill(false);
-  const shortFlags: boolean[] = new Array(n).fill(false);
-
-  const addToZigzag = (value: number, bindex: number) => {
-    zigzag.unshift(bindex);
-    zigzag.unshift(value);
-    if (zigzag.length > MAX_ARRAY_SIZE) {
-      zigzag.pop();
-      zigzag.pop();
-    }
-  };
-
-  for (let i = 0; i < n; i++) {
-    const { high, low } = bars[i];
-    const oldzigzag = zigzag.slice();
-
-    // getZigzag()
-    const ph = hb[i] === 0 ? high : NaN;
-    const pl = lb[i] === 0 ? low : NaN;
-    if (truthy(ph) && isNaN(pl)) dir = 1;
-    else if (truthy(pl) && isNaN(ph)) dir = -1;
-    const dirChanged = ne(dir, prevDir);
-    prevDir = dir;
-    if (truthy(ph) || truthy(pl)) {
-      const value = dir === 1 ? ph : pl;
-      if (dirChanged) {
-        addToZigzag(value, i);
-      } else if (zigzag.length === 0) {
-        addToZigzag(value, i);
-      } else if ((dir === 1 && gt(value, zigzag[0])) || (dir === -1 && lt(value, zigzag[0]))) {
-        zigzag[0] = value;
-        zigzag[1] = i;
-      }
-    }
-
-    // showZigzag(): a new last leg; the leg before is deleted when it had the same start (the last point moved)
-    if (cfg.showzigzag && zigzag.length >= 4 && oldzigzag.length >= 4) {
-      if (ne(zigzag[0], oldzigzag[0]) || ne(zigzag[1], oldzigzag[1])) {
-        if (eq(zigzag[2], oldzigzag[2]) && eq(zigzag[3], oldzigzag[3])) lines.remove(zzline);
-        zzline = lines.add({
-          x1: Math.round(zigzag[1]), y1: zigzag[0], x2: Math.round(zigzag[3]), y2: zigzag[2],
-          color: dir === 1 ? upcol : dncol, width: 2, dead: false,
-        });
-      }
-    }
-
-    // The volume regression has no state: it is only computed on the bars that read it (a breakout)
-    const volSupport = () => {
-      if (!cfg.checkvolSupport) return true;
-      const len = zigzag.length >= 8 ? i - Math.round(zigzag[7]) : 1;
-      return gt(linreg(i, len, 0) - linreg(i, len, 1), 0);
-    };
-    if (dirChanged) canCheckIt = true;
-
-    // A possible 3rd wave: breakout of the end of wave 1 after a retracement inside the range
-    if (zigzag.length >= 8 && canCheckIt) {
-      const w12 = Math.abs(zigzag[2] - zigzag[4]) / Math.abs(zigzag[4] - zigzag[6]);
-      if (ge(w12, cfg.retRateMin) && le(w12, cfg.retRateMax)
-        && ((dir === 1 && gt(high, zigzag[4])) || (dir === -1 && lt(low, zigzag[4])))) {
-        canCheckIt = false;
-        if (volSupport()) {
-          // thereisbo := true: alertcondition(thereisbo and dir == 1) / alertcondition(thereisbo and dir == -1)
-          longFlags[i] = dir === 1;
-          shortFlags[i] = dir === -1;
-          const x7 = Math.round(zigzag[7]);
-          const x5 = Math.round(zigzag[5]);
-          const x3 = Math.round(zigzag[3]);
-          if (cfg.showbo) {
-            boxes.add({ left: x7, top: zigzag[4], right: i, bottom: zigzag[6], bg: dir === 1 ? cfg.bupcol : cfg.bdncol, dead: false });
-          }
-          if (cfg.showwave12) {
-            lines.add({ x1: x7, y1: zigzag[6], x2: x5, y2: zigzag[4], color: BLUE, dead: false });
-            lines.add({ x1: x5, y1: zigzag[4], x2: x3, y2: zigzag[2], color: BLUE, dead: false });
-            const a: LabelStyle = dir === 1 ? 'label_up' : 'label_down';
-            const b: LabelStyle = dir === 1 ? 'label_down' : 'label_up';
-            labels.add({ x: x7, y: zigzag[6], text: '0', color: NO_COLOR, textColor: BLUE, style: a, dead: false });
-            labels.add({ x: x5, y: zigzag[4], text: '1', color: NO_COLOR, textColor: BLUE, style: b, dead: false });
-            labels.add({ x: x3, y: zigzag[2], text: '2', color: NO_COLOR, textColor: BLUE, style: a, dead: false });
-          }
-          labels.add({
-            x: i, y: zigzag[6], text: '', color: dir === 1 ? upcol : dncol, textColor: LABEL_TEXT,
-            style: dir === 1 ? 'triangleup' : 'triangledown', size: 'small', dead: false,
-          });
-
-          const base = zigzag[2];
-          const wave1 = Math.abs(zigzag[4] - zigzag[6]);
-          const target = (enabled: boolean, ret: number) => {
-            if (!enabled) return;
-            const y = Math.max(base + dir * wave1 * ret, 0);
-            lines.add({ x1: i, y1: y, x2: x7, y2: y, color: BLUE, style: 'dashed', dead: false });
-          };
-          target(cfg.target1Enb, cfg.target1Ret);
-          target(cfg.target2Enb, cfg.target2Ret);
-          target(cfg.target3Enb, cfg.target3Ret);
-          target(cfg.target4Enb, cfg.target4Ret);
-        }
-      }
-    }
-  }
-
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    lines: lines.list.map((l) => ({
-      time1: T(l.x1), price1: l.y1, time2: T(l.x2), price2: l.y2, color: l.color,
-      ...(l.width ? { width: l.width } : {}),
-      ...(l.style ? { style: l.style } : {}),
-    })),
-    labels: labels.list.map((l) => ({
-      time: T(l.x), price: l.y, text: l.text, color: l.color, textColor: l.textColor, style: l.style,
-      ...(l.size ? { size: l.size } : {}),
-    })),
-    boxes: boxes.list.map((b) => ({
-      time1: T(b.left), price1: b.top, time2: T(b.right), price2: b.bottom,
-      bgColor: b.bg, borderColor: BLUE, borderWidth: 1, borderStyle: 'dotted' as const,
-    })),
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -323,4 +411,5 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Breakout Short', message: 'Breakout Short' },
 ];
 
-export const ThirdWave = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const ThirdWave = { calculate, createRun, metadata,
+ defaultInputs, inputConfig, plotConfig, alertConditions };

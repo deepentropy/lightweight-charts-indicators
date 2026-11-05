@@ -21,8 +21,10 @@
  * Original notice: © Nathan J. Hart (insideandup). "One Half" color scheme by Son A. Pham.
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 const SOURCES = ['High', 'Low', 'Open', 'Close', 'Median HL/2', 'Typical HLC/3', 'OHLC/4', 'Body Median OC/2', 'Weighted Close HL2C/4', 'Biased HC/2 if Close > Open, else LC/2', 'Biased High if Close > HL/2, else Low', 'Biased High if Close > Open, else Low'] as const;
 export type IchimokuKinkoHyoSource = (typeof SOURCES)[number];
@@ -670,161 +672,188 @@ function section(cfg: IchimokuKinkoHyoInputs, nn: string): Section {
 
 type Point = { time: number; value: number; color: string };
 
-export function calculate(bars: Bar[], inputs: Partial<IchimokuKinkoHyoInputs> = {}): IndicatorResult {
+/** One ma(source, length, type) call of the script, one bar at a time */
+interface MaStep extends Committable {
+  step(value: number, bar: Bar): number;
+}
+
+/** ema1 .. ema<depth>: each one the EMA of the previous one, combined */
+function emaChainStep(length: number, depth: number, f: (e: number[]) => number): MaStep {
+  const es = Array.from({ length: depth }, () => taStep.ema(length));
+  return {
+    step(value) {
+      let cur = value;
+      return f(es.map((m) => (cur = m.step(cur))));
+    },
+    commit() { for (const m of es) m.commit(); },
+  };
+}
+
+/**
+ * ta.ema(source + source - source[math.round((length - 1) / 2)], length): the source values of the earlier bars are
+ * kept by the machine
+ */
+class ZlemaStep implements MaStep {
+  private readonly ema: ReturnType<typeof taStep.ema>;
+  private readonly lag: number;
+  private values: number[] = [];
+  private pending = NaN;
+  private stepped = false;
+
+  constructor(length: number) {
+    this.ema = taStep.ema(length);
+    this.lag = Math.round((length - 1) / 2);
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    this.pending = value;
+    const lag = this.lag;
+    // source[lag] of bar i: the value of bar i - lag (na before the first bar)
+    const k = this.values.length - lag;
+    const past = lag === 0 ? value : k >= 0 ? this.values[k] : NaN;
+    return this.ema.step(k >= 0 ? value + value - past : NaN);
+  }
+
+  commit(): void {
+    this.ema.commit();
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.values.push(this.pending);
+  }
+}
+
+/**
+ * ma(source, length, type): the moving average types of the Pine function (the type is an input, so the chosen
+ * branch runs on every bar)
+ */
+function maStep(length: number, type: IchimokuKinkoHyoMaType | IchimokuKinkoHyoSmoothingType): MaStep {
+  switch (type) {
+    case 'SMA': {
+      const m = taStep.sma();
+      return { step: (v) => m.step(v, length), commit: () => m.commit() };
+    }
+    case 'EMA': {
+      const m = taStep.ema(length);
+      return { step: (v) => m.step(v), commit: () => m.commit() };
+    }
+    case 'DEMA': return emaChainStep(length, 2, ([e1, e2]) => 2 * e1 - e2);
+    case 'TEMA': return emaChainStep(length, 3, ([e1, e2, e3]) => 3 * e1 - 3 * e2 + e3);
+    case 'QEMA':
+      return emaChainStep(length, 5, ([e1, e2, e3, e4, e5]) => 5 * e1 - 10 * e2 + 10 * e3 - 5 * e4 + e5);
+    case 'PEMA':
+      return emaChainStep(length, 8, ([e1, e2, e3, e4, e5, e6, e7, e8]) =>
+        8 * e1 - 28 * e2 + 56 * e3 - 70 * e4 + 56 * e5 - 28 * e6 + 8 * e7 - e8);
+    case 'ZLEMA': return new ZlemaStep(length);
+    case 'T3':
+      return emaChainStep(length, 6, ([, , e3, e4, e5, e6]) => A1 * e6 + A2 * e5 + A3 * e4 + A4 * e3);
+    case 'HMA': {
+      if (length === 1) throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function");
+      const m = taStep.hma(length);
+      return { step: (v) => m.step(v), commit: () => m.commit() };
+    }
+    case 'SMMA': {
+      const m = taStep.rma(length);
+      return { step: (v) => m.step(v), commit: () => m.commit() };
+    }
+    case 'WMA': {
+      const m = taStep.wma();
+      return { step: (v) => m.step(v, length), commit: () => m.commit() };
+    }
+    case 'VWMA': {
+      const m = taStep.vwma(length);
+      return { step: (v, b) => m.step(v, b.volume ?? NaN), commit: () => m.commit() };
+    }
+    case 'Donchian': {
+      // math.avg(ta.highest(high, length), ta.lowest(low, length)): the price highs / lows whatever the source
+      const hh = taStep.highest();
+      const ll = taStep.lowest();
+      return {
+        step: (_v, b) => (hh.step(b.high, length) + ll.step(b.low, length)) / 2,
+        commit: () => { hh.commit(); ll.commit(); },
+      };
+    }
+  }
+}
+
+function sourceOf(name: IchimokuKinkoHyoSource, b: Bar): number {
+  switch (name) {
+    case 'High': return b.high;
+    case 'Low': return b.low;
+    case 'Open': return b.open;
+    case 'Close': return b.close;
+    case 'Median HL/2': return (b.high + b.low) / 2;
+    case 'Typical HLC/3': return (b.high + b.low + b.close) / 3;
+    case 'OHLC/4': return (b.open + b.high + b.low + b.close) / 4;
+    case 'Body Median OC/2': return (b.open + b.close) / 2;
+    case 'Weighted Close HL2C/4': return (b.high + b.low + 2 * b.close) / 4;
+    case 'Biased HC/2 if Close > Open, else LC/2':
+      return gt(b.close, b.open) ? (b.high + b.close) / 2 : (b.low + b.close) / 2;
+    case 'Biased High if Close > HL/2, else Low': return gt(b.close, (b.high + b.low) / 2) ? b.high : b.low;
+    case 'Biased High if Close > Open, else Low': return gt(b.close, b.open) ? b.high : b.low;
+  }
+}
+
+/** The machines of one plot NN (null: not called) */
+interface SectionSteps {
+  m: MaStep;
+  high: MaStep | null;
+  low: MaStep | null;
+  open: MaStep | null;
+  close: MaStep | null;
+  pHi: MaStep | null;
+  pLo: MaStep | null;
+  smoothed: MaStep | null;
+  upper: ReturnType<typeof taStep.highest> | null;
+  lower: ReturnType<typeof taStep.lowest> | null;
+}
+
+interface IchimokuRun extends BarRunState<Record<string, never>> {
+  sections: SectionSteps[];
+  smoothedMean: MaStep;
+  /** Per plot: the value of each bar (shown on bar + offset) */
+  vals: number[][];
+  /** Per plot with an offset <= 0: the points (the time of an earlier bar or the bar's own) */
+  pts: Point[][];
+  cloudColors: string[];
+  /** Per plot with an offset > 0: its points of the last update, the first `laterFinal` of them final */
+  later: Point[][];
+  laterFinal: number[];
+}
+
+function study(inputs: Partial<IchimokuKinkoHyoInputs>): BarStudy<IchimokuRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const open = bars.map((b) => b.open);
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const close = bars.map((b) => b.close);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const interval = barInterval(bars);
-
-  const ema = (x: number[], len: number) => A(ta.ema(S(x), len));
-  /** ema1 .. ema<depth>: each one the EMA of the previous one */
-  const emaChain = (x: number[], len: number, depth: number) => {
-    const out: number[][] = [];
-    let cur = x;
-    for (let d = 0; d < depth; d++) {
-      cur = ema(cur, len);
-      out.push(cur);
-    }
-    return out;
-  };
-  const combine = (e: number[][], f: (v: number[]) => number) => bars.map((_b, i) => f(e.map((s) => s[i])));
-
-  // ma(source, length, type): the moving average types of the Pine function (the type is an input, so the chosen
-  // branch runs on every bar)
-  const ma = (src: number[], length: number, type: IchimokuKinkoHyoMaType | IchimokuKinkoHyoSmoothingType): number[] => {
-    switch (type) {
-      case 'SMA': return A(ta.sma(S(src), length));
-      case 'EMA': return ema(src, length);
-      case 'DEMA': return combine(emaChain(src, length, 2), ([e1, e2]) => 2 * e1 - e2);
-      case 'TEMA': return combine(emaChain(src, length, 3), ([e1, e2, e3]) => 3 * e1 - 3 * e2 + e3);
-      case 'QEMA':
-        return combine(emaChain(src, length, 5), ([e1, e2, e3, e4, e5]) => 5 * e1 - 10 * e2 + 10 * e3 - 5 * e4 + e5);
-      case 'PEMA':
-        return combine(emaChain(src, length, 8), ([e1, e2, e3, e4, e5, e6, e7, e8]) =>
-          8 * e1 - 28 * e2 + 56 * e3 - 70 * e4 + 56 * e5 - 28 * e6 + 8 * e7 - e8);
-      case 'ZLEMA': {
-        // ta.ema(source + source - source[math.round((length - 1) / 2)], length)
-        const lag = Math.round((length - 1) / 2);
-        return ema(src.map((v, i) => (i - lag >= 0 ? v + v - src[i - lag] : NaN)), length);
-      }
-      case 'T3':
-        return combine(emaChain(src, length, 6), ([, , e3, e4, e5, e6]) => A1 * e6 + A2 * e5 + A3 * e4 + A4 * e3);
-      case 'HMA':
-        if (length === 1) throw new Error("Invalid value of the 'length' argument (0.0) in the 'wma' function");
-        return A(ta.hma(S(src), length));
-      case 'SMMA': return A(ta.rma(S(src), length));
-      case 'WMA': return A(ta.wma(S(src), length));
-      case 'VWMA': return A(ta.vwma(S(src), length, S(volume)));
-      case 'Donchian': {
-        // math.avg(ta.highest(high, length), ta.lowest(low, length)): the price highs / lows whatever the source
-        const hh = A(ta.highest(S(high), length));
-        const ll = A(ta.lowest(S(low), length));
-        return hh.map((h, i) => (h + ll[i]) / 2);
-      }
-    }
-  };
-
-  const sourceOf = (name: IchimokuKinkoHyoSource): number[] => bars.map((b) => {
-    switch (name) {
-      case 'High': return b.high;
-      case 'Low': return b.low;
-      case 'Open': return b.open;
-      case 'Close': return b.close;
-      case 'Median HL/2': return (b.high + b.low) / 2;
-      case 'Typical HLC/3': return (b.high + b.low + b.close) / 3;
-      case 'OHLC/4': return (b.open + b.high + b.low + b.close) / 4;
-      case 'Body Median OC/2': return (b.open + b.close) / 2;
-      case 'Weighted Close HL2C/4': return (b.high + b.low + 2 * b.close) / 4;
-      case 'Biased HC/2 if Close > Open, else LC/2':
-        return gt(b.close, b.open) ? (b.high + b.close) / 2 : (b.low + b.close) / 2;
-      case 'Biased High if Close > HL/2, else Low': return gt(b.close, (b.high + b.low) / 2) ? b.high : b.low;
-      case 'Biased High if Close > Open, else Low': return gt(b.close, b.open) ? b.high : b.low;
-    }
-  });
-
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  /** plot(value, offset = off): the value of bar i is drawn on bar i + off (future bars with barTime) */
-  const shifted = (vals: number[] | null, off: number, col: string): Point[] => {
-    const out: Point[] = [];
-    for (let i = 0; i < n; i++) {
-      if (i + off < 0) continue;
-      out.push({ time: barTime(bars, i + off, interval), value: vals ? fin(vals[i]) : NaN, color: col });
-    }
-    return out;
-  };
+  const secs = NN.map((nn) => section(cfg, nn));
+  const selects = NN.map((nn) => (cfg as unknown as Record<string, boolean>)[`meanSelect${nn}`]);
+  const offsets = secs.map((s) => plotOffset(s.displacement, s.displacementAdjust));
 
-  const plots: Record<string, Point[]> = {};
-  let plotIndex = 0;
-  const addPlot = (vals: number[] | null, off: number, col: string) => {
-    const id = `plot${plotIndex++}`;
-    plots[id] = shifted(vals, off, col);
-    return id;
+  // The plots in the Pine order, with their offsets and colours; the fills
+  const plotOffsets: number[] = [];
+  const plotColors: string[] = [];
+  const addPlot = (off: number, col: string) => {
+    plotOffsets.push(off);
+    plotColors.push(col);
+    return `plot${plotOffsets.length - 1}`;
   };
   const fills: NonNullable<IndicatorResult['fills']> = [];
-
-  const zeros = new Array<number>(n).fill(0);
-  const refma: number[][] = [];
-  const refmaHigh: number[][] = [];
-  const refmaLow: number[][] = [];
-  const refmaOpen: number[][] = [];
-  const refmaClose: number[][] = [];
-  const offsets: number[] = [];
-  const selects = NN.map((nn) => (cfg as unknown as Record<string, boolean>)[`meanSelect${nn}`]);
-
-  NN.forEach((nn, k) => {
-    const s = section(cfg, nn);
+  secs.forEach((s, k) => {
+    const nn = NN[k];
     const [c, sc] = SECTION_RGB[k];
-    const src = sourceOf(s.source);
-    const m = ma(src, s.length, s.type);
-    refma.push(m);
-    // refmaNN_high / _low / _open / _close: only used by the mean, where an unselected plot counts as 0
-    refmaHigh.push(selects[k] ? ma(high, s.length, s.type) : zeros);
-    refmaLow.push(selects[k] ? ma(low, s.length, s.type) : zeros);
-    refmaOpen.push(selects[k] ? ma(open, s.length, s.type) : zeros);
-    refmaClose.push(selects[k] ? ma(close, s.length, s.type) : zeros);
-    const off = plotOffset(s.displacement, s.displacementAdjust);
-    offsets.push(off);
-    const isDonchian = s.type === 'Donchian';
-    const hl = s.hlOcSource === 'High and Low';
-
-    // plot(show_allNN ? show_refmaNN_source ? refmaNN_source : na : na, ...)
-    addPlot(s.showAll && s.showSource ? src : null, off, rgb(c, 10));
-    // plot(show_allNN ? show_refmaNN ? refmaNN : na : na, ...)
-    addPlot(s.showAll && s.show ? m : null, off, rgb(c, 20));
-    // refmaNNNN = ma(High and Low ? high : close), refmaNNNN_open = ma(High and Low ? low : open); na for Donchian
-    const showHlOc = s.showAll && s.showHlOc && !isDonchian;
-    const pHi = addPlot(showHlOc ? ma(hl ? high : close, s.length, s.type) : null, off, rgb(c, 40));
-    const pLo = addPlot(showHlOc ? ma(hl ? low : open, s.length, s.type) : null, off, rgb(c, 70));
+    const off = offsets[k];
+    addPlot(off, rgb(c, 10));
+    addPlot(off, rgb(c, 20));
+    const pHi = addPlot(off, rgb(c, 40));
+    const pLo = addPlot(off, rgb(c, 70));
     fills.push({ plot1: pHi, plot2: pLo, options: { title: `Reference plot ${nn} fill`, color: rgb(c, 80) } });
-    // smoothed_refmaNN = ma(refmaNN, smoothed length, smoothed type); plot 07 has no show_all07 condition
-    const showSmoothed = (k === 6 || s.showAll) && s.smoothedShow;
-    addPlot(showSmoothed ? ma(m, s.smoothedLength, s.smoothedType) : null, off, rgb(sc, 20));
-    // Donchian channel: highs / lows, or candle body tops / bottoms
-    const showChannel = s.showAll && s.show && isDonchian && s.showHlOc;
-    let upper: number[] | null = null;
-    let lower: number[] | null = null;
-    if (showChannel) {
-      upper = hl
-        ? A(ta.highest(S(high), s.length))
-        : A(ta.highest(S(bars.map((b) => (gt(b.close, b.open) ? b.close : b.open))), s.length));
-      lower = hl
-        ? A(ta.lowest(S(low), s.length))
-        : A(ta.lowest(S(bars.map((b) => (lt(b.close, b.open) ? b.close : b.open))), s.length));
-    }
-    const pUp = addPlot(upper, off, rgb(c, 20));
-    const pDn = addPlot(lower, off, rgb(c, 20));
+    addPlot(off, rgb(sc, 20));
+    const pUp = addPlot(off, rgb(c, 20));
+    const pDn = addPlot(off, rgb(c, 20));
     fills.push({ plot1: pUp, plot2: pDn, options: { title: `Donchian plot ${nn} fill`, color: rgb(c, 80) } });
   });
 
   // Mean of the selected plots (an unselected plot counts as 0, or 1 in the product of the geometric mean)
   const count = selects.reduce((acc, sel) => acc + (sel ? 1.0 : 0.0), 0.0);
-  const pick = (arr: number[][], i: number) => arr.map((a, k) => (selects[k] ? a[i] : 0.0));
   const arith = (v: number[]) => (v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[6] + v[7]) / count;
   const geo = (v: number[]) => {
     const g = v.map((x, k) => (selects[k] ? x : 1.0));
@@ -847,38 +876,20 @@ export function calculate(bars: Bar[], inputs: Partial<IchimokuKinkoHyoInputs> =
       case 'Cubic Mean': return power(v, 3.0);
     }
   };
-  /** close means: the arithmetic, quadratic and cubic means take the plot 08 moving average as eighth term */
-  const meanClose = (i: number): number => {
-    const v = pick(refmaClose, i);
-    if (cfg.meanType === 'Arithmetic Mean' || cfg.meanType === 'Quadratic Mean' || cfg.meanType === 'Cubic Mean') {
-      v[7] = selects[7] ? refma[7][i] : 0.0;
-    }
-    return mean(v);
-  };
-  const avema09 = bars.map((_b, i) => mean(pick(refma, i)));
-  const avema09High = bars.map((_b, i) => mean(pick(refmaHigh, i)));
-  const avema09Low = bars.map((_b, i) => mean(pick(refmaLow, i)));
-  const avema09Open = bars.map((_b, i) => mean(pick(refmaOpen, i)));
-  const avema09Close = bars.map((_b, i) => meanClose(i));
 
   const meanOff = plotOffset(cfg.meanDisplacement, cfg.meanDisplacementAdjust);
   const cloneOff = plotOffset(cfg.meanCloneDisplacement, cfg.meanCloneDisplacementAdjust);
   const hasMean = count > 0.0;
   const oc = cfg.meanHlOcSource === 'Open and Close';
-  addPlot(cfg.showMeanPlot && cfg.showMean && hasMean ? avema09 : null, meanOff, rgb(WHITE, 40));
-  const pOh = addPlot(cfg.showMeanPlot && cfg.showMeanHlOc && hasMean ? (oc ? avema09Open : avema09High) : null,
-    meanOff, rgb(WHITE, 60));
-  const pLc = addPlot(cfg.showMeanPlot && cfg.showMeanHlOc && hasMean ? (oc ? avema09Close : avema09Low) : null,
-    meanOff, rgb(WHITE, 80));
+  addPlot(meanOff, rgb(WHITE, 40));
+  const pOh = addPlot(meanOff, rgb(WHITE, 60));
+  const pLc = addPlot(meanOff, rgb(WHITE, 80));
   fills.push({ plot1: pOh, plot2: pLc, options: { title: 'Mean OHLC fill', color: rgb(WHITE, 80) } });
-  const smoothedMean = ma(avema09, cfg.smoothedMeanLength, cfg.smoothedMeanType);
-  addPlot(cfg.showMeanPlot && cfg.smoothedShowMean ? smoothedMean : null, meanOff, rgb(WHITE, 40));
-  addPlot(cfg.showMeanPlot && cfg.showMeanClone && hasMean ? avema09 : null, cloneOff, rgb(WHITE, 40));
+  addPlot(meanOff, rgb(WHITE, 40));
+  addPlot(cloneOff, rgb(WHITE, 40));
 
   // Cloud 01: the two chosen plots (values without the hide inputs) with their offsets
   const sectionIndex = (name: IchimokuKinkoHyoCloudPlot) => NN.indexOf(name.slice(5) as (typeof NN)[number]);
-  const cloudValues = (name: IchimokuKinkoHyoCloudPlot) => (name === 'Mean 01' || name === 'Mean 02'
-    ? avema09 : refma[sectionIndex(name)]);
   const cloudOffset = (name: IchimokuKinkoHyoCloudPlot) => {
     if (name === 'Mean 01') return meanOff;
     // the Pine script uses the Mean 01 "Adjust" input with the Mean 02 displacement
@@ -886,28 +897,169 @@ export function calculate(bars: Bar[], inputs: Partial<IchimokuKinkoHyoInputs> =
     return offsets[sectionIndex(name)];
   };
   const showCloud = cfg.showCloudPlot && cfg.showCloud01;
-  const c1 = addPlot(showCloud ? cloudValues(cfg.cloud0101) : null, cloudOffset(cfg.cloud0101), rgb(WHITE, 90));
-  const c2 = addPlot(showCloud ? cloudValues(cfg.cloud0102) : null, cloudOffset(cfg.cloud0102), rgb(WHITE, 90));
-  // cloud0101_fill >= cloud0102_fill (values of the bar, no offset); cloud0102_fill stays 0 for "Mean 02"
-  const fill1 = cloudValues(cfg.cloud0101);
-  const fill2 = cfg.cloud0102 === 'Mean 02' ? zeros : cloudValues(cfg.cloud0102);
+  const c1 = addPlot(cloudOffset(cfg.cloud0101), rgb(WHITE, 90));
+  const c2 = addPlot(cloudOffset(cfg.cloud0102), rgb(WHITE, 90));
   const white = rgb(WHITE, 90);
   const yellow = rgb(YELLOW, 90);
-  // fill colour of bar i goes with the plot points of bar i
-  fills.push({
-    plot1: c1, plot2: c2, options: { title: 'Cloud 01' },
-    colors: bars.map((_b, i) => (ge(fill1[i], fill2[i]) ? white : yellow)),
-  });
+  const PLOTS = plotOffsets.length;
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
+    init() {
+      const sections = secs.map((s, k): SectionSteps => {
+        const isDonchian = s.type === 'Donchian';
+        const hl = s.hlOcSource === 'High and Low';
+        const showHlOc = s.showAll && s.showHlOc && !isDonchian;
+        // smoothed_refmaNN = ma(refmaNN, smoothed length, smoothed type); plot 07 has no show_all07 condition
+        const showSmoothed = (k === 6 || s.showAll) && s.smoothedShow;
+        const showChannel = s.showAll && s.show && isDonchian && s.showHlOc;
+        // refmaNN_high / _low / _open / _close: only used by the mean, where an unselected plot counts as 0
+        const sel = selects[k];
+        return {
+          m: maStep(s.length, s.type),
+          high: sel ? maStep(s.length, s.type) : null,
+          low: sel ? maStep(s.length, s.type) : null,
+          open: sel ? maStep(s.length, s.type) : null,
+          close: sel ? maStep(s.length, s.type) : null,
+          pHi: showHlOc ? maStep(s.length, s.type) : null,
+          pLo: showHlOc ? maStep(s.length, s.type) : null,
+          smoothed: showSmoothed ? maStep(s.smoothedLength, s.smoothedType) : null,
+          upper: showChannel ? taStep.highest() : null,
+          lower: showChannel ? taStep.lowest() : null,
+        };
+      });
+      const s: IchimokuRun = {
+        sections, smoothedMean: maStep(cfg.smoothedMeanLength, cfg.smoothedMeanType),
+        vals: Array.from({ length: PLOTS }, () => []), pts: Array.from({ length: PLOTS }, () => []), cloudColors: [],
+        later: Array.from({ length: PLOTS }, () => []), laterFinal: new Array<number>(PLOTS).fill(0),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      for (const sec of sections) {
+        for (const m of [sec.m, sec.high, sec.low, sec.open, sec.close, sec.pHi, sec.pLo, sec.smoothed, sec.upper, sec.lower]) {
+          if (m) s.steps.push(m);
+        }
+      }
+      s.steps.push(s.smoothedMean);
+      s.series = [...s.vals, ...s.pts, s.cloudColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const values: number[] = [];
+      const refma: number[] = [];
+      const refmaHigh: number[] = [];
+      const refmaLow: number[] = [];
+      const refmaOpen: number[] = [];
+      const refmaClose: number[] = [];
+      secs.forEach((sec, k) => {
+        const st = s.sections[k];
+        const hl = sec.hlOcSource === 'High and Low';
+        const src = sourceOf(sec.source, b);
+        const m = st.m.step(src, b);
+        refma.push(m);
+        refmaHigh.push(st.high ? st.high.step(b.high, b) : 0);
+        refmaLow.push(st.low ? st.low.step(b.low, b) : 0);
+        refmaOpen.push(st.open ? st.open.step(b.open, b) : 0);
+        refmaClose.push(st.close ? st.close.step(b.close, b) : 0);
+        // plot(show_allNN ? show_refmaNN_source ? refmaNN_source : na : na, ...)
+        values.push(sec.showAll && sec.showSource ? src : NaN);
+        // plot(show_allNN ? show_refmaNN ? refmaNN : na : na, ...)
+        values.push(sec.showAll && sec.show ? m : NaN);
+        // refmaNNNN = ma(High and Low ? high : close), refmaNNNN_open = ma(High and Low ? low : open); na for Donchian
+        values.push(st.pHi ? st.pHi.step(hl ? b.high : b.close, b) : NaN);
+        values.push(st.pLo ? st.pLo.step(hl ? b.low : b.open, b) : NaN);
+        values.push(st.smoothed ? st.smoothed.step(m, b) : NaN);
+        // Donchian channel: highs / lows, or candle body tops / bottoms
+        values.push(st.upper ? st.upper.step(hl ? b.high : gt(b.close, b.open) ? b.close : b.open, sec.length) : NaN);
+        values.push(st.lower ? st.lower.step(hl ? b.low : lt(b.close, b.open) ? b.close : b.open, sec.length) : NaN);
+      });
+
+      const pick = (arr: number[]) => arr.map((a, k) => (selects[k] ? a : 0.0));
+      /** close means: the arithmetic, quadratic and cubic means take the plot 08 moving average as eighth term */
+      const meanClose = (): number => {
+        const v = pick(refmaClose);
+        if (cfg.meanType === 'Arithmetic Mean' || cfg.meanType === 'Quadratic Mean' || cfg.meanType === 'Cubic Mean') {
+          v[7] = selects[7] ? refma[7] : 0.0;
+        }
+        return mean(v);
+      };
+      const avema09 = mean(pick(refma));
+      const avema09High = mean(pick(refmaHigh));
+      const avema09Low = mean(pick(refmaLow));
+      const avema09Open = mean(pick(refmaOpen));
+      const avema09Close = meanClose();
+      const smoothedMean = s.smoothedMean.step(avema09, b);
+
+      values.push(cfg.showMeanPlot && cfg.showMean && hasMean ? avema09 : NaN);
+      values.push(cfg.showMeanPlot && cfg.showMeanHlOc && hasMean ? (oc ? avema09Open : avema09High) : NaN);
+      values.push(cfg.showMeanPlot && cfg.showMeanHlOc && hasMean ? (oc ? avema09Close : avema09Low) : NaN);
+      values.push(cfg.showMeanPlot && cfg.smoothedShowMean ? smoothedMean : NaN);
+      values.push(cfg.showMeanPlot && cfg.showMeanClone && hasMean ? avema09 : NaN);
+
+      const cloudValue = (name: IchimokuKinkoHyoCloudPlot) => (name === 'Mean 01' || name === 'Mean 02'
+        ? avema09 : refma[sectionIndex(name)]);
+      values.push(showCloud ? cloudValue(cfg.cloud0101) : NaN);
+      values.push(showCloud ? cloudValue(cfg.cloud0102) : NaN);
+      // cloud0101_fill >= cloud0102_fill (values of the bar, no offset); cloud0102_fill stays 0 for "Mean 02"
+      const fill1 = cloudValue(cfg.cloud0101);
+      const fill2 = cfg.cloud0102 === 'Mean 02' ? 0 : cloudValue(cfg.cloud0102);
+      // fill colour of bar i goes with the plot points of bar i
+      s.cloudColors[i] = ge(fill1, fill2) ? white : yellow;
+
+      // plot(value, offset = off): the value of bar i is drawn on bar i + off; an offset <= 0 reads the time of
+      // this bar or an earlier one
+      for (let p = 0; p < PLOTS; p++) {
+        const v = fin(values[p]);
+        s.vals[p][i] = v;
+        const off = plotOffsets[p];
+        if (off <= 0 && i + off >= 0) s.pts[p][i] = { time: barTime(bars, i + off, 0), value: v, color: plotColors[p] };
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const interval = plotOffsets.some((off) => off > 0) ? barInterval(bars) : 0;
+      const plots: Record<string, Point[]> = {};
+      for (let p = 0; p < PLOTS; p++) {
+        const off = plotOffsets[p];
+        let out: Point[];
+        if (off <= 0) {
+          out = s.pts[p].slice(Math.min(n, -off));
+        } else {
+          // a later bar time, or the time of a future bar. The points of the confirmed bars drawn on confirmed bars
+          // are kept for the next updates of the run (their bars are the same when the run resumes)
+          const cache = s.later[p];
+          const vals = s.vals[p];
+          const col = plotColors[p];
+          cache.length = Math.min(cache.length, n);
+          for (let i = s.laterFinal[p]; i < n; i++) cache[i] = { time: barTime(bars, i + off, interval), value: vals[i], color: col };
+          s.laterFinal[p] = Math.max(0, Math.min(n - 1 - off, n - 1));
+          out = cache.slice();
+        }
+        plots[`plot${p}`] = out;
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          ...fills.map((f) => ({ ...f, options: { ...f.options } })),
+          { plot1: c1, plot2: c2, options: { title: 'Cloud 01' }, colors: s.cloudColors.slice() },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IchimokuKinkoHyoInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IchimokuKinkoHyoInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const IchimokuKinkoHyo = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

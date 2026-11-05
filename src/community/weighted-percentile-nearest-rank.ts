@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WeightedPercentileNearestRankInputs {
   /** Source */
@@ -55,63 +57,87 @@ export const metadata = {
 const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<WeightedPercentileNearestRankInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface WpnrRun extends BarRunState<Record<string, never>> {
+  src: number[];
+  plot0: Point[];
+}
+
+function study(inputs: Partial<WeightedPercentileNearestRankInputs>): BarStudy<WpnrRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const len = cfg.length;
   const p = cfg.percent;
-  // Pine: `for i = 1 to len - 1` counts down to 0 when len is 1, and array.get(1) on a 1-element array fails
-  if (len < 2) throw new Error(`Index ${Math.max(len, 0)} is out of bounds. Array size is ${Math.max(len, 0)}.`);
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
-
-  const data = new Array<number>(len);
-  const weights = new Array<number>(len);
-  const idx = new Array<number>(len);
-  const plot0 = new Array<{ time: number; value: number }>(n);
-  for (let bar = 0; bar < n; bar++) {
-    for (let i = 0; i < len; i++) {
-      const j = bar - i;
-      const body = j >= 0 ? Math.abs(bars[j].close - bars[j].open) : NaN;
-      weights[i] = (cfg.timeWeighting ? len - i : 1) * (cfg.inferredVolume ? body : 1);
-      data[i] = j >= 0 ? src[j] : NaN;
-      idx[i] = i;
-    }
-    // array.sort_indices(data, order.ascending): na values last
-    idx.sort((a, b) => {
-      const x = data[a];
-      const y = data[b];
-      if (isNaN(x)) return isNaN(y) ? 0 : 1;
-      if (isNaN(y)) return -1;
-      return x - y;
-    });
-    // sorted_weights.sum() (na skipped) / 100 * p
-    let sum = 0;
-    for (let i = 0; i < len; i++) {
-      const w = weights[idx[i]];
-      if (!isNaN(w)) sum += w;
-    }
-    const thres = (sum / 100) * p;
-    // Cumulative weights: an na weight makes the rest of the sums na
-    let out = 0.0;
-    let cum = 0;
-    for (let i = 0; i < len; i++) {
-      cum = i === 0 ? weights[idx[0]] : cum + weights[idx[i]];
-      if (ge(cum, thres)) {
-        out = data[idx[i]];
-        break;
-      }
-    }
-    plot0[bar] = { time: bars[bar].time, value: out };
-  }
-
+  const value = barSource(cfg.src);
+  const data = new Array<number>(Math.max(len, 0));
+  const weights = new Array<number>(Math.max(len, 0));
+  const idx = new Array<number>(Math.max(len, 0));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      // Pine: `for i = 1 to len - 1` counts down to 0 when len is 1, and array.get(1) on a 1-element array fails
+      if (len < 2) throw new Error(`Index ${Math.max(len, 0)} is out of bounds. Array size is ${Math.max(len, 0)}.`);
+      const s: WpnrRun = { src: [], plot0: [], steps: [], vars: {}, lists: [], series: [] };
+      s.series = [s.src, s.plot0];
+      return s;
+    },
+    bar(s, bar, bars) {
+      s.src[bar] = value(bars[bar]);
+      for (let i = 0; i < len; i++) {
+        const j = bar - i;
+        const body = j >= 0 ? Math.abs(bars[j].close - bars[j].open) : NaN;
+        weights[i] = (cfg.timeWeighting ? len - i : 1) * (cfg.inferredVolume ? body : 1);
+        data[i] = j >= 0 ? s.src[j] : NaN;
+        idx[i] = i;
+      }
+      // array.sort_indices(data, order.ascending): na values last
+      idx.sort((a, b) => {
+        const x = data[a];
+        const y = data[b];
+        if (isNaN(x)) return isNaN(y) ? 0 : 1;
+        if (isNaN(y)) return -1;
+        return x - y;
+      });
+      // sorted_weights.sum() (na skipped) / 100 * p
+      let sum = 0;
+      for (let i = 0; i < len; i++) {
+        const w = weights[idx[i]];
+        if (!isNaN(w)) sum += w;
+      }
+      const thres = (sum / 100) * p;
+      // Cumulative weights: an na weight makes the rest of the sums na
+      let out = 0.0;
+      let cum = 0;
+      for (let i = 0; i < len; i++) {
+        cum = i === 0 ? weights[idx[0]] : cum + weights[idx[i]];
+        if (ge(cum, thres)) {
+          out = data[idx[i]];
+          break;
+        }
+      }
+      s.plot0[bar] = { time: bars[bar].time, value: out };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WeightedPercentileNearestRankInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WeightedPercentileNearestRankInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const WeightedPercentileNearestRank = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

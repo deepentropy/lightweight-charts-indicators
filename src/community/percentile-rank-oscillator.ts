@@ -14,9 +14,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, math, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, math, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 
 export type PercentileRankOutputScale = '-1..+1' | '0..100';
 
@@ -151,83 +153,127 @@ function rollingPercentile(src: number[], n: number, i: number): number {
   return pct;
 }
 
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface ProRun extends BarRunState<Record<string, never>> {
+  priceRma: ReturnType<typeof taStep.rma> | null;
+  vwRma: ReturnType<typeof taStep.rma> | null;
+  vwma: ReturnType<typeof taStep.vwma> | null;
+  mid: number[];
+  disp: number[];
+  plot0: Point[];
+  plot1: Point[];
+  bandColors: string[];
+  flags: boolean[][];
+  times: number[][];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<PercentileRankOscillatorInputs>): BarStudy<ProRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const len = Math.max(3, Math.min(cfg.lookback, 500));
+  const minusOneToOne = cfg.outputScale === '-1..+1';
+  const mapToOut = (x: number) => (minusOneToOne ? x / 50.0 - 1.0 : x);
+  const vwlen = cfg.vwmaLenSame ? len : Math.max(1, cfg.vwmaLenCustom);
+  return {
+    init() {
+      const priceRma = cfg.smooth > 1 ? taStep.rma(cfg.smooth) : null;
+      const vwRma = cfg.enableVwmaPct && cfg.smooth > 1 ? taStep.rma(cfg.smooth) : null;
+      const vwma = cfg.enableVwmaPct ? taStep.vwma(vwlen) : null;
+      const s: ProRun = {
+        priceRma, vwRma, vwma, mid: [], disp: [], plot0: [], plot1: [], bandColors: [],
+        flags: [[], [], [], [], [], []], times: [[], [], [], [], [], []], bgColors: [],
+        steps: [priceRma, vwRma, vwma].filter((m) => m !== null),
+        vars: {}, lists: [], series: [],
+      };
+      s.lists = [...s.times, s.bgColors];
+      s.series = [s.mid, s.disp, s.plot0, s.plot1, s.bandColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      s.mid[i] = (b.high + b.low) / 2.0;
+
+      // Price percentile
+      const pricePct = rollingPercentile(s.mid, len, i);
+      const priceOut = mapToOut(s.priceRma ? s.priceRma.step(pricePct) : pricePct);
+
+      // VWMA percentile: percentile of the deviation mid - vwma(mid)
+      let vwmaPct = 0.0;
+      let vwOut = 0.0;
+      if (s.vwma) {
+        const vwmaMid = s.vwma.step(s.mid[i], b.volume ?? NaN);
+        s.disp[i] = s.mid[i] - vwmaMid;
+        vwmaPct = rollingPercentile(s.disp, len, i);
+        vwOut = mapToOut(s.vwRma ? s.vwRma.step(vwmaPct) : vwmaPct);
+      }
+
+      // Background: confluence > price > VWMA
+      const isPriceTop = ge(pricePct, cfg.highThresh);
+      const isPriceBot = le(pricePct, cfg.lowThresh);
+      const isVwTop = cfg.enableVwmaPct ? ge(vwmaPct, cfg.highThresh) : false;
+      const isVwBot = cfg.enableVwmaPct ? le(vwmaPct, cfg.lowThresh) : false;
+      const conflTop = cfg.enableVwmaPct && isPriceTop && isVwTop;
+      const conflBot = cfg.enableVwmaPct && isPriceBot && isVwBot;
+      const bgPrice = (isPriceTop || isPriceBot) && cfg.fillExtremes && cfg.alertsPrice ? (isPriceTop ? cfg.topColor : cfg.botColor) : null;
+      const bgVw = (isVwTop || isVwBot) && cfg.fillExtremes && cfg.alertsVwma ? (isVwTop ? cfg.topColor : cfg.botColor) : null;
+      const bgConfl = (conflTop || conflBot) && cfg.fillExtremes && cfg.alertsConfl ? (conflTop ? cfg.topColor : cfg.botColor) : null;
+      const finalBg = bgConfl ?? bgPrice ?? bgVw;
+      const flags = [
+        cfg.alertsPrice && isPriceTop,
+        cfg.alertsPrice && isPriceBot,
+        cfg.enableVwmaPct && cfg.alertsVwma && isVwTop,
+        cfg.enableVwmaPct && cfg.alertsVwma && isVwBot,
+        cfg.enableVwmaPct && cfg.alertsConfl && conflTop,
+        cfg.enableVwmaPct && cfg.alertsConfl && conflBot,
+      ];
+      flags.forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      });
+      if (finalBg !== null) s.bgColors.push({ time: b.time, color: finalBg });
+
+      s.plot0[i] = { time: b.time, value: priceOut, color: '#5448C8' };
+      s.plot1[i] = { time: b.time, value: cfg.enableVwmaPct ? vwOut : NaN, color: '#548687' };
+      s.bandColors[i] = cfg.bandFillColor;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // Working band lines, rounded to 6 decimals
+      const topLine = math.round((minusOneToOne ? cfg.highThresh / 50.0 - 1.0 : cfg.highThresh) * 1e6) / 1e6;
+      const botLine = math.round((minusOneToOne ? cfg.lowThresh / 50.0 - 1.0 : cfg.lowThresh) * 1e6) / 1e6;
+      const midLine = minusOneToOne ? 0.0 : 50.0;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: topLine, options: { title: 'Top', color: '#A53860', linestyle: 'dashed' } },
+          { value: botLine, options: { title: 'Bot', color: '#4D8B31', linestyle: 'dashed' } },
+          { value: midLine, options: { title: 'Mid', color: '#423E3B', linestyle: 'dashed' } },
+        ],
+        fills: [
+          // fill(h_top, h_bot, band_fill_color)
+          { plot1: 'hline_top', plot2: 'hline_bot', options: { color: cfg.bandFillColor },
+            colors: s.bandColors.slice() },
+        ],
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PercentileRankOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<PercentileRankOscillatorInputs> = {},
 ): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const len = Math.max(3, Math.min(cfg.lookback, 500));
-  const minusOneToOne = cfg.outputScale === '-1..+1';
-  const mapToOut = (x: number) => (minusOneToOne ? x / 50.0 - 1.0 : x);
-  const smoothFn = (a: number[]) => (cfg.smooth > 1 ? A(ta.rma(S(a), cfg.smooth)) : a);
-
-  const mid = bars.map((b) => (b.high + b.low) / 2.0);
-
-  // Price percentile
-  const pricePct = bars.map((_b, i) => rollingPercentile(mid, len, i));
-  const priceOut = smoothFn(pricePct).map(mapToOut);
-
-  // VWMA percentile: percentile of the deviation mid - vwma(mid)
-  let vwmaPct: number[] = new Array<number>(n).fill(0.0);
-  let vwOut: number[] = new Array<number>(n).fill(0.0);
-  if (cfg.enableVwmaPct) {
-    const vwlen = cfg.vwmaLenSame ? len : Math.max(1, cfg.vwmaLenCustom);
-    const vwmaMid = A(ta.vwma(S(mid), vwlen, S(bars.map((b) => b.volume ?? NaN))));
-    const disp = mid.map((m, i) => m - vwmaMid[i]);
-    vwmaPct = bars.map((_b, i) => rollingPercentile(disp, len, i));
-    vwOut = smoothFn(vwmaPct).map(mapToOut);
-  }
-
-  // Background: confluence > price > VWMA
-  const bgColors: BgColorData[] = [];
-  const flags: boolean[][] = [[], [], [], [], [], []];
-  for (let i = 0; i < n; i++) {
-    const isPriceTop = ge(pricePct[i], cfg.highThresh);
-    const isPriceBot = le(pricePct[i], cfg.lowThresh);
-    const isVwTop = cfg.enableVwmaPct ? ge(vwmaPct[i], cfg.highThresh) : false;
-    const isVwBot = cfg.enableVwmaPct ? le(vwmaPct[i], cfg.lowThresh) : false;
-    const conflTop = cfg.enableVwmaPct && isPriceTop && isVwTop;
-    const conflBot = cfg.enableVwmaPct && isPriceBot && isVwBot;
-    const bgPrice = (isPriceTop || isPriceBot) && cfg.fillExtremes && cfg.alertsPrice ? (isPriceTop ? cfg.topColor : cfg.botColor) : null;
-    const bgVw = (isVwTop || isVwBot) && cfg.fillExtremes && cfg.alertsVwma ? (isVwTop ? cfg.topColor : cfg.botColor) : null;
-    const bgConfl = (conflTop || conflBot) && cfg.fillExtremes && cfg.alertsConfl ? (conflTop ? cfg.topColor : cfg.botColor) : null;
-    const finalBg = bgConfl ?? bgPrice ?? bgVw;
-    flags[0].push(cfg.alertsPrice && isPriceTop);
-    flags[1].push(cfg.alertsPrice && isPriceBot);
-    flags[2].push(cfg.enableVwmaPct && cfg.alertsVwma && isVwTop);
-    flags[3].push(cfg.enableVwmaPct && cfg.alertsVwma && isVwBot);
-    flags[4].push(cfg.enableVwmaPct && cfg.alertsConfl && conflTop);
-    flags[5].push(cfg.enableVwmaPct && cfg.alertsConfl && conflBot);
-    if (finalBg !== null) bgColors.push({ time: bars[i].time, color: finalBg });
-  }
-
-  // Working band lines, rounded to 6 decimals
-  const topLine = math.round((minusOneToOne ? cfg.highThresh / 50.0 - 1.0 : cfg.highThresh) * 1e6) / 1e6;
-  const botLine = math.round((minusOneToOne ? cfg.lowThresh / 50.0 - 1.0 : cfg.lowThresh) * 1e6) / 1e6;
-  const midLine = minusOneToOne ? 0.0 : 50.0;
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: priceOut[i], color: '#5448C8' })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.enableVwmaPct ? vwOut[i] : NaN, color: '#548687' })),
-    },
-    hlines: [
-      { value: topLine, options: { title: 'Top', color: '#A53860', linestyle: 'dashed' } },
-      { value: botLine, options: { title: 'Bot', color: '#4D8B31', linestyle: 'dashed' } },
-      { value: midLine, options: { title: 'Mid', color: '#423E3B', linestyle: 'dashed' } },
-    ],
-    fills: [
-      // fill(h_top, h_bot, band_fill_color)
-      { plot1: 'hline_top', plot2: 'hline_bot', options: { color: cfg.bandFillColor },
-        colors: new Array<string>(n).fill(cfg.bandFillColor) },
-    ],
-    bgColors,
-    alerts: alertStates(alertConditions, bars, flags),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -242,6 +288,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const PercentileRankOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -21,13 +21,14 @@
  */
 
 import {
-  ta, str, color, math as pmath, getSourceSeries, Series,
+  taStep, str, color, math as pmath,
   type Bar, type IndicatorResult, type InputConfig, type PlotConfig, type ShapeConfig, type SourceType,
 } from 'oakscriptjs';
 import type { LabelData, LineDrawingData, MarkerData } from '../types';
 import { mintickOf, type ChartContext } from '../chart-context';
 import { timeAfterLastBar } from '../anchor-period';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { StudyDrawingKind } from '../style-outputs';
 
 export interface ExtremeTrendReversalPointsInputs {
@@ -133,129 +134,229 @@ function arrayAvg(src: number[]): number {
   return c > 0 ? s / c : NaN;
 }
 
+/**
+ * ta.percentile_nearest_rank(source, length, percentage) for several percentages of one source, one bar at a time,
+ * with the operations of the oakscriptjs array function (same values): a sorted window of the last `length` values
+ * (a new value goes before the first value not below it), na before bar `length - 1`.
+ */
+class NearestRankStep {
+  private values: number[] = [];
+  private bars: number[] = [];
+  private pending: { values: number[]; bars: number[] } | null = null;
+  private readonly ranks: number[];
+
+  constructor(private readonly length: number, percentages: number[]) {
+    this.ranks = percentages.map((p) => Math.min(length, Math.max(1, Math.ceil((p / 100) * length))));
+  }
+
+  /** The percentiles on bar `i` (one per percentage) */
+  step(i: number, v: number): number[] {
+    const values = this.values.slice();
+    const bars = this.bars.slice();
+    let k = 0;
+    while (k < values.length && !(values[k] >= v)) k++;
+    values.splice(k, 0, v);
+    bars.splice(k, 0, i);
+    if (i >= this.length) {
+      const old = bars.indexOf(i - this.length);
+      values.splice(old, 1);
+      bars.splice(old, 1);
+    }
+    this.pending = { values, bars };
+    return this.ranks.map((rank) => (i < this.length - 1 ? NaN : values[rank - 1]));
+  }
+
+  commit(): void {
+    if (!this.pending) return;
+    this.values = this.pending.values;
+    this.bars = this.pending.bars;
+    this.pending = null;
+  }
+}
+
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[]; labels: LabelData[]; lines: LineDrawingData[] };
+type MaStep = { step(v: number): number; commit(): void };
+
+interface EtrpVars {
+  /** matrix.new<float>(1, level + 1, source): rows newest first (replaced on each bar, rows never changed) */
+  mtx: readonly (readonly number[])[];
+  /** `var float ma = ta.tr` inside arrayutils.ma: one variable for the call site of the loop; ta.tr of bar 0 is na */
+  arrMa: number;
+  /** The row of the bar */
+  lastRow: readonly number[];
+}
+
+interface EtrpRun extends BarRunState<EtrpVars> {
+  ranks: NearestRankStep;
+  ma: MaStep;
+  crossUnder: ReturnType<typeof taStep.crossunder>;
+  crossOver: ReturnType<typeof taStep.crossover>;
+  strength: number[];
+  bull: boolean[];
+  bear: boolean[];
+  plots: Point[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<ExtremeTrendReversalPointsInputs>): BarStudy<EtrpRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { type, length, level, history } = cfg;
+  const value = barSource(cfg.source);
+  const maxHistory = length - 1;
+  const kEma = 2 / (length + 1);
+  const maxStrength = (level * (level + 1)) / 2;
+  const lag = cfg.realTimeAlerts ? 0 : 1;
+  const maStep = (): MaStep => {
+    if (type === 'ema') return taStep.ema(length);
+    if (type === 'rma') return taStep.rma(length);
+    const m = type === 'wma' ? taStep.wma() : taStep.sma();
+    return { step: (v) => m.step(v, length), commit: () => m.commit() };
+  };
+  return {
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const s: EtrpRun = {
+        ranks: new NearestRankStep(history, [
+          50 - cfg.minMaxRangePercentile, 50 + cfg.minMaxRangePercentile,
+          50 - cfg.extremeMinMaxRangePercentile, 50 + cfg.extremeMinMaxRangePercentile,
+        ]),
+        ma: maStep(), crossUnder: taStep.crossunder(), crossOver: taStep.crossover(),
+        strength: [], bull: [], bear: [], plots: Array.from({ length: 7 }, () => []), markers: [],
+        flags: [[], []], times: [[], []],
+        steps: [], vars: { mtx: [], arrMa: NaN, lastRow: [] }, lists: [], series: [],
+      };
+      s.steps = [s.ranks, s.ma, s.crossUnder, s.crossOver];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.strength, s.bull, s.bear, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const time = bars[i].time;
+      const src = value(bars[i]) ?? NaN;
+      // matrix.new<float>(1, level + 1, source) on the first bar
+      if (i === 0) v.mtx = [new Array(level + 1).fill(src)];
+      const mtx = v.mtx;
+      const row: number[] = [src];
+      if (type === 'ema') {
+        for (let c = 1; c <= level; c++) row.push(row[c - 1] * kEma + (1 - kEma) * mtx[0][c]);
+      } else if (type === 'rma') {
+        for (let c = 1; c <= level; c++) row.push((mtx[0][c] * (length - 1) + row[c - 1]) / length);
+      } else {
+        for (let c = 1; c <= level; c++) {
+          const tmp = [row[c - 1], ...mtx.map((r) => r[c - 1])];
+          if (tmp.length >= length) {
+            const sliced = tmp.slice(0, length);
+            v.arrMa = type === 'sma' ? arrayAvg(sliced) : arrayWma(sliced, length);
+          }
+          row.push(v.arrMa);
+        }
+      }
+      // _matrix.unshift(maMatrix, row, maxHistory)
+      let next = [row, ...mtx];
+      if (next.length > maxHistory) next = next.slice(0, next.length - 1);
+      v.mtx = next;
+      v.lastRow = row;
+
+      let st = 0;
+      for (let a = 0; a <= level; a++) {
+        for (let b = a + 1; b <= level; b++) if (gt(row[a], row[b])) st++;
+      }
+      s.strength[i] = st;
+      const [minRange, maxRange, extremeMinRange, extremeMaxRange] = s.ranks.step(i, st).map((x) => x ?? NaN);
+
+      const ma = s.ma.step(src) ?? NaN;
+      const crossUnder = s.crossUnder.step(src, ma);
+      const crossOver = s.crossOver.step(src, ma);
+      const bull = i > 0 && s.strength[i - 1] === maxStrength && !!crossUnder;
+      const bear = i > 0 && s.strength[i - 1] === 0 && !!crossOver;
+      s.bull[i] = bull;
+      s.bear[i] = bear;
+
+      const p = s.plots;
+      p[0][i] = { time, value: st };
+      p[1][i] = { time, value: minRange };
+      p[2][i] = { time, value: maxRange };
+      p[3][i] = { time, value: extremeMinRange };
+      p[4][i] = { time, value: extremeMaxRange };
+      p[5][i] = {
+        time,
+        value: st > extremeMaxRange ? 2 : st > maxRange ? 1 : st > minRange ? 0 : st < extremeMinRange ? -1 : -2,
+      };
+      const c = st > extremeMaxRange ? GREEN : st > maxRange ? LIME : st < extremeMinRange ? RED
+        : st < minRange ? ORANGE : SILVER;
+      p[6][i] = { time, value: ma, color: c };
+
+      if (bull) s.markers.push({ id: 'shape0', time, position: 'aboveBar', shape: 'triangleDown', color: RED, size: 'small' });
+      if (bear) s.markers.push({ id: 'shape1', time, position: 'belowBar', shape: 'triangleUp', color: GREEN, size: 'small' });
+
+      // the alerts on the bar of the signal (real time) or on the bar after it
+      [s.bull, s.bear].forEach((f, k) => {
+        const on = i >= lag ? f[i - lag] : false;
+        s.flags[k][i] = on;
+        if (on) s.times[k].push(time as number);
+      });
+    },
+    result(s, bars, chart) {
+      const n = bars.length;
+      // Last bar: drawingutils.draw_labelled_line(value, type + '(' + i + ')', levelColor, levelColor, 0, true, ...):
+      // a solid line from bar_index to bar_index + 20 and a text-only label at bar_index + 10
+      const lines: LineDrawingData[] = [];
+      const labels: LabelData[] = [];
+      if (n > 0) {
+        const lastRow = s.vars.lastRow;
+        const tick = mintickOf(chart);
+        const t0 = bars[n - 1].time;
+        const t10 = timeAfterLastBar(bars, 10, chart);
+        const t20 = timeAfterLastBar(bars, 20, chart);
+        for (let k = 1; k <= level; k++) {
+          const levelColor = color.from_gradient(k, 1, level, GREEN, RED);
+          const y = lastRow[k];
+          lines.push({ time1: t0, price1: y, time2: t20, price2: y, color: levelColor, style: 'solid' });
+          labels.push({
+            time: t10, price: y, text: `${type}(${k})\n${str.tostring(pmath.round_to_mintick(y, tick))}`,
+            style: 'none', textColor: levelColor, size: 'normal', color: String(color.new(levelColor, 100)),
+          });
+        }
+      }
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(),
+          plot1: p[1].slice(),
+          plot2: p[2].slice(),
+          plot3: p[3].slice(),
+          plot4: p[4].slice(),
+          plot5: p[5].slice(),
+          plot6: p[6].slice(),
+        },
+        markers: s.markers.slice(),
+        lines,
+        labels,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ExtremeTrendReversalPointsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<ExtremeTrendReversalPointsInputs> = {},
   chart?: ChartContext,
 ): IndicatorResult & { alerts: AlertConditionState[]; labels: LabelData[]; lines: LineDrawingData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { type, length, level, history } = cfg;
-  const n = bars.length;
-  const srcSeries = getSourceSeries(bars, cfg.source);
-  const src = srcSeries.toArray().map((v) => v ?? NaN);
-  const maxHistory = length - 1;
-
-  // matrix.new<float>(1, level + 1, source): rows newest first
-  let mtx: number[][] = n > 0 ? [new Array(level + 1).fill(src[0])] : [];
-  // `var float ma = ta.tr` inside arrayutils.ma: one variable for the call site of the loop; ta.tr of bar 0 is na
-  let arrMa = NaN;
-  const kEma = 2 / (length + 1);
-
-  const strength = new Array<number>(n).fill(0);
-  let lastRow: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const row: number[] = [src[i]];
-    if (type === 'ema') {
-      for (let c = 1; c <= level; c++) row.push(row[c - 1] * kEma + (1 - kEma) * mtx[0][c]);
-    } else if (type === 'rma') {
-      for (let c = 1; c <= level; c++) row.push((mtx[0][c] * (length - 1) + row[c - 1]) / length);
-    } else {
-      for (let c = 1; c <= level; c++) {
-        const tmp = [row[c - 1], ...mtx.map((r) => r[c - 1])];
-        if (tmp.length >= length) {
-          const sliced = tmp.slice(0, length);
-          arrMa = type === 'sma' ? arrayAvg(sliced) : arrayWma(sliced, length);
-        }
-        row.push(arrMa);
-      }
-    }
-    // _matrix.unshift(maMatrix, row, maxHistory)
-    mtx.unshift(row);
-    if (mtx.length > maxHistory) mtx = mtx.slice(0, mtx.length - 1);
-
-    let s = 0;
-    for (let a = 0; a <= level; a++) {
-      for (let b = a + 1; b <= level; b++) if (gt(row[a], row[b])) s++;
-    }
-    strength[i] = s;
-    lastRow = row;
-  }
-
-  const S = new Series(bars, (_, i) => strength[i]);
-  const A = (x: Series) => x.toArray().map((v) => v ?? NaN);
-  const minRange = A(ta.percentile_nearest_rank(S, history, 50 - cfg.minMaxRangePercentile));
-  const maxRange = A(ta.percentile_nearest_rank(S, history, 50 + cfg.minMaxRangePercentile));
-  const extremeMinRange = A(ta.percentile_nearest_rank(S, history, 50 - cfg.extremeMinMaxRangePercentile));
-  const extremeMaxRange = A(ta.percentile_nearest_rank(S, history, 50 + cfg.extremeMinMaxRangePercentile));
-  const maxStrength = (level * (level + 1)) / 2;
-
-  const maSeries = type === 'ema' ? ta.ema(srcSeries, length)
-    : type === 'rma' ? ta.rma(srcSeries, length)
-      : type === 'wma' ? ta.wma(srcSeries, length) : ta.sma(srcSeries, length);
-  const ma = A(maSeries);
-  const crossUnder = A(ta.crossunder(srcSeries, maSeries));
-  const crossOver = A(ta.crossover(srcSeries, maSeries));
-
-  const bull = bars.map((_, i) => i > 0 && strength[i - 1] === maxStrength && !!crossUnder[i]);
-  const bear = bars.map((_, i) => i > 0 && strength[i - 1] === 0 && !!crossOver[i]);
-
-  const pts = (v: number[]) => bars.map((b, i) => ({ time: b.time, value: v[i] }));
-  const plot5 = strength.map((s, i) => (s > extremeMaxRange[i] ? 2 : s > maxRange[i] ? 1 : s > minRange[i] ? 0
-    : s < extremeMinRange[i] ? -1 : -2));
-  const plot6 = bars.map((b, i) => {
-    const s = strength[i];
-    const c = s > extremeMaxRange[i] ? GREEN : s > maxRange[i] ? LIME : s < extremeMinRange[i] ? RED
-      : s < minRange[i] ? ORANGE : SILVER;
-    return { time: b.time, value: ma[i], color: c };
-  });
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    if (bull[i]) markers.push({ id: 'shape0', time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: RED, size: 'small' });
-    if (bear[i]) markers.push({ id: 'shape1', time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: GREEN, size: 'small' });
-  }
-
-  // Last bar: drawingutils.draw_labelled_line(value, type + '(' + i + ')', levelColor, levelColor, 0, true, ...):
-  // a solid line from bar_index to bar_index + 20 and a text-only label at bar_index + 10
-  const lines: LineDrawingData[] = [];
-  const labels: LabelData[] = [];
-  if (n > 0) {
-    const tick = mintickOf(chart);
-    const t0 = bars[n - 1].time;
-    const t10 = timeAfterLastBar(bars, 10, chart);
-    const t20 = timeAfterLastBar(bars, 20, chart);
-    for (let k = 1; k <= level; k++) {
-      const levelColor = color.from_gradient(k, 1, level, GREEN, RED);
-      const y = lastRow[k];
-      lines.push({ time1: t0, price1: y, time2: t20, price2: y, color: levelColor, style: 'solid' });
-      labels.push({
-        time: t10, price: y, text: `${type}(${k})\n${str.tostring(pmath.round_to_mintick(y, tick))}`,
-        style: 'none', textColor: levelColor, size: 'normal', color: String(color.new(levelColor, 100)),
-      });
-    }
-  }
-
-  const lag = cfg.realTimeAlerts ? 0 : 1;
-  const shift = (f: boolean[]) => f.map((_, i) => (i >= lag ? f[i - lag] : false));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: pts(strength),
-      plot1: pts(minRange),
-      plot2: pts(maxRange),
-      plot3: pts(extremeMinRange),
-      plot4: pts(extremeMaxRange),
-      plot5: pts(plot5),
-      plot6,
-    },
-    markers,
-    lines,
-    labels,
-    alerts: alertStates(alertConditions, bars, [shift(bull), shift(bear)]),
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const ExtremeTrendReversalPoints = {
-  calculate, metadata, defaultInputs, inputConfig, plotConfig, shapeConfig, alertConditions, drawingKinds,
+  calculate, createRun, metadata,
+ defaultInputs, inputConfig, plotConfig, shapeConfig, alertConditions, drawingKinds,
 };

@@ -28,9 +28,10 @@
  * Original notice: © BigBeluga
  */
 
-import { ta, Series, color, str, barTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, str, barTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BoxData, LabelData, LineDrawingData, LinefillData } from '../types';
 import { foregroundColorOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LiquidityThermalMapInputs {
   /** Profile Depth: the number of bars of the profile (100, 300 or 600) */
@@ -112,158 +113,209 @@ const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
 type Point = { time: number; value: number };
 
+type Result = IndicatorResult & { lines: LineDrawingData[]; boxes: BoxData[]; labels: LabelData[]; linefills: LinefillData[] };
+
+/** The levels of one bar, read again on the last bar */
+interface LevelBar {
+  H: number;
+  L: number;
+  step: number;
+  levels: number[];
+  volBins: number[];
+  binMax: number;
+}
+
+interface ThermalVars {
+  /** The levels of the bar (the last bar's on the last bar) */
+  last: LevelBar | null;
+}
+
+interface ThermalRun extends BarRunState<ThermalVars> {
+  highest: ReturnType<typeof taStep.highest>;
+  lowest: ReturnType<typeof taStep.lowest>;
+  plots: Point[][];
+  fillColors: string[][];
+}
+
+function study(inputs: Partial<LiquidityThermalMapInputs>): BarStudy<ThermalRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { pocCol1, pocCol2, removeCol } = cfg;
+  const period = cfg.profileType === 'Shallow Profile' ? 100 : cfg.profileType === 'Balanced Profile' ? 300 : 600;
+  const min = cfg.sensitivityMode === 'High Contrast' ? 0.5 : cfg.sensitivityMode === 'Balanced' ? 0.25 : 0.0;
+  // calc_bars_count: the script runs on the last 1,500 bars only
+  let start = 0;
+
+  const inBand = (x: number, loww: number, upp: number) => ge(x, loww) && le(x, upp);
+  const gradient = (lv: LevelBar, b: Bar, number: number): string => {
+    const { open, high, low, close } = b;
+    const hl2 = (high + low) / 2;
+    const hlc3 = (high + low + close) / 3;
+    const val = lv.volBins[number] / lv.binMax;
+    const loww = lv.levels[number];
+    const upp = lv.levels[number + 1 > 29 ? 29 : number + 1];
+    let pocCol = le(close, loww) ? pocCol1 : pocCol2;
+    if (removeCol && (inBand(open, loww, upp) || inBand(close, loww, upp) || inBand(hl2, loww, upp) || inBand(hlc3, loww, upp))) {
+      pocCol = COLOR_NA;
+    }
+    const col = eq(lv.volBins[number], lv.binMax)
+      ? color.new(pocCol, 20)
+      : color.from_gradient(val, min, 1, COLOR_NA, color.new(pocCol, 50));
+    return col === null || col === undefined || Number.isNaN(col as unknown as number) ? 'transparent' : String(col);
+  };
+
+  return {
+    // the first calculated bar follows the bar count
+    key: (bars) => String(Math.max(0, bars.length - CALC_BARS)),
+    init(bars) {
+      start = Math.max(0, bars.length - CALC_BARS);
+      const s: ThermalRun = {
+        highest: taStep.highest(), lowest: taStep.lowest(),
+        plots: Array.from({ length: BINS + 1 }, () => []), fillColors: Array.from({ length: BINS }, () => []),
+        steps: [], vars: { last: null }, lists: [], series: [],
+      };
+      s.steps = [s.highest, s.lowest];
+      s.series = [...s.plots, ...s.fillColors];
+      return s;
+    },
+    bar(s, bi, bars) {
+      const b = bars[bi];
+      const time = b.time;
+      if (bi < start) {
+        for (const p of s.plots) p[bi] = { time, value: NaN };
+        for (const f of s.fillColors) f[bi] = 'transparent';
+        return;
+      }
+      const H = s.highest.step(b.high, period) ?? NaN;
+      const L = s.lowest.step(b.low, period) ?? NaN;
+      const step = (H - L) / BINS;
+
+      const levels: number[] = new Array(BINS).fill(NaN);
+      const volBins: number[] = new Array(BINS).fill(0);
+      for (let i = 0; i < BINS; i++) {
+        const ll = L + step * i;
+        const mid = ll + step / 2;
+        levels[i] = ll;
+        for (let k = 0; k <= period - 1; k++) {
+          // close[k], volume[k]: na before the first calculated bar
+          const c = bi - k >= start ? bars[bi - k].close : NaN;
+          if (lt(Math.abs(c - mid), step)) volBins[i] += bi - k >= start ? bars[bi - k].volume ?? NaN : NaN;
+        }
+      }
+      // array.max skips na values
+      const binValues = volBins.filter((v) => !Number.isNaN(v));
+      const binMax = binValues.length > 0 ? Math.max(...binValues) : NaN;
+      const lv: LevelBar = { H, L, step, levels, volBins, binMax };
+      s.vars.last = lv;
+
+      for (let i = 0; i < BINS; i++) s.plots[i][bi] = { time, value: levels[i] };
+      s.plots[BINS][bi] = { time, value: H };
+      for (let i = 0; i < BINS; i++) s.fillColors[i][bi] = gradient(lv, b, i);
+    },
+    result(s, bars, chart) {
+      const n = bars.length;
+      const lines: LineDrawingData[] = [];
+      const boxes: BoxData[] = [];
+      const labels: LabelData[] = [];
+      const linefills: LinefillData[] = [];
+      const lv = s.vars.last;
+      if (n > 0 && lv) {
+        // chart.fg_color
+        const chartFg = foregroundColorOf(chart);
+        // barstate.islast: labels, the ladder of boxes, the bands after the last bar
+        const b = bars[n - 1];
+        const { time, close } = b;
+        const { H, L, step, levels, volBins, binMax } = lv;
+        const barIndex = n - 1;
+        const lastIdx = BINS - 1;
+        let buyVol = 0.0;
+        let sellVol = 0.0;
+        let splitIdx = Math.trunc(Math.floor((close - L) / step));
+        splitIdx = Math.max(0, Math.min(lastIdx, splitIdx));
+        for (let i = 0; i <= lastIdx; i++) {
+          const mid = L + step * i + step / 2;
+          if (lt(mid, close)) buyVol += volBins[i];
+          else sellVol += volBins[i];
+        }
+        const totalVol = buyVol + sellVol;
+        const buyPct = gt(totalVol, 0) ? buyVol / totalVol : 0;
+        const sellPct = gt(totalVol, 0) ? sellVol / totalVol : 0;
+        const imbalance = gt(sellVol, 0) ? buyVol - sellVol : NaN;
+        const vol = (v: number) => str.tostring(v, 'volume');
+        const labelTime = barTime(bars, barIndex + 40);
+
+        labels.push({
+          time: labelTime, price: L + (close - L) / 2,
+          text: `BUY LIQ\n${vol(buyVol)}\n${str.tostring(buyPct * 100, '#.0')}%`,
+          style: 'label_left', textColor: pocCol2, color: COLOR_NA,
+          tooltip: `Liquidity Below Price\n\nTotal Volume Below Current Price:\n${vol(buyVol)}\n\nRepresents accumulated volume Below Current Price`,
+        });
+        labels.push({
+          time: labelTime, price: close + (H - close) / 2,
+          text: `SELL LIQ\n${vol(sellVol)}\n${str.tostring(sellPct * 100, '#.0')}%`,
+          style: 'label_left', textColor: pocCol1, color: COLOR_NA,
+          tooltip: `Liquidity Above Price\n\nTotal Volume Above Current Price:\n${vol(sellVol)}\n\nRepresents accumulated volume Above Current Price`,
+        });
+        labels.push({
+          time: labelTime, price: H + step,
+          text: `Imbalance: ${vol(imbalance)}`,
+          style: 'label_left', textColor: chartFg, color: COLOR_NA,
+          tooltip: `Liquidity Imbalance\n\nDifference Between Below and Above Liquidity:\n${vol(imbalance)}\n\nPositive → More liquidity below price\nNegative → More liquidity above price.`,
+        });
+
+        for (let i = 0; i <= lastIdx; i++) {
+          const ll = L + step * i;
+          const hh = ll + step;
+          const mid = ll + step / 2;
+          const baseCol = gt(close, mid) ? pocCol2 : pocCol1;
+          const dist = Math.abs(i - splitIdx);
+          const maxDist = Math.max(splitIdx, lastIdx - splitIdx);
+          const fade = maxDist > 0 ? dist / maxDist : 0.0;
+          const alpha = Math.trunc(10 + fade * 85);
+          const isMax = eq(volBins[i], binMax);
+          // Without coordinates (no highest / lowest yet) the box is not drawn
+          if (Number.isNaN(hh) || Number.isNaN(ll)) continue;
+          boxes.push({
+            time1: barTime(bars, barIndex + (isMax ? 10 : 25)), price1: hh, time2: barTime(bars, barIndex + 35), price2: ll,
+            bgColor: isMax ? baseCol : String(color.new(baseCol, alpha)), borderColor: 'transparent', textColor: '#FFFFFF',
+            ...(isMax ? { text: `>${vol(binMax)}<` } : {}),
+          });
+        }
+
+        for (let i = 0; i <= 29; i++) {
+          const level1 = levels[i];
+          const level2 = levels[i + 1];
+          if (Number.isNaN(level1) || Number.isNaN(level2)) continue;
+          const l1: LineDrawingData = { time1: time, price1: level1, time2: barTime(bars, barIndex + 10), price2: level1, color: COLOR_NA };
+          const l2: LineDrawingData = { time1: time, price1: level2, time2: barTime(bars, barIndex + 10), price2: level2, color: COLOR_NA };
+          lines.push(l1, l2);
+          linefills.push({ line1: l1, line2: l2, color: gradient(lv, b, i) });
+        }
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: Object.fromEntries(s.plots.map((p, k) => [`plot${k}`, p.slice()])),
+        fills: s.fillColors.map((colors, k) => ({ plot1: `plot${k}`, plot2: `plot${k + 1}`, colors: colors.slice() })),
+        lines,
+        boxes,
+        labels,
+        linefills,
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LiquidityThermalMapInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<LiquidityThermalMapInputs> = {},
   chart?: ChartContext,
 ): IndicatorResult & { lines: LineDrawingData[]; boxes: BoxData[]; labels: LabelData[]; linefills: LinefillData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { pocCol1, pocCol2, removeCol } = cfg;
-  const period = cfg.profileType === 'Shallow Profile' ? 100 : cfg.profileType === 'Balanced Profile' ? 300 : 600;
-  const min = cfg.sensitivityMode === 'High Contrast' ? 0.5 : cfg.sensitivityMode === 'Balanced' ? 0.25 : 0.0;
-  // chart.fg_color
-  const chartFg = foregroundColorOf(chart);
-  const n = bars.length;
-
-  // calc_bars_count: the script runs on the last 1,500 bars only
-  const start = Math.max(0, n - CALC_BARS);
-  const calcBars = bars.slice(start);
-  const m = calcBars.length;
-  const H = ta.highest(Series.fromArray(calcBars, calcBars.map((b) => b.high)), period).toArray().map((v) => v ?? NaN);
-  const L = ta.lowest(Series.fromArray(calcBars, calcBars.map((b) => b.low)), period).toArray().map((v) => v ?? NaN);
-
-  const plots: Point[][] = Array.from({ length: BINS + 1 }, () => []);
-  const fillColors: string[][] = Array.from({ length: BINS }, () => []);
-  for (let i = 0; i < start; i++) {
-    for (const p of plots) p.push({ time: bars[i].time, value: NaN });
-    for (const f of fillColors) f.push('transparent');
-  }
-
-  const lines: LineDrawingData[] = [];
-  const boxes: BoxData[] = [];
-  const labels: LabelData[] = [];
-  const linefills: LinefillData[] = [];
-
-  for (let j = 0; j < m; j++) {
-    const { time, open, high, low, close } = calcBars[j];
-    const hl2 = (high + low) / 2;
-    const hlc3 = (high + low + close) / 3;
-    const step = (H[j] - L[j]) / BINS;
-
-    const levels: number[] = new Array(BINS).fill(NaN);
-    const volBins: number[] = new Array(BINS).fill(0);
-    for (let i = 0; i < BINS; i++) {
-      const ll = L[j] + step * i;
-      const mid = ll + step / 2;
-      levels[i] = ll;
-      for (let k = 0; k <= period - 1; k++) {
-        // close[k], volume[k]: na before the first calculated bar
-        const c = j - k >= 0 ? calcBars[j - k].close : NaN;
-        if (lt(Math.abs(c - mid), step)) volBins[i] += j - k >= 0 ? calcBars[j - k].volume ?? NaN : NaN;
-      }
-    }
-    // array.max skips na values
-    const binValues = volBins.filter((v) => !Number.isNaN(v));
-    const binMax = binValues.length > 0 ? Math.max(...binValues) : NaN;
-
-    const inBand = (x: number, loww: number, upp: number) => ge(x, loww) && le(x, upp);
-    const gradient = (number: number): string => {
-      const val = volBins[number] / binMax;
-      const loww = levels[number];
-      const upp = levels[number + 1 > 29 ? 29 : number + 1];
-      let pocCol = le(close, loww) ? pocCol1 : pocCol2;
-      if (removeCol && (inBand(open, loww, upp) || inBand(close, loww, upp) || inBand(hl2, loww, upp) || inBand(hlc3, loww, upp))) {
-        pocCol = COLOR_NA;
-      }
-      const col = eq(volBins[number], binMax)
-        ? color.new(pocCol, 20)
-        : color.from_gradient(val, min, 1, COLOR_NA, color.new(pocCol, 50));
-      return col === null || col === undefined || Number.isNaN(col as unknown as number) ? 'transparent' : String(col);
-    };
-
-    for (let i = 0; i < BINS; i++) plots[i].push({ time, value: levels[i] });
-    plots[BINS].push({ time, value: H[j] });
-    for (let i = 0; i < BINS; i++) fillColors[i].push(gradient(i));
-
-    if (j !== m - 1) continue;
-
-    // barstate.islast: labels, the ladder of boxes, the bands after the last bar
-    const barIndex = start + j;
-    const lastIdx = BINS - 1;
-    let buyVol = 0.0;
-    let sellVol = 0.0;
-    let splitIdx = Math.trunc(Math.floor((close - L[j]) / step));
-    splitIdx = Math.max(0, Math.min(lastIdx, splitIdx));
-    for (let i = 0; i <= lastIdx; i++) {
-      const mid = L[j] + step * i + step / 2;
-      if (lt(mid, close)) buyVol += volBins[i];
-      else sellVol += volBins[i];
-    }
-    const totalVol = buyVol + sellVol;
-    const buyPct = gt(totalVol, 0) ? buyVol / totalVol : 0;
-    const sellPct = gt(totalVol, 0) ? sellVol / totalVol : 0;
-    const imbalance = gt(sellVol, 0) ? buyVol - sellVol : NaN;
-    const vol = (v: number) => str.tostring(v, 'volume');
-    const labelTime = barTime(bars, barIndex + 40);
-
-    labels.push({
-      time: labelTime, price: L[j] + (close - L[j]) / 2,
-      text: `BUY LIQ\n${vol(buyVol)}\n${str.tostring(buyPct * 100, '#.0')}%`,
-      style: 'label_left', textColor: pocCol2, color: COLOR_NA,
-      tooltip: `Liquidity Below Price\n\nTotal Volume Below Current Price:\n${vol(buyVol)}\n\nRepresents accumulated volume Below Current Price`,
-    });
-    labels.push({
-      time: labelTime, price: close + (H[j] - close) / 2,
-      text: `SELL LIQ\n${vol(sellVol)}\n${str.tostring(sellPct * 100, '#.0')}%`,
-      style: 'label_left', textColor: pocCol1, color: COLOR_NA,
-      tooltip: `Liquidity Above Price\n\nTotal Volume Above Current Price:\n${vol(sellVol)}\n\nRepresents accumulated volume Above Current Price`,
-    });
-    labels.push({
-      time: labelTime, price: H[j] + step,
-      text: `Imbalance: ${vol(imbalance)}`,
-      style: 'label_left', textColor: chartFg, color: COLOR_NA,
-      tooltip: `Liquidity Imbalance\n\nDifference Between Below and Above Liquidity:\n${vol(imbalance)}\n\nPositive → More liquidity below price\nNegative → More liquidity above price.`,
-    });
-
-    for (let i = 0; i <= lastIdx; i++) {
-      const ll = L[j] + step * i;
-      const hh = ll + step;
-      const mid = ll + step / 2;
-      const baseCol = gt(close, mid) ? pocCol2 : pocCol1;
-      const dist = Math.abs(i - splitIdx);
-      const maxDist = Math.max(splitIdx, lastIdx - splitIdx);
-      const fade = maxDist > 0 ? dist / maxDist : 0.0;
-      const alpha = Math.trunc(10 + fade * 85);
-      const isMax = eq(volBins[i], binMax);
-      // Without coordinates (no highest / lowest yet) the box is not drawn
-      if (Number.isNaN(hh) || Number.isNaN(ll)) continue;
-      boxes.push({
-        time1: barTime(bars, barIndex + (isMax ? 10 : 25)), price1: hh, time2: barTime(bars, barIndex + 35), price2: ll,
-        bgColor: isMax ? baseCol : String(color.new(baseCol, alpha)), borderColor: 'transparent', textColor: '#FFFFFF',
-        ...(isMax ? { text: `>${vol(binMax)}<` } : {}),
-      });
-    }
-
-    for (let i = 0; i <= 29; i++) {
-      const level1 = levels[i];
-      const level2 = levels[i + 1];
-      if (Number.isNaN(level1) || Number.isNaN(level2)) continue;
-      const l1: LineDrawingData = { time1: time, price1: level1, time2: barTime(bars, barIndex + 10), price2: level1, color: COLOR_NA };
-      const l2: LineDrawingData = { time1: time, price1: level2, time2: barTime(bars, barIndex + 10), price2: level2, color: COLOR_NA };
-      lines.push(l1, l2);
-      linefills.push({ line1: l1, line2: l2, color: gradient(i) });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: Object.fromEntries(plots.map((p, k) => [`plot${k}`, p])),
-    fills: fillColors.map((colors, k) => ({ plot1: `plot${k}`, plot2: `plot${k + 1}`, colors })),
-    lines,
-    boxes,
-    labels,
-    linefills,
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
-export const LiquidityThermalMap = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+export const LiquidityThermalMap = { calculate, createRun, metadata,
+ defaultInputs, inputConfig, plotConfig };

@@ -14,9 +14,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface StatisticalPriceDeviationIndexInputs {
   /** Lookback (median & MAD) */
@@ -125,32 +127,26 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
 /**
- * rolling_median_and_mad(src, n): avail = min(n, bar_index + 1) values nz(src[i]) (na counts as 0), sorted; the
- * median and the mean absolute deviation around it.
+ * rolling_median_and_mad(src, n) on bar b: avail = min(n, bar_index + 1) values nz(src[i]) (na counts as 0), sorted;
+ * the median and the mean absolute deviation around it.
  */
-function rollingMedianAndMad(src: number[], n: number): [number[], number[]] {
-  const med: number[] = new Array(src.length);
-  const mad: number[] = new Array(src.length);
-  for (let b = 0; b < src.length; b++) {
-    const avail = Math.min(n, b + 1);
-    const arr: number[] = [];
-    for (let i = 0; i <= avail - 1; i++) {
-      const v = src[b - i];
-      arr.push(Number.isFinite(v) ? v : 0);
-    }
-    arr.sort((x, y) => x - y);
-    let midVal = 0.0;
-    if (avail % 2 === 1) {
-      midVal = arr[Math.trunc(avail / 2)];
-    } else {
-      midVal = (arr[Math.trunc(avail / 2) - 1] + arr[Math.trunc(avail / 2)]) / 2.0;
-    }
-    let sumAbs = 0.0;
-    for (let j = 0; j <= avail - 1; j++) sumAbs += Math.abs(arr[j] - midVal);
-    med[b] = midVal;
-    mad[b] = sumAbs / Math.max(avail, 1);
+function rollingMedianAndMad(src: number[], n: number, b: number): [number, number] {
+  const avail = Math.min(n, b + 1);
+  const arr: number[] = [];
+  for (let i = 0; i <= avail - 1; i++) {
+    const v = src[b - i];
+    arr.push(Number.isFinite(v) ? v : 0);
   }
-  return [med, mad];
+  arr.sort((x, y) => x - y);
+  let midVal = 0.0;
+  if (avail % 2 === 1) {
+    midVal = arr[Math.trunc(avail / 2)];
+  } else {
+    midVal = (arr[Math.trunc(avail / 2) - 1] + arr[Math.trunc(avail / 2)]) / 2.0;
+  }
+  let sumAbs = 0.0;
+  for (let j = 0; j <= avail - 1; j++) sumAbs += Math.abs(arr[j] - midVal);
+  return [midVal, sumAbs / Math.max(avail, 1)];
 }
 
 /** tanh_map(x): (e - 1) / (e + 1) with e = exp(2 * clamp(x, -50, 50)) */
@@ -160,115 +156,160 @@ const tanhMap = (x: number) => {
   return (e - 1.0) / (e + 1.0);
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<StatisticalPriceDeviationIndexInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface SpdiRun extends BarRunState<Record<string, never>> {
+  priceRma: ReturnType<typeof taStep.rma> | null;
+  vwmaRma: ReturnType<typeof taStep.rma> | null;
+  vwmaMid: ReturnType<typeof taStep.vwma>;
+  since: ReturnType<typeof taStep.barssince>[];
+  mid: number[];
+  disp: number[];
+  plots: Point[][];
+  bandColors: string[];
+  flags: boolean[][];
+  times: number[][];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<StatisticalPriceDeviationIndexInputs>): BarStudy<SpdiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const tiny = 1e-9;
   const len = Math.max(3, Math.min(cfg.lenIn, 500));
   const { clipK, alpha, smooth } = cfg;
   const oneScale = cfg.outMode === '-1..+1';
-
-  const mid = bars.map((b) => (b.high + b.low) / 2.0);
+  const vwlen = cfg.vwmaLenSame ? len : Math.max(1, cfg.vwmaLenCustom);
+  const bandColor = cfg.fillBand ? cfg.bandFillColor : 'transparent';
+  const plotColors = [color.blue, color.green, String(color.new(color.blue, 80)), String(color.new(color.green, 80))];
+  const shows = [true, cfg.useVwmaLine, cfg.showPriceRaw, cfg.showVwmaRaw];
 
   /** z-score clipped to +-K, tanh mapping, optional RMA (ta.rma runs on every bar when smooth > 1) */
-  const oscillator = (x: number[]) => {
-    const [median, mad] = rollingMedianAndMad(x, len);
-    const zClipped = x.map((v, i) => Math.max(Math.min((v - median[i]) / Math.max(mad[i], tiny), clipK), -clipK));
-    const mapped = zClipped.map((z) => tanhMap(alpha * z));
-    const final = smooth > 1 ? A(ta.rma(S(mapped), smooth)) : mapped;
-    const out = final.map((v) => (oneScale ? v : (v + 1.0) * 50.0));
-    const zDisplay = zClipped.map((z) => (oneScale ? z : (z + clipK) * (100.0 / (2.0 * clipK))));
+  const oscillator = (x: number[], i: number, rma: SpdiRun['priceRma']) => {
+    const [median, mad] = rollingMedianAndMad(x, len, i);
+    const v = x[i];
+    const zClipped = Math.max(Math.min((v - median) / Math.max(mad, tiny), clipK), -clipK);
+    const mapped = tanhMap(alpha * zClipped);
+    const final = rma ? rma.step(mapped) : mapped;
+    const out = oneScale ? final : (final + 1.0) * 50.0;
+    const zDisplay = oneScale ? zClipped : (zClipped + clipK) * (100.0 / (2.0 * clipK));
     return { final, out, zDisplay };
   };
 
-  // PRICE MAD OSCILLATOR
-  const price = oscillator(mid);
-  // VWMA DISP OSCILLATOR: disp = mid - ta.vwma(mid, vwlen)
-  const vwlen = cfg.vwmaLenSame ? len : Math.max(1, cfg.vwmaLenCustom);
-  const vwmaMid = A(ta.vwma(S(mid), vwlen, S(bars.map((b) => b.volume ?? NaN))));
-  const vwma = oscillator(mid.map((m, i) => m - vwmaMid[i]));
-
-  // LEVELS
-  const midNum = oneScale ? 0.0 : 50.0;
-  const topNum = oneScale ? cfg.levelHigh : (cfg.levelHigh + 1.0) * 50.0;
-  const botNum = oneScale ? cfg.levelLow : (cfg.levelLow + 1.0) * 50.0;
-
-  // Confluence: extremes of the -1..+1 values
-  const priceCondTop = price.final.map((v) => ge(v, cfg.levelHigh));
-  const priceCondBot = price.final.map((v) => le(v, cfg.levelLow));
-  const vwmaCondTop = vwma.final.map((v) => ge(v, cfg.levelHigh));
-  const vwmaCondBot = vwma.final.map((v) => le(v, cfg.levelLow));
-  // checkWithin(cond, window) = window == 0 ? cond : (na(ta.barssince(cond)) ? false : ta.barssince(cond) <= window)
-  // (the second ta.barssince runs from the first true condition on, as the first one: same value)
-  const checkWithin = (cond: boolean[]) => {
-    if (cfg.confluenceWindow === 0) return cond;
-    const since = A(ta.barssince(S(cond.map((c) => (c ? 1 : 0)))));
-    return since.map((s) => !isNaN(s) && s <= cfg.confluenceWindow);
-  };
-  const priceTopOk = checkWithin(priceCondTop);
-  const priceBotOk = checkWithin(priceCondBot);
-  const vwmaTopOk = checkWithin(vwmaCondTop);
-  const vwmaBotOk = checkWithin(vwmaCondBot);
-
-  // final_bg: confluence > price > vwma
-  const bgColors: BgColorData[] = [];
-  const flags: boolean[][] = [[], [], [], [], [], []];
-  for (let i = 0; i < n; i++) {
-    const conflTop = cfg.confluenceEnable && priceTopOk[i] && vwmaTopOk[i];
-    const conflBot = cfg.confluenceEnable && priceBotOk[i] && vwmaBotOk[i];
-    const isVwmaTop = cfg.useVwmaLine && vwmaCondTop[i];
-    const isVwmaBot = cfg.useVwmaLine && vwmaCondBot[i];
-    // alertcondition(alerts_price_only and price_final >= level_high, ...) and the other five, in declaration order
-    flags[0].push(cfg.alertsPriceOnly && priceCondTop[i]);
-    flags[1].push(cfg.alertsPriceOnly && priceCondBot[i]);
-    flags[2].push(cfg.alertsVwmaOnly && isVwmaTop);
-    flags[3].push(cfg.alertsVwmaOnly && isVwmaBot);
-    flags[4].push(cfg.confluenceEnable && conflTop);
-    flags[5].push(cfg.confluenceEnable && conflBot);
-    let bg: string | null = null;
-    if (conflTop && cfg.confluenceEnable) bg = cfg.topColor;
-    else if (conflBot && cfg.confluenceEnable) bg = cfg.botColor;
-    else if (priceCondTop[i] && cfg.alertsPriceOnly) bg = cfg.topColor;
-    else if (priceCondBot[i] && cfg.alertsPriceOnly) bg = cfg.botColor;
-    else if (isVwmaTop && cfg.alertsVwmaOnly) bg = cfg.topColor;
-    else if (isVwmaBot && cfg.alertsVwmaOnly) bg = cfg.botColor;
-    if (bg) bgColors.push({ time: bars[i].time, color: bg });
-  }
-
-  const P = (vals: number[], show: boolean, c: string) =>
-    bars.map((b, i) => ({ time: b.time, value: show ? vals[i] : NaN, color: c }));
-  const bandColor = cfg.fillBand ? cfg.bandFillColor : 'transparent';
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(price_out, "Price MAD Osc", color.blue)
-      plot0: P(price.out, true, color.blue),
-      // plot(use_vwma_line ? vwma_out : na, "VWMA Disp Osc", color.green)
-      plot1: P(vwma.out, cfg.useVwmaLine, color.green),
-      // plot(show_price_raw ? price_z_display : na, "Price raw z (clipped)", color.new(color.blue, 80))
-      plot2: P(price.zDisplay, cfg.showPriceRaw, String(color.new(color.blue, 80))),
-      // plot(show_vwma_raw ? vwma_z_display : na, "VWMA raw z (clipped)", color.new(color.green, 80))
-      plot3: P(vwma.zDisplay, cfg.showVwmaRaw, String(color.new(color.green, 80))),
+    init() {
+      const priceRma = smooth > 1 ? taStep.rma(smooth) : null;
+      const vwmaRma = smooth > 1 ? taStep.rma(smooth) : null;
+      // VWMA DISP OSCILLATOR: disp = mid - ta.vwma(mid, vwlen)
+      const vwmaMid = taStep.vwma(vwlen);
+      const since = cfg.confluenceWindow === 0 ? [] : [0, 1, 2, 3].map(() => taStep.barssince());
+      const s: SpdiRun = {
+        priceRma, vwmaRma, vwmaMid, since, mid: [], disp: [], plots: [[], [], [], []], bandColors: [],
+        flags: [[], [], [], [], [], []], times: [[], [], [], [], [], []], bgColors: [],
+        steps: [...(priceRma ? [priceRma] : []), ...(vwmaRma ? [vwmaRma] : []), vwmaMid, ...since],
+        vars: {}, lists: [], series: [],
+      };
+      s.lists = [...s.times, s.bgColors];
+      s.series = [s.mid, s.disp, ...s.plots, s.bandColors, ...s.flags];
+      return s;
     },
-    hlines: [
-      { value: midNum, options: { title: 'MID', color: color.gray, linestyle: 'dashed' } },
-      { value: topNum, options: { title: 'Top', color: color.red, linestyle: 'dashed' } },
-      { value: botNum, options: { title: 'Bot', color: color.green, linestyle: 'dashed' } },
-    ],
-    fills: [
-      // fill(h_top, h_bot, fill_band ? band_fill_color : na)
-      { plot1: 'hline_top', plot2: 'hline_bot', options: { title: 'Hlines Background' },
-        colors: new Array<string>(n).fill(bandColor) },
-    ],
-    bgColors,
-    alerts: alertStates(alertConditions, bars, flags),
+    bar(s, i, bars) {
+      const b = bars[i];
+      s.mid[i] = (b.high + b.low) / 2.0;
+      // PRICE MAD OSCILLATOR
+      const price = oscillator(s.mid, i, s.priceRma);
+      const vwmaMid = s.vwmaMid.step(s.mid[i], b.volume ?? NaN);
+      s.disp[i] = s.mid[i] - vwmaMid;
+      const vwma = oscillator(s.disp, i, s.vwmaRma);
+
+      // Confluence: extremes of the -1..+1 values
+      const priceCondTop = ge(price.final, cfg.levelHigh);
+      const priceCondBot = le(price.final, cfg.levelLow);
+      const vwmaCondTop = ge(vwma.final, cfg.levelHigh);
+      const vwmaCondBot = le(vwma.final, cfg.levelLow);
+      // checkWithin(cond, window) = window == 0 ? cond : (na(ta.barssince(cond)) ? false : ta.barssince(cond) <= window)
+      // (the second ta.barssince runs from the first true condition on, as the first one: same value)
+      const checkWithin = (cond: boolean, k: number) => {
+        if (cfg.confluenceWindow === 0) return cond;
+        const since = s.since[k].step(cond ? 1 : 0);
+        return !isNaN(since) && since <= cfg.confluenceWindow;
+      };
+      const priceTopOk = checkWithin(priceCondTop, 0);
+      const priceBotOk = checkWithin(priceCondBot, 1);
+      const vwmaTopOk = checkWithin(vwmaCondTop, 2);
+      const vwmaBotOk = checkWithin(vwmaCondBot, 3);
+
+      // final_bg: confluence > price > vwma
+      const conflTop = cfg.confluenceEnable && priceTopOk && vwmaTopOk;
+      const conflBot = cfg.confluenceEnable && priceBotOk && vwmaBotOk;
+      const isVwmaTop = cfg.useVwmaLine && vwmaCondTop;
+      const isVwmaBot = cfg.useVwmaLine && vwmaCondBot;
+      // alertcondition(alerts_price_only and price_final >= level_high, ...) and the other five, in declaration order
+      const flags = [
+        cfg.alertsPriceOnly && priceCondTop,
+        cfg.alertsPriceOnly && priceCondBot,
+        cfg.alertsVwmaOnly && isVwmaTop,
+        cfg.alertsVwmaOnly && isVwmaBot,
+        cfg.confluenceEnable && conflTop,
+        cfg.confluenceEnable && conflBot,
+      ];
+      flags.forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      });
+      let bg: string | null = null;
+      if (conflTop && cfg.confluenceEnable) bg = cfg.topColor;
+      else if (conflBot && cfg.confluenceEnable) bg = cfg.botColor;
+      else if (priceCondTop && cfg.alertsPriceOnly) bg = cfg.topColor;
+      else if (priceCondBot && cfg.alertsPriceOnly) bg = cfg.botColor;
+      else if (isVwmaTop && cfg.alertsVwmaOnly) bg = cfg.topColor;
+      else if (isVwmaBot && cfg.alertsVwmaOnly) bg = cfg.botColor;
+      if (bg) s.bgColors.push({ time: b.time, color: bg });
+
+      // plot(price_out, "Price MAD Osc", color.blue)
+      // plot(use_vwma_line ? vwma_out : na, "VWMA Disp Osc", color.green)
+      // plot(show_price_raw ? price_z_display : na, "Price raw z (clipped)", color.new(color.blue, 80))
+      // plot(show_vwma_raw ? vwma_z_display : na, "VWMA raw z (clipped)", color.new(color.green, 80))
+      const vals = [price.out, vwma.out, price.zDisplay, vwma.zDisplay];
+      vals.forEach((v, k) => { s.plots[k][i] = { time: b.time, value: shows[k] ? v : NaN, color: plotColors[k] }; });
+      s.bandColors[i] = bandColor;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // LEVELS
+      const midNum = oneScale ? 0.0 : 50.0;
+      const topNum = oneScale ? cfg.levelHigh : (cfg.levelHigh + 1.0) * 50.0;
+      const botNum = oneScale ? cfg.levelLow : (cfg.levelLow + 1.0) * 50.0;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        hlines: [
+          { value: midNum, options: { title: 'MID', color: color.gray, linestyle: 'dashed' } },
+          { value: topNum, options: { title: 'Top', color: color.red, linestyle: 'dashed' } },
+          { value: botNum, options: { title: 'Bot', color: color.green, linestyle: 'dashed' } },
+        ],
+        fills: [
+          // fill(h_top, h_bot, fill_band ? band_fill_color : na)
+          { plot1: 'hline_top', plot2: 'hline_bot', options: { title: 'Hlines Background' },
+            colors: s.bandColors.slice() },
+        ],
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<StatisticalPriceDeviationIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<StatisticalPriceDeviationIndexInputs> = {},
+): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -283,6 +324,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const StatisticalPriceDeviationIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

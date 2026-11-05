@@ -14,9 +14,11 @@
  * Original notice: © BackQuant
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TheilSenLineFilterInputs {
   /** Series to filter with the Theil-Sen median-slope line */
@@ -86,69 +88,114 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TheilSenLineFilterInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface TheilSenVars {
+  /** var int Trend = 0 */
+  trend: number;
+  /** var color barColour = color.white */
+  barColour: string;
+}
+
+interface TheilSenRun extends BarRunState<TheilSenVars> {
+  atr: ReturnType<typeof taStep.atr> | null;
+  /** The source of another study (read from the whole bar set; such a run is always full) */
+  external: number[] | null;
+  src: number[];
+  tsf: number[];
+  change: number[];
+  plot0: { time: number; value: number; color: string }[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+}
+
+function study(inputs: Partial<TheilSenLineFilterInputs>): BarStudy<TheilSenRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.pricesource).toArray().map((v) => v ?? NaN);
-  const atr = cfg.capMode === 'ATR' ? ta.atr(bars, cfg.atrLen).toArray().map((v) => v ?? NaN) : [];
-
-  const tsf: number[] = new Array(n).fill(NaN);
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  let trend = 0; // var int Trend = 0
-  let barColour: string = color.white; // var color barColour = color.white
+  const value = barSource(cfg.pricesource);
   const a: number[] = [];
-  for (let i = 0; i < n; i++) {
-    // ts_median_slope(src, len): slopes (src - src[k]) / k for k = 1..len, na values skipped
-    a.length = 0;
-    for (let k = 1; k <= cfg.winLen; k++) {
-      const v = i - k >= 0 ? src[i - k] : NaN;
-      if (!isNaN(v)) a.push((src[i] - v) / k);
-    }
-    const m = a.length;
-    let slope: number;
-    if (m === 0) {
-      slope = 0.0;
-    } else {
-      a.sort((x, y) => x - y);
-      // mid = n / 2: a fractional quotient (n odd) is truncated by array.get
-      const mid = Math.trunc(m / 2);
-      slope = m % 2 === 1 ? a[mid] : (a[mid - 1] + a[mid]) * 0.5;
-    }
-
-    // Optional slope cap
-    const baseCap = cfg.capMode === 'ATR' ? atr[i] * cfg.capMult
-      : cfg.capMode === 'Percent' ? Math.abs(src[i]) * cfg.capPct * 0.01
-        : cfg.capMode === 'Points' ? cfg.capPts : NaN;
-    const slopeCap = baseCap;
-    if (!isNaN(slopeCap)) slope = gt(slope, slopeCap) ? slopeCap : lt(slope, -slopeCap) ? -slopeCap : slope;
-
-    // tsf := na(tsf[1]) ? pricesource : tsf[1] + response * slope
-    const prev = i > 0 ? tsf[i - 1] : NaN;
-    tsf[i] = isNaN(prev) ? src[i] : prev + cfg.response * slope;
-
-    trend = gt(tsf[i], prev) ? 1 : lt(tsf[i], prev) ? -1 : trend;
-    barColour = trend === 1 ? cfg.longColor : trend === -1 ? cfg.shortColor : barColour;
-
-    // barcolor(paintCandles ? barColour : na)
-    if (cfg.paintCandles) barColors.push({ time: bars[i].time as number, color: barColour });
-    // plot(showLine ? tsf : na, "Theil-Sen", color.new(barColour, 40), linewidth = 4)
-    plot0.push({ time: bars[i].time as number, value: cfg.showLine ? tsf[i] : NaN, color: String(color.new(barColour, 40)) });
-  }
-
-  // upTurn = ta.crossover(tsf - tsf[1], 0), dnTurn = ta.crossunder(tsf - tsf[1], 0)
-  const change = tsf.map((v, i) => (i > 0 ? v - tsf[i - 1] : NaN));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    markers: [],
-    barColors,
-    alerts: alertStates(alertConditions, bars, [crossedOver(change, 0), crossedUnder(change, 0)]),
+    fullRunReason: () => (isBarSource(cfg.pricesource) ? null : 'source of another study'),
+    init(bars) {
+      const s: TheilSenRun = {
+        atr: cfg.capMode === 'ATR' ? taStep.atr(cfg.atrLen) : null,
+        external: isBarSource(cfg.pricesource) ? null : getSourceSeries(bars, cfg.pricesource).toArray().map((v) => v ?? NaN),
+        src: [], tsf: [], change: [], plot0: [], barColors: [], flags: [[], []],
+        steps: [], vars: { trend: 0, barColour: color.white }, lists: [], series: [],
+      };
+      if (s.atr) s.steps = [s.atr];
+      s.lists = [s.barColors];
+      s.series = [s.src, s.tsf, s.change, s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const src = s.src;
+      src[i] = s.external ? s.external[i] : value(b);
+      const atr = s.atr ? s.atr.step(b.high, b.low, b.close) : NaN;
+      // ts_median_slope(src, len): slopes (src - src[k]) / k for k = 1..len, na values skipped
+      a.length = 0;
+      for (let k = 1; k <= cfg.winLen; k++) {
+        const p = i - k >= 0 ? src[i - k] : NaN;
+        if (!isNaN(p)) a.push((src[i] - p) / k);
+      }
+      const m = a.length;
+      let slope: number;
+      if (m === 0) {
+        slope = 0.0;
+      } else {
+        a.sort((x, y) => x - y);
+        // mid = n / 2: a fractional quotient (n odd) is truncated by array.get
+        const mid = Math.trunc(m / 2);
+        slope = m % 2 === 1 ? a[mid] : (a[mid - 1] + a[mid]) * 0.5;
+      }
+
+      // Optional slope cap
+      const baseCap = cfg.capMode === 'ATR' ? atr * cfg.capMult
+        : cfg.capMode === 'Percent' ? Math.abs(src[i]) * cfg.capPct * 0.01
+          : cfg.capMode === 'Points' ? cfg.capPts : NaN;
+      const slopeCap = baseCap;
+      if (!isNaN(slopeCap)) slope = gt(slope, slopeCap) ? slopeCap : lt(slope, -slopeCap) ? -slopeCap : slope;
+
+      // tsf := na(tsf[1]) ? pricesource : tsf[1] + response * slope
+      const tsf = s.tsf;
+      const prev = i > 0 ? tsf[i - 1] : NaN;
+      tsf[i] = isNaN(prev) ? src[i] : prev + cfg.response * slope;
+
+      v.trend = gt(tsf[i], prev) ? 1 : lt(tsf[i], prev) ? -1 : v.trend;
+      v.barColour = v.trend === 1 ? cfg.longColor : v.trend === -1 ? cfg.shortColor : v.barColour;
+
+      // barcolor(paintCandles ? barColour : na)
+      if (cfg.paintCandles) s.barColors.push({ time: b.time as number, color: v.barColour });
+      // plot(showLine ? tsf : na, "Theil-Sen", color.new(barColour, 40), linewidth = 4)
+      s.plot0[i] = { time: b.time as number, value: cfg.showLine ? tsf[i] : NaN, color: String(color.new(v.barColour, 40)) };
+
+      // upTurn = ta.crossover(tsf - tsf[1], 0), dnTurn = ta.crossunder(tsf - tsf[1], 0)
+      const change = i > 0 ? tsf[i] - tsf[i - 1] : NaN;
+      s.change[i] = change;
+      const pc = i > 0 ? s.change[i - 1] : NaN;
+      s.flags[0][i] = change > 0 && pc <= 0;
+      s.flags[1][i] = change < 0 && pc >= 0;
+    },
+    result(s, bars) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: [],
+        barColors: s.barColors.slice(),
+        alerts: alertStates(alertConditions, bars, s.flags),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TheilSenLineFilterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TheilSenLineFilterInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -159,6 +206,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TheilSenLineFilter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

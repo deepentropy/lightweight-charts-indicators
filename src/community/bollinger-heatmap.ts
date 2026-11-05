@@ -11,7 +11,9 @@
  * Original notice: © Quantitative
  */
 
-import { taCore, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 const TOTAL_BARS = 30;
 const LINE_WIDTH = 4;
@@ -90,9 +92,19 @@ export const metadata = {
 /** Pine a >= b: not (b - a > 1e-10); false with na */
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > 1e-10);
 
-export function calculate(bars: Bar[], inputs: Partial<BollingerHeatmapInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface BollingerHeatmapRun extends BarRunState<Record<string, never>> {
+  /** basis = ta.sma(close, length), dev = ta.stdev(close, length) of each band */
+  basis: ReturnType<typeof taStep.sma>[];
+  dev: ReturnType<typeof taStep.stdev>[];
+  plot0: Point[];
+  plot1: Point[];
+  pts: Point[][];
+}
+
+function study(inputs: Partial<BollingerHeatmapInputs>): BarStudy<BollingerHeatmapRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
 
   // fColorFromRatio(distanceRatio)
   const steps: [number, string][] = [
@@ -105,43 +117,63 @@ export function calculate(bars: Bar[], inputs: Partial<BollingerHeatmapInputs> =
   };
   // math.max / math.min give na with an na argument; +-infinity stays and is clamped
   const clamp = (x: number) => (isNaN(x) ? NaN : Math.min(Math.max(x, 0.0), 1.0));
-
-  const plots: Record<string, { time: number; value: number; color: string }[]> = {
-    plot0: bars.map((b) => ({ time: b.time, value: -5, color: '#00000000' })),
-    plot1: bars.map((b) => ({ time: b.time, value: 45, color: '#00000000' })),
-  };
-  const closeArr = bars.map((b) => b.close);
   // ta.bb(close, length, bbStd) inside `for i = 0 to TOTAL_BARS - 1`: one call site with a different length on each
   // call (basis = ta.sma, dev = bbStd * ta.stdev); the loop call sites keep the last call of each bar. Every call of a
   // bar gets the same close, so the kept history is the closes and each call gives the correctly rounded window sums
-  // of the last `length` closes: the values of ta.sma / ta.stdev of the closes with that length, computed once here
+  // of the last `length` closes: the values of ta.sma / ta.stdev of the closes with that length, one machine each here
   const lengths = Array.from({ length: TOTAL_BARS }, (_x, k) => cfg[lengthKey(k)] as number);
-  const basisOf = lengths.map((length) => taCore.sma(closeArr, length));
-  const devOf = lengths.map((length) => taCore.stdev(closeArr, length));
-  const pts: { time: number; value: number; color: string }[][] = Array.from({ length: TOTAL_BARS }, () => new Array(n));
-  for (let i = 0; i < n; i++) {
-    for (let k = 0; k < TOTAL_BARS; k++) {
-      const basis = basisOf[k][i];
-      const dev = devOf[k][i];
-      const u = basis + cfg.bbStd * dev;
-      const l = basis - cfg.bbStd * dev;
-      const bandRange = u - l;
-      const distanceToLower = closeArr[i] - l;
-      // plain division: x / 0 is +-infinity, 0 / 0 is na
-      const distanceRatio = clamp(distanceToLower / bandRange);
-      pts[k][i] = { time: bars[i].time, value: k, color: colourOf(distanceRatio) };
-    }
-  }
-  for (let k = 0; k < TOTAL_BARS; k++) plots[`plot${k + 2}`] = pts[k];
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      const s: BollingerHeatmapRun = {
+        basis: lengths.map(() => taStep.sma()), dev: lengths.map(() => taStep.stdev()),
+        plot0: [], plot1: [], pts: Array.from({ length: TOTAL_BARS }, () => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [...s.basis, ...s.dev];
+      s.series = [s.plot0, s.plot1, ...s.pts];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      s.plot0[i] = { time: b.time, value: -5, color: '#00000000' };
+      s.plot1[i] = { time: b.time, value: 45, color: '#00000000' };
+      for (let k = 0; k < TOTAL_BARS; k++) {
+        const basis = s.basis[k].step(close, lengths[k]);
+        const dev = s.dev[k].step(close, lengths[k]);
+        const u = basis + cfg.bbStd * dev;
+        const l = basis - cfg.bbStd * dev;
+        const bandRange = u - l;
+        const distanceToLower = close - l;
+        // plain division: x / 0 is +-infinity, 0 / 0 is na
+        const distanceRatio = clamp(distanceToLower / bandRange);
+        s.pts[k][i] = { time: b.time, value: k, color: colourOf(distanceRatio) };
+      }
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = { plot0: s.plot0.slice(), plot1: s.plot1.slice() };
+      for (let k = 0; k < TOTAL_BARS; k++) plots[`plot${k + 2}`] = s.pts[k].slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BollingerHeatmapInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BollingerHeatmapInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BollingerHeatmap = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

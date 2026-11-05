@@ -15,8 +15,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DynamicVolumeClustersInputs {
   /** Range lookback period (also the bar count window of the line colours) */
@@ -122,195 +124,240 @@ const le = (a: number, b: number) => ge(b, a);
 /** Pine a == b */
 const eq = (a: number, b: number) => ge(a, b) && le(a, b);
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> };
+type Step2 = { step(value: number, length: number): number; commit(): void };
+
+interface DvcVars {
+  maU: number;
+  lenU: number;
+  countU: number;
+  maL: number;
+  lenL: number;
+  countL: number;
+  lastU: number;
+  lastL: number;
+  /** ta.rising(sma, 5) / ta.falling(sma, 5): the counters of rises / falls */
+  upCount: number;
+  dnCount: number;
+  /** dyn_cluster and the kf state */
+  dyn: number;
+  kf: number;
+}
+
+interface DvcRun extends BarRunState<DvcVars> {
+  hh: Step2;
+  ll: Step2;
+  sma: Step2;
+  maxAbs: Step2;
+  maxDelta: Step2;
+  hi5: Step2;
+  lo5: Step2;
+  tr: ReturnType<typeof taStep.tr>;
+  trEma: ReturnType<typeof taStep.ema>;
+  vpmU: number[];
+  vpmL: number[];
+  smaArr: number[];
+  countsDiff: number[];
+  upperPlot: Point[];
+  lowerPlot: Point[];
+  candles: PlotCandleData[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<DynamicVolumeClustersInputs>): BarStudy<DvcRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const gradient = (count: number, bottom: number, top: number, c1: string, c2: string) =>
+    String(color.from_gradient(count, bottom, top, color.new(c1, 20 - count), c2));
+  return {
+    init() {
+      const s: DvcRun = {
+        hh: taStep.highest(), ll: taStep.lowest(), sma: taStep.sma(), maxAbs: taStep.highest(), maxDelta: taStep.highest(),
+        hi5: taStep.highest(), lo5: taStep.lowest(), tr: taStep.tr(false), trEma: taStep.ema(20),
+        vpmU: [], vpmL: [], smaArr: [], countsDiff: [], upperPlot: [], lowerPlot: [], candles: [], markers: [],
+        steps: [],
+        vars: {
+          maU: NaN, lenU: 0, countU: 0, maL: NaN, lenL: 0, countL: 0, lastU: 0, lastL: 0, upCount: 0, dnCount: 0,
+          dyn: NaN, kf: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.hh, s.ll, s.sma, s.maxAbs, s.maxDelta, s.hi5, s.lo5, s.tr, s.trEma];
+      s.lists = [s.markers];
+      s.series = [s.vpmU, s.vpmL, s.smaArr, s.countsDiff, s.upperPlot, s.lowerPlot, s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const c = b.close;
+      const at = (a: number[], j: number) => (j >= 0 ? a[j] : NaN);
+
+      // Range boundaries: hh = ta.highest(high, len); ll = ta.lowest(low, len)
+      const hh = s.hh.step(b.high, cfg.len) ?? NaN;
+      const ll = s.ll.step(b.low, cfg.len) ?? NaN;
+      const rangee = hh - ll;
+      const upperZoneTop = hh;
+      const upperZoneBottom = hh - (rangee * cfg.zoneP) / 100;
+      const lowerZoneTop = ll + (rangee * cfg.zoneP) / 100;
+      const lowerZoneBottom = ll;
+      // Restart logic for the upper zone
+      if (gt(c, upperZoneBottom) && le(c, upperZoneTop)) {
+        v.maU = c;
+        v.lenU = 1;
+        v.countU = 0;
+        v.lastU = i;
+      } else if (v.lenU > 0) {
+        if (v.countU >= 2) {
+          v.maU = (v.maU * v.lenU + c) / (v.lenU + 1);
+          v.lenU = v.lenU + 1;
+        }
+        v.countU = v.countU + 1;
+      }
+      // Restart logic for the lower zone
+      if (ge(c, lowerZoneBottom) && lt(c, lowerZoneTop)) {
+        v.maL = c;
+        v.lenL = 1;
+        v.countL = 0;
+        v.lastL = i;
+      } else if (v.lenL > 0) {
+        if (v.countL >= 2) {
+          v.maL = (v.maL * v.lenL + c) / (v.lenL + 1);
+          v.lenL = v.lenL + 1;
+        }
+        v.countL = v.countL + 1;
+      }
+      const vpmU = s.vpmU;
+      const vpmL = s.vpmL;
+      vpmU[i] = v.maU;
+      vpmL[i] = v.maL;
+
+      // Retest signal logic: sma = ta.sma(close, 5); up = ta.rising(sma, 5); dn = ta.falling(sma, 5)
+      const sma = s.sma.step(c, 5) ?? NaN;
+      s.smaArr[i] = sma;
+      // a step from or to an na (or +/-Infinity) bar leaves the counters unchanged
+      const prevSma = i > 0 ? s.smaArr[i - 1] : NaN;
+      if (Number.isFinite(sma) && Number.isFinite(prevSma)) {
+        v.upCount = sma - prevSma > 1e-10 ? v.upCount + 1 : 0;
+        v.dnCount = prevSma - sma > 1e-10 ? v.dnCount + 1 : 0;
+      }
+      const up = v.upCount >= 5;
+      const dn = v.dnCount >= 5;
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      // ta.crossover(close, VPMavg_U): close > VPMavg_U and close[1] <= VPMavg_U[1], compared exactly (no 1e-10
+      // tolerance; na compares false)
+      const crossover = i > 0 && c > vpmU[i] && prevClose <= vpmU[i - 1];
+      // ta.crossunder(close, VPMavg_L): close < VPMavg_L and close[1] >= VPMavg_L[1], compared exactly
+      const crossunder = i > 0 && c < vpmL[i] && prevClose >= vpmL[i - 1];
+      const sinceU = i - v.lastU;
+      const sinceL = i - v.lastL;
+      const upperRetest = cfg.retestSignals && crossover && up && sinceU >= cfg.minBarsBetweenSignals
+        && sinceU <= cfg.maxBarsBetweenSignals && le(at(vpmU, i - 1), vpmU[i]);
+      const lowerRetest = cfg.retestSignals && crossunder && dn && sinceL >= cfg.minBarsBetweenSignals
+        && sinceL <= cfg.maxBarsBetweenSignals && le(vpmL[i], at(vpmL, i - 1));
+
+      // Dynamic price cluster
+      // counts_diff = VPMavg_U - VPMavg_L; max_abs_counts_diff = ta.highest(math.abs(counts_diff), 200)
+      const d = vpmU[i] - vpmL[i];
+      s.countsDiff[i] = d;
+      const maxAbs = s.maxAbs.step(Math.abs(d), 200) ?? NaN;
+      // counts_diff_norm = (counts_diff + max_abs) / (2 * max_abs), a plain division; dyn_length = 5 + norm * (max_length - 5)
+      const norm = (d + maxAbs) / (2 * maxAbs);
+      const dynLength = 5 + norm * (cfg.maxLength - 5);
+      // calc_accel_factor(counts_diff, nz(counts_diff[1])): delta = abs(counts_diff - prev);
+      // max_delta = ta.highest(delta, 20); max_delta := max_delta == 0 ? 1 : max_delta; delta / max_delta
+      const prevD = at(s.countsDiff, i - 1);
+      const delta = Math.abs(d - (isNaN(prevD) ? 0 : prevD));
+      const m = s.maxDelta.step(delta, 20) ?? NaN;
+      const maxDelta = m === 0 ? 1 : m;
+      const accel = delta / maxDelta;
+      // adjust_alpha(dyn_length, accel_factor, 5.0): alpha = 2 / (dyn_length + 1) * (1 + accel * 5); math.min(1, alpha)
+      const a = (2 / (dynLength + 1)) * (1 + accel * 5.0);
+      const alpha = isNaN(a) ? NaN : Math.min(1, a);
+      // dyn_cluster := na(dyn_cluster[1]) ? close : alpha * close + (1 - alpha) * dyn_cluster[1]
+      // kf(src): kfRSI := na(kfRSI) ? src : kfRSI + filterStrength * (src - kfRSI)
+      v.dyn = isNaN(v.dyn) ? c : alpha * c + (1 - alpha) * v.dyn;
+      v.kf = isNaN(v.kf) ? v.dyn : v.kf + cfg.filterStrength * (v.dyn - v.kf);
+      const cluster = v.kf;
+
+      // cluster_color(avg_val, ...): count of the bars i = 0 .. len - 1 with high[i] >= avg_val and low[i] <= avg_val
+      const clusterCount = (avg: number) => {
+        let count = 0;
+        for (let k = 0; k <= cfg.len - 1; k++) {
+          const j = i - k;
+          if (ge(j >= 0 ? bars[j].high : NaN, avg) && le(j >= 0 ? bars[j].low : NaN, avg)) count += 1;
+        }
+        return count;
+      };
+
+      // U_col = VPMavg_U == close ? na : cluster_color(VPMavg_U, true, false, false)
+      const uCol = eq(vpmU[i], c) ? 'transparent' : gradient(clusterCount(vpmU[i]), 5, 15, cfg.red1, cfg.red2);
+      const lCol = eq(vpmL[i], c) ? 'transparent' : gradient(clusterCount(vpmL[i]), 5, 15, cfg.green1, cfg.green2);
+      // trend_col = dynamic_price_cluster == close ? na : cluster_color(dynamic_price_cluster, false, false, true)
+      let trendCol = 'transparent';
+      if (!eq(cluster, c)) {
+        const count = clusterCount(cluster);
+        trendCol = gt(c, cluster)
+          ? gradient(count, cfg.priceClusterStart, cfg.priceClusterPeak, cfg.bullishCluster1, cfg.bullishCluster2)
+          : gradient(count, cfg.priceClusterStart, cfg.priceClusterPeak, cfg.bearishCluster1, cfg.bearishCluster2);
+      }
+      s.upperPlot[i] = { time: t, value: vpmU[i], color: uCol };
+      s.lowerPlot[i] = { time: t, value: vpmL[i], color: lCol };
+      // plotcandle(open, high, low, close, color = trend_col, wickcolor = trend_col, bordercolor = trend_col)
+      s.candles[i] = { time: t, open: b.open, high: b.high, low: b.low, close: c,
+        color: trendCol, wickColor: trendCol, borderColor: trendCol };
+
+      // placesell = ta.highest(high, 5) + ta.ema(ta.tr, 20); placebuy = ta.lowest(low, 5) - ta.ema(ta.tr, 20)
+      // plotshape(upper_retest ? placesell : na, 'Triangle Dn', shape.triangledown, location.absolute, retest_col_2, size.tiny)
+      // plotshape(lower_retest ? placebuy : na, 'Triangle Up', shape.triangleup, location.absolute, retest_col_1, size.tiny)
+      // and the 'UI Only' copies: color.new(retest_col, 50), size.normal (ids shape0..shape3 in declaration order)
+      const hi5 = s.hi5.step(b.high, 5) ?? NaN;
+      const lo5 = s.lo5.step(b.low, 5) ?? NaN;
+      const trEma = s.trEma.step(s.tr.step(b.high, b.low, c)) ?? NaN;
+      const placeSell = hi5 + trEma;
+      const placeBuy = lo5 - trEma;
+      const markers = s.markers;
+      if (upperRetest && !isNaN(placeSell)) {
+        markers.push({ time: t, position: 'atPriceMiddle', price: placeSell, shape: 'triangleDown', color: cfg.retestCol2, size: 'tiny',
+          id: 'shape0' });
+        markers.push({ time: t, position: 'atPriceMiddle', price: placeSell, shape: 'triangleDown',
+          color: String(color.new(cfg.retestCol2, 50)), size: 'normal', id: 'shape2' });
+      }
+      if (lowerRetest && !isNaN(placeBuy)) {
+        markers.push({ time: t, position: 'atPriceMiddle', price: placeBuy, shape: 'triangleUp', color: cfg.retestCol1, size: 'tiny',
+          id: 'shape1' });
+        markers.push({ time: t, position: 'atPriceMiddle', price: placeBuy, shape: 'triangleUp',
+          color: String(color.new(cfg.retestCol1, 50)), size: 'normal', id: 'shape3' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.upperPlot.slice(), plot1: s.lowerPlot.slice() },
+        markers: s.markers.slice(),
+        plotCandles: { clusterCandles: s.candles.slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DynamicVolumeClustersInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<DynamicVolumeClustersInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const close = bars.map((b) => b.close);
-  const at = (a: number[], j: number) => (j >= 0 ? a[j] : NaN);
-
-  // Range boundaries: hh = ta.highest(high, len); ll = ta.lowest(low, len)
-  const hh = A(ta.highest(S(high), cfg.len));
-  const ll = A(ta.lowest(S(low), cfg.len));
-
-  const vpmU: number[] = new Array(n);
-  const vpmL: number[] = new Array(n);
-  const lastRetestU: number[] = new Array(n);
-  const lastRetestL: number[] = new Array(n);
-  let maU = NaN;
-  let lenU = 0;
-  let countU = 0;
-  let maL = NaN;
-  let lenL = 0;
-  let countL = 0;
-  let lastU = 0;
-  let lastL = 0;
-  for (let i = 0; i < n; i++) {
-    const rangee = hh[i] - ll[i];
-    const upperZoneTop = hh[i];
-    const upperZoneBottom = hh[i] - (rangee * cfg.zoneP) / 100;
-    const lowerZoneTop = ll[i] + (rangee * cfg.zoneP) / 100;
-    const lowerZoneBottom = ll[i];
-    const c = close[i];
-    // Restart logic for the upper zone
-    if (gt(c, upperZoneBottom) && le(c, upperZoneTop)) {
-      maU = c;
-      lenU = 1;
-      countU = 0;
-      lastU = i;
-    } else if (lenU > 0) {
-      if (countU >= 2) {
-        maU = (maU * lenU + c) / (lenU + 1);
-        lenU = lenU + 1;
-      }
-      countU = countU + 1;
-    }
-    // Restart logic for the lower zone
-    if (ge(c, lowerZoneBottom) && lt(c, lowerZoneTop)) {
-      maL = c;
-      lenL = 1;
-      countL = 0;
-      lastL = i;
-    } else if (lenL > 0) {
-      if (countL >= 2) {
-        maL = (maL * lenL + c) / (lenL + 1);
-        lenL = lenL + 1;
-      }
-      countL = countL + 1;
-    }
-    vpmU[i] = maU;
-    vpmL[i] = maL;
-    lastRetestU[i] = lastU;
-    lastRetestL[i] = lastL;
-  }
-
-  // Retest signal logic: sma = ta.sma(close, 5); up = ta.rising(sma, 5); dn = ta.falling(sma, 5)
-  const sma = S(A(ta.sma(S(close), 5)));
-  const up = ta.rising(sma, 5).toArray();
-  const dn = ta.falling(sma, 5).toArray();
-  const upperRetest: boolean[] = new Array(n);
-  const lowerRetest: boolean[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    // ta.crossover(close, VPMavg_U): close > VPMavg_U and close[1] <= VPMavg_U[1], compared exactly (no 1e-10
-    // tolerance; na compares false)
-    const crossover = i > 0 && close[i] > vpmU[i] && close[i - 1] <= vpmU[i - 1];
-    // ta.crossunder(close, VPMavg_L): close < VPMavg_L and close[1] >= VPMavg_L[1], compared exactly
-    const crossunder = i > 0 && close[i] < vpmL[i] && close[i - 1] >= vpmL[i - 1];
-    const sinceU = i - lastRetestU[i];
-    const sinceL = i - lastRetestL[i];
-    upperRetest[i] = cfg.retestSignals && crossover && !!up[i] && sinceU >= cfg.minBarsBetweenSignals
-      && sinceU <= cfg.maxBarsBetweenSignals && le(at(vpmU, i - 1), vpmU[i]);
-    lowerRetest[i] = cfg.retestSignals && crossunder && !!dn[i] && sinceL >= cfg.minBarsBetweenSignals
-      && sinceL <= cfg.maxBarsBetweenSignals && le(vpmL[i], at(vpmL, i - 1));
-  }
-
-  // Dynamic price cluster
-  // counts_diff = VPMavg_U - VPMavg_L; max_abs_counts_diff = ta.highest(math.abs(counts_diff), 200)
-  const countsDiff = vpmU.map((u, i) => u - vpmL[i]);
-  const maxAbs = A(ta.highest(S(countsDiff.map(Math.abs)), 200));
-  // counts_diff_norm = (counts_diff + max_abs) / (2 * max_abs), a plain division; dyn_length = 5 + norm * (max_length - 5)
-  const dynLength = countsDiff.map((d, i) => {
-    const norm = (d + maxAbs[i]) / (2 * maxAbs[i]);
-    return 5 + norm * (cfg.maxLength - 5);
-  });
-  // calc_accel_factor(counts_diff, nz(counts_diff[1])): delta = abs(counts_diff - prev);
-  // max_delta = ta.highest(delta, 20); max_delta := max_delta == 0 ? 1 : max_delta; delta / max_delta
-  const delta = countsDiff.map((d, i) => {
-    const prev = at(countsDiff, i - 1);
-    return Math.abs(d - (isNaN(prev) ? 0 : prev));
-  });
-  const maxDelta = A(ta.highest(S(delta), 20)).map((m) => (m === 0 ? 1 : m));
-  const accel = delta.map((d, i) => d / maxDelta[i]);
-  // adjust_alpha(dyn_length, accel_factor, 5.0): alpha = 2 / (dyn_length + 1) * (1 + accel * 5); math.min(1, alpha)
-  const alpha = dynLength.map((l, i) => {
-    const a = (2 / (l + 1)) * (1 + accel[i] * 5.0);
-    return isNaN(a) ? NaN : Math.min(1, a);
-  });
-  // dyn_cluster := na(dyn_cluster[1]) ? close : alpha * close + (1 - alpha) * dyn_cluster[1]
-  // kf(src): kfRSI := na(kfRSI) ? src : kfRSI + filterStrength * (src - kfRSI)
-  const cluster: number[] = new Array(n);
-  let dyn = NaN;
-  let kf = NaN;
-  for (let i = 0; i < n; i++) {
-    dyn = isNaN(dyn) ? close[i] : alpha[i] * close[i] + (1 - alpha[i]) * dyn;
-    kf = isNaN(kf) ? dyn : kf + cfg.filterStrength * (dyn - kf);
-    cluster[i] = kf;
-  }
-
-  // cluster_color(avg_val, ...): count of the bars i = 0 .. len - 1 with high[i] >= avg_val and low[i] <= avg_val
-  const clusterCount = (i: number, avg: number) => {
-    let count = 0;
-    for (let k = 0; k <= cfg.len - 1; k++) {
-      if (ge(at(high, i - k), avg) && le(at(low, i - k), avg)) count += 1;
-    }
-    return count;
-  };
-  const gradient = (count: number, bottom: number, top: number, c1: string, c2: string) =>
-    String(color.from_gradient(count, bottom, top, color.new(c1, 20 - count), c2));
-
-  const upperPlot: { time: number; value: number; color: string }[] = [];
-  const lowerPlot: { time: number; value: number; color: string }[] = [];
-  const candles: PlotCandleData[] = [];
-  const markers: MarkerData[] = [];
-  const hi5 = A(ta.highest(S(high), 5));
-  const lo5 = A(ta.lowest(S(low), 5));
-  const trEma = A(ta.ema(ta.tr(bars, false), 20));
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const c = close[i];
-    // U_col = VPMavg_U == close ? na : cluster_color(VPMavg_U, true, false, false)
-    const uCol = eq(vpmU[i], c) ? 'transparent' : gradient(clusterCount(i, vpmU[i]), 5, 15, cfg.red1, cfg.red2);
-    const lCol = eq(vpmL[i], c) ? 'transparent' : gradient(clusterCount(i, vpmL[i]), 5, 15, cfg.green1, cfg.green2);
-    // trend_col = dynamic_price_cluster == close ? na : cluster_color(dynamic_price_cluster, false, false, true)
-    let trendCol = 'transparent';
-    if (!eq(cluster[i], c)) {
-      const count = clusterCount(i, cluster[i]);
-      trendCol = gt(c, cluster[i])
-        ? gradient(count, cfg.priceClusterStart, cfg.priceClusterPeak, cfg.bullishCluster1, cfg.bullishCluster2)
-        : gradient(count, cfg.priceClusterStart, cfg.priceClusterPeak, cfg.bearishCluster1, cfg.bearishCluster2);
-    }
-    upperPlot.push({ time: t, value: vpmU[i], color: uCol });
-    lowerPlot.push({ time: t, value: vpmL[i], color: lCol });
-    // plotcandle(open, high, low, close, color = trend_col, wickcolor = trend_col, bordercolor = trend_col)
-    candles.push({ time: t, open: bars[i].open, high: bars[i].high, low: bars[i].low, close: c,
-      color: trendCol, wickColor: trendCol, borderColor: trendCol });
-
-    // placesell = ta.highest(high, 5) + ta.ema(ta.tr, 20); placebuy = ta.lowest(low, 5) - ta.ema(ta.tr, 20)
-    // plotshape(upper_retest ? placesell : na, 'Triangle Dn', shape.triangledown, location.absolute, retest_col_2, size.tiny)
-    // plotshape(lower_retest ? placebuy : na, 'Triangle Up', shape.triangleup, location.absolute, retest_col_1, size.tiny)
-    // and the 'UI Only' copies: color.new(retest_col, 50), size.normal (ids shape0..shape3 in declaration order)
-    const placeSell = hi5[i] + trEma[i];
-    const placeBuy = lo5[i] - trEma[i];
-    if (upperRetest[i] && !isNaN(placeSell)) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: placeSell, shape: 'triangleDown', color: cfg.retestCol2, size: 'tiny',
-        id: 'shape0' });
-      markers.push({ time: t, position: 'atPriceMiddle', price: placeSell, shape: 'triangleDown',
-        color: String(color.new(cfg.retestCol2, 50)), size: 'normal', id: 'shape2' });
-    }
-    if (lowerRetest[i] && !isNaN(placeBuy)) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: placeBuy, shape: 'triangleUp', color: cfg.retestCol1, size: 'tiny',
-        id: 'shape1' });
-      markers.push({ time: t, position: 'atPriceMiddle', price: placeBuy, shape: 'triangleUp',
-        color: String(color.new(cfg.retestCol1, 50)), size: 'normal', id: 'shape3' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: upperPlot, plot1: lowerPlot },
-    markers,
-    plotCandles: { clusterCandles: candles },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const DynamicVolumeClusters = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

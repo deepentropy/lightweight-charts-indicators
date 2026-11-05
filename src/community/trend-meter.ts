@@ -19,9 +19,11 @@
  */
 
 import {
-  ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
+  taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
 } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type TrendMeterSource =
   | 'MACD Crossover - 12, 26, 9'
@@ -151,243 +153,302 @@ const on = (x: number) => !isNaN(x) && x !== 0;
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[], inputs: Partial<TrendMeterInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Ema = ReturnType<typeof taStep.ema>;
+type Sma = ReturnType<typeof taStep.sma>;
+type Ma = { step(v: number): number; commit(): void };
+
+/** One moving average of the trend bars (EMA or SMA of the close) */
+function maStep(type: 'EMA' | 'SMA', len: number): Ma {
+  if (type === 'SMA') {
+    const m = taStep.sma();
+    return { step: (v) => m.step(v, len), commit: () => m.commit() };
+  }
+  return taStep.ema(len);
+}
+
+interface TrendMeterRun extends BarRunState<Record<string, never>> {
+  esa: Ema; de: Ema; wt1: Ema; wt2: Sma; wtCross: ReturnType<typeof taStep.cross>;
+  ma1: Ma; ma2: Ma; ma3: Ma; ma4: Ma;
+  macdFast: Ema; macdSlow: Ema; macdSig: Ema;
+  fastFast: Ema; fastSlow: Ema; fastSig: Ema;
+  ema5: Ema; ema20: Ema; dad: Ema;
+  rsi5: ReturnType<typeof taStep.rsi>; rsi13: ReturnType<typeof taStep.rsi>; rsi14: ReturnType<typeof taStep.rsi>;
+  xMean: Sma; yMean: Sma; xDev: ReturnType<typeof taStep.stdev>; yDev: ReturnType<typeof taStep.stdev>;
+  corr: ReturnType<typeof taStep.correlation>;
+  /** Values of earlier bars */
+  haopen: number[]; haclose: number[]; ccolor: number[];
+  ma1v: number[]; ma2v: number[]; ma3v: number[]; ma4v: number[];
+  rsi14v: number[]; yellowWave: number[]; pos3: boolean[]; neg3: boolean[];
+  plots: Point[][];
+  fillColors: string[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TrendMeterInputs>): BarStudy<TrendMeterRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => (v === null || v === undefined ? NaN : v));
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const closeS = S(close);
-  const prev = (a: number[], i: number, k = 1) => (i - k >= 0 ? a[i - k] : NaN);
-
-  // Wave Trend
-  const ap = bars.map((b) => (b.high + b.low + b.close) / 3);
-  const esa = A(ta.ema(S(ap), 9));
-  const de = A(ta.ema(S(ap.map((x, i) => Math.abs(x - esa[i]))), 9));
-  const ci = ap.map((x, i) => (x - esa[i]) / (0.015 * de[i]));
-  const wt1 = A(ta.ema(S(ci), 12));
-  const wt2 = A(ta.sma(S(wt1), 3));
-  const yellowWave = wt1.map((x, i) => x - wt2[i]);
-  const wtCross = A(ta.cross(S(wt1), S(wt2)));
-
-  // Moving averages of the trend bars
-  const ma = (type: 'EMA' | 'SMA', len: number) => A(type === 'SMA' ? ta.sma(closeS, len) : ta.ema(closeS, len));
-  const ma1 = ma(cfg.ma1Type, cfg.ma1Length);
-  const ma2 = ma(cfg.ma2Type, cfg.ma2Length);
-  const ma3 = ma(cfg.ma3Type, cfg.ma3Length);
-  const ma4 = ma(cfg.ma4Type, cfg.ma4Length);
-
-  // MACD 12 / 26 / 9 and fast MACD 8 / 21 / 5
-  const macdHist = (fast: number, slow: number, sig: number) => {
-    const ef = A(ta.ema(closeS, fast));
-    const es = A(ta.ema(closeS, slow));
-    const line = ef.map((x, i) => x - es[i]);
-    const signal = A(ta.ema(S(line), sig));
-    return line.map((x, i) => x - signal[i]);
-  };
-  const macdHistogram = macdHist(12, 26, 9);
-  const fastMacdHistogram = macdHist(8, 21, 5);
-
-  // Top Dog Trading Mom / Dad
-  const ema5 = A(ta.ema(closeS, 5));
-  const ema20 = A(ta.ema(closeS, 20));
-  const topDogMom = ema5.map((x, i) => x - ema20[i]);
-  const topDogDad = A(ta.ema(S(topDogMom), 30));
-
-  // Trend candles: haopen := na(haopen[1]) ? (open + close) / 2 : (haopen[1] + haclose[1]) / 2, haclose = ohlc4
-  const haclose = bars.map((b) => (b.open + b.high + b.low + b.close) / 4);
-  const haopen = new Array<number>(n).fill(NaN);
-  for (let i = 0; i < n; i++) {
-    const p = prev(haopen, i);
-    haopen[i] = isNaN(p) ? (bars[i].open + bars[i].close) / 2 : (p + haclose[i - 1]) / 2;
-  }
-  const ccolor = haclose.map((x, i) => (gt(x - haopen[i], 0) ? 1 : 0));
-  const inside = (i: number, k: number) => {
-    const o = prev(haopen, i, k);
-    const c = prev(haclose, i, k);
-    const hi = Math.max(o, c);
-    const lo = Math.min(o, c);
-    return le(haopen[i], hi) && ge(haopen[i], lo) && le(haclose[i], hi) && ge(haclose[i], lo);
-  };
-  const trendCandle = new Array<number>(n);
-  for (let i = 0; i < n; i++) {
-    let v = ccolor[i];
-    for (const k of [6, 5, 4, 3, 2, 1]) {
-      if (inside(i, k)) {
-        v = prev(ccolor, i, k);
-        break;
-      }
-    }
-    trendCandle[i] = on(v) ? 1 : 0;
-  }
-
-  // RSI 5, RSI 13 and the linear regression signal line of RSI 13 (x = bar_index)
-  const rsi5 = A(ta.rsi(closeS, 5));
-  const rsi13 = A(ta.rsi(closeS, 13));
-  const xs = bars.map((_b, i) => i);
-  const xS = S(xs);
-  const rsi13S = S(rsi13);
-  const x_ = A(ta.sma(xS, 21));
-  const y_ = A(ta.sma(rsi13S, 21));
-  const mx = A(ta.stdev(xS, 21));
-  const my = A(ta.stdev(rsi13S, 21));
-  const corr = A(ta.correlation(xS, rsi13S, 21));
-  const linReg1 = xs.map((x, i) => {
-    const slope = corr[i] * (my[i] / mx[i]);
-    const inter = y_[i] - slope * x_[i];
-    return x * slope + inter;
-  });
-
-  const rsi14 = A(ta.rsi(closeS, 14));
-
-  const meterResult = (src: TrendMeterSource, i: number): number => {
-    switch (src) {
-      case 'MACD Crossover - 12, 26, 9': return gt(macdHistogram[i], 0) ? 1 : 0;
-      case 'MACD Crossover - Fast - 8, 21, 5': return gt(fastMacdHistogram[i], 0) ? 1 : 0;
-      case 'Mom Dad Cross (Top Dog Trading)': return gt(topDogMom[i], topDogDad[i]) ? 1 : 0;
-      case 'RSI Signal Line Cross - RSI 13, Sig 21': return gt(rsi13[i], linReg1[i]) ? 1 : 0;
-      case 'RSI 5: > or < 50': return gt(rsi5[i], 50) ? 1 : 0;
-      case 'RSI 13: > or < 50': return gt(rsi13[i], 50) ? 1 : 0;
-      case 'Trend Candles': return trendCandle[i];
-      default: return NaN;
-    }
-  };
-  const meterColor = (src: TrendMeterSource, i: number): string | null => {
-    if (src === 'N/A') return null;
-    return on(meterResult(src, i)) ? TEAL : RED;
-  };
-
-  const pos3 = new Array<boolean>(n);
-  const neg3 = new Array<boolean>(n);
-  for (let i = 0; i < n; i++) {
-    const r1 = on(meterResult(cfg.trendBar1, i));
-    const r2 = on(meterResult(cfg.trendBar2, i));
-    const r3 = on(meterResult(cfg.trendBar3, i));
-    pos3[i] = r1 && r2 && r3;
-    neg3[i] = !r1 && !r2 && !r3;
-  }
-
-  const t = (i: number) => bars[i].time;
-  const P = (f: (i: number) => Point): Point[] => bars.map((_b, i) => f(i));
-  const tb4On = (i: number) => {
-    switch (cfg.trendBar4) {
-      case 'MA Direction - Fast MA - TB1': return gt(ma1[i], prev(ma1, i));
-      case 'MA Direction - Slow MA - TB1': return gt(ma2[i], prev(ma2, i));
-      default: return gt(ma1[i], ma2[i]);
-    }
-  };
-  const tb5On = (i: number) => {
-    switch (cfg.trendBar5) {
-      case 'MA Direction - Fast MA - TB2': return gt(ma3[i], prev(ma3, i));
-      case 'MA Direction - Slow MA - TB2': return gt(ma4[i], prev(ma4, i));
-      default: return gt(ma3[i], ma4[i]);
-    }
-  };
   const tbGreen = String(color.new(GREEN, 15));
   const tbRed = String(color.new(RED, 20));
   const posPressure = String(color.new(TEAL, 25));
   const negPressure = String(color.new('#DC143C', 32));
-  // BackgroundColorChangePositive = TrendBars3Positive and not TrendBars3Positive[1] (na [1] on bar 0 is false)
-  const chPos = bars.map((_b, i) => pos3[i] && !(i > 0 && pos3[i - 1]));
-  const chNeg = bars.map((_b, i) => neg3[i] && !(i > 0 && neg3[i - 1]));
-  // plot transp = 20 / 18 on an opaque colour
-  const signalColor = (i: number): string =>
-    (chPos[i] ? String(color.new(TEAL, 20)) : chNeg[i] ? String(color.new(RED, 20)) : 'transparent');
-  // OSIndicatorsYellowPointingUp = (RSI14OS or RSI14OS[1]) and WTVOS and YellowWavePointingUp
-  const osUp = bars.map((_b, i) =>
-    (lt(rsi14[i], 30) || lt(prev(rsi14, i), 30)) && lt(wt1[i], -60) && gt(yellowWave[i], prev(yellowWave, i)));
-  // OBIndicatorsYellowPointingDown = (RSI14OB or RSI14OB[1]) and WTVOB and not YellowWavePointingUp
-  const obDown = bars.map((_b, i) =>
-    (gt(rsi14[i], 70) || gt(prev(rsi14, i), 70)) && gt(wt1[i], 60) && !gt(yellowWave[i], prev(yellowWave, i)));
-  // PositiveWaveTrendCross = WTCross and WTCrossUp (wt2 - wt1 <= 0), NegativeWaveTrendCross = WTCross and WTCrossDown
-  const wtPos = bars.map((_b, i) => on(wtCross[i]) && le(wt2[i] - wt1[i], 0));
-  const wtNeg = bars.map((_b, i) => on(wtCross[i]) && ge(wt2[i] - wt1[i], 0));
-  const meter = (src: TrendMeterSource, value: number) => P((i) => {
-    const c = meterColor(src, i);
-    return { time: t(i), value, color: c === null ? 'transparent' : String(color.new(c, 18)) };
-  });
-
-  const plots: Record<string, Point[]> = {
-    plot0: P((i) => ({ time: t(i), value: cfg.posNegPressure && osUp[i] ? 138.5 : NaN, color: posPressure })),
-    plot1: P((i) => ({ time: t(i), value: cfg.posNegPressure && obDown[i] ? 138.5 : NaN, color: negPressure })),
-    plot2: P((i) => ({ time: t(i), value: cfg.tmSetups ? 134.5 : NaN, color: signalColor(i) })),
-    plot3: P((i) => {
-      const up = wtPos[i] && pos3[i];
-      const down = wtNeg[i] && neg3[i];
-      return { time: t(i), value: cfg.tmSetupsAndWt && (up || down) ? 134.5 : NaN, color: signalColor(i) };
-    }),
-    plot4: meter(cfg.trendBar1, 128.5),
-    plot5: meter(cfg.trendBar2, 122.5),
-    plot6: meter(cfg.trendBar3, 116.5),
-    plot7: P((i) => ({ time: t(i), value: cfg.showTrendBar1 && cfg.showTrendBar2 ? 110 : NaN, color: tb4On(i) ? tbGreen : tbRed })),
-    plot8: P((i) => ({ time: t(i), value: cfg.showTrendBar1 && !cfg.showTrendBar2 ? 110 : NaN, color: tb4On(i) ? tbGreen : tbRed })),
-    plot9: P((i) => ({ time: t(i), value: cfg.showTrendBar2 && cfg.showTrendBar1 ? 104.5 : NaN, color: tb5On(i) ? tbGreen : tbRed })),
-    plot10: P((i) => ({ time: t(i), value: cfg.showTrendBar2 && !cfg.showTrendBar1 ? 110 : NaN, color: tb5On(i) ? tbGreen : tbRed })),
-  };
-
-  // fill(TMa, TMb, color = TrendBars3Positive ? color.green : TrendBars3Negative ? color.red : na, transp = 91)
   const fillGreen = String(color.new(GREEN, 91));
   const fillRed = String(color.new(RED, 91));
-  const fillColors = bars.map((_b, i) => (pos3[i] ? fillGreen : neg3[i] ? fillRed : 'transparent'));
   const hlineColor = String(color.new('#FFFFFF', 100));
-
-  // Alert conditions, as the original computes them (na history is false)
-  const at = (a: boolean[], i: number, k: number) => i - k >= 0 && a[i - k];
-  const crossUp = (a: number[], b: number[], i: number) => gt(a[i], b[i]) && le(prev(a, i), prev(b, i));
-  const crossDown = (a: number[], b: number[], i: number) => lt(a[i], b[i]) && ge(prev(a, i), prev(b, i));
-  const flags: boolean[][] = alertConditions.map(() => new Array<boolean>(n).fill(false));
-  for (let i = 0; i < n; i++) {
-    const p = pos3[i], q = neg3[i];
-    const bgPos = chPos[i], bgNeg = chNeg[i];
-    const wtP = wtPos[i] && p, wtN = wtNeg[i] && q;
-    // TrendMetersNoLongerAlign = ((not P or not N) and P[1]) or ((not P or not N) and N[1])
-    const notBoth = !p || !q;
-    const noLonger = (notBoth && at(pos3, i, 1)) || (notBoth && at(neg3, i, 1));
-    // RapidColorChangePositive / Negative = P and (N[1] or N[2]) / N and (P[1] or P[2])
-    const rapidPos = p && (at(neg3, i, 1) || at(neg3, i, 2));
-    const rapidNeg = q && (at(pos3, i, 1) || at(pos3, i, 2));
-    // TB1MACrossUp = crossover(MA1, MA2), TB2MACrossUp = crossover(MA3, MA4), ...
-    const tb1Up = crossUp(ma1, ma2, i), tb1Down = crossDown(ma1, ma2, i);
-    const tb2Up = crossUp(ma3, ma4, i), tb2Down = crossDown(ma3, ma4, i);
-    const tb1Green = gt(ma1[i], ma2[i]), tb1Red = lt(ma1[i], ma2[i]);
-    const tb2Green = gt(ma3[i], ma4[i]), tb2Red = lt(ma3[i], ma4[i]);
-    const tb12Green = tb1Green && tb2Green && (tb1Up || tb2Up);
-    const tb12Red = tb1Red && tb2Red && (tb1Down || tb2Down);
-    const v = [
-      obDown[i] || osUp[i],
-      bgPos, bgNeg, bgPos || bgNeg,
-      wtP, wtN, wtP || wtN,
-      noLonger,
-      rapidPos, rapidNeg, rapidPos || rapidNeg,
-      tb1Up, tb1Down, tb1Up || tb1Down,
-      tb2Up, tb2Down, tb2Up || tb2Down,
-      tb12Green, tb12Red, tb12Green || tb12Red,
-      tb12Green && p, tb12Red && q, (tb12Green && p) || (tb12Red && q),
-      tb1Green && p, tb1Red && q, (tb1Green && p) || (tb1Red && q),
-      tb2Green && p, tb2Red && q, (tb2Green && p) || (tb2Red && q),
-      bgPos && tb1Green, bgNeg && tb1Red, (bgPos && tb1Green) || (bgNeg && tb1Red),
-      bgPos && tb2Green, bgNeg && tb2Red, (bgPos && tb2Green) || (bgNeg && tb2Red),
-      bgPos && tb1Green && tb2Green, bgNeg && tb1Red && tb2Red,
-      (bgPos && tb1Green && tb2Green) || (bgNeg && tb1Red && tb2Red),
-    ];
-    for (let k = 0; k < v.length; k++) flags[k][i] = v[k];
-  }
+  const PLOT_COUNT = 11;
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines: [
-      { value: 113.7, options: { color: hlineColor, linestyle: 'dashed' } },
-      { value: 131.3, options: { color: hlineColor, linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_tma', plot2: 'hline_tmb', colors: fillColors,
-        options: { title: 'Trend Meter Background Highlight - 3 Trend Meter Conditions Met' } },
-    ],
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      const s: TrendMeterRun = {
+        esa: taStep.ema(9), de: taStep.ema(9), wt1: taStep.ema(12), wt2: taStep.sma(), wtCross: taStep.cross(),
+        ma1: maStep(cfg.ma1Type, cfg.ma1Length), ma2: maStep(cfg.ma2Type, cfg.ma2Length),
+        ma3: maStep(cfg.ma3Type, cfg.ma3Length), ma4: maStep(cfg.ma4Type, cfg.ma4Length),
+        macdFast: taStep.ema(12), macdSlow: taStep.ema(26), macdSig: taStep.ema(9),
+        fastFast: taStep.ema(8), fastSlow: taStep.ema(21), fastSig: taStep.ema(5),
+        ema5: taStep.ema(5), ema20: taStep.ema(20), dad: taStep.ema(30),
+        rsi5: taStep.rsi(5), rsi13: taStep.rsi(13), rsi14: taStep.rsi(14),
+        xMean: taStep.sma(), yMean: taStep.sma(), xDev: taStep.stdev(), yDev: taStep.stdev(), corr: taStep.correlation(21),
+        haopen: [], haclose: [], ccolor: [], ma1v: [], ma2v: [], ma3v: [], ma4v: [], rsi14v: [], yellowWave: [],
+        pos3: [], neg3: [], plots: Array.from({ length: PLOT_COUNT }, () => []), fillColors: [],
+        flags: alertConditions.map(() => []), times: alertConditions.map(() => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [
+        s.esa, s.de, s.wt1, s.wt2, s.wtCross, s.ma1, s.ma2, s.ma3, s.ma4, s.macdFast, s.macdSlow, s.macdSig,
+        s.fastFast, s.fastSlow, s.fastSig, s.ema5, s.ema20, s.dad, s.rsi5, s.rsi13, s.rsi14,
+        s.xMean, s.yMean, s.xDev, s.yDev, s.corr,
+      ];
+      s.lists = s.times;
+      s.series = [
+        s.haopen, s.haclose, s.ccolor, s.ma1v, s.ma2v, s.ma3v, s.ma4v, s.rsi14v, s.yellowWave, s.pos3, s.neg3,
+        ...s.plots, s.fillColors, ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const close = b.close;
+      const prev = (a: number[], k = 1) => (i - k >= 0 ? a[i - k] : NaN);
+
+      // Wave Trend
+      const ap = (b.high + b.low + b.close) / 3;
+      const esa = s.esa.step(ap);
+      const de = s.de.step(Math.abs(ap - esa));
+      const ci = (ap - esa) / (0.015 * de);
+      const wt1 = s.wt1.step(ci);
+      const wt2 = s.wt2.step(wt1, 3);
+      const yellowWave = wt1 - wt2;
+      s.yellowWave[i] = yellowWave;
+      const wtCross = s.wtCross.step(wt1, wt2);
+
+      // Moving averages of the trend bars
+      const ma1 = s.ma1.step(close);
+      const ma2 = s.ma2.step(close);
+      const ma3 = s.ma3.step(close);
+      const ma4 = s.ma4.step(close);
+      s.ma1v[i] = ma1;
+      s.ma2v[i] = ma2;
+      s.ma3v[i] = ma3;
+      s.ma4v[i] = ma4;
+
+      // MACD 12 / 26 / 9 and fast MACD 8 / 21 / 5
+      const line = s.macdFast.step(close) - s.macdSlow.step(close);
+      const macdHistogram = line - s.macdSig.step(line);
+      const fastLine = s.fastFast.step(close) - s.fastSlow.step(close);
+      const fastMacdHistogram = fastLine - s.fastSig.step(fastLine);
+
+      // Top Dog Trading Mom / Dad
+      const topDogMom = s.ema5.step(close) - s.ema20.step(close);
+      const topDogDad = s.dad.step(topDogMom);
+
+      // Trend candles: haopen := na(haopen[1]) ? (open + close) / 2 : (haopen[1] + haclose[1]) / 2, haclose = ohlc4
+      const haclose = (b.open + b.high + b.low + b.close) / 4;
+      s.haclose[i] = haclose;
+      const p = prev(s.haopen);
+      const haopen = isNaN(p) ? (b.open + b.close) / 2 : (p + s.haclose[i - 1]) / 2;
+      s.haopen[i] = haopen;
+      const ccolor = gt(haclose - haopen, 0) ? 1 : 0;
+      s.ccolor[i] = ccolor;
+      const inside = (k: number) => {
+        const o = prev(s.haopen, k);
+        const c = prev(s.haclose, k);
+        const hi = Math.max(o, c);
+        const lo = Math.min(o, c);
+        return le(haopen, hi) && ge(haopen, lo) && le(haclose, hi) && ge(haclose, lo);
+      };
+      let tc = ccolor;
+      for (const k of [6, 5, 4, 3, 2, 1]) {
+        if (inside(k)) {
+          tc = prev(s.ccolor, k);
+          break;
+        }
+      }
+      const trendCandle = on(tc) ? 1 : 0;
+
+      // RSI 5, RSI 13 and the linear regression signal line of RSI 13 (x = bar_index)
+      const rsi5 = s.rsi5.step(close);
+      const rsi13 = s.rsi13.step(close);
+      const x = i;
+      const x_ = s.xMean.step(x, 21);
+      const y_ = s.yMean.step(rsi13, 21);
+      const mx = s.xDev.step(x, 21);
+      const my = s.yDev.step(rsi13, 21);
+      const corr = s.corr.step(x, rsi13);
+      const slope = corr * (my / mx);
+      const inter = y_ - slope * x_;
+      const linReg1 = x * slope + inter;
+
+      const rsi14 = s.rsi14.step(close);
+      s.rsi14v[i] = rsi14;
+
+      const meterResult = (src: TrendMeterSource): number => {
+        switch (src) {
+          case 'MACD Crossover - 12, 26, 9': return gt(macdHistogram, 0) ? 1 : 0;
+          case 'MACD Crossover - Fast - 8, 21, 5': return gt(fastMacdHistogram, 0) ? 1 : 0;
+          case 'Mom Dad Cross (Top Dog Trading)': return gt(topDogMom, topDogDad) ? 1 : 0;
+          case 'RSI Signal Line Cross - RSI 13, Sig 21': return gt(rsi13, linReg1) ? 1 : 0;
+          case 'RSI 5: > or < 50': return gt(rsi5, 50) ? 1 : 0;
+          case 'RSI 13: > or < 50': return gt(rsi13, 50) ? 1 : 0;
+          case 'Trend Candles': return trendCandle;
+          default: return NaN;
+        }
+      };
+      const meterColor = (src: TrendMeterSource): string | null => {
+        if (src === 'N/A') return null;
+        return on(meterResult(src)) ? TEAL : RED;
+      };
+
+      const r1 = on(meterResult(cfg.trendBar1));
+      const r2 = on(meterResult(cfg.trendBar2));
+      const r3 = on(meterResult(cfg.trendBar3));
+      const pos3 = r1 && r2 && r3;
+      const neg3 = !r1 && !r2 && !r3;
+      s.pos3[i] = pos3;
+      s.neg3[i] = neg3;
+
+      const tb4On = (() => {
+        switch (cfg.trendBar4) {
+          case 'MA Direction - Fast MA - TB1': return gt(ma1, prev(s.ma1v));
+          case 'MA Direction - Slow MA - TB1': return gt(ma2, prev(s.ma2v));
+          default: return gt(ma1, ma2);
+        }
+      })();
+      const tb5On = (() => {
+        switch (cfg.trendBar5) {
+          case 'MA Direction - Fast MA - TB2': return gt(ma3, prev(s.ma3v));
+          case 'MA Direction - Slow MA - TB2': return gt(ma4, prev(s.ma4v));
+          default: return gt(ma3, ma4);
+        }
+      })();
+      // BackgroundColorChangePositive = TrendBars3Positive and not TrendBars3Positive[1] (na [1] on bar 0 is false)
+      const chPos = pos3 && !(i > 0 && s.pos3[i - 1]);
+      const chNeg = neg3 && !(i > 0 && s.neg3[i - 1]);
+      // plot transp = 20 / 18 on an opaque colour
+      const signalColor = chPos ? String(color.new(TEAL, 20)) : chNeg ? String(color.new(RED, 20)) : 'transparent';
+      // OSIndicatorsYellowPointingUp = (RSI14OS or RSI14OS[1]) and WTVOS and YellowWavePointingUp
+      const osUp = (lt(rsi14, 30) || lt(prev(s.rsi14v), 30)) && lt(wt1, -60) && gt(yellowWave, prev(s.yellowWave));
+      // OBIndicatorsYellowPointingDown = (RSI14OB or RSI14OB[1]) and WTVOB and not YellowWavePointingUp
+      const obDown = (gt(rsi14, 70) || gt(prev(s.rsi14v), 70)) && gt(wt1, 60) && !gt(yellowWave, prev(s.yellowWave));
+      // PositiveWaveTrendCross = WTCross and WTCrossUp (wt2 - wt1 <= 0), NegativeWaveTrendCross = WTCross and WTCrossDown
+      const wtPos = wtCross && le(wt2 - wt1, 0);
+      const wtNeg = wtCross && ge(wt2 - wt1, 0);
+      const meter = (src: TrendMeterSource, value: number): Point => {
+        const c = meterColor(src);
+        return { time: t, value, color: c === null ? 'transparent' : String(color.new(c, 18)) };
+      };
+
+      const pl = s.plots;
+      pl[0][i] = { time: t, value: cfg.posNegPressure && osUp ? 138.5 : NaN, color: posPressure };
+      pl[1][i] = { time: t, value: cfg.posNegPressure && obDown ? 138.5 : NaN, color: negPressure };
+      pl[2][i] = { time: t, value: cfg.tmSetups ? 134.5 : NaN, color: signalColor };
+      {
+        const up = wtPos && pos3;
+        const down = wtNeg && neg3;
+        pl[3][i] = { time: t, value: cfg.tmSetupsAndWt && (up || down) ? 134.5 : NaN, color: signalColor };
+      }
+      pl[4][i] = meter(cfg.trendBar1, 128.5);
+      pl[5][i] = meter(cfg.trendBar2, 122.5);
+      pl[6][i] = meter(cfg.trendBar3, 116.5);
+      pl[7][i] = { time: t, value: cfg.showTrendBar1 && cfg.showTrendBar2 ? 110 : NaN, color: tb4On ? tbGreen : tbRed };
+      pl[8][i] = { time: t, value: cfg.showTrendBar1 && !cfg.showTrendBar2 ? 110 : NaN, color: tb4On ? tbGreen : tbRed };
+      pl[9][i] = { time: t, value: cfg.showTrendBar2 && cfg.showTrendBar1 ? 104.5 : NaN, color: tb5On ? tbGreen : tbRed };
+      pl[10][i] = { time: t, value: cfg.showTrendBar2 && !cfg.showTrendBar1 ? 110 : NaN, color: tb5On ? tbGreen : tbRed };
+
+      // fill(TMa, TMb, color = TrendBars3Positive ? color.green : TrendBars3Negative ? color.red : na, transp = 91)
+      s.fillColors[i] = pos3 ? fillGreen : neg3 ? fillRed : 'transparent';
+
+      // Alert conditions, as the original computes them (na history is false)
+      const at = (a: boolean[], k: number) => i - k >= 0 && a[i - k];
+      const crossUp = (a: number, bv: number, pa: number, pb: number) => gt(a, bv) && le(pa, pb);
+      const crossDown = (a: number, bv: number, pa: number, pb: number) => lt(a, bv) && ge(pa, pb);
+      const P3 = pos3, Q3 = neg3;
+      const bgPos = chPos, bgNeg = chNeg;
+      const wtP = wtPos && P3, wtN = wtNeg && Q3;
+      // TrendMetersNoLongerAlign = ((not P or not N) and P[1]) or ((not P or not N) and N[1])
+      const notBoth = !P3 || !Q3;
+      const noLonger = (notBoth && at(s.pos3, 1)) || (notBoth && at(s.neg3, 1));
+      // RapidColorChangePositive / Negative = P and (N[1] or N[2]) / N and (P[1] or P[2])
+      const rapidPos = P3 && (at(s.neg3, 1) || at(s.neg3, 2));
+      const rapidNeg = Q3 && (at(s.pos3, 1) || at(s.pos3, 2));
+      // TB1MACrossUp = crossover(MA1, MA2), TB2MACrossUp = crossover(MA3, MA4), ...
+      const pm1 = prev(s.ma1v), pm2 = prev(s.ma2v), pm3 = prev(s.ma3v), pm4 = prev(s.ma4v);
+      const tb1Up = crossUp(ma1, ma2, pm1, pm2), tb1Down = crossDown(ma1, ma2, pm1, pm2);
+      const tb2Up = crossUp(ma3, ma4, pm3, pm4), tb2Down = crossDown(ma3, ma4, pm3, pm4);
+      const tb1Green = gt(ma1, ma2), tb1Red = lt(ma1, ma2);
+      const tb2Green = gt(ma3, ma4), tb2Red = lt(ma3, ma4);
+      const tb12Green = tb1Green && tb2Green && (tb1Up || tb2Up);
+      const tb12Red = tb1Red && tb2Red && (tb1Down || tb2Down);
+      const v = [
+        obDown || osUp,
+        bgPos, bgNeg, bgPos || bgNeg,
+        wtP, wtN, wtP || wtN,
+        noLonger,
+        rapidPos, rapidNeg, rapidPos || rapidNeg,
+        tb1Up, tb1Down, tb1Up || tb1Down,
+        tb2Up, tb2Down, tb2Up || tb2Down,
+        tb12Green, tb12Red, tb12Green || tb12Red,
+        tb12Green && P3, tb12Red && Q3, (tb12Green && P3) || (tb12Red && Q3),
+        tb1Green && P3, tb1Red && Q3, (tb1Green && P3) || (tb1Red && Q3),
+        tb2Green && P3, tb2Red && Q3, (tb2Green && P3) || (tb2Red && Q3),
+        bgPos && tb1Green, bgNeg && tb1Red, (bgPos && tb1Green) || (bgNeg && tb1Red),
+        bgPos && tb2Green, bgNeg && tb2Red, (bgPos && tb2Green) || (bgNeg && tb2Red),
+        bgPos && tb1Green && tb2Green, bgNeg && tb1Red && tb2Red,
+        (bgPos && tb1Green && tb2Green) || (bgNeg && tb1Red && tb2Red),
+      ];
+      for (let k = 0; k < v.length; k++) {
+        s.flags[k][i] = v[k];
+        if (v[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      for (let k = 0; k < PLOT_COUNT; k++) plots[`plot${k}`] = s.plots[k].slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        hlines: [
+          { value: 113.7, options: { color: hlineColor, linestyle: 'dashed' } },
+          { value: 131.3, options: { color: hlineColor, linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_tma', plot2: 'hline_tmb', colors: s.fillColors.slice(),
+            options: { title: 'Trend Meter Background Highlight - 3 Trend Meter Conditions Met' } },
+        ],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendMeterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrendMeterInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions, in its declaration order */
@@ -434,6 +495,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TrendMeter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

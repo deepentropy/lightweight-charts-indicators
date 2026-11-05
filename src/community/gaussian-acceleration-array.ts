@@ -13,7 +13,9 @@
  * Original notice: © NantzOS
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taCore, taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export interface GaussianAccelerationArrayInputs {
   /** Sample period (WMA and ALMA length) */
@@ -84,65 +86,162 @@ const gt = (a: number, b: number) => a - b > EPS;
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(bars: Bar[], inputs: Partial<GaussianAccelerationArrayInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const high = S(bars.map((b) => b.high));
-  const low = S(bars.map((b) => b.low));
-  const hl2 = S(bars.map((b) => (b.high + b.low) / 2));
+/**
+ * `ta.alma(source, length, offset, sigma)` one bar at a time (no taStep machine): the weights and the sum of the last
+ * `length` values in the order of the oakscriptjs array function (same doubles); na until `length` bars.
+ */
+class AlmaStep implements Committable {
+  private readonly weights: number[] = [];
+  private readonly len: number;
+  private values: number[] = [];
+  private pending = NaN;
+  private stepped = false;
 
+  constructor(length: number, offset: number, sigma: number) {
+    // the length check of ta.alma
+    taCore.alma([], length, offset, sigma);
+    this.len = length;
+    const m = offset * (length - 1);
+    const s = length / sigma;
+    let weightSum = 0;
+    for (let i = 0; i < length; i++) {
+      const weight = Math.exp(-1 * Math.pow(i - m, 2) / (2 * Math.pow(s, 2)));
+      this.weights.push(weight);
+      weightSum += weight;
+    }
+    for (let i = 0; i < length; i++) this.weights[i] /= weightSum;
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    this.pending = value;
+    const len = this.len;
+    const n = this.values.length;
+    if (n + 1 < len) return NaN;
+    let almaValue = 0;
+    for (let j = 0; j < len; j++) {
+      almaValue += (j === len - 1 ? value : this.values[n - len + 1 + j]) * this.weights[j];
+    }
+    return almaValue;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.values.push(this.pending);
+    if (this.values.length > this.len * 2 + 64) this.values = this.values.slice(-this.len);
+  }
+}
+
+/** calc_acceleration(src, period, smoothing) of one source: the machines and the values of the bars */
+interface Accel {
+  wma: ReturnType<typeof taStep.wma>;
+  ema: ReturnType<typeof taStep.ema>;
+  alma: AlmaStep;
+  velSource: number[];
+  accSource: number[];
+}
+
+interface GaussianRun extends BarRunState<Record<string, never>> {
+  /** Per period: the high, low and hl2 accelerations */
+  accels: Accel[][];
+  /** Per period: the hl2 acceleration (after the inversion) */
+  mAcc: number[][];
+  plots: Point[][];
+  bg: string[][];
+}
+
+function study(inputs: Partial<GaussianAccelerationArrayInputs>): BarStudy<GaussianRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
   // logarithmic(src) = math.sign(src) * math.log(math.abs(src) + 1)
   const logarithmic = (x: number) => (isNaN(x) ? NaN : Math.sign(x) * Math.log(Math.abs(x) + 1));
-  // calc_acceleration(src, period, smoothing): [acc, vel]
-  const accel = (src: number[], len: number) => {
-    const velSource = A(ta.ema(S(src), cfg.smoothing));
-    const vel = velSource.map((v, i) => (i > 0 ? logarithmic(v) - logarithmic(velSource[i - 1]) : NaN));
-    const accSource = A(ta.alma(S(vel), len, 0.85, 6));
-    const acc = accSource.map((v, i) => (i > 0 ? logarithmic(v) - logarithmic(accSource[i - 1]) : NaN));
-    return { acc, vel };
-  };
   const sign = cfg.invertIndicator ? -1 : 1;
   const bullBg = cfg.colorBullBG;
   const bearBg = cfg.colorBearBG;
-
   const periods = [cfg.period, cfg.period - cfg.aVar, cfg.period + cfg.aVar,
     cfg.period - 2 * cfg.aVar, cfg.period + 2 * cfg.aVar];
-  const plots: Record<string, Point[]> = {};
-  const fills: { plot1: string; plot2: string; colors: string[] }[] = [];
-  periods.forEach((len, k) => {
-    const h = accel(A(ta.wma(high, len)), len);
-    const l = accel(A(ta.wma(low, len)), len);
-    const m = accel(A(ta.wma(hl2, len)), len);
-    // Inversion: x := invertIndicator ? -x : x
-    const hAcc = h.acc.map((v) => sign * v);
-    const lAcc = l.acc.map((v) => sign * v);
-    const mAcc = m.acc.map((v) => sign * v);
-    // get_colors(vel, acc, acc[1], ...): acc_color = vel > 0 ? bull : bear; acc_bg = acc > acc[1] ? bullBG : bearBG
-    const lineColor = m.vel.map((v) => (gt(v, 0) ? cfg.colorBull : cfg.colorBear));
-    const shown = k < 3 || cfg.displayExpArray;
-    const bg = mAcc.map((v, i) => (!shown ? 'transparent' : i > 0 && gt(v, mAcc[i - 1]) ? bullBg : bearBg));
-    const line = (vals: number[]) => bars.map((b, i) => ({
-      time: b.time, value: Number.isFinite(vals[i]) ? vals[i] : NaN, color: lineColor[i],
-    }));
-    plots[`plot${3 * k}`] = line(mAcc);
-    plots[`plot${3 * k + 1}`] = line(hAcc);
-    plots[`plot${3 * k + 2}`] = line(lAcc);
-    fills.push({ plot1: `plot${3 * k + 1}`, plot2: `plot${3 * k + 2}`, colors: bg });
-  });
+
+  // calc_acceleration(src, period, smoothing): [acc, vel] of bar i
+  const accel = (a: Accel, src: number, len: number, i: number) => {
+    const velSource = a.ema.step(a.wma.step(src, len));
+    a.velSource[i] = velSource;
+    const vel = i > 0 ? logarithmic(velSource) - logarithmic(a.velSource[i - 1]) : NaN;
+    const accSource = a.alma.step(vel);
+    a.accSource[i] = accSource;
+    const acc = i > 0 ? logarithmic(accSource) - logarithmic(a.accSource[i - 1]) : NaN;
+    return { acc, vel };
+  };
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    hlines: [
-      { value: 0, options: { title: 'Centroid', color: String(color.new(color.white, 80)), linestyle: 'dashed' } },
-    ],
+    init() {
+      const s: GaussianRun = {
+        accels: periods.map((len) => [0, 1, 2].map((): Accel => ({
+          wma: taStep.wma(), ema: taStep.ema(cfg.smoothing), alma: new AlmaStep(len, 0.85, 6), velSource: [], accSource: [],
+        }))),
+        mAcc: periods.map(() => []), plots: periods.flatMap(() => [[], [], []]), bg: periods.map(() => []),
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      const all = s.accels.flat();
+      s.steps = all.flatMap((a) => [a.wma, a.ema, a.alma]);
+      s.series = [...all.flatMap((a) => [a.velSource, a.accSource]), ...s.mAcc, ...s.plots, ...s.bg];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const hl2 = (b.high + b.low) / 2;
+      periods.forEach((len, k) => {
+        const [ha, la, ma] = s.accels[k];
+        const h = accel(ha, b.high, len, i);
+        const l = accel(la, b.low, len, i);
+        const m = accel(ma, hl2, len, i);
+        // Inversion: x := invertIndicator ? -x : x
+        const hAcc = sign * h.acc;
+        const lAcc = sign * l.acc;
+        const mAcc = sign * m.acc;
+        s.mAcc[k][i] = mAcc;
+        // get_colors(vel, acc, acc[1], ...): acc_color = vel > 0 ? bull : bear; acc_bg = acc > acc[1] ? bullBG : bearBG
+        const lineColor = gt(m.vel, 0) ? cfg.colorBull : cfg.colorBear;
+        const shown = k < 3 || cfg.displayExpArray;
+        s.bg[k][i] = !shown ? 'transparent' : i > 0 && gt(mAcc, s.mAcc[k][i - 1]) ? bullBg : bearBg;
+        const point = (v: number): Point => ({ time: b.time, value: Number.isFinite(v) ? v : NaN, color: lineColor });
+        s.plots[3 * k][i] = point(mAcc);
+        s.plots[3 * k + 1][i] = point(hAcc);
+        s.plots[3 * k + 2][i] = point(lAcc);
+      });
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      const fills: { plot1: string; plot2: string; colors: string[] }[] = [];
+      periods.forEach((_len, k) => {
+        plots[`plot${3 * k}`] = s.plots[3 * k].slice();
+        plots[`plot${3 * k + 1}`] = s.plots[3 * k + 1].slice();
+        plots[`plot${3 * k + 2}`] = s.plots[3 * k + 2].slice();
+        fills.push({ plot1: `plot${3 * k + 1}`, plot2: `plot${3 * k + 2}`, colors: s.bg[k].slice() });
+      });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        hlines: [
+          { value: 0, options: { title: 'Centroid', color: String(color.new(color.white, 80)), linestyle: 'dashed' } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GaussianAccelerationArrayInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GaussianAccelerationArrayInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const GaussianAccelerationArray = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

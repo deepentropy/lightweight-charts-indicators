@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AIWeightedRSIInputs {
   /** RSI length */
@@ -95,107 +97,145 @@ function topkIndices(arr: number[]): number[] {
   return out;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AIWeightedRSIInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+type Point = { time: number; value: number };
+type Corr = ReturnType<typeof taStep.correlation>;
+type Sma = ReturnType<typeof taStep.sma>;
+type Stdev = ReturnType<typeof taStep.stdev>;
+
+interface AIWeightedRSIRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  atr: ReturnType<typeof taStep.atr>;
+  /** ta.correlation(y_rsi, x, learnLen) of each predictor */
+  corr: Corr[];
+  /** ta.sma / ta.stdev(x, learnLen) of each predictor (f_z) */
+  zMean: Sma[];
+  zStd: Stdev[];
+  rsiMean: Sma;
+  rsiStd: Stdev;
+  signal: Sma;
+  /** Per-bar features (read on the next bar) */
+  retLog: number[];
+  rsiVal: number[];
+  atrPct: number[];
+  volLogChg: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+function study(inputs: Partial<AIWeightedRSIInputs>): BarStudy<AIWeightedRSIRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { rsiLen, sigLen, learnLen } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const vol = bars.map((b) => b.volume ?? NaN);
-  const prev = (a: number[], i: number) => (i > 0 ? a[i - 1] : NaN);
-
-  // Per-bar features
-  // retLog = math.log(close / nz(close[1], close)); volLogChg = math.log(vol / nz(vol[1], vol))
-  const retLog = close.map((c, i) => Math.log(div(c, nz(prev(close, i), c))));
-  const rsiVal = A(ta.rsi(S(close), rsiLen));
-  const atr200 = A(ta.atr(bars, 200));
-  const atrPct = atr200.map((a, i) => div(a, close[i]));
-  const volLogChg = vol.map((v, i) => Math.log(div(v, nz(prev(vol, i), v))));
-
-  // Target: prior bar RSI; predictors: prior-bar values of each feature
-  const yRsi = rsiVal.map((_v, i) => prev(rsiVal, i));
-  const xRet = retLog.map((_v, i) => nz(prev(retLog, i)));
-  const xRsi = rsiVal.map((_v, i) => nz(prev(rsiVal, i)));
-  const xAtrp = atrPct.map((_v, i) => nz(prev(atrPct, i)));
-  const xVchg = volLogChg.map((_v, i) => nz(prev(volLogChg, i)));
-  const xVol = vol.map((_v, i) => nz(prev(vol, i)));
-
-  const corr = (x: number[]) => A(ta.correlation(S(yRsi), S(x), learnLen));
-  // f_z(src, len): s > 0 ? (src - sma) / stdev : 0
-  const fz = (x: number[]) => {
-    const m = A(ta.sma(S(x), learnLen));
-    const s = A(ta.stdev(S(x), learnLen));
-    return x.map((v, i) => nz(gt(s[i], 0) ? div(v - m[i], s[i]) : 0));
-  };
-  const corrRet = corr(xRet);
-  const corrRsi = corr(xRsi);
-  const corrAtrp = corr(xAtrp);
-  const corrVchg = corr(xVchg);
-  const corrVol = corr(xVol);
-  const zRet = fz(xRet);
-  const zRsi = fz(xRsi);
-  const zAtrp = fz(xAtrp);
-  const zVchg = fz(xVchg);
-  const zVol = fz(xVol);
-
-  // rsi_mean = ta.sma(y_rsi, learnLen); rsi_std = ta.stdev(y_rsi, learnLen)
-  const rsiMean = A(ta.sma(S(yRsi), learnLen));
-  const rsiStd = A(ta.stdev(S(yRsi), learnLen));
-
-  const rsiWeight: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    // corrs = |nz(corr)| of each predictor; topIdx = f_topk_indices(corrs)
-    const corrs = [corrRet[i], corrRsi[i], corrAtrp[i], corrVchg[i], corrVol[i]].map((c) => Math.abs(nz(c)));
-    const topIdx = topkIndices(corrs);
-    const featZ = [zRet[i], zRsi[i], zAtrp[i], zVchg[i], zVol[i]];
-    // coef = nz(corr) of each predictor, coef_rsi = 1.0
-    const coef = [nz(corrRet[i]), 1.0, nz(corrAtrp[i]), nz(corrVchg[i]), nz(corrVol[i])];
-    // f_pred: s += nz(coef[idx]) * nz(featZ[idx]) over topIdx
-    let s = 0.0;
-    for (const idx of topIdx) s += nz(coef[idx]) * nz(featZ[idx]);
-    // pred_rsi = nz(rsi_mean) + nz(rsi_std) * pred_rsi_z
-    const predRsi = nz(rsiMean[i]) + nz(rsiStd[i]) * s;
-    // rsiWeight = math.max(-2, math.min(2, (50 - nz(pred_rsi)) / 50)) * -1
-    rsiWeight[i] = Math.max(-2, Math.min(2, (50 - nz(predRsi)) / 50)) * -1;
-  }
-  const maRsi = A(ta.sma(S(rsiWeight), sigLen));
-
-  const constant = <T>(v: T) => new Array<T>(n).fill(v);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: metadata.precision },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: rsiWeight[i] })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: maRsi[i] })),
-      // midLinePlot = plot(0, color = na, editable = false, display = display.none)
-      plot2: bars.map((b) => ({ time: b.time, value: 0 })),
+    init() {
+      const s: AIWeightedRSIRun = {
+        rsi: taStep.rsi(rsiLen), atr: taStep.atr(200),
+        corr: Array.from({ length: 5 }, () => taStep.correlation(learnLen)),
+        zMean: Array.from({ length: 5 }, () => taStep.sma()),
+        zStd: Array.from({ length: 5 }, () => taStep.stdev()),
+        rsiMean: taStep.sma(), rsiStd: taStep.stdev(), signal: taStep.sma(),
+        retLog: [], rsiVal: [], atrPct: [], volLogChg: [], plot0: [], plot1: [], plot2: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.atr, ...s.corr, ...s.zMean, ...s.zStd, s.rsiMean, s.rsiStd, s.signal];
+      s.series = [s.retLog, s.rsiVal, s.atrPct, s.volLogChg, s.plot0, s.plot1, s.plot2];
+      return s;
     },
-    hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
-    fills: [
-      // fill(rsiUpperBand, rsiLowerBand, color = color.rgb(126, 87, 194, 90))
-      { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'AI-Weighted RSI Background Fill', color: BAND_FILL } },
-      // fill(rsiPlot, midLinePlot, 0.5, 0, top_color = color.new(color.lime, 0), bottom_color = color.new(color.lime, 100))
-      { plot1: 'plot0', plot2: 'plot2', options: { title: 'Overbought Gradient Fill' }, gradient: {
-        topValue: constant(0.5), bottomValue: constant(0),
-        topColor: constant<string | null>(String(color.new(color.lime, 0))),
-        bottomColor: constant<string | null>(String(color.new(color.lime, 100))),
-      } },
-      // fill(rsiPlot, midLinePlot, 0, -0.5, top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0))
-      { plot1: 'plot0', plot2: 'plot2', options: { title: 'Oversold Gradient Fill' }, gradient: {
-        topValue: constant(0), bottomValue: constant(-0.5),
-        topColor: constant<string | null>(String(color.new(color.red, 100))),
-        bottomColor: constant<string | null>(String(color.new(color.red, 0))),
-      } },
-    ],
-    markers: [],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      const vol = b.volume ?? NaN;
+      const prevBar = i > 0 ? bars[i - 1] : null;
+      const prev = (a: number[]) => (i > 0 ? a[i - 1] : NaN);
+
+      // Per-bar features
+      // retLog = math.log(close / nz(close[1], close)); volLogChg = math.log(vol / nz(vol[1], vol))
+      s.retLog[i] = Math.log(div(close, nz(prevBar ? prevBar.close : NaN, close)));
+      const rsiVal = s.rsi.step(close);
+      s.rsiVal[i] = rsiVal;
+      const atr200 = s.atr.step(b.high, b.low, close);
+      s.atrPct[i] = div(atr200, close);
+      s.volLogChg[i] = Math.log(div(vol, nz(prevBar ? prevBar.volume ?? NaN : NaN, vol)));
+
+      // Target: prior bar RSI; predictors: prior-bar values of each feature
+      const yRsi = prev(s.rsiVal);
+      const x = [
+        nz(prev(s.retLog)), nz(prev(s.rsiVal)), nz(prev(s.atrPct)), nz(prev(s.volLogChg)),
+        nz(prevBar ? prevBar.volume ?? NaN : NaN),
+      ];
+
+      const corrs = x.map((v, k) => s.corr[k].step(yRsi, v));
+      // f_z(src, len): s > 0 ? (src - sma) / stdev : 0
+      const featZ = x.map((v, k) => {
+        const m = s.zMean[k].step(v, learnLen);
+        const sd = s.zStd[k].step(v, learnLen);
+        return nz(gt(sd, 0) ? div(v - m, sd) : 0);
+      });
+
+      // rsi_mean = ta.sma(y_rsi, learnLen); rsi_std = ta.stdev(y_rsi, learnLen)
+      const rsiMean = s.rsiMean.step(yRsi, learnLen);
+      const rsiStd = s.rsiStd.step(yRsi, learnLen);
+
+      // corrs = |nz(corr)| of each predictor; topIdx = f_topk_indices(corrs)
+      const topIdx = topkIndices(corrs.map((c) => Math.abs(nz(c))));
+      // coef = nz(corr) of each predictor, coef_rsi = 1.0
+      const coef = [nz(corrs[0]), 1.0, nz(corrs[2]), nz(corrs[3]), nz(corrs[4])];
+      // f_pred: s += nz(coef[idx]) * nz(featZ[idx]) over topIdx
+      let sum = 0.0;
+      for (const idx of topIdx) sum += nz(coef[idx]) * nz(featZ[idx]);
+      // pred_rsi = nz(rsi_mean) + nz(rsi_std) * pred_rsi_z
+      const predRsi = nz(rsiMean) + nz(rsiStd) * sum;
+      // rsiWeight = math.max(-2, math.min(2, (50 - nz(pred_rsi)) / 50)) * -1
+      const rsiWeight = Math.max(-2, Math.min(2, (50 - nz(predRsi)) / 50)) * -1;
+      const maRsi = s.signal.step(rsiWeight, sigLen);
+
+      s.plot0[i] = { time: b.time, value: rsiWeight };
+      s.plot1[i] = { time: b.time, value: maRsi };
+      // midLinePlot = plot(0, color = na, editable = false, display = display.none)
+      s.plot2[i] = { time: b.time, value: 0 };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const constant = <T>(v: T) => new Array<T>(n).fill(v);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: metadata.precision },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
+        fills: [
+          // fill(rsiUpperBand, rsiLowerBand, color = color.rgb(126, 87, 194, 90))
+          { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'AI-Weighted RSI Background Fill', color: BAND_FILL } },
+          // fill(rsiPlot, midLinePlot, 0.5, 0, top_color = color.new(color.lime, 0), bottom_color = color.new(color.lime, 100))
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'Overbought Gradient Fill' }, gradient: {
+            topValue: constant(0.5), bottomValue: constant(0),
+            topColor: constant<string | null>(String(color.new(color.lime, 0))),
+            bottomColor: constant<string | null>(String(color.new(color.lime, 100))),
+          } },
+          // fill(rsiPlot, midLinePlot, 0, -0.5, top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0))
+          { plot1: 'plot0', plot2: 'plot2', options: { title: 'Oversold Gradient Fill' }, gradient: {
+            topValue: constant(0), bottomValue: constant(-0.5),
+            topColor: constant<string | null>(String(color.new(color.red, 100))),
+            bottomColor: constant<string | null>(String(color.new(color.red, 0))),
+          } },
+        ],
+        markers: [],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AIWeightedRSIInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AIWeightedRSIInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AIWeightedRSI = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,
