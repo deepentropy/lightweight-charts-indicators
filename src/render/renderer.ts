@@ -311,13 +311,23 @@ export class IndicatorRenderer {
     return series;
   }
 
-  /** The pool series of this creation slot when it has the same type and pane (options re-applied), else null */
+  /** Options last applied to each series (JSON): a reused series with the same options is not given them again */
+  private appliedOptions = new WeakMap<ISeriesApi<SeriesType, Time>, string>();
+
+  /**
+   * The pool series of this creation slot when it has the same type and pane (options re-applied when they changed:
+   * applying options makes the chart rebuild every point of the series), else null
+   */
   private take(kind: unknown, pane: number, options: object): ISeriesApi<SeriesType, Time> | null {
     const slot = this.created.length;
     const p = this.pool[slot];
     if (!p || p.kind !== kind || p.series.getPane().paneIndex() !== pane) return null;
     this.pool[slot] = null;
-    p.series.applyOptions(options);
+    const json = JSON.stringify(options);
+    if (this.appliedOptions.get(p.series) !== json) {
+      p.series.applyOptions(options);
+      this.appliedOptions.set(p.series, json);
+    }
     this.reused.add(p.series);
     return p.series;
   }
@@ -331,6 +341,7 @@ export class IndicatorRenderer {
     if (reused) return reused as unknown as ISeriesApi<T, Time>;
     const series = this.chart.addSeries(definition, options, pane);
     this.kinds.set(series, definition);
+    this.appliedOptions.set(series as unknown as ISeriesApi<SeriesType, Time>, JSON.stringify(options));
     return series;
   }
 
@@ -343,6 +354,7 @@ export class IndicatorRenderer {
     if (reused) return reused as unknown as ISeriesApi<'Custom', Time, TData | WhitespaceData<Time>, TOptions>;
     const series = this.chart.addCustomSeries(view, options, pane);
     this.kinds.set(series, view.constructor);
+    this.appliedOptions.set(series as unknown as ISeriesApi<SeriesType, Time>, JSON.stringify(options));
     return series;
   }
 

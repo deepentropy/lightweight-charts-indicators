@@ -27,6 +27,7 @@ interface FakeSeries {
   data: unknown[];
   setDataCalls: number;
   updateCalls: number;
+  optionsCalls: number;
 }
 
 function fakeChart() {
@@ -34,7 +35,7 @@ function fakeChart() {
   const preserve = new Map<number, boolean>();
   let paneCount = 1;
   const make = (options: Record<string, unknown> = {}, pane = 0) => {
-    const s: FakeSeries = { pane, primitives: new Set(), options: { ...options }, data: [], setDataCalls: 0, updateCalls: 0 };
+    const s: FakeSeries = { pane, primitives: new Set(), options: { ...options }, data: [], setDataCalls: 0, updateCalls: 0, optionsCalls: 0 };
     paneCount = Math.max(paneCount, pane + 1);
     series.add(s);
     return {
@@ -49,7 +50,7 @@ function fakeChart() {
         else if (i < 0 && (last < 0 || (s.data[last] as { time: number }).time < p.time)) s.data.push(p);
         else throw new Error('update of an older point');
       },
-      applyOptions: (o: Record<string, unknown>) => Object.assign(s.options, o),
+      applyOptions: (o: Record<string, unknown>) => { s.optionsCalls++; Object.assign(s.options, o); },
       options: () => s.options,
       attachPrimitive: (p: unknown) => { s.primitives.add(p); },
       detachPrimitive: (p: unknown) => { s.primitives.delete(p); },
@@ -186,6 +187,19 @@ describe('IndicatorRenderer', () => {
         });
       });
     }
+
+    it('gives a reused series its options again only when they changed', () => {
+      const f = fakeChart();
+      const r = new IndicatorRenderer(f.chart, { paneIndex: 1 });
+      const rsi = entry('rsi');
+      r.render(rsi, rsi.calculate(bars, {}), bars);
+      const s = fake(r.series()[0]);
+      r.render(rsi, rsi.calculate(tick(bars), {}), tick(bars), { reuseSeries: true });
+      expect(s.optionsCalls).toBe(0);
+      r.render(rsi, rsi.calculate(tick(bars), {}), tick(bars), { reuseSeries: true, plots: { [rsi.plotConfig[0].id]: { color: '#123456' } } });
+      expect(s.optionsCalls).toBe(1);
+      expect(s.options.color).toBe('#123456');
+    });
 
     it('replaces the data when more than the newest points changed', () => {
       const f = fakeChart();
