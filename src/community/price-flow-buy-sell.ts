@@ -15,11 +15,13 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color, math,
+  taStep, color, math,
   type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PriceFlowBuySellInputs {
   /** Base bandwidth (h) of the Gaussian kernel */
@@ -114,146 +116,190 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface FlowVars {
+  prevSellOut: boolean;
+  prevBuyOut: boolean;
+  prevSellIn: boolean;
+  prevBuyIn: boolean;
+  lastSignal: number; // var int last_signal = 0
+}
+
+interface FlowRun extends BarRunState<FlowVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  volBase: ReturnType<typeof taStep.sma>;
+  mae: ReturnType<typeof taStep.sma>;
+  velVis: ReturnType<typeof taStep.ema>;
+  velStdev: ReturnType<typeof taStep.stdev>;
+  src: number[];
+  yHat: number[];
+  velocity: number[];
+  plots: Point[][];
+  c90: string[];
+  c80: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<PriceFlowBuySellInputs>): BarStudy<FlowRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      // Volatility adjustment
+      const atr = taStep.atr(20);
+      const volBase = taStep.sma();
+      const mae = taStep.sma();
+      const velVis = taStep.ema(5);
+      const velStdev = taStep.stdev();
+      const s: FlowRun = {
+        atr, volBase, mae, velVis, velStdev,
+        src: [], yHat: [], velocity: [],
+        plots: Array.from({ length: 8 }, () => []),
+        c90: [], c80: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [atr, volBase, mae, velVis, velStdev],
+        vars: { prevSellOut: false, prevBuyOut: false, prevSellIn: false, prevBuyIn: false, lastSignal: 0 },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.src, s.yHat, s.velocity, ...s.plots, s.c90, s.c80, ...s.flags];
+      return s;
+    },
+    bar(s, k, bars) {
+      const b = bars[k];
+      const t = b.time;
+      const v = s.vars;
+      s.src[k] = value(b);
+      const volRaw = s.atr.step(b.high, b.low, b.close);
+      const volBase = s.volBase.step(volRaw, 100);
+      // Kernel regression loop (var float y_hat = 0.0, assigned on every bar)
+      const volRatio = cfg.useVol ? volRaw / (eq(volBase, 0) ? 1 : volBase) : 1.0;
+      // math.min / math.max with na give na
+      const volMod = Math.max(0.5, Math.min(volRatio, 2.0));
+      const hEff = cfg.hVal * volMod;
+      let num = 0.0;
+      let den = 0.0;
+      for (let i = 0; i <= cfg.lookback; i++) {
+        const dist = i;
+        const w = math.exp(-math.pow(dist, 2) / (2 * math.pow(hEff, 2))) as number;
+        num = num + w * (k - i >= 0 ? s.src[k - i] : NaN);
+        den = den + w;
+      }
+      const yHat = num / den;
+      s.yHat[k] = yHat;
+      // Statistical bounds (MAE)
+      const mae = s.mae.step(Math.abs(s.src[k] - yHat), cfg.lookback);
+      const upperIn = yHat + mae * cfg.multIn;
+      const lowerIn = yHat - mae * cfg.multIn;
+      const upperOut = yHat + mae * cfg.multOut;
+      const lowerOut = yHat - mae * cfg.multOut;
+      // Velocity and acceleration
+      const vel = k > 0 ? yHat - s.yHat[k - 1] : NaN;
+      s.velocity[k] = vel;
+      const accel = k > 0 ? vel - s.velocity[k - 1] : NaN;
+      const velVis = s.velVis.step(vel);
+      const velStdev = s.velStdev.step(vel, 20);
+
+      const isTrending = gt(Math.abs(vel), velStdev * 0.5);
+      const velMax = velStdev * 2.0;
+      const dynCol = gt(velVis, 0)
+        ? color.from_gradient(velVis, 0, velMax, cfg.colNeut, cfg.colBull)
+        : color.from_gradient(velVis, -velMax, 0, cfg.colBear, cfg.colNeut);
+      const bullWeaken = gt(vel, 0) && lt(accel, 0);
+      const bearWeaken = lt(vel, 0) && gt(accel, 0);
+      const { high, low, close, open } = b;
+      const sellRejOut = gt(high, upperOut) && lt(close, upperOut) && lt(close, open);
+      const buyRejOut = lt(low, lowerOut) && gt(close, lowerOut) && gt(close, open);
+      const sellRejIn = gt(high, upperIn) && lt(close, upperIn) && lt(close, open);
+      const buyRejIn = lt(low, lowerIn) && gt(close, lowerIn) && gt(close, open);
+      const newSellOut = sellRejOut && !v.prevSellOut;
+      const newBuyOut = buyRejOut && !v.prevBuyOut;
+      const newSellIn = sellRejIn && !v.prevSellIn;
+      const newBuyIn = buyRejIn && !v.prevBuyIn;
+      v.prevSellOut = sellRejOut;
+      v.prevBuyOut = buyRejOut;
+      v.prevSellIn = sellRejIn;
+      v.prevBuyIn = buyRejIn;
+      let signalShort: boolean;
+      let signalLong: boolean;
+      if (isTrending) {
+        signalShort = newSellOut && bullWeaken;
+        signalLong = newBuyOut && bearWeaken;
+      } else if (cfg.filterRng) {
+        signalShort = newSellIn && bullWeaken;
+        signalLong = newBuyIn && bearWeaken;
+      } else {
+        signalShort = newSellIn;
+        signalLong = newBuyIn;
+      }
+      const buySignal = signalLong && (!cfg.strictAlternation || v.lastSignal !== 1);
+      const sellSignal = signalShort && (!cfg.strictAlternation || v.lastSignal !== -1);
+      s.flags[0][k] = buySignal;
+      s.flags[1][k] = sellSignal;
+      if (buySignal) s.times[0].push(t as number);
+      if (sellSignal) s.times[1].push(t as number);
+      if (buySignal) v.lastSignal = 1;
+      else if (sellSignal) v.lastSignal = -1;
+      // plotshape(show_buy_sell and buy_signal, 'BUY', shape.labelup, location.belowbar, col_bull, 'BUY', black, small)
+      if (cfg.showBuySell && buySignal) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: cfg.colBull, text: 'BUY',
+          textColor: color.black, size: 'small' });
+      }
+      // plotshape(show_buy_sell and sell_signal, 'SELL', shape.labeldown, location.abovebar, col_bear, 'SELL', white, small)
+      if (cfg.showBuySell && sellSignal) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: cfg.colBear, text: 'SELL',
+          textColor: color.white, size: 'small' });
+      }
+
+      const c50 = String(color.new(dynCol, 50));
+      const c60 = String(color.new(dynCol, 60));
+      const c80 = String(color.new(dynCol, 80));
+      s.c90[k] = String(color.new(dynCol, 90));
+      s.c80[k] = c80;
+      s.plots[0][k] = { time: t, value: yHat, color: dynCol };
+      s.plots[1][k] = { time: t, value: yHat, color: c50 };
+      s.plots[2][k] = { time: t, value: yHat, color: c80 };
+      s.plots[3][k] = { time: t, value: yHat };
+      s.plots[4][k] = { time: t, value: upperIn, color: c80 };
+      s.plots[5][k] = { time: t, value: lowerIn, color: c80 };
+      s.plots[6][k] = { time: t, value: upperOut, color: c60 };
+      s.plots[7][k] = { time: t, value: lowerOut, color: c60 };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          { plot1: 'plot3', plot2: 'plot4', options: { title: 'Bull Zone' }, colors: s.c90.slice() },
+          { plot1: 'plot3', plot2: 'plot5', options: { title: 'Bear Zone' }, colors: s.c90.slice() },
+          { plot1: 'plot4', plot2: 'plot6', options: { title: 'Bull Extreme' }, colors: s.c80.slice() },
+          { plot1: 'plot5', plot2: 'plot7', options: { title: 'Bear Extreme' }, colors: s.c80.slice() },
+        ],
+        markers: s.markers.slice(),
+        // alertcondition(buy_signal, 'BUY Alert') / alertcondition(sell_signal, 'SELL Alert')
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PriceFlowBuySellInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<PriceFlowBuySellInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = A(getSourceSeries(bars, cfg.src));
-
-  // Volatility adjustment
-  const volRaw = A(ta.atr(bars, 20));
-  const volBase = A(ta.sma(S(volRaw), 100));
-
-  // Kernel regression loop (var float y_hat = 0.0, assigned on every bar)
-  const yHat: number[] = new Array(n);
-  for (let k = 0; k < n; k++) {
-    const volRatio = cfg.useVol ? volRaw[k] / (eq(volBase[k], 0) ? 1 : volBase[k]) : 1.0;
-    // math.min / math.max with na give na
-    const volMod = Math.max(0.5, Math.min(volRatio, 2.0));
-    const hEff = cfg.hVal * volMod;
-    let num = 0.0;
-    let den = 0.0;
-    for (let i = 0; i <= cfg.lookback; i++) {
-      const dist = i;
-      const w = math.exp(-math.pow(dist, 2) / (2 * math.pow(hEff, 2))) as number;
-      num = num + w * (k - i >= 0 ? src[k - i] : NaN);
-      den = den + w;
-    }
-    yHat[k] = num / den;
-  }
-
-  // Statistical bounds (MAE)
-  const mae = A(ta.sma(S(src.map((s, i) => Math.abs(s - yHat[i]))), cfg.lookback));
-  const upperIn = yHat.map((y, i) => y + mae[i] * cfg.multIn);
-  const lowerIn = yHat.map((y, i) => y - mae[i] * cfg.multIn);
-  const upperOut = yHat.map((y, i) => y + mae[i] * cfg.multOut);
-  const lowerOut = yHat.map((y, i) => y - mae[i] * cfg.multOut);
-
-  // Velocity and acceleration
-  const velocity = yHat.map((y, i) => (i > 0 ? y - yHat[i - 1] : NaN));
-  const accel = velocity.map((v, i) => (i > 0 ? v - velocity[i - 1] : NaN));
-  const velVis = A(ta.ema(S(velocity), 5));
-  const velStdev = A(ta.stdev(S(velocity), 20));
-
-  const dynCol: string[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = new Array(n).fill(false);
-  const sellFlags: boolean[] = new Array(n).fill(false);
-  let prevSellOut = false;
-  let prevBuyOut = false;
-  let prevSellIn = false;
-  let prevBuyIn = false;
-  let lastSignal = 0; // var int last_signal = 0
-  for (let i = 0; i < n; i++) {
-    const vel = velocity[i];
-    const isTrending = gt(Math.abs(vel), velStdev[i] * 0.5);
-    const velMax = velStdev[i] * 2.0;
-    dynCol[i] = gt(velVis[i], 0)
-      ? color.from_gradient(velVis[i], 0, velMax, cfg.colNeut, cfg.colBull)
-      : color.from_gradient(velVis[i], -velMax, 0, cfg.colBear, cfg.colNeut);
-
-    const bullWeaken = gt(vel, 0) && lt(accel[i], 0);
-    const bearWeaken = lt(vel, 0) && gt(accel[i], 0);
-    const { high, low, close, open } = bars[i];
-    const sellRejOut = gt(high, upperOut[i]) && lt(close, upperOut[i]) && lt(close, open);
-    const buyRejOut = lt(low, lowerOut[i]) && gt(close, lowerOut[i]) && gt(close, open);
-    const sellRejIn = gt(high, upperIn[i]) && lt(close, upperIn[i]) && lt(close, open);
-    const buyRejIn = lt(low, lowerIn[i]) && gt(close, lowerIn[i]) && gt(close, open);
-    const newSellOut = sellRejOut && !prevSellOut;
-    const newBuyOut = buyRejOut && !prevBuyOut;
-    const newSellIn = sellRejIn && !prevSellIn;
-    const newBuyIn = buyRejIn && !prevBuyIn;
-    prevSellOut = sellRejOut;
-    prevBuyOut = buyRejOut;
-    prevSellIn = sellRejIn;
-    prevBuyIn = buyRejIn;
-
-    let signalShort: boolean;
-    let signalLong: boolean;
-    if (isTrending) {
-      signalShort = newSellOut && bullWeaken;
-      signalLong = newBuyOut && bearWeaken;
-    } else if (cfg.filterRng) {
-      signalShort = newSellIn && bullWeaken;
-      signalLong = newBuyIn && bearWeaken;
-    } else {
-      signalShort = newSellIn;
-      signalLong = newBuyIn;
-    }
-
-    const buySignal = signalLong && (!cfg.strictAlternation || lastSignal !== 1);
-    const sellSignal = signalShort && (!cfg.strictAlternation || lastSignal !== -1);
-    buyFlags[i] = buySignal;
-    sellFlags[i] = sellSignal;
-    if (buySignal) lastSignal = 1;
-    else if (sellSignal) lastSignal = -1;
-
-    // plotshape(show_buy_sell and buy_signal, 'BUY', shape.labelup, location.belowbar, col_bull, 'BUY', black, small)
-    if (cfg.showBuySell && buySignal) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: cfg.colBull, text: 'BUY',
-        textColor: color.black, size: 'small' });
-    }
-    // plotshape(show_buy_sell and sell_signal, 'SELL', shape.labeldown, location.abovebar, col_bear, 'SELL', white, small)
-    if (cfg.showBuySell && sellSignal) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: cfg.colBear, text: 'SELL',
-        textColor: color.white, size: 'small' });
-    }
-  }
-
-  const tr = (k: number) => dynCol.map((c) => String(color.new(c, k)));
-  const c50 = tr(50);
-  const c60 = tr(60);
-  const c80 = tr(80);
-  const c90 = tr(90);
-  const P = (v: number[], col?: string[]) =>
-    bars.map((b, i) => (col ? { time: b.time, value: v[i], color: col[i] } : { time: b.time, value: v[i] }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P(yHat, dynCol),
-      plot1: P(yHat, c50),
-      plot2: P(yHat, c80),
-      plot3: P(yHat),
-      plot4: P(upperIn, c80),
-      plot5: P(lowerIn, c80),
-      plot6: P(upperOut, c60),
-      plot7: P(lowerOut, c60),
-    },
-    fills: [
-      { plot1: 'plot3', plot2: 'plot4', options: { title: 'Bull Zone' }, colors: c90 },
-      { plot1: 'plot3', plot2: 'plot5', options: { title: 'Bear Zone' }, colors: c90 },
-      { plot1: 'plot4', plot2: 'plot6', options: { title: 'Bull Extreme' }, colors: c80 },
-      { plot1: 'plot5', plot2: 'plot7', options: { title: 'Bear Extreme' }, colors: c80 },
-    ],
-    markers,
-    // alertcondition(buy_signal, 'BUY Alert') / alertcondition(sell_signal, 'SELL Alert')
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -264,6 +310,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const PriceFlowBuySell = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

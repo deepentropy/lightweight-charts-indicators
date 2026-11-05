@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type GuppyMmaType = 'SMA' | 'EMA' | 'WMA' | 'RMA';
 
@@ -112,84 +114,120 @@ export const metadata = {
 const gt = (a: number, b: number) => a - b > 1e-10;
 const lt = (a: number, b: number) => b - a > 1e-10;
 
-export function calculate(bars: Bar[], inputs: Partial<GuppyMMAInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = bars.map((b) => b.close);
-  const closeS = Series.fromArray(bars, close);
-  const maFn = { SMA: ta.sma, EMA: ta.ema, WMA: ta.wma, RMA: ta.rma }[cfg.maType];
-  // ma(source, length, type): a switch without a default branch (na for another type)
-  const ma = (s: Series, len: number): number[] => (maFn ? A(maFn(s, len)) : new Array<number>(n).fill(NaN));
+type Point = { time: number; value: number; color?: string };
+type Ma = { step(v: number): number; commit(): void };
 
-  const stMA = ST_KEYS.map((k) => ma(closeS, cfg[k]));
-  const ltMA = LT_KEYS.map((k) => ma(closeS, cfg[k]));
-
-  // score(ma, close) = ma > close ? -1 : ma < close ? 1 : 0
-  const score = (m: number, c: number) => (gt(m, c) ? -1 : lt(m, c) ? 1 : 0);
-  const overallAvg: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    let st = 0;
-    let lgt = 0;
-    for (let j = 0; j < 11; j++) {
-      st += score(stMA[j][i], close[i]);
-      lgt += score(ltMA[j][i], close[i]);
-    }
-    overallAvg[i] = (st / 11 + lgt / 11) / 2;
+/** ma(source, length, type) stepped bar by bar: a switch without a default branch (na for another type) */
+function maStep(type: string, len: number): Ma {
+  switch (type) {
+    case 'SMA': { const m = taStep.sma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+    case 'EMA': return taStep.ema(len);
+    case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+    case 'RMA': return taStep.rma(len);
+    default: return { step: () => NaN, commit: () => {} };
   }
-  // smoothedavg = ma(overallAvg, 10, maType)
-  const smoothed = ma(Series.fromArray(bars, overallAvg), 10);
+}
 
+interface GuppyRun extends BarRunState<Record<string, never>> {
+  mas: Ma[];
+  smooth: Ma;
+  /** The 22 average plots, then the smoothed average and the two thresholds */
+  plots: Point[][];
+  smoothed: number[];
+  greenTop: (string | null)[];
+  redTop: (string | null)[];
+}
+
+function study(inputs: Partial<GuppyMMAInputs>): BarStudy<GuppyRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
   const upper = 0.3;
   const lower = -0.3;
-  const t = (i: number) => bars[i].time;
-  const maColor = (m: number, i: number) => (gt(close[i], m) ? cfg.bullishColor : cfg.bearishColor);
-  const plots: Record<string, Array<{ time: number; value: number; color?: string }>> = {};
-  [...stMA, ...ltMA].forEach((m, j) => {
-    // plot(MA, color = close > MA ? bullishColor : bearishColor, force_overlay = true)
-    plots[`plot${j}`] = bars.map((_b, i) => ({ time: t(i), value: m[i], color: maColor(m[i], i) }));
-  });
-  // guppy_color = avg < upper and avg > lower ? neutral : avg > upper ? bullish : avg < lower ? bearish : na
-  // (no colour on the bars without a value: nothing is drawn there; na colour = 'transparent' only at a threshold)
-  plots.plot22 = bars.map((_b, i) => {
-    const s = smoothed[i];
-    if (isNaN(s)) return { time: t(i), value: s };
-    const c = lt(s, upper) && gt(s, lower) ? cfg.neutralColor
-      : gt(s, upper) ? cfg.bullishColor : lt(s, lower) ? cfg.bearishColor : 'transparent';
-    return { time: t(i), value: s, color: c };
-  });
-  plots.plot23 = bars.map((_b, i) => ({ time: t(i), value: upper }));
-  plots.plot24 = bars.map((_b, i) => ({ time: t(i), value: lower }));
-
   const greenZone = String(color.rgb(0, 230, 119, 53));
   const redZone = String(color.rgb(255, 0, 0, 57));
+  // score(ma, close) = ma > close ? -1 : ma < close ? 1 : 0
+  const score = (m: number, c: number) => (gt(m, c) ? -1 : lt(m, c) ? 1 : 0);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines: [
-      { value: 0, options: { title: 'Neutral Line', color: color.white, linestyle: 'solid', linewidth: 1 } },
-      { value: 1, options: { title: 'Max Bull Line', color: cfg.bullishColor, linestyle: 'dashed' } },
-      { value: -1, options: { title: 'Max Bear Line', color: cfg.bearishColor, linestyle: 'dashed' } },
-      { value: upper, options: { title: 'Upper Threshold', color: String(color.new(cfg.bullishColor, 50)), linestyle: 'solid' } },
-      { value: lower, options: { title: 'Lower Threshold', color: String(color.new(cfg.bearishColor, 50)), linestyle: 'solid' } },
-    ],
-    fills: [
-      // fill(guppy_plot, upper_plot, smoothedavg, upper_threshold,
-      //      smoothedavg > upper_threshold ? color.rgb(0, 230, 119, 53) : color(na), color(na))
-      { plot1: 'plot22', plot2: 'plot23', gradient: {
-        topValue: smoothed.slice(), bottomValue: new Array<number>(n).fill(upper),
-        topColor: smoothed.map((s) => (gt(s, upper) ? greenZone : null)), bottomColor: new Array<string | null>(n).fill(null) } },
-      // fill(guppy_plot, lower_plot, smoothedavg, lower_threshold,
-      //      smoothedavg < lower_threshold ? color.rgb(255, 0, 0, 57) : color(na), color(na))
-      { plot1: 'plot22', plot2: 'plot24', gradient: {
-        topValue: smoothed.slice(), bottomValue: new Array<number>(n).fill(lower),
-        topColor: smoothed.map((s) => (lt(s, lower) ? redZone : null)), bottomColor: new Array<string | null>(n).fill(null) } },
-    ],
+    init() {
+      const mas = [...ST_KEYS, ...LT_KEYS].map((k) => maStep(cfg.maType, cfg[k]));
+      // smoothedavg = ma(overallAvg, 10, maType)
+      const smooth = maStep(cfg.maType, 10);
+      const s: GuppyRun = {
+        mas, smooth, plots: Array.from({ length: 25 }, () => []), smoothed: [], greenTop: [], redTop: [],
+        steps: [...mas, smooth], vars: {}, lists: [], series: [],
+      };
+      s.series = [...s.plots, s.smoothed, s.greenTop, s.redTop];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { time, close } = bars[i];
+      let st = 0;
+      let lgt = 0;
+      for (let j = 0; j < 22; j++) {
+        const m = s.mas[j].step(close) ?? NaN;
+        if (j < 11) st += score(m, close);
+        else lgt += score(m, close);
+        // plot(MA, color = close > MA ? bullishColor : bearishColor, force_overlay = true)
+        s.plots[j][i] = { time, value: m, color: gt(close, m) ? cfg.bullishColor : cfg.bearishColor };
+      }
+      const overallAvg = (st / 11 + lgt / 11) / 2;
+      const sm = s.smooth.step(overallAvg) ?? NaN;
+      s.smoothed[i] = sm;
+      // guppy_color = avg < upper and avg > lower ? neutral : avg > upper ? bullish : avg < lower ? bearish : na
+      // (no colour on the bars without a value: nothing is drawn there; na colour = 'transparent' only at a threshold)
+      if (isNaN(sm)) s.plots[22][i] = { time, value: sm };
+      else {
+        const c = lt(sm, upper) && gt(sm, lower) ? cfg.neutralColor
+          : gt(sm, upper) ? cfg.bullishColor : lt(sm, lower) ? cfg.bearishColor : 'transparent';
+        s.plots[22][i] = { time, value: sm, color: c };
+      }
+      s.plots[23][i] = { time, value: upper };
+      s.plots[24][i] = { time, value: lower };
+      s.greenTop[i] = gt(sm, upper) ? greenZone : null;
+      s.redTop[i] = lt(sm, lower) ? redZone : null;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, j) => { plots[`plot${j}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        hlines: [
+          { value: 0, options: { title: 'Neutral Line', color: color.white, linestyle: 'solid', linewidth: 1 } },
+          { value: 1, options: { title: 'Max Bull Line', color: cfg.bullishColor, linestyle: 'dashed' } },
+          { value: -1, options: { title: 'Max Bear Line', color: cfg.bearishColor, linestyle: 'dashed' } },
+          { value: upper, options: { title: 'Upper Threshold', color: String(color.new(cfg.bullishColor, 50)), linestyle: 'solid' } },
+          { value: lower, options: { title: 'Lower Threshold', color: String(color.new(cfg.bearishColor, 50)), linestyle: 'solid' } },
+        ],
+        fills: [
+          // fill(guppy_plot, upper_plot, smoothedavg, upper_threshold,
+          //      smoothedavg > upper_threshold ? color.rgb(0, 230, 119, 53) : color(na), color(na))
+          { plot1: 'plot22', plot2: 'plot23', gradient: {
+            topValue: s.smoothed.slice(), bottomValue: new Array<number>(n).fill(upper),
+            topColor: s.greenTop.slice(), bottomColor: new Array<string | null>(n).fill(null) } },
+          // fill(guppy_plot, lower_plot, smoothedavg, lower_threshold,
+          //      smoothedavg < lower_threshold ? color.rgb(255, 0, 0, 57) : color(na), color(na))
+          { plot1: 'plot22', plot2: 'plot24', gradient: {
+            topValue: s.smoothed.slice(), bottomValue: new Array<number>(n).fill(lower),
+            topColor: s.redTop.slice(), bottomColor: new Array<string | null>(n).fill(null) } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GuppyMMAInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GuppyMMAInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const GuppyMMA = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

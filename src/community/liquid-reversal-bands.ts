@@ -16,9 +16,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LiquidReversalBandsInputs {
   /** Source */
@@ -119,142 +121,253 @@ function colorGradient(ratio: number, colA: string, colB: string): string {
   return String(color.rgb(ch('r'), ch('g'), ch('b'), 0));
 }
 
+type Point = { time: number; value: number; color?: string };
+type LrbResult = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] };
+
+/** ta.alma(source, length, offset, sigma) weights (the oakscriptjs array function: normalised gaussian weights) */
+function almaWeights(length: number, offset: number, sigma: number): number[] {
+  const m = offset * (length - 1);
+  const s = length / sigma;
+  const weights: number[] = [];
+  let weightSum = 0;
+  for (let i = 0; i < length; i++) {
+    const weight = Math.exp(-1 * Math.pow(i - m, 2) / (2 * Math.pow(s, 2)));
+    weights.push(weight);
+    weightSum += weight;
+  }
+  for (let i = 0; i < length; i++) weights[i] /= weightSum;
+  return weights;
+}
+
+interface LrbVars {
+  /** var int lastSignalBar, var string lastSignal */
+  lastSignalBar: number;
+  lastSignal: string;
+}
+
+interface LrbRun extends BarRunState<LrbVars> {
+  emaFair: ReturnType<typeof taStep.ema>;
+  fairEma: ReturnType<typeof taStep.ema>;
+  devStdev: ReturnType<typeof taStep.stdev>;
+  atr: ReturnType<typeof taStep.atr>;
+  absDev: ReturnType<typeof taStep.ema>;
+  rangeEnergy: ReturnType<typeof taStep.ema>;
+  width: ReturnType<typeof taStep.ema>;
+  slopeAvg: ReturnType<typeof taStep.ema>;
+  slopeSmooth: ReturnType<typeof taStep.ema>;
+  src: number[];
+  fair: number[];
+  upperBand: number[];
+  lowerBand: number[];
+  outerUpperBand: number[];
+  outerLowerBand: number[];
+  upperPlot: Point[];
+  lowerPlot: Point[];
+  fairPlot: Point[];
+  outerUpperPlot: Point[];
+  outerLowerPlot: Point[];
+  candles: PlotCandleData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<LiquidReversalBandsInputs>): BarStudy<LrbRun, LrbResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { fairLen, zLen, smoothLen, upperMult, lowerMult, outerUpperMult, outerLowerMult, cooldownBars,
+    showOuterBands, lineSlopeLen, lineSlopeSensitivity } = cfg;
+  const value = barSource(cfg.src);
+  const outerCol = String(color.new(BORDER_COL, 80));
+  let weights: number[] = [];
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      // Liquid fair value
+      const emaFair = taStep.ema(fairLen);
+      checkAlmaLength(fairLen);
+      weights = almaWeights(fairLen, 0.85, 6.0);
+      const fairEma = taStep.ema(Math.max(1, Math.trunc(smoothLen / 2)));
+      // Liquid band width
+      const devStdev = taStep.stdev();
+      const atr = taStep.atr(14);
+      const absDev = taStep.ema(zLen);
+      const rangeEnergy = taStep.ema(smoothLen);
+      const width = taStep.ema(smoothLen);
+      const slopeAvg = taStep.ema(lineSlopeLen);
+      const slopeSmooth = taStep.ema(lineSlopeLen);
+      const s: LrbRun = {
+        emaFair, fairEma, devStdev, atr, absDev, rangeEnergy, width, slopeAvg, slopeSmooth,
+        src: [], fair: [], upperBand: [], lowerBand: [], outerUpperBand: [], outerLowerBand: [],
+        upperPlot: [], lowerPlot: [], fairPlot: [], outerUpperPlot: [], outerLowerPlot: [], candles: [], markers: [],
+        flags: [[], []], times: [[], []],
+        steps: [emaFair, fairEma, devStdev, atr, absDev, rangeEnergy, width, slopeAvg, slopeSmooth],
+        vars: { lastSignalBar: NaN, lastSignal: '' },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [
+        s.src, s.fair, s.upperBand, s.lowerBand, s.outerUpperBand, s.outerLowerBand, s.upperPlot, s.lowerPlot,
+        s.fairPlot, s.outerUpperPlot, s.outerLowerPlot, s.candles, ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const src = value(b);
+      s.src[i] = src;
+
+      // Liquid fair value: ta.alma(src, fairLen, 0.85, 6) from the source of the last fairLen bars
+      const emaFair = s.emaFair.step(src);
+      let almaFair = NaN;
+      if (!(i < fairLen - 1)) {
+        almaFair = 0;
+        for (let j = 0; j < fairLen; j++) almaFair += s.src[i - fairLen + 1 + j] * weights[j];
+      }
+      const fairRaw = emaFair * 0.55 + almaFair * 0.45;
+      const fair = s.fairEma.step(fairRaw);
+      s.fair[i] = fair;
+
+      // Liquid band width
+      const dev = src - fair;
+      const devStdev = s.devStdev.step(dev, zLen);
+      const atrValue = s.atr.step(b.high, b.low, b.close);
+      const absDev = s.absDev.step(Math.abs(dev));
+      const rangeEnergy = s.rangeEnergy.step(b.high - b.low);
+      const baseWidth = devStdev * 0.60 + atrValue * 0.25 + absDev * 0.10 + rangeEnergy * 0.05;
+      const width = s.width.step(baseWidth);
+
+      const upperBand = fair + width * upperMult;
+      const lowerBand = fair - width * lowerMult;
+      const outerUpperBand = fair + width * upperMult * outerUpperMult;
+      const outerLowerBand = fair - width * lowerMult * outerLowerMult;
+      s.upperBand[i] = upperBand;
+      s.lowerBand[i] = lowerBand;
+      s.outerUpperBand[i] = outerUpperBand;
+      s.outerLowerBand[i] = outerLowerBand;
+
+      // Smooth fair value line colour
+      // fairSlopeRaw = nz(fair - fair[1], 0.0)
+      const d = fair - (i > 0 ? s.fair[i - 1] : NaN);
+      const fairSlopeRaw = isNaN(d) ? 0 : d;
+      const fairSlopeAvg = s.slopeAvg.step(Math.abs(fairSlopeRaw));
+      // fairSlopeNorm = fairSlopeAvg != 0.0 ? fairSlopeRaw / fairSlopeAvg : 0.0
+      const fairSlopeNorm = ne(fairSlopeAvg, 0) ? fairSlopeRaw / fairSlopeAvg : 0;
+      const fairSlopeSmooth = s.slopeSmooth.step(fairSlopeNorm);
+
+      // lineRatio = f_clamp(0.5 + fairSlopeSmooth / (2.0 * lineSlopeSensitivity), 0.0, 1.0)
+      // (sensitivity 0: a non-zero value / 0 is +-infinity, clamped to 1 / 0 as in Pine; 0 / 0 is na)
+      const lineRatio = clamp(0.5 + fairSlopeSmooth / (2.0 * lineSlopeSensitivity), 0.0, 1.0);
+      s.fairPlot[i] = { time: t, value: fair, color: colorGradient(lineRatio, BEAR_MAIN, BULL_MAIN) };
+
+      // rawBuy = close[1] <= lowerBand[1] and close > lowerBand; rawSell = close[1] >= upperBand[1] and close < upperBand
+      const close1 = i > 0 ? bars[i - 1].close : NaN;
+      const rawBuy = i > 0 && le(close1, s.lowerBand[i - 1]) && gt(b.close, lowerBand);
+      const rawSell = i > 0 && ge(close1, s.upperBand[i - 1]) && gt(upperBand, b.close);
+      // barsOk = na(lastSignalBar) or bar_index - lastSignalBar >= cooldownBars
+      const v = s.vars;
+      const barsOk = isNaN(v.lastSignalBar) || i - v.lastSignalBar >= cooldownBars;
+      const finalBuy = cfg.enableSignals && rawBuy && barsOk;
+      const finalSell = cfg.enableSignals && rawSell && barsOk;
+      if (finalBuy) {
+        v.lastSignalBar = i;
+        v.lastSignal = 'bull';
+      }
+      if (finalSell) {
+        v.lastSignalBar = i;
+        v.lastSignal = 'bear';
+      }
+
+      // bandRange = upperBand - lowerBand; ratioRaw = bandRange != 0.0 ? (src - lowerBand) / bandRange : 0.5
+      const bandRange = upperBand - lowerBand;
+      const ratioRaw = ne(bandRange, 0) ? (src - lowerBand) / bandRange : 0.5;
+      const ratioClamped = clamp(isNaN(ratioRaw) ? 0.5 : ratioRaw, 0.0, 1.0);
+      const reversalCandleCol = colorGradient(ratioClamped, BULL_MAIN, BEAR_MAIN);
+      const latestSignalCol = v.lastSignal === 'bull' ? BULL_MAIN : v.lastSignal === 'bear' ? BEAR_MAIN : reversalCandleCol;
+      const candleCol = cfg.candleMode === 'Reversal Heat' ? reversalCandleCol : latestSignalCol;
+      // plotcandle(open, high, low, close, 'Liquid Reversal Candles', color / wickcolor / bordercolor = candleCol)
+      s.candles[i] = { time: t, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: candleCol, wickColor: candleCol, borderColor: candleCol };
+
+      // plotshape(finalBuy, 'Buy', location.belowbar, shape.labelup, text '𝓤𝓹', color bullMain, textcolor #000000, size.small)
+      if (finalBuy) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: BULL_MAIN, text: '𝓤𝓹',
+          textColor: '#000000', size: 'small' });
+      }
+      // plotshape(finalSell, 'Sell', location.abovebar, shape.labeldown, text '𝓓𝓸𝔀𝓷', color bearMain, textcolor white, size.small)
+      if (finalSell) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: BEAR_MAIN, text: '𝓓𝓸𝔀𝓷',
+          textColor: LABEL_TEXT_COL, size: 'small' });
+      }
+
+      s.upperPlot[i] = { time: t, value: upperBand, color: BORDER_COL };
+      s.lowerPlot[i] = { time: t, value: lowerBand, color: BORDER_COL };
+      // plot(showOuterBands ? outerUpperBand : na, ...); plot(showOuterBands ? outerLowerBand : na, ...)
+      s.outerUpperPlot[i] = { time: t, value: showOuterBands ? outerUpperBand : NaN, color: outerCol };
+      s.outerLowerPlot[i] = { time: t, value: showOuterBands ? outerLowerBand : NaN, color: outerCol };
+      // alertcondition(finalBuy, "Buy Signal") / alertcondition(finalSell, "Sell Signal")
+      s.flags[0][i] = finalBuy;
+      s.flags[1][i] = finalSell;
+      if (finalBuy) s.times[0].push(t as number);
+      if (finalSell) s.times[1].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const constant = (c: string | null) => new Array<string | null>(n).fill(c);
+      const upperBand = s.upperBand.slice();
+      const lowerBand = s.lowerBand.slice();
+      const fair = s.fair.slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.upperPlot.slice(),
+          plot1: s.lowerPlot.slice(),
+          plot2: s.fairPlot.slice(),
+          plot3: s.outerUpperPlot.slice(),
+          plot4: s.outerLowerPlot.slice(),
+        },
+        fills: [
+          // fill(pUpper, pFair, upperBand, fair, color.new(bearMain, 80), emptyCol)
+          { plot1: 'plot0', plot2: 'plot2', gradient: { topValue: upperBand, bottomValue: fair,
+            topColor: constant(String(color.new(BEAR_MAIN, 80))), bottomColor: constant(EMPTY_COL) } },
+          // fill(pFair, pLower, fair, lowerBand, emptyCol, color.new(bullMain, 80))
+          { plot1: 'plot2', plot2: 'plot1', gradient: { topValue: fair, bottomValue: lowerBand,
+            topColor: constant(EMPTY_COL), bottomColor: constant(String(color.new(BULL_MAIN, 80))) } },
+          // fill(pOuterUpper, pUpper, outerUpperBand, upperBand, showOuterBands ? color.new(bearMain, 70) : na,
+          //      showOuterBands ? color.new(bearMain, 100) : na)
+          { plot1: 'plot3', plot2: 'plot0', gradient: { topValue: s.outerUpperBand.slice(), bottomValue: upperBand,
+            topColor: constant(showOuterBands ? String(color.new(BEAR_MAIN, 70)) : null),
+            bottomColor: constant(showOuterBands ? String(color.new(BEAR_MAIN, 100)) : null) } },
+          // fill(pLower, pOuterLower, lowerBand, outerLowerBand, showOuterBands ? color.new(bullMain, 100) : na,
+          //      showOuterBands ? color.new(bullMain, 70) : na)
+          { plot1: 'plot1', plot2: 'plot4', gradient: { topValue: lowerBand, bottomValue: s.outerLowerBand.slice(),
+            topColor: constant(showOuterBands ? String(color.new(BULL_MAIN, 100)) : null),
+            bottomColor: constant(showOuterBands ? String(color.new(BULL_MAIN, 70)) : null) } },
+        ],
+        markers: s.markers.slice(),
+        plotCandles: { liquidReversalCandles: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** ta.alma: a length below 1 is a runtime error */
+function checkAlmaLength(length: number): void {
+  const len = Math.trunc(length);
+  if (len <= 0) throw new Error(`Invalid value of the 'length' argument (${len}) in the 'alma' function. It must be > 0.`);
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LiquidReversalBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<LrbResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<LiquidReversalBandsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { fairLen, zLen, smoothLen, upperMult, lowerMult, outerUpperMult, outerLowerMult, cooldownBars,
-    showOuterBands, lineSlopeLen, lineSlopeSensitivity } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = A(getSourceSeries(bars, cfg.src));
-
-  // Liquid fair value
-  const emaFair = A(ta.ema(S(src), fairLen));
-  const almaFair = A(ta.alma(S(src), fairLen, 0.85, 6.0));
-  const fairRaw = emaFair.map((e, i) => e * 0.55 + almaFair[i] * 0.45);
-  const fair = A(ta.ema(S(fairRaw), Math.max(1, Math.trunc(smoothLen / 2))));
-
-  // Liquid band width
-  const dev = src.map((s, i) => s - fair[i]);
-  const devStdev = A(ta.stdev(S(dev), zLen));
-  const atrValue = A(ta.atr(bars, 14));
-  const absDev = A(ta.ema(S(dev.map((d) => Math.abs(d))), zLen));
-  const rangeEnergy = A(ta.ema(S(bars.map((b) => b.high - b.low)), smoothLen));
-  const baseWidth = devStdev.map((d, i) => d * 0.60 + atrValue[i] * 0.25 + absDev[i] * 0.10 + rangeEnergy[i] * 0.05);
-  const width = A(ta.ema(S(baseWidth), smoothLen));
-
-  const upperBand = fair.map((f, i) => f + width[i] * upperMult);
-  const lowerBand = fair.map((f, i) => f - width[i] * lowerMult);
-  const outerUpperBand = fair.map((f, i) => f + width[i] * upperMult * outerUpperMult);
-  const outerLowerBand = fair.map((f, i) => f - width[i] * lowerMult * outerLowerMult);
-
-  // Smooth fair value line colour
-  // fairSlopeRaw = nz(fair - fair[1], 0.0)
-  const fairSlopeRaw = fair.map((f, i) => {
-    const d = f - (i > 0 ? fair[i - 1] : NaN);
-    return isNaN(d) ? 0 : d;
-  });
-  const fairSlopeAvg = A(ta.ema(S(fairSlopeRaw.map((v) => Math.abs(v))), lineSlopeLen));
-  // fairSlopeNorm = fairSlopeAvg != 0.0 ? fairSlopeRaw / fairSlopeAvg : 0.0
-  const fairSlopeNorm = fairSlopeAvg.map((a, i) => (ne(a, 0) ? fairSlopeRaw[i] / a : 0));
-  const fairSlopeSmooth = A(ta.ema(S(fairSlopeNorm), lineSlopeLen));
-
-  const close = bars.map((b) => b.close);
-  const markers: MarkerData[] = [];
-  const fairPlot: { time: number; value: number; color: string }[] = [];
-  const candles: PlotCandleData[] = [];
-  let lastSignalBar = NaN; // var int lastSignalBar
-  let lastSignal = ''; // var string lastSignal
-  const buyFlags: boolean[] = new Array(n).fill(false);
-  const sellFlags: boolean[] = new Array(n).fill(false);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    // lineRatio = f_clamp(0.5 + fairSlopeSmooth / (2.0 * lineSlopeSensitivity), 0.0, 1.0)
-    // (sensitivity 0: a non-zero value / 0 is +-infinity, clamped to 1 / 0 as in Pine; 0 / 0 is na)
-    const lineRatio = clamp(0.5 + fairSlopeSmooth[i] / (2.0 * lineSlopeSensitivity), 0.0, 1.0);
-    fairPlot.push({ time: t, value: fair[i], color: colorGradient(lineRatio, BEAR_MAIN, BULL_MAIN) });
-
-    // rawBuy = close[1] <= lowerBand[1] and close > lowerBand; rawSell = close[1] >= upperBand[1] and close < upperBand
-    const rawBuy = i > 0 && le(close[i - 1], lowerBand[i - 1]) && gt(close[i], lowerBand[i]);
-    const rawSell = i > 0 && ge(close[i - 1], upperBand[i - 1]) && gt(upperBand[i], close[i]);
-    // barsOk = na(lastSignalBar) or bar_index - lastSignalBar >= cooldownBars
-    const barsOk = isNaN(lastSignalBar) || i - lastSignalBar >= cooldownBars;
-    const finalBuy = cfg.enableSignals && rawBuy && barsOk;
-    const finalSell = cfg.enableSignals && rawSell && barsOk;
-    buyFlags[i] = finalBuy;
-    sellFlags[i] = finalSell;
-    if (finalBuy) {
-      lastSignalBar = i;
-      lastSignal = 'bull';
-    }
-    if (finalSell) {
-      lastSignalBar = i;
-      lastSignal = 'bear';
-    }
-
-    // bandRange = upperBand - lowerBand; ratioRaw = bandRange != 0.0 ? (src - lowerBand) / bandRange : 0.5
-    const bandRange = upperBand[i] - lowerBand[i];
-    const ratioRaw = ne(bandRange, 0) ? (src[i] - lowerBand[i]) / bandRange : 0.5;
-    const ratioClamped = clamp(isNaN(ratioRaw) ? 0.5 : ratioRaw, 0.0, 1.0);
-    const reversalCandleCol = colorGradient(ratioClamped, BULL_MAIN, BEAR_MAIN);
-    const latestSignalCol = lastSignal === 'bull' ? BULL_MAIN : lastSignal === 'bear' ? BEAR_MAIN : reversalCandleCol;
-    const candleCol = cfg.candleMode === 'Reversal Heat' ? reversalCandleCol : latestSignalCol;
-    // plotcandle(open, high, low, close, 'Liquid Reversal Candles', color / wickcolor / bordercolor = candleCol)
-    candles.push({ time: t, open: b.open, high: b.high, low: b.low, close: b.close,
-      color: candleCol, wickColor: candleCol, borderColor: candleCol });
-
-    // plotshape(finalBuy, 'Buy', location.belowbar, shape.labelup, text '𝓤𝓹', color bullMain, textcolor #000000, size.small)
-    if (finalBuy) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: BULL_MAIN, text: '𝓤𝓹',
-        textColor: '#000000', size: 'small' });
-    }
-    // plotshape(finalSell, 'Sell', location.abovebar, shape.labeldown, text '𝓓𝓸𝔀𝓷', color bearMain, textcolor white, size.small)
-    if (finalSell) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: BEAR_MAIN, text: '𝓓𝓸𝔀𝓷',
-        textColor: LABEL_TEXT_COL, size: 'small' });
-    }
-  }
-
-  const line = (v: number[], col?: string) => bars.map((b, i) => ({ time: b.time, value: v[i], ...(col ? { color: col } : {}) }));
-  const constant = (c: string | null) => new Array<string | null>(n).fill(c);
-  const outerCol = String(color.new(BORDER_COL, 80));
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(upperBand, BORDER_COL),
-      plot1: line(lowerBand, BORDER_COL),
-      plot2: fairPlot,
-      // plot(showOuterBands ? outerUpperBand : na, ...); plot(showOuterBands ? outerLowerBand : na, ...)
-      plot3: line(showOuterBands ? outerUpperBand : new Array(n).fill(NaN), outerCol),
-      plot4: line(showOuterBands ? outerLowerBand : new Array(n).fill(NaN), outerCol),
-    },
-    fills: [
-      // fill(pUpper, pFair, upperBand, fair, color.new(bearMain, 80), emptyCol)
-      { plot1: 'plot0', plot2: 'plot2', gradient: { topValue: upperBand, bottomValue: fair,
-        topColor: constant(String(color.new(BEAR_MAIN, 80))), bottomColor: constant(EMPTY_COL) } },
-      // fill(pFair, pLower, fair, lowerBand, emptyCol, color.new(bullMain, 80))
-      { plot1: 'plot2', plot2: 'plot1', gradient: { topValue: fair, bottomValue: lowerBand,
-        topColor: constant(EMPTY_COL), bottomColor: constant(String(color.new(BULL_MAIN, 80))) } },
-      // fill(pOuterUpper, pUpper, outerUpperBand, upperBand, showOuterBands ? color.new(bearMain, 70) : na,
-      //      showOuterBands ? color.new(bearMain, 100) : na)
-      { plot1: 'plot3', plot2: 'plot0', gradient: { topValue: outerUpperBand, bottomValue: upperBand,
-        topColor: constant(showOuterBands ? String(color.new(BEAR_MAIN, 70)) : null),
-        bottomColor: constant(showOuterBands ? String(color.new(BEAR_MAIN, 100)) : null) } },
-      // fill(pLower, pOuterLower, lowerBand, outerLowerBand, showOuterBands ? color.new(bullMain, 100) : na,
-      //      showOuterBands ? color.new(bullMain, 70) : na)
-      { plot1: 'plot1', plot2: 'plot4', gradient: { topValue: lowerBand, bottomValue: outerLowerBand,
-        topColor: constant(showOuterBands ? String(color.new(BULL_MAIN, 100)) : null),
-        bottomColor: constant(showOuterBands ? String(color.new(BULL_MAIN, 70)) : null) } },
-    ],
-    markers,
-    plotCandles: { liquidReversalCandles: candles },
-    // alertcondition(finalBuy, "Buy Signal") / alertcondition(finalSell, "Sell Signal")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -265,6 +378,8 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const LiquidReversalBands = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

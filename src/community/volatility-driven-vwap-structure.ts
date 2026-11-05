@@ -14,9 +14,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, math, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolatilityDrivenVWAPStructureInputs {
   /** Number of bars of the rolling VWAP */
@@ -87,158 +89,209 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > 1e-10);
 /** Pine division: x / 0 is na */
 const div = (a: number, b: number) => (b === 0 ? NaN : a / b);
 
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface VdVwapVars {
+  structureUpper: number; // var float structureUpper = na
+  structureLower: number; // var float structureLower = na
+  dir: number; // var int direction = 0
+  anchorSumPV: number;
+  anchorSumV: number;
+  anchorSumP2V: number;
+}
+
+interface VdVwapRun extends BarRunState<VdVwapVars> {
+  sumPV: ReturnType<typeof taStep.sum>;
+  sumV: ReturnType<typeof taStep.sum>;
+  atrFast: ReturnType<typeof taStep.atr>;
+  atrSlow: ReturnType<typeof taStep.atr>;
+  atrMean: ReturnType<typeof taStep.sma>;
+  atrDev: ReturnType<typeof taStep.stdev>;
+  mid: number[];
+  anchored: number[];
+  plots: Point[][];
+  fill1: string[];
+  fill2: string[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<VolatilityDrivenVWAPStructureInputs>): BarStudy<VdVwapRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { vwapLengthInput, structureMultInput, atrLength, showBand1, showBand2, bandMult1, bandMult2 } = cfg;
+  // plotColor = anchorColor = direction == 1 ? bullColorInput : bearColorInput; color.new(anchorColor, transp)
+  const shades = (col: string) => ({
+    0: String(color.new(col, 0)), 30: String(color.new(col, 30)), 55: String(color.new(col, 55)),
+    92: String(color.new(col, 92)), 95: String(color.new(col, 95)),
+  });
+  const bullShades = shades(cfg.bullColorInput);
+  const bearShades = shades(cfg.bearColorInput);
+  const le = (a: number, b: number) => ge(b, a);
+  const flags = new Array<boolean>(11).fill(false);
+  return {
+    init() {
+      const sumPV = taStep.sum();
+      const sumV = taStep.sum();
+      const atrFast = taStep.atr(atrLength);
+      const atrSlow = taStep.atr(atrLength * 4);
+      const atrMean = taStep.sma();
+      const atrDev = taStep.stdev();
+      const s: VdVwapRun = {
+        sumPV, sumV, atrFast, atrSlow, atrMean, atrDev,
+        mid: [], anchored: [],
+        plots: Array.from({ length: 6 }, () => []),
+        fill1: [], fill2: [],
+        flags: Array.from({ length: 11 }, () => []),
+        times: Array.from({ length: 11 }, () => []),
+        steps: [sumPV, sumV, atrFast, atrSlow, atrMean, atrDev],
+        vars: { structureUpper: NaN, structureLower: NaN, dir: 0, anchorSumPV: NaN, anchorSumV: NaN, anchorSumP2V: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [...s.times];
+      s.series = [s.mid, s.anchored, ...s.plots, s.fill1, s.fill2, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = s.vars;
+      // src = hlc3; rollingVwap = math.sum(src * volume, len) / math.sum(volume, len)
+      const src = (b.high + b.low + b.close) / 3;
+      const vol = b.volume ?? NaN;
+      const rollingVwap = div(s.sumPV.step(src * vol, vwapLengthInput), s.sumV.step(vol, vwapLengthInput));
+      // atrFast = ta.atr(len); atrSlow = ta.atr(len * 4); mean / stdev of atrFast over vwapLength * 4 bars
+      const atrFast = s.atrFast.step(b.high, b.low, b.close);
+      const atrSlow = s.atrSlow.step(b.high, b.low, b.close);
+      const atrMean = s.atrMean.step(atrFast, vwapLengthInput * 4);
+      const atrDev = s.atrDev.step(atrFast, vwapLengthInput * 4);
+      // atrZ = atrDev != 0 ? (atrFast - atrMean) / atrDev : 0.0 (na != 0 is false: 0.0 while atrDev is na)
+      const atrZ = ne(atrDev, 0) ? div(atrFast - atrMean, atrDev) : 0.0;
+      const atrZClamped = Math.max(Math.min(atrZ, 3.0), -3.0);
+      // volRatio = atrSlow != 0 ? atrFast / atrSlow : 1.0
+      const volRatio = ne(atrSlow, 0) ? div(atrFast, atrSlow) : 1.0;
+      const sigmoidInput = 4.0 * (volRatio - 1.0) + 0.75 * atrZClamped;
+      const sigmoid = 1.0 / (1.0 + Math.exp(-sigmoidInput));
+      const adaptiveVolMult = 0.5 + sigmoid * 1.5;
+      const structureStep = atrFast * structureMultInput * adaptiveVolMult;
+      const vw = rollingVwap;
+      const prevDir = v.dir;
+      const structureReady = !isNaN(vw) && !isNaN(structureStep) && gt(structureStep, 0);
+      if (structureReady) {
+        if (isNaN(v.structureUpper)) {
+          v.structureUpper = vw;
+          v.structureLower = vw - structureStep;
+          v.dir = 1;
+        } else {
+          const upsideExpansion = vw - (v.structureUpper + structureStep);
+          const downsideExpansion = (v.structureLower - structureStep) - vw;
+          const expandsHigher = gt(upsideExpansion, 0);
+          const expandsLower = gt(downsideExpansion, 0);
+          const nextDirection = expandsHigher ? 1 : expandsLower ? -1 : v.dir;
+          if (expandsHigher || expandsLower) {
+            const referenceLevel = nextDirection === 1 ? v.structureUpper : v.structureLower;
+            const travelDistance = Math.abs(vw - referenceLevel);
+            const transitionSteps = Math.floor(div(travelDistance, structureStep));
+            if (nextDirection === 1) {
+              v.structureLower = v.structureUpper + (transitionSteps - 1) * structureStep;
+              v.structureUpper = v.structureUpper + transitionSteps * structureStep;
+            } else {
+              v.structureUpper = v.structureLower - (transitionSteps - 1) * structureStep;
+              v.structureLower = v.structureLower - transitionSteps * structureStep;
+            }
+            v.dir = nextDirection;
+          }
+        }
+      }
+      // structureMid = (structureUpper + structureLower) / 2.0
+      const mid = (v.structureUpper + v.structureLower) / 2.0;
+      s.mid[i] = mid;
+      const direction = v.dir;
+
+      // Reversal anchored VWAP: sums reset when ta.change(direction) != 0 (na on the first bar: false) or na(anchorSumPV)
+      const isReversed = i > 0 && direction - prevDir !== 0;
+      if (isReversed || isNaN(v.anchorSumPV)) {
+        v.anchorSumPV = src * vol;
+        v.anchorSumV = vol;
+        v.anchorSumP2V = src * src * vol;
+      } else {
+        v.anchorSumPV += src * vol;
+        v.anchorSumV += vol;
+        v.anchorSumP2V += src * src * vol;
+      }
+      // anchoredVwap = anchorSumV != 0 ? anchorSumPV / anchorSumV : na
+      const vwapA = ne(v.anchorSumV, 0) ? v.anchorSumPV / v.anchorSumV : NaN;
+      const anchoredVar = ne(v.anchorSumV, 0) ? v.anchorSumP2V / v.anchorSumV - Math.pow(vwapA, 2) : NaN;
+      const dev = !isNaN(anchoredVar) ? Math.sqrt(Math.max(anchoredVar, 0)) : NaN;
+      s.anchored[i] = vwapA;
+
+      const sh = direction === 1 ? bullShades : bearShades;
+      // plot(structureMid, color = plotColor, linestyle = plot.linestyle_dotted, linewidth = 3)
+      s.plots[0][i] = { time, value: mid, color: direction === 1 ? cfg.bullColorInput : cfg.bearColorInput };
+      // plot(anchoredVwap, color = color.new(anchorColor, 0), linewidth = 2)
+      s.plots[1][i] = { time, value: vwapA, color: sh[0] };
+      // anchorUpperK = anchoredVwap + anchoredDev * bandMultK; anchorLowerK = anchoredVwap - anchoredDev * bandMultK
+      // plot(showBand1 ? anchorUpper1 / anchorLower1 : na, color = color.new(anchorColor, 30))
+      s.plots[2][i] = { time, value: !showBand1 ? NaN : vwapA + dev * bandMult1, color: sh[30] };
+      s.plots[3][i] = { time, value: !showBand1 ? NaN : vwapA - dev * bandMult1, color: sh[30] };
+      // plot(showBand2 ? anchorUpper2 / anchorLower2 : na, color = color.new(anchorColor, 55))
+      s.plots[4][i] = { time, value: !showBand2 ? NaN : vwapA + dev * bandMult2, color: sh[55] };
+      s.plots[5][i] = { time, value: !showBand2 ? NaN : vwapA - dev * bandMult2, color: sh[55] };
+      // fill(aU1, aL1, color.new(anchorColor, 92)); fill(aU2, aL2, color.new(anchorColor, 95))
+      s.fill1[i] = sh[92];
+      s.fill2[i] = sh[95];
+
+      // Alerts: bullishShift / bearishShift = isReversed and direction == 1 / -1; ta.crossover / ta.crossunder of close
+      // with anchoredVwap and structureMid; high >= anchorUpperK, low <= anchorLowerK
+      const c = b.close;
+      const pc = i > 0 ? bars[i - 1].close : NaN;
+      const pa = i > 0 ? s.anchored[i - 1] : NaN;
+      const pm = i > 0 ? s.mid[i - 1] : NaN;
+      flags[0] = isReversed && direction === 1;
+      flags[1] = isReversed && direction === -1;
+      flags[2] = isReversed;
+      flags[3] = c > vwapA && pc <= pa;
+      flags[4] = c < vwapA && pc >= pa;
+      flags[5] = c > mid && pc <= pm;
+      flags[6] = c < mid && pc >= pm;
+      flags[7] = ge(b.high, vwapA + 1 * dev * bandMult1);
+      flags[8] = le(b.low, vwapA + -1 * dev * bandMult1);
+      flags[9] = ge(b.high, vwapA + 1 * dev * bandMult2);
+      flags[10] = le(b.low, vwapA + -1 * dev * bandMult2);
+      for (let k = 0; k < 11; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(), plot4: s.plots[4].slice(), plot5: s.plots[5].slice(),
+        },
+        fills: [
+          { plot1: 'plot2', plot2: 'plot3', colors: s.fill1.slice() },
+          { plot1: 'plot4', plot2: 'plot5', colors: s.fill2.slice() },
+        ],
+        markers: [],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolatilityDrivenVWAPStructureInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VolatilityDrivenVWAPStructureInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { vwapLengthInput, structureMultInput, atrLength, showBand1, showBand2, bandMult1, bandMult2 } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // src = hlc3; rollingVwap = math.sum(src * volume, len) / math.sum(volume, len)
-  const src = bars.map((b) => (b.high + b.low + b.close) / 3);
-  const vol = bars.map((b) => b.volume ?? NaN);
-  const sumPV = A(math.sum(S(src.map((s, i) => s * vol[i])), vwapLengthInput));
-  const sumV = A(math.sum(S(vol), vwapLengthInput));
-  const rollingVwap = sumPV.map((pv, i) => div(pv, sumV[i]));
-
-  // atrFast = ta.atr(len); atrSlow = ta.atr(len * 4); mean / stdev of atrFast over vwapLength * 4 bars
-  const atrFast = A(ta.atr(bars, atrLength));
-  const atrSlow = A(ta.atr(bars, atrLength * 4));
-  const atrMean = A(ta.sma(S(atrFast), vwapLengthInput * 4));
-  const atrDev = A(ta.stdev(S(atrFast), vwapLengthInput * 4));
-
-  const mid: number[] = new Array(n);
-  const direction: number[] = new Array(n);
-  let structureUpper = NaN; // var float structureUpper = na
-  let structureLower = NaN; // var float structureLower = na
-  let dir = 0; // var int direction = 0
-  for (let i = 0; i < n; i++) {
-    // atrZ = atrDev != 0 ? (atrFast - atrMean) / atrDev : 0.0 (na != 0 is false: 0.0 while atrDev is na)
-    const atrZ = ne(atrDev[i], 0) ? div(atrFast[i] - atrMean[i], atrDev[i]) : 0.0;
-    const atrZClamped = Math.max(Math.min(atrZ, 3.0), -3.0);
-    // volRatio = atrSlow != 0 ? atrFast / atrSlow : 1.0
-    const volRatio = ne(atrSlow[i], 0) ? div(atrFast[i], atrSlow[i]) : 1.0;
-    const sigmoidInput = 4.0 * (volRatio - 1.0) + 0.75 * atrZClamped;
-    const sigmoid = 1.0 / (1.0 + Math.exp(-sigmoidInput));
-    const adaptiveVolMult = 0.5 + sigmoid * 1.5;
-    const structureStep = atrFast[i] * structureMultInput * adaptiveVolMult;
-
-    const vw = rollingVwap[i];
-    const structureReady = !isNaN(vw) && !isNaN(structureStep) && gt(structureStep, 0);
-    if (structureReady) {
-      if (isNaN(structureUpper)) {
-        structureUpper = vw;
-        structureLower = vw - structureStep;
-        dir = 1;
-      } else {
-        const upsideExpansion = vw - (structureUpper + structureStep);
-        const downsideExpansion = (structureLower - structureStep) - vw;
-        const expandsHigher = gt(upsideExpansion, 0);
-        const expandsLower = gt(downsideExpansion, 0);
-        const nextDirection = expandsHigher ? 1 : expandsLower ? -1 : dir;
-        if (expandsHigher || expandsLower) {
-          const referenceLevel = nextDirection === 1 ? structureUpper : structureLower;
-          const travelDistance = Math.abs(vw - referenceLevel);
-          const transitionSteps = Math.floor(div(travelDistance, structureStep));
-          if (nextDirection === 1) {
-            structureLower = structureUpper + (transitionSteps - 1) * structureStep;
-            structureUpper = structureUpper + transitionSteps * structureStep;
-          } else {
-            structureUpper = structureLower - (transitionSteps - 1) * structureStep;
-            structureLower = structureLower - transitionSteps * structureStep;
-          }
-          dir = nextDirection;
-        }
-      }
-    }
-    // structureMid = (structureUpper + structureLower) / 2.0
-    mid[i] = (structureUpper + structureLower) / 2.0;
-    direction[i] = dir;
-  }
-
-  // Reversal anchored VWAP: sums reset when ta.change(direction) != 0 (na on the first bar: false) or na(anchorSumPV)
-  const anchoredVwap: number[] = new Array(n);
-  const anchoredDev: number[] = new Array(n);
-  const reversed: boolean[] = new Array(n);
-  let anchorSumPV = NaN;
-  let anchorSumV = NaN;
-  let anchorSumP2V = NaN;
-  for (let i = 0; i < n; i++) {
-    const isReversed = i > 0 && direction[i] - direction[i - 1] !== 0;
-    reversed[i] = isReversed;
-    const s = src[i];
-    const v = vol[i];
-    if (isReversed || isNaN(anchorSumPV)) {
-      anchorSumPV = s * v;
-      anchorSumV = v;
-      anchorSumP2V = s * s * v;
-    } else {
-      anchorSumPV += s * v;
-      anchorSumV += v;
-      anchorSumP2V += s * s * v;
-    }
-    // anchoredVwap = anchorSumV != 0 ? anchorSumPV / anchorSumV : na
-    const vwapA = ne(anchorSumV, 0) ? anchorSumPV / anchorSumV : NaN;
-    const anchoredVar = ne(anchorSumV, 0) ? anchorSumP2V / anchorSumV - Math.pow(vwapA, 2) : NaN;
-    anchoredVwap[i] = vwapA;
-    anchoredDev[i] = !isNaN(anchoredVar) ? Math.sqrt(Math.max(anchoredVar, 0)) : NaN;
-  }
-
-  // plotColor = anchorColor = direction == 1 ? bullColorInput : bearColorInput
-  const col = (i: number) => (direction[i] === 1 ? cfg.bullColorInput : cfg.bearColorInput);
-  const c = (i: number, transp: number) => String(color.new(col(i), transp));
-  // anchorUpperK = anchoredVwap + anchoredDev * bandMultK; anchorLowerK = anchoredVwap - anchoredDev * bandMultK
-  const band = (sign: 1 | -1, mult: number, show: boolean, transp: number) =>
-    bars.map((b, i) => ({
-      time: b.time,
-      value: !show ? NaN : sign === 1 ? anchoredVwap[i] + anchoredDev[i] * mult : anchoredVwap[i] - anchoredDev[i] * mult,
-      color: c(i, transp),
-    }));
-
-  // Alerts: bullishShift / bearishShift = isReversed and direction == 1 / -1; ta.crossover / ta.crossunder of close
-  // with anchoredVwap and structureMid; high >= anchorUpperK, low <= anchorLowerK
-  const closes = bars.map((b) => b.close);
-  const bandAt = (sign: 1 | -1, mult: number, i: number) => anchoredVwap[i] + sign * anchoredDev[i] * mult;
-  const le = (a: number, b: number) => ge(b, a);
-  const flags: boolean[][] = [
-    reversed.map((r, i) => r && direction[i] === 1),
-    reversed.map((r, i) => r && direction[i] === -1),
-    reversed,
-    crossedOver(closes, anchoredVwap),
-    crossedUnder(closes, anchoredVwap),
-    crossedOver(closes, mid),
-    crossedUnder(closes, mid),
-    bars.map((b, i) => ge(b.high, bandAt(1, bandMult1, i))),
-    bars.map((b, i) => le(b.low, bandAt(-1, bandMult1, i))),
-    bars.map((b, i) => ge(b.high, bandAt(1, bandMult2, i))),
-    bars.map((b, i) => le(b.low, bandAt(-1, bandMult2, i))),
-  ];
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(structureMid, color = plotColor, linestyle = plot.linestyle_dotted, linewidth = 3)
-      plot0: bars.map((b, i) => ({ time: b.time, value: mid[i], color: col(i) })),
-      // plot(anchoredVwap, color = color.new(anchorColor, 0), linewidth = 2)
-      plot1: bars.map((b, i) => ({ time: b.time, value: anchoredVwap[i], color: c(i, 0) })),
-      // plot(showBand1 ? anchorUpper1 / anchorLower1 : na, color = color.new(anchorColor, 30))
-      plot2: band(1, bandMult1, showBand1, 30),
-      plot3: band(-1, bandMult1, showBand1, 30),
-      // plot(showBand2 ? anchorUpper2 / anchorLower2 : na, color = color.new(anchorColor, 55))
-      plot4: band(1, bandMult2, showBand2, 55),
-      plot5: band(-1, bandMult2, showBand2, 55),
-    },
-    // fill(aU1, aL1, color.new(anchorColor, 92)); fill(aU2, aL2, color.new(anchorColor, 95))
-    fills: [
-      { plot1: 'plot2', plot2: 'plot3', colors: bars.map((_, i) => c(i, 92)) },
-      { plot1: 'plot4', plot2: 'plot5', colors: bars.map((_, i) => c(i, 95)) },
-    ],
-    markers: [],
-    alerts: alertStates(alertConditions, bars, flags),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -258,6 +311,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const VolatilityDrivenVWAPStructure = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

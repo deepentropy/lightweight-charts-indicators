@@ -15,7 +15,9 @@
  * Original notice: © Zeiierman
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DynamicTrailingInputs {
   /** ATR multiplier of the supertrend and of the support / resistance distance */
@@ -87,137 +89,187 @@ const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 /** Pine nz() */
 const nz = (x: number) => (isNaN(x) ? 0 : x);
 
-export function calculate(bars: Bar[], inputs: Partial<DynamicTrailingInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+type Hma = ReturnType<typeof taStep.hma>;
+
+/** The state of one Trends() extreme (see the comment in bar()) */
+interface Extreme {
+  buf: number[];
+  ext: number;
+  extBar: number;
+}
+
+interface TrailingVars {
+  lPrev: number;
+  uPrev: number;
+  tPrev: number;
+  lowest: Extreme;
+  highest: Extreme;
+}
+
+interface TrailingRun extends BarRunState<TrailingVars> {
+  rawAtr: ReturnType<typeof taStep.sma>;
+  atrEma: ReturnType<typeof taStep.ema>;
+  gdHigh: Hma[];
+  gdLow: Hma[];
+  up: ReturnType<typeof taStep.sma>;
+  down: ReturnType<typeof taStep.sma>;
+  tAEma: ReturnType<typeof taStep.ema>;
+  tZEma: ReturnType<typeof taStep.ema>;
+  hl2: number[];
+  atr: number[];
+  d: number[];
+  plot0: Point[];
+  plot1: Point[];
+  fillColors: string[];
+}
+
+const copyExtreme = (e: Extreme): Extreme => ({ buf: e.buf.slice(), ext: e.ext, extBar: e.extBar });
+
+function study(inputs: Partial<DynamicTrailingInputs>): BarStudy<TrailingRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const hl2 = bars.map((b) => (b.high + b.low) / 2);
-
-  // ATR(hl2, atrLen): tr = max(src[1] - min(low, src[1]), max(high - low, src[1] - high)) (na on bar 0); SMA
-  const tr = bars.map((b, i) => {
-    const p = i > 0 ? hl2[i - 1] : NaN;
-    return Math.max(p - Math.min(b.low, p), Math.max(b.high - b.low, p - b.high));
-  });
-  const rawAtr = A(ta.sma(S(tr), cfg.atrLen));
-  const atr = A(ta.ema(S(rawAtr), cfg.atrSmooth));
-
-  // supertrend(mult) on hl2
-  const t: number[] = new Array(n).fill(NaN);
-  const d: number[] = new Array(n).fill(NaN);
-  let lPrev = NaN;
-  let uPrev = NaN;
-  let tPrev = NaN;
-  for (let i = 0; i < n; i++) {
-    let u = hl2[i] + cfg.mult * atr[i];
-    let l = hl2[i] - cfg.mult * atr[i];
-    const prevL = nz(lPrev);
-    const prevU = nz(uPrev);
-    const close1 = i > 0 ? close[i - 1] : NaN;
-    l = gt(l, prevL) || lt(close1, prevL) ? l : prevL;
-    u = lt(u, prevU) || gt(close1, prevU) ? u : prevU;
-    const atr1 = i > 0 ? atr[i - 1] : NaN;
-    // d := na(atr[1]) ? 1 : prevT == prevU ? close > u ? -1 : 1 : close < l ? 1 : -1
-    let dir: number;
-    if (isNaN(atr1)) dir = 1;
-    else if (eq(tPrev, prevU)) dir = gt(close[i], u) ? -1 : 1;
-    else dir = lt(close[i], l) ? 1 : -1;
-    d[i] = dir;
-    t[i] = dir === -1 ? l : u;
-    lPrev = l;
-    uPrev = u;
-    tPrev = t[i];
-  }
-
-  // gd(src, len, f): three chained HMAs combined with the GD factor
-  const gd = (src: number[]) => {
-    const f = cfg.gdFactor;
-    const e1 = A(ta.hma(S(src), cfg.len));
-    const e2 = A(ta.hma(S(e1), cfg.len));
-    const e3 = A(ta.hma(S(e2), cfg.len));
-    const c1 = -f * f * f;
-    const c2 = 3 * f * f + 3 * f * f * f;
-    const c3 = -6 * f * f - 3 * f - 3 * f * f * f;
-    const c4 = 1 + 3 * f + f * f * f + 3 * f * f;
-    return src.map((x, i) => c1 * e3[i] + c2 * e2[i] + c3 * e1[i] + c4 * x);
-  };
-  const gdHigh = gd(bars.map((b) => b.high));
-  const gdLow = gd(bars.map((b) => b.low));
-  const up = A(ta.sma(S(gdHigh.map((x, i) => x + atr[i] * cfg.mult)), cfg.smooth));
-  const down = A(ta.sma(S(gdLow.map((x, i) => x - atr[i] * cfg.mult)), cfg.smooth));
-
-  // Trends(): ta.lowest / ta.highest sit in the two branches of the ternary, so each one only runs on the bars where
-  // its branch is taken (rule found with probe plots of the values used):
-  // - the source history is a ring of len + 1 slots indexed by bar_index, written only on those bars; close_[k] is
-  //   the slot of bar i - k, which still holds an older call (len + 1 bars before) when the branch did not run on
-  //   bar i - k; a slot never written is skipped;
-  // - the extreme is kept with its bar; it is replaced by a new close that passes it, and the window
-  //   close_[0 .. len - 1] is scanned again when the extreme is len bars old (the oldest bar wins a tie);
-  // - na before bar len - 1.
   const ring = cfg.len + 1;
-  const makeExtreme = (isLow: boolean) => {
-    const buf: number[] = new Array(ring).fill(NaN);
-    let ext = NaN;
-    let extBar = -1;
-    return (i: number, x: number) => {
-      buf[i % ring] = x;
-      if (isNaN(ext) || i - extBar >= cfg.len) {
-        ext = NaN;
-        for (let k = 0; k < cfg.len && i - k >= 0; k++) {
-          const v = buf[(i - k) % ring];
-          if (!isNaN(v) && (isNaN(ext) || (isLow ? v <= ext : v >= ext))) {
-            ext = v;
-            extBar = i - k;
-          }
-        }
-      } else if (isLow ? x < ext : x > ext) {
-        ext = x;
-        extBar = i;
-      }
-      return i < cfg.len - 1 ? NaN : ext;
-    };
+  const f = cfg.gdFactor;
+  const c1 = -f * f * f;
+  const c2 = 3 * f * f + 3 * f * f * f;
+  const c3 = -6 * f * f - 3 * f - 3 * f * f * f;
+  const c4 = 1 + 3 * f + f * f * f + 3 * f * f;
+  // gd(src, len, f): three chained HMAs combined with the GD factor
+  const gd = (h: Hma[], x: number) => {
+    const e1 = h[0].step(x);
+    const e2 = h[1].step(e1);
+    const e3 = h[2].step(e2);
+    return c1 * e3 + c2 * e2 + c3 * e1 + c4 * x;
   };
-  const lowest = makeExtreme(true);
-  const highest = makeExtreme(false);
-  const tA: number[] = new Array(n);
-  const tZ: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    if (gt(close[i], t[i])) {
-      tA[i] = (t[i] + down[i] + (lowest(i, close[i]) + atr[i])) / 3;
-    } else {
-      tA[i] = (t[i] + up[i] + (highest(i, close[i]) + atr[i])) / 3;
+  const extreme = (e: Extreme, isLow: boolean, i: number, x: number) => {
+    const buf = e.buf;
+    buf[i % ring] = x;
+    if (isNaN(e.ext) || i - e.extBar >= cfg.len) {
+      e.ext = NaN;
+      for (let k = 0; k < cfg.len && i - k >= 0; k++) {
+        const v = buf[(i - k) % ring];
+        if (!isNaN(v) && (isNaN(e.ext) || (isLow ? v <= e.ext : v >= e.ext))) {
+          e.ext = v;
+          e.extBar = i - k;
+        }
+      }
+    } else if (isLow ? x < e.ext : x > e.ext) {
+      e.ext = x;
+      e.extBar = i;
     }
-    tZ[i] = gt(close[i], tA[i]) ? tA[i] + atr[i] * cfg.cloudWidth : tA[i] - atr[i] * cfg.cloudWidth;
-  }
-
-  const tAPlot = A(ta.ema(S(tA), cfg.plotSmooth));
-  const tZPlot = A(ta.ema(S(tZ), cfg.plotSmooth));
-
+    return i < cfg.len - 1 ? NaN : e.ext;
+  };
   const dnFill = String(color.new(cfg.dncol, 80));
   const upFill = String(color.new(cfg.upcol, 80));
-  const above = (i: number) => gt(close[i], tAPlot[i]);
-
+  const newExtreme = (): Extreme => ({ buf: new Array(ring).fill(NaN), ext: NaN, extBar: -1 });
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(sig and (d < 0 and d[1] < 0 or d > 0 and d[1] > 0) ? tA_plot : na, 'Smart Trailing', trendColor, linebr)
-      plot0: bars.map((b, i) => {
-        const same = i > 0 && ((d[i] < 0 && d[i - 1] < 0) || (d[i] > 0 && d[i - 1] > 0));
-        return { time: b.time, value: same ? tAPlot[i] : NaN, color: above(i) ? cfg.dncol : cfg.upcol };
-      }),
-      // plot(sig ? tZ_plot : na, 'Cloud', color.new(color.gray, 100), display = display.none, linebr)
-      plot1: bars.map((b, i) => ({ time: b.time, value: tZPlot[i], color: CLOUD_LINE })),
+    init() {
+      const s: TrailingRun = {
+        rawAtr: taStep.sma(), atrEma: taStep.ema(cfg.atrSmooth),
+        gdHigh: [taStep.hma(cfg.len), taStep.hma(cfg.len), taStep.hma(cfg.len)],
+        gdLow: [taStep.hma(cfg.len), taStep.hma(cfg.len), taStep.hma(cfg.len)],
+        up: taStep.sma(), down: taStep.sma(), tAEma: taStep.ema(cfg.plotSmooth), tZEma: taStep.ema(cfg.plotSmooth),
+        hl2: [], atr: [], d: [], plot0: [], plot1: [], fillColors: [],
+        steps: [],
+        vars: { lPrev: NaN, uPrev: NaN, tPrev: NaN, lowest: newExtreme(), highest: newExtreme() },
+        lists: [], series: [],
+      };
+      s.steps = [s.rawAtr, s.atrEma, ...s.gdHigh, ...s.gdLow, s.up, s.down, s.tAEma, s.tZEma];
+      s.series = [s.hl2, s.atr, s.d, s.plot0, s.plot1, s.fillColors];
+      return s;
     },
-    // fill(sigL, zoneL, close > tA_plot ? color.new(dncol, 80) : color.new(upcol, 80), 'Cloud')
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Cloud' }, colors: bars.map((_b, i) => (above(i) ? dnFill : upFill)) },
-    ],
+    copyVars: (v) => ({ ...v, lowest: copyExtreme(v.lowest), highest: copyExtreme(v.highest) }),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const close = b.close;
+      const hl2 = (b.high + b.low) / 2;
+      s.hl2[i] = hl2;
+
+      // ATR(hl2, atrLen): tr = max(src[1] - min(low, src[1]), max(high - low, src[1] - high)) (na on bar 0); SMA
+      const p = i > 0 ? s.hl2[i - 1] : NaN;
+      const tr = Math.max(p - Math.min(b.low, p), Math.max(b.high - b.low, p - b.high));
+      const raw = s.rawAtr.step(tr, cfg.atrLen) ?? NaN;
+      const atr = s.atrEma.step(raw) ?? NaN;
+      // the ATR of the previous bar (na(atr[1]))
+      const atr1 = i > 0 ? s.atr[i - 1] : NaN;
+      s.atr[i] = atr;
+
+      // supertrend(mult) on hl2
+      let u = hl2 + cfg.mult * atr;
+      let l = hl2 - cfg.mult * atr;
+      const prevL = nz(v.lPrev);
+      const prevU = nz(v.uPrev);
+      const close1 = i > 0 ? bars[i - 1].close : NaN;
+      l = gt(l, prevL) || lt(close1, prevL) ? l : prevL;
+      u = lt(u, prevU) || gt(close1, prevU) ? u : prevU;
+      // d := na(atr[1]) ? 1 : prevT == prevU ? close > u ? -1 : 1 : close < l ? 1 : -1
+      let dir: number;
+      if (isNaN(atr1)) dir = 1;
+      else if (eq(v.tPrev, prevU)) dir = gt(close, u) ? -1 : 1;
+      else dir = lt(close, l) ? 1 : -1;
+      s.d[i] = dir;
+      const t = dir === -1 ? l : u;
+      v.lPrev = l;
+      v.uPrev = u;
+      v.tPrev = t;
+
+      const gdHigh = gd(s.gdHigh, b.high);
+      const gdLow = gd(s.gdLow, b.low);
+      const up = s.up.step(gdHigh + atr * cfg.mult, cfg.smooth) ?? NaN;
+      const down = s.down.step(gdLow - atr * cfg.mult, cfg.smooth) ?? NaN;
+
+      // Trends(): ta.lowest / ta.highest sit in the two branches of the ternary, so each one only runs on the bars where
+      // its branch is taken (rule found with probe plots of the values used):
+      // - the source history is a ring of len + 1 slots indexed by bar_index, written only on those bars; close_[k] is
+      //   the slot of bar i - k, which still holds an older call (len + 1 bars before) when the branch did not run on
+      //   bar i - k; a slot never written is skipped;
+      // - the extreme is kept with its bar; it is replaced by a new close that passes it, and the window
+      //   close_[0 .. len - 1] is scanned again when the extreme is len bars old (the oldest bar wins a tie);
+      // - na before bar len - 1.
+      let tA: number;
+      if (gt(close, t)) {
+        tA = (t + down + (extreme(v.lowest, true, i, close) + atr)) / 3;
+      } else {
+        tA = (t + up + (extreme(v.highest, false, i, close) + atr)) / 3;
+      }
+      const tZ = gt(close, tA) ? tA + atr * cfg.cloudWidth : tA - atr * cfg.cloudWidth;
+
+      const tAPlot = s.tAEma.step(tA) ?? NaN;
+      const tZPlot = s.tZEma.step(tZ) ?? NaN;
+      const above = gt(close, tAPlot);
+      // plot(sig and (d < 0 and d[1] < 0 or d > 0 and d[1] > 0) ? tA_plot : na, 'Smart Trailing', trendColor, linebr)
+      const same = i > 0 && ((dir < 0 && s.d[i - 1] < 0) || (dir > 0 && s.d[i - 1] > 0));
+      s.plot0[i] = { time: b.time, value: same ? tAPlot : NaN, color: above ? cfg.dncol : cfg.upcol };
+      // plot(sig ? tZ_plot : na, 'Cloud', color.new(color.gray, 100), display = display.none, linebr)
+      s.plot1[i] = { time: b.time, value: tZPlot, color: CLOUD_LINE };
+      // fill(sigL, zoneL, close > tA_plot ? color.new(dncol, 80) : color.new(upcol, 80), 'Cloud')
+      s.fillColors[i] = above ? dnFill : upFill;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Cloud' }, colors: s.fillColors.slice() },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DynamicTrailingInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DynamicTrailingInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const DynamicTrailing = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

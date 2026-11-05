@@ -19,9 +19,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BadV04Inputs {
   shortL1: number;
@@ -115,181 +117,246 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 /** Pine nz: na and +-infinity give the replacement */
 const nz = (v: number, r = 0) => (Number.isFinite(v) ? v : r);
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color: string };
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface BadVars {
+  str: number;
+  sdmp: number;
+  sdmm: number;
+  /** var trendDirection = bool(na): false in Pine v6 */
+  direction: boolean;
+  /** var trendBand = float(na) */
+  trendBand: number;
+  pendingBull: boolean;
+  pendingBear: boolean;
+  lastSignalType: number;
+}
+
+interface BadRun extends BarRunState<BadVars> {
+  emaS1: Ema;
+  emaS2: Ema;
+  rsiS: ReturnType<typeof taStep.rsi>;
+  emaL1: Ema;
+  rsiL: ReturnType<typeof taStep.rsi>;
+  t3: Ema[];
+  adxMa: ReturnType<typeof taStep.sma>;
+  atr: ReturnType<typeof taStep.atr>;
+  maClose: ReturnType<typeof taStep.sma>;
+  ema: Ema;
+  emaAccel: Ema;
+  atr14: ReturnType<typeof taStep.atr>;
+  shortX: number[];
+  maShortX: number[];
+  longX: number[];
+  diPlus: number[];
+  diMinus: number[];
+  emaArr: number[];
+  hueRaw: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  stateFlags: boolean[];
+  times: number[];
+}
+
+function study(inputs: Partial<BadV04Inputs>): BarStudy<BadRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const emaSource = barSource(cfg.emaSource);
+  const len = cfg.adxLength;
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  const pendingBullCol = String(color.new(color.green, 95));
+  const pendingBearCol = String(color.new(color.red, 95));
+  const bullColor = String(color.rgb(255, 255, 255));
+  const bearColor = String(color.rgb(5, 0, 0));
+  // t3(src, 5): six chained EMAs, b = 0.7
+  const tb = 0.7;
+  const c1 = -tb * tb * tb;
+  const c2 = 3 * tb * tb + 3 * tb * tb * tb;
+  const c3 = -6 * tb * tb - 3 * tb - 3 * tb * tb * tb;
+  const c4 = 1 + 3 * tb + tb * tb * tb + 3 * tb * tb;
+  return {
+    fullRunReason: () => (isBarSource(cfg.emaSource) ? null : 'source of another study'),
+    init() {
+      const emaS1 = taStep.ema(cfg.shortL1);
+      const emaS2 = taStep.ema(cfg.shortL2);
+      const rsiS = taStep.rsi(cfg.shortL3);
+      const emaL1 = taStep.ema(cfg.longL1);
+      const rsiL = taStep.rsi(cfg.longL2);
+      const t3 = Array.from({ length: 6 }, () => taStep.ema(5));
+      const adxMa = taStep.sma();
+      const atr = taStep.atr(cfg.volatility);
+      const maClose = taStep.sma();
+      const ema = taStep.ema(cfg.emaLength);
+      const emaAccel = taStep.ema(cfg.colorSmooth);
+      const atr14 = taStep.atr(14);
+      const s: BadRun = {
+        emaS1, emaS2, rsiS, emaL1, rsiL, t3, adxMa, atr, maClose, ema, emaAccel, atr14,
+        shortX: [], maShortX: [], longX: [], diPlus: [], diMinus: [], emaArr: [], hueRaw: [],
+        plots: Array.from({ length: 11 }, () => []), markers: [], bgColors: [], stateFlags: [], times: [],
+        steps: [emaS1, emaS2, rsiS, emaL1, rsiL, ...t3, adxMa, atr, maClose, ema, emaAccel, atr14],
+        vars: {
+          str: 0.0, sdmp: 0.0, sdmm: 0.0, direction: false, trendBand: NaN, pendingBull: false, pendingBear: false,
+          lastSignalType: 0,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors, s.times];
+      s.series = [s.shortX, s.maShortX, s.longX, s.diPlus, s.diMinus, s.emaArr, s.hueRaw, ...s.plots, s.stateFlags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const close = b.close;
+      const prev = (a: number[]) => (i > 0 ? a[i - 1] : NaN);
+
+      // 1. B-Xtrender
+      const emaS1 = s.emaS1.step(close);
+      const emaS2 = s.emaS2.step(close);
+      const shortX = s.rsiS.step(emaS1 - emaS2) - 50;
+      const longX = s.rsiL.step(s.emaL1.step(close)) - 50;
+      s.shortX[i] = shortX;
+      s.longX[i] = longX;
+      const xe1 = s.t3[0].step(shortX);
+      const xe2 = s.t3[1].step(xe1);
+      const xe3 = s.t3[2].step(xe2);
+      const xe4 = s.t3[3].step(xe3);
+      const xe5 = s.t3[4].step(xe4);
+      const xe6 = s.t3[5].step(xe5);
+      const maShortX = c1 * xe6 + c2 * xe5 + c3 * xe4 + c4 * xe3;
+      s.maShortX[i] = maShortX;
+
+      // 2. ADX + DI (nz(x[1]) is 0 on bar 0)
+      const pc = nz(i > 0 ? bars[i - 1].close : NaN);
+      const ph = i > 0 ? bars[i - 1].high : 0;
+      const pl = i > 0 ? bars[i - 1].low : 0;
+      const tr = Math.max(Math.max(b.high - b.low, Math.abs(b.high - pc)), Math.abs(b.low - pc));
+      const dmp = gt(b.high - ph, pl - b.low) ? Math.max(b.high - ph, 0) : 0;
+      const dmm = gt(pl - b.low, b.high - ph) ? Math.max(pl - b.low, 0) : 0;
+      v.str = nz(v.str) - nz(v.str) / len + tr;
+      v.sdmp = nz(v.sdmp) - nz(v.sdmp) / len + dmp;
+      v.sdmm = nz(v.sdmm) - nz(v.sdmm) / len + dmm;
+      const diPlus = (v.sdmp / v.str) * 100;
+      const diMinus = (v.sdmm / v.str) * 100;
+      s.diPlus[i] = diPlus;
+      s.diMinus[i] = diMinus;
+      const dx = (Math.abs(diPlus - diMinus) / (diPlus + diMinus)) * 100;
+      const adx = s.adxMa.step(dx, len);
+
+      // 3. Trend Step
+      const atr = s.atr.step(b.high, b.low, close);
+      const maClose = s.maClose.step(close, cfg.maLength);
+      const maUp = maClose + atr;
+      const maDn = maClose - atr;
+      const upperBand = v.trendBand + atr * cfg.trendWidth;
+      const lowerBand = v.trendBand - atr * cfg.trendWidth;
+      // bar_index < 300: bar_index counts from the first bar given
+      if (i < 300) {
+        if (ge(close, maUp)) v.direction = true;
+        if (le(close, maDn)) v.direction = false;
+      } else {
+        if (ge(b.low, upperBand)) v.direction = true;
+        if (le(b.high, lowerBand)) v.direction = false;
+      }
+      const hl2 = (b.high + b.low) / 2;
+      v.trendBand = v.direction ? Math.max(nz(v.trendBand), hl2) : Math.min(nz(v.trendBand), hl2);
+      const trendDir = v.direction;
+
+      // 4. EMA Core
+      const ema = s.ema.step(emaSource(b));
+      s.emaArr[i] = ema;
+      const emaChange = ema - prev(s.emaArr);
+      const emaAccel = s.emaAccel.step(emaChange);
+      const atr14 = s.atr14.step(b.high, b.low, close);
+      // tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
+      const ex = Math.exp(2 * (emaAccel / (atr14 * 0.01)));
+      const hue = 60 + ((ex - 1) / (ex + 1)) * 60;
+      s.hueRaw[i] = hue;
+      const hp = prev(s.hueRaw);
+      const emaColor = hsvToRgb(isNaN(hp) ? hue : (hue + hp) / 2, 1.0, 1.0);
+
+      // 6. DI crossover with delayed histogram confirmation; ta.crossover / ta.crossunder compare exactly
+      const crossUp = i > 0 && diPlus > diMinus && s.diPlus[i - 1] <= s.diMinus[i - 1];
+      const crossDown = i > 0 && diPlus < diMinus && s.diPlus[i - 1] >= s.diMinus[i - 1];
+      if (crossUp) {
+        v.pendingBull = true;
+        v.pendingBear = false;
+      }
+      if (crossDown) {
+        v.pendingBear = true;
+        v.pendingBull = false;
+      }
+      const bullRev = v.pendingBull && gt(longX, 0) && v.lastSignalType !== 1;
+      const bearRev = v.pendingBear && lt(longX, 0) && v.lastSignalType !== -1;
+      if (bullRev) {
+        v.lastSignalType = 1;
+        v.pendingBull = false;
+      }
+      if (bearRev) {
+        v.lastSignalType = -1;
+        v.pendingBear = false;
+      }
+      const price = maShortX;
+      if (bullRev && !isNaN(price)) {
+        s.markers.push({ id: 'shape0', time: t, position: 'atPriceMiddle', price, shape: 'circle', color: bullColor, size: 'tiny' });
+      }
+      if (bearRev && !isNaN(price)) {
+        s.markers.push({ id: 'shape1', time: t, position: 'atPriceMiddle', price, shape: 'circle', color: bearColor, size: 'tiny' });
+      }
+      if (v.pendingBull && !bullRev) s.bgColors.push({ id: 'bgcolor0', time: t, color: pendingBullCol });
+      if (v.pendingBear && !bearRev) s.bgColors.push({ id: 'bgcolor1', time: t, color: pendingBearCol });
+      // stateChange = bullReversalCondition or bearReversalCondition
+      const state = bullRev || bearRev;
+      s.stateFlags[i] = state;
+      if (state) s.times.push(t as number);
+
+      const risingShort = gt(shortX, prev(s.shortX));
+      const risingT3 = gt(maShortX, prev(s.maShortX));
+      const risingLong = gt(longX, prev(s.longX));
+      const p = s.plots;
+      p[0][i] = { time: t, value: fin(shortX), color: gt(shortX, 0) ? (risingShort ? UP_T : '#228b2200') : (risingShort ? DN_T : '#8b000000') };
+      p[1][i] = { time: t, value: fin(maShortX), color: '#00000000' };
+      p[2][i] = { time: t, value: fin(maShortX), color: risingT3 ? UP_T : DN_T };
+      p[3][i] = { time: t, value: fin(diPlus), color: color.green };
+      p[4][i] = { time: t, value: fin(diMinus), color: color.red };
+      p[5][i] = { time: t, value: fin(adx), color: color.navy };
+      p[6][i] = { time: t, value: 0, color: trendDir ? color.white : color.black };
+      p[7][i] = { time: t, value: cfg.showEmaLine ? -10 : NaN, color: emaColor };
+      p[8][i] = { time: t, value: fin(longX), color: gt(longX, 0) ? (risingLong ? LONG_UP_RISE : '#77777749') : (risingLong ? LONG_DN_RISE : '#0000003f') };
+      p[9][i] = { time: t, value: fin(longX), color: '#00000000' };
+      p[10][i] = { time: t, value: fin(longX), color: risingLong ? UP_T : DN_T };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((pl, k) => { plots[`plot${k}`] = pl.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        // hline(th, color = color.gray): Pine default style dashed, width 1
+        hlines: [{ value: cfg.adxThreshold, options: { title: 'ADX Threshold', color: color.gray, linestyle: 'dashed', linewidth: 1 } }],
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(stateChange, "Signal Confirmed")
+        alerts: liveAlertStates(alertConditions, [s.times], [n > 0 && s.stateFlags[n - 1]]),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BadV04Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<BadV04Inputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const prev = (a: number[], i: number) => (i > 0 ? a[i - 1] : NaN);
-
-  // 1. B-Xtrender
-  const emaS1 = A(ta.ema(S(close), cfg.shortL1));
-  const emaS2 = A(ta.ema(S(close), cfg.shortL2));
-  const shortX = A(ta.rsi(S(emaS1.map((v, i) => v - emaS2[i])), cfg.shortL3)).map((v) => v - 50);
-  const longX = A(ta.rsi(ta.ema(S(close), cfg.longL1), cfg.longL2)).map((v) => v - 50);
-
-  // t3(src, 5): six chained EMAs, b = 0.7
-  const t3 = (src: number[], len: number) => {
-    const xe1 = A(ta.ema(S(src), len));
-    const xe2 = A(ta.ema(S(xe1), len));
-    const xe3 = A(ta.ema(S(xe2), len));
-    const xe4 = A(ta.ema(S(xe3), len));
-    const xe5 = A(ta.ema(S(xe4), len));
-    const xe6 = A(ta.ema(S(xe5), len));
-    const b = 0.7;
-    const c1 = -b * b * b;
-    const c2 = 3 * b * b + 3 * b * b * b;
-    const c3 = -6 * b * b - 3 * b - 3 * b * b * b;
-    const c4 = 1 + 3 * b + b * b * b + 3 * b * b;
-    return xe6.map((_v, i) => c1 * xe6[i] + c2 * xe5[i] + c3 * xe4[i] + c4 * xe3[i]);
-  };
-  const maShortX = t3(shortX, 5);
-
-  // 2. ADX + DI (nz(x[1]) is 0 on bar 0)
-  const len = cfg.adxLength;
-  const diPlus: number[] = new Array(n);
-  const diMinus: number[] = new Array(n);
-  const dx: number[] = new Array(n);
-  let str = 0.0;
-  let sdmp = 0.0;
-  let sdmm = 0.0;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const pc = nz(prev(close, i));
-    const ph = i > 0 ? bars[i - 1].high : 0;
-    const pl = i > 0 ? bars[i - 1].low : 0;
-    const tr = Math.max(Math.max(b.high - b.low, Math.abs(b.high - pc)), Math.abs(b.low - pc));
-    const dmp = gt(b.high - ph, pl - b.low) ? Math.max(b.high - ph, 0) : 0;
-    const dmm = gt(pl - b.low, b.high - ph) ? Math.max(pl - b.low, 0) : 0;
-    str = nz(str) - nz(str) / len + tr;
-    sdmp = nz(sdmp) - nz(sdmp) / len + dmp;
-    sdmm = nz(sdmm) - nz(sdmm) / len + dmm;
-    diPlus[i] = (sdmp / str) * 100;
-    diMinus[i] = (sdmm / str) * 100;
-    dx[i] = (Math.abs(diPlus[i] - diMinus[i]) / (diPlus[i] + diMinus[i])) * 100;
-  }
-  const adx = A(ta.sma(S(dx), len));
-
-  // 3. Trend Step
-  const atr = A(ta.atr(bars, cfg.volatility));
-  const maClose = A(ta.sma(S(close), cfg.maLength));
-  const trendDir: boolean[] = new Array(n);
-  let direction = false; // var trendDirection = bool(na): false in Pine v6
-  let trendBand = NaN; // var trendBand = float(na)
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const maUp = maClose[i] + atr[i];
-    const maDn = maClose[i] - atr[i];
-    const upperBand = trendBand + atr[i] * cfg.trendWidth;
-    const lowerBand = trendBand - atr[i] * cfg.trendWidth;
-    // bar_index < 300: bar_index counts from the first bar given
-    if (i < 300) {
-      if (ge(b.close, maUp)) direction = true;
-      if (le(b.close, maDn)) direction = false;
-    } else {
-      if (ge(b.low, upperBand)) direction = true;
-      if (le(b.high, lowerBand)) direction = false;
-    }
-    const hl2 = (b.high + b.low) / 2;
-    trendBand = direction ? Math.max(nz(trendBand), hl2) : Math.min(nz(trendBand), hl2);
-    trendDir[i] = direction;
-  }
-
-  // 4. EMA Core
-  const ema = A(ta.ema(getSourceSeries(bars, cfg.emaSource), cfg.emaLength));
-  const emaChange = ema.map((v, i) => v - prev(ema, i));
-  const emaAccel = A(ta.ema(S(emaChange), cfg.colorSmooth));
-  const atr14 = A(ta.atr(bars, 14));
-  const hueRaw = emaAccel.map((a, i) => {
-    // tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
-    const ex = Math.exp(2 * (a / (atr14[i] * 0.01)));
-    return 60 + ((ex - 1) / (ex + 1)) * 60;
-  });
-  const emaColor = hueRaw.map((h, i) => {
-    const hp = prev(hueRaw, i);
-    return hsvToRgb(isNaN(hp) ? h : (h + hp) / 2, 1.0, 1.0);
-  });
-
-  // 6. DI crossover with delayed histogram confirmation
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const pendingBullCol = String(color.new(color.green, 95));
-  const pendingBearCol = String(color.new(color.red, 95));
-  let pendingBull = false;
-  let pendingBear = false;
-  let lastSignalType = 0;
-  const stateFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // ta.crossover / ta.crossunder compare exactly
-    const crossUp = i > 0 && diPlus[i] > diMinus[i] && diPlus[i - 1] <= diMinus[i - 1];
-    const crossDown = i > 0 && diPlus[i] < diMinus[i] && diPlus[i - 1] >= diMinus[i - 1];
-    if (crossUp) {
-      pendingBull = true;
-      pendingBear = false;
-    }
-    if (crossDown) {
-      pendingBear = true;
-      pendingBull = false;
-    }
-    const bullRev = pendingBull && gt(longX[i], 0) && lastSignalType !== 1;
-    const bearRev = pendingBear && lt(longX[i], 0) && lastSignalType !== -1;
-    if (bullRev) {
-      lastSignalType = 1;
-      pendingBull = false;
-    }
-    if (bearRev) {
-      lastSignalType = -1;
-      pendingBear = false;
-    }
-    const price = maShortX[i];
-    if (bullRev && !isNaN(price)) {
-      markers.push({ id: 'shape0', time: t, position: 'atPriceMiddle', price, shape: 'circle', color: String(color.rgb(255, 255, 255)), size: 'tiny' });
-    }
-    if (bearRev && !isNaN(price)) {
-      markers.push({ id: 'shape1', time: t, position: 'atPriceMiddle', price, shape: 'circle', color: String(color.rgb(5, 0, 0)), size: 'tiny' });
-    }
-    if (pendingBull && !bullRev) bgColors.push({ id: 'bgcolor0', time: t, color: pendingBullCol });
-    if (pendingBear && !bearRev) bgColors.push({ id: 'bgcolor1', time: t, color: pendingBearCol });
-    // stateChange = bullReversalCondition or bearReversalCondition
-    stateFlags.push(bullRev || bearRev);
-  }
-
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const P = (value: (i: number) => number, col: (i: number) => string) =>
-    bars.map((b, i) => ({ time: b.time, value: fin(value(i)), color: col(i) }));
-  const rising = (a: number[], i: number) => gt(a[i], prev(a, i));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P((i) => shortX[i], (i) => (gt(shortX[i], 0)
-        ? (rising(shortX, i) ? UP_T : '#228b2200')
-        : (rising(shortX, i) ? DN_T : '#8b000000'))),
-      plot1: P((i) => maShortX[i], () => '#00000000'),
-      plot2: P((i) => maShortX[i], (i) => (rising(maShortX, i) ? UP_T : DN_T)),
-      plot3: P((i) => diPlus[i], () => color.green),
-      plot4: P((i) => diMinus[i], () => color.red),
-      plot5: P((i) => adx[i], () => color.navy),
-      plot6: P(() => 0, (i) => (trendDir[i] ? color.white : color.black)),
-      plot7: P(() => (cfg.showEmaLine ? -10 : NaN), (i) => emaColor[i]),
-      plot8: P((i) => longX[i], (i) => (gt(longX[i], 0)
-        ? (rising(longX, i) ? LONG_UP_RISE : '#77777749')
-        : (rising(longX, i) ? LONG_DN_RISE : '#0000003f'))),
-      plot9: P((i) => longX[i], () => '#00000000'),
-      plot10: P((i) => longX[i], (i) => (rising(longX, i) ? UP_T : DN_T)),
-    },
-    // hline(th, color = color.gray): Pine default style dashed, width 1
-    hlines: [{ value: cfg.adxThreshold, options: { title: 'ADX Threshold', color: color.gray, linestyle: 'dashed', linewidth: 1 } }],
-    markers,
-    bgColors,
-    // alertcondition(stateChange, "Signal Confirmed")
-    alerts: alertStates(alertConditions, bars, [stateFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertcondition */
@@ -324,4 +391,5 @@ export const BadV04 = {
   inputConfig,
   plotConfig,
   alertConditions,
+  createRun,
 };

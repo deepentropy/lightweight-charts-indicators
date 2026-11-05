@@ -10,9 +10,11 @@
  * Reference: "Tweezer and Kangaroo Tail" by LonesomeTheBlue
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TweezersKangarooTailInputs {
   enableTweezer: boolean;
@@ -66,164 +68,202 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TweezersKangarooTailInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface TweezVars {
+  /** zigzag stores [value0, barIndex0, value1, barIndex1] (changed in place, copied by copyVars) */
+  zigzag: number[];
+  dir: number;
+  prevDir: number;
+}
+
+interface TweezRun extends BarRunState<TweezVars> {
+  highest: ReturnType<typeof taStep.highest>;
+  lowest: ReturnType<typeof taStep.lowest>;
+  highestKang: ReturnType<typeof taStep.highest>;
+  lowestKang: ReturnType<typeof taStep.lowest>;
+  atr: ReturnType<typeof taStep.atr>;
+  avgTopWick: ReturnType<typeof taStep.sma>;
+  topWick: number[];
+  bottomWick: number[];
+  highestArr: number[];
+  lowestArr: number[];
+  closePlot: { time: number; value: number }[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TweezersKangarooTailInputs>): BarStudy<TweezRun, Result> {
   const {
     enableTweezer, maxRate: maxRatePct, levelDiff: levelDiffPct, tweezPrd, apartPrd,
     enableKangaroo, kangPrd, kangMinPrd, atrMult, wickMult, wickMultAvg,
   } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
   const maxRate = maxRatePct / 100;
   const levelDiffRate = levelDiffPct / 100;
+  const flags = [false, false, false, false];
+  const isHighestBar = (s: TweezRun, bars: Bar[], j: number) => j >= tweezPrd - 1 && bars[j].high === s.highestArr[j];
+  const isLowestBar = (s: TweezRun, bars: Bar[], j: number) => j >= tweezPrd - 1 && bars[j].low === s.lowestArr[j];
+  return {
+    init() {
+      const highest = taStep.highest();
+      const lowest = taStep.lowest();
+      const highestKang = taStep.highest();
+      const lowestKang = taStep.lowest();
+      // ATR for kangaroo tail; average top wick size (SMA 50)
+      const atr = taStep.atr(50);
+      const avgTopWick = taStep.sma();
+      const s: TweezRun = {
+        highest, lowest, highestKang, lowestKang, atr, avgTopWick,
+        topWick: [], bottomWick: [], highestArr: [], lowestArr: [], closePlot: [], markers: [],
+        flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [highest, lowest, highestKang, lowestKang, atr, avgTopWick],
+        vars: { zigzag: [0, 0, 0, 0], dir: 0, prevDir: 0 },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.topWick, s.bottomWick, s.highestArr, s.lowestArr, s.closePlot, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { open, high, low, close, time } = bars[i];
+      const v = s.vars;
+      // wick/body data
+      const topWick = high - Math.max(close, open);
+      const bottomWick = Math.min(close, open) - low;
+      const body = Math.abs(close - open);
+      s.topWick[i] = topWick;
+      s.bottomWick[i] = bottomWick;
+      // Highest/lowest detection for tweezers
+      s.highestArr[i] = s.highest.step(high, tweezPrd);
+      s.lowestArr[i] = s.lowest.step(low, tweezPrd);
+      const atrNow = s.atr.step(high, low, close);
+      const avgTopWickNow = s.avgTopWick.step(topWick, 50);
+      // Highest/lowest for kangaroo prd
+      const highestKang = s.highestKang.step(high, kangPrd);
+      const lowestKang = s.lowestKang.step(low, kangPrd);
+      s.closePlot[i] = { time, value: NaN };
+      let topKangaroo = false;
+      let bottomKangaroo = false;
+      let topTweezer = false;
+      let bottomTweezer = false;
 
-  // Pre-compute wick/body data
-  const topWick: number[] = new Array(n);
-  const bottomWick: number[] = new Array(n);
-  const body: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const { open, high, low, close } = bars[i];
-    topWick[i] = high - Math.max(close, open);
-    bottomWick[i] = Math.min(close, open) - low;
-    body[i] = Math.abs(close - open);
-  }
-
-  // Highest/lowest detection for tweezers
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const highestArr = ta.highest(highSeries, tweezPrd).toArray();
-  const lowestArr = ta.lowest(lowSeries, tweezPrd).toArray();
-
-  const isHighestBar = (i: number) => i >= tweezPrd - 1 && bars[i].high === highestArr[i];
-  const isLowestBar = (i: number) => i >= tweezPrd - 1 && bars[i].low === lowestArr[i];
-
-  // ATR for kangaroo tail
-  const atrArr = ta.atr(bars, 50).toArray();
-
-  // Average top wick size (SMA 50)
-  const topWickSeries = Series.fromArray(bars, topWick);
-  const avgTopWickArr = ta.sma(topWickSeries, 50).toArray();
-
-  // Zigzag tracking for kangaroo tail
-  // zigzag stores [value0, barIndex0, value1, barIndex1]
-  let zigzag = [0, 0, 0, 0];
-  let dir = 0;
-  let prevDir = 0;
-
-  // Highest/lowest for kangaroo prd
-  const highestKangArr = ta.highest(highSeries, kangPrd).toArray();
-  const lowestKangArr = ta.lowest(lowSeries, kangPrd).toArray();
-
-  const markers: MarkerData[] = [];
-  const closePlot = bars.map((b) => ({ time: b.time, value: NaN }));
-  const topKangaroo: boolean[] = new Array(n).fill(false);
-  const bottomKangaroo: boolean[] = new Array(n).fill(false);
-  const topTweezer: boolean[] = new Array(n).fill(false);
-  const bottomTweezer: boolean[] = new Array(n).fill(false);
-
-  for (let i = 0; i < n; i++) {
-    const { open, high, low, close, time } = bars[i];
-
-    // --- TWEEZERS ---
-    if (enableTweezer && i >= tweezPrd) {
-      // Top tweezer
-      if (topWick[i] > 0 && isHighestBar(i)) {
-        for (let x = 1; x <= Math.min(apartPrd, i); x++) {
-          if (topWick[i - x] === 0) break;
-          const maxW = Math.max(topWick[i], topWick[i - x]);
-          const minW = Math.min(topWick[i], topWick[i - x]);
-          if (maxW / minW <= maxRate && Math.abs(high - bars[i - x].high) < maxW * levelDiffRate && isHighestBar(i - x)) {
-            markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'T' });
-            topTweezer[i] = true;
-            break;
-          } else if (bars[i - x].high >= high) {
-            break;
+      // --- TWEEZERS ---
+      if (enableTweezer && i >= tweezPrd) {
+        // Top tweezer
+        if (topWick > 0 && isHighestBar(s, bars, i)) {
+          for (let x = 1; x <= Math.min(apartPrd, i); x++) {
+            if (s.topWick[i - x] === 0) break;
+            const maxW = Math.max(topWick, s.topWick[i - x]);
+            const minW = Math.min(topWick, s.topWick[i - x]);
+            if (maxW / minW <= maxRate && Math.abs(high - bars[i - x].high) < maxW * levelDiffRate && isHighestBar(s, bars, i - x)) {
+              s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'T' });
+              topTweezer = true;
+              break;
+            } else if (bars[i - x].high >= high) {
+              break;
+            }
           }
         }
-      }
-
-      // Bottom tweezer
-      if (bottomWick[i] > 0 && isLowestBar(i)) {
-        for (let x = 1; x <= Math.min(apartPrd, i); x++) {
-          if (bottomWick[i - x] === 0) break;
-          const maxW = Math.max(bottomWick[i], bottomWick[i - x]);
-          const minW = Math.min(bottomWick[i], bottomWick[i - x]);
-          if (maxW / minW <= maxRate && Math.abs(low - bars[i - x].low) < maxW * levelDiffRate && isLowestBar(i - x)) {
-            markers.push({ time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'T' });
-            bottomTweezer[i] = true;
-            break;
-          } else if (bars[i - x].low <= low) {
-            break;
-          }
-        }
-      }
-    }
-
-    // --- KANGAROO TAIL ---
-    if (enableKangaroo && i >= kangPrd) {
-      const ph = bars[i].high === highestKangArr[i] ? high : NaN;
-      const pl = bars[i].low === lowestKangArr[i] ? low : NaN;
-
-      prevDir = dir;
-      if (!isNaN(ph) && isNaN(pl)) dir = 1;
-      else if (!isNaN(pl) && isNaN(ph)) dir = -1;
-
-      const dirChanged = dir !== prevDir;
-
-      if (!isNaN(ph) || !isNaN(pl)) {
-        const val = dir === 1 ? ph : pl;
-        if (!isNaN(val)) {
-          if (dirChanged) {
-            // add_to_zigzag: unshift value, barIndex; pop last two
-            zigzag = [val, i, zigzag[0], zigzag[1]];
-          } else {
-            // update_zigzag: if new extreme, update
-            if ((dir === 1 && val > zigzag[0]) || (dir === -1 && val < zigzag[0])) {
-              zigzag[0] = val;
-              zigzag[1] = i;
+        // Bottom tweezer
+        if (bottomWick > 0 && isLowestBar(s, bars, i)) {
+          for (let x = 1; x <= Math.min(apartPrd, i); x++) {
+            if (s.bottomWick[i - x] === 0) break;
+            const maxW = Math.max(bottomWick, s.bottomWick[i - x]);
+            const minW = Math.min(bottomWick, s.bottomWick[i - x]);
+            if (maxW / minW <= maxRate && Math.abs(low - bars[i - x].low) < maxW * levelDiffRate && isLowestBar(s, bars, i - x)) {
+              s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'T' });
+              bottomTweezer = true;
+              break;
+            } else if (bars[i - x].low <= low) {
+              break;
             }
           }
         }
       }
 
-      const atrVal = atrArr[i] ?? 0;
-      const avgWick = avgTopWickArr[i] ?? 0;
-      const prevHigh = i > 0 ? bars[i - 1].high : high;
-      const prevLow = i > 0 ? bars[i - 1].low : low;
-
-      // Top kangaroo (bearish)
-      if (dir === 1 && topWick[i] >= body[i] * wickMult &&
-        close <= low + (high - low) / 3 && open <= low + (high - low) / 3 &&
-        open < prevHigh && open > prevLow && close < prevHigh && close > prevLow &&
-        topWick[i] >= wickMultAvg * avgWick && body[i] > 0 &&
-        !isNaN(ph) && zigzag[0] === high &&
-        zigzag[0] - zigzag[2] > atrVal * atrMult &&
-        zigzag[1] - zigzag[3] > kangMinPrd) {
-        markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'K' });
-        topKangaroo[i] = true;
+      // --- KANGAROO TAIL ---
+      if (enableKangaroo && i >= kangPrd) {
+        const ph = high === highestKang ? high : NaN;
+        const pl = low === lowestKang ? low : NaN;
+        v.prevDir = v.dir;
+        if (!isNaN(ph) && isNaN(pl)) v.dir = 1;
+        else if (!isNaN(pl) && isNaN(ph)) v.dir = -1;
+        const dir = v.dir;
+        const dirChanged = dir !== v.prevDir;
+        if (!isNaN(ph) || !isNaN(pl)) {
+          const val = dir === 1 ? ph : pl;
+          if (!isNaN(val)) {
+            if (dirChanged) {
+              // add_to_zigzag: unshift value, barIndex; pop last two
+              v.zigzag = [val, i, v.zigzag[0], v.zigzag[1]];
+            } else {
+              // update_zigzag: if new extreme, update
+              if ((dir === 1 && val > v.zigzag[0]) || (dir === -1 && val < v.zigzag[0])) {
+                v.zigzag[0] = val;
+                v.zigzag[1] = i;
+              }
+            }
+          }
+        }
+        const zigzag = v.zigzag;
+        const atrVal = atrNow ?? 0;
+        const avgWick = avgTopWickNow ?? 0;
+        const prevHigh = i > 0 ? bars[i - 1].high : high;
+        const prevLow = i > 0 ? bars[i - 1].low : low;
+        // Top kangaroo (bearish)
+        if (dir === 1 && topWick >= body * wickMult &&
+          close <= low + (high - low) / 3 && open <= low + (high - low) / 3 &&
+          open < prevHigh && open > prevLow && close < prevHigh && close > prevLow &&
+          topWick >= wickMultAvg * avgWick && body > 0 &&
+          !isNaN(ph) && zigzag[0] === high &&
+          zigzag[0] - zigzag[2] > atrVal * atrMult &&
+          zigzag[1] - zigzag[3] > kangMinPrd) {
+          s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: '#FF0000', text: 'K' });
+          topKangaroo = true;
+        }
+        // Bottom kangaroo (bullish)
+        if (dir === -1 && bottomWick >= body * wickMult &&
+          close >= high - (high - low) / 3 && open >= high - (high - low) / 3 &&
+          open < prevHigh && open > prevLow && close < prevHigh && close > prevLow &&
+          bottomWick >= wickMultAvg * avgWick && body > 0 &&
+          !isNaN(pl) && zigzag[0] === low &&
+          zigzag[2] - zigzag[0] > atrVal * atrMult &&
+          zigzag[1] - zigzag[3] > kangMinPrd) {
+          s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'K' });
+          bottomKangaroo = true;
+        }
       }
-
-      // Bottom kangaroo (bullish)
-      if (dir === -1 && bottomWick[i] >= body[i] * wickMult &&
-        close >= high - (high - low) / 3 && open >= high - (high - low) / 3 &&
-        open < prevHigh && open > prevLow && close < prevHigh && close > prevLow &&
-        bottomWick[i] >= wickMultAvg * avgWick && body[i] > 0 &&
-        !isNaN(pl) && zigzag[0] === low &&
-        zigzag[2] - zigzag[0] > atrVal * atrMult &&
-        zigzag[1] - zigzag[3] > kangMinPrd) {
-        markers.push({ time, position: 'belowBar', shape: 'labelUp', color: '#00FF00', text: 'K' });
-        bottomKangaroo[i] = true;
+      // alertcondition(topkangaroo) / (bottomkangaroo) / (top_tweezer) / (bottom_tweezer)
+      flags[0] = topKangaroo;
+      flags[1] = bottomKangaroo;
+      flags[2] = topTweezer;
+      flags[3] = bottomTweezer;
+      for (let k = 0; k < 4; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
       }
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': closePlot },
-    markers,
-    // alertcondition(topkangaroo) / (bottomkangaroo) / (top_tweezer) / (bottom_tweezer)
-    alerts: alertStates(alertConditions, bars, [topKangaroo, bottomKangaroo, topTweezer, bottomTweezer]),
+    },
+    copyVars: (v) => ({ ...v, zigzag: v.zigzag.slice() }),
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.closePlot.slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TweezersKangarooTailInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TweezersKangarooTailInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -234,4 +274,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert3', title: 'Tweezers Bullish', message: 'Tweezers Bullish' },
 ];
 
-export const TweezersKangarooTail = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const TweezersKangarooTail = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

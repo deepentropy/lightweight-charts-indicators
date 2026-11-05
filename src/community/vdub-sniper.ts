@@ -17,9 +17,11 @@
  * Reference: "Vdub FX SniperVX2 Color v2" by Vdubus
  */
 
-import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 import type { ArrowData } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VdubSniperInputs {
   src: SourceType;
@@ -104,10 +106,70 @@ export const metadata = {
 
 type Pt = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VdubSniperInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; arrows: ArrowData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; arrows: ArrowData[] };
+type Ema = ReturnType<typeof taStep.ema>;
+type Ext = ReturnType<typeof taStep.highest>;
+
+/** PineScript `a > b` / `a < b` of two finite numbers (tolerance 1e-10), the comparisons of ta.rising / ta.falling */
+const gt = (a: number, b: number) => a - b > 1e-10;
+const lt = (a: number, b: number) => b - a > 1e-10;
+
+interface VdubVars {
+  /** valuewhen(high >= highest(high, RST), high, 0) / valuewhen(low <= lowest(low, RST), low, 0) */
+  lastT: number;
+  lastB: number;
+  /** ta.rising(ema, 2) / ta.falling(ema, 2) counters of EMA 1 and EMA 2 */
+  rise1: number;
+  fall1: number;
+  rise2: number;
+  fall2: number;
+}
+
+interface VdubRun extends BarRunState<VdubVars> {
+  last8h: Ext;
+  lastl8: Ext;
+  highestH: Ext;
+  lowestL: Ext;
+  ema1: Ema;
+  ema2: Ema;
+  hma: ReturnType<typeof taStep.hma>;
+  vh1High: Ext;
+  vh1: Ema;
+  vl1Low: Ext;
+  vl1: Ema;
+  e1: Ema;
+  e2: Ema;
+  e3: Ema;
+  ee1: Ema;
+  ee2: Ema;
+  atr: ReturnType<typeof taStep.atr>;
+  close: number[];
+  last8hArr: number[];
+  lastl8Arr: number[];
+  upArr: number[];
+  downArr: number[];
+  rstt: number[];
+  rstb: number[];
+  ema1Arr: number[];
+  ema2Arr: number[];
+  signal: number[];
+  trendUp: number[];
+  trendDown: number[];
+  trend: number[];
+  channelTop: Pt[];
+  channelBottom: Pt[];
+  resistTop: Pt[];
+  resistBottom: Pt[];
+  srTop: Pt[];
+  srBottom: Pt[];
+  ema1Plot: Pt[];
+  ema2Plot: Pt[];
+  hullMA: Pt[];
+  markers: MarkerData[];
+  arrows: ArrowData[];
+}
+
+function study(inputs: Partial<VdubSniperInputs>): BarStudy<VdubRun, Result> {
   const {
     channel2, channel,
     bodyChannelPeriod,
@@ -119,210 +181,217 @@ export function calculate(
     hmaBaseLength, hmaLengthScalar,
   } = { ...defaultInputs, ...inputs };
   // Pine: src = input(close) only feeds out = sma(src, 34), which feeds bearish / bullish; none of them is plotted.
-
-  const n = bars.length;
-  const closeSeries = new Series(bars, (b) => b.close);
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const closeArr = closeSeries.toArray();
-  const highArr = highSeries.toArray();
-  const lowArr = lowSeries.toArray();
+  const hmaValue = barSource(hmaSrc);
+  const hmaLen = hmaBaseLength + hmaLengthScalar * 6;
   const nz = (v: number | undefined) => (v === undefined || isNaN(v) ? 0 : v);
-
-  // ===== Candle body resistance Channel (ul2/ll2) =====
   // Pine: plot(channel2 ? last8h : last8h == nz(last8h[1]) ? last8h : na, style = linebr)
-  const last8h = ta.highest(closeSeries, bodyChannelPeriod).toArray();
-  const lastl8 = ta.lowest(closeSeries, bodyChannelPeriod).toArray();
-  const stablePlot = (arr: number[], always: boolean): Pt[] =>
-    bars.map((b, i) => {
-      const v = arr[i];
-      if (v == null || isNaN(v)) return { time: b.time, value: NaN };
-      if (always) return { time: b.time, value: v };
-      return { time: b.time, value: v === nz(arr[i - 1]) ? v : NaN };
-    });
-  const channelTopPlot = stablePlot(last8h, channel2);
-  const channelBottomPlot = stablePlot(lastl8, channel2);
-
-  // ===== LB Resistance Channel (ul/ll) =====
-  // up = close<nz(up[1]) and close>down[1] ? nz(up[1]) : high
-  // down = close<nz(up[1]) and close>down[1] ? nz(down[1]) : low
-  const upArr: number[] = new Array(n);
-  const downArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const c = closeArr[i];
-    const prevUp = nz(upArr[i - 1]);
-    const prevDown = i > 0 ? downArr[i - 1] : NaN; // down[1] (na on the first bar: comparison false)
-    if (c < prevUp && c > prevDown) {
-      upArr[i] = prevUp;
-      downArr[i] = nz(prevDown);
-    } else {
-      upArr[i] = highArr[i];
-      downArr[i] = lowArr[i];
-    }
-  }
-  // Pine: plot(channel ? up : up == nz(up[1]) ? up : na, style = linebr)
-  const resistTopPlot = stablePlot(upArr, channel);
-  const resistBottomPlot = stablePlot(downArr, channel);
-
-  // ===== Support and Resistance (RT2/RB2) =====
-  // RSTT = valuewhen(high >= highest(high, RST), high, 0); RSTB = valuewhen(low <= lowest(low, RST), low, 0)
+  const stablePoint = (time: number, v: number, prev: number | undefined, always: boolean): Pt => {
+    if (v == null || isNaN(v)) return { time, value: NaN };
+    if (always) return { time, value: v };
+    return { time, value: v === nz(prev) ? v : NaN };
+  };
   // plot(RSTT, color = RSTT != RSTT[1] ? na : red): the value is plotted on every bar, transparent where it changes
   // (a comparison with na is na, so the colour stays red on the first bar with a value)
-  const highestH = ta.highest(highSeries, sRLength).toArray();
-  const lowestL = ta.lowest(lowSeries, sRLength).toArray();
-  const rstt: number[] = new Array(n);
-  const rstb: number[] = new Array(n);
-  let lastT = NaN;
-  let lastB = NaN;
-  for (let i = 0; i < n; i++) {
-    if (highArr[i] >= highestH[i]) lastT = highArr[i];
-    if (lowArr[i] <= lowestL[i]) lastB = lowArr[i];
-    rstt[i] = lastT;
-    rstb[i] = lastB;
-  }
-  const levelPlot = (arr: number[], col: string): Pt[] =>
-    bars.map((b, i) => {
-      const v = arr[i];
-      if (isNaN(v)) return { time: b.time, value: NaN };
-      const prev = i > 0 ? arr[i - 1] : NaN;
-      return { time: b.time, value: v, color: !isNaN(prev) && v !== prev ? 'transparent' : col };
-    });
-  const srTopPlot = levelPlot(rstt, RED);
-  const srBottomPlot = levelPlot(rstb, GREEN);
-
-  // ===== Trend colour EMA 1 / EMA 2 =====
-  // direction = rising(ema0, 2) ? +1 : falling(ema0, 2) ? -1 : 0
-  // plot(ema0, color = direction > 0 ? lime : direction < 0 ? red : na): value on every bar, na colour when 0
-  const emaTrend = (len: number) => {
-    const e = ta.ema(closeSeries, len);
-    const eArr = e.toArray();
-    const rising = ta.rising(e, 2).toArray();
-    const falling = ta.falling(e, 2).toArray();
-    const dir: number[] = eArr.map((_v, i) => (rising[i] ? 1 : falling[i] ? -1 : 0));
-    const plot: Pt[] = bars.map((b, i) => {
-      const v = eArr[i];
-      if (v == null || isNaN(v)) return { time: b.time, value: NaN };
-      return { time: b.time, value: v, color: dir[i] > 0 ? LIME : dir[i] < 0 ? RED : 'transparent' };
-    });
-    return { dir, plot };
+  const levelPoint = (time: number, v: number, prev: number, col: string): Pt => {
+    if (isNaN(v)) return { time, value: NaN };
+    return { time, value: v, color: !isNaN(prev) && v !== prev ? 'transparent' : col };
   };
-  const { dir: directionArr, plot: ema1Plot } = emaTrend(ema1Len);
-  const { plot: ema2Plot } = emaTrend(ema2Len);
-
-  // ===== Hull MA =====
-  // plot(not show_hma ? na : hullma(hma_src, hma_base_length + hma_length_scalar * 6))
-  const hmaLen = hmaBaseLength + hmaLengthScalar * 6;
-  const hmaArr = ta.hma(getSourceSeries(bars, hmaSrc), hmaLen).toArray();
-  const hullMAPlot = bars.map((b, i) => ({
-    time: b.time,
-    value: !showHma || hmaArr[i] == null ? NaN : hmaArr[i]!,
-  }));
-
-  // ===== Signal 1: TEMA/DEMA buy/sell markers =====
-  // vh1 = ema(highest(avg(low,close), fast), 5)
-  // vl1 = ema(lowest(avg(high,close), slow), 8)
-  const avgLCSeries = new Series(bars, (b) => (b.low + b.close) / 2);
-  const avgHCSeries = new Series(bars, (b) => (b.high + b.close) / 2);
-  const vh1 = ta.ema(ta.highest(avgLCSeries, fastSignal), 5).toArray();
-  const vl1 = ta.ema(ta.lowest(avgHCSeries, slowSignal), 8).toArray();
-
-  // TEMA: e1=ema(close,1), e2=ema(e1,1), e3=ema(e2,1), tema = 1*(e1-e2)+e3
-  const e1 = ta.ema(closeSeries, 1);
-  const e2 = ta.ema(e1, 1);
-  const e3 = ta.ema(e2, 1).toArray();
-  const e1a = e1.toArray();
-  const e2a = e2.toArray();
-  const tema: number[] = e1a.map((v, i) => 1 * (v - e2a[i]) + e3[i]);
-
-  // DEMA: ee1=ema(close,8), ee2=ema(ee1,5), dema = 2*ee1 - ee2
-  const ee1 = ta.ema(closeSeries, 8);
-  const ee2 = ta.ema(ee1, 5).toArray();
-  const ee1a = ee1.toArray();
-  const dema: number[] = ee1a.map((v, i) => 2 * v - ee2[i]);
-
-  // signal = tema > dema ? max(vh1, vl1) : min(vh1, vl1)
-  const signal: number[] = tema.map((t, i) => (t > dema[i] ? Math.max(vh1[i], vl1[i]) : Math.min(vh1[i], vl1[i])));
-
-  const markers: MarkerData[] = [];
-
-  for (let i = 2; i < n; i++) {
-    const dir = directionArr[i];
-    // is_call = tema > dema and signal > low and (signal-signal[1] > signal[1]-signal[2])
-    const isCall = tema[i] > dema[i] && signal[i] > lowArr[i] &&
-      (signal[i] - signal[i - 1] > signal[i - 1] - signal[i - 2]);
-    // is_put = tema < dema and signal < high and (signal[1]-signal > signal[2]-signal[1])
-    const isPut = tema[i] < dema[i] && signal[i] < highArr[i] &&
-      (signal[i - 1] - signal[i] > signal[i - 2] - signal[i - 1]);
-
-    if (isCall && dir > 0) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'arrowUp', color: GREEN, text: '*BUY*' });
-    }
-    if (isPut && dir < 0) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'arrowDown', color: RED, text: '*SELL*' });
-    }
-  }
-
-  // ===== Signal 2: Supertrend arrows =====
-  // Up=hl2-(Factor*atr(Pd)), Dn=hl2+(Factor*atr(Pd))
-  // TrendUp=close[1]>TrendUp[1]? max(Up,TrendUp[1]) : Up
-  // TrendDown=close[1]<TrendDown[1]? min(Dn,TrendDown[1]) : Dn
-  // Trend = close > TrendDown[1] ? 1: close< TrendUp[1]? -1: nz(Trend[1],0)
-  const atrArr = ta.atr(bars, supertrendPeriod).toArray();
-  const trendUp: number[] = new Array(n).fill(NaN);
-  const trendDown: number[] = new Array(n).fill(NaN);
-  const trend: number[] = new Array(n).fill(0);
-
-  for (let i = 0; i < n; i++) {
-    const hl2 = (highArr[i] + lowArr[i]) / 2;
-    const upVal = hl2 - supertrendFactor * atrArr[i];
-    const dnVal = hl2 + supertrendFactor * atrArr[i];
-    const c1 = i > 0 ? closeArr[i - 1] : NaN;
-    const tu1 = i > 0 ? trendUp[i - 1] : NaN;
-    const td1 = i > 0 ? trendDown[i - 1] : NaN;
-    trendUp[i] = c1 > tu1 ? Math.max(upVal, tu1) : upVal;
-    trendDown[i] = c1 < td1 ? Math.min(dnVal, td1) : dnVal;
-    trend[i] = closeArr[i] > td1 ? 1 : closeArr[i] < tu1 ? -1 : (i > 0 ? trend[i - 1] : 0);
-  }
-
-  // plotarrow(Trend == 1 and Trend[1] == -1 ? Trend : na, "Up Entry Arrow", colorup = lime, transp = 85)
-  // plotarrow(Trend == -1 and Trend[1] == 1 ? Trend : na, "Down Entry Arrow", colordown = red, transp = 85)
-  const arrows: ArrowData[] = [];
-  for (let i = 1; i < n; i++) {
-    if (trend[i] === 1 && trend[i - 1] === -1) {
-      arrows.push({ time: bars[i].time, id: 'arrow0', value: trend[i], color: '#00FF0026' });
-    }
-    if (trend[i] === -1 && trend[i - 1] === 1) {
-      arrows.push({ time: bars[i].time, id: 'arrow1', value: trend[i], color: '#FF000026' });
-    }
-  }
-
-  // Sort markers by time
-  markers.sort((a, b) => a.time - b.time);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'channelTop': channelTopPlot,
-      'channelBottom': channelBottomPlot,
-      'resistTop': resistTopPlot,
-      'resistBottom': resistBottomPlot,
-      'srTop': srTopPlot,
-      'srBottom': srBottomPlot,
-      'ema1': ema1Plot,
-      'ema2': ema2Plot,
-      'hullMA': hullMAPlot,
+    fullRunReason: () => (isBarSource(hmaSrc) ? null : 'source of another study'),
+    init() {
+      const s: VdubRun = {
+        last8h: taStep.highest(), lastl8: taStep.lowest(), highestH: taStep.highest(), lowestL: taStep.lowest(),
+        ema1: taStep.ema(ema1Len), ema2: taStep.ema(ema2Len), hma: taStep.hma(hmaLen),
+        vh1High: taStep.highest(), vh1: taStep.ema(5), vl1Low: taStep.lowest(), vl1: taStep.ema(8),
+        e1: taStep.ema(1), e2: taStep.ema(1), e3: taStep.ema(1), ee1: taStep.ema(8), ee2: taStep.ema(5),
+        atr: taStep.atr(supertrendPeriod),
+        close: [], last8hArr: [], lastl8Arr: [], upArr: [], downArr: [], rstt: [], rstb: [], ema1Arr: [], ema2Arr: [],
+        signal: [], trendUp: [], trendDown: [], trend: [],
+        channelTop: [], channelBottom: [], resistTop: [], resistBottom: [], srTop: [], srBottom: [], ema1Plot: [],
+        ema2Plot: [], hullMA: [], markers: [], arrows: [],
+        steps: [],
+        vars: { lastT: NaN, lastB: NaN, rise1: 0, fall1: 0, rise2: 0, fall2: 0 },
+        lists: [], series: [],
+      };
+      s.steps = [
+        s.last8h, s.lastl8, s.highestH, s.lowestL, s.ema1, s.ema2, s.hma, s.vh1High, s.vh1, s.vl1Low, s.vl1, s.e1,
+        s.e2, s.e3, s.ee1, s.ee2, s.atr,
+      ];
+      s.lists = [s.markers, s.arrows];
+      s.series = [
+        s.close, s.last8hArr, s.lastl8Arr, s.upArr, s.downArr, s.rstt, s.rstb, s.ema1Arr, s.ema2Arr, s.signal,
+        s.trendUp, s.trendDown, s.trend, s.channelTop, s.channelBottom, s.resistTop, s.resistBottom, s.srTop,
+        s.srBottom, s.ema1Plot, s.ema2Plot, s.hullMA,
+      ];
+      return s;
     },
-    fills: [
-      // fill(ul2, ll2, color=black, transp=90) -- body channel
-      { plot1: 'channelTop', plot2: 'channelBottom', options: { color: 'rgba(0,0,0,0.10)', title: 'Candle body resistance Channel' } },
-      // fill(ul2, RT2, color=red, transp=75)
-      { plot1: 'channelTop', plot2: 'srTop', options: { color: 'rgba(255,0,0,0.25)', title: 'Fill' } },
-      // fill(ll2, RB2, color=green, transp=75)
-      { plot1: 'channelBottom', plot2: 'srBottom', options: { color: 'rgba(0,128,0,0.25)', title: 'Fill' } },
-    ],
-    markers,
-    arrows,
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const c = b.close;
+      const high = b.high;
+      const low = b.low;
+      const v = s.vars;
+      s.close[i] = c;
+
+      // ===== Candle body resistance Channel (ul2/ll2) =====
+      const h8 = s.last8h.step(c, bodyChannelPeriod);
+      const l8 = s.lastl8.step(c, bodyChannelPeriod);
+      s.last8hArr[i] = h8;
+      s.lastl8Arr[i] = l8;
+      s.channelTop[i] = stablePoint(time, h8, i > 0 ? s.last8hArr[i - 1] : undefined, channel2);
+      s.channelBottom[i] = stablePoint(time, l8, i > 0 ? s.lastl8Arr[i - 1] : undefined, channel2);
+
+      // ===== LB Resistance Channel (ul/ll) =====
+      // up = close<nz(up[1]) and close>down[1] ? nz(up[1]) : high
+      // down = close<nz(up[1]) and close>down[1] ? nz(down[1]) : low
+      const prevUp = nz(i > 0 ? s.upArr[i - 1] : undefined);
+      const prevDown = i > 0 ? s.downArr[i - 1] : NaN; // down[1] (na on the first bar: comparison false)
+      if (c < prevUp && c > prevDown) {
+        s.upArr[i] = prevUp;
+        s.downArr[i] = nz(prevDown);
+      } else {
+        s.upArr[i] = high;
+        s.downArr[i] = low;
+      }
+      // Pine: plot(channel ? up : up == nz(up[1]) ? up : na, style = linebr)
+      s.resistTop[i] = stablePoint(time, s.upArr[i], i > 0 ? s.upArr[i - 1] : undefined, channel);
+      s.resistBottom[i] = stablePoint(time, s.downArr[i], i > 0 ? s.downArr[i - 1] : undefined, channel);
+
+      // ===== Support and Resistance (RT2/RB2) =====
+      // RSTT = valuewhen(high >= highest(high, RST), high, 0); RSTB = valuewhen(low <= lowest(low, RST), low, 0)
+      const hh = s.highestH.step(high, sRLength);
+      const ll = s.lowestL.step(low, sRLength);
+      if (high >= hh) v.lastT = high;
+      if (low <= ll) v.lastB = low;
+      s.rstt[i] = v.lastT;
+      s.rstb[i] = v.lastB;
+      s.srTop[i] = levelPoint(time, v.lastT, i > 0 ? s.rstt[i - 1] : NaN, RED);
+      s.srBottom[i] = levelPoint(time, v.lastB, i > 0 ? s.rstb[i - 1] : NaN, GREEN);
+
+      // ===== Trend colour EMA 1 / EMA 2 =====
+      // direction = rising(ema0, 2) ? +1 : falling(ema0, 2) ? -1 : 0 (counters of rises / falls from the previous
+      // bar; a step from or to an na value keeps them)
+      // plot(ema0, color = direction > 0 ? lime : direction < 0 ? red : na): value on every bar, na colour when 0
+      const em1 = s.ema1.step(c);
+      const em2 = s.ema2.step(c);
+      s.ema1Arr[i] = em1;
+      s.ema2Arr[i] = em2;
+      const p1 = i > 0 ? s.ema1Arr[i - 1] : NaN;
+      const p2 = i > 0 ? s.ema2Arr[i - 1] : NaN;
+      if (Number.isFinite(em1) && Number.isFinite(p1)) {
+        v.rise1 = gt(em1, p1) ? v.rise1 + 1 : 0;
+        v.fall1 = lt(em1, p1) ? v.fall1 + 1 : 0;
+      }
+      if (Number.isFinite(em2) && Number.isFinite(p2)) {
+        v.rise2 = gt(em2, p2) ? v.rise2 + 1 : 0;
+        v.fall2 = lt(em2, p2) ? v.fall2 + 1 : 0;
+      }
+      const dir = v.rise1 >= 2 ? 1 : v.fall1 >= 2 ? -1 : 0;
+      const dir2 = v.rise2 >= 2 ? 1 : v.fall2 >= 2 ? -1 : 0;
+      s.ema1Plot[i] = em1 == null || isNaN(em1) ? { time, value: NaN }
+        : { time, value: em1, color: dir > 0 ? LIME : dir < 0 ? RED : 'transparent' };
+      s.ema2Plot[i] = em2 == null || isNaN(em2) ? { time, value: NaN }
+        : { time, value: em2, color: dir2 > 0 ? LIME : dir2 < 0 ? RED : 'transparent' };
+
+      // ===== Hull MA =====
+      // plot(not show_hma ? na : hullma(hma_src, hma_base_length + hma_length_scalar * 6))
+      const hma = s.hma.step(hmaValue(b));
+      s.hullMA[i] = { time, value: !showHma || hma == null ? NaN : hma };
+
+      // ===== Signal 1: TEMA/DEMA buy/sell markers =====
+      // vh1 = ema(highest(avg(low,close), fast), 5)
+      // vl1 = ema(lowest(avg(high,close), slow), 8)
+      const vh1 = s.vh1.step(s.vh1High.step((low + c) / 2, fastSignal));
+      const vl1 = s.vl1.step(s.vl1Low.step((high + c) / 2, slowSignal));
+      // TEMA: e1=ema(close,1), e2=ema(e1,1), e3=ema(e2,1), tema = 1*(e1-e2)+e3
+      const e1 = s.e1.step(c);
+      const e2 = s.e2.step(e1);
+      const e3 = s.e3.step(e2);
+      const tema = 1 * (e1 - e2) + e3;
+      // DEMA: ee1=ema(close,8), ee2=ema(ee1,5), dema = 2*ee1 - ee2
+      const ee1 = s.ee1.step(c);
+      const ee2 = s.ee2.step(ee1);
+      const dema = 2 * ee1 - ee2;
+      // signal = tema > dema ? max(vh1, vl1) : min(vh1, vl1)
+      const signal = tema > dema ? Math.max(vh1, vl1) : Math.min(vh1, vl1);
+      s.signal[i] = signal;
+      if (i >= 2) {
+        const s1 = s.signal[i - 1];
+        const s2 = s.signal[i - 2];
+        // is_call = tema > dema and signal > low and (signal-signal[1] > signal[1]-signal[2])
+        const isCall = tema > dema && signal > low && (signal - s1 > s1 - s2);
+        // is_put = tema < dema and signal < high and (signal[1]-signal > signal[2]-signal[1])
+        const isPut = tema < dema && signal < high && (s1 - signal > s2 - s1);
+        if (isCall && dir > 0) {
+          s.markers.push({ time, position: 'belowBar', shape: 'arrowUp', color: GREEN, text: '*BUY*' });
+        }
+        if (isPut && dir < 0) {
+          s.markers.push({ time, position: 'aboveBar', shape: 'arrowDown', color: RED, text: '*SELL*' });
+        }
+      }
+
+      // ===== Signal 2: Supertrend arrows =====
+      // Up=hl2-(Factor*atr(Pd)), Dn=hl2+(Factor*atr(Pd))
+      // TrendUp=close[1]>TrendUp[1]? max(Up,TrendUp[1]) : Up
+      // TrendDown=close[1]<TrendDown[1]? min(Dn,TrendDown[1]) : Dn
+      // Trend = close > TrendDown[1] ? 1: close< TrendUp[1]? -1: nz(Trend[1],0)
+      const atr = s.atr.step(high, low, c);
+      const hl2 = (high + low) / 2;
+      const upVal = hl2 - supertrendFactor * atr;
+      const dnVal = hl2 + supertrendFactor * atr;
+      const c1 = i > 0 ? s.close[i - 1] : NaN;
+      const tu1 = i > 0 ? s.trendUp[i - 1] : NaN;
+      const td1 = i > 0 ? s.trendDown[i - 1] : NaN;
+      s.trendUp[i] = c1 > tu1 ? Math.max(upVal, tu1) : upVal;
+      s.trendDown[i] = c1 < td1 ? Math.min(dnVal, td1) : dnVal;
+      const trend = c > td1 ? 1 : c < tu1 ? -1 : (i > 0 ? s.trend[i - 1] : 0);
+      s.trend[i] = trend;
+      // plotarrow(Trend == 1 and Trend[1] == -1 ? Trend : na, "Up Entry Arrow", colorup = lime, transp = 85)
+      // plotarrow(Trend == -1 and Trend[1] == 1 ? Trend : na, "Down Entry Arrow", colordown = red, transp = 85)
+      if (i >= 1) {
+        const prev = s.trend[i - 1];
+        if (trend === 1 && prev === -1) s.arrows.push({ time, id: 'arrow0', value: trend, color: '#00FF0026' });
+        if (trend === -1 && prev === 1) s.arrows.push({ time, id: 'arrow1', value: trend, color: '#FF000026' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'channelTop': s.channelTop.slice(),
+          'channelBottom': s.channelBottom.slice(),
+          'resistTop': s.resistTop.slice(),
+          'resistBottom': s.resistBottom.slice(),
+          'srTop': s.srTop.slice(),
+          'srBottom': s.srBottom.slice(),
+          'ema1': s.ema1Plot.slice(),
+          'ema2': s.ema2Plot.slice(),
+          'hullMA': s.hullMA.slice(),
+        },
+        fills: [
+          // fill(ul2, ll2, color=black, transp=90) -- body channel
+          { plot1: 'channelTop', plot2: 'channelBottom', options: { color: 'rgba(0,0,0,0.10)', title: 'Candle body resistance Channel' } },
+          // fill(ul2, RT2, color=red, transp=75)
+          { plot1: 'channelTop', plot2: 'srTop', options: { color: 'rgba(255,0,0,0.25)', title: 'Fill' } },
+          // fill(ll2, RB2, color=green, transp=75)
+          { plot1: 'channelBottom', plot2: 'srBottom', options: { color: 'rgba(0,128,0,0.25)', title: 'Fill' } },
+        ],
+        // markers in time order (pushed bar by bar)
+        markers: s.markers.slice(),
+        arrows: s.arrows.slice(),
+      };
+    },
   };
 }
 
-export const VdubSniper = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VdubSniperInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VdubSniperInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const VdubSniper = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

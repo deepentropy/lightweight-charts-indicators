@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FisherVolumeTransformAlphanattInputs {
   fisherPeriod: number;
@@ -60,79 +62,117 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ne = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) > EPS;
 
 type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface FvtRun extends BarRunState<Record<string, never>> {
+  volSma: ReturnType<typeof taStep.sma>;
+  highest: ReturnType<typeof taStep.highest>;
+  lowest: ReturnType<typeof taStep.lowest>;
+  smooth: ReturnType<typeof taStep.ema>;
+  sig: ReturnType<typeof taStep.ema>;
+  osc: number[];
+  signal: number[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+const bullZero = color.new(BULL, 100);
+const bullFull = color.new(BULL, 0);
+const bearFull = color.new(BEAR, 0);
+const bearZero = color.new(BEAR, 100);
+const sigBull = String(color.new(BULL, 30));
+const sigBear = String(color.new(BEAR, 30));
+const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+
+function study(inputs: Partial<FisherVolumeTransformAlphanattInputs>): BarStudy<FvtRun, Result> {
+  const { fisherPeriod, volumeWeight, smoothing } = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const s: FvtRun = {
+        volSma: taStep.sma(), highest: taStep.highest(), lowest: taStep.lowest(), smooth: taStep.ema(smoothing),
+        sig: taStep.ema(smoothing * 2), osc: [], signal: [], plots: Array.from({ length: 22 }, () => []),
+        flags: [[], [], [], []], times: [[], [], [], []], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.volSma, s.highest, s.lowest, s.smooth, s.sig];
+      s.lists = s.times;
+      s.series = [s.osc, s.signal, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // vwPrice = close * (volume / ta.sma(volume, fisherPeriod)): a plain division (x / 0 is +-infinity, 0 / 0 na)
+      const volume = b.volume ?? NaN;
+      const volSma = s.volSma.step(volume, fisherPeriod);
+      const src = b.close * (1 - volumeWeight) + b.close * (volume / volSma) * volumeWeight;
+
+      // fisherTransform(blendedPrice, fisherPeriod)
+      const highest = s.highest.step(src, fisherPeriod);
+      const lowest = s.lowest.step(src, fisherPeriod);
+      const rangee = highest - lowest;
+      // rangee != 0 is false when rangee is na: 0
+      let normalized = ne(rangee, 0) ? ((src - lowest) / rangee - 0.5) * 2 : 0;
+      normalized = Math.max(Math.min(normalized, 0.999), -0.999);
+      const fisher = 0.5 * Math.log((1 + normalized) / (1 - normalized));
+      const osc = s.smooth.step(fisher) * 25;
+      const signal = s.sig.step(osc);
+      s.osc[i] = osc;
+      s.signal[i] = signal;
+
+      const p = s.plots;
+      p[0][i] = { time, value: 0, color: color.gray };
+      // p1..p9: showGradient and oscillator > 0 ? oscillator * k : 0; n1..n9: oscillator < 0
+      for (let j = 0; j < 9; j++) p[1 + j][i] = { time, value: gt(osc, 0) ? fin(osc * LAYERS[j]) : 0 };
+      for (let j = 0; j < 9; j++) p[10 + j][i] = { time, value: lt(osc, 0) ? fin(osc * LAYERS[j]) : 0 };
+      p[19][i] = {
+        time,
+        value: fin(osc),
+        color: gt(osc, 0)
+          ? String(color.from_gradient(osc, 0, 100, bullZero, bullFull))
+          : String(color.from_gradient(osc, -100, 0, bearFull, bearZero)),
+      };
+      p[20][i] = { time, value: fin(osc), color: gt(osc, 0) ? BULL : BEAR };
+      p[21][i] = { time, value: fin(signal), color: gt(osc, signal) ? sigBull : sigBear };
+
+      // alertcondition(ta.crossover(oscillator, 0)) / crossunder(oscillator, 0) / crossover / crossunder(oscillator, signal)
+      const po = i > 0 ? s.osc[i - 1] : NaN;
+      const ps = i > 0 ? s.signal[i - 1] : NaN;
+      const flags = [osc > 0 && po <= 0, osc < 0 && po >= 0, osc > signal && po <= ps, osc < signal && po >= ps];
+      for (let k = 0; k < 4; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, j) => { plots[`plot${j}`] = p.slice(); });
+      // fill(p1, p2, color.new(bullColor, 75)) ... fill(p9, zeroLine, color.new(bullColor, 98)); same for n1..n9
+      const fills = [
+        ...FILL_TRANSP.map((tr, j) => ({ plot1: `plot${1 + j}`, plot2: j < 8 ? `plot${2 + j}` : 'plot0', color: String(color.new(BULL, tr)) })),
+        ...FILL_TRANSP.map((tr, j) => ({ plot1: `plot${10 + j}`, plot2: j < 8 ? `plot${11 + j}` : 'plot0', color: String(color.new(BEAR, tr)) })),
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FisherVolumeTransformAlphanattInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<FisherVolumeTransformAlphanattInputs> = {},
 ): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const { fisherPeriod, volumeWeight, smoothing } = cfg;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // vwPrice = close * (volume / ta.sma(volume, fisherPeriod)): a plain division (x / 0 is +-infinity, 0 / 0 na)
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const volSma = A(ta.sma(S(volume), fisherPeriod));
-  const blended = bars.map((b, i) => b.close * (1 - volumeWeight) + b.close * (volume[i] / volSma[i]) * volumeWeight);
-
-  // fisherTransform(blendedPrice, fisherPeriod)
-  const blendedS = S(blended);
-  const highest = A(ta.highest(blendedS, fisherPeriod));
-  const lowest = A(ta.lowest(blendedS, fisherPeriod));
-  const fisher = blended.map((src, i) => {
-    const rangee = highest[i] - lowest[i];
-    // rangee != 0 is false when rangee is na: 0
-    let normalized = ne(rangee, 0) ? ((src - lowest[i]) / rangee - 0.5) * 2 : 0;
-    normalized = Math.max(Math.min(normalized, 0.999), -0.999);
-    return 0.5 * Math.log((1 + normalized) / (1 - normalized));
-  });
-  const fisherSmooth = A(ta.ema(S(fisher), smoothing));
-  const osc = fisherSmooth.map((v) => v * 25);
-  const signal = A(ta.ema(S(osc), smoothing * 2));
-
-  const time = (i: number) => bars[i].time;
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const P = (f: (i: number) => Point): Point[] => bars.map((_b, i) => f(i));
-  const plots: Record<string, Point[]> = {};
-  plots.plot0 = P((i) => ({ time: time(i), value: 0, color: color.gray }));
-  // p1..p9: showGradient and oscillator > 0 ? oscillator * k : 0; n1..n9: oscillator < 0
-  LAYERS.forEach((k, j) => {
-    plots[`plot${1 + j}`] = P((i) => ({ time: time(i), value: gt(osc[i], 0) ? fin(osc[i] * k) : 0 }));
-  });
-  LAYERS.forEach((k, j) => {
-    plots[`plot${10 + j}`] = P((i) => ({ time: time(i), value: lt(osc[i], 0) ? fin(osc[i] * k) : 0 }));
-  });
-  const bullZero = color.new(BULL, 100);
-  const bullFull = color.new(BULL, 0);
-  const bearFull = color.new(BEAR, 0);
-  const bearZero = color.new(BEAR, 100);
-  plots.plot19 = P((i) => ({
-    time: time(i),
-    value: fin(osc[i]),
-    color: gt(osc[i], 0)
-      ? String(color.from_gradient(osc[i], 0, 100, bullZero, bullFull))
-      : String(color.from_gradient(osc[i], -100, 0, bearFull, bearZero)),
-  }));
-  plots.plot20 = P((i) => ({ time: time(i), value: fin(osc[i]), color: gt(osc[i], 0) ? BULL : BEAR }));
-  const sigBull = String(color.new(BULL, 30));
-  const sigBear = String(color.new(BEAR, 30));
-  plots.plot21 = P((i) => ({ time: time(i), value: fin(signal[i]), color: gt(osc[i], signal[i]) ? sigBull : sigBear }));
-
-  // fill(p1, p2, color.new(bullColor, 75)) ... fill(p9, zeroLine, color.new(bullColor, 98)); same for n1..n9
-  const fills = [
-    ...FILL_TRANSP.map((tr, j) => ({ plot1: `plot${1 + j}`, plot2: j < 8 ? `plot${2 + j}` : 'plot0', color: String(color.new(BULL, tr)) })),
-    ...FILL_TRANSP.map((tr, j) => ({ plot1: `plot${10 + j}`, plot2: j < 8 ? `plot${11 + j}` : 'plot0', color: String(color.new(BEAR, tr)) })),
-  ];
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    // alertcondition(ta.crossover(oscillator, 0)) / crossunder(oscillator, 0) / crossover / crossunder(oscillator, signal)
-    alerts: alertStates(alertConditions, bars, [
-      crossedOver(osc, 0), crossedUnder(osc, 0), crossedOver(osc, signal), crossedUnder(osc, signal),
-    ]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -145,6 +185,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const FisherVolumeTransformAlphanatt = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -22,13 +22,13 @@
  */
 
 import {
-  ta, Series, color, timeframe, getSourceSeries,
+  taStep, color, compare, timeframe,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType, type ArrowData,
 } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
-import { barInterval, barTime } from '../bar-time';
 import { chartTimeframe } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, PivotStep, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 type MaType = 'SMA' | 'EMA' | 'WMA' | 'VWMA' | 'SMMA' | 'DEMA' | 'TEMA' | 'HullMA' | 'ZEMA' | 'TMA' | 'SSMA';
 const MA_TYPES: MaType[] = ['SMA', 'EMA', 'WMA', 'VWMA', 'SMMA', 'DEMA', 'TEMA', 'HullMA', 'ZEMA', 'TMA', 'SSMA'];
@@ -189,44 +189,109 @@ const truthy = (v: number) => !isNaN(v) && v !== 0;
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PullbackTradingToolAltInputs> = {},
-  chart?: ChartContext,
-): Omit<IndicatorResult, 'markers' | 'barColors'> & { markers: MarkerData[]; barColors: BarColorData[]; arrows: ArrowData[] } {
+type Result = Omit<IndicatorResult, 'markers' | 'barColors'> & { markers: MarkerData[]; barColors: BarColorData[]; arrows: ArrowData[] };
+/** One moving average of the source on bar i (its machines and arrays in the run) */
+type MaFn = (x: number, volume: number, i: number) => number;
+
+interface PbVars {
+  /** ta.rising(fastMA, 2) / ta.rising(slowMA, 2): the counters of rises */
+  riseFast: number;
+  riseSlow: number;
+  /** valuewhen histories of the pivots: the latest value (0) and the one before (1) */
+  hi0: number;
+  hi1: number;
+  lo0: number;
+  lo1: number;
+  counthi: number;
+  countlo: number;
+  pvthis: number;
+  pvtlos: number;
+  trUp: boolean | null; // tr_up[1] is na on the first bar
+  trDown: boolean | null;
+  pullbackUpT: number;
+  pullbackDnT: number;
+}
+
+interface PbRun extends BarRunState<PbVars> {
+  fast: MaFn;
+  slow: MaFn;
+  fastAnchor: MaFn;
+  mediumAnchor: MaFn;
+  slowAnchor: MaFn;
+  signal: MaFn;
+  pvthi: PivotStep;
+  pvtlo: PivotStep;
+  hi: number[];
+  lo: number[];
+  fastMA: number[];
+  slowMA: number[];
+  plots: Point[][];
+  /** plot6 .. plot11: the point of bar i - pvtLenR, written by bar i (index i - pvtLenR) */
+  backPlots: Point[][];
+  ribbonFill: string[];
+  barColors: BarColorData[];
+  markers: MarkerData[];
+  arrows: ArrowData[];
+}
+
+/** Anchor multiplier: on an intraday chart below the anchor timeframe, round(anchor / chart minutes) */
+function anchorMultiplier(bars: Bar[], chart: ChartContext | undefined, anchor: number): number {
+  // On daily, weekly and monthly charts the source needs an anchor above 1440 minutes, which the input does not
+  // allow: 1.
+  const tf = chart?.timeframe ?? chartTimeframe(bars);
+  const info = tf === '' ? null : timeframe.info(tf);
+  const interval = info ? info.multiplier : 0;
+  return info !== null && info.isintraday && !(anchor === 0 || interval <= 0 || interval >= anchor)
+    ? Math.round(anchor / interval) : 1;
+}
+
+function study(inputs: Partial<PullbackTradingToolAltInputs>): BarStudy<PbRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const volume = new Series(bars, (b) => b.volume ?? NaN);
+  const value = barSource(cfg.maSrc);
+  const R = cfg.pvtLenR;
+  const levelsOn = cfg.showSRLevels && !cfg.showChannel;
+  const channelOn = cfg.showSRLevels && cfg.showChannel;
+  const pivotsOn = cfg.showPivots && !cfg.showHHLL;
+  const nz = (v: number) => (isNaN(v) ? 0 : v);
 
   // variant(type, src, len): the selected moving average, SMA for an unknown type
-  const variant = (type: string, src: Series, len: number): number[] => {
-    const ema = (s: Series) => ta.ema(s, len);
+  const variant = (s: PbRun, type: string, len: number): MaFn => {
+    const add = <M extends Committable>(m: M): M => { s.steps.push(m); return m; };
+    const ema = () => add(taStep.ema(len));
     switch (type) {
-      case 'EMA': return A(ema(src));
-      case 'WMA': return A(ta.wma(src, len));
-      case 'VWMA': return A(ta.vwma(src, len, volume));
+      case 'EMA': { const e = ema(); return (x) => e.step(x); }
+      case 'WMA': { const w = add(taStep.wma()); return (x) => w.step(x, len); }
+      case 'VWMA': { const w = add(taStep.vwma(len)); return (x, vol) => w.step(x, vol); }
       case 'SMMA': {
         // v5 := na(v5[1]) ? sma(src, len) : (v5[1] * (len - 1) + src) / len
-        const sma = A(ta.sma(src, len));
-        const x = A(src);
-        const out: number[] = new Array(n);
-        for (let i = 0; i < n; i++) out[i] = i === 0 || isNaN(out[i - 1]) ? sma[i] : (out[i - 1] * (len - 1) + x[i]) / len;
-        return out;
+        const sma = add(taStep.sma());
+        const out: number[] = [];
+        s.series.push(out);
+        return (x, _vol, i) => {
+          const m = sma.step(x, len);
+          out[i] = i === 0 || isNaN(out[i - 1]) ? m : (out[i - 1] * (len - 1) + x) / len;
+          return out[i];
+        };
       }
       case 'DEMA': {
-        const v2 = ema(src);
-        return A(v2.mul(2).sub(ema(v2)));
+        const e1 = ema(); const e2 = ema();
+        return (x) => { const v2 = e1.step(x); return v2 * 2 - e2.step(v2); };
       }
       case 'TEMA': {
-        const v2 = ema(src);
-        const v3 = ema(v2);
-        return A(v2.sub(v3).mul(3).add(ema(v3)));
+        const e1 = ema(); const e2 = ema(); const e3 = ema();
+        return (x) => {
+          const v2 = e1.step(x);
+          const v3 = e2.step(v2);
+          return (v2 - v3) * 3 + e3.step(v3);
+        };
       }
-      case 'HullMA':
+      case 'HullMA': {
         // wma(2 * wma(src, len / 2) - wma(src, len), round(sqrt(len)))
-        return A(ta.wma(ta.wma(src, Math.trunc(len / 2)).mul(2).sub(ta.wma(src, len)), Math.round(Math.sqrt(len))));
+        const w1 = add(taStep.wma()); const w2 = add(taStep.wma()); const w3 = add(taStep.wma());
+        const half = Math.trunc(len / 2);
+        const root = Math.round(Math.sqrt(len));
+        return (x) => w3.step(w1.step(x, half) * 2 - w2.step(x, len), root);
+      }
       case 'SSMA': {
         // SuperSmoother filter, (c) 2013 John F. Ehlers
         const a1 = Math.exp((-1.414 * 3.14159) / len);
@@ -234,203 +299,234 @@ export function calculate(
         const c2 = b1;
         const c3 = -a1 * a1;
         const c1 = 1 - c2 - c3;
-        const x = A(src);
-        const nz = (v: number) => (isNaN(v) ? 0 : v);
-        const out: number[] = new Array(n);
-        for (let i = 0; i < n; i++) {
-          out[i] = (c1 * (x[i] + nz(i > 0 ? x[i - 1] : NaN))) / 2 + c2 * nz(i > 0 ? out[i - 1] : NaN) + c3 * nz(i > 1 ? out[i - 2] : NaN);
-        }
-        return out;
+        const src: number[] = [];
+        const out: number[] = [];
+        s.series.push(src, out);
+        return (x, _vol, i) => {
+          src[i] = x;
+          out[i] = (c1 * (x + nz(i > 0 ? src[i - 1] : NaN))) / 2 + c2 * nz(i > 0 ? out[i - 1] : NaN) + c3 * nz(i > 1 ? out[i - 2] : NaN);
+          return out[i];
+        };
       }
       case 'ZEMA': {
-        const ema1 = ema(src);
-        return A(ema1.add(ema1.sub(ema(ema1))));
+        const e1 = ema(); const e2 = ema();
+        return (x) => { const v = e1.step(x); return v + (v - e2.step(v)); };
       }
-      case 'TMA': return A(ta.sma(ta.sma(src, len), len));
-      default: return A(ta.sma(src, len));
+      case 'TMA': {
+        const s1 = add(taStep.sma()); const s2 = add(taStep.sma());
+        return (x) => s2.step(s1.step(x, len), len);
+      }
+      default: { const m = add(taStep.sma()); return (x) => m.step(x, len); }
     }
   };
 
-  // Anchor multiplier: on an intraday chart below the anchor timeframe, round(anchor / chart minutes). On daily,
-  // weekly and monthly charts the source needs an anchor above 1440 minutes, which the input does not allow: 1.
-  const tf = chart?.timeframe ?? chartTimeframe(bars);
-  const info = tf === '' ? null : timeframe.info(tf);
-  const interval = info ? info.multiplier : 0;
-  const mult = info !== null && info.isintraday && !(cfg.anchor === 0 || interval <= 0 || interval >= cfg.anchor)
-    ? Math.round(cfg.anchor / interval) : 1;
-
-  const fastAnchorLen = cfg.fastAnchorLen * mult;
-  const mediumAnchorLen = cfg.mediumAnchorLen * mult;
-  const slowAnchorLen = cfg.slowAnchorLen * mult;
-  const signalLen = cfg.signalLen * mult;
-  const fastLen = cfg.anchorRibbon ? cfg.fastLen * mult : cfg.fastLen;
-  const slowLen = cfg.anchorRibbon ? cfg.slowLen * mult : cfg.slowLen;
-
-  const maSrc = getSourceSeries(bars, cfg.maSrc);
-  const fastMA = variant(cfg.fastType, maSrc, fastLen);
-  const slowMA = variant(cfg.slowType, maSrc, slowLen);
-  const fastAnchorMA = variant(cfg.fastAnchorType, maSrc, fastAnchorLen);
-  const mediumAnchorMA = variant(cfg.mediumAnchorType, maSrc, mediumAnchorLen);
-  const slowAnchorMA = variant(cfg.slowAnchorType, maSrc, slowAnchorLen);
-  const signalMA = variant(cfg.signalType, maSrc, signalLen);
-  const fastRising = ta.rising(S(fastMA), 2).toArray();
-  const slowRising = ta.rising(S(slowMA), 2).toArray();
-
-  // Pivots on the highs and lows, or on the candle bodies (Renko style)
-  const R = cfg.pvtLenR;
-  const hi = bars.map((b) => (cfg.uRenko ? Math.max(b.close, b.open) : b.high));
-  const lo = bars.map((b) => (cfg.uRenko ? Math.min(b.close, b.open) : b.low));
-  const pvthi = A(ta.pivothigh(S(hi), cfg.pvtLenL, R));
-  const pvtlo = A(ta.pivotlow(S(lo), cfg.pvtLenL, R));
-
-  const step = barInterval(bars);
-  const time = (i: number) => barTime(bars, i, step);
-  const plots: Record<string, Point[]> = {};
-  for (let k = 0; k < 16; k++) plots[`plot${k}`] = [];
-  const barColors: BarColorData[] = [];
-  const markers: MarkerData[] = [];
-  const arrows: ArrowData[] = [];
-  const ribbonFill: string[] = [];
-
-  // valuewhen histories of the pivots (latest value last)
-  const highs: number[] = [];
-  const lows: number[] = [];
-  const back = (list: number[], k: number) => (list.length > k ? list[list.length - 1 - k] : NaN);
-  let counthi = NaN;
-  let countlo = NaN;
-  let pvthis = NaN;
-  let pvtlos = NaN;
-  let trUp: boolean | null = null; // tr_up[1] is na on the first bar
-  let trDown: boolean | null = null;
-  let pullbackUpT = NaN;
-  let pullbackDnT = NaN;
-  const levelsOn = cfg.showSRLevels && !cfg.showChannel;
-  const channelOn = cfg.showSRLevels && cfg.showChannel;
-  const pivotsOn = cfg.showPivots && !cfg.showHHLL;
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time as number;
-    const sig = signalMA[i];
-
-    // Bar colour from the open and the close against the signal average
-    if (cfg.showBarColor) {
-      const above = gt(b.open, sig) && gt(b.close, sig);
-      const below = lt(b.open, sig) && lt(b.close, sig);
-      const falling = gt(b.open, b.close);
-      const c = !cfg.useGrabClr
-        ? (above ? DODGER_BLUE : below ? RED : YELLOW)
-        : above ? (falling ? GREEN : LIME) : below ? (falling ? DARK_RED : RED) : (falling ? BLUE : AQUA);
-      barColors.push({ time: t, color: c });
-    }
-
-    plots.plot0.push({ time: t, value: cfg.showMAs ? fastMA[i] : NaN, color: T(fastRising[i] ? AQUA : FUCHSIA, 10) });
-    plots.plot1.push({ time: t, value: cfg.showMAs ? slowMA[i] : NaN, color: T(slowRising[i] ? AQUA : FUCHSIA, 10) });
-    ribbonFill.push(T(gt(fastMA[i], slowMA[i]) ? AQUA : FUCHSIA, 90));
-    plots.plot2.push({ time: t, value: sig });
-    plots.plot3.push({ time: t, value: fastAnchorMA[i] });
-    plots.plot4.push({ time: t, value: mediumAnchorMA[i] });
-    plots.plot5.push({ time: t, value: cfg.useSlowMA ? slowAnchorMA[i] : NaN });
-
-    // Higher highs, lower highs, higher lows, lower lows: valuewhen(pvthi, high_[pvtLenR], 1) against (..., 0)
-    const isHi = truthy(pvthi[i]);
-    const isLo = truthy(pvtlo[i]);
-    if (isHi) highs.push(i - R >= 0 ? hi[i - R] : NaN);
-    if (isLo) lows.push(i - R >= 0 ? lo[i - R] : NaN);
-    const hasHi = !isNaN(pvthi[i]);
-    const hasLo = !isNaN(pvtlo[i]);
-    const higherHigh = hasHi && lt(back(highs, 1), back(highs, 0)) ? pvthi[i] : NaN;
-    const lowerHigh = hasHi && gt(back(highs, 1), back(highs, 0)) ? pvthi[i] : NaN;
-    const higherLow = hasLo && lt(back(lows, 1), back(lows, 0)) ? pvtlo[i] : NaN;
-    const lowerLow = hasLo && gt(back(lows, 1), back(lows, 0)) ? pvtlo[i] : NaN;
-    // plotshape(..., offset = -pvtLenR, transp = 20): the mark is drawn pvtLenR bars back
-    const mark = (v: number, above: boolean, base: string, text: string, id: string) => {
-      if (cfg.showHHLL && truthy(v) && i - R >= 0) {
-        markers.push({
-          time: time(i - R), position: above ? 'aboveBar' : 'belowBar', shape: above ? 'triangleUp' : 'triangleDown',
-          color: T(base, 20), text, id,
-        });
-      }
-    };
-    mark(higherHigh, true, LIME, 'HH', 'shape0');
-    mark(lowerHigh, true, RED, 'LH', 'shape1');
-    mark(higherLow, false, LIME, 'HL', 'shape2');
-    mark(lowerLow, false, RED, 'LL', 'shape3');
-
-    // Pivot dots, drawn pvtLenR bars back
-    if (i - R >= 0) {
-      const tb = time(i - R);
-      plots.plot6.push({ time: tb, value: pivotsOn ? pvthi[i] : NaN });
-      plots.plot7.push({ time: tb, value: pivotsOn ? pvtlo[i] : NaN });
-      plots.plot8.push({ time: tb, value: pivotsOn ? pvthi[i] : NaN });
-      plots.plot9.push({ time: tb, value: pivotsOn ? pvtlo[i] : NaN });
-    }
-
-    // Bars since the last pivot, and the last pivot levels
-    counthi = isHi ? 0 : (isNaN(counthi) ? 0 : counthi) + 1;
-    countlo = isLo ? 0 : (isNaN(countlo) ? 0 : countlo) + 1;
-    const prevHis = pvthis;
-    const prevLos = pvtlos;
-    pvthis = isHi ? (i - R >= 0 ? bars[i - R].high : NaN) : (isNaN(prevHis) ? b.high : prevHis);
-    pvtlos = isLo ? (i - R >= 0 ? bars[i - R].low : NaN) : (isNaN(prevLos) ? b.low : prevLos);
-    // hipc = (pvthis != pvthis[1]) ? na : green; lopc = (pvtlos != pvtlos[1]) ? na : maroon
-    const hipc = ne(pvthis, prevHis) ? 'transparent' : GREEN;
-    const lopc = ne(pvtlos, prevLos) ? 'transparent' : MAROON;
-    const top = levelsOn && (cfg.maxLvlLen === 0 || counthi < cfg.maxLvlLen) ? pvthis : NaN;
-    const bottom = levelsOn && (cfg.maxLvlLen === 0 || countlo < cfg.maxLvlLen) ? pvtlos : NaN;
-    if (i - R >= 0) {
-      plots.plot10.push({ time: time(i - R), value: top, color: hipc });
-      plots.plot11.push({ time: time(i - R), value: bottom, color: lopc });
-    }
-    plots.plot12.push({ time: t, value: top, color: hipc });
-    plots.plot13.push({ time: t, value: bottom, color: lopc });
-    plots.plot14.push({ time: t, value: channelOn ? pvthis : NaN });
-    plots.plot15.push({ time: t, value: channelOn ? pvtlos : NaN });
-
-    // Trend: both ribbon averages above (below) the medium, the fast anchored and the signal averages
-    const prevUp = trUp;
-    const prevDown = trDown;
-    trUp = gt(slowMA[i], mediumAnchorMA[i]) && gt(slowMA[i], fastAnchorMA[i]) && gt(slowMA[i], sig)
-      && gt(fastMA[i], mediumAnchorMA[i]) && gt(fastMA[i], fastAnchorMA[i]) && gt(fastMA[i], sig);
-    trDown = lt(slowMA[i], mediumAnchorMA[i]) && lt(slowMA[i], fastAnchorMA[i]) && lt(slowMA[i], sig)
-      && lt(fastMA[i], mediumAnchorMA[i]) && lt(fastMA[i], fastAnchorMA[i]) && lt(fastMA[i], sig);
-
-    // Break of the last pivot level inside a trend
-    const prevHigh = i > 0 ? bars[i - 1].high : NaN;
-    const prevLow = i > 0 ? bars[i - 1].low : NaN;
-    pullbackUpT = trUp && lt(prevHigh, pvthis) && gt(b.high, pvthis) && (!cfg.closeBr || gt(b.close, pvthis))
-      ? (isNaN(pullbackUpT) ? 0 : pullbackUpT) + 1 : 0;
-    pullbackDnT = trDown && gt(prevLow, pvtlos) && lt(b.low, pvtlos) && (!cfg.closeBr || lt(b.close, pvtlos))
-      ? (isNaN(pullbackDnT) ? 0 : pullbackDnT) + 1 : 0;
-
-    // plotarrow(series, colorup / colordown, transp = 0): the series value (sign = direction)
-    const arrow = (on: boolean, value: number, c: string, id: string) => {
-      if (on) arrows.push({ time: t, id, value, color: c });
-    };
-    arrow(cfg.showBreak && trUp && !prevUp, 1, AQUA, 'arrow0');
-    arrow(cfg.showBreak && trDown && !prevDown, -1, BLUE, 'arrow1');
-    arrow(cfg.showPB && pullbackUpT === 1, pullbackUpT, LIME, 'arrow2');
-    arrow(cfg.showPB && pullbackDnT === 1, -pullbackDnT, RED, 'arrow3');
-  }
-  markers.sort((p, q) => p.time - q.time);
+  /** ta.rising(x, 2) of one bar: the counter of rises from the previous bar (unchanged at an na step) */
+  const rising = (count: number, x: number, prev: number): number =>
+    (Number.isFinite(x) && Number.isFinite(prev) ? (compare.gt(x, prev) ? count + 1 : 0) : count);
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills: [
-      // fill(p1, p2, color = fastMA > slowMA ? aqua : fuchsia, transp = 90, title = "Ribbon Fill")
-      { plot1: 'plot0', plot2: 'plot1', colors: ribbonFill, options: { title: 'Ribbon Fill', color: T(AQUA, 90) } },
-      // fill(p3, p4, color = gray, transp = 90, title = "Anchored MA Fill")
-      { plot1: 'plot3', plot2: 'plot4', options: { title: 'Anchored MA Fill', color: T(GRAY, 90) } },
-    ],
-    markers,
-    arrows,
-    barColors,
+    fullRunReason: () => (isBarSource(cfg.maSrc) ? null : 'source of another study'),
+    // the lengths follow the anchor multiplier of the chart timeframe (from the bar gaps without a chart timeframe)
+    key: (bars, chart) => String(anchorMultiplier(bars, chart, cfg.anchor)),
+    init(bars, chart) {
+      const mult = anchorMultiplier(bars, chart, cfg.anchor);
+      const fastAnchorLen = cfg.fastAnchorLen * mult;
+      const mediumAnchorLen = cfg.mediumAnchorLen * mult;
+      const slowAnchorLen = cfg.slowAnchorLen * mult;
+      const signalLen = cfg.signalLen * mult;
+      const fastLen = cfg.anchorRibbon ? cfg.fastLen * mult : cfg.fastLen;
+      const slowLen = cfg.anchorRibbon ? cfg.slowLen * mult : cfg.slowLen;
+      const nop: MaFn = () => NaN;
+      const s: PbRun = {
+        fast: nop, slow: nop, fastAnchor: nop, mediumAnchor: nop, slowAnchor: nop, signal: nop,
+        pvthi: new PivotStep(cfg.pvtLenL, R, true), pvtlo: new PivotStep(cfg.pvtLenL, R, false),
+        hi: [], lo: [], fastMA: [], slowMA: [], plots: Array.from({ length: 16 }, () => []), backPlots: [],
+        ribbonFill: [], barColors: [], markers: [], arrows: [],
+        steps: [],
+        vars: {
+          riseFast: 0, riseSlow: 0, hi0: NaN, hi1: NaN, lo0: NaN, lo1: NaN, counthi: NaN, countlo: NaN, pvthis: NaN,
+          pvtlos: NaN, trUp: null, trDown: null, pullbackUpT: NaN, pullbackDnT: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.fast = variant(s, cfg.fastType, fastLen);
+      s.slow = variant(s, cfg.slowType, slowLen);
+      s.fastAnchor = variant(s, cfg.fastAnchorType, fastAnchorLen);
+      s.mediumAnchor = variant(s, cfg.mediumAnchorType, mediumAnchorLen);
+      s.slowAnchor = variant(s, cfg.slowAnchorType, slowAnchorLen);
+      s.signal = variant(s, cfg.signalType, signalLen);
+      s.steps.push(s.pvthi, s.pvtlo);
+      s.backPlots = [6, 7, 8, 9, 10, 11].map((k) => s.plots[k]);
+      s.lists = [s.barColors, s.markers, s.arrows];
+      s.series.push(s.hi, s.lo, s.fastMA, s.slowMA, s.ribbonFill,
+        ...s.plots.filter((p) => !s.backPlots.includes(p)));
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time as number;
+      const x = value(b);
+      const vol = b.volume ?? NaN;
+      const fastMA = s.fast(x, vol, i);
+      const slowMA = s.slow(x, vol, i);
+      const fastAnchorMA = s.fastAnchor(x, vol, i);
+      const mediumAnchorMA = s.mediumAnchor(x, vol, i);
+      const slowAnchorMA = s.slowAnchor(x, vol, i);
+      const sig = s.signal(x, vol, i);
+      s.fastMA[i] = fastMA;
+      s.slowMA[i] = slowMA;
+      v.riseFast = rising(v.riseFast, fastMA, i > 0 ? s.fastMA[i - 1] : NaN);
+      v.riseSlow = rising(v.riseSlow, slowMA, i > 0 ? s.slowMA[i - 1] : NaN);
+      const fastRising = v.riseFast >= 2;
+      const slowRising = v.riseSlow >= 2;
+
+      // Pivots on the highs and lows, or on the candle bodies (Renko style)
+      const hiV = cfg.uRenko ? Math.max(b.close, b.open) : b.high;
+      const loV = cfg.uRenko ? Math.min(b.close, b.open) : b.low;
+      s.hi[i] = hiV;
+      s.lo[i] = loV;
+      const pvthi = s.pvthi.step(i, hiV);
+      const pvtlo = s.pvtlo.step(i, loV);
+      const p = s.plots;
+
+      // Bar colour from the open and the close against the signal average
+      if (cfg.showBarColor) {
+        const above = gt(b.open, sig) && gt(b.close, sig);
+        const below = lt(b.open, sig) && lt(b.close, sig);
+        const falling = gt(b.open, b.close);
+        const c = !cfg.useGrabClr
+          ? (above ? DODGER_BLUE : below ? RED : YELLOW)
+          : above ? (falling ? GREEN : LIME) : below ? (falling ? DARK_RED : RED) : (falling ? BLUE : AQUA);
+        s.barColors.push({ time: t, color: c });
+      }
+
+      p[0][i] = { time: t, value: cfg.showMAs ? fastMA : NaN, color: T(fastRising ? AQUA : FUCHSIA, 10) };
+      p[1][i] = { time: t, value: cfg.showMAs ? slowMA : NaN, color: T(slowRising ? AQUA : FUCHSIA, 10) };
+      s.ribbonFill[i] = T(gt(fastMA, slowMA) ? AQUA : FUCHSIA, 90);
+      p[2][i] = { time: t, value: sig };
+      p[3][i] = { time: t, value: fastAnchorMA };
+      p[4][i] = { time: t, value: mediumAnchorMA };
+      p[5][i] = { time: t, value: cfg.useSlowMA ? slowAnchorMA : NaN };
+
+      // Higher highs, lower highs, higher lows, lower lows: valuewhen(pvthi, high_[pvtLenR], 1) against (..., 0)
+      const isHi = truthy(pvthi);
+      const isLo = truthy(pvtlo);
+      if (isHi) { v.hi1 = v.hi0; v.hi0 = i - R >= 0 ? s.hi[i - R] : NaN; }
+      if (isLo) { v.lo1 = v.lo0; v.lo0 = i - R >= 0 ? s.lo[i - R] : NaN; }
+      const hasHi = !isNaN(pvthi);
+      const hasLo = !isNaN(pvtlo);
+      const higherHigh = hasHi && lt(v.hi1, v.hi0) ? pvthi : NaN;
+      const lowerHigh = hasHi && gt(v.hi1, v.hi0) ? pvthi : NaN;
+      const higherLow = hasLo && lt(v.lo1, v.lo0) ? pvtlo : NaN;
+      const lowerLow = hasLo && gt(v.lo1, v.lo0) ? pvtlo : NaN;
+      // plotshape(..., offset = -pvtLenR, transp = 20): the mark is drawn pvtLenR bars back
+      if (cfg.showHHLL && i - R >= 0) {
+        const tb = bars[i - R].time as number;
+        const mark = (val: number, above: boolean, base: string, text: string, id: string) => {
+          if (truthy(val)) {
+            s.markers.push({
+              time: tb, position: above ? 'aboveBar' : 'belowBar', shape: above ? 'triangleUp' : 'triangleDown',
+              color: T(base, 20), text, id,
+            });
+          }
+        };
+        mark(higherHigh, true, LIME, 'HH', 'shape0');
+        mark(lowerHigh, true, RED, 'LH', 'shape1');
+        mark(higherLow, false, LIME, 'HL', 'shape2');
+        mark(lowerLow, false, RED, 'LL', 'shape3');
+      }
+
+      // Pivot dots, drawn pvtLenR bars back
+      if (i - R >= 0) {
+        const tb = bars[i - R].time as number;
+        p[6][i - R] = { time: tb, value: pivotsOn ? pvthi : NaN };
+        p[7][i - R] = { time: tb, value: pivotsOn ? pvtlo : NaN };
+        p[8][i - R] = { time: tb, value: pivotsOn ? pvthi : NaN };
+        p[9][i - R] = { time: tb, value: pivotsOn ? pvtlo : NaN };
+      }
+
+      // Bars since the last pivot, and the last pivot levels
+      v.counthi = isHi ? 0 : (isNaN(v.counthi) ? 0 : v.counthi) + 1;
+      v.countlo = isLo ? 0 : (isNaN(v.countlo) ? 0 : v.countlo) + 1;
+      const prevHis = v.pvthis;
+      const prevLos = v.pvtlos;
+      const pvthis = isHi ? (i - R >= 0 ? bars[i - R].high : NaN) : (isNaN(prevHis) ? b.high : prevHis);
+      const pvtlos = isLo ? (i - R >= 0 ? bars[i - R].low : NaN) : (isNaN(prevLos) ? b.low : prevLos);
+      v.pvthis = pvthis;
+      v.pvtlos = pvtlos;
+      // hipc = (pvthis != pvthis[1]) ? na : green; lopc = (pvtlos != pvtlos[1]) ? na : maroon
+      const hipc = ne(pvthis, prevHis) ? 'transparent' : GREEN;
+      const lopc = ne(pvtlos, prevLos) ? 'transparent' : MAROON;
+      const top = levelsOn && (cfg.maxLvlLen === 0 || v.counthi < cfg.maxLvlLen) ? pvthis : NaN;
+      const bottom = levelsOn && (cfg.maxLvlLen === 0 || v.countlo < cfg.maxLvlLen) ? pvtlos : NaN;
+      if (i - R >= 0) {
+        const tb = bars[i - R].time as number;
+        p[10][i - R] = { time: tb, value: top, color: hipc };
+        p[11][i - R] = { time: tb, value: bottom, color: lopc };
+      }
+      p[12][i] = { time: t, value: top, color: hipc };
+      p[13][i] = { time: t, value: bottom, color: lopc };
+      p[14][i] = { time: t, value: channelOn ? pvthis : NaN };
+      p[15][i] = { time: t, value: channelOn ? pvtlos : NaN };
+
+      // Trend: both ribbon averages above (below) the medium, the fast anchored and the signal averages
+      const prevUp = v.trUp;
+      const prevDown = v.trDown;
+      const trUp = gt(slowMA, mediumAnchorMA) && gt(slowMA, fastAnchorMA) && gt(slowMA, sig)
+        && gt(fastMA, mediumAnchorMA) && gt(fastMA, fastAnchorMA) && gt(fastMA, sig);
+      const trDown = lt(slowMA, mediumAnchorMA) && lt(slowMA, fastAnchorMA) && lt(slowMA, sig)
+        && lt(fastMA, mediumAnchorMA) && lt(fastMA, fastAnchorMA) && lt(fastMA, sig);
+      v.trUp = trUp;
+      v.trDown = trDown;
+
+      // Break of the last pivot level inside a trend
+      const prevHigh = i > 0 ? bars[i - 1].high : NaN;
+      const prevLow = i > 0 ? bars[i - 1].low : NaN;
+      v.pullbackUpT = trUp && lt(prevHigh, pvthis) && gt(b.high, pvthis) && (!cfg.closeBr || gt(b.close, pvthis))
+        ? (isNaN(v.pullbackUpT) ? 0 : v.pullbackUpT) + 1 : 0;
+      v.pullbackDnT = trDown && gt(prevLow, pvtlos) && lt(b.low, pvtlos) && (!cfg.closeBr || lt(b.close, pvtlos))
+        ? (isNaN(v.pullbackDnT) ? 0 : v.pullbackDnT) + 1 : 0;
+
+      // plotarrow(series, colorup / colordown, transp = 0): the series value (sign = direction)
+      if (cfg.showBreak && trUp && !prevUp) s.arrows.push({ time: t, id: 'arrow0', value: 1, color: AQUA });
+      if (cfg.showBreak && trDown && !prevDown) s.arrows.push({ time: t, id: 'arrow1', value: -1, color: BLUE });
+      if (cfg.showPB && v.pullbackUpT === 1) s.arrows.push({ time: t, id: 'arrow2', value: v.pullbackUpT, color: LIME });
+      if (cfg.showPB && v.pullbackDnT === 1) s.arrows.push({ time: t, id: 'arrow3', value: -v.pullbackDnT, color: RED });
+    },
+    result(s, bars) {
+      const back = Math.max(0, bars.length - R);
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = s.backPlots.includes(p) ? p.slice(0, back) : p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          // fill(p1, p2, color = fastMA > slowMA ? aqua : fuchsia, transp = 90, title = "Ribbon Fill")
+          { plot1: 'plot0', plot2: 'plot1', colors: s.ribbonFill.slice(), options: { title: 'Ribbon Fill', color: T(AQUA, 90) } },
+          // fill(p3, p4, color = gray, transp = 90, title = "Anchored MA Fill")
+          { plot1: 'plot3', plot2: 'plot4', options: { title: 'Anchored MA Fill', color: T(GRAY, 90) } },
+        ],
+        markers: s.markers.slice().sort((p, q) => p.time - q.time),
+        arrows: s.arrows.slice(),
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PullbackTradingToolAltInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PullbackTradingToolAltInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const PullbackTradingToolAlt = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

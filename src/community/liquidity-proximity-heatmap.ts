@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type HLPHTheme = 'Viridis' | 'Inferno' | 'Magma' | 'Plasma' | 'Cividis' | 'Turbo';
 
@@ -101,51 +103,39 @@ function getColor(vol: number, mn: number, mx: number, off: number, trans: numbe
 }
 
 type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<LiquidityProximityHeatmapInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+interface HlphVars {
+  /** Stored pivot highs / lows and the volume of their pivot bar (changed in place, copied by copyVars) */
+  hPrice: number[];
+  hVol: number[];
+  lPrice: number[];
+  lVol: number[];
+  maxVol: number;
+  minVol: number;
+  hasPoints: boolean;
+}
+
+interface HlphRun extends BarRunState<HlphVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  hPlots: Point[][];
+  lPlots: Point[][];
+  vwapH: Point[];
+  vwapL: Point[];
+}
+
+function study(inputs: Partial<LiquidityProximityHeatmapInputs>): BarStudy<HlphRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const offset = THEME_OFFSET[cfg.themeName] ?? 50;
   const numPoints = Math.min(cfg.numPoints, MAX_P);
   const hidden = String(color.new(color.gray, 100));
-
-  const hPlots: Point[][] = Array.from({ length: MAX_P }, () => []);
-  const lPlots: Point[][] = Array.from({ length: MAX_P }, () => []);
-  const vwapH: Point[] = [];
-  const vwapL: Point[] = [];
-
   // calc_bars_count: the script runs on the last calcBarsCount bars only; the bars before have no value
-  const start = Math.max(0, n - cfg.calcBarsCount);
-  for (let i = 0; i < start; i++) {
-    const t = bars[i].time;
-    for (let k = 0; k < MAX_P; k++) {
-      hPlots[k].push({ time: t, value: NaN, color: hidden });
-      lPlots[k].push({ time: t, value: NaN, color: hidden });
-    }
-    vwapH.push({ time: t, value: NaN });
-    vwapL.push({ time: t, value: NaN });
-  }
-  const calcBars = bars.slice(start);
-  const m = calcBars.length;
-  const high = calcBars.map((b) => b.high);
-  const low = calcBars.map((b) => b.low);
-  const volume = calcBars.map((b) => b.volume ?? NaN);
-  const phFound = ta.pivothigh(Series.fromArray(calcBars, high), cfg.leftLen, cfg.rightLen).toArray().map((v) => v ?? NaN);
-  const plFound = ta.pivotlow(Series.fromArray(calcBars, low), cfg.leftLen, cfg.rightLen).toArray().map((v) => v ?? NaN);
-
-  const hPrice: number[] = [];
-  const hVol: number[] = [];
-  const lPrice: number[] = [];
-  const lVol: number[] = [];
-  let maxVol = 0.0; // var float max_vol_found = 0.0
-  let minVol = 1.0e10; // var float min_vol_found = 1.0e10
-  let hasPoints = false;
+  const startOf = (bars: Bar[]) => Math.max(0, bars.length - cfg.calcBarsCount);
+  let start = 0;
 
   /** Sorting of one side: stored prices beyond the bar, by distance (Pine exchange sort), nearest numPoints */
-  const side = (prices: number[], vols: number[], beyond: (p: number) => boolean, dist: (p: number) => number) => {
+  const side = (v: HlphVars, prices: number[], vols: number[], beyond: (p: number) => boolean, dist: (p: number) => number) => {
     const tp: number[] = [];
     const tVol: number[] = [];
     const td: number[] = [];
@@ -174,7 +164,7 @@ export function calculate(
       let sumV = 0.0;
       for (let k = 0; k < limit; k++) {
         resP[k] = tp[k];
-        resC[k] = getColor(tVol[k], minVol, maxVol, offset, cfg.transInput);
+        resC[k] = getColor(tVol[k], v.minVol, v.maxVol, offset, cfg.transInput);
         sumPV += tp[k] * tVol[k];
         sumV += tVol[k];
       }
@@ -184,61 +174,111 @@ export function calculate(
     return { resP, resC, vwap };
   };
 
-  for (let j = 0; j < m; j++) {
-    const t = calcBars[j].time;
-    // if not na(ph_found): v = volume[rightLen]; push; shift beyond bufferSize; update the volume range
-    if (!isNaN(phFound[j])) {
-      const v = j - cfg.rightLen >= 0 ? volume[j - cfg.rightLen] : NaN;
-      hPrice.push(phFound[j]);
-      hVol.push(v);
-      if (hPrice.length > cfg.bufferSize) {
-        hPrice.shift();
-        hVol.shift();
-      }
-      maxVol = hasPoints ? Math.max(maxVol, v) : v;
-      minVol = hasPoints ? Math.min(minVol, v) : v;
-      hasPoints = true;
-    }
-    if (!isNaN(plFound[j])) {
-      const v = j - cfg.rightLen >= 0 ? volume[j - cfg.rightLen] : NaN;
-      lPrice.push(plFound[j]);
-      lVol.push(v);
-      if (lPrice.length > cfg.bufferSize) {
-        lPrice.shift();
-        lVol.shift();
-      }
-      maxVol = hasPoints ? Math.max(maxVol, v) : v;
-      minVol = hasPoints ? Math.min(minVol, v) : v;
-      hasPoints = true;
-    }
-
-    // Highs: p > high, distance p - high; Lows: p < low, distance low - p
-    const hs = side(hPrice, hVol, (p) => gt(p, high[j]), (p) => p - high[j]);
-    const ls = side(lPrice, lVol, (p) => lt(p, low[j]), (p) => low[j] - p);
-    for (let k = 0; k < MAX_P; k++) {
-      hPlots[k].push({ time: t, value: hs.resP[k], color: hs.resC[k] });
-      lPlots[k].push({ time: t, value: ls.resP[k], color: ls.resC[k] });
-    }
-    vwapH.push({ time: t, value: hs.vwap });
-    vwapL.push({ time: t, value: ls.vwap });
-  }
-
-  const plots: Record<string, Point[]> = {};
-  for (let k = 0; k < MAX_P; k++) plots[`h${k + 1}`] = hPlots[k];
-  for (let k = 0; k < MAX_P; k++) plots[`l${k + 1}`] = lPlots[k];
-  // plot(vwap_h, "VWAP Highs", #f23645, 1, plot.style_linebr, linestyle = plot.linestyle_dotted); vwap_l #089981
-  plots.vwapH = vwapH.map((p) => ({ ...p, color: '#f23645' }));
-  plots.vwapL = vwapL.map((p) => ({ ...p, color: '#089981' }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    markers: [],
+    // the first calculated bar follows the bar count
+    key: (bars) => String(startOf(bars)),
+    init(bars) {
+      start = startOf(bars);
+      const ph = new PivotStep(cfg.leftLen, cfg.rightLen, true);
+      const pl = new PivotStep(cfg.leftLen, cfg.rightLen, false);
+      const s: HlphRun = {
+        ph, pl,
+        hPlots: Array.from({ length: MAX_P }, () => []),
+        lPlots: Array.from({ length: MAX_P }, () => []),
+        vwapH: [], vwapL: [],
+        steps: [ph, pl],
+        vars: { hPrice: [], hVol: [], lPrice: [], lVol: [], maxVol: 0.0, minVol: 1.0e10, hasPoints: false },
+        lists: [], series: [],
+      };
+      s.series = [...s.hPlots, ...s.lPlots, s.vwapH, s.vwapL];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      if (i < start) {
+        for (let k = 0; k < MAX_P; k++) {
+          s.hPlots[k][i] = { time: t, value: NaN, color: hidden };
+          s.lPlots[k][i] = { time: t, value: NaN, color: hidden };
+        }
+        s.vwapH[i] = { time: t, value: NaN, color: '#f23645' };
+        s.vwapL[i] = { time: t, value: NaN, color: '#089981' };
+        return;
+      }
+      // bar j of the calculated bars
+      const j = i - start;
+      const v = s.vars;
+      const high = bars[i].high;
+      const low = bars[i].low;
+      const phFound = s.ph.step(j, high);
+      const plFound = s.pl.step(j, low);
+      // if not na(ph_found): v = volume[rightLen]; push; shift beyond bufferSize; update the volume range
+      if (!isNaN(phFound)) {
+        const vol = j - cfg.rightLen >= 0 ? bars[i - cfg.rightLen].volume ?? NaN : NaN;
+        v.hPrice.push(phFound);
+        v.hVol.push(vol);
+        if (v.hPrice.length > cfg.bufferSize) {
+          v.hPrice.shift();
+          v.hVol.shift();
+        }
+        v.maxVol = v.hasPoints ? Math.max(v.maxVol, vol) : vol;
+        v.minVol = v.hasPoints ? Math.min(v.minVol, vol) : vol;
+        v.hasPoints = true;
+      }
+      if (!isNaN(plFound)) {
+        const vol = j - cfg.rightLen >= 0 ? bars[i - cfg.rightLen].volume ?? NaN : NaN;
+        v.lPrice.push(plFound);
+        v.lVol.push(vol);
+        if (v.lPrice.length > cfg.bufferSize) {
+          v.lPrice.shift();
+          v.lVol.shift();
+        }
+        v.maxVol = v.hasPoints ? Math.max(v.maxVol, vol) : vol;
+        v.minVol = v.hasPoints ? Math.min(v.minVol, vol) : vol;
+        v.hasPoints = true;
+      }
+
+      // Highs: p > high, distance p - high; Lows: p < low, distance low - p
+      const hs = side(v, v.hPrice, v.hVol, (p) => gt(p, high), (p) => p - high);
+      const ls = side(v, v.lPrice, v.lVol, (p) => lt(p, low), (p) => low - p);
+      for (let k = 0; k < MAX_P; k++) {
+        s.hPlots[k][i] = { time: t, value: hs.resP[k], color: hs.resC[k] };
+        s.lPlots[k][i] = { time: t, value: ls.resP[k], color: ls.resC[k] };
+      }
+      // plot(vwap_h, "VWAP Highs", #f23645, 1, plot.style_linebr, linestyle = plot.linestyle_dotted); vwap_l #089981
+      s.vwapH[i] = { time: t, value: hs.vwap, color: '#f23645' };
+      s.vwapL[i] = { time: t, value: ls.vwap, color: '#089981' };
+    },
+    copyVars: (v) => ({ ...v, hPrice: v.hPrice.slice(), hVol: v.hVol.slice(), lPrice: v.lPrice.slice(), lVol: v.lVol.slice() }),
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      for (let k = 0; k < MAX_P; k++) plots[`h${k + 1}`] = s.hPlots[k].slice();
+      for (let k = 0; k < MAX_P; k++) plots[`l${k + 1}`] = s.lPlots[k].slice();
+      plots.vwapH = s.vwapH.slice();
+      plots.vwapL = s.vwapL.slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        markers: [],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LiquidityProximityHeatmapInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<LiquidityProximityHeatmapInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const LiquidityProximityHeatmap = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

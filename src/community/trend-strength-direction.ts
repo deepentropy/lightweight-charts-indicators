@@ -10,8 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendStrengthDirectionInputs {
   hmaLength1: number;
@@ -73,47 +75,95 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<TrendStrengthDirectionInputs> = {}): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+/** One calculateHMA(close, length) call: the three ta.wma machines and the HMA of the bar before */
+interface Hma {
+  half: number;
+  root: number;
+  len: number;
+  wma1: ReturnType<typeof taStep.wma>;
+  wma2: ReturnType<typeof taStep.wma>;
+  wma3: ReturnType<typeof taStep.wma>;
+  /** the HMA of every bar (hma[1]) */
+  hma: number[];
+}
+
+interface TsdRun extends BarRunState<Record<string, never>> {
+  hmas: Hma[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+const ANGLE_FILL = String(color.new(color.gray, 90));
+
+function study(inputs: Partial<TrendStrengthDirectionInputs>): BarStudy<TsdRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-
-  // calculateHMA(source, length): wma(2 * wma(source, round(length / 2)) - wma(source, length), round(sqrt(length)))
-  const hma = (length: number): number[] => {
-    const wma1 = A(ta.wma(close, Math.round(length / 2)));
-    const wma2 = A(ta.wma(close, length));
-    const diff = wma1.map((v, i) => 2 * v - wma2[i]);
-    return A(ta.wma(Series.fromArray(bars, diff), Math.round(Math.sqrt(length))));
-  };
-  // calculateAngle(hma) = math.atan(hma - hma[1]) * 180 / math.pi
-  const angle = (h: number[]): number[] => h.map((v, i) => {
-    const a = (Math.atan(v - (i > 0 ? h[i - 1] : NaN)) * 180) / Math.PI;
-    return Number.isFinite(a) ? a : NaN;
-  });
-
   const lengths = [cfg.hmaLength1, cfg.hmaLength2, cfg.hmaLength3, cfg.hmaLength4, cfg.hmaLength5, cfg.hmaLengthCustom];
-  const plots: IndicatorResult['plots'] = {};
-  let angle1: number[] = [];
-  lengths.forEach((len, k) => {
-    const a = angle(hma(len));
-    if (k === 0) angle1 = a;
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: a[i], color: PLOT_COLORS[k] }));
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines: hlineConfig.map((h) => ({
-      value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle, linewidth: h.linewidth ?? 1 },
-    })),
-    fills: [
-      { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Angle Range Fill' },
-        colors: new Array<string>(n).fill(String(color.new(color.gray, 90))) },
-    ],
-    // alertcondition(hmaAngle1 > angleLevelUpper) / alertcondition(hmaAngle1 < angleLevelLower), levels 45 / -45
-    alerts: alertStates(alertConditions, bars, [angle1.map((v) => v > 45), angle1.map((v) => v < -45)]),
+    init() {
+      const hmas: Hma[] = lengths.map((len) => ({
+        half: Math.round(len / 2), root: Math.round(Math.sqrt(len)), len,
+        wma1: taStep.wma(), wma2: taStep.wma(), wma3: taStep.wma(), hma: [],
+      }));
+      const s: TsdRun = {
+        hmas, plots: lengths.map(() => []), flags: [[], []], times: [[], []],
+        steps: hmas.flatMap((h) => [h.wma1, h.wma2, h.wma3]), vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [...hmas.map((h) => h.hma), ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const close = b.close;
+      let angle1 = NaN;
+      s.hmas.forEach((h, k) => {
+        // calculateHMA(source, length): wma(2 * wma(source, round(length / 2)) - wma(source, length), round(sqrt(length)))
+        const diff = 2 * h.wma1.step(close, h.half) - h.wma2.step(close, h.len);
+        const v = h.wma3.step(diff, h.root);
+        h.hma[i] = v;
+        // calculateAngle(hma) = math.atan(hma - hma[1]) * 180 / math.pi
+        const raw = (Math.atan(v - (i > 0 ? h.hma[i - 1] : NaN)) * 180) / Math.PI;
+        const a = Number.isFinite(raw) ? raw : NaN;
+        if (k === 0) angle1 = a;
+        s.plots[k][i] = { time: b.time, value: a, color: PLOT_COLORS[k] };
+      });
+      // alertcondition(hmaAngle1 > angleLevelUpper) / alertcondition(hmaAngle1 < angleLevelLower), levels 45 / -45
+      [angle1 > 45, angle1 < -45].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(b.time as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: IndicatorResult['plots'] = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        hlines: hlineConfig.map((h) => ({
+          value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle, linewidth: h.linewidth ?? 1 },
+        })),
+        fills: [
+          { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Angle Range Fill' },
+            colors: new Array<string>(n).fill(ANGLE_FILL) },
+        ],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendStrengthDirectionInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrendStrengthDirectionInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -124,6 +174,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TrendStrengthDirection = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

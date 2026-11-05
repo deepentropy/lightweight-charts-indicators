@@ -16,9 +16,11 @@
  * Original notice: © Vaquant
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MacdXBbXStdevXRviInputs {
   fastEmaPeriod: number;
@@ -149,114 +151,151 @@ const colorKey = (c: string): string => {
   return s;
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MacdXBbXStdevXRviInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface VenturoseRun extends BarRunState<Record<string, never>> {
+  fastEma: ReturnType<typeof taStep.ema>;
+  slowEma: ReturnType<typeof taStep.ema>;
+  avg: ReturnType<typeof taStep.ema>;
+  stdev: ReturnType<typeof taStep.stdev>;
+  smoothedAvg: ReturnType<typeof taStep.ema>;
+  rviStdev: ReturnType<typeof taStep.stdev>;
+  upper: ReturnType<typeof taStep.ema>;
+  lower: ReturnType<typeof taStep.ema>;
+  macd: number[];
+  keys: string[];
+  plots: Point[][];
+  bearFills: string[];
+  bullFills: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<MacdXBbXStdevXRviInputs>): BarStudy<VenturoseRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-
-  // MACD and its bands
-  const fastEma = A(ta.ema(close, cfg.fastEmaPeriod));
-  const slowEma = A(ta.ema(close, cfg.slowEmaPeriod));
-  const macd = fastEma.map((v, i) => v - slowEma[i]);
-  const macdS = S(macd);
-  const avg = A(ta.ema(macdS, cfg.avgPeriod));
-  const stdev = A(ta.stdev(macdS, cfg.avgPeriod));
-  const smoothedAvg = A(ta.ema(macdS, cfg.smoothedAvgPeriod));
-  const upperBand = avg.map((v, i) => v + cfg.stdevFactor * stdev[i]);
-  const lowerBand = avg.map((v, i) => v - cfg.stdevFactor * stdev[i]);
-
-  // RVI: upper = ema(change(close) <= 0 ? 0 : stddev), lower = ema(change(close) > 0 ? 0 : stddev)
-  const stddev = A(ta.stdev(close, cfg.rviLength));
-  const change = bars.map((b, i) => (i > 0 ? b.close - bars[i - 1].close : NaN));
-  const upper = A(ta.ema(S(change.map((c, i) => (le(c, 0) ? 0 : stddev[i]))), cfg.rviMaLength));
-  const lower = A(ta.ema(S(change.map((c, i) => (gt(c, 0) ? 0 : stddev[i]))), cfg.rviMaLength));
-  // rvi = upper + lower != 0 ? upper / (upper + lower) * 100 : 0 (na != 0 is false)
-  const rvi = upper.map((u, i) => (ne(u + lower[i], 0) ? (u / (u + lower[i])) * 100 : 0));
-
   const bull = cfg.bullishColor;
   const bear = cfg.bearishColor;
   const bullKey = colorKey(bull);
   const bearKey = colorKey(bear);
   const inside = cfg.triggerAt === 'Inside';
-
-  const plotColor: string[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const m = macd[i];
-    let c = cfg.neutralLineColor;
-    if (inside) {
-      if (gt(m, upperBand[i])) c = bull;
-      else if (lt(m, lowerBand[i])) c = bear;
-      else c = gt(m, i > 0 ? macd[i - 1] : NaN) ? bull : bear;
-    } else {
-      // bearish_trigger = lower_band, bullish_trigger = upper_band
-      c = cfg.neutralLineColor;
-      if (lt(m, lowerBand[i])) c = bear;
-      if (gt(m, upperBand[i])) c = bull;
-    }
-    plotColor[i] = c;
-  }
-
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [], anyFlags: boolean[] = [];
   const bearFill = String(color.new(bear, 90 / 1.5));
   const bullFill = String(color.new(bull, 90 / 1.5));
-  const bearFills: string[] = new Array(n);
-  const bullFills: string[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const key = colorKey(plotColor[i]);
-    // plot_color[1] != x: false on bar 0 (na)
-    const prevKey = i > 0 ? colorKey(plotColor[i - 1]) : null;
-    const buySignal = key === bullKey && prevKey !== null && prevKey !== bullKey
-      && (!cfg.enableSignalFilter || le(macd[i], avg[i]));
-    const sellSignal = key === bearKey && prevKey !== null && prevKey !== bearKey
-      && (!cfg.enableSignalFilter || ge(macd[i], avg[i]));
-    buyFlags.push(buySignal);
-    sellFlags.push(sellSignal);
-    anyFlags.push(buySignal || sellSignal);
-    if (buySignal && cfg.plotBuySignals) {
-      markers.push({ time: t, position: 'bottom', shape: 'triangleUp', color: bull, size: 'small' });
-    }
-    if (sellSignal && cfg.plotSellSignals) {
-      markers.push({ time: t, position: 'top', shape: 'triangleDown', color: bear, size: 'small' });
-    }
-    if (gt(rvi[i], cfg.rviUpperThreshold) && cfg.plotSellHints) {
-      markers.push({ time: t, position: 'top', shape: 'flag', color: bear, size: 'small' });
-    }
-    if (lt(rvi[i], cfg.rviLowerThreshold) && cfg.plotBuyHints) {
-      markers.push({ time: t, position: 'bottom', shape: 'flag', color: bull, size: 'small' });
-    }
-    // bearish_color_plot = macd < lower_band ? color.new(bearish_color, 60) : na; bullish: macd > upper_band
-    bearFills[i] = lt(macd[i], lowerBand[i]) ? bearFill : 'transparent';
-    bullFills[i] = gt(macd[i], upperBand[i]) ? bullFill : 'transparent';
-  }
-
-  const line = (vals: number[], col: (i: number) => string) =>
-    bars.map((b, i) => ({ time: b.time, value: Number.isFinite(vals[i]) ? vals[i] : NaN, color: col(i) }));
-
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(macd, (i) => plotColor[i]),
-      plot1: line(upperBand, () => cfg.neutralColor),
-      plot2: line(lowerBand, () => cfg.neutralColor),
-      plot3: line(avg, () => cfg.avgColor),
-      plot4: line(smoothedAvg, () => cfg.smoothedAvgColor),
+    init() {
+      const s: VenturoseRun = {
+        fastEma: taStep.ema(cfg.fastEmaPeriod), slowEma: taStep.ema(cfg.slowEmaPeriod), avg: taStep.ema(cfg.avgPeriod),
+        stdev: taStep.stdev(), smoothedAvg: taStep.ema(cfg.smoothedAvgPeriod), rviStdev: taStep.stdev(),
+        upper: taStep.ema(cfg.rviMaLength), lower: taStep.ema(cfg.rviMaLength), macd: [], keys: [],
+        plots: [[], [], [], [], []], bearFills: [], bullFills: [], markers: [], flags: [[], [], []], times: [[], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.fastEma, s.slowEma, s.avg, s.stdev, s.smoothedAvg, s.rviStdev, s.upper, s.lower];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.macd, s.keys, ...s.plots, s.bearFills, s.bullFills, ...s.flags];
+      return s;
     },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot2', colors: new Array<string>(n).fill(cfg.neutralFillColor) },
-      { plot1: 'plot0', plot2: 'plot2', colors: bearFills },
-      { plot1: 'plot0', plot2: 'plot1', colors: bullFills },
-    ],
-    markers,
-    // alertcondition(buy_signal or sell_signal, 'Buy & Sell') / (buy_signal, 'Buy') / (sell_signal, 'Sell')
-    alerts: alertStates(alertConditions, bars, [anyFlags, buyFlags, sellFlags]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const close = b.close;
+
+      // MACD and its bands
+      const m = s.fastEma.step(close) - s.slowEma.step(close);
+      s.macd[i] = m;
+      const avg = s.avg.step(m);
+      const stdev = s.stdev.step(m, cfg.avgPeriod);
+      const smoothedAvg = s.smoothedAvg.step(m);
+      const upperBand = avg + cfg.stdevFactor * stdev;
+      const lowerBand = avg - cfg.stdevFactor * stdev;
+
+      // RVI: upper = ema(change(close) <= 0 ? 0 : stddev), lower = ema(change(close) > 0 ? 0 : stddev)
+      const stddev = s.rviStdev.step(close, cfg.rviLength);
+      const change = i > 0 ? close - bars[i - 1].close : NaN;
+      const upper = s.upper.step(le(change, 0) ? 0 : stddev);
+      const lower = s.lower.step(gt(change, 0) ? 0 : stddev);
+      // rvi = upper + lower != 0 ? upper / (upper + lower) * 100 : 0 (na != 0 is false)
+      const rvi = ne(upper + lower, 0) ? (upper / (upper + lower)) * 100 : 0;
+
+      let c = cfg.neutralLineColor;
+      if (inside) {
+        if (gt(m, upperBand)) c = bull;
+        else if (lt(m, lowerBand)) c = bear;
+        else c = gt(m, i > 0 ? s.macd[i - 1] : NaN) ? bull : bear;
+      } else {
+        // bearish_trigger = lower_band, bullish_trigger = upper_band
+        c = cfg.neutralLineColor;
+        if (lt(m, lowerBand)) c = bear;
+        if (gt(m, upperBand)) c = bull;
+      }
+
+      const key = colorKey(c);
+      s.keys[i] = key;
+      // plot_color[1] != x: false on bar 0 (na)
+      const prevKey = i > 0 ? s.keys[i - 1] : null;
+      const buySignal = key === bullKey && prevKey !== null && prevKey !== bullKey
+        && (!cfg.enableSignalFilter || le(m, avg));
+      const sellSignal = key === bearKey && prevKey !== null && prevKey !== bearKey
+        && (!cfg.enableSignalFilter || ge(m, avg));
+      // alertcondition(buy_signal or sell_signal, 'Buy & Sell') / (buy_signal, 'Buy') / (sell_signal, 'Sell')
+      const flags = [buySignal || sellSignal, buySignal, sellSignal];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+      if (buySignal && cfg.plotBuySignals) {
+        s.markers.push({ time: t, position: 'bottom', shape: 'triangleUp', color: bull, size: 'small' });
+      }
+      if (sellSignal && cfg.plotSellSignals) {
+        s.markers.push({ time: t, position: 'top', shape: 'triangleDown', color: bear, size: 'small' });
+      }
+      if (gt(rvi, cfg.rviUpperThreshold) && cfg.plotSellHints) {
+        s.markers.push({ time: t, position: 'top', shape: 'flag', color: bear, size: 'small' });
+      }
+      if (lt(rvi, cfg.rviLowerThreshold) && cfg.plotBuyHints) {
+        s.markers.push({ time: t, position: 'bottom', shape: 'flag', color: bull, size: 'small' });
+      }
+      // bearish_color_plot = macd < lower_band ? color.new(bearish_color, 60) : na; bullish: macd > upper_band
+      s.bearFills[i] = lt(m, lowerBand) ? bearFill : 'transparent';
+      s.bullFills[i] = gt(m, upperBand) ? bullFill : 'transparent';
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: fin(m), color: c };
+      p[1][i] = { time: t, value: fin(upperBand), color: cfg.neutralColor };
+      p[2][i] = { time: t, value: fin(lowerBand), color: cfg.neutralColor };
+      p[3][i] = { time: t, value: fin(avg), color: cfg.avgColor };
+      p[4][i] = { time: t, value: fin(smoothedAvg), color: cfg.smoothedAvgColor };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        fills: [
+          { plot1: 'plot1', plot2: 'plot2', colors: new Array<string>(n).fill(cfg.neutralFillColor) },
+          { plot1: 'plot0', plot2: 'plot2', colors: s.bearFills.slice() },
+          { plot1: 'plot0', plot2: 'plot1', colors: s.bullFills.slice() },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MacdXBbXStdevXRviInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<MacdXBbXStdevXRviInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -268,6 +307,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const MacdXBbXStdevXRvi = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

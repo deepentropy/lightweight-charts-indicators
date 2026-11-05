@@ -15,9 +15,11 @@
  * Original notice: © Uptrick
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taCore, taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface UptrickDynamicZScoreDeviationInputs {
   maLen: number;
@@ -115,108 +117,226 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
 type Point = { time: number; value: number; color?: string };
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+/** ta.alma(source, length, offset, sigma) weights (the operations of the oakscriptjs function) */
+function almaWeights(length: number, offset: number, sigma: number): number[] {
+  const m = offset * (length - 1);
+  const s = length / sigma;
+  const weights: number[] = [];
+  let weightSum = 0;
+  for (let i = 0; i < length; i++) {
+    const weight = Math.exp(-1 * Math.pow(i - m, 2) / (2 * Math.pow(s, 2)));
+    weights.push(weight);
+    weightSum += weight;
+  }
+  for (let i = 0; i < length; i++) weights[i]! /= weightSum;
+  return weights;
+}
+
+/**
+ * (x - ta.sma(x, len)) / (ta.stdev(x, len) + 1e-10) stepped bar by bar: the window sums of x and of its squares of
+ * the oakscriptjs ta.sma / ta.stdev (biased) machines, shared (same doubles)
+ */
+class ZScore {
+  private readonly sums = taStep.sum();
+  private readonly squares = taStep.sum();
+  private readonly len: number;
+  constructor(length: number) {
+    // the length checks of ta.sma and ta.stdev
+    taStep.sma().step(0, length);
+    taStep.stdev().step(0, length);
+    this.len = Math.floor(length);
+  }
+  step(x: number): number {
+    const len = this.len;
+    const sum = this.sums.step(x, len);
+    const sq = this.squares.step(Number.isFinite(x) ? x * x : NaN, len);
+    const mean = sum / len;
+    const variance = sq / len - mean * mean;
+    const sd = Number.isNaN(variance) ? NaN : variance > 0 ? Math.sqrt(variance) : 0;
+    return (x - mean) / (sd + 1e-10);
+  }
+  commit(): void {
+    this.sums.commit();
+    this.squares.commit();
+  }
+}
+
+interface UptrickRun extends BarRunState<Record<string, never>> {
+  zlma: ReturnType<typeof taStep.ema>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  rsiEma: ReturnType<typeof taStep.ema>;
+  zRsi: ZScore;
+  zPrice: ZScore;
+  emaR: ReturnType<typeof taStep.ema>;
+  emaG: ReturnType<typeof taStep.ema>;
+  emaB: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  rsiArr: number[];
+  comboMA: number[];
+  plots: Point[][];
+  fillColors: string[][];
+  barColors: BarColorData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<UptrickDynamicZScoreDeviationInputs>): BarStudy<UptrickRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const maLen = cfg.maLen;
+  const weights = almaWeights(maLen, cfg.almaOffset, cfg.almaSigma);
+  const rsiWeights = almaWeights(10, 0.85, 6);
+  const bullR = color.r(BULL), bullG = color.g(BULL), bullB = color.b(BULL);
+  const bearR = color.r(BEAR), bearG = color.g(BEAR), bearB = color.b(BEAR);
+  // Shadow layers k = 1..4: plot(on ? comboMA +/- shadowBaseMult * k * shadowATR : na), fill(u, l, color.new(maCoreColor, tr))
+  const layerTransp = [75, 85, 92, 96];
+  const layerOn = [1, 2, 3, 4].map((k) => cfg.showShadow && (k === 1 || (k === 4 ? cfg.shadowLayers === 4 : cfg.shadowLayers >= k)));
+  const upText = '𝐔𝐩';
+  const downText = '𝐃𝐨𝐰𝐧';
+  return {
+    init() {
+      // the length checks of ta.alma
+      taCore.alma([], maLen, cfg.almaOffset, cfg.almaSigma);
+      const zlma = taStep.ema(maLen);
+      const rsi = taStep.rsi(cfg.rsiLen);
+      const rsiEma = taStep.ema(cfg.rsiEmaLen);
+      const zRsi = new ZScore(cfg.zLookback);
+      const zPrice = new ZScore(cfg.zLookback);
+      const emaR = taStep.ema(15);
+      const emaG = taStep.ema(15);
+      const emaB = taStep.ema(15);
+      const atr = taStep.atr(cfg.atrLength);
+      const s: UptrickRun = {
+        zlma, rsi, rsiEma, zRsi, zPrice, emaR, emaG, emaB, atr, rsiArr: [], comboMA: [],
+        plots: Array.from({ length: 9 }, () => []), fillColors: [[], [], [], []], barColors: [], markers: [],
+        flags: [[], []], times: [[], []],
+        steps: [zlma, rsi, rsiEma, zRsi, zPrice, emaR, emaG, emaB, atr], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.rsiArr, s.comboMA, ...s.plots, ...s.fillColors, s.barColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const close = b.close;
+
+      // Core MA: (alma + zlma) / 2 with zlma = ta.ema(2 * src - src[maLen], maLen)
+      let alma = NaN;
+      if (i >= maLen - 1) {
+        alma = 0;
+        for (let j = 0; j < maLen; j++) alma += bars[i - maLen + 1 + j].close * weights[j]!;
+      }
+      const zlmaSrc = i >= maLen ? 2 * close - bars[i - maLen].close : NaN;
+      const zlma = s.zlma.step(zlmaSrc);
+      const comboMA = (alma + zlma) / 2;
+      s.comboMA[i] = comboMA;
+
+      // RSI, ALMA-smoothed RSI and RSI EMA
+      const rsi = s.rsi.step(close);
+      s.rsiArr[i] = rsi;
+      let rsiSmooth = NaN;
+      if (i >= 10 - 1) {
+        rsiSmooth = 0;
+        for (let j = 0; j < 10; j++) rsiSmooth += s.rsiArr[i - 10 + 1 + j] * rsiWeights[j]!;
+      }
+      const rsiEma = s.rsiEma.step(rsi);
+
+      // z-scores
+      const zRsi = s.zRsi.step(rsiSmooth);
+      const priceDist = close - comboMA;
+      const zPrice = s.zPrice.step(priceDist);
+
+      // Line colour: rawSlope = comboMA - comboMA[slopeLen]; channels = ta.ema(rawSlope > 0 ? bull : bear, 15)
+      const rawSlope = i >= cfg.slopeLen ? comboMA - s.comboMA[i - cfg.slopeLen] : NaN;
+      const up = gt(rawSlope, 0);
+      const emaR = s.emaR.step(up ? bullR : bearR);
+      const emaG = s.emaG.step(up ? bullG : bearG);
+      const emaB = s.emaB.step(up ? bullB : bearB);
+      const maCoreColor = cfg.smoothGradient
+        // color.rgb(int(r), int(g), int(b)): int() truncates, a na channel is 0
+        ? color.rgb(Math.trunc(emaR), Math.trunc(emaG), Math.trunc(emaB))
+        : gt(rawSlope, 0) ? BULL : lt(rawSlope, 0) ? BEAR : color.gray;
+
+      const atr = s.atr.step(b.high, b.low, close);
+      for (let k = 1; k <= 4; k++) {
+        const on = layerOn[k - 1];
+        const width = cfg.shadowBaseMult * k * atr;
+        s.plots[2 * (k - 1)][i] = { time, value: on ? comboMA + width : NaN };
+        s.plots[2 * (k - 1) + 1][i] = { time, value: on ? comboMA - width : NaN };
+        s.fillColors[k - 1][i] = on ? String(color.new(maCoreColor, layerTransp[k - 1])) : 'transparent';
+      }
+      // plot(comboMA, title = "Smoothed MA (ALMA + ZLMA)", color = maCoreColor, linewidth = 2)
+      s.plots[8][i] = { time, value: comboMA, color: maCoreColor };
+      // barcolor(useBarColor ? maCoreColor : na)
+      s.barColors[i] = { time, color: maCoreColor };
+
+      let buyCond = false;
+      let sellCond = false;
+      if (i >= 1) {
+        const prevClose = bars[i - 1].close;
+        buyCond = cfg.showSignals && lt(zPrice, -cfg.priceZThresh) && lt(zRsi, -cfg.rsiZThresh)
+          && lt(rsiEma, 40) && gt(close, prevClose);
+        sellCond = cfg.showSignals && gt(zPrice, cfg.priceZThresh) && gt(zRsi, cfg.rsiZThresh)
+          && gt(rsiEma, 60) && lt(close, prevClose);
+        const strength = Math.abs(zPrice) + Math.abs(zRsi);
+        // Strong (>= 6): normal; medium (4..6): small; weak (< 4): tiny; fixed (dynamic size off): small
+        const size = !cfg.useDynamicSize ? 'small' : ge(strength, 6) ? 'normal' : ge(strength, 4) ? 'small' : lt(strength, 4) ? 'tiny' : null;
+        if (size !== null) {
+          // Style ids: Buy Strong / Medium / Weak / Fixed = shape0..3, Sell Strong / Medium / Weak / Fixed = shape4..7
+          const k = !cfg.useDynamicSize ? 3 : size === 'normal' ? 0 : size === 'small' ? 1 : 2;
+          // plotshape(buyCond ..., location.belowbar, shape.labelup, color.rgb(92, 240, 215), text = "𝐔𝐩", textcolor = #000000)
+          if (buyCond) {
+            s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: BULL, size, text: upText, textColor: '#000000', id: `shape${k}` });
+          }
+          // plotshape(sellCond ..., location.abovebar, shape.labeldown, color.rgb(179, 42, 195), text = "𝐃𝐨𝐰𝐧", textcolor = color.white)
+          if (sellCond) {
+            s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: BEAR, size, text: downText, textColor: color.white, id: `shape${4 + k}` });
+          }
+        }
+      }
+      s.flags[0][i] = buyCond;
+      s.flags[1][i] = sellCond;
+      if (buyCond) s.times[0].push(time as number);
+      if (sellCond) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      const fills: NonNullable<IndicatorResult['fills']> = [];
+      for (let k = 1; k <= 4; k++) {
+        const u = `plot${2 * (k - 1)}`;
+        const l = `plot${2 * (k - 1) + 1}`;
+        plots[u] = s.plots[2 * (k - 1)].slice();
+        plots[l] = s.plots[2 * (k - 1) + 1].slice();
+        fills.push({ plot1: u, plot2: l, colors: s.fillColors[k - 1].slice() });
+      }
+      plots.plot8 = s.plots[8].slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        markers: s.markers.slice(),
+        barColors: cfg.useBarColor ? s.barColors.slice() : [],
+        // alertcondition(buyCond, "Buy Alert") / alertcondition(sellCond, "Sell Alert")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<UptrickDynamicZScoreDeviationInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<UptrickDynamicZScoreDeviationInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const src = S(close);
-
-  // Core MA: (alma + zlma) / 2 with zlma = ta.ema(2 * src - src[maLen], maLen)
-  const alma = A(ta.alma(src, cfg.maLen, cfg.almaOffset, cfg.almaSigma));
-  const zlmaSrc = close.map((c, i) => (i >= cfg.maLen ? 2 * c - close[i - cfg.maLen] : NaN));
-  const zlma = A(ta.ema(S(zlmaSrc), cfg.maLen));
-  const comboMA = alma.map((v, i) => (v + zlma[i]) / 2);
-
-  // RSI, ALMA-smoothed RSI and RSI EMA
-  const rsi = ta.rsi(src, cfg.rsiLen);
-  const rsiSmooth = ta.alma(rsi, 10, 0.85, 6);
-  const rsiEma = A(ta.ema(rsi, cfg.rsiEmaLen));
-
-  // z-scores
-  const rs = A(rsiSmooth);
-  const rsiMean = A(ta.sma(rsiSmooth, cfg.zLookback));
-  const rsiStdev = A(ta.stdev(rsiSmooth, cfg.zLookback));
-  const zRsi = rs.map((v, i) => (v - rsiMean[i]) / (rsiStdev[i] + 1e-10));
-  const priceDist = close.map((c, i) => c - comboMA[i]);
-  const pdMean = A(ta.sma(S(priceDist), cfg.zLookback));
-  const pdStd = A(ta.stdev(S(priceDist), cfg.zLookback));
-  const zPrice = priceDist.map((v, i) => (v - pdMean[i]) / (pdStd[i] + 1e-10));
-
-  // Line colour: rawSlope = comboMA - comboMA[slopeLen]; channels = ta.ema(rawSlope > 0 ? bull : bear, 15)
-  const rawSlope = comboMA.map((v, i) => (i >= cfg.slopeLen ? v - comboMA[i - cfg.slopeLen] : NaN));
-  const up = rawSlope.map((s) => gt(s, 0));
-  const emaR = A(ta.ema(S(up.map((u) => (u ? color.r(BULL) : color.r(BEAR)))), 15));
-  const emaG = A(ta.ema(S(up.map((u) => (u ? color.g(BULL) : color.g(BEAR)))), 15));
-  const emaB = A(ta.ema(S(up.map((u) => (u ? color.b(BULL) : color.b(BEAR)))), 15));
-  const maCoreColor = rawSlope.map((s, i) => (cfg.smoothGradient
-    // color.rgb(int(r), int(g), int(b)): int() truncates, a na channel is 0
-    ? color.rgb(Math.trunc(emaR[i]), Math.trunc(emaG[i]), Math.trunc(emaB[i]))
-    : gt(s, 0) ? BULL : lt(s, 0) ? BEAR : color.gray));
-
-  const atr = A(ta.atr(bars, cfg.atrLength));
-  const plots: Record<string, Point[]> = {};
-  const fills: NonNullable<IndicatorResult['fills']> = [];
-  // Shadow layers k = 1..4: plot(on ? comboMA +/- shadowBaseMult * k * shadowATR : na), fill(u, l, color.new(maCoreColor, tr))
-  const layerTransp = [75, 85, 92, 96];
-  for (let k = 1; k <= 4; k++) {
-    const on = cfg.showShadow && (k === 1 || (k === 4 ? cfg.shadowLayers === 4 : cfg.shadowLayers >= k));
-    const width = atr.map((a) => cfg.shadowBaseMult * k * a);
-    const u = `plot${2 * (k - 1)}`;
-    const l = `plot${2 * (k - 1) + 1}`;
-    plots[u] = bars.map((b, i) => ({ time: b.time, value: on ? comboMA[i] + width[i] : NaN }));
-    plots[l] = bars.map((b, i) => ({ time: b.time, value: on ? comboMA[i] - width[i] : NaN }));
-    const tr = layerTransp[k - 1];
-    fills.push({ plot1: u, plot2: l, colors: maCoreColor.map((c) => (on ? String(color.new(c, tr)) : 'transparent')) });
-  }
-  // plot(comboMA, title = "Smoothed MA (ALMA + ZLMA)", color = maCoreColor, linewidth = 2)
-  plots.plot8 = bars.map((b, i) => ({ time: b.time, value: comboMA[i], color: maCoreColor[i] }));
-
-  // barcolor(useBarColor ? maCoreColor : na)
-  const barColors: BarColorData[] = cfg.useBarColor ? bars.map((b, i) => ({ time: b.time, color: maCoreColor[i] })) : [];
-
-  const markers: MarkerData[] = [];
-  const upText = '𝐔𝐩';
-  const downText = '𝐃𝐨𝐰𝐧';
-  const buyFlags: boolean[] = new Array(n).fill(false);
-  const sellFlags: boolean[] = new Array(n).fill(false);
-  for (let i = 1; i < n; i++) {
-    const t = bars[i].time;
-    const buyCond = cfg.showSignals && lt(zPrice[i], -cfg.priceZThresh) && lt(zRsi[i], -cfg.rsiZThresh)
-      && lt(rsiEma[i], 40) && gt(close[i], close[i - 1]);
-    const sellCond = cfg.showSignals && gt(zPrice[i], cfg.priceZThresh) && gt(zRsi[i], cfg.rsiZThresh)
-      && gt(rsiEma[i], 60) && lt(close[i], close[i - 1]);
-    buyFlags[i] = buyCond;
-    sellFlags[i] = sellCond;
-    const strength = Math.abs(zPrice[i]) + Math.abs(zRsi[i]);
-    // Strong (>= 6): normal; medium (4..6): small; weak (< 4): tiny; fixed (dynamic size off): small
-    const size = !cfg.useDynamicSize ? 'small' : ge(strength, 6) ? 'normal' : ge(strength, 4) ? 'small' : lt(strength, 4) ? 'tiny' : null;
-    if (size === null) continue;
-    // Style ids: Buy Strong / Medium / Weak / Fixed = shape0..3, Sell Strong / Medium / Weak / Fixed = shape4..7
-    const k = !cfg.useDynamicSize ? 3 : size === 'normal' ? 0 : size === 'small' ? 1 : 2;
-    // plotshape(buyCond ..., location.belowbar, shape.labelup, color.rgb(92, 240, 215), text = "𝐔𝐩", textcolor = #000000)
-    if (buyCond) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: BULL, size, text: upText, textColor: '#000000', id: `shape${k}` });
-    }
-    // plotshape(sellCond ..., location.abovebar, shape.labeldown, color.rgb(179, 42, 195), text = "𝐃𝐨𝐰𝐧", textcolor = color.white)
-    if (sellCond) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: BEAR, size, text: downText, textColor: color.white, id: `shape${4 + k}` });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers,
-    barColors,
-    // alertcondition(buyCond, "Buy Alert") / alertcondition(sellCond, "Sell Alert")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -232,4 +352,5 @@ export const UptrickDynamicZScoreDeviation = {
   inputConfig,
   plotConfig,
   alertConditions,
+  createRun,
 };

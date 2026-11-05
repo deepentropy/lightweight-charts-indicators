@@ -16,10 +16,11 @@
  * Original notice: © Uncle_the_shooter
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
-import { barInterval, barTime } from '../bar-time';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type Mpo4SlowColorMode = 'Direction' | 'Position vs Zero';
 
@@ -187,245 +188,291 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<Mpo4LinesModalEngineInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Sma = ReturnType<typeof taStep.sma>;
+type Ema = ReturnType<typeof taStep.ema>;
+
+interface Mpo4Vars {
+  /** Calls of the ta.barssince in _inRange (Pine v6 `and` is lazy) */
+  plCalls: number;
+  phCalls: number;
+  /** var bool plFound / phFound / bullCond / bearCond */
+  plFoundVar: boolean;
+  phFoundVar: boolean;
+  bullVar: boolean;
+  bearVar: boolean;
+}
+
+/** calcCPO(_len, _smooth): the SMA of the bodies, the contributions of each bar and the EMA of the normalised sum */
+interface Cpo {
+  len: number;
+  avgBody: Sma;
+  ema: Ema;
+  contrib: number[];
+}
+
+interface Mpo4Run extends BarRunState<Mpo4Vars> {
+  cpo: Cpo[];
+  line1Ema: Ema;
+  pl: PivotStep;
+  ph: PivotStep;
+  line1: number[];
+  line2: number[];
+  line3: number[];
+  line4: number[];
+  plots: Point[][];
+  /** plot11 / plot12: the value of bar i drawn on bar i - lb (no point for the first lb bars) */
+  bullLine: Point[];
+  bearLine: Point[];
+  layers: string[][];
+  fastAB: string[];
+  /** ta.valuewhen(found, x, 1) histories */
+  plOsc: number[];
+  plLow: number[];
+  phOsc: number[];
+  phHigh: number[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<Mpo4LinesModalEngineInputs>): BarStudy<Mpo4Run, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const rangeUpper = 60;
   const rangeLower = 5;
-
-  // calcCPO(_len, _smooth)
-  const body = bars.map((b) => Math.abs(b.close - b.open));
-  const bodyS = S(body);
-  const direction = bars.map((b) => (gt(b.close, b.open) ? 1.0 : lt(b.close, b.open) ? -1.0 : 0.0));
-  const calcCPO = (len: number, smooth: number): number[] => {
-    const avgBody = A(ta.sma(bodyS, len));
-    // weight = avgBody != 0 ? body / avgBody : 1.0 (na != 0 is false)
-    const contrib = body.map((bd, i) => direction[i] * (!isNaN(avgBody[i]) && Math.abs(avgBody[i]) > EPS ? bd / avgBody[i] : 1.0));
-    const norm: number[] = new Array(n);
-    for (let b = 0; b < n; b++) {
-      // rolling = sum of contrib[i] for i = 0 to _len - 1 (na before bar 0)
-      let rolling = 0.0;
-      const step = len - 1 >= 0 ? 1 : -1;
-      for (let i = 0; step > 0 ? i <= len - 1 : i >= len - 1; i += step) {
-        rolling += b - i >= 0 && b - i < n ? contrib[b - i] : NaN;
-      }
-      norm[b] = (rolling / (len * 2)) * 100;
-    }
-    return A(ta.ema(S(norm), smooth));
-  };
-  const line1Raw = calcCPO(cfg.len1, cfg.smoothLen1);
-  const line1 = A(ta.ema(S(line1Raw), cfg.extraSmoothLen));
-  const line2 = calcCPO(cfg.len2, cfg.smoothLen2);
-  const line3 = calcCPO(cfg.len3, cfg.smoothLen3);
-  const line4 = calcCPO(cfg.len4, cfg.smoothLen4);
-
-  // Colours (color.new(c, 0))
-  const c0 = (c: string) => String(color.new(c, 0));
-  const line1Color = (i: number) => (cfg.slowColorMode === 'Position vs Zero'
-    ? (ge(line1[i], 0) ? c0(cfg.line1ColorPositive) : c0(cfg.line1ColorNegative))
-    : (gt(line1[i], i > 0 ? line1[i - 1] : NaN) ? c0(cfg.line1ColorPositive) : c0(cfg.line1ColorNegative)));
-  const line2Color = (i: number) => (ge(line2[i], 0) ? c0(cfg.line2ColorPositive) : c0(cfg.line2ColorNegative));
-  const line3Color = (i: number) => (ge(line3[i], 0) ? c0(cfg.line3ColorPositive) : c0(cfg.line3ColorNegative));
-  const line4Color = (i: number) => (ge(line4[i], 0) ? c0(cfg.line4ColorPositive) : c0(cfg.line4ColorNegative));
-
-  // Divergence on fast line A
   const lb = cfg.pivotLength;
-  const pivotHighOsc = A(ta.pivothigh(S(line2), lb, lb));
-  const pivotLowOsc = A(ta.pivotlow(S(line2), lb, lb));
-  const plFound: boolean[] = new Array(n).fill(false);
-  const phFound: boolean[] = new Array(n).fill(false);
-  const bullCond: boolean[] = new Array(n).fill(false);
-  const bearCond: boolean[] = new Array(n).fill(false);
-  const oscLbr = (i: number) => (i - lb >= 0 ? line2[i - lb] : NaN);
-  {
-    // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
-    const plOsc: number[] = [];
-    const plLow: number[] = [];
-    const phOsc: number[] = [];
-    const phHigh: number[] = [];
-    // Pine v6 `and` is lazy: the ta.barssince inside _inRange(...) only runs on the bars where the left side
-    // (oscLbr > ta.valuewhen(...)) is true, so it counts those calls. One state per call site.
-    let plCalls = NaN;
-    let phCalls = NaN;
-    let plFoundVar = false; // var bool plFound = false
-    let phFoundVar = false; // var bool phFound = false
-    let bullVar = false; // var bool bullCond = false
-    let bearVar = false; // var bool bearCond = false
-    for (let i = 0; i < n; i++) {
-      if (cfg.calculateDivergence) {
-        const o = oscLbr(i);
-        const lowLbr = i - lb >= 0 ? bars[i - lb].low : NaN;
-        const highLbr = i - lb >= 0 ? bars[i - lb].high : NaN;
-
-        const prevPlFound = plFoundVar; // plFound[1]
-        plFoundVar = !isNaN(pivotLowOsc[i]);
-        if (plFoundVar) {
-          plOsc.push(o);
-          plLow.push(lowLbr);
-        }
-        const vwPlOsc = plOsc.length >= 2 ? plOsc[plOsc.length - 2] : NaN;
-        const vwPlLow = plLow.length >= 2 ? plLow[plLow.length - 2] : NaN;
-        let oscHl = false;
-        if (gt(o, vwPlOsc)) {
-          if (prevPlFound) plCalls = 0;
-          else if (!isNaN(plCalls)) plCalls++;
-          oscHl = rangeLower <= plCalls && plCalls <= rangeUpper;
-        }
-        const priceLl = lt(lowLbr, vwPlLow);
-        bullVar = priceLl && oscHl && plFoundVar;
-
-        const prevPhFound = phFoundVar; // phFound[1]
-        phFoundVar = !isNaN(pivotHighOsc[i]);
-        if (phFoundVar) {
-          phOsc.push(o);
-          phHigh.push(highLbr);
-        }
-        const vwPhOsc = phOsc.length >= 2 ? phOsc[phOsc.length - 2] : NaN;
-        const vwPhHigh = phHigh.length >= 2 ? phHigh[phHigh.length - 2] : NaN;
-        let oscLh = false;
-        if (lt(o, vwPhOsc)) {
-          if (prevPhFound) phCalls = 0;
-          else if (!isNaN(phCalls)) phCalls++;
-          oscLh = rangeLower <= phCalls && phCalls <= rangeUpper;
-        }
-        const priceHh = gt(highLbr, vwPhHigh);
-        bearVar = priceHh && oscLh && phFoundVar;
-      }
-      plFound[i] = plFoundVar;
-      phFound[i] = phFoundVar;
-      bullCond[i] = bullVar;
-      bearCond[i] = bearVar;
-    }
-  }
-
-  const interval = barInterval(bars);
-  const t = (i: number) => bars[i].time;
-  const P = (f: (i: number) => Point | null): Point[] => {
-    const out: Point[] = [];
-    for (let i = 0; i < n; i++) {
-      const p = f(i);
-      if (p) out.push(p);
-    }
-    return out;
-  };
   const showMid = cfg.showLine3 && cfg.showFastBToZeroGradient;
   const noDiv = String(color.new(color.white, 100));
-  const plots: Record<string, Point[]> = {
-    plot0: P((i) => ({ time: t(i), value: cfg.showLine1 ? line1[i] : NaN, color: line1Color(i) })),
-    plot1: P((i) => ({ time: t(i), value: cfg.showLine2 ? line2[i] : NaN, color: line2Color(i) })),
-    plot2: P((i) => ({ time: t(i), value: cfg.showLine3 ? line3[i] : NaN, color: line3Color(i) })),
-    plot3: P((i) => ({ time: t(i), value: cfg.showLine4 ? line4[i] : NaN, color: line4Color(i) })),
-    // plot(showLine3 and showFastBToZeroGradient ? line3 * k : na, color = na, display = display.none)
-    plot4: P((i) => ({ time: t(i), value: showMid ? line3[i] * 0.8 : NaN })),
-    plot5: P((i) => ({ time: t(i), value: showMid ? line3[i] * 0.6 : NaN })),
-    plot6: P((i) => ({ time: t(i), value: showMid ? line3[i] * 0.4 : NaN })),
-    plot7: P((i) => ({ time: t(i), value: showMid ? line3[i] * 0.2 : NaN })),
-    plot8: P((i) => ({ time: t(i), value: 0 })),
-    // plot(showOverboughtGradient ? overbought : na,
-    //      color.new(line2 <= line3 ? overboughtLineColor : zeroLineColor, bandTransparency), linewidth = 10)
-    plot9: P((i) => ({
-      time: t(i), value: cfg.showOverboughtGradient ? cfg.overbought : NaN,
-      color: String(color.new(le(line2[i], line3[i]) ? cfg.overboughtLineColor : cfg.zeroLineColor, cfg.bandTransparency)),
-    })),
-    // plot(showOversoldGradient ? oversold : na, color.new(line2 > line3 ? oversoldLineColor : zeroLineColor, ...))
-    plot10: P((i) => ({
-      time: t(i), value: cfg.showOversoldGradient ? cfg.oversold : NaN,
-      color: String(color.new(gt(line2[i], line3[i]) ? cfg.oversoldLineColor : cfg.zeroLineColor, cfg.bandTransparency)),
-    })),
-    // plot(calculateDivergence and plFound ? oscLbr : na, offset = -lookbackRight,
-    //      color = bullCond ? bullDivColor : color.new(color.white, 100)): the value of bar i is drawn on bar i - lb
-    plot11: P((i) => (i - lb < 0 ? null : {
-      time: barTime(bars, i - lb, interval),
-      value: cfg.calculateDivergence && plFound[i] ? oscLbr(i) : NaN,
-      color: bullCond[i] ? cfg.bullDivColor : noDiv,
-    })),
-    plot12: P((i) => (i - lb < 0 ? null : {
-      time: barTime(bars, i - lb, interval),
-      value: cfg.calculateDivergence && phFound[i] ? oscLbr(i) : NaN,
-      color: bearCond[i] ? cfg.bearDivColor : noDiv,
-    })),
-  };
-
-  // fillColor = line3 >= 0 ? color.new(line3ColorPositive, gradientTransparency) : color.new(line3ColorNegative, ...)
   const gT = cfg.gradientTransparency;
-  const layer = (k: number) => bars.map((_b, i) => {
-    if (!showMid) return 'transparent';
-    if (k === 0) return String(color.new(ge(line3[i], 0) ? cfg.line3ColorPositive : cfg.line3ColorNegative, gT));
-    return String(color.new(line3Color(i), gT + k));
-  });
-  const fills = [
-    { plot1: 'plot2', plot2: 'plot4', options: { title: 'Fill Layer 1' }, colors: layer(0) },
-    { plot1: 'plot4', plot2: 'plot5', options: { title: 'Fill Layer 2' }, colors: layer(5) },
-    { plot1: 'plot5', plot2: 'plot6', options: { title: 'Fill Layer 3' }, colors: layer(10) },
-    { plot1: 'plot6', plot2: 'plot7', options: { title: 'Fill Layer 4' }, colors: layer(15) },
-    { plot1: 'plot7', plot2: 'plot8', options: { title: 'Fill Layer 5' }, colors: layer(20) },
-    // fill(plot_line2, plot_line3, showLine2 and showLine3 ? color.new(line2Color, line2Line3GradientTransparency) : na)
-    { plot1: 'plot1', plot2: 'plot2', options: { title: 'Fast A to B Fill' },
-      colors: bars.map((_b, i) => (cfg.showLine2 && cfg.showLine3
-        ? String(color.new(line2Color(i), cfg.line2Line3GradientTransparency)) : 'transparent')) },
-  ];
-
-  const markers: MarkerData[] = [];
   const buyColor = String(color.new(cfg.oversoldLineColor, 60));
   const sellColor = String(color.new(cfg.overboughtLineColor, 60));
   const bullLabel = String(color.new(cfg.bullDivColor, 40));
   const bearLabel = String(color.new(cfg.bearDivColor, 40));
-  const buyAlert = new Array<boolean>(n).fill(false);
-  const sellAlert = new Array<boolean>(n).fill(false);
-  const dirChange = new Array<boolean>(n).fill(false);
-  const posChange = new Array<boolean>(n).fill(false);
-  const l1 = (i: number) => (i >= 0 ? line1[i] : NaN);
-  for (let i = 0; i < n; i++) {
-    // ta.crossover(line2, oversold) / ta.crossunder(line2, overbought): exact comparisons (na compares false)
-    const longSignal = i > 0 && line2[i] > cfg.oversold && line2[i - 1] <= cfg.oversold;
-    const shortSignal = i > 0 && line2[i] < cfg.overbought && line2[i - 1] >= cfg.overbought;
-    // supBuySignal / supSellSignal
-    buyAlert[i] = cfg.showObosSignals && longSignal;
-    sellAlert[i] = cfg.showObosSignals && shortSignal;
-    // colorChangeDirection = slowColorMode == 'Direction' and (line1 > line1[1]) != (line1[1] > line1[2])
-    dirChange[i] = cfg.slowColorMode === 'Direction' && gt(l1(i), l1(i - 1)) !== gt(l1(i - 1), l1(i - 2));
-    // colorChangePosition = slowColorMode == 'Position vs Zero' and (line1 >= 0) != (line1[1] >= 0)
-    posChange[i] = cfg.slowColorMode === 'Position vs Zero' && ge(l1(i), 0) !== ge(l1(i - 1), 0);
-    // plotshape(supBuySignal ? line2 : na, location.bottom, color.new(oversoldLineColor, 60), shape.circle, size.tiny)
-    if (cfg.showObosSignals && longSignal) {
-      markers.push({ time: t(i), position: 'bottom', shape: 'circle', color: buyColor, size: 'tiny' });
-    }
-    // plotshape(supSellSignal ? line2 : na, location.top, color.new(overboughtLineColor, 60), shape.circle, size.tiny)
-    if (cfg.showObosSignals && shortSignal) {
-      markers.push({ time: t(i), position: 'top', shape: 'circle', color: sellColor, size: 'tiny' });
-    }
-    // plotshape(bullCond ? oscLbr : na, offset = -lookbackRight, text = ' Bull ', shape.labelup, location.absolute,
-    //   color.new(bullDivColor, 40), textcolor = textColor, size.small)
-    if (i - lb >= 0) {
-      const price = oscLbr(i);
-      if (bullCond[i] && !isNaN(price)) {
-        markers.push({ time: barTime(bars, i - lb, interval), position: 'atPriceBottom', price, shape: 'labelUp',
-          color: bullLabel, text: ' Bull ', textColor: cfg.textColor, size: 'small' });
-      }
-      if (bearCond[i] && !isNaN(price)) {
-        markers.push({ time: barTime(bars, i - lb, interval), position: 'atPriceTop', price, shape: 'labelDown',
-          color: bearLabel, text: ' Bear ', textColor: cfg.textColor, size: 'small' });
-      }
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
-    plots,
-    hlines: [
-      { value: 0, options: { title: 'Zero Line', color: cfg.zeroLineColor, linestyle: 'dashed' } },
-      { value: cfg.overbought, options: { title: 'Overbought', color: cfg.overboughtLineColor, linestyle: 'dashed' } },
-      { value: cfg.oversold, options: { title: 'Oversold', color: cfg.oversoldLineColor, linestyle: 'dashed' } },
-    ],
-    fills,
-    markers,
-    alerts: alertStates(alertConditions, bars, [buyAlert, sellAlert, dirChange, posChange, bullCond, bearCond]),
+  // Colours (color.new(c, 0))
+  const c0 = (c: string) => String(color.new(c, 0));
+  const cpo = (len: number, smooth: number): Cpo => ({ len, avgBody: taStep.sma(), ema: taStep.ema(smooth), contrib: [] });
+  const cpoStep = (c: Cpo, i: number, bd: number, direction: number): number => {
+    const avgBody = c.avgBody.step(bd, c.len);
+    // weight = avgBody != 0 ? body / avgBody : 1.0 (na != 0 is false)
+    c.contrib[i] = direction * (!isNaN(avgBody) && Math.abs(avgBody) > EPS ? bd / avgBody : 1.0);
+    // rolling = sum of contrib[i] for i = 0 to _len - 1 (na before bar 0; the SMA has checked _len >= 1)
+    const len = c.len;
+    let rolling = 0.0;
+    for (let k = 0; k <= len - 1; k++) rolling += i - k >= 0 ? c.contrib[i - k] : NaN;
+    return c.ema.step((rolling / (len * 2)) * 100);
   };
+  return {
+    init() {
+      const s: Mpo4Run = {
+        cpo: [cpo(cfg.len1, cfg.smoothLen1), cpo(cfg.len2, cfg.smoothLen2), cpo(cfg.len3, cfg.smoothLen3), cpo(cfg.len4, cfg.smoothLen4)],
+        line1Ema: taStep.ema(cfg.extraSmoothLen),
+        pl: new PivotStep(lb, lb, false), ph: new PivotStep(lb, lb, true),
+        line1: [], line2: [], line3: [], line4: [],
+        plots: Array.from({ length: 11 }, () => []), bullLine: [], bearLine: [],
+        layers: Array.from({ length: 5 }, () => []), fastAB: [],
+        plOsc: [], plLow: [], phOsc: [], phHigh: [], markers: [],
+        flags: Array.from({ length: 6 }, () => []), times: Array.from({ length: 6 }, () => []),
+        steps: [],
+        vars: { plCalls: NaN, phCalls: NaN, plFoundVar: false, phFoundVar: false, bullVar: false, bearVar: false },
+        lists: [], series: [],
+      };
+      s.steps = [...s.cpo.flatMap((c) => [c.avgBody, c.ema]), s.line1Ema, s.pl, s.ph];
+      s.lists = [s.plOsc, s.plLow, s.phOsc, s.phHigh, s.markers, ...s.times];
+      s.series = [
+        ...s.cpo.map((c) => c.contrib), s.line1, s.line2, s.line3, s.line4, ...s.plots, ...s.layers, s.fastAB, ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const time = b.time;
+      const bd = Math.abs(b.close - b.open);
+      const direction = gt(b.close, b.open) ? 1.0 : lt(b.close, b.open) ? -1.0 : 0.0;
+      const line1Raw = cpoStep(s.cpo[0], i, bd, direction);
+      const l1 = s.line1Ema.step(line1Raw);
+      const l2 = cpoStep(s.cpo[1], i, bd, direction);
+      const l3 = cpoStep(s.cpo[2], i, bd, direction);
+      const l4 = cpoStep(s.cpo[3], i, bd, direction);
+      s.line1[i] = l1;
+      s.line2[i] = l2;
+      s.line3[i] = l3;
+      s.line4[i] = l4;
+      const line1 = s.line1;
+      const line2 = s.line2;
+
+      const line1Color = cfg.slowColorMode === 'Position vs Zero'
+        ? (ge(l1, 0) ? c0(cfg.line1ColorPositive) : c0(cfg.line1ColorNegative))
+        : (gt(l1, i > 0 ? line1[i - 1] : NaN) ? c0(cfg.line1ColorPositive) : c0(cfg.line1ColorNegative));
+      const line2Color = ge(l2, 0) ? c0(cfg.line2ColorPositive) : c0(cfg.line2ColorNegative);
+      const line3Color = ge(l3, 0) ? c0(cfg.line3ColorPositive) : c0(cfg.line3ColorNegative);
+      const line4Color = ge(l4, 0) ? c0(cfg.line4ColorPositive) : c0(cfg.line4ColorNegative);
+
+      // Divergence on fast line A
+      const o = i - lb >= 0 ? line2[i - lb] : NaN;
+      if (cfg.calculateDivergence) {
+        const pivotLowOsc = s.pl.step(i, l2);
+        const pivotHighOsc = s.ph.step(i, l2);
+        const lowLbr = i - lb >= 0 ? bars[i - lb].low : NaN;
+        const highLbr = i - lb >= 0 ? bars[i - lb].high : NaN;
+
+        // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
+        // Pine v6 `and` is lazy: the ta.barssince inside _inRange(...) only runs on the bars where the left side
+        // (oscLbr > ta.valuewhen(...)) is true, so it counts those calls. One state per call site.
+        const prevPlFound = v.plFoundVar; // plFound[1]
+        v.plFoundVar = !isNaN(pivotLowOsc);
+        if (v.plFoundVar) {
+          s.plOsc.push(o);
+          s.plLow.push(lowLbr);
+        }
+        const vwPlOsc = s.plOsc.length >= 2 ? s.plOsc[s.plOsc.length - 2] : NaN;
+        const vwPlLow = s.plLow.length >= 2 ? s.plLow[s.plLow.length - 2] : NaN;
+        let oscHl = false;
+        if (gt(o, vwPlOsc)) {
+          if (prevPlFound) v.plCalls = 0;
+          else if (!isNaN(v.plCalls)) v.plCalls++;
+          oscHl = rangeLower <= v.plCalls && v.plCalls <= rangeUpper;
+        }
+        const priceLl = lt(lowLbr, vwPlLow);
+        v.bullVar = priceLl && oscHl && v.plFoundVar;
+
+        const prevPhFound = v.phFoundVar; // phFound[1]
+        v.phFoundVar = !isNaN(pivotHighOsc);
+        if (v.phFoundVar) {
+          s.phOsc.push(o);
+          s.phHigh.push(highLbr);
+        }
+        const vwPhOsc = s.phOsc.length >= 2 ? s.phOsc[s.phOsc.length - 2] : NaN;
+        const vwPhHigh = s.phHigh.length >= 2 ? s.phHigh[s.phHigh.length - 2] : NaN;
+        let oscLh = false;
+        if (lt(o, vwPhOsc)) {
+          if (prevPhFound) v.phCalls = 0;
+          else if (!isNaN(v.phCalls)) v.phCalls++;
+          oscLh = rangeLower <= v.phCalls && v.phCalls <= rangeUpper;
+        }
+        const priceHh = gt(highLbr, vwPhHigh);
+        v.bearVar = priceHh && oscLh && v.phFoundVar;
+      }
+      const plFound = v.plFoundVar;
+      const phFound = v.phFoundVar;
+      const bullCond = v.bullVar;
+      const bearCond = v.bearVar;
+
+      const p = s.plots;
+      p[0][i] = { time, value: cfg.showLine1 ? l1 : NaN, color: line1Color };
+      p[1][i] = { time, value: cfg.showLine2 ? l2 : NaN, color: line2Color };
+      p[2][i] = { time, value: cfg.showLine3 ? l3 : NaN, color: line3Color };
+      p[3][i] = { time, value: cfg.showLine4 ? l4 : NaN, color: line4Color };
+      // plot(showLine3 and showFastBToZeroGradient ? line3 * k : na, color = na, display = display.none)
+      p[4][i] = { time, value: showMid ? l3 * 0.8 : NaN };
+      p[5][i] = { time, value: showMid ? l3 * 0.6 : NaN };
+      p[6][i] = { time, value: showMid ? l3 * 0.4 : NaN };
+      p[7][i] = { time, value: showMid ? l3 * 0.2 : NaN };
+      p[8][i] = { time, value: 0 };
+      // plot(showOverboughtGradient ? overbought : na,
+      //      color.new(line2 <= line3 ? overboughtLineColor : zeroLineColor, bandTransparency), linewidth = 10)
+      p[9][i] = {
+        time, value: cfg.showOverboughtGradient ? cfg.overbought : NaN,
+        color: String(color.new(le(l2, l3) ? cfg.overboughtLineColor : cfg.zeroLineColor, cfg.bandTransparency)),
+      };
+      // plot(showOversoldGradient ? oversold : na, color.new(line2 > line3 ? oversoldLineColor : zeroLineColor, ...))
+      p[10][i] = {
+        time, value: cfg.showOversoldGradient ? cfg.oversold : NaN,
+        color: String(color.new(gt(l2, l3) ? cfg.oversoldLineColor : cfg.zeroLineColor, cfg.bandTransparency)),
+      };
+      // plot(calculateDivergence and plFound ? oscLbr : na, offset = -lookbackRight,
+      //      color = bullCond ? bullDivColor : color.new(color.white, 100)): the value of bar i is drawn on bar i - lb
+      // (bar i is the only writer of that slot)
+      if (i - lb >= 0) {
+        const at = bars[i - lb].time;
+        s.bullLine[i - lb] = { time: at, value: cfg.calculateDivergence && plFound ? o : NaN, color: bullCond ? cfg.bullDivColor : noDiv };
+        s.bearLine[i - lb] = { time: at, value: cfg.calculateDivergence && phFound ? o : NaN, color: bearCond ? cfg.bearDivColor : noDiv };
+      }
+
+      // fillColor = line3 >= 0 ? color.new(line3ColorPositive, gradientTransparency) : color.new(line3ColorNegative, ...)
+      for (let k = 0; k < 5; k++) {
+        s.layers[k][i] = !showMid ? 'transparent'
+          : k === 0 ? String(color.new(ge(l3, 0) ? cfg.line3ColorPositive : cfg.line3ColorNegative, gT))
+            : String(color.new(line3Color, gT + k * 5));
+      }
+      // fill(plot_line2, plot_line3, showLine2 and showLine3 ? color.new(line2Color, line2Line3GradientTransparency) : na)
+      s.fastAB[i] = cfg.showLine2 && cfg.showLine3 ? String(color.new(line2Color, cfg.line2Line3GradientTransparency)) : 'transparent';
+
+      // ta.crossover(line2, oversold) / ta.crossunder(line2, overbought): exact comparisons (na compares false)
+      const longSignal = i > 0 && l2 > cfg.oversold && line2[i - 1] <= cfg.oversold;
+      const shortSignal = i > 0 && l2 < cfg.overbought && line2[i - 1] >= cfg.overbought;
+      const L1 = (j: number) => (j >= 0 ? line1[j] : NaN);
+      const f = s.flags;
+      // supBuySignal / supSellSignal
+      f[0][i] = cfg.showObosSignals && longSignal;
+      f[1][i] = cfg.showObosSignals && shortSignal;
+      // colorChangeDirection = slowColorMode == 'Direction' and (line1 > line1[1]) != (line1[1] > line1[2])
+      f[2][i] = cfg.slowColorMode === 'Direction' && gt(L1(i), L1(i - 1)) !== gt(L1(i - 1), L1(i - 2));
+      // colorChangePosition = slowColorMode == 'Position vs Zero' and (line1 >= 0) != (line1[1] >= 0)
+      f[3][i] = cfg.slowColorMode === 'Position vs Zero' && ge(L1(i), 0) !== ge(L1(i - 1), 0);
+      f[4][i] = bullCond;
+      f[5][i] = bearCond;
+      for (let k = 0; k < 6; k++) if (f[k][i]) s.times[k].push(time as number);
+      // plotshape(supBuySignal ? line2 : na, location.bottom, color.new(oversoldLineColor, 60), shape.circle, size.tiny)
+      if (cfg.showObosSignals && longSignal) {
+        s.markers.push({ time, position: 'bottom', shape: 'circle', color: buyColor, size: 'tiny' });
+      }
+      // plotshape(supSellSignal ? line2 : na, location.top, color.new(overboughtLineColor, 60), shape.circle, size.tiny)
+      if (cfg.showObosSignals && shortSignal) {
+        s.markers.push({ time, position: 'top', shape: 'circle', color: sellColor, size: 'tiny' });
+      }
+      // plotshape(bullCond ? oscLbr : na, offset = -lookbackRight, text = ' Bull ', shape.labelup, location.absolute,
+      //   color.new(bullDivColor, 40), textcolor = textColor, size.small)
+      if (i - lb >= 0) {
+        const price = o;
+        if (bullCond && !isNaN(price)) {
+          s.markers.push({ time: bars[i - lb].time, position: 'atPriceBottom', price, shape: 'labelUp',
+            color: bullLabel, text: ' Bull ', textColor: cfg.textColor, size: 'small' });
+        }
+        if (bearCond && !isNaN(price)) {
+          s.markers.push({ time: bars[i - lb].time, position: 'atPriceTop', price, shape: 'labelDown',
+            color: bearLabel, text: ' Bear ', textColor: cfg.textColor, size: 'small' });
+        }
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const shifted = Math.max(0, n - lb);
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      plots.plot11 = s.bullLine.slice(0, shifted);
+      plots.plot12 = s.bearLine.slice(0, shifted);
+      const fills = [
+        { plot1: 'plot2', plot2: 'plot4', options: { title: 'Fill Layer 1' }, colors: s.layers[0].slice() },
+        { plot1: 'plot4', plot2: 'plot5', options: { title: 'Fill Layer 2' }, colors: s.layers[1].slice() },
+        { plot1: 'plot5', plot2: 'plot6', options: { title: 'Fill Layer 3' }, colors: s.layers[2].slice() },
+        { plot1: 'plot6', plot2: 'plot7', options: { title: 'Fill Layer 4' }, colors: s.layers[3].slice() },
+        { plot1: 'plot7', plot2: 'plot8', options: { title: 'Fill Layer 5' }, colors: s.layers[4].slice() },
+        { plot1: 'plot1', plot2: 'plot2', options: { title: 'Fast A to B Fill' }, colors: s.fastAB.slice() },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 2 },
+        plots,
+        hlines: [
+          { value: 0, options: { title: 'Zero Line', color: cfg.zeroLineColor, linestyle: 'dashed' } },
+          { value: cfg.overbought, options: { title: 'Overbought', color: cfg.overboughtLineColor, linestyle: 'dashed' } },
+          { value: cfg.oversold, options: { title: 'Oversold', color: cfg.oversoldLineColor, linestyle: 'dashed' } },
+        ],
+        fills,
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<Mpo4LinesModalEngineInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<Mpo4LinesModalEngineInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -440,6 +487,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const Mpo4LinesModalEngine = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

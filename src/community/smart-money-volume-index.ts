@@ -17,10 +17,11 @@
  * Original notice: © AlgoAlpha
  */
 
-import { ta, math, color, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
 import { foregroundColorOf, backgroundColorOf, type ChartContext } from '../chart-context';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type Committable, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SmartMoneyVolumeIndexInputs {
   /** "Compare": buy and sell interest as two lines; "Net": one oscillator */
@@ -99,148 +100,289 @@ const lt = (a: number, b: number) => b - a > EPS;
 
 type Point = { time: number; value: number; color?: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SmartMoneyVolumeIndexInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] };
+
+interface SmviVars {
+  /** ta.pvi / ta.nvi of the previous bar */
+  pvi: number;
+  nvi: number;
+}
+
+interface SmviRun extends BarRunState<SmviVars> {
+  pviEma: ReturnType<typeof taStep.ema>;
+  nviEma: ReturnType<typeof taStep.ema>;
+  drsiStep: ReturnType<typeof taStep.rsi>;
+  srsiStep: ReturnType<typeof taStep.rsi>;
+  sumBuy: ReturnType<typeof taStep.sum>;
+  sumSell: ReturnType<typeof taStep.sum>;
+  peakStep: WindowHighest;
+  /** plot0 .. plot19 */
+  plots: Point[][];
+  buyTop: number[];
+  sellTop: number[];
+  topActive: boolean[];
+  botActive: boolean[];
+  candles: PlotCandleData[];
+  sigBuy: number[];
+  sigSell: number[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/** taCore volumeIndex: nz(index[1], 0) == 0 ? 1 : index[1], moved by the close change on the bars `use` selects */
+function volumeIndex(prevIndex: number, c: number, prevC: number, v: number, prevV: number, up: boolean): number {
+  const prev = !prevIndex ? 1 : prevIndex;
+  let value = prev;
+  if (c && prevC) {
+    if (up ? v > prevV : v < prevV) value = prev + ((c - prevC) / prevC) * prev;
+  }
+  return value;
+}
+
+/**
+ * `ta.highest(source, length)` with a constant length in O(1) per bar: the same doubles as taStep.highest (the
+ * highest of the last `length` finite values, also on a bar whose own value is na; na before bar `length - 1`; +0
+ * wins over -0), from a deque of the committed values that may still be the highest.
+ */
+class WindowHighest implements Committable {
+  private readonly len: number;
+  private values: number[] = [];
+  /** Indices into `values`, their values decreasing (a -0 after a +0 is kept) */
+  private deque: number[] = [];
+  private head = 0;
+  private bars = 0;
+  private pending = NaN;
+  private stepped = false;
+
+  constructor(length: number) {
+    // the length checks of ta.highest (the same errors)
+    taStep.highest().step(NaN, length);
+    this.len = Math.trunc(length);
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    this.pending = value;
+    const own = Number.isFinite(value);
+    const count = this.values.length;
+    if (this.bars < this.len - 1 || count + (own ? 1 : 0) === 0) return NaN;
+    // the committed values of the window: the last len - 1 with the own value, else the last len
+    const first = count - (own ? this.len - 1 : this.len);
+    let h = this.head;
+    if (h < this.deque.length && this.deque[h] < first) h++;
+    if (h >= this.deque.length) return value;
+    const best = this.values[this.deque[h]];
+    return own ? Math.max(value, best) : best;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.bars++;
+    const v = this.pending;
+    if (!Number.isFinite(v)) return;
+    const d = this.deque;
+    // drop the values v replaces as the highest (equal ones too, but a +0 is not replaced by a -0)
+    while (d.length > this.head) {
+      const last = this.values[d[d.length - 1]];
+      if (last < v || (last === v && !(Object.is(v, -0) && Object.is(last, 0)))) d.pop();
+      else break;
+    }
+    d.push(this.values.length);
+    this.values.push(v);
+    const first = this.values.length - this.len;
+    while (this.head < d.length && d[this.head] < first) this.head++;
+    if (this.head > 1024 && this.head * 2 > d.length) {
+      // keep the arrays short: indices from the oldest value still in the deque
+      const base = d[this.head];
+      this.values = this.values.slice(base);
+      this.deque = d.slice(this.head).map((k) => k - base);
+      this.head = 0;
+    }
+  }
+}
+
+function study(inputs: Partial<SmartMoneyVolumeIndexInputs>): BarStudy<SmviRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const compare = cfg.mode === 'Compare';
   const net = cfg.mode === 'Net';
   const thr = cfg.highInterestThreshold;
-  // chart.fg_color / chart.bg_color
-  const CHART_FG = foregroundColorOf(chart);
-  const CHART_BG = backgroundColorOf(chart);
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // dumb = ta.pvi - ta.ema(ta.pvi, 255); smart = ta.nvi - ta.ema(ta.nvi, 255)
-  const pvi = ta.pvi(bars);
-  const nvi = ta.nvi(bars);
-  const drsi = A(ta.rsi(pvi.sub(ta.ema(pvi, 255)), cfg.volumeFlowPeriod));
-  const srsi = A(ta.rsi(nvi.sub(ta.ema(nvi, 255)), cfg.volumeFlowPeriod));
-
-  // r_buy = srsi / drsi; r_sell = (100 - srsi) / (100 - drsi)
-  const rBuy = srsi.map((v, i) => v / drsi[i]);
-  const rSell = srsi.map((v, i) => (100 - v) / (100 - drsi[i]));
-  const sumsBuy = A(math.sum(S(rBuy), cfg.indexPeriod) as Series);
-  const sumsSell = A(math.sum(S(rSell), cfg.indexPeriod) as Series);
-  // peak = ta.highest(math.max(sums_buy, sums_sell), peakslen)
-  const peak = A(ta.highest(S(sumsBuy.map((v, i) => (isNaN(v) || isNaN(sumsSell[i]) ? NaN : Math.max(v, sumsSell[i])))),
-    cfg.normalizationPeriod));
-
-  const indexBuy = sumsBuy.map((v, i) => v / peak[i]);
-  const indexSell = sumsSell.map((v, i) => v / peak[i]);
-  const netIndex = indexBuy.map((v, i) => v - indexSell[i]);
-
-  const t = (i: number) => bars[i].time as number;
   const num = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const constant = (v: number): Point[] => bars.map((b) => ({ time: b.time as number, value: v }));
-  const series = (f: (i: number) => number, c: string): Point[] => bars.map((_b, i) => ({ time: t(i), value: num(f(i)), color: c }));
-
-  // plot_buy = mode == "Compare" ? index_buy : na; plot_sell = mode == "Compare" ? -index_sell : na
-  const plotBuy = (i: number) => (compare ? indexBuy[i] : NaN);
-  const plotSell = (i: number) => (compare ? -indexSell[i] : NaN);
-  // n_up = mode == "Net" and net_index > 0 ? net_index : na; n_dn = mode == "Net" and net_index < 0 ? net_index : na
-  const nUp = (i: number) => (net && gt(netIndex[i], 0) ? netIndex[i] : NaN);
-  const nDn = (i: number) => (net && lt(netIndex[i], 0) ? netIndex[i] : NaN);
-
-  const plots: Record<string, Point[]> = {
-    plot0: constant(0),
-    plot1: constant(1),
-    plot2: constant(-1),
-    plot3: constant(thr),
-    plot4: constant(-thr),
-    plot5: series(plotBuy, cfg.upColor),
-    plot6: series(plotSell, cfg.downColor),
-  };
-  LAYERS.forEach(([factor, transparency], k) => {
-    plots[`plot${7 + k}`] = series((i) => nUp(i) * factor, String(color.new(cfg.secondaryUpColor, transparency)));
-    plots[`plot${13 + k}`] = series((i) => nDn(i) * factor, String(color.new(cfg.secondaryDownColor, transparency)));
-  });
-  plots.plot12 = series(nUp, String(color.new(cfg.upColor, 20)));
-  plots.plot18 = series(nDn, String(color.new(cfg.downColor, 20)));
-  // plot(close, "Price Tracking line", color = color.new(chart.fg_color, 85), force_overlay = true)
-  plots.plot19 = series((i) => bars[i].close, String(color.new(CHART_FG, 85)));
-
-  // v_up = mode == "Compare" ? index_buy : net_index; v_dn = mode == "Compare" ? -index_sell : net_index
-  const fg = (transparency: number) => String(color.new(CHART_FG, transparency));
-  const topActive = bars.map((_b, i) => gt(compare ? indexBuy[i] : netIndex[i], 0.7));
-  const botActive = bars.map((_b, i) => lt(compare ? -indexSell[i] : netIndex[i], -0.7));
-  const fills = [
-    // fill(thresh_up, top, 1, thr, top_active ? fg 45 : fg 90, top_active ? fg 30 : fg 60)
-    {
-      plot1: 'plot3', plot2: 'plot1',
-      gradient: {
-        topValue: bars.map(() => 1), bottomValue: bars.map(() => thr),
-        topColor: topActive.map((on) => (on ? fg(45) : fg(90))), bottomColor: topActive.map((on) => (on ? fg(30) : fg(60))),
-      },
-    },
-    // fill(thresh_down, low_, -thr, -1, bot_active ? fg 30 : fg 60, bot_active ? fg 45 : fg 90)
-    {
-      plot1: 'plot4', plot2: 'plot2',
-      gradient: {
-        topValue: bars.map(() => -thr), bottomValue: bars.map(() => -1),
-        topColor: botActive.map((on) => (on ? fg(30) : fg(60))), bottomColor: botActive.map((on) => (on ? fg(45) : fg(90))),
-      },
-    },
-    // fill(bottom, i_buy, plot_buy, 0, green, chart.bg_color)
-    {
-      plot1: 'plot0', plot2: 'plot5',
-      gradient: {
-        topValue: bars.map((_b, i) => num(plotBuy(i))), bottomValue: bars.map(() => 0),
-        topColor: bars.map(() => cfg.upColor), bottomColor: bars.map(() => CHART_BG),
-      },
-    },
-    // fill(bottom, i_sell, plot_sell, 0, red, chart.bg_color)
-    {
-      plot1: 'plot0', plot2: 'plot6',
-      gradient: {
-        topValue: bars.map((_b, i) => num(plotSell(i))), bottomValue: bars.map(() => 0),
-        topColor: bars.map(() => cfg.downColor), bottomColor: bars.map(() => CHART_BG),
-      },
-    },
-  ];
-
-  // plotcandle(open, high, low, close, color = candle_color, wickcolor = candle_color, bordercolor = candle_color,
-  //   force_overlay = true)
-  const candles: PlotCandleData[] = [];
-  for (let i = 0; i < n; i++) {
-    let candleColor: string | null;
-    if (net) {
-      // net_color = net_index > 0 ? from_gradient(abs_net, 0, 1, bg, green) : from_gradient(abs_net, 0, 1, bg, red)
-      const absNet = Math.abs(netIndex[i]);
-      candleColor = isNaN(absNet) ? null
-        : String(color.from_gradient(absNet, 0, 1, CHART_BG, gt(netIndex[i], 0) ? cfg.upColor : cfg.downColor));
-    } else {
-      // comp_color = sig_buy > thr ? green : sig_sell > thr ? red : na
-      candleColor = gt(indexBuy[i], thr) ? cfg.upColor : gt(indexSell[i], thr) ? cfg.downColor : null;
-    }
-    const c = candleColor ?? 'transparent';
-    candles.push({
-      time: t(i), open: bars[i].open, high: bars[i].high, low: bars[i].low, close: bars[i].close,
-      color: c, wickColor: c, borderColor: c, forceOverlay: true,
-    });
-  }
-
-  // Alerts: sig_buy = Compare ? index_buy : net_index; sig_sell = Compare ? index_sell : -net_index;
-  // v_up = Compare ? index_buy : net_index
-  const sigBuy = bars.map((_b, i) => num(compare ? indexBuy[i] : netIndex[i]));
-  const sigSell = bars.map((_b, i) => num(compare ? indexSell[i] : -netIndex[i]));
-  const vUp = sigBuy;
-
+  const upLayer = LAYERS.map(([, transparency]) => String(color.new(cfg.secondaryUpColor, transparency)));
+  const downLayer = LAYERS.map(([, transparency]) => String(color.new(cfg.secondaryDownColor, transparency)));
+  const upLine = String(color.new(cfg.upColor, 20));
+  const downLine = String(color.new(cfg.downColor, 20));
+  let CHART_FG = '';
+  let CHART_BG = '';
+  let priceColor = '';
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    plotCandles: { smartMoneyCandles: candles },
-    alerts: alertStates(alertConditions, bars, [
-      crossedOver(sigBuy, thr), crossedOver(sigSell, thr), crossedUnder(sigBuy, thr), crossedUnder(sigSell, thr),
-      crossedOver(sigBuy, 0), crossedUnder(sigBuy, 0), crossedOver(sigSell, 0), crossedUnder(sigSell, 0),
-      crossedOver(vUp, 0.7), crossedUnder(vUp, 0.7),
-    ]),
+    init(_bars, chart) {
+      // chart.fg_color / chart.bg_color
+      CHART_FG = foregroundColorOf(chart);
+      CHART_BG = backgroundColorOf(chart);
+      priceColor = String(color.new(CHART_FG, 85));
+      const s: SmviRun = {
+        pviEma: taStep.ema(255), nviEma: taStep.ema(255), drsiStep: taStep.rsi(cfg.volumeFlowPeriod),
+        srsiStep: taStep.rsi(cfg.volumeFlowPeriod), sumBuy: taStep.sum(), sumSell: taStep.sum(), peakStep: new WindowHighest(cfg.normalizationPeriod),
+        plots: Array.from({ length: 20 }, () => []), buyTop: [], sellTop: [], topActive: [], botActive: [], candles: [],
+        sigBuy: [], sigSell: [], flags: Array.from({ length: 10 }, () => []), times: Array.from({ length: 10 }, () => []),
+        steps: [], vars: { pvi: NaN, nvi: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.pviEma, s.nviEma, s.drsiStep, s.srsiStep, s.sumBuy, s.sumSell, s.peakStep];
+      s.lists = s.times;
+      s.series = [...s.plots, s.buyTop, s.sellTop, s.topActive, s.botActive, s.candles, s.sigBuy, s.sigSell, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const time = b.time as number;
+
+      // dumb = ta.pvi - ta.ema(ta.pvi, 255); smart = ta.nvi - ta.ema(ta.nvi, 255)
+      const prevC = i === 0 ? NaN : bars[i - 1].close;
+      const vol = b.volume ?? NaN;
+      const pv = i === 0 ? NaN : bars[i - 1].volume ?? NaN;
+      const prevV = i === 0 || Number.isNaN(pv) ? 0 : pv;
+      v.pvi = volumeIndex(v.pvi, b.close, prevC, vol, prevV, true);
+      v.nvi = volumeIndex(v.nvi, b.close, prevC, vol, prevV, false);
+      const drsi = s.drsiStep.step(v.pvi - s.pviEma.step(v.pvi));
+      const srsi = s.srsiStep.step(v.nvi - s.nviEma.step(v.nvi));
+
+      // r_buy = srsi / drsi; r_sell = (100 - srsi) / (100 - drsi)
+      const sumsBuy = s.sumBuy.step(srsi / drsi, cfg.indexPeriod);
+      const sumsSell = s.sumSell.step((100 - srsi) / (100 - drsi), cfg.indexPeriod);
+      // peak = ta.highest(math.max(sums_buy, sums_sell), peakslen)
+      const peak = s.peakStep.step(isNaN(sumsBuy) || isNaN(sumsSell) ? NaN : Math.max(sumsBuy, sumsSell));
+      const indexBuy = sumsBuy / peak;
+      const indexSell = sumsSell / peak;
+      const netIndex = indexBuy - indexSell;
+
+      // plot_buy = mode == "Compare" ? index_buy : na; plot_sell = mode == "Compare" ? -index_sell : na
+      const plotBuy = compare ? indexBuy : NaN;
+      const plotSell = compare ? -indexSell : NaN;
+      // n_up = mode == "Net" and net_index > 0 ? net_index : na; n_dn = mode == "Net" and net_index < 0 ? net_index : na
+      const nUp = net && gt(netIndex, 0) ? netIndex : NaN;
+      const nDn = net && lt(netIndex, 0) ? netIndex : NaN;
+
+      const p = s.plots;
+      p[0][i] = { time, value: 0 };
+      p[1][i] = { time, value: 1 };
+      p[2][i] = { time, value: -1 };
+      p[3][i] = { time, value: thr };
+      p[4][i] = { time, value: -thr };
+      p[5][i] = { time, value: num(plotBuy), color: cfg.upColor };
+      p[6][i] = { time, value: num(plotSell), color: cfg.downColor };
+      for (let k = 0; k < LAYERS.length; k++) {
+        const factor = LAYERS[k][0];
+        p[7 + k][i] = { time, value: num(nUp * factor), color: upLayer[k] };
+        p[13 + k][i] = { time, value: num(nDn * factor), color: downLayer[k] };
+      }
+      p[12][i] = { time, value: num(nUp), color: upLine };
+      p[18][i] = { time, value: num(nDn), color: downLine };
+      // plot(close, "Price Tracking line", color = color.new(chart.fg_color, 85), force_overlay = true)
+      p[19][i] = { time, value: num(b.close), color: priceColor };
+
+      // v_up = mode == "Compare" ? index_buy : net_index; v_dn = mode == "Compare" ? -index_sell : net_index
+      s.topActive[i] = gt(compare ? indexBuy : netIndex, 0.7);
+      s.botActive[i] = lt(compare ? -indexSell : netIndex, -0.7);
+      s.buyTop[i] = num(plotBuy);
+      s.sellTop[i] = num(plotSell);
+
+      // plotcandle(open, high, low, close, color = candle_color, wickcolor = candle_color, bordercolor = candle_color,
+      //   force_overlay = true)
+      let candleColor: string | null;
+      if (net) {
+        // net_color = net_index > 0 ? from_gradient(abs_net, 0, 1, bg, green) : from_gradient(abs_net, 0, 1, bg, red)
+        const absNet = Math.abs(netIndex);
+        candleColor = isNaN(absNet) ? null
+          : String(color.from_gradient(absNet, 0, 1, CHART_BG, gt(netIndex, 0) ? cfg.upColor : cfg.downColor));
+      } else {
+        // comp_color = sig_buy > thr ? green : sig_sell > thr ? red : na
+        candleColor = gt(indexBuy, thr) ? cfg.upColor : gt(indexSell, thr) ? cfg.downColor : null;
+      }
+      const c = candleColor ?? 'transparent';
+      s.candles[i] = {
+        time, open: b.open, high: b.high, low: b.low, close: b.close,
+        color: c, wickColor: c, borderColor: c, forceOverlay: true,
+      };
+
+      // Alerts: sig_buy = Compare ? index_buy : net_index; sig_sell = Compare ? index_sell : -net_index;
+      // v_up = Compare ? index_buy : net_index; ta.crossover / ta.crossunder compare exactly (na compares false)
+      const sb = num(compare ? indexBuy : netIndex);
+      const ss = num(compare ? indexSell : -netIndex);
+      s.sigBuy[i] = sb;
+      s.sigSell[i] = ss;
+      const pb = i > 0 ? s.sigBuy[i - 1] : NaN;
+      const ps = i > 0 ? s.sigSell[i - 1] : NaN;
+      const f = s.flags;
+      f[0][i] = sb > thr && pb <= thr;
+      f[1][i] = ss > thr && ps <= thr;
+      f[2][i] = sb < thr && pb >= thr;
+      f[3][i] = ss < thr && ps >= thr;
+      f[4][i] = sb > 0 && pb <= 0;
+      f[5][i] = sb < 0 && pb >= 0;
+      f[6][i] = ss > 0 && ps <= 0;
+      f[7][i] = ss < 0 && ps >= 0;
+      f[8][i] = sb > 0.7 && pb <= 0.7;
+      f[9][i] = sb < 0.7 && pb >= 0.7;
+      for (let k = 0; k < 10; k++) if (f[k][i]) s.times[k].push(time);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const constant = <T>(v: T): T[] => new Array<T>(n).fill(v);
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      const fg = (transparency: number) => String(color.new(CHART_FG, transparency));
+      const fg30 = fg(30);
+      const fg45 = fg(45);
+      const fg60 = fg(60);
+      const fg90 = fg(90);
+      const fills = [
+        // fill(thresh_up, top, 1, thr, top_active ? fg 45 : fg 90, top_active ? fg 30 : fg 60)
+        {
+          plot1: 'plot3', plot2: 'plot1',
+          gradient: {
+            topValue: constant(1), bottomValue: constant(thr),
+            topColor: s.topActive.map((on) => (on ? fg45 : fg90)), bottomColor: s.topActive.map((on) => (on ? fg30 : fg60)),
+          },
+        },
+        // fill(thresh_down, low_, -thr, -1, bot_active ? fg 30 : fg 60, bot_active ? fg 45 : fg 90)
+        {
+          plot1: 'plot4', plot2: 'plot2',
+          gradient: {
+            topValue: constant(-thr), bottomValue: constant(-1),
+            topColor: s.botActive.map((on) => (on ? fg30 : fg60)), bottomColor: s.botActive.map((on) => (on ? fg45 : fg90)),
+          },
+        },
+        // fill(bottom, i_buy, plot_buy, 0, green, chart.bg_color)
+        {
+          plot1: 'plot0', plot2: 'plot5',
+          gradient: { topValue: s.buyTop.slice(), bottomValue: constant(0), topColor: constant(cfg.upColor), bottomColor: constant(CHART_BG) },
+        },
+        // fill(bottom, i_sell, plot_sell, 0, red, chart.bg_color)
+        {
+          plot1: 'plot0', plot2: 'plot6',
+          gradient: { topValue: s.sellTop.slice(), bottomValue: constant(0), topColor: constant(cfg.downColor), bottomColor: constant(CHART_BG) },
+        },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        plotCandles: { smartMoneyCandles: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SmartMoneyVolumeIndexInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SmartMoneyVolumeIndexInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions (no message: the default "Alert Fired!") */
@@ -259,6 +401,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const SmartMoneyVolumeIndex = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

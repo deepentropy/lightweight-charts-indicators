@@ -15,9 +15,11 @@
  * Original notice: © BOSWaves
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TripleGaussianSmoothedRibbonInputs {
   /** Main smoothing length */
@@ -82,11 +84,8 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-/**
- * gaussian(source, length, sig): result = sum over i of weight[i] * source[length - 1 - i], added only when
- * bar_index >= i; a missing history value (na) makes the sum na, so the result is na until bar length - 1.
- */
-function gaussian(source: number[], length: number, sig: number): number[] {
+/** The normalised weights of gaussian(source, length, sig): exp(-x^2 / (2 sigma^2)), x = i - floor(length / 2) */
+function gaussianWeights(length: number, sig: number): number[] {
   const weights: number[] = [];
   let sumWeights = 0.0;
   const center = Math.floor(length / 2);
@@ -97,137 +96,196 @@ function gaussian(source: number[], length: number, sig: number): number[] {
     sumWeights += w;
   }
   for (let i = 0; i < weights.length; i++) weights[i] = weights[i] / sumWeights;
-  const n = source.length;
-  const out: number[] = new Array(n);
-  for (let b = 0; b < n; b++) {
-    let result = 0.0;
-    for (let i = 0; i <= length - 1; i++) {
-      if (b >= i) {
-        const k = b - (length - 1 - i);
-        result += weights[i] * (k >= 0 ? source[k] : NaN);
-      }
+  return weights;
+}
+
+/**
+ * gaussian(source, length, sig) on bar b: result = sum over i of weight[i] * source[length - 1 - i], added only when
+ * bar_index >= i; a missing history value (na) makes the sum na, so the result is na until bar length - 1.
+ */
+function gaussianAt(source: number[], b: number, length: number, weights: number[]): number {
+  let result = 0.0;
+  for (let i = 0; i <= length - 1; i++) {
+    if (b >= i) {
+      const k = b - (length - 1 - i);
+      result += weights[i] * (k >= 0 ? source[k] : NaN);
     }
-    out[b] = result;
   }
-  return out;
+  return result;
+}
+
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+type Step = ReturnType<typeof taStep.highest>;
+
+interface TgsrRun extends BarRunState<Record<string, never>> {
+  distLow: Step;
+  distHigh: Step;
+  maxMomentum: Step;
+  extremeHigh: Step;
+  extremeLow: Step;
+  rangeHigh: Step;
+  rangeLow: Step;
+  atr: ReturnType<typeof taStep.atr>;
+  crossUnder: ReturnType<typeof taStep.crossunder>;
+  crossOver: ReturnType<typeof taStep.crossover>;
+  src: number[];
+  g1: number[];
+  g2: number[];
+  v1: number[];
+  plots: Point[][];
+  layers: string[][];
+  glowColor: string[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<TripleGaussianSmoothedRibbonInputs>): BarStudy<TgsrRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { slength, siglen, sigma } = cfg;
+  const value = barSource(cfg.src);
+  const wMain = gaussianWeights(slength, sigma);
+  // signal line and ribbon layers on v1: signal length, + 4, + 8, + 12, + 16
+  const outerLengths = [siglen, siglen + 4, siglen + 8, siglen + 12, siglen + 16];
+  const wOuter = outerLengths.map((l) => gaussianWeights(l, sigma));
+  const baseOpacity = 35;
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: TgsrRun = {
+        distLow: taStep.lowest(), distHigh: taStep.highest(), maxMomentum: taStep.highest(),
+        extremeHigh: taStep.highest(), extremeLow: taStep.lowest(), rangeHigh: taStep.highest(), rangeLow: taStep.lowest(),
+        atr: taStep.atr(14), crossUnder: taStep.crossunder(), crossOver: taStep.crossover(),
+        src: [], g1: [], g2: [], v1: [], plots: Array.from({ length: 8 }, () => []), layers: [[], [], [], []],
+        glowColor: [], barColors: [], flags: [[], []], times: [[], []], markers: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.distLow, s.distHigh, s.maxMomentum, s.extremeHigh, s.extremeLow, s.rangeHigh, s.rangeLow, s.atr, s.crossUnder, s.crossOver];
+      s.lists = [...s.times, s.markers];
+      s.series = [s.src, s.g1, s.g2, s.v1, ...s.plots, ...s.layers, s.glowColor, s.barColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time as number;
+      // Triple Gaussian smoothing on the source; signal line and ribbon layers on v1
+      s.src[i] = value(b);
+      s.g1[i] = gaussianAt(s.src, i, slength, wMain);
+      s.g2[i] = gaussianAt(s.g1, i, slength, wMain);
+      const v1 = gaussianAt(s.g2, i, slength, wMain);
+      s.v1[i] = v1;
+      const v2 = gaussianAt(s.v1, i, outerLengths[0], wOuter[0]);
+      const ribbon2 = gaussianAt(s.v1, i, outerLengths[1], wOuter[1]);
+      const ribbon3 = gaussianAt(s.v1, i, outerLengths[2], wOuter[2]);
+      const ribbon4 = gaussianAt(s.v1, i, outerLengths[3], wOuter[3]);
+      const ribbon5 = gaussianAt(s.v1, i, outerLengths[4], wOuter[4]);
+
+      // ndist = (dist - ta.lowest(dist, 70)) / (ta.highest(dist, 70) - ta.lowest(dist, 70)) (x / 0: +-infinity or na)
+      const dist = v2 - v1;
+      const distLow = s.distLow.step(dist, 70);
+      const distHigh = s.distHigh.step(dist, 70);
+      const ndist = (dist - distLow) / (distHigh - distLow);
+
+      // normMomentum = maxMomentum > 0 ? momentum / maxMomentum : 0
+      const momentum = Math.abs(v1 - (i >= 5 ? s.v1[i - 5] : NaN));
+      const maxMomentum = s.maxMomentum.step(momentum, 50);
+      const normMomentum = gt(maxMomentum, 0) ? momentum / maxMomentum : 0;
+
+      const trendColor = color.from_gradient(ndist, 0, 1, cfg.bullishColor, cfg.bearishColor);
+      // opacityK = int(baseOpacity + 5 * k - normMomentum * 15) (int() truncates; na stays na)
+      for (let k = 0; k < 4; k++) s.layers[k][i] = String(color.new(trendColor, Math.trunc(baseOpacity + 5 * k - normMomentum * 15)));
+
+      // atr = ta.atr(14); glow = v1 +- atr * 0.5
+      const atr = s.atr.step(b.high, b.low, b.close);
+
+      // barcolor(showCandleColors ? candleColor : na)
+      if (cfg.showCandleColors) s.barColors[i] = { time: b.time, color: trendColor };
+
+      // Signals at extremes
+      const extremeHigh = s.extremeHigh.step(v1, 7);
+      const extremeLow = s.extremeLow.step(v1, 7);
+      const rangeHigh = s.rangeHigh.step(v1, cfg.trendStrength);
+      const rangeLow = s.rangeLow.step(v1, cfg.trendStrength);
+      // ta.crossunder(v2, v1) / ta.crossover(v2, v1): exact comparisons
+      const crossUnder = s.crossUnder.step(v2, v1);
+      const crossOver = s.crossOver.step(v2, v1);
+      const signalOffset = atr * 1.5;
+      // isConsolidating = rangev1 / v1 < minSeparation
+      const isConsolidating = lt((rangeHigh - rangeLow) / v1, cfg.minSeparation);
+      // validBullish = ta.crossunder(v2, v1) and not isConsolidating / validBearish = ta.crossover(v2, v1) and ...
+      const bull = crossUnder && !isConsolidating;
+      const bear = crossOver && !isConsolidating;
+      [bull, bear].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(time);
+      });
+      // plotshape(validBullish ? extremeLow - signalOffset : na, shape.triangleup, location.absolute, size.normal)
+      if (bull) {
+        const price = extremeLow - signalOffset;
+        if (Number.isFinite(price)) {
+          s.markers.push({ time: b.time, position: 'atPriceMiddle', price, shape: 'triangleUp', color: cfg.bullishColor, size: 'normal' });
+        }
+      }
+      // plotshape(validBearish ? extremeHigh + signalOffset : na, shape.triangledown, location.absolute, size.normal)
+      if (bear) {
+        const price = extremeHigh + signalOffset;
+        if (Number.isFinite(price)) {
+          s.markers.push({ time: b.time, position: 'atPriceMiddle', price, shape: 'triangleDown', color: cfg.bearishColor, size: 'normal' });
+        }
+      }
+
+      // p1..p5 = plot(ribbon1..5, display = display.none)
+      const p = s.plots;
+      p[0][i] = { time, value: v1 };
+      p[1][i] = { time, value: ribbon2 };
+      p[2][i] = { time, value: ribbon3 };
+      p[3][i] = { time, value: ribbon4 };
+      p[4][i] = { time, value: ribbon5 };
+      // plot(v1, "Core Gaussian", color = trendColor, linewidth = 3)
+      p[5][i] = { time, value: v1, color: trendColor };
+      // p_glow_upper / p_glow_lower = plot(v1 +- atr * 0.5, display = display.none)
+      p[6][i] = { time, value: v1 + atr * 0.5 };
+      p[7][i] = { time, value: v1 - atr * 0.5 };
+      s.glowColor[i] = String(color.new(trendColor, 88));
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(), plot6: p[6].slice(), plot7: p[7].slice(),
+        },
+        fills: [
+          // fill(pK, pK+1, color = color.new(trendColor, opacityK))
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Ribbon Layer 1' }, colors: s.layers[0].slice() },
+          { plot1: 'plot1', plot2: 'plot2', options: { title: 'Ribbon Layer 2' }, colors: s.layers[1].slice() },
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Ribbon Layer 3' }, colors: s.layers[2].slice() },
+          { plot1: 'plot3', plot2: 'plot4', options: { title: 'Ribbon Layer 4' }, colors: s.layers[3].slice() },
+          // fill(p_glow_upper, p_glow_lower, color = color.new(trendColor, 88))
+          { plot1: 'plot6', plot2: 'plot7', options: { title: 'Outer Glow' }, colors: s.glowColor.slice() },
+        ],
+        barColors: cfg.showCandleColors ? s.barColors.slice() : [],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TripleGaussianSmoothedRibbonInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<TripleGaussianSmoothedRibbonInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const { slength, siglen, sigma } = cfg;
-
-  const src = A(getSourceSeries(bars, cfg.src));
-  // Triple Gaussian smoothing on the source; signal line and ribbon layers on v1
-  const v1 = gaussian(gaussian(gaussian(src, slength, sigma), slength, sigma), slength, sigma);
-  const v2 = gaussian(v1, siglen, sigma);
-  const ribbon2 = gaussian(v1, siglen + 4, sigma);
-  const ribbon3 = gaussian(v1, siglen + 8, sigma);
-  const ribbon4 = gaussian(v1, siglen + 12, sigma);
-  const ribbon5 = gaussian(v1, siglen + 16, sigma);
-
-  // ndist = (dist - ta.lowest(dist, 70)) / (ta.highest(dist, 70) - ta.lowest(dist, 70)) (x / 0: +-infinity or na)
-  const dist = v2.map((v, i) => v - v1[i]);
-  const distLow = A(ta.lowest(S(dist), 70));
-  const distHigh = A(ta.highest(S(dist), 70));
-  const ndist = dist.map((d, i) => (d - distLow[i]) / (distHigh[i] - distLow[i]));
-
-  // normMomentum = maxMomentum > 0 ? momentum / maxMomentum : 0
-  const momentum = v1.map((v, i) => Math.abs(v - (i >= 5 ? v1[i - 5] : NaN)));
-  const maxMomentum = A(ta.highest(S(momentum), 50));
-  const normMomentum = momentum.map((m, i) => (gt(maxMomentum[i], 0) ? m / maxMomentum[i] : 0));
-
-  const trendColor = ndist.map((d) => color.from_gradient(d, 0, 1, cfg.bullishColor, cfg.bearishColor));
-  const baseOpacity = 35;
-  // opacityK = int(baseOpacity + 5 * k - normMomentum * 15) (int() truncates; na stays na)
-  const opacity = (k: number) => normMomentum.map((m) => Math.trunc(baseOpacity + 5 * k - m * 15));
-  const layer = (k: number) => {
-    const op = opacity(k);
-    return trendColor.map((c, i) => String(color.new(c, op[i])));
-  };
-
-  // atr = ta.atr(14); glow = v1 +- atr * 0.5
-  const atr = A(ta.atr(bars, 14));
-  const glowUpper = v1.map((v, i) => v + atr[i] * 0.5);
-  const glowLower = v1.map((v, i) => v - atr[i] * 0.5);
-
-  // barcolor(showCandleColors ? candleColor : na)
-  const barColors: BarColorData[] = [];
-  if (cfg.showCandleColors) {
-    for (let i = 0; i < n; i++) barColors.push({ time: bars[i].time, color: trendColor[i] });
-  }
-
-  // Signals at extremes
-  const v1S = S(v1);
-  const extremeHigh = A(ta.highest(v1S, 7));
-  const extremeLow = A(ta.lowest(v1S, 7));
-  const rangeHigh = A(ta.highest(v1S, cfg.trendStrength));
-  const rangeLow = A(ta.lowest(v1S, cfg.trendStrength));
-  // ta.crossunder(v2, v1) / ta.crossover(v2, v1): exact comparisons
-  const v2S = S(v2);
-  const crossUnder = A(ta.crossunder(v2S, v1S));
-  const crossOver = A(ta.crossover(v2S, v1S));
-  const markers: MarkerData[] = [];
-  const bullFlags: boolean[] = [], bearFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const signalOffset = atr[i] * 1.5;
-    // isConsolidating = rangev1 / v1 < minSeparation
-    const isConsolidating = lt((rangeHigh[i] - rangeLow[i]) / v1[i], cfg.minSeparation);
-    // validBullish = ta.crossunder(v2, v1) and not isConsolidating / validBearish = ta.crossover(v2, v1) and ...
-    bullFlags.push(crossUnder[i] === 1 && !isConsolidating);
-    bearFlags.push(crossOver[i] === 1 && !isConsolidating);
-    // plotshape(validBullish ? extremeLow - signalOffset : na, shape.triangleup, location.absolute, size.normal)
-    if (crossUnder[i] === 1 && !isConsolidating) {
-      const price = extremeLow[i] - signalOffset;
-      if (Number.isFinite(price)) {
-        markers.push({ time: bars[i].time, position: 'atPriceMiddle', price, shape: 'triangleUp', color: cfg.bullishColor, size: 'normal' });
-      }
-    }
-    // plotshape(validBearish ? extremeHigh + signalOffset : na, shape.triangledown, location.absolute, size.normal)
-    if (crossOver[i] === 1 && !isConsolidating) {
-      const price = extremeHigh[i] + signalOffset;
-      if (Number.isFinite(price)) {
-        markers.push({ time: bars[i].time, position: 'atPriceMiddle', price, shape: 'triangleDown', color: cfg.bearishColor, size: 'normal' });
-      }
-    }
-  }
-
-  const P = (vals: number[]) => bars.map((b, i) => ({ time: b.time, value: vals[i] }));
-  const glowColor = trendColor.map((c) => String(color.new(c, 88)));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // p1..p5 = plot(ribbon1..5, display = display.none)
-      plot0: P(v1),
-      plot1: P(ribbon2),
-      plot2: P(ribbon3),
-      plot3: P(ribbon4),
-      plot4: P(ribbon5),
-      // plot(v1, "Core Gaussian", color = trendColor, linewidth = 3)
-      plot5: bars.map((b, i) => ({ time: b.time, value: v1[i], color: trendColor[i] })),
-      // p_glow_upper / p_glow_lower = plot(v1 +- atr * 0.5, display = display.none)
-      plot6: P(glowUpper),
-      plot7: P(glowLower),
-    },
-    fills: [
-      // fill(pK, pK+1, color = color.new(trendColor, opacityK))
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Ribbon Layer 1' }, colors: layer(0) },
-      { plot1: 'plot1', plot2: 'plot2', options: { title: 'Ribbon Layer 2' }, colors: layer(1) },
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Ribbon Layer 3' }, colors: layer(2) },
-      { plot1: 'plot3', plot2: 'plot4', options: { title: 'Ribbon Layer 4' }, colors: layer(3) },
-      // fill(p_glow_upper, p_glow_lower, color = color.new(trendColor, 88))
-      { plot1: 'plot6', plot2: 'plot7', options: { title: 'Outer Glow' }, colors: glowColor },
-    ],
-    barColors,
-    markers,
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions (no message: the default one) */
@@ -238,6 +296,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TripleGaussianSmoothedRibbon = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

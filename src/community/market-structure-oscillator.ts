@@ -19,8 +19,10 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BoxData, LabelData, LineDrawingData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type LineStyleName = 'Solid' | 'Dashed' | 'Dotted';
 type Toggle = 'Enabled' | 'Disabled';
@@ -232,65 +234,89 @@ function queryPatterns(lastPrice: number, midPrice: number, prevPrice: number, i
   return isSwingHigh ? gt(midPrice, prevPrice) && ge(midPrice, lastPrice) : gt(prevPrice, midPrice) && ge(lastPrice, midPrice);
 }
 
-/** normalize() of the script without its SMA: one state per call */
-function normalizer(): (close: number, buy: boolean, sell: boolean) => number {
-  let os = 0;
-  let prevOs = NaN;
-  let max = NaN;
-  let min = NaN;
-  return (close, buy, sell) => {
-    os = buy ? 1 : sell ? -1 : os;
-    // math.max / math.min give na while max / min are na
-    max = os > prevOs ? close : os < prevOs ? max : Number.isNaN(max) ? NaN : Math.max(close, max);
-    min = os < prevOs ? close : os > prevOs ? min : Number.isNaN(min) ? NaN : Math.min(close, min);
-    prevOs = os;
-    return (close - min) / (max - min);
-  };
+/** The state of normalize() of the script without its SMA: one per call */
+interface NormState {
+  os: number;
+  prevOs: number;
+  max: number;
+  min: number;
 }
 
-/** The drawing count limit of Pine: above max + 5 objects of one kind the oldest are deleted until max remain */
-function register<T>(list: T[], obj: T): void {
-  list.push(obj);
-  if (list.length > MAX_OBJECTS + 5) list.splice(0, list.length - MAX_OBJECTS);
+const newNorm = (): NormState => ({ os: 0, prevOs: NaN, max: NaN, min: NaN });
+
+function normalize(s: NormState, close: number, buy: boolean, sell: boolean): number {
+  s.os = buy ? 1 : sell ? -1 : s.os;
+  // math.max / math.min give na while max / min are na
+  s.max = s.os > s.prevOs ? close : s.os < s.prevOs ? s.max : Number.isNaN(s.max) ? NaN : Math.max(close, s.max);
+  s.min = s.os < s.prevOs ? close : s.os > s.prevOs ? s.min : Number.isNaN(s.min) ? NaN : Math.min(close, s.min);
+  s.prevOs = s.os;
+  return (close - s.min) / (s.max - s.min);
 }
 
-export function calculate(bars: Bar[], inputs: Partial<MarketStructureOscillatorInputs> = {}): IndicatorResult {
+/**
+ * The drawings kept by the drawing count limit of Pine (above max + 5 objects of one kind the oldest are deleted until
+ * max remain) after `count` objects were created: the last ones of the list of every object created
+ */
+function kept<T>(all: T[]): T[] {
+  const count = all.length;
+  const keep = count <= MAX_OBJECTS + 5 ? count : MAX_OBJECTS + ((count - MAX_OBJECTS - 6) % 6);
+  return all.slice(count - keep);
+}
+
+type Point = { time: number; value: number; color?: string };
+
+interface MsoVars {
+  /** Swings of the levels: short term, intermediate term, long term (high, low) */
+  stHigh: Swings;
+  stLow: Swings;
+  itHigh: Swings;
+  itLow: Swings;
+  ltHigh: Swings;
+  ltLow: Swings;
+  msType: number[];
+  norms: NormState[];
+  /** cSwingHigh[1] / cSwingLow[1] of the two marketStructure() calls */
+  prevSwing: { high: boolean; low: boolean }[];
+}
+
+interface MsoRun extends BarRunState<MsoVars> {
+  smas: ReturnType<typeof taStep.sma>[];
+  ema: ReturnType<typeof taStep.ema>;
+  msOSC: number[];
+  cycleFast: number[];
+  /** plot0 .. plot8 */
+  plots: Point[][];
+  /** Every drawing created (the limit is applied in the result) */
+  lines: LineDrawingData[];
+  boxes: BoxData[];
+  labels: LabelData[];
+  candles: PlotCandleData[];
+}
+
+const copySwings = (s: Swings): Swings => ({ ...s });
+
+function study(inputs: Partial<MarketStructureOscillatorInputs>): BarStudy<MsoRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const lineStyle = (s: LineStyleName) => (s === 'Dotted' ? 'dotted' : s === 'Dashed' ? 'dashed' : 'solid');
-
-  const stLow = newSwings();
-  const stHigh = newSwings();
-  const itLow = newSwings();
-  const itHigh = newSwings();
-  const ltLow = newSwings();
-  const ltHigh = newSwings();
-  const msType = [0, 0, 0];
-
   const levels = [
-    { on: cfg.msOnChart1, high: stHigh, low: stLow, style: lineStyle(cfg.msOnChartK1), labels: cfg.stMSLblK1T === 'Enabled', bull: cfg.cBullColorK1, bear: cfg.cBearColorK1 },
-    { on: cfg.msOnChart2, high: itHigh, low: itLow, style: lineStyle(cfg.msOnChartK2), labels: cfg.stMSLblK2T === 'Enabled', bull: cfg.cBullColorK2, bear: cfg.cBearColorK2 },
-    { on: cfg.msOnChart3, high: ltHigh, low: ltLow, style: lineStyle(cfg.msOnChartK3), labels: cfg.stMSLblK3T === 'Enabled', bull: cfg.cBullColorK3, bear: cfg.cBearColorK3 },
+    { on: cfg.msOnChart1, style: lineStyle(cfg.msOnChartK1), labels: cfg.stMSLblK1T === 'Enabled', bull: cfg.cBullColorK1, bear: cfg.cBearColorK1 },
+    { on: cfg.msOnChart2, style: lineStyle(cfg.msOnChartK2), labels: cfg.stMSLblK2T === 'Enabled', bull: cfg.cBullColorK2, bear: cfg.cBearColorK2 },
+    { on: cfg.msOnChart3, style: lineStyle(cfg.msOnChartK3), labels: cfg.stMSLblK3T === 'Enabled', bull: cfg.cBullColorK3, bear: cfg.cBearColorK3 },
   ] as const;
+  const weights = [cfg.msWeightK1, cfg.msWeightK2, cfg.msWeightK3];
+  const anyOsc = cfg.msOscShow || cfg.msDataK1 || cfg.msDataK2 || cfg.msDataK3;
+  const components = [
+    { on: cfg.msDataK1, col: cfg.msColorK1 }, { on: cfg.msDataK2, col: cfg.msColorK2 }, { on: cfg.msDataK3, col: cfg.msColorK3 },
+  ];
 
-  const lines: LineDrawingData[] = [];
-  const boxes: BoxData[] = [];
-  const labels: LabelData[] = [];
-
-  const norm = [normalizer(), normalizer(), normalizer()];
-  const raw: number[][] = [[], [], []];
-  // cSwingHigh[1] / cSwingLow[1] of the two marketStructure() calls
-  const prevSwing = [{ high: false, low: false }, { high: false, low: false }];
-
-  /** marketStructure(): swings of a level from the swings of the level below; returns [bull, bear] */
-  const marketStructure = (site: number, hHigh: Swings, hLow: Swings, lHigh: Swings, lLow: Swings, close: number, first: boolean) => {
+  /** marketStructure(): swings of a level from the swings of the level below; returns bull, bear (bit 1, bit 2) */
+  const marketStructure = (v: MsoVars, site: number, hHigh: Swings, hLow: Swings, lHigh: Swings, lLow: Swings, close: number, first: boolean) => {
     let bull = false;
     let bear = false;
+    const prev = v.prevSwing[site];
     const cHigh = queryPatterns(lHigh.lastPrice, lHigh.midPrice, lHigh.prevPrice, true);
     // cSwingHigh != cSwingHigh[1]: na on the first bar
-    if (cHigh && !first && cHigh !== prevSwing[site].high) {
+    if (cHigh && !first && cHigh !== prev.high) {
       updatePattern(hHigh, lHigh.midPrice, lHigh.midIndex);
       hHigh.isCrossed = false;
     }
@@ -299,7 +325,7 @@ export function calculate(bars: Bar[], inputs: Partial<MarketStructureOscillator
       bull = true;
     }
     const cLow = queryPatterns(lLow.lastPrice, lLow.midPrice, lLow.prevPrice, false);
-    if (cLow && !first && cLow !== prevSwing[site].low) {
+    if (cLow && !first && cLow !== prev.low) {
       updatePattern(hLow, lLow.midPrice, lLow.midIndex);
       hLow.isCrossed = false;
     }
@@ -307,163 +333,198 @@ export function calculate(bars: Bar[], inputs: Partial<MarketStructureOscillator
       hLow.isCrossed = true;
       bear = true;
     }
-    prevSwing[site] = { high: cHigh, low: cLow };
-    return [bull, bear] as const;
+    prev.high = cHigh;
+    prev.low = cLow;
+    return (bull ? 1 : 0) | (bear ? 2 : 0);
   };
-
-  for (let i = 0; i < n; i++) {
-    const bar = bars[i];
-    const close = bar.close;
-
-    // Market structures on the chart: they read the swings as they were after the bar before
-    levels.forEach((lv, k) => {
-      if (!lv.on) return;
-      if (gt(close, lv.high.lastPrice) && !lv.high.isCrossed) {
-        const x1 = bars[lv.high.lastIndex].time;
-        const y = lv.high.lastPrice;
-        register(lines, { time1: x1, price1: y, time2: bar.time, price2: y, color: lv.bull, style: lv.style, width: 1, forceOverlay: true });
-        if (lv.labels) {
-          register(boxes, {
-            time1: x1, price1: y, time2: bar.time, price2: y, borderColor: 'transparent', text: msType[k] < 0 ? 'CHoCH' : 'BoS',
-            textColor: lv.bull, textSize: 'tiny', textHAlign: 'left', textVAlign: 'bottom', forceOverlay: true,
-          });
-          msType[k] = 1;
-        }
-      }
-      if (gt(lv.low.lastPrice, close) && !lv.low.isCrossed) {
-        const x1 = bars[lv.low.lastIndex].time;
-        const y = lv.low.lastPrice;
-        register(lines, { time1: x1, price1: y, time2: bar.time, price2: y, color: lv.bear, style: lv.style, width: 1, forceOverlay: true });
-        if (lv.labels) {
-          register(boxes, {
-            time1: x1, price1: y, time2: bar.time, price2: y, borderColor: 'transparent', text: msType[k] > 0 ? 'CHoCH' : 'BoS',
-            textColor: lv.bear, textSize: 'tiny', textHAlign: 'left', textVAlign: 'top', forceOverlay: true,
-          });
-          msType[k] = -1;
-        }
-      }
-    });
-
-    // shortMarketStructure()
-    let bull = false;
-    let bear = false;
-    if (i >= 2 && queryPatterns(bar.high, bars[i - 1].high, bars[i - 2].high, true)) {
-      updatePattern(stHigh, bars[i - 1].high, i - 1);
-      stHigh.isCrossed = false;
-    }
-    if (gt(close, stHigh.lastPrice) && !stHigh.isCrossed) {
-      stHigh.isCrossed = true;
-      bull = true;
-    }
-    if (i >= 2 && queryPatterns(bar.low, bars[i - 1].low, bars[i - 2].low, false)) {
-      stLow.isCrossed = false;
-      updatePattern(stLow, bars[i - 1].low, i - 1);
-    }
-    if (gt(stLow.lastPrice, close) && !stLow.isCrossed) {
-      stLow.isCrossed = true;
-      bear = true;
-    }
-    raw[0].push(norm[0](close, bull, bear));
-
-    const [bull2, bear2] = marketStructure(0, itHigh, itLow, stHigh, stLow, close, i === 0);
-    raw[1].push(norm[1](close, bull2, bear2));
-    const [bull3, bear3] = marketStructure(1, ltHigh, ltLow, itHigh, itLow, close, i === 0);
-    raw[2].push(norm[2](close, bull3, bear3));
-  }
-
-  // ta.sma((bar.close - min) / (max - min), smooth) * 100
-  const st = raw.map((r) => A(ta.sma(S(r), cfg.normSmooth)).map((v) => v * 100));
-  const weights = [cfg.msWeightK1, cfg.msWeightK2, cfg.msWeightK3];
-  const msOSC = bars.map((_, i) => {
-    let num = 0;
-    let den = 0;
-    for (let k = 0; k < 3; k++) {
-      const v = st[k][i];
-      // nz() and na() take an infinite value as na
-      const isNa = !Number.isFinite(v);
-      num += weights[k] * (isNa ? 0 : v);
-      den += weights[k] * (isNa ? 0 : 1);
-    }
-    return num / den;
-  });
-
-  // cycleFast = cycleOpt ? msOSC - ta.ema(msOSC, cyc_Smooth) + 50 : 50
-  const ema = cfg.cycleOpt ? A(ta.ema(S(msOSC), cfg.cycSmooth)) : [];
-  const cycleFast = msOSC.map((v, i) => (cfg.cycleOpt ? v - ema[i] + 50 : 50));
-
-  // Signals: a dot on the price chart when the oscillator (or the cycle) crosses 50
-  const signals = (on: boolean, values: number[], bullColor: string, bearColor: string, i: number) => {
-    if (!on || i === 0) return;
-    const change = Math.sign(values[i] - 50) - Math.sign(values[i - 1] - 50);
-    if (change > 0) {
-      register(labels, { time: bars[i].time, price: bars[i].low, text: '⦁', color: 'transparent', textColor: bullColor, style: 'label_up', forceOverlay: true });
-    }
-    if (change < 0) {
-      register(labels, { time: bars[i].time, price: bars[i].high, text: '⦁', color: 'transparent', textColor: bearColor, style: 'label_down', forceOverlay: true });
-    }
-  };
-
-  const anyOsc = cfg.msOscShow || cfg.msDataK1 || cfg.msDataK2 || cfg.msDataK3;
-  const level = (value: number) => bars.map((b) => ({ time: b.time, value: anyOsc ? value : NaN }));
-  const component = (on: boolean, values: number[], col: string) =>
-    bars.map((b, i) => ({ time: b.time, value: on && Number.isFinite(values[i]) ? values[i] : NaN, color: col }));
-  const candles: PlotCandleData[] = [];
-  const oscPlot: Array<{ time: number; value: number; color?: string }> = [];
-
-  for (let i = 0; i < n; i++) {
-    const v = msOSC[i];
-    const shown = cfg.msOscShow && Number.isFinite(v);
-    const col = color.from_gradient(v, 0, 100, cfg.msBearColor, cfg.msBullColor);
-    oscPlot.push({ time: bars[i].time, value: shown ? v : NaN, ...(col ? { color: String(col) } : {}) });
-    signals(cfg.oscSig, msOSC, cfg.oBullColor, cfg.oBearColor, i);
-    // plotcandle(50., 50., 50., cycleFast, ...): no candle while the value is na
-    const c = cycleFast[i];
-    if (Number.isFinite(c)) {
-      const body = gt(c, 50) ? cfg.cBullColor : cfg.cBearColor;
-      candles.push({
-        time: bars[i].time, open: 50, high: 50, low: 50, close: c, color: body, borderColor: cfg.cycleOpt ? body : '#787B86',
-        wickColor: '#737375',
-      });
-    }
-    signals(cfg.cycleSig, cycleFast, cfg.sBullColor, cfg.sBearColor, i);
-  }
-
-  const constant = <T>(v: T) => new Array<T>(n).fill(v);
-  const bull0 = String(color.new(cfg.msBullColor, 0));
-  const bull73 = String(color.new(cfg.msBullColor, 73));
-  const bull100 = String(color.new(cfg.msBullColor, 100));
-  const bear0 = String(color.new(cfg.msBearColor, 0));
-  const bear73 = String(color.new(cfg.msBearColor, 73));
-  const bear100 = String(color.new(cfg.msBearColor, 100));
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: level(100),
-      plot1: level(85),
-      plot2: level(50).map((p) => ({ ...p, color: MID_COLOR })),
-      plot3: level(15),
-      plot4: level(0),
-      plot5: oscPlot,
-      plot6: component(cfg.msDataK1, st[0], cfg.msColorK1),
-      plot7: component(cfg.msDataK2, st[1], cfg.msColorK2),
-      plot8: component(cfg.msDataK3, st[2], cfg.msColorK3),
+    init() {
+      const s: MsoRun = {
+        smas: [taStep.sma(), taStep.sma(), taStep.sma()], ema: taStep.ema(cfg.cycSmooth),
+        msOSC: [], cycleFast: [], plots: Array.from({ length: 9 }, () => []),
+        lines: [], boxes: [], labels: [], candles: [],
+        steps: [],
+        vars: {
+          stHigh: newSwings(), stLow: newSwings(), itHigh: newSwings(), itLow: newSwings(), ltHigh: newSwings(),
+          ltLow: newSwings(), msType: [0, 0, 0], norms: [newNorm(), newNorm(), newNorm()],
+          prevSwing: [{ high: false, low: false }, { high: false, low: false }],
+        },
+        lists: [], series: [],
+      };
+      s.steps = [...s.smas, ...(cfg.cycleOpt ? [s.ema] : [])];
+      s.lists = [s.lines, s.boxes, s.labels, s.candles];
+      s.series = [s.msOSC, s.cycleFast, ...s.plots];
+      return s;
     },
-    fills: [
-      // Overbought Fill
-      { plot1: 'plot0', plot2: 'plot1', gradient: { topValue: constant(100), bottomValue: constant(85), topColor: constant(bear100), bottomColor: constant(bear73) } },
-      // Oversold Fill
-      { plot1: 'plot3', plot2: 'plot4', gradient: { topValue: constant(15), bottomValue: constant(0), topColor: constant(bull73), bottomColor: constant(bull100) } },
-      // Bullish Gradient Fill
-      { plot1: 'plot5', plot2: 'plot2', gradient: { topValue: constant(100), bottomValue: constant(cfg.cycleOpt ? 60 : 50), topColor: constant(bull0), bottomColor: constant(bull100) } },
-      // Bearish Gradient Fill
-      { plot1: 'plot5', plot2: 'plot2', gradient: { topValue: constant(cfg.cycleOpt ? 40 : 50), bottomValue: constant(0), topColor: constant(bear100), bottomColor: constant(bear0) } },
-    ],
-    plotCandles: { cycleHistogram: candles },
-    lines,
-    boxes,
-    labels,
+    copyVars: (v) => ({
+      stHigh: copySwings(v.stHigh), stLow: copySwings(v.stLow), itHigh: copySwings(v.itHigh), itLow: copySwings(v.itLow),
+      ltHigh: copySwings(v.ltHigh), ltLow: copySwings(v.ltLow), msType: v.msType.slice(),
+      norms: v.norms.map((x) => ({ ...x })), prevSwing: v.prevSwing.map((x) => ({ ...x })),
+    }),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const bar = bars[i];
+      const close = bar.close;
+      const time = bar.time;
+      const { stHigh, stLow, itHigh, itLow, ltHigh, ltLow, msType } = v;
+      const highs = [stHigh, itHigh, ltHigh];
+      const lows = [stLow, itLow, ltLow];
+
+      // Market structures on the chart: they read the swings as they were after the bar before
+      for (let k = 0; k < 3; k++) {
+        const lv = levels[k];
+        if (!lv.on) continue;
+        const high = highs[k];
+        const low = lows[k];
+        if (gt(close, high.lastPrice) && !high.isCrossed) {
+          const x1 = bars[high.lastIndex].time;
+          const y = high.lastPrice;
+          s.lines.push({ time1: x1, price1: y, time2: time, price2: y, color: lv.bull, style: lv.style, width: 1, forceOverlay: true });
+          if (lv.labels) {
+            s.boxes.push({
+              time1: x1, price1: y, time2: time, price2: y, borderColor: 'transparent', text: msType[k] < 0 ? 'CHoCH' : 'BoS',
+              textColor: lv.bull, textSize: 'tiny', textHAlign: 'left', textVAlign: 'bottom', forceOverlay: true,
+            });
+            msType[k] = 1;
+          }
+        }
+        if (gt(low.lastPrice, close) && !low.isCrossed) {
+          const x1 = bars[low.lastIndex].time;
+          const y = low.lastPrice;
+          s.lines.push({ time1: x1, price1: y, time2: time, price2: y, color: lv.bear, style: lv.style, width: 1, forceOverlay: true });
+          if (lv.labels) {
+            s.boxes.push({
+              time1: x1, price1: y, time2: time, price2: y, borderColor: 'transparent', text: msType[k] > 0 ? 'CHoCH' : 'BoS',
+              textColor: lv.bear, textSize: 'tiny', textHAlign: 'left', textVAlign: 'top', forceOverlay: true,
+            });
+            msType[k] = -1;
+          }
+        }
+      }
+
+      // shortMarketStructure()
+      let bull = false;
+      let bear = false;
+      if (i >= 2 && queryPatterns(bar.high, bars[i - 1].high, bars[i - 2].high, true)) {
+        updatePattern(stHigh, bars[i - 1].high, i - 1);
+        stHigh.isCrossed = false;
+      }
+      if (gt(close, stHigh.lastPrice) && !stHigh.isCrossed) {
+        stHigh.isCrossed = true;
+        bull = true;
+      }
+      if (i >= 2 && queryPatterns(bar.low, bars[i - 1].low, bars[i - 2].low, false)) {
+        stLow.isCrossed = false;
+        updatePattern(stLow, bars[i - 1].low, i - 1);
+      }
+      if (gt(stLow.lastPrice, close) && !stLow.isCrossed) {
+        stLow.isCrossed = true;
+        bear = true;
+      }
+      const raw0 = normalize(v.norms[0], close, bull, bear);
+      const ms2 = marketStructure(v, 0, itHigh, itLow, stHigh, stLow, close, i === 0);
+      const raw1 = normalize(v.norms[1], close, (ms2 & 1) !== 0, (ms2 & 2) !== 0);
+      const ms3 = marketStructure(v, 1, ltHigh, ltLow, itHigh, itLow, close, i === 0);
+      const raw2 = normalize(v.norms[2], close, (ms3 & 1) !== 0, (ms3 & 2) !== 0);
+
+      // ta.sma((bar.close - min) / (max - min), smooth) * 100
+      const st0 = s.smas[0].step(raw0, cfg.normSmooth) * 100;
+      const st1 = s.smas[1].step(raw1, cfg.normSmooth) * 100;
+      const st2 = s.smas[2].step(raw2, cfg.normSmooth) * 100;
+      let num = 0;
+      let den = 0;
+      for (let k = 0; k < 3; k++) {
+        const x = k === 0 ? st0 : k === 1 ? st1 : st2;
+        // nz() and na() take an infinite value as na
+        const isNa = !Number.isFinite(x);
+        num += weights[k] * (isNa ? 0 : x);
+        den += weights[k] * (isNa ? 0 : 1);
+      }
+      const msOSC = num / den;
+      s.msOSC[i] = msOSC;
+
+      // cycleFast = cycleOpt ? msOSC - ta.ema(msOSC, cyc_Smooth) + 50 : 50
+      const c = cfg.cycleOpt ? msOSC - (s.ema.step(msOSC) ?? NaN) + 50 : 50;
+      s.cycleFast[i] = c;
+
+      const p = s.plots;
+      const lvl = anyOsc;
+      p[0][i] = { time, value: lvl ? 100 : NaN };
+      p[1][i] = { time, value: lvl ? 85 : NaN };
+      p[2][i] = { time, value: lvl ? 50 : NaN, color: MID_COLOR };
+      p[3][i] = { time, value: lvl ? 15 : NaN };
+      p[4][i] = { time, value: lvl ? 0 : NaN };
+      const shown = cfg.msOscShow && Number.isFinite(msOSC);
+      const col = color.from_gradient(msOSC, 0, 100, cfg.msBearColor, cfg.msBullColor);
+      p[5][i] = { time, value: shown ? msOSC : NaN, ...(col ? { color: String(col) } : {}) };
+      for (let k = 0; k < 3; k++) {
+        const x = k === 0 ? st0 : k === 1 ? st1 : st2;
+        p[6 + k][i] = { time, value: components[k].on && Number.isFinite(x) ? x : NaN, color: components[k].col };
+      }
+
+      // Signals: a dot on the price chart when the oscillator (or the cycle) crosses 50
+      const signals = (on: boolean, values: number[], bullColor: string, bearColor: string) => {
+        if (!on || i === 0) return;
+        const change = Math.sign(values[i] - 50) - Math.sign(values[i - 1] - 50);
+        if (change > 0) {
+          s.labels.push({ time, price: bar.low, text: '⦁', color: 'transparent', textColor: bullColor, style: 'label_up', forceOverlay: true });
+        }
+        if (change < 0) {
+          s.labels.push({ time, price: bar.high, text: '⦁', color: 'transparent', textColor: bearColor, style: 'label_down', forceOverlay: true });
+        }
+      };
+      signals(cfg.oscSig, s.msOSC, cfg.oBullColor, cfg.oBearColor);
+      // plotcandle(50., 50., 50., cycleFast, ...): no candle while the value is na
+      if (Number.isFinite(c)) {
+        const body = gt(c, 50) ? cfg.cBullColor : cfg.cBearColor;
+        s.candles.push({
+          time, open: 50, high: 50, low: 50, close: c, color: body, borderColor: cfg.cycleOpt ? body : '#787B86',
+          wickColor: '#737375',
+        });
+      }
+      signals(cfg.cycleSig, s.cycleFast, cfg.sBullColor, cfg.sBearColor);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const constant = <T>(v: T) => new Array<T>(n).fill(v);
+      const bull0 = String(color.new(cfg.msBullColor, 0));
+      const bull73 = String(color.new(cfg.msBullColor, 73));
+      const bull100 = String(color.new(cfg.msBullColor, 100));
+      const bear0 = String(color.new(cfg.msBearColor, 0));
+      const bear73 = String(color.new(cfg.msBearColor, 73));
+      const bear100 = String(color.new(cfg.msBearColor, 100));
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          // Overbought Fill
+          { plot1: 'plot0', plot2: 'plot1', gradient: { topValue: constant(100), bottomValue: constant(85), topColor: constant(bear100), bottomColor: constant(bear73) } },
+          // Oversold Fill
+          { plot1: 'plot3', plot2: 'plot4', gradient: { topValue: constant(15), bottomValue: constant(0), topColor: constant(bull73), bottomColor: constant(bull100) } },
+          // Bullish Gradient Fill
+          { plot1: 'plot5', plot2: 'plot2', gradient: { topValue: constant(100), bottomValue: constant(cfg.cycleOpt ? 60 : 50), topColor: constant(bull0), bottomColor: constant(bull100) } },
+          // Bearish Gradient Fill
+          { plot1: 'plot5', plot2: 'plot2', gradient: { topValue: constant(cfg.cycleOpt ? 40 : 50), bottomValue: constant(0), topColor: constant(bear100), bottomColor: constant(bear0) } },
+        ],
+        plotCandles: { cycleHistogram: s.candles.slice() },
+        lines: kept(s.lines),
+        boxes: kept(s.boxes),
+        labels: kept(s.labels),
+      };
+    },
   };
 }
 
-export const MarketStructureOscillator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MarketStructureOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MarketStructureOscillatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MarketStructureOscillator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

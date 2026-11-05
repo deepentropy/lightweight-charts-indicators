@@ -16,9 +16,11 @@
  * Original notice: © RWCS_LTD
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DynamicVwapFairValueDivergenceSuiteInputs {
   /** Show the divergence signals */
@@ -92,77 +94,66 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DynamicVwapFairValueDivergenceSuiteInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const high = bars.map((b) => b.high);
-  const low = bars.map((b) => b.low);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const time = bars.map((b) => b.time as number);
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
 
-  // anchorTime = ta.valuewhen(low == ta.lowest(low, swingLength), time, 0)
-  const lowestLow = A(ta.lowest(S(low), cfg.swingLength));
-  const stdDev = A(ta.stdev(S(close), cfg.stdevLength));
+interface VwapVars {
+  anchorTime: number;
+  prevAnchorTime: number;
+  /** var float cumPV = na / var float cumVolume = na */
+  cumPV: number;
+  cumVolume: number;
+}
 
-  const vwapValue: number[] = new Array(n).fill(NaN);
-  const stdevValue: number[] = new Array(n).fill(NaN);
-  const up = [1, 2, 3, 4, 5].map(() => new Array<number>(n).fill(NaN));
-  const dn = [1, 2, 3, 4, 5].map(() => new Array<number>(n).fill(NaN));
-  let anchorTime = NaN;
-  let prevAnchorTime = NaN;
-  let cumPV = NaN; // var float cumPV = na
-  let cumVolume = NaN; // var float cumVolume = na
-  for (let i = 0; i < n; i++) {
-    if (eq(low[i], lowestLow[i])) anchorTime = time[i];
-    // newAnchor = ta.change(anchorTime) != 0 (na on the first bar with an anchor: false)
-    const newAnchor = !isNaN(anchorTime) && !isNaN(prevAnchorTime) && anchorTime - prevAnchorTime !== 0;
-    prevAnchorTime = anchorTime;
-    const afterAnchor = !isNaN(anchorTime) && time[i] >= anchorTime;
-    if (afterAnchor) {
-      if (newAnchor) {
-        cumPV = 0;
-        cumVolume = 0;
-      }
-      const barVolume = isNaN(volume[i]) ? high[i] - low[i] : volume[i];
-      // na + x stays na: the sums are na until the first anchor change
-      cumPV += close[i] * barVolume;
-      cumVolume += barVolume;
-      vwapValue[i] = cumPV / cumVolume;
-      stdevValue[i] = stdDev[i];
-    }
-    if (afterAnchor && !isNaN(stdevValue[i])) {
-      for (let k = 0; k < 5; k++) {
-        up[k][i] = vwapValue[i] + (k + 1) * stdevValue[i];
-        dn[k][i] = vwapValue[i] - (k + 1) * stdevValue[i];
-      }
-    }
+interface VwapRun extends BarRunState<VwapVars> {
+  lowest: ReturnType<typeof taStep.lowest>;
+  dev: ReturnType<typeof taStep.stdev>;
+  hh: ReturnType<typeof taStep.highest>;
+  volMa: ReturnType<typeof taStep.sma>;
+  cross: ReturnType<typeof taStep.crossover>;
+  vwap: number[];
+  /** +1 to +5 sigma, then -1 and -2 sigma */
+  up: number[][];
+  slope: number[];
+  highestHigh: number[];
+  plots: Point[][];
+  fills: string[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/**
+ * ta.linreg(source[shift], length, 0) on bar i from the values of the earlier bars (the operations of the oakscriptjs
+ * function: na when a value of the window is na, sums from the oldest value)
+ */
+function linregAt(source: number[], i: number, shift: number, length: number): number {
+  const len = Math.floor(length);
+  // a value before the first bar is na
+  if (i < len - 1 || i - shift - (len - 1) < 0) return NaN;
+  const end = i - shift;
+  for (let j = 0; j < len; j++) if (isNaN(source[end - j])) return NaN;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXY = 0;
+  let sumX2 = 0;
+  for (let j = 0; j < len; j++) {
+    const x = j + 1;
+    const y = source[end - (len - 1 - j)];
+    sumX += x;
+    sumY += y;
+    sumXY += x * y;
+    sumX2 += x * x;
   }
-  const [upper1, upper2, upper3, upper4, upper5] = up;
-  const [lower1, lower2] = dn;
+  const slope = (len * sumXY - sumX * sumY) / (len * sumX2 - sumX * sumX);
+  const intercept = sumY / len - (slope * sumX) / len + slope;
+  return intercept + slope * (len - 1 - 0);
+}
 
-  // VWAP slope: (ta.linreg(vwapValue, slopeLength, 0) - ta.linreg(vwapValue[slopeLength], slopeLength, 0)) / slopeLength
+function study(inputs: Partial<DynamicVwapFairValueDivergenceSuiteInputs>): BarStudy<VwapRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const L = cfg.slopeLength;
-  const linregNow = A(ta.linreg(S(vwapValue), L, 0));
-  const vwapShifted = vwapValue.map((_v, i) => (i - L >= 0 ? vwapValue[i - L] : NaN));
-  const linregPrev = A(ta.linreg(S(vwapShifted), L, 0));
-  const vwapSlope = linregNow.map((v, i) => (v - linregPrev[i]) / L);
-  const highestHigh = A(ta.highest(S(high), L));
-  const volMA = A(ta.sma(S(volume), 20));
-  const crossAboveVWAP = A(ta.crossover(S(close), S(vwapValue)));
-
-  const markers: MarkerData[] = [];
-  const flags: boolean[][] = [[], [], []];
   const fillColor = (on: boolean, c: string) => (cfg.showFills && on ? c : 'transparent');
-  const fills = {
-    f1: new Array<string>(n), f2: new Array<string>(n), f3: new Array<string>(n),
-    f4: new Array<string>(n), f5: new Array<string>(n), f6: new Array<string>(n),
-  };
   const green85 = String(color.new(color.green, 85));
   const yellow80 = String(color.new(color.yellow, 80));
   const orange70 = String(color.new(color.orange, 70));
@@ -171,84 +162,171 @@ export function calculate(
   const slopeColor = String(color.new(color.fuchsia, 40));
   const retestColor = String(color.new(color.aqua, 40));
   const failColor = String(color.new(color.red, 40));
-  for (let i = 0; i < n; i++) {
-    // priceHigherHigh = high > ta.highest(high, slopeLength)[1]; slopeDivergence = ... and vwapSlope < vwapSlope[1]
-    const priceHigherHigh = i > 0 && gt(high[i], highestHigh[i - 1]);
-    const slopeDivergence = priceHigherHigh && i > 0 && lt(vwapSlope[i], vwapSlope[i - 1]);
-    // lowVolumeRetest = ta.crossover(close, vwapValue) and volume < volMA
-    const lowVolumeRetest = crossAboveVWAP[i] === 1 && lt(volume[i], volMA[i]);
-    // sigmaFail = close[1] > upper3[1] and close < upper1
-    const sigmaFail = i > 0 && gt(close[i - 1], upper3[i - 1]) && lt(close[i], upper1[i]);
-    const t = time[i];
-    flags[0].push(slopeDivergence);
-    flags[1].push(lowVolumeRetest);
-    flags[2].push(sigmaFail);
-    if (cfg.detect && slopeDivergence) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: slopeColor, size: 'tiny' });
-    }
-    if (cfg.detect && lowVolumeRetest) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: retestColor, size: 'tiny' });
-    }
-    if (cfg.detect && sigmaFail) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'cross', color: failColor, size: 'tiny' });
-    }
-
-    const c = close[i];
-    const o = bars[i].open;
-    const u1 = upper1[i], l1 = lower1[i], u2 = upper2[i], l2 = lower2[i], u3 = upper3[i], u4 = upper4[i], u5 = upper5[i];
-    const inside1sigma = (le(c, u1) && ge(c, l1)) || (le(o, u1) && ge(o, l1));
-    const insidePlus2sigma = (le(c, u2) && gt(c, u1)) || (le(o, u2) && gt(o, u1));
-    const insideMinus2sigma = (ge(c, l2) && lt(c, l1)) || (ge(o, l2) && lt(o, l1));
-    const insidePlus3sigma = (le(c, u3) && gt(c, u2)) || (le(o, u3) && gt(o, u2));
-    const insidePlus4sigma = (le(c, u4) && gt(c, u3)) || (le(o, u4) && gt(o, u3));
-    const insidePlus5sigma = (le(c, u5) && gt(c, u4)) || (le(o, u5) && gt(o, u4));
-    fills.f1[i] = fillColor(inside1sigma, green85);
-    fills.f2[i] = fillColor(insidePlus2sigma, yellow80);
-    fills.f3[i] = fillColor(insideMinus2sigma, yellow80);
-    fills.f4[i] = fillColor(insidePlus3sigma, orange70);
-    fills.f5[i] = fillColor(insidePlus4sigma, red70);
-    fills.f6[i] = fillColor(insidePlus5sigma, fuchsia70);
-  }
-
+  const lineColors = [
+    String(color.new(color.white, 0)), String(color.new(color.lime, 30)), String(color.new(color.lime, 30)),
+    String(color.new(color.yellow, 40)), String(color.new(color.orange, 50)), String(color.new(color.red, 60)),
+    String(color.new(color.fuchsia, 70)),
+  ];
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const line = (vals: number[], c?: string) => bars.map((_b, i) => ({ time: time[i], value: fin(vals[i]), ...(c ? { color: c } : {}) }));
-  const ext = (vals: number[]) => (cfg.showExtendedBands ? vals : new Array<number>(n).fill(NaN));
-
+  const ext = (x: number) => (cfg.showExtendedBands ? x : NaN);
+  const fillTitles = [
+    'Fair Value Zone Fill', '+1σ to +2σ Fill', '-1σ to -2σ Fill', '+2σ to +3σ Fill', '+3σ to +4σ Fill', '+4σ to +5σ Fill',
+  ];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(vwapValue, String(color.new(color.white, 0))),
-      plot1: line(upper1, String(color.new(color.lime, 30))),
-      plot2: line(lower1, String(color.new(color.lime, 30))),
-      plot3: line(upper2, String(color.new(color.yellow, 40))),
-      plot4: line(ext(upper3), String(color.new(color.orange, 50))),
-      plot5: line(ext(upper4), String(color.new(color.red, 60))),
-      plot6: line(ext(upper5), String(color.new(color.fuchsia, 70))),
-      plot7: line(upper1),
-      plot8: line(lower1),
-      plot9: line(upper2),
-      plot10: line(upper1),
-      plot11: line(lower1),
-      plot12: line(lower2),
-      plot13: line(upper3),
-      plot14: line(upper2),
-      plot15: line(upper4),
-      plot16: line(upper3),
-      plot17: line(upper5),
-      plot18: line(upper4),
+    init() {
+      const lowest = taStep.lowest();
+      const dev = taStep.stdev();
+      // ta.linreg checks the length (read below from the VWAP of the earlier bars)
+      taStep.linreg(L, 0);
+      const hh = taStep.highest();
+      const volMa = taStep.sma();
+      const cross = taStep.crossover();
+      const s: VwapRun = {
+        lowest, dev, hh, volMa, cross,
+        vwap: [], up: [[], [], [], [], [], [], []], slope: [], highestHigh: [],
+        plots: Array.from({ length: 19 }, () => []), fills: Array.from({ length: 6 }, () => []),
+        markers: [], flags: [[], [], []], times: [[], [], []],
+        steps: [lowest, dev, hh, volMa, cross],
+        vars: { anchorTime: NaN, prevAnchorTime: NaN, cumPV: NaN, cumVolume: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.vwap, ...s.up, s.slope, s.highestHigh, ...s.plots, ...s.fills, ...s.flags];
+      return s;
     },
-    fills: [
-      { plot1: 'plot7', plot2: 'plot8', options: { title: 'Fair Value Zone Fill' }, colors: fills.f1 },
-      { plot1: 'plot9', plot2: 'plot10', options: { title: '+1σ to +2σ Fill' }, colors: fills.f2 },
-      { plot1: 'plot11', plot2: 'plot12', options: { title: '-1σ to -2σ Fill' }, colors: fills.f3 },
-      { plot1: 'plot13', plot2: 'plot14', options: { title: '+2σ to +3σ Fill' }, colors: fills.f4 },
-      { plot1: 'plot15', plot2: 'plot16', options: { title: '+3σ to +4σ Fill' }, colors: fills.f5 },
-      { plot1: 'plot17', plot2: 'plot18', options: { title: '+4σ to +5σ Fill' }, colors: fills.f6 },
-    ],
-    markers,
-    // alertcondition(slopeDivergence) / alertcondition(lowVolumeRetest) / alertcondition(sigmaFail)
-    alerts: alertStates(alertConditions, bars, flags),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const t = b.time as number;
+      const close = b.close;
+      const high = b.high;
+      const low = b.low;
+      const volume = b.volume ?? NaN;
+      // anchorTime = ta.valuewhen(low == ta.lowest(low, swingLength), time, 0)
+      const lowestLow = s.lowest.step(low, cfg.swingLength);
+      const stdDev = s.dev.step(close, cfg.stdevLength);
+      if (eq(low, lowestLow)) v.anchorTime = t;
+      // newAnchor = ta.change(anchorTime) != 0 (na on the first bar with an anchor: false)
+      const newAnchor = !isNaN(v.anchorTime) && !isNaN(v.prevAnchorTime) && v.anchorTime - v.prevAnchorTime !== 0;
+      v.prevAnchorTime = v.anchorTime;
+      const afterAnchor = !isNaN(v.anchorTime) && t >= v.anchorTime;
+      let vwapValue = NaN;
+      let stdevValue = NaN;
+      if (afterAnchor) {
+        if (newAnchor) {
+          v.cumPV = 0;
+          v.cumVolume = 0;
+        }
+        const barVolume = isNaN(volume) ? high - low : volume;
+        // na + x stays na: the sums are na until the first anchor change
+        v.cumPV += close * barVolume;
+        v.cumVolume += barVolume;
+        vwapValue = v.cumPV / v.cumVolume;
+        stdevValue = stdDev;
+      }
+      s.vwap[i] = vwapValue;
+      const bands = afterAnchor && !isNaN(stdevValue);
+      for (let k = 0; k < 5; k++) s.up[k][i] = bands ? vwapValue + (k + 1) * stdevValue : NaN;
+      s.up[5][i] = bands ? vwapValue - 1 * stdevValue : NaN;
+      s.up[6][i] = bands ? vwapValue - 2 * stdevValue : NaN;
+      const u1 = s.up[0][i], u2 = s.up[1][i], u3 = s.up[2][i], u4 = s.up[3][i], u5 = s.up[4][i];
+      const l1 = s.up[5][i], l2 = s.up[6][i];
+
+      // VWAP slope: (ta.linreg(vwapValue, slopeLength, 0) - ta.linreg(vwapValue[slopeLength], slopeLength, 0)) / slopeLength
+      const linregNow = linregAt(s.vwap, i, 0, L);
+      const linregPrev = linregAt(s.vwap, i, L, L);
+      const vwapSlope = (linregNow - linregPrev) / L;
+      s.slope[i] = vwapSlope;
+      s.highestHigh[i] = s.hh.step(high, L);
+      const volMA = s.volMa.step(volume, 20);
+      const crossAboveVWAP = s.cross.step(close, vwapValue);
+
+      // priceHigherHigh = high > ta.highest(high, slopeLength)[1]; slopeDivergence = ... and vwapSlope < vwapSlope[1]
+      const priceHigherHigh = i > 0 && gt(high, s.highestHigh[i - 1]);
+      const slopeDivergence = priceHigherHigh && i > 0 && lt(vwapSlope, s.slope[i - 1]);
+      // lowVolumeRetest = ta.crossover(close, vwapValue) and volume < volMA
+      const lowVolumeRetest = crossAboveVWAP && lt(volume, volMA);
+      // sigmaFail = close[1] > upper3[1] and close < upper1
+      const sigmaFail = i > 0 && gt(bars[i - 1].close, s.up[2][i - 1]) && lt(close, u1);
+      s.flags[0][i] = slopeDivergence;
+      s.flags[1][i] = lowVolumeRetest;
+      s.flags[2][i] = sigmaFail;
+      if (slopeDivergence) s.times[0].push(t);
+      if (lowVolumeRetest) s.times[1].push(t);
+      if (sigmaFail) s.times[2].push(t);
+      if (cfg.detect && slopeDivergence) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: slopeColor, size: 'tiny' });
+      }
+      if (cfg.detect && lowVolumeRetest) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: retestColor, size: 'tiny' });
+      }
+      if (cfg.detect && sigmaFail) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'cross', color: failColor, size: 'tiny' });
+      }
+
+      const c = close;
+      const o = b.open;
+      const inside1sigma = (le(c, u1) && ge(c, l1)) || (le(o, u1) && ge(o, l1));
+      const insidePlus2sigma = (le(c, u2) && gt(c, u1)) || (le(o, u2) && gt(o, u1));
+      const insideMinus2sigma = (ge(c, l2) && lt(c, l1)) || (ge(o, l2) && lt(o, l1));
+      const insidePlus3sigma = (le(c, u3) && gt(c, u2)) || (le(o, u3) && gt(o, u2));
+      const insidePlus4sigma = (le(c, u4) && gt(c, u3)) || (le(o, u4) && gt(o, u3));
+      const insidePlus5sigma = (le(c, u5) && gt(c, u4)) || (le(o, u5) && gt(o, u4));
+      s.fills[0][i] = fillColor(inside1sigma, green85);
+      s.fills[1][i] = fillColor(insidePlus2sigma, yellow80);
+      s.fills[2][i] = fillColor(insideMinus2sigma, yellow80);
+      s.fills[3][i] = fillColor(insidePlus3sigma, orange70);
+      s.fills[4][i] = fillColor(insidePlus4sigma, red70);
+      s.fills[5][i] = fillColor(insidePlus5sigma, fuchsia70);
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: fin(vwapValue), color: lineColors[0] };
+      p[1][i] = { time: t, value: fin(u1), color: lineColors[1] };
+      p[2][i] = { time: t, value: fin(l1), color: lineColors[2] };
+      p[3][i] = { time: t, value: fin(u2), color: lineColors[3] };
+      p[4][i] = { time: t, value: fin(ext(u3)), color: lineColors[4] };
+      p[5][i] = { time: t, value: fin(ext(u4)), color: lineColors[5] };
+      p[6][i] = { time: t, value: fin(ext(u5)), color: lineColors[6] };
+      // the hidden plots of the fills, two per fill in the Pine order
+      p[7][i] = { time: t, value: fin(u1) };
+      p[8][i] = { time: t, value: fin(l1) };
+      p[9][i] = { time: t, value: fin(u2) };
+      p[10][i] = { time: t, value: fin(u1) };
+      p[11][i] = { time: t, value: fin(l1) };
+      p[12][i] = { time: t, value: fin(l2) };
+      p[13][i] = { time: t, value: fin(u3) };
+      p[14][i] = { time: t, value: fin(u2) };
+      p[15][i] = { time: t, value: fin(u4) };
+      p[16][i] = { time: t, value: fin(u3) };
+      p[17][i] = { time: t, value: fin(u5) };
+      p[18][i] = { time: t, value: fin(u4) };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((pl, k) => { plots[`plot${k}`] = pl.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: fillTitles.map((title, k) => ({ plot1: `plot${7 + 2 * k}`, plot2: `plot${8 + 2 * k}`, options: { title }, colors: s.fills[k].slice() })),
+        markers: s.markers.slice(),
+        // alertcondition(slopeDivergence) / alertcondition(lowVolumeRetest) / alertcondition(sigmaFail)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DynamicVwapFairValueDivergenceSuiteInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<DynamicVwapFairValueDivergenceSuiteInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -265,4 +343,5 @@ export const DynamicVwapFairValueDivergenceSuite = {
   inputConfig,
   plotConfig,
   alertConditions,
+  createRun,
 };

@@ -10,7 +10,9 @@
  * Original notice: © VolumeVigilante
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface InstitutionalCompositeMovingAverageInputs {
   showMa1: boolean;
@@ -82,44 +84,94 @@ export const metadata = {
   overlay: true,
 };
 
-/** compositeMA(src, len): (sma + ema + hma + wma) / 4 */
-function compositeMA(bars: Bar[], source: SourceType, len: number): number[] {
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, source);
-  const sma = A(ta.sma(src, len));
-  const ema = A(ta.ema(src, len));
-  const wma = A(ta.wma(src, len));
-  // hma = ta.wma(2 * ta.wma(src, len / 2) - ta.wma(src, len), math.round(math.sqrt(len)))
-  const wmaHalf = A(ta.wma(src, len / 2));
-  const diff = wmaHalf.map((v, i) => 2 * v - wma[i]);
-  const hma = A(ta.wma(Series.fromArray(bars, diff), Math.round(Math.sqrt(len))));
-  return sma.map((v, i) => (v + ema[i] + hma[i] + wma[i]) / 4);
+type Point = { time: number; value: number; color: string };
+
+/** compositeMA(src, len): (sma + ema + hma + wma) / 4, one bar at a time */
+class CompositeMA {
+  private readonly sma = taStep.sma();
+  private readonly ema: ReturnType<typeof taStep.ema>;
+  private readonly wma = taStep.wma();
+  private readonly wmaHalf = taStep.wma();
+  private readonly hma = taStep.wma();
+  private readonly hmaLength: number;
+
+  constructor(private readonly len: number) {
+    this.ema = taStep.ema(len);
+    this.hmaLength = Math.round(Math.sqrt(len));
+  }
+
+  step(v: number): number {
+    const sma = this.sma.step(v, this.len);
+    const ema = this.ema.step(v);
+    const wma = this.wma.step(v, this.len);
+    // hma = ta.wma(2 * ta.wma(src, len / 2) - ta.wma(src, len), math.round(math.sqrt(len)))
+    const wmaHalf = this.wmaHalf.step(v, this.len / 2);
+    const hma = this.hma.step(2 * wmaHalf - wma, this.hmaLength);
+    return (sma + ema + hma + wma) / 4;
+  }
+
+  commit(): void {
+    this.sma.commit();
+    this.ema.commit();
+    this.wma.commit();
+    this.wmaHalf.commit();
+    this.hma.commit();
+  }
+}
+
+interface IcmaRun extends BarRunState<Record<string, never>> {
+  plots: Point[][];
+}
+
+function study(inputs: Partial<InstitutionalCompositeMovingAverageInputs>): BarStudy<IcmaRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const lines = [
+    { show: cfg.showMa1, source: cfg.ma1Source, len: cfg.ma1Length, col: cfg.ma1Color },
+    { show: cfg.showMa2, source: cfg.ma2Source, len: cfg.ma2Length, col: cfg.ma2Color },
+    { show: cfg.showMa3, source: cfg.ma3Source, len: cfg.ma3Length, col: cfg.ma3Color },
+    { show: cfg.showMa4, source: cfg.ma4Source, len: cfg.ma4Length, col: cfg.ma4Color },
+  ].map((l) => ({ ...l, value: barSource(l.source) }));
+  let mas: CompositeMA[] = [];
+  return {
+    fullRunReason: () => (lines.every((l) => isBarSource(l.source)) ? null : 'source of another study'),
+    init() {
+      mas = lines.map((l) => new CompositeMA(l.len));
+      const s: IcmaRun = { plots: lines.map(() => []), steps: mas, vars: {}, lists: [], series: [] };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      lines.forEach((l, k) => {
+        const ma = mas[k].step(l.value(b));
+        // plot(show_ma ? ma : na, color = ma_color)
+        s.plots[k][i] = { time: b.time, value: l.show ? ma : NaN, color: l.col };
+      });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<InstitutionalCompositeMovingAverageInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<InstitutionalCompositeMovingAverageInputs> = {},
 ): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const line = (show: boolean, source: SourceType, len: number, col: string) => {
-    const ma = compositeMA(bars, source, len);
-    // plot(show_ma ? ma : na, color = ma_color)
-    return bars.map((b, i) => ({ time: b.time, value: show ? ma[i] : NaN, color: col }));
-  };
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(cfg.showMa1, cfg.ma1Source, cfg.ma1Length, cfg.ma1Color),
-      plot1: line(cfg.showMa2, cfg.ma2Source, cfg.ma2Length, cfg.ma2Color),
-      plot2: line(cfg.showMa3, cfg.ma3Source, cfg.ma3Length, cfg.ma3Color),
-      plot3: line(cfg.showMa4, cfg.ma4Source, cfg.ma4Length, cfg.ma4Color),
-    },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const InstitutionalCompositeMovingAverage = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

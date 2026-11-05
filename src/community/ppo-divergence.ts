@@ -17,7 +17,9 @@
  * Reference: "Pekipek's PPO Divergence BETA" by Pekipek
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PPODivergenceInputs {
   fastLength: number;
@@ -69,163 +71,194 @@ export const metadata = {
 
 // --- Pine-equivalent helpers ---
 
-/** barssince(cond): 0 on a bar where cond is true, na before the first true bar. */
-function barssince(cond: boolean[]): number[] {
-  const out: number[] = new Array(cond.length);
-  let since = NaN;
-  for (let i = 0; i < cond.length; i++) {
-    if (cond[i]) since = 0;
-    else if (!isNaN(since)) since++;
-    out[i] = since;
-  }
-  return out;
-}
-
-/** valuewhen(cond, src, occurrence) as a series (0 = most recent true bar, the current one included). */
-function valuewhen(cond: boolean[], src: number[], occurrence: number): number[] {
-  const out: number[] = new Array(cond.length);
-  const hits: number[] = [];
-  for (let i = 0; i < cond.length; i++) {
-    if (cond[i]) hits.push(i);
-    const k = hits.length - 1 - occurrence;
-    out[i] = k >= 0 ? src[hits[k]] : NaN;
-  }
-  return out;
-}
-
 /** a > b / a < b with na: false. */
 const gt = (a: number, b: number): boolean => a > b;
 const lt = (a: number, b: number): boolean => a < b;
 
-export function calculate(bars: Bar[], inputs: Partial<PPODivergenceInputs> = {}): Omit<IndicatorResult, 'markers'> {
+type Result = Omit<IndicatorResult, 'markers'>;
+type Point = { time: number; value: number };
+type Vw = ReturnType<typeof taStep.valuewhen>;
+
+interface PpoVars {
+  /** barssince(oscMins / oscMax / priceMins / priceMax) */
+  bsOscMins: number;
+  bsOscMax: number;
+  bsPriceMins: number;
+  bsPriceMax: number;
+}
+
+interface PpoRun extends BarRunState<PpoVars> {
+  emaFast: ReturnType<typeof taStep.ema>;
+  emaSlow: ReturnType<typeof taStep.ema>;
+  dSma: ReturnType<typeof taStep.sma>;
+  low6: ReturnType<typeof taStep.lowest>;
+  high7: ReturnType<typeof taStep.highest>;
+  lowestLow: ReturnType<typeof taStep.lowest>;
+  highestHigh: ReturnType<typeof taStep.highest>;
+  highestD: ReturnType<typeof taStep.highest>;
+  lowestD: ReturnType<typeof taStep.lowest>;
+  vw: Record<'ct4' | 'ct5' | 'ct6' | 'ct7' | 'y2' | 'y6' | 'bull' | 'bear' | 'y3' | 'y4' | 'y7' | 'y8' | 'y9' | 'y10', Vw>;
+  d: number[];
+  plot0: Point[];
+  /** plot1 / plot2: bar i writes its own point (na) and the point of bar i - 1 (offset -1) */
+  plot1: Point[];
+  plot2: Point[];
+  divPlots: Point[][];
+}
+
+function study(inputs: Partial<PPODivergenceInputs>): BarStudy<PpoRun, Result> {
   const { fastLength, slowLength, smoother, divLookbackPeriod, longTermDiv, src } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const source = getSourceSeries(bars, src);
-
-  const emaFast = ta.ema(source, fastLength).toArray();
-  const emaSlow = ta.ema(source, slowLength).toArray();
-
-  // PPO = ((EMA_fast - EMA_slow) / EMA_slow) * 100
-  const macd2Arr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const f = emaFast[i];
-    const s = emaSlow[i];
-    macd2Arr[i] = (f == null || s == null || s === 0) ? NaN : ((f - s) / s) * 100;
-  }
-
-  // d = SMA(PPO, smoother)
-  const macd2Series = new Series(bars, (_b, i) => macd2Arr[i]);
-  const dArr = ta.sma(macd2Series, smoother).toArray().map(v => v ?? NaN);
-
-  const lowArr = bars.map(b => b.low);
-  const highArr = bars.map(b => b.high);
-  const at = (arr: number[], i: number): number => (i >= 0 ? arr[i] : NaN);
-  const series = (arr: number[]) => new Series(bars, (_b, i) => arr[i]);
-  const highestOf = (arr: number[], len: number) => ta.highest(series(arr), len).toArray().map(v => v ?? NaN);
-  const lowestOf = (arr: number[], len: number) => ta.lowest(series(arr), len).toArray().map(v => v ?? NaN);
-
-  // --- Price bottoms/tops (priceMins / priceMax; na comparisons are false) ---
-  const priceMins: boolean[] = new Array(n);
-  const priceMax: boolean[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const L = (k: number) => at(lowArr, i - k);
-    const H = (k: number) => at(highArr, i - k);
-    priceMins[i] = (L(0) > L(1) && L(1) < L(2))
-      || (L(1) === L(2) && L(1) < L(0) && L(1) < L(3))
-      || (L(1) === L(2) && L(1) === L(3) && L(1) < L(0) && L(1) < L(4))
-      || (L(1) === L(2) && L(1) === L(3) && L(1) !== 0 && L(1) === L(4) && L(1) < L(0) && L(1) < L(5));
-    priceMax[i] = (H(0) < H(1) && H(1) > H(2))
-      || (H(1) === H(2) && H(1) > H(0) && H(1) > H(3))
-      || (H(1) === H(2) && H(1) === H(3) && H(1) > H(0) && H(1) > H(4))
-      || (H(1) === H(2) && H(1) === H(3) && H(1) !== 0 && H(1) === H(4) && H(1) > H(0) && H(1) > H(5));
-  }
-
-  // --- Oscillator bottoms/tops ---
-  const oscMins: boolean[] = new Array(n);
-  const oscMax: boolean[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    oscMins[i] = gt(dArr[i], at(dArr, i - 1)) && lt(at(dArr, i - 1), at(dArr, i - 2));
-    oscMax[i] = lt(dArr[i], at(dArr, i - 1)) && gt(at(dArr, i - 1), at(dArr, i - 2));
-  }
-
-  const d1 = dArr.map((_, i) => at(dArr, i - 1));
-  const low1 = lowArr.map((_, i) => at(lowArr, i - 1));
-  const high1 = highArr.map((_, i) => at(highArr, i - 1));
-
-  const ct4 = valuewhen(oscMins, d1, 0);
-  const ct5 = valuewhen(oscMax, d1, 0);
-  const ct6 = valuewhen(priceMins, low1, 0);
-  const ct7 = valuewhen(priceMax, high1, 0);
-
-  const bsOscMins = barssince(oscMins);
-  const bsOscMax = barssince(oscMax);
-  const bsPriceMins = barssince(priceMins);
-  const bsPriceMax = barssince(priceMax);
-
-  // delayedlow / delayedhigh: price bottom/top within 3 bars of the oscillator one
-  const delayedlow = lowArr.map((_, i) => (priceMins[i] && bsOscMins[i] < 3 ? low1[i] : NaN));
-  const delayedhigh = highArr.map((_, i) => (priceMax[i] && bsOscMax[i] < 3 ? high1[i] : NaN));
-
-  // filter / filter2: tops/bottoms in price less than 5 bars away
-  const low6 = lowestOf(ct6, 4);
-  const high7 = highestOf(ct7, 4);
-  const filterArr = low6.map((v, i) => (bsPriceMins[i] < 5 ? v : NaN));
-  const filter2Arr = high7.map((v, i) => (bsPriceMax[i] < 5 ? v : NaN));
-
-  const y2 = valuewhen(oscMax, filter2Arr, 1);
-  const y6 = valuewhen(oscMins, filterArr, 1);
-  const longTermBullFilt = valuewhen(priceMins, lowestOf(lowArr, divLookbackPeriod), 1);
-  const longTermBearFilt = valuewhen(priceMax, highestOf(highArr, divLookbackPeriod), 1);
-  const y3 = valuewhen(oscMax, ct5, 0);
-  const y4 = valuewhen(oscMax, ct5, 1);
-  const y7 = valuewhen(oscMins, ct4, 0);
-  const y8 = valuewhen(oscMins, ct4, 1);
-  const y9 = valuewhen(oscMins, ct6, 0);
-  const y10 = valuewhen(oscMax, ct7, 0);
-
-  const highestD = highestOf(dArr, divLookbackPeriod);
-  const lowestD = lowestOf(dArr, divLookbackPeriod);
-
-  const cond: boolean[][] = Array.from({ length: 8 }, () => new Array(n).fill(false));
-  for (let i = 0; i < n; i++) {
-    const iBear = lt(ct5[i], highestD[i]);              // i  : long term bearish oscillator divergence
-    const i2 = gt(y10[i], longTermBearFilt[i]);         // i2 : long term bearish top divergence
-    const i3 = gt(delayedhigh[i], longTermBearFilt[i]); // i3 : long term bearish delayed high divergence
-    const i4 = gt(ct4[i], lowestD[i]);                  // i4 : long term bullish oscillator divergence
-    const i5 = lt(y9[i], longTermBullFilt[i]);          // i5 : long term bullish bottom divergence
-    const i6 = lt(delayedlow[i], longTermBullFilt[i]);  // i6 : long term bullish delayed bottom divergence
-    cond[0][i] = gt(y10[i], y2[i]) && oscMax[i] && lt(y3[i], y4[i]);
-    cond[1][i] = lt(y9[i], y6[i]) && oscMins[i] && gt(y7[i], y8[i]);
-    cond[2][i] = lt(delayedlow[i], y6[i]) && gt(y7[i], y8[i]);
-    cond[3][i] = gt(delayedhigh[i], y2[i]) && lt(y3[i], y4[i]);
-    cond[4][i] = longTermDiv && oscMax[i] && iBear && i2;
-    cond[5][i] = longTermDiv && oscMins[i] && i4 && i5;
-    cond[6][i] = longTermDiv && iBear && i3;
-    cond[7][i] = longTermDiv && i4 && i6;
-  }
-
-  // plot(d); bulldiv / beardiv = d[1] at oscillator bottoms / tops, drawn with offset -1 (on the previous bar)
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: dArr[i] }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: i + 1 < n && oscMins[i + 1] ? d1[i + 1] : NaN }));
-  const plot2 = bars.map((b, i) => ({ time: b.time, value: i + 1 < n && oscMax[i + 1] ? d1[i + 1] : NaN }));
-  const divPlots = cond.map(c => bars.map((b, i) => ({ time: b.time, value: c[i] ? dArr[i] : NaN })));
-
+  const value = barSource(src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'plot0': plot0,
-      'plot1': plot1,
-      'plot2': plot2,
-      'plot3': divPlots[0],
-      'plot4': divPlots[1],
-      'plot5': divPlots[2],
-      'plot6': divPlots[3],
-      'plot7': divPlots[4],
-      'plot8': divPlots[5],
-      'plot9': divPlots[6],
-      'plot10': divPlots[7],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const vw = {
+        ct4: taStep.valuewhen(0), ct5: taStep.valuewhen(0), ct6: taStep.valuewhen(0), ct7: taStep.valuewhen(0),
+        y2: taStep.valuewhen(1), y6: taStep.valuewhen(1), bull: taStep.valuewhen(1), bear: taStep.valuewhen(1),
+        y3: taStep.valuewhen(0), y4: taStep.valuewhen(1), y7: taStep.valuewhen(0), y8: taStep.valuewhen(1),
+        y9: taStep.valuewhen(0), y10: taStep.valuewhen(0),
+      };
+      const s: PpoRun = {
+        emaFast: taStep.ema(fastLength), emaSlow: taStep.ema(slowLength), dSma: taStep.sma(), low6: taStep.lowest(),
+        high7: taStep.highest(), lowestLow: taStep.lowest(), highestHigh: taStep.highest(), highestD: taStep.highest(),
+        lowestD: taStep.lowest(), vw, d: [], plot0: [], plot1: [], plot2: [], divPlots: Array.from({ length: 8 }, () => []),
+        steps: [], vars: { bsOscMins: NaN, bsOscMax: NaN, bsPriceMins: NaN, bsPriceMax: NaN }, lists: [], series: [],
+      };
+      s.steps = [
+        s.emaFast, s.emaSlow, s.dSma, s.low6, s.high7, s.lowestLow, s.highestHigh, s.highestD, s.lowestD, ...Object.values(vw),
+      ];
+      s.series = [s.d, s.plot0, s.plot1, s.plot2, ...s.divPlots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const vw = s.vw;
+      const source = value(b);
+      const f = s.emaFast.step(source);
+      const sl = s.emaSlow.step(source);
+      // PPO = ((EMA_fast - EMA_slow) / EMA_slow) * 100
+      const macd2 = (f == null || sl == null || sl === 0) ? NaN : ((f - sl) / sl) * 100;
+      // d = SMA(PPO, smoother)
+      const d = s.dSma.step(macd2, smoother) ?? NaN;
+      const dArr = s.d;
+      dArr[i] = d;
+      const at = (k: number) => (i - k >= 0 ? dArr[i - k] : NaN);
+      const L = (k: number) => (i - k >= 0 ? bars[i - k].low : NaN);
+      const H = (k: number) => (i - k >= 0 ? bars[i - k].high : NaN);
+
+      // --- Price bottoms/tops (priceMins / priceMax; na comparisons are false) ---
+      const priceMins = (L(0) > L(1) && L(1) < L(2))
+        || (L(1) === L(2) && L(1) < L(0) && L(1) < L(3))
+        || (L(1) === L(2) && L(1) === L(3) && L(1) < L(0) && L(1) < L(4))
+        || (L(1) === L(2) && L(1) === L(3) && L(1) !== 0 && L(1) === L(4) && L(1) < L(0) && L(1) < L(5));
+      const priceMax = (H(0) < H(1) && H(1) > H(2))
+        || (H(1) === H(2) && H(1) > H(0) && H(1) > H(3))
+        || (H(1) === H(2) && H(1) === H(3) && H(1) > H(0) && H(1) > H(4))
+        || (H(1) === H(2) && H(1) === H(3) && H(1) !== 0 && H(1) === H(4) && H(1) > H(0) && H(1) > H(5));
+
+      // --- Oscillator bottoms/tops ---
+      const oscMins = gt(d, at(1)) && lt(at(1), at(2));
+      const oscMax = lt(d, at(1)) && gt(at(1), at(2));
+
+      const d1 = at(1);
+      const low1 = L(1);
+      const high1 = H(1);
+
+      const ct4 = vw.ct4.step(oscMins, d1);
+      const ct5 = vw.ct5.step(oscMax, d1);
+      const ct6 = vw.ct6.step(priceMins, low1);
+      const ct7 = vw.ct7.step(priceMax, high1);
+
+      // barssince(cond): 0 on a bar where cond is true, na before the first true bar
+      const since = (c: boolean, prev: number) => (c ? 0 : isNaN(prev) ? NaN : prev + 1);
+      v.bsOscMins = since(oscMins, v.bsOscMins);
+      v.bsOscMax = since(oscMax, v.bsOscMax);
+      v.bsPriceMins = since(priceMins, v.bsPriceMins);
+      v.bsPriceMax = since(priceMax, v.bsPriceMax);
+
+      // delayedlow / delayedhigh: price bottom/top within 3 bars of the oscillator one
+      const delayedlow = priceMins && v.bsOscMins < 3 ? low1 : NaN;
+      const delayedhigh = priceMax && v.bsOscMax < 3 ? high1 : NaN;
+
+      // filter / filter2: tops/bottoms in price less than 5 bars away
+      const low6 = s.low6.step(ct6, 4) ?? NaN;
+      const high7 = s.high7.step(ct7, 4) ?? NaN;
+      const filter = v.bsPriceMins < 5 ? low6 : NaN;
+      const filter2 = v.bsPriceMax < 5 ? high7 : NaN;
+
+      const y2 = vw.y2.step(oscMax, filter2);
+      const y6 = vw.y6.step(oscMins, filter);
+      const longTermBullFilt = vw.bull.step(priceMins, s.lowestLow.step(b.low, divLookbackPeriod) ?? NaN);
+      const longTermBearFilt = vw.bear.step(priceMax, s.highestHigh.step(b.high, divLookbackPeriod) ?? NaN);
+      const y3 = vw.y3.step(oscMax, ct5);
+      const y4 = vw.y4.step(oscMax, ct5);
+      const y7 = vw.y7.step(oscMins, ct4);
+      const y8 = vw.y8.step(oscMins, ct4);
+      const y9 = vw.y9.step(oscMins, ct6);
+      const y10 = vw.y10.step(oscMax, ct7);
+
+      const highestD = s.highestD.step(d, divLookbackPeriod) ?? NaN;
+      const lowestD = s.lowestD.step(d, divLookbackPeriod) ?? NaN;
+
+      const iBear = lt(ct5, highestD);              // i  : long term bearish oscillator divergence
+      const i2 = gt(y10, longTermBearFilt);         // i2 : long term bearish top divergence
+      const i3 = gt(delayedhigh, longTermBearFilt); // i3 : long term bearish delayed high divergence
+      const i4 = gt(ct4, lowestD);                  // i4 : long term bullish oscillator divergence
+      const i5 = lt(y9, longTermBullFilt);          // i5 : long term bullish bottom divergence
+      const i6 = lt(delayedlow, longTermBullFilt);  // i6 : long term bullish delayed bottom divergence
+      const cond = [
+        gt(y10, y2) && oscMax && lt(y3, y4),
+        lt(y9, y6) && oscMins && gt(y7, y8),
+        lt(delayedlow, y6) && gt(y7, y8),
+        gt(delayedhigh, y2) && lt(y3, y4),
+        longTermDiv && oscMax && iBear && i2,
+        longTermDiv && oscMins && i4 && i5,
+        longTermDiv && iBear && i3,
+        longTermDiv && i4 && i6,
+      ];
+
+      // plot(d); bulldiv / beardiv = d[1] at oscillator bottoms / tops, drawn with offset -1 (on the previous bar)
+      const time = b.time;
+      s.plot0[i] = { time, value: d };
+      s.plot1[i] = { time, value: NaN };
+      s.plot2[i] = { time, value: NaN };
+      if (i > 0) {
+        const t1 = bars[i - 1].time;
+        s.plot1[i - 1] = { time: t1, value: oscMins ? d1 : NaN };
+        s.plot2[i - 1] = { time: t1, value: oscMax ? d1 : NaN };
+      }
+      for (let k = 0; k < 8; k++) s.divPlots[k][i] = { time, value: cond[k] ? d : NaN };
+    },
+    result(s) {
+      const dp = s.divPlots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'plot0': s.plot0.slice(),
+          'plot1': s.plot1.slice(),
+          'plot2': s.plot2.slice(),
+          'plot3': dp[0].slice(),
+          'plot4': dp[1].slice(),
+          'plot5': dp[2].slice(),
+          'plot6': dp[3].slice(),
+          'plot7': dp[4].slice(),
+          'plot8': dp[5].slice(),
+          'plot9': dp[6].slice(),
+          'plot10': dp[7].slice(),
+        },
+      };
     },
   };
 }
 
-export const PPODivergence = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PPODivergenceInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PPODivergenceInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const PPODivergence = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

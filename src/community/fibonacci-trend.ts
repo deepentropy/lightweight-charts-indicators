@@ -17,10 +17,11 @@
  * Original notice: © ChartPrime
  */
 
-import { ta, str, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, str, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LabelData, LineDrawingData, LinefillData } from '../types';
 import { barInterval, barTime } from '../bar-time';
 import { foregroundColorOf, backgroundColorOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FibonacciTrendInputs {
   trendOn: boolean;
@@ -98,182 +99,220 @@ interface Lb {
   style: 'label_down' | 'label_up' | 'label_left';
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FibonacciTrendInputs> = {},
-  chart?: ChartContext,
-): Omit<IndicatorResult, 'labels' | 'lines' | 'linefills'> & { labels: LabelData[]; lines: LineDrawingData[]; linefills: LinefillData[] } {
+type Result = Omit<IndicatorResult, 'labels' | 'lines' | 'linefills'> & { labels: LabelData[]; lines: LineDrawingData[]; linefills: LinefillData[] };
+
+interface FibVars {
+  // The objects of `fib_d` (null: na). The script deletes every object before it makes the next one, so the counts
+  // stay far below the limits (500 lines, 50 labels). fibLow / fib0 are changed in place (copied in copyVars), the
+  // others are replaced.
+  fibLow: Ln | null; // fib_
+  fib0: Ln | null;
+  fibDi: Ln | null;
+  levels: Ln[]; // fib236, fib382, fib05, fib618, fib786
+  labH: Lb | null;
+  labL: Lb | null;
+  levelLabels: Lb[]; // L0, L_, L236, L382, L618, L786
+  fills: Array<[Ln, Ln]>;
+  h: number;
+  l: number;
+  hi: number;
+  li: number;
+  val0: number;
+  val1: number;
+}
+
+interface FibRun extends BarRunState<FibVars> {
+  st: ReturnType<typeof taStep.supertrend>;
+  atr: ReturnType<typeof taStep.atr>;
+  direction: number[];
+  plot0: Array<{ time: number; value: number; color: string }>;
+  plot1: Array<{ time: number; value: number }>;
+  topValue: number[];
+  bottomValue: number[];
+  bottomColor: Array<string | null>;
+}
+
+function study(inputs: Partial<FibonacciTrendInputs>): BarStudy<FibRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const extend = Math.trunc(cfg.extend);
   const v236 = cfg.v236 * 100;
   const v382 = cfg.v382 * 100;
   const v618 = cfg.v618 * 100;
   const v786 = cfg.v786 * 100;
-
-  const [stS, dirS] = ta.supertrend(bars, cfg.trend, 25);
-  const supertrend = stS.toArray();
-  const direction = dirS.toArray();
-  const atr = ta.atr(bars, 200).toArray();
-
-  // The objects of `fib_d` (null: na). The script deletes every object before it makes the next one, so the counts
-  // stay far below the limits (500 lines, 50 labels).
-  let fibLow: Ln | null = null; // fib_
-  let fib0: Ln | null = null;
-  let fibDi: Ln | null = null;
-  let levels: Ln[] = []; // fib236, fib382, fib05, fib618, fib786
-  let labH: Lb | null = null;
-  let labL: Lb | null = null;
-  let levelLabels: Lb[] = []; // L0, L_, L236, L382, L618, L786
-  let fills: Array<[Ln, Ln]> = [];
-
-  let h = NaN;
-  let l = NaN;
-  let hi = NaN;
-  let li = NaN;
-  let val0 = NaN;
-  let val1 = NaN;
-
-  // chart.fg_color / chart.bg_color
-  const chartFg = foregroundColorOf(chart);
-  const chartBg = backgroundColorOf(chart);
-  const fg50 = String(color.new(chartFg, 50));
+  // chart.fg_color / chart.bg_color (set by init from the chart of the run)
+  let chartFg = '';
+  let chartBg = '';
+  let fg50 = '';
   const flat = (x1: number, y: number, x2: number, width: number, lineColor = chartFg, style: Ln['style'] = 'solid'): Ln =>
     ({ x1, y1: y, x2, y2: y, color: lineColor, width, style });
-
-  const plot0: Array<{ time: number; value: number; color: string }> = [];
-  const plot1: Array<{ time: number; value: number }> = [];
-  const topValue: number[] = [];
-  const bottomValue: number[] = [];
-  const bottomColor: Array<string | null> = [];
-
-  for (let i = 0; i < n; i++) {
-    const bar = bars[i];
-    const trend = direction[i] ?? NaN;
-    const prev = i > 0 ? (direction[i - 1] ?? NaN) : NaN;
-    const known = !isNaN(trend) && !isNaN(prev);
-    const changed = known && trend !== prev;
-    const same = known && trend === prev;
-    const a = atr[i] ?? NaN;
-
-    if (changed) {
-      // every line and label of the trend before is deleted
-      fibLow = fib0 = fibDi = labH = labL = null;
-      levels = [];
-      levelLabels = [];
-      fills = [];
-      if (trend === -1) {
-        fibLow = flat(i, bar.low, i, 2);
-        fib0 = flat(i, bar.high + a * 3, i, 2);
-      } else if (trend === 1) {
-        fibLow = flat(i, bar.high, i, 2);
-        fib0 = flat(i, bar.low - a * 3, i, 2);
-        fibDi = { x1: li, y1: l, x2: hi, y2: h, color: chartFg, width: 1, style: 'dashed' };
-      }
-    }
-
-    if (same) {
-      if (fibLow && lt(bar.low, fibLow.y1)) fibLow.y1 = fibLow.y2 = bar.low;
-      if (fib0 && gt(bar.high, fib0.y1)) fib0.y1 = fib0.y2 = bar.high;
-
-      if (fib0 && eq(bar.high, fib0.y1)) {
-        h = bar.high;
-        hi = i;
-        labH = { x: hi, y: h, text: str.tostring(h, '#,###.####'), color: '#15373b', textColor: null, style: 'label_down' };
-      }
-      if (fibLow && eq(bar.low, fibLow.y1)) {
-        l = bar.low;
-        li = i;
-        labL = { x: li, y: l, text: str.tostring(l, '#,###.####'), color: '#15373b', textColor: null, style: 'label_up' };
-      }
-
-      if (fibLow) fibLow.x2 = i + extend;
-      if (fib0) fib0.x2 = i + extend;
-
-      fibDi = { x1: li, y1: l, x2: hi, y2: h, color: chartFg, width: 1, style: 'dashed' };
-      const start = fib0 ? fib0.x1 : NaN;
-      if (fibDi.x1 < start || fibDi.x2 < start) fibDi = null;
-
-      const top = fib0 ? fib0.y1 : NaN;
-      const bottom = fibLow ? fibLow.y1 : NaN;
-      const sizeStep = (top - bottom) / 100;
-      if (trend === -1) {
-        val0 = top;
-        val1 = bottom;
-      }
-      if (trend === 1) {
-        val0 = bottom;
-        val1 = top;
-      }
-
-      const x1 = fib0 ? fib0.x1 : NaN;
-      const x2 = fib0 ? fib0.x2 : NaN;
-      const level = (v: number) => val0 - sizeStep * v * trend * -1;
-      const fib236 = flat(x1, level(v236), x2, 1);
-      const fib382 = flat(x1, level(v382), x2, 1);
-      const fib05 = flat(x1, level(50), x2, 1, fg50, 'dotted');
-      const fib618 = flat(x1, level(v618), x2, 1);
-      const fib786 = flat(x1, level(v786), x2, 1);
-      levels = [fib236, fib382, fib05, fib618, fib786];
-
-      const side = (y: number, text: string): Lb => ({ x: i + extend, y, text, color: chartBg, textColor: chartFg, style: 'label_left' });
-      const priced = (v: number, line: Ln) => side(line.y1, str.tostring(v / 100) + str.tostring(line.y1, ' (#,###.####)'));
-      levelLabels = [
-        side(val0, '0 ' + str.tostring(val0, '(#,###.####)')),
-        side(val1, '1 ' + str.tostring(val1, '(#,###.####)')),
-        priced(v236, fib236),
-        priced(v382, fib382),
-        priced(v618, fib618),
-        priced(v786, fib786),
-      ];
-
-      // a fill on deleted lines is not drawn: only the two fills of the current lines remain
-      fills = [[fib618, fib786], [fib05, fib786]];
-    }
-
-    // color = trend_on ? (direction == 1 ? col2 : col1) : na
-    const trendColor = cfg.trendOn ? (trend === 1 ? cfg.col2 : cfg.col1) : null;
-    const st = supertrend[i] ?? NaN;
-    const hl2 = (bar.high + bar.low) / 2;
-    plot0.push({ time: bar.time, value: st, color: changed || trendColor === null ? 'transparent' : trendColor });
-    plot1.push({ time: bar.time, value: hl2 });
-    topValue.push(hl2);
-    bottomValue.push(st);
-    const faded = changed ? null : color.new(trendColor as string, 90);
-    bottomColor.push(faded === null || faded === undefined ? null : String(faded));
-  }
-
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
-  // a line or a label with an na coordinate is not drawn
-  const drawn = (ln: Ln) => !isNaN(ln.x1) && !isNaN(ln.x2) && !isNaN(ln.y1) && !isNaN(ln.y2);
-  const toLine = (ln: Ln): LineDrawingData => ({
-    time1: T(ln.x1), price1: ln.y1, time2: T(ln.x2), price2: ln.y2, color: ln.color,
-    ...(ln.width !== 1 ? { width: ln.width } : {}),
-    ...(ln.style !== 'solid' ? { style: ln.style } : {}),
-  });
-  const allLines = [fibLow, fib0, fibDi, ...levels].filter((ln): ln is Ln => ln !== null && drawn(ln));
-  const allLabels = [labH, labL, ...levelLabels].filter((lb): lb is Lb => lb !== null && !isNaN(lb.x) && !isNaN(lb.y));
+  const copy = <T extends object>(o: T | null): T | null => (o ? { ...o } : null);
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    fills: [
-      // fill(p1, p2, hl2, supertrend, na, direction != direction[1] ? na : color.new(color, 90))
-      { plot1: 'plot0', plot2: 'plot1', gradient: { topValue, bottomValue, topColor: new Array(n).fill(null), bottomColor } },
-    ],
-    lines: allLines.map(toLine),
-    labels: allLabels.map((lb) => ({
-      time: T(lb.x), price: lb.y, text: lb.text, color: lb.color,
-      ...(lb.textColor !== null ? { textColor: lb.textColor } : {}),
-      ...(lb.style !== 'label_down' ? { style: lb.style } : {}),
-    })),
-    linefills: fills.filter(([a, b]) => drawn(a) && drawn(b)).map(([a, b]) => ({ line1: toLine(a), line2: toLine(b), color: cfg.fillCol })),
+    init(_bars, chart) {
+      chartFg = foregroundColorOf(chart);
+      chartBg = backgroundColorOf(chart);
+      fg50 = String(color.new(chartFg, 50));
+      const s: FibRun = {
+        st: taStep.supertrend(cfg.trend, 25), atr: taStep.atr(200), direction: [], plot0: [], plot1: [], topValue: [],
+        bottomValue: [], bottomColor: [], steps: [],
+        vars: {
+          fibLow: null, fib0: null, fibDi: null, levels: [], labH: null, labL: null, levelLabels: [], fills: [],
+          h: NaN, l: NaN, hi: NaN, li: NaN, val0: NaN, val1: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.st, s.atr];
+      s.series = [s.direction, s.plot0, s.plot1, s.topValue, s.bottomValue, s.bottomColor];
+      return s;
+    },
+    copyVars: (v) => ({ ...v, fibLow: copy(v.fibLow), fib0: copy(v.fib0) }),
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const v = s.vars;
+      const [stValue, dir] = s.st.step(bar.high, bar.low, bar.close);
+      const a = s.atr.step(bar.high, bar.low, bar.close) ?? NaN;
+      const trend = dir ?? NaN;
+      s.direction[i] = trend;
+      const prev = i > 0 ? s.direction[i - 1] : NaN;
+      const known = !isNaN(trend) && !isNaN(prev);
+      const changed = known && trend !== prev;
+      const same = known && trend === prev;
+
+      if (changed) {
+        // every line and label of the trend before is deleted
+        v.fibLow = v.fib0 = v.fibDi = v.labH = v.labL = null;
+        v.levels = [];
+        v.levelLabels = [];
+        v.fills = [];
+        if (trend === -1) {
+          v.fibLow = flat(i, bar.low, i, 2);
+          v.fib0 = flat(i, bar.high + a * 3, i, 2);
+        } else if (trend === 1) {
+          v.fibLow = flat(i, bar.high, i, 2);
+          v.fib0 = flat(i, bar.low - a * 3, i, 2);
+          v.fibDi = { x1: v.li, y1: v.l, x2: v.hi, y2: v.h, color: chartFg, width: 1, style: 'dashed' };
+        }
+      }
+
+      if (same) {
+        const fibLow = v.fibLow;
+        const fib0 = v.fib0;
+        if (fibLow && lt(bar.low, fibLow.y1)) fibLow.y1 = fibLow.y2 = bar.low;
+        if (fib0 && gt(bar.high, fib0.y1)) fib0.y1 = fib0.y2 = bar.high;
+
+        if (fib0 && eq(bar.high, fib0.y1)) {
+          v.h = bar.high;
+          v.hi = i;
+          v.labH = { x: v.hi, y: v.h, text: str.tostring(v.h, '#,###.####'), color: '#15373b', textColor: null, style: 'label_down' };
+        }
+        if (fibLow && eq(bar.low, fibLow.y1)) {
+          v.l = bar.low;
+          v.li = i;
+          v.labL = { x: v.li, y: v.l, text: str.tostring(v.l, '#,###.####'), color: '#15373b', textColor: null, style: 'label_up' };
+        }
+
+        if (fibLow) fibLow.x2 = i + extend;
+        if (fib0) fib0.x2 = i + extend;
+
+        v.fibDi = { x1: v.li, y1: v.l, x2: v.hi, y2: v.h, color: chartFg, width: 1, style: 'dashed' };
+        const start = fib0 ? fib0.x1 : NaN;
+        if (v.fibDi.x1 < start || v.fibDi.x2 < start) v.fibDi = null;
+
+        const top = fib0 ? fib0.y1 : NaN;
+        const bottom = fibLow ? fibLow.y1 : NaN;
+        const sizeStep = (top - bottom) / 100;
+        if (trend === -1) {
+          v.val0 = top;
+          v.val1 = bottom;
+        }
+        if (trend === 1) {
+          v.val0 = bottom;
+          v.val1 = top;
+        }
+
+        const x1 = fib0 ? fib0.x1 : NaN;
+        const x2 = fib0 ? fib0.x2 : NaN;
+        const val0 = v.val0;
+        const level = (lv: number) => val0 - sizeStep * lv * trend * -1;
+        const fib236 = flat(x1, level(v236), x2, 1);
+        const fib382 = flat(x1, level(v382), x2, 1);
+        const fib05 = flat(x1, level(50), x2, 1, fg50, 'dotted');
+        const fib618 = flat(x1, level(v618), x2, 1);
+        const fib786 = flat(x1, level(v786), x2, 1);
+        v.levels = [fib236, fib382, fib05, fib618, fib786];
+
+        const side = (y: number, text: string): Lb => ({ x: i + extend, y, text, color: chartBg, textColor: chartFg, style: 'label_left' });
+        const priced = (lv: number, line: Ln) => side(line.y1, str.tostring(lv / 100) + str.tostring(line.y1, ' (#,###.####)'));
+        v.levelLabels = [
+          side(v.val0, '0 ' + str.tostring(v.val0, '(#,###.####)')),
+          side(v.val1, '1 ' + str.tostring(v.val1, '(#,###.####)')),
+          priced(v236, fib236),
+          priced(v382, fib382),
+          priced(v618, fib618),
+          priced(v786, fib786),
+        ];
+
+        // a fill on deleted lines is not drawn: only the two fills of the current lines remain
+        v.fills = [[fib618, fib786], [fib05, fib786]];
+      }
+
+      // color = trend_on ? (direction == 1 ? col2 : col1) : na
+      const trendColor = cfg.trendOn ? (trend === 1 ? cfg.col2 : cfg.col1) : null;
+      const st = stValue ?? NaN;
+      const hl2 = (bar.high + bar.low) / 2;
+      s.plot0[i] = { time: bar.time, value: st, color: changed || trendColor === null ? 'transparent' : trendColor };
+      s.plot1[i] = { time: bar.time, value: hl2 };
+      s.topValue[i] = hl2;
+      s.bottomValue[i] = st;
+      const faded = changed ? null : color.new(trendColor as string, 90);
+      s.bottomColor[i] = faded === null || faded === undefined ? null : String(faded);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const v = s.vars;
+      const interval = barInterval(bars);
+      const T = (index: number) => barTime(bars, index, interval);
+      // a line or a label with an na coordinate is not drawn
+      const drawn = (ln: Ln) => !isNaN(ln.x1) && !isNaN(ln.x2) && !isNaN(ln.y1) && !isNaN(ln.y2);
+      const toLine = (ln: Ln): LineDrawingData => ({
+        time1: T(ln.x1), price1: ln.y1, time2: T(ln.x2), price2: ln.y2, color: ln.color,
+        ...(ln.width !== 1 ? { width: ln.width } : {}),
+        ...(ln.style !== 'solid' ? { style: ln.style } : {}),
+      });
+      const allLines = [v.fibLow, v.fib0, v.fibDi, ...v.levels].filter((ln): ln is Ln => ln !== null && drawn(ln));
+      const allLabels = [v.labH, v.labL, ...v.levelLabels].filter((lb): lb is Lb => lb !== null && !isNaN(lb.x) && !isNaN(lb.y));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        fills: [
+          // fill(p1, p2, hl2, supertrend, na, direction != direction[1] ? na : color.new(color, 90))
+          { plot1: 'plot0', plot2: 'plot1', gradient: { topValue: s.topValue.slice(), bottomValue: s.bottomValue.slice(),
+            topColor: new Array(n).fill(null), bottomColor: s.bottomColor.slice() } },
+        ],
+        lines: allLines.map(toLine),
+        labels: allLabels.map((lb) => ({
+          time: T(lb.x), price: lb.y, text: lb.text, color: lb.color,
+          ...(lb.textColor !== null ? { textColor: lb.textColor } : {}),
+          ...(lb.style !== 'label_down' ? { style: lb.style } : {}),
+        })),
+        linefills: v.fills.filter(([a, b]) => drawn(a) && drawn(b)).map(([a, b]) => ({ line1: toLine(a), line2: toLine(b), color: cfg.fillCol })),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FibonacciTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FibonacciTrendInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const FibonacciTrend = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

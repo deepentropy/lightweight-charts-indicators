@@ -9,8 +9,10 @@
  * Reference: "Heikin Ashi RSI Oscillator" by JayRogers
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HeikinAshiRsiOscillatorInputs {
   lenHARSI: number;
@@ -97,161 +99,152 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<HeikinAshiRsiOscillatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> };
+
+interface HarsiRun extends BarRunState<Record<string, never>> {
+  rsiClose: ReturnType<typeof taStep.rsi>;
+  rsiHigh: ReturnType<typeof taStep.rsi>;
+  rsiLow: ReturnType<typeof taStep.rsi>;
+  rsiOverlay: ReturnType<typeof taStep.rsi>;
+  stoch: ReturnType<typeof taStep.stoch>;
+  kSma: ReturnType<typeof taStep.sma>;
+  dSma: ReturnType<typeof taStep.sma>;
+  zrsiClose: number[];
+  haOpen: number[];
+  haClose: number[];
+  rsiLine: number[];
+  candles: PlotCandleData[];
+  plots: Point[][];
+  fillStoch: string[];
+}
+
+function study(inputs: Partial<HeikinAshiRsiOscillatorInputs>): BarStudy<HarsiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const close = new Series(bars, (b) => b.close);
-  const high = new Series(bars, (b) => b.high);
-  const low = new Series(bars, (b) => b.low);
-
-  // Zero-median RSI: RSI - 50
-  const rsiCloseArr = ta.rsi(close, cfg.lenHARSI).toArray();
-  const rsiHighArr = ta.rsi(high, cfg.lenHARSI).toArray();
-  const rsiLowArr = ta.rsi(low, cfg.lenHARSI).toArray();
-
-  const zrsiClose: number[] = rsiCloseArr.map(v => v != null ? v - 50 : NaN);
-  const zrsiHigh: number[] = rsiHighArr.map(v => v != null ? v - 50 : NaN);
-  const zrsiLow: number[] = rsiLowArr.map(v => v != null ? v - 50 : NaN);
-
-  // HA RSI candle components
-  // openRSI = nz(closeRSI[1], closeRSI)
-  const openRSI: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    openRSI[i] = i > 0 && !isNaN(zrsiClose[i - 1]) ? zrsiClose[i - 1] : zrsiClose[i];
-  }
-
-  // highRSI = max of zrsi(high) and zrsi(low), lowRSI = min
-  const highRSI: number[] = new Array(n);
-  const lowRSI: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    highRSI[i] = Math.max(zrsiHigh[i], zrsiLow[i]);
-    lowRSI[i] = Math.min(zrsiHigh[i], zrsiLow[i]);
-  }
-
-  // HA close = (openRSI + highRSI + lowRSI + closeRSI) / 4
-  const haClose: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    haClose[i] = (openRSI[i] + highRSI[i] + lowRSI[i] + zrsiClose[i]) / 4;
-  }
-
-  // HA open with smoothing: open[i] = na(open[s]) ? (openRSI + closeRSI)/2 : (open[i-1]*s + close[i-1])/(s+1)
-  const s = cfg.openSmoothing;
-  const haOpen: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    if (i < s || isNaN(haOpen[i - 1])) {
-      haOpen[i] = (openRSI[i] + zrsiClose[i]) / 2;
-    } else {
-      haOpen[i] = (haOpen[i - 1] * s + haClose[i - 1]) / (s + 1);
-    }
-  }
-
-  // HA high = max(highRSI, haOpen, haClose), HA low = min(lowRSI, haOpen, haClose)
-  const haHigh: number[] = new Array(n);
-  const haLow: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    haHigh[i] = Math.max(highRSI[i], haOpen[i], haClose[i]);
-    haLow[i] = Math.min(lowRSI[i], haOpen[i], haClose[i]);
-  }
-
   const warmup = cfg.lenHARSI;
-
-  // Plot candles
-  const candles: PlotCandleData[] = [];
-  for (let i = 0; i < n; i++) {
-    if (i < warmup || isNaN(haClose[i])) {
-      candles.push({ time: bars[i].time as number, open: NaN, high: NaN, low: NaN, close: NaN });
-      continue;
-    }
-    const bullish = haClose[i] > haOpen[i];
-    const color = bullish ? '#26A69A' : '#EF5350';
-    candles.push({
-      time: bars[i].time as number,
-      open: haOpen[i],
-      high: haHigh[i],
-      low: haLow[i],
-      close: haClose[i],
-      color,
-      borderColor: color,
-      wickColor: color,
-    });
-  }
-
-  // RSI overlay line
-  const rsiOverlayRaw = ta.rsi(close, cfg.lenRSI).toArray();
-  const zrsiOverlay: number[] = rsiOverlayRaw.map(v => v != null ? v - 50 : NaN);
-
-  // Smoothed mode: smoothed = (smoothed[1] + zrsi) / 2
-  const rsiLine: number[] = new Array(n);
-  if (cfg.smoothedMode) {
-    for (let i = 0; i < n; i++) {
-      if (isNaN(zrsiOverlay[i])) {
-        rsiLine[i] = NaN;
-      } else if (i === 0 || isNaN(rsiLine[i - 1])) {
-        rsiLine[i] = zrsiOverlay[i];
-      } else {
-        rsiLine[i] = (rsiLine[i - 1] + zrsiOverlay[i]) / 2;
-      }
-    }
-  } else {
-    for (let i = 0; i < n; i++) {
-      rsiLine[i] = zrsiOverlay[i];
-    }
-  }
-
-  // Build plot arrays
-  const plot0 = rsiLine.map((v, i) => ({
-    time: bars[i].time,
-    value: cfg.showPlot && i >= warmup ? v : NaN,
-  }));
-
-  // Band lines (constant)
-  const plot1 = bars.map(b => ({ time: b.time, value: cfg.upper }));
-  const plot2 = bars.map(b => ({ time: b.time, value: cfg.lower }));
-  const plot3 = bars.map(b => ({ time: b.time, value: cfg.upperExtreme }));
-  const plot4 = bars.map(b => ({ time: b.time, value: cfg.lowerExtreme }));
-
-  // Histogram: RSI value as histogram bars
-  const plot5 = rsiLine.map((v, i) => ({
-    time: bars[i].time,
-    value: cfg.showHist && i >= warmup ? v : NaN,
-    color: v > 0 ? 'rgba(38,166,154,0.4)' : 'rgba(239,83,80,0.4)',
-  }));
-
-  // Fills: upper to upperExtreme (red), upper to lower (blue), lower to lowerExtreme (green)
-  const fillUpperExtreme = bars.map(() => 'rgba(255,0,0,0.1)');
-  const fillMid = bars.map(() => 'rgba(33,150,243,0.05)');
-  const fillLowerExtreme = bars.map(() => 'rgba(0,255,0,0.1)');
-
-  // StochK = f_zstoch(RSI, stochLen, smoothK, stochFit): (sma(stoch(RSI, RSI, RSI, len) - 50, smoothK) / 100) * scale;
-  // StochD = sma(StochK, smoothD)
-  const num = (v: number | null | undefined) => (v == null ? NaN : v);
-  const rsiS = Series.fromArray(bars, rsiLine);
-  const zstoch = ta.stoch(rsiS, rsiS, rsiS, cfg.stochLen).toArray().map((v) => num(v) - 50);
-  const stochK = ta.sma(Series.fromArray(bars, zstoch), cfg.smoothK).toArray().map((v) => (num(v) / 100) * cfg.stochFit);
-  const stochD = ta.sma(Series.fromArray(bars, stochK), cfg.smoothD).toArray().map(num);
-  // plot(i_showStoch ? StochK : na, "Stoch K", not i_ribbon ? colStochK : colNone) / "Stoch D"
-  const plot6 = stochK.map((v, i) => ({ time: bars[i].time, value: cfg.showStoch ? v : NaN, color: cfg.ribbon ? COL_NONE : COL_STOCH_K }));
-  const plot7 = stochD.map((v, i) => ({ time: bars[i].time, value: cfg.showStoch ? v : NaN, color: cfg.ribbon ? COL_NONE : COL_STOCH_D }));
-  // fill(plot_stochK, plot_stochD, i_ribbon ? colStochFill : na): colStochFill = StochK >= StochD ? K colour : D colour (50 %)
-  const fillStoch = stochK.map((k, i) => (!cfg.ribbon ? 'transparent' : !(stochD[i] - k > 1e-10) && !isNaN(k) && !isNaN(stochD[i])
-    ? COL_STOCH_K_FILL : COL_STOCH_D_FILL));
-
+  const s0 = cfg.openSmoothing;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3, 'plot4': plot4, 'plot5': plot5, 'plot6': plot6, 'plot7': plot7 },
-    plotCandles: { harsi: candles },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot3', colors: fillUpperExtreme },
-      { plot1: 'plot1', plot2: 'plot2', colors: fillMid },
-      { plot1: 'plot2', plot2: 'plot4', colors: fillLowerExtreme },
-      // untitled fill of the original: its default title
-      { plot1: 'plot6', plot2: 'plot7', options: { title: 'Plots Background' }, colors: fillStoch },
-    ],
-    hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },
-    ],
+    init() {
+      const s: HarsiRun = {
+        rsiClose: taStep.rsi(cfg.lenHARSI), rsiHigh: taStep.rsi(cfg.lenHARSI), rsiLow: taStep.rsi(cfg.lenHARSI),
+        rsiOverlay: taStep.rsi(cfg.lenRSI), stoch: taStep.stoch(cfg.stochLen), kSma: taStep.sma(), dSma: taStep.sma(),
+        zrsiClose: [], haOpen: [], haClose: [], rsiLine: [], candles: [], plots: Array.from({ length: 8 }, () => []),
+        fillStoch: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.rsiClose, s.rsiHigh, s.rsiLow, s.rsiOverlay, s.stoch, s.kSma, s.dSma];
+      s.series = [s.zrsiClose, s.haOpen, s.haClose, s.rsiLine, s.candles, ...s.plots, s.fillStoch];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+
+      // Zero-median RSI: RSI - 50
+      const zrsiClose = s.rsiClose.step(b.close) - 50;
+      const zrsiHigh = s.rsiHigh.step(b.high) - 50;
+      const zrsiLow = s.rsiLow.step(b.low) - 50;
+      s.zrsiClose[i] = zrsiClose;
+
+      // HA RSI candle components
+      // openRSI = nz(closeRSI[1], closeRSI)
+      const openRSI = i > 0 && !isNaN(s.zrsiClose[i - 1]) ? s.zrsiClose[i - 1] : zrsiClose;
+      // highRSI = max of zrsi(high) and zrsi(low), lowRSI = min
+      const highRSI = Math.max(zrsiHigh, zrsiLow);
+      const lowRSI = Math.min(zrsiHigh, zrsiLow);
+      // HA close = (openRSI + highRSI + lowRSI + closeRSI) / 4
+      const haClose = (openRSI + highRSI + lowRSI + zrsiClose) / 4;
+      s.haClose[i] = haClose;
+      // HA open with smoothing: open[i] = na(open[s]) ? (openRSI + closeRSI)/2 : (open[i-1]*s + close[i-1])/(s+1)
+      const haOpen = i < s0 || isNaN(s.haOpen[i - 1])
+        ? (openRSI + zrsiClose) / 2
+        : (s.haOpen[i - 1] * s0 + s.haClose[i - 1]) / (s0 + 1);
+      s.haOpen[i] = haOpen;
+      // HA high = max(highRSI, haOpen, haClose), HA low = min(lowRSI, haOpen, haClose)
+      const haHigh = Math.max(highRSI, haOpen, haClose);
+      const haLow = Math.min(lowRSI, haOpen, haClose);
+
+      // Plot candles
+      if (i < warmup || isNaN(haClose)) {
+        s.candles[i] = { time: time as number, open: NaN, high: NaN, low: NaN, close: NaN };
+      } else {
+        const bullish = haClose > haOpen;
+        const color = bullish ? '#26A69A' : '#EF5350';
+        s.candles[i] = { time: time as number, open: haOpen, high: haHigh, low: haLow, close: haClose, color, borderColor: color, wickColor: color };
+      }
+
+      // RSI overlay line
+      const zrsiOverlay = s.rsiOverlay.step(b.close) - 50;
+      // Smoothed mode: smoothed = (smoothed[1] + zrsi) / 2
+      let rsiLine: number;
+      if (cfg.smoothedMode) {
+        if (isNaN(zrsiOverlay)) rsiLine = NaN;
+        else if (i === 0 || isNaN(s.rsiLine[i - 1])) rsiLine = zrsiOverlay;
+        else rsiLine = (s.rsiLine[i - 1] + zrsiOverlay) / 2;
+      } else {
+        rsiLine = zrsiOverlay;
+      }
+      s.rsiLine[i] = rsiLine;
+
+      const p = s.plots;
+      p[0][i] = { time, value: cfg.showPlot && i >= warmup ? rsiLine : NaN };
+      // Band lines (constant)
+      p[1][i] = { time, value: cfg.upper };
+      p[2][i] = { time, value: cfg.lower };
+      p[3][i] = { time, value: cfg.upperExtreme };
+      p[4][i] = { time, value: cfg.lowerExtreme };
+      // Histogram: RSI value as histogram bars
+      p[5][i] = {
+        time,
+        value: cfg.showHist && i >= warmup ? rsiLine : NaN,
+        color: rsiLine > 0 ? 'rgba(38,166,154,0.4)' : 'rgba(239,83,80,0.4)',
+      };
+
+      // StochK = f_zstoch(RSI, stochLen, smoothK, stochFit): (sma(stoch(RSI, RSI, RSI, len) - 50, smoothK) / 100) * scale;
+      // StochD = sma(StochK, smoothD)
+      const zstoch = s.stoch.step(rsiLine, rsiLine, rsiLine) - 50;
+      const stochK = (s.kSma.step(zstoch, cfg.smoothK) / 100) * cfg.stochFit;
+      const stochD = s.dSma.step(stochK, cfg.smoothD);
+      // plot(i_showStoch ? StochK : na, "Stoch K", not i_ribbon ? colStochK : colNone) / "Stoch D"
+      p[6][i] = { time, value: cfg.showStoch ? stochK : NaN, color: cfg.ribbon ? COL_NONE : COL_STOCH_K };
+      p[7][i] = { time, value: cfg.showStoch ? stochD : NaN, color: cfg.ribbon ? COL_NONE : COL_STOCH_D };
+      // fill(plot_stochK, plot_stochD, i_ribbon ? colStochFill : na): colStochFill = StochK >= StochD ? K colour : D colour (50 %)
+      s.fillStoch[i] = !cfg.ribbon ? 'transparent' : !(stochD - stochK > 1e-10) && !isNaN(stochK) && !isNaN(stochD)
+        ? COL_STOCH_K_FILL : COL_STOCH_D_FILL;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // Fills: upper to upperExtreme (red), upper to lower (blue), lower to lowerExtreme (green)
+      const constant = (c: string): string[] => new Array(n).fill(c);
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'plot0': p[0].slice(), 'plot1': p[1].slice(), 'plot2': p[2].slice(), 'plot3': p[3].slice(), 'plot4': p[4].slice(),
+          'plot5': p[5].slice(), 'plot6': p[6].slice(), 'plot7': p[7].slice(),
+        },
+        plotCandles: { harsi: s.candles.slice() },
+        fills: [
+          { plot1: 'plot1', plot2: 'plot3', colors: constant('rgba(255,0,0,0.1)') },
+          { plot1: 'plot1', plot2: 'plot2', colors: constant('rgba(33,150,243,0.05)') },
+          { plot1: 'plot2', plot2: 'plot4', colors: constant('rgba(0,255,0,0.1)') },
+          // untitled fill of the original: its default title
+          { plot1: 'plot6', plot2: 'plot7', options: { title: 'Plots Background' }, colors: s.fillStoch.slice() },
+        ],
+        hlines: [
+          { value: 0, options: { color: '#787B86', linestyle: 'dotted' as const, title: 'Zero' } },
+        ],
+      };
+    },
   };
 }
 
-export const HeikinAshiRsiOscillator = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HeikinAshiRsiOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HeikinAshiRsiOscillatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const HeikinAshiRsiOscillator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };

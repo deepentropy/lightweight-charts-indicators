@@ -16,9 +16,11 @@
  * Original notice: © BackQuant
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData, PlotCandleData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type KernelType = 'Epanechnikov' | 'Triangular' | 'Laplacian' | 'Cosine';
 type BandType = 'Kernel ATR' | 'Kernel StdDev';
@@ -118,17 +120,30 @@ function kernelWeight(idx: number, length: number, bw: number, ktype: KernelType
   return 0.5 * (1.0 + Math.cos(Math.PI * uClamp));
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<KernelChannelInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = A(getSourceSeries(bars, cfg.src));
-  const close = bars.map((b) => b.close);
-  const len = cfg.winLength;
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] };
 
+interface KernelRun extends BarRunState<Record<string, never>> {
+  tr: ReturnType<typeof taStep.tr>;
+  src: number[];
+  trs: number[];
+  midline: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  fill: string[];
+  /** relWidth of the bars where percentile() runs (its argument history) */
+  calls: number[];
+  bgColors: BgColorData[];
+  candles: PlotCandleData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<KernelChannelInputs>): BarStudy<KernelRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  const len = cfg.winLength;
   const w = Array.from({ length: len }, (_v, i) => kernelWeight(i, len, cfg.bandwidth, cfg.kernelType));
   // nz(s[i]): bars before the history (and na values) count as 0
   const nzAt = (s: number[], j: number) => (j >= 0 && !isNaN(s[j]) ? s[j] : 0);
@@ -151,106 +166,127 @@ export function calculate(
     }
     return den !== 0 ? Math.sqrt(num / den) : NaN;
   };
-
-  const tr = A(ta.tr(bars, true));
-  const midline: number[] = new Array(n);
-  const upper: number[] = new Array(n);
-  const lower: number[] = new Array(n);
-  const relWidth: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const mid = kernelMu(src, i);
-    const width = cfg.bandType === 'Kernel ATR' ? kernelMu(tr, i) : isNaN(mid) ? NaN : kernelStddev(src, i, mid);
-    midline[i] = mid;
-    const bad = isNaN(mid) || isNaN(width);
-    upper[i] = bad ? NaN : mid + width * cfg.bandMult;
-    lower[i] = bad ? NaN : mid - width * cfg.bandMult;
-    // relWidth = na(width) or midline == 0.0 ? na : width / math.abs(midline)
-    relWidth[i] = isNaN(width) || eq(mid, 0) ? NaN : width / Math.abs(mid);
-  }
-
-  // squeezeRank = showSqueeze and not na(relWidth) ? percentile(relWidth, lookback, pct) : na
-  // percentile() runs only on the bars of that branch: its argument history `s[i]` is the value of the i-th
-  // previous call. From bar_index >= len: share (%) of the window values below the current one.
   const sqLen = cfg.squeezeLookback;
-  const calls: number[] = [];
-  const inSqueeze: boolean[] = new Array(n).fill(false);
-  for (let i = 0; i < n; i++) {
-    if (!(cfg.showSqueeze && !isNaN(relWidth[i]))) continue;
-    calls.push(relWidth[i]);
-    const m = calls.length - 1;
-    if (i < sqLen) continue;
-    let count = 0;
-    let rank = 0;
-    const cur = calls[m];
-    for (let k = 0; k < sqLen; k++) {
-      const v = m - k >= 0 ? calls[m - k] : 0; // nz(s[i])
-      count += 1;
-      if (lt(v, cur)) rank += 1;
-    }
-    const frac = count > 0 ? (100.0 * rank) / count : NaN;
-    inSqueeze[i] = !isNaN(frac) && le(frac, cfg.squeezePct);
-  }
-
   const colFlat = color.gray;
-  const midColor = (i: number) => {
-    const prev = i > 0 ? midline[i - 1] : NaN;
-    return gt(midline[i], prev) ? cfg.colUp : lt(midline[i], prev) ? cfg.colDown : colFlat;
-  };
-
-  const bgColors: BgColorData[] = [];
-  const candles: PlotCandleData[] = [];
+  const fillOf = new Map<string, string>([cfg.colUp, cfg.colDown, colFlat].map((c) => [c, String(color.new(c, 80))]));
   const devUp = String(color.new(cfg.colUp, 80));
   const devDown = String(color.new(cfg.colDown, 80));
   const compressedCol = String(color.new(color.gray, 60));
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // bgcolor(showSqueeze and inSqueeze ? sqzCol : na), then the two deviation layers
-    if (cfg.showSqueeze && inSqueeze[i]) bgColors.push({ time: t, color: cfg.sqzCol, id: 'bgcolor0' });
-    if (cfg.highlightDev && gt(close[i], upper[i])) bgColors.push({ time: t, color: devUp, id: 'bgcolor1' });
-    if (cfg.highlightDev && lt(close[i], lower[i])) bgColors.push({ time: t, color: devDown, id: 'bgcolor2' });
-
-    // plotcandle(..., "Bar Coloring", barCol, barCol, bordercolor = barCol, display = useBarColor ? all : none)
-    if (cfg.useBarColor) {
-      const prev = i > 0 ? midline[i - 1] : NaN;
-      const rising = gt(midline[i], prev);
-      const falling = lt(midline[i], prev);
-      const c = close[i];
-      let barCol: string;
-      if (gt(c, upper[i]) && rising) barCol = color.lime;
-      else if (lt(c, lower[i]) && falling) barCol = color.red;
-      else if (ge(c, midline[i]) && le(c, upper[i]) && rising) barCol = color.teal;
-      else if (le(c, midline[i]) && ge(c, lower[i]) && falling) barCol = color.maroon;
-      else if (cfg.showSqueeze && inSqueeze[i]) barCol = compressedCol;
-      else barCol = color.orange;
-      candles.push({ time: t, open: bars[i].open, high: bars[i].high, low: bars[i].low, close: c,
-        color: barCol, wickColor: barCol, borderColor: barCol });
-    }
-  }
-
+  const flags = [false, false, false, false, false, false];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: midline[i], color: midColor(i) })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: cfg.showBands ? upper[i] : NaN, color: midColor(i) })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: cfg.showBands ? lower[i] : NaN, color: midColor(i) })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const tr = taStep.tr(true);
+      const s: KernelRun = {
+        tr, src: [], trs: [], midline: [], plot0: [], plot1: [], plot2: [], fill: [], calls: [], bgColors: [],
+        candles: [], flags: Array.from({ length: 6 }, () => []), times: Array.from({ length: 6 }, () => []),
+        steps: [tr], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.calls, s.bgColors, s.candles, ...s.times];
+      s.series = [s.src, s.trs, s.midline, s.plot0, s.plot1, s.plot2, s.fill, ...s.flags];
+      return s;
     },
-    // fill(plotUpper, plotLower, "Kernel Channel Fill", color.new(midColor, 80))
-    fills: [{
-      plot1: 'plot1', plot2: 'plot2', options: { title: 'Kernel Channel Fill' },
-      colors: bars.map((_b, i) => String(color.new(midColor(i), 80))),
-    }],
-    bgColors,
-    // the plotcandle output is always declared; its candles are drawn only with useBarColor (display.none else)
-    plotCandles: { barColoring: candles },
-    alerts: alertStates(alertConditions, bars, [
-      bars.map((_b, i) => gt(midline[i], i > 0 ? midline[i - 1] : NaN)), // midline > midline[1]
-      bars.map((_b, i) => lt(midline[i], i > 0 ? midline[i - 1] : NaN)), // midline < midline[1]
-      crossedOver(close, midline),
-      crossedUnder(close, midline),
-      bars.map((_b, i) => lt(close[i], upper[i])), // close < upper
-      bars.map((_b, i) => lt(close[i], lower[i])), // close < lower
-    ]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      s.src[i] = value(b);
+      s.trs[i] = s.tr.step(b.high, b.low, b.close);
+      const mid = kernelMu(s.src, i);
+      const width = cfg.bandType === 'Kernel ATR' ? kernelMu(s.trs, i) : isNaN(mid) ? NaN : kernelStddev(s.src, i, mid);
+      s.midline[i] = mid;
+      const bad = isNaN(mid) || isNaN(width);
+      const upper = bad ? NaN : mid + width * cfg.bandMult;
+      const lower = bad ? NaN : mid - width * cfg.bandMult;
+      // relWidth = na(width) or midline == 0.0 ? na : width / math.abs(midline)
+      const relWidth = isNaN(width) || eq(mid, 0) ? NaN : width / Math.abs(mid);
+
+      // squeezeRank = showSqueeze and not na(relWidth) ? percentile(relWidth, lookback, pct) : na
+      // percentile() runs only on the bars of that branch: its argument history `s[i]` is the value of the i-th
+      // previous call. From bar_index >= len: share (%) of the window values below the current one.
+      let inSqueeze = false;
+      if (cfg.showSqueeze && !isNaN(relWidth)) {
+        const calls = s.calls;
+        calls.push(relWidth);
+        const m = calls.length - 1;
+        if (i >= sqLen) {
+          let count = 0;
+          let rank = 0;
+          const cur = calls[m];
+          for (let k = 0; k < sqLen; k++) {
+            const v = m - k >= 0 ? calls[m - k] : 0; // nz(s[i])
+            count += 1;
+            if (lt(v, cur)) rank += 1;
+          }
+          const frac = count > 0 ? (100.0 * rank) / count : NaN;
+          inSqueeze = !isNaN(frac) && le(frac, cfg.squeezePct);
+        }
+      }
+
+      const prev = i > 0 ? s.midline[i - 1] : NaN;
+      const rising = gt(mid, prev);
+      const falling = lt(mid, prev);
+      const midColor = rising ? cfg.colUp : falling ? cfg.colDown : colFlat;
+      s.plot0[i] = { time: t, value: mid, color: midColor };
+      s.plot1[i] = { time: t, value: cfg.showBands ? upper : NaN, color: midColor };
+      s.plot2[i] = { time: t, value: cfg.showBands ? lower : NaN, color: midColor };
+      // fill(plotUpper, plotLower, "Kernel Channel Fill", color.new(midColor, 80))
+      s.fill[i] = fillOf.get(midColor)!;
+
+      const c = b.close;
+      // bgcolor(showSqueeze and inSqueeze ? sqzCol : na), then the two deviation layers
+      if (cfg.showSqueeze && inSqueeze) s.bgColors.push({ time: t, color: cfg.sqzCol, id: 'bgcolor0' });
+      if (cfg.highlightDev && gt(c, upper)) s.bgColors.push({ time: t, color: devUp, id: 'bgcolor1' });
+      if (cfg.highlightDev && lt(c, lower)) s.bgColors.push({ time: t, color: devDown, id: 'bgcolor2' });
+      // plotcandle(..., "Bar Coloring", barCol, barCol, bordercolor = barCol, display = useBarColor ? all : none)
+      if (cfg.useBarColor) {
+        let barCol: string;
+        if (gt(c, upper) && rising) barCol = color.lime;
+        else if (lt(c, lower) && falling) barCol = color.red;
+        else if (ge(c, mid) && le(c, upper) && rising) barCol = color.teal;
+        else if (le(c, mid) && ge(c, lower) && falling) barCol = color.maroon;
+        else if (cfg.showSqueeze && inSqueeze) barCol = compressedCol;
+        else barCol = color.orange;
+        s.candles.push({ time: t, open: b.open, high: b.high, low: b.low, close: c,
+          color: barCol, wickColor: barCol, borderColor: barCol });
+      }
+
+      const pc = i > 0 ? bars[i - 1].close : NaN;
+      flags[0] = rising; // midline > midline[1]
+      flags[1] = falling; // midline < midline[1]
+      flags[2] = c > mid && pc <= prev; // ta.crossover(close, midline)
+      flags[3] = c < mid && pc >= prev; // ta.crossunder(close, midline)
+      flags[4] = lt(c, upper); // close < upper
+      flags[5] = lt(c, lower); // close < lower
+      for (let k = 0; k < 6; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        fills: [{ plot1: 'plot1', plot2: 'plot2', options: { title: 'Kernel Channel Fill' }, colors: s.fill.slice() }],
+        bgColors: s.bgColors.slice(),
+        // the plotcandle output is always declared; its candles are drawn only with useBarColor (display.none else)
+        plotCandles: { barColoring: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<KernelChannelInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<KernelChannelInputs> = {},
+): IndicatorResult & { bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -265,6 +301,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const KernelChannel = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

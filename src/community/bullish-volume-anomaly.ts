@@ -12,9 +12,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertcondition (title '{{ticker}}', no message) */
 export const alertConditions: AlertConditionDecl[] = [
@@ -65,105 +67,152 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface BvaVars {
+  /** The ATR zigzag: last swing low / high and the trend */
+  LL: number;
+  HH: number;
+  trend: number;
+}
+
+interface BvaRun extends BarRunState<BvaVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  cum: ReturnType<typeof taStep.cum>;
+  ssMean: ReturnType<typeof taStep.sma>;
+  ssDev: ReturnType<typeof taStep.stdev>;
+  cMean: ReturnType<typeof taStep.sma>;
+  cDev: ReturnType<typeof taStep.stdev>;
+  pDev: ReturnType<typeof taStep.stdev>;
+  ema: ReturnType<typeof taStep.ema>;
+  p: number[];
+  down: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  up: number[];
+  flags: boolean[];
+  times: number[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<BullishVolumeAnomalyInputs>): BarStudy<BvaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const W = 480;
+  const l = cfg.bandLength;
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  return {
+    init() {
+      const s: BvaRun = {
+        atr: taStep.atr(cfg.atrLength), cum: taStep.cum(), ssMean: taStep.sma(), ssDev: taStep.stdev(), cMean: taStep.sma(),
+        cDev: taStep.stdev(), pDev: taStep.stdev(), ema: taStep.ema(l),
+        p: [], down: [], up: [], plot0: [], plot1: [], plot2: [], flags: [], times: [], markers: [],
+        steps: [], vars: { LL: NaN, HH: NaN, trend: 1 }, lists: [], series: [],
+      };
+      s.steps = [s.atr, s.cum, s.ssMean, s.ssDev, s.cMean, s.cDev, s.pDev, s.ema];
+      s.lists = [s.times, s.markers];
+      s.series = [s.p, s.down, s.up, s.plot0, s.plot1, s.plot2, s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const close = b.close;
+
+      // Single ATR zigzag; the volume is signed by the trend after this bar's update
+      const atr = s.atr.step(b.high, b.low, close);
+      if (i === 0) {
+        v.LL = b.low;
+        v.HH = b.high;
+        v.trend = 1;
+      }
+      const thr = atr * cfg.atrMult;
+      const { LL, HH, trend } = v;
+      let nextLL = LL;
+      let nextHH = HH;
+      let nextTrend = trend;
+      if (!isNaN(thr)) {
+        if (trend > 0) {
+          if (ge(b.high, HH)) nextHH = b.high;
+          else if (lt(b.low, HH - thr)) {
+            nextTrend = -1;
+            nextLL = b.low;
+          }
+        } else if (le(b.low, LL)) nextLL = b.low;
+        else if (gt(b.high, LL + thr)) {
+          nextTrend = 1;
+          nextHH = b.high;
+        }
+      }
+      v.LL = nextLL;
+      v.HH = nextHH;
+      v.trend = nextTrend;
+      const signedVolume = nextTrend === 1 ? (b.volume ?? NaN) : -(b.volume ?? NaN);
+
+      // Z-scores; plain divisions (x / 0 is +-infinity, 0 / 0 na)
+      const ss = s.cum.step(signedVolume);
+      const ssMean = s.ssMean.step(ss, W);
+      const ssDev = s.ssDev.step(ss, W);
+      const sv = (ss - ssMean) / ssDev;
+      const cMean = s.cMean.step(close, W);
+      const cDev = s.cDev.step(close, W);
+      const p = (close - cMean) / cDev;
+      s.p[i] = p;
+      const pDev = s.pDev.step(p, W);
+      const c = (i >= W ? p - s.p[i - W] : NaN) / pDev;
+
+      // close_range(l): sum of |open[i] - close[i]| / open[i] for i = 0 .. l - 1 (open[i] != 0), divided by l
+      const ema = s.ema.step(close);
+      let mean = 0.0;
+      for (let k = 0; k <= l - 1; k++) {
+        const o = i - k >= 0 ? bars[i - k].open : NaN;
+        if (!isNaN(o) && Math.abs(o) > EPS) mean = mean + Math.abs(o - bars[i - k].close) / o;
+      }
+      const range = mean / l;
+      s.up[i] = ema * (1 + range * cfg.bandMult);
+      s.down[i] = ema * (1 - range * cfg.bandMult);
+
+      // alertcondition(s-p>2 and c<1 and s>0 and high<down[1], '{{ticker}}')
+      const signal = i >= 1 && gt(sv - p, 2) && lt(c, 1) && gt(sv, 0) && lt(b.high, s.down[i - 1]);
+      s.flags[i] = signal;
+      if (signal) {
+        s.times.push(b.time as number);
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'normal' });
+      }
+
+      const time = b.time as number;
+      s.plot0[i] = { time, value: fin(ema), color: color.blue };
+      s.plot1[i] = { time, value: i > 0 ? fin(s.up[i - 1]) : NaN, color: color.green };
+      s.plot2[i] = { time, value: i > 0 ? fin(s.down[i - 1]) : NaN, color: color.red };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, [s.times], [n > 0 && s.flags[n - 1]]),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BullishVolumeAnomalyInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<BullishVolumeAnomalyInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const W = 480;
-
-  // Single ATR zigzag; the volume is signed by the trend after this bar's update
-  const atr = A(ta.atr(bars, cfg.atrLength));
-  const signedVolume: number[] = new Array(n);
-  let LL = NaN;
-  let HH = NaN;
-  let trend = 1;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    if (i === 0) {
-      LL = b.low;
-      HH = b.high;
-      trend = 1;
-    }
-    const thr = atr[i] * cfg.atrMult;
-    let nextLL = LL;
-    let nextHH = HH;
-    let nextTrend = trend;
-    if (!isNaN(thr)) {
-      if (trend > 0) {
-        if (ge(b.high, HH)) nextHH = b.high;
-        else if (lt(b.low, HH - thr)) {
-          nextTrend = -1;
-          nextLL = b.low;
-        }
-      } else if (le(b.low, LL)) nextLL = b.low;
-      else if (gt(b.high, LL + thr)) {
-        nextTrend = 1;
-        nextHH = b.high;
-      }
-    }
-    LL = nextLL;
-    HH = nextHH;
-    trend = nextTrend;
-    signedVolume[i] = nextTrend === 1 ? (b.volume ?? NaN) : -(b.volume ?? NaN);
-  }
-
-  // Z-scores; plain divisions (x / 0 is +-infinity, 0 / 0 na)
-  const ss = A(ta.cum(S(signedVolume)));
-  const ssMean = A(ta.sma(S(ss), W));
-  const ssDev = A(ta.stdev(S(ss), W));
-  const s = ss.map((v, i) => (v - ssMean[i]) / ssDev[i]);
-  const close = bars.map((b) => b.close);
-  const cMean = A(ta.sma(S(close), W));
-  const cDev = A(ta.stdev(S(close), W));
-  const p = close.map((v, i) => (v - cMean[i]) / cDev[i]);
-  const pDev = A(ta.stdev(S(p), W));
-  const c = p.map((v, i) => (i >= W ? v - p[i - W] : NaN) / pDev[i]);
-
-  // close_range(l): sum of |open[i] - close[i]| / open[i] for i = 0 .. l - 1 (open[i] != 0), divided by l
-  const l = cfg.bandLength;
-  const ema = A(ta.ema(S(close), l));
-  const up: number[] = new Array(n);
-  const down: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    let mean = 0.0;
-    for (let k = 0; k <= l - 1; k++) {
-      const o = i - k >= 0 ? bars[i - k].open : NaN;
-      if (!isNaN(o) && Math.abs(o) > EPS) mean = mean + Math.abs(o - bars[i - k].close) / o;
-    }
-    const range = mean / l;
-    up[i] = ema[i] * (1 + range * cfg.bandMult);
-    down[i] = ema[i] * (1 - range * cfg.bandMult);
-  }
-
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const markers: MarkerData[] = [];
-  const signalFlags: boolean[] = new Array(n).fill(false);
-  for (let i = 1; i < n; i++) {
-    if (gt(s[i] - p[i], 2) && lt(c[i], 1) && gt(s[i], 0) && lt(bars[i].high, down[i - 1])) {
-      signalFlags[i] = true;
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'normal' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(ema[i]), color: color.blue })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: i > 0 ? fin(up[i - 1]) : NaN, color: color.green })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: i > 0 ? fin(down[i - 1]) : NaN, color: color.red })),
-    },
-    markers,
-    // alertcondition(s-p>2 and c<1 and s>0 and high<down[1], '{{ticker}}')
-    alerts: alertStates(alertConditions, bars, [signalFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const BullishVolumeAnomaly = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

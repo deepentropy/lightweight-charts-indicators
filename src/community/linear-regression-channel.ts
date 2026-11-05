@@ -11,7 +11,9 @@
  * Reference: "Linear Regression Channel" (LRC_SH)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LinearRegressionChannelInputs {
   length: number;
@@ -38,76 +40,110 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<LinearRegressionChannelInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+/** ta.linreg(source, len, 0) on bar i of `src` (the values of every bar): the doubles of the oakscriptjs array function */
+function linregAt(src: number[], i: number, len: number): number {
+  if (i < len - 1) return NaN;
+  for (let j = 0; j < len; j++) if (isNaN(src[i - j])) return NaN;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXY = 0;
+  let sumX2 = 0;
+  for (let j = 0; j < len; j++) {
+    const x = j + 1;
+    const y = src[i - (len - 1 - j)];
+    sumX += x;
+    sumY += y;
+    sumXY += x * y;
+    sumX2 += x * x;
+  }
+  const slope = (len * sumXY - sumX * sumY) / (len * sumX2 - sumX * sumX);
+  const intercept = sumY / len - (slope * sumX) / len + slope;
+  return intercept + slope * (len - 1);
+}
+
+interface LrcRun extends BarRunState<Record<string, never>> {
+  high: number[];
+  low: number[];
+  devHigh: ReturnType<typeof taStep.stdev>;
+  devLow: ReturnType<typeof taStep.stdev>;
+  aArr: number[];
+  bArr: number[];
+  devHighArr: number[];
+  devLowArr: number[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<LinearRegressionChannelInputs>): BarStudy<LrcRun, IndicatorResult> {
   const { length } = { ...defaultInputs, ...inputs };
-
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-
-  // Pine: a = linreg(high, len, 0), b = linreg(low, len, 0)
-  const aArr = ta.linreg(highSeries, length, 0).toArray();
-  const bArr = ta.linreg(lowSeries, length, 0).toArray();
-
-  // Pine: c = -dev(low, len) + b, d = dev(high, len) + a
-  const devHighArr = ta.stdev(highSeries, length).toArray();
-  const devLowArr = ta.stdev(lowSeries, length).toArray();
-
+  const len = Math.floor(length);
   const warmup = length;
-
-  // Plot a = linreg(high)
-  const plot0 = bars.map((b, i) => {
-    const v = aArr[i];
-    if (i < warmup || v == null || isNaN(v)) return { time: b.time, value: NaN };
-    return { time: b.time, value: v };
-  });
-
-  // Plot b = linreg(low)
-  const plot1 = bars.map((b, i) => {
-    const v = bArr[i];
-    if (i < warmup || v == null || isNaN(v)) return { time: b.time, value: NaN };
-    return { time: b.time, value: v };
-  });
-
-  // Plot c = b - dev(low, len) -- lower band, colored by direction
-  const plot2 = bars.map((b, i) => {
-    const bv = bArr[i];
-    const dv = devLowArr[i];
-    if (i < warmup || bv == null || isNaN(bv) || dv == null || isNaN(dv)) return { time: b.time, value: NaN };
-    const val = bv - dv;
-    let color = '#26A69A';
-    if (i > warmup) {
-      const prevB = bArr[i - 1];
-      const prevD = devLowArr[i - 1];
-      if (prevB != null && prevD != null) {
-        const prevVal = prevB - prevD;
-        color = val > prevVal ? '#26A69A' : '#EF5350';
-      }
-    }
-    return { time: b.time, value: val, color };
-  });
-
-  // Plot d = a + dev(high, len) -- upper band, colored by direction
-  const plot3 = bars.map((b, i) => {
-    const av = aArr[i];
-    const dv = devHighArr[i];
-    if (i < warmup || av == null || isNaN(av) || dv == null || isNaN(dv)) return { time: b.time, value: NaN };
-    const val = av + dv;
-    let color = '#26A69A';
-    if (i > warmup) {
-      const prevA = aArr[i - 1];
-      const prevD = devHighArr[i - 1];
-      if (prevA != null && prevD != null) {
-        const prevVal = prevA + prevD;
-        color = val > prevVal ? '#26A69A' : '#EF5350';
-      }
-    }
-    return { time: b.time, value: val, color };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
+    init() {
+      const s: LrcRun = {
+        high: [], low: [], devHigh: taStep.stdev(), devLow: taStep.stdev(),
+        aArr: [], bArr: [], devHighArr: [], devLowArr: [], plots: [[], [], [], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.devHigh, s.devLow];
+      s.series = [s.high, s.low, s.aArr, s.bArr, s.devHighArr, s.devLowArr, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const time = bar.time;
+      // Pine: a = linreg(high, len, 0), b = linreg(low, len, 0)
+      s.high[i] = bar.high;
+      s.low[i] = bar.low;
+      const av = linregAt(s.high, i, len);
+      const bv = linregAt(s.low, i, len);
+      // Pine: c = -dev(low, len) + b, d = dev(high, len) + a
+      const dh = s.devHigh.step(bar.high, length);
+      const dl = s.devLow.step(bar.low, length);
+      s.aArr[i] = av;
+      s.bArr[i] = bv;
+      s.devHighArr[i] = dh;
+      s.devLowArr[i] = dl;
+      const p = s.plots;
+      // Plot a = linreg(high)
+      p[0][i] = i < warmup || isNaN(av) ? { time, value: NaN } : { time, value: av };
+      // Plot b = linreg(low)
+      p[1][i] = i < warmup || isNaN(bv) ? { time, value: NaN } : { time, value: bv };
+      // Plot c = b - dev(low, len) -- lower band, colored by direction
+      if (i < warmup || isNaN(bv) || isNaN(dl)) p[2][i] = { time, value: NaN };
+      else {
+        const val = bv - dl;
+        let color = '#26A69A';
+        if (i > warmup) color = val > s.bArr[i - 1] - s.devLowArr[i - 1] ? '#26A69A' : '#EF5350';
+        p[2][i] = { time, value: val, color };
+      }
+      // Plot d = a + dev(high, len) -- upper band, colored by direction
+      if (i < warmup || isNaN(av) || isNaN(dh)) p[3][i] = { time, value: NaN };
+      else {
+        const val = av + dh;
+        let color = '#26A69A';
+        if (i > warmup) color = val > s.aArr[i - 1] + s.devHighArr[i - 1] ? '#26A69A' : '#EF5350';
+        p[3][i] = { time, value: val, color };
+      }
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': p[0].slice(), 'plot1': p[1].slice(), 'plot2': p[2].slice(), 'plot3': p[3].slice() },
+      };
+    },
   };
 }
 
-export const LinearRegressionChannel = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LinearRegressionChannelInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<LinearRegressionChannelInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const LinearRegressionChannel = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

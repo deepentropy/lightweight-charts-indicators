@@ -16,9 +16,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SqueezeChannelInputs {
   bbLength: number;
@@ -148,28 +150,50 @@ const lt = (a: number, b: number) => b - a > EPS;
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
 type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Level = { level: number; expiry: number; start: number; broken: boolean };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SqueezeChannelInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+interface SqVars {
+  channelActive: boolean;
+  channelHigh: number;
+  channelLow: number;
+  barsSinceEntry: number;
+  channelLocked: boolean;
+  squeezeStillOn: boolean;
+  lastSqueezeColor: string | null;
+  watchingReversal: boolean;
+  reversalDirection: number;
+  reversalLevel: number;
+  reversalBarsLeft: number;
+  reversalTriggered: boolean;
+  prevSqueezeOn: boolean;
+  /** bullBreakout[1] or bearBreakout[1] */
+  prevBreakout: boolean;
+  /** channelHigh[1] / channelLow[1] */
+  prevChannelHigh: number;
+  prevChannelLow: number;
+  /** The extended levels (changed in place, copied by copyVars) */
+  extHigh: Level[];
+  extLow: Level[];
+}
+
+interface SqRun extends BarRunState<SqVars> {
+  bbBasis: ReturnType<typeof taStep.sma>;
+  bbStdev: ReturnType<typeof taStep.stdev>;
+  kcBasis: ReturnType<typeof taStep.sma>;
+  kcAtr: ReturnType<typeof taStep.atr>;
+  atr: ReturnType<typeof taStep.atr>;
+  swingHigh: ReturnType<typeof taStep.highest>;
+  swingLow: ReturnType<typeof taStep.lowest>;
+  plots: Record<string, Point[]>;
+  fillColors: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SqueezeChannelInputs>): BarStudy<SqRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  // One flag per bar for each alertcondition, in the original's order
-  const flags: boolean[][] = Array.from({ length: alertConditions.length }, () => []);
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const closeS = S(close);
-
-  // Squeeze
-  const bbBasis = A(ta.sma(closeS, cfg.bbLength));
-  const bbStdev = A(ta.stdev(closeS, cfg.bbLength));
-  const kcBasis = A(ta.sma(closeS, cfg.kcLength));
-  const kcAtr = A(ta.atr(bars, cfg.kcLength));
-  const atrValue = A(ta.atr(bars, cfg.atrLength));
-  const initialSwingHigh = A(ta.highest(S(bars.map((b) => b.high)), cfg.swingLookback));
-  const initialSwingLow = A(ta.lowest(S(bars.map((b) => b.low)), cfg.swingLookback));
 
   const getSqueezeColor = (strength: number): string | null => {
     if (isNaN(strength)) return null;
@@ -180,33 +204,6 @@ export function calculate(
     return cfg.sqColor5;
   };
 
-  // var state
-  let channelActive = false;
-  let channelHigh = NaN;
-  let channelLow = NaN;
-  let barsSinceEntry = 0;
-  let channelLocked = false;
-  let squeezeStillOn = false;
-  let lastSqueezeColor: string | null = null;
-  let watchingReversal = false;
-  let reversalDirection = 0;
-  let reversalLevel = NaN;
-  let reversalBarsLeft = 0;
-  let reversalTriggered = false;
-  let prevSqueezeOn = false;
-  let prevBreakout = false; // bullBreakout[1] or bearBreakout[1]
-  let prevChannelHigh = NaN; // channelHigh[1]
-  let prevChannelLow = NaN; // channelLow[1]
-
-  type Level = { level: number; expiry: number; start: number; broken: boolean };
-  const extHigh: Level[] = [];
-  const extLow: Level[] = [];
-
-  const t = (i: number) => bars[i].time;
-  const plots: Record<string, Point[]> = {};
-  for (let k = 0; k < 14; k++) plots[`plot${k}`] = [];
-  const fillColors: string[] = new Array(n);
-  const markers: MarkerData[] = [];
   const reversalColorBear = String(color.new(cfg.bearColor, 50));
   const reversalColorBull = String(color.new(cfg.bullColor, 50));
   const extBullColor = String(color.new(cfg.bullColor, 30));
@@ -214,188 +211,249 @@ export function calculate(
   const extBullRevColor = String(color.new(cfg.reversalBullColor, 30));
   const extBearRevColor = String(color.new(cfg.reversalBearColor, 30));
 
-  for (let i = 0; i < n; i++) {
-    const bar = bars[i];
-    const bbDev = cfg.bbMult * bbStdev[i];
-    const bbUpper = bbBasis[i] + bbDev;
-    const bbLower = bbBasis[i] - bbDev;
-    const bbWidth = bbUpper - bbLower;
-    const kcRange = cfg.kcMult * kcAtr[i];
-    const kcUpper = kcBasis[i] + kcRange;
-    const kcLower = kcBasis[i] - kcRange;
-    const kcWidth = kcUpper - kcLower;
-    const squeezeOn = gt(bbLower, kcLower) && lt(bbUpper, kcUpper);
-    const squeezeEntry = squeezeOn && !prevSqueezeOn;
-    const squeezeRatio = squeezeOn ? bbWidth / kcWidth : NaN;
-    const squeezeStrength = squeezeOn ? 1.0 - Math.min(squeezeRatio, 1.0) : NaN;
-
-    if (squeezeEntry) {
-      channelActive = true;
-      channelHigh = initialSwingHigh[i];
-      channelLow = initialSwingLow[i];
-      barsSinceEntry = 0;
-      channelLocked = false;
-      squeezeStillOn = true;
-      lastSqueezeColor = getSqueezeColor(squeezeStrength);
-      watchingReversal = false;
-      reversalDirection = 0;
-      reversalLevel = NaN;
-      reversalBarsLeft = 0;
-      reversalTriggered = false;
-    } else if (channelActive) {
-      barsSinceEntry += 1;
-      if (barsSinceEntry <= cfg.swingLookfwd && !channelLocked) {
-        if (gt(bar.high, channelHigh)) channelHigh = bar.high;
-        if (lt(bar.low, channelLow)) channelLow = bar.low;
-      }
-      if (barsSinceEntry > cfg.swingLookfwd) channelLocked = true;
-      if (squeezeOn) lastSqueezeColor = getSqueezeColor(squeezeStrength);
-      if (!squeezeOn) squeezeStillOn = false;
-    }
-
-    // Signals
-    const validBreakoutZone = channelActive && channelLocked;
-    const bullBreakout = validBreakoutZone && gt(bar.close, channelHigh);
-    const bearBreakout = validBreakoutZone && lt(bar.close, channelLow);
-    if (bullBreakout) {
-      if (cfg.enableReversal) {
-        watchingReversal = true;
-        reversalDirection = 1;
-        reversalLevel = channelLow;
-        reversalBarsLeft = cfg.reversalBars;
-        reversalTriggered = false;
-      }
-      channelActive = false;
-    }
-    if (bearBreakout) {
-      if (cfg.enableReversal) {
-        watchingReversal = true;
-        reversalDirection = -1;
-        reversalLevel = channelHigh;
-        reversalBarsLeft = cfg.reversalBars;
-        reversalTriggered = false;
-      }
-      channelActive = false;
-    }
-
-    // Reversal detection
-    let bearReversal = false;
-    let bullReversal = false;
-    if (cfg.enableReversal && watchingReversal && reversalBarsLeft > 0 && !reversalTriggered) {
-      reversalBarsLeft -= 1;
-      if (reversalDirection === 1 && lt(bar.close, reversalLevel)) {
-        bearReversal = true;
-        reversalTriggered = true;
-      }
-      if (reversalDirection === -1 && gt(bar.close, reversalLevel)) {
-        bullReversal = true;
-        reversalTriggered = true;
-      }
-    }
-    if (reversalBarsLeft <= 0) watchingReversal = false;
-
-    // Extended S/R levels (bar_index is only used relative to the push bar)
-    if (prevBreakout) {
-      extHigh.push({ level: prevChannelHigh, expiry: i + cfg.extendedBars, start: i, broken: false });
-      extLow.push({ level: prevChannelLow, expiry: i + cfg.extendedBars, start: i, broken: false });
-    }
-    let extBullSignal = false;
-    let extBearSignal = false;
-    let extBullReversal = false;
-    let extBearReversal = false;
-    for (let k = extHigh.length - 1; k >= 0; k--) {
-      const { level, expiry, start, broken } = extHigh[k];
-      const delayPassed = i >= start + cfg.srDelayBars;
-      if (i > expiry) {
-        extHigh.splice(k, 1);
-      } else if (delayPassed && cfg.enableSRRetest) {
-        if (!broken && gt(bar.close, level)) {
-          extHigh[k].broken = true;
-          extBullSignal = true;
-        }
-        if (broken && lt(bar.close, level)) {
-          extBearReversal = true;
-          extHigh.splice(k, 1);
-        }
-      }
-    }
-    for (let k = extLow.length - 1; k >= 0; k--) {
-      const { level, expiry, start, broken } = extLow[k];
-      const delayPassed = i >= start + cfg.srDelayBars;
-      if (i > expiry) {
-        extLow.splice(k, 1);
-      } else if (delayPassed && cfg.enableSRRetest) {
-        if (!broken && lt(bar.close, level)) {
-          extLow[k].broken = true;
-          extBearSignal = true;
-        }
-        if (broken && gt(bar.close, level)) {
-          extBullReversal = true;
-          extLow.splice(k, 1);
-        }
-      }
-    }
-
-    // Channel plots
-    const baseColor = squeezeStillOn ? lastSqueezeColor : cfg.channelColorWaiting;
-    const currentChannelColor = channelActive ? baseColor : null;
-    // color.new(na, 85) is black with transparency 85
-    const fillColor = channelActive ? String(color.new(baseColor ?? '#000000', 85)) : null;
-    const chColor = currentChannelColor ?? undefined;
-    plots.plot0.push({ time: t(i), value: cfg.showChannel && channelActive ? channelHigh : NaN, color: chColor });
-    plots.plot1.push({ time: t(i), value: cfg.showChannel && channelActive ? channelLow : NaN, color: chColor });
-    fillColors[i] = cfg.showChannelFill && fillColor !== null ? fillColor : 'transparent';
-    const channelMid = channelActive ? (channelHigh + channelLow) / 2 : NaN;
-    plots.plot2.push({
-      time: t(i), value: cfg.showChannel && channelActive && channelLocked ? channelMid : NaN, color: MID_COLOR,
-    });
-    plots.plot3.push({
-      time: t(i),
-      value: cfg.showChannel && cfg.enableReversal && watchingReversal && !reversalTriggered ? reversalLevel : NaN,
-      color: reversalDirection === 1 ? reversalColorBear : reversalColorBull,
-    });
-
-    // Extended level plots
-    const extLevel = (arr: Level[], idx: number) => {
-      if (!(cfg.enableExtendedLevels && idx < arr.length)) return NaN;
-      const level = arr[idx].level;
-      const priceDistance = Math.abs(bar.close - level);
-      return le(priceDistance, atrValue[i] * cfg.atrProximity) ? level : NaN;
-    };
-    for (let k = 0; k < 5; k++) {
-      plots[`plot${4 + k}`].push({ time: t(i), value: extLevel(extHigh, k), color: cfg.extendedColorHigh });
-      plots[`plot${9 + k}`].push({ time: t(i), value: extLevel(extLow, k), color: cfg.extendedColorLow });
-    }
-
-    // Shapes (id: shape<k>, the plotshape outputs in the original's order)
-    const mk = (on: boolean, id: string, shape: MarkerData['shape'], position: MarkerData['position'], c: string, size: 'tiny' | 'small') => {
-      if (on) markers.push({ time: t(i), position, shape, color: c, size, id });
-    };
-    mk(bullBreakout, 'shape0', 'triangleUp', 'belowBar', cfg.bullColor, 'tiny');
-    mk(bearBreakout, 'shape1', 'triangleDown', 'aboveBar', cfg.bearColor, 'tiny');
-    mk(cfg.enableReversal && bullReversal, 'shape2', 'diamond', 'belowBar', cfg.reversalBullColor, 'small');
-    mk(cfg.enableReversal && bearReversal, 'shape3', 'diamond', 'aboveBar', cfg.reversalBearColor, 'small');
-    mk(extBullSignal, 'shape4', 'triangleUp', 'belowBar', extBullColor, 'tiny');
-    mk(extBearSignal, 'shape5', 'triangleDown', 'aboveBar', extBearColor, 'tiny');
-    mk(extBullReversal, 'shape6', 'diamond', 'belowBar', extBullRevColor, 'small');
-    mk(extBearReversal, 'shape7', 'diamond', 'aboveBar', extBearRevColor, 'small');
-    [bullBreakout, bearBreakout, bullReversal, bearReversal, extBullSignal, extBearSignal, extBullReversal, extBearReversal,
-      squeezeEntry].forEach((f, k) => flags[k].push(f));
-
-    prevSqueezeOn = squeezeOn;
-    prevBreakout = bullBreakout || bearBreakout;
-    prevChannelHigh = channelHigh;
-    prevChannelLow = channelLow;
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    // fill(p_high, p_low, color = showChannelFill ? fillColor : na, title = "Channel Fill")
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Channel Fill' }, colors: fillColors }],
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      const s: SqRun = {
+        bbBasis: taStep.sma(), bbStdev: taStep.stdev(), kcBasis: taStep.sma(), kcAtr: taStep.atr(cfg.kcLength),
+        atr: taStep.atr(cfg.atrLength), swingHigh: taStep.highest(), swingLow: taStep.lowest(),
+        plots: {}, fillColors: [], markers: [],
+        // One flag per bar for each alertcondition, in the original's order
+        flags: alertConditions.map(() => []), times: alertConditions.map(() => []),
+        steps: [],
+        // var state
+        vars: {
+          channelActive: false, channelHigh: NaN, channelLow: NaN, barsSinceEntry: 0, channelLocked: false,
+          squeezeStillOn: false, lastSqueezeColor: null, watchingReversal: false, reversalDirection: 0,
+          reversalLevel: NaN, reversalBarsLeft: 0, reversalTriggered: false, prevSqueezeOn: false, prevBreakout: false,
+          prevChannelHigh: NaN, prevChannelLow: NaN, extHigh: [], extLow: [],
+        },
+        lists: [], series: [],
+      };
+      for (let k = 0; k < 14; k++) s.plots[`plot${k}`] = [];
+      s.steps = [s.bbBasis, s.bbStdev, s.kcBasis, s.kcAtr, s.atr, s.swingHigh, s.swingLow];
+      s.lists = [s.markers, ...s.times];
+      s.series = [...Object.values(s.plots), s.fillColors, ...s.flags];
+      return s;
+    },
+    copyVars: (v) => ({ ...v, extHigh: v.extHigh.map((l) => ({ ...l })), extLow: v.extLow.map((l) => ({ ...l })) }),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const bar = bars[i];
+      const time = bar.time as number;
+      const plots = s.plots;
+
+      // Squeeze
+      const bbBasis = s.bbBasis.step(bar.close, cfg.bbLength);
+      const bbStdev = s.bbStdev.step(bar.close, cfg.bbLength);
+      const kcBasis = s.kcBasis.step(bar.close, cfg.kcLength);
+      const kcAtr = s.kcAtr.step(bar.high, bar.low, bar.close);
+      const atrValue = s.atr.step(bar.high, bar.low, bar.close);
+      const initialSwingHigh = s.swingHigh.step(bar.high, cfg.swingLookback);
+      const initialSwingLow = s.swingLow.step(bar.low, cfg.swingLookback);
+
+      const bbDev = cfg.bbMult * bbStdev;
+      const bbUpper = bbBasis + bbDev;
+      const bbLower = bbBasis - bbDev;
+      const bbWidth = bbUpper - bbLower;
+      const kcRange = cfg.kcMult * kcAtr;
+      const kcUpper = kcBasis + kcRange;
+      const kcLower = kcBasis - kcRange;
+      const kcWidth = kcUpper - kcLower;
+      const squeezeOn = gt(bbLower, kcLower) && lt(bbUpper, kcUpper);
+      const squeezeEntry = squeezeOn && !v.prevSqueezeOn;
+      const squeezeRatio = squeezeOn ? bbWidth / kcWidth : NaN;
+      const squeezeStrength = squeezeOn ? 1.0 - Math.min(squeezeRatio, 1.0) : NaN;
+
+      if (squeezeEntry) {
+        v.channelActive = true;
+        v.channelHigh = initialSwingHigh;
+        v.channelLow = initialSwingLow;
+        v.barsSinceEntry = 0;
+        v.channelLocked = false;
+        v.squeezeStillOn = true;
+        v.lastSqueezeColor = getSqueezeColor(squeezeStrength);
+        v.watchingReversal = false;
+        v.reversalDirection = 0;
+        v.reversalLevel = NaN;
+        v.reversalBarsLeft = 0;
+        v.reversalTriggered = false;
+      } else if (v.channelActive) {
+        v.barsSinceEntry += 1;
+        if (v.barsSinceEntry <= cfg.swingLookfwd && !v.channelLocked) {
+          if (gt(bar.high, v.channelHigh)) v.channelHigh = bar.high;
+          if (lt(bar.low, v.channelLow)) v.channelLow = bar.low;
+        }
+        if (v.barsSinceEntry > cfg.swingLookfwd) v.channelLocked = true;
+        if (squeezeOn) v.lastSqueezeColor = getSqueezeColor(squeezeStrength);
+        if (!squeezeOn) v.squeezeStillOn = false;
+      }
+
+      // Signals
+      const validBreakoutZone = v.channelActive && v.channelLocked;
+      const bullBreakout = validBreakoutZone && gt(bar.close, v.channelHigh);
+      const bearBreakout = validBreakoutZone && lt(bar.close, v.channelLow);
+      if (bullBreakout) {
+        if (cfg.enableReversal) {
+          v.watchingReversal = true;
+          v.reversalDirection = 1;
+          v.reversalLevel = v.channelLow;
+          v.reversalBarsLeft = cfg.reversalBars;
+          v.reversalTriggered = false;
+        }
+        v.channelActive = false;
+      }
+      if (bearBreakout) {
+        if (cfg.enableReversal) {
+          v.watchingReversal = true;
+          v.reversalDirection = -1;
+          v.reversalLevel = v.channelHigh;
+          v.reversalBarsLeft = cfg.reversalBars;
+          v.reversalTriggered = false;
+        }
+        v.channelActive = false;
+      }
+
+      // Reversal detection
+      let bearReversal = false;
+      let bullReversal = false;
+      if (cfg.enableReversal && v.watchingReversal && v.reversalBarsLeft > 0 && !v.reversalTriggered) {
+        v.reversalBarsLeft -= 1;
+        if (v.reversalDirection === 1 && lt(bar.close, v.reversalLevel)) {
+          bearReversal = true;
+          v.reversalTriggered = true;
+        }
+        if (v.reversalDirection === -1 && gt(bar.close, v.reversalLevel)) {
+          bullReversal = true;
+          v.reversalTriggered = true;
+        }
+      }
+      if (v.reversalBarsLeft <= 0) v.watchingReversal = false;
+
+      // Extended S/R levels (bar_index is only used relative to the push bar)
+      const extHigh = v.extHigh;
+      const extLow = v.extLow;
+      if (v.prevBreakout) {
+        extHigh.push({ level: v.prevChannelHigh, expiry: i + cfg.extendedBars, start: i, broken: false });
+        extLow.push({ level: v.prevChannelLow, expiry: i + cfg.extendedBars, start: i, broken: false });
+      }
+      let extBullSignal = false;
+      let extBearSignal = false;
+      let extBullReversal = false;
+      let extBearReversal = false;
+      for (let k = extHigh.length - 1; k >= 0; k--) {
+        const { level, expiry, start, broken } = extHigh[k];
+        const delayPassed = i >= start + cfg.srDelayBars;
+        if (i > expiry) {
+          extHigh.splice(k, 1);
+        } else if (delayPassed && cfg.enableSRRetest) {
+          if (!broken && gt(bar.close, level)) {
+            extHigh[k].broken = true;
+            extBullSignal = true;
+          }
+          if (broken && lt(bar.close, level)) {
+            extBearReversal = true;
+            extHigh.splice(k, 1);
+          }
+        }
+      }
+      for (let k = extLow.length - 1; k >= 0; k--) {
+        const { level, expiry, start, broken } = extLow[k];
+        const delayPassed = i >= start + cfg.srDelayBars;
+        if (i > expiry) {
+          extLow.splice(k, 1);
+        } else if (delayPassed && cfg.enableSRRetest) {
+          if (!broken && lt(bar.close, level)) {
+            extLow[k].broken = true;
+            extBearSignal = true;
+          }
+          if (broken && gt(bar.close, level)) {
+            extBullReversal = true;
+            extLow.splice(k, 1);
+          }
+        }
+      }
+
+      // Channel plots
+      const channelActive = v.channelActive;
+      const baseColor = v.squeezeStillOn ? v.lastSqueezeColor : cfg.channelColorWaiting;
+      const currentChannelColor = channelActive ? baseColor : null;
+      // color.new(na, 85) is black with transparency 85
+      const fillColor = channelActive ? String(color.new(baseColor ?? '#000000', 85)) : null;
+      const chColor = currentChannelColor ?? undefined;
+      plots.plot0[i] = { time, value: cfg.showChannel && channelActive ? v.channelHigh : NaN, color: chColor };
+      plots.plot1[i] = { time, value: cfg.showChannel && channelActive ? v.channelLow : NaN, color: chColor };
+      s.fillColors[i] = cfg.showChannelFill && fillColor !== null ? fillColor : 'transparent';
+      const channelMid = channelActive ? (v.channelHigh + v.channelLow) / 2 : NaN;
+      plots.plot2[i] = {
+        time, value: cfg.showChannel && channelActive && v.channelLocked ? channelMid : NaN, color: MID_COLOR,
+      };
+      plots.plot3[i] = {
+        time,
+        value: cfg.showChannel && cfg.enableReversal && v.watchingReversal && !v.reversalTriggered ? v.reversalLevel : NaN,
+        color: v.reversalDirection === 1 ? reversalColorBear : reversalColorBull,
+      };
+
+      // Extended level plots
+      const extLevel = (arr: Level[], idx: number) => {
+        if (!(cfg.enableExtendedLevels && idx < arr.length)) return NaN;
+        const level = arr[idx].level;
+        const priceDistance = Math.abs(bar.close - level);
+        return le(priceDistance, atrValue * cfg.atrProximity) ? level : NaN;
+      };
+      for (let k = 0; k < 5; k++) {
+        plots[`plot${4 + k}`][i] = { time, value: extLevel(extHigh, k), color: cfg.extendedColorHigh };
+        plots[`plot${9 + k}`][i] = { time, value: extLevel(extLow, k), color: cfg.extendedColorLow };
+      }
+
+      // Shapes (id: shape<k>, the plotshape outputs in the original's order)
+      const mk = (on: boolean, id: string, shape: MarkerData['shape'], position: MarkerData['position'], c: string, size: 'tiny' | 'small') => {
+        if (on) s.markers.push({ time: bar.time, position, shape, color: c, size, id });
+      };
+      mk(bullBreakout, 'shape0', 'triangleUp', 'belowBar', cfg.bullColor, 'tiny');
+      mk(bearBreakout, 'shape1', 'triangleDown', 'aboveBar', cfg.bearColor, 'tiny');
+      mk(cfg.enableReversal && bullReversal, 'shape2', 'diamond', 'belowBar', cfg.reversalBullColor, 'small');
+      mk(cfg.enableReversal && bearReversal, 'shape3', 'diamond', 'aboveBar', cfg.reversalBearColor, 'small');
+      mk(extBullSignal, 'shape4', 'triangleUp', 'belowBar', extBullColor, 'tiny');
+      mk(extBearSignal, 'shape5', 'triangleDown', 'aboveBar', extBearColor, 'tiny');
+      mk(extBullReversal, 'shape6', 'diamond', 'belowBar', extBullRevColor, 'small');
+      mk(extBearReversal, 'shape7', 'diamond', 'aboveBar', extBearRevColor, 'small');
+      [bullBreakout, bearBreakout, bullReversal, bearReversal, extBullSignal, extBearSignal, extBullReversal, extBearReversal,
+        squeezeEntry].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(time);
+      });
+
+      v.prevSqueezeOn = squeezeOn;
+      v.prevBreakout = bullBreakout || bearBreakout;
+      v.prevChannelHigh = v.channelHigh;
+      v.prevChannelLow = v.channelLow;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      for (const k of Object.keys(s.plots)) plots[k] = s.plots[k].slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        // fill(p_high, p_low, color = showChannelFill ? fillColor : na, title = "Channel Fill")
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Channel Fill' }, colors: s.fillColors.slice() }],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SqueezeChannelInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<SqueezeChannelInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -413,6 +471,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const SqueezeChannel = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

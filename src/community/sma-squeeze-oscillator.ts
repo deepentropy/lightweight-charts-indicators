@@ -15,10 +15,11 @@
  * Original notice: © Uncle_the_shooter
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData, PlotCandleData } from '../types';
-import { barInterval, barTime } from '../bar-time';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type Committable, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SmaSqueezeOscillatorInputs {
   /** SMA 1 length (squeeze and momentum) */
@@ -120,37 +121,174 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
 type Point = { time: number; value: number; color?: string };
 type Gradient = { topValue: number[]; bottomValue: number[]; topColor: Array<string | null>; bottomColor: Array<string | null> };
+/**
+ * `math.sum(source, length)` with a constant length, one bar at a time: the correctly rounded sum of the last `length`
+ * non-na values (exact partials, as the oakscriptjs window sums: the same doubles), the previous result on a bar with
+ * an na value. The kept partials are copied into a second buffer on a step (no allocation per bar).
+ */
+class WindowSum implements Committable {
+  private values: number[] = [];
+  private p = new Float64Array(16);
+  private n = 0;
+  private q = new Float64Array(16);
+  private qn = 0;
+  private last = NaN;
+  private next = NaN;
+  private pending = NaN;
+  private stepped = false;
+  private readonly len: number;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SmaSqueezeOscillatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> }
-  & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-
-  // Calculations
-  const sma1 = A(ta.sma(close, cfg.len1));
-  const sma2 = A(ta.sma(close, cfg.len2));
-  const sma3 = A(ta.sma(close, cfg.len3));
-  const smaFilter = A(ta.sma(close, cfg.smaFilterLen));
-  const atr = A(ta.atr(bars, cfg.atrLen));
-  const isSqueeze: boolean[] = new Array(n);
-  const rawMomentum: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const maxSma = Math.max(sma1[i], Math.max(sma2[i], sma3[i]));
-    const minSma = Math.min(sma1[i], Math.min(sma2[i], sma3[i]));
-    isSqueeze[i] = lt(maxSma - minSma, atr[i] * cfg.atrMult);
-    rawMomentum[i] = (sma1[i] - sma2[i] + sma1[i] - sma3[i]) / 2;
+  constructor(length: number) {
+    this.len = Math.floor(length);
   }
-  const momentumSeries = ta.sma(S(rawMomentum), cfg.momentumSmoothing);
-  const momentum = A(momentumSeries);
-  const zero = S(new Array(n).fill(0));
-  const crossUp = A(ta.crossover(momentumSeries, zero));
-  const crossDown = A(ta.crossunder(momentumSeries, zero));
+
+  /** Adds `x` to the partials of `q` exactly (Shewchuk) */
+  private add(x: number): void {
+    let q = this.q;
+    const n = this.qn;
+    let i = 0;
+    for (let j = 0; j < n; j++) {
+      let y = q[j]!;
+      if (Math.abs(x) < Math.abs(y)) {
+        const t = x;
+        x = y;
+        y = t;
+      }
+      const hi = x + y;
+      const lo = y - (hi - x);
+      if (lo !== 0) q[i++] = lo;
+      x = hi;
+    }
+    if (i === q.length) {
+      const grown = new Float64Array(q.length * 2);
+      grown.set(q);
+      this.q = q = grown;
+    }
+    q[i] = x;
+    this.qn = i + 1;
+  }
+
+  /** The exact sum of the partials of `q` rounded once (round half to even) */
+  private round(): number {
+    const p = this.q;
+    let n = this.qn;
+    if (n === 0) return 0;
+    let hi = p[--n]!;
+    while (n > 0) {
+      const x = hi;
+      const y = p[--n]!;
+      hi = x + y;
+      const lo = y - (hi - x);
+      if (lo !== 0) {
+        if (n > 0 && ((lo < 0 && p[n - 1]! < 0) || (lo > 0 && p[n - 1]! > 0))) {
+          const y2 = lo * 2;
+          const x2 = hi + y2;
+          if (y2 === x2 - hi) hi = x2;
+        }
+        break;
+      }
+    }
+    return hi;
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    if (!(this.len >= 1)) { this.pending = NaN; this.next = NaN; return NaN; }
+    if (value === undefined || value === null || !Number.isFinite(value)) {
+      this.pending = NaN;
+      this.next = this.last;
+      return this.last;
+    }
+    if (this.q.length < this.p.length) this.q = new Float64Array(this.p.length);
+    this.q.set(this.p.subarray(0, this.n));
+    this.qn = this.n;
+    const count = this.values.length;
+    if (count >= this.len) this.add(-this.values[count - this.len]!);
+    this.add(value);
+    this.pending = value;
+    this.next = count + 1 >= this.len ? this.round() : NaN;
+    return this.next;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.last = this.next;
+    if (Number.isNaN(this.pending)) return;
+    const p = this.p;
+    this.p = this.q;
+    this.n = this.qn;
+    this.q = p;
+    this.values.push(this.pending);
+    if (this.values.length > this.len * 2 + 1024) this.values = this.values.slice(-this.len);
+  }
+}
+
+/** `ta.sma(source, length)` with a constant length: {@link WindowSum} divided by the length */
+class WindowSma extends WindowSum {
+  private readonly div: number;
+
+  constructor(length: number) {
+    super(length);
+    this.div = Math.floor(length);
+  }
+
+  override step(value: number): number {
+    return super.step(value) / this.div;
+  }
+}
+
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> }
+  & { alerts: AlertConditionState[] };
+
+interface SsoVars {
+  /** ta.valuewhen(found, x, 1): the last two values of x on the found bars (prev: the one before the latest) */
+  plOsc: number;
+  plOscPrev: number;
+  plLow: number;
+  plLowPrev: number;
+  phOsc: number;
+  phOscPrev: number;
+  phHigh: number;
+  phHighPrev: number;
+  /** ta.barssince(found): na until the first found bar */
+  bsLow: number;
+  bsHigh: number;
+}
+
+interface SsoRun extends BarRunState<SsoVars> {
+  sma1: WindowSma;
+  sma2: WindowSma;
+  sma3: WindowSma;
+  smaFilter: WindowSma;
+  atr: ReturnType<typeof taStep.atr>;
+  momentum: WindowSma;
+  crossUp: ReturnType<typeof taStep.crossover>;
+  crossDown: ReturnType<typeof taStep.crossunder>;
+  pivotHigh: PivotStep;
+  pivotLow: PivotStep;
+  isSqueeze: boolean[];
+  momentumArr: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  /** The divergence lines: one point per bar from bar lb, drawn lb bars back */
+  plot3: Point[];
+  plot4: Point[];
+  gBull: Gradient;
+  gBear: Gradient;
+  gSqBull: Gradient;
+  gSqBear: Gradient;
+  squeezeFill: string[];
+  candles: PlotCandleData[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SmaSqueezeOscillatorInputs>): BarStudy<SsoRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
 
   // Colours
   const colBullStrong = String(color.new(cfg.bullColor, 0));
@@ -167,163 +305,209 @@ export function calculate(
   const lb = cfg.pivotLength;
   const rangeUpper = 60;
   const rangeLower = 1;
-  const pivotHighOsc = A(ta.pivothigh(momentumSeries, lb, lb));
-  const pivotLowOsc = A(ta.pivotlow(momentumSeries, lb, lb));
-  const oscLbr = (i: number) => (i - lb >= 0 ? momentum[i - lb] : NaN);
-  const plFound: boolean[] = new Array(n);
-  const phFound: boolean[] = new Array(n);
-  const bullCond: boolean[] = new Array(n);
-  const bearCond: boolean[] = new Array(n);
-  {
-    // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
-    const plOsc: number[] = [];
-    const plLow: number[] = [];
-    const phOsc: number[] = [];
-    const phHigh: number[] = [];
-    // ta.barssince(found): na until the first found bar
-    let bsLow = NaN;
-    let bsHigh = NaN;
-    for (let i = 0; i < n; i++) {
-      const o = oscLbr(i);
-      const lowLbr = i - lb >= 0 ? bars[i - lb].low : NaN;
-      const highLbr = i - lb >= 0 ? bars[i - lb].high : NaN;
-      plFound[i] = !isNaN(pivotLowOsc[i]);
-      phFound[i] = !isNaN(pivotHighOsc[i]);
-      if (plFound[i]) {
-        plOsc.push(o);
-        plLow.push(lowLbr);
-      }
-      if (phFound[i]) {
-        phOsc.push(o);
-        phHigh.push(highLbr);
-      }
-      const prevOscLow = plOsc.length >= 2 ? plOsc[plOsc.length - 2] : NaN;
-      const prevPriceLow = plLow.length >= 2 ? plLow[plLow.length - 2] : NaN;
-      const prevOscHigh = phOsc.length >= 2 ? phOsc[phOsc.length - 2] : NaN;
-      const prevPriceHigh = phHigh.length >= 2 ? phHigh[phHigh.length - 2] : NaN;
-      // ta.barssince(...)[1]: the count of the previous bar
-      const bsLowPrev = bsLow;
-      const bsHighPrev = bsHigh;
-      bsLow = plFound[i] ? 0 : isNaN(bsLow) ? NaN : bsLow + 1;
-      bsHigh = phFound[i] ? 0 : isNaN(bsHigh) ? NaN : bsHigh + 1;
-      const inRangeLow = bsLowPrev >= rangeLower && bsLowPrev <= rangeUpper;
-      const inRangeHigh = bsHighPrev >= rangeLower && bsHighPrev <= rangeUpper;
-      bullCond[i] = plFound[i] && lt(lowLbr, prevPriceLow) && gt(o, prevOscLow) && inRangeLow;
-      bearCond[i] = phFound[i] && gt(highLbr, prevPriceHigh) && lt(o, prevOscHigh) && inRangeHigh;
-    }
-  }
 
-  const interval = barInterval(bars);
-  const plots: Record<string, Point[]> = { plot0: [], plot1: [], plot2: [], plot3: [], plot4: [] };
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const candles: PlotCandleData[] = [];
-  const newGradient = (): Gradient => ({ topValue: new Array(n), bottomValue: new Array(n), topColor: new Array(n), bottomColor: new Array(n) });
-  const gBull = newGradient();
-  const gBear = newGradient();
-  const gSqBull = newGradient();
-  const gSqBear = newGradient();
-  const squeezeFill: string[] = new Array(n);
-  const flags: boolean[][] = alertConditions.map(() => []);
+  const newGradient = (): Gradient => ({ topValue: [], bottomValue: [], topColor: [], bottomColor: [] });
+  const gradArrays = (g: Gradient) => [g.topValue, g.bottomValue, g.topColor, g.bottomColor];
   const setGrad = (g: Gradient, i: number, on: boolean, top: number, bottom: number, topC: string, bottomC: string) => {
     g.topValue[i] = on ? top : NaN;
     g.bottomValue[i] = on ? bottom : NaN;
     g.topColor[i] = on ? topC : null;
     g.bottomColor[i] = on ? bottomC : null;
   };
-
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    const m = momentum[i];
-    const sq = isSqueeze[i];
-    const trendUp = !cfg.useSmaFilter || gt(b.close, smaFilter[i]);
-    const trendDown = !cfg.useSmaFilter || lt(b.close, smaFilter[i]);
-
-    // plot(0, 'Zero Line Filter', color = not useSmaFilter ? bullColor : close > smaFilter ? bullColor : bearColor)
-    plots.plot0.push({ time: t, value: 0, color: trendUp ? cfg.bullColor : cfg.bearColor });
-    plots.plot1.push({ time: t, value: m, color: ge(m, 0) ? cfg.bullColor : cfg.bearColor });
-    plots.plot2.push({ time: t, value: 0 });
-
-    // Fills between the momentum and zero
-    const pos = gt(m, 0);
-    const neg = lt(m, 0);
-    setGrad(gBull, i, !sq && pos, m, 0, colBullStrong, colBullFade);
-    setGrad(gBear, i, !sq && neg, 0, m, colBearFade, colBearStrong);
-    squeezeFill[i] = sq ? sqFill : 'transparent';
-    setGrad(gSqBull, i, sq && pos, m, 0, sqStrong, sqFade);
-    setGrad(gSqBear, i, sq && neg, 0, m, sqFade, sqStrong);
-
-    // Cross signals (diamonds at the momentum)
-    const bullCross = !!crossUp[i] && trendUp && !isNaN(m);
-    const bearCross = !!crossDown[i] && trendDown && !isNaN(m);
-    if (bullCross) {
-      markers.push({ id: 'shape0', time: t, position: 'atPriceMiddle', price: m, shape: 'diamond', color: cfg.bullCrossColor, size: 'small' });
-    }
-    if (bearCross) {
-      markers.push({ id: 'shape1', time: t, position: 'atPriceMiddle', price: m, shape: 'diamond', color: cfg.bearCrossColor, size: 'small' });
-    }
-    // First bar after a squeeze (circles at the momentum)
-    const nowOutOfSqueeze = !sq && i > 0 && isSqueeze[i - 1];
-    const firstLong = nowOutOfSqueeze && pos && trendUp;
-    const firstShort = nowOutOfSqueeze && neg && trendDown;
-    if (firstLong) {
-      markers.push({ id: 'shape2', time: t, position: 'atPriceMiddle', price: m, shape: 'circle', color: cfg.firstLongColor, size: 'small' });
-    }
-    if (firstShort) {
-      markers.push({ id: 'shape3', time: t, position: 'atPriceMiddle', price: m, shape: 'circle', color: cfg.firstShortColor, size: 'small' });
-    }
-    // alertcondition(bullCross / bearCross / firstAfterSqueezeLong / firstAfterSqueezeShort /
-    //   calculateDivergence and bullCond / calculateDivergence and bearCond)
-    [bullCross, bearCross, firstLong, firstShort, cfg.calculateDivergence && bullCond[i], cfg.calculateDivergence && bearCond[i]]
-      .forEach((f, k) => flags[k].push(f));
-
-    // Wave candles: barcolor and plotcandle(force_overlay = true); colour na draws nothing
-    const wave = sq ? sqStrong : pos ? colBullStrong : neg ? colBearStrong : null;
-    const candleColor = cfg.enableCandleColor ? wave : null;
-    if (candleColor) barColors.push({ time: t, color: candleColor });
-    const cc = candleColor ?? 'transparent';
-    candles.push({ time: t, open: b.open, high: b.high, low: b.low, close: b.close, color: cc, wickColor: cc,
-      borderColor: cc, forceOverlay: true });
-
-    // Divergences, offset = -lookbackRight: the value of bar i is drawn on bar i - lb
-    if (i - lb >= 0) {
-      const tp = barTime(bars, i - lb, interval);
-      const o = oscLbr(i);
-      plots.plot3.push({ time: tp, value: cfg.calculateDivergence && plFound[i] ? o : NaN,
-        color: cfg.calculateDivergence && bullCond[i] ? cfg.bullColor : 'transparent' });
-      plots.plot4.push({ time: tp, value: cfg.calculateDivergence && phFound[i] ? o : NaN,
-        color: cfg.calculateDivergence && bearCond[i] ? cfg.bearColor : 'transparent' });
-      if (cfg.calculateDivergence && bullCond[i] && !isNaN(o)) {
-        markers.push({ id: 'shape4', time: tp, position: 'atPriceBottom', price: o, shape: 'labelUp', color: bullLabel, text: 'Bull',
-          textColor: cfg.textColor, size: 'small' });
-      }
-      if (cfg.calculateDivergence && bearCond[i] && !isNaN(o)) {
-        markers.push({ id: 'shape5', time: tp, position: 'atPriceTop', price: o, shape: 'labelDown', color: bearLabel, text: 'Bear',
-          textColor: cfg.textColor, size: 'small' });
-      }
-    }
-  }
+  const sliceGrad = (g: Gradient): Gradient => ({
+    topValue: g.topValue.slice(), bottomValue: g.bottomValue.slice(), topColor: g.topColor.slice(), bottomColor: g.bottomColor.slice(),
+  });
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills: [
-      // fill(momPlot, p0, top_value / bottom_value = momentum / 0 when not squeeze and momentum > 0, bull strong -> fade)
-      { plot1: 'plot1', plot2: 'plot2', gradient: gBull },
-      // fill(momPlot, p0, top_value / bottom_value = 0 / momentum when not squeeze and momentum < 0, bear fade -> strong)
-      { plot1: 'plot1', plot2: 'plot2', gradient: gBear },
-      // fill(momPlot, p0, color = isSqueeze ? color.new(squeezeColor, 85) : na, title = 'Squeeze Fill')
-      { plot1: 'plot1', plot2: 'plot2', options: { title: 'Squeeze Fill' }, colors: squeezeFill },
-      // squeeze gradients (yellow), above / below zero
-      { plot1: 'plot1', plot2: 'plot2', gradient: gSqBull },
-      { plot1: 'plot1', plot2: 'plot2', gradient: gSqBear },
-    ],
-    markers,
-    barColors,
-    plotCandles: { waveCandles: candles },
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      const s: SsoRun = {
+        sma1: new WindowSma(cfg.len1), sma2: new WindowSma(cfg.len2), sma3: new WindowSma(cfg.len3), smaFilter: new WindowSma(cfg.smaFilterLen), atr: taStep.atr(cfg.atrLen),
+        momentum: new WindowSma(cfg.momentumSmoothing), crossUp: taStep.crossover(), crossDown: taStep.crossunder(),
+        pivotHigh: new PivotStep(lb, lb, true), pivotLow: new PivotStep(lb, lb, false),
+        isSqueeze: [], momentumArr: [], plot0: [], plot1: [], plot2: [], plot3: [], plot4: [],
+        gBull: newGradient(), gBear: newGradient(), gSqBull: newGradient(), gSqBear: newGradient(), squeezeFill: [],
+        candles: [], markers: [], barColors: [], flags: alertConditions.map(() => []), times: alertConditions.map(() => []),
+        steps: [],
+        vars: {
+          plOsc: NaN, plOscPrev: NaN, plLow: NaN, plLowPrev: NaN, phOsc: NaN, phOscPrev: NaN, phHigh: NaN, phHighPrev: NaN,
+          bsLow: NaN, bsHigh: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.steps = [s.sma1, s.sma2, s.sma3, s.smaFilter, s.atr, s.momentum, s.crossUp, s.crossDown, s.pivotHigh, s.pivotLow];
+      s.lists = [s.plot3, s.plot4, s.markers, s.barColors, ...s.times];
+      s.series = [
+        s.isSqueeze, s.momentumArr, s.plot0, s.plot1, s.plot2, ...gradArrays(s.gBull), ...gradArrays(s.gBear),
+        ...gradArrays(s.gSqBull), ...gradArrays(s.gSqBear), s.squeezeFill, s.candles, ...s.flags,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+
+      // Calculations
+      const sma1 = s.sma1.step(b.close);
+      const sma2 = s.sma2.step(b.close);
+      const sma3 = s.sma3.step(b.close);
+      const smaFilter = s.smaFilter.step(b.close);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const maxSma = Math.max(sma1, Math.max(sma2, sma3));
+      const minSma = Math.min(sma1, Math.min(sma2, sma3));
+      const sq = lt(maxSma - minSma, atr * cfg.atrMult);
+      s.isSqueeze[i] = sq;
+      const rawMomentum = (sma1 - sma2 + sma1 - sma3) / 2;
+      const m = s.momentum.step(rawMomentum);
+      s.momentumArr[i] = m;
+      const crossUp = s.crossUp.step(m, 0);
+      const crossDown = s.crossDown.step(m, 0);
+
+      // Divergence
+      const pivotHighOsc = s.pivotHigh.step(i, m);
+      const pivotLowOsc = s.pivotLow.step(i, m);
+      const o = i - lb >= 0 ? s.momentumArr[i - lb] : NaN;
+      const lowLbr = i - lb >= 0 ? bars[i - lb].low : NaN;
+      const highLbr = i - lb >= 0 ? bars[i - lb].high : NaN;
+      const plFound = !isNaN(pivotLowOsc);
+      const phFound = !isNaN(pivotHighOsc);
+      // ta.valuewhen(found, x, 1): x on the found bar before the latest one (the latest can be the current bar)
+      if (plFound) {
+        v.plOscPrev = v.plOsc;
+        v.plOsc = o;
+        v.plLowPrev = v.plLow;
+        v.plLow = lowLbr;
+      }
+      if (phFound) {
+        v.phOscPrev = v.phOsc;
+        v.phOsc = o;
+        v.phHighPrev = v.phHigh;
+        v.phHigh = highLbr;
+      }
+      const prevOscLow = v.plOscPrev;
+      const prevPriceLow = v.plLowPrev;
+      const prevOscHigh = v.phOscPrev;
+      const prevPriceHigh = v.phHighPrev;
+      // ta.barssince(...)[1]: the count of the previous bar
+      const bsLowPrev = v.bsLow;
+      const bsHighPrev = v.bsHigh;
+      v.bsLow = plFound ? 0 : isNaN(v.bsLow) ? NaN : v.bsLow + 1;
+      v.bsHigh = phFound ? 0 : isNaN(v.bsHigh) ? NaN : v.bsHigh + 1;
+      const inRangeLow = bsLowPrev >= rangeLower && bsLowPrev <= rangeUpper;
+      const inRangeHigh = bsHighPrev >= rangeLower && bsHighPrev <= rangeUpper;
+      const bullCond = plFound && lt(lowLbr, prevPriceLow) && gt(o, prevOscLow) && inRangeLow;
+      const bearCond = phFound && gt(highLbr, prevPriceHigh) && lt(o, prevOscHigh) && inRangeHigh;
+
+      const trendUp = !cfg.useSmaFilter || gt(b.close, smaFilter);
+      const trendDown = !cfg.useSmaFilter || lt(b.close, smaFilter);
+
+      // plot(0, 'Zero Line Filter', color = not useSmaFilter ? bullColor : close > smaFilter ? bullColor : bearColor)
+      s.plot0[i] = { time: t, value: 0, color: trendUp ? cfg.bullColor : cfg.bearColor };
+      s.plot1[i] = { time: t, value: m, color: ge(m, 0) ? cfg.bullColor : cfg.bearColor };
+      s.plot2[i] = { time: t, value: 0 };
+
+      // Fills between the momentum and zero
+      const pos = gt(m, 0);
+      const neg = lt(m, 0);
+      setGrad(s.gBull, i, !sq && pos, m, 0, colBullStrong, colBullFade);
+      setGrad(s.gBear, i, !sq && neg, 0, m, colBearFade, colBearStrong);
+      s.squeezeFill[i] = sq ? sqFill : 'transparent';
+      setGrad(s.gSqBull, i, sq && pos, m, 0, sqStrong, sqFade);
+      setGrad(s.gSqBear, i, sq && neg, 0, m, sqFade, sqStrong);
+
+      // Cross signals (diamonds at the momentum)
+      const bullCross = crossUp && trendUp && !isNaN(m);
+      const bearCross = crossDown && trendDown && !isNaN(m);
+      if (bullCross) {
+        s.markers.push({ id: 'shape0', time: t, position: 'atPriceMiddle', price: m, shape: 'diamond', color: cfg.bullCrossColor, size: 'small' });
+      }
+      if (bearCross) {
+        s.markers.push({ id: 'shape1', time: t, position: 'atPriceMiddle', price: m, shape: 'diamond', color: cfg.bearCrossColor, size: 'small' });
+      }
+      // First bar after a squeeze (circles at the momentum)
+      const nowOutOfSqueeze = !sq && i > 0 && s.isSqueeze[i - 1];
+      const firstLong = nowOutOfSqueeze && pos && trendUp;
+      const firstShort = nowOutOfSqueeze && neg && trendDown;
+      if (firstLong) {
+        s.markers.push({ id: 'shape2', time: t, position: 'atPriceMiddle', price: m, shape: 'circle', color: cfg.firstLongColor, size: 'small' });
+      }
+      if (firstShort) {
+        s.markers.push({ id: 'shape3', time: t, position: 'atPriceMiddle', price: m, shape: 'circle', color: cfg.firstShortColor, size: 'small' });
+      }
+      // alertcondition(bullCross / bearCross / firstAfterSqueezeLong / firstAfterSqueezeShort /
+      //   calculateDivergence and bullCond / calculateDivergence and bearCond)
+      const flag = (k: number, f: boolean) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(t as number);
+      };
+      flag(0, bullCross);
+      flag(1, bearCross);
+      flag(2, firstLong);
+      flag(3, firstShort);
+      flag(4, cfg.calculateDivergence && bullCond);
+      flag(5, cfg.calculateDivergence && bearCond);
+
+      // Wave candles: barcolor and plotcandle(force_overlay = true); colour na draws nothing
+      const wave = sq ? sqStrong : pos ? colBullStrong : neg ? colBearStrong : null;
+      const candleColor = cfg.enableCandleColor ? wave : null;
+      if (candleColor) s.barColors.push({ time: t, color: candleColor });
+      const cc = candleColor ?? 'transparent';
+      s.candles[i] = { time: t, open: b.open, high: b.high, low: b.low, close: b.close, color: cc, wickColor: cc,
+        borderColor: cc, forceOverlay: true };
+
+      // Divergences, offset = -lookbackRight: the value of bar i is drawn on bar i - lb
+      if (i - lb >= 0) {
+        const tp = bars[i - lb].time;
+        s.plot3.push({ time: tp, value: cfg.calculateDivergence && plFound ? o : NaN,
+          color: cfg.calculateDivergence && bullCond ? cfg.bullColor : 'transparent' });
+        s.plot4.push({ time: tp, value: cfg.calculateDivergence && phFound ? o : NaN,
+          color: cfg.calculateDivergence && bearCond ? cfg.bearColor : 'transparent' });
+        if (cfg.calculateDivergence && bullCond && !isNaN(o)) {
+          s.markers.push({ id: 'shape4', time: tp, position: 'atPriceBottom', price: o, shape: 'labelUp', color: bullLabel, text: 'Bull',
+            textColor: cfg.textColor, size: 'small' });
+        }
+        if (cfg.calculateDivergence && bearCond && !isNaN(o)) {
+          s.markers.push({ id: 'shape5', time: tp, position: 'atPriceTop', price: o, shape: 'labelDown', color: bearLabel, text: 'Bear',
+            textColor: cfg.textColor, size: 'small' });
+        }
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice(), plot4: s.plot4.slice() },
+        fills: [
+          // fill(momPlot, p0, top_value / bottom_value = momentum / 0 when not squeeze and momentum > 0, bull strong -> fade)
+          { plot1: 'plot1', plot2: 'plot2', gradient: sliceGrad(s.gBull) },
+          // fill(momPlot, p0, top_value / bottom_value = 0 / momentum when not squeeze and momentum < 0, bear fade -> strong)
+          { plot1: 'plot1', plot2: 'plot2', gradient: sliceGrad(s.gBear) },
+          // fill(momPlot, p0, color = isSqueeze ? color.new(squeezeColor, 85) : na, title = 'Squeeze Fill')
+          { plot1: 'plot1', plot2: 'plot2', options: { title: 'Squeeze Fill' }, colors: s.squeezeFill.slice() },
+          // squeeze gradients (yellow), above / below zero
+          { plot1: 'plot1', plot2: 'plot2', gradient: sliceGrad(s.gSqBull) },
+          { plot1: 'plot1', plot2: 'plot2', gradient: sliceGrad(s.gSqBear) },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        plotCandles: { waveCandles: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SmaSqueezeOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<SmaSqueezeOscillatorInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; plotCandles: Record<string, PlotCandleData[]> }
+  & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -338,6 +522,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const SmaSqueezeOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

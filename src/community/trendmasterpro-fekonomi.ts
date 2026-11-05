@@ -15,8 +15,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendMasterProFekonomiInputs {
   fastLength: number;
@@ -118,91 +120,134 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TrendMasterProFekonomiInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+type Sma = ReturnType<typeof taStep.sma>;
+
+interface TmpRun extends BarRunState<Record<string, never>> {
+  macd: ReturnType<typeof taStep.macd>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  shortEmaStep: ReturnType<typeof taStep.ema>;
+  longEmaStep: ReturnType<typeof taStep.ema>;
+  dmi: ReturnType<typeof taStep.dmi>;
+  /** sma(high, len) / sma(low, len) of the conversion, base and lagging lengths */
+  smas: Sma[];
+  averageVolume: Sma;
+  macdLine: number[];
+  signalLine: number[];
+  shortEma: number[];
+  longEma: number[];
+  plots: Point[][];
+  fillColors: string[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<TrendMasterProFekonomiInputs>): BarStudy<TmpRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-  const closeS = S(close);
-  const highS = S(bars.map((b) => b.high));
-  const lowS = S(bars.map((b) => b.low));
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  const [macdS, signalS] = ta.macd(closeS, cfg.fastLength, cfg.slowLength, cfg.signalLength);
-  const macdLine = A(macdS);
-  const signalLine = A(signalS);
-  const rsi = A(ta.rsi(closeS, cfg.rsiLength));
-  const shortEma = A(ta.ema(closeS, cfg.shortEmaLength));
-  const longEma = A(ta.ema(closeS, cfg.longEmaLength));
-  // [adx, adx_plus_di, adx_minus_di] = ta.dmi(...): ta.dmi returns [+DI, -DI, ADX]
-  const [dmiA, dmiB, dmiC] = ta.dmi(bars, cfg.adxLength, cfg.adxSmoothing);
-  const adx = A(dmiA);
-  const adxPlusDi = A(dmiB);
-  const adxMinusDi = A(dmiC);
-  const smaHL = (len: number) => {
-    const h = A(ta.sma(highS, len));
-    const l = A(ta.sma(lowS, len));
-    return h.map((v, i) => (v + l[i]) / 2);
-  };
-  const conversionLine = smaHL(cfg.conversionLength);
-  const baseLine = smaHL(cfg.baseLength);
-  const spanA = conversionLine.map((v, i) => (v + baseLine[i]) / 2);
-  const spanB = smaHL(cfg.laggingSpan);
-  const averageVolume = A(ta.sma(S(volume), 20));
-
   const totalWeight = cfg.macdWeight + cfg.rsiWeight + cfg.emaWeight + cfg.cloudWeight;
   const confidence = cfg.confidenceLevel / 100;
   // ta.crossover(a, b): a > b and a[1] <= b[1]; ta.crossunder(a, b): a < b and a[1] >= b[1]; exact comparisons
   const crossover = (a: number[], b: number[], i: number) => i > 0 && a[i] > b[i] && a[i - 1] <= b[i - 1];
   const crossunder = (a: number[], b: number[], i: number) => i > 0 && a[i] < b[i] && a[i - 1] >= b[i - 1];
-
-  const markers: MarkerData[] = [];
-  const fillColors: string[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time as number;
-    const macdBuy = crossover(macdLine, signalLine, i);
-    const macdSell = crossunder(macdLine, signalLine, i);
-    const rsiBuy = gt(rsi[i], 50);
-    const rsiSell = lt(rsi[i], 50);
-    const emaBuy = crossover(shortEma, longEma, i);
-    const emaSell = crossunder(shortEma, longEma, i);
-    const adxBuy = gt(adx[i], cfg.adxThreshold) && gt(adxPlusDi[i], adxMinusDi[i]) && gt(adxPlusDi[i], cfg.plusDiThreshold);
-    const adxSell = gt(adx[i], cfg.adxThreshold) && gt(adxMinusDi[i], adxPlusDi[i]) && gt(adxMinusDi[i], cfg.minusDiThreshold);
-    const cloudBuy = gt(close[i], Math.max(spanA[i], spanB[i])) && gt(spanA[i], spanB[i]);
-    const cloudSell = lt(close[i], Math.min(spanA[i], spanB[i])) && lt(spanA[i], spanB[i]);
-    // volume_increase = na(average_volume) ? false : volume > average_volume * volume_threshold and close > open
-    const volumeIncrease = isNaN(averageVolume[i])
-      ? false
-      : gt(volume[i], averageVolume[i] * cfg.volumeThreshold) && gt(close[i], bars[i].open);
-    const buyConditions = (macdBuy ? cfg.macdWeight : 0) + (rsiBuy ? cfg.rsiWeight : 0)
-      + (emaBuy && adxBuy ? cfg.emaWeight : 0) + (cloudBuy && volumeIncrease ? cfg.cloudWeight : 0);
-    const sellConditions = (macdSell ? cfg.macdWeight : 0) + (rsiSell ? cfg.rsiWeight : 0)
-      + (emaSell && adxSell ? cfg.emaWeight : 0) + (cloudSell ? cfg.cloudWeight : 0);
-    if (ge(buyConditions / totalWeight, confidence)) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY', textColor: color.blue });
-    }
-    if (ge(sellConditions / totalWeight, confidence)) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: color.blue });
-    }
-    // fill_color = leading_span_a > leading_span_b ? color.new(color.green, 90) : color.new(color.red, 90)
-    fillColors[i] = gt(spanA[i], spanB[i]) ? FILL_UP : FILL_DOWN;
-  }
-
-  const line = (vals: number[]) => bars.map((b, i) => ({ time: b.time as number, value: vals[i] }));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: line(shortEma), plot1: line(longEma), plot2: line(spanA), plot3: line(spanB), plot4: line(close) },
-    fills: [{ plot1: 'plot2', plot2: 'plot3', options: { title: 'Plots Background' }, colors: fillColors }],
-    markers,
+    init() {
+      const s: TmpRun = {
+        macd: taStep.macd(cfg.fastLength, cfg.slowLength, cfg.signalLength), rsi: taStep.rsi(cfg.rsiLength),
+        shortEmaStep: taStep.ema(cfg.shortEmaLength), longEmaStep: taStep.ema(cfg.longEmaLength),
+        dmi: taStep.dmi(cfg.adxLength, cfg.adxSmoothing), smas: Array.from({ length: 6 }, () => taStep.sma()),
+        averageVolume: taStep.sma(), macdLine: [], signalLine: [], shortEma: [], longEma: [],
+        plots: Array.from({ length: 5 }, () => []), fillColors: [], markers: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.macd, s.rsi, s.shortEmaStep, s.longEmaStep, s.dmi, ...s.smas, s.averageVolume];
+      s.lists = [s.markers];
+      s.series = [s.macdLine, s.signalLine, s.shortEma, s.longEma, ...s.plots, s.fillColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time as number;
+      const close = b.close;
+      const volume = b.volume ?? NaN;
+
+      const [macdLine, signalLine] = s.macd.step(close);
+      s.macdLine[i] = macdLine;
+      s.signalLine[i] = signalLine;
+      const rsi = s.rsi.step(close);
+      const shortEma = s.shortEmaStep.step(close);
+      const longEma = s.longEmaStep.step(close);
+      s.shortEma[i] = shortEma;
+      s.longEma[i] = longEma;
+      // [adx, adx_plus_di, adx_minus_di] = ta.dmi(...): ta.dmi returns [+DI, -DI, ADX]
+      const [adx, adxPlusDi, adxMinusDi] = s.dmi.step(b.high, b.low, close);
+      const smaHL = (k: number, len: number) => (s.smas[2 * k].step(b.high, len) + s.smas[2 * k + 1].step(b.low, len)) / 2;
+      const conversionLine = smaHL(0, cfg.conversionLength);
+      const baseLine = smaHL(1, cfg.baseLength);
+      const spanA = (conversionLine + baseLine) / 2;
+      const spanB = smaHL(2, cfg.laggingSpan);
+      const averageVolume = s.averageVolume.step(volume, 20);
+
+      const macdBuy = crossover(s.macdLine, s.signalLine, i);
+      const macdSell = crossunder(s.macdLine, s.signalLine, i);
+      const rsiBuy = gt(rsi, 50);
+      const rsiSell = lt(rsi, 50);
+      const emaBuy = crossover(s.shortEma, s.longEma, i);
+      const emaSell = crossunder(s.shortEma, s.longEma, i);
+      const adxBuy = gt(adx, cfg.adxThreshold) && gt(adxPlusDi, adxMinusDi) && gt(adxPlusDi, cfg.plusDiThreshold);
+      const adxSell = gt(adx, cfg.adxThreshold) && gt(adxMinusDi, adxPlusDi) && gt(adxMinusDi, cfg.minusDiThreshold);
+      const cloudBuy = gt(close, Math.max(spanA, spanB)) && gt(spanA, spanB);
+      const cloudSell = lt(close, Math.min(spanA, spanB)) && lt(spanA, spanB);
+      // volume_increase = na(average_volume) ? false : volume > average_volume * volume_threshold and close > open
+      const volumeIncrease = isNaN(averageVolume)
+        ? false
+        : gt(volume, averageVolume * cfg.volumeThreshold) && gt(close, b.open);
+      const buyConditions = (macdBuy ? cfg.macdWeight : 0) + (rsiBuy ? cfg.rsiWeight : 0)
+        + (emaBuy && adxBuy ? cfg.emaWeight : 0) + (cloudBuy && volumeIncrease ? cfg.cloudWeight : 0);
+      const sellConditions = (macdSell ? cfg.macdWeight : 0) + (rsiSell ? cfg.rsiWeight : 0)
+        + (emaSell && adxSell ? cfg.emaWeight : 0) + (cloudSell ? cfg.cloudWeight : 0);
+      if (ge(buyConditions / totalWeight, confidence)) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY', textColor: color.blue });
+      }
+      if (ge(sellConditions / totalWeight, confidence)) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: color.blue });
+      }
+      // fill_color = leading_span_a > leading_span_b ? color.new(color.green, 90) : color.new(color.red, 90)
+      s.fillColors[i] = gt(spanA, spanB) ? FILL_UP : FILL_DOWN;
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: shortEma };
+      p[1][i] = { time: t, value: longEma };
+      p[2][i] = { time: t, value: spanA };
+      p[3][i] = { time: t, value: spanB };
+      p[4][i] = { time: t, value: close };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        fills: [{ plot1: 'plot2', plot2: 'plot3', options: { title: 'Plots Background' }, colors: s.fillColors.slice() }],
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendMasterProFekonomiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<TrendMasterProFekonomiInputs> = {},
+): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TrendMasterProFekonomi = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

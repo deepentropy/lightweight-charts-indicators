@@ -17,10 +17,12 @@
  */
 
 import {
-  ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
+  taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar,
 } from 'oakscriptjs';
 import type { BgColorData, MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type Committable, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RetailVsBankerNetPositionsSymmetryBreakInputs {
   /** Trend EMA length */
@@ -154,176 +156,368 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RetailVsBankerNetPositionsSymmetryBreakInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+/**
+ * `math.sum(source, length)` with a constant length, one bar at a time: the correctly rounded sum of the last `length`
+ * non-na values (exact partials, as the oakscriptjs window sums: the same doubles), the previous result on a bar with
+ * an na value. The kept partials are copied into a second buffer on a step (no allocation per bar).
+ */
+class WindowSum implements Committable {
+  private values: number[] = [];
+  private p = new Float64Array(16);
+  private n = 0;
+  private q = new Float64Array(16);
+  private qn = 0;
+  private last = NaN;
+  private next = NaN;
+  private pending = NaN;
+  private stepped = false;
+  private readonly len: number;
 
-  // rng = ta.tr(true): high - low when close[1] is na
-  const rng = bars.map((b, i) => (i === 0
-    ? b.high - b.low
-    : Math.max(b.high - b.low, Math.abs(b.high - bars[i - 1].close), Math.abs(b.low - bars[i - 1].close))));
-  const rngMu = A(ta.sma(S(rng), cfg.rngLen));
-  const rngSd = A(ta.stdev(S(rng), cfg.rngLen));
-  const ema = A(ta.ema(S(bars.map((b) => b.close)), cfg.lenTrend));
-
-  const instUp: number[] = new Array(n);
-  const instDn: number[] = new Array(n);
-  const retUp: number[] = new Array(n);
-  const retDn: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const { open, close } = bars[i];
-    const volume = bars[i].volume ?? NaN;
-    const zRng = eq(rngSd[i], 0) ? 0 : (rng[i] - rngMu[i]) / rngSd[i];
-    const upBar = gt(close, open);
-    const dnBar = lt(close, open);
-    const withTrend = (ge(close, ema[i]) && upBar) || (lt(close, ema[i]) && dnBar);
-    const against = (ge(close, ema[i]) && dnBar) || (lt(close, ema[i]) && upBar);
-    const isBig = cfg.useZAdapt ? ge(zRng, cfg.zBigBar) : ge(zRng, 0.5);
-    const isSmall = cfg.useZAdapt ? le(zRng, cfg.zSmallBar) : le(zRng, -0.5);
-    instUp[i] = withTrend && isBig && upBar ? volume : 0;
-    instDn[i] = withTrend && isBig && dnBar ? volume : 0;
-    retUp[i] = (against || isSmall) && upBar ? volume : 0;
-    retDn[i] = (against || isSmall) && dnBar ? volume : 0;
+  constructor(length: number) {
+    this.len = Math.floor(length);
   }
-  // rollSum(x, n) = ta.sma(x, n) * n
-  const rollSum = (x: number[]) => A(ta.sma(S(x), cfg.lenNet)).map((v) => v * cfg.lenNet);
-  const sumInstUp = rollSum(instUp);
-  const sumInstDn = rollSum(instDn);
-  const sumRetUp = rollSum(retUp);
-  const sumRetDn = rollSum(retDn);
-  const net = (up: number[], dn: number[]) => up.map((u, i) => {
-    const tot = u + dn[i];
-    return eq(tot, 0) ? 0 : (100 * (u - dn[i])) / tot;
-  });
-  const instNet = A(ta.ema(S(net(sumInstUp, sumInstDn)), cfg.smooth));
-  const retNet = A(ta.ema(S(net(sumRetUp, sumRetDn)), cfg.smooth));
 
-  // Symmetry-break detection
-  const nz = (v: number) => (isNaN(v) ? 0 : v);
-  const instROC = instNet.map((v, i) => v - nz(i > 0 ? instNet[i - 1] : NaN));
-  const retROC = retNet.map((v, i) => v - nz(i > 0 ? retNet[i - 1] : NaN));
-  const sdInstROC = A(ta.stdev(S(instROC), cfg.lenSpike));
-  const sdRetROC = A(ta.stdev(S(retROC), cfg.lenSpike));
+  /** Adds `x` to the partials of `q` exactly (Shewchuk) */
+  private add(x: number): void {
+    let q = this.q;
+    const n = this.qn;
+    let i = 0;
+    for (let j = 0; j < n; j++) {
+      let y = q[j]!;
+      if (Math.abs(x) < Math.abs(y)) {
+        const t = x;
+        x = y;
+        y = t;
+      }
+      const hi = x + y;
+      const lo = y - (hi - x);
+      if (lo !== 0) q[i++] = lo;
+      x = hi;
+    }
+    if (i === q.length) {
+      const grown = new Float64Array(q.length * 2);
+      grown.set(q);
+      this.q = q = grown;
+    }
+    q[i] = x;
+    this.qn = i + 1;
+  }
 
-  // Extremes: ta.highest / ta.lowest of instNet[1] (window mode) or ta.pivothigh / pivotlow (pivot mode); each
-  // only runs in its mode (lazy `and`, ternary)
+  /** The exact sum of the partials of `q` rounded once (round half to even) */
+  private round(): number {
+    const p = this.q;
+    let n = this.qn;
+    if (n === 0) return 0;
+    let hi = p[--n]!;
+    while (n > 0) {
+      const x = hi;
+      const y = p[--n]!;
+      hi = x + y;
+      const lo = y - (hi - x);
+      if (lo !== 0) {
+        if (n > 0 && ((lo < 0 && p[n - 1]! < 0) || (lo > 0 && p[n - 1]! > 0))) {
+          const y2 = lo * 2;
+          const x2 = hi + y2;
+          if (y2 === x2 - hi) hi = x2;
+        }
+        break;
+      }
+    }
+    return hi;
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    if (!(this.len >= 1)) { this.pending = NaN; this.next = NaN; return NaN; }
+    if (value === undefined || value === null || !Number.isFinite(value)) {
+      this.pending = NaN;
+      this.next = this.last;
+      return this.last;
+    }
+    if (this.q.length < this.p.length) this.q = new Float64Array(this.p.length);
+    this.q.set(this.p.subarray(0, this.n));
+    this.qn = this.n;
+    const count = this.values.length;
+    if (count >= this.len) this.add(-this.values[count - this.len]!);
+    this.add(value);
+    this.pending = value;
+    this.next = count + 1 >= this.len ? this.round() : NaN;
+    return this.next;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.last = this.next;
+    if (Number.isNaN(this.pending)) return;
+    const p = this.p;
+    this.p = this.q;
+    this.n = this.qn;
+    this.q = p;
+    this.values.push(this.pending);
+    if (this.values.length > this.len * 2 + 1024) this.values = this.values.slice(-this.len);
+  }
+}
+
+/** `ta.sma(source, length)` with a constant length: {@link WindowSum} divided by the length */
+class WindowSma extends WindowSum {
+  private readonly div: number;
+
+  constructor(length: number) {
+    super(length);
+    this.div = Math.floor(length);
+  }
+
+  override step(value: number): number {
+    return super.step(value) / this.div;
+  }
+}
+
+/** `ta.stdev(source, length)` (biased) with a constant length, from {@link WindowSum}s of the values and squares */
+class WindowStdev implements Committable {
+  private readonly sums: WindowSum;
+  private readonly squares: WindowSum;
+  private readonly len: number;
+
+  constructor(length: number) {
+    this.len = Math.floor(length);
+    this.sums = new WindowSum(length);
+    this.squares = new WindowSum(length);
+  }
+
+  /** The biased variance */
+  variance(value: number): number {
+    const sum = this.sums.step(value);
+    const sq = this.squares.step(value === undefined || value === null || !Number.isFinite(value) ? NaN : value * value);
+    if (this.len <= 0) return NaN;
+    const mean = sum / this.len;
+    return sq / this.len - mean * mean;
+  }
+
+  step(value: number): number {
+    const v = this.variance(value);
+    return Number.isNaN(v) ? NaN : v > 0 ? Math.sqrt(v) : 0;
+  }
+
+  commit(): void {
+    this.sums.commit();
+    this.squares.commit();
+  }
+}
+
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface RvbVars {
+  lastIdx: number;
+  lastTopIdx: number;
+  lastBotIdx: number;
+  /** ta.crossover / ta.crossunder(retNet, 0): the last bar where retNet was not na */
+  prevRet: number;
+}
+
+interface RvbRun extends BarRunState<RvbVars> {
+  rngMu: WindowSma;
+  rngSd: WindowStdev;
+  ema: ReturnType<typeof taStep.ema>;
+  /** rollSum of instUp, instDn, retUp, retDn */
+  sums: WindowSma[];
+  instEma: ReturnType<typeof taStep.ema>;
+  retEma: ReturnType<typeof taStep.ema>;
+  sdInst: WindowStdev;
+  sdRet: WindowStdev;
+  hi: ReturnType<typeof taStep.highest>;
+  lo: ReturnType<typeof taStep.lowest>;
+  ph: PivotStep;
+  pl: PivotStep;
+  instNet: number[];
+  retNet: number[];
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RetailVsBankerNetPositionsSymmetryBreakInputs>): BarStudy<RvbRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const L = cfg.extLen;
-  const prevInst = instNet.map((_v, i) => (i > 0 ? instNet[i - 1] : NaN));
-  const hi = cfg.usePivots ? [] : A(ta.highest(S(prevInst), cfg.extLen - 1));
-  const lo = cfg.usePivots ? [] : A(ta.lowest(S(prevInst), cfg.extLen - 1));
-  const ph = cfg.usePivots ? A(ta.pivothigh(S(instNet), L, L)) : [];
-  const pl = cfg.usePivots ? A(ta.pivotlow(S(instNet), L, L)) : [];
-
+  const nz = (v: number) => (isNaN(v) ? 0 : v);
   const instColor = (v: number) => (ge(v, 0) ? color.aqua : color.orange);
   const retColor = (v: number) => (ge(v, 0) ? color.lime : color.red);
   const extTopBg = String(color.new(color.aqua, 90));
   const extBotBg = String(color.new(color.orange, 90));
   const symBg = String(color.new(color.fuchsia, 88));
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  // alertcondition flags in the original's order
-  const flags: boolean[][] = [0, 1, 2, 3, 4, 5].map(() => new Array<boolean>(n).fill(false));
-  let lastIdx = NaN;
-  let lastTopIdx = NaN;
-  let lastBotIdx = NaN;
-  // ta.crossover / ta.crossunder(retNet, 0): exact compare with the last bar where retNet was not na
-  let prevRet = NaN;
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const zInst = eq(sdInstROC[i], 0) ? 0 : instROC[i] / sdInstROC[i];
-    const zRet = eq(sdRetROC[i], 0) ? 0 : retROC[i] / sdRetROC[i];
-    const retQuiet = le(Math.abs(retROC[i]), cfg.retQuietK * sdRetROC[i]);
-    // math.sign(instROC) != math.sign(retROC): false when one side is na
-    const sI = Math.sign(instROC[i]);
-    const sR = Math.sign(retROC[i]);
-    const opposite = !isNaN(sI) && !isNaN(sR) && sI !== sR;
-    const zGapOK = ge(Math.abs(zInst) - Math.abs(zRet), cfg.zGapCut);
-    const instBig = ge(Math.abs(instROC[i]), cfg.minInstROC);
-    const symBreakRaw = ge(Math.abs(zInst), cfg.zInstCut) && zGapOK && instBig && (retQuiet || opposite);
-    const canFire = isNaN(lastIdx) || i - lastIdx > cfg.coolOff;
-    const symBreak = symBreakRaw && canFire;
-    if (symBreak) lastIdx = i;
-
-    const r = retNet[i];
-    const retFlipUp = !isNaN(r) && !isNaN(prevRet) && r > 0 && prevRet <= 0;
-    const retFlipDown = !isNaN(r) && !isNaN(prevRet) && r < 0 && prevRet >= 0;
-    if (!isNaN(r)) prevRet = r;
-    // plotchar(showRetFlips and retFlipUp ? retNet : na, char = "▲", location.absolute, color.lime, size.tiny)
-    if (cfg.showRetFlips && retFlipUp) {
-      markers.push({ id: 'char0', time: t, position: 'atPriceMiddle', price: r, shape: 'circle', color: 'transparent', text: '▲',
-        textColor: color.lime, size: 'tiny' });
-    }
-    if (cfg.showRetFlips && retFlipDown) {
-      markers.push({ id: 'char1', time: t, position: 'atPriceMiddle', price: r, shape: 'circle', color: 'transparent', text: '▼',
-        textColor: color.red, size: 'tiny' });
-    }
-
-    const v = instNet[i];
-    const newHighNow = !cfg.usePivots && gt(v, hi[i]);
-    const newLowNow = !cfg.usePivots && lt(v, lo[i]);
-    const pivotTopNow = cfg.usePivots && !isNaN(ph[i]);
-    const pivotBotNow = cfg.usePivots && !isNaN(pl[i]);
-    const topNowRaw = newHighNow || pivotTopNow;
-    const botNowRaw = newLowNow || pivotBotNow;
-    const topNow = cfg.requireSym ? topNowRaw && symBreak : topNowRaw;
-    const botNow = cfg.requireSym ? botNowRaw && symBreak : botNowRaw;
-    const canTop = isNaN(lastTopIdx) || i - lastTopIdx > cfg.dedupeBars;
-    const canBot = isNaN(lastBotIdx) || i - lastBotIdx > cfg.dedupeBars;
-    const topFire = topNow && canTop;
-    const botFire = botNow && canBot;
-    if (topFire) lastTopIdx = i;
-    if (botFire) lastBotIdx = i;
-    flags[0][i] = retFlipUp;
-    flags[1][i] = retFlipDown;
-    flags[2][i] = retFlipUp || retFlipDown;
-    flags[3][i] = topFire;
-    flags[4][i] = botFire;
-    flags[5][i] = symBreak;
-    // plotchar(topFire ? instNet : na, "Institutional Extreme High", "●", location.absolute, size.tiny, aqua)
-    if (topFire && !isNaN(v)) {
-      markers.push({ id: 'char2', time: t, position: 'atPriceMiddle', price: v, shape: 'circle', color: 'transparent', text: '●',
-        textColor: color.aqua, size: 'tiny' });
-    }
-    if (botFire && !isNaN(v)) {
-      markers.push({ id: 'char3', time: t, position: 'atPriceMiddle', price: v, shape: 'circle', color: 'transparent', text: '●',
-        textColor: color.orange, size: 'tiny' });
-    }
-    // bgcolor layers in Pine order (the later call is drawn on top)
-    if (cfg.showExtBG && topFire) bgColors.push({ time: t, color: extTopBg });
-    if (cfg.showExtBG && botFire) bgColors.push({ time: t, color: extBotBg });
-    if (cfg.shadeBG && symBreak) bgColors.push({ time: t, color: symBg });
-    // plotshape(showMarks and symBreak, style = shape.circle, location = location.top, size = size.tiny,
-    //           color = color.fuchsia, text = "Break"): Pine default text colour (blue)
-    if (cfg.showMarks && symBreak) {
-      markers.push({ id: 'shape4', time: t, position: 'top', shape: 'circle', color: color.fuchsia, text: 'Break', textColor: color.blue,
-        size: 'tiny' });
-    }
-  }
-
-  const plot0 = bars.map((b, i) => ({ time: b.time, value: instNet[i], color: instColor(instNet[i]) }));
-  const plot1 = bars.map((b, i) => ({ time: b.time, value: retNet[i], color: retColor(retNet[i]) }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    hlines: [
-      { value: 0, options: { title: 'Zero', color: ZERO_COLOR, linestyle: 'dashed' } },
-      { value: cfg.thrShow, options: { title: ' +Thr', color: THR_COLOR, linestyle: 'dashed' } },
-      { value: -cfg.thrShow, options: { title: ' -Thr', color: THR_COLOR, linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_plus', plot2: 'hline_minus', colors: new Array<string>(n).fill(THR_FILL) },
-    ],
-    markers,
-    bgColors,
-    alerts: alertStates(alertConditions, bars, flags),
+  // net(up, dn) of the rolling sums
+  const net = (u: number, d: number) => {
+    const tot = u + d;
+    return eq(tot, 0) ? 0 : (100 * (u - d)) / tot;
   };
+  return {
+    init() {
+      const s: RvbRun = {
+        rngMu: new WindowSma(cfg.rngLen), rngSd: new WindowStdev(cfg.rngLen), ema: taStep.ema(cfg.lenTrend),
+        sums: [0, 1, 2, 3].map(() => new WindowSma(cfg.lenNet)),
+        instEma: taStep.ema(cfg.smooth), retEma: taStep.ema(cfg.smooth), sdInst: new WindowStdev(cfg.lenSpike), sdRet: new WindowStdev(cfg.lenSpike),
+        hi: taStep.highest(), lo: taStep.lowest(), ph: new PivotStep(L, L, true), pl: new PivotStep(L, L, false),
+        instNet: [], retNet: [], plot0: [], plot1: [], markers: [], bgColors: [],
+        flags: [0, 1, 2, 3, 4, 5].map(() => []), times: [0, 1, 2, 3, 4, 5].map(() => []),
+        steps: [], vars: { lastIdx: NaN, lastTopIdx: NaN, lastBotIdx: NaN, prevRet: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.rngMu, s.rngSd, s.ema, ...s.sums, s.instEma, s.retEma, s.sdInst, s.sdRet,
+        ...(cfg.usePivots ? [s.ph, s.pl] : [s.hi, s.lo])];
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [s.instNet, s.retNet, s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const vars = s.vars;
+      const bar = bars[i];
+      const t = bar.time;
+      const { open, close } = bar;
+      const volume = bar.volume ?? NaN;
+      // rng = ta.tr(true): high - low when close[1] is na
+      const rng = i === 0
+        ? bar.high - bar.low
+        : Math.max(bar.high - bar.low, Math.abs(bar.high - bars[i - 1].close), Math.abs(bar.low - bars[i - 1].close));
+      const rngMu = s.rngMu.step(rng);
+      const rngSd = s.rngSd.step(rng);
+      const ema = s.ema.step(close);
+
+      const zRng = eq(rngSd, 0) ? 0 : (rng - rngMu) / rngSd;
+      const upBar = gt(close, open);
+      const dnBar = lt(close, open);
+      const withTrend = (ge(close, ema) && upBar) || (lt(close, ema) && dnBar);
+      const against = (ge(close, ema) && dnBar) || (lt(close, ema) && upBar);
+      const isBig = cfg.useZAdapt ? ge(zRng, cfg.zBigBar) : ge(zRng, 0.5);
+      const isSmall = cfg.useZAdapt ? le(zRng, cfg.zSmallBar) : le(zRng, -0.5);
+      // rollSum(x, n) = ta.sma(x, n) * n
+      const sumInstUp = s.sums[0].step(withTrend && isBig && upBar ? volume : 0) * cfg.lenNet;
+      const sumInstDn = s.sums[1].step(withTrend && isBig && dnBar ? volume : 0) * cfg.lenNet;
+      const sumRetUp = s.sums[2].step((against || isSmall) && upBar ? volume : 0) * cfg.lenNet;
+      const sumRetDn = s.sums[3].step((against || isSmall) && dnBar ? volume : 0) * cfg.lenNet;
+      const v = s.instEma.step(net(sumInstUp, sumInstDn));
+      const r = s.retEma.step(net(sumRetUp, sumRetDn));
+      s.instNet[i] = v;
+      s.retNet[i] = r;
+
+      // Symmetry-break detection
+      const prevInst = i > 0 ? s.instNet[i - 1] : NaN;
+      const instROC = v - nz(prevInst);
+      const retROC = r - nz(i > 0 ? s.retNet[i - 1] : NaN);
+      const sdInstROC = s.sdInst.step(instROC);
+      const sdRetROC = s.sdRet.step(retROC);
+
+      // Extremes: ta.highest / ta.lowest of instNet[1] (window mode) or ta.pivothigh / pivotlow (pivot mode); each
+      // only runs in its mode (lazy `and`, ternary)
+      const hi = cfg.usePivots ? NaN : s.hi.step(prevInst, cfg.extLen - 1);
+      const lo = cfg.usePivots ? NaN : s.lo.step(prevInst, cfg.extLen - 1);
+      const ph = cfg.usePivots ? s.ph.step(i, v) : NaN;
+      const pl = cfg.usePivots ? s.pl.step(i, v) : NaN;
+
+      const zInst = eq(sdInstROC, 0) ? 0 : instROC / sdInstROC;
+      const zRet = eq(sdRetROC, 0) ? 0 : retROC / sdRetROC;
+      const retQuiet = le(Math.abs(retROC), cfg.retQuietK * sdRetROC);
+      // math.sign(instROC) != math.sign(retROC): false when one side is na
+      const sI = Math.sign(instROC);
+      const sR = Math.sign(retROC);
+      const opposite = !isNaN(sI) && !isNaN(sR) && sI !== sR;
+      const zGapOK = ge(Math.abs(zInst) - Math.abs(zRet), cfg.zGapCut);
+      const instBig = ge(Math.abs(instROC), cfg.minInstROC);
+      const symBreakRaw = ge(Math.abs(zInst), cfg.zInstCut) && zGapOK && instBig && (retQuiet || opposite);
+      const canFire = isNaN(vars.lastIdx) || i - vars.lastIdx > cfg.coolOff;
+      const symBreak = symBreakRaw && canFire;
+      if (symBreak) vars.lastIdx = i;
+
+      const prevRet = vars.prevRet;
+      const retFlipUp = !isNaN(r) && !isNaN(prevRet) && r > 0 && prevRet <= 0;
+      const retFlipDown = !isNaN(r) && !isNaN(prevRet) && r < 0 && prevRet >= 0;
+      if (!isNaN(r)) vars.prevRet = r;
+      const markers = s.markers;
+      // plotchar(showRetFlips and retFlipUp ? retNet : na, char = "▲", location.absolute, color.lime, size.tiny)
+      if (cfg.showRetFlips && retFlipUp) {
+        markers.push({ id: 'char0', time: t, position: 'atPriceMiddle', price: r, shape: 'circle', color: 'transparent', text: '▲',
+          textColor: color.lime, size: 'tiny' });
+      }
+      if (cfg.showRetFlips && retFlipDown) {
+        markers.push({ id: 'char1', time: t, position: 'atPriceMiddle', price: r, shape: 'circle', color: 'transparent', text: '▼',
+          textColor: color.red, size: 'tiny' });
+      }
+
+      const newHighNow = !cfg.usePivots && gt(v, hi);
+      const newLowNow = !cfg.usePivots && lt(v, lo);
+      const pivotTopNow = cfg.usePivots && !isNaN(ph);
+      const pivotBotNow = cfg.usePivots && !isNaN(pl);
+      const topNowRaw = newHighNow || pivotTopNow;
+      const botNowRaw = newLowNow || pivotBotNow;
+      const topNow = cfg.requireSym ? topNowRaw && symBreak : topNowRaw;
+      const botNow = cfg.requireSym ? botNowRaw && symBreak : botNowRaw;
+      const canTop = isNaN(vars.lastTopIdx) || i - vars.lastTopIdx > cfg.dedupeBars;
+      const canBot = isNaN(vars.lastBotIdx) || i - vars.lastBotIdx > cfg.dedupeBars;
+      const topFire = topNow && canTop;
+      const botFire = botNow && canBot;
+      if (topFire) vars.lastTopIdx = i;
+      if (botFire) vars.lastBotIdx = i;
+      // alertcondition flags in the original's order
+      const f = s.flags;
+      f[0][i] = retFlipUp;
+      f[1][i] = retFlipDown;
+      f[2][i] = retFlipUp || retFlipDown;
+      f[3][i] = topFire;
+      f[4][i] = botFire;
+      f[5][i] = symBreak;
+      for (let k = 0; k < 6; k++) if (f[k][i]) s.times[k].push(t as number);
+      // plotchar(topFire ? instNet : na, "Institutional Extreme High", "●", location.absolute, size.tiny, aqua)
+      if (topFire && !isNaN(v)) {
+        markers.push({ id: 'char2', time: t, position: 'atPriceMiddle', price: v, shape: 'circle', color: 'transparent', text: '●',
+          textColor: color.aqua, size: 'tiny' });
+      }
+      if (botFire && !isNaN(v)) {
+        markers.push({ id: 'char3', time: t, position: 'atPriceMiddle', price: v, shape: 'circle', color: 'transparent', text: '●',
+          textColor: color.orange, size: 'tiny' });
+      }
+      // bgcolor layers in Pine order (the later call is drawn on top)
+      if (cfg.showExtBG && topFire) s.bgColors.push({ time: t, color: extTopBg });
+      if (cfg.showExtBG && botFire) s.bgColors.push({ time: t, color: extBotBg });
+      if (cfg.shadeBG && symBreak) s.bgColors.push({ time: t, color: symBg });
+      // plotshape(showMarks and symBreak, style = shape.circle, location = location.top, size = size.tiny,
+      //           color = color.fuchsia, text = "Break"): Pine default text colour (blue)
+      if (cfg.showMarks && symBreak) {
+        markers.push({ id: 'shape4', time: t, position: 'top', shape: 'circle', color: color.fuchsia, text: 'Break', textColor: color.blue,
+          size: 'tiny' });
+      }
+      s.plot0[i] = { time: t, value: v, color: instColor(v) };
+      s.plot1[i] = { time: t, value: r, color: retColor(r) };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: 0, options: { title: 'Zero', color: ZERO_COLOR, linestyle: 'dashed' } },
+          { value: cfg.thrShow, options: { title: ' +Thr', color: THR_COLOR, linestyle: 'dashed' } },
+          { value: -cfg.thrShow, options: { title: ' -Thr', color: THR_COLOR, linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_plus', plot2: 'hline_minus', colors: new Array<string>(n).fill(THR_FILL) },
+        ],
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RetailVsBankerNetPositionsSymmetryBreakInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RetailVsBankerNetPositionsSymmetryBreakInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -342,6 +536,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RetailVsBankerNetPositionsSymmetryBreak = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

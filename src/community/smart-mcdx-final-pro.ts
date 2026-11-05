@@ -12,7 +12,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { HLineConfig } from 'oakscriptjs';
 
 export interface SmartMcdxFinalProInputs {
@@ -106,94 +108,131 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<SmartMcdxFinalProInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+type Ema = ReturnType<typeof taStep.ema>;
+
+/** line(len): ema(normalize(ema(flow, len), len), smooth) * scale, with normalize(src, len) = src / ema(abs(src), len) */
+interface Line {
+  raw: Ema;
+  den: Ema;
+  smooth: Ema;
+}
+
+interface McdxRun extends BarRunState<Record<string, never>> {
+  retail: Line;
+  hot: Line;
+  banker: Line;
+  htf: Line;
+  bankerMA: Ema;
+  htfMa: Ema;
+  crossUp: ReturnType<typeof taStep.crossover>;
+  crossDown: ReturnType<typeof taStep.crossunder>;
+  plots: Point[][];
+  bandColors: string[];
+}
+
+function study(inputs: Partial<SmartMcdxFinalProInputs>): BarStudy<McdxRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const scale = 20.0;
-
-  // flow = (close - close[1]) * volume
-  const flow = bars.map((b, i) => (i > 0 ? (b.close - bars[i - 1].close) * (b.volume ?? NaN) : NaN));
-  const flowS = S(flow);
-
+  const htfLen = cfg.bankerLen * cfg.htfMult;
+  const makeLine = (len: number, smooth: number): Line => ({ raw: taStep.ema(len), den: taStep.ema(len), smooth: taStep.ema(smooth) });
   // normalize(src, len) = src / ta.ema(math.abs(src), len): a plain division (x / 0 is +-infinity, 0 / 0 na;
   // ta.ema skips the infinite values as Pine)
-  const normalize = (src: number[], len: number) => {
-    const den = A(ta.ema(S(src.map((v) => Math.abs(v))), len));
-    return src.map((v, i) => v / den[i]);
+  const lineStep = (l: Line, flow: number) => {
+    const raw = l.raw.step(flow) ?? NaN;
+    const den = l.den.step(Math.abs(raw)) ?? NaN;
+    return (l.smooth.step(raw / den) ?? NaN) * scale;
   };
-  const line = (len: number) => {
-    const raw = A(ta.ema(flowS, len));
-    return A(ta.ema(S(normalize(raw, len)), cfg.smooth)).map((v) => v * scale);
-  };
-  const r = line(cfg.retailLen);
-  const h = line(cfg.hotLen);
-  const b = line(cfg.bankerLen);
-  const bankerMA = A(ta.ema(S(b), cfg.smooth));
-
-  // Trend: trendActive = math.abs(b) > minStrength
-  const trendActive = b.map((v) => gt(Math.abs(v), cfg.minStrength));
-  const bullTrend = b.map((v, i) => gt(v, 0) && trendActive[i]);
-  const bearTrend = b.map((v, i) => lt(v, 0) && trendActive[i]);
-
-  // ta.crossover(b, bankerMA) / ta.crossunder(b, bankerMA)
-  const crossUp = ta.crossover(S(b), S(bankerMA)).toArray();
-  const crossDown = ta.crossunder(S(b), S(bankerMA)).toArray();
-
-  // HTF Banker: the same steps with bankerLen * htfMult and smooth * htfMult
-  const htfLen = cfg.bankerLen * cfg.htfMult;
-  const bHtfRaw = A(ta.ema(flowS, htfLen));
-  const bHtfNorm = normalize(bHtfRaw, htfLen);
-  const bHtf = A(ta.ema(S(bHtfNorm), cfg.smooth * cfg.htfMult)).map((v) => v * scale);
-  const bHtfMa = A(ta.ema(S(bHtf), cfg.smooth));
-
+  const lineSteps = (l: Line) => [l.raw, l.den, l.smooth];
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const t = (i: number) => bars[i].time;
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  const plot4 = [];
-  const plot5 = [];
-  const plot6 = [];
-  const plot7 = [];
-  const plot8 = [];
-  const plot9 = [];
-  const bandColors: string[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    plot0.push({ time: t(i), value: fin(r[i]), color: RETAIL_COL });
-    plot1.push({ time: t(i), value: fin(h[i]), color: HOT_COL });
-    plot2.push({ time: t(i), value: fin(b[i]), color: BANKER_COL });
-    plot3.push({ time: t(i), value: fin(bankerMA[i]), color: color.white });
-    // p1 = plot(showTrendBand ? 2 : na, display = display.none); p2 = plot(showTrendBand ? -2 : na, ...)
-    plot4.push({ time: t(i), value: cfg.showTrendBand ? 2 : NaN });
-    plot5.push({ time: t(i), value: cfg.showTrendBand ? -2 : NaN });
-    // fill(p1, p2, color = bullTrend ? color.new(#39FF14, 85) : bearTrend ? color.new(#FF073A, 85) : na)
-    bandColors[i] = bullTrend[i] ? BAND_BULL : bearTrend[i] ? BAND_BEAR : 'transparent';
-    // bullDot = crossUp and trendActive ? bankerMA : na; plot(showDots ? bullDot : na, style = circles)
-    const validBull = !!crossUp[i] && trendActive[i];
-    const validBear = !!crossDown[i] && trendActive[i];
-    plot6.push({ time: t(i), value: cfg.showDots && validBull ? fin(bankerMA[i]) : NaN, color: cfg.dotUpCol });
-    plot7.push({ time: t(i), value: cfg.showDots && validBear ? fin(bankerMA[i]) : NaN, color: cfg.dotDnCol });
-    // htfCol = b_htf > b_htf_ma ? htfBullCol : htfBearCol
-    plot8.push({ time: t(i), value: cfg.showHTF ? fin(bHtf[i]) : NaN, color: gt(bHtf[i], bHtfMa[i]) ? HTF_BULL : HTF_BEAR });
-    plot9.push({ time: t(i), value: cfg.showHTF ? fin(bHtfMa[i]) : NaN, color: HTF_MA_COL });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4, plot5, plot6, plot7, plot8, plot9 },
-    hlines: hlineConfig.map((hl) => ({
-      value: hl.price,
-      options: { title: hl.title, color: hl.color, linestyle: hl.linestyle, linewidth: hl.linewidth },
-    })),
-    fills: [{ plot1: 'plot4', plot2: 'plot5', colors: bandColors }],
+    init() {
+      const s: McdxRun = {
+        retail: makeLine(cfg.retailLen, cfg.smooth), hot: makeLine(cfg.hotLen, cfg.smooth),
+        banker: makeLine(cfg.bankerLen, cfg.smooth),
+        // HTF Banker: the same steps with bankerLen * htfMult and smooth * htfMult
+        htf: makeLine(htfLen, cfg.smooth * cfg.htfMult),
+        bankerMA: taStep.ema(cfg.smooth), htfMa: taStep.ema(cfg.smooth),
+        crossUp: taStep.crossover(), crossDown: taStep.crossunder(),
+        plots: Array.from({ length: 10 }, () => []), bandColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [
+        ...lineSteps(s.retail), ...lineSteps(s.hot), ...lineSteps(s.banker), ...lineSteps(s.htf), s.bankerMA, s.htfMa,
+        s.crossUp, s.crossDown,
+      ];
+      s.series = [...s.plots, s.bandColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const time = bar.time;
+      // flow = (close - close[1]) * volume
+      const flow = i > 0 ? (bar.close - bars[i - 1].close) * (bar.volume ?? NaN) : NaN;
+      const r = lineStep(s.retail, flow);
+      const h = lineStep(s.hot, flow);
+      const b = lineStep(s.banker, flow);
+      const bankerMA = s.bankerMA.step(b) ?? NaN;
+
+      // Trend: trendActive = math.abs(b) > minStrength
+      const trendActive = gt(Math.abs(b), cfg.minStrength);
+      const bullTrend = gt(b, 0) && trendActive;
+      const bearTrend = lt(b, 0) && trendActive;
+
+      // ta.crossover(b, bankerMA) / ta.crossunder(b, bankerMA)
+      const crossUp = s.crossUp.step(b, bankerMA);
+      const crossDown = s.crossDown.step(b, bankerMA);
+
+      const bHtf = lineStep(s.htf, flow);
+      const bHtfMa = s.htfMa.step(bHtf) ?? NaN;
+
+      const p = s.plots;
+      p[0][i] = { time, value: fin(r), color: RETAIL_COL };
+      p[1][i] = { time, value: fin(h), color: HOT_COL };
+      p[2][i] = { time, value: fin(b), color: BANKER_COL };
+      p[3][i] = { time, value: fin(bankerMA), color: color.white };
+      // p1 = plot(showTrendBand ? 2 : na, display = display.none); p2 = plot(showTrendBand ? -2 : na, ...)
+      p[4][i] = { time, value: cfg.showTrendBand ? 2 : NaN };
+      p[5][i] = { time, value: cfg.showTrendBand ? -2 : NaN };
+      // fill(p1, p2, color = bullTrend ? color.new(#39FF14, 85) : bearTrend ? color.new(#FF073A, 85) : na)
+      s.bandColors[i] = bullTrend ? BAND_BULL : bearTrend ? BAND_BEAR : 'transparent';
+      // bullDot = crossUp and trendActive ? bankerMA : na; plot(showDots ? bullDot : na, style = circles)
+      const validBull = !!crossUp && trendActive;
+      const validBear = !!crossDown && trendActive;
+      p[6][i] = { time, value: cfg.showDots && validBull ? fin(bankerMA) : NaN, color: cfg.dotUpCol };
+      p[7][i] = { time, value: cfg.showDots && validBear ? fin(bankerMA) : NaN, color: cfg.dotDnCol };
+      // htfCol = b_htf > b_htf_ma ? htfBullCol : htfBearCol
+      p[8][i] = { time, value: cfg.showHTF ? fin(bHtf) : NaN, color: gt(bHtf, bHtfMa) ? HTF_BULL : HTF_BEAR };
+      p[9][i] = { time, value: cfg.showHTF ? fin(bHtfMa) : NaN, color: HTF_MA_COL };
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        hlines: hlineConfig.map((hl) => ({
+          value: hl.price,
+          options: { title: hl.title, color: hl.color, linestyle: hl.linestyle, linewidth: hl.linewidth },
+        })),
+        fills: [{ plot1: 'plot4', plot2: 'plot5', colors: s.bandColors.slice() }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SmartMcdxFinalProInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SmartMcdxFinalProInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const SmartMcdxFinalPro = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

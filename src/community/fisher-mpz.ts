@@ -17,9 +17,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
+import { taCore, taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall } from '../types';
-import { crossedOver, crossedUnder } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -157,128 +158,235 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const nz = (x: number) => (Number.isFinite(x) ? x : 0);
 
 /**
- * kalmanFilter(src, Q, R): one state per Pine call site (var x = na, var P = na); returns the per-bar function.
+ * The sorted window of `ta.percentile_nearest_rank(source, length, p)` stepped bar by bar, with the rules of the
+ * oakscriptjs array function: every value is kept (na values too, after the values they do not compare with), a new
+ * value goes before the first value that is >= it, the value of bar i - length leaves the window, the result is the
+ * value of rank `rank` (na before bar length - 1). One window serves several percentages.
  */
-function kalmanSite(Q: number, R: number): (src: number) => number {
-  let x = NaN;
-  let P = NaN;
-  return (src: number) => {
-    if (isNaN(x)) {
-      x = src;
-      P = 1.0;
+class SortedWindow {
+  private readonly values: number[] = [];
+  private readonly bars: number[] = [];
+  private count = 0;
+  /** The step of the current bar: its value, its insertion index, the post-insertion index of the value that leaves */
+  private v = NaN;
+  private k = 0;
+  private out = -1;
+  private stepped = false;
+
+  constructor(private readonly length: number) {}
+
+  step(v: number): void {
+    const values = this.values;
+    let k = 0;
+    while (k < values.length && !(values[k] >= v)) k++;
+    this.v = v;
+    this.k = k;
+    const i = this.count;
+    if (i >= this.length) {
+      const o = this.bars.indexOf(i - this.length);
+      this.out = o < k ? o : o + 1;
+    } else {
+      this.out = -1;
     }
-    const xPrior = x;
-    const pPrior = P + Q;
+    this.stepped = true;
+  }
+
+  /** The value of rank `rank` (1-based) of the window with the value of the current bar */
+  at(rank: number): number {
+    if (this.count < this.length - 1) return NaN;
+    const r = rank - 1;
+    // the index in the window with the new value, before the removal
+    const p = this.out >= 0 && r >= this.out ? r + 1 : r;
+    if (p < this.k) return this.values[p]!;
+    if (p === this.k) return this.v;
+    return this.values[p - 1]!;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    const i = this.count;
+    this.values.splice(this.k, 0, this.v);
+    this.bars.splice(this.k, 0, i);
+    if (this.out >= 0) {
+      this.values.splice(this.out, 1);
+      this.bars.splice(this.out, 1);
+    }
+    this.count++;
+  }
+}
+
+type Point = { time: number; value: number; color: string };
+
+interface FisherVars {
+  /** kalmanFilter(src, Q, R) call sites (var x = na, var P = na): two per transform */
+  kx: number[];
+  kP: number[];
+  /** var float nValue1 = 0.0 / var float fisher = 0.0 of each transform */
+  nValue1: number[];
+  fisher: number[];
+}
+
+interface FisherRun extends BarRunState<FisherVars> {
+  window: SortedWindow | null;
+  atr: ReturnType<typeof taStep.atr> | null;
+  atrSma: ReturnType<typeof taStep.sma> | null;
+  medians: ReturnType<typeof taStep.median>[];
+  mads: ReturnType<typeof taStep.median>[];
+  trig: ReturnType<typeof taStep.ema>;
+  composite: number[];
+  trigger: number[];
+  plots: Point[][];
+  colors: string[];
+  alertCalls: AlertCall[];
+}
+
+function study(inputs: Partial<FisherMPzInputs>): BarStudy<FisherRun, IndicatorResult & { alertCalls: AlertCall[] }> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const lengths = [cfg.length1, cfg.length2, cfg.length3];
+  const Q = cfg.kalmanQ;
+  const R = cfg.kalmanR;
+  const totalWeight = cfg.weight1 + cfg.weight2 + cfg.weight3;
+  const isClassic = cfg.visualStyle === 'Classic';
+  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  const indivColors = [cfg.shortColor, cfg.mediumColor, cfg.longColor].map((c) => String(color.new(c, 30)));
+  const look = cfg.winsorLookback;
+  const rankOf = (percentage: number) => Math.min(look, Math.max(1, Math.ceil((percentage / 100) * look)));
+  /** kalmanFilter(src, Q, R) of call site k */
+  const kalman = (v: FisherVars, k: number, src: number): number => {
+    if (isNaN(v.kx[k])) {
+      v.kx[k] = src;
+      v.kP[k] = 1.0;
+    }
+    const xPrior = v.kx[k];
+    const pPrior = v.kP[k] + Q;
     const K = pPrior / (pPrior + R);
-    x = xPrior + K * (src - xPrior);
-    P = (1 - K) * pPrior;
-    return x;
+    v.kx[k] = xPrior + K * (src - xPrior);
+    v.kP[k] = (1 - K) * pPrior;
+    return v.kx[k];
+  };
+  return {
+    init() {
+      let window: SortedWindow | null = null;
+      if (cfg.useWinsorization) {
+        // the length check of ta.percentile_nearest_rank
+        taCore.percentile_nearest_rank([], look, cfg.lowerPercentile);
+        window = new SortedWindow(look);
+      }
+      const atr = cfg.useDynamicClip ? taStep.atr(cfg.dynamicClipLength) : null;
+      const atrSma = cfg.useDynamicClip ? taStep.sma() : null;
+      const medians = lengths.map((l) => taStep.median(l));
+      const mads = lengths.map((l) => taStep.median(l));
+      const trig = taStep.ema(2);
+      const s: FisherRun = {
+        window, atr, atrSma, medians, mads, trig, composite: [], trigger: [],
+        plots: [[], [], [], [], []], colors: [], alertCalls: [],
+        steps: [...(window ? [window] : []), ...(atr ? [atr] : []), ...(atrSma ? [atrSma] : []), ...medians, ...mads, trig],
+        vars: { kx: [NaN, NaN, NaN, NaN, NaN, NaN], kP: [NaN, NaN, NaN, NaN, NaN, NaN], nValue1: [0.0, 0.0, 0.0], fisher: [0.0, 0.0, 0.0] },
+        lists: [], series: [],
+      };
+      s.lists = [s.alertCalls];
+      s.series = [s.composite, s.trigger, ...s.plots, s.colors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // changed in place: copyVars copies them at the end of the last confirmed bar
+      const v = s.vars;
+      // priceSource = useWinsorization ? winsorize(hl2, winsorLookback, lowerPercentile, upperPercentile) : hl2
+      const rawPrice = (b.high + b.low) / 2;
+      let priceSource = rawPrice;
+      if (s.window) {
+        s.window.step(rawPrice);
+        const lowerT = s.window.at(rankOf(cfg.lowerPercentile));
+        const upperT = s.window.at(rankOf(cfg.upperPercentile));
+        priceSource = Math.max(lowerT, Math.min(rawPrice, upperT));
+      }
+
+      // calcDynamicClip(dynamicClipLength): the same on the three fisherTransform calls
+      let clip = cfg.zScoreClip;
+      if (s.atr && s.atrSma) {
+        const a = s.atr.step(b.high, b.low, b.close);
+        const atrSma = s.atrSma.step(a, cfg.dynamicClipLength);
+        const volatilityRatio = gt(atrSma, 0) ? a / atrSma : 1.0;
+        const normalizedVol = Math.min(Math.max((volatilityRatio - 0.5) / 1.5, 0), 1);
+        clip = 0.05 + normalizedVol * (0.2 - 0.05);
+      }
+
+      const fishers = [NaN, NaN, NaN];
+      for (let k = 0; k < 3; k++) {
+        // calcRobustZScore(src, length)
+        const median = s.medians[k].step(priceSource);
+        const absDeviation = Math.abs(priceSource - median);
+        const mad = s.mads[k].step(absDeviation);
+        const robustStdDev = mad * 1.4826;
+        const zScore = gt(robustStdDev, 0) ? (priceSource - median) / robustStdDev : 0.0;
+        const zScoreClipped = Math.min(Math.max(zScore, -clip), clip);
+        const normalized = zScoreClipped / clip;
+        if (cfg.useKalman) v.nValue1[k] = kalman(v, 2 * k, normalized);
+        else v.nValue1[k] = cfg.smoothFactor * normalized + (1 - cfg.smoothFactor) * nz(v.nValue1[k]);
+        const nValue2 = Math.min(Math.max(v.nValue1[k], -0.999), 0.999);
+        const raw = 0.5 * Math.log((1 + nValue2) / (1 - nValue2));
+        if (cfg.useKalman) v.fisher[k] = kalman(v, 2 * k + 1, raw);
+        else v.fisher[k] = raw + 0.5 * nz(v.fisher[k]);
+        fishers[k] = v.fisher[k];
+      }
+
+      const composite = (fishers[0] * cfg.weight1 + fishers[1] * cfg.weight2 + fishers[2] * cfg.weight3) / totalWeight;
+      s.composite[i] = composite;
+      const compositePrev = i > 0 ? s.composite[i - 1] : NaN;
+      // trigger = smoothTrigger ? ta.ema(composite[1], 2) : composite[1]
+      const emaPrev = s.trig.step(compositePrev);
+      const trigger = cfg.smoothTrigger ? emaPrev : compositePrev;
+      s.trigger[i] = trigger;
+
+      // bullishCross = ta.crossover(composite, trigger); bearishCross = ta.crossunder(composite, trigger)
+      // if enableAlerts and alertOnBullish and bullishCross: alert("...", alert.freq_once_per_bar); bearish alike
+      const pc = compositePrev;
+      const pt = i > 0 ? s.trigger[i - 1] : NaN;
+      const bullishCross = composite > trigger && pc <= pt;
+      const bearishCross = composite < trigger && pc >= pt;
+      if (cfg.enableAlerts && cfg.alertOnBullish && bullishCross) {
+        s.alertCalls.push({ time: time as number, message: 'Fisher MPz: Bullish Crossover - Composite crossed above Trigger', freq: 'once_per_bar' });
+      }
+      if (cfg.enableAlerts && cfg.alertOnBearish && bearishCross) {
+        s.alertCalls.push({ time: time as number, message: 'Fisher MPz: Bearish Crossover - Composite crossed below Trigger', freq: 'once_per_bar' });
+      }
+
+      const dirColor = ge(composite, trigger) ? cfg.bullishColor : cfg.bearishColor;
+      s.plots[0][i] = { time, value: fin(composite), color: isClassic ? cfg.compositeColor : dirColor };
+      s.plots[1][i] = { time, value: fin(trigger), color: isClassic ? cfg.triggerColor : dirColor };
+      for (let k = 0; k < 3; k++) s.plots[2 + k][i] = { time, value: cfg.showIndividual ? fin(fishers[k]) : NaN, color: indivColors[k] };
+      // fill(p1, p2, color = isClassic ? na : color.new(isBullish ? bullishColor : bearishColor, fillOpacity))
+      s.colors[i] = isClassic ? 'transparent' : String(color.new(dirColor, cfg.fillOpacity));
+    },
+    copyVars: (v) => ({ kx: v.kx.slice(), kP: v.kP.slice(), nValue1: v.nValue1.slice(), fisher: v.fisher.slice() }),
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+        },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: String(color.new(color.gray, 50)), linestyle: 'dotted' } }],
+        fills: [{ plot1: 'plot0', plot2: 'plot1', colors: s.colors.slice(), options: { title: 'Direction Fill' } }],
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FisherMPzInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult & { alertCalls: AlertCall[] }> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(bars: Bar[], inputs: Partial<FisherMPzInputs> = {}): IndicatorResult & { alertCalls: AlertCall[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // priceSource = useWinsorization ? winsorize(hl2, winsorLookback, lowerPercentile, upperPercentile) : hl2
-  const rawPrice = bars.map((b) => (b.high + b.low) / 2);
-  let priceSource = rawPrice;
-  if (cfg.useWinsorization) {
-    const lowerT = A(ta.percentile_nearest_rank(S(rawPrice), cfg.winsorLookback, cfg.lowerPercentile));
-    const upperT = A(ta.percentile_nearest_rank(S(rawPrice), cfg.winsorLookback, cfg.upperPercentile));
-    priceSource = rawPrice.map((v, i) => Math.max(lowerT[i], Math.min(v, upperT[i])));
-  }
-
-  // calcDynamicClip(dynamicClipLength): the same on the three fisherTransform calls
-  let clipLevel: number[] = new Array(n).fill(cfg.zScoreClip);
-  if (cfg.useDynamicClip) {
-    const atrValue = A(ta.atr(bars, cfg.dynamicClipLength));
-    const atrSma = A(ta.sma(S(atrValue), cfg.dynamicClipLength));
-    clipLevel = atrValue.map((a, i) => {
-      const volatilityRatio = gt(atrSma[i], 0) ? a / atrSma[i] : 1.0;
-      const normalizedVol = Math.min(Math.max((volatilityRatio - 0.5) / 1.5, 0), 1);
-      return 0.05 + normalizedVol * (0.2 - 0.05);
-    });
-  }
-
-  const fisherTransform = (length: number): number[] => {
-    // calcRobustZScore(src, length)
-    const median = A(ta.median(S(priceSource), length));
-    const absDeviation = priceSource.map((v, i) => Math.abs(v - median[i]));
-    const mad = A(ta.median(S(absDeviation), length));
-    const kalman1 = kalmanSite(cfg.kalmanQ, cfg.kalmanR);
-    const kalman2 = kalmanSite(cfg.kalmanQ, cfg.kalmanR);
-    const out = new Array(n);
-    let nValue1 = 0.0; // var float nValue1 = 0.0
-    let fisher = 0.0; // var float fisher = 0.0
-    for (let i = 0; i < n; i++) {
-      const robustStdDev = mad[i] * 1.4826;
-      const zScore = gt(robustStdDev, 0) ? (priceSource[i] - median[i]) / robustStdDev : 0.0;
-      const clip = clipLevel[i];
-      const zScoreClipped = Math.min(Math.max(zScore, -clip), clip);
-      const normalized = zScoreClipped / clip;
-      if (cfg.useKalman) nValue1 = kalman1(normalized);
-      else nValue1 = cfg.smoothFactor * normalized + (1 - cfg.smoothFactor) * nz(nValue1);
-      const nValue2 = Math.min(Math.max(nValue1, -0.999), 0.999);
-      const raw = 0.5 * Math.log((1 + nValue2) / (1 - nValue2));
-      if (cfg.useKalman) fisher = kalman2(raw);
-      else fisher = raw + 0.5 * nz(fisher);
-      out[i] = fisher;
-    }
-    return out;
-  };
-  const fisher1 = fisherTransform(cfg.length1);
-  const fisher2 = fisherTransform(cfg.length2);
-  const fisher3 = fisherTransform(cfg.length3);
-
-  const totalWeight = cfg.weight1 + cfg.weight2 + cfg.weight3;
-  const composite = fisher1.map((f1, i) => (f1 * cfg.weight1 + fisher2[i] * cfg.weight2 + fisher3[i] * cfg.weight3) / totalWeight);
-  const compositePrev = composite.map((_v, i) => (i > 0 ? composite[i - 1] : NaN));
-  // trigger = smoothTrigger ? ta.ema(composite[1], 2) : composite[1]
-  const trigger = cfg.smoothTrigger ? A(ta.ema(S(compositePrev), 2)) : compositePrev;
-
-  // bullishCross = ta.crossover(composite, trigger); bearishCross = ta.crossunder(composite, trigger)
-  // if enableAlerts and alertOnBullish and bullishCross: alert("...", alert.freq_once_per_bar); bearish alike
-  const bullishCross = crossedOver(composite, trigger);
-  const bearishCross = crossedUnder(composite, trigger);
-  const alertCalls: AlertCall[] = [];
-  for (let i = 0; i < n; i++) {
-    if (cfg.enableAlerts && cfg.alertOnBullish && bullishCross[i]) {
-      alertCalls.push({ time: bars[i].time as number, message: 'Fisher MPz: Bullish Crossover - Composite crossed above Trigger', freq: 'once_per_bar' });
-    }
-    if (cfg.enableAlerts && cfg.alertOnBearish && bearishCross[i]) {
-      alertCalls.push({ time: bars[i].time as number, message: 'Fisher MPz: Bearish Crossover - Composite crossed below Trigger', freq: 'once_per_bar' });
-    }
-  }
-
-  const isClassic = cfg.visualStyle === 'Classic';
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const dirColor = (i: number) => (ge(composite[i], trigger[i]) ? cfg.bullishColor : cfg.bearishColor);
-  const t = (i: number) => bars[i].time;
-  const plot0 = bars.map((_b, i) => ({ time: t(i), value: fin(composite[i]), color: isClassic ? cfg.compositeColor : dirColor(i) }));
-  const plot1 = bars.map((_b, i) => ({ time: t(i), value: fin(trigger[i]), color: isClassic ? cfg.triggerColor : dirColor(i) }));
-  const indiv = (f: number[], c: string) => {
-    const col = String(color.new(c, 30));
-    return bars.map((_b, i) => ({ time: t(i), value: cfg.showIndividual ? fin(f[i]) : NaN, color: col }));
-  };
-  // fill(p1, p2, color = isClassic ? na : color.new(isBullish ? bullishColor : bearishColor, fillOpacity))
-  const colors = bars.map((_b, i) => (isClassic ? 'transparent' : String(color.new(dirColor(i), cfg.fillOpacity))));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0,
-      plot1,
-      plot2: indiv(fisher1, cfg.shortColor),
-      plot3: indiv(fisher2, cfg.mediumColor),
-      plot4: indiv(fisher3, cfg.longColor),
-    },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: String(color.new(color.gray, 50)), linestyle: 'dotted' } }],
-    fills: [{ plot1: 'plot0', plot2: 'plot1', colors, options: { title: 'Direction Fill' } }],
-    alertCalls,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const FisherMPz = {
@@ -288,4 +396,5 @@ export const FisherMPz = {
   inputConfig,
   plotConfig,
   hasAlertFunction,
+  createRun,
 };

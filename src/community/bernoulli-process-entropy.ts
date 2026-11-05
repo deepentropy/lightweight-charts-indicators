@@ -14,9 +14,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, math, fixnan, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, compare, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type Committable, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 const TYPES = ['Value', 'SMA', 'Change', '%-Change', 'Momentum', 'Acceleration', 'Contribution', 'Volatility',
   'Elher_smoother'] as const;
@@ -97,154 +99,234 @@ export const metadata = {
 };
 
 type Arr = number[];
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+/** One bar of a source: its value on bar i (the earlier values kept in arrays of the run) */
+type BarFn = (v: number, i: number) => number;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<BernoulliProcessEntropyInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+/** ta.percentrank(source, length) on bar i of `src` (the values of every bar): the oakscriptjs array function */
+function percentrankAt(src: Arr, i: number, length: number): number {
+  if (i < length) return NaN;
+  const cur = src[i];
+  let count = 0;
+  for (let j = 1; j <= length; j++) if (compare.le(src[i - j], cur)) count++;
+  return (count * 100) / length;
+}
+
+interface BernVars {
+  /** fixnan(100 * ema(plusDM) / trur), fixnan(100 * ema(minusDM) / trur): the last non-na values */
+  plus: number;
+  minus: number;
+}
+
+interface BernRun extends BarRunState<BernVars> {
+  /** infoc / infov of one bar: the measurement chain of the close / log(volume) (null when not included) */
+  cr: BarFn | null;
+  vr: BarFn | null;
+  info2: number[];
+  obv: ReturnType<typeof taStep.obv>;
+  obvChange: ReturnType<typeof taStep.change>;
+  obvDev: ReturnType<typeof taStep.stdev>;
+  trur: ReturnType<typeof taStep.rma>;
+  emaP: ReturnType<typeof taStep.ema>;
+  emaM: ReturnType<typeof taStep.ema>;
+  hvp: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<BernoulliProcessEntropyInputs>): BarStudy<BernRun, Result> {
   const { len, trange, avg, type, diLen, vPR, bc, vc, pb, pobv, xc, xn, smo } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const S = (a: Arr) => Series.fromArray(bars, a);
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const sma = (a: Arr, l: number) => A(ta.sma(S(a), l));
-  const change = (a: Arr, l = 1) => A(ta.change(S(a), l));
-  const sum = (a: Arr, l: number) => A(math.sum(S(a), l) as Series);
   const back = (a: Arr, i: number, k: number) => (i - k >= 0 ? a[i - k] : NaN);
   const nz = (v: number, r = 0) => (isNaN(v) ? r : v);
+  const red50 = String(color.new(color.red, 50));
+  const green50 = String(color.new(color.green, 50));
+  const bands = pb && bc && vc && !xn;
 
-  // Ehlers UltimateSmoother: us = src; from bar_index 4 on the 2-pole formula with us[1], us[2]
-  const ultimateSmoother = (src: Arr, period: number): Arr => {
-    const a1 = Math.exp((-1.414 * Math.PI) / period);
-    const c2 = 2.0 * a1 * Math.cos((1.414 * Math.PI) / period);
-    const c3 = -a1 * a1;
-    const c1 = (1.0 + c2 - c3) / 4.0;
-    const us: Arr = new Array(n);
-    for (let i = 0; i < n; i++) {
-      us[i] = src[i];
-      if (i >= 4) {
-        us[i] = (1.0 - c1) * src[i] + (2.0 * c1 - c2) * src[i - 1] - (c1 + c3) * src[i - 2]
-          + c2 * nz(us[i - 1]) + c3 * nz(us[i - 2]);
-      }
-    }
-    return us;
-  };
-
-  // measure(_type, _src, _lbl)
-  const measure = (src: Arr, lbl: number): Arr => {
+  /** measure(_type, _src, _lbl) of one source: its machines added to `steps`, its arrays of every bar to `series` */
+  const measure = (steps: Committable[], series: unknown[][], lbl: number): BarFn => {
+    const src: Arr = [];
+    series.push(src);
+    const add = <T extends Committable>(m: T): T => { steps.push(m); return m; };
+    const keep = (f: BarFn): BarFn => (v, i) => { src[i] = v; return f(v, i); };
     switch (type) {
-      case 'Value': return src.slice();
-      case 'SMA': return sma(src, lbl);
-      case 'Change': return sma(change(src), lbl);
-      case 'Momentum': return sma(change(src, lbl), lbl);
-      case 'Acceleration': return sma(change(change(src, lbl), lbl), lbl);
-      case 'Contribution': {
-        const s = sum(src, lbl);
-        return src.map((v, i) => v / s[i]);
+      case 'Value': return (v) => v;
+      case 'SMA': { const sma = add(taStep.sma()); return (v) => sma.step(v, lbl); }
+      case 'Change': {
+        const ch = add(taStep.change(1)); const sma = add(taStep.sma());
+        return (v) => sma.step(ch.step(v), lbl);
       }
+      case 'Momentum': {
+        const ch = add(taStep.change(lbl)); const sma = add(taStep.sma());
+        return (v) => sma.step(ch.step(v), lbl);
+      }
+      case 'Acceleration': {
+        const ch = add(taStep.change(lbl)); const ch2 = add(taStep.change(lbl)); const sma = add(taStep.sma());
+        return (v) => sma.step(ch2.step(ch.step(v)), lbl);
+      }
+      case 'Contribution': { const sum = add(taStep.sum()); return (v) => v / sum.step(v, lbl); }
       case '%-Change': {
-        const ch = change(src);
-        return sma(ch.map((c, i) => c / nz(back(src, i, lbl), src[i])), lbl);
+        const ch = add(taStep.change(1)); const sma = add(taStep.sma());
+        return keep((v, i) => sma.step(ch.step(v) / nz(back(src, i, lbl), v), lbl));
       }
       case 'Volatility': {
-        const vaa = src.map((v, i) => Math.log(v / nz(back(src, i, 1), v)));
-        const vam = sma(vaa, lbl);
-        const sq = sum(vaa.map((v, i) => Math.pow(v - vam[i], 2)), lbl);
-        return sq.map((v) => Math.sqrt(v / lbl));
+        const sma = add(taStep.sma()); const sum = add(taStep.sum());
+        return keep((v, i) => {
+          const vaa = Math.log(v / nz(back(src, i, 1), v));
+          const vam = sma.step(vaa, lbl);
+          return Math.sqrt(sum.step(Math.pow(vaa - vam, 2), lbl) / lbl);
+        });
       }
-      case 'Elher_smoother': return ultimateSmoother(src, lbl);
-      default: return new Array(n).fill(0);
+      case 'Elher_smoother': {
+        // Ehlers UltimateSmoother: us = src; from bar_index 4 on the 2-pole formula with us[1], us[2]
+        const period = lbl;
+        const a1 = Math.exp((-1.414 * Math.PI) / period);
+        const c2 = 2.0 * a1 * Math.cos((1.414 * Math.PI) / period);
+        const c3 = -a1 * a1;
+        const c1 = (1.0 + c2 - c3) / 4.0;
+        const us: Arr = [];
+        series.push(us);
+        return keep((v, i) => {
+          us[i] = v;
+          if (i >= 4) {
+            us[i] = (1.0 - c1) * v + (2.0 * c1 - c2) * src[i - 1] - (c1 + c3) * src[i - 2]
+              + c2 * nz(us[i - 1]) + c3 * nz(us[i - 2]);
+          }
+          return us[i];
+        });
+      }
+      default: return () => 0;
     }
   };
 
   // n_CDF(_src, _len, _smo): normal CDF approximation of the z-score, smoothed
-  const nCdf = (src: Arr, l: number, sm: number): Arr => {
-    const xBar = sma(src, l);
-    const s = sum(src.map((v, i) => Math.pow(v - xBar[i], 2)), l).map((v) => Math.sqrt(v / (l - 1)));
-    const cdf = src.map((v, i) => {
-      const z = Math.max(Math.min((v - xBar[i]) / s[i], 5.55), -5.55);
-      return 1 / (1 + Math.pow(1 - z / 5.555, 1 / 0.1186));
-    });
-    return sma(cdf, sm);
+  const nCdf = (steps: Committable[], l: number, sm: number): ((v: number) => number) => {
+    const xBarStep = taStep.sma(); const sum = taStep.sum(); const smooth = taStep.sma();
+    steps.push(xBarStep, sum, smooth);
+    return (v) => {
+      const xBar = xBarStep.step(v, l);
+      const sd = Math.sqrt(sum.step(Math.pow(v - xBar, 2), l) / (l - 1));
+      const z = Math.max(Math.min((v - xBar) / sd, 5.55), -5.55);
+      return smooth.step(1 / (1 + Math.pow(1 - z / 5.555, 1 / 0.1186)), sm);
+    };
   };
 
   // bern(_src, _avg, _len, _xn): sum over _len bars of the binary entropy term of the clamped percent rank
-  const bern = (src: Arr): Arr => {
-    const pr = A(ta.percentrank(S(src), avg));
-    const term = pr.map((p) => {
-      const r2 = Math.min(Math.max(p / 100, 0.001), 0.999);
-      return ((xn ? -1 : 1) * r2 * Math.log(r2)) / Math.log(2) - ((1 - r2) * Math.log(1 - r2)) / Math.log(2);
-    });
-    return sum(term, len);
+  const bern = (steps: Committable[], series: unknown[][]): BarFn => {
+    const sum = taStep.sum();
+    const src: Arr = [];
+    steps.push(sum);
+    series.push(src);
+    return (v, i) => {
+      src[i] = v;
+      const r2 = Math.min(Math.max(percentrankAt(src, i, avg) / 100, 0.001), 0.999);
+      return sum.step(((xn ? -1 : 1) * r2 * Math.log(r2)) / Math.log(2) - ((1 - r2) * Math.log(1 - r2)) / Math.log(2), len);
+    };
   };
 
-  const close = bars.map((b) => b.close);
-  const cr = measure(close, len);
-  const vr = measure(bars.map((b) => Math.log(b.volume ?? NaN)), len);
-  const cr2 = xn ? nCdf(cr, len, smo) : cr;
-  const vr2 = xn ? nCdf(vr, len, smo) : vr;
-  const infoc = bc ? bern(cr2) : new Array(n).fill(0);
-  const infov = vc ? bern(vr2) : new Array(n).fill(0);
-  // info2 = bc and vc ? infoc - infov : xn ? (infoc + infov) / (-len + 1) : infoc + infov
-  const info2 = infoc.map((c, i) => (bc && vc ? c - infov[i] : xn ? (c + infov[i]) / (-len + 1) : c + infov[i]));
-  const hvp = A(ta.percentrank(S(info2), avg));
+  /** measure, then n_CDF with "Bernoulli Purest", then bern, of one source */
+  const chain = (steps: Committable[], series: unknown[][]): BarFn => {
+    const m = measure(steps, series, len);
+    const cdf = xn ? nCdf(steps, len, smo) : null;
+    const b = bern(steps, series);
+    return (v, i) => { const x = m(v, i); return b(cdf ? cdf(x) : x, i); };
+  };
 
-  // obv_adx(_len, _lensig): DI difference of the OBV (true range replaced by RMA of the OBV stdev)
-  const obv = A(ta.obv(bars));
-  const up = change(obv);
-  const down = up.map((v) => -v);
-  const plusDM = up.map((u, i) => (isNaN(u) ? NaN : u > down[i] && u > 0 ? u : 0));
-  const minusDM = down.map((d, i) => (isNaN(d) ? NaN : d > up[i] && d > 0 ? d : 0));
-  const trur = A(ta.rma(ta.stdev(S(obv), diLen), diLen));
-  const emaP = A(ta.ema(S(plusDM), diLen));
-  const emaM = A(ta.ema(S(minusDM), diLen));
-  const plus = fixnan(emaP.map((v, i) => (100 * v) / trur[i]));
-  const minus = fixnan(emaM.map((v, i) => (100 * v) / trur[i]));
-  const diDiff = plus.map((p, i) => p - minus[i]);
-  // diDiff2 = math.sign(info2) == math.sign(diDiff) ? 0 : diDiff
-  const diDiff2 = diDiff.map((d, i) => (Math.sign(info2[i]) === Math.sign(d) ? 0 : d));
-
-  const markers: MarkerData[] = [];
-  const bernPlot: { time: number; value: number; color: string }[] = [];
-  const red50 = String(color.new(color.red, 50));
-  const green50 = String(color.new(color.green, 50));
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const v = info2[i];
-    const h = hvp[i];
-    // col1 = info2 > trange ? green : info2 < -trange ? red : gray
-    const col1 = v > trange ? color.green : v < -trange ? color.red : color.gray;
-    // col2 adds maroon / lime when the percent rank is extreme and the DI difference disagrees
-    const col2 = v > trange && h > 100 - vPR && diDiff2[i] !== 0 ? color.maroon
-      : v < -trange && h < vPR && diDiff2[i] !== 0 ? color.lime
-        : col1;
-    bernPlot.push({ time: t, value: v, color: xc ? col2 : col1 });
-    const bigMove = Math.abs(v) > Math.abs(trange);
-    // green_arrows: triangledown at info2 in red 50; red_arrows: triangleup at info2 in green 50
-    if (h > 100 - vPR && bigMove && v >= trange) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: v, shape: 'triangleDown', color: red50, size: 'tiny' });
-    }
-    if (h < vPR && bigMove && v <= trange) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: v, shape: 'triangleUp', color: green50, size: 'tiny' });
-    }
-  }
-
-  // downAlert = hvp[1] < 100 - vPR and hvp > 100 - vPR; upAlert = hvp[1] > vPR and hvp < vPR
-  const prevHvp = (i: number) => (i > 0 ? hvp[i - 1] : NaN);
-  const downFlags = hvp.map((h, i) => prevHvp(i) < 100 - vPR && h > 100 - vPR);
-  const upFlags = hvp.map((h, i) => prevHvp(i) > vPR && h < vPR);
-
-  const bands = pb && bc && vc && !xn;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: pobv ? diDiff2[i] / 10 : NaN })),
-      plot1: bernPlot,
-      plot2: bars.map((b, i) => ({ time: b.time, value: bands ? infoc[i] : NaN })),
-      plot3: bars.map((b, i) => ({ time: b.time, value: bands ? -infov[i] : NaN })),
+    init() {
+      const steps: Committable[] = [];
+      const series: unknown[][] = [];
+      const cr = bc ? chain(steps, series) : null;
+      const vr = vc ? chain(steps, series) : null;
+      const s: BernRun = {
+        cr, vr, info2: [], obv: taStep.obv(), obvChange: taStep.change(1), obvDev: taStep.stdev(),
+        trur: taStep.rma(diLen), emaP: taStep.ema(diLen), emaM: taStep.ema(diLen),
+        hvp: [], plots: [[], [], [], []], markers: [], flags: [[], []], times: [[], []],
+        steps, vars: { plus: NaN, minus: NaN }, lists: [], series,
+      };
+      steps.push(s.obv, s.obvChange, s.obvDev, s.trur, s.emaP, s.emaM);
+      s.lists = [s.markers, ...s.times];
+      series.push(s.info2, s.hvp, ...s.plots, ...s.flags);
+      return s;
     },
-    markers,
-    alerts: alertStates(alertConditions, bars, [downFlags, upFlags]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const vars = s.vars;
+      const infoc = s.cr ? s.cr(b.close, i) : 0;
+      const infov = s.vr ? s.vr(Math.log(b.volume ?? NaN), i) : 0;
+      // info2 = bc and vc ? infoc - infov : xn ? (infoc + infov) / (-len + 1) : infoc + infov
+      const v = bc && vc ? infoc - infov : xn ? (infoc + infov) / (-len + 1) : infoc + infov;
+      s.info2[i] = v;
+      const h = percentrankAt(s.info2, i, avg);
+      s.hvp[i] = h;
+
+      // obv_adx(_len, _lensig): DI difference of the OBV (true range replaced by RMA of the OBV stdev)
+      const obv = s.obv.step(b.close, b.volume ?? NaN);
+      const up = s.obvChange.step(obv);
+      const down = -up;
+      const plusDM = isNaN(up) ? NaN : up > down && up > 0 ? up : 0;
+      const minusDM = isNaN(down) ? NaN : down > up && down > 0 ? down : 0;
+      const trur = s.trur.step(s.obvDev.step(obv, diLen));
+      const plusRaw = (100 * s.emaP.step(plusDM)) / trur;
+      const minusRaw = (100 * s.emaM.step(minusDM)) / trur;
+      // fixnan keeps the last non-na value (+/-Infinity kept)
+      if (!Number.isNaN(plusRaw)) vars.plus = plusRaw;
+      if (!Number.isNaN(minusRaw)) vars.minus = minusRaw;
+      const diDiff = vars.plus - vars.minus;
+      // diDiff2 = math.sign(info2) == math.sign(diDiff) ? 0 : diDiff
+      const diDiff2 = Math.sign(v) === Math.sign(diDiff) ? 0 : diDiff;
+
+      // col1 = info2 > trange ? green : info2 < -trange ? red : gray
+      const col1 = v > trange ? color.green : v < -trange ? color.red : color.gray;
+      // col2 adds maroon / lime when the percent rank is extreme and the DI difference disagrees
+      const col2 = v > trange && h > 100 - vPR && diDiff2 !== 0 ? color.maroon
+        : v < -trange && h < vPR && diDiff2 !== 0 ? color.lime
+          : col1;
+      const p = s.plots;
+      p[0][i] = { time: t, value: pobv ? diDiff2 / 10 : NaN };
+      p[1][i] = { time: t, value: v, color: xc ? col2 : col1 };
+      p[2][i] = { time: t, value: bands ? infoc : NaN };
+      p[3][i] = { time: t, value: bands ? -infov : NaN };
+      const bigMove = Math.abs(v) > Math.abs(trange);
+      // green_arrows: triangledown at info2 in red 50; red_arrows: triangleup at info2 in green 50
+      if (h > 100 - vPR && bigMove && v >= trange) {
+        s.markers.push({ time: t, position: 'atPriceMiddle', price: v, shape: 'triangleDown', color: red50, size: 'tiny' });
+      }
+      if (h < vPR && bigMove && v <= trange) {
+        s.markers.push({ time: t, position: 'atPriceMiddle', price: v, shape: 'triangleUp', color: green50, size: 'tiny' });
+      }
+      // downAlert = hvp[1] < 100 - vPR and hvp > 100 - vPR; upAlert = hvp[1] > vPR and hvp < vPR
+      const prev = i > 0 ? s.hvp[i - 1] : NaN;
+      const down2 = prev < 100 - vPR && h > 100 - vPR;
+      const up2 = prev > vPR && h < vPR;
+      s.flags[0][i] = down2;
+      s.flags[1][i] = up2;
+      if (down2) s.times[0].push(t as number);
+      if (up2) s.times[1].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BernoulliProcessEntropyInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BernoulliProcessEntropyInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -255,6 +337,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const BernoulliProcessEntropy = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -23,8 +23,9 @@
  */
 
 import { color, timeframe, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { chartTimeframe, higherTimeframeBars } from '../anchor-period';
+import { chartTimeframe, hasCalendar, higherTimeframeBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CmPivotPointsCustomInputs {
   /** Show Daily Pivots? */
@@ -151,26 +152,154 @@ function levelsOf(bars: Bar[], tf: string, sh3: boolean, context?: ChartContext)
   return Object.fromEntries(LEVELS.map((l) => [l, previous(out[l])])) as Record<Level, number[]>;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<CmPivotPointsCustomInputs> = {}, chart?: ChartContext): IndicatorResult {
+type Point = { time: number; value: number };
+
+/** Start (UNIX ms, UTC) of the D / W / M calendar period of the day `day` (the UTC rule of `periodStarts`) */
+function calendarPeriodStart(day: number, info: ReturnType<typeof timeframe.info>): number {
+  const DAY = 86400000;
+  const WEEK = 7 * DAY;
+  const n = info.multiplier;
+  const d = new Date(day);
+  const year = d.getUTCFullYear();
+  if (info.isdaily) {
+    if (n === 1) return day;
+    const jan1 = Date.UTC(year, 0, 1);
+    return jan1 + Math.floor((day - jan1) / DAY / n) * n * DAY;
+  }
+  if (info.isweekly) {
+    const monday = day - ((d.getUTCDay() + 6) % 7) * DAY;
+    if (n === 1) return monday;
+    const jan1 = Date.UTC(new Date(monday).getUTCFullYear(), 0, 1);
+    const firstMonday = jan1 + ((8 - new Date(jan1).getUTCDay()) % 7) * DAY;
+    return firstMonday + Math.floor((monday - firstMonday) / WEEK / n) * n * WEEK;
+  }
+  return Date.UTC(year, Math.floor(d.getUTCMonth() / n) * n, 1);
+}
+
+/** One timeframe of the run: how its periods are found, the bar of the current period, the levels of the previous one */
+interface TfState {
+  /** 'chart': each chart bar is a period; 'utc': the UTC calendar periods; 'pre': levels computed on all bars */
+  mode: 'chart' | 'utc' | 'pre';
+  info: ReturnType<typeof timeframe.info> | null;
+  pre: Record<Level, number[]> | null;
+  /** Period key of the current period, its high / low / close */
+  key: number;
+  high: number;
+  low: number;
+  close: number;
+  /** The levels of the previous period (LEVELS order) */
+  prev: number[];
+}
+
+interface PivotVars {
+  tfs: TfState[];
+}
+
+interface PivotRun extends BarRunState<PivotVars> {
+  plots: Point[][];
+}
+
+/** The levels of a bar of the timeframe (LEVELS order) */
+function barLevels(high: number, low: number, close: number, sh3: boolean): number[] {
+  const pivot = (high + low + close) / 3.0;
+  const r1 = pivot + (pivot - low);
+  const s1 = pivot - (high - pivot);
+  // r3 = sh3 and r1 + (high - low) ? r1 + (high - low) : na
+  const r3 = r1 + (high - low);
+  const s3 = s1 - (high - low);
+  return [pivot, r1, s1, pivot + (high - low), pivot - (high - low), sh3 && truthy(r3) ? r3 : NaN, sh3 && truthy(s3) ? s3 : NaN];
+}
+
+const NO_LEVELS = LEVELS.map(() => NaN);
+
+function study(inputs: Partial<CmPivotPointsCustomInputs>): BarStudy<PivotRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-
-  // A timeframe is computed only when its switch is on
-  const levels = new Map<string, Record<Level, number[]>>();
-  const plots: Record<string, Array<{ time: number; value: number }>> = {};
-  SPECS.forEach((s, j) => {
-    // plot(sd and dtime_pivot ? dtime_pivot : na)
-    let values: number[] | null = null;
-    if (cfg[s.group.on]) {
-      if (!levels.has(s.group.tf)) levels.set(s.group.tf, levelsOf(bars, s.group.tf, cfg.sh3, chart));
-      values = levels.get(s.group.tf)![s.level];
-    }
-    plots[`plot${j}`] = bars.map((b, i) => ({ time: b.time, value: values && truthy(values[i]) ? values[i] : NaN }));
-  });
-
+  let inMs = false;
+  const SPEC_GROUP = SPECS.map((sp) => GROUPS.indexOf(sp.group));
+  const SPEC_LEVEL = SPECS.map((sp) => LEVELS.indexOf(sp.level));
+  const SPEC_ON = SPECS.map((sp) => cfg[sp.group.on]);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    // the chart timeframe comes from the bar gaps, the time unit from the first bar
+    key: (bars, chart) => `${chartTimeframe(bars, chart)}|${bars.length > 0 && bars[0].time >= 1e12}`,
+    // with the exchange calendar the periods come from the calendar of the whole bar set
+    fullRunReason: (chart) => (hasCalendar(chart) ? 'exchange calendar periods' : null),
+    init(bars, chart) {
+      inMs = bars.length > 0 && bars[0].time >= 1e12;
+      const chartTf = chartTimeframe(bars, chart);
+      // A timeframe is computed only when its switch is on
+      const tfs: TfState[] = GROUPS.map((g) => {
+        const st: TfState = { mode: 'chart', info: null, pre: null, key: NaN, high: NaN, low: NaN, close: NaN, prev: NO_LEVELS };
+        if (!cfg[g.on]) return st;
+        if (hasCalendar(chart)) {
+          st.mode = 'pre';
+          st.pre = levelsOf(bars, g.tf, cfg.sh3, chart);
+        } else if (chartTf !== '' && timeframe.in_seconds(g.tf) !== timeframe.in_seconds(chartTf)) {
+          if (timeframe.in_seconds(g.tf) < timeframe.in_seconds(chartTf)) {
+            throw new Error(`The timeframe "${g.tf}" is lower than the chart timeframe "${chartTf}": the bars do not carry that data.`);
+          }
+          st.mode = 'utc';
+          st.info = timeframe.info(g.tf);
+        }
+        return st;
+      });
+      const s: PivotRun = { plots: SPECS.map(() => []), steps: [], vars: { tfs }, lists: [], series: [] };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // changed in place: copyVars copies them at the end of the last confirmed bar
+      const tfs = s.vars.tfs;
+      for (let k = 0; k < GROUPS.length; k++) {
+        const st = tfs[k];
+        if (!cfg[GROUPS[k].on] || st.mode === 'pre') continue;
+        // security(tickerid, tf, level[1]): the levels of the bar of the previous period
+        let key: number;
+        if (st.mode === 'chart') key = i;
+        else {
+          const t = inMs ? time : time * 1000;
+          key = calendarPeriodStart(Math.floor(t / 86400000) * 86400000, st.info!);
+        }
+        if (i === 0 || key !== st.key) {
+          if (i > 0) st.prev = barLevels(st.high, st.low, st.close, cfg.sh3);
+          st.key = key;
+          st.high = b.high;
+          st.low = b.low;
+          st.close = b.close;
+        } else {
+          st.high = Math.max(st.high, b.high);
+          st.low = Math.min(st.low, b.low);
+          st.close = b.close;
+        }
+      }
+      for (let j = 0; j < SPECS.length; j++) {
+        // plot(sd and dtime_pivot ? dtime_pivot : na)
+        const st = tfs[SPEC_GROUP[j]];
+        let v = NaN;
+        if (SPEC_ON[j]) v = st.mode === 'pre' ? st.pre![SPECS[j].level][i] : st.prev[SPEC_LEVEL[j]];
+        s.plots[j][i] = { time, value: truthy(v) ? v : NaN };
+      }
+    },
+    copyVars: (v) => ({ tfs: v.tfs.map((t) => ({ ...t })) }),
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, j) => { plots[`plot${j}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
 }
 
-export const CmPivotPointsCustom = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CmPivotPointsCustomInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CmPivotPointsCustomInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const CmPivotPointsCustom = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

@@ -15,11 +15,13 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color,
+  taStep, color,
   type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type AbdullahMaType = 'None' | 'SMA' | 'SMA + Bollinger Bands' | 'EMA' | 'SMMA (RMA)' | 'WMA' | 'VWMA';
 
@@ -124,129 +126,197 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
 type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; visibility: Record<string, boolean> };
+
+interface AbdullahVars {
+  /** var int ce_dir = 1 */
+  ceDir: number;
+}
+
+interface AbdullahRun extends BarRunState<AbdullahVars> {
+  lsma: ReturnType<typeof taStep.linreg>;
+  lsma2: ReturnType<typeof taStep.linreg>;
+  atr: ReturnType<typeof taStep.atr>;
+  hi: ReturnType<typeof taStep.highest>;
+  lo: ReturnType<typeof taStep.lowest>;
+  ema: ReturnType<typeof taStep.ema>;
+  ma: { step(v: number, volume: number): number; commit(): void } | null;
+  dev: ReturnType<typeof taStep.stdev> | null;
+  longStop: number[];
+  shortStop: number[];
+  dir: number[];
+  emaOut: number[];
+  zlsmaPlot: Point[];
+  longPlot: Point[];
+  shortPlot: Point[];
+  midPlot: Point[];
+  maPlot: Point[];
+  upperPlot: Point[];
+  lowerPlot: Point[];
+  longFill: string[];
+  shortFill: string[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<AbdullahInputs>): BarStudy<AbdullahRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const zlsmaSrc = barSource(cfg.zlsmaSrc);
+  const emaSrc = barSource(cfg.emaSrc);
+  const ohlc4 = barSource('ohlc4');
+  const isBB = cfg.maType === 'SMA + Bollinger Bands';
+  const enableMA = cfg.maType !== 'None';
+  const maStep = (): AbdullahRun['ma'] => {
+    switch (cfg.maType) {
+      case 'SMA':
+      case 'SMA + Bollinger Bands': { const m = taStep.sma(); return { step: (v) => m.step(v, cfg.maLength), commit: () => m.commit() }; }
+      case 'EMA': { const m = taStep.ema(cfg.maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMMA (RMA)': { const m = taStep.rma(cfg.maLength); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, cfg.maLength), commit: () => m.commit() }; }
+      case 'VWMA': { const m = taStep.vwma(cfg.maLength); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+      default: return null;
+    }
+  };
+  return {
+    fullRunReason: () => (isBarSource(cfg.zlsmaSrc) && isBarSource(cfg.emaSrc) ? null : 'source of another study'),
+    init() {
+      const lsma = taStep.linreg(cfg.zlsmaLength, cfg.zlsmaOffset);
+      const lsma2 = taStep.linreg(cfg.zlsmaLength, cfg.zlsmaOffset);
+      const atr = taStep.atr(cfg.ceLength);
+      const hi = taStep.highest();
+      const lo = taStep.lowest();
+      const ema = taStep.ema(cfg.emaLength);
+      const ma = maStep();
+      const dev = isBB ? taStep.stdev() : null;
+      const s: AbdullahRun = {
+        lsma, lsma2, atr, hi, lo, ema, ma, dev,
+        longStop: [], shortStop: [], dir: [], emaOut: [],
+        zlsmaPlot: [], longPlot: [], shortPlot: [], midPlot: [], maPlot: [], upperPlot: [], lowerPlot: [],
+        longFill: [], shortFill: [], markers: [],
+        steps: [lsma, lsma2, atr, hi, lo, ema, ...(ma ? [ma] : []), ...(dev ? [dev] : [])],
+        vars: { ceDir: 1 },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [
+        s.longStop, s.shortStop, s.dir, s.emaOut, s.zlsmaPlot, s.longPlot, s.shortPlot, s.midPlot, s.maPlot,
+        s.upperPlot, s.lowerPlot, s.longFill, s.shortFill,
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // 1. ZLSMA
+      const lsma = s.lsma.step(zlsmaSrc(b));
+      const lsma2 = s.lsma2.step(lsma);
+      s.zlsmaPlot[i] = { time, value: lsma + (lsma - lsma2), color: color.yellow };
+
+      // 2. Chandelier Exit
+      const ceAtr = cfg.ceMult * s.atr.step(b.high, b.low, b.close);
+      const hi = s.hi.step(cfg.ceUseClose ? b.close : b.high, cfg.ceLength);
+      const lo = s.lo.step(cfg.ceUseClose ? b.close : b.low, cfg.ceLength);
+      const prevClose = i > 0 ? bars[i - 1].close : NaN;
+      let ls = hi - ceAtr;
+      // longStopPrev = nz(longStop[1], longStop)
+      const lsPrev = i > 0 && !isNaN(s.longStop[i - 1]) ? s.longStop[i - 1] : ls;
+      ls = gt(prevClose, lsPrev) ? Math.max(ls, lsPrev) : ls;
+      let ss = lo + ceAtr;
+      const ssPrev = i > 0 && !isNaN(s.shortStop[i - 1]) ? s.shortStop[i - 1] : ss;
+      ss = lt(prevClose, ssPrev) ? Math.min(ss, ssPrev) : ss;
+      s.longStop[i] = ls;
+      s.shortStop[i] = ss;
+      const c = b.close;
+      const v = s.vars;
+      v.ceDir = gt(c, ssPrev) ? 1 : lt(c, lsPrev) ? -1 : v.ceDir;
+      const ceDir = v.ceDir;
+      s.dir[i] = ceDir;
+      // ce_dir[1] is na on bar 0: no signal
+      const buySignal = i > 0 && ceDir === 1 && s.dir[i - 1] === -1;
+      const sellSignal = i > 0 && ceDir === -1 && s.dir[i - 1] === 1;
+      // plotshape(buySignal ? longStop : na, 'Long Stop Start', location.absolute, shape.circle, size.tiny, green)
+      if (buySignal && !isNaN(ls)) {
+        s.markers.push({ time, position: 'atPriceMiddle', price: ls, shape: 'circle', color: color.green, size: 'tiny', id: 'shape0' });
+      }
+      // plotshape(buySignal and ce_showLabels ? longStop : na, 'Buy Label', text = 'Buy', shape.labelup, size.tiny)
+      if (buySignal && cfg.ceShowLabels && !isNaN(ls)) {
+        s.markers.push({ time, position: 'atPriceBottom', price: ls, shape: 'labelUp', color: color.green,
+          text: 'Buy', textColor: color.white, size: 'tiny', id: 'shape1' });
+      }
+      if (sellSignal && !isNaN(ss)) {
+        // plotshape(sellSignal ? shortStop : na, 'Short Stop Start', ...) / 'Sell Label'
+        s.markers.push({ time, position: 'atPriceMiddle', price: ss, shape: 'circle', color: color.red, size: 'tiny', id: 'shape2' });
+      }
+      if (sellSignal && cfg.ceShowLabels && !isNaN(ss)) {
+        s.markers.push({ time, position: 'atPriceTop', price: ss, shape: 'labelDown', color: color.red,
+          text: 'Sell', textColor: color.white, size: 'tiny', id: 'shape3' });
+      }
+      s.longPlot[i] = { time, value: ceDir === 1 ? ls : NaN, color: color.green };
+      s.shortPlot[i] = { time, value: ceDir === 1 ? NaN : ss, color: color.red };
+      s.midPlot[i] = { time, value: ohlc4(b) };
+      // fill(midPricePlot, longStopPlot, color = ce_highlightState and ce_dir == 1 ? longFill : na)
+      s.longFill[i] = cfg.ceHighlightState && ceDir === 1 ? LONG_FILL : 'transparent';
+      s.shortFill[i] = cfg.ceHighlightState && ceDir === -1 ? SHORT_FILL : 'transparent';
+
+      // 3. EMA and its smoothing
+      const emaOut = s.ema.step(emaSrc(b));
+      s.emaOut[i] = emaOut;
+      const ma = s.ma ? s.ma.step(emaOut, b.volume ?? NaN) : NaN;
+      const sd = s.dev ? s.dev.step(emaOut, cfg.maLength) * cfg.bbMult : NaN;
+      s.maPlot[i] = { time, value: ma, color: color.yellow };
+      s.upperPlot[i] = { time, value: ma + sd, color: color.green };
+      s.lowerPlot[i] = { time, value: ma - sd, color: color.green };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // plot(ema_out, offset = ema_offset): the value of bar i is drawn on bar i + offset
+      const interval = barInterval(bars);
+      const emaPlot: Point[] = [];
+      for (let i = 0; i < n; i++) {
+        const j = i + cfg.emaOffset;
+        if (j < 0) continue;
+        emaPlot.push({ time: barTime(bars, j, interval), value: s.emaOut[i], color: color.blue });
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.zlsmaPlot.slice(),
+          plot1: s.longPlot.slice(),
+          plot2: s.shortPlot.slice(),
+          plot3: s.midPlot.slice(),
+          plot4: emaPlot,
+          plot5: s.maPlot.slice(),
+          plot6: s.upperPlot.slice(),
+          plot7: s.lowerPlot.slice(),
+        },
+        fills: [
+          { plot1: 'plot3', plot2: 'plot1', options: { title: 'Long State Filling' }, colors: s.longFill.slice() },
+          { plot1: 'plot3', plot2: 'plot2', options: { title: 'Short State Filling' }, colors: s.shortFill.slice() },
+          // fill(bbUpperBand, bbLowerBand, color = isBB ? color.new(color.green, 90) : na)
+          { plot1: 'plot6', plot2: 'plot7', options: { title: 'Bollinger Bands Background Fill' },
+            colors: new Array<string>(n).fill(isBB ? BB_FILL : 'transparent') },
+        ],
+        markers: s.markers.slice(),
+        visibility: { enableMA, isBB },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AbdullahInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<AbdullahInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; visibility: Record<string, boolean> } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const t = (i: number) => bars[i].time;
-
-  // 1. ZLSMA
-  const lsma = A(ta.linreg(getSourceSeries(bars, cfg.zlsmaSrc), cfg.zlsmaLength, cfg.zlsmaOffset));
-  const lsma2 = A(ta.linreg(S(lsma), cfg.zlsmaLength, cfg.zlsmaOffset));
-  const zlsma = lsma.map((v, i) => v + (v - lsma2[i]));
-
-  // 2. Chandelier Exit
-  const atr = A(ta.atr(bars, cfg.ceLength));
-  const close = S(bars.map((b) => b.close));
-  const hi = A(ta.highest(cfg.ceUseClose ? close : S(bars.map((b) => b.high)), cfg.ceLength));
-  const lo = A(ta.lowest(cfg.ceUseClose ? close : S(bars.map((b) => b.low)), cfg.ceLength));
-  const longStop: number[] = new Array(n);
-  const shortStop: number[] = new Array(n);
-  const dir: number[] = new Array(n);
-  const markers: MarkerData[] = [];
-  let ceDir = 1; // var int ce_dir = 1
-  for (let i = 0; i < n; i++) {
-    const ceAtr = cfg.ceMult * atr[i];
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    let ls = hi[i] - ceAtr;
-    // longStopPrev = nz(longStop[1], longStop)
-    const lsPrev = i > 0 && !isNaN(longStop[i - 1]) ? longStop[i - 1] : ls;
-    ls = gt(prevClose, lsPrev) ? Math.max(ls, lsPrev) : ls;
-    let ss = lo[i] + ceAtr;
-    const ssPrev = i > 0 && !isNaN(shortStop[i - 1]) ? shortStop[i - 1] : ss;
-    ss = lt(prevClose, ssPrev) ? Math.min(ss, ssPrev) : ss;
-    longStop[i] = ls;
-    shortStop[i] = ss;
-    const c = bars[i].close;
-    ceDir = gt(c, ssPrev) ? 1 : lt(c, lsPrev) ? -1 : ceDir;
-    dir[i] = ceDir;
-
-    // ce_dir[1] is na on bar 0: no signal
-    const buySignal = i > 0 && ceDir === 1 && dir[i - 1] === -1;
-    const sellSignal = i > 0 && ceDir === -1 && dir[i - 1] === 1;
-    // plotshape(buySignal ? longStop : na, 'Long Stop Start', location.absolute, shape.circle, size.tiny, green)
-    if (buySignal && !isNaN(ls)) {
-      markers.push({ time: t(i), position: 'atPriceMiddle', price: ls, shape: 'circle', color: color.green, size: 'tiny', id: 'shape0' });
-    }
-    // plotshape(buySignal and ce_showLabels ? longStop : na, 'Buy Label', text = 'Buy', shape.labelup, size.tiny)
-    if (buySignal && cfg.ceShowLabels && !isNaN(ls)) {
-      markers.push({ time: t(i), position: 'atPriceBottom', price: ls, shape: 'labelUp', color: color.green,
-        text: 'Buy', textColor: color.white, size: 'tiny', id: 'shape1' });
-    }
-    if (sellSignal && !isNaN(ss)) {
-      // plotshape(sellSignal ? shortStop : na, 'Short Stop Start', ...) / 'Sell Label'
-      markers.push({ time: t(i), position: 'atPriceMiddle', price: ss, shape: 'circle', color: color.red, size: 'tiny', id: 'shape2' });
-    }
-    if (sellSignal && cfg.ceShowLabels && !isNaN(ss)) {
-      markers.push({ time: t(i), position: 'atPriceTop', price: ss, shape: 'labelDown', color: color.red,
-        text: 'Sell', textColor: color.white, size: 'tiny', id: 'shape3' });
-    }
-  }
-
-  // 3. EMA and its smoothing
-  const emaOut = A(ta.ema(getSourceSeries(bars, cfg.emaSrc), cfg.emaLength));
-  const isBB = cfg.maType === 'SMA + Bollinger Bands';
-  const enableMA = cfg.maType !== 'None';
-  const emaS = S(emaOut);
-  let smoothingMA: number[] = new Array(n).fill(NaN);
-  if (enableMA) {
-    switch (cfg.maType) {
-      case 'SMA':
-      case 'SMA + Bollinger Bands': smoothingMA = A(ta.sma(emaS, cfg.maLength)); break;
-      case 'EMA': smoothingMA = A(ta.ema(emaS, cfg.maLength)); break;
-      case 'SMMA (RMA)': smoothingMA = A(ta.rma(emaS, cfg.maLength)); break;
-      case 'WMA': smoothingMA = A(ta.wma(emaS, cfg.maLength)); break;
-      case 'VWMA': smoothingMA = A(ta.vwma(emaS, cfg.maLength, S(bars.map((b) => b.volume ?? NaN)))); break;
-    }
-  }
-  const smoothingStDev = isBB ? A(ta.stdev(emaS, cfg.maLength)).map((v) => v * cfg.bbMult) : new Array<number>(n).fill(NaN);
-
-  const P = (f: (i: number) => number, col?: string): Point[] =>
-    bars.map((b, i) => (col === undefined ? { time: b.time, value: f(i) } : { time: b.time, value: f(i), color: col }));
-  // plot(ema_out, offset = ema_offset): the value of bar i is drawn on bar i + offset
-  const interval = barInterval(bars);
-  const emaPlot: Point[] = [];
-  for (let i = 0; i < n; i++) {
-    const j = i + cfg.emaOffset;
-    if (j < 0) continue;
-    emaPlot.push({ time: barTime(bars, j, interval), value: emaOut[i], color: color.blue });
-  }
-
-  const ohlc4 = A(getSourceSeries(bars, 'ohlc4'));
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P((i) => zlsma[i], color.yellow),
-      plot1: P((i) => (dir[i] === 1 ? longStop[i] : NaN), color.green),
-      plot2: P((i) => (dir[i] === 1 ? NaN : shortStop[i]), color.red),
-      plot3: P((i) => ohlc4[i]),
-      plot4: emaPlot,
-      plot5: P((i) => smoothingMA[i], color.yellow),
-      plot6: P((i) => smoothingMA[i] + smoothingStDev[i], color.green),
-      plot7: P((i) => smoothingMA[i] - smoothingStDev[i], color.green),
-    },
-    fills: [
-      // fill(midPricePlot, longStopPlot, color = ce_highlightState and ce_dir == 1 ? longFill : na)
-      { plot1: 'plot3', plot2: 'plot1', options: { title: 'Long State Filling' },
-        colors: dir.map((d) => (cfg.ceHighlightState && d === 1 ? LONG_FILL : 'transparent')) },
-      { plot1: 'plot3', plot2: 'plot2', options: { title: 'Short State Filling' },
-        colors: dir.map((d) => (cfg.ceHighlightState && d === -1 ? SHORT_FILL : 'transparent')) },
-      // fill(bbUpperBand, bbLowerBand, color = isBB ? color.new(color.green, 90) : na)
-      { plot1: 'plot6', plot2: 'plot7', options: { title: 'Bollinger Bands Background Fill' },
-        colors: new Array<string>(n).fill(isBB ? BB_FILL : 'transparent') },
-    ],
-    markers,
-    visibility: { enableMA, isBB },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const Abdullah = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

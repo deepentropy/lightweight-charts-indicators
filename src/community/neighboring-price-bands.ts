@@ -14,8 +14,10 @@
  * (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/ © LuxAlgo
  */
 
-import { ta, Series, array, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, array, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface NeighboringPriceBandsInputs {
   /** Number of historical bars kept in the price distribution */
@@ -79,24 +81,45 @@ function getPercentile(arr: number[], p: number): number {
   return v1 + (v2 - v1) * (idx - i1);
 }
 
-export function calculate(bars: Bar[], inputs: Partial<NeighboringPriceBandsInputs> = {}): IndicatorResult & { bgColors: BgColorData[] } {
+type Point = { time: number; value: number };
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+
+interface NpbVars {
+  /** var priceArray (the last bufferSize closes) and var sortedArray (their sorted non-na values), changed in place */
+  priceArray: number[];
+  sortedArray: number[];
+}
+
+interface NpbRun extends BarRunState<NpbVars> {
+  smaBull: ReturnType<typeof taStep.sma>;
+  smaBear: ReturnType<typeof taStep.sma>;
+  finalBull: number[];
+  finalBear: number[];
+  finalAvg: number[];
+  plots: Point[][];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<NeighboringPriceBandsInputs>): BarStudy<NpbRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
   const { bufferSize, k, percentile, smooth } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  const priceArray: number[] = [];
-  const sortedArray: number[] = [];
+  // bgcolor(na(bullVal) ? color.new(BULL_COLOR, 85) : na); bgcolor(na(bearVal) ? color.new(BEAR_COLOR, 85) : na)
+  const bullBg = String(color.new(BULL_COLOR, 85));
+  const bearBg = String(color.new(BEAR_COLOR, 85));
+  const bullTop = String(color.new(BULL_COLOR, 80));
+  const bullBottom = String(color.new(BULL_COLOR, 100));
+  const bearTop = String(color.new(BEAR_COLOR, 80));
+  const bearBottom = String(color.new(BEAR_COLOR, 100));
 
   // removeValue(val): remove one occurrence of val from the sorted distribution
-  const removeValue = (val: number) => {
+  const removeValue = (sortedArray: number[], val: number) => {
     if (!isNaN(val) && array.size(sortedArray) > 0) {
       const idx = array.binary_search_leftmost(sortedArray, val);
       if (idx < array.size(sortedArray) && eq(array.get(sortedArray, idx), val)) array.remove(sortedArray, idx);
     }
   };
   // addValue(val): insert val keeping the order
-  const addValue = (val: number) => {
+  const addValue = (sortedArray: number[], val: number) => {
     if (!isNaN(val)) {
       let idx = 0;
       if (array.size(sortedArray) > 0) {
@@ -107,74 +130,91 @@ export function calculate(bars: Bar[], inputs: Partial<NeighboringPriceBandsInpu
     }
   };
 
-  const bullVal: number[] = new Array(n).fill(NaN);
-  const bearVal: number[] = new Array(n).fill(NaN);
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    // Values of the current bar from the distribution of the previous bars (before the buffer update)
-    if (array.size(sortedArray) > 0) {
-      const idx = array.binary_search_leftmost(sortedArray, close);
-      const size = array.size(sortedArray);
-      // Bearish component: idx - K to idx (higher percentile = further below the price)
-      const bearStart = Math.max(0, idx - k);
-      if (idx > bearStart) bearVal[i] = getPercentile(array.slice(sortedArray, bearStart, idx), 100 - percentile);
-      // Bullish component: idx to idx + K
-      const bullEnd = Math.min(size - 1, idx + k);
-      if (bullEnd > idx) bullVal[i] = getPercentile(array.slice(sortedArray, idx, bullEnd + 1), percentile);
-    }
-    // Update the buffer for the next bar
-    if (array.size(priceArray) >= bufferSize) removeValue(array.shift(priceArray));
-    array.push(priceArray, close);
-    addValue(close);
-  }
-
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const smoothedBull = A(ta.sma(S(bullVal), smooth));
-  const smoothedBear = A(ta.sma(S(bearVal), smooth));
-  const finalBull = bullVal.map((v, i) => (!isNaN(v) ? smoothedBull[i] : NaN));
-  const finalBear = bearVal.map((v, i) => (!isNaN(v) ? smoothedBear[i] : NaN));
-  // math.avg(finalBull, finalBear): na when one of them is na
-  const finalAvg = finalBull.map((v, i) => (v + finalBear[i]) / 2);
-
-  const P = (vals: number[]) => bars.map((b, i) => ({ time: b.time, value: vals[i] }));
-
-  // bgcolor(na(bullVal) ? color.new(BULL_COLOR, 85) : na); bgcolor(na(bearVal) ? color.new(BEAR_COLOR, 85) : na)
-  const bullBg = String(color.new(BULL_COLOR, 85));
-  const bearBg = String(color.new(BEAR_COLOR, 85));
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    if (isNaN(bullVal[i])) bgColors.push({ time: bars[i].time, color: bullBg });
-    if (isNaN(bearVal[i])) bgColors.push({ time: bars[i].time, color: bearBg });
-  }
-
-  // fill(plotBull, plotAvg, finalBull, finalAvg, color.new(BULL_COLOR, 80), color.new(BULL_COLOR, 100)) and the
-  // same for the bearish band
-  const bullTop = String(color.new(BULL_COLOR, 80));
-  const bullBottom = String(color.new(BULL_COLOR, 100));
-  const bearTop = String(color.new(BEAR_COLOR, 80));
-  const bearBottom = String(color.new(BEAR_COLOR, 100));
-  const fills = [
-    { plot1: 'plot1', plot2: 'plot3', gradient: { topValue: finalBull, bottomValue: finalAvg,
-      topColor: new Array<string | null>(n).fill(bullTop), bottomColor: new Array<string | null>(n).fill(bullBottom) } },
-    { plot1: 'plot2', plot2: 'plot3', gradient: { topValue: finalBear, bottomValue: finalAvg,
-      topColor: new Array<string | null>(n).fill(bearTop), bottomColor: new Array<string | null>(n).fill(bearBottom) } },
-  ];
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P(bars.map((b) => b.close)),
-      plot1: P(finalBull),
-      plot2: P(finalBear),
-      plot3: P(finalAvg),
+    init() {
+      const s: NpbRun = {
+        smaBull: taStep.sma(), smaBear: taStep.sma(), finalBull: [], finalBear: [], finalAvg: [],
+        plots: [[], [], [], []], bgColors: [],
+        steps: [], vars: { priceArray: [], sortedArray: [] }, lists: [], series: [],
+      };
+      s.steps = [s.smaBull, s.smaBear];
+      s.lists = [s.bgColors];
+      s.series = [s.finalBull, s.finalBear, s.finalAvg, ...s.plots];
+      return s;
     },
-    fills,
-    bgColors,
+    copyVars: (v) => ({ priceArray: v.priceArray.slice(), sortedArray: v.sortedArray.slice() }),
+    bar(s, i, bars) {
+      const { priceArray, sortedArray } = s.vars;
+      const time = bars[i].time;
+      const close = bars[i].close;
+      let bullVal = NaN;
+      let bearVal = NaN;
+      // Values of the current bar from the distribution of the previous bars (before the buffer update)
+      if (array.size(sortedArray) > 0) {
+        const idx = array.binary_search_leftmost(sortedArray, close);
+        const size = array.size(sortedArray);
+        // Bearish component: idx - K to idx (higher percentile = further below the price)
+        const bearStart = Math.max(0, idx - k);
+        if (idx > bearStart) bearVal = getPercentile(array.slice(sortedArray, bearStart, idx), 100 - percentile);
+        // Bullish component: idx to idx + K
+        const bullEnd = Math.min(size - 1, idx + k);
+        if (bullEnd > idx) bullVal = getPercentile(array.slice(sortedArray, idx, bullEnd + 1), percentile);
+      }
+      // Update the buffer for the next bar
+      if (array.size(priceArray) >= bufferSize) removeValue(sortedArray, array.shift(priceArray));
+      array.push(priceArray, close);
+      addValue(sortedArray, close);
+
+      const smoothedBull = s.smaBull.step(bullVal, smooth);
+      const smoothedBear = s.smaBear.step(bearVal, smooth);
+      const finalBull = !isNaN(bullVal) ? smoothedBull : NaN;
+      const finalBear = !isNaN(bearVal) ? smoothedBear : NaN;
+      // math.avg(finalBull, finalBear): na when one of them is na
+      const finalAvg = (finalBull + finalBear) / 2;
+      s.finalBull[i] = finalBull;
+      s.finalBear[i] = finalBear;
+      s.finalAvg[i] = finalAvg;
+      const p = s.plots;
+      p[0][i] = { time, value: close };
+      p[1][i] = { time, value: finalBull };
+      p[2][i] = { time, value: finalBear };
+      p[3][i] = { time, value: finalAvg };
+      if (isNaN(bullVal)) s.bgColors.push({ time, color: bullBg });
+      if (isNaN(bearVal)) s.bgColors.push({ time, color: bearBg });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      // fill(plotBull, plotAvg, finalBull, finalAvg, color.new(BULL_COLOR, 80), color.new(BULL_COLOR, 100)) and the
+      // same for the bearish band
+      const fills = [
+        { plot1: 'plot1', plot2: 'plot3', gradient: { topValue: s.finalBull.slice(), bottomValue: s.finalAvg.slice(),
+          topColor: new Array<string | null>(n).fill(bullTop), bottomColor: new Array<string | null>(n).fill(bullBottom) } },
+        { plot1: 'plot2', plot2: 'plot3', gradient: { topValue: s.finalBear.slice(), bottomValue: s.finalAvg.slice(),
+          topColor: new Array<string | null>(n).fill(bearTop), bottomColor: new Array<string | null>(n).fill(bearBottom) } },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice() },
+        fills,
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<NeighboringPriceBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<NeighboringPriceBandsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const NeighboringPriceBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

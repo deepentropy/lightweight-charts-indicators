@@ -14,6 +14,8 @@
 
 import { color, array, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MeasuredPatternMoveInputs {
   /** Pattern type */
@@ -81,54 +83,74 @@ const DIRECTION: Record<string, 'up' | 'down'> = {
 /** `for i = 0 to 500`: the current bar and the 500 before it */
 const LOOKBACK = 500;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MeasuredPatternMoveInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } {
+type Result = IndicatorResult & { bgColors: BgColorData[] };
+type Point = { time: number; value: number; color: string };
+
+interface MeasuredRun extends BarRunState<Record<string, never>> {
+  /** One plot per glow layer */
+  plots: Point[][];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<MeasuredPatternMoveInputs>): BarStudy<MeasuredRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const cont = CONT[cfg.typ] ?? NaN;
   const dir = DIRECTION[cfg.typ];
-  const inPeriod = (i: number) => {
-    const t = bars[i].time * 1000;
-    return t >= cfg.startTime && t <= cfg.endTime;
-  };
-
-  const target: number[] = new Array(n);
-  const bgColors: BgColorData[] = [];
   const bgcol = String(color.new('#721682', 79));
-  for (let b = 0; b < n; b++) {
-    const hiAr: number[] = [];
-    const loAr: number[] = [];
-    // for i = 0 to 500: time[i] >= start_time and time[i] <= end_time (time[i] is na before the first bar)
-    for (let i = 0; i <= LOOKBACK && b - i >= 0; i++) {
-      if (inPeriod(b - i)) {
-        array.push(hiAr, bars[b - i].high);
-        array.push(loAr, bars[b - i].low);
-      }
-    }
-    const max = array.max(hiAr);
-    const min = array.min(loAr);
-    const dif = max - min;
-    target[b] = dir === 'up' ? max + dif * cont : dir === 'down' ? min - dif * cont : NaN;
-    // bgcolor(time >= start_time and time <= end_time ? bgcol : na)
-    if (inPeriod(b)) bgColors.push({ time: bars[b].time, color: bgcol });
-  }
-
-  const plots: IndicatorResult['plots'] = {};
-  GLOW_COLS.forEach((c, k) => {
-    plots[`plot${k}`] = bars.map((bar, i) => ({ time: bar.time, value: target[i], color: c }));
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    bgColors,
+    init() {
+      const s: MeasuredRun = { plots: GLOW_COLS.map(() => []), bgColors: [], steps: [], vars: {}, lists: [], series: [] };
+      s.lists = [s.bgColors];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, b, bars) {
+      const inPeriod = (i: number) => {
+        const t = bars[i].time * 1000;
+        return t >= cfg.startTime && t <= cfg.endTime;
+      };
+      const hiAr: number[] = [];
+      const loAr: number[] = [];
+      // for i = 0 to 500: time[i] >= start_time and time[i] <= end_time (time[i] is na before the first bar)
+      for (let i = 0; i <= LOOKBACK && b - i >= 0; i++) {
+        if (inPeriod(b - i)) {
+          array.push(hiAr, bars[b - i].high);
+          array.push(loAr, bars[b - i].low);
+        }
+      }
+      const max = array.max(hiAr);
+      const min = array.min(loAr);
+      const dif = max - min;
+      const target = dir === 'up' ? max + dif * cont : dir === 'down' ? min - dif * cont : NaN;
+      const time = bars[b].time;
+      GLOW_COLS.forEach((c, k) => { s.plots[k][b] = { time, value: target, color: c }; });
+      // bgcolor(time >= start_time and time <= end_time ? bgcol : na)
+      if (inPeriod(b)) s.bgColors.push({ time, color: bgcol });
+    },
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MeasuredPatternMoveInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MeasuredPatternMoveInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MeasuredPatternMove = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

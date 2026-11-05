@@ -17,13 +17,14 @@
  */
 
 import {
-  ta, getSourceSeries, Series, math, color, timeframe, heikinAshi, mapToChart,
+  ta, taStep, getSourceSeries, Series, math, color, timeframe, heikinAshi, mapToChart,
   type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
 } from 'oakscriptjs';
 import type { MarkerData, PineSize } from '../types';
 import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
 import { chartTimeframe, higherTimeframeBars } from '../anchor-period';
 import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MarketCipherBInputs {
   wtChannelLen: number;
@@ -212,68 +213,412 @@ function waveTrend(bars: Bar[], chlen: number, avg: number, malen: number): { wt
 }
 
 /**
- * f_findDivs(src, topLimit, botLimit, useLimits) of the original: fractals of src two bars back, the previous
- * fractal's value and price (valuewhen(...)[2]) and the regular divergences
+ * f_findDivs(src, topLimit, botLimit, useLimits) of the original, one bar at a time: fractals of src two bars back,
+ * the previous fractal's value and price (valuewhen(...)[2]) and the regular divergences
  */
-function findDivs(src: number[], highs: number[], lows: number[], topLimit: number, botLimit: number, useLimits: boolean) {
-  const n = src.length;
-  const at = (a: number[], i: number) => (i >= 0 ? a[i] : NaN);
-  const fractalTop: boolean[] = new Array(n).fill(false);
-  const fractalBot: boolean[] = new Array(n).fill(false);
-  const lowPrev: number[] = new Array(n).fill(NaN);
-  const bearSignal: boolean[] = new Array(n).fill(false);
-  const bullSignal: boolean[] = new Array(n).fill(false);
-  const vwHigh: number[] = new Array(n).fill(NaN);
-  const vwHighPrice: number[] = new Array(n).fill(NaN);
-  const vwLow: number[] = new Array(n).fill(NaN);
-  const vwLowPrice: number[] = new Array(n).fill(NaN);
-  for (let i = 0; i < n; i++) {
-    const s0 = at(src, i), s1 = at(src, i - 1), s2 = at(src, i - 2), s3 = at(src, i - 3), s4 = at(src, i - 4);
+class Divs {
+  readonly src: number[] = [];
+  readonly vwHigh: number[] = [];
+  readonly vwHighPrice: number[] = [];
+  readonly vwLow: number[] = [];
+  readonly vwLowPrice: number[] = [];
+  readonly fractalBot: boolean[] = [];
+  readonly lowPrev: number[] = [];
+  readonly bearSignal: boolean[] = [];
+  readonly bullSignal: boolean[] = [];
+
+  constructor(private readonly topLimit: number, private readonly botLimit: number, private readonly useLimits: boolean) {}
+
+  get series(): unknown[][] {
+    return [this.src, this.vwHigh, this.vwHighPrice, this.vwLow, this.vwLowPrice, this.fractalBot, this.lowPrev, this.bearSignal, this.bullSignal];
+  }
+
+  bar(i: number, value: number, bars: Bar[]): void {
+    const { src, vwHigh, vwHighPrice, vwLow, vwLowPrice, useLimits } = this;
+    src[i] = value;
+    const at = (a: number[], k: number) => (k >= 0 ? a[k] : NaN);
+    const s0 = value, s1 = at(src, i - 1), s2 = at(src, i - 2), s3 = at(src, i - 3), s4 = at(src, i - 4);
     const top = s4 < s2 && s3 < s2 && s2 > s1 && s2 > s0;
     const bot = s4 > s2 && s3 > s2 && s2 < s1 && s2 < s0;
     const fractalize = top ? 1 : bot ? -1 : 0;
     // fractalTop / fractalBot are floats (src[2] or na) used as conditions: true when not na and not 0
-    const ft = fractalize > 0 && (useLimits ? s2 >= topLimit : true) ? s2 : NaN;
-    const fb = fractalize < 0 && (useLimits ? s2 <= botLimit : true) ? s2 : NaN;
-    fractalTop[i] = !Number.isNaN(ft) && ft !== 0;
-    fractalBot[i] = !Number.isNaN(fb) && fb !== 0;
-    vwHigh[i] = fractalTop[i] ? s2 : i > 0 ? vwHigh[i - 1] : NaN;
-    vwHighPrice[i] = fractalTop[i] ? at(highs, i - 2) : i > 0 ? vwHighPrice[i - 1] : NaN;
-    vwLow[i] = fractalBot[i] ? s2 : i > 0 ? vwLow[i - 1] : NaN;
-    vwLowPrice[i] = fractalBot[i] ? at(lows, i - 2) : i > 0 ? vwLowPrice[i - 1] : NaN;
+    const ft = fractalize > 0 && (useLimits ? s2 >= this.topLimit : true) ? s2 : NaN;
+    const fb = fractalize < 0 && (useLimits ? s2 <= this.botLimit : true) ? s2 : NaN;
+    const fractalTop = !Number.isNaN(ft) && ft !== 0;
+    const fractalBot = !Number.isNaN(fb) && fb !== 0;
+    this.fractalBot[i] = fractalBot;
+    const high2 = i >= 2 ? bars[i - 2].high : NaN;
+    const low2 = i >= 2 ? bars[i - 2].low : NaN;
+    vwHigh[i] = fractalTop ? s2 : i > 0 ? vwHigh[i - 1] : NaN;
+    vwHighPrice[i] = fractalTop ? high2 : i > 0 ? vwHighPrice[i - 1] : NaN;
+    vwLow[i] = fractalBot ? s2 : i > 0 ? vwLow[i - 1] : NaN;
+    vwLowPrice[i] = fractalBot ? low2 : i > 0 ? vwLowPrice[i - 1] : NaN;
     const highPrev = at(vwHigh, i - 2);
     const highPrice = at(vwHighPrice, i - 2);
-    lowPrev[i] = at(vwLow, i - 2);
+    const lowPrev = at(vwLow, i - 2);
+    this.lowPrev[i] = lowPrev;
     const lowPrice = at(vwLowPrice, i - 2);
-    bearSignal[i] = fractalTop[i] && at(highs, i - 2) > highPrice && s2 < highPrev;
-    bullSignal[i] = fractalBot[i] && at(lows, i - 2) < lowPrice && s2 > lowPrev[i];
+    this.bearSignal[i] = fractalTop && high2 > highPrice && s2 < highPrev;
+    this.bullSignal[i] = fractalBot && low2 < lowPrice && s2 > lowPrev;
   }
-  return { fractalTop, fractalBot, lowPrev, bearSignal, bullSignal };
 }
 
-/** sma over an array: na when a value of the window is na */
-function smaArr(src: number[], len: number): number[] {
-  return src.map((_v, i) => {
-    if (i < len - 1) return NaN;
-    let sum = 0;
-    for (let j = i - len + 1; j <= i; j++) sum += src[j];
-    return sum / len;
-  });
+/** sma over the last `len` values of an array (bar i included): na when a value of the window is na */
+function smaAt(src: number[], i: number, len: number): number {
+  if (i < len - 1) return NaN;
+  let sum = 0;
+  for (let j = i - len + 1; j <= i; j++) sum += src[j];
+  return sum / len;
 }
 
-/** stoch(src, src, src, len): na while the window has an na value, or with a zero range */
-function stochArr(src: number[], len: number): number[] {
-  return src.map((v, i) => {
-    if (i < len - 1) return NaN;
-    let lo = Infinity;
-    let hi = -Infinity;
-    for (let j = i - len + 1; j <= i; j++) {
-      if (Number.isNaN(src[j])) return NaN;
-      lo = Math.min(lo, src[j]);
-      hi = Math.max(hi, src[j]);
-    }
-    return hi - lo > 0 ? (100 * (v - lo)) / (hi - lo) : NaN;
-  });
+/** stoch(src, src, src, len) on bar i: na while the window has an na value, or with a zero range */
+function stochAt(src: number[], i: number, len: number): number {
+  if (i < len - 1) return NaN;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let j = i - len + 1; j <= i; j++) {
+    if (Number.isNaN(src[j])) return NaN;
+    lo = Math.min(lo, src[j]);
+    hi = Math.max(hi, src[j]);
+  }
+  return hi - lo > 0 ? (100 * (src[i] - lo)) / (hi - lo) : NaN;
+}
+
+type Point = { time: number; value: number; color?: string };
+type McbResult = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface McbRun extends BarRunState<Record<string, never>> {
+  esa: ReturnType<typeof taStep.ema>;
+  de: ReturnType<typeof taStep.ema>;
+  wt1Ema: ReturnType<typeof taStep.ema>;
+  wt2Sma: ReturnType<typeof taStep.sma>;
+  mfiSma: ReturnType<typeof taStep.sma>;
+  rsiStep: ReturnType<typeof taStep.rsi>;
+  stochRsiStep: ReturnType<typeof taStep.rsi>;
+  wt1: number[];
+  wt2: number[];
+  rsi: number[];
+  rsiMFI: number[];
+  stochRsi: number[];
+  stochRaw: number[];
+  kk: number[];
+  stochK: number[];
+  stochD: number[];
+  rsiWhen: number[];
+  /** wtCross, wtCrossUp, wtCrossDown of each bar */
+  cross: boolean[];
+  crossUp: boolean[];
+  crossDown: boolean[];
+  divs: Divs[];
+  wt1Plot: Point[];
+  wt2Plot: Point[];
+  vwapPlot: Point[];
+  mfiPlot: Point[];
+  crossDotPlot: Point[];
+  crossLinePlot: Point[];
+  mfiBarTop: Point[];
+  mfiBarBottom: Point[];
+  mfiBarColors: string[];
+  stochKPlot: Point[];
+  stochDPlot: Point[];
+  kdColors: string[];
+  /** the markers at the time of a bar but the Sommi ones: char4 / char5 (from the bar), char6..8 (from 2 bars later) */
+  marksA: (MarkerData[] | null)[];
+  marksB: (MarkerData[] | null)[];
+  /** alert flags of the conditions that do not read the higher timeframes (null for alert3 / alert5) */
+  flags: (boolean[] | null)[];
+}
+
+function study(inputs: Partial<MarketCipherBInputs>): BarStudy<McbRun, McbResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const {
+    wtChannelLen, wtAvgLen, wtMALen,
+    rsiMFIPeriod, rsiMFIMult, rsiMFIPosY,
+    obLevel, obLevel2, obLevel3, osLevel, osLevel2, osLevel3,
+  } = cfg;
+  const hlc3 = barSource('hlc3');
+  const warmup = wtChannelLen + wtAvgLen;
+  const mfiWarmup = rsiMFIPeriod;
+  const toVal = (v: number | null, i: number, wu: number): number => {
+    if (v == null || i < wu || !isFinite(v)) return NaN;
+    return v;
+  };
+  const buyCircle = String(color.new(COLOR_GREEN, 50));
+  const sellCircle = String(color.new(COLOR_RED, 50));
+  const gold = String(color.new(COLOR_ORANGE, 15));
+  return {
+    init() {
+      // Pine: esa = ema(hlc3, chlen), de = ema(abs(hlc3-esa), chlen)
+      //        ci = (hlc3 - esa) / (0.015 * de)
+      //        wt1 = ema(ci, avg), wt2 = sma(wt1, malen)
+      const esa = taStep.ema(wtChannelLen);
+      const de = taStep.ema(wtChannelLen);
+      const wt1Ema = taStep.ema(wtAvgLen);
+      const wt2Sma = taStep.sma();
+      const mfiSma = taStep.sma();
+      const rsiStep = taStep.rsi(cfg.rsiLen);
+      const stochRsiStep = taStep.rsi(cfg.stochRsiLen);
+      // Divergences: wt, wt (additional levels), rsi, stoch
+      const divs = [
+        new Divs(cfg.wtDivOBLevel, cfg.wtDivOSLevel, true),
+        new Divs(cfg.wtDivOBLevel_add, cfg.wtDivOSLevel_add, true),
+        new Divs(cfg.rsiDivOBLevel, cfg.rsiDivOSLevel, true),
+        new Divs(0, 0, false),
+      ];
+      const s: McbRun = {
+        esa, de, wt1Ema, wt2Sma, mfiSma, rsiStep, stochRsiStep,
+        wt1: [], wt2: [], rsi: [], rsiMFI: [], stochRsi: [], stochRaw: [], kk: [], stochK: [], stochD: [], rsiWhen: [],
+        cross: [], crossUp: [], crossDown: [], divs,
+        wt1Plot: [], wt2Plot: [], vwapPlot: [], mfiPlot: [], crossDotPlot: [], crossLinePlot: [], mfiBarTop: [],
+        mfiBarBottom: [], mfiBarColors: [], stochKPlot: [], stochDPlot: [], kdColors: [], marksA: [], marksB: [],
+        flags: [[], [], [], null, [], null, [], [], []],
+        steps: [esa, de, wt1Ema, wt2Sma, mfiSma, rsiStep, stochRsiStep], vars: {}, lists: [], series: [],
+      };
+      s.series = [
+        s.wt1, s.wt2, s.rsi, s.rsiMFI, s.stochRsi, s.stochRaw, s.kk, s.stochK, s.stochD, s.rsiWhen, s.cross, s.crossUp,
+        s.crossDown, ...divs.flatMap((d) => d.series), s.wt1Plot, s.wt2Plot, s.vwapPlot, s.mfiPlot, s.crossDotPlot,
+        s.crossLinePlot, s.mfiBarTop, s.mfiBarBottom, s.mfiBarColors, s.stochKPlot, s.stochDPlot, s.kdColors, s.marksA,
+        s.marksB, ...s.flags.filter((f): f is boolean[] => f !== null),
+      ];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      // --- WaveTrend ---
+      const src = hlc3(b);
+      const esa = s.esa.step(src);
+      const de = s.de.step(Math.abs(src - esa));
+      const ci = (src - esa) / (de * 0.015);
+      const c1 = s.wt1Ema.step(ci);
+      const c2 = s.wt2Sma.step(c1, wtMALen);
+      s.wt1[i] = c1;
+      s.wt2[i] = c2;
+
+      // --- RSI+MFI Area ---
+      // Pine: sma(((close - open) / (high - low)) * multiplier, period) - posY
+      const range = b.high - b.low;
+      const mfiRaw = range > 0 ? ((b.close - b.open) / range) * rsiMFIMult : 0;
+      const mfi = s.mfiSma.step(mfiRaw, rsiMFIPeriod);
+
+      // Pine: plot(wt1, style=area, color=#4994EC)
+      s.wt1Plot[i] = { time, value: toVal(c1, i, warmup) };
+      // Pine: plot(wt2, style=area, color=#1F1559)
+      s.wt2Plot[i] = { time, value: toVal(c2, i, warmup) };
+      // Pine: wtVwap = wt1 - wt2; plot(wtVwap, style=area, color=white)
+      s.vwapPlot[i] = isNaN(c1) || isNaN(c2) || i < warmup ? { time, value: NaN } : { time, value: c1 - c2 };
+      // Pine: plot(rsiMFI, style=area, color=rsiMFIColor)
+      const val = toVal(mfi, i, mfiWarmup) - rsiMFIPosY;
+      const rsiMFI = isFinite(val) ? val : NaN;
+      s.mfiPlot[i] = { time, value: rsiMFI, color: val > 0 ? '#3EE14580' : '#FF3D2E80' };
+      s.rsiMFI[i] = rsiMFI;
+
+      // --- Cross dots ---
+      // Pine: wtCross = cross(wt1, wt2)
+      //       plot(wtCross ? wt2 : na, style=circles, color=signalColor, linewidth=3)
+      const p1 = i > 0 ? s.wt1[i - 1] : NaN;
+      const p2 = i > 0 ? s.wt2[i - 1] : NaN;
+      if (i < warmup + 1 || isNaN(c1) || isNaN(c2) || isNaN(p1) || isNaN(p2)) {
+        s.crossDotPlot[i] = { time, value: NaN };
+        s.crossLinePlot[i] = { time, value: NaN };
+      } else if ((p1 <= p2 && c1 > c2) || (p1 >= p2 && c1 < c2)) {
+        // Pine: plot(cross(wt1, wt2) ? wt2 : na, color=black, style=line, linewidth=5)
+        s.crossLinePlot[i] = { time, value: c2 };
+        // Small circle at every cross (Pine line 495)
+        s.crossDotPlot[i] = { time, value: c2, color: (c2 - c1) > 0 ? '#FF5252' : '#00E676' };
+      } else {
+        s.crossDotPlot[i] = { time, value: NaN };
+        s.crossLinePlot[i] = { time, value: NaN };
+      }
+
+      // --- Signals of the original (na values compare false) ---
+      // rsi = rsi(close, rsiLen)
+      const rsi = s.rsiStep.step(b.close);
+      s.rsi[i] = rsi;
+      // f_stochrsi(close, stochLen, stochRsiLen, stochKSmooth, stochDSmooth, stochUseLog, stochAvg)
+      s.stochRsi[i] = s.stochRsiStep.step(cfg.stochUseLog ? Math.log(b.close) : b.close);
+      s.stochRaw[i] = stochAt(s.stochRsi, i, cfg.stochLen);
+      const kk = smaAt(s.stochRaw, i, cfg.stochKSmooth);
+      s.kk[i] = kk;
+      const stochD = smaAt(s.kk, i, cfg.stochDSmooth);
+      s.stochD[i] = stochD;
+      const stochK = cfg.stochAvg ? (kk + stochD) / 2 : kk;
+      s.stochK[i] = stochK;
+
+      // Divergences
+      const [wtDiv, wtDivAdd, rsiDiv, stochDiv] = s.divs;
+      wtDiv.bar(i, c2, bars);
+      wtDivAdd.bar(i, c2, bars);
+      rsiDiv.bar(i, rsi, bars);
+      stochDiv.bar(i, stochK, bars);
+      // lastRsi = valuewhen(wtFractalBot, rsi[2], 0)[2]
+      s.rsiWhen[i] = wtDiv.fractalBot[i] ? (i >= 2 ? s.rsi[i - 2] : NaN) : i > 0 ? s.rsiWhen[i - 1] : NaN;
+
+      const wtCross = (c1 > c2 && p1 <= p2) || (c1 < c2 && p1 >= p2);
+      const wtCrossUp = c2 - c1 <= 0;
+      const wtCrossDown = c2 - c1 >= 0;
+      s.cross[i] = wtCross;
+      s.crossUp[i] = wtCrossUp;
+      s.crossDown[i] = wtCrossDown;
+      // buySignal = wtCross and wtCrossUp and wtOversold; sellSignal = wtCross and wtCrossDown and wtOverbought
+      const buySignal = wtCross && wtCrossUp && c2 <= osLevel;
+      const sellSignal = wtCross && wtCrossDown && c2 >= obLevel;
+      const buySignalDiv = (cfg.wtShowDiv && wtDiv.bullSignal[i]) || (cfg.wtShowDiv && wtDivAdd.bullSignal[i])
+        || (cfg.stochShowDiv && stochDiv.bullSignal[i]) || (cfg.rsiShowDiv && rsiDiv.bullSignal[i]);
+      const sellSignalDiv = (cfg.wtShowDiv && wtDiv.bearSignal[i]) || (cfg.wtShowDiv && wtDivAdd.bearSignal[i])
+        || (cfg.stochShowDiv && stochDiv.bearSignal[i]) || (cfg.rsiShowDiv && rsiDiv.bearSignal[i]);
+      const lastRsi = i >= 2 ? s.rsiWhen[i - 2] : NaN;
+      const wtLowPrev = wtDiv.lowPrev[i];
+      const wtGoldBuy = ((cfg.wtShowDiv && wtDiv.bullSignal[i]) || (cfg.rsiShowDiv && rsiDiv.bullSignal[i]))
+        && wtLowPrev <= osLevel3 && c2 > osLevel3 && wtLowPrev - c2 <= -5 && lastRsi < 30;
+
+      const f = s.flags;
+      f[0]![i] = buySignal;
+      f[1]![i] = buySignalDiv;
+      f[2]![i] = wtGoldBuy;
+      f[4]![i] = wtCross && wtCrossUp;
+      f[6]![i] = sellSignal;
+      f[7]![i] = sellSignalDiv;
+      f[8]![i] = wtCross && wtCrossDown;
+
+      // plotchar(..., location = location.absolute): the character at the price, on the bar (offset applied)
+      const char = (id: string, at: number, price: number, ch: string, css: string, size: PineSize): MarkerData =>
+        ({ id, time: bars[at].time, position: 'atPriceMiddle', price, shape: 'circle', char: ch, color: css, size });
+      let a: MarkerData[] | null = null;
+      if (cfg.wtBuyShow && buySignal) (a ??= []).push(char('char4', i, -107, '·', buyCircle, 'small'));
+      if (cfg.wtSellShow && sellSignal) (a ??= []).push(char('char5', i, 105, '·', sellCircle, 'small'));
+      s.marksA[i] = a;
+      // the characters with offset = -2: bar i is the only writer of the slot of bar i - 2
+      if (i >= 2) {
+        let m: MarkerData[] | null = null;
+        // offset = -2, transp = 15: wtBullDiv ? green : wtBullDiv_add ? color.new(green, 60) : rsiShowDiv ? green : na
+        if (cfg.wtDivShow && buySignalDiv) {
+          const css = wtDiv.bullSignal[i] ? String(color.new(COLOR_GREEN, 15))
+            : wtDivAdd.bullSignal[i] ? String(color.new(COLOR_GREEN, 60))
+              : cfg.rsiShowDiv ? String(color.new(COLOR_GREEN, 15)) : 'transparent';
+          (m ??= []).push(char('char6', i - 2, -106, '•', css, 'small'));
+        }
+        // wtBearDiv ? red : wtBearDiv_add ? color.new(red, 60) : rsiBearDiv ? red : na
+        if (cfg.wtDivShow && sellSignalDiv) {
+          const css = wtDiv.bearSignal[i] ? String(color.new(COLOR_RED, 15))
+            : wtDivAdd.bearSignal[i] ? String(color.new(COLOR_RED, 60))
+              : rsiDiv.bearSignal[i] ? String(color.new(COLOR_RED, 15)) : 'transparent';
+          (m ??= []).push(char('char7', i - 2, 106, '•', css, 'small'));
+        }
+        if (wtGoldBuy && cfg.wtGoldShow) (m ??= []).push(char('char8', i - 2, -106, '•', gold, 'normal'));
+        s.marksB[i - 2] = m;
+      }
+      // the slots of the last two bars have no writer yet
+      s.marksB[i] = null;
+
+      // MFI bar: plot(rsiMFIShow ? -95 : na) / plot(rsiMFIShow ? -99 : na) with transp 100,
+      // fill(..., title = 'MFI Bar Colors', color = rsiMFIColor, transp = 75)
+      s.mfiBarTop[i] = { time, value: -95 };
+      s.mfiBarBottom[i] = { time, value: -99 };
+      s.mfiBarColors[i] = String(color.new(rsiMFI > 0 ? '#3ee145' : '#ff3d2e', 75));
+      // Stochastic RSI: plot(stochShow ? stochK : na, 'Stoch K') / plot(stochShow ? stochD : na, 'Stoch D'),
+      // fill(stochKplot, stochDplot, title = 'KD Fill', color = stochK >= stochD ? #21baf3 95% : #673ab7 90%)
+      s.stochKPlot[i] = { time, value: cfg.stochShow && Number.isFinite(stochK) ? stochK : NaN };
+      s.stochDPlot[i] = { time, value: cfg.stochShow && Number.isFinite(stochD) ? stochD : NaN };
+      s.kdColors[i] = String(stochK >= stochD ? color.new('#21baf3', 95) : color.new('#673ab7', 90));
+    },
+    // The Sommi flag and diamond read the higher timeframes of the whole bar set (the diamond with lookahead): they
+    // are found again on each update
+    result(s, bars, chart) {
+      const n = bars.length;
+      // Bars of a timeframe as security(syminfo.tickerid, tf, ...) builds them; null: the chart bars
+      const chartTf = chartTimeframe(bars, chart);
+      const securityOf = (tf: string) => {
+        if (tf.trim() === '' || chartTf === '' || timeframe.in_seconds(tf) <= timeframe.in_seconds(chartTf)) return null;
+        return higherTimeframeBars(bars, tf, chart);
+      };
+      // f_findSommiFlag: hwtVwap = wt1 - wt2 of the WaveTrend of the timeframe (no lookahead)
+      const flagSec = securityOf(cfg.sommiVwapTF);
+      let hwtVwap: number[];
+      if (flagSec) {
+        const h = waveTrend(flagSec.htf, wtChannelLen, wtAvgLen, wtMALen);
+        hwtVwap = mapToChart(h.wt1.map((v, g) => v - h.wt2[g]), flagSec.group, flagSec.latest, false, false);
+      } else {
+        hwtVwap = s.wt1.map((v, i) => v - s.wt2[i]);
+      }
+      // f_getTFCandle: Heikin Ashi candle of the timeframe (lookahead on), candleBodyDir = close > open
+      const candleBodyDir = (tf: string): boolean[] => {
+        const sec = securityOf(tf);
+        const ha = heikinAshi(sec ? sec.htf : bars);
+        const dir = ha.map((hb) => (hb.close > hb.open ? 1 : 0));
+        const onChart = sec ? mapToChart(dir, sec.group, sec.latest, true, false) : dir;
+        return onChart.map((v) => v === 1);
+      };
+      const dir1 = candleBodyDir(cfg.sommiHTCRes);
+      const dir2 = candleBodyDir(cfg.sommiHTCRes2);
+
+      const bull: boolean[] = new Array(n);
+      const bear: boolean[] = new Array(n);
+      const markers: MarkerData[] = [];
+      const char = (id: string, i: number, price: number, ch: string, css: string) => {
+        markers.push({ id, time: bars[i].time, position: 'atPriceMiddle', price, shape: 'circle', char: ch, color: css, size: 'tiny' });
+      };
+      for (let i = 0; i < n; i++) {
+        const c2 = s.wt2[i];
+        const wtCross = s.cross[i];
+        const sommiBearish = s.rsiMFI[i] < cfg.soomiRSIMFIBearLevel && c2 > cfg.soomiFlagWTBearLevel && wtCross && s.crossDown[i]
+          && hwtVwap[i] < cfg.sommiVwapBearLevel;
+        const sommiBullish = s.rsiMFI[i] > cfg.soomiRSIMFIBullLevel && c2 < cfg.soomiFlagWTBullLevel && wtCross && s.crossUp[i]
+          && hwtVwap[i] > cfg.sommiVwapBullLevel;
+        const sommiBearishDiamond = c2 >= cfg.soomiDiamondWTBearLevel && wtCross && s.crossDown[i] && !dir1[i] && !dir2[i];
+        const sommiBullishDiamond = c2 <= cfg.soomiDiamondWTBullLevel && wtCross && s.crossUp[i] && dir1[i] && dir2[i];
+        bull[i] = sommiBullish || sommiBullishDiamond;
+        bear[i] = sommiBearish || sommiBearishDiamond;
+        // the markers in the order of the original's (sorted by time): the Sommi characters, char4 / char5, then the
+        // characters drawn 2 bars back
+        if (cfg.sommiFlagShow && sommiBearish) char('char0', i, 108, '⚑', COLOR_PINK);
+        if (cfg.sommiFlagShow && sommiBullish) char('char1', i, -108, '⚑', COLOR_BLUELIGHT);
+        if (cfg.sommiDiamondShow && sommiBearishDiamond) char('char2', i, 108, '◆', COLOR_PINK);
+        if (cfg.sommiDiamondShow && sommiBullishDiamond) char('char3', i, -108, '◆', COLOR_BLUELIGHT);
+        const a = s.marksA[i];
+        if (a) for (const m of a) markers.push(m);
+        const m2 = s.marksB[i];
+        if (m2) for (const m of m2) markers.push(m);
+      }
+      const flags = s.flags.map((f, k) => f ?? (k === 3 ? bull : bear));
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'wt1': s.wt1Plot.slice(),
+          'wt2': s.wt2Plot.slice(),
+          'vwap': s.vwapPlot.slice(),
+          'mfiArea': s.mfiPlot.slice(),
+          'crossDot': s.crossDotPlot.slice(),
+          'crossLine': s.crossLinePlot.slice(),
+          'mfiBarTop': s.mfiBarTop.slice(),
+          'mfiBarBottom': s.mfiBarBottom.slice(),
+          'stochK': s.stochKPlot.slice(),
+          'stochD': s.stochDPlot.slice(),
+        },
+        fills: [
+          { plot1: 'mfiBarTop', plot2: 'mfiBarBottom', options: { title: 'MFI Bar Colors' }, colors: s.mfiBarColors.slice() },
+          { plot1: 'stochK', plot2: 'stochD', options: { title: 'KD Fill' }, colors: s.kdColors.slice() },
+        ],
+        hlines: [
+          { value: 0, options: { color: '#FFFFFF80', linestyle: 'solid' as const, title: 'Zero' } },
+          { value: obLevel, options: { color: '#FFFFFF26', linestyle: 'dashed' as const, title: 'OB1 (53)' } },
+          { value: osLevel, options: { color: '#FFFFFF26', linestyle: 'dashed' as const, title: 'OS1 (-53)' } },
+          { value: obLevel2, options: { color: '#FFFFFF15', linestyle: 'dashed' as const, title: 'OB2 (60)' } },
+          { value: osLevel2, options: { color: '#FFFFFF15', linestyle: 'dashed' as const, title: 'OS2 (-60)' } },
+          { value: obLevel3, options: { color: '#FFFFFF0A', linestyle: 'dotted' as const, title: 'OB3 (100)' } },
+          { value: osLevel3, options: { color: '#FFFFFF0A', linestyle: 'dotted' as const, title: 'OS3 (-75)' } },
+        ],
+        markers,
+        alerts: alertStates(alertConditions, bars, flags),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MarketCipherBInputs> = {}, chart: ChartContext = {}): IndicatorRun<McbResult> {
+  return createBarRun(study(inputs), chart);
 }
 
 export function calculate(
@@ -281,262 +626,7 @@ export function calculate(
   inputs: Partial<MarketCipherBInputs> = {},
   chart?: ChartContext,
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const {
-    wtChannelLen, wtAvgLen, wtMALen,
-    rsiMFIPeriod, rsiMFIMult, rsiMFIPosY,
-    obLevel, obLevel2, obLevel3, osLevel, osLevel2, osLevel3,
-  } = cfg;
-
-  const n = bars.length;
-
-  // --- WaveTrend ---
-  // Pine: esa = ema(hlc3, chlen), de = ema(abs(hlc3-esa), chlen)
-  //        ci = (hlc3 - esa) / (0.015 * de)
-  //        wt1 = ema(ci, avg), wt2 = sma(wt1, malen)
-  const { wt1: wt1Arr, wt2: wt2Arr } = waveTrend(bars, wtChannelLen, wtAvgLen, wtMALen);
-
-  // --- RSI+MFI Area ---
-  // Pine: sma(((close - open) / (high - low)) * multiplier, period) - posY
-  const mfiRaw: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const range = bars[i].high - bars[i].low;
-    mfiRaw[i] = range > 0 ? ((bars[i].close - bars[i].open) / range) * rsiMFIMult : 0;
-  }
-  const mfiSeries = new Series(bars, (_bar, idx) => mfiRaw[idx]);
-  const mfiSma = ta.sma(mfiSeries, rsiMFIPeriod);
-  const mfiArr = mfiSma.toArray();
-
-  const warmup = wtChannelLen + wtAvgLen;
-  const mfiWarmup = rsiMFIPeriod;
-
-  const toVal = (v: number | null, i: number, wu: number): number => {
-    if (v == null || i < wu || !isFinite(v)) return NaN;
-    return v;
-  };
-
-  // Pine: plot(wt1, style=area, color=#4994EC)
-  const wt1Plot = wt1Arr.map((v, i) => ({ time: bars[i].time, value: toVal(v, i, warmup) }));
-  // Pine: plot(wt2, style=area, color=#1F1559)
-  const wt2Plot = wt2Arr.map((v, i) => ({ time: bars[i].time, value: toVal(v, i, warmup) }));
-
-  // Pine: wtVwap = wt1 - wt2; plot(wtVwap, style=area, color=white)
-  const vwapPlot = bars.map((b, i) => {
-    const v1 = wt1Arr[i];
-    const v2 = wt2Arr[i];
-    if (isNaN(v1) || isNaN(v2) || i < warmup) return { time: b.time, value: NaN };
-    return { time: b.time, value: v1 - v2 };
-  });
-
-  // Pine: plot(rsiMFI, style=area, color=rsiMFIColor)
-  const mfiPlot = bars.map((b, i) => {
-    const v = mfiArr[i];
-    const val = toVal(v, i, mfiWarmup) - rsiMFIPosY;
-    const color = val > 0 ? '#3EE14580' : '#FF3D2E80';
-    return { time: b.time, value: isFinite(val) ? val : NaN, color };
-  });
-
-  // --- Cross dots ---
-  // Pine: wtCross = cross(wt1, wt2)
-  //       plot(wtCross ? wt2 : na, style=circles, color=signalColor, linewidth=3)
-  const crossDotPlot: { time: number; value: number; color?: string }[] = [];
-  const crossLinePlot: { time: number; value: number }[] = [];
-
-  for (let i = 0; i < n; i++) {
-    if (i < warmup + 1 || isNaN(wt1Arr[i]) || isNaN(wt2Arr[i]) ||
-        isNaN(wt1Arr[i - 1]) || isNaN(wt2Arr[i - 1])) {
-      crossDotPlot.push({ time: bars[i].time, value: NaN });
-      crossLinePlot.push({ time: bars[i].time, value: NaN });
-      continue;
-    }
-
-    const prev1 = wt1Arr[i - 1];
-    const prev2 = wt2Arr[i - 1];
-    const curr1 = wt1Arr[i];
-    const curr2 = wt2Arr[i];
-
-    // cross: either crossover or crossunder
-    const crossUp = prev1 <= prev2 && curr1 > curr2;
-    const crossDown = prev1 >= prev2 && curr1 < curr2;
-    const isCross = crossUp || crossDown;
-
-    if (isCross) {
-      // Pine: plot(cross(wt1, wt2) ? wt2 : na, color=black, style=line, linewidth=5)
-      crossLinePlot.push({ time: bars[i].time, value: curr2 });
-
-      // Small circle at every cross (Pine line 495)
-      const dotColor = (curr2 - curr1) > 0 ? '#FF5252' : '#00E676';
-      crossDotPlot.push({ time: bars[i].time, value: curr2, color: dotColor });
-    } else {
-      crossDotPlot.push({ time: bars[i].time, value: NaN });
-      crossLinePlot.push({ time: bars[i].time, value: NaN });
-    }
-  }
-
-  // --- Signals of the original (na values compare false) ---
-  const highs = bars.map((b) => b.high);
-  const lows = bars.map((b) => b.low);
-  // rsiMFI: the MFI Area values
-  const rsiMFI = mfiPlot.map((p) => p.value);
-
-  // rsi = rsi(close, rsiLen)
-  const rsi = num(ta.rsi(new Series(bars, (b) => b.close), cfg.rsiLen).toArray());
-
-  // f_stochrsi(close, stochLen, stochRsiLen, stochKSmooth, stochDSmooth, stochUseLog, stochAvg)
-  const stochSrc = bars.map((b) => (cfg.stochUseLog ? Math.log(b.close) : b.close));
-  const stochRsi = num(ta.rsi(Series.fromArray(bars, stochSrc), cfg.stochRsiLen).toArray());
-  const kk = smaArr(stochArr(stochRsi, cfg.stochLen), cfg.stochKSmooth);
-  const stochD = smaArr(kk, cfg.stochDSmooth);
-  const stochK = cfg.stochAvg ? kk.map((v, i) => (v + stochD[i]) / 2) : kk;
-
-  // Divergences
-  const wtDiv = findDivs(wt2Arr, highs, lows, cfg.wtDivOBLevel, cfg.wtDivOSLevel, true);
-  const wtDivAdd = findDivs(wt2Arr, highs, lows, cfg.wtDivOBLevel_add, cfg.wtDivOSLevel_add, true);
-  const rsiDiv = findDivs(rsi, highs, lows, cfg.rsiDivOBLevel, cfg.rsiDivOSLevel, true);
-  const stochDiv = findDivs(stochK, highs, lows, 0, 0, false);
-  // lastRsi = valuewhen(wtFractalBot, rsi[2], 0)[2]
-  const rsiWhen: number[] = new Array(n).fill(NaN);
-  for (let i = 0; i < n; i++) {
-    rsiWhen[i] = wtDiv.fractalBot[i] ? (i >= 2 ? rsi[i - 2] : NaN) : i > 0 ? rsiWhen[i - 1] : NaN;
-  }
-
-  // Bars of a timeframe as security(syminfo.tickerid, tf, ...) builds them; null: the chart bars
-  const chartTf = chartTimeframe(bars, chart);
-  const securityOf = (tf: string) => {
-    if (tf.trim() === '' || chartTf === '' || timeframe.in_seconds(tf) <= timeframe.in_seconds(chartTf)) return null;
-    return higherTimeframeBars(bars, tf, chart);
-  };
-  // f_findSommiFlag: hwtVwap = wt1 - wt2 of the WaveTrend of the timeframe (no lookahead)
-  const flagSec = securityOf(cfg.sommiVwapTF);
-  let hwtVwap: number[];
-  if (flagSec) {
-    const h = waveTrend(flagSec.htf, wtChannelLen, wtAvgLen, wtMALen);
-    hwtVwap = mapToChart(h.wt1.map((v, g) => v - h.wt2[g]), flagSec.group, flagSec.latest, false, false);
-  } else {
-    hwtVwap = wt1Arr.map((v, i) => v - wt2Arr[i]);
-  }
-  // f_getTFCandle: Heikin Ashi candle of the timeframe (lookahead on), candleBodyDir = close > open
-  const candleBodyDir = (tf: string): boolean[] => {
-    const sec = securityOf(tf);
-    const ha = heikinAshi(sec ? sec.htf : bars);
-    const dir = ha.map((b) => (b.close > b.open ? 1 : 0));
-    const onChart = sec ? mapToChart(dir, sec.group, sec.latest, true, false) : dir;
-    return onChart.map((v) => v === 1);
-  };
-  const dir1 = candleBodyDir(cfg.sommiHTCRes);
-  const dir2 = candleBodyDir(cfg.sommiHTCRes2);
-
-  const flags: boolean[][] = Array.from({ length: 9 }, () => new Array<boolean>(n).fill(false));
-  const markers: MarkerData[] = [];
-  // plotchar(..., location = location.absolute): the character at the price, on the bar (offset applied)
-  const char = (id: string, i: number, price: number, ch: string, css: string, size: PineSize) => {
-    if (i < 0) return;
-    markers.push({ id, time: bars[i].time, position: 'atPriceMiddle', price, shape: 'circle', char: ch, color: css, size });
-  };
-  const buyCircle = String(color.new(COLOR_GREEN, 50));
-  const sellCircle = String(color.new(COLOR_RED, 50));
-  const gold = String(color.new(COLOR_ORANGE, 15));
-  for (let i = 0; i < n; i++) {
-    const c1 = wt1Arr[i];
-    const c2 = wt2Arr[i];
-    const p1 = i > 0 ? wt1Arr[i - 1] : NaN;
-    const p2 = i > 0 ? wt2Arr[i - 1] : NaN;
-    const wtCross = (c1 > c2 && p1 <= p2) || (c1 < c2 && p1 >= p2);
-    const wtCrossUp = c2 - c1 <= 0;
-    const wtCrossDown = c2 - c1 >= 0;
-    // buySignal = wtCross and wtCrossUp and wtOversold; sellSignal = wtCross and wtCrossDown and wtOverbought
-    const buySignal = wtCross && wtCrossUp && c2 <= osLevel;
-    const sellSignal = wtCross && wtCrossDown && c2 >= obLevel;
-    const buySignalDiv = (cfg.wtShowDiv && wtDiv.bullSignal[i]) || (cfg.wtShowDiv && wtDivAdd.bullSignal[i])
-      || (cfg.stochShowDiv && stochDiv.bullSignal[i]) || (cfg.rsiShowDiv && rsiDiv.bullSignal[i]);
-    const sellSignalDiv = (cfg.wtShowDiv && wtDiv.bearSignal[i]) || (cfg.wtShowDiv && wtDivAdd.bearSignal[i])
-      || (cfg.stochShowDiv && stochDiv.bearSignal[i]) || (cfg.rsiShowDiv && rsiDiv.bearSignal[i]);
-    const lastRsi = i >= 2 ? rsiWhen[i - 2] : NaN;
-    const wtLowPrev = wtDiv.lowPrev[i];
-    const wtGoldBuy = ((cfg.wtShowDiv && wtDiv.bullSignal[i]) || (cfg.rsiShowDiv && rsiDiv.bullSignal[i]))
-      && wtLowPrev <= osLevel3 && c2 > osLevel3 && wtLowPrev - c2 <= -5 && lastRsi < 30;
-    const sommiBearish = rsiMFI[i] < cfg.soomiRSIMFIBearLevel && c2 > cfg.soomiFlagWTBearLevel && wtCross && wtCrossDown
-      && hwtVwap[i] < cfg.sommiVwapBearLevel;
-    const sommiBullish = rsiMFI[i] > cfg.soomiRSIMFIBullLevel && c2 < cfg.soomiFlagWTBullLevel && wtCross && wtCrossUp
-      && hwtVwap[i] > cfg.sommiVwapBullLevel;
-    const sommiBearishDiamond = c2 >= cfg.soomiDiamondWTBearLevel && wtCross && wtCrossDown && !dir1[i] && !dir2[i];
-    const sommiBullishDiamond = c2 <= cfg.soomiDiamondWTBullLevel && wtCross && wtCrossUp && dir1[i] && dir2[i];
-
-    flags[0][i] = buySignal;
-    flags[1][i] = buySignalDiv;
-    flags[2][i] = wtGoldBuy;
-    flags[3][i] = sommiBullish || sommiBullishDiamond;
-    flags[4][i] = wtCross && wtCrossUp;
-    flags[5][i] = sommiBearish || sommiBearishDiamond;
-    flags[6][i] = sellSignal;
-    flags[7][i] = sellSignalDiv;
-    flags[8][i] = wtCross && wtCrossDown;
-
-    if (cfg.sommiFlagShow && sommiBearish) char('char0', i, 108, '⚑', COLOR_PINK, 'tiny');
-    if (cfg.sommiFlagShow && sommiBullish) char('char1', i, -108, '⚑', COLOR_BLUELIGHT, 'tiny');
-    if (cfg.sommiDiamondShow && sommiBearishDiamond) char('char2', i, 108, '◆', COLOR_PINK, 'tiny');
-    if (cfg.sommiDiamondShow && sommiBullishDiamond) char('char3', i, -108, '◆', COLOR_BLUELIGHT, 'tiny');
-    if (cfg.wtBuyShow && buySignal) char('char4', i, -107, '·', buyCircle, 'small');
-    if (cfg.wtSellShow && sellSignal) char('char5', i, 105, '·', sellCircle, 'small');
-    // offset = -2, transp = 15: wtBullDiv ? green : wtBullDiv_add ? color.new(green, 60) : rsiShowDiv ? green : na
-    if (cfg.wtDivShow && buySignalDiv) {
-      const css = wtDiv.bullSignal[i] ? String(color.new(COLOR_GREEN, 15))
-        : wtDivAdd.bullSignal[i] ? String(color.new(COLOR_GREEN, 60))
-          : cfg.rsiShowDiv ? String(color.new(COLOR_GREEN, 15)) : 'transparent';
-      char('char6', i - 2, -106, '•', css, 'small');
-    }
-    // wtBearDiv ? red : wtBearDiv_add ? color.new(red, 60) : rsiBearDiv ? red : na
-    if (cfg.wtDivShow && sellSignalDiv) {
-      const css = wtDiv.bearSignal[i] ? String(color.new(COLOR_RED, 15))
-        : wtDivAdd.bearSignal[i] ? String(color.new(COLOR_RED, 60))
-          : rsiDiv.bearSignal[i] ? String(color.new(COLOR_RED, 15)) : 'transparent';
-      char('char7', i - 2, 106, '•', css, 'small');
-    }
-    if (wtGoldBuy && cfg.wtGoldShow) char('char8', i - 2, -106, '•', gold, 'normal');
-  }
-  markers.sort((a, b) => a.time - b.time);
-
-  // MFI bar: plot(rsiMFIShow ? -95 : na) / plot(rsiMFIShow ? -99 : na) with transp 100,
-  // fill(..., title = 'MFI Bar Colors', color = rsiMFIColor, transp = 75)
-  const mfiBarTop = bars.map((b) => ({ time: b.time, value: -95 }));
-  const mfiBarBottom = bars.map((b) => ({ time: b.time, value: -99 }));
-  const mfiBarColors = rsiMFI.map((v) => String(color.new(v > 0 ? '#3ee145' : '#ff3d2e', 75)));
-  // Stochastic RSI: plot(stochShow ? stochK : na, 'Stoch K') / plot(stochShow ? stochD : na, 'Stoch D'),
-  // fill(stochKplot, stochDplot, title = 'KD Fill', color = stochK >= stochD ? #21baf3 95% : #673ab7 90%)
-  const stochKPlot = bars.map((b, i) => ({ time: b.time, value: cfg.stochShow && Number.isFinite(stochK[i]) ? stochK[i] : NaN }));
-  const stochDPlot = bars.map((b, i) => ({ time: b.time, value: cfg.stochShow && Number.isFinite(stochD[i]) ? stochD[i] : NaN }));
-  const kdColors = stochK.map((k, i) => String(k >= stochD[i] ? color.new('#21baf3', 95) : color.new('#673ab7', 90)));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'wt1': wt1Plot,
-      'wt2': wt2Plot,
-      'vwap': vwapPlot,
-      'mfiArea': mfiPlot,
-      'crossDot': crossDotPlot,
-      'crossLine': crossLinePlot,
-      'mfiBarTop': mfiBarTop,
-      'mfiBarBottom': mfiBarBottom,
-      'stochK': stochKPlot,
-      'stochD': stochDPlot,
-    },
-    fills: [
-      { plot1: 'mfiBarTop', plot2: 'mfiBarBottom', options: { title: 'MFI Bar Colors' }, colors: mfiBarColors },
-      { plot1: 'stochK', plot2: 'stochD', options: { title: 'KD Fill' }, colors: kdColors },
-    ],
-    hlines: [
-      { value: 0, options: { color: '#FFFFFF80', linestyle: 'solid' as const, title: 'Zero' } },
-      { value: obLevel, options: { color: '#FFFFFF26', linestyle: 'dashed' as const, title: 'OB1 (53)' } },
-      { value: osLevel, options: { color: '#FFFFFF26', linestyle: 'dashed' as const, title: 'OS1 (-53)' } },
-      { value: obLevel2, options: { color: '#FFFFFF15', linestyle: 'dashed' as const, title: 'OB2 (60)' } },
-      { value: osLevel2, options: { color: '#FFFFFF15', linestyle: 'dashed' as const, title: 'OS2 (-60)' } },
-      { value: obLevel3, options: { color: '#FFFFFF0A', linestyle: 'dotted' as const, title: 'OB3 (100)' } },
-      { value: osLevel3, options: { color: '#FFFFFF0A', linestyle: 'dotted' as const, title: 'OS3 (-75)' } },
-    ],
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -552,4 +642,5 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert8', title: 'Sell (Small red dot)', message: 'Sell small circle' },
 ];
 
-export const MarketCipherB = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const MarketCipherB = { calculate, createRun, metadata,
+ defaultInputs, inputConfig, plotConfig, alertConditions };

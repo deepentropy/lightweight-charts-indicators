@@ -18,9 +18,11 @@
  * Original notice: © Duyck
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -89,133 +91,185 @@ const max = (...v: number[]) => (v.some((x) => isNaN(x)) ? NaN : Math.max(...v))
 const min = (...v: number[]) => (v.some((x) => isNaN(x)) ? NaN : Math.min(...v));
 const nz = (x: number, r = 0) => (isNaN(x) ? r : x);
 
-export function calculate(bars: Bar[], inputs: Partial<SwingarmAtrTrendIndicatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
+
+interface SwingVars {
+  /** Wild_ma history (_wild[1]) */
+  wild: number;
+  trendUpPrev: number;
+  trendDownPrev: number;
+  trendPrev: number;
+  exPrev: number;
+  /** fixnan(f1) */
+  lastF1: number;
+}
+
+interface SwingRun extends BarRunState<SwingVars> {
+  rangeSma: ReturnType<typeof taStep.sma>;
+  atrSma: ReturnType<typeof taStep.sma>;
+  under: ReturnType<typeof taStep.crossunder>[];
+  over: ReturnType<typeof taStep.crossover>[];
+  fibs: number[][];
+  long: boolean[];
+  fixed: number[];
+  plots: Point[][];
+  fillColors: string[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SwingarmAtrTrendIndicatorInputs>): BarStudy<SwingRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  // security(tickerid(syminfo.prefix, syminfo.ticker), timeframe.period, x): the chart series
-  const h = bars.map((b) => b.high);
-  const l = bars.map((b) => b.low);
-  const c = bars.map((b) => b.close);
-  const at = (a: number[], i: number) => (i >= 0 ? a[i] : NaN);
-
-  // HiLo = min(h - l, 1.5 * nz(sma(h - l, ATRPeriod)))
-  const rangeSma = A(ta.sma(S(bars.map((b) => b.high - b.low)), cfg.atrPeriod));
-  const trueRange: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    if (cfg.trailType === 'modified') {
-      const hiLo = min(h[i] - l[i], 1.5 * nz(rangeSma[i]));
-      const hRef = le(l[i], at(h, i - 1)) ? h[i] - at(c, i - 1) : h[i] - at(c, i - 1) - 0.5 * (l[i] - at(h, i - 1));
-      const lRef = ge(h[i], at(l, i - 1)) ? at(c, i - 1) - l[i] : at(c, i - 1) - l[i] - 0.5 * (at(l, i - 1) - h[i]);
-      trueRange[i] = max(hiLo, hRef, lRef);
-    } else {
-      trueRange[i] = max(h[i] - l[i], Math.abs(h[i] - at(c, i - 1)), Math.abs(l[i] - at(c, i - 1)));
-    }
-  }
-
-  const trail: number[] = new Array(n);
-  const ex: number[] = new Array(n);
-  const trend: number[] = new Array(n);
-  let wild = NaN; // Wild_ma history (_wild[1])
-  let trendUpPrev = NaN;
-  let trendDownPrev = NaN;
-  let trendPrev = NaN;
-  let exPrev = NaN;
-  for (let i = 0; i < n; i++) {
-    // Wild_ma(_src, _malength): _wild := nz(_wild[1]) + (_src - nz(_wild[1])) / _malength
-    wild = nz(wild) + (trueRange[i] - nz(wild)) / cfg.atrPeriod;
-    const loss = cfg.atrFactor * wild;
-    const up = c[i] - loss;
-    const dn = c[i] + loss;
-    const cPrev = at(c, i - 1);
-    const trendUp = gt(cPrev, trendUpPrev) ? max(up, trendUpPrev) : up;
-    const trendDown = lt(cPrev, trendDownPrev) ? min(dn, trendDownPrev) : dn;
-    const t = gt(c[i], trendDownPrev) ? 1 : lt(c[i], trendUpPrev) ? -1 : nz(trendPrev, 1);
-    trail[i] = t === 1 ? trendUp : trendDown;
-    // crossover(Trend, 0) / crossunder(Trend, 0): Trend is never na
-    const crossUp = t > 0 && trendPrev <= 0;
-    const crossDown = t < 0 && trendPrev >= 0;
-    ex[i] = crossUp ? h[i] : crossDown ? l[i] : t === 1 ? max(exPrev, h[i]) : t === -1 ? min(exPrev, l[i]) : exPrev;
-    trend[i] = t;
-    trendUpPrev = trendUp;
-    trendDownPrev = trendDown;
-    trendPrev = t;
-    exPrev = ex[i];
-  }
-
-  const f1 = ex.map((e, i) => e + ((trail[i] - e) * 61.8) / 100);
-  const f2 = ex.map((e, i) => e + ((trail[i] - e) * 78.6) / 100);
-  const f3 = ex.map((e, i) => e + ((trail[i] - e) * 88.6) / 100);
-  const l100 = trail.map((v) => v + 0);
-
-  const time = (i: number) => bars[i].time;
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const plots = {
-    plot0: trail.map((v, i) => ({ time: time(i), value: fin(v), color: trend[i] === 1 ? GREEN : RED })),
-    plot1: ex.map((v, i) => ({ time: time(i), value: fin(v), color: trend[i] === 1 ? LIME : FUCHSIA })),
-    plot2: f1.map((v, i) => ({ time: time(i), value: fin(v) })),
-    plot3: f2.map((v, i) => ({ time: time(i), value: fin(v) })),
-    plot4: f3.map((v, i) => ({ time: time(i), value: fin(v) })),
-    plot5: l100.map((v, i) => ({ time: time(i), value: fin(v) })),
-  };
-
-  // state = Trend == 1 ? "long" : "short"
-  const long = trend.map((t) => t === 1);
-  const fills = [
-    { plot1: 'plot2', plot2: 'plot3', colors: long.map((s) => (s ? GREEN : RED)) },
-    { plot1: 'plot3', plot2: 'plot4', colors: long.map((s) => (s ? 'rgba(76, 175, 80, 0.3)' : 'rgba(255, 82, 82, 0.3)')) },
-    { plot1: 'plot4', plot2: 'plot5', colors: long.map((s) => (s ? 'rgba(76, 175, 80, 0.4)' : 'rgba(255, 82, 82, 0.4)')) },
-  ];
-
-  // l1 = state[1] == "long" and crossunder(norm_c, f1[1]) ...: both sides run on every bar (Pine v4)
-  const close = S(c);
-  const prevOf = (a: number[]) => S(a.map((_v, i) => at(a, i - 1)));
-  const under = [f1, f2, f3].map((f) => ta.crossunder(close, prevOf(f)).toArray());
-  const over = [f1, f2, f3].map((f) => ta.crossover(close, prevOf(f)).toArray());
-  // atr = sma(trueRange, 14)
-  const atr = A(ta.sma(S(trueRange), 14));
   const k = [1, 1.5, 2];
-  const markers: MarkerData[] = [];
-  for (let i = 1; i < n; i++) {
-    if (!cfg.showFibEntries) break;
-    // plotshape(cond ? low - k * atr : na, location.belowbar): an na or 0 value draws no shape
-    for (let j = 0; j < 3; j++) {
-      const v = l[i] - k[j] * atr[i];
-      if (long[i - 1] && under[j][i] && !isNaN(v) && v !== 0) {
-        // plotshape LS1 / LS2 / LS3: ids shape0..shape2
-        markers.push({ time: time(i), position: 'belowBar', shape: 'triangleUp', color: YELLOW, size: 'tiny', id: `shape${j}` });
-      }
-    }
-    for (let j = 0; j < 3; j++) {
-      const v = h[i] + k[j] * atr[i];
-      if (!long[i - 1] && over[j][i] && !isNaN(v) && v !== 0) {
-        // plotshape SS1 / SS2 / SS3: ids shape3..shape5
-        markers.push({ time: time(i), position: 'aboveBar', shape: 'triangleDown', color: PURPLE, size: 'tiny', id: `shape${j + 3}` });
-      }
-    }
-  }
-
-  // alertcondition(l1..l3, s1..s3): state[1] == "long" / "short" (na on the first bar) and the cross
-  const flags: boolean[][] = [];
-  for (let j = 0; j < 3; j++) flags.push(bars.map((_b, i) => i > 0 && long[i - 1] && !!under[j][i]));
-  for (let j = 0; j < 3; j++) flags.push(bars.map((_b, i) => i > 0 && !long[i - 1] && !!over[j][i]));
-  // alertcondition(fixnan(f1) != fixnan(f1[1])): na (before the first value) compares false
-  const fixed: number[] = [];
-  let lastF1 = NaN;
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(f1[i])) lastF1 = f1[i];
-    fixed.push(lastF1);
-  }
-  flags.push(fixed.map((v, i) => i > 0 && !isNaN(v) && !isNaN(fixed[i - 1]) && !(Math.abs(v - fixed[i - 1]) <= EPS)));
-
+  const fibLevels = [61.8, 78.6, 88.6];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      const rangeSma = taStep.sma();
+      const atrSma = taStep.sma();
+      const under = [0, 1, 2].map(() => taStep.crossunder());
+      const over = [0, 1, 2].map(() => taStep.crossover());
+      const s: SwingRun = {
+        rangeSma, atrSma, under, over, fibs: [[], [], []], long: [], fixed: [],
+        plots: [[], [], [], [], [], []], fillColors: [[], [], []], markers: [],
+        flags: Array.from({ length: 7 }, () => []), times: Array.from({ length: 7 }, () => []),
+        steps: [rangeSma, atrSma, ...under, ...over],
+        vars: { wild: NaN, trendUpPrev: NaN, trendDownPrev: NaN, trendPrev: NaN, exPrev: NaN, lastF1: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.fibs, s.long, s.fixed, ...s.plots, ...s.fillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time;
+      // security(tickerid(syminfo.prefix, syminfo.ticker), timeframe.period, x): the chart series
+      const h = b.high;
+      const l = b.low;
+      const c = b.close;
+      const hPrev = i > 0 ? bars[i - 1].high : NaN;
+      const lPrev = i > 0 ? bars[i - 1].low : NaN;
+      const cPrev = i > 0 ? bars[i - 1].close : NaN;
+
+      // HiLo = min(h - l, 1.5 * nz(sma(h - l, ATRPeriod)))
+      const rangeSma = s.rangeSma.step(h - l, cfg.atrPeriod);
+      let trueRange: number;
+      if (cfg.trailType === 'modified') {
+        const hiLo = min(h - l, 1.5 * nz(rangeSma));
+        const hRef = le(l, hPrev) ? h - cPrev : h - cPrev - 0.5 * (l - hPrev);
+        const lRef = ge(h, lPrev) ? cPrev - l : cPrev - l - 0.5 * (lPrev - h);
+        trueRange = max(hiLo, hRef, lRef);
+      } else {
+        trueRange = max(h - l, Math.abs(h - cPrev), Math.abs(l - cPrev));
+      }
+
+      // Wild_ma(_src, _malength): _wild := nz(_wild[1]) + (_src - nz(_wild[1])) / _malength
+      v.wild = nz(v.wild) + (trueRange - nz(v.wild)) / cfg.atrPeriod;
+      const loss = cfg.atrFactor * v.wild;
+      const up = c - loss;
+      const dn = c + loss;
+      const trendUp = gt(cPrev, v.trendUpPrev) ? max(up, v.trendUpPrev) : up;
+      const trendDown = lt(cPrev, v.trendDownPrev) ? min(dn, v.trendDownPrev) : dn;
+      const t = gt(c, v.trendDownPrev) ? 1 : lt(c, v.trendUpPrev) ? -1 : nz(v.trendPrev, 1);
+      const trail = t === 1 ? trendUp : trendDown;
+      // crossover(Trend, 0) / crossunder(Trend, 0): Trend is never na
+      const crossUp = t > 0 && v.trendPrev <= 0;
+      const crossDown = t < 0 && v.trendPrev >= 0;
+      const ex = crossUp ? h : crossDown ? l : t === 1 ? max(v.exPrev, h) : t === -1 ? min(v.exPrev, l) : v.exPrev;
+      v.trendUpPrev = trendUp;
+      v.trendDownPrev = trendDown;
+      v.trendPrev = t;
+      v.exPrev = ex;
+
+      const f = fibLevels.map((p) => ex + ((trail - ex) * p) / 100);
+      const l100 = trail + 0;
+      // state = Trend == 1 ? "long" : "short"
+      const long = t === 1;
+      s.long[i] = long;
+      const p = s.plots;
+      p[0][i] = { time, value: fin(trail), color: long ? GREEN : RED };
+      p[1][i] = { time, value: fin(ex), color: long ? LIME : FUCHSIA };
+      for (let j = 0; j < 3; j++) p[2 + j][i] = { time, value: fin(f[j]) };
+      p[5][i] = { time, value: fin(l100) };
+      s.fillColors[0][i] = long ? GREEN : RED;
+      s.fillColors[1][i] = long ? 'rgba(76, 175, 80, 0.3)' : 'rgba(255, 82, 82, 0.3)';
+      s.fillColors[2][i] = long ? 'rgba(76, 175, 80, 0.4)' : 'rgba(255, 82, 82, 0.4)';
+
+      // l1 = state[1] == "long" and crossunder(norm_c, f1[1]) ...: both sides run on every bar (Pine v4)
+      const under: boolean[] = [];
+      const over: boolean[] = [];
+      for (let j = 0; j < 3; j++) {
+        const fPrev = i > 0 ? s.fibs[j][i - 1] : NaN;
+        under.push(s.under[j].step(c, fPrev));
+        over.push(s.over[j].step(c, fPrev));
+        s.fibs[j][i] = f[j];
+      }
+      // atr = sma(trueRange, 14)
+      const atr = s.atrSma.step(trueRange, 14);
+      const longPrev = i > 0 && s.long[i - 1];
+      if (i >= 1 && cfg.showFibEntries) {
+        // plotshape(cond ? low - k * atr : na, location.belowbar): an na or 0 value draws no shape
+        for (let j = 0; j < 3; j++) {
+          const y = l - k[j] * atr;
+          if (longPrev && under[j] && !isNaN(y) && y !== 0) {
+            // plotshape LS1 / LS2 / LS3: ids shape0..shape2
+            s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: YELLOW, size: 'tiny', id: `shape${j}` });
+          }
+        }
+        for (let j = 0; j < 3; j++) {
+          const y = h + k[j] * atr;
+          if (!longPrev && over[j] && !isNaN(y) && y !== 0) {
+            // plotshape SS1 / SS2 / SS3: ids shape3..shape5
+            s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: PURPLE, size: 'tiny', id: `shape${j + 3}` });
+          }
+        }
+      }
+
+      // alertcondition(l1..l3, s1..s3): state[1] == "long" / "short" (na on the first bar) and the cross
+      const flags: boolean[] = [];
+      for (let j = 0; j < 3; j++) flags.push(i > 0 && longPrev && under[j]);
+      for (let j = 0; j < 3; j++) flags.push(i > 0 && !longPrev && over[j]);
+      // alertcondition(fixnan(f1) != fixnan(f1[1])): na (before the first value) compares false
+      if (!isNaN(f[0])) v.lastF1 = f[0];
+      const fixed = v.lastF1;
+      s.fixed[i] = fixed;
+      const fixedPrev = i > 0 ? s.fixed[i - 1] : NaN;
+      flags.push(i > 0 && !isNaN(fixed) && !isNaN(fixedPrev) && !(Math.abs(fixed - fixedPrev) <= EPS));
+      for (let j = 0; j < 7; j++) {
+        s.flags[j][i] = flags[j];
+        if (flags[j]) s.times[j].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((pl, j) => { plots[`plot${j}`] = pl.slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          { plot1: 'plot2', plot2: 'plot3', colors: s.fillColors[0].slice() },
+          { plot1: 'plot3', plot2: 'plot4', colors: s.fillColors[1].slice() },
+          { plot1: 'plot4', plot2: 'plot5', colors: s.fillColors[2].slice() },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SwingarmAtrTrendIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SwingarmAtrTrendIndicatorInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const SwingarmAtrTrendIndicator = {
@@ -225,4 +279,5 @@ export const SwingarmAtrTrendIndicator = {
   inputConfig,
   plotConfig,
   alertConditions,
+  createRun,
 };

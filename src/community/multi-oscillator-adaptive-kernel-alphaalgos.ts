@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MultiOscillatorAdaptiveKernelInputs {
   src: SourceType;
@@ -98,96 +100,140 @@ function kernelWeight(i: number, len: number, type: string): number {
   return 0.0;
 }
 
-/** smooth_value(src, len, type): kernel-weighted mean of src[0 .. min(len - 1, bar_index)] (na with an na value) */
-function smoothValue(src: number[], len: number, type: string): number[] {
-  return src.map((_v, b) => {
-    let sum = 0.0;
-    let weightSum = 0.0;
-    for (let i = 0; i <= Math.min(len - 1, b); i++) {
-      const w = kernelWeight(i, len, type);
-      sum += src[b - i] * w;
-      weightSum += w;
-    }
-    // The weight of i = 0 is 1: weightSum >= 1, the 0 test is never true
-    return weightSum === 0 ? NaN : sum / weightSum;
-  });
+type Result = IndicatorResult & { barColors: BarColorData[] };
+type Point = { time: number; value: number; color?: string };
+
+/** The weights of kernel_weight(i, len, type) for i = 0 .. len - 1 and their running sums (the order of the loop) */
+function kernel(len: number, type: string): { w: number[]; sums: number[] } {
+  const w: number[] = [];
+  const sums: number[] = [];
+  let weightSum = 0.0;
+  for (let i = 0; i <= len - 1; i++) {
+    w.push(kernelWeight(i, len, type));
+    weightSum += w[i];
+    sums.push(weightSum);
+  }
+  return { w, sums };
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MultiOscillatorAdaptiveKernelInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+/** smooth_value(src, len, type) on bar b: kernel-weighted mean of src[0 .. min(len - 1, bar_index)] (na with an na value) */
+function smoothAt(src: number[], b: number, k: { w: number[]; sums: number[] }): number {
+  const last = Math.min(k.w.length - 1, b);
+  let sum = 0.0;
+  for (let i = 0; i <= last; i++) sum += src[b - i] * k.w[i];
+  const weightSum = last >= 0 ? k.sums[last] : 0.0;
+  // The weight of i = 0 is 1: weightSum >= 1, the 0 test is never true
+  return weightSum === 0 ? NaN : sum / weightSum;
+}
+
+interface MoakRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi> | null;
+  stoch: ReturnType<typeof taStep.stoch> | null;
+  stochSma: ReturnType<typeof taStep.sma> | null;
+  mfi: ReturnType<typeof taStep.mfi> | null;
+  cci: ReturnType<typeof taStep.cci> | null;
+  rawValue: number[];
+  signal: number[];
+  signal2: number[];
+  /** plot0 .. plot21 */
+  plots: Point[][];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<MultiOscillatorAdaptiveKernelInputs>): BarStudy<MoakRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = getSourceSeries(bars, cfg.src);
-  const high = S(bars.map((b) => b.high));
-  const low = S(bars.map((b) => b.low));
-
-  // var rsi_val / stoch_val / mfi_val / cci_val = 0.0: an oscillator that is off stays 0
-  const zero = new Array(n).fill(0);
-  const rsiVal = cfg.useRsi ? A(ta.rsi(src, cfg.lenRsi)).map((r) => (r - 50) * 2) : zero;
-  const stochVal = cfg.useStoch
-    ? A(ta.sma(ta.stoch(src, high, low, cfg.lenStoch), 3)).map((k) => (k - 50) * 2) : zero;
-  const mfiVal = cfg.useMfi
-    ? A(ta.mfi(S(bars.map((b) => (b.high + b.low + b.close) / 3)), cfg.lenMfi, S(bars.map((b) => b.volume ?? NaN))))
-      .map((m) => (m - 50) * 2)
-    : zero;
-  const cciVal = cfg.useCci ? A(ta.cci(src, cfg.lenCci)).map((c) => c / 4) : zero;
+  const value = barSource(cfg.src);
   const activeCount = [cfg.useRsi, cfg.useStoch, cfg.useMfi, cfg.useCci].filter(Boolean).length;
-  const rawValue = bars.map((_b, i) => (rsiVal[i] + stochVal[i] + mfiVal[i] + cciVal[i]) / Math.max(activeCount, 1));
-
-  const signal = smoothValue(rawValue, cfg.kernelLen, cfg.kernelType);
-  const signal2 = smoothValue(signal, cfg.kernelLen * 2, cfg.kernelType);
-
-  const t = (i: number) => bars[i].time;
-  const plots: Record<string, { time: number; value: number; color?: string }[]> = {};
+  // kernelWeight(i, kernelLen) / kernelWeight(i, kernelLen * 2) are the same on every bar: computed once
+  const k1 = kernel(cfg.kernelLen, cfg.kernelType);
+  const k2 = kernel(cfg.kernelLen * 2, cfg.kernelType);
   const zeroCol = String(color.new(color.gray, 50));
-  plots.plot0 = bars.map((_b, i) => ({ time: t(i), value: 0, color: zeroCol }));
   const sigUp = String(color.new(BULL, 70));
   const sigDown = String(color.new(BEAR, 70));
-  plots.plot1 = bars.map((_b, i) => ({ time: t(i), value: signal[i], color: gt(signal[i], 0) ? sigUp : sigDown }));
-  for (let j = 0; j < 10; j++) {
-    const k = (10 - j) / 10; // 1, 0.9, ..., 0.1
-    const pc = layerColor(BULL, j + 1);
-    const nc = layerColor(BEAR, j + 1);
-    // plot(signal2 > 0 ? signal2 * k : 0) / plot(signal2 < 0 ? signal2 * k : 0)
-    plots[`plot${2 + j}`] = bars.map((_b, i) => ({
-      time: t(i), value: gt(signal2[i], 0) ? (j === 0 ? signal2[i] : signal2[i] * k) : 0, color: pc,
-    }));
-    plots[`plot${12 + j}`] = bars.map((_b, i) => ({
-      time: t(i), value: lt(signal2[i], 0) ? (j === 0 ? signal2[i] : signal2[i] * k) : 0, color: nc,
-    }));
-  }
-
-  // fill(layer k, layer k + 1 (layer 10: zero line), signal2 > 0 ? color.new(bull_color, 5 + 10 (k - 1)) : na)
-  const fills: { plot1: string; plot2: string; colors: string[] }[] = [];
-  for (const [first, base, on] of [[2, BULL, gt], [12, BEAR, lt]] as const) {
-    for (let j = 0; j < 10; j++) {
-      const c = String(color.new(base, 5 + 10 * j));
-      fills.push({
-        plot1: `plot${first + j}`, plot2: j === 9 ? 'plot0' : `plot${first + j + 1}`,
-        colors: signal2.map((v) => (on(v, 0) ? c : 'transparent')),
-      });
-    }
-  }
-
-  // barcolor(bar_coloring ? (signal2 > 0 ? bull_color : bear_color) : na)
-  const barColors: BarColorData[] = cfg.barColoring
-    ? bars.map((_b, i) => ({ time: t(i), color: gt(signal2[i], 0) ? BULL : BEAR }))
-    : [];
-
+  const pcs = Array.from({ length: 10 }, (_, j) => layerColor(BULL, j + 1));
+  const ncs = Array.from({ length: 10 }, (_, j) => layerColor(BEAR, j + 1));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    barColors,
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: MoakRun = {
+        rsi: cfg.useRsi ? taStep.rsi(cfg.lenRsi) : null,
+        stoch: cfg.useStoch ? taStep.stoch(cfg.lenStoch) : null,
+        stochSma: cfg.useStoch ? taStep.sma() : null,
+        mfi: cfg.useMfi ? taStep.mfi(cfg.lenMfi) : null,
+        cci: cfg.useCci ? taStep.cci(cfg.lenCci) : null,
+        rawValue: [], signal: [], signal2: [], plots: Array.from({ length: 22 }, () => []), barColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.stoch, s.stochSma, s.mfi, s.cci].filter((m): m is NonNullable<typeof m> => m !== null);
+      s.series = [s.rawValue, s.signal, s.signal2, ...s.plots, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const src = value(b);
+      // var rsi_val / stoch_val / mfi_val / cci_val = 0.0: an oscillator that is off stays 0
+      const rsiVal = s.rsi ? (s.rsi.step(src) - 50) * 2 : 0;
+      const stochVal = s.stoch ? (s.stochSma!.step(s.stoch.step(src, b.high, b.low), 3) - 50) * 2 : 0;
+      const mfiVal = s.mfi ? (s.mfi.step((b.high + b.low + b.close) / 3, b.volume ?? NaN) - 50) * 2 : 0;
+      const cciVal = s.cci ? s.cci.step(src) / 4 : 0;
+      s.rawValue[i] = (rsiVal + stochVal + mfiVal + cciVal) / Math.max(activeCount, 1);
+
+      const signal = smoothAt(s.rawValue, i, k1);
+      s.signal[i] = signal;
+      const signal2 = smoothAt(s.signal, i, k2);
+      s.signal2[i] = signal2;
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: 0, color: zeroCol };
+      p[1][i] = { time: t, value: signal, color: gt(signal, 0) ? sigUp : sigDown };
+      const pos = gt(signal2, 0);
+      const neg = lt(signal2, 0);
+      for (let j = 0; j < 10; j++) {
+        const k = (10 - j) / 10; // 1, 0.9, ..., 0.1
+        // plot(signal2 > 0 ? signal2 * k : 0) / plot(signal2 < 0 ? signal2 * k : 0)
+        p[2 + j][i] = { time: t, value: pos ? (j === 0 ? signal2 : signal2 * k) : 0, color: pcs[j] };
+        p[12 + j][i] = { time: t, value: neg ? (j === 0 ? signal2 : signal2 * k) : 0, color: ncs[j] };
+      }
+      // barcolor(bar_coloring ? (signal2 > 0 ? bull_color : bear_color) : na)
+      if (cfg.barColoring) s.barColors[i] = { time: t, color: pos ? BULL : BEAR };
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+      // fill(layer k, layer k + 1 (layer 10: zero line), signal2 > 0 ? color.new(bull_color, 5 + 10 (k - 1)) : na)
+      const fills: { plot1: string; plot2: string; colors: string[] }[] = [];
+      for (const [first, base, on] of [[2, BULL, gt], [12, BEAR, lt]] as const) {
+        for (let j = 0; j < 10; j++) {
+          const c = String(color.new(base, 5 + 10 * j));
+          fills.push({
+            plot1: `plot${first + j}`, plot2: j === 9 ? 'plot0' : `plot${first + j + 1}`,
+            colors: s.signal2.map((v) => (on(v, 0) ? c : 'transparent')),
+          });
+        }
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        barColors: cfg.barColoring ? s.barColors.slice() : [],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MultiOscillatorAdaptiveKernelInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MultiOscillatorAdaptiveKernelInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MultiOscillatorAdaptiveKernel = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

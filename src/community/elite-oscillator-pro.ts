@@ -18,9 +18,11 @@
  * Original notice: © 2026 Not Alpha
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EliteOscillatorProInputs {
   calcMode: 'Stochastic' | 'RSI';
@@ -181,110 +183,158 @@ const clamp = (x: number, lo: number, hi: number) => (isNaN(x) || isNaN(lo) || i
 
 type Point = { time: number; value: number; color?: string };
 
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+type Cross = ReturnType<typeof taStep.crossover>;
+
+interface EliteRun extends BarRunState<Record<string, never>> {
+  base: { step(v: number, high: number, low: number): number; commit(): void };
+  ema1: ReturnType<typeof taStep.ema>;
+  ema2: ReturnType<typeof taStep.ema>;
+  sig: ReturnType<typeof taStep.ema>;
+  crosses: Cross[];
+  plots: Point[][];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<EliteOscillatorProInputs>): BarStudy<EliteRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const { upBound, loBound, obLevel, osLevel, midLevel, bandHi, bandLo } = cfg;
+  const value = barSource(cfg.src);
+  const bgColor = String(color.new('#2a2b2e', 100));
+  const obColor = String(color.new(cfg.colBlue, 0));
+  const zones = cfg.dotMode === 'Zones';
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      // Core engine (the mode is a constant input: only one of the two calls runs, on every bar)
+      let base: EliteRun['base'];
+      if (cfg.calcMode === 'Stochastic') {
+        const m = taStep.stoch(cfg.oscLen);
+        base = { step: (v, h, l) => m.step(v, h, l), commit: () => m.commit() };
+      } else {
+        const m = taStep.rsi(cfg.oscLen);
+        base = { step: (v) => m.step(v), commit: () => m.commit() };
+      }
+      const ema1 = taStep.ema(cfg.smooth1);
+      const ema2 = taStep.ema(cfg.smooth2);
+      const sig = taStep.ema(cfg.sigLen);
+      // crossUpSignal, enterOB, enterOS, crossBandLo, crossBandHi, crossDownSignal, exitOB, exitOS
+      const crosses: Cross[] = [
+        taStep.crossover(), taStep.crossover(), taStep.crossunder(), taStep.crossover(), taStep.crossunder(),
+        taStep.crossunder(), taStep.crossunder(), taStep.crossover(),
+      ];
+      const s: EliteRun = {
+        base, ema1, ema2, sig, crosses, plots: Array.from({ length: 14 }, () => []), bgColors: [],
+        flags: Array.from({ length: 6 }, () => []), times: Array.from({ length: 6 }, () => []),
+        steps: [base, ema1, ema2, sig, ...crosses], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors, ...s.times];
+      s.series = [...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time as number;
+      const rawBase = s.base.step(value(b), b.high, b.low);
+      const raw = clamp(rawBase, loBound, upBound);
+      const oscRaw = s.ema2.step(s.ema1.step(raw));
+      const o = clamp(oscRaw, loBound, upBound);
+      const signal = clamp(s.sig.step(o), loBound, upBound);
+
+      // Crossings (oakscriptjs: exact comparisons, with the last bar where both values were not na)
+      const c = s.crosses;
+      const crossUpSignal = c[0].step(o, signal);
+      const enterOB = c[1].step(o, obLevel);
+      const enterOS = c[2].step(o, osLevel);
+      const crossBandLo = c[3].step(o, bandLo);
+      const crossBandHi = c[4].step(o, bandHi);
+      const crossDownSignal = c[5].step(o, signal);
+      const exitOB = c[6].step(o, obLevel);
+      const exitOS = c[7].step(o, osLevel);
+
+      const oscAboveMid = gt(o, midLevel);
+      const oscInOB = ge(o, obLevel);
+      const oscInOS = le(o, osLevel);
+      const oscInNeutral = ge(o, bandLo) && le(o, bandHi);
+      const enterNeutral = (crossBandLo && le(o, bandHi)) || (crossBandHi && ge(o, bandLo));
+      const bullMomentum = crossUpSignal && oscAboveMid;
+      // bearMomentum = crossDownSignal and oscBelowMid
+      const bearMomentum = crossDownSignal && lt(o, midLevel);
+      // alertcondition(enterOB / enterOS / exitOB / exitOS / orangeSig / bearMomentum)
+      const flags = [enterOB, enterOS, exitOB, exitOS, bullMomentum, bearMomentum];
+      for (let k = 0; k < 6; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t);
+      }
+
+      // bgcolor(useBlackBg ? color.new(#2a2b2e, 100) : na)
+      if (cfg.useBlackBg) s.bgColors.push({ time: t, color: bgColor });
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: upBound, color: cfg.colTeal };
+      p[1][i] = { time: t, value: loBound, color: cfg.colTeal };
+      p[2][i] = { time: t, value: obLevel, color: obColor };
+      p[3][i] = { time: t, value: osLevel, color: obColor };
+      p[4][i] = { time: t, value: midLevel, color: cfg.colMid };
+      // math.max(osc, midLevel) / math.min(osc, midLevel): na when osc is na
+      p[5][i] = { time: t, value: isNaN(o) ? NaN : Math.max(o, midLevel) };
+      p[6][i] = { time: t, value: midLevel };
+      p[7][i] = { time: t, value: midLevel };
+      p[8][i] = { time: t, value: isNaN(o) ? NaN : Math.min(o, midLevel) };
+      p[9][i] = { time: t, value: o, color: cfg.colLine };
+
+      const greenSig = zones ? oscInOB : enterOB;
+      const redSig = zones ? oscInOS : enterOS;
+      const magentaSig = zones ? oscInNeutral : enterNeutral;
+      p[10][i] = { time: t, value: cfg.showGreen && greenSig ? upBound : NaN, color: cfg.colGreen };
+      p[11][i] = { time: t, value: cfg.showRed && redSig ? loBound : NaN, color: cfg.colRed };
+      p[12][i] = { time: t, value: cfg.showOrange && bullMomentum ? bandHi : NaN, color: cfg.colOrange };
+      p[13][i] = { time: t, value: cfg.showMagenta && magentaSig ? midLevel : NaN, color: cfg.colMagenta };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((pl, k) => { plots[`plot${k}`] = pl.slice(); });
+      const fill = (c: string) => new Array<string>(n).fill(c);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 3 },
+        plots,
+        hlines: [
+          { value: bandHi, options: { title: 'Band Top 55', color: String(color.new(cfg.colMid, 65)), linestyle: 'dotted' } },
+          { value: bandLo, options: { title: 'Band Bot 45', color: String(color.new(cfg.colMid, 65)), linestyle: 'dotted' } },
+        ],
+        fills: [
+          // fill(hlHi, hlLo, color = showBand ? color.new(colMid, 93) : na)
+          { plot1: 'hline_band_top', plot2: 'hline_band_bot', options: { title: 'Neutral Band Fill' },
+            colors: fill(cfg.showBand ? String(color.new(cfg.colMid, 93)) : 'transparent') },
+          // fill(fillTop, fillBase, top_value = upBound, bottom_value = midLevel, color.new(colFill, 14), color.new(colFill, 92))
+          { plot1: 'plot5', plot2: 'plot6', options: { title: 'Hump Gradient Bull' },
+            gradient: { topValue: new Array(n).fill(upBound), bottomValue: new Array(n).fill(midLevel),
+              topColor: fill(String(color.new(cfg.colFill, 14))), bottomColor: fill(String(color.new(cfg.colFill, 92))) } },
+          // fill(fillBearTop, fillBearBase, top_value = midLevel, bottom_value = loBound, color.new(colFillBear, 92), color.new(colFillBear, 14))
+          { plot1: 'plot7', plot2: 'plot8', options: { title: 'Hump Gradient Bear' },
+            gradient: { topValue: new Array(n).fill(midLevel), bottomValue: new Array(n).fill(loBound),
+              topColor: fill(String(color.new(cfg.colFillBear, 92))), bottomColor: fill(String(color.new(cfg.colFillBear, 14))) } },
+        ],
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EliteOscillatorProInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<EliteOscillatorProInputs> = {},
 ): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const { upBound, loBound, obLevel, osLevel, midLevel, bandHi, bandLo } = cfg;
-
-  // Core engine (the mode is a constant input: only one of the two calls runs, on every bar)
-  const src = getSourceSeries(bars, cfg.src);
-  const rawBase = cfg.calcMode === 'Stochastic'
-    ? A(ta.stoch(src, S(bars.map((b) => b.high)), S(bars.map((b) => b.low)), cfg.oscLen))
-    : A(ta.rsi(src, cfg.oscLen));
-  const raw = rawBase.map((x) => clamp(x, loBound, upBound));
-  const oscRaw = A(ta.ema(ta.ema(S(raw), cfg.smooth1), cfg.smooth2));
-  const osc = oscRaw.map((x) => clamp(x, loBound, upBound));
-  const signalRaw = A(ta.ema(S(osc), cfg.sigLen));
-  const signal = signalRaw.map((x) => clamp(x, loBound, upBound));
-
-  // Crossings (oakscriptjs: exact comparisons, with the last bar where both values were not na)
-  const oscS = S(osc);
-  const B = (s: Series) => s.toArray().map((v) => Boolean(v));
-  const crossUpSignal = B(ta.crossover(oscS, S(signal)));
-  const enterOB = B(ta.crossover(oscS, obLevel));
-  const enterOS = B(ta.crossunder(oscS, osLevel));
-  const crossBandLo = B(ta.crossover(oscS, bandLo));
-  const crossBandHi = B(ta.crossunder(oscS, bandHi));
-  const crossDownSignal = B(ta.crossunder(oscS, S(signal)));
-  const exitOB = B(ta.crossunder(oscS, obLevel));
-  const exitOS = B(ta.crossover(oscS, osLevel));
-  const bullFlags: boolean[] = [];
-  const bearFlags: boolean[] = [];
-
-  const bgColor = String(color.new('#2a2b2e', 100));
-  const bgColors: BgColorData[] = [];
-  const names = Array.from({ length: 14 }, (_v, k) => `plot${k}`);
-  const plots: Record<string, Point[]> = Object.fromEntries(names.map((k) => [k, [] as Point[]]));
-  const obColor = String(color.new(cfg.colBlue, 0));
-  const zones = cfg.dotMode === 'Zones';
-
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time as number;
-    const o = osc[i];
-    const oscAboveMid = gt(o, midLevel);
-    const oscInOB = ge(o, obLevel);
-    const oscInOS = le(o, osLevel);
-    const oscInNeutral = ge(o, bandLo) && le(o, bandHi);
-    const enterNeutral = (crossBandLo[i] && le(o, bandHi)) || (crossBandHi[i] && ge(o, bandLo));
-    const bullMomentum = crossUpSignal[i] && oscAboveMid;
-    // bearMomentum = crossDownSignal and oscBelowMid
-    bullFlags.push(bullMomentum);
-    bearFlags.push(crossDownSignal[i] && lt(o, midLevel));
-
-    // bgcolor(useBlackBg ? color.new(#2a2b2e, 100) : na)
-    if (cfg.useBlackBg) bgColors.push({ time: t, color: bgColor });
-
-    plots.plot0.push({ time: t, value: upBound, color: cfg.colTeal });
-    plots.plot1.push({ time: t, value: loBound, color: cfg.colTeal });
-    plots.plot2.push({ time: t, value: obLevel, color: obColor });
-    plots.plot3.push({ time: t, value: osLevel, color: obColor });
-    plots.plot4.push({ time: t, value: midLevel, color: cfg.colMid });
-    // math.max(osc, midLevel) / math.min(osc, midLevel): na when osc is na
-    plots.plot5.push({ time: t, value: isNaN(o) ? NaN : Math.max(o, midLevel) });
-    plots.plot6.push({ time: t, value: midLevel });
-    plots.plot7.push({ time: t, value: midLevel });
-    plots.plot8.push({ time: t, value: isNaN(o) ? NaN : Math.min(o, midLevel) });
-    plots.plot9.push({ time: t, value: o, color: cfg.colLine });
-
-    const greenSig = zones ? oscInOB : enterOB[i];
-    const redSig = zones ? oscInOS : enterOS[i];
-    const magentaSig = zones ? oscInNeutral : enterNeutral;
-    plots.plot10.push({ time: t, value: cfg.showGreen && greenSig ? upBound : NaN, color: cfg.colGreen });
-    plots.plot11.push({ time: t, value: cfg.showRed && redSig ? loBound : NaN, color: cfg.colRed });
-    plots.plot12.push({ time: t, value: cfg.showOrange && bullMomentum ? bandHi : NaN, color: cfg.colOrange });
-    plots.plot13.push({ time: t, value: cfg.showMagenta && magentaSig ? midLevel : NaN, color: cfg.colMagenta });
-  }
-
-  const fill = (c: string) => new Array<string>(n).fill(c);
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay, precision: 3 },
-    plots,
-    hlines: [
-      { value: bandHi, options: { title: 'Band Top 55', color: String(color.new(cfg.colMid, 65)), linestyle: 'dotted' } },
-      { value: bandLo, options: { title: 'Band Bot 45', color: String(color.new(cfg.colMid, 65)), linestyle: 'dotted' } },
-    ],
-    fills: [
-      // fill(hlHi, hlLo, color = showBand ? color.new(colMid, 93) : na)
-      { plot1: 'hline_band_top', plot2: 'hline_band_bot', options: { title: 'Neutral Band Fill' },
-        colors: fill(cfg.showBand ? String(color.new(cfg.colMid, 93)) : 'transparent') },
-      // fill(fillTop, fillBase, top_value = upBound, bottom_value = midLevel, color.new(colFill, 14), color.new(colFill, 92))
-      { plot1: 'plot5', plot2: 'plot6', options: { title: 'Hump Gradient Bull' },
-        gradient: { topValue: new Array(n).fill(upBound), bottomValue: new Array(n).fill(midLevel),
-          topColor: fill(String(color.new(cfg.colFill, 14))), bottomColor: fill(String(color.new(cfg.colFill, 92))) } },
-      // fill(fillBearTop, fillBearBase, top_value = midLevel, bottom_value = loBound, color.new(colFillBear, 92), color.new(colFillBear, 14))
-      { plot1: 'plot7', plot2: 'plot8', options: { title: 'Hump Gradient Bear' },
-        gradient: { topValue: new Array(n).fill(midLevel), bottomValue: new Array(n).fill(loBound),
-          topColor: fill(String(color.new(cfg.colFillBear, 92))), bottomColor: fill(String(color.new(cfg.colFillBear, 14))) } },
-    ],
-    bgColors,
-    // alertcondition(enterOB / enterOS / exitOB / exitOS / orangeSig / bearMomentum)
-    alerts: alertStates(alertConditions, bars, [enterOB, enterOS, exitOB, exitOS, bullFlags, bearFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -306,4 +356,5 @@ export const EliteOscillatorPro = {
   hlineConfig,
   fillConfig,
   alertConditions,
+  createRun,
 };

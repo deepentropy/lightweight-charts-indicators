@@ -12,7 +12,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FilterWaveInputs {
   /** Number of regression values compared pair by pair */
@@ -69,71 +71,103 @@ function pineRange(a: number, b: number): number[] {
   return out;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<FilterWaveInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface FilterWaveRun extends BarRunState<Record<string, never>> {
+  linreg: ReturnType<typeof taStep.linreg>;
+  sma1: ReturnType<typeof taStep.sma>;
+  sma2: ReturnType<typeof taStep.sma>;
+  sma3: ReturnType<typeof taStep.sma>;
+  atr: ReturnType<typeof taStep.atr>;
+  lr: number[];
+  wave: Point[];
+  floor: Point[];
+  fill: string[];
+}
+
+function study(inputs: Partial<FilterWaveInputs>): BarStudy<FilterWaveRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { n, p } = cfg;
-  const len = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const lr = A(ta.linreg(getSourceSeries(bars, cfg.src), cfg.lrLen, 0));
-  const lrAt = (bar: number, k: number) => {
-    if (k < 0) throw new Error(`Invalid number of bars back: ${k}`);
-    return bar - k >= 0 ? lr[bar - k] : NaN;
-  };
-
+  const value = barSource(cfg.src);
   // total_pairs = (n * (n - 1)) / 2 and p / 100 are fractional divisions in Pine v6
   const totalPairs = (n * (n - 1)) / 2;
   const threshold = totalPairs * (p / 100);
-  const iRange = pineRange(0, n - 2);
-  const state: number[] = new Array(len);
-  const intensity: number[] = new Array(len);
-  for (let b = 0; b < len; b++) {
-    let trend = 0;
-    for (const i of iRange) {
-      for (const j of pineRange(i + 1, n - 1)) {
-        const a = lrAt(b, i);
-        const c = lrAt(b, j);
+  // the (i, j) pairs of the two loops, in their order
+  const pairs: number[] = [];
+  for (const i of pineRange(0, n - 2)) for (const j of pineRange(i + 1, n - 1)) pairs.push(i, j);
+  const finite = (v: number) => (Number.isFinite(v) ? v : NaN);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const linreg = taStep.linreg(cfg.lrLen, 0);
+      const sma1 = taStep.sma();
+      const sma2 = taStep.sma();
+      const sma3 = taStep.sma();
+      const atr = taStep.atr(14);
+      const s: FilterWaveRun = {
+        linreg, sma1, sma2, sma3, atr, lr: [], wave: [], floor: [], fill: [],
+        steps: [linreg, sma1, sma2, sma3, atr], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.lr, s.wave, s.floor, s.fill];
+      return s;
+    },
+    bar(s, b, bars) {
+      const bar = bars[b];
+      const { lr } = s;
+      lr[b] = s.linreg.step(value(bar));
+      const lrAt = (k: number) => {
+        if (k < 0) throw new Error(`Invalid number of bars back: ${k}`);
+        return b - k >= 0 ? lr[b - k] : NaN;
+      };
+      let trend = 0;
+      for (let q = 0; q < pairs.length; q += 2) {
+        const a = lrAt(pairs[q]);
+        const c = lrAt(pairs[q + 1]);
         trend += gt(a, c) ? 1 : lt(a, c) ? -1 : 0;
       }
-    }
-    state[b] = gt(trend, threshold) ? 1 : lt(trend, -threshold) ? -1 : 0;
-    intensity[b] = Math.abs(trend) / totalPairs;
-  }
+      const state = gt(trend, threshold) ? 1 : lt(trend, -threshold) ? -1 : 0;
+      const intensity = Math.abs(trend) / totalPairs;
 
-  const smooth1 = A(ta.sma(S(intensity), 3));
-  const smooth2 = A(ta.sma(S(smooth1), 3));
-  const smooth3 = A(ta.sma(S(smooth2), 3));
-  const atr = A(ta.atr(bars, 14));
+      const smooth1 = s.sma1.step(intensity, 3);
+      const smooth2 = s.sma2.step(smooth1, 3);
+      const smooth3 = s.sma3.step(smooth2, 3);
+      const atr = s.atr.step(bar.high, bar.low, bar.close);
 
-  const waveColor = (i: number) => {
-    // alpha = 90 - int(intensity * 70)
-    const alpha = 90 - Math.trunc(intensity[i] * 70);
-    return state[i] === 1 ? color.new(cfg.colBull, alpha)
-      : state[i] === -1 ? color.new(cfg.colBear, alpha)
-        : color.new(color.gray, 80);
-  };
-  const finite = (v: number) => (Number.isFinite(v) ? v : NaN);
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
+      // alpha = 90 - int(intensity * 70)
+      const alpha = 90 - Math.trunc(intensity * 70);
+      const waveColor = state === 1 ? color.new(cfg.colBull, alpha)
+        : state === -1 ? color.new(cfg.colBear, alpha)
+          : color.new(color.gray, 80);
       // wave = close + smooth3 * ta.atr(14) * 0.5
-      plot0: bars.map((b, i) => ({
-        time: b.time, value: finite(b.close + smooth3[i] * atr[i] * 0.5), color: String(waveColor(i)),
-      })),
+      s.wave[b] = { time: bar.time, value: finite(bar.close + smooth3 * atr * 0.5), color: String(waveColor) };
       // wave_floor = close + smooth3 * ta.atr(14) * 0.1, colour color.new(wave_color, 90)
-      plot1: bars.map((b, i) => ({
-        time: b.time, value: finite(b.close + smooth3[i] * atr[i] * 0.1), color: String(color.new(waveColor(i), 90)),
-      })),
+      s.floor[b] = { time: bar.time, value: finite(bar.close + smooth3 * atr * 0.1), color: String(color.new(waveColor, 90)) };
+      // fill(p1, p2, color.new(wave_color, 85))
+      s.fill[b] = String(color.new(waveColor, 85));
     },
-    // fill(p1, p2, color.new(wave_color, 85))
-    fills: [{ plot1: 'plot0', plot2: 'plot1', colors: bars.map((_b, i) => String(color.new(waveColor(i), 85))) }],
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.wave.slice(), plot1: s.floor.slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', colors: s.fill.slice() }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FilterWaveInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FilterWaveInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const FilterWave = {
   calculate,
+  createRun,
+
   metadata,
   defaultInputs,
   inputConfig,

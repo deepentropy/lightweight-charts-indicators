@@ -23,10 +23,11 @@
  * Reference: "Renko Chart" by LonesomeTheBlue
  */
 
-import { ta, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, PlotCandleData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
 import { mintickOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type RenkoColorTheme = 'Green/Red' | 'Yellow/Blue' | 'White/Yellow' | 'Orange/Blue' | 'Lime/Red' | 'Blue/Red';
 
@@ -166,137 +167,72 @@ function themeColors(theme: RenkoColorTheme): [string, string] {
   return [up, down];
 }
 
-export function calculate(bars: Bar[], inputs: Partial<RenkoChartInputs> = {}, chart?: ChartContext): RenkoChartResult {
+type Point = { time: number; value: number; color?: string };
+
+interface RenkoRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  // Renko brick state (values at the end of each bar)
+  trend: number[];
+  iopenprice: number[];
+  icloseprice: number[];
+  beginprice: number[];
+  boxArr: number[];
+  oprice: number[];
+  // breakout
+  botrend: number[];
+  switchArr: number[];
+  // main trend
+  trcnt1: number[];
+  countch: number[];
+  obox: number[];
+  em: number[];
+  mtrend: number[];
+  trendUp: number[];
+  trendDown: number[];
+  waitit: number[];
+  tsl: number[];
+  // outputs
+  openPlot: Point[];
+  closePlot: Point[];
+  fillColors: string[];
+  breakoutPlot: Point[];
+  trendPlot: Point[];
+  tsl2Plot: Point[];
+  thresholdFillColors: string[];
+  thresholdPlot: Point[];
+  trendChangePlot: Point[];
+  renkoCandles: PlotCandleData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RenkoChartInputs>): BarStudy<RenkoRun, RenkoChartResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const reversal = 2;
-  const mintick = mintickOf(chart);
   const atrMode = cfg.mode === 'ATR';
-
-  // atrboxsize = conv_atr(atr(modevalue))
-  const atrArr = ta.atr(bars, cfg.atrPeriod).toArray().map((v) => v ?? NaN);
-
-  // Renko brick state arrays (values at the end of each bar)
-  const trend: number[] = new Array(n).fill(0);
-  const iopenprice: number[] = new Array(n).fill(0);
-  const icloseprice: number[] = new Array(n).fill(0);
-  const beginprice: number[] = new Array(n).fill(0);
-  const boxArr: number[] = new Array(n).fill(0);
-
-  for (let i = 0; i < n; i++) {
-    const atrBoxSize = convAtr(atrArr[i], mintick);
-    // box := na(box[1]) ? (mode == 'ATR' ? atrboxsize : boxsize) : box[1]
-    let box = i === 0 ? (atrMode ? atrBoxSize : cfg.boxSize) : boxArr[i - 1];
-    // trend := barstate.isfirst ? 0 : nz(trend[1]); beginprice := barstate.isfirst ? floor(open / box) * box : ...
-    let tr = i === 0 ? 0 : trend[i - 1];
-    let bp = i === 0 ? Math.floor(bars[i].open / box) * box : beginprice[i - 1];
-    const prevIopen = i > 0 ? iopenprice[i - 1] : 0;
-    const prevIclose = i > 0 ? icloseprice[i - 1] : 0;
-    let iop = 0;
-    let icp = 0;
-
-    const currentprice = cfg.source === 'close' ? bars[i].close : (tr === 1 ? bars[i].high : bars[i].low);
-    if (tr === 0 && box * reversal <= Math.abs(bp - currentprice)) {
-      if (bp > currentprice) {
-        const numcell = Math.floor(Math.abs(bp - currentprice) / box);
-        iop = bp;
-        icp = bp - numcell * box;
-        tr = -1;
-      }
-      if (bp < currentprice) {
-        const numcell = Math.floor(Math.abs(bp - currentprice) / box);
-        iop = bp;
-        icp = bp + numcell * box;
-        tr = 1;
-      }
-    }
-
-    if (tr === -1) {
-      let nok = true;
-      if (bp > currentprice && box <= Math.abs(bp - currentprice)) {
-        const numcell = Math.floor(Math.abs(bp - currentprice) / box);
-        icp = bp - numcell * box;
-        tr = -1;
-        bp = icp;
-        nok = false;
-      } else {
-        iop = iop === 0 ? prevIopen : iop;
-        icp = icp === 0 ? prevIclose : icp;
-      }
-
-      const tempcurrentprice = cfg.source === 'close' ? bars[i].close : bars[i].high;
-      if (bp < tempcurrentprice && box * reversal <= Math.abs(bp - tempcurrentprice) && nok) {
-        const numcell = Math.floor(Math.abs(bp - tempcurrentprice) / box);
-        iop = bp + box;
-        icp = bp + numcell * box;
-        tr = 1;
-        bp = icp;
-      } else {
-        iop = iop === 0 ? prevIopen : iop;
-        icp = icp === 0 ? prevIclose : icp;
-      }
-    } else if (tr === 1) {
-      let nok = true;
-      if (bp < currentprice && box <= Math.abs(bp - currentprice)) {
-        const numcell = Math.floor(Math.abs(bp - currentprice) / box);
-        icp = bp + numcell * box;
-        tr = 1;
-        bp = icp;
-        nok = false;
-      } else {
-        iop = iop === 0 ? prevIopen : iop;
-        icp = icp === 0 ? prevIclose : icp;
-      }
-
-      const tempcurrentprice = cfg.source === 'close' ? bars[i].close : bars[i].low;
-      if (bp > tempcurrentprice && box * reversal <= Math.abs(bp - tempcurrentprice) && nok) {
-        const numcell = Math.floor(Math.abs(bp - tempcurrentprice) / box);
-        iop = bp - box;
-        icp = bp - numcell * box;
-        tr = -1;
-        bp = icp;
-      } else {
-        iop = iop === 0 ? prevIopen : iop;
-        icp = icp === 0 ? prevIclose : icp;
-      }
-    }
-
-    // Recalculate box size if icloseprice changed
-    // box := change(icloseprice) ? (mode == 'ATR' ? atrboxsize : boxsize) : box
-    if (i > 0 && icp !== prevIclose) {
-      box = atrMode ? atrBoxSize : cfg.boxSize;
-    }
-
-    trend[i] = tr;
-    iopenprice[i] = iop;
-    icloseprice[i] = icp;
-    beginprice[i] = bp;
-    boxArr[i] = box;
-  }
-
-  // Compute oprice (open price for area display)
-  const oprice: number[] = new Array(n).fill(0);
-  for (let i = 0; i < n; i++) {
-    const prevTrend = i > 0 ? trend[i - 1] : 0;
-    const prevIclose = i > 0 ? icloseprice[i - 1] : 0;
-    const prevBox = i > 0 ? boxArr[i - 1] : 0; // nz(box[1])
-
-    let op: number;
-    if (trend[i] === 1) {
-      op = prevTrend === 1 ? prevIclose - prevBox : prevIclose + prevBox;
-    } else if (trend[i] === -1) {
-      op = prevTrend === -1 ? prevIclose + prevBox : prevIclose - prevBox;
-    } else {
-      op = prevIclose;
-    }
-    oprice[i] = Math.max(op, 0);
-  }
+  let mintick = 0.01;
+  const L = cfg.breakoutLength;
+  const temaLen = cfg.trendEmaLength;
+  const thsreversal = cfg.trendThreshold;
+  const thsreversal2 = cfg.trendThresholdReversal;
+  const [upColor, downColor] = themeColors(cfg.colorTheme);
+  const areaOn = (cfg.showStyle ?? 'Area') === 'Area';
+  const candleOn = cfg.showStyle === 'Candle';
+  // Main trend (the original's "Trend" block): na is NaN; a series used as a condition is true when it is not na and
+  // not 0.
+  const nz = (v: number, d = 0) => (Number.isNaN(v) ? d : v);
+  const truthy = (v: number) => !Number.isNaN(v) && v !== 0;
+  const pmax = (x: number, y: number) => (Number.isNaN(x) || Number.isNaN(y) ? NaN : Math.max(x, y));
+  const pmin = (x: number, y: number) => (Number.isNaN(x) || Number.isNaN(y) ? NaN : Math.min(x, y));
+  /** Pine `a != b`: false when either is na */
+  const ne = (a: number, b: number) => !Number.isNaN(a) && !Number.isNaN(b) && a !== b;
 
   // Breakout (the original's f_Brickhigh / f_Bricklow): from an up (down) column whose bricks are fewer than Length,
   // count back the bricks of the earlier columns (history [x + 1]) until Length is reached; false at the start of the
   // history or when an earlier column of the same trend closed beyond the current close.
-  const L = cfg.breakoutLength;
-  const brickHigh = (i: number): boolean => {
+  const brickHigh = (s: RenkoRun, i: number): boolean => {
+    const { trend, icloseprice, iopenprice, boxArr } = s;
     if (trend[i] !== 1) return false;
     const box = boxArr[i];
     const icp = icloseprice[i];
@@ -325,7 +261,8 @@ export function calculate(bars: Bar[], inputs: Partial<RenkoChartInputs> = {}, c
     }
     return ret;
   };
-  const brickLow = (i: number): boolean => {
+  const brickLow = (s: RenkoRun, i: number): boolean => {
+    const { trend, icloseprice, iopenprice, boxArr } = s;
     if (trend[i] !== -1) return false;
     const box = boxArr[i];
     const icp = icloseprice[i];
@@ -355,51 +292,8 @@ export function calculate(bars: Bar[], inputs: Partial<RenkoChartInputs> = {}, c
     return ret;
   };
 
-  // switch / setA / setB / botrend (switch[1] na on the first bar: neither start)
-  const botrend: number[] = new Array(n).fill(0);
-  const switchArr: number[] = new Array(n).fill(0);
-  const setAFlags: boolean[] = new Array(n).fill(false);
-  const setBFlags: boolean[] = new Array(n).fill(false);
-  for (let i = 0; i < n; i++) {
-    const bh = brickHigh(i);
-    const bl = brickLow(i);
-    const prevSw = i > 0 ? switchArr[i - 1] : NaN;
-    let setA = 0, setB = 0;
-    if (bh && prevSw === 0) {
-      switchArr[i] = 1;
-      setA = 1;
-    } else if (bl && prevSw === 1) {
-      switchArr[i] = 0;
-      setB = 1;
-    } else {
-      switchArr[i] = Number.isNaN(prevSw) ? 0 : prevSw;
-    }
-    botrend[i] = setA === 1 ? 1 : setB === 1 ? -1 : (i > 0 ? botrend[i - 1] : 0);
-    setAFlags[i] = setA === 1;
-    setBFlags[i] = setB === 1;
-  }
-
-  // Main trend (the original's "Trend" block): brick EMA (myema) rounded to the brick grid, TrendUp / TrendDown
-  // ratchets, whipsaw wait. na is NaN; a series used as a condition is true when it is not na and not 0.
-  const nz = (v: number, d = 0) => (Number.isNaN(v) ? d : v);
-  const truthy = (v: number) => !Number.isNaN(v) && v !== 0;
-  const chgIcp = (i: number) => (i > 0 ? icloseprice[i] - icloseprice[i - 1] : NaN);
-  const chgTrend = (i: number) => (i > 0 ? trend[i] - trend[i - 1] : NaN);
-  const temaLen = cfg.trendEmaLength;
-  const thsreversal = cfg.trendThreshold;
-  const thsreversal2 = cfg.trendThresholdReversal;
-
-  const trcnt1: number[] = new Array(n).fill(0);
-  const countch: number[] = new Array(n).fill(0);
-  const obox: number[] = new Array(n).fill(0);
-  const em: number[] = new Array(n).fill(NaN);
-  const mtrend: number[] = new Array(n).fill(1);
-  const trendUp: number[] = new Array(n).fill(NaN);
-  const trendDown: number[] = new Array(n).fill(NaN);
-  const waitit: number[] = new Array(n).fill(0);
-
   // mysma(ser, len): the mean of the last `len` distinct consecutive brick closes (na when fewer)
-  const mysma = (i: number, len: number): number => {
+  const mysma = (icloseprice: number[], i: number, len: number): number => {
     let sum = icloseprice[i];
     let nn = 1;
     if (len > 1) {
@@ -416,216 +310,353 @@ export function calculate(bars: Bar[], inputs: Partial<RenkoChartInputs> = {}, c
     }
     return nn === len ? sum / len : NaN;
   };
-  const pmax = (x: number, y: number) => (Number.isNaN(x) || Number.isNaN(y) ? NaN : Math.max(x, y));
-  const pmin = (x: number, y: number) => (Number.isNaN(x) || Number.isNaN(y) ? NaN : Math.min(x, y));
-
-  for (let i = 0; i < n; i++) {
-    const icp = icloseprice[i];
-    const box = boxArr[i];
-    const cIcp = truthy(chgIcp(i));
-    trcnt1[i] = Math.min(cIcp ? 1 : nz(i > 0 ? trcnt1[i - 1] : NaN) + 1, 4000);
-    countch[i] = cIcp ? nz(i > 0 ? countch[i - 1] : NaN) + 1 : nz(i > 0 ? countch[i - 1] : NaN);
-    // trch = false; trch := change(trend) and change(icloseprice) ? true : ... : nz(trch, false) (the fresh false)
-    const trch = truthy(chgTrend(i)) && cIcp;
-    // obox := change(icloseprice) != 0 ? nz(box[1]) : nz(obox[1])
-    obox[i] = cIcp ? nz(boxArr[i - 1]) : nz(i > 0 ? obox[i - 1] : NaN);
-
-    // myema(icloseprice, tremalen, trcnt1, obox)
-    let e = NaN;
-    if (countch[i] <= temaLen) e = mysma(i, temaLen);
-    const tc = trcnt1[i];
-    const serBack = i - tc >= 0 ? icloseprice[i - tc] : NaN;
-    if (countch[i] > temaLen && !Number.isNaN(serBack) && icp !== nz(serBack)) {
-      const alpha = 2 / (temaLen + 1);
-      const bb = icp > nz(serBack) ? 1 : -1;
-      const kats = trch ? reversal : 1;
-      let st = nz(serBack) + bb * obox[i] * kats;
-      e = alpha * st + (1 - alpha) * nz(i - tc >= 0 ? em[i - tc] : NaN);
-      st += bb * obox[i];
-      for (let x = 0; x <= 4000; x++) {
-        if ((st > icp && bb > 0) || (st < icp && bb < 0)) break;
-        e = alpha * st + (1 - alpha) * nz(e);
-        st += bb * obox[i];
-      }
-    }
-    if (Number.isNaN(e)) e = i > 0 ? em[i - 1] : NaN;
-    em[i] = e;
-    // tema := icloseprice - floor((icloseprice - tmp) / obox) * obox (a division by 0 is na)
-    const tema = obox[i] === 0 ? NaN : icp - Math.floor((icp - e) / obox[i]) * obox[i];
-
-    let upt = tema - thsreversal * box;
-    if (upt > icp - reversal * box) upt = icp - reversal * box;
-    let dnt = tema + thsreversal * box;
-    if (dnt < icp + reversal * box) dnt = icp + reversal * box;
-
-    const prevUp = i > 0 ? trendUp[i - 1] : NaN;
-    const prevDn = i > 0 ? trendDown[i - 1] : NaN;
-    const prevIcp = i > 0 ? icloseprice[i - 1] : NaN;
-    const prevMt = i > 0 ? mtrend[i - 1] : NaN;
-
-    // waitit := nz(waitit[1]); mtrend := nz(mtrend[1], 1)
-    let wi = nz(i > 0 ? waitit[i - 1] : NaN);
-    let mt = nz(prevMt, 1);
-    let up = cIcp && wi === 0 ? (prevIcp > prevUp ? pmax(upt, prevUp) : upt) : nz(prevUp);
-    if (mt === 1 && up - prevUp < 0) up = nz(prevUp);
-    let dn = cIcp && wi === 0 ? (prevIcp < prevDn ? pmin(dnt, prevDn) : dnt) : prevDn;
-    if (mt === -1 && dn - prevDn > 0) dn = nz(prevDn);
-
-    mt = wi === 0 ? (icp > prevDn ? 1 : icp < prevUp ? -1 : mt) : mt;
-
-    const chM = mt - prevMt;
-    if (!Number.isNaN(chM) && chM !== 0 && wi === 0 && nz(i >= 2 ? waitit[i - 2] : NaN) === 0) wi = 1;
-    else wi = wi !== 0 ? wi + 1 : wi;
-
-    if (wi > 0) mt = nz(prevMt);
-
-    if (wi > cfg.barcountWhip) {
-      if (mt === 1) {
-        if (icp >= up + thsreversal2 * box) wi = 0;
-        if (icp <= up - thsreversal2 * box) {
-          wi = 0;
-          mt = -1;
-          dn = prevIcp < prevDn ? pmin(dnt, prevDn) : dnt;
-        }
-      } else {
-        if (icp <= dn - thsreversal2 * box) wi = 0;
-        if (icp >= dn + thsreversal2 * box) {
-          wi = 0;
-          mt = 1;
-          up = prevIcp > prevUp ? pmax(upt, prevUp) : upt;
-        }
-      }
-    }
-
-    trendUp[i] = up;
-    trendDown[i] = dn;
-    mtrend[i] = mt;
-    waitit[i] = wi;
-  }
-
-  // ---- Output ----
-  const [upColor, downColor] = themeColors(cfg.colorTheme);
-  const trendColor = (i: number) => (trend[i] === 1 ? upColor : downColor);
-  const areaOn = (cfg.showStyle ?? 'Area') === 'Area';
-  const candleOn = cfg.showStyle === 'Candle';
-  /** Pine `a != b`: false when either is na */
-  const ne = (a: number, b: number) => !Number.isNaN(a) && !Number.isNaN(b) && a !== b;
-
-  // openline = plot(showstyle == 'Area' and oprice > 0 ? oprice : na, color = oprice < 0 or oprice[1] < 0 ? na : gray)
-  // (oprice is never below 0)
-  const openPlot = oprice.map((v, i) => ({ time: bars[i].time, value: areaOn && v > 0 ? v : NaN, color: GRAY }));
-  // closeline = plot(showstyle == 'Area' and icloseprice > 0 ? icloseprice : na,
-  //   color = icloseprice <= 0 or icloseprice[1] <= 0 ? na : gray)
-  const closePlot = icloseprice.map((v, i) => ({
-    time: bars[i].time,
-    value: areaOn && v > 0 ? v : NaN,
-    color: v <= 0 || (i > 0 && icloseprice[i - 1] <= 0) ? TRANSPARENT : GRAY,
-  }));
-  // fill(openline, closeline, color = oprice <= 0 and icloseprice <= 0 ? na : trend == 1 ? upcolor : downcolor, transp = 70)
-  const fillColors = bars.map((_b, i) => (oprice[i] <= 0 && icloseprice[i] <= 0 ? TRANSPARENT : String(color.new(trendColor(i), 70))));
-
-  // boline = showbreakout ? botrend == 1 ? (trend == 1 ? icloseprice : oprice) : (trend == 1 ? oprice : icloseprice) : na,
-  // color = showbreakout ? botrend == 1 ? lime : botrend == -1 ? red : na : na
-  const breakoutPlot = bars.map((b, i) => {
-    if (!cfg.showBreakout) return { time: b.time, value: NaN };
-    const val = botrend[i] === 1
-      ? (trend[i] === 1 ? icloseprice[i] : oprice[i])
-      : (trend[i] === 1 ? oprice[i] : icloseprice[i]);
-    return { time: b.time, value: val, color: botrend[i] === 1 ? LIME : botrend[i] === -1 ? RED : TRANSPARENT };
-  });
-
-  // Tsl = mtrend == 1 ? TrendUp : TrendDown; trendline = plot(Tsl, linewidth = 3,
-  //   color = showtrend and Tsl != 0 and nz(Tsl[1]) != 0 ? trendcol : na)
-  const tsl = mtrend.map((mt, i) => (mt === 1 ? trendUp[i] : trendDown[i]));
-  const tslOn = (i: number) => ne(tsl[i], 0) && nz(i > 0 ? tsl[i - 1] : NaN) !== 0;
-  const prevMtOf = (i: number) => nz(i > 0 ? mtrend[i - 1] : NaN);
-  const trendPlot = tsl.map((v, i) => {
-    // trendcol = mtrend == 1 and nz(mtrend[1]) == 1 ? (waitit == 0 ? green : silver)
-    //   : mtrend == -1 and nz(mtrend[1]) == -1 ? (waitit == 0 ? red : silver) : na
-    const pm = prevMtOf(i);
-    const trendcol = mtrend[i] === 1 && pm === 1 ? (waitit[i] === 0 ? GREEN : SILVER)
-      : mtrend[i] === -1 && pm === -1 ? (waitit[i] === 0 ? RED : SILVER) : TRANSPARENT;
-    return { time: bars[i].time, value: v, color: cfg.showTrend && tslOn(i) ? trendcol : TRANSPARENT };
-  });
-
-  // Tsl2 = mtrend == 1 ? TrendUp + thsreversal * box : TrendDown - thsreversal * box, at most / least the brick close,
-  // at least 0; trline = plot(Tsl2, style = circles, color = na)
-  const tsl2Plot = mtrend.map((mt, i) => {
-    let t2 = mt === 1 ? trendUp[i] + thsreversal * boxArr[i] : trendDown[i] - thsreversal * boxArr[i];
-    if ((mt === 1 && t2 > icloseprice[i]) || (mt === -1 && t2 < icloseprice[i])) t2 = icloseprice[i];
-    if (t2 < 0) t2 = 0;
-    return { time: bars[i].time, value: t2, color: TRANSPARENT };
-  });
-
-  // fill(trendline, trline, color = trcol): trcol = showtrend and showtrhold and mtrend == nz(mtrend[1]) and Tsl != 0
-  //   and nz(Tsl[1]) != 0 ? (waitit == 0 ? (mtrend == 1 ? lime 80 : red 80) : yellow 80) : white 100
-  const thresholdFillColors = mtrend.map((mt, i) => {
-    if (!(cfg.showTrend && cfg.showThreshold && mt === prevMtOf(i) && tslOn(i))) return String(color.new(WHITE, 100));
-    return String(color.new(waitit[i] === 0 ? (mt === 1 ? LIME : RED) : YELLOW, 80));
-  });
-
-  // plot(waitit > barcountwhip ? (mtrend == 1 ? TrendUp - thsreversal2 * box : TrendDown + thsreversal2 * box) : na,
-  //   color = maroon, style = circles)
-  const thresholdPlot = mtrend.map((mt, i) => ({
-    time: bars[i].time,
-    value: waitit[i] > cfg.barcountWhip
-      ? (mt === 1 ? trendUp[i] - thsreversal2 * boxArr[i] : trendDown[i] + thsreversal2 * boxArr[i]) : NaN,
-    color: MAROON,
-  }));
-
-  // plotcandle(showstyle == 'Candle' ? oprice : na, max(oprice, icloseprice), min(oprice, icloseprice), icloseprice,
-  //   title = 'Renko Candles', color = trend == 1 ? upcolor : downcolor)
-  const renkoCandles: PlotCandleData[] = bars.map((b, i) => {
-    const o = oprice[i];
-    const c = icloseprice[i];
-    return {
-      time: b.time as number,
-      open: candleOn ? o : NaN,
-      high: candleOn ? Math.max(o, c) : NaN,
-      low: candleOn ? Math.min(o, c) : NaN,
-      close: candleOn ? c : NaN,
-      color: trendColor(i),
-    };
-  });
-
-  // alertcondition(setA == 1), (setB == 1), (change(mtrend) > 0), (change(mtrend) < 0), (change(trend) > 0),
-  // (change(trend) < 0)
-  const chg = (a: number[], sign: number) => a.map((v, i) => i > 0 && (v - a[i - 1]) * sign > 0);
-
-  // barcolor(changebarcol ? trend == 1 ? upcolor : downcolor : na)
-  const barColors: BarColorData[] = cfg.changeBarCol
-    ? bars.map((b, i) => ({ id: 'barcolor0', time: b.time, color: trendColor(i) }))
-    : [];
-
-  // plot(change(mtrend) > 0 and showtrend or change(mtrend) < 0 and showtrend ? Tsl : na, linewidth = 6,
-  //   color = change(mtrend) > 0 and showtrend ? color.green : color.red, style = plot.style_circles)
-  const trendChangePlot = tsl.map((v, i) => {
-    const ch = i > 0 ? mtrend[i] - mtrend[i - 1] : NaN;
-    const on = cfg.showTrend && (ch > 0 || ch < 0);
-    return { time: bars[i].time, value: on ? v : NaN, color: ch > 0 && cfg.showTrend ? GREEN : RED };
-  });
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'renkoOpen': openPlot,
-      'renkoClose': closePlot,
-      'breakoutLine': breakoutPlot,
-      'trendLine': trendPlot,
-      'tsl2': tsl2Plot,
-      'threshold': thresholdPlot,
-      'trendChange': trendChangePlot,
+    init(_bars, chart) {
+      mintick = mintickOf(chart);
+      const atr = taStep.atr(cfg.atrPeriod);
+      const s: RenkoRun = {
+        atr,
+        trend: [], iopenprice: [], icloseprice: [], beginprice: [], boxArr: [], oprice: [], botrend: [], switchArr: [],
+        trcnt1: [], countch: [], obox: [], em: [], mtrend: [], trendUp: [], trendDown: [], waitit: [], tsl: [],
+        openPlot: [], closePlot: [], fillColors: [], breakoutPlot: [], trendPlot: [], tsl2Plot: [],
+        thresholdFillColors: [], thresholdPlot: [], trendChangePlot: [], renkoCandles: [], barColors: [],
+        flags: Array.from({ length: 6 }, () => []), times: Array.from({ length: 6 }, () => []),
+        steps: [atr], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [
+        s.trend, s.iopenprice, s.icloseprice, s.beginprice, s.boxArr, s.oprice, s.botrend, s.switchArr, s.trcnt1,
+        s.countch, s.obox, s.em, s.mtrend, s.trendUp, s.trendDown, s.waitit, s.tsl, s.openPlot, s.closePlot,
+        s.fillColors, s.breakoutPlot, s.trendPlot, s.tsl2Plot, s.thresholdFillColors, s.thresholdPlot,
+        s.trendChangePlot, s.renkoCandles, s.barColors, ...s.flags,
+      ];
+      return s;
     },
-    fills: [
-      { plot1: 'renkoOpen', plot2: 'renkoClose', options: { color: String(color.new(upColor, 70)) }, colors: fillColors },
-      { plot1: 'trendLine', plot2: 'tsl2', options: { color: String(color.new(LIME, 80)) }, colors: thresholdFillColors },
-    ],
-    barColors,
-    plotCandles: { renkoCandles },
-    alerts: alertStates(alertConditions, bars, [
-      setAFlags, setBFlags, chg(mtrend, 1), chg(mtrend, -1), chg(trend, 1), chg(trend, -1),
-    ]),
-  } as RenkoChartResult;
+    bar(s, i, bars) {
+      const { trend, iopenprice, icloseprice, beginprice, boxArr } = s;
+      const bar = bars[i];
+      // atrboxsize = conv_atr(atr(modevalue))
+      const atrBoxSize = convAtr(s.atr.step(bar.high, bar.low, bar.close), mintick);
+      // box := na(box[1]) ? (mode == 'ATR' ? atrboxsize : boxsize) : box[1]
+      let box = i === 0 ? (atrMode ? atrBoxSize : cfg.boxSize) : boxArr[i - 1];
+      // trend := barstate.isfirst ? 0 : nz(trend[1]); beginprice := barstate.isfirst ? floor(open / box) * box : ...
+      let tr = i === 0 ? 0 : trend[i - 1];
+      let bp = i === 0 ? Math.floor(bar.open / box) * box : beginprice[i - 1];
+      const prevIopen = i > 0 ? iopenprice[i - 1] : 0;
+      const prevIclose = i > 0 ? icloseprice[i - 1] : 0;
+      let iop = 0;
+      let icp = 0;
+
+      const currentprice = cfg.source === 'close' ? bar.close : (tr === 1 ? bar.high : bar.low);
+      if (tr === 0 && box * reversal <= Math.abs(bp - currentprice)) {
+        if (bp > currentprice) {
+          const numcell = Math.floor(Math.abs(bp - currentprice) / box);
+          iop = bp;
+          icp = bp - numcell * box;
+          tr = -1;
+        }
+        if (bp < currentprice) {
+          const numcell = Math.floor(Math.abs(bp - currentprice) / box);
+          iop = bp;
+          icp = bp + numcell * box;
+          tr = 1;
+        }
+      }
+
+      if (tr === -1) {
+        let nok = true;
+        if (bp > currentprice && box <= Math.abs(bp - currentprice)) {
+          const numcell = Math.floor(Math.abs(bp - currentprice) / box);
+          icp = bp - numcell * box;
+          tr = -1;
+          bp = icp;
+          nok = false;
+        } else {
+          iop = iop === 0 ? prevIopen : iop;
+          icp = icp === 0 ? prevIclose : icp;
+        }
+
+        const tempcurrentprice = cfg.source === 'close' ? bar.close : bar.high;
+        if (bp < tempcurrentprice && box * reversal <= Math.abs(bp - tempcurrentprice) && nok) {
+          const numcell = Math.floor(Math.abs(bp - tempcurrentprice) / box);
+          iop = bp + box;
+          icp = bp + numcell * box;
+          tr = 1;
+          bp = icp;
+        } else {
+          iop = iop === 0 ? prevIopen : iop;
+          icp = icp === 0 ? prevIclose : icp;
+        }
+      } else if (tr === 1) {
+        let nok = true;
+        if (bp < currentprice && box <= Math.abs(bp - currentprice)) {
+          const numcell = Math.floor(Math.abs(bp - currentprice) / box);
+          icp = bp + numcell * box;
+          tr = 1;
+          bp = icp;
+          nok = false;
+        } else {
+          iop = iop === 0 ? prevIopen : iop;
+          icp = icp === 0 ? prevIclose : icp;
+        }
+
+        const tempcurrentprice = cfg.source === 'close' ? bar.close : bar.low;
+        if (bp > tempcurrentprice && box * reversal <= Math.abs(bp - tempcurrentprice) && nok) {
+          const numcell = Math.floor(Math.abs(bp - tempcurrentprice) / box);
+          iop = bp - box;
+          icp = bp - numcell * box;
+          tr = -1;
+          bp = icp;
+        } else {
+          iop = iop === 0 ? prevIopen : iop;
+          icp = icp === 0 ? prevIclose : icp;
+        }
+      }
+
+      // Recalculate box size if icloseprice changed
+      // box := change(icloseprice) ? (mode == 'ATR' ? atrboxsize : boxsize) : box
+      if (i > 0 && icp !== prevIclose) {
+        box = atrMode ? atrBoxSize : cfg.boxSize;
+      }
+
+      trend[i] = tr;
+      iopenprice[i] = iop;
+      icloseprice[i] = icp;
+      beginprice[i] = bp;
+      boxArr[i] = box;
+
+      // oprice (open price for area display)
+      const prevTrend = i > 0 ? trend[i - 1] : 0;
+      const prevBox = i > 0 ? boxArr[i - 1] : 0; // nz(box[1])
+      let op: number;
+      if (tr === 1) {
+        op = prevTrend === 1 ? prevIclose - prevBox : prevIclose + prevBox;
+      } else if (tr === -1) {
+        op = prevTrend === -1 ? prevIclose + prevBox : prevIclose - prevBox;
+      } else {
+        op = prevIclose;
+      }
+      const oprice = Math.max(op, 0);
+      s.oprice[i] = oprice;
+
+      // switch / setA / setB / botrend (switch[1] na on the first bar: neither start)
+      const bh = brickHigh(s, i);
+      const bl = brickLow(s, i);
+      const prevSw = i > 0 ? s.switchArr[i - 1] : NaN;
+      let setA = 0, setB = 0;
+      if (bh && prevSw === 0) {
+        s.switchArr[i] = 1;
+        setA = 1;
+      } else if (bl && prevSw === 1) {
+        s.switchArr[i] = 0;
+        setB = 1;
+      } else {
+        s.switchArr[i] = Number.isNaN(prevSw) ? 0 : prevSw;
+      }
+      const botrend = setA === 1 ? 1 : setB === 1 ? -1 : (i > 0 ? s.botrend[i - 1] : 0);
+      s.botrend[i] = botrend;
+
+      // Main trend: brick EMA (myema) rounded to the brick grid, TrendUp / TrendDown ratchets, whipsaw wait
+      const { trcnt1, countch, obox, em, mtrend, trendUp, trendDown, waitit } = s;
+      const cIcp = truthy(i > 0 ? icp - prevIclose : NaN);
+      trcnt1[i] = Math.min(cIcp ? 1 : nz(i > 0 ? trcnt1[i - 1] : NaN) + 1, 4000);
+      countch[i] = cIcp ? nz(i > 0 ? countch[i - 1] : NaN) + 1 : nz(i > 0 ? countch[i - 1] : NaN);
+      // trch = false; trch := change(trend) and change(icloseprice) ? true : ... : nz(trch, false) (the fresh false)
+      const trch = truthy(i > 0 ? tr - prevTrend : NaN) && cIcp;
+      // obox := change(icloseprice) != 0 ? nz(box[1]) : nz(obox[1])
+      obox[i] = cIcp ? nz(boxArr[i - 1]) : nz(i > 0 ? obox[i - 1] : NaN);
+
+      // myema(icloseprice, tremalen, trcnt1, obox)
+      let e = NaN;
+      if (countch[i] <= temaLen) e = mysma(icloseprice, i, temaLen);
+      const tc = trcnt1[i];
+      const serBack = i - tc >= 0 ? icloseprice[i - tc] : NaN;
+      if (countch[i] > temaLen && !Number.isNaN(serBack) && icp !== nz(serBack)) {
+        const alpha = 2 / (temaLen + 1);
+        const bb = icp > nz(serBack) ? 1 : -1;
+        const kats = trch ? reversal : 1;
+        let st = nz(serBack) + bb * obox[i] * kats;
+        e = alpha * st + (1 - alpha) * nz(i - tc >= 0 ? em[i - tc] : NaN);
+        st += bb * obox[i];
+        for (let x = 0; x <= 4000; x++) {
+          if ((st > icp && bb > 0) || (st < icp && bb < 0)) break;
+          e = alpha * st + (1 - alpha) * nz(e);
+          st += bb * obox[i];
+        }
+      }
+      if (Number.isNaN(e)) e = i > 0 ? em[i - 1] : NaN;
+      em[i] = e;
+      // tema := icloseprice - floor((icloseprice - tmp) / obox) * obox (a division by 0 is na)
+      const tema = obox[i] === 0 ? NaN : icp - Math.floor((icp - e) / obox[i]) * obox[i];
+
+      let upt = tema - thsreversal * box;
+      if (upt > icp - reversal * box) upt = icp - reversal * box;
+      let dnt = tema + thsreversal * box;
+      if (dnt < icp + reversal * box) dnt = icp + reversal * box;
+
+      const prevUp = i > 0 ? trendUp[i - 1] : NaN;
+      const prevDn = i > 0 ? trendDown[i - 1] : NaN;
+      const prevIcp = i > 0 ? icloseprice[i - 1] : NaN;
+      const prevMt = i > 0 ? mtrend[i - 1] : NaN;
+
+      // waitit := nz(waitit[1]); mtrend := nz(mtrend[1], 1)
+      let wi = nz(i > 0 ? waitit[i - 1] : NaN);
+      let mt = nz(prevMt, 1);
+      let up = cIcp && wi === 0 ? (prevIcp > prevUp ? pmax(upt, prevUp) : upt) : nz(prevUp);
+      if (mt === 1 && up - prevUp < 0) up = nz(prevUp);
+      let dn = cIcp && wi === 0 ? (prevIcp < prevDn ? pmin(dnt, prevDn) : dnt) : prevDn;
+      if (mt === -1 && dn - prevDn > 0) dn = nz(prevDn);
+
+      mt = wi === 0 ? (icp > prevDn ? 1 : icp < prevUp ? -1 : mt) : mt;
+
+      const chM = mt - prevMt;
+      if (!Number.isNaN(chM) && chM !== 0 && wi === 0 && nz(i >= 2 ? waitit[i - 2] : NaN) === 0) wi = 1;
+      else wi = wi !== 0 ? wi + 1 : wi;
+
+      if (wi > 0) mt = nz(prevMt);
+
+      if (wi > cfg.barcountWhip) {
+        if (mt === 1) {
+          if (icp >= up + thsreversal2 * box) wi = 0;
+          if (icp <= up - thsreversal2 * box) {
+            wi = 0;
+            mt = -1;
+            dn = prevIcp < prevDn ? pmin(dnt, prevDn) : dnt;
+          }
+        } else {
+          if (icp <= dn - thsreversal2 * box) wi = 0;
+          if (icp >= dn + thsreversal2 * box) {
+            wi = 0;
+            mt = 1;
+            up = prevIcp > prevUp ? pmax(upt, prevUp) : upt;
+          }
+        }
+      }
+
+      trendUp[i] = up;
+      trendDown[i] = dn;
+      mtrend[i] = mt;
+      waitit[i] = wi;
+
+      // ---- Output ----
+      const time = bar.time;
+      const trendColor = tr === 1 ? upColor : downColor;
+      // openline = plot(showstyle == 'Area' and oprice > 0 ? oprice : na, color = oprice < 0 or oprice[1] < 0 ? na : gray)
+      // (oprice is never below 0)
+      s.openPlot[i] = { time, value: areaOn && oprice > 0 ? oprice : NaN, color: GRAY };
+      // closeline = plot(showstyle == 'Area' and icloseprice > 0 ? icloseprice : na,
+      //   color = icloseprice <= 0 or icloseprice[1] <= 0 ? na : gray)
+      s.closePlot[i] = {
+        time,
+        value: areaOn && icp > 0 ? icp : NaN,
+        color: icp <= 0 || (i > 0 && prevIclose <= 0) ? TRANSPARENT : GRAY,
+      };
+      // fill(openline, closeline, color = oprice <= 0 and icloseprice <= 0 ? na : trend == 1 ? upcolor : downcolor, transp = 70)
+      s.fillColors[i] = oprice <= 0 && icp <= 0 ? TRANSPARENT : String(color.new(trendColor, 70));
+
+      // boline = showbreakout ? botrend == 1 ? (trend == 1 ? icloseprice : oprice) : (trend == 1 ? oprice : icloseprice) : na,
+      // color = showbreakout ? botrend == 1 ? lime : botrend == -1 ? red : na : na
+      if (!cfg.showBreakout) s.breakoutPlot[i] = { time, value: NaN };
+      else {
+        const val = botrend === 1 ? (tr === 1 ? icp : oprice) : (tr === 1 ? oprice : icp);
+        s.breakoutPlot[i] = { time, value: val, color: botrend === 1 ? LIME : botrend === -1 ? RED : TRANSPARENT };
+      }
+
+      // Tsl = mtrend == 1 ? TrendUp : TrendDown; trendline = plot(Tsl, linewidth = 3,
+      //   color = showtrend and Tsl != 0 and nz(Tsl[1]) != 0 ? trendcol : na)
+      const tsl = mt === 1 ? up : dn;
+      s.tsl[i] = tsl;
+      const tslOn = ne(tsl, 0) && nz(i > 0 ? s.tsl[i - 1] : NaN) !== 0;
+      const pm = nz(prevMt);
+      // trendcol = mtrend == 1 and nz(mtrend[1]) == 1 ? (waitit == 0 ? green : silver)
+      //   : mtrend == -1 and nz(mtrend[1]) == -1 ? (waitit == 0 ? red : silver) : na
+      const trendcol = mt === 1 && pm === 1 ? (wi === 0 ? GREEN : SILVER)
+        : mt === -1 && pm === -1 ? (wi === 0 ? RED : SILVER) : TRANSPARENT;
+      s.trendPlot[i] = { time, value: tsl, color: cfg.showTrend && tslOn ? trendcol : TRANSPARENT };
+
+      // Tsl2 = mtrend == 1 ? TrendUp + thsreversal * box : TrendDown - thsreversal * box, at most / least the brick close,
+      // at least 0; trline = plot(Tsl2, style = circles, color = na)
+      let t2 = mt === 1 ? up + thsreversal * box : dn - thsreversal * box;
+      if ((mt === 1 && t2 > icp) || (mt === -1 && t2 < icp)) t2 = icp;
+      if (t2 < 0) t2 = 0;
+      s.tsl2Plot[i] = { time, value: t2, color: TRANSPARENT };
+
+      // fill(trendline, trline, color = trcol): trcol = showtrend and showtrhold and mtrend == nz(mtrend[1]) and Tsl != 0
+      //   and nz(Tsl[1]) != 0 ? (waitit == 0 ? (mtrend == 1 ? lime 80 : red 80) : yellow 80) : white 100
+      s.thresholdFillColors[i] = !(cfg.showTrend && cfg.showThreshold && mt === pm && tslOn)
+        ? String(color.new(WHITE, 100))
+        : String(color.new(wi === 0 ? (mt === 1 ? LIME : RED) : YELLOW, 80));
+
+      // plot(waitit > barcountwhip ? (mtrend == 1 ? TrendUp - thsreversal2 * box : TrendDown + thsreversal2 * box) : na,
+      //   color = maroon, style = circles)
+      s.thresholdPlot[i] = {
+        time,
+        value: wi > cfg.barcountWhip ? (mt === 1 ? up - thsreversal2 * box : dn + thsreversal2 * box) : NaN,
+        color: MAROON,
+      };
+
+      // plotcandle(showstyle == 'Candle' ? oprice : na, max(oprice, icloseprice), min(oprice, icloseprice), icloseprice,
+      //   title = 'Renko Candles', color = trend == 1 ? upcolor : downcolor)
+      s.renkoCandles[i] = {
+        time: time as number,
+        open: candleOn ? oprice : NaN,
+        high: candleOn ? Math.max(oprice, icp) : NaN,
+        low: candleOn ? Math.min(oprice, icp) : NaN,
+        close: candleOn ? icp : NaN,
+        color: trendColor,
+      };
+
+      // barcolor(changebarcol ? trend == 1 ? upcolor : downcolor : na)
+      s.barColors[i] = { id: 'barcolor0', time, color: trendColor };
+
+      // plot(change(mtrend) > 0 and showtrend or change(mtrend) < 0 and showtrend ? Tsl : na, linewidth = 6,
+      //   color = change(mtrend) > 0 and showtrend ? color.green : color.red, style = plot.style_circles)
+      const ch = i > 0 ? mt - prevMt : NaN;
+      const on = cfg.showTrend && (ch > 0 || ch < 0);
+      s.trendChangePlot[i] = { time, value: on ? tsl : NaN, color: ch > 0 && cfg.showTrend ? GREEN : RED };
+
+      // alertcondition(setA == 1), (setB == 1), (change(mtrend) > 0), (change(mtrend) < 0), (change(trend) > 0),
+      // (change(trend) < 0)
+      const chT = tr - prevTrend;
+      const flags = [setA === 1, setB === 1, i > 0 && ch > 0, i > 0 && ch < 0, i > 0 && chT > 0, i > 0 && chT < 0];
+      for (let k = 0; k < 6; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'renkoOpen': s.openPlot.slice(),
+          'renkoClose': s.closePlot.slice(),
+          'breakoutLine': s.breakoutPlot.slice(),
+          'trendLine': s.trendPlot.slice(),
+          'tsl2': s.tsl2Plot.slice(),
+          'threshold': s.thresholdPlot.slice(),
+          'trendChange': s.trendChangePlot.slice(),
+        },
+        fills: [
+          { plot1: 'renkoOpen', plot2: 'renkoClose', options: { color: String(color.new(upColor, 70)) }, colors: s.fillColors.slice() },
+          { plot1: 'trendLine', plot2: 'tsl2', options: { color: String(color.new(LIME, 80)) }, colors: s.thresholdFillColors.slice() },
+        ],
+        barColors: cfg.changeBarCol ? s.barColors.slice() : [],
+        plotCandles: { renkoCandles: s.renkoCandles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      } as RenkoChartResult;
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RenkoChartInputs> = {}, chart: ChartContext = {}): IndicatorRun<RenkoChartResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RenkoChartInputs> = {}, chart?: ChartContext): RenkoChartResult {
+  return fullResult(createRun(inputs, chart).update(bars)) as RenkoChartResult;
 }
 
 /** The original's alertconditions */
@@ -638,4 +669,5 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert5', title: 'Renko Trend is Down', message: 'Renko Trend is Down' },
 ];
 
-export const RenkoChart = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig, alertConditions };
+export const RenkoChart = { calculate, createRun, metadata,
+ defaultInputs, inputConfig, plotConfig, plotCandleConfig, alertConditions };

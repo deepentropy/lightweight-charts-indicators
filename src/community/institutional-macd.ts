@@ -12,8 +12,10 @@
  * Original notice: © VolumeVigilante | Trade Smart. Trade Vigilantly.
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface InstitutionalMacdInputs {
   fastLength: number;
@@ -76,59 +78,137 @@ const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
+
+/**
+ * z = (x - ta.sma(x, len)) / ta.stdev(x, len) stepped bar by bar: the window sums of x and of its squares of the
+ * oakscriptjs ta.sma / ta.stdev (biased) machines, shared (same doubles)
+ */
+class ZScore {
+  private readonly sums = taStep.sum();
+  private readonly squares = taStep.sum();
+  private readonly len: number;
+  constructor(length: number) {
+    // the length checks of ta.sma and ta.stdev
+    taStep.sma().step(0, length);
+    taStep.stdev().step(0, length);
+    this.len = Math.floor(length);
+  }
+  step(x: number): number {
+    const len = this.len;
+    const sum = this.sums.step(x, len);
+    const sq = this.squares.step(Number.isFinite(x) ? x * x : NaN, len);
+    const mean = sum / len;
+    const variance = sq / len - mean * mean;
+    const sd = Number.isNaN(variance) ? NaN : variance > 0 ? Math.sqrt(variance) : 0;
+    return (x - mean) / sd;
+  }
+  commit(): void {
+    this.sums.commit();
+    this.squares.commit();
+  }
+}
+
+interface ImacdRun extends BarRunState<Record<string, never>> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  sig: ReturnType<typeof taStep.ema>;
+  zH: ZScore;
+  zM: ZScore;
+  zS: ZScore;
+  zHist: number[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<InstitutionalMacdInputs>): BarStudy<ImacdRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  const plotValue = (v: number) => (Number.isFinite(v) ? v : NaN);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const fast = taStep.ema(cfg.fastLength);
+      const slow = taStep.ema(cfg.slowLength);
+      const sig = taStep.ema(cfg.signalLength);
+      const zH = new ZScore(cfg.zScoreLength);
+      const zM = new ZScore(cfg.zScoreLength);
+      const zS = new ZScore(cfg.zScoreLength);
+      const s: ImacdRun = {
+        fast, slow, sig, zH, zM, zS, zHist: [], plots: [[], [], [], [], []], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [fast, slow, sig, zH, zM, zS], vars: {}, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [s.zHist, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const v = value(b);
+      const macdLine = s.fast.step(v) - s.slow.step(v);
+      const signalLine = s.sig.step(macdLine);
+      const hist = macdLine - signalLine;
+
+      // z = (x - ta.sma(x, len)) / ta.stdev(x, len): a plain division (x / 0 is +-infinity, 0 / 0 NaN); the histogram
+      // colour compares the infinite value, the plots show na for it
+      const zHist = s.zH.step(hist);
+      const macdZ = s.zM.step(macdLine);
+      const signalZ = s.zS.step(signalLine);
+      s.zHist[i] = zHist;
+      const prev = i > 0 ? s.zHist[i - 1] : NaN;
+
+      const isRising = i > 0 && gt(zHist, prev);
+      const c = ge(zHist, 0) ? (isRising ? '#26A69A' : '#B2DFDB') : isRising ? '#FFCDD2' : '#FF5252';
+      s.plots[0][i] = { time, value: cfg.showZHistogram ? plotValue(zHist) : NaN, color: c };
+      s.plots[1][i] = { time, value: cfg.showZLines ? plotValue(macdZ) : NaN };
+      s.plots[2][i] = { time, value: cfg.showZLines ? plotValue(signalZ) : NaN };
+      s.plots[3][i] = { time, value: cfg.showZBands ? cfg.zScoreThreshold : NaN };
+      s.plots[4][i] = { time, value: cfg.showZBands ? -cfg.zScoreThreshold : NaN };
+
+      // alertcondition(zHist > zScoreThreshold, ...), (zHist < -zScoreThreshold, ...), (ta.crossover(zHist, 0), ...),
+      // (ta.crossunder(zHist, 0), ...)
+      const flags = [
+        gt(zHist, cfg.zScoreThreshold),
+        lt(zHist, -cfg.zScoreThreshold),
+        zHist > 0 && prev <= 0,
+        zHist < 0 && prev >= 0,
+      ];
+      for (let k = 0; k < 4; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(time as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+          plot4: s.plots[4].slice(),
+        },
+        hlines: [{ value: 0, options: { title: 'Zero', color: ZERO_COLOR, linestyle: 'dashed' } }],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<InstitutionalMacdInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<InstitutionalMacdInputs> = {},
 ): IndicatorResult & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = getSourceSeries(bars, cfg.src);
-
-  const fastMA = A(ta.ema(src, cfg.fastLength));
-  const slowMA = A(ta.ema(src, cfg.slowLength));
-  const macdLine = fastMA.map((f, i) => f - slowMA[i]);
-  const signalLine = A(ta.ema(S(macdLine), cfg.signalLength));
-  const hist = macdLine.map((m, i) => m - signalLine[i]);
-
-  // z = (x - ta.sma(x, len)) / ta.stdev(x, len): a plain division (x / 0 is +-infinity, 0 / 0 NaN); the histogram
-  // colour compares the infinite value, the plots show na for it
-  const zScore = (x: number[]) => {
-    const mean = A(ta.sma(S(x), cfg.zScoreLength));
-    const sd = A(ta.stdev(S(x), cfg.zScoreLength));
-    return x.map((v, i) => (v - mean[i]) / sd[i]);
-  };
-  const plotValue = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const zHist = zScore(hist);
-  const macdZ = zScore(macdLine);
-  const signalZ = zScore(signalLine);
-
-  const t = (i: number) => bars[i].time;
-  const plot0 = bars.map((_b, i) => {
-    const isRising = i > 0 && gt(zHist[i], zHist[i - 1]);
-    const c = ge(zHist[i], 0) ? (isRising ? '#26A69A' : '#B2DFDB') : isRising ? '#FFCDD2' : '#FF5252';
-    return { time: t(i), value: cfg.showZHistogram ? plotValue(zHist[i]) : NaN, color: c };
-  });
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0,
-      plot1: bars.map((_b, i) => ({ time: t(i), value: cfg.showZLines ? plotValue(macdZ[i]) : NaN })),
-      plot2: bars.map((_b, i) => ({ time: t(i), value: cfg.showZLines ? plotValue(signalZ[i]) : NaN })),
-      plot3: bars.map((_b, i) => ({ time: t(i), value: cfg.showZBands ? cfg.zScoreThreshold : NaN })),
-      plot4: bars.map((_b, i) => ({ time: t(i), value: cfg.showZBands ? -cfg.zScoreThreshold : NaN })),
-    },
-    hlines: [{ value: 0, options: { title: 'Zero', color: ZERO_COLOR, linestyle: 'dashed' } }],
-    // alertcondition(zHist > zScoreThreshold, ...), (zHist < -zScoreThreshold, ...), (ta.crossover(zHist, 0), ...),
-    // (ta.crossunder(zHist, 0), ...)
-    alerts: alertStates(alertConditions, bars, [
-      zHist.map((z) => gt(z, cfg.zScoreThreshold)),
-      zHist.map((z) => lt(z, -cfg.zScoreThreshold)),
-      crossedOver(zHist, 0),
-      crossedUnder(zHist, 0),
-    ]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -146,4 +226,5 @@ export const InstitutionalMacd = {
   inputConfig,
   plotConfig,
   alertConditions,
+  createRun,
 };

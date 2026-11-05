@@ -15,9 +15,11 @@
  * Original notice: © LyroRS
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PulseRsiLyroRsInputs {
   /** Length of the SMA, the linear regression and the EMAs */
@@ -109,140 +111,187 @@ const PALETTES: Record<PulseRsiLyroRsInputs['colMode'], [string, string]> = {
   Royal: ['#FFC107', '#673AB7'],
 };
 
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> }
+  & { alerts: AlertConditionState[] };
+
+interface PulseVars {
+  /** var colType1 / colType2 */
+  c1: string | null;
+  c2: string | null;
+  /** Per cross (res with res[1], 50, 30, 70, long, short): res and the level on the last bar where both were not na */
+  pa: number[];
+  pb: number[];
+}
+
+interface PulseRun extends BarRunState<PulseVars> {
+  sma: ReturnType<typeof taStep.sma>;
+  linreg: ReturnType<typeof taStep.linreg>;
+  emaU: ReturnType<typeof taStep.ema>;
+  emaD: ReturnType<typeof taStep.ema>;
+  help2: number[];
+  res: number[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  plot3: Point[];
+  candles: PlotCandleData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<PulseRsiLyroRsInputs>): BarStudy<PulseRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const len = cfg.len;
+  // switch ColMode (an unknown mode leaves UpC / DnC na); if cpyn: the custom colours
+  const pal = PALETTES[cfg.colMode] as [string, string] | undefined;
+  const upC: string | null = cfg.cpyn ? cfg.cpUpC : pal ? pal[0] : null;
+  const dnC: string | null = cfg.cpyn ? cfg.cpDnC : pal ? pal[1] : null;
+  const NA = 'transparent';
+  const val = (v: number) => (Number.isFinite(v) ? v : NaN);
+  const lineCol = (c: string | null, tr: number) => (c === null ? String(color.new('#000000', tr)) : String(color.new(c, tr)));
+  const upLine = lineCol(upC, 30);
+  const dnLine = lineCol(dnC, 30);
+  // color.new(pc, 75) of the few line colours
+  const glows = new Map<string | null, string>();
+  const glowOf = (c: string | null): string => {
+    let g = glows.get(c);
+    if (g === undefined) { g = String(color.new(c ?? '#000000', 75)); glows.set(c, g); }
+    return g;
+  };
+  // per-bar scratch values (written again on every bar)
+  const over = [false, false, false, false, false, false];
+  const under = [false, false, false, false, false, false];
+  const levels = [NaN, 50, 30, 70, cfg.thresholdLong, cfg.thresholdShort];
+  const flags = [false, false, false, false, false, false, false, false];
+  const add = (s: PulseRun, t: number, m: Omit<MarkerData, 'time' | 'size' | 'forceOverlay' | 'color'> & { id: string }, c: string | null) => {
+    s.markers.push({ time: t, ...m, color: c ?? NA, size: 'tiny', forceOverlay: true });
+  };
+  return {
+    init() {
+      const sma = taStep.sma();
+      const linreg = taStep.linreg(len, 0);
+      const emaU = taStep.ema(len);
+      const emaD = taStep.ema(len);
+      const s: PulseRun = {
+        sma, linreg, emaU, emaD,
+        help2: [], res: [], plot0: [], plot1: [], plot2: [], plot3: [], candles: [], markers: [],
+        flags: Array.from({ length: 8 }, () => []),
+        times: Array.from({ length: 8 }, () => []),
+        steps: [sma, linreg, emaU, emaD],
+        vars: { c1: color.white, c2: color.white, pa: new Array(6).fill(NaN), pb: new Array(6).fill(NaN) },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.help2, s.res, s.plot0, s.plot1, s.plot2, s.plot3, s.candles, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const v = s.vars;
+      // vol = (close * high * low) * math.abs(volume); help = math.sqrt(vol)
+      const help = Math.sqrt(b.close * b.high * b.low * Math.abs(b.volume ?? NaN));
+      const helpp = s.sma.step(help, len);
+      const help2 = s.linreg.step(helpp);
+      s.help2[i] = help2;
+      // u = math.max(help2 - help2[1], 0); d = math.max(help2[1] - help2, 0) (na when a value is na)
+      const u = i > 0 ? Math.max(help2 - s.help2[i - 1], 0) : NaN;
+      const d = i > 0 ? Math.max(s.help2[i - 1] - help2, 0) : NaN;
+      const eu = s.emaU.step(u);
+      const ed = s.emaD.step(d);
+      // rs = ema(u) / ema(d) (x / 0 is +infinity: res = 100; 0 / 0 is na); res = 100 - 100 / (1 + rs)
+      const r = 100 - 100 / (1 + eu / ed);
+      s.res[i] = r;
+      const r1 = i > 0 ? s.res[i - 1] : NaN;
+      const r2 = i > 1 ? s.res[i - 2] : NaN;
+      // var colType1 / colType2 = color.white, updated by the Type 1 / Type 2 conditions
+      if (gt(r, r1)) v.c1 = upC;
+      if (lt(r, r1)) v.c1 = dnC;
+      if (gt(r, 50)) v.c2 = upC;
+      if (lt(r, 50)) v.c2 = dnC;
+      // pc_dd / pc_flType1: Type 1 (res > res[1] up, res < res[2] down), else Type 2 (res against 50), else na
+      const pc: string | null =
+        cfg.sigType1Enable && gt(r, r1) ? upC
+          : cfg.sigType1Enable && lt(r, r2) ? dnC
+            : cfg.sigType2Enable && gt(r, 50) ? upC
+              : cfg.sigType2Enable && lt(r, 50) ? dnC
+                : null;
+      // ta.crossover / ta.crossunder: compared with the last bar where both values were not na (exact comparisons:
+      // no 1e-10 tolerance, unlike the operators)
+      levels[0] = r1;
+      for (let k = 0; k < 6; k++) {
+        over[k] = false;
+        under[k] = false;
+        const bv = levels[k];
+        if (isNaN(r) || isNaN(bv)) continue;
+        if (!isNaN(v.pa[k])) {
+          over[k] = r > bv && !(v.pa[k] > v.pb[k]);
+          under[k] = r < bv && !(v.pa[k] < v.pb[k]);
+        }
+        v.pa[k] = r;
+        v.pb[k] = bv;
+      }
+      // Type 1: shape.labelup / labeldown, colour colType1, text 𝓛𝓸𝓷𝓰 / 𝓢𝓱𝓸𝓻𝓽 in black
+      if (cfg.sigType1Enable && over[0]) add(s, t, { id: 'shape0', position: 'belowBar', shape: 'labelUp', text: '𝓛𝓸𝓷𝓰', textColor: '#000000' }, v.c1);
+      if (cfg.sigType1Enable && under[0]) add(s, t, { id: 'shape1', position: 'aboveBar', shape: 'labelDown', text: '𝓢𝓱𝓸𝓻𝓽', textColor: '#000000' }, v.c1);
+      // Type 2: colour colType2
+      if (cfg.sigType2Enable && over[1]) add(s, t, { id: 'shape2', position: 'belowBar', shape: 'labelUp', text: '𝓛𝓸𝓷𝓰', textColor: '#000000' }, v.c2);
+      if (cfg.sigType2Enable && under[1]) add(s, t, { id: 'shape3', position: 'aboveBar', shape: 'labelDown', text: '𝓢𝓱𝓸𝓻𝓽', textColor: '#000000' }, v.c2);
+      // Type 3: triangles crossover(res, 30) / crossunder(res, 70)
+      if (cfg.sigType3Enable && over[2]) add(s, t, { id: 'shape4', position: 'belowBar', shape: 'triangleUp' }, upC);
+      if (cfg.sigType3Enable && under[3]) add(s, t, { id: 'shape5', position: 'aboveBar', shape: 'triangleDown' }, dnC);
+      // Type 4: labels with ⬆ / ⬇ in white
+      if (cfg.sigType4Enable && over[4]) add(s, t, { id: 'shape6', position: 'belowBar', shape: 'labelUp', text: '⬆', textColor: color.white }, upC);
+      if (cfg.sigType4Enable && under[5]) add(s, t, { id: 'shape7', position: 'aboveBar', shape: 'labelDown', text: '⬇', textColor: color.white }, dnC);
+      // plotcandle(open, high, low, close, "Candle Color", pc_flType1, pc_flType1, bordercolor = pc_flType1,
+      //   force_overlay = true, display = display.pane)
+      const c = pc ?? NA;
+      s.candles[i] = { time: t, open: b.open, high: b.high, low: b.low, close: b.close, color: c, wickColor: c,
+        borderColor: c, forceOverlay: true };
+      s.plot0[i] = { time: t, value: val(r), color: c };
+      // color.new(na, 75) is black with transparency 75
+      s.plot1[i] = { time: t, value: val(r), color: glowOf(pc) };
+      // plot(Threshold_L_Fl, color = color.new(UpC, 30), editable = false)
+      s.plot2[i] = { time: t, value: cfg.thresholdLong, color: upLine };
+      s.plot3[i] = { time: t, value: cfg.thresholdShort, color: dnLine };
+      // alertcondition(res > res[1] / res < res[1] / res > 50 / res < 50 / res > 30 / res < 70 / res > Threshold_L_Fl /
+      // res < Threshold_S_Fl)
+      flags[0] = gt(r, r1); flags[1] = lt(r, r1); flags[2] = gt(r, 50); flags[3] = lt(r, 50);
+      flags[4] = gt(r, 30); flags[5] = lt(r, 70); flags[6] = gt(r, cfg.thresholdLong); flags[7] = lt(r, cfg.thresholdShort);
+      for (let k = 0; k < 8; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    copyVars: (v) => ({ ...v, pa: v.pa.slice(), pb: v.pb.slice() }),
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice(), plot3: s.plot3.slice() },
+        // hline(50, title = "MidLine"): default colour and style
+        hlines: [{ value: 50, options: { title: 'MidLine', color: '#787B86', linestyle: 'dashed' } }],
+        markers: s.markers.slice(),
+        plotCandles: { candleColor: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PulseRsiLyroRsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<PulseRsiLyroRsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> }
   & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const len = cfg.len;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  // switch ColMode (an unknown mode leaves UpC / DnC na); if cpyn: the custom colours
-  const pal = PALETTES[cfg.colMode] as [string, string] | undefined;
-  const upC: string | null = cfg.cpyn ? cfg.cpUpC : pal ? pal[0] : null;
-  const dnC: string | null = cfg.cpyn ? cfg.cpDnC : pal ? pal[1] : null;
-
-  // vol = (close * high * low) * math.abs(volume); help = math.sqrt(vol)
-  const help = bars.map((b) => Math.sqrt(b.close * b.high * b.low * Math.abs(b.volume ?? NaN)));
-  const helpp = A(ta.sma(S(help), len));
-  const help2 = A(ta.linreg(S(helpp), len, 0));
-  // u = math.max(help2 - help2[1], 0); d = math.max(help2[1] - help2, 0) (na when a value is na)
-  const u = help2.map((h, i) => (i > 0 ? Math.max(h - help2[i - 1], 0) : NaN));
-  const d = help2.map((h, i) => (i > 0 ? Math.max(help2[i - 1] - h, 0) : NaN));
-  const emaU = A(ta.ema(S(u), len));
-  const emaD = A(ta.ema(S(d), len));
-  // rs = ema(u) / ema(d) (x / 0 is +infinity: res = 100; 0 / 0 is na); res = 100 - 100 / (1 + rs)
-  const res = emaU.map((eu, i) => 100 - 100 / (1 + eu / emaD[i]));
-  const r1 = (i: number) => (i > 0 ? res[i - 1] : NaN);
-  const r2 = (i: number) => (i > 1 ? res[i - 2] : NaN);
-
-  // var colType1 / colType2 = color.white, updated by the Type 1 / Type 2 conditions
-  const colType1: (string | null)[] = new Array(n);
-  const colType2: (string | null)[] = new Array(n);
-  let c1: string | null = color.white;
-  let c2: string | null = color.white;
-  for (let i = 0; i < n; i++) {
-    if (gt(res[i], r1(i))) c1 = upC;
-    if (lt(res[i], r1(i))) c1 = dnC;
-    if (gt(res[i], 50)) c2 = upC;
-    if (lt(res[i], 50)) c2 = dnC;
-    colType1[i] = c1;
-    colType2[i] = c2;
-  }
-
-  // pc_dd / pc_flType1: Type 1 (res > res[1] up, res < res[2] down), else Type 2 (res against 50), else na
-  const pc: (string | null)[] = res.map((r, i) => (
-    cfg.sigType1Enable && gt(r, r1(i)) ? upC
-      : cfg.sigType1Enable && lt(r, r2(i)) ? dnC
-        : cfg.sigType2Enable && gt(r, 50) ? upC
-          : cfg.sigType2Enable && lt(r, 50) ? dnC
-            : null));
-
-  // ta.crossover / ta.crossunder: compared with the last bar where both values were not na (exact comparisons:
-  // no 1e-10 tolerance, unlike the operators)
-  const crosses = (b: (i: number) => number) => {
-    const over: boolean[] = new Array(n).fill(false);
-    const under: boolean[] = new Array(n).fill(false);
-    let pa = NaN;
-    let pb = NaN;
-    for (let i = 0; i < n; i++) {
-      const a = res[i];
-      const bv = b(i);
-      if (isNaN(a) || isNaN(bv)) continue;
-      if (!isNaN(pa)) {
-        over[i] = a > bv && !(pa > pb);
-        under[i] = a < bv && !(pa < pb);
-      }
-      pa = a;
-      pb = bv;
-    }
-    return { over, under };
-  };
-  const x1 = crosses(r1);
-  const x2 = crosses(() => 50);
-  const x3a = crosses(() => 30);
-  const x3b = crosses(() => 70);
-  const x4a = crosses(() => cfg.thresholdLong);
-  const x4b = crosses(() => cfg.thresholdShort);
-
-  const markers: MarkerData[] = [];
-  const candles: PlotCandleData[] = [];
-  const NA = 'transparent';
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    const add = (on: boolean, m: Omit<MarkerData, 'time' | 'size' | 'forceOverlay' | 'color'> & { id: string }, c: string | null) => {
-      if (on) markers.push({ time: t, ...m, color: c ?? NA, size: 'tiny', forceOverlay: true });
-    };
-    // Type 1: shape.labelup / labeldown, colour colType1, text 𝓛𝓸𝓷𝓰 / 𝓢𝓱𝓸𝓻𝓽 in black
-    add(cfg.sigType1Enable && x1.over[i], { id: 'shape0', position: 'belowBar', shape: 'labelUp', text: '𝓛𝓸𝓷𝓰', textColor: '#000000' }, colType1[i]);
-    add(cfg.sigType1Enable && x1.under[i], { id: 'shape1', position: 'aboveBar', shape: 'labelDown', text: '𝓢𝓱𝓸𝓻𝓽', textColor: '#000000' }, colType1[i]);
-    // Type 2: colour colType2
-    add(cfg.sigType2Enable && x2.over[i], { id: 'shape2', position: 'belowBar', shape: 'labelUp', text: '𝓛𝓸𝓷𝓰', textColor: '#000000' }, colType2[i]);
-    add(cfg.sigType2Enable && x2.under[i], { id: 'shape3', position: 'aboveBar', shape: 'labelDown', text: '𝓢𝓱𝓸𝓻𝓽', textColor: '#000000' }, colType2[i]);
-    // Type 3: triangles crossover(res, 30) / crossunder(res, 70)
-    add(cfg.sigType3Enable && x3a.over[i], { id: 'shape4', position: 'belowBar', shape: 'triangleUp' }, upC);
-    add(cfg.sigType3Enable && x3b.under[i], { id: 'shape5', position: 'aboveBar', shape: 'triangleDown' }, dnC);
-    // Type 4: labels with ⬆ / ⬇ in white
-    add(cfg.sigType4Enable && x4a.over[i], { id: 'shape6', position: 'belowBar', shape: 'labelUp', text: '⬆', textColor: color.white }, upC);
-    add(cfg.sigType4Enable && x4b.under[i], { id: 'shape7', position: 'aboveBar', shape: 'labelDown', text: '⬇', textColor: color.white }, dnC);
-
-    // plotcandle(open, high, low, close, "Candle Color", pc_flType1, pc_flType1, bordercolor = pc_flType1,
-    //   force_overlay = true, display = display.pane)
-    const c = pc[i] ?? NA;
-    candles.push({ time: t, open: b.open, high: b.high, low: b.low, close: b.close, color: c, wickColor: c,
-      borderColor: c, forceOverlay: true });
-  }
-
-  // color.new(na, 75) is black with transparency 75
-  const glow = pc.map((c) => String(color.new(c ?? '#000000', 75)));
-  const val = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const lineCol = (c: string | null, tr: number) => (c === null ? String(color.new('#000000', tr)) : String(color.new(c, tr)));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: val(res[i]), color: pc[i] ?? NA })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: val(res[i]), color: glow[i] })),
-      // plot(Threshold_L_Fl, color = color.new(UpC, 30), editable = false)
-      plot2: bars.map((b) => ({ time: b.time, value: cfg.thresholdLong, color: lineCol(upC, 30) })),
-      plot3: bars.map((b) => ({ time: b.time, value: cfg.thresholdShort, color: lineCol(dnC, 30) })),
-    },
-    // hline(50, title = "MidLine"): default colour and style
-    hlines: [{ value: 50, options: { title: 'MidLine', color: '#787B86', linestyle: 'dashed' } }],
-    markers,
-    plotCandles: { candleColor: candles },
-    // alertcondition(res > res[1] / res < res[1] / res > 50 / res < 50 / res > 30 / res < 70 / res > Threshold_L_Fl /
-    // res < Threshold_S_Fl)
-    alerts: alertStates(alertConditions, bars, [
-      res.map((r, i) => gt(r, r1(i))), res.map((r, i) => lt(r, r1(i))),
-      res.map((r) => gt(r, 50)), res.map((r) => lt(r, 50)),
-      res.map((r) => gt(r, 30)), res.map((r) => lt(r, 70)),
-      res.map((r) => gt(r, cfg.thresholdLong)), res.map((r) => lt(r, cfg.thresholdShort)),
-    ]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -259,6 +308,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const PulseRsiLyroRs = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,
