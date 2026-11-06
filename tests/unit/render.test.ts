@@ -233,6 +233,24 @@ describe('IndicatorRenderer', () => {
       }
     });
 
+    it('keeps its primitives attached on a live update and gives them the new result', () => {
+      const f = fakeChart();
+      const r = new IndicatorRenderer(f.chart);
+      const bb = entry('bb');
+      r.render(bb, bb.calculate(bars, {}), bars);
+      const attached = [...f.series].flatMap((s) => [...s.primitives]);
+      expect(attached.length).toBeGreaterThan(0);
+      const next = tick(bars);
+      r.render(bb, bb.calculate(next, {}), next, { reuseSeries: true });
+      // the same slots stay attached (no layout of the chart again)
+      expect([...f.series].flatMap((s) => [...s.primitives])).toEqual(attached);
+      // and hold the new fill: the same as a fresh render's
+      const inner = (p: unknown) => (p as { inner: { getData?: () => unknown } }).inner.getData?.();
+      const ref = fakeChart();
+      new IndicatorRenderer(ref.chart).render(bb, bb.calculate(next, {}), next);
+      expect(attached.map(inner)).toEqual([...ref.series].flatMap((s) => [...s.primitives]).map(inner));
+    });
+
     it('gives a reused series its options again only when they changed', () => {
       const f = fakeChart();
       const r = new IndicatorRenderer(f.chart, { paneIndex: 1 });

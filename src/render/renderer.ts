@@ -18,6 +18,8 @@ import {
   type IChartApi,
   type ISeriesApi,
   type ISeriesPrimitive,
+  type SeriesAttachedParameter,
+  type Logical,
   type ISeriesMarkersPluginApi,
   type SeriesMarker,
   type SeriesType,
@@ -168,7 +170,9 @@ export class IndicatorRenderer {
   private plotSeries: Array<ISeriesApi<SeriesType, Time>> = [];
   /** Every other series created (anchors, hlines, fills, candles, ...) */
   private otherSeries: Array<ISeriesApi<SeriesType, Time>> = [];
-  private attached: Array<{ series: ISeriesApi<SeriesType, Time>; primitive: ISeriesPrimitive<Time> }> = [];
+  private attached: Array<{ series: ISeriesApi<SeriesType, Time>; primitive: PrimitiveSlot }> = [];
+  /** The previous render's attached slots a reuseSeries render can take again (by attach order); null = taken */
+  private slotPool: Array<{ series: ISeriesApi<SeriesType, Time>; primitive: PrimitiveSlot } | null> = [];
   private markerPlugins: Array<ISeriesMarkersPluginApi<Time>> = [];
   private tables: Array<{ table: TableData; pane: number; el: HTMLElement }> = [];
   private tableObserver: ResizeObserver | null = null;
@@ -226,7 +230,8 @@ export class IndicatorRenderer {
       if (bars.length) this.draw(entry, result as IndicatorResult & Record<string, any>, bars, pane);
       this.prepared = this.preparedNow;
     } finally {
-      // series of the previous render not taken again
+      // primitives and series of the previous render not taken again
+      for (const p of this.slotPool.splice(0)) if (p) p.series.detachPrimitive(p.primitive);
       for (const p of this.pool.splice(0)) if (p) this.chart.removeSeries(p.series);
       if (paneApi && !this.opts.preserveEmptyPane) paneApi.setPreserveEmptyPane(preserved ?? false);
     }
@@ -273,7 +278,8 @@ export class IndicatorRenderer {
 
   /** Remove what the last render drew; `keepSeries`: its series go to the pool instead (reuseSeries) */
   private clearOwned(keepSeries = false): void {
-    for (const { series, primitive } of this.attached) series.detachPrimitive(primitive);
+    if (keepSeries) this.slotPool = this.attached;
+    else for (const { series, primitive } of this.attached) series.detachPrimitive(primitive);
     this.attached = [];
     for (const p of this.markerPlugins) p.detach();
     this.markerPlugins = [];
@@ -431,9 +437,19 @@ export class IndicatorRenderer {
     }, 1);
   }
 
+  /** Attach a primitive; a reused render puts it in the previous render's slot of the same series and kind */
   private attach(series: ISeriesApi<SeriesType, Time>, primitive: ISeriesPrimitive<Time>): void {
-    series.attachPrimitive(primitive);
-    this.attached.push({ series, primitive });
+    const slot = this.attached.length;
+    const kept = this.slotPool[slot];
+    if (kept && kept.series === series && kept.primitive.holds(primitive)) {
+      this.slotPool[slot] = null;
+      kept.primitive.set(primitive);
+      this.attached.push(kept);
+      return;
+    }
+    const fresh = new PrimitiveSlot(primitive);
+    series.attachPrimitive(fresh);
+    this.attached.push({ series, primitive: fresh });
   }
 
   /** Invisible line series that holds primitives (and, with autoscale, the price range of what they draw) */
@@ -1062,6 +1078,72 @@ export class IndicatorRenderer {
       el.style.top = `${area.top + top}px`;
       el.style.visibility = 'visible';
     }
+  }
+}
+
+/**
+ * A primitive attached to a series that another one of the same kind can take the place of: attaching or detaching a
+ * primitive makes the chart lay its panes out again and paint a second time, so a live render keeps the slot and
+ * swaps its content (a light update).
+ */
+class PrimitiveSlot implements ISeriesPrimitive<Time> {
+  private param: SeriesAttachedParameter<Time> | null = null;
+
+  constructor(private inner: ISeriesPrimitive<Time>) {}
+
+  /** `next` is of the kind this slot holds */
+  holds(next: ISeriesPrimitive<Time>): boolean {
+    return next.constructor === this.inner.constructor;
+  }
+
+  set(next: ISeriesPrimitive<Time>): void {
+    this.inner.detached?.();
+    this.inner = next;
+    if (!this.param) return;
+    next.attached?.(this.param);
+    this.param.requestUpdate();
+  }
+
+  attached(param: SeriesAttachedParameter<Time>): void {
+    this.param = param;
+    this.inner.attached?.(param);
+  }
+
+  detached(): void {
+    this.inner.detached?.();
+    this.param = null;
+  }
+
+  updateAllViews(): void {
+    this.inner.updateAllViews?.();
+  }
+
+  paneViews() {
+    return this.inner.paneViews?.() ?? [];
+  }
+
+  priceAxisViews() {
+    return this.inner.priceAxisViews?.() ?? [];
+  }
+
+  timeAxisViews() {
+    return this.inner.timeAxisViews?.() ?? [];
+  }
+
+  priceAxisPaneViews() {
+    return this.inner.priceAxisPaneViews?.() ?? [];
+  }
+
+  timeAxisPaneViews() {
+    return this.inner.timeAxisPaneViews?.() ?? [];
+  }
+
+  autoscaleInfo(startTimePoint: Logical, endTimePoint: Logical) {
+    return this.inner.autoscaleInfo?.(startTimePoint, endTimePoint) ?? null;
+  }
+
+  hitTest(x: number, y: number) {
+    return this.inner.hitTest?.(x, y) ?? null;
   }
 }
 
