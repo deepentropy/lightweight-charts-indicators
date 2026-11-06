@@ -34212,4 +34212,4 @@ export {
 } from './other-symbol';
 
 // Package version
-export const version = '0.19.3';
+export const version = '0.20.0';
