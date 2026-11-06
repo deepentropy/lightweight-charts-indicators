@@ -7,7 +7,9 @@
  * Reference: "MACD DEMA" community indicator
  */
 
-import { ta, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MACDDEMAInputs {
   fastLength: number;
@@ -42,55 +44,80 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<MACDDEMAInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult;
+
+interface MacdDemaRun extends BarRunState<Record<string, never>> {
+  emas: ReturnType<typeof taStep.ema>[];
+  hist: number[];
+  macdData: Point[];
+  sigData: Point[];
+  histData: Point[];
+}
+
+function study(inputs: Partial<MACDDEMAInputs>): BarStudy<MacdDemaRun, Result> {
   const { fastLength, slowLength, signalLength, src } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
-
-  // DEMA(n) = 2*EMA(src, n) - EMA(EMA(src, n), n)
-  const emaFast = ta.ema(source, fastLength);
-  const emaFast2 = ta.ema(emaFast, fastLength);
-  const demaFast = emaFast.mul(2).sub(emaFast2);
-
-  const emaSlow = ta.ema(source, slowLength);
-  const emaSlow2 = ta.ema(emaSlow, slowLength);
-  const demaSlow = emaSlow.mul(2).sub(emaSlow2);
-
-  const macdLine = demaFast.sub(demaSlow);
-  // Signal is also DEMA: 2*EMA(macd, len) - EMA(EMA(macd, len), len)
-  const sigEma1 = ta.ema(macdLine, signalLength);
-  const sigEma2 = ta.ema(sigEma1, signalLength);
-  const signalLine = sigEma1.mul(2).sub(sigEma2);
-  const histogram = macdLine.sub(signalLine);
-
-  const macdArr = macdLine.toArray();
-  const sigArr = signalLine.toArray();
-  const histArr = histogram.toArray();
-
+  const value = barSource(src);
   const warmup = slowLength * 2;
-
-  const toPlot = (arr: (number | null)[]) =>
-    arr.map((v, i) => ({ time: bars[i].time, value: (i < warmup || v == null) ? NaN : v }));
-
-  const histPlot = histArr.map((v, i) => {
-    if (i < warmup || v == null) return { time: bars[i].time, value: NaN };
-    const prev = i > 0 ? (histArr[i - 1] ?? NaN) : NaN;
-    let color: string;
-    if (v >= 0) {
-      color = v > prev ? '#00E676' : '#26A69A';
-    } else {
-      color = v < prev ? '#FF5252' : '#EF5350';
-    }
-    return { time: bars[i].time, value: v, color };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': toPlot(macdArr), 'plot1': toPlot(sigArr), 'plot2': histPlot },
-    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(33,150,243,0.15)' } },
-    ],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const emas = [fastLength, fastLength, slowLength, slowLength, signalLength, signalLength].map((l) => taStep.ema(l));
+      const s: MacdDemaRun = { emas, hist: [], macdData: [], sigData: [], histData: [], steps: emas, vars: {}, lists: [], series: [] };
+      s.series = [s.hist, s.macdData, s.sigData, s.histData];
+      return s;
+    },
+    bar(s, i, bars) {
+      const time = bars[i].time;
+      const [e1, e2, e3, e4, e5, e6] = s.emas;
+      const v = value(bars[i]);
+      // DEMA(n) = 2*EMA(src, n) - EMA(EMA(src, n), n)
+      const emaFast = e1.step(v);
+      const demaFast = emaFast * 2 - e2.step(emaFast);
+      const emaSlow = e3.step(v);
+      const demaSlow = emaSlow * 2 - e4.step(emaSlow);
+      const macd = demaFast - demaSlow;
+      // Signal is also DEMA: 2*EMA(macd, len) - EMA(EMA(macd, len), len)
+      const sigEma1 = e5.step(macd);
+      const signal = sigEma1 * 2 - e6.step(sigEma1);
+      const h = macd - signal;
+      s.hist[i] = h;
+      const out = i < warmup;
+      s.macdData[i] = { time, value: out ? NaN : macd };
+      s.sigData[i] = { time, value: out ? NaN : signal };
+      if (out) {
+        s.histData[i] = { time, value: NaN };
+      } else {
+        const prev = i > 0 ? s.hist[i - 1] : NaN;
+        let color: string;
+        if (h >= 0) {
+          color = h > prev ? '#00E676' : '#26A69A';
+        } else {
+          color = h < prev ? '#FF5252' : '#EF5350';
+        }
+        s.histData[i] = { time, value: h, color };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.macdData.slice(), 'plot1': s.sigData.slice(), 'plot2': s.histData.slice() },
+        hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed', title: 'Zero' } }],
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { color: 'rgba(33,150,243,0.15)' } },
+        ],
+      };
+    },
   };
 }
 
-export const MACDDEMA = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MACDDEMAInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MACDDEMAInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const MACDDEMA = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

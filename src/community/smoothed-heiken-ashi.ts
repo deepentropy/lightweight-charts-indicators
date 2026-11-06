@@ -7,8 +7,10 @@
  * Reference: "Smoothed Heiken Ashi Candles v1" by jackvmk
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SmoothedHeikenAshiInputs {
   emaLength1: number;
@@ -37,88 +39,96 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<SmoothedHeikenAshiInputs> = {}): Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> } {
+type Result = Omit<IndicatorResult, 'markers'> & { plotCandles: Record<string, PlotCandleData[]> };
+
+interface ShaVars {
+  /** haOpen[1], haClose[1] */
+  prevHaOpen: number;
+  prevHaClose: number;
+}
+
+interface ShaRun extends BarRunState<ShaVars> {
+  /** EMAs of the open, high, low, close, then of the HA open, high, low, close */
+  emas: ReturnType<typeof taStep.ema>[];
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<SmoothedHeikenAshiInputs>): BarStudy<ShaRun, Result> {
   const { emaLength1, emaLength2 } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // Step 1: EMA smooth each OHLC
-  const openSeries = new Series(bars, (b) => b.open);
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const closeSeries = new Series(bars, (b) => b.close);
-
-  const o1 = ta.ema(openSeries, emaLength1).toArray();
-  const h1 = ta.ema(highSeries, emaLength1).toArray();
-  const l1 = ta.ema(lowSeries, emaLength1).toArray();
-  const c1 = ta.ema(closeSeries, emaLength1).toArray();
-
-  // Step 2: Heiken Ashi on smoothed values
-  const haClose: number[] = new Array(n);
-  const haOpen: number[] = new Array(n);
-  const haHigh: number[] = new Array(n);
-  const haLow: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const oo = isNaN(o1[i]) ? bars[i].open : o1[i];
-    const hh = isNaN(h1[i]) ? bars[i].high : h1[i];
-    const ll = isNaN(l1[i]) ? bars[i].low : l1[i];
-    const cc = isNaN(c1[i]) ? bars[i].close : c1[i];
-
-    haClose[i] = (oo + hh + ll + cc) / 4;
-
-    if (i === 0) {
-      haOpen[i] = (oo + cc) / 2;
-    } else {
-      haOpen[i] = (haOpen[i - 1] + haClose[i - 1]) / 2;
-    }
-
-    haHigh[i] = Math.max(hh, haOpen[i], haClose[i]);
-    haLow[i] = Math.min(ll, haOpen[i], haClose[i]);
-  }
-
-  // Step 3: EMA smooth the HA candles
-  const haOpenSeries = new Series(bars, (_b, i) => haOpen[i]);
-  const haHighSeries = new Series(bars, (_b, i) => haHigh[i]);
-  const haLowSeries = new Series(bars, (_b, i) => haLow[i]);
-  const haCloseSeries = new Series(bars, (_b, i) => haClose[i]);
-
-  const finalO = ta.ema(haOpenSeries, emaLength2).toArray();
-  const finalH = ta.ema(haHighSeries, emaLength2).toArray();
-  const finalL = ta.ema(haLowSeries, emaLength2).toArray();
-  const finalC = ta.ema(haCloseSeries, emaLength2).toArray();
-
   const warmup = emaLength1 + emaLength2;
-  const candles: PlotCandleData[] = [];
-
-  for (let i = 0; i < n; i++) {
-    if (i < warmup || finalO[i] == null || finalC[i] == null || !isFinite(finalO[i]!) || !isFinite(finalC[i]!)) {
-      candles.push({ time: bars[i].time as number, open: NaN, high: NaN, low: NaN, close: NaN });
-      continue;
-    }
-
-    const o = finalO[i]!;
-    const h = finalH[i]!;
-    const l = finalL[i]!;
-    const c = finalC[i]!;
-    const col = c >= o ? '#26A69A' : '#EF5350';
-
-    candles.push({
-      time: bars[i].time as number,
-      open: o,
-      high: h,
-      low: l,
-      close: c,
-      color: col,
-      borderColor: col,
-      wickColor: col,
-    });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    plotCandles: { sha: candles },
+    init() {
+      const emas = [
+        ...[0, 1, 2, 3].map(() => taStep.ema(emaLength1)),
+        ...[0, 1, 2, 3].map(() => taStep.ema(emaLength2)),
+      ];
+      const s: ShaRun = {
+        emas, candles: [], steps: emas, vars: { prevHaOpen: NaN, prevHaClose: NaN }, lists: [], series: [],
+      };
+      s.series = [s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const e = s.emas;
+      // Step 1: EMA smooth each OHLC
+      const o1 = e[0].step(b.open);
+      const h1 = e[1].step(b.high);
+      const l1 = e[2].step(b.low);
+      const c1 = e[3].step(b.close);
+
+      // Step 2: Heiken Ashi on smoothed values
+      const oo = isNaN(o1) ? b.open : o1;
+      const hh = isNaN(h1) ? b.high : h1;
+      const ll = isNaN(l1) ? b.low : l1;
+      const cc = isNaN(c1) ? b.close : c1;
+      const haClose = (oo + hh + ll + cc) / 4;
+      const haOpen = i === 0 ? (oo + cc) / 2 : (v.prevHaOpen + v.prevHaClose) / 2;
+      const haHigh = Math.max(hh, haOpen, haClose);
+      const haLow = Math.min(ll, haOpen, haClose);
+      v.prevHaOpen = haOpen;
+      v.prevHaClose = haClose;
+
+      // Step 3: EMA smooth the HA candles
+      const o = e[4].step(haOpen);
+      const h = e[5].step(haHigh);
+      const l = e[6].step(haLow);
+      const c = e[7].step(haClose);
+
+      if (i < warmup || !isFinite(o) || !isFinite(c)) {
+        s.candles[i] = { time: b.time as number, open: NaN, high: NaN, low: NaN, close: NaN };
+        return;
+      }
+      const col = c >= o ? '#26A69A' : '#EF5350';
+      s.candles[i] = {
+        time: b.time as number,
+        open: o,
+        high: h,
+        low: l,
+        close: c,
+        color: col,
+        borderColor: col,
+        wickColor: col,
+      };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        plotCandles: { sha: s.candles.slice() },
+      };
+    },
   };
 }
 
-export const SmoothedHeikenAshi = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SmoothedHeikenAshiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SmoothedHeikenAshiInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const SmoothedHeikenAshi = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };

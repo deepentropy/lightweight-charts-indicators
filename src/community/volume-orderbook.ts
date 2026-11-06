@@ -29,6 +29,7 @@ import { array, str, color, type IndicatorResult, type InputConfig, type PlotCon
 import type { BoxData, LineDrawingData } from '../types';
 import { barInterval, barTime } from '../bar-time';
 import { foregroundColorOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VolumeOrderbookInputs {
   src: 'open' | 'high' | 'low' | 'close' | 'hl2' | 'hlc3' | 'ohlc4' | 'hlcc4';
@@ -82,13 +83,20 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<VolumeOrderbookInputs> = {},
-  chart?: ChartContext,
-): Omit<IndicatorResult, 'boxes' | 'lines'> & { boxes: BoxData[]; lines: LineDrawingData[] } {
+type Result = Omit<IndicatorResult, 'boxes' | 'lines'> & { boxes: BoxData[]; lines: LineDrawingData[] };
+
+interface OrderbookVars {
+  /** The level height (range of the first bar times "Width") */
+  step: number;
+  /** The levels and their volumes (changed in place, copied by copyVars) */
+  levels: number[];
+  volumes: number[];
+}
+
+type OrderbookRun = BarRunState<OrderbookVars>;
+
+function study(inputs: Partial<VolumeOrderbookInputs>): BarStudy<OrderbookRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const rows = Math.trunc(cfg.rows);
   const left = Math.trunc(cfg.left);
 
@@ -124,113 +132,134 @@ export function calculate(
     }
   };
 
-  let step = 0;
-  const levels: number[] = [];
-  const volumes: number[] = [];
-  const boxes: BoxData[] = [];
-  const lines: LineDrawingData[] = [];
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
-
-  for (let i = 0; i < n; i++) {
-    const bar = bars[i];
-    const src = source(bar);
-    const volume = bar.volume ?? NaN;
-    if (i === 0) step = (bar.high - bar.low) * cfg.mult;
-
-    if (levels.length <= 0) {
-      levels.push(src + step);
-      levels.push(src - step);
-      volumes.push(volume);
-    } else {
-      let found = false;
-      for (let k = 0; k <= levels.length - 2; k++) {
-        if (lt(src, levels[k]) && gt(src, levels[k + 1])) {
-          volumes[k] = volumes[k] + volume;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        if (gt(src, levels[0])) {
-          let lvl = levels[0];
-          checkGrowth(i, src, lvl, step, true, levels.length);
-          const addLevels: number[] = [];
-          while (gt(src, lvl)) {
-            addLevels.push(lvl + step);
-            lvl = lvl + step;
-          }
-          addLevels.push(lvl + step);
-          // each new level goes to the front of the array
-          levels.unshift(...addLevels.reverse());
-          volumes.unshift(volume, ...new Array<number>(addLevels.length - 1).fill(0));
-        } else if (lt(src, levels[levels.length - 1])) {
-          let lvl = levels[levels.length - 1];
-          checkGrowth(i, src, lvl, step, false, levels.length);
-          while (lt(src, lvl)) {
-            levels.push(lvl - step);
-            volumes.push(0);
-            lvl = lvl - step;
-          }
-          levels.push(lvl - step);
-          volumes.push(volume);
-        }
-      }
-    }
-
-    // barstate.islast
-    if (i !== n - 1) continue;
-    const vols: number[] = new Array(rows * 2 + 1).fill(NaN);
-    const made: Array<BoxData | null> = new Array(rows * 2 + 2).fill(null);
-    for (let k = 0; k <= levels.length - 2; k++) {
-      if (!(lt(src, levels[k]) && gt(src, levels[k + 1]))) continue;
-      for (let x = 0; x <= Math.min(volumes.length - 1, rows * 2); x++) {
-        vols[x] = k - rows + x < volumes.length - 1 ? volumes[Math.max(0, k - rows + x)] : 0;
-      }
-      const vol = array.copy(vols);
-      array.sort(vols);
-      for (let x = 0; x <= rows * 2; x++) {
-        if (!(k - rows + x < levels.length - 1)) continue;
-        const col = x < rows ? color.red : x > rows ? color.lime : color.gray;
-        const rank = array.indexof(vols, vol[x]);
-        const grade = String(color.from_gradient(rank, 0, vols.length, color.new(col, 80), color.new(col, 40)));
-        made[x] = {
-          time1: T(i + left + rows * 2 - rank), price1: levels[Math.max(0, k - rows + x)],
-          time2: T(i + left + rows * 2 + rank), price2: levels[Math.max(1, k - rows + x + 1)],
-          borderColor: grade, bgColor: grade, borderStyle: 'dotted', text: str.tostring(vol[x], 'volume'), textColor: foregroundColorOf(chart),
-          ...(cfg.poc && rank === rows * 2 ? { extend: 'left' as const } : {}),
-        };
-        if (cfg.tbli && k - rows + x >= 0) {
-          const y = levels[k - rows + x];
-          lines.push({
-            time1: T(i + left), price1: y, time2: T(Math.min(i + left + rows * 2 + vols.length - 1, i + 500)), price2: y,
-            color: String(color.gray),
-          });
-        }
-      }
-      if (cfg.tbl) {
-        // box.get_top / box.get_bottom of a box that was not made are na: the frame is not drawn
-        const top = made[0] ? made[0].price1 : NaN;
-        const bottom = made[rows * 2] ? made[rows * 2]!.price2 : NaN;
-        made[rows * 2 + 1] = {
-          time1: T(i + left), price1: top, time2: T(i + left + rows * 2 + vols.length - 1), price2: bottom,
-          borderColor: String(color.gray), borderWidth: 2, bgColor: 'transparent',
-        };
-      }
-    }
-    for (const b of made) if (b && !isNaN(b.price1) && !isNaN(b.price2)) boxes.push(b);
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    boxes,
-    lines,
+    init() {
+      return { steps: [], lists: [], series: [], vars: { step: 0, levels: [], volumes: [] } };
+    },
+    copyVars: (v) => ({ step: v.step, levels: v.levels.slice(), volumes: v.volumes.slice() }),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const levels = v.levels;
+      const volumes = v.volumes;
+      const bar = bars[i];
+      const src = source(bar);
+      const volume = bar.volume ?? NaN;
+      if (i === 0) v.step = (bar.high - bar.low) * cfg.mult;
+      const step = v.step;
+
+      if (levels.length <= 0) {
+        levels.push(src + step);
+        levels.push(src - step);
+        volumes.push(volume);
+      } else {
+        let found = false;
+        for (let k = 0; k <= levels.length - 2; k++) {
+          if (lt(src, levels[k]) && gt(src, levels[k + 1])) {
+            volumes[k] = volumes[k] + volume;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          if (gt(src, levels[0])) {
+            let lvl = levels[0];
+            checkGrowth(i, src, lvl, step, true, levels.length);
+            const addLevels: number[] = [];
+            while (gt(src, lvl)) {
+              addLevels.push(lvl + step);
+              lvl = lvl + step;
+            }
+            addLevels.push(lvl + step);
+            // each new level goes to the front of the array
+            levels.unshift(...addLevels.reverse());
+            volumes.unshift(volume, ...new Array<number>(addLevels.length - 1).fill(0));
+          } else if (lt(src, levels[levels.length - 1])) {
+            let lvl = levels[levels.length - 1];
+            checkGrowth(i, src, lvl, step, false, levels.length);
+            while (lt(src, lvl)) {
+              levels.push(lvl - step);
+              volumes.push(0);
+              lvl = lvl - step;
+            }
+            levels.push(lvl - step);
+            volumes.push(volume);
+          }
+        }
+      }
+    },
+    // barstate.islast: the boxes and lines of the last bar, from the levels at its end
+    result(s, bars, chart) {
+      const n = bars.length;
+      const boxes: BoxData[] = [];
+      const lines: LineDrawingData[] = [];
+      if (n > 0) {
+        const { levels, volumes } = s.vars;
+        const i = n - 1;
+        const src = source(bars[i]);
+        const interval = barInterval(bars);
+        const T = (index: number) => barTime(bars, index, interval);
+        const vols: number[] = new Array(rows * 2 + 1).fill(NaN);
+        const made: Array<BoxData | null> = new Array(rows * 2 + 2).fill(null);
+        for (let k = 0; k <= levels.length - 2; k++) {
+          if (!(lt(src, levels[k]) && gt(src, levels[k + 1]))) continue;
+          for (let x = 0; x <= Math.min(volumes.length - 1, rows * 2); x++) {
+            vols[x] = k - rows + x < volumes.length - 1 ? volumes[Math.max(0, k - rows + x)] : 0;
+          }
+          const vol = array.copy(vols);
+          array.sort(vols);
+          for (let x = 0; x <= rows * 2; x++) {
+            if (!(k - rows + x < levels.length - 1)) continue;
+            const col = x < rows ? color.red : x > rows ? color.lime : color.gray;
+            const rank = array.indexof(vols, vol[x]);
+            const grade = String(color.from_gradient(rank, 0, vols.length, color.new(col, 80), color.new(col, 40)));
+            made[x] = {
+              time1: T(i + left + rows * 2 - rank), price1: levels[Math.max(0, k - rows + x)],
+              time2: T(i + left + rows * 2 + rank), price2: levels[Math.max(1, k - rows + x + 1)],
+              borderColor: grade, bgColor: grade, borderStyle: 'dotted', text: str.tostring(vol[x], 'volume'), textColor: foregroundColorOf(chart),
+              ...(cfg.poc && rank === rows * 2 ? { extend: 'left' as const } : {}),
+            };
+            if (cfg.tbli && k - rows + x >= 0) {
+              const y = levels[k - rows + x];
+              lines.push({
+                time1: T(i + left), price1: y, time2: T(Math.min(i + left + rows * 2 + vols.length - 1, i + 500)), price2: y,
+                color: String(color.gray),
+              });
+            }
+          }
+          if (cfg.tbl) {
+            // box.get_top / box.get_bottom of a box that was not made are na: the frame is not drawn
+            const top = made[0] ? made[0].price1 : NaN;
+            const bottom = made[rows * 2] ? made[rows * 2]!.price2 : NaN;
+            made[rows * 2 + 1] = {
+              time1: T(i + left), price1: top, time2: T(i + left + rows * 2 + vols.length - 1), price2: bottom,
+              borderColor: String(color.gray), borderWidth: 2, bgColor: 'transparent',
+            };
+          }
+        }
+        for (const b of made) if (b && !isNaN(b.price1) && !isNaN(b.price2)) boxes.push(b);
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        boxes,
+        lines,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VolumeOrderbookInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<VolumeOrderbookInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const VolumeOrderbook = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

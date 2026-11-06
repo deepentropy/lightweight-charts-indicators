@@ -16,10 +16,11 @@
  * Original notice: © QuantAlgo
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
-import { barInterval, barTime } from '../bar-time';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AsymmetricVolatilityTrendLineInputs {
   /** 'Default' | 'Fast Response' | 'Smooth Trend' (the presets override thresholdMult and lookback) */
@@ -96,13 +97,34 @@ const COLOR_PRESETS: Record<string, [string, string]> = {
   Neon: ['#ffff00', '#ff00ff'],
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AsymmetricVolatilityTrendLineInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
-  & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
+  & { alerts: AlertConditionState[] };
+
+interface AvtlVars {
+  /** var float trend_line = na, var int trend_dir = 0, var int prev_dir = 0 */
+  tl: number;
+  dir: number;
+  prevDir: number;
+}
+
+interface AvtlRun extends BarRunState<AvtlVars> {
+  sd: WindowStdev;
+  line: number[];
+  dirs: number[];
+  plots: Point[][];
+  layers: string[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+const LAYER_TRANSP = [55, 70, 82, 92];
+
+function study(inputs: Partial<AsymmetricVolatilityTrendLineInputs>): BarStudy<AvtlRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   let { thresholdMult, lookback } = cfg;
   if (cfg.preset === 'Fast Response') {
     thresholdMult = 1.0;
@@ -112,98 +134,113 @@ export function calculate(
     lookback = 35;
   }
   const [bullish, bearish] = COLOR_PRESETS[cfg.colorPreset] ?? [cfg.bullishColor, cfg.bearishColor];
-
-  const srcSeries = getSourceSeries(bars, cfg.src);
-  const src = srcSeries.toArray().map((v) => v ?? NaN);
-  const sd = ta.stdev(srcSeries, lookback).toArray().map((v) => v ?? NaN);
-
-  const line: number[] = new Array(n);
-  const lineColor: string[] = new Array(n);
-  const reversal: boolean[] = new Array(n);
-  const dirs: number[] = new Array(n);
-  let tl = NaN; // var float trend_line = na
-  let dir = 0; // var int trend_dir = 0
-  let prevDir = 0; // var int prev_dir = 0
-  for (let i = 0; i < n; i++) {
-    const vt = sd[i] * thresholdMult;
-    const s = src[i];
-    if (isNaN(tl)) {
-      tl = s;
-    } else {
-      prevDir = dir;
-      if (dir >= 0) {
-        if (gt(s, tl + vt * 0.5)) {
-          tl = Math.max(tl, s - vt * 0.25);
-          dir = 1;
-        } else if (gt(tl - vt, s)) {
-          tl = s + vt * 0.25;
-          dir = -1;
-        }
-      } else if (gt(tl - vt * 0.5, s)) {
-        tl = Math.min(tl, s + vt * 0.25);
-        dir = -1;
-      } else if (gt(s, tl + vt)) {
-        tl = s - vt * 0.25;
-        dir = 1;
-      }
-    }
-    line[i] = tl;
-    // is_reversal = trend_dir != prev_dir and bar_index > 0 (prev_dir is 0 on the first bar, as trend_dir)
-    reversal[i] = dir !== prevDir && i > 0;
-    lineColor[i] = dir === 1 ? bullish : bearish;
-    dirs[i] = dir;
-  }
-
-  // turned_bullish = trend_dir == 1 and trend_dir[1] == -1; turned_bearish the mirror; trend_changed = either
-  const turnedBullish = dirs.map((d, i) => i > 0 && d === 1 && dirs[i - 1] === -1);
-  const turnedBearish = dirs.map((d, i) => i > 0 && d === -1 && dirs[i - 1] === 1);
-  const trendChanged = turnedBullish.map((f, i) => f || turnedBearish[i]);
-
-  const t = (i: number) => bars[i].time;
-  const plot = (f: (i: number) => number, c?: (i: number) => string) =>
-    bars.map((_b, i) => (c ? { time: t(i), value: f(i), color: c(i) } : { time: t(i), value: f(i) }));
-  const mid = (k: number) => (i: number) => line[i] + (src[i] - line[i]) * k;
-  const layer = (tr: number) => lineColor.map((c) => String(color.new(c, tr)));
-
-  const interval = barInterval(bars);
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    // plotchar(is_reversal ? trend_line[1] : na, 'Reversal', '⦿', location.absolute, color = line_color,
-    //          size = size.small, offset = -1): the value of bar i is drawn on bar i - 1
-    if (reversal[i] && i > 0 && !isNaN(line[i - 1])) {
-      markers.push({ time: barTime(bars, i - 1, interval), position: 'atPriceMiddle', price: line[i - 1], shape: 'circle',
-        color: 'transparent', text: '⦿', textColor: lineColor[i], size: 'small' });
-    }
-    // barcolor(show_candles ? color.new(line_color, bar_trans) : na); bgcolor(show_bgcolor ? color.new(line_color, bg_trans) : na)
-    if (cfg.showCandles) barColors.push({ time: t(i), color: String(color.new(lineColor[i], cfg.barTransparency)) });
-    if (cfg.showBgColor) bgColors.push({ time: t(i), color: String(color.new(lineColor[i], cfg.bgTransparency)) });
-  }
-
+  const value = barSource(cfg.src);
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(trend_line, 'Trend Line', line_color, linewidth = 4, style = plot.style_linebr)
-      plot0: plot((i) => line[i], (i) => lineColor[i]),
-      // fill anchors (display.none): trend_line, mid1, mid2, mid3, src
-      plot1: plot((i) => line[i]),
-      plot2: plot(mid(0.25)),
-      plot3: plot(mid(0.5)),
-      plot4: plot(mid(0.75)),
-      plot5: plot((i) => src[i]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: AvtlRun = {
+        sd: new WindowStdev(lookback), line: [], dirs: [], plots: Array.from({ length: 6 }, () => []),
+        layers: LAYER_TRANSP.map(() => []), markers: [], barColors: [], bgColors: [], flags: [[], [], []],
+        times: [[], [], []], steps: [], vars: { tl: NaN, dir: 0, prevDir: 0 }, lists: [], series: [],
+      };
+      s.steps = [s.sd];
+      s.lists = [s.markers, s.barColors, s.bgColors, ...s.times];
+      s.series = [s.line, s.dirs, ...s.plots, ...s.layers, ...s.flags];
+      return s;
     },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot2', colors: layer(55) },
-      { plot1: 'plot2', plot2: 'plot3', colors: layer(70) },
-      { plot1: 'plot3', plot2: 'plot4', colors: layer(82) },
-      { plot1: 'plot4', plot2: 'plot5', colors: layer(92) },
-    ],
-    markers,
-    barColors,
-    bgColors,
-    alerts: alertStates(alertConditions, bars, [turnedBullish, turnedBearish, trendChanged]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const src = value(b);
+      const vt = s.sd.step(src) * thresholdMult;
+      if (isNaN(v.tl)) {
+        v.tl = src;
+      } else {
+        v.prevDir = v.dir;
+        if (v.dir >= 0) {
+          if (gt(src, v.tl + vt * 0.5)) {
+            v.tl = Math.max(v.tl, src - vt * 0.25);
+            v.dir = 1;
+          } else if (gt(v.tl - vt, src)) {
+            v.tl = src + vt * 0.25;
+            v.dir = -1;
+          }
+        } else if (gt(v.tl - vt * 0.5, src)) {
+          v.tl = Math.min(v.tl, src + vt * 0.25);
+          v.dir = -1;
+        } else if (gt(src, v.tl + vt)) {
+          v.tl = src - vt * 0.25;
+          v.dir = 1;
+        }
+      }
+      const tl = v.tl;
+      const dir = v.dir;
+      s.line[i] = tl;
+      s.dirs[i] = dir;
+      // is_reversal = trend_dir != prev_dir and bar_index > 0 (prev_dir is 0 on the first bar, as trend_dir)
+      const reversal = dir !== v.prevDir && i > 0;
+      const lineColor = dir === 1 ? bullish : bearish;
+
+      // turned_bullish = trend_dir == 1 and trend_dir[1] == -1; turned_bearish the mirror; trend_changed = either
+      const prev = i > 0 ? s.dirs[i - 1] : NaN;
+      const turnedBullish = i > 0 && dir === 1 && prev === -1;
+      const turnedBearish = i > 0 && dir === -1 && prev === 1;
+      const trendChanged = turnedBullish || turnedBearish;
+      const t = b.time;
+      s.flags[0][i] = turnedBullish;
+      s.flags[1][i] = turnedBearish;
+      s.flags[2][i] = trendChanged;
+      if (turnedBullish) s.times[0].push(t as number);
+      if (turnedBearish) s.times[1].push(t as number);
+      if (trendChanged) s.times[2].push(t as number);
+
+      // plot(trend_line, 'Trend Line', line_color, linewidth = 4, style = plot.style_linebr)
+      s.plots[0][i] = { time: t, value: tl, color: lineColor };
+      // fill anchors (display.none): trend_line, mid1, mid2, mid3, src
+      s.plots[1][i] = { time: t, value: tl };
+      s.plots[2][i] = { time: t, value: tl + (src - tl) * 0.25 };
+      s.plots[3][i] = { time: t, value: tl + (src - tl) * 0.5 };
+      s.plots[4][i] = { time: t, value: tl + (src - tl) * 0.75 };
+      s.plots[5][i] = { time: t, value: src };
+      for (let k = 0; k < LAYER_TRANSP.length; k++) s.layers[k][i] = String(color.new(lineColor, LAYER_TRANSP[k]));
+
+      // plotchar(is_reversal ? trend_line[1] : na, 'Reversal', '⦿', location.absolute, color = line_color,
+      //          size = size.small, offset = -1): the value of bar i is drawn on bar i - 1
+      if (reversal && i > 0 && !isNaN(s.line[i - 1])) {
+        s.markers.push({ time: bars[i - 1].time, position: 'atPriceMiddle', price: s.line[i - 1], shape: 'circle',
+          color: 'transparent', text: '⦿', textColor: lineColor, size: 'small' });
+      }
+      // barcolor(show_candles ? color.new(line_color, bar_trans) : na); bgcolor(show_bgcolor ? color.new(line_color, bg_trans) : na)
+      if (cfg.showCandles) s.barColors.push({ time: t, color: String(color.new(lineColor, cfg.barTransparency)) });
+      if (cfg.showBgColor) s.bgColors.push({ time: t, color: String(color.new(lineColor, cfg.bgTransparency)) });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: Object.fromEntries(s.plots.map((p, k) => [`plot${k}`, p.slice()])),
+        fills: [
+          { plot1: 'plot1', plot2: 'plot2', colors: s.layers[0].slice() },
+          { plot1: 'plot2', plot2: 'plot3', colors: s.layers[1].slice() },
+          { plot1: 'plot3', plot2: 'plot4', colors: s.layers[2].slice() },
+          { plot1: 'plot4', plot2: 'plot5', colors: s.layers[3].slice() },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AsymmetricVolatilityTrendLineInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AsymmetricVolatilityTrendLineInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -224,6 +261,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const AsymmetricVolatilityTrendLine = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

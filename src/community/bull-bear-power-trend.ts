@@ -9,7 +9,9 @@
  * Reference: "Bull Bear Power Trend" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BullBearPowerTrendInputs {
   showRegTrend: boolean;
@@ -48,74 +50,86 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<BullBearPowerTrendInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface PowerRun extends BarRunState<Record<string, never>> {
+  highest50: WindowExtreme;
+  lowest50: WindowExtreme;
+  atr5: ReturnType<typeof taStep.atr>;
+  reg: ReturnType<typeof taStep.linreg> | null;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<BullBearPowerTrendInputs>): BarStudy<PowerRun, IndicatorResult> {
   const { showRegTrend, regLength } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-
-  const highest50 = ta.highest(highSeries, 50).toArray();
-  const lowest50 = ta.lowest(lowSeries, 50).toArray();
-  const atr5 = ta.atr(bars, 5).toArray();
-
-  const bullArr: number[] = new Array(n);
-  const bearArr: number[] = new Array(n);
-  const trendArr: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const atr = atr5[i] ?? 1;
-    const safeAtr = atr === 0 ? 1 : atr;
-    bullArr[i] = ((bars[i].close - (lowest50[i] ?? bars[i].low)) / safeAtr);
-    bearArr[i] = -(((highest50[i] ?? bars[i].high) - bars[i].close) / safeAtr);
-    trendArr[i] = bullArr[i] + bearArr[i];
-  }
-
-  // Optional linear regression on trend
-  const trendSeries = new Series(bars, (_b, i) => trendArr[i]);
-  const regArr = showRegTrend ? ta.linreg(trendSeries, regLength, 0).toArray() : null;
-
   const warmup = 50;
-  const makePlot = (arr: number[]) =>
-    arr.map((v, i) => ({ time: bars[i].time, value: i < warmup ? NaN : v }));
-
-  const trendPlot = bars.map((b, i) => {
-    if (i < warmup) return { time: b.time, value: NaN };
-    if (showRegTrend && regArr) return { time: b.time, value: regArr[i] ?? NaN };
-    return { time: b.time, value: trendArr[i] };
-  });
-
-  // Histograms: bull power when BullTrend < 2, bear power when BearTrend > -2
-  const bullHist = bullArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : (v < 2 ? v - 2 : NaN),
-  }));
-  const bearHist = bearArr.map((v, i) => ({
-    time: bars[i].time,
-    value: i < warmup ? NaN : (v > -2 ? v + 2 : NaN),
-  }));
-
-  const level2Plot = bars.map((b) => ({ time: b.time, value: 2 }));
-  const levelNeg2Plot = bars.map((b) => ({ time: b.time, value: -2 }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'plot0': makePlot(bullArr),
-      'plot1': makePlot(bearArr),
-      'plot2': trendPlot,
-      'plot3': bullHist,
-      'plot4': bearHist,
-      'plot5': level2Plot,
-      'plot6': levelNeg2Plot,
+    init() {
+      const highest50 = new WindowExtreme(false, 50);
+      const lowest50 = new WindowExtreme(true, 50);
+      const atr5 = taStep.atr(5);
+      // Optional linear regression on trend
+      const reg = showRegTrend ? taStep.linreg(regLength, 0) : null;
+      const s: PowerRun = {
+        highest50, lowest50, atr5, reg, plots: Array.from({ length: 7 }, () => []),
+        steps: [highest50, lowest50, atr5, ...(reg ? [reg] : [])], vars: {}, lists: [], series: [],
+      };
+      s.series = [...s.plots];
+      return s;
     },
-    hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
-    fills: [
-      { plot1: 'plot0', plot2: 'plot5', options: { color: 'rgba(0,128,0,0.15)' } },
-      { plot1: 'plot1', plot2: 'plot6', options: { color: 'rgba(255,0,0,0.15)' } },
-      { plot1: 'plot6', plot2: 'plot5', options: { color: 'rgba(255,255,255,0.12)' } },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const highest50: number | null = s.highest50.step(b.high);
+      const lowest50: number | null = s.lowest50.step(b.low);
+      const atr = (s.atr5.step(b.high, b.low, b.close) as number | null) ?? 1;
+      const safeAtr = atr === 0 ? 1 : atr;
+      const bull = ((b.close - (lowest50 ?? b.low)) / safeAtr);
+      const bear = -(((highest50 ?? b.high) - b.close) / safeAtr);
+      const trend = bull + bear;
+      const reg = s.reg ? s.reg.step(trend) : NaN;
+
+      const p = s.plots;
+      p[0][i] = { time, value: i < warmup ? NaN : bull };
+      p[1][i] = { time, value: i < warmup ? NaN : bear };
+      p[2][i] = i < warmup ? { time, value: NaN } : showRegTrend ? { time, value: reg ?? NaN } : { time, value: trend };
+      // Histograms: bull power when BullTrend < 2, bear power when BearTrend > -2
+      p[3][i] = { time, value: i < warmup ? NaN : (bull < 2 ? bull - 2 : NaN) };
+      p[4][i] = { time, value: i < warmup ? NaN : (bear > -2 ? bear + 2 : NaN) };
+      p[5][i] = { time, value: 2 };
+      p[6][i] = { time, value: -2 };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'plot0': p[0].slice(),
+          'plot1': p[1].slice(),
+          'plot2': p[2].slice(),
+          'plot3': p[3].slice(),
+          'plot4': p[4].slice(),
+          'plot5': p[5].slice(),
+          'plot6': p[6].slice(),
+        },
+        hlines: hlineConfig.map(h => ({ value: h.value, options: h.options })),
+        fills: [
+          { plot1: 'plot0', plot2: 'plot5', options: { color: 'rgba(0,128,0,0.15)' } },
+          { plot1: 'plot1', plot2: 'plot6', options: { color: 'rgba(255,0,0,0.15)' } },
+          { plot1: 'plot6', plot2: 'plot5', options: { color: 'rgba(255,255,255,0.12)' } },
+        ],
+      };
+    },
   };
 }
 
-export const BullBearPowerTrend = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BullBearPowerTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BullBearPowerTrendInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const BullBearPowerTrend = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

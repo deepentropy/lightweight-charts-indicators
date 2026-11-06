@@ -15,10 +15,12 @@
  */
 
 import {
-  ta, compare, color, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
+  taStep, compare, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -71,99 +73,144 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RangeFilterBuySell5minInputs> = {},
-): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface RangeFilterVars {
+  /** CondIni */
+  condIni: number;
+}
+
+interface RangeFilterRun extends BarRunState<RangeFilterVars> {
+  avrng: ReturnType<typeof taStep.ema>;
+  smrng: ReturnType<typeof taStep.ema>;
+  src: number[];
+  filt: number[];
+  upward: number[];
+  downward: number[];
+  filtPlot: Point[];
+  hbandPlot: Point[];
+  lbandPlot: Point[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RangeFilterBuySell5minInputs>): BarStudy<RangeFilterRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = A(getSourceSeries(bars, cfg.src));
+  const value = barSource(cfg.src);
   const nz = (v: number) => (Number.isFinite(v) ? v : 0);
-
-  // smoothrng(x, t, m): ta.ema(ta.ema(math.abs(x - x[1]), t), t * 2 - 1) * m
-  const absChange = src.map((v, i) => (i > 0 ? Math.abs(v - src[i - 1]) : NaN));
-  const avrng = ta.ema(Series.fromArray(bars, absChange), cfg.per);
-  const smrng = A(ta.ema(avrng, cfg.per * 2 - 1)).map((v) => v * cfg.mult);
-
-  const filt: number[] = new Array(n);
-  const upward: number[] = new Array(n);
-  const downward: number[] = new Array(n);
-  const hband: number[] = new Array(n);
-  const lband: number[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const filtColors: string[] = new Array(n);
-  let condIni = 0;
-  const longFlags: boolean[] = [];
-  const shortFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const x = src[i];
-    const r = smrng[i];
-    // rngfilt(x, r)
-    const prev = i > 0 ? nz(filt[i - 1]) : 0;
-    filt[i] = compare.gt(x, prev)
-      ? (compare.lt(x - r, prev) ? prev : x - r)
-      : (compare.gt(x + r, prev) ? prev : x + r);
-
-    // Filter direction
-    const f1 = i > 0 ? filt[i - 1] : NaN;
-    const up1 = i > 0 ? nz(upward[i - 1]) : 0;
-    const dn1 = i > 0 ? nz(downward[i - 1]) : 0;
-    upward[i] = compare.gt(filt[i], f1) ? up1 + 1 : compare.lt(filt[i], f1) ? 0 : up1;
-    downward[i] = compare.lt(filt[i], f1) ? dn1 + 1 : compare.gt(filt[i], f1) ? 0 : dn1;
-
-    hband[i] = filt[i] + r;
-    lband[i] = filt[i] - r;
-
-    const s1 = i > 0 ? src[i - 1] : NaN;
-    const above = compare.gt(x, filt[i]);
-    const below = compare.lt(x, filt[i]);
-    const rising = compare.gt(x, s1);
-    const falling = compare.lt(x, s1);
-    const longCond = (above && rising && upward[i] > 0) || (above && falling && upward[i] > 0);
-    const shortCond = (below && falling && downward[i] > 0) || (below && rising && downward[i] > 0);
-
-    filtColors[i] = upward[i] > 0 ? UP_COLOR : downward[i] > 0 ? DOWN_COLOR : MID_COLOR;
-    barColors.push({ time: bars[i].time, color: longCond ? UP_COLOR : shortCond ? DOWN_COLOR : MID_COLOR });
-
-    // CondIni := longCond ? 1 : shortCond ? -1 : CondIni[1]
-    const condPrev = condIni;
-    condIni = longCond ? 1 : shortCond ? -1 : condPrev;
-    longFlags.push(longCond && condPrev === -1);
-    shortFlags.push(shortCond && condPrev === 1);
-    if (longCond && condPrev === -1) {
-      markers.push({
-        time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: BUY_COLOR, text: 'Buy', textColor: UP_COLOR, size: 'small',
-      });
-    }
-    if (shortCond && condPrev === 1) {
-      markers.push({
-        time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: SELL_COLOR, text: 'Sell', textColor: UP_COLOR, size: 'small',
-      });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: filt[i], color: filtColors[i] })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: hband[i] })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: lband[i] })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      // smoothrng(x, t, m): ta.ema(ta.ema(math.abs(x - x[1]), t), t * 2 - 1) * m
+      const avrng = taStep.ema(cfg.per);
+      const smrng = taStep.ema(cfg.per * 2 - 1);
+      const s: RangeFilterRun = {
+        avrng, smrng, src: [], filt: [], upward: [], downward: [], filtPlot: [], hbandPlot: [], lbandPlot: [],
+        markers: [], barColors: [], flags: [[], [], []], times: [[], [], []],
+        steps: [avrng, smrng], vars: { condIni: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = [s.src, s.filt, s.upward, s.downward, s.filtPlot, s.hbandPlot, s.lbandPlot, ...s.flags];
+      return s;
     },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot0', options: { color: HIGH_FILL, title: 'High Target Range' } },
-      { plot1: 'plot2', plot2: 'plot0', options: { color: LOW_FILL, title: 'Low Target Range' } },
-    ],
-    markers,
-    barColors,
-    // alertcondition(longCondition), (shortCondition), (longCondition or shortCondition)
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags, longFlags.map((f, i) => f || shortFlags[i])]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const x = value(b) ?? NaN;
+      s.src[i] = x;
+      const s1 = i > 0 ? s.src[i - 1] : NaN;
+      const absChange = i > 0 ? Math.abs(x - s1) : NaN;
+      const r = s.smrng.step(s.avrng.step(absChange)) * cfg.mult;
+
+      // rngfilt(x, r)
+      const prev = i > 0 ? nz(s.filt[i - 1]) : 0;
+      const filt = compare.gt(x, prev)
+        ? (compare.lt(x - r, prev) ? prev : x - r)
+        : (compare.gt(x + r, prev) ? prev : x + r);
+      s.filt[i] = filt;
+
+      // Filter direction
+      const f1 = i > 0 ? s.filt[i - 1] : NaN;
+      const up1 = i > 0 ? nz(s.upward[i - 1]) : 0;
+      const dn1 = i > 0 ? nz(s.downward[i - 1]) : 0;
+      const upward = compare.gt(filt, f1) ? up1 + 1 : compare.lt(filt, f1) ? 0 : up1;
+      const downward = compare.lt(filt, f1) ? dn1 + 1 : compare.gt(filt, f1) ? 0 : dn1;
+      s.upward[i] = upward;
+      s.downward[i] = downward;
+
+      const above = compare.gt(x, filt);
+      const below = compare.lt(x, filt);
+      const rising = compare.gt(x, s1);
+      const falling = compare.lt(x, s1);
+      const longCond = (above && rising && upward > 0) || (above && falling && upward > 0);
+      const shortCond = (below && falling && downward > 0) || (below && rising && downward > 0);
+
+      const filtColor = upward > 0 ? UP_COLOR : downward > 0 ? DOWN_COLOR : MID_COLOR;
+      s.barColors.push({ time, color: longCond ? UP_COLOR : shortCond ? DOWN_COLOR : MID_COLOR });
+
+      // CondIni := longCond ? 1 : shortCond ? -1 : CondIni[1]
+      const condPrev = s.vars.condIni;
+      s.vars.condIni = longCond ? 1 : shortCond ? -1 : condPrev;
+      const long = longCond && condPrev === -1;
+      const short = shortCond && condPrev === 1;
+      if (long) {
+        s.markers.push({
+          time, position: 'belowBar', shape: 'labelUp', color: BUY_COLOR, text: 'Buy', textColor: UP_COLOR, size: 'small',
+        });
+      }
+      if (short) {
+        s.markers.push({
+          time, position: 'aboveBar', shape: 'labelDown', color: SELL_COLOR, text: 'Sell', textColor: UP_COLOR, size: 'small',
+        });
+      }
+      // alertcondition(longCondition), (shortCondition), (longCondition or shortCondition)
+      s.flags[0][i] = long;
+      s.flags[1][i] = short;
+      s.flags[2][i] = long || short;
+      if (long) s.times[0].push(time as number);
+      if (short) s.times[1].push(time as number);
+      if (long || short) s.times[2].push(time as number);
+
+      s.filtPlot[i] = { time, value: filt, color: filtColor };
+      s.hbandPlot[i] = { time, value: filt + r };
+      s.lbandPlot[i] = { time, value: filt - r };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.filtPlot.slice(),
+          plot1: s.hbandPlot.slice(),
+          plot2: s.lbandPlot.slice(),
+        },
+        fills: [
+          { plot1: 'plot1', plot2: 'plot0', options: { color: HIGH_FILL, title: 'High Target Range' } },
+          { plot1: 'plot2', plot2: 'plot0', options: { color: LOW_FILL, title: 'Low Target Range' } },
+        ],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RangeFilterBuySell5minInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RangeFilterBuySell5minInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RangeFilterBuySell5min = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -7,7 +7,9 @@
  * Reference: "Premier Stochastic Oscillator [LazyBear]"
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PremierStochasticInputs {
   stochLength: number;
@@ -38,62 +40,84 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PremierStochasticInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface PsoRun extends BarRunState<Record<string, never>> {
+  stoch: ReturnType<typeof taStep.stoch>;
+  ema1: ReturnType<typeof taStep.ema>;
+  ema2: ReturnType<typeof taStep.ema>;
+  /** The source values of another study (null: read from the bars) */
+  ext: number[] | null;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<PremierStochasticInputs>): BarStudy<PsoRun, IndicatorResult> {
   const { stochLength, smoothLength, src } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const srcSeries = getSourceSeries(bars, src);
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-
-  const rawStoch = ta.stoch(srcSeries, highSeries, lowSeries, stochLength).toArray();
-
-  // Normalize: nStoch = 0.1 * (rawStoch - 50)
-  const nStoch: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    nStoch[i] = isNaN(rawStoch[i]) ? 0 : 0.1 * (rawStoch[i] - 50);
-  }
-
-  const nStochSeries = new Series(bars, (_b, i) => nStoch[i]);
-  const ss1 = ta.ema(nStochSeries, smoothLength).toArray();
-
-  const ss1Series = new Series(bars, (_b, i) => isNaN(ss1[i]) ? 0 : ss1[i]);
-  const ss = ta.ema(ss1Series, smoothLength).toArray();
-
-  // IFT: PSO = (exp(2*ss) - 1) / (exp(2*ss) + 1)
-  const psoArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const v = isNaN(ss[i]) ? 0 : ss[i];
-    const e = Math.exp(2 * v);
-    psoArr[i] = (e - 1) / (e + 1);
-  }
-
+  const value = barSource(src);
   const warmup = stochLength + smoothLength * 2;
 
-  // Pine: plot(pso, title="Premier Stoch", color=black, linewidth=2) -- line
-  const plot0 = psoArr.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    return { time: bars[i].time, value: v };
-  });
-
-  // Pine: plot(pso, color=iff(pso < 0, red, blue), style=histogram) -- histogram with conditional color
-  const plot1 = psoArr.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    const color = v < 0 ? '#EF5350' : '#2196F3';
-    return { time: bars[i].time, value: v, color };
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1 },
-    hlines: [
-      { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Zero' } },
-      { value: 0.2, options: { color: '#2196F3', linestyle: 'dashed' as const, title: 'Upper Trigger' } },
-      { value: 0.9, options: { color: '#2196F3', linestyle: 'solid' as const, title: 'Upper' } },
-      { value: -0.2, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Lower Trigger' } },
-      { value: -0.9, options: { color: '#EF5350', linestyle: 'solid' as const, title: 'Lower' } },
-    ],
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init(bars) {
+      const stoch = taStep.stoch(stochLength);
+      const ema1 = taStep.ema(smoothLength);
+      const ema2 = taStep.ema(smoothLength);
+      const s: PsoRun = {
+        stoch, ema1, ema2, ext: isBarSource(src) ? null : getSourceSeries(bars, src).toArray(), plot0: [], plot1: [],
+        steps: [stoch, ema1, ema2], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const rawStoch = s.stoch.step(s.ext ? s.ext[i] : value(b), b.high, b.low);
+
+      // Normalize: nStoch = 0.1 * (rawStoch - 50)
+      const nStoch = isNaN(rawStoch) ? 0 : 0.1 * (rawStoch - 50);
+      const ss1 = s.ema1.step(nStoch);
+      const ss = s.ema2.step(isNaN(ss1) ? 0 : ss1);
+
+      // IFT: PSO = (exp(2*ss) - 1) / (exp(2*ss) + 1)
+      const v = isNaN(ss) ? 0 : ss;
+      const e = Math.exp(2 * v);
+      const pso = (e - 1) / (e + 1);
+
+      const time = b.time;
+      if (i < warmup) {
+        s.plot0[i] = { time, value: NaN };
+        s.plot1[i] = { time, value: NaN };
+      } else {
+        // Pine: plot(pso, title="Premier Stoch", color=black, linewidth=2) -- line
+        s.plot0[i] = { time, value: pso };
+        // Pine: plot(pso, color=iff(pso < 0, red, blue), style=histogram) -- histogram with conditional color
+        s.plot1[i] = { time, value: pso, color: pso < 0 ? '#EF5350' : '#2196F3' };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice() },
+        hlines: [
+          { value: 0, options: { color: '#787B86', linestyle: 'solid' as const, title: 'Zero' } },
+          { value: 0.2, options: { color: '#2196F3', linestyle: 'dashed' as const, title: 'Upper Trigger' } },
+          { value: 0.9, options: { color: '#2196F3', linestyle: 'solid' as const, title: 'Upper' } },
+          { value: -0.2, options: { color: '#EF5350', linestyle: 'dashed' as const, title: 'Lower Trigger' } },
+          { value: -0.9, options: { color: '#EF5350', linestyle: 'solid' as const, title: 'Lower' } },
+        ],
+      };
+    },
   };
 }
 
-export const PremierStochastic = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PremierStochasticInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PremierStochasticInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const PremierStochastic = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

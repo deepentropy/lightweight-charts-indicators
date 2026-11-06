@@ -11,10 +11,12 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 import { barInterval, barTime } from '../bar-time';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -52,74 +54,126 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SwingSupportAndResistanceInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface SwingVars {
+  /** var float resistance / support: the last pivot high / low */
+  r: number;
+  s: number;
+}
+
+interface SwingRun extends BarRunState<SwingVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  over: ReturnType<typeof taStep.crossover>;
+  under: ReturnType<typeof taStep.crossunder>;
+  resistance: number[];
+  support: number[];
+  /** The shifted plots (a whole non-negative pivot length): the point of bar i - pivotLen, written by bar i */
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SwingSupportAndResistanceInputs>): BarStudy<SwingRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const len = cfg.pivotLen;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const pivotHigh = A(ta.pivothigh(getSourceSeries(bars, 'high'), len, len));
-  const pivotLow = A(ta.pivotlow(getSourceSeries(bars, 'low'), len, len));
-
-  // var float resistance / support: the last pivot high / low
-  const resistance: number[] = new Array(n);
-  const support: number[] = new Array(n);
-  let r = NaN;
-  let s = NaN;
-  for (let i = 0; i < n; i++) {
-    if (!isNaN(pivotHigh[i])) r = pivotHigh[i];
-    if (!isNaN(pivotLow[i])) s = pivotLow[i];
-    resistance[i] = r;
-    support[i] = s;
-  }
-
-  // plot(..., offset = -pivotLen): the value of bar i is drawn on bar i - pivotLen
-  const interval = barInterval(bars);
-  const shifted = (vals: number[], show: boolean, col: string) => {
-    const out: { time: number; value: number; color: string }[] = [];
-    for (let i = 0; i < n; i++) {
-      const t = barTime(bars, i - len, interval);
-      if (isNaN(t)) continue;
-      out.push({ time: t, value: show ? vals[i] : NaN, color: col });
-    }
-    return out;
-  };
-
-  // ta.crossover(close, resistance) / ta.crossunder(close, support)
-  const close = getSourceSeries(bars, 'close');
-  const buySignal = ta.crossover(close, S(resistance)).toArray();
-  const sellSignal = ta.crossunder(close, S(support)).toArray();
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    if (buySignal[i]) {
-      markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: color.green, text: 'Buy',
-        textColor: color.green, size: 'small' });
-    }
-    if (sellSignal[i]) {
-      markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: color.red, text: 'Sell',
-        textColor: color.red, size: 'small' });
-    }
-  }
-
+  /** A shift back by a whole number of bars: each point is written by one bar; else the plots are built at the end */
+  const backShift = Number.isInteger(len) && len >= 0;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: shifted(resistance, cfg.showResistance, color.red),
-      plot1: shifted(support, cfg.showSupport, color.green),
+    init() {
+      const s: SwingRun = {
+        ph: new PivotStep(len, len, true), pl: new PivotStep(len, len, false), over: taStep.crossover(),
+        under: taStep.crossunder(), resistance: [], support: [], plot0: [], plot1: [], markers: [],
+        flags: [[], []], times: [[], []], steps: [], vars: { r: NaN, s: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.ph, s.pl, s.over, s.under];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.resistance, s.support, s.plot0, s.plot1, ...s.flags];
+      return s;
     },
-    markers,
-    // alertcondition(buySignal, 'Buy Alert') / alertcondition(sellSignal, 'Sell Alert')
-    alerts: alertStates(alertConditions, bars, [buySignal.map((v) => !!v), sellSignal.map((v) => !!v)]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const pivotHigh = s.ph.step(i, b.high);
+      const pivotLow = s.pl.step(i, b.low);
+      if (!isNaN(pivotHigh)) v.r = pivotHigh;
+      if (!isNaN(pivotLow)) v.s = pivotLow;
+      s.resistance[i] = v.r;
+      s.support[i] = v.s;
+
+      // plot(..., offset = -pivotLen): the value of bar i is drawn on bar i - pivotLen
+      if (backShift && i - len >= 0) {
+        const t = bars[i - len].time;
+        s.plot0[i - len] = { time: t, value: cfg.showResistance ? v.r : NaN, color: color.red };
+        s.plot1[i - len] = { time: t, value: cfg.showSupport ? v.s : NaN, color: color.green };
+      }
+
+      // ta.crossover(close, resistance) / ta.crossunder(close, support)
+      const buySignal = !!s.over.step(b.close, v.r);
+      const sellSignal = !!s.under.step(b.close, v.s);
+      const time = b.time;
+      if (buySignal) {
+        s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: color.green, text: 'Buy',
+          textColor: color.green, size: 'small' });
+      }
+      if (sellSignal) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: color.red, text: 'Sell',
+          textColor: color.red, size: 'small' });
+      }
+      s.flags[0][i] = buySignal;
+      s.flags[1][i] = sellSignal;
+      if (buySignal) s.times[0].push(time as number);
+      if (sellSignal) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      let plot0: Point[];
+      let plot1: Point[];
+      if (backShift) {
+        plot0 = s.plot0.slice(0, Math.max(0, n - len));
+        plot1 = s.plot1.slice(0, Math.max(0, n - len));
+      } else {
+        // a shift forward (times after the last bar) or a fractional one (no point)
+        const interval = barInterval(bars);
+        const shifted = (vals: number[], show: boolean, col: string) => {
+          const out: Point[] = [];
+          for (let i = 0; i < n; i++) {
+            const t = barTime(bars, i - len, interval);
+            if (isNaN(t)) continue;
+            out.push({ time: t, value: show ? vals[i] : NaN, color: col });
+          }
+          return out;
+        };
+        plot0 = shifted(s.resistance, cfg.showResistance, color.red);
+        plot1 = shifted(s.support, cfg.showSupport, color.green);
+      }
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1 },
+        markers: s.markers.slice(),
+        // alertcondition(buySignal, 'Buy Alert') / alertcondition(sellSignal, 'Sell Alert')
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SwingSupportAndResistanceInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SwingSupportAndResistanceInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const SwingSupportAndResistance = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

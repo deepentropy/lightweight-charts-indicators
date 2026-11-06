@@ -15,9 +15,14 @@
  * Original notice: © Decam9
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma,
+  type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export type MovingAverageCrossoverWithShadingSignalsMaType = 'EMA' | 'SMA';
 
@@ -91,93 +96,148 @@ const lt = (a: number, b: number): boolean => b - a > EPS;
 const ge = (a: number, b: number): boolean => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number): boolean => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+type Ma = { step(v: number): number; commit(): void };
+
+interface MaCrossVars {
+  /** ta.cross(Fast, Slow) / ta.cross(Slow, Trend): the values of the last call with both values not na */
+  fsA: number;
+  fsB: number;
+  stA: number;
+  stB: number;
+  /** uptrend[1] / downtrend[1] */
+  prevUp: boolean;
+  prevDown: boolean;
+}
+
+interface MaCrossRun extends BarRunState<MaCrossVars> {
+  trendPlain: Ma | null;
+  trend: Ma;
+  fast: Ma;
+  slow: Ma;
+  plots: Point[][];
+  shading: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<MovingAverageCrossoverWithShadingSignalsInputs>): BarStudy<MaCrossRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  // getMA(_src, _len, _type) => _type == "EMA" ? ta.ema(_src, _len) : ta.sma(_src, _len)
+  const getMA = (len: number, type: MovingAverageCrossoverWithShadingSignalsMaType): Ma =>
+    (type === 'EMA' ? taStep.ema(len) : new WindowSma(len));
+  const src1 = barSource(cfg.src1);
+  const src2 = barSource(cfg.src2);
+  const src3 = barSource(cfg.src3);
+  const lime = String(color.new(color.lime, 75));
+  const yellow = String(color.new(color.yellow, 75));
+  const maroon = String(color.new(color.maroon, 75));
+  // ta.cross(a, b): compared with the last bar where it ran with both values not na (a tie there counts); exact
+  // comparisons
+  // close > ma ? low : high
+  const dynamicSrc = (b: Bar, ma: number) => (gt(b.close, ma) ? b.low : b.high);
+  const crossed = (a: number, b: number, p1: number, p2: number) => (a > b && p1 <= p2) || (a < b && p1 >= p2);
+  return {
+    fullRunReason: () =>
+      (isBarSource(cfg.src3) && (cfg.dynamic1 || isBarSource(cfg.src1)) && (cfg.dynamic2 || isBarSource(cfg.src2))
+        ? null : 'source of another study'),
+    init() {
+      // in the order of the ta calls (the same first runtime error)
+      const trendPlain = cfg.dynamic3 ? getMA(cfg.len3, cfg.ma3Type) : null;
+      const trend = getMA(cfg.len3, cfg.ma3Type);
+      const fast = getMA(cfg.len1, cfg.ma1Type);
+      const slow = getMA(cfg.len2, cfg.ma2Type);
+      const s: MaCrossRun = {
+        trendPlain, trend, fast, slow, plots: [[], [], []], shading: [], markers: [],
+        flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [...(trendPlain ? [trendPlain] : []), trend, fast, slow],
+        vars: { fsA: NaN, fsB: NaN, stA: NaN, stB: NaN, prevUp: false, prevDown: false },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.plots, s.shading, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      // TrendSrc = dynamic3 ? (close > getMA(src3, len3, ma3_type) ? low : high) : src3
+      const trendSrc = s.trendPlain ? dynamicSrc(b, s.trendPlain.step(src3(b))) : src3(b);
+      const trend = s.trend.step(trendSrc);
+      const fast = s.fast.step(cfg.dynamic1 ? dynamicSrc(b, trend) : src1(b));
+      const slow = s.slow.step(cfg.dynamic2 ? dynamicSrc(b, trend) : src2(b));
+
+      s.shading[i] = ge(fast, slow)
+        ? (gt(slow, trend) ? lime : yellow)
+        : (lt(slow, trend) ? maroon : yellow);
+      const uptrend = ge(fast, slow) && ge(slow, trend);
+      const downtrend = le(fast, slow) && le(slow, trend);
+      // justCrossed = ta.cross(Fast, Slow) or ta.cross(Slow, Trend): the `or` is lazy, so the second cross
+      // only runs (and keeps history) on the bars where the first one is false.
+      let justCrossed = crossed(fast, slow, v.fsA, v.fsB);
+      if (!isNaN(fast) && !isNaN(slow)) {
+        v.fsA = fast;
+        v.fsB = slow;
+      }
+      if (!justCrossed) {
+        justCrossed = crossed(slow, trend, v.stA, v.stB);
+        if (!isNaN(slow) && !isNaN(trend)) {
+          v.stA = slow;
+          v.stB = trend;
+        }
+      }
+      // plotshape(long, location.belowbar, shape.labelup, color.green, size.tiny, 'Buy')
+      if (uptrend && justCrossed) s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.green, size: 'tiny', id: 'shape0' });
+      // plotshape(short, location.abovebar, shape.labeldown, color.red, size.tiny, 'Sell')
+      if (downtrend && justCrossed) s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.red, size: 'tiny', id: 'shape1' });
+      // exitLong = uptrend[1] and not uptrend: xcross above the bar, green; exitShort likewise, red
+      if (v.prevUp && !uptrend) s.markers.push({ time: t, position: 'aboveBar', shape: 'xcross', color: color.green, size: 'tiny', id: 'shape2' });
+      if (v.prevDown && !downtrend) s.markers.push({ time: t, position: 'aboveBar', shape: 'xcross', color: color.red, size: 'tiny', id: 'shape3' });
+      // long / short / exitLong / exitShort
+      const flags = s.flags;
+      flags[0][i] = uptrend && justCrossed;
+      flags[1][i] = downtrend && justCrossed;
+      flags[2][i] = v.prevUp && !uptrend;
+      flags[3][i] = v.prevDown && !downtrend;
+      for (let k = 0; k < 4; k++) if (flags[k][i]) s.times[k].push(t as number);
+      v.prevUp = uptrend;
+      v.prevDown = downtrend;
+
+      s.plots[0][i] = { time: t, value: fast, color: FAST_COL };
+      s.plots[1][i] = { time: t, value: slow, color: SLOW_COL };
+      // color = close >= Trend ? color.green : color.red
+      s.plots[2][i] = { time: t, value: trend, color: ge(b.close, trend) ? color.green : color.red };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        // fill(ma1, ma2, color = Shading)
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors: s.shading.slice() }],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<MovingAverageCrossoverWithShadingSignalsInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<MovingAverageCrossoverWithShadingSignalsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  // getMA(_src, _len, _type) => _type == "EMA" ? ta.ema(_src, _len) : ta.sma(_src, _len)
-  const getMA = (src: number[], len: number, type: MovingAverageCrossoverWithShadingSignalsMaType) =>
-    A(type === 'EMA' ? ta.ema(S(src), len) : ta.sma(S(src), len));
-  const close = bars.map((b) => b.close);
-  // close > ma ? low : high
-  const dynamicSrc = (ma: number[]) => bars.map((b, i) => (gt(b.close, ma[i]) ? b.low : b.high));
-
-  // TrendSrc = dynamic3 ? (close > getMA(src3, len3, ma3_type) ? low : high) : src3
-  const src3 = A(getSourceSeries(bars, cfg.src3));
-  const trendSrc = cfg.dynamic3 ? dynamicSrc(getMA(src3, cfg.len3, cfg.ma3Type)) : src3;
-  const trend = getMA(trendSrc, cfg.len3, cfg.ma3Type);
-  const fastSrc = cfg.dynamic1 ? dynamicSrc(trend) : A(getSourceSeries(bars, cfg.src1));
-  const fast = getMA(fastSrc, cfg.len1, cfg.ma1Type);
-  const slowSrc = cfg.dynamic2 ? dynamicSrc(trend) : A(getSourceSeries(bars, cfg.src2));
-  const slow = getMA(slowSrc, cfg.len2, cfg.ma2Type);
-
-  // ta.cross(a, b): compared with the last bar where it ran with both values not na (a tie there counts); exact
-  // comparisons. justCrossed = ta.cross(Fast, Slow) or ta.cross(Slow, Trend): the `or` is lazy, so the second cross
-  // only runs (and keeps history) on the bars where the first one is false.
-  class Cross {
-    private p1 = NaN;
-    private p2 = NaN;
-    call(a: number, b: number): boolean {
-      const r = (a > b && this.p1 <= this.p2) || (a < b && this.p1 >= this.p2);
-      if (!isNaN(a) && !isNaN(b)) {
-        this.p1 = a;
-        this.p2 = b;
-      }
-      return r;
-    }
-  }
-  const crossFastSlow = new Cross();
-  const crossSlowTrend = new Cross();
-
-  const lime = String(color.new(color.lime, 75));
-  const yellow = String(color.new(color.yellow, 75));
-  const maroon = String(color.new(color.maroon, 75));
-  const shading: string[] = new Array(n);
-  const markers: MarkerData[] = [];
-  let prevUp = false;
-  let prevDown = false;
-  const flags: boolean[][] = [0, 1, 2, 3].map(() => new Array<boolean>(n).fill(false));
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    shading[i] = ge(fast[i], slow[i])
-      ? (gt(slow[i], trend[i]) ? lime : yellow)
-      : (lt(slow[i], trend[i]) ? maroon : yellow);
-    const uptrend = ge(fast[i], slow[i]) && ge(slow[i], trend[i]);
-    const downtrend = le(fast[i], slow[i]) && le(slow[i], trend[i]);
-    const justCrossed = crossFastSlow.call(fast[i], slow[i]) || crossSlowTrend.call(slow[i], trend[i]);
-    // plotshape(long, location.belowbar, shape.labelup, color.green, size.tiny, 'Buy')
-    if (uptrend && justCrossed) markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.green, size: 'tiny', id: 'shape0' });
-    // plotshape(short, location.abovebar, shape.labeldown, color.red, size.tiny, 'Sell')
-    if (downtrend && justCrossed) markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.red, size: 'tiny', id: 'shape1' });
-    // exitLong = uptrend[1] and not uptrend: xcross above the bar, green; exitShort likewise, red
-    if (prevUp && !uptrend) markers.push({ time: t, position: 'aboveBar', shape: 'xcross', color: color.green, size: 'tiny', id: 'shape2' });
-    if (prevDown && !downtrend) markers.push({ time: t, position: 'aboveBar', shape: 'xcross', color: color.red, size: 'tiny', id: 'shape3' });
-    // long / short / exitLong / exitShort
-    flags[0][i] = uptrend && justCrossed;
-    flags[1][i] = downtrend && justCrossed;
-    flags[2][i] = prevUp && !uptrend;
-    flags[3][i] = prevDown && !downtrend;
-    prevUp = uptrend;
-    prevDown = downtrend;
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fast[i], color: FAST_COL })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: slow[i], color: SLOW_COL })),
-      // color = close >= Trend ? color.green : color.red
-      plot2: bars.map((b, i) => ({ time: b.time, value: trend[i], color: ge(close[i], trend[i]) ? color.green : color.red })),
-    },
-    // fill(ma1, ma2, color = Shading)
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors: shading }],
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -190,6 +250,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const MovingAverageCrossoverWithShadingSignals = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

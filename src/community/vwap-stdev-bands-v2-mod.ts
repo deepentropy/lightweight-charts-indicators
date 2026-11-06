@@ -23,8 +23,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { color, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
-import { securityStarts } from '../anchor-period';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { hasCalendar, securityStarts } from '../anchor-period';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 import type { ChartContext } from '../chart-context';
 import type { BarColorData } from '../types';
 
@@ -139,97 +140,140 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Point = { time: number; value: number; color?: string };
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+const DAY = 86400000;
+
+interface VwapVars {
+  vwapsum: number;
+  volumesum: number;
+  v2sum: number;
+}
+
+interface VwapRun extends BarRunState<VwapVars> {
+  myvwap: number[];
+  prevwap: number[];
+  plots: Point[][];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<VwapStdevBandsV2ModInputs>): BarStudy<VwapRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const priceOf = barSource(cfg.colorSrc);
+  /** The bar times are in ms (from the first bar) */
+  let ms = false;
+  /** Daily starts of the exchange calendar (whole bar set), else the UTC days */
+  let starts: number[] | null = null;
+  const dayOf = (t: number) => Math.floor((ms ? t : t * 1000) / DAY);
+  const shown = (v: number) => (Number.isFinite(v) ? v : NaN);
+  const bands: Array<[boolean, number]> = [
+    [true, cfg.devUp1], [true, -cfg.devDn1], [cfg.showDv2, cfg.devUp2], [cfg.showDv2, -cfg.devDn2],
+    [cfg.showDv3, cfg.devUp3], [cfg.showDv3, -cfg.devDn3], [cfg.showDv4, cfg.devUp4], [cfg.showDv4, -cfg.devDn4],
+    [cfg.showDv5, cfg.devUp5], [cfg.showDv5, -cfg.devDn5],
+  ];
+  return {
+    fullRunReason: (c) => (!isBarSource(cfg.colorSrc) ? 'source of another study'
+      : hasCalendar(c) ? 'daily periods of the exchange calendar' : null),
+    // the UTC days read the time unit of the first bar
+    key: (bars) => String(bars.length > 0 && bars[0].time >= 1e12),
+    init(bars, c) {
+      ms = bars.length > 0 && bars[0].time >= 1e12;
+      // start = security(tickerid, "D", time); newSession = iff(change(start), 1, 0): never on the first bar
+      starts = hasCalendar(c) ? securityStarts(bars, 'D', c) : null;
+      const s: VwapRun = {
+        myvwap: [], prevwap: [], plots: Array.from({ length: 12 }, () => []), barColors: [],
+        steps: [], vars: { vwapsum: NaN, volumesum: NaN, v2sum: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = [s.myvwap, s.prevwap, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const st = s.vars;
+      const { myvwap, prevwap } = s;
+      const b = bars[i];
+      const hl2 = (b.high + b.low) / 2;
+      const volume = b.volume ?? NaN;
+      let newSession: boolean;
+      if (starts) newSession = i > 0 && starts[i] !== starts[i - 1];
+      else {
+        // periodStarts(bars, 'D') on the UTC calendar: a new period on each new UTC day
+        newSession = i > 0 && dayOf(b.time) !== dayOf(bars[i - 1].time);
+      }
+      st.vwapsum = newSession ? hl2 * volume : st.vwapsum + hl2 * volume;
+      st.volumesum = newSession ? volume : st.volumesum + volume;
+      st.v2sum = newSession ? volume * hl2 * hl2 : st.v2sum + volume * hl2 * hl2;
+      const v = st.vwapsum / st.volumesum;
+      myvwap[i] = v;
+      const d = Math.sqrt(Math.max(st.v2sum / st.volumesum - v * v, 0));
+      prevwap[i] = i === 0 ? NaN : newSession ? myvwap[i - 1] : prevwap[i - 1];
+
+      const time = b.time;
+      const plots = s.plots;
+      plots[0][i] = { time, value: shown(v) };
+      for (let k = 0; k < bands.length; k++) {
+        const [show, mult] = bands[k];
+        plots[k + 1][i] = { time, value: shown(show ? v + mult * d : NaN) };
+      }
+      // plot(showPrevVWAP ? prevwap : na, color = close > prevwap ? green : red)
+      plots[11][i] = {
+        time,
+        value: cfg.showPrevVWAP ? shown(prevwap[i]) : NaN,
+        color: b.close - prevwap[i] > 1e-10 ? GREEN : RED,
+      };
+
+      // barcolor(showBcol ? Color... : na) x 8: a later call with a colour replaces the earlier ones
+      if (cfg.showBcol) {
+        const p = priceOf(b);
+        const u1 = v + cfg.devUp1 * d;
+        const d1 = v - cfg.devDn1 * d;
+        const u2 = v + cfg.devUp2 * d;
+        const u3 = v + cfg.devUp3 * d;
+        const d2 = v - cfg.devDn2 * d;
+        const d3 = v - cfg.devDn3 * d;
+        // myvwapu4 = myvwap + devDn4 * dev (as in the original)
+        const u4 = v + cfg.devDn4 * d;
+        const d4 = v - cfg.devDn4 * d;
+        const between = (lo: number, hi: number) => gt(p, lo) && lt(p, hi);
+        let c: string | null = null;
+        if (between(d1, v)) c = BAR.black;
+        if (between(v, u2)) c = BAR.white;
+        if (between(d2, d1)) c = BAR.gray;
+        if (between(u1, u2)) c = BAR.gray;
+        if (between(d3, d2)) c = BAR.green;
+        if (between(u2, u3)) c = BAR.maroon;
+        if (between(d4, d3)) c = BAR.lime;
+        if (between(u3, u4)) c = BAR.red;
+        if (c !== null) s.barColors.push({ time, color: c });
+      }
+    },
+    result(s) {
+      const p = s.plots.map((x) => x.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0], plot1: p[1], plot2: p[2], plot3: p[3], plot4: p[4], plot5: p[5], plot6: p[6], plot7: p[7],
+          plot8: p[8], plot9: p[9], plot10: p[10], plot11: p[11],
+        },
+        fills: fillConfig.map((f) => ({ plot1: f.plot1, plot2: f.plot2, options: { color: f.color, title: f.title } })),
+        barColors: s.barColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<VwapStdevBandsV2ModInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<VwapStdevBandsV2ModInputs> = {},
   chart?: ChartContext,
 ): IndicatorResult & { barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // start = security(tickerid, "D", time); newSession = iff(change(start), 1, 0): never on the first bar
-  const start = securityStarts(bars, 'D', chart);
-
-  const myvwap: number[] = new Array(n).fill(NaN);
-  const dev: number[] = new Array(n).fill(NaN);
-  const prevwap: number[] = new Array(n).fill(NaN);
-  let vwapsum = NaN;
-  let volumesum = NaN;
-  let v2sum = NaN;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const hl2 = (b.high + b.low) / 2;
-    const volume = b.volume ?? NaN;
-    const newSession = i > 0 && start[i] !== start[i - 1];
-    vwapsum = newSession ? hl2 * volume : vwapsum + hl2 * volume;
-    volumesum = newSession ? volume : volumesum + volume;
-    v2sum = newSession ? volume * hl2 * hl2 : v2sum + volume * hl2 * hl2;
-    myvwap[i] = vwapsum / volumesum;
-    dev[i] = Math.sqrt(Math.max(v2sum / volumesum - myvwap[i] * myvwap[i], 0));
-    prevwap[i] = i === 0 ? NaN : newSession ? myvwap[i - 1] : prevwap[i - 1];
-  }
-
-  const shown = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const series = (value: (i: number) => number) => bars.map((b, i) => ({ time: b.time, value: shown(value(i)) }));
-  const band = (show: boolean, mult: number) => series((i) => (show ? myvwap[i] + mult * dev[i] : NaN));
-
-  // plot(showPrevVWAP ? prevwap : na, color = close > prevwap ? green : red)
-  const plot11 = bars.map((b, i) => ({
-    time: b.time,
-    value: cfg.showPrevVWAP ? shown(prevwap[i]) : NaN,
-    color: b.close - prevwap[i] > 1e-10 ? GREEN : RED,
-  }));
-
-  // barcolor(showBcol ? Color... : na) x 8: a later call with a colour replaces the earlier ones
-  const price = getSourceSeries(bars, cfg.colorSrc).toArray().map((v) => v ?? NaN);
-  const barColors: BarColorData[] = [];
-  if (cfg.showBcol) {
-    for (let i = 0; i < n; i++) {
-      const p = price[i];
-      const v = myvwap[i];
-      const d = dev[i];
-      const u1 = v + cfg.devUp1 * d;
-      const d1 = v - cfg.devDn1 * d;
-      const u2 = v + cfg.devUp2 * d;
-      const u3 = v + cfg.devUp3 * d;
-      const d2 = v - cfg.devDn2 * d;
-      const d3 = v - cfg.devDn3 * d;
-      // myvwapu4 = myvwap + devDn4 * dev (as in the original)
-      const u4 = v + cfg.devDn4 * d;
-      const d4 = v - cfg.devDn4 * d;
-      const between = (lo: number, hi: number) => gt(p, lo) && lt(p, hi);
-      let c: string | null = null;
-      if (between(d1, v)) c = BAR.black;
-      if (between(v, u2)) c = BAR.white;
-      if (between(d2, d1)) c = BAR.gray;
-      if (between(u1, u2)) c = BAR.gray;
-      if (between(d3, d2)) c = BAR.green;
-      if (between(u2, u3)) c = BAR.maroon;
-      if (between(d4, d3)) c = BAR.lime;
-      if (between(u3, u4)) c = BAR.red;
-      if (c !== null) barColors.push({ time: bars[i].time, color: c });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: series((i) => myvwap[i]),
-      plot1: band(true, cfg.devUp1),
-      plot2: band(true, -cfg.devDn1),
-      plot3: band(cfg.showDv2, cfg.devUp2),
-      plot4: band(cfg.showDv2, -cfg.devDn2),
-      plot5: band(cfg.showDv3, cfg.devUp3),
-      plot6: band(cfg.showDv3, -cfg.devDn3),
-      plot7: band(cfg.showDv4, cfg.devUp4),
-      plot8: band(cfg.showDv4, -cfg.devDn4),
-      plot9: band(cfg.showDv5, cfg.devUp5),
-      plot10: band(cfg.showDv5, -cfg.devDn5),
-      plot11,
-    },
-    fills: fillConfig.map((f) => ({ plot1: f.plot1, plot2: f.plot2, options: { color: f.color, title: f.title } })),
-    barColors,
-  };
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
-export const VwapStdevBandsV2Mod = { calculate, metadata, defaultInputs, inputConfig, plotConfig, fillConfig };
+export const VwapStdevBandsV2Mod = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, fillConfig };

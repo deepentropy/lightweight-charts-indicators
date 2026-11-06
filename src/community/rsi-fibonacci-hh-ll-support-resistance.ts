@@ -12,7 +12,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RsiFibonacciHhLlSupportResistanceInputs {
   /** Length of the highest / lowest window and of the SMA of the regularity flag */
@@ -46,65 +48,110 @@ export const metadata = {
 /** Pine float comparison a > b: a - b > 1e-10; na operands give false */
 const gt = (a: number, b: number): boolean => a - b > 1e-10;
 
-export function calculate(bars: Bar[], inputs: Partial<RsiFibonacciHhLlSupportResistanceInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface TramaVars {
+  /** The previous highest / lowest */
+  prevHighest: number;
+  prevLowest: number;
+  /** ama of the high and of the low (na before bar 0) */
+  ama1: number;
+  ama2: number;
+}
+
+interface TramaRun extends BarRunState<TramaVars> {
+  highest: WindowExtreme;
+  lowest: WindowExtreme;
+  regularity: WindowSma;
+  m: number[];
+  /** plot0, then the upper levels plot1..plot6 and the lower levels plot7..plot12 */
+  plots: Point[][];
+}
+
+function study(inputs: Partial<RsiFibonacciHhLlSupportResistanceInputs>): BarStudy<TramaRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // hh = math.max(math.sign(ta.change(ta.highest(length))), 0); ll = math.max(math.sign(ta.change(ta.lowest(length)) * -1), 0)
-  const highest = A(ta.highest(S(bars.map((b) => b.high)), length));
-  const lowest = A(ta.lowest(S(bars.map((b) => b.low)), length));
-  const flag = bars.map((_b, i) => {
-    const hh = i > 0 ? Math.max(Math.sign(highest[i] - highest[i - 1]), 0) : NaN;
-    const ll = i > 0 ? Math.max(Math.sign((lowest[i] - lowest[i - 1]) * -1), 0) : NaN;
-    // bool(x): true when x is not na and not 0
-    return (!isNaN(hh) && hh !== 0) || (!isNaN(ll) && ll !== 0) ? 1 : 0;
-  });
-  const regularity = A(ta.sma(S(flag), length));
-
-  const m: number[] = new Array(n);
-  const dist: number[] = new Array(n);
-  let ama1 = NaN;
-  let ama2 = NaN;
-  for (let i = 0; i < n; i++) {
-    const tc = Math.pow(regularity[i], 2);
-    const { high, low } = bars[i];
-    // ama := nz(ama[1] + tc * (price - ama[1]), price)
-    const a1 = ama1 + tc * (high - ama1);
-    const a2 = ama2 + tc * (low - ama2);
-    ama1 = isNaN(a1) ? high : a1;
-    ama2 = isNaN(a2) ? low : a2;
-    m[i] = (ama1 + ama2) / 2;
-    dist[i] = (ama1 - ama2) / 2;
-  }
-
-  const t = (i: number) => bars[i].time;
-  const plots: Record<string, { time: number; value: number; color?: string }[]> = {};
-  // plot(m, linewidth = 3, color = m > m[5] ? color.lime : color.red)
-  plots.plot0 = m.map((v, i) => ({ time: t(i), value: v, color: i >= 5 && gt(v, m[i - 5]) ? color.lime : color.red }));
-  [5, 4, 3, 2, 1, 0].forEach((k, j) => {
-    plots[`plot${1 + j}`] = m.map((v, i) => ({ time: t(i), value: v + dist[i] * LEVELS[k], color: color.lime }));
-    plots[`plot${7 + j}`] = m.map((v, i) => ({ time: t(i), value: v - dist[i] * LEVELS[k], color: color.red }));
-  });
-
-  // fill(ph6, ph5, color.new(color.lime, 70)), fill(pl6, pl5, color.new(color.red, 70)), ... down to ph2 / ph1 (99)
-  const transp = [70, 90, 93, 96, 99];
-  const fills = transp.flatMap((tr, j) => [
-    { plot1: `plot${1 + j}`, plot2: `plot${2 + j}`, options: { title: 'Plots Background', color: String(color.new(color.lime, tr)) } },
-    { plot1: `plot${7 + j}`, plot2: `plot${8 + j}`, options: { title: 'Plots Background', color: String(color.new(color.red, tr)) } },
-  ]);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
+    init() {
+      const highest = new WindowExtreme(false, length);
+      const lowest = new WindowExtreme(true, length);
+      const regularity = new WindowSma(length);
+      const plots: Point[][] = Array.from({ length: 13 }, () => []);
+      const s: TramaRun = {
+        highest, lowest, regularity, m: [], plots, steps: [highest, lowest, regularity],
+        vars: { prevHighest: NaN, prevLowest: NaN, ama1: NaN, ama2: NaN }, lists: [], series: [],
+      };
+      s.series = [s.m, ...plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { high, low, time } = bars[i];
+      // hh = math.max(math.sign(ta.change(ta.highest(length))), 0); ll = math.max(math.sign(ta.change(ta.lowest(length)) * -1), 0)
+      const highest = s.highest.step(high);
+      const lowest = s.lowest.step(low);
+      const hh = i > 0 ? Math.max(Math.sign(highest - v.prevHighest), 0) : NaN;
+      const ll = i > 0 ? Math.max(Math.sign((lowest - v.prevLowest) * -1), 0) : NaN;
+      v.prevHighest = highest;
+      v.prevLowest = lowest;
+      // bool(x): true when x is not na and not 0
+      const flag = (!isNaN(hh) && hh !== 0) || (!isNaN(ll) && ll !== 0) ? 1 : 0;
+      const regularity = s.regularity.step(flag);
+
+      const tc = Math.pow(regularity, 2);
+      // ama := nz(ama[1] + tc * (price - ama[1]), price)
+      const a1 = v.ama1 + tc * (high - v.ama1);
+      const a2 = v.ama2 + tc * (low - v.ama2);
+      v.ama1 = isNaN(a1) ? high : a1;
+      v.ama2 = isNaN(a2) ? low : a2;
+      const m = (v.ama1 + v.ama2) / 2;
+      const dist = (v.ama1 - v.ama2) / 2;
+      s.m[i] = m;
+
+      // plot(m, linewidth = 3, color = m > m[5] ? color.lime : color.red)
+      s.plots[0][i] = { time, value: m, color: i >= 5 && gt(m, s.m[i - 5]) ? color.lime : color.red };
+      for (let j = 0; j < 6; j++) {
+        const k = 5 - j;
+        s.plots[1 + j][i] = { time, value: m + dist * LEVELS[k], color: color.lime };
+        s.plots[7 + j][i] = { time, value: m - dist * LEVELS[k], color: color.red };
+      }
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      plots.plot0 = s.plots[0].slice();
+      for (let j = 0; j < 6; j++) {
+        plots[`plot${1 + j}`] = s.plots[1 + j].slice();
+        plots[`plot${7 + j}`] = s.plots[7 + j].slice();
+      }
+
+      // fill(ph6, ph5, color.new(color.lime, 70)), fill(pl6, pl5, color.new(color.red, 70)), ... down to ph2 / ph1 (99)
+      const transp = [70, 90, 93, 96, 99];
+      const fills = transp.flatMap((tr, j) => [
+        { plot1: `plot${1 + j}`, plot2: `plot${2 + j}`, options: { title: 'Plots Background', color: String(color.new(color.lime, tr)) } },
+        { plot1: `plot${7 + j}`, plot2: `plot${8 + j}`, options: { title: 'Plots Background', color: String(color.new(color.red, tr)) } },
+      ]);
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiFibonacciHhLlSupportResistanceInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RsiFibonacciHhLlSupportResistanceInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RsiFibonacciHhLlSupportResistance = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

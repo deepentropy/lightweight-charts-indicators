@@ -12,8 +12,10 @@
  * Original notice: © rukich
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ExhaustionZoneInputs {
   /** ATR length */
@@ -77,61 +79,95 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > 1e-10);
 /** na(x) ? 0.0 : x */
 const nz0 = (x: number) => (isNaN(x) ? 0 : x);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ExhaustionZoneInputs> = {},
-): IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] };
+
+interface ExhaustionRun extends BarRunState<Record<string, never>> {
+  atrStep: ReturnType<typeof taStep.atr>;
+  atrSma: WindowSma;
+  highest: WindowExtreme;
+  lowest: WindowExtreme;
+  rebSma: WindowSma;
+  atr: number[];
+  highestS: number[];
+  lowestF: number[];
+  plots: Point[][];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<ExhaustionZoneInputs>): BarStudy<ExhaustionRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // atr = ta.sma(ta.atr(atrLength), atrSmooth); na -> 0
-  const atr = A(ta.sma(ta.atr(bars, cfg.atrLength), cfg.atrSmooth)).map(nz0);
-  // highest_s = ta.highest(low - atr * 2, highestLength); lowest_f = ta.lowest(low + atr * 2, lowestLength); na -> 0
-  const highestS = A(ta.highest(S(bars.map((b, i) => b.low - atr[i] * 2)), cfg.highestLength)).map(nz0);
-  const lowestF = A(ta.lowest(S(bars.map((b, i) => b.low + atr[i] * 2)), cfg.lowestLength)).map(nz0);
-
-  // adjusted_mid = (highest_s[1] + lowest_f[1]) / 2 - (highest_s[1] + lowest_f[1]) * lineFactor; na -> 0
-  const adjustedMid = bars.map((_b, i) => {
-    if (i === 0) return 0;
-    const s = highestS[i - 1] + lowestF[i - 1];
-    return nz0(s / 2 - s * cfg.lineFactor);
-  });
-  const rebSma = A(ta.sma(S(adjustedMid), cfg.smaLength)).map(nz0);
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // rebound_line = reb_sma + atr[1] * atrFactor; na -> 0
-    const rebound = nz0(rebSma[i] + (i > 0 ? atr[i - 1] : NaN) * cfg.atrFactor);
-    const scaled = nz0(rebound * cfg.lineScale);
-    plot0.push({ time: t, value: rebound, color: REBOUND_COL });
-    plot1.push({ time: t, value: scaled, color: SCALED_COL });
-    plot2.push({ time: t, value: scaled, color: SCALED_COL });
-    // signal_cond = low <= rebound_line
-    if (le(bars[i].low, rebound)) {
-      bgColors.push({ time: t, color: BG_COL });
-      barColors.push({ time: t, color: BAR_COL });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    // fill(h_rebound, l_rebound, color.new(color.green, 70), title = 'Fill Area')
-    fills: [{ plot1: 'plot0', plot2: 'plot2', options: { title: 'Fill Area' }, colors: new Array<string>(n).fill(FILL_COL) }],
-    barColors,
-    bgColors,
+    init() {
+      const s: ExhaustionRun = {
+        atrStep: taStep.atr(cfg.atrLength), atrSma: new WindowSma(cfg.atrSmooth),
+        highest: new WindowExtreme(false, cfg.highestLength), lowest: new WindowExtreme(true, cfg.lowestLength),
+        rebSma: new WindowSma(cfg.smaLength),
+        atr: [], highestS: [], lowestF: [], plots: [[], [], []], barColors: [], bgColors: [],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.atrStep, s.atrSma, s.highest, s.lowest, s.rebSma];
+      s.lists = [s.barColors, s.bgColors];
+      s.series = [s.atr, s.highestS, s.lowestF, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      // atr = ta.sma(ta.atr(atrLength), atrSmooth); na -> 0
+      const atr = nz0(s.atrSma.step(s.atrStep.step(b.high, b.low, b.close)));
+      s.atr[i] = atr;
+      // highest_s = ta.highest(low - atr * 2, highestLength); lowest_f = ta.lowest(low + atr * 2, lowestLength); na -> 0
+      s.highestS[i] = nz0(s.highest.step(b.low - atr * 2));
+      s.lowestF[i] = nz0(s.lowest.step(b.low + atr * 2));
+
+      // adjusted_mid = (highest_s[1] + lowest_f[1]) / 2 - (highest_s[1] + lowest_f[1]) * lineFactor; na -> 0
+      let adjustedMid = 0;
+      if (i > 0) {
+        const sum = s.highestS[i - 1] + s.lowestF[i - 1];
+        adjustedMid = nz0(sum / 2 - sum * cfg.lineFactor);
+      }
+      const rebSma = nz0(s.rebSma.step(adjustedMid));
+
+      // rebound_line = reb_sma + atr[1] * atrFactor; na -> 0
+      const rebound = nz0(rebSma + (i > 0 ? s.atr[i - 1] : NaN) * cfg.atrFactor);
+      const scaled = nz0(rebound * cfg.lineScale);
+      s.plots[0][i] = { time: t, value: rebound, color: REBOUND_COL };
+      s.plots[1][i] = { time: t, value: scaled, color: SCALED_COL };
+      s.plots[2][i] = { time: t, value: scaled, color: SCALED_COL };
+      // signal_cond = low <= rebound_line
+      if (le(b.low, rebound)) {
+        s.bgColors.push({ time: t, color: BG_COL });
+        s.barColors.push({ time: t, color: BAR_COL });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        // fill(h_rebound, l_rebound, color.new(color.green, 70), title = 'Fill Area')
+        fills: [{ plot1: 'plot0', plot2: 'plot2', options: { title: 'Fill Area' }, colors: new Array<string>(n).fill(FILL_COL) }],
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ExhaustionZoneInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ExhaustionZoneInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ExhaustionZone = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

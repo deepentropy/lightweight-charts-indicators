@@ -10,9 +10,11 @@
  * Reference: "Bill Williams. Alligator, Fractals & Res-Sup combined" by vlkvr (Pine v3)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import { barInterval, barTime } from '../bar-time';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WilliamsComboInputs {
   lipsLength: number;
@@ -71,31 +73,35 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<WilliamsComboInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface WilliamsVars {
+  /** valuewhen(...) of the resistance and the support */
+  highRS: number;
+  lowRS: number;
+}
+
+interface WilliamsRun extends BarRunState<WilliamsVars> {
+  jaw: ReturnType<typeof taStep.rma>;
+  teeth: ReturnType<typeof taStep.rma>;
+  lips: ReturnType<typeof taStep.rma>;
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  jawRaw: number[];
+  teethRaw: number[];
+  lipsRaw: number[];
+  plot3: Point[];
+  plot4: Point[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<WilliamsComboInputs>): BarStudy<WilliamsRun, Result> {
   const { lipsLength, teethLength, jawLength, lipsOffset, teethOffset, jawOffset, n: period, showRS, lengthRS } =
     { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const hl2Series = new Series(bars, (b) => (b.high + b.low) / 2);
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-
-  // Pine smma: na(smma[1]) ? sma(src, length) : (smma[1] * (length - 1) + src) / length  (= RMA)
-  const jawRaw = ta.rma(hl2Series, jawLength).toArray();
-  const teethRaw = ta.rma(hl2Series, teethLength).toArray();
-  const lipsRaw = ta.rma(hl2Series, lipsLength).toArray();
-
-  // Pine plot(..., offset = k): the value of bar i is drawn on bar i + k. The last k values fall on the k bars after
-  // the last bar (times of these future bars).
-  const interval = barInterval(bars);
-  const shifted = (arr: number[], offset: number) =>
-    Array.from({ length: n + Math.max(0, offset) }, (_, i) => {
-      const j = i - offset;
-      const v = j >= 0 && j < n ? arr[j] : NaN;
-      return { time: barTime(bars, i, interval), value: v ?? NaN };
-    });
 
   // Fractals (Pine source, literally): h(k) = high[k], NaN before the first bar (comparisons with na are false).
-  const upFractalAt = (i: number): boolean => {
+  const upFractalAt = (bars: Bar[], i: number): boolean => {
     const h = (k: number) => (i - k >= 0 ? bars[i - k].high : NaN);
     const c = h(period);
     return (h(period + 2) < c && h(period + 1) < c && h(period - 1) < c && h(period - 2) < c) ||
@@ -104,7 +110,7 @@ export function calculate(bars: Bar[], inputs: Partial<WilliamsComboInputs> = {}
       (h(period + 5) < c && h(period + 4) < c && h(period + 3) === c && h(period + 2) === c && h(period + 1) <= c && h(period - 1) < c && h(period - 2) < c) ||
       (h(period + 6) < c && h(period + 5) < c && h(period + 4) === c && h(period + 3) <= c && h(period + 2) === c && h(period + 1) <= c && h(period - 1) < c && h(period - 2) < c);
   };
-  const dnFractalAt = (i: number): boolean => {
+  const dnFractalAt = (bars: Bar[], i: number): boolean => {
     const l = (k: number) => (i - k >= 0 ? bars[i - k].low : NaN);
     const c = l(period);
     return (l(period + 2) > c && l(period + 1) > c && l(period - 1) > c && l(period - 2) > c) ||
@@ -114,56 +120,93 @@ export function calculate(bars: Bar[], inputs: Partial<WilliamsComboInputs> = {}
       (l(period + 6) > c && l(period + 5) > c && l(period + 4) === c && l(period + 3) >= c && l(period + 2) === c && l(period + 1) >= c && l(period - 1) > c && l(period - 2) > c);
   };
 
-  const hhArr = ta.highest(highSeries, lengthRS).toArray();
-  const llArr = ta.lowest(lowSeries, lengthRS).toArray();
-
-  const markers: MarkerData[] = [];
-  let highRS = NaN;
-  let lowRS = NaN;
-
-  const plot3: { time: number; value: number; color?: string }[] = [];
-  const plot4: { time: number; value: number; color?: string }[] = [];
-
-  for (let i = 0; i < n; i++) {
-    // plotshape(..., offset = -2): drawn 2 bars before the bar where the fractal is found
-    if (i >= 2 && upFractalAt(i)) {
-      markers.push({ time: bars[i - 2].time, position: 'aboveBar', shape: 'triangleUp', color: OLIVE });
-    }
-    if (i >= 2 && dnFractalAt(i)) {
-      markers.push({ time: bars[i - 2].time, position: 'belowBar', shape: 'triangleDown', color: MAROON });
-    }
-
-    const prevHighRS = highRS;
-    const prevLowRS = lowRS;
-    // Pine: highRS = valuewhen(high >= highest(high, lengthRS), high, 0) (highest is na on the first lengthRS - 1 bars)
-    if (bars[i].high >= hhArr[i]) highRS = bars[i].high;
-    if (bars[i].low <= llArr[i]) lowRS = bars[i].low;
-
-    // Pine: series = showRS and highRS ? highRS : na; color = highRS != highRS[1] ? na : olive
-    // (a comparison with na is na, so the colour stays olive on the first bar with a value)
-    const resOn = showRS && !isNaN(highRS) && highRS !== 0;
-    const supOn = showRS && !isNaN(lowRS) && lowRS !== 0;
-    const resChanged = !isNaN(prevHighRS) && highRS !== prevHighRS;
-    const supChanged = !isNaN(prevLowRS) && lowRS !== prevLowRS;
-    plot3.push(resOn
-      ? { time: bars[i].time, value: highRS, color: resChanged ? 'transparent' : OLIVE }
-      : { time: bars[i].time, value: NaN });
-    plot4.push(supOn
-      ? { time: bars[i].time, value: lowRS, color: supChanged ? 'transparent' : MAROON }
-      : { time: bars[i].time, value: NaN });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'plot0': shifted(jawRaw, jawOffset),
-      'plot1': shifted(teethRaw, teethOffset),
-      'plot2': shifted(lipsRaw, lipsOffset),
-      'plot3': plot3,
-      'plot4': plot4,
+    init() {
+      // Pine smma: na(smma[1]) ? sma(src, length) : (smma[1] * (length - 1) + src) / length  (= RMA)
+      const jaw = taStep.rma(jawLength);
+      const teeth = taStep.rma(teethLength);
+      const lips = taStep.rma(lipsLength);
+      const hh = new WindowExtreme(false, lengthRS);
+      const ll = new WindowExtreme(true, lengthRS);
+      const s: WilliamsRun = {
+        jaw, teeth, lips, hh, ll, jawRaw: [], teethRaw: [], lipsRaw: [], plot3: [], plot4: [], markers: [],
+        steps: [jaw, teeth, lips, hh, ll], vars: { highRS: NaN, lowRS: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.jawRaw, s.teethRaw, s.lipsRaw, s.plot3, s.plot4];
+      return s;
     },
-    markers,
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const hl2 = (b.high + b.low) / 2;
+      s.jawRaw[i] = s.jaw.step(hl2);
+      s.teethRaw[i] = s.teeth.step(hl2);
+      s.lipsRaw[i] = s.lips.step(hl2);
+      const hh = s.hh.step(b.high);
+      const ll = s.ll.step(b.low);
+
+      // plotshape(..., offset = -2): drawn 2 bars before the bar where the fractal is found
+      if (i >= 2 && upFractalAt(bars, i)) {
+        s.markers.push({ time: bars[i - 2].time, position: 'aboveBar', shape: 'triangleUp', color: OLIVE });
+      }
+      if (i >= 2 && dnFractalAt(bars, i)) {
+        s.markers.push({ time: bars[i - 2].time, position: 'belowBar', shape: 'triangleDown', color: MAROON });
+      }
+
+      const prevHighRS = v.highRS;
+      const prevLowRS = v.lowRS;
+      // Pine: highRS = valuewhen(high >= highest(high, lengthRS), high, 0) (highest is na on the first lengthRS - 1 bars)
+      if (b.high >= hh) v.highRS = b.high;
+      if (b.low <= ll) v.lowRS = b.low;
+      const { highRS, lowRS } = v;
+
+      // Pine: series = showRS and highRS ? highRS : na; color = highRS != highRS[1] ? na : olive
+      // (a comparison with na is na, so the colour stays olive on the first bar with a value)
+      const resOn = showRS && !isNaN(highRS) && highRS !== 0;
+      const supOn = showRS && !isNaN(lowRS) && lowRS !== 0;
+      const resChanged = !isNaN(prevHighRS) && highRS !== prevHighRS;
+      const supChanged = !isNaN(prevLowRS) && lowRS !== prevLowRS;
+      s.plot3[i] = resOn
+        ? { time: b.time, value: highRS, color: resChanged ? 'transparent' : OLIVE }
+        : { time: b.time, value: NaN };
+      s.plot4[i] = supOn
+        ? { time: b.time, value: lowRS, color: supChanged ? 'transparent' : MAROON }
+        : { time: b.time, value: NaN };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // Pine plot(..., offset = k): the value of bar i is drawn on bar i + k. The last k values fall on the k bars after
+      // the last bar (times of these future bars).
+      const interval = barInterval(bars);
+      const shifted = (arr: number[], offset: number) =>
+        Array.from({ length: n + Math.max(0, offset) }, (_, i) => {
+          const j = i - offset;
+          const v = j >= 0 && j < n ? arr[j] : NaN;
+          return { time: barTime(bars, i, interval), value: v ?? NaN };
+        });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'plot0': shifted(s.jawRaw, jawOffset),
+          'plot1': shifted(s.teethRaw, teethOffset),
+          'plot2': shifted(s.lipsRaw, lipsOffset),
+          'plot3': s.plot3.slice(),
+          'plot4': s.plot4.slice(),
+        },
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const WilliamsCombo = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WilliamsComboInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WilliamsComboInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const WilliamsCombo = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

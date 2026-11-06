@@ -11,8 +11,9 @@
  * Original notice: © Stocktitian
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { barInterval, barTime } from '../bar-time';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface UltraCleanSupportResistanceLevelsInputs {
   /** Pivot left length */
@@ -52,61 +53,98 @@ const ne = (a: number, b: number) => Number.isFinite(a) && Number.isFinite(b) &&
 
 type Point = { time: number; value: number; color: string };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<UltraCleanSupportResistanceLevelsInputs> = {},
-): IndicatorResult {
+interface UltraCleanVars {
+  /** pvthis / pvtlos: the last pivot high / low */
+  hi: number;
+  lo: number;
+}
+
+interface UltraCleanRun extends BarRunState<UltraCleanVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  pvthi: number[];
+  pvtlo: number[];
+  pvthis: number[];
+  pvtlos: number[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<UltraCleanSupportResistanceLevelsInputs>): BarStudy<UltraCleanRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const shunt = 1;
-  // maxLvlLen = 0: the levels are always drawn (the ta.barssince counts are not used)
-
-  const pvthi_ = A(ta.pivothigh(S(bars.map((b) => b.high)), cfg.pvtLenL, cfg.pvtLenR));
-  const pvtlo_ = A(ta.pivotlow(S(bars.map((b) => b.low)), cfg.pvtLenL, cfg.pvtLenR));
-
-  // pvthis := na(pvthi) ? pvthis[1] : pvthi, with pvthi = pvthi_[Shunt]
-  const pvthis: number[] = new Array(n);
-  const pvtlos: number[] = new Array(n);
-  let hi = NaN;
-  let lo = NaN;
-  for (let i = 0; i < n; i++) {
-    const ph = i >= shunt ? pvthi_[i - shunt] : NaN;
-    const pl = i >= shunt ? pvtlo_[i - shunt] : NaN;
-    if (!isNaN(ph)) hi = ph;
-    if (!isNaN(pl)) lo = pl;
-    pvthis[i] = hi;
-    pvtlos[i] = lo;
-  }
-  // hipc = ta.change(pvthis) != 0 ? na : color (na change: coloured)
-  const hipc = pvthis.map((v, i) => (i > 0 && ne(v - pvthis[i - 1], 0) ? 'transparent' : RES_COLOR));
-  const lopc = pvtlos.map((v, i) => (i > 0 && ne(v - pvtlos[i - 1], 0) ? 'transparent' : SUP_COLOR));
-
   // offset = -pvtLenR - Shunt: the value of bar i is drawn on bar i - k
   const k = cfg.pvtLenR + shunt;
-  const interval = barInterval(bars);
-  const shifted = (vals: number[], cols: string[]): Point[] => {
-    const out: Point[] = [];
-    for (let i = k; i < n; i++) out.push({ time: barTime(bars, i - k, interval), value: vals[i], color: cols[i] });
-    return out;
-  };
-  const plain = (vals: number[], cols: string[]): Point[] =>
-    bars.map((b, i) => ({ time: b.time, value: vals[i], color: cols[i] }));
-
+  // maxLvlLen = 0: the levels are always drawn (the ta.barssince counts are not used)
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: shifted(pvthis, hipc),
-      plot1: shifted(pvtlos, lopc),
-      plot2: plain(pvthis, hipc),
-      plot3: plain(pvtlos, lopc),
+    init() {
+      const ph = new PivotStep(cfg.pvtLenL, cfg.pvtLenR, true);
+      const pl = new PivotStep(cfg.pvtLenL, cfg.pvtLenR, false);
+      const s: UltraCleanRun = {
+        ph, pl, pvthi: [], pvtlo: [], pvthis: [], pvtlos: [], plots: [[], [], [], []],
+        steps: [ph, pl], vars: { hi: NaN, lo: NaN }, lists: [], series: [],
+      };
+      // the shifted plots get one point per bar from bar k on (a list); the others one point per bar
+      s.lists = [s.plots[0], s.plots[1]];
+      s.series = [s.pvthi, s.pvtlo, s.pvthis, s.pvtlos, s.plots[2], s.plots[3]];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      s.pvthi[i] = s.ph.step(i, b.high);
+      s.pvtlo[i] = s.pl.step(i, b.low);
+      // pvthis := na(pvthi) ? pvthis[1] : pvthi, with pvthi = pvthi_[Shunt]
+      const ph = i >= shunt ? s.pvthi[i - shunt] : NaN;
+      const pl = i >= shunt ? s.pvtlo[i - shunt] : NaN;
+      if (!isNaN(ph)) v.hi = ph;
+      if (!isNaN(pl)) v.lo = pl;
+      const hi = v.hi;
+      const lo = v.lo;
+      s.pvthis[i] = hi;
+      s.pvtlos[i] = lo;
+      // hipc = ta.change(pvthis) != 0 ? na : color (na change: coloured)
+      const hipc = i > 0 && ne(hi - s.pvthis[i - 1], 0) ? 'transparent' : RES_COLOR;
+      const lopc = i > 0 && ne(lo - s.pvtlos[i - 1], 0) ? 'transparent' : SUP_COLOR;
+      if (i >= k) {
+        const time = bars[i - k].time;
+        s.plots[0].push({ time, value: hi, color: hipc });
+        s.plots[1].push({ time, value: lo, color: lopc });
+      }
+      s.plots[2][i] = { time: b.time, value: hi, color: hipc };
+      s.plots[3][i] = { time: b.time, value: lo, color: lopc };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: s.plots[0].slice(),
+          plot1: s.plots[1].slice(),
+          plot2: s.plots[2].slice(),
+          plot3: s.plots[3].slice(),
+        },
+      };
     },
   };
 }
 
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<UltraCleanSupportResistanceLevelsInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<UltraCleanSupportResistanceLevelsInputs> = {},
+): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
 export const UltraCleanSupportResistanceLevels = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

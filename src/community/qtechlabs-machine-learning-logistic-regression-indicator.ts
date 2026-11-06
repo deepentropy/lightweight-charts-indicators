@@ -13,9 +13,11 @@
  * Original notice: © Q# Tech Labs 2025
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original's alertconditions */
 export const alertConditions: AlertConditionDecl[] = [
@@ -64,16 +66,30 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<QtechlabsMachineLearningLogisticRegressionIndicatorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
 
-  const ds = bars.map((b) => {
+interface QtechVars {
+  /** signal[1] (na before the first bar) */
+  prevSignal: number;
+}
+
+interface QtechRun extends BarRunState<QtechVars> {
+  retHi: WindowExtreme;
+  retLo: WindowExtreme;
+  synHi: WindowExtreme;
+  synLo: WindowExtreme;
+  ema: ReturnType<typeof taStep.ema>;
+  ds: number[];
+  plot0: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<QtechlabsMachineLearningLogisticRegressionIndicatorInputs>): BarStudy<QtechRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const price = (b: Bar): number => {
     switch (cfg.ptype) {
       case 'Open': return b.open;
       case 'High': return b.high;
@@ -83,69 +99,101 @@ export function calculate(
       case 'HLC3': return (b.high + b.low + b.close) / 3;
       default: return (b.open + b.high + b.low + b.close) / 4;
     }
-  });
-
-  // ret = math.log(ds / ds[ret_lookback]); synthetic = math.log(math.abs(math.pow(ds, 2) - 1) + 0.5)
-  const ret = ds.map((v, i) => (i >= cfg.retLookback ? Math.log(v / ds[i - cfg.retLookback]) : NaN));
-  const synthetic = ds.map((v) => Math.log(Math.abs(Math.pow(v, 2) - 1) + 0.5));
-
-  // normalize(x, len): hi == lo ? 0.5 : (x - lo) / (hi - lo)
-  const normalize = (x: number[], len: number) => {
-    const hi = A(ta.highest(S(x), len));
-    const lo = A(ta.lowest(S(x), len));
-    return x.map((v, i) => (eq(hi[i], lo[i]) ? 0.5 : (v - lo[i]) / (hi[i] - lo[i])));
   };
-  const normRet = normalize(ret, 20);
-  const normSynthetic = normalize(synthetic, 20);
-
   const w0 = -2.0;
   const w1 = 2.0;
   const w2 = 1.0;
-  const prob = normRet.map((r, i) => 1 / (1 + Math.exp(-(w0 + w1 * r + w2 * normSynthetic[i]))));
-  const sprob = A(ta.ema(S(prob), cfg.smoothLen));
-
-  const markers: MarkerData[] = [];
   const buyColor = color.green;
   const sellColor = color.red;
-  let prevSignal = NaN;
-  const buyFlags: boolean[] = [];
-  const sellFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const signal = gt(sprob[i], cfg.threshold) ? 1 : lt(sprob[i], 1 - cfg.threshold) ? -1 : 0;
-    // signal != signal[1]: false when signal[1] is na (bar 0)
-    const changed = !isNaN(prevSignal) && signal !== prevSignal;
-    buyFlags.push(signal === 1 && changed);
-    sellFlags.push(signal === -1 && changed);
-    // plotshape(..., text = "BUY"): no textcolor, the Pine default text colour (color.blue)
-    if (signal === 1 && changed) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: buyColor, text: 'BUY',
-        textColor: color.blue });
-    }
-    if (signal === -1 && changed) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: sellColor, text: 'SELL',
-        textColor: color.blue });
-    }
-    prevSignal = signal;
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: sprob.map((v, i) => ({ time: bars[i].time, value: Number.isFinite(v) ? v : NaN, color: color.blue })),
+    init() {
+      const retHi = new WindowExtreme(false, 20);
+      const retLo = new WindowExtreme(true, 20);
+      const synHi = new WindowExtreme(false, 20);
+      const synLo = new WindowExtreme(true, 20);
+      const ema = taStep.ema(cfg.smoothLen);
+      const s: QtechRun = {
+        retHi, retLo, synHi, synLo, ema, ds: [], plot0: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [retHi, retLo, synHi, synLo, ema],
+        vars: { prevSignal: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.ds, s.plot0, ...s.flags];
+      return s;
     },
-    hlines: [
-      { value: 0.5, options: { title: 'Neutral', color: color.gray, linestyle: 'dashed' } },
-      { value: cfg.threshold, options: { title: 'Buy Threshold', color: color.green, linestyle: 'dotted' } },
-      { value: 1 - cfg.threshold, options: { title: 'Sell Threshold', color: color.red, linestyle: 'dotted' } },
-    ],
-    markers,
-    // alertcondition(buy, "Buy Signal") / alertcondition(sell, "Sell Signal")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const ds = price(b);
+      s.ds[i] = ds;
+      // ret = math.log(ds / ds[ret_lookback]); synthetic = math.log(math.abs(math.pow(ds, 2) - 1) + 0.5)
+      const ret = i >= cfg.retLookback ? Math.log(ds / s.ds[i - cfg.retLookback]) : NaN;
+      const synthetic = Math.log(Math.abs(Math.pow(ds, 2) - 1) + 0.5);
+
+      // normalize(x, len): hi == lo ? 0.5 : (x - lo) / (hi - lo)
+      const normalize = (x: number, hiStep: WindowExtreme, loStep: WindowExtreme) => {
+        const hi = hiStep.step(x);
+        const lo = loStep.step(x);
+        return eq(hi, lo) ? 0.5 : (x - lo) / (hi - lo);
+      };
+      const normRet = normalize(ret, s.retHi, s.retLo);
+      const normSynthetic = normalize(synthetic, s.synHi, s.synLo);
+
+      const prob = 1 / (1 + Math.exp(-(w0 + w1 * normRet + w2 * normSynthetic)));
+      const sprob = s.ema.step(prob);
+
+      const signal = gt(sprob, cfg.threshold) ? 1 : lt(sprob, 1 - cfg.threshold) ? -1 : 0;
+      // signal != signal[1]: false when signal[1] is na (bar 0)
+      const changed = !isNaN(v.prevSignal) && signal !== v.prevSignal;
+      const buy = signal === 1 && changed;
+      const sell = signal === -1 && changed;
+      s.flags[0][i] = buy;
+      s.flags[1][i] = sell;
+      if (buy) s.times[0].push(b.time as number);
+      if (sell) s.times[1].push(b.time as number);
+      // plotshape(..., text = "BUY"): no textcolor, the Pine default text colour (color.blue)
+      if (buy) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: buyColor, text: 'BUY',
+          textColor: color.blue });
+      }
+      if (sell) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: sellColor, text: 'SELL',
+          textColor: color.blue });
+      }
+      v.prevSignal = signal;
+      s.plot0[i] = { time: b.time, value: Number.isFinite(sprob) ? sprob : NaN, color: color.blue };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines: [
+          { value: 0.5, options: { title: 'Neutral', color: color.gray, linestyle: 'dashed' } },
+          { value: cfg.threshold, options: { title: 'Buy Threshold', color: color.green, linestyle: 'dotted' } },
+          { value: 1 - cfg.threshold, options: { title: 'Sell Threshold', color: color.red, linestyle: 'dotted' } },
+        ],
+        markers: s.markers.slice(),
+        // alertcondition(buy, "Buy Signal") / alertcondition(sell, "Sell Signal")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<QtechlabsMachineLearningLogisticRegressionIndicatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<QtechlabsMachineLearningLogisticRegressionIndicatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const QtechlabsMachineLearningLogisticRegressionIndicator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

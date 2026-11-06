@@ -15,10 +15,11 @@
  * Original notice: @Adam's Cat
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData, PlotCandleData } from '../types';
 import type { ChartContext } from '../chart-context';
-import { periodChanges } from '../anchor-period';
+import { hasCalendar, periodChanges } from '../anchor-period';
+import { AlmaStep, barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, WindowVwma, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export type PureCocaMaType = 'SMA' | 'EMA' | 'WMA' | 'RMA' | 'VWMA' | 'ALMA' | 'TEMA' | 'DEMA' | 'KAMA' | 'T3' | 'JMA'
   | 'SMMA' | 'VWAP';
@@ -96,47 +97,48 @@ function newDay(bars: Bar[], chart?: ChartContext): boolean[] {
   return periodChanges(bars, '1D', chart).map((change, i) => i === 0 || change);
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<PureCocaInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> } {
+const DAY = 86400000;
+
+// ta.crossover(a, b): a > b and a[1] <= b[1]; ta.crossunder(a, b): a < b and a[1] >= b[1] (exact, no 1e-10 tolerance)
+const crossover = (i: number, z: number, pz: number, level: number) => i > 0 && z > level && pz <= level;
+const crossunder = (i: number, z: number, pz: number, level: number) => i > 0 && z < level && pz >= level;
+
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> };
+
+interface CocaVars {
+  /** var color coloring = na */
+  coloring: string | null;
+  /** var color bgCol = na */
+  bgCol: string | null;
+  /** History of the lazy crossunder: its previous z and whether it ran before */
+  cuPrevZ: number;
+  cuRan: boolean;
+  /** ta.vwap sums */
+  sumPV: number;
+  sumV: number;
+}
+
+interface CocaRun extends BarRunState<CocaVars> {
+  ma: (b: Bar, v: number, i: number, bars: Bar[]) => number;
+  mean: WindowSma;
+  sd: WindowStdev;
+  z: number[];
+  plot0: Point[];
+  candles: PlotCandleData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<PureCocaInputs>): BarStudy<CocaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = getSourceSeries(bars, cfg.src);
+  const value = barSource(cfg.src);
   const len = cfg.maLength;
-  const volume = S(bars.map((b) => b.volume ?? NaN));
-
-  // f_ma(src, ma_length, ma_type)
-  let smoothed: number[];
-  switch (cfg.maType) {
-    case 'SMA': smoothed = A(ta.sma(src, len)); break;
-    case 'EMA': smoothed = A(ta.ema(src, len)); break;
-    case 'WMA': case 'JMA': smoothed = A(ta.wma(src, len)); break;
-    case 'RMA': case 'SMMA': smoothed = A(ta.rma(src, len)); break;
-    case 'VWMA': smoothed = A(ta.vwma(src, len, volume)); break;
-    case 'ALMA': smoothed = A(ta.alma(src, len, 0.85, 6)); break;
-    case 'T3': smoothed = A(ta.wma(ta.wma(ta.wma(src, len), len), len)); break;
-    case 'VWAP': {
-      // ta.vwap: VWAP of hlc3 anchored to the session (a new day on daily bars)
-      const hlc3 = S(bars.map((b) => (b.high + b.low + b.close) / 3));
-      smoothed = A(ta.vwap(hlc3, volume, S(newDay(bars, chart).map(Number))));
-      break;
-    }
-    default: smoothed = new Array(n).fill(NaN); // TEMA, DEMA, KAMA: na
-  }
-
-  // z_score = (smoothed - mean) / stdev: a plain division (x / 0 is +-infinity, 0 / 0 NaN); the comparisons use the
-  // infinite value, the plot shows na for it
-  const mean = A(ta.sma(S(smoothed), cfg.lookback));
-  const sd = A(ta.stdev(S(smoothed), cfg.lookback));
-  const z = smoothed.map((v, i) => (v - mean[i]) / sd[i]);
-
-  // ta.crossover(a, b): a > b and a[1] <= b[1]; ta.crossunder(a, b): a < b and a[1] >= b[1] (exact, no 1e-10 tolerance)
-  const crossover = (i: number, level: number) => i > 0 && z[i] > level && z[i - 1] <= level;
-  const crossunder = (i: number, level: number) => i > 0 && z[i] < level && z[i - 1] >= level;
+  const isVwap = cfg.maType === 'VWAP';
+  /** The bar times are in ms (from the first bar) */
+  let ms = false;
+  /** New days of the exchange calendar (whole bar set), else the UTC days */
+  let days: boolean[] | null = null;
+  const dayOf = (t: number) => Math.floor((ms ? t : t * 1000) / DAY);
 
   const red = '#ff0000';
   const white = '#ffffff';
@@ -145,71 +147,145 @@ export function calculate(
   const bgDown = String(color.new('#646464', 40));
   const bgS = String(color.new('#1d1d1d', 75));
 
-  const candles: PlotCandleData[] = [];
-  const bgColors: BgColorData[] = [];
-  let coloring: string | null = null; // var color coloring = na
-  let bgCol: string | null = null; // var color bgCol = na
-  // S = ta.crossover(z_score, lowerMD) or ta.crossunder(z_score, upperMD): Pine v6 `or` is lazy, so the crossunder
-  // only runs (and keeps its history) on the bars where the crossover is false.
-  let cuPrevZ = NaN;
-  let cuRan = false;
-  for (let i = 0; i < n; i++) {
-    const co = crossover(i, cfg.lowerMD);
-    let cu = false;
-    if (!co) {
-      cu = cuRan && z[i] < cfg.upperMD && cuPrevZ >= cfg.upperMD;
-      cuPrevZ = z[i];
-      cuRan = true;
-    }
-    const sig = co || cu;
-    if (crossover(i, cfg.upperB)) {
-      coloring = red;
-      bgCol = bgRed;
-    }
-    if (cfg.downT && crossunder(i, cfg.lowerB)) {
-      coloring = white;
-      bgCol = bgDown;
-    }
-    if (sig) {
-      coloring = dimGray;
-      bgCol = bgS;
-    }
-    // plotcandle(open, high, low, close, 'BarColor', color, bordercolor = color, wickcolor = color, force_overlay = true)
-    // color = barColoring ? coloring : na; an na colour draws no candle
-    const c = cfg.barColoring && coloring ? coloring : 'transparent';
-    const b = bars[i];
-    candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: c, borderColor: c,
-      wickColor: c, forceOverlay: true });
-    // bgcolor(bgCol, force_overlay = true, display = showBGCol ? display.all : display.none)
-    if (cfg.showBGCol && bgCol) bgColors.push({ time: b.time, color: bgCol, forceOverlay: true });
-  }
-
-  // hline(downT ? lowerMD : na) / hline(downT ? lowerB : na): an na hline is not drawn
-  const hlines = [
-    { value: cfg.upperB, options: { title: 'Upper Boundery', color: '#ffffff', linestyle: 'dashed' as const } },
-    { value: cfg.upperMD, options: { title: 'Midline For Upper Boundery', color: '#ffffff', linestyle: 'solid' as const } },
-    ...(cfg.downT
-      ? [
-        { value: cfg.lowerMD, options: { title: 'Midline For Upper Boundery', color: '#ff0000', linestyle: 'solid' as const } },
-        { value: cfg.lowerB, options: { title: 'Lower Boundery', color: '#ff0000', linestyle: 'dashed' as const } },
-      ]
-      : []),
-  ];
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(z_score, style = plot.style_histogram, color = z_score > 0 ? #ff0000 : #ffffff, title = 'Z-Score')
-      plot0: bars.map((b, i) => ({ time: b.time, value: Number.isFinite(z[i]) ? z[i] : NaN, color: gt(z[i], 0) ? red : white })),
+    fullRunReason: (c) => (!isBarSource(cfg.src) ? 'source of another study'
+      : isVwap && hasCalendar(c) ? 'VWAP days of the exchange calendar' : null),
+    // the UTC days read the time unit of the first bar
+    key: (bars) => String(bars.length > 0 && bars[0].time >= 1e12),
+    init(bars, c) {
+      ms = bars.length > 0 && bars[0].time >= 1e12;
+      days = isVwap && hasCalendar(c) ? newDay(bars, c) : null;
+      const steps: Committable[] = [];
+      // f_ma(src, ma_length, ma_type)
+      let ma: CocaRun['ma'];
+      switch (cfg.maType) {
+        case 'SMA': { const m = new WindowSma(len); steps.push(m); ma = (_b, v) => m.step(v); break; }
+        case 'EMA': { const m = taStep.ema(len); steps.push(m); ma = (_b, v) => m.step(v); break; }
+        case 'WMA': case 'JMA': { const m = taStep.wma(); steps.push(m); ma = (_b, v) => m.step(v, len); break; }
+        case 'RMA': case 'SMMA': { const m = taStep.rma(len); steps.push(m); ma = (_b, v) => m.step(v); break; }
+        case 'VWMA': { const m = new WindowVwma(len); steps.push(m); ma = (b, v) => m.step(v, b.volume ?? NaN); break; }
+        case 'ALMA': { const m = new AlmaStep(len, 0.85, 6); steps.push(m); ma = (_b, v) => m.step(v); break; }
+        case 'T3': {
+          const w1 = taStep.wma(), w2 = taStep.wma(), w3 = taStep.wma();
+          steps.push(w1, w2, w3);
+          ma = (_b, v) => w3.step(w2.step(w1.step(v, len), len), len);
+          break;
+        }
+        case 'VWAP': {
+          // ta.vwap: VWAP of hlc3 anchored to the session (a new day on daily bars)
+          ma = (b, _v, i, all) => {
+            const st = s.vars;
+            const h = (b.high + b.low + b.close) / 3;
+            const vol = b.volume ?? NaN;
+            const anchor = days ? days[i] : i === 0 || dayOf(b.time) !== dayOf(all[i - 1].time);
+            if (anchor) {
+              st.sumPV = h * vol;
+              st.sumV = vol;
+            } else {
+              st.sumPV += h * vol;
+              st.sumV += vol;
+            }
+            return st.sumV === 0 ? NaN : st.sumPV / st.sumV;
+          };
+          break;
+        }
+        default: ma = () => NaN; // TEMA, DEMA, KAMA: na
+      }
+      const mean = new WindowSma(cfg.lookback);
+      const sd = new WindowStdev(cfg.lookback);
+      const s: CocaRun = {
+        ma, mean, sd, z: [], plot0: [], candles: [], bgColors: [],
+        steps: [...steps, mean, sd],
+        vars: { coloring: null, bgCol: null, cuPrevZ: NaN, cuRan: false, sumPV: NaN, sumV: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.z, s.plot0, s.candles];
+      return s;
     },
-    hlines,
-    bgColors,
-    plotCandles: { BarColor: candles },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const smoothed = s.ma(b, value(b), i, bars);
+      // z_score = (smoothed - mean) / stdev: a plain division (x / 0 is +-infinity, 0 / 0 NaN); the comparisons use the
+      // infinite value, the plot shows na for it
+      const mean = s.mean.step(smoothed);
+      const sd = s.sd.step(smoothed);
+      const z = (smoothed - mean) / sd;
+      s.z[i] = z;
+      const pz = i > 0 ? s.z[i - 1] : NaN;
+
+      // S = ta.crossover(z_score, lowerMD) or ta.crossunder(z_score, upperMD): Pine v6 `or` is lazy, so the crossunder
+      // only runs (and keeps its history) on the bars where the crossover is false.
+      const co = crossover(i, z, pz, cfg.lowerMD);
+      let cu = false;
+      if (!co) {
+        cu = v.cuRan && z < cfg.upperMD && v.cuPrevZ >= cfg.upperMD;
+        v.cuPrevZ = z;
+        v.cuRan = true;
+      }
+      const sig = co || cu;
+      if (crossover(i, z, pz, cfg.upperB)) {
+        v.coloring = red;
+        v.bgCol = bgRed;
+      }
+      if (cfg.downT && crossunder(i, z, pz, cfg.lowerB)) {
+        v.coloring = white;
+        v.bgCol = bgDown;
+      }
+      if (sig) {
+        v.coloring = dimGray;
+        v.bgCol = bgS;
+      }
+      // plotcandle(open, high, low, close, 'BarColor', color, bordercolor = color, wickcolor = color, force_overlay = true)
+      // color = barColoring ? coloring : na; an na colour draws no candle
+      const c = cfg.barColoring && v.coloring ? v.coloring : 'transparent';
+      s.candles[i] = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: c, borderColor: c,
+        wickColor: c, forceOverlay: true };
+      // bgcolor(bgCol, force_overlay = true, display = showBGCol ? display.all : display.none)
+      if (cfg.showBGCol && v.bgCol) s.bgColors.push({ time: b.time, color: v.bgCol, forceOverlay: true });
+      // plot(z_score, style = plot.style_histogram, color = z_score > 0 ? #ff0000 : #ffffff, title = 'Z-Score')
+      s.plot0[i] = { time: b.time, value: Number.isFinite(z) ? z : NaN, color: gt(z, 0) ? red : white };
+    },
+    result(s) {
+      // hline(downT ? lowerMD : na) / hline(downT ? lowerB : na): an na hline is not drawn
+      const hlines = [
+        { value: cfg.upperB, options: { title: 'Upper Boundery', color: '#ffffff', linestyle: 'dashed' as const } },
+        { value: cfg.upperMD, options: { title: 'Midline For Upper Boundery', color: '#ffffff', linestyle: 'solid' as const } },
+        ...(cfg.downT
+          ? [
+            { value: cfg.lowerMD, options: { title: 'Midline For Upper Boundery', color: '#ff0000', linestyle: 'solid' as const } },
+            { value: cfg.lowerB, options: { title: 'Lower Boundery', color: '#ff0000', linestyle: 'dashed' as const } },
+          ]
+          : []),
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        hlines,
+        bgColors: s.bgColors.slice(),
+        plotCandles: { BarColor: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PureCocaInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<PureCocaInputs> = {},
+  chart?: ChartContext,
+): IndicatorResult & { bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> } {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const PureCoca = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

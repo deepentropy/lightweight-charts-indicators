@@ -10,9 +10,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RsiAdxAtrComboInputs {
   rsiLen: number;
@@ -64,70 +66,104 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RsiAdxAtrComboInputs> = {},
-): IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number };
+
+interface ComboRun extends BarRunState<Record<string, never>> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  tr: ReturnType<typeof taStep.tr>;
+  atrADX: ReturnType<typeof taStep.rma>;
+  plusRma: ReturnType<typeof taStep.rma>;
+  minusRma: ReturnType<typeof taStep.rma>;
+  adx: ReturnType<typeof taStep.rma>;
+  atr: ReturnType<typeof taStep.atr>;
+  plots: Point[][];
+  flags: boolean[];
+  times: number[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<RsiAdxAtrComboInputs>): BarStudy<ComboRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const rsi = A(ta.rsi(getSourceSeries(bars, cfg.rsiSource), cfg.rsiLen));
-
-  // upMove = high - high[1]; downMove = low[1] - low (na on the first bar: both DM are 0)
-  const plusDM: number[] = new Array(n);
-  const minusDM: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const up = i > 0 ? bars[i].high - bars[i - 1].high : NaN;
-    const down = i > 0 ? bars[i - 1].low - bars[i].low : NaN;
-    plusDM[i] = gt(up, down) && gt(up, 0) ? up : 0;
-    minusDM[i] = gt(down, up) && gt(down, 0) ? down : 0;
-  }
-  // tr = ta.tr (the variable: na on the first bar)
-  const atrADX = A(ta.rma(ta.tr(bars, false), cfg.adxLen));
-  const plusRma = A(ta.rma(S(plusDM), cfg.adxLen));
-  const minusRma = A(ta.rma(S(minusDM), cfg.adxLen));
-  const dx: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    // Plain divisions: x / 0 is +-infinity, 0 / 0 is na; ta.rma skips the non-finite values like na
-    const plusDI = (100 * plusRma[i]) / atrADX[i];
-    const minusDI = (100 * minusRma[i]) / atrADX[i];
-    dx[i] = (100 * Math.abs(plusDI - minusDI)) / (plusDI + minusDI);
-  }
-  const adx = A(ta.rma(S(dx), cfg.adxLen));
-  const atr = A(ta.atr(bars, cfg.atrLen));
-
+  const src = barSource(cfg.rsiSource);
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   const signal = String(color.new(color.fuchsia, 85));
-  const bgColors: BgColorData[] = [];
-  const comboFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const rsiCond = gt(rsi[i], cfg.rsiLower) && lt(rsi[i], cfg.rsiUpper);
-    const adxCond = lt(adx[i], cfg.adxThreshold);
-    const atrCond = lt(atr[i], cfg.atrThreshold);
-    // bgcolor(comboSignal ? color.new(color.fuchsia, 85) : na)
-    const comboSignal = rsiCond && adxCond && atrCond;
-    comboFlags.push(comboSignal);
-    if (comboSignal) bgColors.push({ time: bars[i].time, color: signal });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(rsi[i]) })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(adx[i]) })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: fin(atr[i]) })),
+    fullRunReason: () => (isBarSource(cfg.rsiSource) ? null : 'source of another study'),
+    init() {
+      const rsi = taStep.rsi(cfg.rsiLen);
+      const tr = taStep.tr(false);
+      const atrADX = taStep.rma(cfg.adxLen);
+      const plusRma = taStep.rma(cfg.adxLen);
+      const minusRma = taStep.rma(cfg.adxLen);
+      const adx = taStep.rma(cfg.adxLen);
+      const atr = taStep.atr(cfg.atrLen);
+      const s: ComboRun = {
+        rsi, tr, atrADX, plusRma, minusRma, adx, atr, plots: [[], [], []], flags: [], times: [], bgColors: [],
+        steps: [rsi, tr, atrADX, plusRma, minusRma, adx, atr], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.times, s.bgColors];
+      s.series = [...s.plots, s.flags];
+      return s;
     },
-    hlines: [
-      { value: cfg.rsiLower, options: { title: 'RSI Lower', color: color.green, linestyle: 'dashed' } },
-      { value: cfg.rsiUpper, options: { title: 'RSI Upper', color: color.red, linestyle: 'dashed' } },
-      { value: cfg.adxThreshold, options: { title: 'ADX Threshold', color: color.gray, linestyle: 'dashed' } },
-    ],
-    bgColors,
-    // alertcondition(comboSignal, "All Conditions Met")
-    alerts: alertStates(alertConditions, bars, [comboFlags]),
+    bar(s, i, bars) {
+      const b = bars[i];
+      const rsi = s.rsi.step(src(b));
+      // upMove = high - high[1]; downMove = low[1] - low (na on the first bar: both DM are 0)
+      const up = i > 0 ? b.high - bars[i - 1].high : NaN;
+      const down = i > 0 ? bars[i - 1].low - b.low : NaN;
+      const plusDM = gt(up, down) && gt(up, 0) ? up : 0;
+      const minusDM = gt(down, up) && gt(down, 0) ? down : 0;
+      // tr = ta.tr (the variable: na on the first bar)
+      const atrADX = s.atrADX.step(s.tr.step(b.high, b.low, b.close));
+      const plusRma = s.plusRma.step(plusDM);
+      const minusRma = s.minusRma.step(minusDM);
+      // Plain divisions: x / 0 is +-infinity, 0 / 0 is na; ta.rma skips the non-finite values like na
+      const plusDI = (100 * plusRma) / atrADX;
+      const minusDI = (100 * minusRma) / atrADX;
+      const dx = (100 * Math.abs(plusDI - minusDI)) / (plusDI + minusDI);
+      const adx = s.adx.step(dx);
+      const atr = s.atr.step(b.high, b.low, b.close);
+
+      const rsiCond = gt(rsi, cfg.rsiLower) && lt(rsi, cfg.rsiUpper);
+      const adxCond = lt(adx, cfg.adxThreshold);
+      const atrCond = lt(atr, cfg.atrThreshold);
+      // bgcolor(comboSignal ? color.new(color.fuchsia, 85) : na)
+      const comboSignal = rsiCond && adxCond && atrCond;
+      s.flags[i] = comboSignal;
+      if (comboSignal) {
+        s.bgColors.push({ time: b.time, color: signal });
+        s.times.push(b.time as number);
+      }
+      s.plots[0][i] = { time: b.time, value: fin(rsi) };
+      s.plots[1][i] = { time: b.time, value: fin(adx) };
+      s.plots[2][i] = { time: b.time, value: fin(atr) };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        hlines: [
+          { value: cfg.rsiLower, options: { title: 'RSI Lower', color: color.green, linestyle: 'dashed' } },
+          { value: cfg.rsiUpper, options: { title: 'RSI Upper', color: color.red, linestyle: 'dashed' } },
+          { value: cfg.adxThreshold, options: { title: 'ADX Threshold', color: color.gray, linestyle: 'dashed' } },
+        ],
+        bgColors: s.bgColors.slice(),
+        // alertcondition(comboSignal, "All Conditions Met")
+        alerts: liveAlertStates(alertConditions, [s.times], [n > 0 && s.flags[n - 1]]),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RsiAdxAtrComboInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RsiAdxAtrComboInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertcondition */
@@ -137,6 +173,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RsiAdxAtrCombo = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

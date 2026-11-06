@@ -9,8 +9,10 @@
  * Reference: "GMMA Oscillator" community indicator
  */
 
-import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface GMMAOscillatorInputs {
   gmmaType: string;
@@ -48,9 +50,22 @@ export const metadata = {
   overlay: false,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<GMMAOscillatorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface GmmaRun extends BarRunState<Record<string, never>> {
+  fastEmas: ReturnType<typeof taStep.ema>[];
+  slowEmas: ReturnType<typeof taStep.ema>[];
+  smooth: WindowSma | null;
+  signal: ReturnType<typeof taStep.ema>;
+  oscPlot: Point[];
+  sigPlot: Point[];
+  histPlot: Point[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<GMMAOscillatorInputs>): BarStudy<GmmaRun, IndicatorResult> {
   const { gmmaType, smoothLen, signalLen, src, showZones } = { ...defaultInputs, ...inputs };
-  const source = getSourceSeries(bars, src);
+  const value = barSource(src);
 
   // Define EMA periods based on GMMA type
   let fastPeriods: number[];
@@ -69,99 +84,111 @@ export function calculate(bars: Bar[], inputs: Partial<GMMAOscillatorInputs> = {
     slowPeriods = [30, 35, 40, 45, 50, 60];
   }
 
-  // Compute all EMAs
-  const fastEmas = fastPeriods.map(p => ta.ema(source, p).toArray());
-  const slowEmas = slowPeriods.map(p => ta.ema(source, p).toArray());
-
   const maxPeriod = Math.max(...slowPeriods);
   const warmup = maxPeriod;
 
-  // Average of fast group and slow group per bar
-  const rawOscArr: number[] = [];
-  for (let i = 0; i < bars.length; i++) {
-    let fastSum = 0;
-    let slowSum = 0;
-    let valid = true;
-
-    for (let j = 0; j < fastEmas.length; j++) {
-      const v = fastEmas[j][i];
-      if (v == null || isNaN(v)) { valid = false; break; }
-      fastSum += v;
-    }
-    if (valid) {
-      for (let j = 0; j < slowEmas.length; j++) {
-        const v = slowEmas[j][i];
-        if (v == null || isNaN(v)) { valid = false; break; }
+  return {
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      // Compute all EMAs
+      const fastEmas = fastPeriods.map((p) => taStep.ema(p));
+      const slowEmas = slowPeriods.map((p) => taStep.ema(p));
+      // Optional smoothing with SMA
+      const smooth = smoothLen > 1 ? new WindowSma(smoothLen) : null;
+      // Signal = EMA of oscillator
+      const signal = taStep.ema(signalLen);
+      const s: GmmaRun = {
+        fastEmas, slowEmas, smooth, signal, oscPlot: [], sigPlot: [], histPlot: [], bgColors: [],
+        steps: [...fastEmas, ...slowEmas, ...(smooth ? [smooth] : []), signal], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.bgColors];
+      s.series = [s.oscPlot, s.sigPlot, s.histPlot];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const x = value(b);
+      // Average of fast group and slow group per bar (every EMA is stepped on every bar)
+      let fastSum = 0;
+      let slowSum = 0;
+      let valid = true;
+      for (let j = 0; j < s.fastEmas.length; j++) {
+        const v = s.fastEmas[j].step(x);
+        if (!valid) continue;
+        if (v == null || isNaN(v)) { valid = false; continue; }
+        fastSum += v;
+      }
+      for (let j = 0; j < s.slowEmas.length; j++) {
+        const v = s.slowEmas[j].step(x);
+        if (!valid) continue;
+        if (v == null || isNaN(v)) { valid = false; continue; }
         slowSum += v;
       }
-    }
+      let rawOsc: number;
+      if (!valid) {
+        rawOsc = NaN;
+      } else {
+        const fastAvg = fastSum / s.fastEmas.length;
+        const slowAvg = slowSum / s.slowEmas.length;
+        rawOsc = slowAvg !== 0 ? ((fastAvg - slowAvg) / slowAvg) * 100 : 0;
+      }
 
-    if (!valid) {
-      rawOscArr.push(NaN);
-      continue;
-    }
+      const osc = s.smooth ? s.smooth.step(rawOsc) ?? NaN : rawOsc;
+      const signal = s.signal.step(osc);
 
-    const fastAvg = fastSum / fastEmas.length;
-    const slowAvg = slowSum / slowEmas.length;
-    rawOscArr.push(slowAvg !== 0 ? ((fastAvg - slowAvg) / slowAvg) * 100 : 0);
-  }
+      // Build plot data
+      if (i < warmup || isNaN(osc)) {
+        s.oscPlot[i] = { time, value: NaN };
+      } else {
+        const sig = signal ?? NaN;
+        const color = !isNaN(sig) && osc > sig ? '#26A69A' : '#EF5350';
+        s.oscPlot[i] = { time, value: osc, color };
+      }
 
-  // Optional smoothing with SMA
-  let oscArr: number[];
-  if (smoothLen > 1) {
-    const rawSeries = new Series(bars, (_, i) => rawOscArr[i]);
-    oscArr = ta.sma(rawSeries, smoothLen).toArray().map(v => v ?? NaN);
-  } else {
-    oscArr = rawOscArr;
-  }
+      if (i < warmup || signal == null || isNaN(signal)) {
+        s.sigPlot[i] = { time, value: NaN };
+      } else {
+        const color = !isNaN(osc) && osc > signal ? '#26A69A' : '#EF5350';
+        s.sigPlot[i] = { time, value: signal, color };
+      }
 
-  // Signal = EMA of oscillator
-  const oscSeries = new Series(bars, (_, i) => oscArr[i]);
-  const signalArr = ta.ema(oscSeries, signalLen).toArray();
+      // Histogram = osc - signal
+      const sig = signal ?? NaN;
+      if (i < warmup || isNaN(osc) || isNaN(sig)) {
+        s.histPlot[i] = { time, value: NaN };
+      } else {
+        const diff = osc - sig;
+        const color = diff >= 0 ? '#26A69A' : '#EF5350';
+        s.histPlot[i] = { time, value: diff, color };
+      }
 
-  // Build plot data
-  const oscPlot = oscArr.map((v, i) => {
-    if (i < warmup || isNaN(v)) return { time: bars[i].time, value: NaN };
-    const sig = signalArr[i] ?? NaN;
-    const color = !isNaN(sig) && v > sig ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  const sigPlot = signalArr.map((v, i) => {
-    if (i < warmup || v == null || isNaN(v)) return { time: bars[i].time, value: NaN };
-    const osc = oscArr[i];
-    const color = !isNaN(osc) && osc > v ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // Histogram = osc - signal
-  const histPlot = oscArr.map((v, i) => {
-    const sig = signalArr[i] ?? NaN;
-    if (i < warmup || isNaN(v) || isNaN(sig)) return { time: bars[i].time, value: NaN };
-    const diff = v - sig;
-    const color = diff >= 0 ? '#26A69A' : '#EF5350';
-    return { time: bars[i].time, value: diff, color };
-  });
-
-  // Background zone colors
-  const bgColors: BgColorData[] = [];
-  if (showZones) {
-    for (let i = warmup; i < bars.length; i++) {
-      const v = oscArr[i];
-      if (isNaN(v)) continue;
-      bgColors.push({
-        time: bars[i].time,
-        color: v >= 0 ? 'rgba(38,166,154,0.10)' : 'rgba(239,83,80,0.10)',
-      });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': oscPlot, 'plot1': sigPlot, 'plot2': histPlot },
-    hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, linewidth: 1, title: 'Zero' } }],
-    bgColors,
-  } as Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] };
+      // Background zone colors
+      if (showZones && i >= warmup && !isNaN(osc)) {
+        s.bgColors.push({
+          time,
+          color: osc >= 0 ? 'rgba(38,166,154,0.10)' : 'rgba(239,83,80,0.10)',
+        });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.oscPlot.slice(), 'plot1': s.sigPlot.slice(), 'plot2': s.histPlot.slice() },
+        hlines: [{ value: 0, options: { color: '#787B86', linestyle: 'dashed' as const, linewidth: 1, title: 'Zero' } }],
+        bgColors: s.bgColors.slice(),
+      } as Omit<IndicatorResult, 'markers'> & { bgColors: BgColorData[] };
+    },
+  };
 }
 
-export const GMMAOscillator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GMMAOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GMMAOscillatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const GMMAOscillator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

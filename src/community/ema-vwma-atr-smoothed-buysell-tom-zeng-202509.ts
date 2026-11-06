@@ -12,9 +12,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
 import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EmaVwmaAtrSmoothedBuysellTomZeng202509Inputs {
   ema1Len: number;
@@ -79,103 +81,128 @@ const lt = (a: number, b: number) => b - a > EPS;
 /** nz(x, y) */
 const nz = (x: number, y: number) => (isNaN(x) ? y : x);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EmaVwmaAtrSmoothedBuysellTomZeng202509Inputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface EmaAtrVars {
+  /** var int pos = 0, var bool isLong = false, var bool isShort = false */
+  pos: number;
+  isLong: boolean;
+  isShort: boolean;
+}
+
+interface EmaAtrRun extends BarRunState<EmaAtrVars> {
+  emas: Array<ReturnType<typeof taStep.ema>>;
+  atr: ReturnType<typeof taStep.atr>;
+  vwma: WindowVwma;
+  stop: number[];
+  plots: Point[][];
+  flags: boolean[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<EmaVwmaAtrSmoothedBuysellTomZeng202509Inputs>): BarStudy<EmaAtrRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const closeS = getSourceSeries(bars, 'close');
-  const close = bars.map((b) => b.close);
-  const t = (i: number) => bars[i].time;
-
-  const ema1 = A(ta.ema(closeS, cfg.ema1Len));
-  const ema2 = A(ta.ema(closeS, cfg.ema2Len));
-  const ema3 = A(ta.ema(closeS, cfg.ema3Len));
-  const ema5 = A(ta.ema(closeS, cfg.ema5Len));
-
-  // ATR trailing stop
-  const xATR = A(ta.atr(bars, cfg.atrPeriod));
-  const stop: number[] = new Array(n).fill(NaN);
-  const posArr: number[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const longFlags: boolean[] = [];
-  const shortFlags: boolean[] = [];
-  let pos = 0; // var int pos = 0
-  let isLong = false; // var bool isLong = false
-  let isShort = false; // var bool isShort = false
-  for (let i = 0; i < n; i++) {
-    const nLoss = cfg.atrMultip * xATR[i];
-    const c = close[i];
-    const c1 = i > 0 ? close[i - 1] : NaN;
-    // prevStop = nz(xATRTrailingStop[1], close[1])
-    const prevStop = nz(i > 0 ? stop[i - 1] : NaN, c1);
-    let s: number;
-    if (gt(c, prevStop) && gt(c1, prevStop)) s = Math.max(prevStop, c - nLoss);
-    else if (lt(c, prevStop) && lt(c1, prevStop)) s = Math.min(prevStop, c + nLoss);
-    else s = gt(c, prevStop) ? c - nLoss : c + nLoss;
-    stop[i] = s;
-
-    // prevStopForPos = nz(xATRTrailingStop[1], close[1]) (same value as prevStop)
-    if (lt(c1, prevStop) && gt(c, s)) pos = 1;
-    else if (gt(c1, prevStop) && lt(c, s)) pos = -1;
-    // else pos := nz(pos[1], 0): unchanged
-    posArr[i] = pos;
-
-    const LONG = !isLong && pos === 1;
-    const SHORT = !isShort && pos === -1;
-    longFlags.push(LONG);
-    shortFlags.push(SHORT);
-    if (LONG) {
-      isLong = true;
-      isShort = false;
-    }
-    if (SHORT) {
-      isLong = false;
-      isShort = true;
-    }
-    // barcolor(isLong ? color.new(color.lime, 0) : isShort ? color.new(color.red, 0) : na)
-    if (isLong) barColors.push({ time: t(i), color: LIME });
-    else if (isShort) barColors.push({ time: t(i), color: RED });
-    // plotshape(LONG, 'Buy', shape.labelup, location.belowbar, text 'Buy', white text, color.green, size.normal)
-    if (LONG) {
-      markers.push({ time: t(i), position: 'belowBar', shape: 'labelUp', color: color.green, text: 'Buy', textColor: color.white, size: 'normal' });
-    }
-    // plotshape(SHORT, 'Sell', shape.labeldown, location.abovebar, text 'Sell', white text, color.red, size.normal)
-    if (SHORT) {
-      markers.push({ time: t(i), position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'Sell', textColor: color.white, size: 'normal' });
-    }
-  }
-
-  // VWMA and the average of the VWMA and the trailing stop
-  const vwma = A(ta.vwma(getSourceSeries(bars, cfg.vwmaSrc), cfg.vwmaLen, Series.fromArray(bars, bars.map((b) => b.volume ?? NaN))));
-  const avg1 = bars.map((_b, i) => (isNaN(vwma[i]) || isNaN(stop[i]) ? NaN : (vwma[i] + stop[i]) / 2.0));
-
+  const vwmaSrc = barSource(cfg.vwmaSrc);
   const fin = (x: number) => (Number.isFinite(x) ? x : NaN);
-  const line = (v: number[], col: string) => bars.map((b, i) => ({ time: b.time, value: fin(v[i]), color: col }));
-
+  const EMA_COLORS = [color.red, color.orange, color.yellow, color.blue];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(ema1, color.red),
-      plot1: line(ema2, color.orange),
-      plot2: line(ema3, color.yellow),
-      plot3: line(ema5, color.blue),
-      // color = pos == 1 ? color.green : pos == -1 ? color.red : color.gray
-      plot4: bars.map((b, i) => ({
-        time: b.time, value: fin(stop[i]),
-        color: posArr[i] === 1 ? color.green : posArr[i] === -1 ? color.red : color.gray,
-      })),
-      plot5: line(vwma, VWMA_COLOR),
-      plot6: line(avg1, color.aqua),
+    fullRunReason: () => (isBarSource(cfg.vwmaSrc) ? null : 'source of another study'),
+    init() {
+      const emas = [cfg.ema1Len, cfg.ema2Len, cfg.ema3Len, cfg.ema5Len].map((len) => taStep.ema(len));
+      const atr = taStep.atr(cfg.atrPeriod);
+      const vwma = new WindowVwma(cfg.vwmaLen);
+      const s: EmaAtrRun = {
+        emas, atr, vwma, stop: [], plots: Array.from({ length: 7 }, () => []), flags: [[], []], markers: [], barColors: [],
+        steps: [...emas, atr, vwma], vars: { pos: 0, isLong: false, isShort: false }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors];
+      s.series = [s.stop, ...s.plots, ...s.flags];
+      return s;
     },
-    markers,
-    barColors,
-    // alertcondition(LONG, "Buy Signal") / alertcondition(SHORT, "Sell Signal")
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time;
+      const p = s.plots;
+      for (let k = 0; k < 4; k++) p[k][i] = { time, value: fin(s.emas[k].step(b.close)), color: EMA_COLORS[k] };
+
+      // ATR trailing stop
+      const xATR = s.atr.step(b.high, b.low, b.close);
+      const nLoss = cfg.atrMultip * xATR;
+      const c = b.close;
+      const c1 = i > 0 ? bars[i - 1].close : NaN;
+      // prevStop = nz(xATRTrailingStop[1], close[1])
+      const prevStop = nz(i > 0 ? s.stop[i - 1] : NaN, c1);
+      let st: number;
+      if (gt(c, prevStop) && gt(c1, prevStop)) st = Math.max(prevStop, c - nLoss);
+      else if (lt(c, prevStop) && lt(c1, prevStop)) st = Math.min(prevStop, c + nLoss);
+      else st = gt(c, prevStop) ? c - nLoss : c + nLoss;
+      s.stop[i] = st;
+
+      // prevStopForPos = nz(xATRTrailingStop[1], close[1]) (same value as prevStop)
+      if (lt(c1, prevStop) && gt(c, st)) v.pos = 1;
+      else if (gt(c1, prevStop) && lt(c, st)) v.pos = -1;
+      // else pos := nz(pos[1], 0): unchanged
+      const pos = v.pos;
+
+      const LONG = !v.isLong && pos === 1;
+      const SHORT = !v.isShort && pos === -1;
+      s.flags[0][i] = LONG;
+      s.flags[1][i] = SHORT;
+      if (LONG) {
+        v.isLong = true;
+        v.isShort = false;
+      }
+      if (SHORT) {
+        v.isLong = false;
+        v.isShort = true;
+      }
+      // barcolor(isLong ? color.new(color.lime, 0) : isShort ? color.new(color.red, 0) : na)
+      if (v.isLong) s.barColors.push({ time, color: LIME });
+      else if (v.isShort) s.barColors.push({ time, color: RED });
+      // plotshape(LONG, 'Buy', shape.labelup, location.belowbar, text 'Buy', white text, color.green, size.normal)
+      if (LONG) {
+        s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'Buy', textColor: color.white, size: 'normal' });
+      }
+      // plotshape(SHORT, 'Sell', shape.labeldown, location.abovebar, text 'Sell', white text, color.red, size.normal)
+      if (SHORT) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'Sell', textColor: color.white, size: 'normal' });
+      }
+
+      // VWMA and the average of the VWMA and the trailing stop
+      const vwma = s.vwma.step(vwmaSrc(b), b.volume ?? NaN);
+      const avg1 = isNaN(vwma) || isNaN(st) ? NaN : (vwma + st) / 2.0;
+      // color = pos == 1 ? color.green : pos == -1 ? color.red : color.gray
+      p[4][i] = { time, value: fin(st), color: pos === 1 ? color.green : pos === -1 ? color.red : color.gray };
+      p[5][i] = { time, value: fin(vwma), color: VWMA_COLOR };
+      p[6][i] = { time, value: fin(avg1), color: color.aqua };
+    },
+    result(s, bars) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice(),
+          plot5: p[5].slice(), plot6: p[6].slice(),
+        },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        // alertcondition(LONG, "Buy Signal") / alertcondition(SHORT, "Sell Signal")
+        alerts: alertStates(alertConditions, bars, s.flags),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EmaVwmaAtrSmoothedBuysellTomZeng202509Inputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EmaVwmaAtrSmoothedBuysellTomZeng202509Inputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -186,6 +213,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const EmaVwmaAtrSmoothedBuysellTomZeng202509 = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

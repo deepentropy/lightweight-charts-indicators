@@ -13,8 +13,9 @@
  * Reference: "Hull Butterfly Oscillator [LuxAlgo]"
  */
 
-import { getSourceSeries, ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { getSourceSeries, taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import { foregroundColorOf, type ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface HullButterflyOscInputs {
   length: number;
@@ -107,89 +108,123 @@ export function buildHullCoeffs(length: number): number[] {
   return hullCoeffs;
 }
 
-export function calculate(bars: Bar[], inputs: Partial<HullButterflyOscInputs> = {}, chart?: ChartContext): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface HboVars {
+  /** var os = 0 */
+  os: number;
+}
+
+interface HboRun extends BarRunState<HboVars> {
+  fg: string;
+  cum: ReturnType<typeof taStep.cum>;
+  crossUp: ReturnType<typeof taStep.cross>;
+  crossDn: ReturnType<typeof taStep.cross>;
+  /** The source values of another study (null: read from the bars) */
+  ext: number[] | null;
+  srcArr: number[];
+  hsoArr: number[];
+  osArr: number[];
+  histPlot: Point[];
+  linePlot: Point[];
+  bullDot: Point[];
+  bearDot: Point[];
+  levels: Point[][];
+}
+
+function study(inputs: Partial<HullButterflyOscInputs>): BarStudy<HboRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length, mult, src } = cfg;
-  const n = bars.length;
-  const srcArr = getSourceSeries(bars, src).toArray();
-
+  const value = barSource(src);
   const hullCoeffs = buildHullCoeffs(length);
   const len = hullCoeffs.length - 1;
-
-  // hma / inv_hma over src[0..len]: na until bar len
-  const hsoArr: number[] = new Array(n).fill(NaN);
-  for (let t = 0; t < n; t++) {
-    if (len < 0 || t - len < 0) continue;
-    let hma = 0;
-    let invHma = 0;
-    for (let i = 0; i <= len; i++) {
-      hma += srcArr[t - i] * hullCoeffs[i];
-      invHma += srcArr[t - (len - i)] * hullCoeffs[i];
-    }
-    hsoArr[t] = hma - invHma;
-  }
-
-  // cmean = ta.cum(math.abs(hso)) / bar_index * mult
-  const cumAbs = ta.cum(Series.fromArray(bars, hsoArr.map((v) => Math.abs(v)))).toArray();
-  const cmeanArr = cumAbs.map((c, t) => (Number.isFinite(c) && t !== 0 ? (c / t) * mult : NaN));
-
-  const hsoS = Series.fromArray(bars, hsoArr);
-  const crossUp = ta.cross(hsoS, Series.fromArray(bars, cmeanArr)).toArray();
-  const crossDn = ta.cross(hsoS, Series.fromArray(bars, cmeanArr.map((c) => -c))).toArray();
-
-  // var os = 0
-  const osArr: number[] = new Array(n).fill(0);
-  let os = 0;
-  for (let t = 0; t < n; t++) {
-    const hso = hsoArr[t];
-    const prev = t > 0 ? hsoArr[t - 1] : NaN;
-    const cm = cmeanArr[t];
-    if (crossUp[t] || crossDn[t]) os = 0;
-    else if (hso < prev && hso > cm) os = -1;
-    else if (hso > prev && hso < -cm) os = 1;
-    osArr[t] = os;
-  }
-
-  // css = hso > 0 ? from_gradient(hso, 0, cmean, bull_css_0, bull_css_1) : from_gradient(hso, -cmean, 0, bear_css_1, bear_css_0)
-  const histPlot = hsoArr.map((hso, t) => {
-    const cm = cmeanArr[t];
-    const css = hso > 0
-      ? color.from_gradient(hso, 0, cm, cfg.bullCss0, cfg.bullCss1)
-      : color.from_gradient(hso, -cm, 0, cfg.bearCss1, cfg.bearCss0);
-    return { time: bars[t].time, value: hso, color: css };
-  });
-  // plot(hso, 'Hull Butterfly', chart.fg_color)
-  const fg = foregroundColorOf(chart);
-  const linePlot = hsoArr.map((hso, t) => ({ time: bars[t].time, value: hso, color: fg }));
-
-  // plot(os > os[1] and os == 1 ? hso : na, 'Bullish Dot', bull_css_1, 2, plot.style_circles) (os[1] na on bar 0)
-  const bullDot = hsoArr.map((hso, t) => ({
-    time: bars[t].time,
-    value: t > 0 && osArr[t] > osArr[t - 1] && osArr[t] === 1 ? hso : NaN,
-    color: cfg.bullCss1,
-  }));
-  // plot(os < os[1] and os == -1 ? hso : na, 'Bearish Dot', bear_css_1, 2, plot.style_circles)
-  const bearDot = hsoArr.map((hso, t) => ({
-    time: bars[t].time,
-    value: t > 0 && osArr[t] < osArr[t - 1] && osArr[t] === -1 ? hso : NaN,
-    color: cfg.bearCss1,
-  }));
-
-  const level = (k: number) => cmeanArr.map((cm, t) => ({ time: bars[t].time, value: cm * k, color: GRAY }));
+  const ks = [1, 0.5, -0.5, -1];
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'plot0': histPlot,
-      'plot1': linePlot,
-      'bullDot': bullDot,
-      'bearDot': bearDot,
-      'plot2': level(1),
-      'plot3': level(0.5),
-      'plot4': level(-0.5),
-      'plot5': level(-1),
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init(bars, chart) {
+      const cum = taStep.cum();
+      const crossUp = taStep.cross();
+      const crossDn = taStep.cross();
+      const s: HboRun = {
+        // plot(hso, 'Hull Butterfly', chart.fg_color)
+        fg: foregroundColorOf(chart),
+        cum, crossUp, crossDn, ext: isBarSource(src) ? null : getSourceSeries(bars, src).toArray(),
+        srcArr: [], hsoArr: [], osArr: [], histPlot: [], linePlot: [], bullDot: [], bearDot: [], levels: ks.map(() => []),
+        steps: [cum, crossUp, crossDn], vars: { os: 0 }, lists: [], series: [],
+      };
+      s.series = [s.srcArr, s.hsoArr, s.osArr, s.histPlot, s.linePlot, s.bullDot, s.bearDot, ...s.levels];
+      return s;
+    },
+    bar(s, t, bars) {
+      const b = bars[t];
+      const srcArr = s.srcArr;
+      srcArr[t] = s.ext ? s.ext[t] : value(b);
+      // hma / inv_hma over src[0..len]: na until bar len
+      let hso = NaN;
+      if (!(len < 0 || t - len < 0)) {
+        let hma = 0;
+        let invHma = 0;
+        for (let i = 0; i <= len; i++) {
+          hma += srcArr[t - i] * hullCoeffs[i];
+          invHma += srcArr[t - (len - i)] * hullCoeffs[i];
+        }
+        hso = hma - invHma;
+      }
+      s.hsoArr[t] = hso;
+
+      // cmean = ta.cum(math.abs(hso)) / bar_index * mult
+      const c = s.cum.step(Math.abs(hso));
+      const cm = Number.isFinite(c) && t !== 0 ? (c / t) * mult : NaN;
+      const crossUp = s.crossUp.step(hso, cm);
+      const crossDn = s.crossDn.step(hso, -cm);
+
+      const prev = t > 0 ? s.hsoArr[t - 1] : NaN;
+      const v = s.vars;
+      if (crossUp || crossDn) v.os = 0;
+      else if (hso < prev && hso > cm) v.os = -1;
+      else if (hso > prev && hso < -cm) v.os = 1;
+      const os = v.os;
+      s.osArr[t] = os;
+
+      // css = hso > 0 ? from_gradient(hso, 0, cmean, bull_css_0, bull_css_1) : from_gradient(hso, -cmean, 0, bear_css_1, bear_css_0)
+      const css = hso > 0
+        ? color.from_gradient(hso, 0, cm, cfg.bullCss0, cfg.bullCss1)
+        : color.from_gradient(hso, -cm, 0, cfg.bearCss1, cfg.bearCss0);
+      const time = b.time;
+      s.histPlot[t] = { time, value: hso, color: css };
+      s.linePlot[t] = { time, value: hso, color: s.fg };
+      // plot(os > os[1] and os == 1 ? hso : na, 'Bullish Dot', bull_css_1, 2, plot.style_circles) (os[1] na on bar 0)
+      s.bullDot[t] = { time, value: t > 0 && os > s.osArr[t - 1] && os === 1 ? hso : NaN, color: cfg.bullCss1 };
+      // plot(os < os[1] and os == -1 ? hso : na, 'Bearish Dot', bear_css_1, 2, plot.style_circles)
+      s.bearDot[t] = { time, value: t > 0 && os < s.osArr[t - 1] && os === -1 ? hso : NaN, color: cfg.bearCss1 };
+      for (let k = 0; k < ks.length; k++) s.levels[k][t] = { time, value: cm * ks[k], color: GRAY };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'plot0': s.histPlot.slice(),
+          'plot1': s.linePlot.slice(),
+          'bullDot': s.bullDot.slice(),
+          'bearDot': s.bearDot.slice(),
+          'plot2': s.levels[0].slice(),
+          'plot3': s.levels[1].slice(),
+          'plot4': s.levels[2].slice(),
+          'plot5': s.levels[3].slice(),
+        },
+      };
     },
   };
 }
 
-export const HullButterflyOscillator = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<HullButterflyOscInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<HullButterflyOscInputs> = {}, chart?: ChartContext): IndicatorResult {
+  return fullResult(createRun(inputs, chart).update(bars));
+}
+
+export const HullButterflyOscillator = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

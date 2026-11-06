@@ -9,6 +9,8 @@
 
 import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { LineDrawingData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface BitcoinLogCurvesInputs {
   showFibs: boolean;
@@ -61,147 +63,170 @@ export const metadata = {
 const GENESIS_MS = 1279670400000;
 const E = 2.718281828459;
 
-export function calculate(bars: Bar[], inputs: Partial<BitcoinLogCurvesInputs> = {}): Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { lines: LineDrawingData[] };
+
+interface BtcLogRun extends BarRunState<Record<string, never>> {
+  plotTop: Point[];
+  plotBottom: Point[];
+  plotFibs: Point[][];
+}
+
+const fibLevels = [0.9098, 0.8541, 0.7639, 0.618, 0.5, 0.382, 0.2361, 0.1459, 0.0902];
+
+function study(inputs: Partial<BitcoinLogCurvesInputs>): BarStudy<BtcLogRun, Result> {
   const { showFibs, showExtensions, highIntercept, highSlope, lowIntercept, lowSlope } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const fibLevels = [0.9098, 0.8541, 0.7639, 0.618, 0.5, 0.382, 0.2361, 0.1459, 0.0902];
-
-  // Pre-allocate plot arrays
-  const plotTop: { time: number; value: number }[] = new Array(n);
-  const plotBottom: { time: number; value: number }[] = new Array(n);
-  const plotFibs: { time: number; value: number }[][] = fibLevels.map(() => new Array(n));
-
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time as number;
-    // time is in seconds for lightweight-charts, convert to ms
-    const timeMs = t > 1e12 ? t : t * 1000;
-
-    const timeIndex = timeMs < GENESIS_MS ? 3.0 : (timeMs - GENESIS_MS) / 86400000;
-    const weight = (Math.log10(timeIndex + 10) * timeIndex * timeIndex - timeIndex) / 30000;
-
-    if (timeIndex <= 2 || weight <= 0) {
-      plotTop[i] = { time: t, value: NaN };
-      plotBottom[i] = { time: t, value: NaN };
-      for (let f = 0; f < fibLevels.length; f++) {
-        plotFibs[f][i] = { time: t, value: NaN };
-      }
-      continue;
-    }
-
-    const logWeight = Math.log(weight);
-
-    const highLogDev = logWeight + highIntercept + highSlope * timeIndex;
-    const lowLogDev = logWeight + lowIntercept + lowSlope * timeIndex;
-    const logRange = highLogDev - lowLogDev;
-
-    plotTop[i] = { time: t, value: Math.pow(E, highLogDev) };
-    plotBottom[i] = { time: t, value: Math.pow(E, lowLogDev) };
-
-    for (let f = 0; f < fibLevels.length; f++) {
-      const fibCalc = logRange * fibLevels[f] + lowLogDev;
-      plotFibs[f][i] = { time: t, value: showFibs ? Math.pow(E, fibCalc) : NaN };
-    }
-  }
-
-  // Build fills between adjacent fib levels (gradient coloring)
-  const plotIds = ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5', 'plot6', 'plot7', 'plot8', 'plot9', 'plot10'];
-  const fillColors = [
-    'rgba(255,0,0,0.05)',      // top to 90.98
-    'rgba(255,80,0,0.05)',     // 90.98 to 85.41
-    'rgba(255,160,0,0.05)',    // 85.41 to 76.39
-    'rgba(255,220,0,0.05)',    // 76.39 to 61.80
-    'rgba(200,255,0,0.05)',    // 61.80 to 50
-    'rgba(100,255,0,0.05)',    // 50 to 38.20
-    'rgba(0,255,80,0.05)',     // 38.20 to 23.61
-    'rgba(0,255,180,0.05)',    // 23.61 to 14.59
-    'rgba(0,200,255,0.05)',    // 14.59 to 9.02
-    'rgba(0,100,255,0.05)',    // 9.02 to bottom
-  ];
-
-  const fills = showFibs
-    ? fillColors.map((color, idx) => ({
-        plot1: plotIds[idx],
-        plot2: plotIds[idx + 1],
-        options: { color },
-      }))
-    : [];
-
-  const plots: Record<string, { time: number; value: number }[]> = {
-    'plot0': plotTop,
-    'plot1': plotFibs[0],   // 90.98
-    'plot2': plotFibs[1],   // 85.41
-    'plot3': plotFibs[2],   // 76.39
-    'plot4': plotFibs[3],   // 61.80
-    'plot5': plotFibs[4],   // 50.00 (Mid)
-    'plot6': plotFibs[5],   // 38.20
-    'plot7': plotFibs[6],   // 23.61
-    'plot8': plotFibs[7],   // 14.59
-    'plot9': plotFibs[8],   // 9.02
-    'plot10': plotBottom,
-  };
-
-  // Forward curve projection lines (Pine's ExtenZe function + for loop)
-  const lines: LineDrawingData[] = [];
-  if (showExtensions && n >= 2) {
-    const lastT = bars[n - 1].time as number;
-    const lastTMs = lastT > 1e12 ? lastT : lastT * 1000;
-    const timeDeltaMs = n >= 2
-      ? ((bars[n - 1].time as number) - (bars[n - 2].time as number)) * (lastT > 1e12 ? 1 : 1000)
-      : 86400000;
-    // Pine: ForLoopStep ~91 for daily, ForLoopMax = ForLoopStep * 13
-    // We use a default daily-like step of 91 bars, 13 segments
-    const forLoopStep = 91;
-    const forLoopMax = forLoopStep * 13;
-
-    // ExtenZe: compute curve value at future offset i bars from last bar
-    function extenZe(offsetBars: number, slope: number, intercept: number): number {
-      const futMs = lastTMs + timeDeltaMs * offsetBars;
-      const ti = (futMs - GENESIS_MS) / 86400000;
-      const w = (Math.log10(ti + 10) * ti * ti - ti) / 30000;
-      if (w <= 0) return NaN;
-      const hld = Math.log(w) + intercept + slope * ti;
-      return Math.pow(E, hld);
-    }
-
-    const midSlope = (highSlope + lowSlope) * 0.5;
-    const midIntercept = (highIntercept + lowIntercept) * 0.5;
-
-    const curveParams = [
-      { slope: highSlope, intercept: highIntercept },
-      { slope: lowSlope, intercept: lowIntercept },
-      { slope: midSlope, intercept: midIntercept },
-    ];
-
-    for (const { slope, intercept } of curveParams) {
-      for (let i = 0; i < forLoopMax; i += forLoopStep) {
-        const t1Offset = i;
-        const t2Offset = i + forLoopStep;
-        const v1 = extenZe(t1Offset, slope, intercept);
-        const v2 = extenZe(t2Offset, slope, intercept);
-        if (isNaN(v1) || isNaN(v2)) continue;
-        // Convert back to time units matching bar time format
-        const time1 = lastT > 1e12
-          ? lastT + timeDeltaMs * t1Offset
-          : lastT + (timeDeltaMs * t1Offset) / 1000;
-        const time2 = lastT > 1e12
-          ? lastT + timeDeltaMs * t2Offset
-          : lastT + (timeDeltaMs * t2Offset) / 1000;
-        lines.push({
-          time1, price1: v1,
-          time2, price2: v2,
-          color: '#808080', width: 1,
-        });
-      }
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    lines,
+    init() {
+      const s: BtcLogRun = {
+        plotTop: [], plotBottom: [], plotFibs: fibLevels.map(() => []), steps: [], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plotTop, s.plotBottom, ...s.plotFibs];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time as number;
+      // time is in seconds for lightweight-charts, convert to ms
+      const timeMs = t > 1e12 ? t : t * 1000;
+
+      const timeIndex = timeMs < GENESIS_MS ? 3.0 : (timeMs - GENESIS_MS) / 86400000;
+      const weight = (Math.log10(timeIndex + 10) * timeIndex * timeIndex - timeIndex) / 30000;
+
+      if (timeIndex <= 2 || weight <= 0) {
+        s.plotTop[i] = { time: t, value: NaN };
+        s.plotBottom[i] = { time: t, value: NaN };
+        for (let f = 0; f < fibLevels.length; f++) {
+          s.plotFibs[f][i] = { time: t, value: NaN };
+        }
+        return;
+      }
+
+      const logWeight = Math.log(weight);
+
+      const highLogDev = logWeight + highIntercept + highSlope * timeIndex;
+      const lowLogDev = logWeight + lowIntercept + lowSlope * timeIndex;
+      const logRange = highLogDev - lowLogDev;
+
+      s.plotTop[i] = { time: t, value: Math.pow(E, highLogDev) };
+      s.plotBottom[i] = { time: t, value: Math.pow(E, lowLogDev) };
+
+      for (let f = 0; f < fibLevels.length; f++) {
+        const fibCalc = logRange * fibLevels[f] + lowLogDev;
+        s.plotFibs[f][i] = { time: t, value: showFibs ? Math.pow(E, fibCalc) : NaN };
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // Build fills between adjacent fib levels (gradient coloring)
+      const plotIds = ['plot0', 'plot1', 'plot2', 'plot3', 'plot4', 'plot5', 'plot6', 'plot7', 'plot8', 'plot9', 'plot10'];
+      const fillColors = [
+        'rgba(255,0,0,0.05)',      // top to 90.98
+        'rgba(255,80,0,0.05)',     // 90.98 to 85.41
+        'rgba(255,160,0,0.05)',    // 85.41 to 76.39
+        'rgba(255,220,0,0.05)',    // 76.39 to 61.80
+        'rgba(200,255,0,0.05)',    // 61.80 to 50
+        'rgba(100,255,0,0.05)',    // 50 to 38.20
+        'rgba(0,255,80,0.05)',     // 38.20 to 23.61
+        'rgba(0,255,180,0.05)',    // 23.61 to 14.59
+        'rgba(0,200,255,0.05)',    // 14.59 to 9.02
+        'rgba(0,100,255,0.05)',    // 9.02 to bottom
+      ];
+
+      const fills = showFibs
+        ? fillColors.map((color, idx) => ({
+            plot1: plotIds[idx],
+            plot2: plotIds[idx + 1],
+            options: { color },
+          }))
+        : [];
+
+      const plotFibs = s.plotFibs.map((p) => p.slice());
+      const plots: Record<string, { time: number; value: number }[]> = {
+        'plot0': s.plotTop.slice(),
+        'plot1': plotFibs[0],   // 90.98
+        'plot2': plotFibs[1],   // 85.41
+        'plot3': plotFibs[2],   // 76.39
+        'plot4': plotFibs[3],   // 61.80
+        'plot5': plotFibs[4],   // 50.00 (Mid)
+        'plot6': plotFibs[5],   // 38.20
+        'plot7': plotFibs[6],   // 23.61
+        'plot8': plotFibs[7],   // 14.59
+        'plot9': plotFibs[8],   // 9.02
+        'plot10': s.plotBottom.slice(),
+      };
+
+      // Forward curve projection lines (Pine's ExtenZe function + for loop)
+      const lines: LineDrawingData[] = [];
+      if (showExtensions && n >= 2) {
+        const lastT = bars[n - 1].time as number;
+        const lastTMs = lastT > 1e12 ? lastT : lastT * 1000;
+        const timeDeltaMs = n >= 2
+          ? ((bars[n - 1].time as number) - (bars[n - 2].time as number)) * (lastT > 1e12 ? 1 : 1000)
+          : 86400000;
+        // Pine: ForLoopStep ~91 for daily, ForLoopMax = ForLoopStep * 13
+        // We use a default daily-like step of 91 bars, 13 segments
+        const forLoopStep = 91;
+        const forLoopMax = forLoopStep * 13;
+
+        // ExtenZe: compute curve value at future offset i bars from last bar
+        function extenZe(offsetBars: number, slope: number, intercept: number): number {
+          const futMs = lastTMs + timeDeltaMs * offsetBars;
+          const ti = (futMs - GENESIS_MS) / 86400000;
+          const w = (Math.log10(ti + 10) * ti * ti - ti) / 30000;
+          if (w <= 0) return NaN;
+          const hld = Math.log(w) + intercept + slope * ti;
+          return Math.pow(E, hld);
+        }
+
+        const midSlope = (highSlope + lowSlope) * 0.5;
+        const midIntercept = (highIntercept + lowIntercept) * 0.5;
+
+        const curveParams = [
+          { slope: highSlope, intercept: highIntercept },
+          { slope: lowSlope, intercept: lowIntercept },
+          { slope: midSlope, intercept: midIntercept },
+        ];
+
+        for (const { slope, intercept } of curveParams) {
+          for (let i = 0; i < forLoopMax; i += forLoopStep) {
+            const t1Offset = i;
+            const t2Offset = i + forLoopStep;
+            const v1 = extenZe(t1Offset, slope, intercept);
+            const v2 = extenZe(t2Offset, slope, intercept);
+            if (isNaN(v1) || isNaN(v2)) continue;
+            // Convert back to time units matching bar time format
+            const time1 = lastT > 1e12
+              ? lastT + timeDeltaMs * t1Offset
+              : lastT + (timeDeltaMs * t1Offset) / 1000;
+            const time2 = lastT > 1e12
+              ? lastT + timeDeltaMs * t2Offset
+              : lastT + (timeDeltaMs * t2Offset) / 1000;
+            lines.push({
+              time1, price1: v1,
+              time2, price2: v2,
+              color: '#808080', width: 1,
+            });
+          }
+        }
+      }
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        lines,
+      };
+    },
   };
 }
 
-export const BitcoinLogCurves = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<BitcoinLogCurvesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<BitcoinLogCurvesInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const BitcoinLogCurves = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

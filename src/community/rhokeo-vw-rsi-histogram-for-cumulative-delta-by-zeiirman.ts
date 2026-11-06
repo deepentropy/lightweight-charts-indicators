@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type RhokeoMaType = 'SMA' | 'EMA' | 'SMMA (RMA)' | 'WMA' | 'VWMA';
 
@@ -107,43 +109,30 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const eq = (a: number, b: number) => !isNaN(a) && !isNaN(b) && Math.abs(a - b) <= EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<RhokeoVwRsiHistogramInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface RhokeoRun extends BarRunState<Record<string, never>> {
+  gain: ReturnType<typeof taStep.rma>;
+  loss: ReturnType<typeof taStep.rma>;
+  ma: { step(v: number, volume: number): number; commit(): void };
+  src: number[];
+  zero: Point[];
+  hist: Point[];
+}
+
+function study(inputs: Partial<RhokeoVwRsiHistogramInputs>): BarStudy<RhokeoRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = A(getSourceSeries(bars, cfg.rsiPrice));
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  // price_change = src - src[1]; gains / losses times the volume (0.0 when the change is na or not > / < 0)
-  const vwGain: number[] = new Array(n);
-  const vwLoss: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const pc = i > 0 ? src[i] - src[i - 1] : NaN;
-    vwGain[i] = gt(pc, 0) ? pc * volume[i] : 0.0;
-    vwLoss[i] = lt(pc, 0) ? Math.abs(pc) * volume[i] : 0.0;
-  }
-  const avgGain = A(ta.rma(S(vwGain), cfg.rsiLength));
-  const avgLoss = A(ta.rma(S(vwLoss), cfg.rsiLength));
-  const normalized = bars.map((_b, i) => {
-    const rs = eq(avgLoss[i], 0) ? 999999.0 : avgGain[i] / avgLoss[i];
-    const rsi = 100.0 - 100.0 / (1.0 + rs);
-    return (rsi - 50.0) / 50.0;
-  });
-
-  const ns = S(normalized);
+  const value = barSource(cfg.rsiPrice);
   const len = cfg.rsiMaLength;
-  let smoothed: number[];
-  switch (cfg.rsiMaType) {
-    case 'SMA': smoothed = A(ta.sma(ns, len)); break;
-    case 'SMMA (RMA)': smoothed = A(ta.rma(ns, len)); break;
-    case 'WMA': smoothed = A(ta.wma(ns, len)); break;
-    case 'VWMA': smoothed = A(ta.vwma(ns, len, S(volume))); break;
-    default: smoothed = A(ta.ema(ns, len));
-  }
-  // clamp(x, -1, 1) = x < lo ? lo : x > hi ? hi : x (na stays na)
-  const clamped = smoothed.map((x) => (lt(x, -1.0) ? -1.0 : gt(x, 1.0) ? 1.0 : x));
-
+  const maStep = (): RhokeoRun['ma'] => {
+    switch (cfg.rsiMaType) {
+      case 'SMA': { const m = new WindowSma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMMA (RMA)': { const m = taStep.rma(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, len), commit: () => m.commit() }; }
+      case 'VWMA': { const m = new WindowVwma(len); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+      default: { const m = taStep.ema(len); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+    }
+  };
   const histColor = (v: number) => (ge(v, cfg.vwrsiObLevel) ? cfg.histColorAboveOb
     : ge(v, 0) ? cfg.histColorAboveZero
       : ge(v, cfg.vwrsiOsLevel) ? cfg.histColorBelowZero
@@ -151,33 +140,76 @@ export function calculate(bars: Bar[], inputs: Partial<RhokeoVwRsiHistogramInput
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   const redNone = String(color.new(color.red, 100));
   const limeNone = String(color.new(color.lime, 100));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b) => ({ time: b.time, value: cfg.obLevel, color: redNone })),
-      plot1: bars.map((b) => ({ time: b.time, value: 1.0, color: redNone })),
-      plot2: bars.map((b) => ({ time: b.time, value: cfg.osLevel, color: limeNone })),
-      plot3: bars.map((b) => ({ time: b.time, value: -1.0, color: limeNone })),
-      plot4: bars.map((b, i) => ({ time: b.time, value: 0, color: ge(clamped[i], 0) ? cfg.zeroUpColor : cfg.zeroDnColor })),
-      plot5: bars.map((b, i) => ({ time: b.time, value: fin(clamped[i]), color: histColor(clamped[i]) })),
+    fullRunReason: () => (isBarSource(cfg.rsiPrice) ? null : 'source of another study'),
+    init() {
+      const gain = taStep.rma(cfg.rsiLength);
+      const loss = taStep.rma(cfg.rsiLength);
+      const ma = maStep();
+      const s: RhokeoRun = { gain, loss, ma, src: [], zero: [], hist: [], steps: [gain, loss, ma], vars: {}, lists: [], series: [] };
+      s.series = [s.src, s.zero, s.hist];
+      return s;
     },
-    hlines: [
-      { value: 1, options: { title: 'Ceiling', color: cfg.ceilingFloorColor, linestyle: 'dashed' } },
-      { value: -1, options: { title: 'Floor', color: cfg.ceilingFloorColor, linestyle: 'dashed' } },
-      { value: cfg.vwrsiObLevel, options: { title: 'VW-RSI OB', color: cfg.obLineColor, linestyle: 'dashed' } },
-      { value: cfg.vwrsiOsLevel, options: { title: 'VW-RSI OS', color: cfg.osLineColor, linestyle: 'dashed' } },
-    ],
-    fills: [
-      // fill(pOB, pTOP, color = ob_shade_color); fill(pOS, pBOT, color = os_shade_color)
-      { plot1: 'plot0', plot2: 'plot1', options: { color: cfg.obShadeColor }, colors: new Array<string>(n).fill(cfg.obShadeColor) },
-      { plot1: 'plot2', plot2: 'plot3', options: { color: cfg.osShadeColor }, colors: new Array<string>(n).fill(cfg.osShadeColor) },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const volume = b.volume ?? NaN;
+      const src = value(b);
+      s.src[i] = src;
+      // price_change = src - src[1]; gains / losses times the volume (0.0 when the change is na or not > / < 0)
+      const pc = i > 0 ? src - s.src[i - 1] : NaN;
+      const vwGain = gt(pc, 0) ? pc * volume : 0.0;
+      const vwLoss = lt(pc, 0) ? Math.abs(pc) * volume : 0.0;
+      const avgGain = s.gain.step(vwGain);
+      const avgLoss = s.loss.step(vwLoss);
+      const rs = eq(avgLoss, 0) ? 999999.0 : avgGain / avgLoss;
+      const rsi = 100.0 - 100.0 / (1.0 + rs);
+      const normalized = (rsi - 50.0) / 50.0;
+      const x = s.ma.step(normalized, volume);
+      // clamp(x, -1, 1) = x < lo ? lo : x > hi ? hi : x (na stays na)
+      const clamped = lt(x, -1.0) ? -1.0 : gt(x, 1.0) ? 1.0 : x;
+      s.zero[i] = { time: b.time, value: 0, color: ge(clamped, 0) ? cfg.zeroUpColor : cfg.zeroDnColor };
+      s.hist[i] = { time: b.time, value: fin(clamped), color: histColor(clamped) };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: bars.map((b) => ({ time: b.time, value: cfg.obLevel, color: redNone })),
+          plot1: bars.map((b) => ({ time: b.time, value: 1.0, color: redNone })),
+          plot2: bars.map((b) => ({ time: b.time, value: cfg.osLevel, color: limeNone })),
+          plot3: bars.map((b) => ({ time: b.time, value: -1.0, color: limeNone })),
+          plot4: s.zero.slice(),
+          plot5: s.hist.slice(),
+        },
+        hlines: [
+          { value: 1, options: { title: 'Ceiling', color: cfg.ceilingFloorColor, linestyle: 'dashed' } },
+          { value: -1, options: { title: 'Floor', color: cfg.ceilingFloorColor, linestyle: 'dashed' } },
+          { value: cfg.vwrsiObLevel, options: { title: 'VW-RSI OB', color: cfg.obLineColor, linestyle: 'dashed' } },
+          { value: cfg.vwrsiOsLevel, options: { title: 'VW-RSI OS', color: cfg.osLineColor, linestyle: 'dashed' } },
+        ],
+        fills: [
+          // fill(pOB, pTOP, color = ob_shade_color); fill(pOS, pBOT, color = os_shade_color)
+          { plot1: 'plot0', plot2: 'plot1', options: { color: cfg.obShadeColor }, colors: new Array<string>(n).fill(cfg.obShadeColor) },
+          { plot1: 'plot2', plot2: 'plot3', options: { color: cfg.osShadeColor }, colors: new Array<string>(n).fill(cfg.osShadeColor) },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RhokeoVwRsiHistogramInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RhokeoVwRsiHistogramInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const RhokeoVwRsiHistogram = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

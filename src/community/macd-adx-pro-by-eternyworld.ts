@@ -14,8 +14,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type MacdAdxProMode = 'Sensitive' | 'Filtered';
 
@@ -85,65 +87,98 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MacdAdxProByEternyworldInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface MacdAdxRun extends BarRunState<Record<string, never>> {
+  macd: ReturnType<typeof taStep.macd>;
+  dmi: ReturnType<typeof taStep.dmi>;
+  hist: number[];
+  diplus: number[];
+  adx: number[];
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<MacdAdxProByEternyworldInputs>): BarStudy<MacdAdxRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const [macdS, signalS, histS] = ta.macd(close, cfg.fastLength, cfg.slowLength, cfg.signalLength);
-  const macdLine = A(macdS);
-  const signalLine = A(signalS);
-  const hist = A(histS);
-  const [plusS, minusS, adxS] = ta.dmi(bars, cfg.adxLength, cfg.adxSmoothing);
-  const diplus = A(plusS);
-  const diminus = A(minusS);
-  const adx = A(adxS);
-  const prev = (a: number[], i: number) => (i > 0 ? a[i - 1] : NaN);
-
   const sensitive = cfg.mode === 'Sensitive';
   const grayLight = String(color.new('#F6F6F8', 60));
   const limeSignal = String(color.new(LIME_DARK, 30));
   const redSignal = String(color.new(RED_DARK, 30));
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  const plot4 = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
   const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !gt(a, b);
-  for (let i = 0; i < bars.length; i++) {
-    const t = bars[i].time;
-    const strongTrend = ge(adx[i], cfg.adxThreshold);
-    const bullish = gt(diplus[i], diminus[i]);
-    const adxWeakening = lt(adx[i], prev(adx, i));
-    const diplusRising = gt(diplus[i], prev(diplus, i));
-    const h = hist[i];
-    const histColor = sensitive
-      ? (ge(h, 0) ? (gt(h, prev(hist, i)) ? LIME_DARK : LIME_LIGHT) : (lt(h, prev(hist, i)) ? RED_DARK : RED_LIGHT))
-      : strongTrend
-        ? (bullish ? (adxWeakening ? (diplusRising ? LIME_MID : LIME_LIGHT) : LIME_DARK) : (adxWeakening ? RED_LIGHT : RED_DARK))
-        : (adxWeakening ? grayLight : GRAY_DARK);
-    const up = sensitive ? gt(h, 0) : bullish;
-    // alertcondition(hist > 0 and hist[1] <= 0 and (mode == "Sensitive" or bullish_direction), "Strong Buy")
-    buyFlags.push(gt(h, 0) && le(prev(hist, i), 0) && (sensitive || bullish));
-    // alertcondition(hist < 0 and hist[1] >= 0 and (mode == "Sensitive" or bearish_direction), "Strong Sell")
-    sellFlags.push(lt(h, 0) && ge(prev(hist, i), 0) && (sensitive || gt(diminus[i], diplus[i])));
-    plot0.push({ time: t, value: h, color: histColor });
-    plot1.push({ time: t, value: macdLine[i], color: up ? LIME_DARK : RED_DARK });
-    plot2.push({ time: t, value: signalLine[i], color: up ? limeSignal : redSignal });
-    plot3.push({ time: t, value: cfg.showAdx ? adx[i] : NaN, color: 'rgb(246, 246, 247)' });
-    plot4.push({ time: t, value: cfg.showAdxThreshold ? cfg.adxThreshold : NaN, color: color.orange });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4 },
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    init() {
+      const s: MacdAdxRun = {
+        macd: taStep.macd(cfg.fastLength, cfg.slowLength, cfg.signalLength),
+        dmi: taStep.dmi(cfg.adxLength, cfg.adxSmoothing),
+        hist: [], diplus: [], adx: [], plots: [[], [], [], [], []], flags: [[], []], times: [[], []],
+        steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.macd, s.dmi];
+      s.lists = s.times;
+      s.series = [s.hist, s.diplus, s.adx, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const [macdLine, signalLine, h] = s.macd.step(b.close);
+      const [diplus, diminus, adx] = s.dmi.step(b.high, b.low, b.close);
+      const prevHist = i > 0 ? s.hist[i - 1] : NaN;
+      const prevAdx = i > 0 ? s.adx[i - 1] : NaN;
+      const prevPlus = i > 0 ? s.diplus[i - 1] : NaN;
+      s.hist[i] = h;
+      s.adx[i] = adx;
+      s.diplus[i] = diplus;
+      const strongTrend = ge(adx, cfg.adxThreshold);
+      const bullish = gt(diplus, diminus);
+      const adxWeakening = lt(adx, prevAdx);
+      const diplusRising = gt(diplus, prevPlus);
+      const histColor = sensitive
+        ? (ge(h, 0) ? (gt(h, prevHist) ? LIME_DARK : LIME_LIGHT) : (lt(h, prevHist) ? RED_DARK : RED_LIGHT))
+        : strongTrend
+          ? (bullish ? (adxWeakening ? (diplusRising ? LIME_MID : LIME_LIGHT) : LIME_DARK) : (adxWeakening ? RED_LIGHT : RED_DARK))
+          : (adxWeakening ? grayLight : GRAY_DARK);
+      const up = sensitive ? gt(h, 0) : bullish;
+      // alertcondition(hist > 0 and hist[1] <= 0 and (mode == "Sensitive" or bullish_direction), "Strong Buy")
+      const buy = gt(h, 0) && le(prevHist, 0) && (sensitive || bullish);
+      // alertcondition(hist < 0 and hist[1] >= 0 and (mode == "Sensitive" or bearish_direction), "Strong Sell")
+      const sell = lt(h, 0) && ge(prevHist, 0) && (sensitive || gt(diminus, diplus));
+      s.flags[0][i] = buy;
+      s.flags[1][i] = sell;
+      if (buy) s.times[0].push(t as number);
+      if (sell) s.times[1].push(t as number);
+      const p = s.plots;
+      p[0][i] = { time: t, value: h, color: histColor };
+      p[1][i] = { time: t, value: macdLine, color: up ? LIME_DARK : RED_DARK };
+      p[2][i] = { time: t, value: signalLine, color: up ? limeSignal : redSignal };
+      p[3][i] = { time: t, value: cfg.showAdx ? adx : NaN, color: 'rgb(246, 246, 247)' };
+      p[4][i] = { time: t, value: cfg.showAdxThreshold ? cfg.adxThreshold : NaN, color: color.orange };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MacdAdxProByEternyworldInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<MacdAdxProByEternyworldInputs> = {},
+): IndicatorResult & { alerts: AlertConditionState[] } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -154,6 +189,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const MacdAdxProByEternyworld = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

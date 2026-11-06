@@ -10,9 +10,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { barInterval, barTime } from '../bar-time';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 // The Pine script has no input
 export interface UnicornSetupDetectorInputs {}
@@ -30,50 +31,77 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  _inputs: Partial<UnicornSetupDetectorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
-  const n = bars.length;
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const high = S(bars.map((b) => b.high));
-  const low = S(bars.map((b) => b.low));
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
 
-  // hhll(high, low): ta.highest(high, 3), ta.lowest(low, 3)
-  const highestHigh = A(ta.highest(high, 3));
-  const lowestLow = A(ta.lowest(low, 3));
-  // prevHigh / prevLow (ta.valuewhen) are not used by any output
-  // fvgBullish = fvgBearish = ta.highest(high, 2) - ta.lowest(low, 2)
-  const low2 = A(ta.lowest(low, 2));
-  const range2 = A(ta.highest(high, 2)).map((h, i) => h - low2[i]);
-  const unicornZoneBullish = lowestLow.map((v, i) => v + range2[i] / 2);
-  const unicornZoneBearish = highestHigh.map((v, i) => v - range2[i] / 2);
+interface UnicornRun extends BarRunState<Record<string, never>> {
+  hh3: WindowExtreme;
+  ll3: WindowExtreme;
+  hh2: WindowExtreme;
+  ll2: WindowExtreme;
+  over: ReturnType<typeof taStep.crossover>;
+  under: ReturnType<typeof taStep.crossunder>;
+  markers: MarkerData[];
+}
 
-  // ta.crossover / ta.crossunder: exact comparisons (library functions)
-  const close = S(bars.map((b) => b.close));
-  const bullishRetest = ta.crossover(close, S(unicornZoneBullish)).toArray().map((v) => !!v);
-  const bearishRetest = ta.crossunder(close, S(unicornZoneBearish)).toArray().map((v) => !!v);
-
-  const interval = barInterval(bars);
-  const markers: MarkerData[] = [];
-  for (let i = 1; i < n; i++) {
-    const t = barTime(bars, i - 1, interval);
-    // plotshape(bullishRetest, "Buy Signal", shape.triangleup, location.belowbar, color.blue, size.tiny, offset = -1)
-    if (bullishRetest[i]) {
-      markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.blue, size: 'tiny' });
-    }
-    // plotshape(bearishRetest, "Sell Signal", shape.triangledown, location.abovebar, color.red, size.tiny, offset = -1)
-    if (bearishRetest[i]) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'tiny' });
-    }
-  }
-
+function study(): BarStudy<UnicornRun, Result> {
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
+    init() {
+      const hh3 = new WindowExtreme(false, 3);
+      const ll3 = new WindowExtreme(true, 3);
+      const hh2 = new WindowExtreme(false, 2);
+      const ll2 = new WindowExtreme(true, 2);
+      const over = taStep.crossover();
+      const under = taStep.crossunder();
+      const s: UnicornRun = {
+        hh3, ll3, hh2, ll2, over, under, markers: [],
+        steps: [hh3, ll3, hh2, ll2, over, under], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // hhll(high, low): ta.highest(high, 3), ta.lowest(low, 3)
+      const highestHigh = s.hh3.step(b.high);
+      const lowestLow = s.ll3.step(b.low);
+      // prevHigh / prevLow (ta.valuewhen) are not used by any output
+      // fvgBullish = fvgBearish = ta.highest(high, 2) - ta.lowest(low, 2)
+      const low2 = s.ll2.step(b.low);
+      const range2 = s.hh2.step(b.high) - low2;
+      const unicornZoneBullish = lowestLow + range2 / 2;
+      const unicornZoneBearish = highestHigh - range2 / 2;
+
+      // ta.crossover / ta.crossunder: exact comparisons (library functions)
+      const bullishRetest = s.over.step(b.close, unicornZoneBullish);
+      const bearishRetest = s.under.step(b.close, unicornZoneBearish);
+      if (i < 1) return;
+      const t = bars[i - 1].time;
+      // plotshape(bullishRetest, "Buy Signal", shape.triangleup, location.belowbar, color.blue, size.tiny, offset = -1)
+      if (bullishRetest) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: color.blue, size: 'tiny' });
+      }
+      // plotshape(bearishRetest, "Sell Signal", shape.triangledown, location.abovebar, color.red, size.tiny, offset = -1)
+      if (bearishRetest) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'tiny' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+      };
+    },
   };
 }
 
-export const UnicornSetupDetector = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(_inputs: Partial<UnicornSetupDetectorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(), chart);
+}
+
+export function calculate(bars: Bar[], _inputs: Partial<UnicornSetupDetectorInputs> = {}): Result {
+  return fullResult(createRun(_inputs).update(bars));
+}
+
+export const UnicornSetupDetector = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

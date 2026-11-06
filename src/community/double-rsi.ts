@@ -13,9 +13,11 @@
  * Original notice: © Clokivez
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DoubleRsiInputs {
   /** Colour the price candles with the state colour */
@@ -62,86 +64,119 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DoubleRsiInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> }
-  & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> }
+  & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
+
+interface DrsiVars {
+  /** T[1] and col[1] */
+  T: number;
+  col: string | null;
+  /** The last T that was not na (ta.crossover(T, 0) / ta.crossunder(T, 0)) */
+  lastT: number;
+}
+
+interface DrsiRun extends BarRunState<DrsiVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  rsi2: ReturnType<typeof taStep.rsi>;
+  plots: Point[][];
+  candles: PlotCandleData[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<DoubleRsiInputs>): BarStudy<DrsiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-
-  // rsi = ta.rsi(close, rl); drsi = 2 * rsi - ta.rsi(rsi, rl)
-  const rsi = A(ta.rsi(Series.fromArray(bars, bars.map((b) => b.close)), cfg.length));
-  const rsi2 = A(ta.rsi(Series.fromArray(bars, rsi), cfg.length));
-  const drsi = rsi.map((r, i) => 2 * r - rsi2[i]);
-
-  // T := drsi > lt ? 1 : drsi < st ? -1 : T[1] (T[1] is na on the first bar, so T stays na until a signal)
-  // col := T > 0 ? color.lime : T < 0 ? color.red : col[1] (na until the first signal)
-  const T: number[] = new Array(n);
-  const col: (string | null)[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const prevT = i > 0 ? T[i - 1] : NaN;
-    T[i] = gt(drsi[i], cfg.longThreshold) ? 1 : lt(drsi[i], cfg.shortThreshold) ? -1 : prevT;
-    const prevCol = i > 0 ? col[i - 1] : null;
-    col[i] = gt(T[i], 0) ? color.lime : lt(T[i], 0) ? color.red : prevCol;
-  }
-
-  // color.new(na, t) is black with transparency t
-  const glowCol = (i: number, t: number) => (cfg.glow ? String(color.new(col[i] as string, t)) : 'transparent');
-  const plot = (t: number) => bars.map((b, i) => ({
-    time: b.time, value: Number.isFinite(drsi[i]) ? drsi[i] : NaN, color: glowCol(i, t),
-  }));
-
-  const candles: PlotCandleData[] = [];
-  const markers: MarkerData[] = [];
-  const buyFlags = new Array<boolean>(n).fill(false);
-  const sellFlags = new Array<boolean>(n).fill(false);
-  // ta.crossover(T, 0) / ta.crossunder(T, 0): compared with the last bar where T was not na
-  let lastT = NaN;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    // plotcandle(open, high, low, close, "Bar Color", bc ? col : na, bc ? col : na, bordercolor = bc ? col : na,
-    //   force_overlay = true)
-    const c = cfg.barColor && col[i] !== null ? (col[i] as string) : 'transparent';
-    candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: c, wickColor: c,
-      borderColor: c, forceOverlay: true });
-    if (!isNaN(T[i])) {
-      if (!isNaN(lastT)) {
-        // plotshape(L, "Buy", shape.triangleup, location.belowbar, #00ffbf, size = size.tiny, force_overlay = true)
-        if (T[i] > 0 && lastT <= 0) {
-          buyFlags[i] = true;
-          markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: '#00ffbf', size: 'tiny',
-            forceOverlay: true });
-        }
-        // plotshape(S, "Sell", shape.triangledown, location.abovebar, #ff0040, size = size.tiny, force_overlay = true)
-        if (T[i] < 0 && lastT >= 0) {
-          sellFlags[i] = true;
-          markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: '#ff0040', size: 'tiny',
-            forceOverlay: true });
-        }
-      }
-      lastT = T[i];
-    }
-  }
-
+  const TRANSP = [30, 30, 80, 85];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: plot(30),
-      plot1: plot(30),
-      plot2: plot(80),
-      plot3: plot(85),
+    init() {
+      const rsi = taStep.rsi(cfg.length);
+      const rsi2 = taStep.rsi(cfg.length);
+      const s: DrsiRun = {
+        rsi, rsi2, plots: TRANSP.map(() => []), candles: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [rsi, rsi2], vars: { T: NaN, col: null, lastT: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.plots, s.candles, ...s.flags];
+      return s;
     },
-    hlines: [
-      { value: cfg.longThreshold, options: { title: 'Long Threshold', color: color.lime, linestyle: 'dashed' } },
-      { value: cfg.shortThreshold, options: { title: 'Short Threshold', color: color.red, linestyle: 'dashed' } },
-    ],
-    markers,
-    plotCandles: { barColor: candles },
-    // alertcondition(ta.crossover(T, 0), "DRSI: Buy") / alertcondition(ta.crossunder(T, 0), "DRSI: Sell")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      // rsi = ta.rsi(close, rl); drsi = 2 * rsi - ta.rsi(rsi, rl)
+      const rsi = s.rsi.step(b.close);
+      const drsi = 2 * rsi - s.rsi2.step(rsi);
+
+      // T := drsi > lt ? 1 : drsi < st ? -1 : T[1] (T[1] is na on the first bar, so T stays na until a signal)
+      // col := T > 0 ? color.lime : T < 0 ? color.red : col[1] (na until the first signal)
+      const T = gt(drsi, cfg.longThreshold) ? 1 : lt(drsi, cfg.shortThreshold) ? -1 : v.T;
+      const col = gt(T, 0) ? color.lime : lt(T, 0) ? color.red : v.col;
+      v.T = T;
+      v.col = col;
+
+      // color.new(na, t) is black with transparency t
+      const value = Number.isFinite(drsi) ? drsi : NaN;
+      TRANSP.forEach((t, k) => {
+        s.plots[k][i] = { time: b.time, value, color: cfg.glow ? String(color.new(col as string, t)) : 'transparent' };
+      });
+
+      // plotcandle(open, high, low, close, "Bar Color", bc ? col : na, bc ? col : na, bordercolor = bc ? col : na,
+      //   force_overlay = true)
+      const c = cfg.barColor && col !== null ? (col as string) : 'transparent';
+      s.candles[i] = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, color: c, wickColor: c,
+        borderColor: c, forceOverlay: true };
+      // ta.crossover(T, 0) / ta.crossunder(T, 0): compared with the last bar where T was not na
+      let buy = false;
+      let sell = false;
+      if (!isNaN(T)) {
+        if (!isNaN(v.lastT)) {
+          // plotshape(L, "Buy", shape.triangleup, location.belowbar, #00ffbf, size = size.tiny, force_overlay = true)
+          if (T > 0 && v.lastT <= 0) {
+            buy = true;
+            s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: '#00ffbf', size: 'tiny',
+              forceOverlay: true });
+          }
+          // plotshape(S, "Sell", shape.triangledown, location.abovebar, #ff0040, size = size.tiny, force_overlay = true)
+          if (T < 0 && v.lastT >= 0) {
+            sell = true;
+            s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: '#ff0040', size: 'tiny',
+              forceOverlay: true });
+          }
+        }
+        v.lastT = T;
+      }
+      s.flags[0][i] = buy;
+      s.flags[1][i] = sell;
+      if (buy) s.times[0].push(b.time as number);
+      if (sell) s.times[1].push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice() },
+        hlines: [
+          { value: cfg.longThreshold, options: { title: 'Long Threshold', color: color.lime, linestyle: 'dashed' } },
+          { value: cfg.shortThreshold, options: { title: 'Short Threshold', color: color.red, linestyle: 'dashed' } },
+        ],
+        markers: s.markers.slice(),
+        plotCandles: { barColor: s.candles.slice() },
+        // alertcondition(ta.crossover(T, 0), "DRSI: Buy") / alertcondition(ta.crossunder(T, 0), "DRSI: Sell")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DoubleRsiInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DoubleRsiInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -152,6 +187,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const DoubleRsi = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

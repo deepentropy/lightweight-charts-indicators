@@ -8751,6 +8751,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: chandeKrollStopIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...chandeKrollStopIndicator.defaultInputs },
     calculate: chandeKrollStopIndicator.calculate,
+    createRun: chandeKrollStopIndicator.createRun,
   },
   {
     id: 'relative-volume-at-time',
@@ -9181,6 +9182,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: halfTrendIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...halfTrendIndicator.defaultInputs },
     calculate: halfTrendIndicator.calculate,
+    createRun: halfTrendIndicator.createRun,
   },
   {
     id: 'qqe-mod',
@@ -9221,6 +9223,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: utBotIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...utBotIndicator.defaultInputs },
     calculate: utBotIndicator.calculate,
+    createRun: utBotIndicator.createRun,
   },
   {
     id: 'hull-suite',
@@ -9247,6 +9250,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: ottIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...ottIndicator.defaultInputs },
     calculate: ottIndicator.calculate,
+    createRun: ottIndicator.createRun,
   },
   {
     id: 'trend-magic',
@@ -9471,6 +9475,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: accurateSwingTradingIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...accurateSwingTradingIndicator.defaultInputs },
     calculate: accurateSwingTradingIndicator.calculate,
+    createRun: accurateSwingTradingIndicator.createRun,
   },
   {
     id: 'bull-bear-power-trend',
@@ -9484,6 +9489,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: bullBearPowerTrendIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...bullBearPowerTrendIndicator.defaultInputs },
     calculate: bullBearPowerTrendIndicator.calculate,
+    createRun: bullBearPowerTrendIndicator.createRun,
   },
   {
     id: 'bb-breakout-oscillator',
@@ -9710,6 +9716,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: smoothedHeikenAshiIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...smoothedHeikenAshiIndicator.defaultInputs },
     calculate: smoothedHeikenAshiIndicator.calculate,
+    createRun: smoothedHeikenAshiIndicator.createRun,
   },
   {
     id: 'macd-leader',
@@ -9871,6 +9878,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: premierStochasticIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...premierStochasticIndicator.defaultInputs },
     calculate: premierStochasticIndicator.calculate,
+    createRun: premierStochasticIndicator.createRun,
   },
   {
     id: 'volume-accumulation-pct',
@@ -10529,6 +10537,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: fibonacciLevelsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...fibonacciLevelsIndicator.defaultInputs },
     calculate: fibonacciLevelsIndicator.calculate,
+    createRun: fibonacciLevelsIndicator.createRun,
   },
   {
     id: 'fibonacci-zone',
@@ -10581,6 +10590,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: ichimokuEmaBandsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...ichimokuEmaBandsIndicator.defaultInputs },
     calculate: ichimokuEmaBandsIndicator.calculate,
+    createRun: ichimokuEmaBandsIndicator.createRun,
   },
   {
     id: 'intraday-buy-sell',
@@ -10713,6 +10723,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: macdDemaIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...macdDemaIndicator.defaultInputs },
     calculate: macdDemaIndicator.calculate,
+    createRun: macdDemaIndicator.createRun,
   },
   {
     id: 'macd-divergence',
@@ -10939,6 +10950,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: pivotPointSupertrendIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...pivotPointSupertrendIndicator.defaultInputs },
     calculate: pivotPointSupertrendIndicator.calculate,
+    createRun: pivotPointSupertrendIndicator.createRun,
   },
   {
     id: 'ppo-alerts',
@@ -10994,6 +11006,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: qqeIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...qqeIndicator.defaultInputs },
     calculate: qqeIndicator.calculate,
+    createRun: qqeIndicator.createRun,
   },
   {
     id: 'qqe-signals',
@@ -11073,6 +11086,7 @@ const registryPart1: IndicatorRegistryEntry[] = [
     plotConfig: rsiBbDispersionIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...rsiBbDispersionIndicator.defaultInputs },
     calculate: rsiBbDispersionIndicator.calculate,
+    createRun: rsiBbDispersionIndicator.createRun,
   },
   {
     id: 'rsi-divergence',
@@ -11157,6 +11171,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: sarEmaMacdIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...sarEmaMacdIndicator.defaultInputs },
     calculate: sarEmaMacdIndicator.calculate,
+    createRun: sarEmaMacdIndicator.createRun,
   },
   {
     id: 'scalping-line',
@@ -11358,6 +11373,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: superSupertrendIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...superSupertrendIndicator.defaultInputs },
     calculate: superSupertrendIndicator.calculate,
+    createRun: superSupertrendIndicator.createRun,
   },
   {
     id: 'supertrend-channels',
@@ -11662,6 +11678,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: williamsComboIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...williamsComboIndicator.defaultInputs },
     calculate: williamsComboIndicator.calculate,
+    createRun: williamsComboIndicator.createRun,
   },
   {
     id: 'zero-lag-ema',
@@ -12146,6 +12163,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: bankerFundFlowIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...bankerFundFlowIndicator.defaultInputs },
     calculate: bankerFundFlowIndicator.calculate,
+    createRun: bankerFundFlowIndicator.createRun,
   },
   {
     id: 'adaptive-macd',
@@ -12172,6 +12190,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: radiusTrendIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...radiusTrendIndicator.defaultInputs },
     calculate: radiusTrendIndicator.calculate,
+    createRun: radiusTrendIndicator.createRun,
   },
   {
     id: 'ultimate-rsi',
@@ -12439,6 +12458,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: bitcoinLogCurvesIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...bitcoinLogCurvesIndicator.defaultInputs },
     calculate: bitcoinLogCurvesIndicator.calculate,
+    createRun: bitcoinLogCurvesIndicator.createRun,
   },
   {
     id: 'hema-trend-levels',
@@ -12677,6 +12697,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: hullButterflyOscillatorIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...hullButterflyOscillatorIndicator.defaultInputs },
     calculate: hullButterflyOscillatorIndicator.calculate,
+    createRun: hullButterflyOscillatorIndicator.createRun,
   },
   {
     id: 'gmma-oscillator',
@@ -12690,6 +12711,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: gmmaOscillatorIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...gmmaOscillatorIndicator.defaultInputs },
     calculate: gmmaOscillatorIndicator.calculate,
+    createRun: gmmaOscillatorIndicator.createRun,
   },
   {
     id: 'bjorgum-tsi',
@@ -12923,6 +12945,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: bjorgumAutotrailIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...bjorgumAutotrailIndicator.defaultInputs },
     calculate: bjorgumAutotrailIndicator.calculate,
+    createRun: bjorgumAutotrailIndicator.createRun,
   },
   {
     id: 'delta-rsi-oscillator',
@@ -13728,6 +13751,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: atrZlemaIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...atrZlemaIndicator.defaultInputs },
     calculate: atrZlemaIndicator.calculate,
+    createRun: atrZlemaIndicator.createRun,
   },
   {
     id: 'pivot-breakout-high-low-signals',
@@ -13755,6 +13779,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: scalpingToolDynamicTpSlIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...scalpingToolDynamicTpSlIndicator.defaultInputs },
     calculate: scalpingToolDynamicTpSlIndicator.calculate,
+    createRun: scalpingToolDynamicTpSlIndicator.createRun,
   },
   {
     id: 'absolute-strength-index',
@@ -13812,6 +13837,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: aiBreakoutBandsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...aiBreakoutBandsIndicator.defaultInputs },
     calculate: aiBreakoutBandsIndicator.calculate,
+    createRun: aiBreakoutBandsIndicator.createRun,
   },
   {
     id: 'liquid-reversal-bands',
@@ -14006,6 +14032,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     hlineConfig: adaptiveVolatilityScaledOscillatorIndicator.hlineConfig,
     defaultInputs: { ...adaptiveVolatilityScaledOscillatorIndicator.defaultInputs },
     calculate: adaptiveVolatilityScaledOscillatorIndicator.calculate,
+    createRun: adaptiveVolatilityScaledOscillatorIndicator.createRun,
   },
   {
     id: 'dynamic-volatility-filter',
@@ -14019,6 +14046,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: dynamicVolatilityFilterIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...dynamicVolatilityFilterIndicator.defaultInputs },
     calculate: dynamicVolatilityFilterIndicator.calculate,
+    createRun: dynamicVolatilityFilterIndicator.createRun,
   },
   {
     id: 'trend-state-signals',
@@ -14045,6 +14073,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: asymmetricVolatilityTrendLineIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...asymmetricVolatilityTrendLineIndicator.defaultInputs },
     calculate: asymmetricVolatilityTrendLineIndicator.calculate,
+    createRun: asymmetricVolatilityTrendLineIndicator.createRun,
   },
   {
     id: 'fractional-ema-kalman-filter',
@@ -14144,6 +14173,7 @@ const registryPart2: IndicatorRegistryEntry[] = [
     plotConfig: projectedCrossoverTrendIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...projectedCrossoverTrendIndicator.defaultInputs },
     calculate: projectedCrossoverTrendIndicator.calculate,
+    createRun: projectedCrossoverTrendIndicator.createRun,
   },
   {
     id: 'institutional-macd',
@@ -14626,6 +14656,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: institutionalVolumeRsiIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...institutionalVolumeRsiIndicator.defaultInputs },
     calculate: institutionalVolumeRsiIndicator.calculate,
+    createRun: institutionalVolumeRsiIndicator.createRun,
   },
   {
     id: 'money-flow-extended',
@@ -14711,6 +14742,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: exhaustionZoneIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...exhaustionZoneIndicator.defaultInputs },
     calculate: exhaustionZoneIndicator.calculate,
+    createRun: exhaustionZoneIndicator.createRun,
   },
   {
     id: 'change-point-detection',
@@ -14916,6 +14948,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: pureCocaIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...pureCocaIndicator.defaultInputs },
     calculate: pureCocaIndicator.calculate,
+    createRun: pureCocaIndicator.createRun,
   },
   {
     id: 'q-kama-clarity-trend',
@@ -15090,6 +15123,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: vossPredictiveFilterIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...vossPredictiveFilterIndicator.defaultInputs },
     calculate: vossPredictiveFilterIndicator.calculate,
+    createRun: vossPredictiveFilterIndicator.createRun,
   },
   {
     id: 'aggregated-scores-oscillator',
@@ -15226,6 +15260,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: xauusdFamilyScalpingIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...xauusdFamilyScalpingIndicator.defaultInputs },
     calculate: xauusdFamilyScalpingIndicator.calculate,
+    createRun: xauusdFamilyScalpingIndicator.createRun,
   },
   {
     id: 'smooth-rsi',
@@ -15367,6 +15402,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: doubleRsiIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...doubleRsiIndicator.defaultInputs },
     calculate: doubleRsiIndicator.calculate,
+    createRun: doubleRsiIndicator.createRun,
   },
   {
     id: 'dynamic-testing',
@@ -15761,6 +15797,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: atrVolatilityAndTrendAnalysisIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...atrVolatilityAndTrendAnalysisIndicator.defaultInputs },
     calculate: atrVolatilityAndTrendAnalysisIndicator.calculate,
+    createRun: atrVolatilityAndTrendAnalysisIndicator.createRun,
   },
   {
     id: 'rsi-bars-onlyflow',
@@ -15789,6 +15826,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     fillConfig: adxAndRsiComboIndicator.fillConfig,
     defaultInputs: { ...adxAndRsiComboIndicator.defaultInputs },
     calculate: adxAndRsiComboIndicator.calculate,
+    createRun: adxAndRsiComboIndicator.createRun,
   },
   {
     id: 'rsi-trend-navigator',
@@ -15885,6 +15923,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: danSIroncladObSimpleIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...danSIroncladObSimpleIndicator.defaultInputs },
     calculate: danSIroncladObSimpleIndicator.calculate,
+    createRun: danSIroncladObSimpleIndicator.createRun,
   },
   {
     id: 'lumina-trend-channels',
@@ -15898,6 +15937,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: luminaTrendChannelsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...luminaTrendChannelsIndicator.defaultInputs },
     calculate: luminaTrendChannelsIndicator.calculate,
+    createRun: luminaTrendChannelsIndicator.createRun,
   },
   {
     id: 'buyers-sellers-range',
@@ -16049,6 +16089,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: longShortDomIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...longShortDomIndicator.defaultInputs },
     calculate: longShortDomIndicator.calculate,
+    createRun: longShortDomIndicator.createRun,
   },
   {
     id: 'rsi-confirm-trend-with-williams',
@@ -16242,6 +16283,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: movingAverageCrossoverWithShadingSignalsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...movingAverageCrossoverWithShadingSignalsIndicator.defaultInputs },
     calculate: movingAverageCrossoverWithShadingSignalsIndicator.calculate,
+    createRun: movingAverageCrossoverWithShadingSignalsIndicator.createRun,
   },
   {
     id: 'fibonacci-weighted-moving-average',
@@ -16268,6 +16310,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: rsiFibonacciHhLlSupportResistanceIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...rsiFibonacciHhLlSupportResistanceIndicator.defaultInputs },
     calculate: rsiFibonacciHhLlSupportResistanceIndicator.calculate,
+    createRun: rsiFibonacciHhLlSupportResistanceIndicator.createRun,
   },
   {
     id: 'z-score-oscillator',
@@ -16457,6 +16500,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: p1mTrendContinuationSignalsSslBbFilterIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...p1mTrendContinuationSignalsSslBbFilterIndicator.defaultInputs },
     calculate: p1mTrendContinuationSignalsSslBbFilterIndicator.calculate,
+    createRun: p1mTrendContinuationSignalsSslBbFilterIndicator.createRun,
   },
   {
     id: 'adaptive-rsi-lyro-rs',
@@ -16470,6 +16514,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: adaptiveRsiLyroRsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...adaptiveRsiLyroRsIndicator.defaultInputs },
     calculate: adaptiveRsiLyroRsIndicator.calculate,
+    createRun: adaptiveRsiLyroRsIndicator.createRun,
   },
   {
     id: 'sine-weighted-moving-average',
@@ -16536,6 +16581,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: smoothedSourceWeightedEmaIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...smoothedSourceWeightedEmaIndicator.defaultInputs },
     calculate: smoothedSourceWeightedEmaIndicator.calculate,
+    createRun: smoothedSourceWeightedEmaIndicator.createRun,
   },
   {
     id: 'rolling-sharpe-ratio-oscillator-astral-vision',
@@ -16563,6 +16609,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: edwardSmartChannelReversalIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...edwardSmartChannelReversalIndicator.defaultInputs },
     calculate: edwardSmartChannelReversalIndicator.calculate,
+    createRun: edwardSmartChannelReversalIndicator.createRun,
   },
   {
     id: 'g-score-nal',
@@ -16711,6 +16758,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: terminalVelocityStopLyroRsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...terminalVelocityStopLyroRsIndicator.defaultInputs },
     calculate: terminalVelocityStopLyroRsIndicator.calculate,
+    createRun: terminalVelocityStopLyroRsIndicator.createRun,
   },
   {
     id: 'linereg-candles-with-hma-filter',
@@ -16887,6 +16935,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     fillConfig: ehlersAdaptiveRsiIndicator.fillConfig,
     defaultInputs: { ...ehlersAdaptiveRsiIndicator.defaultInputs },
     calculate: ehlersAdaptiveRsiIndicator.calculate,
+    createRun: ehlersAdaptiveRsiIndicator.createRun,
   },
   {
     id: 'volumetric-compressed-ma',
@@ -17010,6 +17059,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: medianGaussianTrendNalIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...medianGaussianTrendNalIndicator.defaultInputs },
     calculate: medianGaussianTrendNalIndicator.calculate,
+    createRun: medianGaussianTrendNalIndicator.createRun,
   },
   {
     id: 'guppy-mma',
@@ -17092,6 +17142,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: tmoIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...tmoIndicator.defaultInputs },
     calculate: tmoIndicator.calculate,
+    createRun: tmoIndicator.createRun,
   },
   {
     id: 'candle-range-theory-by-lucas',
@@ -17200,6 +17251,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: inverseDistanceWeightedMovingAverageIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...inverseDistanceWeightedMovingAverageIndicator.defaultInputs },
     calculate: inverseDistanceWeightedMovingAverageIndicator.calculate,
+    createRun: inverseDistanceWeightedMovingAverageIndicator.createRun,
   },
   {
     id: 'moving-averages-with-continuous-periods',
@@ -17350,6 +17402,7 @@ const registryPart3: IndicatorRegistryEntry[] = [
     plotConfig: fibonacciHhLlTramaBandIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...fibonacciHhLlTramaBandIndicator.defaultInputs },
     calculate: fibonacciHhLlTramaBandIndicator.calculate,
+    createRun: fibonacciHhLlTramaBandIndicator.createRun,
   },
   {
     id: 'msl-squeeze-pulse',
@@ -17910,6 +17963,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: chakraRissEngulfingCandlestickStrategyIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...chakraRissEngulfingCandlestickStrategyIndicator.defaultInputs },
     calculate: chakraRissEngulfingCandlestickStrategyIndicator.calculate,
+    createRun: chakraRissEngulfingCandlestickStrategyIndicator.createRun,
   },
   {
     id: 'acceleration-bands-htf',
@@ -17990,6 +18044,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: ultraSmartTrailIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...ultraSmartTrailIndicator.defaultInputs },
     calculate: ultraSmartTrailIndicator.calculate,
+    createRun: ultraSmartTrailIndicator.createRun,
   },
   {
     id: 'macd-with-crossings-and-above-below-zero',
@@ -18047,6 +18102,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: emaVwmaAtrSmoothedBuysellTomZeng202509Indicator.plotConfig as PlotConfig[],
     defaultInputs: { ...emaVwmaAtrSmoothedBuysellTomZeng202509Indicator.defaultInputs },
     calculate: emaVwmaAtrSmoothedBuysellTomZeng202509Indicator.calculate,
+    createRun: emaVwmaAtrSmoothedBuysellTomZeng202509Indicator.createRun,
   },
   {
     id: 'multiple-rsi',
@@ -18128,6 +18184,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: waeSniperScalpXauusdM1TunedIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...waeSniperScalpXauusdM1TunedIndicator.defaultInputs },
     calculate: waeSniperScalpXauusdM1TunedIndicator.calculate,
+    createRun: waeSniperScalpXauusdM1TunedIndicator.createRun,
   },
   {
     id: 'tremor-tracker',
@@ -18303,6 +18360,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: polyphaseMacdIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...polyphaseMacdIndicator.defaultInputs },
     calculate: polyphaseMacdIndicator.calculate,
+    createRun: polyphaseMacdIndicator.createRun,
   },
   {
     id: 'advancedlines-paskal',
@@ -18665,6 +18723,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: ictRtmPriceActionIndicatorIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...ictRtmPriceActionIndicatorIndicator.defaultInputs },
     calculate: ictRtmPriceActionIndicatorIndicator.calculate,
+    createRun: ictRtmPriceActionIndicatorIndicator.createRun,
   },
   {
     id: 'lorentzian-length-adaptive-moving-average',
@@ -19287,6 +19346,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: ema21PullbackBuyIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...ema21PullbackBuyIndicator.defaultInputs },
     calculate: ema21PullbackBuyIndicator.calculate,
+    createRun: ema21PullbackBuyIndicator.createRun,
   },
   {
     id: 'candle-channel',
@@ -19328,6 +19388,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: lunarPhaseIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...lunarPhaseIndicator.defaultInputs },
     calculate: lunarPhaseIndicator.calculate,
+    createRun: lunarPhaseIndicator.createRun,
   },
   {
     id: 'atr-scaled-deviation-oscillator',
@@ -19395,6 +19456,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: rhokeoVwRsiHistogramForCumulativeDeltaByZeiirmanIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...rhokeoVwRsiHistogramForCumulativeDeltaByZeiirmanIndicator.defaultInputs },
     calculate: rhokeoVwRsiHistogramForCumulativeDeltaByZeiirmanIndicator.calculate,
+    createRun: rhokeoVwRsiHistogramForCumulativeDeltaByZeiirmanIndicator.createRun,
   },
   {
     id: 'delta-volume-rsi',
@@ -19489,6 +19551,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: zScoreStdemaBandsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...zScoreStdemaBandsIndicator.defaultInputs },
     calculate: zScoreStdemaBandsIndicator.calculate,
+    createRun: zScoreStdemaBandsIndicator.createRun,
   },
   {
     id: 'renko-sniper-pro',
@@ -19706,6 +19769,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: vortexProWithMovingAverageIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...vortexProWithMovingAverageIndicator.defaultInputs },
     calculate: vortexProWithMovingAverageIndicator.calculate,
+    createRun: vortexProWithMovingAverageIndicator.createRun,
   },
   {
     id: 'mid-term-ribbon',
@@ -19785,6 +19849,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: guppyWaveIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...guppyWaveIndicator.defaultInputs },
     calculate: guppyWaveIndicator.calculate,
+    createRun: guppyWaveIndicator.createRun,
   },
   {
     id: 'ross-cameron-inspired-day-trading-strategy',
@@ -19840,6 +19905,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: cycleSyncedChannelBreakoutIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...cycleSyncedChannelBreakoutIndicator.defaultInputs },
     calculate: cycleSyncedChannelBreakoutIndicator.calculate,
+    createRun: cycleSyncedChannelBreakoutIndicator.createRun,
   },
   {
     id: 'all-in-one-rsi-system',
@@ -19896,6 +19962,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: swingSupportAndResistanceIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...swingSupportAndResistanceIndicator.defaultInputs },
     calculate: swingSupportAndResistanceIndicator.calculate,
+    createRun: swingSupportAndResistanceIndicator.createRun,
   },
   {
     id: 'smiiol',
@@ -20062,6 +20129,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: aiTradingAssistantV2Indicator.plotConfig as PlotConfig[],
     defaultInputs: { ...aiTradingAssistantV2Indicator.defaultInputs },
     calculate: aiTradingAssistantV2Indicator.calculate,
+    createRun: aiTradingAssistantV2Indicator.createRun,
   },
   {
     id: 'volume-buy-sell-split',
@@ -20088,6 +20156,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: spiraAlligatorIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...spiraAlligatorIndicator.defaultInputs },
     calculate: spiraAlligatorIndicator.calculate,
+    createRun: spiraAlligatorIndicator.createRun,
   },
   {
     id: 'tasc-2026-01-the-reversion-index',
@@ -20142,6 +20211,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: rsiAdxAtrComboIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...rsiAdxAtrComboIndicator.defaultInputs },
     calculate: rsiAdxAtrComboIndicator.calculate,
+    createRun: rsiAdxAtrComboIndicator.createRun,
   },
   {
     id: 'macd-adx-pro-by-eternyworld',
@@ -20155,6 +20225,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: macdAdxProByEternyworldIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...macdAdxProByEternyworldIndicator.defaultInputs },
     calculate: macdAdxProByEternyworldIndicator.calculate,
+    createRun: macdAdxProByEternyworldIndicator.createRun,
   },
   {
     id: 'cabal-dev-indicator',
@@ -20235,6 +20306,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: wavefunctionMacdIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...wavefunctionMacdIndicator.defaultInputs },
     calculate: wavefunctionMacdIndicator.calculate,
+    createRun: wavefunctionMacdIndicator.createRun,
   },
   {
     id: 'regression-channel-oscillator',
@@ -20302,6 +20374,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: scottgoAdvancedMacdIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...scottgoAdvancedMacdIndicator.defaultInputs },
     calculate: scottgoAdvancedMacdIndicator.calculate,
+    createRun: scottgoAdvancedMacdIndicator.createRun,
   },
   {
     id: 'ema-9-26-cross',
@@ -20342,6 +20415,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: premiumTradeZonesIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...premiumTradeZonesIndicator.defaultInputs },
     calculate: premiumTradeZonesIndicator.calculate,
+    createRun: premiumTradeZonesIndicator.createRun,
   },
   {
     id: 'sl-4-emas-2-smas-crossover-signals',
@@ -20997,6 +21071,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: trueHighLowRsiForDivergenceIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...trueHighLowRsiForDivergenceIndicator.defaultInputs },
     calculate: trueHighLowRsiForDivergenceIndicator.calculate,
+    createRun: trueHighLowRsiForDivergenceIndicator.createRun,
   },
   {
     id: 'navier-cauchy-market-elasticity',
@@ -21110,6 +21185,7 @@ const registryPart4: IndicatorRegistryEntry[] = [
     plotConfig: ultraCleanSupportResistanceLevelsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...ultraCleanSupportResistanceLevelsIndicator.defaultInputs },
     calculate: ultraCleanSupportResistanceLevelsIndicator.calculate,
+    createRun: ultraCleanSupportResistanceLevelsIndicator.createRun,
   },
   {
     id: 'volumetric-tensegrity',
@@ -21344,6 +21420,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: magnetForceRsiFilterV6Indicator.plotConfig as PlotConfig[],
     defaultInputs: { ...magnetForceRsiFilterV6Indicator.defaultInputs },
     calculate: magnetForceRsiFilterV6Indicator.calculate,
+    createRun: magnetForceRsiFilterV6Indicator.createRun,
   },
   {
     id: 'atr-trend-color',
@@ -21384,6 +21461,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: forLoopVoteTrailingStopMiesonchartsIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...forLoopVoteTrailingStopMiesonchartsIndicator.defaultInputs },
     calculate: forLoopVoteTrailingStopMiesonchartsIndicator.calculate,
+    createRun: forLoopVoteTrailingStopMiesonchartsIndicator.createRun,
   },
   {
     id: 'wave-n-kdj-volumi-smc-ichimoku',
@@ -21504,6 +21582,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: mamaFamaIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...mamaFamaIndicator.defaultInputs },
     calculate: mamaFamaIndicator.calculate,
+    createRun: mamaFamaIndicator.createRun,
   },
   {
     id: 'support-resistance-channel-breakout',
@@ -21517,6 +21596,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: supportResistanceChannelBreakoutIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...supportResistanceChannelBreakoutIndicator.defaultInputs },
     calculate: supportResistanceChannelBreakoutIndicator.calculate,
+    createRun: supportResistanceChannelBreakoutIndicator.createRun,
   },
   {
     id: 'obvx-conviction-bias',
@@ -21724,6 +21804,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: candleBuySellSupportResistanceIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...candleBuySellSupportResistanceIndicator.defaultInputs },
     calculate: candleBuySellSupportResistanceIndicator.calculate,
+    createRun: candleBuySellSupportResistanceIndicator.createRun,
   },
   {
     id: 'madz-moving-average-deviation-z-score',
@@ -21946,6 +22027,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: sRBreakoutAtrConfirmationIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...sRBreakoutAtrConfirmationIndicator.defaultInputs },
     calculate: sRBreakoutAtrConfirmationIndicator.calculate,
+    createRun: sRBreakoutAtrConfirmationIndicator.createRun,
   },
   {
     id: 'beep-boop',
@@ -22092,6 +22174,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: qtechlabsMachineLearningLogisticRegressionIndicatorIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...qtechlabsMachineLearningLogisticRegressionIndicatorIndicator.defaultInputs },
     calculate: qtechlabsMachineLearningLogisticRegressionIndicatorIndicator.calculate,
+    createRun: qtechlabsMachineLearningLogisticRegressionIndicatorIndicator.createRun,
   },
   {
     id: 'fibsync-dynamicfibsupport',
@@ -22266,6 +22349,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     fillConfig: radiantMeanReversionChannelsIndicator.fillConfig,
     defaultInputs: { ...radiantMeanReversionChannelsIndicator.defaultInputs },
     calculate: radiantMeanReversionChannelsIndicator.calculate,
+    createRun: radiantMeanReversionChannelsIndicator.createRun,
   },
   {
     id: 'wyckoff-effort-vs-result',
@@ -22499,6 +22583,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: trendScalperIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...trendScalperIndicator.defaultInputs },
     calculate: trendScalperIndicator.calculate,
+    createRun: trendScalperIndicator.createRun,
   },
   {
     id: 'early-pivot-alert-v1a',
@@ -22581,6 +22666,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: rsiPotentialIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...rsiPotentialIndicator.defaultInputs },
     calculate: rsiPotentialIndicator.calculate,
+    createRun: rsiPotentialIndicator.createRun,
   },
   {
     id: 'volume-variation-index-indicator',
@@ -22809,6 +22895,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: volumeBasedMovingAverageIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...volumeBasedMovingAverageIndicator.defaultInputs },
     calculate: volumeBasedMovingAverageIndicator.calculate,
+    createRun: volumeBasedMovingAverageIndicator.createRun,
   },
   {
     id: 'normalized-volume-true-range',
@@ -23042,6 +23129,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: medianAtrSdOscillatorIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...medianAtrSdOscillatorIndicator.defaultInputs },
     calculate: medianAtrSdOscillatorIndicator.calculate,
+    createRun: medianAtrSdOscillatorIndicator.createRun,
   },
   {
     id: 'rsi-adx-atr-18-01-25',
@@ -23152,6 +23240,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     fillConfig: movingVolumeWeightedAvgPriceChannelBbsIndicator.fillConfig,
     defaultInputs: { ...movingVolumeWeightedAvgPriceChannelBbsIndicator.defaultInputs },
     calculate: movingVolumeWeightedAvgPriceChannelBbsIndicator.calculate,
+    createRun: movingVolumeWeightedAvgPriceChannelBbsIndicator.createRun,
   },
   {
     id: 'macd-pseudo-super-smoother',
@@ -23208,6 +23297,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: bigTradesWhaleDetectorByHkIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...bigTradesWhaleDetectorByHkIndicator.defaultInputs },
     calculate: bigTradesWhaleDetectorByHkIndicator.calculate,
+    createRun: bigTradesWhaleDetectorByHkIndicator.createRun,
   },
   {
     id: '50-body-candle',
@@ -23234,6 +23324,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: pocketPivotBreakoutIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...pocketPivotBreakoutIndicator.defaultInputs },
     calculate: pocketPivotBreakoutIndicator.calculate,
+    createRun: pocketPivotBreakoutIndicator.createRun,
   },
   {
     id: 'custom-buy-and-sell-signal-with-body-ratio-and-rsi',
@@ -23274,6 +23365,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: rbtStrategyIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...rbtStrategyIndicator.defaultInputs },
     calculate: rbtStrategyIndicator.calculate,
+    createRun: rbtStrategyIndicator.createRun,
   },
   {
     id: 'candle-state',
@@ -23418,6 +23510,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: liquiditySweepConfirmationIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...liquiditySweepConfirmationIndicator.defaultInputs },
     calculate: liquiditySweepConfirmationIndicator.calculate,
+    createRun: liquiditySweepConfirmationIndicator.createRun,
   },
   {
     id: 'abusuhil-bullish-candles',
@@ -23431,6 +23524,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: abusuhilBullishCandlesIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...abusuhilBullishCandlesIndicator.defaultInputs },
     calculate: abusuhilBullishCandlesIndicator.calculate,
+    createRun: abusuhilBullishCandlesIndicator.createRun,
   },
   {
     id: 'rsi-ma-cross-divergence-signal',
@@ -23457,6 +23551,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: rsiCandleColorIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...rsiCandleColorIndicator.defaultInputs },
     calculate: rsiCandleColorIndicator.calculate,
+    createRun: rsiCandleColorIndicator.createRun,
   },
   {
     id: 'trendshift',
@@ -23522,6 +23617,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: cvdBigTradeDetectorByHkIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...cvdBigTradeDetectorByHkIndicator.defaultInputs },
     calculate: cvdBigTradeDetectorByHkIndicator.calculate,
+    createRun: cvdBigTradeDetectorByHkIndicator.createRun,
   },
   {
     id: 'manipulation-candle',
@@ -23666,6 +23762,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: movingAverageTrendMeterIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...movingAverageTrendMeterIndicator.defaultInputs },
     calculate: movingAverageTrendMeterIndicator.calculate,
+    createRun: movingAverageTrendMeterIndicator.createRun,
   },
   {
     id: 'triple-doji-sequence',
@@ -23850,6 +23947,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: actuallyEngulfingCandlesticksIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...actuallyEngulfingCandlesticksIndicator.defaultInputs },
     calculate: actuallyEngulfingCandlesticksIndicator.calculate,
+    createRun: actuallyEngulfingCandlesticksIndicator.createRun,
   },
   {
     id: 'perfect-hammer-pattern-indicators-and-alerts',
@@ -23902,6 +24000,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: unicornSetupDetectorIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...unicornSetupDetectorIndicator.defaultInputs },
     calculate: unicornSetupDetectorIndicator.calculate,
+    createRun: unicornSetupDetectorIndicator.createRun,
   },
   {
     id: 'ut-bot-trend-volume',
@@ -24404,6 +24503,7 @@ const registryPart5: IndicatorRegistryEntry[] = [
     plotConfig: customizableRsiStochrsiDoubleConfirmationIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...customizableRsiStochrsiDoubleConfirmationIndicator.defaultInputs },
     calculate: customizableRsiStochrsiDoubleConfirmationIndicator.calculate,
+    createRun: customizableRsiStochrsiDoubleConfirmationIndicator.createRun,
   },
   {
     id: 'john-wick-doji-indicator',
@@ -25782,6 +25882,7 @@ const registryPart7: IndicatorRegistryEntry[] = [
     plotConfig: fibonacciConfluenceToolkitIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...fibonacciConfluenceToolkitIndicator.defaultInputs },
     calculate: fibonacciConfluenceToolkitIndicator.calculate,
+    createRun: fibonacciConfluenceToolkitIndicator.createRun,
   },
   {
     id: 'linear-regression-oscillator',
@@ -25821,6 +25922,7 @@ const registryPart7: IndicatorRegistryEntry[] = [
     plotConfig: rangeFilterBuySell5minIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...rangeFilterBuySell5minIndicator.defaultInputs },
     calculate: rangeFilterBuySell5minIndicator.calculate,
+    createRun: rangeFilterBuySell5minIndicator.createRun,
   },
   {
     id: 'pivot-points-high-low-multi-time-frame',
@@ -25861,6 +25963,7 @@ const registryPart7: IndicatorRegistryEntry[] = [
     fillConfig: vwapStdevBandsV2ModIndicator.fillConfig,
     defaultInputs: { ...vwapStdevBandsV2ModIndicator.defaultInputs },
     calculate: vwapStdevBandsV2ModIndicator.calculate,
+    createRun: vwapStdevBandsV2ModIndicator.createRun,
   },
   {
     id: 'zig-zag-channels',
@@ -25926,6 +26029,7 @@ const registryPart7: IndicatorRegistryEntry[] = [
     plotConfig: volumeOrderbookIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...volumeOrderbookIndicator.defaultInputs },
     calculate: volumeOrderbookIndicator.calculate,
+    createRun: volumeOrderbookIndicator.createRun,
   },
   {
     id: 'auto-fib-theyangguizi',
@@ -26008,6 +26112,7 @@ const registryPart7: IndicatorRegistryEntry[] = [
     plotConfig: qqeKivancIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...qqeKivancIndicator.defaultInputs },
     calculate: qqeKivancIndicator.calculate,
+    createRun: qqeKivancIndicator.createRun,
   },
   {
     id: 'swing-profile',
@@ -26663,6 +26768,7 @@ const registryPart8: IndicatorRegistryEntry[] = [
     plotConfig: ttmSqueezeGreenyIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...ttmSqueezeGreenyIndicator.defaultInputs },
     calculate: ttmSqueezeGreenyIndicator.calculate,
+    createRun: ttmSqueezeGreenyIndicator.createRun,
   },
   {
     id: 'daily-weekly-monthly-yearly-opens',
@@ -26728,6 +26834,7 @@ const registryPart8: IndicatorRegistryEntry[] = [
     plotConfig: fvgIfvgIctInversionFairValueGapSignalIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...fvgIfvgIctInversionFairValueGapSignalIndicator.defaultInputs },
     calculate: fvgIfvgIctInversionFairValueGapSignalIndicator.calculate,
+    createRun: fvgIfvgIctInversionFairValueGapSignalIndicator.createRun,
   },
   {
     id: 'rsi-support-resistance-by-dgt',
@@ -27366,6 +27473,7 @@ const registryPart8: IndicatorRegistryEntry[] = [
     plotConfig: renkoCandlesOverlayIndicator.plotConfig as PlotConfig[],
     defaultInputs: { ...renkoCandlesOverlayIndicator.defaultInputs },
     calculate: renkoCandlesOverlayIndicator.calculate,
+    createRun: renkoCandlesOverlayIndicator.createRun,
   },
   {
     id: 'market-profile-with-tpo',
@@ -31738,6 +31846,7 @@ const registryPart12: IndicatorRegistryEntry[] = [
     barColorConfig: kdjIndicatorIamaltcoinIndicator.barColorConfig,
     defaultInputs: { ...kdjIndicatorIamaltcoinIndicator.defaultInputs },
     calculate: kdjIndicatorIamaltcoinIndicator.calculate,
+    createRun: kdjIndicatorIamaltcoinIndicator.createRun,
   },
   {
     id: 'range-sentiment-profile',
@@ -32193,6 +32302,7 @@ const registryPart12: IndicatorRegistryEntry[] = [
     drawingKinds: pivotLevelsIndicator.drawingKinds,
     defaultInputs: { ...pivotLevelsIndicator.defaultInputs },
     calculate: pivotLevelsIndicator.calculate,
+    createRun: pivotLevelsIndicator.createRun,
   },
   {
     id: 'backtesting-trading-engine',

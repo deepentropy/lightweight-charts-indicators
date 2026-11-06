@@ -12,11 +12,11 @@
  * Reference: "Accurate Swing Trading System" (community)
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
-import {
-  alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState,
-} from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** Pine float comparisons: a > b only when a - b > 1e-10 (na compares false) */
 const EPS = 1e-10;
@@ -58,67 +58,110 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AccurateSwingTradingInputs> = {},
-): IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
-  & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
+  & { alerts: AlertConditionState[] };
+
+interface AstVars {
+  /** avn = valuewhen(avd != 0, avd, 0) (na before the first) */
+  avn: number;
+}
+
+interface AstRun extends BarRunState<AstVars> {
+  highest: WindowExtreme;
+  lowest: WindowExtreme;
+  hh: number[];
+  ll: number[];
+  tsl: number[];
+  plot0: Point[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<AccurateSwingTradingInputs>): BarStudy<AstRun, Result> {
   const { swingLength, showBarColor, showBgColor } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  // res = highest(high, no), sup = lowest(low, no): na until the window is full
-  const hh = ta.highest(highSeries, swingLength).toArray();
-  const ll = ta.lowest(lowSeries, swingLength).toArray();
-
-  // avd = iff(close > res[1], 1, iff(close < sup[1], -1, 0)), avn = valuewhen(avd != 0, avd, 0) (na before the
-  // first), tsl = iff(avn == 1, sup, res)
-  const tsl: number[] = new Array(n);
-  let avn = NaN;
-  for (let i = 0; i < n; i++) {
-    const c = bars[i].close;
-    const res1 = i > 0 ? hh[i - 1] ?? NaN : NaN;
-    const sup1 = i > 0 ? ll[i - 1] ?? NaN : NaN;
-    const avd = gt(c, res1) ? 1 : lt(c, sup1) ? -1 : 0;
-    if (avd !== 0) avn = avd;
-    tsl[i] = avn === 1 ? ll[i] ?? NaN : hh[i] ?? NaN;
-  }
-  const closes = bars.map((b) => b.close);
-  // Buy = crossover(close, tsl), Sell = crossunder(close, tsl)
-  const buy = crossedOver(closes, tsl);
-  const sell = crossedUnder(closes, tsl);
-
-  // colr = close >= tsl ? color.green : close <= tsl ? color.red : na
-  const colr = bars.map((b, i) => (Number.isNaN(tsl[i]) ? null : !lt(b.close, tsl[i]) ? GREEN : RED));
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time as number;
-    // plotshape(Buy, "BUY", shape.labelup, location.belowbar, color.green, text = "BUY", textcolor = color.black)
-    if (buy[i]) markers.push({ id: 'shape0', time: t, position: 'belowBar', shape: 'labelUp', color: GREEN, text: 'BUY', textColor: BLACK });
-    // plotshape(Sell, "SELL", shape.labeldown, location.abovebar, color.red, text = "SELL", textcolor = color.black)
-    if (sell[i]) markers.push({ id: 'shape1', time: t, position: 'aboveBar', shape: 'labelDown', color: RED, text: 'SELL', textColor: BLACK });
-    const c = colr[i];
-    if (c === null) continue;
-    // barcolor(Barcolor ? colr : na); bgcolor(Bgcolor ? colr : na) (default transparency 90)
-    if (showBarColor) barColors.push({ id: 'barcolor0', time: t, color: c });
-    if (showBgColor) bgColors.push({ id: 'bgcolor0', time: t, color: c === GREEN ? GREEN_90 : RED_90 });
-  }
-
-  // plot(tsl, color = colr, linewidth = 3, title = "TSL")
-  const tslPlot = tsl.map((v, i) => ({ time: bars[i].time, value: v, color: colr[i] ?? 'transparent' }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': tslPlot },
-    markers,
-    barColors,
-    bgColors,
-    alerts: alertStates(alertConditions, bars, [buy, sell]),
+    init() {
+      const s: AstRun = {
+        highest: new WindowExtreme(false, swingLength), lowest: new WindowExtreme(true, swingLength),
+        hh: [], ll: [], tsl: [], plot0: [], markers: [], barColors: [], bgColors: [], flags: [[], []], times: [[], []],
+        steps: [], vars: { avn: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.highest, s.lowest];
+      s.lists = [s.markers, s.barColors, s.bgColors, ...s.times];
+      s.series = [s.hh, s.ll, s.tsl, s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      // res = highest(high, no), sup = lowest(low, no): na until the window is full
+      const hh = s.highest.step(b.high);
+      const ll = s.lowest.step(b.low);
+      s.hh[i] = hh;
+      s.ll[i] = ll;
+
+      // avd = iff(close > res[1], 1, iff(close < sup[1], -1, 0)), avn = valuewhen(avd != 0, avd, 0) (na before the
+      // first), tsl = iff(avn == 1, sup, res)
+      const c = b.close;
+      const res1 = i > 0 ? s.hh[i - 1] : NaN;
+      const sup1 = i > 0 ? s.ll[i - 1] : NaN;
+      const avd = gt(c, res1) ? 1 : lt(c, sup1) ? -1 : 0;
+      if (avd !== 0) v.avn = avd;
+      const tsl = v.avn === 1 ? ll : hh;
+      s.tsl[i] = tsl;
+
+      // Buy = crossover(close, tsl), Sell = crossunder(close, tsl)
+      const pc = i > 0 ? bars[i - 1].close : NaN;
+      const pt = i > 0 ? s.tsl[i - 1] : NaN;
+      const buy = c > tsl && pc <= pt;
+      const sell = c < tsl && pc >= pt;
+      const t = b.time as number;
+      s.flags[0][i] = buy;
+      s.flags[1][i] = sell;
+      if (buy) s.times[0].push(t);
+      if (sell) s.times[1].push(t);
+
+      // colr = close >= tsl ? color.green : close <= tsl ? color.red : na
+      const colr = Number.isNaN(tsl) ? null : !lt(c, tsl) ? GREEN : RED;
+
+      // plotshape(Buy, "BUY", shape.labelup, location.belowbar, color.green, text = "BUY", textcolor = color.black)
+      if (buy) s.markers.push({ id: 'shape0', time: t, position: 'belowBar', shape: 'labelUp', color: GREEN, text: 'BUY', textColor: BLACK });
+      // plotshape(Sell, "SELL", shape.labeldown, location.abovebar, color.red, text = "SELL", textcolor = color.black)
+      if (sell) s.markers.push({ id: 'shape1', time: t, position: 'aboveBar', shape: 'labelDown', color: RED, text: 'SELL', textColor: BLACK });
+      if (colr !== null) {
+        // barcolor(Barcolor ? colr : na); bgcolor(Bgcolor ? colr : na) (default transparency 90)
+        if (showBarColor) s.barColors.push({ id: 'barcolor0', time: t, color: colr });
+        if (showBgColor) s.bgColors.push({ id: 'bgcolor0', time: t, color: colr === GREEN ? GREEN_90 : RED_90 });
+      }
+
+      // plot(tsl, color = colr, linewidth = 3, title = "TSL")
+      s.plot0[i] = { time: b.time, value: tsl, color: colr ?? 'transparent' };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AccurateSwingTradingInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AccurateSwingTradingInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -127,4 +170,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'Sell Signal', message: 'Sell' },
 ];
 
-export const AccurateSwingTrading = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const AccurateSwingTrading = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

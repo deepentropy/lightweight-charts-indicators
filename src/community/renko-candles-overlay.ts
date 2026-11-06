@@ -23,11 +23,12 @@
  * Original notice: © LonesomeTheBlue
  */
 
-import { ta, str, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, str, math, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, BoxData, LabelData, LineDrawingData } from '../types';
 import { barInterval, barTime } from '../bar-time';
 import { mintickOf, type ChartContext } from '../chart-context';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RenkoCandlesOverlayInputs {
   /** Brick size method */
@@ -117,26 +118,39 @@ const GRAY = '#787B86';
 const BLACK = '#363A45';
 const WHITE = '#FFFFFF';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RenkoCandlesOverlayInputs> = {},
-  chart?: ChartContext,
-): IndicatorResult & { barColors: BarColorData[]; boxes: BoxData[]; labels: LabelData[]; lines: LineDrawingData[] }
-  & { alerts: AlertConditionState[] } {
+type Result = IndicatorResult & { barColors: BarColorData[]; boxes: BoxData[]; labels: LabelData[]; lines: LineDrawingData[] }
+  & { alerts: AlertConditionState[] };
+
+interface RenkoVars {
+  /** The brick size in use */
+  boxs: number;
+  trend: number;
+  /** The closes of the bricks, newest first (changed in place, copied by copyVars) */
+  rclose: number[];
+}
+
+interface RenkoRun extends BarRunState<RenkoVars> {
+  mintick: number;
+  num: number;
+  atr: ReturnType<typeof taStep.atr> | null;
+  tr: ReturnType<typeof taStep.tr>;
+  /** The bricks added on the last bar calculated (the 'Unconfirmed' count when it receives live updates), else -1 */
+  lastUnconfirmed: number;
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<RenkoCandlesOverlayInputs>): BarStudy<RenkoRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const mintick = mintickOf(chart);
   const mode = cfg.mode;
   const period = Math.trunc(cfg.period);
   const bwidth = Math.trunc(cfg.bwidth);
+  const pineMax = (a: number, b: number) => (Number.isNaN(a) || Number.isNaN(b) ? NaN : Math.max(a, b));
 
-  // get_b_size(): var num = math.pow(10, str.length(str.tostring(syminfo.mintick)) - 2)
-  const num = Math.pow(10, str.tostring(mintick).length - 2);
-  const atr = mode === 'ATR' || mode === 'ATR/2' || mode === 'ATR/4' ? ta.atr(bars, Math.trunc(cfg.modevalue)).toArray() : [];
-  const tr = ta.tr(bars, true).toArray();
-  const getBSize = (value: number, i: number): number => {
+  const getBSize = (value: number, tr: number, num: number, mintick: number): number => {
     let ret = value;
-    if (ret === null || ret === undefined || Number.isNaN(ret)) ret = tr[i] ?? NaN;
+    if (ret === null || ret === undefined || Number.isNaN(ret)) ret = tr ?? NaN;
     if (lt(ret, 1)) {
       ret = math.round(ret * num) / num;
     } else if (!Number.isNaN(ret)) {
@@ -145,136 +159,170 @@ export function calculate(
     }
     return Number.isNaN(ret) ? NaN : Math.max(ret, mintick);
   };
-  const pineMax = (a: number, b: number) => (Number.isNaN(a) || Number.isNaN(b) ? NaN : Math.max(a, b));
-  const boxsizeAt = (i: number): number => {
-    switch (mode) {
-      case 'ATR': return getBSize(atr[i] ?? NaN, i);
-      case 'ATR/2': return pineMax(getBSize(atr[i] ?? NaN, i) / 2, mintick);
-      case 'ATR/4': return pineMax(getBSize(atr[i] ?? NaN, i) / 4, mintick);
-      case 'Percentage': return getBSize((cfg.percentagebs * bars[i].close) / 100, i);
-      default: return cfg.tboxsize;
-    }
-  };
-
-  let boxs = NaN;
-  let trend = 0;
-  const rclose: number[] = [];
-  let unconfirmed = -1;
-  const barColors: BarColorData[] = [];
-  const trendUp: boolean[] = [];
-  const trendDown: boolean[] = [];
-  // barstate.isrealtime: the last bar receives live updates
-  const live = chart?.realtime === true;
-
-  const addbricks = (numbrick: number, start: number, bsize: number) => {
+  const addbricks = (rclose: number[], numbrick: number, start: number, bsize: number) => {
     // for x = 1 to numbrick (counts down when numbrick < 1)
     if (numbrick >= 1) for (let x = 1; x <= numbrick; x++) rclose.unshift(start + x * bsize);
     else for (let x = 1; x >= numbrick; x--) rclose.unshift(start + x * bsize);
   };
 
-  for (let i = 0; i < n; i++) {
-    const boxsize = boxsizeAt(i);
-    if (i === 0) {
-      boxs = boxsize;
-      rclose.push(Math.floor(bars[0].open / boxs) * boxs);
-    }
-    const currentprice = bars[i].close;
-    const lastclose = rclose[0];
-    const numcell = Math.floor(Math.abs(lastclose - currentprice) / boxs);
-    const prevTrend = trend;
-    unconfirmed = -1;
-
-    if (numcell > 0) {
-      if (trend === 0) {
-        if (numcell >= 2) {
-          trend = lt(lastclose, currentprice) ? 1 : -1;
-          addbricks(numcell, lastclose, trend * boxs);
-        }
-      } else if (lt(lastclose * trend, currentprice * trend)) {
-        addbricks(numcell, lastclose, trend * boxs);
-      } else if (numcell >= 2) {
-        trend *= -1;
-        addbricks(numcell - 1, lastclose + trend * boxs, trend * boxs);
-      }
-      // change boxsize when trend changed
-      if (ne(lastclose, rclose[0])) {
-        boxs = boxsize;
-        // not barstate.ishistory and barstate.isrealtime
-        if (live && i === n - 1) unconfirmed = numcell - (trend !== prevTrend ? 1 : 0);
-      }
-    }
-    // delete old elements
-    while (rclose.length > period + 3) rclose.pop();
-
-    // alertcondition(trend[1] == -1 and trend == 1) / alertcondition(trend[1] == 1 and trend == -1)
-    trendUp.push(i > 0 && prevTrend === -1 && trend === 1);
-    trendDown.push(i > 0 && prevTrend === 1 && trend === -1);
-
-    if (cfg.changebrol) barColors.push({ time: bars[i].time as number, color: trend === 1 ? cfg.barcolup : cfg.barcoldn });
-  }
-
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
-  const last = n - 1;
-  const lines: LineDrawingData[] = [];
-  const labels: LabelData[] = [];
-  const boxes: BoxData[] = [];
-
-  if (n > 0 && cfg.putlabels && trend !== 0) {
-    const up = trend === 1 ? rclose[0] + boxs : rclose[0] + boxs * 2;
-    const dn = trend === 1 ? rclose[0] - boxs * 2 : rclose[0] - boxs;
-    for (const y of [up, dn]) {
-      lines.push({
-        time1: T(last), price1: y, time2: T(last - 1), price2: y, color: GRAY, extend: 'both',
-        ...(cfg.linestyle === 'solid' ? {} : { style: cfg.linestyle }),
-      });
-    }
-    labels.push({ time: T(last + 10), price: up, text: str.tostring(up), color: cfg.colup, textColor: BLACK, style: 'label_down' });
-    labels.push({ time: T(last + 10), price: dn, text: str.tostring(dn), color: cfg.coldn, textColor: WHITE, style: 'label_up' });
-  }
-
-  // barstate.islast
-  if (n > 0 && rclose.length >= 2) {
-    const R = (x: number): number => {
-      if (x < 0 || x >= rclose.length) throw new Error(`Index ${x} is out of bounds, array size is ${rclose.length}`);
-      return rclose[x];
-    };
-    let start = rclose.length - 3;
-    for (let x = rclose.length - 3; x >= 0; x--) {
-      if ((gt(R(x), R(x + 1)) && gt(R(x + 1), R(x + 2))) || (lt(R(x), R(x + 1)) && lt(R(x + 1), R(x + 2)))) {
-        start = x;
-        break;
-      }
-    }
-    let colnum = (start + 1) * bwidth;
-    let trnd = gt(R(start), R(start + 1)) ? 1 : -1;
-    let lasttb = R(start);
-    for (let x = start + 1; x >= 0; x--) {
-      const oldtrnd = trnd;
-      trnd = gt(R(x), R(x + 1)) ? 1 : -1;
-      const col = x < unconfirmed ? cfg.coluc : trnd === 1 ? cfg.colup : cfg.coldn;
-      const bcol = trnd === 1 ? cfg.bcolup : cfg.bcoldn;
-      const topbottom = oldtrnd === trnd ? R(x + 1) : lasttb;
-      if (last - colnum - bwidth > 1 && colnum < 285) {
-        boxes.push({
-          time1: T(last - colnum), price1: R(x), time2: T(last - colnum - bwidth), price2: topbottom,
-          borderWidth: Math.trunc(cfg.borderwidth), borderColor: bcol, bgColor: col,
-        });
-      }
-      colnum -= bwidth;
-      lasttb = topbottom;
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    barColors,
-    boxes,
-    labels,
-    lines,
-    alerts: alertStates(alertConditions, bars, [trendUp, trendDown]),
+    init(_bars, chart) {
+      const mintick = mintickOf(chart);
+      const atr = mode === 'ATR' || mode === 'ATR/2' || mode === 'ATR/4' ? taStep.atr(Math.trunc(cfg.modevalue)) : null;
+      const tr = taStep.tr(true);
+      const s: RenkoRun = {
+        mintick,
+        // get_b_size(): var num = math.pow(10, str.length(str.tostring(syminfo.mintick)) - 2)
+        num: Math.pow(10, str.tostring(mintick).length - 2),
+        atr, tr, lastUnconfirmed: -1, barColors: [], flags: [[], []], times: [[], []],
+        steps: [...(atr ? [atr] : []), tr], vars: { boxs: NaN, trend: 0, rclose: [] }, lists: [], series: [],
+      };
+      s.lists = [s.barColors, ...s.times];
+      s.series = [...s.flags];
+      return s;
+    },
+    copyVars: (v) => ({ boxs: v.boxs, trend: v.trend, rclose: v.rclose.slice() }),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { mintick, num } = s;
+      const n = bars.length;
+      const b = bars[i];
+      const atr = s.atr ? s.atr.step(b.high, b.low, b.close) : NaN;
+      const tr = s.tr.step(b.high, b.low, b.close);
+      let boxsize: number;
+      switch (mode) {
+        case 'ATR': boxsize = getBSize(atr ?? NaN, tr, num, mintick); break;
+        case 'ATR/2': boxsize = pineMax(getBSize(atr ?? NaN, tr, num, mintick) / 2, mintick); break;
+        case 'ATR/4': boxsize = pineMax(getBSize(atr ?? NaN, tr, num, mintick) / 4, mintick); break;
+        case 'Percentage': boxsize = getBSize((cfg.percentagebs * b.close) / 100, tr, num, mintick); break;
+        default: boxsize = cfg.tboxsize;
+      }
+
+      const rclose = v.rclose;
+      if (i === 0) {
+        v.boxs = boxsize;
+        rclose.push(Math.floor(b.open / v.boxs) * v.boxs);
+      }
+      const currentprice = b.close;
+      const lastclose = rclose[0];
+      const numcell = Math.floor(Math.abs(lastclose - currentprice) / v.boxs);
+      const prevTrend = v.trend;
+      let unconfirmed = -1;
+
+      if (numcell > 0) {
+        if (v.trend === 0) {
+          if (numcell >= 2) {
+            v.trend = lt(lastclose, currentprice) ? 1 : -1;
+            addbricks(rclose, numcell, lastclose, v.trend * v.boxs);
+          }
+        } else if (lt(lastclose * v.trend, currentprice * v.trend)) {
+          addbricks(rclose, numcell, lastclose, v.trend * v.boxs);
+        } else if (numcell >= 2) {
+          v.trend *= -1;
+          addbricks(rclose, numcell - 1, lastclose + v.trend * v.boxs, v.trend * v.boxs);
+        }
+        // change boxsize when trend changed
+        if (ne(lastclose, rclose[0])) {
+          v.boxs = boxsize;
+          // not barstate.ishistory and barstate.isrealtime (the chart's realtime flag is read in result)
+          if (i === n - 1) unconfirmed = numcell - (v.trend !== prevTrend ? 1 : 0);
+        }
+      }
+      if (i === n - 1) s.lastUnconfirmed = unconfirmed;
+      // delete old elements
+      while (rclose.length > period + 3) rclose.pop();
+
+      // alertcondition(trend[1] == -1 and trend == 1) / alertcondition(trend[1] == 1 and trend == -1)
+      const trend = v.trend;
+      const up = i > 0 && prevTrend === -1 && trend === 1;
+      const down = i > 0 && prevTrend === 1 && trend === -1;
+      s.flags[0][i] = up;
+      s.flags[1][i] = down;
+      if (up) s.times[0].push(b.time as number);
+      if (down) s.times[1].push(b.time as number);
+
+      if (cfg.changebrol) s.barColors.push({ time: b.time as number, color: trend === 1 ? cfg.barcolup : cfg.barcoldn });
+    },
+    // the drawings of the last bar, from the bricks at its end
+    result(s, bars, chart) {
+      const n = bars.length;
+      const { boxs, trend, rclose } = s.vars;
+      // barstate.isrealtime: the last bar receives live updates
+      const live = chart?.realtime === true;
+      const unconfirmed = live && n > 0 ? s.lastUnconfirmed : -1;
+      const interval = barInterval(bars);
+      const T = (index: number) => barTime(bars, index, interval);
+      const last = n - 1;
+      const lines: LineDrawingData[] = [];
+      const labels: LabelData[] = [];
+      const boxes: BoxData[] = [];
+
+      if (n > 0 && cfg.putlabels && trend !== 0) {
+        const up = trend === 1 ? rclose[0] + boxs : rclose[0] + boxs * 2;
+        const dn = trend === 1 ? rclose[0] - boxs * 2 : rclose[0] - boxs;
+        for (const y of [up, dn]) {
+          lines.push({
+            time1: T(last), price1: y, time2: T(last - 1), price2: y, color: GRAY, extend: 'both',
+            ...(cfg.linestyle === 'solid' ? {} : { style: cfg.linestyle }),
+          });
+        }
+        labels.push({ time: T(last + 10), price: up, text: str.tostring(up), color: cfg.colup, textColor: BLACK, style: 'label_down' });
+        labels.push({ time: T(last + 10), price: dn, text: str.tostring(dn), color: cfg.coldn, textColor: WHITE, style: 'label_up' });
+      }
+
+      // barstate.islast
+      if (n > 0 && rclose.length >= 2) {
+        const R = (x: number): number => {
+          if (x < 0 || x >= rclose.length) throw new Error(`Index ${x} is out of bounds, array size is ${rclose.length}`);
+          return rclose[x];
+        };
+        let start = rclose.length - 3;
+        for (let x = rclose.length - 3; x >= 0; x--) {
+          if ((gt(R(x), R(x + 1)) && gt(R(x + 1), R(x + 2))) || (lt(R(x), R(x + 1)) && lt(R(x + 1), R(x + 2)))) {
+            start = x;
+            break;
+          }
+        }
+        let colnum = (start + 1) * bwidth;
+        let trnd = gt(R(start), R(start + 1)) ? 1 : -1;
+        let lasttb = R(start);
+        for (let x = start + 1; x >= 0; x--) {
+          const oldtrnd = trnd;
+          trnd = gt(R(x), R(x + 1)) ? 1 : -1;
+          const col = x < unconfirmed ? cfg.coluc : trnd === 1 ? cfg.colup : cfg.coldn;
+          const bcol = trnd === 1 ? cfg.bcolup : cfg.bcoldn;
+          const topbottom = oldtrnd === trnd ? R(x + 1) : lasttb;
+          if (last - colnum - bwidth > 1 && colnum < 285) {
+            boxes.push({
+              time1: T(last - colnum), price1: R(x), time2: T(last - colnum - bwidth), price2: topbottom,
+              borderWidth: Math.trunc(cfg.borderwidth), borderColor: bcol, bgColor: col,
+            });
+          }
+          colnum -= bwidth;
+          lasttb = topbottom;
+        }
+      }
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        barColors: s.barColors.slice(),
+        boxes,
+        labels,
+        lines,
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RenkoCandlesOverlayInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RenkoCandlesOverlayInputs> = {}, chart?: ChartContext): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 /** The original's alertconditions */
@@ -285,6 +333,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const RenkoCandlesOverlay = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

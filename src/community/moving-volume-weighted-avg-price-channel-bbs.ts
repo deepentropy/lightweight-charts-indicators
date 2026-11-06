@@ -12,9 +12,11 @@
  */
 
 import {
-  ta, getSourceSeries, color,
+  color,
   type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MovingVolumeWeightedAvgPriceChannelBbsInputs {
   /** Price source */
@@ -82,63 +84,95 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
+type Point = { time: number; value: number; color: string };
+
+interface MvwapRun extends BarRunState<Record<string, never>> {
+  dev: WindowStdev;
+  price: number[];
+  volume: number[];
+  plots: Point[][];
+  pctFill: string[];
+  stdFill: string[];
+}
+
+function study(inputs: Partial<MovingVolumeWeightedAvgPriceChannelBbsInputs>): BarStudy<MvwapRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const source = barSource(cfg.priceSource);
+  const pct = cfg.percentBandMult1 / 100;
+  return {
+    fullRunReason: () => (isBarSource(cfg.priceSource) ? null : 'source of another study'),
+    init() {
+      const dev = new WindowStdev(cfg.stdDevLen);
+      const s: MvwapRun = {
+        dev, price: [], volume: [], plots: [[], [], [], [], []], pctFill: [], stdFill: [],
+        steps: [dev], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.price, s.volume, ...s.plots, s.pctFill, s.stdFill];
+      return s;
+    },
+    bar(s, k, bars) {
+      const price = s.price;
+      const volume = s.volume;
+      price[k] = source(bars[k]);
+      volume[k] = bars[k].volume ?? NaN;
+
+      // for i = 0 to math.min(windowLen - 1, bar_index): sums of price * volume and of volume (na values skipped)
+      let sumPriceVolume = 0;
+      let sumVol = 0;
+      const last = Math.min(cfg.windowLen - 1, k);
+      for (let i = 0; i <= last; i++) {
+        const p = price[k - i];
+        const v = volume[k - i];
+        if (!isNaN(p) && !isNaN(v)) {
+          sumPriceVolume += p * v;
+          sumVol += v;
+        }
+      }
+      const vwap = gt(sumVol, 0) ? sumPriceVolume / sumVol : NaN;
+      const stdDev = s.dev.step(price[k]);
+
+      const time = bars[k].time;
+      const [p0, p1, p2, p3, p4] = s.plots;
+      p0[k] = { time, value: vwap, color: color.yellow };
+      p1[k] = { time, value: cfg.showBand1 ? vwap + vwap * pct : NaN, color: UPPER_PCT_COL };
+      p2[k] = { time, value: cfg.showBand1 ? vwap - vwap * pct : NaN, color: LOWER_PCT_COL };
+      p3[k] = { time, value: cfg.showBand2 ? vwap + stdDev * cfg.stdDevBandMult1 : NaN, color: STD_COL };
+      p4[k] = { time, value: cfg.showBand2 ? vwap - stdDev * cfg.stdDevBandMult1 : NaN, color: STD_COL };
+      s.pctFill[k] = PCT_FILL_COL;
+      s.stdFill[k] = STD_FILL_COL;
+    },
+    result(s) {
+      const [plot0, plot1, plot2, plot3, plot4] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4 },
+        fills: [
+          { plot1: 'plot1', plot2: 'plot2', options: { title: 'Percentage Band Fill' }, colors: s.pctFill.slice() },
+          { plot1: 'plot3', plot2: 'plot4', options: { title: 'StdDev Band Fill' }, colors: s.stdFill.slice() },
+        ],
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(
+  inputs: Partial<MovingVolumeWeightedAvgPriceChannelBbsInputs> = {},
+  chart: ChartContext = {},
+): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<MovingVolumeWeightedAvgPriceChannelBbsInputs> = {},
 ): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const srcSeries = getSourceSeries(bars, cfg.priceSource);
-  const price = srcSeries.toArray().map((v) => v ?? NaN);
-  const volume = bars.map((b) => b.volume ?? NaN);
-
-  // for i = 0 to math.min(windowLen - 1, bar_index): sums of price * volume and of volume (na values skipped)
-  const vwap: number[] = new Array(n);
-  for (let k = 0; k < n; k++) {
-    let sumPriceVolume = 0;
-    let sumVol = 0;
-    const last = Math.min(cfg.windowLen - 1, k);
-    for (let i = 0; i <= last; i++) {
-      const p = price[k - i];
-      const v = volume[k - i];
-      if (!isNaN(p) && !isNaN(v)) {
-        sumPriceVolume += p * v;
-        sumVol += v;
-      }
-    }
-    vwap[k] = gt(sumVol, 0) ? sumPriceVolume / sumVol : NaN;
-  }
-
-  const stdDev = ta.stdev(srcSeries, cfg.stdDevLen).toArray().map((v) => v ?? NaN);
-  const pct = cfg.percentBandMult1 / 100;
-
-  const t = (i: number) => bars[i].time;
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((_b, i) => ({ time: t(i), value: vwap[i], color: color.yellow })),
-      plot1: bars.map((_b, i) => ({
-        time: t(i), value: cfg.showBand1 ? vwap[i] + vwap[i] * pct : NaN, color: UPPER_PCT_COL,
-      })),
-      plot2: bars.map((_b, i) => ({
-        time: t(i), value: cfg.showBand1 ? vwap[i] - vwap[i] * pct : NaN, color: LOWER_PCT_COL,
-      })),
-      plot3: bars.map((_b, i) => ({
-        time: t(i), value: cfg.showBand2 ? vwap[i] + stdDev[i] * cfg.stdDevBandMult1 : NaN, color: STD_COL,
-      })),
-      plot4: bars.map((_b, i) => ({
-        time: t(i), value: cfg.showBand2 ? vwap[i] - stdDev[i] * cfg.stdDevBandMult1 : NaN, color: STD_COL,
-      })),
-    },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot2', options: { title: 'Percentage Band Fill' }, colors: new Array<string>(n).fill(PCT_FILL_COL) },
-      { plot1: 'plot3', plot2: 'plot4', options: { title: 'StdDev Band Fill' }, colors: new Array<string>(n).fill(STD_FILL_COL) },
-    ],
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MovingVolumeWeightedAvgPriceChannelBbs = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

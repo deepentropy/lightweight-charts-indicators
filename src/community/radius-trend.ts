@@ -9,7 +9,9 @@
  * Reference: "Radius Trend [ChartPrime]" by ChartPrime
  */
 
-import { ta, getSourceSeries, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface RadiusTrendInputs {
   step: number;
@@ -38,142 +40,164 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<RadiusTrendInputs> = {}): IndicatorResult {
-  const { step, multi } = { ...defaultInputs, ...inputs };
-  const len = bars.length;
-  const n = 3; // step interval (hardcoded in PineScript)
+type Point = { time: number; value: number; color?: string };
 
-  // distance = sma(abs(high - low), 100) * multi
-  const rangeSeries = new Series(bars, (b) => Math.abs(b.high - b.low));
-  const smaRangeArr = ta.sma(rangeSeries, 100).toArray();
-
+interface RadiusVars {
   // State variables (var in PineScript = persistent)
-  let multi1 = 0;
-  let multi2 = 0;
-  let band = 0;
-  let trend = true; // true = bullish
+  multi1: number;
+  multi2: number;
+  band: number;
+  /** true = bullish */
+  trend: boolean;
+}
 
-  const bandArr: number[] = new Array(len);
-  const trendArr: boolean[] = new Array(len);
+interface RadiusRun extends BarRunState<RadiusVars> {
+  smaRange: WindowSma;
+  sband: WindowSma;
+  smoothUpper: WindowSma;
+  smoothLower: WindowSma;
+  hl2Sma: WindowSma;
+  bandArr: number[];
+  trendArr: boolean[];
+  hl2SmaArr: number[];
+  topColor: string[];
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
 
+function study(inputs: Partial<RadiusTrendInputs>): BarStudy<RadiusRun, IndicatorResult> {
+  const { step, multi } = { ...defaultInputs, ...inputs };
+  const n = 3; // step interval (hardcoded in PineScript)
   const warmup = 101; // PineScript initializes on bar_index == 101
 
-  for (let i = 0; i < len; i++) {
-    const smaRange = smaRangeArr[i];
-    if (isNaN(smaRange) || i < warmup) {
-      // Before warmup, set initial state on bar 101
-      if (i === warmup) {
-        trend = true;
-        band = bars[i].low * 0.8;
-      }
-      bandArr[i] = NaN;
-      trendArr[i] = trend;
-      continue;
-    }
-
-    const distance = smaRange * multi;
-    const distance1 = smaRange * 0.2;
-    const close = bars[i].close;
-
-    // Update trend based on price relation to band
-    if (close < band) trend = false;
-    if (close > band) trend = true;
-
-    // Detect trend change (ta.change(trend) = trend != trend[1])
-    const prevTrend: boolean = i > 0 ? trendArr[i - 1] : trend;
-    if (!prevTrend && prevTrend !== trend) {
-      // Was bearish, now bullish
-      band = bars[i].low - distance;
-    }
-    if (prevTrend && prevTrend !== trend) {
-      // Was bullish, now bearish
-      band = bars[i].high + distance;
-    }
-
-    // Apply step angle every n bars
-    if (i % n === 0 && trend) {
-      multi1 = 0;
-      multi2 += step;
-      band += distance1 * multi2;
-    }
-    if (i % n === 0 && !trend) {
-      multi1 += step;
-      multi2 = 0;
-      band -= distance1 * multi1;
-    }
-
-    bandArr[i] = band;
-    trendArr[i] = trend;
-  }
-
-  // Smooth the band: Sband = sma(band, n)
-  const bandSeries = Series.fromArray(bars, bandArr);
-  const sbandArr = ta.sma(bandSeries, n).toArray();
-
-  // Upper and lower bands for outer display
-  const bandUpperArr: number[] = new Array(len);
-  const bandLowerArr: number[] = new Array(len);
-  for (let i = 0; i < len; i++) {
-    const smaRange = smaRangeArr[i];
-    if (isNaN(smaRange) || isNaN(bandArr[i])) {
-      bandUpperArr[i] = NaN;
-      bandLowerArr[i] = NaN;
-    } else {
-      const distance = smaRange * multi;
-      bandUpperArr[i] = bandArr[i] + distance * 0.5;
-      bandLowerArr[i] = bandArr[i] - distance * 0.5;
-    }
-  }
-
-  const bandUpperSeries = Series.fromArray(bars, bandUpperArr);
-  const bandLowerSeries = Series.fromArray(bars, bandLowerArr);
-  const smoothUpperArr = ta.sma(bandUpperSeries, n).toArray();
-  const smoothLowerArr = ta.sma(bandLowerSeries, n).toArray();
-
-  // plot0: smoothed band (Sband) with linebr on trend change
-  const plot0 = sbandArr.map((v, i) => {
-    if (i < warmup + n || isNaN(v)) return { time: bars[i].time, value: NaN };
-    // linebr: NaN on trend change
-    if (i > 0 && trendArr[i] !== trendArr[i - 1]) return { time: bars[i].time, value: NaN };
-    const color = trendArr[i] ? '#54b6d4' : '#cf2b2b';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // plot1: outer band (band1 = trend ? band_upper : band_lower), every other bar
-  const plot1 = bars.map((b, i) => {
-    if (i < warmup + n) return { time: b.time, value: NaN };
-    const val = trendArr[i] ? smoothUpperArr[i] : smoothLowerArr[i];
-    if (isNaN(val)) return { time: b.time, value: NaN };
-    // PineScript plots every other bar (bar_index % 2 == 0)
-    if (i % 2 !== 0) return { time: b.time, value: NaN };
-    const color = trendArr[i] ? '#54b6d4' : '#cf2b2b';
-    return { time: b.time, value: val, color };
-  });
-
-  // Hidden SMA of hl2 for fill reference (Pine: ta.sma(hl2, 20))
-  const hl2Series = getSourceSeries(bars, 'hl2');
-  const hl2SmaArr = ta.sma(hl2Series, 20).toArray();
-  const plot2 = hl2SmaArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (i < warmup + n || v == null || isNaN(v)) ? NaN : v,
-  }));
-
-  // Pine: color = trend ? #54b6d4 : #cf2b2b
-  //   fill(p1, p2, band, ta.sma(hl2, 20), color.new(color, 60), na)
-  const gradient = {
-    topValue: bandArr.slice(),
-    bottomValue: hl2SmaArr.map(v => (v == null ? NaN : v)),
-    topColor: trendArr.map(t => (t ? 'rgba(84,182,212,0.4)' : 'rgba(207,43,43,0.4)')),
-    bottomColor: new Array<string | null>(len).fill(null),
-  };
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot2', gradient },
-    ],
+    init() {
+      // distance = sma(abs(high - low), 100) * multi
+      const smaRange = new WindowSma(100);
+      // Smooth the band: Sband = sma(band, n), and the outer bands
+      const sband = new WindowSma(n);
+      const smoothUpper = new WindowSma(n);
+      const smoothLower = new WindowSma(n);
+      // Hidden SMA of hl2 for fill reference (Pine: ta.sma(hl2, 20))
+      const hl2Sma = new WindowSma(20);
+      const s: RadiusRun = {
+        smaRange, sband, smoothUpper, smoothLower, hl2Sma, bandArr: [], trendArr: [], hl2SmaArr: [], topColor: [],
+        plot0: [], plot1: [], plot2: [],
+        steps: [smaRange, sband, smoothUpper, smoothLower, hl2Sma],
+        vars: { multi1: 0, multi2: 0, band: 0, trend: true },
+        lists: [], series: [],
+      };
+      s.series = [s.bandArr, s.trendArr, s.hl2SmaArr, s.topColor, s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const smaRange = s.smaRange.step(Math.abs(b.high - b.low));
+      let bandValue: number;
+      if (isNaN(smaRange) || i < warmup) {
+        // Before warmup, set initial state on bar 101
+        if (i === warmup) {
+          v.trend = true;
+          v.band = b.low * 0.8;
+        }
+        bandValue = NaN;
+      } else {
+        const distance = smaRange * multi;
+        const distance1 = smaRange * 0.2;
+        const close = b.close;
+
+        // Update trend based on price relation to band
+        if (close < v.band) v.trend = false;
+        if (close > v.band) v.trend = true;
+
+        // Detect trend change (ta.change(trend) = trend != trend[1])
+        const prevTrend: boolean = i > 0 ? s.trendArr[i - 1] : v.trend;
+        if (!prevTrend && prevTrend !== v.trend) {
+          // Was bearish, now bullish
+          v.band = b.low - distance;
+        }
+        if (prevTrend && prevTrend !== v.trend) {
+          // Was bullish, now bearish
+          v.band = b.high + distance;
+        }
+
+        // Apply step angle every n bars
+        if (i % n === 0 && v.trend) {
+          v.multi1 = 0;
+          v.multi2 += step;
+          v.band += distance1 * v.multi2;
+        }
+        if (i % n === 0 && !v.trend) {
+          v.multi1 += step;
+          v.multi2 = 0;
+          v.band -= distance1 * v.multi1;
+        }
+        bandValue = v.band;
+      }
+      const trend = v.trend;
+      s.bandArr[i] = bandValue;
+      s.trendArr[i] = trend;
+
+      const sband = s.sband.step(bandValue);
+      // Upper and lower bands for outer display
+      let bandUpper = NaN;
+      let bandLower = NaN;
+      if (!(isNaN(smaRange) || isNaN(bandValue))) {
+        const distance = smaRange * multi;
+        bandUpper = bandValue + distance * 0.5;
+        bandLower = bandValue - distance * 0.5;
+      }
+      const smoothUpper = s.smoothUpper.step(bandUpper);
+      const smoothLower = s.smoothLower.step(bandLower);
+      const time = b.time;
+
+      // plot0: smoothed band (Sband) with linebr on trend change
+      if (i < warmup + n || isNaN(sband)) s.plot0[i] = { time, value: NaN };
+      // linebr: NaN on trend change
+      else if (i > 0 && trend !== s.trendArr[i - 1]) s.plot0[i] = { time, value: NaN };
+      else s.plot0[i] = { time, value: sband, color: trend ? '#54b6d4' : '#cf2b2b' };
+
+      // plot1: outer band (band1 = trend ? band_upper : band_lower), every other bar
+      const val = trend ? smoothUpper : smoothLower;
+      if (i < warmup + n || isNaN(val)) s.plot1[i] = { time, value: NaN };
+      // PineScript plots every other bar (bar_index % 2 == 0)
+      else if (i % 2 !== 0) s.plot1[i] = { time, value: NaN };
+      else s.plot1[i] = { time, value: val, color: trend ? '#54b6d4' : '#cf2b2b' };
+
+      const hl2Sma = s.hl2Sma.step((b.high + b.low) / 2);
+      s.hl2SmaArr[i] = hl2Sma;
+      s.plot2[i] = { time, value: (i < warmup + n || isNaN(hl2Sma)) ? NaN : hl2Sma };
+      s.topColor[i] = trend ? 'rgba(84,182,212,0.4)' : 'rgba(207,43,43,0.4)';
+    },
+    result(s, bars) {
+      // Pine: color = trend ? #54b6d4 : #cf2b2b
+      //   fill(p1, p2, band, ta.sma(hl2, 20), color.new(color, 60), na)
+      const gradient = {
+        topValue: s.bandArr.slice(),
+        bottomValue: s.hl2SmaArr.slice(),
+        topColor: s.topColor.slice(),
+        bottomColor: new Array<string | null>(bars.length).fill(null),
+      };
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice(), 'plot1': s.plot1.slice(), 'plot2': s.plot2.slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot2', gradient },
+        ],
+      };
+    },
   };
 }
 
-export const RadiusTrend = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RadiusTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RadiusTrendInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const RadiusTrend = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

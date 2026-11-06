@@ -9,9 +9,11 @@
  * Reference: "UT Bot Alerts"
  */
 
-import { ta, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, crossedOver, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface UTBotInputs {
   keyValue: number;
@@ -38,74 +40,110 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<UTBotInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface UtRun extends BarRunState<Record<string, never>> {
+  atr: ReturnType<typeof taStep.atr>;
+  trailStop: number[];
+  plot0: Point[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<UTBotInputs>): BarStudy<UtRun, Result> {
   const { keyValue, atrPeriod } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
+  const warmup = atrPeriod;
+  return {
+    init() {
+      const atr = taStep.atr(atrPeriod);
+      const s: UtRun = {
+        atr, trailStop: [], plot0: [], markers: [], barColors: [], flags: [[], []], times: [[], []],
+        steps: [atr], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = [s.trailStop, s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const bar = bars[i];
+      const trailStop = s.trailStop;
+      const nLoss = keyValue * (s.atr.step(bar.high, bar.low, bar.close) ?? 0);
+      const src = bar.close;
 
-  const atrArr = ta.atr(bars, atrPeriod).toArray();
-  const trailStop: number[] = new Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const nLoss = keyValue * (atrArr[i] ?? 0);
-    const src = bars[i].close;
-
-    if (i === 0) {
-      trailStop[i] = src - nLoss;
-    } else {
-      const prev = trailStop[i - 1];
-      const prevSrc = bars[i - 1].close;
-      if (src > prev && prevSrc > prev) {
-        trailStop[i] = Math.max(prev, src - nLoss);
-      } else if (src < prev && prevSrc < prev) {
-        trailStop[i] = Math.min(prev, src + nLoss);
-      } else if (src > prev) {
+      if (i === 0) {
         trailStop[i] = src - nLoss;
       } else {
-        trailStop[i] = src + nLoss;
+        const prev = trailStop[i - 1];
+        const prevSrc = bars[i - 1].close;
+        if (src > prev && prevSrc > prev) {
+          trailStop[i] = Math.max(prev, src - nLoss);
+        } else if (src < prev && prevSrc < prev) {
+          trailStop[i] = Math.min(prev, src + nLoss);
+        } else if (src > prev) {
+          trailStop[i] = src - nLoss;
+        } else {
+          trailStop[i] = src + nLoss;
+        }
       }
-    }
-  }
+      const v = trailStop[i];
 
-  const warmup = atrPeriod;
-  // Dynamic color: green when close > trailing stop, red otherwise
-  const barColors: BarColorData[] = [];
-  const plot0 = trailStop.map((v, i) => {
-    if (i < warmup) return { time: bars[i].time, value: NaN };
-    const above = bars[i].close > v;
-    const color = above ? '#26A69A' : '#EF5350';
-    barColors.push({ time: bars[i].time as number, color });
-    return { time: bars[i].time, value: v, color };
-  });
+      // Dynamic color: green when close > trailing stop, red otherwise
+      if (i < warmup) {
+        s.plot0[i] = { time: bar.time, value: NaN };
+      } else {
+        const above = src > v;
+        const color = above ? '#26A69A' : '#EF5350';
+        s.barColors.push({ time: bar.time as number, color });
+        s.plot0[i] = { time: bar.time, value: v, color };
+      }
 
-  // Markers: buy when close crosses above trailing stop, sell when crosses below
-  const markers: MarkerData[] = [];
-  for (let i = warmup + 1; i < n; i++) {
-    const prevAbove = bars[i - 1].close > trailStop[i - 1];
-    const curAbove = bars[i].close > trailStop[i];
-    if (!prevAbove && curAbove) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
-    } else if (prevAbove && !curAbove) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
-    }
-  }
+      // Markers: buy when close crosses above trailing stop, sell when crosses below
+      if (i >= warmup + 1) {
+        const prevAbove = bars[i - 1].close > trailStop[i - 1];
+        const curAbove = src > v;
+        if (!prevAbove && curAbove) {
+          s.markers.push({ time: bar.time, position: 'belowBar', shape: 'labelUp', color: '#26A69A', text: 'Buy' });
+        } else if (prevAbove && !curAbove) {
+          s.markers.push({ time: bar.time, position: 'aboveBar', shape: 'labelDown', color: '#EF5350', text: 'Sell' });
+        }
+      }
 
-  // buy = src > xATRTrailingStop and crossover(ema(src, 1), xATRTrailingStop); sell = src < xATRTrailingStop and
-  // crossover(xATRTrailingStop, ema(src, 1)) (ema of length 1 = src); the stop is taken after the ATR warm-up
-  const closes = bars.map((b) => b.close);
-  const stop = trailStop.map((v, i) => (i < warmup ? NaN : v));
-  const above = crossedOver(closes, stop);
-  const below = crossedOver(stop, closes);
-  const buy = closes.map((c, i) => c > stop[i] && above[i]);
-  const sell = closes.map((c, i) => c < stop[i] && below[i]);
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0 },
-    markers,
-    barColors,
-    // alertcondition(buy, "UT Long") / alertcondition(sell, "UT Short")
-    alerts: alertStates(alertConditions, bars, [buy, sell]),
+      // buy = src > xATRTrailingStop and crossover(ema(src, 1), xATRTrailingStop); sell = src < xATRTrailingStop and
+      // crossover(xATRTrailingStop, ema(src, 1)) (ema of length 1 = src); the stop is taken after the ATR warm-up
+      const stop = i < warmup ? NaN : v;
+      const pc = i > 0 ? bars[i - 1].close : NaN;
+      const ps = i > 0 ? (i - 1 < warmup ? NaN : trailStop[i - 1]) : NaN;
+      const buy = src > stop && pc <= ps;
+      const sell = src < stop && ps <= pc;
+      [buy, sell].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(bar.time as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plot0.slice() },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        // alertcondition(buy, "UT Long") / alertcondition(sell, "UT Short")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<UTBotInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<UTBotInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -114,4 +152,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert1', title: 'UT Short', message: 'UT Short' },
 ];
 
-export const UTBot = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const UTBot = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

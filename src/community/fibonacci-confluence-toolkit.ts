@@ -25,10 +25,11 @@
  * Original notice: © LuxAlgo
  */
 
-import { ta, str, color, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, str, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BoxData, LabelData, LineDrawingData } from '../types';
 import { barInterval, barTime } from '../bar-time';
 import { backgroundColorOf, mintickOf, type ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type SizeText = 'Tiny' | 'Small' | 'Normal' | 'Large';
 
@@ -216,18 +217,73 @@ interface Fibs {
 const textSize = (s: string): Size => (s === 'Tiny' ? 'tiny' : s === 'Small' ? 'small' : s === 'Normal' ? 'normal' : 'large');
 const lineStyle = (s: string): Style => (s === 'Dotted' ? 'dotted' : s === 'Dashed' ? 'dashed' : 'solid');
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<FibonacciConfluenceToolkitInputs> = {},
-  chart?: ChartContext,
-): Omit<IndicatorResult, 'boxes' | 'labels' | 'lines'> & { boxes: BoxData[]; labels: LabelData[]; lines: LineDrawingData[] } {
+type Result = Omit<IndicatorResult, 'boxes' | 'labels' | 'lines'> & { boxes: BoxData[]; labels: LabelData[]; lines: LineDrawingData[] };
+
+interface ToolkitVars {
+  /** Drawings in creation order (the ones kept: at most max + 5) */
+  lines: Ln[];
+  labels: Lb[];
+  boxes: Bx[];
+  stLow: Structure;
+  stHigh: Structure;
+  itLow: Structure;
+  itHigh: Structure;
+  ltLow: Structure;
+  ltHigh: Structure;
+  ltMS: { lastType: number; prevType: number };
+  bullFibs: Fibs;
+  bearFibs: Fibs;
+  prevITL: boolean;
+  prevITH: boolean;
+  prevLTL: boolean;
+  prevLTH: boolean;
+}
+
+interface ToolkitRun extends BarRunState<ToolkitVars> {
+  bodyEma: ReturnType<typeof taStep.ema>;
+  body: number[];
+  bodyAvg: number[];
+}
+
+/** A deep copy of the variables: each drawing copied once, so the structures and the lists share the copies */
+function copyToolkitVars(v: ToolkitVars): ToolkitVars {
+  const seen = new Map<object, object>();
+  const dup = <T extends object | null>(o: T): T => {
+    if (o === null) return o;
+    let c = seen.get(o);
+    if (!c) {
+      c = { ...o };
+      seen.set(o, c);
+    }
+    return c as T;
+  };
+  const st = (x: Structure): Structure => ({
+    ...x, lastLabel: dup(x.lastLabel), midLabel: dup(x.midLabel), prevLabel: dup(x.prevLabel), zone: dup(x.zone),
+  });
+  const fibs = (f: Fibs): Fibs => {
+    const lines: Record<string, Ln | null> = {};
+    const labels: Record<string, Lb | null> = {};
+    for (const k of Object.keys(f.lines)) lines[k] = dup(f.lines[k]!);
+    for (const k of Object.keys(f.labels)) labels[k] = dup(f.labels[k]!);
+    return { lines, labels };
+  };
+  return {
+    lines: v.lines.map(dup), labels: v.labels.map(dup), boxes: v.boxes.map(dup),
+    stLow: st(v.stLow), stHigh: st(v.stHigh), itLow: st(v.itLow), itHigh: st(v.itHigh), ltLow: st(v.ltLow), ltHigh: st(v.ltHigh),
+    ltMS: { ...v.ltMS }, bullFibs: fibs(v.bullFibs), bearFibs: fibs(v.bearFibs),
+    prevITL: v.prevITL, prevITH: v.prevITH, prevLTL: v.prevLTL, prevLTH: v.prevLTH,
+  };
+}
+
+function study(inputs: Partial<FibonacciConfluenceToolkitInputs>): BarStudy<ToolkitRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  // chart.bg_color, syminfo.mintick
-  const CHART_BG = backgroundColorOf(chart);
-  const MINTICK = mintickOf(chart);
-  const n = bars.length;
-  const bullColor = cfg.bullCHoCHs ? cfg.ltBullMSColor : CHART_BG;
-  const bearColor = cfg.bearCHoCHs ? cfg.ltBearMSColor : CHART_BG;
+  // chart.bg_color, syminfo.mintick (read in init)
+  let MINTICK = mintickOf(undefined);
+  let bullColor = '';
+  let bearColor = '';
+  let bars: Bar[] = [];
+  /** The variables of the bar being calculated */
+  let v = null as unknown as ToolkitVars;
   const msStyle = lineStyle(cfg.ltMSLineStyle);
   const msWidth = Math.trunc(cfg.ltMSLineWidth);
   // the retracement levels between 0 and 1, in the order of the script
@@ -246,25 +302,22 @@ export function calculate(
   const limit = <T extends { deleted: boolean }>(list: T[]) => {
     if (list.length > MAX_OBJECTS + 5) for (const o of list.splice(0, list.length - MAX_OBJECTS)) o.deleted = true;
   };
-  const lines: Ln[] = [];
-  const labels: Lb[] = [];
-  const boxes: Bx[] = [];
   const newLine = (x1: number, y1: number, x2: number, y2: number, lineColor: string | null, style: Style = 'solid', width = 1): Ln => {
     const o: Ln = { x1, y1, x2, y2, color: lineColor, style, width, deleted: false };
-    lines.push(o);
-    limit(lines);
+    v.lines.push(o);
+    limit(v.lines);
     return o;
   };
   const newLabel = (l: Omit<Lb, 'deleted'>): Lb => {
     const o = { ...l, deleted: false };
-    labels.push(o);
-    limit(labels);
+    v.labels.push(o);
+    limit(v.labels);
     return o;
   };
   const newBox = (b: Omit<Bx, 'deleted'>): Bx => {
     const o = { ...b, deleted: false };
-    boxes.push(o);
-    limit(boxes);
+    v.boxes.push(o);
+    limit(v.boxes);
     return o;
   };
   const priceLabel = (x: number, y: number, level: number): Lb => {
@@ -278,15 +331,6 @@ export function calculate(
     if (l && !l.deleted) l.x = x;
   };
 
-  const stLow = structure();
-  const stHigh = structure();
-  const itLow = structure();
-  const itHigh = structure();
-  const ltLow = structure();
-  const ltHigh = structure();
-  const ltMS = { lastType: 0, prevType: 0 };
-  const bullFibs: Fibs = { lines: {}, labels: {} };
-  const bearFibs: Fibs = { lines: {}, labels: {} };
 
   /** method queryPatterns(ICTMS this, isSwingHigh) */
   const query = (s: Structure, isSwingHigh: boolean) =>
@@ -346,7 +390,7 @@ export function calculate(
     const condition = isBullish ? gt(bar.close, s.lastPrice) : lt(bar.close, s.lastPrice);
     if (condition && !s.isCrossed) {
       s.isCrossed = true;
-      if (ltMS.lastType === (isBullish ? -1 : 1)) {
+      if (v.ltMS.lastType === (isBullish ? -1 : 1)) {
         s.isCHoCH = true;
         s.measure = false;
         newLine(s.lastIndex, s.lastPrice, i, s.lastPrice, c, msStyle, msWidth);
@@ -361,7 +405,7 @@ export function calculate(
             index = i - k;
           }
         }
-        const f = isBullish ? bullFibs : bearFibs;
+        const f = isBullish ? v.bullFibs : v.bearFibs;
         f.lines['1'] = newLine(index, value, i, value, null);
         f.labels['1'] = priceLabel(i, value, 1);
         // the label of level 1 always starts with "1" (it does not use the input value)
@@ -382,8 +426,8 @@ export function calculate(
       } else {
         s.isCHoCH = false;
       }
-      ltMS.prevType = ltMS.lastType;
-      ltMS.lastType = isBullish ? 1 : -1;
+      v.ltMS.prevType = v.ltMS.lastType;
+      v.ltMS.lastType = isBullish ? 1 : -1;
     } else if (s.isCHoCH) {
       if (isBullish ? gt(bar.low, s.lwest) : lt(bar.high, s.hghst)) {
         if (s.zone && !s.zone.deleted) s.zone.right = i + 1;
@@ -396,9 +440,9 @@ export function calculate(
   /** A long-term swing: the range of the retracement after a CHoCH, and the optional swing label */
   const longTerm = (lt_: Structure, it: Structure, isHigh: boolean, i: number) => {
     lt_.isCrossed = false;
-    if (ltMS.lastType === (isHigh ? 1 : -1) && ltMS.prevType !== ltMS.lastType && !lt_.measure) {
+    if (v.ltMS.lastType === (isHigh ? 1 : -1) && v.ltMS.prevType !== v.ltMS.lastType && !lt_.measure) {
       lt_.measure = true;
-      const f = isHigh ? bullFibs : bearFibs;
+      const f = isHigh ? v.bullFibs : v.bearFibs;
       const ln1 = f.lines['1'] ?? null;
       const anchorX = ln1 && !ln1.deleted ? ln1.x1 : NaN;
       const zone = lt_.zone && !lt_.zone.deleted ? lt_.zone : null;
@@ -417,113 +461,149 @@ export function calculate(
     }
   };
 
-  // Engulfing candles
-  const body = bars.map((b) => Math.max(b.close, b.open) - Math.min(b.close, b.open));
-  const bodyAvg = ta.ema(Series.fromArray(bars, body), 14).toArray();
   const engulfOn = cfg.engulf !== 'Disabled';
 
-  let prevITL = false;
-  let prevITH = false;
-  let prevLTL = false;
-  let prevLTH = false;
-
-  for (let i = 0; i < n; i++) {
-    const bar = bars[i];
-
-    // Short-term swings
-    if (i >= 2) {
-      const l1 = bars[i - 1].low;
-      if (gt(bars[i - 2].low, l1) && le(l1, bar.low)) {
-        update(stLow, l1, i - 1);
-        stLow.lastLabel = newLabel({ x: i - 1, y: l1, text: '⦁', textColor: null, style: 'label_up', size: 'normal', tooltip: '' });
-      }
-      const h1 = bars[i - 1].high;
-      if (lt(bars[i - 2].high, h1) && ge(h1, bar.high)) {
-        update(stHigh, h1, i - 1);
-        stHigh.lastLabel = newLabel({ x: i - 1, y: h1, text: '⦁', textColor: null, style: 'label_down', size: 'normal', tooltip: '' });
-      }
-    }
-
-    // Intermediate swings
-    const cITL = query(stLow, false);
-    if (cITL && !prevITL && i > 0) {
-      update(itLow, stLow.midPrice, stLow.midIndex);
-      itLow.lastLabel = stLow.midLabel;
-    }
-    prevITL = cITL;
-    const cITH = query(stHigh, true);
-    if (cITH && !prevITH && i > 0) {
-      update(itHigh, stHigh.midPrice, stHigh.midIndex);
-      itHigh.lastLabel = stHigh.midLabel;
-    }
-    prevITH = cITH;
-
-    // Long-term swings
-    const cLTL = query(itLow, false);
-    if (cLTL && !prevLTL && i > 0) longTerm(ltLow, itLow, false, i);
-    prevLTL = cLTL;
-    if (ltLow.isCHoCH && ltLow.measure && lt(bar.high, ltLow.hghst)) manageFibs(bearFibs, false, false, 0, 0, 0, 0, '', i);
-
-    const cLTH = query(itHigh, true);
-    if (cLTH && !prevLTH && i > 0) longTerm(ltHigh, itHigh, true, i);
-    prevLTH = cLTH;
-    if (ltHigh.isCHoCH && ltHigh.measure && gt(bar.low, ltHigh.lwest)) manageFibs(bullFibs, false, true, 0, 0, 0, 0, '', i);
-
-    renderStructures(ltLow, false, bearColor, i);
-    renderStructures(ltHigh, true, bullColor, i);
-
-    // Engulfing candle patterns
-    if (engulfOn && i > 0) {
-      const p = bars[i - 1];
-      const avg = bodyAvg[i] ?? NaN;
-      const prevAvg = bodyAvg[i - 1] ?? NaN;
-      const longBody = gt(body[i], avg);
-      const prevSmall = lt(body[i - 1], prevAvg);
-      const white = lt(bar.open, bar.close);
-      const black = gt(bar.open, bar.close);
-      const bearish = black && longBody && lt(p.open, p.close) && prevSmall && le(bar.close, p.open) && ge(bar.open, p.close)
-        && (lt(bar.close, p.open) || gt(bar.open, p.close));
-      const bullish = white && longBody && gt(p.open, p.close) && prevSmall && ge(bar.close, p.open) && le(bar.open, p.close)
-        && (gt(bar.close, p.open) || lt(bar.open, p.close));
-      const all = cfg.engulf === 'All';
-      const zoneEdge = (s: Structure, top: boolean) =>
-        (s.zone && !s.zone.deleted ? (top ? Math.max(s.zone.top, s.zone.bottom) : Math.min(s.zone.top, s.zone.bottom)) : NaN);
-      if (bearish && (all || (ltLow.isCHoCH && ltLow.measure && gt(bar.close, zoneEdge(ltLow, false))))) {
-        newLabel({ x: i, y: bar.high, text: '▼', textColor: bearColor, style: 'label_down', size: textSize(cfg.engulfSZ), tooltip: TT_BEAR });
-      }
-      if (bullish && (all || (ltHigh.isCHoCH && ltHigh.measure && lt(bar.close, zoneEdge(ltHigh, true))))) {
-        newLabel({ x: i, y: bar.low, text: '▲', textColor: bullColor, style: 'label_up', size: textSize(cfg.engulfSZ), tooltip: TT_BULL });
-      }
-    }
-  }
-
-  const interval = barInterval(bars);
-  const T = (index: number) => barTime(bars, index, interval);
-  const ok = (...v: number[]) => v.every((x) => Number.isFinite(x));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    // an object with an na coordinate is not drawn
-    lines: lines.filter((l) => ok(l.x1, l.y1, l.x2, l.y2)).map((l) => ({
-      time1: T(l.x1), price1: l.y1, time2: T(l.x2), price2: l.y2, color: l.color ?? 'transparent',
-      ...(l.width !== 1 ? { width: l.width } : {}),
-      ...(l.style !== 'solid' ? { style: l.style } : {}),
-    })),
-    labels: labels.filter((l) => ok(l.x, l.y)).map((l) => ({
-      time: T(l.x), price: l.y, text: l.text, color: 'transparent', textColor: l.textColor ?? 'transparent',
-      ...(l.style !== 'label_down' ? { style: l.style } : {}),
-      ...(l.size !== 'normal' ? { size: l.size } : {}),
-      ...(l.tooltip ? { tooltip: l.tooltip } : {}),
-    })),
-    boxes: boxes.filter((b) => ok(b.left, b.top, b.right, b.bottom)).map((b) => ({
-      time1: T(b.left), price1: b.top, time2: T(b.right), price2: b.bottom, bgColor: b.bg ?? 'transparent', borderColor: 'transparent',
-      ...(b.text ? { text: b.text, textSize: 'tiny' as const, textHAlign: 'left' as const, textVAlign: b.textVAlign ?? undefined, textColor: b.textColor ?? undefined } : {}),
-    })),
+    init(_bars, chart) {
+      const CHART_BG = backgroundColorOf(chart);
+      MINTICK = mintickOf(chart);
+      bullColor = cfg.bullCHoCHs ? cfg.ltBullMSColor : CHART_BG;
+      bearColor = cfg.bearCHoCHs ? cfg.ltBearMSColor : CHART_BG;
+      const bodyEma = taStep.ema(14);
+      const s: ToolkitRun = {
+        bodyEma, body: [], bodyAvg: [], steps: [bodyEma],
+        vars: {
+          lines: [], labels: [], boxes: [],
+          stLow: structure(), stHigh: structure(), itLow: structure(), itHigh: structure(), ltLow: structure(), ltHigh: structure(),
+          ltMS: { lastType: 0, prevType: 0 }, bullFibs: { lines: {}, labels: {} }, bearFibs: { lines: {}, labels: {} },
+          prevITL: false, prevITH: false, prevLTL: false, prevLTH: false,
+        },
+        lists: [], series: [],
+      };
+      s.series = [s.body, s.bodyAvg];
+      return s;
+    },
+    copyVars: copyToolkitVars,
+    bar(s, i, allBars) {
+      bars = allBars;
+      v = s.vars;
+      const bar = bars[i];
+      const b = bar;
+      // Engulfing candles: body and its ema(14)
+      s.body[i] = Math.max(b.close, b.open) - Math.min(b.close, b.open);
+      s.bodyAvg[i] = s.bodyEma.step(s.body[i]);
+
+      // Short-term swings
+      if (i >= 2) {
+        const l1 = bars[i - 1].low;
+        if (gt(bars[i - 2].low, l1) && le(l1, bar.low)) {
+          update(v.stLow, l1, i - 1);
+          v.stLow.lastLabel = newLabel({ x: i - 1, y: l1, text: '⦁', textColor: null, style: 'label_up', size: 'normal', tooltip: '' });
+        }
+        const h1 = bars[i - 1].high;
+        if (lt(bars[i - 2].high, h1) && ge(h1, bar.high)) {
+          update(v.stHigh, h1, i - 1);
+          v.stHigh.lastLabel = newLabel({ x: i - 1, y: h1, text: '⦁', textColor: null, style: 'label_down', size: 'normal', tooltip: '' });
+        }
+      }
+
+      // Intermediate swings
+      const cITL = query(v.stLow, false);
+      if (cITL && !v.prevITL && i > 0) {
+        update(v.itLow, v.stLow.midPrice, v.stLow.midIndex);
+        v.itLow.lastLabel = v.stLow.midLabel;
+      }
+      v.prevITL = cITL;
+      const cITH = query(v.stHigh, true);
+      if (cITH && !v.prevITH && i > 0) {
+        update(v.itHigh, v.stHigh.midPrice, v.stHigh.midIndex);
+        v.itHigh.lastLabel = v.stHigh.midLabel;
+      }
+      v.prevITH = cITH;
+
+      // Long-term swings
+      const cLTL = query(v.itLow, false);
+      if (cLTL && !v.prevLTL && i > 0) longTerm(v.ltLow, v.itLow, false, i);
+      v.prevLTL = cLTL;
+      if (v.ltLow.isCHoCH && v.ltLow.measure && lt(bar.high, v.ltLow.hghst)) manageFibs(v.bearFibs, false, false, 0, 0, 0, 0, '', i);
+
+      const cLTH = query(v.itHigh, true);
+      if (cLTH && !v.prevLTH && i > 0) longTerm(v.ltHigh, v.itHigh, true, i);
+      v.prevLTH = cLTH;
+      if (v.ltHigh.isCHoCH && v.ltHigh.measure && gt(bar.low, v.ltHigh.lwest)) manageFibs(v.bullFibs, false, true, 0, 0, 0, 0, '', i);
+
+      renderStructures(v.ltLow, false, bearColor, i);
+      renderStructures(v.ltHigh, true, bullColor, i);
+
+      // Engulfing candle patterns
+      if (engulfOn && i > 0) {
+        const p = bars[i - 1];
+        const avg = s.bodyAvg[i] ?? NaN;
+        const prevAvg = s.bodyAvg[i - 1] ?? NaN;
+        const longBody = gt(s.body[i], avg);
+        const prevSmall = lt(s.body[i - 1], prevAvg);
+        const white = lt(bar.open, bar.close);
+        const black = gt(bar.open, bar.close);
+        const bearish = black && longBody && lt(p.open, p.close) && prevSmall && le(bar.close, p.open) && ge(bar.open, p.close)
+          && (lt(bar.close, p.open) || gt(bar.open, p.close));
+        const bullish = white && longBody && gt(p.open, p.close) && prevSmall && ge(bar.close, p.open) && le(bar.open, p.close)
+          && (gt(bar.close, p.open) || lt(bar.open, p.close));
+        const all = cfg.engulf === 'All';
+        const zoneEdge = (s: Structure, top: boolean) =>
+          (s.zone && !s.zone.deleted ? (top ? Math.max(s.zone.top, s.zone.bottom) : Math.min(s.zone.top, s.zone.bottom)) : NaN);
+        if (bearish && (all || (v.ltLow.isCHoCH && v.ltLow.measure && gt(bar.close, zoneEdge(v.ltLow, false))))) {
+          newLabel({ x: i, y: bar.high, text: '▼', textColor: bearColor, style: 'label_down', size: textSize(cfg.engulfSZ), tooltip: TT_BEAR });
+        }
+        if (bullish && (all || (v.ltHigh.isCHoCH && v.ltHigh.measure && lt(bar.close, zoneEdge(v.ltHigh, true))))) {
+          newLabel({ x: i, y: bar.low, text: '▲', textColor: bullColor, style: 'label_up', size: textSize(cfg.engulfSZ), tooltip: TT_BULL });
+        }
+      }
+    },
+    result(s, bars) {
+      const v = s.vars;
+      const interval = barInterval(bars);
+      const T = (index: number) => barTime(bars, index, interval);
+      const ok = (...v: number[]) => v.every((x) => Number.isFinite(x));
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        // an object with an na coordinate is not drawn
+        lines: v.lines.filter((l) => ok(l.x1, l.y1, l.x2, l.y2)).map((l) => ({
+          time1: T(l.x1), price1: l.y1, time2: T(l.x2), price2: l.y2, color: l.color ?? 'transparent',
+          ...(l.width !== 1 ? { width: l.width } : {}),
+          ...(l.style !== 'solid' ? { style: l.style } : {}),
+        })),
+        labels: v.labels.filter((l) => ok(l.x, l.y)).map((l) => ({
+          time: T(l.x), price: l.y, text: l.text, color: 'transparent', textColor: l.textColor ?? 'transparent',
+          ...(l.style !== 'label_down' ? { style: l.style } : {}),
+          ...(l.size !== 'normal' ? { size: l.size } : {}),
+          ...(l.tooltip ? { tooltip: l.tooltip } : {}),
+        })),
+        boxes: v.boxes.filter((b) => ok(b.left, b.top, b.right, b.bottom)).map((b) => ({
+          time1: T(b.left), price1: b.top, time2: T(b.right), price2: b.bottom, bgColor: b.bg ?? 'transparent', borderColor: 'transparent',
+          ...(b.text ? { text: b.text, textSize: 'tiny' as const, textHAlign: 'left' as const, textVAlign: b.textVAlign ?? undefined, textColor: b.textColor ?? undefined } : {}),
+        })),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FibonacciConfluenceToolkitInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<FibonacciConfluenceToolkitInputs> = {},
+  chart?: ChartContext,
+): Result {
+  return fullResult(createRun(inputs, chart).update(bars));
 }
 
 export const FibonacciConfluenceToolkit = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

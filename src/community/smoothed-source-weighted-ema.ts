@@ -12,8 +12,10 @@
  * Original notice: © Clokivez
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SmoothedSourceWeightedEmaInputs {
   /** Colour the bars with the state colour */
@@ -84,101 +86,130 @@ const lt = (a: number, b: number) => b - a > EPS;
 
 type Point = { time: number; value: number; color?: string };
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+
+interface SswemaVars {
+  /** T := L ? 1 : S ? -1 : T[1]; col := L ? #00ffbf : S ? #ff0040 : col[1] (both na before the first signal) */
+  t: number;
+  col: string | null;
+}
+
+interface SswemaRun extends BarRunState<SswemaVars> {
+  sd: WindowStdev;
+  ema: ReturnType<typeof taStep.ema>;
+  up: ReturnType<typeof taStep.crossover>;
+  down: ReturnType<typeof taStep.crossunder>;
+  plots: Point[][];
+  logicCol: string[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<SmoothedSourceWeightedEmaInputs>): BarStudy<SswemaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const NA = 'transparent';
+  const sourceUpCol = String(color.new(color.red, 85));
+  const sourceDnCol = String(color.new(color.lime, 85));
+  return {
+    init() {
+      const s: SswemaRun = {
+        sd: new WindowStdev(cfg.smoothingLength),
+        ema: taStep.ema(cfg.emaLength),
+        up: taStep.crossover(),
+        down: taStep.crossunder(),
+        plots: Array.from({ length: 9 }, () => []),
+        logicCol: [], markers: [], barColors: [],
+        steps: [], vars: { t: NaN, col: null }, lists: [], series: [],
+      };
+      s.steps = [s.sd, s.ema, s.up, s.down];
+      s.lists = [s.markers, s.barColors];
+      s.series = [...s.plots, s.logicCol];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time;
+      const cl = b.close;
+      const srcsd = s.sd.step(cl);
+      const ema = s.ema.step(cl);
+      const L = gt(cl - srcsd, ema * cfg.upperWeight);
+      const S = lt(cl + srcsd, ema * cfg.lowerWeight);
+      if (L) {
+        v.t = 1;
+        v.col = LONG;
+      } else if (S) {
+        v.t = -1;
+        v.col = SHORT;
+      }
+      const col = v.col;
+      const arrowL = s.up.step(v.t, 0);
+      const arrowS = s.down.step(v.t, 0);
+
+      const p = s.plots;
+      // plot(ema, "EMA", col, 2)
+      p[0][i] = { time, value: ema, color: col ?? NA };
+      // plot(ema, "EMA", gy ? gcol : na, 4) / (gy ? gcol2 : na, 10) / (gy ? gcol3 : na, 16)
+      // color.new(col, x): a na col gives black with that transparency
+      p[1][i] = { time, value: ema, color: cfg.glow ? String(color.new(col as string, 30)) : NA };
+      p[2][i] = { time, value: ema, color: cfg.glow ? String(color.new(col as string, 80)) : NA };
+      p[3][i] = { time, value: ema, color: cfg.glow ? String(color.new(col as string, 85)) : NA };
+      // plot(ema * wl, "Upper EMA Weight", pl ? color.green : na, 1); plot(ema * ws, "Lower EMA Weight", pl ? color.red : na, 1)
+      p[4][i] = { time, value: ema * cfg.upperWeight, color: cfg.plotLogic ? color.green : NA };
+      p[5][i] = { time, value: ema * cfg.lowerWeight, color: cfg.plotLogic ? color.red : NA };
+      // plot(uppersrc, "Upper Source", pl ? color.new(color.red, 85) : na, 1); plot(lowersrc, "Lower Source", ...)
+      p[6][i] = { time, value: cl + srcsd, color: cfg.plotLogic ? sourceUpCol : NA };
+      p[7][i] = { time, value: cl - srcsd, color: cfg.plotLogic ? sourceDnCol : NA };
+      // closeplot = plot(pl ? close : na)
+      p[8][i] = { time, value: cfg.plotLogic ? cl : NaN, color: '#2962FF' };
+      // fill(emaplot, emaUPplot, pl ? col : na); fill(emaplot, emaDNplot, pl ? col : na)
+      s.logicCol[i] = cfg.plotLogic && col !== null ? col : NA;
+
+      // plotshape(arrowL, "Real Buy", shape.triangleup, location.belowbar, #00ffbf, size = size.tiny, force_overlay = true)
+      if (arrowL) s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: LONG, size: 'tiny', forceOverlay: true });
+      // plotshape(arrowS, "Real Sell", shape.triangledown, location.abovebar, #ff0040, size = size.tiny, force_overlay = true)
+      if (arrowS) s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: SHORT, size: 'tiny', forceOverlay: true });
+      // barcolor(bc ? col : na)
+      if (cfg.barColor && col !== null) s.barColors.push({ time, color: col });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      const plots: Record<string, Point[]> = {};
+      p.forEach((pl, k) => { plots[`plot${k}`] = pl.slice(); });
+      const fills = [
+        { plot1: 'plot0', plot2: 'plot4', colors: s.logicCol.slice() },
+        { plot1: 'plot0', plot2: 'plot5', colors: s.logicCol.slice() },
+        // fill(closeplot, uppersrcplot, pl ? color.new(color.red, 85) : na); fill(closeplot, lowersrcplot, pl ? color.new(color.lime, 85) : na)
+        { plot1: 'plot8', plot2: 'plot6', colors: new Array<string>(n).fill(cfg.plotLogic ? sourceUpCol : NA) },
+        { plot1: 'plot8', plot2: 'plot7', colors: new Array<string>(n).fill(cfg.plotLogic ? sourceDnCol : NA) },
+      ];
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SmoothedSourceWeightedEmaInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<SmoothedSourceWeightedEmaInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const srcsd = A(ta.stdev(close, cfg.smoothingLength));
-  const ema = A(ta.ema(close, cfg.emaLength));
-
-  // T := L ? 1 : S ? -1 : T[1]; col := L ? #00ffbf : S ? #ff0040 : col[1] (both na before the first signal)
-  const T: number[] = new Array(n);
-  const col: Array<string | null> = new Array(n);
-  let t = NaN;
-  let c: string | null = null;
-  for (let i = 0; i < n; i++) {
-    const cl = bars[i].close;
-    const L = gt(cl - srcsd[i], ema[i] * cfg.upperWeight);
-    const S = lt(cl + srcsd[i], ema[i] * cfg.lowerWeight);
-    if (L) {
-      t = 1;
-      c = LONG;
-    } else if (S) {
-      t = -1;
-      c = SHORT;
-    }
-    T[i] = t;
-    col[i] = c;
-  }
-  const tSeries = Series.fromArray(bars, T);
-  const zero = Series.fromArray(bars, new Array(n).fill(0));
-  const arrowL = ta.crossover(tSeries, zero).toArray();
-  const arrowS = ta.crossunder(tSeries, zero).toArray();
-
-  const NA = 'transparent';
-  // color.new(col, x): a na col gives black with that transparency
-  const gcol = col.map((x) => String(color.new(x as string, 30)));
-  const gcol2 = col.map((x) => String(color.new(x as string, 80)));
-  const gcol3 = col.map((x) => String(color.new(x as string, 85)));
-  const sourceUpCol = String(color.new(color.red, 85));
-  const sourceDnCol = String(color.new(color.lime, 85));
-
-  const P = (f: (b: Bar, i: number) => Point): Point[] => bars.map(f);
-  const plots: Record<string, Point[]> = {
-    // plot(ema, "EMA", col, 2)
-    plot0: P((b, i) => ({ time: b.time, value: ema[i], color: col[i] ?? NA })),
-    // plot(ema, "EMA", gy ? gcol : na, 4) / (gy ? gcol2 : na, 10) / (gy ? gcol3 : na, 16)
-    plot1: P((b, i) => ({ time: b.time, value: ema[i], color: cfg.glow ? gcol[i] : NA })),
-    plot2: P((b, i) => ({ time: b.time, value: ema[i], color: cfg.glow ? gcol2[i] : NA })),
-    plot3: P((b, i) => ({ time: b.time, value: ema[i], color: cfg.glow ? gcol3[i] : NA })),
-    // plot(ema * wl, "Upper EMA Weight", pl ? color.green : na, 1); plot(ema * ws, "Lower EMA Weight", pl ? color.red : na, 1)
-    plot4: P((b, i) => ({ time: b.time, value: ema[i] * cfg.upperWeight, color: cfg.plotLogic ? color.green : NA })),
-    plot5: P((b, i) => ({ time: b.time, value: ema[i] * cfg.lowerWeight, color: cfg.plotLogic ? color.red : NA })),
-    // plot(uppersrc, "Upper Source", pl ? color.new(color.red, 85) : na, 1); plot(lowersrc, "Lower Source", ...)
-    plot6: P((b, i) => ({ time: b.time, value: b.close + srcsd[i], color: cfg.plotLogic ? sourceUpCol : NA })),
-    plot7: P((b, i) => ({ time: b.time, value: b.close - srcsd[i], color: cfg.plotLogic ? sourceDnCol : NA })),
-    // closeplot = plot(pl ? close : na)
-    plot8: P((b) => ({ time: b.time, value: cfg.plotLogic ? b.close : NaN, color: '#2962FF' })),
-  };
-
-  // fill(emaplot, emaUPplot, pl ? col : na); fill(emaplot, emaDNplot, pl ? col : na)
-  const logicCol = col.map((x) => (cfg.plotLogic && x !== null ? x : NA));
-  const fills = [
-    { plot1: 'plot0', plot2: 'plot4', colors: logicCol },
-    { plot1: 'plot0', plot2: 'plot5', colors: logicCol },
-    // fill(closeplot, uppersrcplot, pl ? color.new(color.red, 85) : na); fill(closeplot, lowersrcplot, pl ? color.new(color.lime, 85) : na)
-    { plot1: 'plot8', plot2: 'plot6', colors: new Array<string>(n).fill(cfg.plotLogic ? sourceUpCol : NA) },
-    { plot1: 'plot8', plot2: 'plot7', colors: new Array<string>(n).fill(cfg.plotLogic ? sourceDnCol : NA) },
-  ];
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    // plotshape(arrowL, "Real Buy", shape.triangleup, location.belowbar, #00ffbf, size = size.tiny, force_overlay = true)
-    if (arrowL[i]) markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: LONG, size: 'tiny', forceOverlay: true });
-    // plotshape(arrowS, "Real Sell", shape.triangledown, location.abovebar, #ff0040, size = size.tiny, force_overlay = true)
-    if (arrowS[i]) markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: SHORT, size: 'tiny', forceOverlay: true });
-    // barcolor(bc ? col : na)
-    if (cfg.barColor && col[i] !== null) barColors.push({ time, color: col[i] as string });
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers,
-    barColors,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const SmoothedSourceWeightedEma = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

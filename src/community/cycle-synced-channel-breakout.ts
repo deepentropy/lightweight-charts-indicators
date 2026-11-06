@@ -14,9 +14,11 @@
  * Original notice: © TradeTechanalysis
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
 import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CycleSyncedChannelBreakoutInputs {
   /** Keltner length (EMA and ATR) */
@@ -74,93 +76,131 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CycleSyncedChannelBreakoutInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface CycleVars {
+  /** var int lastSignalBar = na */
+  lastSignalBar: number;
+}
+
+interface CycleRun extends BarRunState<CycleVars> {
+  basis: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  priceSma: WindowSma;
+  hp: ReturnType<typeof taStep.ema>;
+  smooth: ReturnType<typeof taStep.ema>;
+  avgBody: WindowSma;
+  smoothPower: number[];
+  upper: Point[];
+  lower: Point[];
+  flags: boolean[][];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<CycleSyncedChannelBreakoutInputs>): BarStudy<CycleRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // Keltner channel
-  const close = bars.map((b) => b.close);
-  const basis = A(ta.ema(S(close), cfg.lengthKeltner));
-  const atrRange = A(ta.atr(bars, cfg.lengthKeltner));
-  const upperKC = basis.map((v, i) => v + cfg.mult * atrRange[i]);
-  const lowerKC = basis.map((v, i) => v - cfg.mult * atrRange[i]);
-
-  // Cycle momentum
-  const price = bars.map((b) => (b.high + b.low) / 2);
-  const priceSma = A(ta.sma(S(price), cfg.cycleLength));
-  const detrender = price.map((p, i) => p - priceSma[i]);
-  const hp = A(ta.ema(S(detrender), 3));
-  const power = hp.map((v) => Math.pow(v, 2));
-  const smoothPower = A(ta.ema(S(power), 5));
-
-  // Body expansion
-  const bodySize = bars.map((b) => Math.abs(b.close - b.open));
-  const avgBody = A(ta.sma(S(bodySize), cfg.cycleLength));
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
   const bullBg = String(color.new(color.green, 85));
   const bearBg = String(color.new(color.red, 85));
-  let lastSignalBar = NaN; // var int lastSignalBar = na
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const p = i > 0 ? bars[i - 1] : undefined;
-    const c1 = p ? p.close : NaN;
-    const o1 = p ? p.open : NaN;
-    const bullEngulf = lt(c1, o1) && gt(b.close, b.open) && gt(b.close, o1) && lt(b.open, c1);
-    const bearEngulf = gt(c1, o1) && lt(b.close, b.open) && lt(b.close, o1) && gt(b.open, c1);
-    const strongBody = gt(bodySize[i], 1.2 * avgBody[i]);
-    const powerUp = i > 0 && gt(smoothPower[i], smoothPower[i - 1]);
-    const bullRaw = (bullEngulf || (cfg.useBodyBreakout && strongBody)) && gt(b.close, upperKC[i]) && powerUp;
-    const bearRaw = (bearEngulf || (cfg.useBodyBreakout && strongBody)) && lt(b.close, lowerKC[i]) && powerUp;
-    // cooldownOK = na(lastSignalBar) or (bar_index - lastSignalBar > cooldownBars)
-    const cooldownOK = isNaN(lastSignalBar) || i - lastSignalBar > cfg.cooldownBars;
-    const bullFinal = bullRaw && cooldownOK;
-    const bearFinal = bearRaw && cooldownOK;
-    if (bullFinal || bearFinal) lastSignalBar = i;
-    buyFlags.push(bullFinal);
-    sellFlags.push(bearFinal);
-
-    // plotshape(showEngulfing and bullEngulf, "Bull Engulf", location.belowbar, color.green, shape.triangleup, size.tiny)
-    if (cfg.showEngulfing && bullEngulf) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'tiny' });
-    }
-    if (cfg.showEngulfing && bearEngulf) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'tiny' });
-    }
-    // plotshape(showBreakout and bullFinal, "Buy Signal", location.belowbar, color.green, shape.labelup, text = "BUY"):
-    // Pine default text colour (color.blue) and size (size.auto)
-    if (cfg.showBreakout && bullFinal) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY',
-        textColor: color.blue, size: 'auto' });
-    }
-    if (cfg.showBreakout && bearFinal) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: color.blue, size: 'auto' });
-    }
-    // bgcolor(bullFinal ? color.new(color.green, 85) : na); bgcolor(bearFinal ? color.new(color.red, 85) : na)
-    if (bullFinal) bgColors.push({ time: b.time, color: bullBg });
-    if (bearFinal) bgColors.push({ time: b.time, color: bearBg });
-  }
-
-  const t = (i: number) => bars[i].time;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((_b, i) => ({ time: t(i), value: upperKC[i], color: UPPER })),
-      plot1: bars.map((_b, i) => ({ time: t(i), value: lowerKC[i], color: LOWER })),
+    init() {
+      const basis = taStep.ema(cfg.lengthKeltner);
+      const atr = taStep.atr(cfg.lengthKeltner);
+      const priceSma = new WindowSma(cfg.cycleLength);
+      const hp = taStep.ema(3);
+      const smooth = taStep.ema(5);
+      const avgBody = new WindowSma(cfg.cycleLength);
+      const s: CycleRun = {
+        basis, atr, priceSma, hp, smooth, avgBody, smoothPower: [], upper: [], lower: [], flags: [[], []], markers: [],
+        bgColors: [], steps: [basis, atr, priceSma, hp, smooth, avgBody], vars: { lastSignalBar: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors];
+      s.series = [s.smoothPower, s.upper, s.lower, ...s.flags];
+      return s;
     },
-    markers,
-    bgColors,
-    // alertcondition(bullFinal, "Cycle Breakout BUY") / alertcondition(bearFinal, "Cycle Breakout SELL")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      // Keltner channel
+      const basis = s.basis.step(b.close);
+      const atrRange = s.atr.step(b.high, b.low, b.close);
+      const upperKC = basis + cfg.mult * atrRange;
+      const lowerKC = basis - cfg.mult * atrRange;
+
+      // Cycle momentum
+      const price = (b.high + b.low) / 2;
+      const detrender = price - s.priceSma.step(price);
+      const hp = s.hp.step(detrender);
+      const power = Math.pow(hp, 2);
+      const smoothPower = s.smooth.step(power);
+      s.smoothPower[i] = smoothPower;
+
+      // Body expansion
+      const bodySize = Math.abs(b.close - b.open);
+      const avgBody = s.avgBody.step(bodySize);
+
+      const p = i > 0 ? bars[i - 1] : undefined;
+      const c1 = p ? p.close : NaN;
+      const o1 = p ? p.open : NaN;
+      const bullEngulf = lt(c1, o1) && gt(b.close, b.open) && gt(b.close, o1) && lt(b.open, c1);
+      const bearEngulf = gt(c1, o1) && lt(b.close, b.open) && lt(b.close, o1) && gt(b.open, c1);
+      const strongBody = gt(bodySize, 1.2 * avgBody);
+      const powerUp = i > 0 && gt(smoothPower, s.smoothPower[i - 1]);
+      const bullRaw = (bullEngulf || (cfg.useBodyBreakout && strongBody)) && gt(b.close, upperKC) && powerUp;
+      const bearRaw = (bearEngulf || (cfg.useBodyBreakout && strongBody)) && lt(b.close, lowerKC) && powerUp;
+      // cooldownOK = na(lastSignalBar) or (bar_index - lastSignalBar > cooldownBars)
+      const cooldownOK = isNaN(v.lastSignalBar) || i - v.lastSignalBar > cfg.cooldownBars;
+      const bullFinal = bullRaw && cooldownOK;
+      const bearFinal = bearRaw && cooldownOK;
+      if (bullFinal || bearFinal) v.lastSignalBar = i;
+      s.flags[0][i] = bullFinal;
+      s.flags[1][i] = bearFinal;
+
+      // plotshape(showEngulfing and bullEngulf, "Bull Engulf", location.belowbar, color.green, shape.triangleup, size.tiny)
+      if (cfg.showEngulfing && bullEngulf) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: color.green, size: 'tiny' });
+      }
+      if (cfg.showEngulfing && bearEngulf) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: color.red, size: 'tiny' });
+      }
+      // plotshape(showBreakout and bullFinal, "Buy Signal", location.belowbar, color.green, shape.labelup, text = "BUY"):
+      // Pine default text colour (color.blue) and size (size.auto)
+      if (cfg.showBreakout && bullFinal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY',
+          textColor: color.blue, size: 'auto' });
+      }
+      if (cfg.showBreakout && bearFinal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: color.blue, size: 'auto' });
+      }
+      // bgcolor(bullFinal ? color.new(color.green, 85) : na); bgcolor(bearFinal ? color.new(color.red, 85) : na)
+      if (bullFinal) s.bgColors.push({ time: b.time, color: bullBg });
+      if (bearFinal) s.bgColors.push({ time: b.time, color: bearBg });
+
+      s.upper[i] = { time: b.time, value: upperKC, color: UPPER };
+      s.lower[i] = { time: b.time, value: lowerKC, color: LOWER };
+    },
+    result(s, bars) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.upper.slice(), plot1: s.lower.slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(bullFinal, "Cycle Breakout BUY") / alertcondition(bearFinal, "Cycle Breakout SELL")
+        alerts: alertStates(alertConditions, bars, s.flags),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CycleSyncedChannelBreakoutInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CycleSyncedChannelBreakoutInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -171,6 +211,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const CycleSyncedChannelBreakout = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

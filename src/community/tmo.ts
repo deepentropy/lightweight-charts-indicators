@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrueMomentumOscillatorInputs {
   /** Number of previous opens compared with the close */
@@ -55,65 +57,88 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<TrueMomentumOscillatorInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface TmoRun extends BarRunState<Record<string, never>> {
+  ema5: ReturnType<typeof taStep.ema>;
+  main: ReturnType<typeof taStep.ema>;
+  signal: ReturnType<typeof taStep.ema>;
+  plots: Point[][];
+  cloud: string[];
+}
+
+function study(inputs: Partial<TrueMomentumOscillatorInputs>): BarStudy<TmoRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length, calcLength, smoothLength } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // data = sum over i = 0 .. length of (close > open[i] ? 1 : close < open[i] ? -1 : 0); open[i] before the first
-  // bar is na and adds 0. `for i = 0 to length` counts down when length < 0.
-  const data: number[] = new Array(n);
   const step = length >= 0 ? 1 : -1;
-  for (let b = 0; b < n; b++) {
-    const c = bars[b].close;
-    let sum = 0;
-    for (let i = 0; step > 0 ? i <= length : i >= length; i += step) {
-      if (i < 0) throw new Error(`Invalid number of bars back: ${i}`);
-      const o = b - i >= 0 ? bars[b - i].open : NaN;
-      sum += gt(c, o) ? 1 : lt(c, o) ? -1 : 0;
-    }
-    data[b] = sum;
-  }
-
-  const ema5 = A(ta.ema(S(data), calcLength));
-  const mainVal = A(ta.ema(S(ema5), smoothLength));
-  const signalVal = A(ta.ema(S(mainVal), smoothLength));
-
-  const up = (i: number) => gt(mainVal[i], signalVal[i]);
-  const lineColor = (i: number) => (up(i) ? color.green : color.red);
   const cloudUp = String(color.new(color.green, 80));
   const cloudDown = String(color.new(color.red, 80));
-
   // ob = math.round(length * 0.7), os = -ob
   const ob = Math.round(length * 0.7);
   const os = -ob;
-  const constant = (v: number) => bars.map((b) => ({ time: b.time, value: v, color: color.gray }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: mainVal[i], color: lineColor(i) })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: signalVal[i], color: lineColor(i) })),
-      plot2: constant(0),
-      plot3: constant(ob),
-      plot4: constant(os),
-      plot5: constant(length),
-      plot6: constant(-length),
+    init() {
+      const s: TmoRun = {
+        ema5: taStep.ema(calcLength), main: taStep.ema(smoothLength), signal: taStep.ema(smoothLength),
+        plots: Array.from({ length: 7 }, () => []), cloud: [], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.steps = [s.ema5, s.main, s.signal];
+      s.series = [...s.plots, s.cloud];
+      return s;
     },
-    fills: [
-      // fill(p_main, p_signal, main_val > signal_val ? color.new(color.green, 80) : color.new(color.red, 80))
-      { plot1: 'plot0', plot2: 'plot1', colors: bars.map((_b, i) => (up(i) ? cloudUp : cloudDown)) },
-      // fill(p_ob, p_obLine, color.new(color.red, 90)); fill(p_osLine, p_os, color.new(color.green, 90))
-      { plot1: 'plot3', plot2: 'plot5', options: { color: String(color.new(color.red, 90)) } },
-      { plot1: 'plot6', plot2: 'plot4', options: { color: String(color.new(color.green, 90)) } },
-    ],
+    bar(s, b, bars) {
+      // data = sum over i = 0 .. length of (close > open[i] ? 1 : close < open[i] ? -1 : 0); open[i] before the first
+      // bar is na and adds 0. `for i = 0 to length` counts down when length < 0.
+      const c = bars[b].close;
+      let sum = 0;
+      for (let i = 0; step > 0 ? i <= length : i >= length; i += step) {
+        if (i < 0) throw new Error(`Invalid number of bars back: ${i}`);
+        const o = b - i >= 0 ? bars[b - i].open : NaN;
+        sum += gt(c, o) ? 1 : lt(c, o) ? -1 : 0;
+      }
+      const ema5 = s.ema5.step(sum);
+      const mainVal = s.main.step(ema5);
+      const signalVal = s.signal.step(mainVal);
+      const up = gt(mainVal, signalVal);
+      const lineColor = up ? color.green : color.red;
+      const time = bars[b].time;
+      s.plots[0][b] = { time, value: mainVal, color: lineColor };
+      s.plots[1][b] = { time, value: signalVal, color: lineColor };
+      s.plots[2][b] = { time, value: 0, color: color.gray };
+      s.plots[3][b] = { time, value: ob, color: color.gray };
+      s.plots[4][b] = { time, value: os, color: color.gray };
+      s.plots[5][b] = { time, value: length, color: color.gray };
+      s.plots[6][b] = { time, value: -length, color: color.gray };
+      s.cloud[b] = up ? cloudUp : cloudDown;
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: Object.fromEntries(s.plots.map((p, k) => [`plot${k}`, p.slice()])),
+        fills: [
+          // fill(p_main, p_signal, main_val > signal_val ? color.new(color.green, 80) : color.new(color.red, 80))
+          { plot1: 'plot0', plot2: 'plot1', colors: s.cloud.slice() },
+          // fill(p_ob, p_obLine, color.new(color.red, 90)); fill(p_osLine, p_os, color.new(color.green, 90))
+          { plot1: 'plot3', plot2: 'plot5', options: { color: String(color.new(color.red, 90)) } },
+          { plot1: 'plot6', plot2: 'plot4', options: { color: String(color.new(color.green, 90)) } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrueMomentumOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrueMomentumOscillatorInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TrueMomentumOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

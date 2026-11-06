@@ -11,7 +11,9 @@
  * Original notice: @ Julien_Eche
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EhlersAdaptiveRsiInputs {
   /** Source of the RSI */
@@ -60,76 +62,114 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<EhlersAdaptiveRsiInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+interface EhlersVars {
+  /** var float avgGain / avgLoss = na */
+  avgGain: number;
+  avgLoss: number;
+  /** src of the bar before */
+  prev: number;
+}
+
+interface EhlersRun extends BarRunState<EhlersVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  priceScale: WindowSma;
+  instPeriod: ReturnType<typeof taStep.ema>;
+  periodVal: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<EhlersAdaptiveRsiInputs>): BarStudy<EhlersRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const src = A(getSourceSeries(bars, cfg.src));
-
-  // dynamicPeriod()
-  const atrValue = A(ta.atr(bars, 1));
-  const priceScale = A(ta.sma(S(bars.map((b) => b.close)), 20));
-  const instArg = bars.map((_b, i) => {
-    const relativeAtr = gt(priceScale[i], 0) ? atrValue[i] / priceScale[i] : 0;
-    return 0.33 * (360 / (Math.abs(relativeAtr) * 100 + 0.00001));
-  });
-  const instPeriod = A(ta.ema(S(instArg), 50));
-  const periodVal = A(ta.ema(S(instPeriod), 10));
-  // math.max(3, math.min(30, math.round(period_val / 2))): na while period_val is na
-  const length = periodVal.map((v) => Math.max(3, Math.min(30, Math.round(v / 2))));
-
-  // Wilder averages with the variable length; var float avgGain / avgLoss = na
-  const rsi: number[] = new Array(n);
-  let avgGain = NaN;
-  let avgLoss = NaN;
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? src[i - 1] : NaN;
-    const gain = Math.max(0, src[i] - prev); // math.max(0, na) = na
-    const loss = Math.max(0, prev - src[i]);
-    const len = length[i];
-    avgGain = isNaN(avgGain) ? gain : (avgGain * (len - 1) + gain) / len;
-    avgLoss = isNaN(avgLoss) ? loss : (avgLoss * (len - 1) + loss) / len;
-    // rs = avgLoss == 0 ? 100 : avgGain / avgLoss; adaptive_rsi = avgLoss == 0 ? 100 : 100 - 100 / (1 + rs)
-    const rs = eq(avgLoss, 0) ? 100.0 : avgGain / avgLoss;
-    const v = eq(avgLoss, 0) ? 100.0 : 100 - 100 / (1 + rs);
-    rsi[i] = Number.isFinite(v) ? v : NaN;
-  }
-
+  const value = barSource(cfg.src);
   const green0 = String(color.new(color.green, 0));
   const green100 = String(color.new(color.green, 100));
   const red0 = String(color.new(color.red, 0));
   const red100 = String(color.new(color.red, 100));
-  const fillArr = <T>(v: T) => new Array<T>(n).fill(v);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: rsi[i] })),
-      plot1: bars.map((b) => ({ time: b.time, value: 50 })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: EhlersRun = {
+        atr: taStep.atr(1),
+        priceScale: new WindowSma(20),
+        instPeriod: taStep.ema(50),
+        periodVal: taStep.ema(10),
+        plot0: [], plot1: [],
+        steps: [], vars: { avgGain: NaN, avgLoss: NaN, prev: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.atr, s.priceScale, s.instPeriod, s.periodVal];
+      s.series = [s.plot0, s.plot1];
+      return s;
     },
-    hlines: [
-      { value: 50, options: { title: 'Midline', color: MID_COLOR, linestyle: 'dashed' } },
-      { value: OB_LEVEL, options: { title: 'Overbought', color: '#787B86', linestyle: 'dashed' } },
-      { value: OS_LEVEL, options: { title: 'Oversold', color: '#787B86', linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Zone Fill' }, colors: fillArr(ZONE_FILL) },
-      // fill(rsiPlot, midLinePlot, 100, obLevel, top_color = color.new(color.green, 0),
-      //      bottom_color = color.new(color.green, 100))
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Overbought Fill' },
-        gradient: { topValue: fillArr(100), bottomValue: fillArr(OB_LEVEL), topColor: fillArr<string | null>(green0),
-          bottomColor: fillArr<string | null>(green100) } },
-      // fill(rsiPlot, midLinePlot, osLevel, 0, top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0))
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Oversold Fill' },
-        gradient: { topValue: fillArr(OS_LEVEL), bottomValue: fillArr(0), topColor: fillArr<string | null>(red100),
-          bottomColor: fillArr<string | null>(red0) } },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const src = value(b);
+      // dynamicPeriod()
+      const atrValue = s.atr.step(b.high, b.low, b.close);
+      const priceScale = s.priceScale.step(b.close);
+      const relativeAtr = gt(priceScale, 0) ? atrValue / priceScale : 0;
+      const instArg = 0.33 * (360 / (Math.abs(relativeAtr) * 100 + 0.00001));
+      const instPeriod = s.instPeriod.step(instArg);
+      const periodVal = s.periodVal.step(instPeriod);
+      // math.max(3, math.min(30, math.round(period_val / 2))): na while period_val is na
+      const len = Math.max(3, Math.min(30, Math.round(periodVal / 2)));
+
+      // Wilder averages with the variable length
+      const prev = v.prev;
+      v.prev = src;
+      const gain = Math.max(0, src - prev); // math.max(0, na) = na
+      const loss = Math.max(0, prev - src);
+      v.avgGain = isNaN(v.avgGain) ? gain : (v.avgGain * (len - 1) + gain) / len;
+      v.avgLoss = isNaN(v.avgLoss) ? loss : (v.avgLoss * (len - 1) + loss) / len;
+      // rs = avgLoss == 0 ? 100 : avgGain / avgLoss; adaptive_rsi = avgLoss == 0 ? 100 : 100 - 100 / (1 + rs)
+      const rs = eq(v.avgLoss, 0) ? 100.0 : v.avgGain / v.avgLoss;
+      const r = eq(v.avgLoss, 0) ? 100.0 : 100 - 100 / (1 + rs);
+      s.plot0[i] = { time: b.time, value: Number.isFinite(r) ? r : NaN };
+      s.plot1[i] = { time: b.time, value: 50 };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const fillArr = <T>(x: T) => new Array<T>(n).fill(x);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        hlines: [
+          { value: 50, options: { title: 'Midline', color: MID_COLOR, linestyle: 'dashed' } },
+          { value: OB_LEVEL, options: { title: 'Overbought', color: '#787B86', linestyle: 'dashed' } },
+          { value: OS_LEVEL, options: { title: 'Oversold', color: '#787B86', linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Zone Fill' }, colors: fillArr(ZONE_FILL) },
+          // fill(rsiPlot, midLinePlot, 100, obLevel, top_color = color.new(color.green, 0),
+          //      bottom_color = color.new(color.green, 100))
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Overbought Fill' },
+            gradient: { topValue: fillArr(100), bottomValue: fillArr(OB_LEVEL), topColor: fillArr<string | null>(green0),
+              bottomColor: fillArr<string | null>(green100) } },
+          // fill(rsiPlot, midLinePlot, osLevel, 0, top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0))
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Oversold Fill' },
+            gradient: { topValue: fillArr(OS_LEVEL), bottomValue: fillArr(0), topColor: fillArr<string | null>(red100),
+              bottomColor: fillArr<string | null>(red0) } },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EhlersAdaptiveRsiInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EhlersAdaptiveRsiInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const EhlersAdaptiveRsi = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

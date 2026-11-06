@@ -15,8 +15,10 @@
  * Original notice: © peacefulLizard50262
  */
 
-import { ta, math, color, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, math, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type LuminanceStyle = 'SDTV' | 'Adobe' | 'HDTV' | 'Standard' | 'Bihexcone';
 
@@ -190,20 +192,17 @@ function hslToColor(self: HSL): string {
 
 const linearInterpolation = (end: number, start: number, u: number) => start + u * (end - start);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<RSICandleColorInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] } {
-  const { length, hueShift, luminanceStyle } = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const n = bars.length;
-  const close = bars.map((b) => b.close);
+type Result = Omit<IndicatorResult, 'markers'> & { barColors: BarColorData[] };
 
-  // filter(close, 1): difference of the cumulative sum of the 1-2-2-1 weighted close
-  const weighted = close.map((c, i) => (i >= 3 ? (c + (close[i - 1] * 2) + (close[i - 2] * 2) + close[i - 3]) / 6 : NaN));
-  const cum = A(ta.cum(Series.fromArray(bars, weighted)));
-  const filtered = cum.map((f, i) => (i >= 1 ? (f - cum[i - 1]) / 1 : NaN));
-  const rsiRaw = A(ta.rsi(Series.fromArray(bars, filtered), length));
+interface RsiColorRun extends BarRunState<Record<string, never>> {
+  cum: ReturnType<typeof taStep.cum>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  cumArr: number[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<RSICandleColorInputs>): BarStudy<RsiColorRun, Result> {
+  const { length, hueShift, luminanceStyle } = { ...defaultInputs, ...inputs };
 
   const p = math.pow(length / 14, 0.618);
   const e1 = 1 + p - 1;
@@ -224,33 +223,58 @@ export function calculate(
   const bottomValue = 0;
   const totalRange = 100 - bottomValue;
 
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const r = rsiRaw[i];
-    const f = -math.pow(Math.abs(Math.abs(r - 50) - 50), e1) / math.pow(50, e2) + 50;
-    const rsia = gt(r, 50) ? f + 50 : -f + 50;
-    const value = Number.isNaN(rsia) ? 50 : rsia;
-
-    const uTotal = clamp((value - bottomValue) / totalRange, 0.0, 0.99999999);
-    const scaledPos = uTotal * segmentCount;
-    const current = Math.floor(scaledPos);
-    const localU = scaledPos - current;
-    const a = xyzColors[current + 1];
-    const b = xyzColors[current];
-    const xyz: XYZ = {
-      x: linearInterpolation(a.x, b.x, localU),
-      y: linearInterpolation(a.y, b.y, localU),
-      z: linearInterpolation(a.z, b.z, localU),
-      t: linearInterpolation(a.t, b.t, localU),
-    };
-    barColors.push({ time: bars[i].time, color: hslToColor(xyzToHsl(xyz)) });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    barColors,
+    init() {
+      const cum = taStep.cum();
+      const rsi = taStep.rsi(length);
+      const s: RsiColorRun = { cum, rsi, cumArr: [], barColors: [], steps: [cum, rsi], vars: {}, lists: [], series: [] };
+      s.series = [s.cumArr, s.barColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const close = (k: number) => bars[k].close;
+      // filter(close, 1): difference of the cumulative sum of the 1-2-2-1 weighted close
+      const weighted = i >= 3 ? (close(i) + (close(i - 1) * 2) + (close(i - 2) * 2) + close(i - 3)) / 6 : NaN;
+      const cum = s.cum.step(weighted) ?? NaN;
+      s.cumArr[i] = cum;
+      const filtered = i >= 1 ? (cum - s.cumArr[i - 1]) / 1 : NaN;
+      const r = s.rsi.step(filtered) ?? NaN;
+
+      const f = -math.pow(Math.abs(Math.abs(r - 50) - 50), e1) / math.pow(50, e2) + 50;
+      const rsia = gt(r, 50) ? f + 50 : -f + 50;
+      const value = Number.isNaN(rsia) ? 50 : rsia;
+
+      const uTotal = clamp((value - bottomValue) / totalRange, 0.0, 0.99999999);
+      const scaledPos = uTotal * segmentCount;
+      const current = Math.floor(scaledPos);
+      const localU = scaledPos - current;
+      const a = xyzColors[current + 1];
+      const b = xyzColors[current];
+      const xyz: XYZ = {
+        x: linearInterpolation(a.x, b.x, localU),
+        y: linearInterpolation(a.y, b.y, localU),
+        z: linearInterpolation(a.z, b.z, localU),
+        t: linearInterpolation(a.t, b.t, localU),
+      };
+      s.barColors[i] = { time: bars[i].time, color: hslToColor(xyzToHsl(xyz)) };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        barColors: s.barColors.slice(),
+      };
+    },
   };
 }
 
-export const RSICandleColor = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<RSICandleColorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<RSICandleColorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const RSICandleColor = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

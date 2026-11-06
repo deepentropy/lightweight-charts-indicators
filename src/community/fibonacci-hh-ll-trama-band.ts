@@ -11,7 +11,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FibonacciHhLlTramaBandInputs {
   /** Highest / lowest window and SMA length of the TRAMA speed */
@@ -44,63 +46,99 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<FibonacciHhLlTramaBandInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface TramaVars {
+  /** ama of the high and of the low (var through ama[1]) */
+  ama1: number;
+  ama2: number;
+}
+
+interface TramaRun extends BarRunState<TramaVars> {
+  hi: WindowExtreme;
+  lo: WindowExtreme;
+  hiChange: ReturnType<typeof taStep.change>;
+  loChange: ReturnType<typeof taStep.change>;
+  tc: WindowSma;
+  m: number[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<FibonacciHhLlTramaBandInputs>): BarStudy<TramaRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const { length } = cfg;
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // hh = math.max(math.sign(ta.change(ta.highest(length))), 0); ll = math.max(math.sign(ta.change(ta.lowest(length)) * -1), 0)
-  const hiChange = A(ta.change(ta.highest(S(bars.map((b) => b.high)), length)));
-  const loChange = A(ta.change(ta.lowest(S(bars.map((b) => b.low)), length)));
-  // bool(hh) or bool(ll) ? 1 : 0 (bool(na) and bool(0) are false)
-  const newExtreme = bars.map((_b, i) => (Math.max(Math.sign(hiChange[i]), 0) > 0 || Math.max(Math.sign(-loChange[i]), 0) > 0 ? 1 : 0));
-  const tcSma = A(ta.sma(S(newExtreme), length));
-
-  const m: number[] = new Array(n);
-  const dist: number[] = new Array(n);
-  let ama1 = NaN;
-  let ama2 = NaN;
-  for (let i = 0; i < n; i++) {
-    const tc = tcSma[i] ** 2;
-    const { high, low } = bars[i];
-    // ama := nz(ama[1] + tc * (src - ama[1]), src)
-    const a1 = ama1 + tc * (high - ama1);
-    const a2 = ama2 + tc * (low - ama2);
-    ama1 = Number.isFinite(a1) ? a1 : high;
-    ama2 = Number.isFinite(a2) ? a2 : low;
-    m[i] = (ama1 + ama2) / 2;
-    dist[i] = (ama1 - ama2) / 2;
-  }
-
-  const t = (i: number) => bars[i].time;
-  const plots: IndicatorResult['plots'] = {
-    // plot(m, linewidth = 3, color = m > m[5] ? color.lime : color.red)
-    plot0: bars.map((_b, i) => ({ time: t(i), value: m[i], color: i >= 5 && gt(m[i], m[i - 5]) ? color.lime : color.red })),
-  };
-  RATIOS.forEach((r, k) => {
-    plots[`plot${k + 1}`] = bars.map((_b, i) => ({ time: t(i), value: m[i] + dist[i] * r, color: color.lime }));
-    plots[`plot${k + 7}`] = bars.map((_b, i) => ({ time: t(i), value: m[i] - dist[i] * r, color: color.red }));
-  });
-
-  // fill(ph6, ph5, color.new(color.lime, 70)), fill(pl6, pl5, color.new(color.red, 70)), ... 90, 93, 96, 99
-  const transp = [70, 90, 93, 96, 99];
-  const fills: NonNullable<IndicatorResult['fills']> = [];
-  transp.forEach((tr, k) => {
-    fills.push({ plot1: `plot${k + 1}`, plot2: `plot${k + 2}`, options: { color: String(color.new(color.lime, tr)) } });
-    fills.push({ plot1: `plot${k + 7}`, plot2: `plot${k + 8}`, options: { color: String(color.new(color.red, tr)) } });
-  });
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
+    init() {
+      const hi = new WindowExtreme(false, length);
+      const lo = new WindowExtreme(true, length);
+      const hiChange = taStep.change();
+      const loChange = taStep.change();
+      const tc = new WindowSma(length);
+      const s: TramaRun = {
+        hi, lo, hiChange, loChange, tc, m: [], plots: Array.from({ length: 13 }, () => []),
+        steps: [hi, lo, hiChange, loChange, tc], vars: { ama1: NaN, ama2: NaN }, lists: [], series: [],
+      };
+      s.series = [s.m, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { high, low, time } = bars[i];
+      // hh = math.max(math.sign(ta.change(ta.highest(length))), 0); ll = math.max(math.sign(ta.change(ta.lowest(length)) * -1), 0)
+      const hiChange = s.hiChange.step(s.hi.step(high));
+      const loChange = s.loChange.step(s.lo.step(low));
+      // bool(hh) or bool(ll) ? 1 : 0 (bool(na) and bool(0) are false)
+      const newExtreme = Math.max(Math.sign(hiChange), 0) > 0 || Math.max(Math.sign(-loChange), 0) > 0 ? 1 : 0;
+      const tc = s.tc.step(newExtreme) ** 2;
+      // ama := nz(ama[1] + tc * (src - ama[1]), src)
+      const a1 = v.ama1 + tc * (high - v.ama1);
+      const a2 = v.ama2 + tc * (low - v.ama2);
+      v.ama1 = Number.isFinite(a1) ? a1 : high;
+      v.ama2 = Number.isFinite(a2) ? a2 : low;
+      const m = (v.ama1 + v.ama2) / 2;
+      const dist = (v.ama1 - v.ama2) / 2;
+      s.m[i] = m;
+      const p = s.plots;
+      // plot(m, linewidth = 3, color = m > m[5] ? color.lime : color.red)
+      p[0][i] = { time, value: m, color: i >= 5 && gt(m, s.m[i - 5]) ? color.lime : color.red };
+      RATIOS.forEach((r, k) => {
+        p[k + 1][i] = { time, value: m + dist * r, color: color.lime };
+        p[k + 7][i] = { time, value: m - dist * r, color: color.red };
+      });
+    },
+    result(s) {
+      const plots: IndicatorResult['plots'] = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+
+      // fill(ph6, ph5, color.new(color.lime, 70)), fill(pl6, pl5, color.new(color.red, 70)), ... 90, 93, 96, 99
+      const transp = [70, 90, 93, 96, 99];
+      const fills: NonNullable<IndicatorResult['fills']> = [];
+      transp.forEach((tr, k) => {
+        fills.push({ plot1: `plot${k + 1}`, plot2: `plot${k + 2}`, options: { color: String(color.new(color.lime, tr)) } });
+        fills.push({ plot1: `plot${k + 7}`, plot2: `plot${k + 8}`, options: { color: String(color.new(color.red, tr)) } });
+      });
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FibonacciHhLlTramaBandInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FibonacciHhLlTramaBandInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const FibonacciHhLlTramaBand = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

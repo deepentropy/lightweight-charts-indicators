@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface WaeSniperScalpXauusdM1TunedInputs {
   sensitivity: number;
@@ -75,80 +77,117 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<WaeSniperScalpXauusdM1TunedInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+
+interface WaeVars {
+  /** var bool buyLock = false, var bool sellLock = false */
+  buyLock: boolean;
+  sellLock: boolean;
+  prevMacd: number;
+}
+
+interface WaeRun extends BarRunState<WaeVars> {
+  emaFast: ReturnType<typeof taStep.ema>;
+  emaSlow: ReturnType<typeof taStep.ema>;
+  basis: WindowSma;
+  sd: WindowStdev;
+  tr: ReturnType<typeof taStep.tr>;
+  rmaTr: ReturnType<typeof taStep.rma>;
+  emaFilter: ReturnType<typeof taStep.ema>;
+  trendUp: number[];
+  trendDown: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<WaeSniperScalpXauusdM1TunedInputs>): BarStudy<WaeRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-
-  const emaFast = A(ta.ema(close, cfg.fastLength));
-  const emaSlow = A(ta.ema(close, cfg.slowLength));
-  const basis = A(ta.sma(close, cfg.channelLength));
-  const sd = A(ta.stdev(close, cfg.channelLength));
-  const rmaTr = A(ta.rma(ta.tr(bars, true), cfg.atrLength));
-  const emaFilter = A(ta.ema(close, cfg.emaFilterLen));
-
-  const trendUp: number[] = new Array(n);
-  const trendDown: number[] = new Array(n);
-  const bbWidth: number[] = new Array(n);
-  const deadZone: number[] = new Array(n);
-  const markers: MarkerData[] = [];
-  let buyLock = false; // var bool buyLock = false
-  let sellLock = false;
-  let prevMacd = NaN;
-  for (let i = 0; i < n; i++) {
-    const macd = emaFast[i] - emaSlow[i];
-    const t1 = (macd - prevMacd) * cfg.sensitivity;
-    prevMacd = macd;
-    const dev = cfg.mult * sd[i];
-    bbWidth[i] = basis[i] + dev - (basis[i] - dev);
-    deadZone[i] = rmaTr[i] * cfg.atrMult;
-    trendUp[i] = gt(t1, 0) ? t1 : 0;
-    trendDown[i] = gt(0, t1) ? -t1 : 0;
-
-    const c = bars[i].close;
-    const buySignal = gt(trendUp[i], deadZone[i]) && gt(trendUp[i], bbWidth[i]) && gt(c, emaFilter[i])
-      && i > 0 && gt(trendUp[i], trendUp[i - 1]);
-    const sellSignal = gt(trendDown[i], deadZone[i]) && gt(trendDown[i], bbWidth[i]) && gt(emaFilter[i], c)
-      && i > 0 && gt(trendDown[i], trendDown[i - 1]);
-
-    // plotshape(buySignal and not buyLock[1], ...): buyLock[1] is the lock before this bar's updates
-    const prevBuyLock = buyLock;
-    const prevSellLock = sellLock;
-    if (buySignal) {
-      buyLock = true;
-      sellLock = false;
-    }
-    if (sellSignal) {
-      sellLock = true;
-      buyLock = false;
-    }
-    if (buySignal && !prevBuyLock) {
-      markers.push({ time: bars[i].time, position: 'bottom', shape: 'triangleUp', color: color.green, size: 'tiny' });
-    }
-    if (sellSignal && !prevSellLock) {
-      markers.push({ time: bars[i].time, position: 'top', shape: 'triangleDown', color: color.red, size: 'tiny' });
-    }
-  }
-
-  const line = (v: number[], c: string) => bars.map((bar, i) => ({ time: bar.time, value: v[i], color: c }));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(trendUp, UP_COL),
-      plot1: line(trendDown, DOWN_COL),
-      plot2: line(bbWidth, color.orange),
-      plot3: line(deadZone, color.blue),
+    init() {
+      const s: WaeRun = {
+        emaFast: taStep.ema(cfg.fastLength), emaSlow: taStep.ema(cfg.slowLength), basis: new WindowSma(cfg.channelLength),
+        sd: new WindowStdev(cfg.channelLength), tr: taStep.tr(true), rmaTr: taStep.rma(cfg.atrLength),
+        emaFilter: taStep.ema(cfg.emaFilterLen), trendUp: [], trendDown: [], plots: [[], [], [], []], markers: [],
+        steps: [], vars: { buyLock: false, sellLock: false, prevMacd: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.emaFast, s.emaSlow, s.basis, s.sd, s.tr, s.rmaTr, s.emaFilter];
+      s.lists = [s.markers];
+      s.series = [s.trendUp, s.trendDown, ...s.plots];
+      return s;
     },
-    markers,
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const c = b.close;
+      const emaFast = s.emaFast.step(c);
+      const emaSlow = s.emaSlow.step(c);
+      const basis = s.basis.step(c);
+      const sd = s.sd.step(c);
+      const rmaTr = s.rmaTr.step(s.tr.step(b.high, b.low, b.close));
+      const emaFilter = s.emaFilter.step(c);
+
+      const macd = emaFast - emaSlow;
+      const t1 = (macd - v.prevMacd) * cfg.sensitivity;
+      v.prevMacd = macd;
+      const dev = cfg.mult * sd;
+      const bbWidth = basis + dev - (basis - dev);
+      const deadZone = rmaTr * cfg.atrMult;
+      const trendUp = gt(t1, 0) ? t1 : 0;
+      const trendDown = gt(0, t1) ? -t1 : 0;
+      s.trendUp[i] = trendUp;
+      s.trendDown[i] = trendDown;
+
+      const buySignal = gt(trendUp, deadZone) && gt(trendUp, bbWidth) && gt(c, emaFilter)
+        && i > 0 && gt(trendUp, s.trendUp[i - 1]);
+      const sellSignal = gt(trendDown, deadZone) && gt(trendDown, bbWidth) && gt(emaFilter, c)
+        && i > 0 && gt(trendDown, s.trendDown[i - 1]);
+
+      // plotshape(buySignal and not buyLock[1], ...): buyLock[1] is the lock before this bar's updates
+      const prevBuyLock = v.buyLock;
+      const prevSellLock = v.sellLock;
+      if (buySignal) {
+        v.buyLock = true;
+        v.sellLock = false;
+      }
+      if (sellSignal) {
+        v.sellLock = true;
+        v.buyLock = false;
+      }
+      if (buySignal && !prevBuyLock) {
+        s.markers.push({ time: b.time, position: 'bottom', shape: 'triangleUp', color: color.green, size: 'tiny' });
+      }
+      if (sellSignal && !prevSellLock) {
+        s.markers.push({ time: b.time, position: 'top', shape: 'triangleDown', color: color.red, size: 'tiny' });
+      }
+
+      s.plots[0][i] = { time: b.time, value: trendUp, color: UP_COL };
+      s.plots[1][i] = { time: b.time, value: trendDown, color: DOWN_COL };
+      s.plots[2][i] = { time: b.time, value: bbWidth, color: color.orange };
+      s.plots[3][i] = { time: b.time, value: deadZone, color: color.blue };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WaeSniperScalpXauusdM1TunedInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WaeSniperScalpXauusdM1TunedInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const WaeSniperScalpXauusdM1Tuned = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

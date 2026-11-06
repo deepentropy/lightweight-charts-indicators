@@ -11,10 +11,12 @@
  */
 
 import {
-  ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
+  taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar,
   type SourceType,
 } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ZScoreStdemaBandsInputs {
   source: SourceType;
@@ -57,58 +59,95 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ZScoreStdemaBandsInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface ZScoreVars {
+  /** var color color = na (null) */
+  col: string | null;
+}
+
+interface ZScoreRun extends BarRunState<ZScoreVars> {
+  mean: WindowSma;
+  std: WindowStdev;
+  zEma: ReturnType<typeof taStep.ema>;
+  zStd: WindowStdev;
+  plots: Point[][];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<ZScoreStdemaBandsInputs>): BarStudy<ZScoreRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const srcSeries = getSourceSeries(bars, cfg.source);
-  const src = A(srcSeries);
-  const mean = A(ta.sma(srcSeries, cfg.length));
-  const std = A(ta.stdev(srcSeries, cfg.length));
-  // A plain division: x / 0 is +-infinity (0 / 0 NaN); ta.ema / ta.stdev skip the infinite value like na, the
-  // comparisons use it, the plot shows na
-  const z = src.map((v, i) => (v - mean[i]) / std[i]);
-  const zEma = A(ta.ema(S(z), cfg.stdEmaLength));
-  const zStd = A(ta.stdev(S(z), cfg.stdEmaLength));
-  const up = zEma.map((e, i) => e + zStd[i]);
-  const down = zEma.map((e, i) => e - zStd[i]);
-
+  const value = barSource(cfg.source);
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const barColors: BarColorData[] = [];
-  let col: string | null = null; // var color color = na
-  for (let i = 0; i < n; i++) {
-    if (gt(z[i], 0) && gt(z[i], up[i])) col = color.blue;
-    if (lt(z[i], 0) && lt(z[i], down[i])) col = color.yellow;
-    if (col !== null) barColors.push({ time: bars[i].time as number, color: col });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(z[i]), color: color.orange })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(up[i]), color: color.green })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: fin(down[i]), color: color.red })),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const mean = new WindowSma(cfg.length);
+      const std = new WindowStdev(cfg.length);
+      const zEma = taStep.ema(cfg.stdEmaLength);
+      const zStd = new WindowStdev(cfg.stdEmaLength);
+      const s: ZScoreRun = {
+        mean, std, zEma, zStd, plots: [[], [], []], barColors: [], steps: [mean, std, zEma, zStd], vars: { col: null },
+        lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = s.plots;
+      return s;
     },
-    hlines: [
-      { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed', linewidth: 1 } },
-      { value: 1, options: { title: '+1 SD', color: color.gray, linestyle: 'dotted' } },
-      { value: 2, options: { title: '+2 SD', color: color.gray, linestyle: 'dotted' } },
-      { value: 3, options: { title: '+3 SD', color: color.gray, linestyle: 'dotted' } },
-      { value: -1, options: { title: '-1 SD', color: color.gray, linestyle: 'dotted' } },
-      { value: -2, options: { title: '-2 SD', color: color.gray, linestyle: 'dotted' } },
-      { value: -3, options: { title: '-3 SD', color: color.gray, linestyle: 'dotted' } },
-    ],
-    barColors,
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const src = value(b);
+      const mean = s.mean.step(src);
+      const std = s.std.step(src);
+      // A plain division: x / 0 is +-infinity (0 / 0 NaN); ta.ema / ta.stdev skip the infinite value like na, the
+      // comparisons use it, the plot shows na
+      const z = (src - mean) / std;
+      const zEma = s.zEma.step(z);
+      const zStd = s.zStd.step(z);
+      const up = zEma + zStd;
+      const down = zEma - zStd;
+
+      if (gt(z, 0) && gt(z, up)) v.col = color.blue;
+      if (lt(z, 0) && lt(z, down)) v.col = color.yellow;
+      if (v.col !== null) s.barColors.push({ time: b.time as number, color: v.col });
+
+      s.plots[0][i] = { time: b.time, value: fin(z), color: color.orange };
+      s.plots[1][i] = { time: b.time, value: fin(up), color: color.green };
+      s.plots[2][i] = { time: b.time, value: fin(down), color: color.red };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice() },
+        hlines: [
+          { value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed', linewidth: 1 } },
+          { value: 1, options: { title: '+1 SD', color: color.gray, linestyle: 'dotted' } },
+          { value: 2, options: { title: '+2 SD', color: color.gray, linestyle: 'dotted' } },
+          { value: 3, options: { title: '+3 SD', color: color.gray, linestyle: 'dotted' } },
+          { value: -1, options: { title: '-1 SD', color: color.gray, linestyle: 'dotted' } },
+          { value: -2, options: { title: '-2 SD', color: color.gray, linestyle: 'dotted' } },
+          { value: -3, options: { title: '-3 SD', color: color.gray, linestyle: 'dotted' } },
+        ],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ZScoreStdemaBandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ZScoreStdemaBandsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ZScoreStdemaBands = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -12,8 +12,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, WindowStdev, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface InstitutionalVolumeRSIInputs {
   /** RSI length (also the VWMA length) */
@@ -65,48 +67,100 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<InstitutionalVolumeRSIInputs> = {},
-): IndicatorResult & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { alerts: AlertConditionState[] };
+
+interface IvRsiVars {
+  /** rsi_val[1], upper[1], lower[1] of the crosses */
+  prevRsi: number;
+  prevUpper: number;
+  prevLower: number;
+}
+
+interface IvRsiRun extends BarRunState<IvRsiVars> {
+  vwma: WindowVwma | null;
+  rsi: ReturnType<typeof taStep.rsi>;
+  basis: WindowSma;
+  dev: WindowStdev;
+  plots: Point[][];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<InstitutionalVolumeRSIInputs>): BarStudy<IvRsiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const close = S(bars.map((b) => b.close));
-  // rsi_src = src_type == "VWMA (Volume Weighted)" ? ta.vwma(close, rsi_len) : close
-  const rsiSrc = cfg.srcType === 'VWMA (Volume Weighted)'
-    ? ta.vwma(close, cfg.rsiLen, S(bars.map((b) => b.volume ?? NaN)))
-    : close;
-  const rsi = A(ta.rsi(rsiSrc, cfg.rsiLen));
-  const rsiS = S(rsi);
-  const basis = A(ta.sma(rsiS, cfg.bbLen));
-  const dev = A(ta.stdev(rsiS, cfg.bbLen));
-  const upper = basis.map((b, i) => b + dev[i] * cfg.bbMult);
-  const lower = basis.map((b, i) => b - dev[i] * cfg.bbMult);
-
-  // ta.crossover(a, b): a > b and a[1] <= b[1]; ta.crossunder(a, b): a < b and a[1] >= b[1]
-  // (exact comparisons, no 1e-10 tolerance; na gives false)
-  const crossUp = (i: number) => i > 0 && rsi[i] > upper[i] && rsi[i - 1] <= upper[i - 1];
-  const crossDn = (i: number) => i > 0 && rsi[i] < lower[i] && rsi[i - 1] >= lower[i - 1];
-
-  const t = (i: number) => bars[i].time;
-  const plot0 = bars.map((_b, i) => ({ time: t(i), value: upper[i], color: BAND_COL }));
-  const plot1 = bars.map((_b, i) => ({ time: t(i), value: lower[i], color: BAND_COL }));
-  const plot2 = bars.map((_b, i) => ({ time: t(i), value: basis[i], color: BASE_COL }));
-  // rsi_color = rsi_val > basis ? #00E676 : #FF5252
-  const plot3 = bars.map((_b, i) => ({ time: t(i), value: rsi[i], color: gt(rsi[i], basis[i]) ? BULL_COL : BEAR_COL }));
-  const plot4 = bars.map((_b, i) => ({ time: t(i), value: crossUp(i) ? rsi[i] : NaN, color: color.white }));
-  const plot5 = bars.map((_b, i) => ({ time: t(i), value: crossDn(i) ? rsi[i] : NaN, color: color.white }));
-
+  const useVwma = cfg.srcType === 'VWMA (Volume Weighted)';
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4, plot5 },
-    // fill(p_upper, p_lower, color = color.new(color.blue, 95), title = "Volatility Zone")
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Volatility Zone', color: FILL_COL } }],
-    // alertcondition(cross_up, ...) / alertcondition(cross_dn, ...)
-    alerts: alertStates(alertConditions, bars, [bars.map((_b, i) => crossUp(i)), bars.map((_b, i) => crossDn(i))]),
+    init() {
+      const vwma = useVwma ? new WindowVwma(cfg.rsiLen) : null;
+      const rsi = taStep.rsi(cfg.rsiLen);
+      const basis = new WindowSma(cfg.bbLen);
+      const dev = new WindowStdev(cfg.bbLen);
+      const s: IvRsiRun = {
+        vwma, rsi, basis, dev, plots: Array.from({ length: 6 }, () => []), flags: [[], []], times: [[], []],
+        steps: [...(vwma ? [vwma] : []), rsi, basis, dev],
+        vars: { prevRsi: NaN, prevUpper: NaN, prevLower: NaN },
+        lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time;
+      // rsi_src = src_type == "VWMA (Volume Weighted)" ? ta.vwma(close, rsi_len) : close
+      const rsiSrc = s.vwma ? s.vwma.step(b.close, b.volume ?? NaN) : b.close;
+      const rsi = s.rsi.step(rsiSrc);
+      const basis = s.basis.step(rsi);
+      const dev = s.dev.step(rsi);
+      const upper = basis + dev * cfg.bbMult;
+      const lower = basis - dev * cfg.bbMult;
+
+      // ta.crossover(a, b): a > b and a[1] <= b[1]; ta.crossunder(a, b): a < b and a[1] >= b[1]
+      // (exact comparisons, no 1e-10 tolerance; na gives false)
+      const crossUp = i > 0 && rsi > upper && v.prevRsi <= v.prevUpper;
+      const crossDn = i > 0 && rsi < lower && v.prevRsi >= v.prevLower;
+      v.prevRsi = rsi;
+      v.prevUpper = upper;
+      v.prevLower = lower;
+
+      const p = s.plots;
+      p[0][i] = { time, value: upper, color: BAND_COL };
+      p[1][i] = { time, value: lower, color: BAND_COL };
+      p[2][i] = { time, value: basis, color: BASE_COL };
+      // rsi_color = rsi_val > basis ? #00E676 : #FF5252
+      p[3][i] = { time, value: rsi, color: gt(rsi, basis) ? BULL_COL : BEAR_COL };
+      p[4][i] = { time, value: crossUp ? rsi : NaN, color: color.white };
+      p[5][i] = { time, value: crossDn ? rsi : NaN, color: color.white };
+      // alertcondition(cross_up, ...) / alertcondition(cross_dn, ...)
+      s.flags[0][i] = crossUp;
+      s.flags[1][i] = crossDn;
+      if (crossUp) s.times[0].push(time as number);
+      if (crossDn) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const [plot0, plot1, plot2, plot3, plot4, plot5] = s.plots.map((x) => x.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4, plot5 },
+        // fill(p_upper, p_lower, color = color.new(color.blue, 95), title = "Volatility Zone")
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Volatility Zone', color: FILL_COL } }],
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<InstitutionalVolumeRSIInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<InstitutionalVolumeRSIInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -117,6 +171,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const InstitutionalVolumeRSI = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

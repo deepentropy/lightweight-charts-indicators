@@ -12,9 +12,11 @@
  * Original notice: © Jos-ProTrader
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import { type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface EdwardSmartChannelReversalInputs {
   /** Channel length (highest high / lowest low) */
@@ -60,63 +62,91 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 /** Pine plotshape default text colour */
 const PINE_TEXT = '#2962FF';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<EdwardSmartChannelReversalInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface EdwardRun extends BarRunState<Record<string, never>> {
+  upper: WindowExtreme;
+  lower: WindowExtreme;
+  ema: ReturnType<typeof taStep.ema>;
+  rsi: ReturnType<typeof taStep.rsi>;
+  plots: Point[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<EdwardSmartChannelReversalInputs>): BarStudy<EdwardRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const upper = A(ta.highest(S(bars.map((b) => b.high)), cfg.channelLength));
-  const lower = A(ta.lowest(S(bars.map((b) => b.low)), cfg.channelLength));
-  const close = S(bars.map((b) => b.close));
-  const ema = A(ta.ema(close, cfg.emaLength));
-  const rsi = A(ta.rsi(close, cfg.rsiLength));
-
-  const plots: Record<string, { time: number; value: number; color: string }[]> = {
-    plot0: [], plot1: [], plot2: [], plot3: [],
-  };
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const t = b.time;
-    const mid = (upper[i] + lower[i]) / 2;
-    plots.plot0.push({ time: t, value: fin(upper[i]), color: color.red });
-    plots.plot1.push({ time: t, value: fin(lower[i]), color: color.green });
-    plots.plot2.push({ time: t, value: fin(mid), color: color.orange });
-    plots.plot3.push({ time: t, value: fin(ema[i]), color: color.yellow });
-
-    const bullReversal = le(b.low, lower[i]) && gt(b.close, b.open) && gt(b.close, lower[i]) && lt(rsi[i], 40);
-    const bearReversal = ge(b.high, upper[i]) && lt(b.close, b.open) && lt(b.close, upper[i]) && gt(rsi[i], 60);
-    const buySignal = bullReversal && gt(b.close, ema[i]);
-    const sellSignal = bearReversal && lt(b.close, ema[i]);
-    buyFlags.push(buySignal);
-    sellFlags.push(sellSignal);
-    // plotshape(buySignal, 'BUY', shape.labelup, location.belowbar, color.lime, text = 'BUY')
-    if (buySignal) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY', textColor: PINE_TEXT, size: 'auto' });
-    }
-    // plotshape(sellSignal, 'SELL', shape.labeldown, location.abovebar, color.red, text = 'SELL')
-    if (sellSignal) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: PINE_TEXT, size: 'auto' });
-    }
-  }
-
   // fill(upperPlot, lowerPlot, color = color.new(color.blue, 92))
   const fillColor = String(color.new(color.blue, 92));
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors: new Array<string>(n).fill(fillColor) }],
-    markers,
-    // alertcondition(buySignal, "Buy Alert") / alertcondition(sellSignal, "Sell Alert")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    init() {
+      const upper = new WindowExtreme(false, cfg.channelLength);
+      const lower = new WindowExtreme(true, cfg.channelLength);
+      const ema = taStep.ema(cfg.emaLength);
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const s: EdwardRun = {
+        upper, lower, ema, rsi, plots: [[], [], [], []], markers: [], flags: [[], []], times: [[], []],
+        steps: [upper, lower, ema, rsi], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const t = b.time;
+      const upper = s.upper.step(b.high);
+      const lower = s.lower.step(b.low);
+      const ema = s.ema.step(b.close);
+      const rsi = s.rsi.step(b.close);
+      const mid = (upper + lower) / 2;
+      s.plots[0][i] = { time: t, value: fin(upper), color: color.red };
+      s.plots[1][i] = { time: t, value: fin(lower), color: color.green };
+      s.plots[2][i] = { time: t, value: fin(mid), color: color.orange };
+      s.plots[3][i] = { time: t, value: fin(ema), color: color.yellow };
+
+      const bullReversal = le(b.low, lower) && gt(b.close, b.open) && gt(b.close, lower) && lt(rsi, 40);
+      const bearReversal = ge(b.high, upper) && lt(b.close, b.open) && lt(b.close, upper) && gt(rsi, 60);
+      const buySignal = bullReversal && gt(b.close, ema);
+      const sellSignal = bearReversal && lt(b.close, ema);
+      // plotshape(buySignal, 'BUY', shape.labelup, location.belowbar, color.lime, text = 'BUY')
+      if (buySignal) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY', textColor: PINE_TEXT, size: 'auto' });
+      }
+      // plotshape(sellSignal, 'SELL', shape.labeldown, location.abovebar, color.red, text = 'SELL')
+      if (sellSignal) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL', textColor: PINE_TEXT, size: 'auto' });
+      }
+      [buySignal, sellSignal].forEach((f, k) => {
+        s.flags[k][i] = f;
+        if (f) s.times[k].push(t as number);
+      });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice(), plot2: s.plots[2].slice(), plot3: s.plots[3].slice() },
+        fills: [{ plot1: 'plot0', plot2: 'plot1', options: { title: 'Plots Background' }, colors: new Array<string>(n).fill(fillColor) }],
+        markers: s.markers.slice(),
+        // alertcondition(buySignal, "Buy Alert") / alertcondition(sellSignal, "Sell Alert")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<EdwardSmartChannelReversalInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<EdwardSmartChannelReversalInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -127,6 +157,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const EdwardSmartChannelReversal = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

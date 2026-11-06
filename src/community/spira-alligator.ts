@@ -15,10 +15,12 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { taCore, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
 import { barInterval, barTime } from '../bar-time';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma, WindowVwma, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 const MA_TYPES = ['SMA', 'EMA', 'SMMA (RMA)', 'WMA', 'VWMA', 'HullMA', 'TMA', 'HybridMA',
   'ZeroLagEMA', 'SuperEMA', 'TrendMA', 'HMA', 'THMA', 'EHMA', 'DEMA', 'TEMA',
@@ -122,222 +124,411 @@ const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
 type Arr = number[];
-const toArr = (a: ArrayLike<number | undefined>): Arr => Array.from(a, (v) => v ?? NaN);
 /** x[k]: na before the first bar */
 const hist = (x: Arr, i: number, k: number) => (i - k >= 0 ? x[i - k] : NaN);
 
-/** Moving averages of the Pine script; each call has its own history (one Pine call site per call) */
-function makeMa(volume: Arr, atr: Arr) {
-  const sma = (x: Arr, len: number) => toArr(taCore.sma(x, len));
-  const ema = (x: Arr, len: number) => toArr(taCore.ema(x, len));
-  const rma = (x: Arr, len: number) => toArr(taCore.rma(x, len));
-  const wma = (x: Arr, len: number) => toArr(taCore.wma(x, len));
-  const vwma = (x: Arr, len: number) => toArr(taCore.vwma(x, len, volume));
-  const zip = (f: (...v: number[]) => number, ...xs: Arr[]) => xs[0].map((_v, i) => f(...xs.map((x) => x[i])));
+/** x[k] of one series computed bar by bar: the committed values of the earlier bars and the value of this bar */
+class History implements Committable {
+  private values: number[] = [];
+  private pending = NaN;
+  private stepped = false;
+
+  constructor(private readonly keep: number) {}
+
+  push(v: number): void {
+    this.pending = v;
+    this.stepped = true;
+  }
+
+  /** x[k]: na before the first bar */
+  back(k: number): number {
+    if (k === 0) return this.pending;
+    const j = this.values.length - k;
+    return j >= 0 ? this.values[j] : NaN;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.values.push(this.pending);
+    if (this.values.length > this.keep * 2 + 1024) this.values = this.values.slice(-this.keep);
+  }
+}
+
+/** The value of the previous bar of a recursive series (s[1]) */
+class Prev implements Committable {
+  value = NaN;
+  private next = NaN;
+  private stepped = false;
+
+  set(v: number): void {
+    this.next = v;
+    this.stepped = true;
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    this.value = this.next;
+  }
+}
+
+type F = (v: number) => number;
+
+/**
+ * Moving averages of the Pine script, one bar at a time; each call has its own history (one Pine call site per call).
+ * The machines go into `steps`; `bar` gives the volume and the ATR of the bar.
+ */
+function makeMa(steps: Committable[], bar: { volume: number; atr: number }) {
+  const add = <T extends Committable>(m: T): T => {
+    steps.push(m);
+    return m;
+  };
+  const sma = (len: number): F => { const m = add(new WindowSma(len)); return (v) => m.step(v); };
+  const ema = (len: number): F => { const m = add(taStep.ema(len)); return (v) => m.step(v); };
+  const rma = (len: number): F => { const m = add(taStep.rma(len)); return (v) => m.step(v); };
+  const wma = (len: number): F => { const m = add(taStep.wma()); return (v) => m.step(v, len); };
+  const vwma = (len: number): F => { const m = add(new WindowVwma(len)); return (v) => m.step(v, bar.volume); };
 
   /** wma_custom(src, length): a Pine `for i = 0 to length - 1` loop (length can be fractional: length / 2) */
-  const wmaCustom = (x: Arr, length: number): Arr => x.map((_v, bar) => {
-    let sum = 0.0;
-    let norm = 0.0;
+  const wmaCustom = (length: number): F => {
+    const x = add(new History(Math.ceil(Math.abs(length)) + 2));
     const end = length - 1;
     // for i = 0 to end: counts down when end < 0
     const step = end >= 0 ? 1 : -1;
-    for (let i = 0; step > 0 ? i <= end : i >= end; i += step) {
-      const weight = length - i;
-      sum += hist(x, bar, i) * weight;
-      norm += weight;
-    }
-    return sum / norm;
-  });
-  const zlema = (x: Arr, length: number) => {
+    return (v) => {
+      x.push(v);
+      let sum = 0.0;
+      let norm = 0.0;
+      for (let i = 0; step > 0 ? i <= end : i >= end; i += step) {
+        const weight = length - i;
+        sum += x.back(i) * weight;
+        norm += weight;
+      }
+      return sum / norm;
+    };
+  };
+  const zlema = (length: number): F => {
     const lag = Math.round((length - 1) / 2);
-    return ema(x.map((v, i) => v + (v - hist(x, i, lag))), length);
+    const x = add(new History(Math.abs(lag) + 2));
+    const e = ema(length);
+    return (v) => {
+      x.push(v);
+      return e(v + (v - x.back(lag)));
+    };
   };
-  const hma = (x: Arr, length: number) => wmaCustom(
-    zip((a, b) => 2 * a - b, wmaCustom(x, length / 2), wmaCustom(x, length)), Math.round(Math.sqrt(length)));
-  const dema = (x: Arr, length: number) => {
-    const e1 = ema(x, length);
-    return zip((a, b) => 2 * a - b, e1, ema(e1, length));
+  const hma = (length: number): F => {
+    const half = wmaCustom(length / 2);
+    const full = wmaCustom(length);
+    const out = wmaCustom(Math.round(Math.sqrt(length)));
+    return (v) => out(2 * half(v) - full(v));
   };
-  const tema = (x: Arr, length: number) => {
-    const e1 = ema(x, length);
-    const e2 = ema(e1, length);
-    return zip((a, b, c) => 3 * (a - b) + c, e1, e2, ema(e2, length));
+  const dema = (length: number): F => {
+    const e1 = ema(length);
+    const e2 = ema(length);
+    return (v) => {
+      const a = e1(v);
+      return 2 * a - e2(a);
+    };
   };
-  const hybrid = (x: Arr, length: number) => {
-    const basic = sma(x, length);
-    const out: Arr = new Array(x.length);
-    for (let i = 0; i < x.length; i++) {
-      const prev = hist(out, i, 1);
-      out[i] = isNaN(prev) ? basic[i] : (prev * (length - 1) + basic[i]) / length;
-    }
-    return out;
+  const tema = (length: number): F => {
+    const e1 = ema(length);
+    const e2 = ema(length);
+    const e3 = ema(length);
+    return (v) => {
+      const a = e1(v);
+      const b = e2(a);
+      return 3 * (a - b) + e3(b);
+    };
   };
-  const smoothed = (x: Arr, length: number) => {
+  /** 3 * (f1 - f2) + f3 of three chained calls of one function */
+  const triple = (f: (length: number) => F, length: number): F => {
+    const f1 = f(length);
+    const f2 = f(length);
+    const f3 = f(length);
+    return (v) => {
+      const a = f1(v);
+      const b = f2(a);
+      return 3 * (a - b) + f3(b);
+    };
+  };
+  const hybrid = (length: number): F => {
+    const basic = sma(length);
+    const prev = add(new Prev());
+    return (v) => {
+      const p = prev.value;
+      const b = basic(v);
+      const out = isNaN(p) ? b : (p * (length - 1) + b) / length;
+      prev.set(out);
+      return out;
+    };
+  };
+  const smoothed = (length: number): F => {
     // s := na(s[1]) ? ta.sma(src, length) : (s[1] * (length - 1) + src) / length; the ta.sma only runs (and keeps
     // its history) on the bars where s[1] is na
-    const received: Arr = [];
-    const out: Arr = new Array(x.length);
-    for (let i = 0; i < x.length; i++) {
-      const prev = hist(out, i, 1);
-      if (isNaN(prev)) {
-        received.push(x[i]);
-        out[i] = toArr(taCore.sma(received, length))[received.length - 1];
-      } else {
-        out[i] = (prev * (length - 1) + x[i]) / length;
-      }
-    }
-    return out;
+    const received = sma(length);
+    const prev = add(new Prev());
+    return (v) => {
+      const p = prev.value;
+      const out = isNaN(p) ? received(v) : (p * (length - 1) + v) / length;
+      prev.set(out);
+      return out;
+    };
   };
 
-  return (type: string, x: Arr, length: number): Arr => {
+  return (type: string, length: number): F => {
     switch (type) {
-      case 'SMA': return sma(x, length);
-      case 'EMA': return ema(x, length);
-      case 'SMMA (RMA)': return rma(x, length);
-      case 'WMA': return wma(x, length);
-      case 'VWMA': return vwma(x, length);
+      case 'SMA': return sma(length);
+      case 'EMA': return ema(length);
+      case 'SMMA (RMA)': return rma(length);
+      case 'WMA': return wma(length);
+      case 'VWMA': return vwma(length);
       case 'HullMA':
-      case 'HMA': return hma(x, length);
-      case 'TMA': return sma(sma(x, length), length);
-      case 'HybridMA': return hybrid(x, length);
+      case 'HMA': return hma(length);
+      case 'TMA': {
+        const s1 = sma(length);
+        const s2 = sma(length);
+        return (v) => s2(s1(v));
+      }
+      case 'HybridMA': return hybrid(length);
       case 'ZeroLagEMA': {
-        const e1 = ema(x, length);
-        return zip((a, b) => a + (a - b), e1, ema(e1, length));
+        const e1 = ema(length);
+        const e2 = ema(length);
+        return (v) => {
+          const a = e1(v);
+          return a + (a - e2(a));
+        };
       }
       case 'SuperEMA':
-      case 'TEMA': return tema(x, length);
+      case 'TEMA': return tema(length);
       case 'TrendMA': {
-        const e = ema(x, length);
-        const s = sma(x, length);
-        const atrSma = sma(atr, length);
+        const e = ema(length);
+        const s = sma(length);
+        const atrSma = sma(length);
         // trend = atrSeries / ta.sma(atrSeries, length): a plain division
-        return zip((ev, sv, a, as) => {
-          const trend = a / as;
+        return (v) => {
+          const ev = e(v);
+          const sv = s(v);
+          const a = bar.atr;
+          const trend = a / atrSma(a);
           return ev * trend + sv * (1 - trend);
-        }, e, s, atr, atrSma);
+        };
       }
       case 'THMA': {
-        const w1 = wmaCustom(x, length / 3);
-        return wmaCustom(zip((a, b, c) => a * 3 - b - c, w1, wmaCustom(x, length / 2), wmaCustom(x, length)), length);
+        const w1 = wmaCustom(length / 3);
+        const w2 = wmaCustom(length / 2);
+        const w3 = wmaCustom(length);
+        const out = wmaCustom(length);
+        return (v) => out(w1(v) * 3 - w2(v) - w3(v));
       }
-      case 'EHMA':
+      case 'EHMA': {
         // ta.ema with the fractional length / 2
-        return ema(zip((a, b) => 2 * a - b, ema(x, length / 2), ema(x, length)), Math.round(Math.sqrt(length)));
-      case 'DEMA': return dema(x, length);
-      case 'TDEMA': {
-        const d1 = dema(x, length);
-        return zip((a, b, c) => 3 * (a - b) + c, d1, dema(d1, length), dema(dema(d1, length), length));
+        const half = ema(length / 2);
+        const full = ema(length);
+        const out = ema(Math.round(Math.sqrt(length)));
+        return (v) => out(2 * half(v) - full(v));
       }
-      case 'TTEMA': {
-        const t1 = tema(x, length);
-        return zip((a, b, c) => 3 * (a - b) + c, t1, tema(t1, length), tema(tema(t1, length), length));
-      }
-      case 'ZLEMA': return zlema(x, length);
+      case 'DEMA': return dema(length);
+      case 'TDEMA': return triple(dema, length);
+      case 'TTEMA': return triple(tema, length);
+      case 'ZLEMA': return zlema(length);
       case 'ZLDEMA':
       case 'DZLEMA': {
-        const z1 = zlema(x, length);
-        return zip((a, b) => 2 * a - b, z1, zlema(z1, length));
+        const z1 = zlema(length);
+        const z2 = zlema(length);
+        return (v) => {
+          const a = z1(v);
+          return 2 * a - z2(a);
+        };
       }
       case 'ZLTEMA':
-      case 'TZLEMA': {
-        const z1 = zlema(x, length);
-        const z2 = zlema(z1, length);
-        return zip((a, b, c) => 3 * (a - b) + c, z1, z2, zlema(z2, length));
+      case 'TZLEMA': return triple(zlema, length);
+      case 'LLEMA': {
+        const x = add(new History(3));
+        const e = ema(length);
+        return (v) => {
+          x.push(v);
+          return e(0.25 * v + 0.5 * x.back(1) + 0.25 * x.back(2));
+        };
       }
-      case 'LLEMA':
-        return ema(x.map((v, i) => 0.25 * v + 0.5 * hist(x, i, 1) + 0.25 * hist(x, i, 2)), length);
       case 'NMA': {
         const lambda = length / 26;
         const alpha = (lambda * (length - 1)) / (length - lambda);
-        const e1 = ema(x, length);
-        return zip((a, b) => (1 + alpha) * a - alpha * b, e1, ema(e1, 26));
+        const e1 = ema(length);
+        const e2 = ema(26);
+        return (v) => {
+          const a = e1(v);
+          return (1 + alpha) * a - alpha * e2(a);
+        };
       }
-      case 'SmoothedMA': return smoothed(x, length);
-      default: return x.map(() => NaN);
+      case 'SmoothedMA': return smoothed(length);
+      default: return () => NaN;
     }
   };
 }
 
 type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+
+interface SpiraVars {
+  /** var bool */
+  bearPullbackSeen: boolean;
+  /** var bool */
+  bullPullbackSeen: boolean;
+}
+
+interface SpiraRun extends BarRunState<SpiraVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  bar: { volume: number; atr: number };
+  lipsMa: F;
+  teethMa: F;
+  jawMa: F;
+  trendMa: F;
+  /** lips, teeth, jaw, trend of each bar */
+  values: Arr[];
+  /** The offset plots: the point of bar i written by bar i + offset (the time of that bar) */
+  shiftedPlots: Point[][];
+  plainPlots: Point[][];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SpiraAlligatorInputs>): BarStudy<SpiraRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const srcOf = barSource(cfg.aliSrc);
+  const buyBg = String(color.new(color.lime, 88));
+  const sellBg = String(color.new(color.red, 88));
+  // plot(..., offset = k): the value of bar i is drawn on bar i + k (trend, lips, teeth, jaw)
+  const shifts: Array<{ show: boolean; col: string; k: number; value: number }> = [
+    { show: cfg.showTrend, col: cfg.trendColor, k: 0, value: 3 },
+    { show: cfg.showAli, col: cfg.lipsColor, k: cfg.lipsOffset, value: 0 },
+    { show: cfg.showAli, col: cfg.teethColor, k: cfg.teethOffset, value: 1 },
+    { show: cfg.showAli, col: cfg.jawColor, k: cfg.jawOffset, value: 2 },
+  ];
+  /** The offsets written by the bars (else every point is built in `result`) */
+  const direct = shifts.map(({ k }) => Number.isInteger(k) && k >= 0);
+  return {
+    fullRunReason: () => (isBarSource(cfg.aliSrc) ? null : 'source of another study'),
+    init() {
+      const atr = taStep.atr(14);
+      const steps: Committable[] = [atr];
+      const bar = { volume: NaN, atr: NaN };
+      const ma = makeMa(steps, bar);
+      const lipsMa = ma(cfg.aliType, cfg.lipsLength);
+      const teethMa = ma(cfg.aliType, cfg.teethLength);
+      const jawMa = ma(cfg.aliType, cfg.jawLength);
+      const trendMa = ma(cfg.trendType, cfg.trendLength);
+      const s: SpiraRun = {
+        atr, bar, lipsMa, teethMa, jawMa, trendMa, values: [[], [], [], []],
+        shiftedPlots: [[], [], [], []], plainPlots: [[], [], [], []], markers: [], bgColors: [],
+        flags: [[], []], times: [[], []],
+        steps, vars: { bearPullbackSeen: false, bullPullbackSeen: false }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [...s.values, ...s.shiftedPlots, ...s.plainPlots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const c = b.close;
+      s.bar.volume = b.volume ?? NaN;
+      s.bar.atr = s.atr.step(b.high, b.low, c);
+      const src = srcOf(b);
+      const [lips, teeth, jaw, trend] = s.values;
+      lips[i] = s.lipsMa(src);
+      teeth[i] = s.teethMa(src);
+      jaw[i] = s.jawMa(src);
+      trend[i] = s.trendMa(c);
+
+      // (lips > teeth) and (lips[1] <= teeth[1]); (lips < teeth) and (lips[1] >= teeth[1])
+      const crossUp = gt(lips[i], teeth[i]) && le(hist(lips, i, 1), hist(teeth, i, 1));
+      const crossDown = lt(lips[i], teeth[i]) && ge(hist(lips, i, 1), hist(teeth, i, 1));
+      if (crossUp && lt(c, trend[i])) v.bearPullbackSeen = true;
+      if (gt(c, trend[i])) v.bearPullbackSeen = false;
+      if (crossDown) v.bullPullbackSeen = true;
+      if (lt(c, trend[i])) v.bullPullbackSeen = false;
+      const sell = v.bearPullbackSeen && crossDown && lt(c, trend[i]);
+      const buy = v.bullPullbackSeen && crossUp && gt(c, trend[i]);
+      if (sell) v.bearPullbackSeen = false;
+      if (buy) v.bullPullbackSeen = false;
+      s.flags[0][i] = buy;
+      s.flags[1][i] = sell;
+      const time = b.time;
+      if (buy) s.times[0].push(time as number);
+      if (sell) s.times[1].push(time as number);
+
+      if (cfg.showSignals && buy) {
+        s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'alligator',
+          textColor: color.black, size: 'tiny' });
+      }
+      if (cfg.showSignals && sell) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'alligator',
+          textColor: color.white, size: 'tiny' });
+      }
+      if (cfg.showBg && buy) s.bgColors.push({ time, color: buyBg });
+      if (cfg.showBg && sell) s.bgColors.push({ time, color: sellBg });
+
+      // the point of bar i - k is drawn at the time of this bar (its only writer)
+      for (let p = 0; p < 4; p++) {
+        const { show, col, k, value } = shifts[p];
+        if (direct[p] && i - k >= 0) {
+          const x = s.values[value][i - k];
+          s.shiftedPlots[p][i - k] = { time, value: show && Number.isFinite(x) ? x : NaN, color: col };
+        }
+        const y = s.values[p][i];
+        s.plainPlots[p][i] = { time, value: Number.isFinite(y) ? y : NaN };
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      // the points drawn after the last bar: the times of the bar interval (barTime)
+      let interval: number | undefined;
+      const shifted = (p: number): Point[] => {
+        const { show, col, k, value } = shifts[p];
+        const known = direct[p] ? Math.max(0, n - k) : 0;
+        const out = s.shiftedPlots[p].slice(0, known);
+        for (let i = known; i < n; i++) {
+          if (interval === undefined) interval = barInterval(bars);
+          const x = s.values[value][i];
+          out.push({ time: barTime(bars, i + k, interval), value: show && Number.isFinite(x) ? x : NaN, color: col });
+        }
+        return out;
+      };
+      const [plot4, plot5, plot6, plot7] = s.plainPlots.map((x) => x.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          plot0: shifted(0),
+          plot1: shifted(1),
+          plot2: shifted(2),
+          plot3: shifted(3),
+          plot4,
+          plot5,
+          plot6,
+          plot7,
+        },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(buy_signal, "BUY Signal") / alertcondition(sell_signal, "SELL Signal")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SpiraAlligatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
 
 export function calculate(
   bars: Bar[],
   inputs: Partial<SpiraAlligatorInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = toArr(getSourceSeries(bars, cfg.aliSrc).toArray());
-  const close = bars.map((b) => b.close);
-  const volume = bars.map((b) => b.volume ?? NaN);
-  const atr = toArr(taCore.atr(14, bars.map((b) => b.high), bars.map((b) => b.low), close));
-  const ma = makeMa(volume, atr);
-
-  const lips = ma(cfg.aliType, src, cfg.lipsLength);
-  const teeth = ma(cfg.aliType, src, cfg.teethLength);
-  const jaw = ma(cfg.aliType, src, cfg.jawLength);
-  const trend = ma(cfg.trendType, close, cfg.trendLength);
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
-  const buyBg = String(color.new(color.lime, 88));
-  const sellBg = String(color.new(color.red, 88));
-  const buyFlags: boolean[] = [];
-  const sellFlags: boolean[] = [];
-  let bearPullbackSeen = false; // var bool
-  let bullPullbackSeen = false; // var bool
-  for (let i = 0; i < n; i++) {
-    const c = close[i];
-    // (lips > teeth) and (lips[1] <= teeth[1]); (lips < teeth) and (lips[1] >= teeth[1])
-    const crossUp = gt(lips[i], teeth[i]) && le(hist(lips, i, 1), hist(teeth, i, 1));
-    const crossDown = lt(lips[i], teeth[i]) && ge(hist(lips, i, 1), hist(teeth, i, 1));
-    if (crossUp && lt(c, trend[i])) bearPullbackSeen = true;
-    if (gt(c, trend[i])) bearPullbackSeen = false;
-    if (crossDown) bullPullbackSeen = true;
-    if (lt(c, trend[i])) bullPullbackSeen = false;
-    const sell = bearPullbackSeen && crossDown && lt(c, trend[i]);
-    const buy = bullPullbackSeen && crossUp && gt(c, trend[i]);
-    if (sell) bearPullbackSeen = false;
-    if (buy) bullPullbackSeen = false;
-    buyFlags.push(buy);
-    sellFlags.push(sell);
-
-    const time = bars[i].time;
-    if (cfg.showSignals && buy) {
-      markers.push({ time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'alligator',
-        textColor: color.black, size: 'tiny' });
-    }
-    if (cfg.showSignals && sell) {
-      markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'alligator',
-        textColor: color.white, size: 'tiny' });
-    }
-    if (cfg.showBg && buy) bgColors.push({ time, color: buyBg });
-    if (cfg.showBg && sell) bgColors.push({ time, color: sellBg });
-  }
-
-  // plot(..., offset = k): the value of bar i is drawn on bar i + k
-  const interval = barInterval(bars);
-  const shifted = (values: Arr, show: boolean, col: string, k: number): Point[] =>
-    values.map((v, i) => ({ time: barTime(bars, i + k, interval), value: show && Number.isFinite(v) ? v : NaN, color: col }));
-  const plain = (values: Arr): Point[] => values.map((v, i) => ({ time: bars[i].time, value: Number.isFinite(v) ? v : NaN }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: shifted(trend, cfg.showTrend, cfg.trendColor, 0),
-      plot1: shifted(lips, cfg.showAli, cfg.lipsColor, cfg.lipsOffset),
-      plot2: shifted(teeth, cfg.showAli, cfg.teethColor, cfg.teethOffset),
-      plot3: shifted(jaw, cfg.showAli, cfg.jawColor, cfg.jawOffset),
-      plot4: plain(lips),
-      plot5: plain(teeth),
-      plot6: plain(jaw),
-      plot7: plain(trend),
-    },
-    markers,
-    bgColors,
-    // alertcondition(buy_signal, "BUY Signal") / alertcondition(sell_signal, "SELL Signal")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -348,6 +539,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const SpiraAlligator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

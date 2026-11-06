@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AbusuhilBullishCandlesInputs {
   showHammer: boolean;
@@ -100,97 +102,145 @@ const lt = (a: number, b: number) => b - a > EPS;
 /** Pine plotshape default text colour */
 const PINE_TEXT = '#2962FF';
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface AbusuhilRun extends BarRunState<Record<string, never>> {
+  stoch: ReturnType<typeof taStep.stoch>;
+  kSma: WindowSma;
+  dSma: WindowSma;
+  volSma: WindowSma | null;
+  emaStep: ReturnType<typeof taStep.ema>;
+  k: number[];
+  d: number[];
+  ema: number[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/** id: the plotshape output (shape0 .. shape5 in the original's order) */
+function label(markers: MarkerData[], time: number, on: boolean, col: string, text: string, id: string): void {
+  if (on) markers.push({ time, position: 'belowBar', shape: 'labelUp', color: col, text, textColor: PINE_TEXT, size: 'auto', id });
+}
+
+function study(inputs: Partial<AbusuhilBullishCandlesInputs>): BarStudy<AbusuhilRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      // k = ta.sma(ta.stoch(close, high, low, stochKLen), stochSmooth), d = ta.sma(k, stochDLen)
+      const stoch = taStep.stoch(cfg.stochKLen);
+      const kSma = new WindowSma(cfg.stochSmooth);
+      const dSma = new WindowSma(cfg.stochDLen);
+      // volPass = not useVolume or volume > ta.sma(volume, 20) * volumeMultiplier (lazy or: the SMA runs only when the
+      // filter is on, then on every bar)
+      const volSma = cfg.useVolume ? new WindowSma(20) : null;
+      const emaStep = taStep.ema(20);
+      const s: AbusuhilRun = {
+        stoch, kSma, dSma, volSma, emaStep, k: [], d: [], ema: [], markers: [],
+        flags: [[], [], [], [], [], []], times: [[], [], [], [], [], []],
+        steps: [stoch, kSma, dSma, ...(volSma ? [volSma] : []), emaStep], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.k, s.d, s.ema, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const { open, high, close: c } = b;
+      const ki = s.kSma.step(s.stoch.step(c, high, b.low));
+      const di = s.dSma.step(ki);
+      const volSma = s.volSma ? s.volSma.step(b.volume ?? NaN) : NaN;
+      const emai = s.emaStep.step(c);
+      const k = s.k;
+      const d = s.d;
+      const ema = s.ema;
+      k[i] = ki;
+      d[i] = di;
+      ema[i] = emai;
+      const p1 = i >= 1 ? bars[i - 1] : null;
+      const p2 = i >= 2 ? bars[i - 2] : null;
+      const open1 = p1 ? p1.open : NaN;
+      const close1 = p1 ? p1.close : NaN;
+      const low1 = p1 ? p1.low : NaN;
+      const open2 = p2 ? p2.open : NaN;
+      const close2 = p2 ? p2.close : NaN;
+      const high2 = p2 ? p2.high : NaN;
+      const ema1 = i >= 1 ? ema[i - 1] : NaN;
+      const ema2 = i >= 2 ? ema[i - 2] : NaN;
+      const k1 = i >= 1 ? k[i - 1] : NaN;
+      const d1 = i >= 1 ? d[i - 1] : NaN;
+
+      const volPass = !cfg.useVolume || gt(b.volume ?? NaN, volSma * cfg.volumeMultiplier);
+      const stochPass = !cfg.useStoch || (gt(ki, di) || (lt(k1, d1) && gt(ki, di)));
+      const allFiltersPass = stochPass && volPass;
+      const isDown = lt(c, emai) && lt(close1, ema1) && lt(close2, ema2);
+      const markers = s.markers;
+      const time = b.time;
+
+      // Hammer
+      const hammerCond = cfg.showHammer && isDown && gt(c, open) && gt(open - b.low, 2 * Math.abs(c - open))
+        && lt(high - c, c - open) && allFiltersPass;
+      label(markers, time, hammerCond, color.green, 'Hammer', 'shape0');
+
+      // Bullish Engulfing
+      const engulfingCond = cfg.showEngulfing && isDown && lt(close1, open1) && gt(c, open) && lt(open, close1)
+        && gt(c, open1) && gt(c - open, 1.5 * Math.abs(close1 - open1)) && allFiltersPass;
+      label(markers, time, engulfingCond, color.lime, 'Engulf', 'shape1');
+
+      // Morning Star
+      const body2 = Math.abs(close2 - open2);
+      const body1 = Math.abs(close1 - open1);
+      const morningStarCond = cfg.showMorningStar && isDown && lt(close2, open2) && gt(body2, body1 * 2)
+        && lt(body1, body2 * 0.5) && gt(c, open) && gt(c, (open2 + close2) / 2) && allFiltersPass;
+      label(markers, time, morningStarCond, color.navy, 'Morning Star', 'shape2');
+
+      // Piercing Line
+      const piercingCond = cfg.showPiercing && isDown && lt(close1, open1) && gt(c, open) && lt(open, low1)
+        && gt(c, (open1 + close1) / 2) && allFiltersPass;
+      label(markers, time, piercingCond, color.orange, 'Piercing', 'shape3');
+
+      // Three White Soldiers
+      const threeSoldiersCond = cfg.showThreeSoldiers && isDown && gt(close2, open2) && gt(close1, open1) && gt(c, open)
+        && gt(open1, open2) && gt(close1, close2) && gt(open, open1) && gt(c, close1) && allFiltersPass;
+      label(markers, time, threeSoldiersCond, color.maroon, '3 Soldiers', 'shape4');
+
+      // Three Inside Up
+      const threeInsideUpCond = cfg.showThreeInsideUp && isDown && lt(close2, open2) && gt(close1, open1)
+        && gt(open1, close2) && lt(close1, open2) && gt(c, open) && gt(c, high2) && allFiltersPass;
+      label(markers, time, threeInsideUpCond, color.teal, 'Inside Up', 'shape5');
+
+      // alertcondition(<pattern>Cond and alert<Pattern>, ...): one flag list per pattern
+      const flags = s.flags;
+      flags[0][i] = hammerCond && cfg.alertHammer;
+      flags[1][i] = engulfingCond && cfg.alertEngulfing;
+      flags[2][i] = morningStarCond && cfg.alertMorningStar;
+      flags[3][i] = piercingCond && cfg.alertPiercing;
+      flags[4][i] = threeSoldiersCond && cfg.alertThreeSoldiers;
+      flags[5][i] = threeInsideUpCond && cfg.alertThreeInsideUp;
+      for (let j = 0; j < 6; j++) if (flags[j][i]) s.times[j].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AbusuhilBullishCandlesInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<AbusuhilBullishCandlesInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = new Series(bars, (b) => b.close);
-
-  // k = ta.sma(ta.stoch(close, high, low, stochKLen), stochSmooth), d = ta.sma(k, stochDLen)
-  const kS = ta.sma(ta.stoch(close, new Series(bars, (b) => b.high), new Series(bars, (b) => b.low), cfg.stochKLen), cfg.stochSmooth);
-  const k = A(kS);
-  const d = A(ta.sma(kS, cfg.stochDLen));
-  // volPass = not useVolume or volume > ta.sma(volume, 20) * volumeMultiplier (lazy or: the SMA runs only when the
-  // filter is on, then on every bar)
-  const volSma = cfg.useVolume ? A(ta.sma(new Series(bars, (b) => b.volume ?? NaN), 20)) : [];
-  const ema = A(ta.ema(close, 20));
-
-  const markers: MarkerData[] = [];
-  // id: the plotshape output (shape0 .. shape5 in the original's order)
-  const label = (time: number, on: boolean, col: string, text: string, id: string) => {
-    if (on) markers.push({ time, position: 'belowBar', shape: 'labelUp', color: col, text, textColor: PINE_TEXT, size: 'auto', id });
-  };
-  // alertcondition(<pattern>Cond and alert<Pattern>, ...): one flag list per pattern
-  const flags: boolean[][] = [[], [], [], [], [], []];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const { open, high, close: c } = b;
-    const p1 = i >= 1 ? bars[i - 1] : null;
-    const p2 = i >= 2 ? bars[i - 2] : null;
-    const open1 = p1 ? p1.open : NaN;
-    const close1 = p1 ? p1.close : NaN;
-    const low1 = p1 ? p1.low : NaN;
-    const open2 = p2 ? p2.open : NaN;
-    const close2 = p2 ? p2.close : NaN;
-    const high2 = p2 ? p2.high : NaN;
-    const ema1 = i >= 1 ? ema[i - 1] : NaN;
-    const ema2 = i >= 2 ? ema[i - 2] : NaN;
-    const k1 = i >= 1 ? k[i - 1] : NaN;
-    const d1 = i >= 1 ? d[i - 1] : NaN;
-
-    const volPass = !cfg.useVolume || gt(b.volume ?? NaN, volSma[i] * cfg.volumeMultiplier);
-    const stochPass = !cfg.useStoch || (gt(k[i], d[i]) || (lt(k1, d1) && gt(k[i], d[i])));
-    const allFiltersPass = stochPass && volPass;
-    const isDown = lt(c, ema[i]) && lt(close1, ema1) && lt(close2, ema2);
-
-    // Hammer
-    const hammerCond = cfg.showHammer && isDown && gt(c, open) && gt(open - b.low, 2 * Math.abs(c - open))
-      && lt(high - c, c - open) && allFiltersPass;
-    label(b.time, hammerCond, color.green, 'Hammer', 'shape0');
-    flags[0].push(hammerCond && cfg.alertHammer);
-
-    // Bullish Engulfing
-    const engulfingCond = cfg.showEngulfing && isDown && lt(close1, open1) && gt(c, open) && lt(open, close1)
-      && gt(c, open1) && gt(c - open, 1.5 * Math.abs(close1 - open1)) && allFiltersPass;
-    label(b.time, engulfingCond, color.lime, 'Engulf', 'shape1');
-    flags[1].push(engulfingCond && cfg.alertEngulfing);
-
-    // Morning Star
-    const body2 = Math.abs(close2 - open2);
-    const body1 = Math.abs(close1 - open1);
-    const morningStarCond = cfg.showMorningStar && isDown && lt(close2, open2) && gt(body2, body1 * 2)
-      && lt(body1, body2 * 0.5) && gt(c, open) && gt(c, (open2 + close2) / 2) && allFiltersPass;
-    label(b.time, morningStarCond, color.navy, 'Morning Star', 'shape2');
-    flags[2].push(morningStarCond && cfg.alertMorningStar);
-
-    // Piercing Line
-    const piercingCond = cfg.showPiercing && isDown && lt(close1, open1) && gt(c, open) && lt(open, low1)
-      && gt(c, (open1 + close1) / 2) && allFiltersPass;
-    label(b.time, piercingCond, color.orange, 'Piercing', 'shape3');
-    flags[3].push(piercingCond && cfg.alertPiercing);
-
-    // Three White Soldiers
-    const threeSoldiersCond = cfg.showThreeSoldiers && isDown && gt(close2, open2) && gt(close1, open1) && gt(c, open)
-      && gt(open1, open2) && gt(close1, close2) && gt(open, open1) && gt(c, close1) && allFiltersPass;
-    label(b.time, threeSoldiersCond, color.maroon, '3 Soldiers', 'shape4');
-    flags[4].push(threeSoldiersCond && cfg.alertThreeSoldiers);
-
-    // Three Inside Up
-    const threeInsideUpCond = cfg.showThreeInsideUp && isDown && lt(close2, open2) && gt(close1, open1)
-      && gt(open1, close2) && lt(close1, open2) && gt(c, open) && gt(c, high2) && allFiltersPass;
-    label(b.time, threeInsideUpCond, color.teal, 'Inside Up', 'shape5');
-    flags[5].push(threeInsideUpCond && cfg.alertThreeInsideUp);
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -203,4 +253,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert5', title: 'Three Inside Up Alert', message: 'Three Inside Up pattern detected' },
 ];
 
-export const AbusuhilBullishCandles = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const AbusuhilBullishCandles = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

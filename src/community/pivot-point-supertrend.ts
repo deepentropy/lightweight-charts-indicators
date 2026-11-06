@@ -11,9 +11,11 @@
  * Reference: "Pivot Point SuperTrend" by LonesomeTheBlue
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PivotPointSupertrendInputs {
   pivotLen: number;
@@ -63,138 +65,173 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<PivotPointSupertrendInputs> = {}): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const { pivotLen: prd, atrFactor: Factor, atrLen: Pd, showPivot, showLabel, showCl, showSr } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
 
-  // Pine: float ph = pivothigh(prd, prd), float pl = pivotlow(prd, prd)
-  const phArr = ta.pivothigh(new Series(bars, (b) => b.high), prd, prd).toArray();
-  const plArr = ta.pivotlow(new Series(bars, (b) => b.low), prd, prd).toArray();
-  const atrArr = ta.atr(bars, Pd).toArray();
+interface PpstVars {
+  /** var float center = na */
+  center: number;
+  /** TUp[1], TDown[1] */
+  prevTUp: number;
+  prevTDown: number;
+  support: number;
+  resistance: number;
+}
+
+interface PpstRun extends BarRunState<PpstVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  atr: ReturnType<typeof taStep.atr>;
+  trend: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<PivotPointSupertrendInputs>): BarStudy<PpstRun, Result> {
+  const { pivotLen: prd, atrFactor: Factor, atrLen: Pd, showPivot, showLabel, showCl, showSr } = { ...defaultInputs, ...inputs };
 
   // Pine `if ph` / `ph ? ...`: na and 0 are false
   const isPivot = (v: number | null | undefined): v is number => v != null && !isNaN(v) && v !== 0;
 
-  const centerArr: number[] = new Array(n).fill(NaN);
-  const trendArr: number[] = new Array(n).fill(0);
-  const tslArr: number[] = new Array(n).fill(NaN);
-  const supportArr: number[] = new Array(n).fill(NaN);
-  const resistanceArr: number[] = new Array(n).fill(NaN);
-
-  let center = NaN;       // var float center = na
-  let prevTUp = NaN;      // TUp[1]
-  let prevTDown = NaN;    // TDown[1]
-  let support = NaN;
-  let resistance = NaN;
-
-  for (let i = 0; i < n; i++) {
-    const ph = phArr[i];
-    const pl = plArr[i];
-
-    // Pine: lastpp = ph ? ph : pl ? pl : na; center := na(center) ? lastpp : (center * 2 + lastpp) / 3
-    const lastpp = isPivot(ph) ? ph : isPivot(pl) ? pl : NaN;
-    if (isPivot(lastpp)) {
-      center = isNaN(center) ? lastpp : (center * 2 + lastpp) / 3;
-    }
-
-    const atr = atrArr[i] ?? NaN;
-    const Up = center - Factor * atr;
-    const Dn = center + Factor * atr;
-
-    // Pine: TUp := close[1] > TUp[1] ? max(Up, TUp[1]) : Up (comparisons with na are false, max with na is na)
-    const close1 = i > 0 ? bars[i - 1].close : NaN;
-    const TUp = close1 > prevTUp ? Math.max(Up, prevTUp) : Up;
-    const TDown = close1 < prevTDown ? Math.min(Dn, prevTDown) : Dn;
-
-    // Pine: Trend := close > TDown[1] ? 1 : close < TUp[1] ? -1 : nz(Trend[1], 1)
-    const close = bars[i].close;
-    const trend = close > prevTDown ? 1 : close < prevTUp ? -1 : i > 0 ? trendArr[i - 1] : 1;
-
-    centerArr[i] = center;
-    trendArr[i] = trend;
-    tslArr[i] = trend === 1 ? TUp : TDown;
-    prevTUp = TUp;
-    prevTDown = TDown;
-
-    // Pine: support := pl ? pl : support[1]; resistance := ph ? ph : resistance[1]
-    if (isPivot(pl)) support = pl;
-    if (isPivot(ph)) resistance = ph;
-    supportArr[i] = support;
-    resistanceArr[i] = resistance;
-  }
-
-  // Pine: plot(Trailingsl, color = linecolor, linewidth = 2, title = "PP SuperTrend")
-  // linecolor = Trend == 1 and nz(Trend[1]) == 1 ? lime : Trend == -1 and nz(Trend[1]) == -1 ? red : na
-  // A value with an na colour is kept as a transparent point.
-  const plot0 = tslArr.map((v, i) => {
-    const t1 = i > 0 ? trendArr[i - 1] : 0;
-    const t = trendArr[i];
-    const color = t === 1 && t1 === 1 ? LIME : t === -1 && t1 === -1 ? RED : 'transparent';
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // Pine: plot(showcl ? center : na, color = showcl ? center < hl2 ? blue : red : na)
-  const plot1 = centerArr.map((v, i) => {
-    if (!showCl) return { time: bars[i].time, value: NaN };
-    const hl2 = (bars[i].high + bars[i].low) / 2;
-    return { time: bars[i].time, value: v, color: v < hl2 ? BLUE : RED };
-  });
-
-  // Pine: plot(showsr and support ? support : na, ..., style = plot.style_circles, offset = -prd)
-  // The value computed on bar i is shown on bar i - prd.
-  const shifted = (arr: number[]) => bars.map((b, j) => {
-    const v = j + prd < n ? arr[j + prd] : NaN;
-    return { time: b.time, value: showSr && isPivot(v) ? v : NaN };
-  });
-  const plot2 = shifted(supportArr);
-  const plot3 = shifted(resistanceArr);
-
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    // Pine: plotshape(ph and showpivot, text="H", style=shape.labeldown, color=na, textcolor=color.red,
-    //   location=location.abovebar, offset = -prd); same for pl with "L", textcolor=color.lime, location.belowbar
-    if (showPivot && i >= prd) {
-      if (isPivot(phArr[i])) {
-        markers.push({ time: bars[i - prd].time, position: 'aboveBar', shape: 'labelDown', color: 'transparent', text: 'H', textColor: RED });
-      }
-      if (isPivot(plArr[i])) {
-        markers.push({ time: bars[i - prd].time, position: 'belowBar', shape: 'labelDown', color: 'transparent', text: 'L', textColor: LIME });
-      }
-    }
-    // Pine: bsignal = Trend == 1 and Trend[1] == -1; ssignal = Trend == -1 and Trend[1] == 1
-    // plotshape(bsignal and showlabel ? Trailingsl : na, "Buy", location.absolute, shape.labelup, size.tiny, lime,
-    //   textcolor = color.black)
-    // plotshape(ssignal and showlabel ? Trailingsl : na, "Sell", location.absolute, shape.labeldown, size.tiny, red,
-    //   textcolor = color.white)
-    // (Pine hides the shape when Trailingsl is na). At the stop price: labelup below it, labeldown above it.
-    if (showLabel && i > 0 && !isNaN(tslArr[i])) {
-      if (trendArr[i] === 1 && trendArr[i - 1] === -1) {
-        markers.push({
-          time: bars[i].time, position: 'atPriceBottom', price: tslArr[i], shape: 'labelUp',
-          color: LIME, text: 'Buy', textColor: '#000000', size: 'tiny',
-        });
-      }
-      if (trendArr[i] === -1 && trendArr[i - 1] === 1) {
-        markers.push({
-          time: bars[i].time, position: 'atPriceTop', price: tslArr[i], shape: 'labelDown',
-          color: RED, text: 'Sell', textColor: '#FFFFFF', size: 'tiny',
-        });
-      }
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2, 'plot3': plot3 },
-    markers,
-    // alertcondition(Trend == 1 and Trend[1] == -1) / (Trend == -1 and Trend[1] == 1) / (change(Trend)); Trend[1] is
-    // na on the first bar
-    alerts: alertStates(alertConditions, bars, [
-      trendArr.map((t, i) => i > 0 && t === 1 && trendArr[i - 1] === -1),
-      trendArr.map((t, i) => i > 0 && t === -1 && trendArr[i - 1] === 1),
-      trendArr.map((t, i) => i > 0 && t !== trendArr[i - 1]),
-    ]),
+    init() {
+      const s: PpstRun = {
+        ph: new PivotStep(prd, prd, true), pl: new PivotStep(prd, prd, false), atr: taStep.atr(Pd),
+        trend: [], plots: Array.from({ length: 4 }, () => []), markers: [], flags: [[], [], []], times: [[], [], []],
+        steps: [],
+        vars: { center: NaN, prevTUp: NaN, prevTDown: NaN, support: NaN, resistance: NaN },
+        lists: [], series: [],
+      };
+      s.steps = [s.ph, s.pl, s.atr];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.trend, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      // Pine: float ph = pivothigh(prd, prd), float pl = pivotlow(prd, prd)
+      const ph = s.ph.step(i, b.high);
+      const pl = s.pl.step(i, b.low);
+
+      // Pine: lastpp = ph ? ph : pl ? pl : na; center := na(center) ? lastpp : (center * 2 + lastpp) / 3
+      const lastpp = isPivot(ph) ? ph : isPivot(pl) ? pl : NaN;
+      if (isPivot(lastpp)) {
+        v.center = isNaN(v.center) ? lastpp : (v.center * 2 + lastpp) / 3;
+      }
+      const center = v.center;
+
+      const atr = s.atr.step(b.high, b.low, b.close);
+      const Up = center - Factor * atr;
+      const Dn = center + Factor * atr;
+
+      // Pine: TUp := close[1] > TUp[1] ? max(Up, TUp[1]) : Up (comparisons with na are false, max with na is na)
+      const close1 = i > 0 ? bars[i - 1].close : NaN;
+      const TUp = close1 > v.prevTUp ? Math.max(Up, v.prevTUp) : Up;
+      const TDown = close1 < v.prevTDown ? Math.min(Dn, v.prevTDown) : Dn;
+
+      // Pine: Trend := close > TDown[1] ? 1 : close < TUp[1] ? -1 : nz(Trend[1], 1)
+      const close = b.close;
+      const trend = close > v.prevTDown ? 1 : close < v.prevTUp ? -1 : i > 0 ? s.trend[i - 1] : 1;
+
+      s.trend[i] = trend;
+      const tsl = trend === 1 ? TUp : TDown;
+      v.prevTUp = TUp;
+      v.prevTDown = TDown;
+
+      // Pine: support := pl ? pl : support[1]; resistance := ph ? ph : resistance[1]
+      if (isPivot(pl)) v.support = pl;
+      if (isPivot(ph)) v.resistance = ph;
+
+      // Pine: plot(Trailingsl, color = linecolor, linewidth = 2, title = "PP SuperTrend")
+      // linecolor = Trend == 1 and nz(Trend[1]) == 1 ? lime : Trend == -1 and nz(Trend[1]) == -1 ? red : na
+      // A value with an na colour is kept as a transparent point.
+      const t1 = i > 0 ? s.trend[i - 1] : 0;
+      const lineColor = trend === 1 && t1 === 1 ? LIME : trend === -1 && t1 === -1 ? RED : 'transparent';
+      s.plots[0][i] = { time: b.time, value: tsl, color: lineColor };
+
+      // Pine: plot(showcl ? center : na, color = showcl ? center < hl2 ? blue : red : na)
+      if (!showCl) s.plots[1][i] = { time: b.time, value: NaN };
+      else {
+        const hl2 = (b.high + b.low) / 2;
+        s.plots[1][i] = { time: b.time, value: center, color: center < hl2 ? BLUE : RED };
+      }
+
+      // Pine: plot(showsr and support ? support : na, ..., style = plot.style_circles, offset = -prd)
+      // The value computed on bar i is shown on bar i - prd (bar i is the only writer of that point; its own point
+      // stays na until bar i + prd).
+      s.plots[2][i] = { time: b.time, value: NaN };
+      s.plots[3][i] = { time: b.time, value: NaN };
+      if (i >= prd) {
+        const back = bars[i - prd].time;
+        s.plots[2][i - prd] = { time: back, value: showSr && isPivot(v.support) ? v.support : NaN };
+        s.plots[3][i - prd] = { time: back, value: showSr && isPivot(v.resistance) ? v.resistance : NaN };
+      }
+
+      // Pine: plotshape(ph and showpivot, text="H", style=shape.labeldown, color=na, textcolor=color.red,
+      //   location=location.abovebar, offset = -prd); same for pl with "L", textcolor=color.lime, location.belowbar
+      if (showPivot && i >= prd) {
+        if (isPivot(ph)) {
+          s.markers.push({ time: bars[i - prd].time, position: 'aboveBar', shape: 'labelDown', color: 'transparent', text: 'H', textColor: RED });
+        }
+        if (isPivot(pl)) {
+          s.markers.push({ time: bars[i - prd].time, position: 'belowBar', shape: 'labelDown', color: 'transparent', text: 'L', textColor: LIME });
+        }
+      }
+      // Pine: bsignal = Trend == 1 and Trend[1] == -1; ssignal = Trend == -1 and Trend[1] == 1
+      // plotshape(bsignal and showlabel ? Trailingsl : na, "Buy", location.absolute, shape.labelup, size.tiny, lime,
+      //   textcolor = color.black)
+      // plotshape(ssignal and showlabel ? Trailingsl : na, "Sell", location.absolute, shape.labeldown, size.tiny, red,
+      //   textcolor = color.white)
+      // (Pine hides the shape when Trailingsl is na). At the stop price: labelup below it, labeldown above it.
+      if (showLabel && i > 0 && !isNaN(tsl)) {
+        if (trend === 1 && s.trend[i - 1] === -1) {
+          s.markers.push({
+            time: b.time, position: 'atPriceBottom', price: tsl, shape: 'labelUp',
+            color: LIME, text: 'Buy', textColor: '#000000', size: 'tiny',
+          });
+        }
+        if (trend === -1 && s.trend[i - 1] === 1) {
+          s.markers.push({
+            time: b.time, position: 'atPriceTop', price: tsl, shape: 'labelDown',
+            color: RED, text: 'Sell', textColor: '#FFFFFF', size: 'tiny',
+          });
+        }
+      }
+      // alertcondition(Trend == 1 and Trend[1] == -1) / (Trend == -1 and Trend[1] == 1) / (change(Trend)); Trend[1] is
+      // na on the first bar
+      const prev = i > 0 ? s.trend[i - 1] : NaN;
+      const buy = i > 0 && trend === 1 && prev === -1;
+      const sell = i > 0 && trend === -1 && prev === 1;
+      const changed = i > 0 && trend !== prev;
+      s.flags[0][i] = buy;
+      s.flags[1][i] = sell;
+      s.flags[2][i] = changed;
+      if (buy) s.times[0].push(b.time as number);
+      if (sell) s.times[1].push(b.time as number);
+      if (changed) s.times[2].push(b.time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plots[0].slice(), 'plot1': s.plots[1].slice(), 'plot2': s.plots[2].slice(), 'plot3': s.plots[3].slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PivotPointSupertrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PivotPointSupertrendInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -204,4 +241,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert2', title: 'Trend Changed', message: 'Trend Changed' },
 ];
 
-export const PivotPointSupertrend = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const PivotPointSupertrend = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

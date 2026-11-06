@@ -13,9 +13,11 @@
  * Original notice: © LyroRS
  */
 
-import { ta, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TerminalVelocityStopLyroRsInputs {
   /** ATR length */
@@ -84,101 +86,147 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<TerminalVelocityStopLyroRsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> }
-  & { alerts: AlertConditionState[] } {
+type Point = { time: Bar['time']; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> }
+  & { alerts: AlertConditionState[] };
+
+interface TvsVars {
+  /** var float stop = na, var int dir = 1 */
+  stop: number;
+  dir: number;
+}
+
+interface TvsRun extends BarRunState<TvsVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  plots: Point[][];
+  topValue: number[];
+  bottomValue: number[];
+  topColor: string[];
+  bottomColor: string[];
+  candles: PlotCandleData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TerminalVelocityStopLyroRsInputs>): BarStudy<TvsRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   let [upC, dnC] = PALETTES[cfg.colMode] ?? ['transparent', 'transparent'];
   if (cfg.useCustomPalette) {
     upC = cfg.customUpColor;
     dnC = cfg.customDownColor;
   }
-
-  const atr = ta.atr(bars, cfg.atrLen).toArray().map((v) => v ?? NaN);
-  const stopArr: number[] = new Array(n);
-  const dirArr: number[] = new Array(n);
-  let stop = NaN; // var float stop = na
-  let dir = 1; // var int dir = 1
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    const a = atr[i];
-    const target = dir === 1 ? close - cfg.mult * a : close + cfg.multm * a;
-    if (isNaN(stop)) {
-      stop = target;
-    } else {
-      const step = Math.max(Math.min(target - stop, cfg.vmax * a), -cfg.vmax * a);
-      if (dir === 1) {
-        stop = Math.max(stop, stop + step);
-        if (lt(close, stop)) {
-          dir = -1;
-          stop = close + cfg.multm * a;
-        }
-      } else {
-        stop = Math.min(stop, stop + step);
-        if (gt(close, stop)) {
-          dir = 1;
-          stop = close - cfg.mult * a;
-        }
-      }
-    }
-    stopArr[i] = stop;
-    dirArr[i] = dir;
-  }
-
   const upGlow = String(color.new(upC, 80));
   const dnGlow = String(color.new(dnC, 80));
   const up90 = String(color.new(upC, 90));
   const up50 = String(color.new(upC, 50));
   const dn90 = String(color.new(dnC, 90));
   const dn50 = String(color.new(dnC, 50));
-  const flipUp = (i: number) => dirArr[i] === 1 && i > 0 && dirArr[i - 1] === -1;
-  const flipDown = (i: number) => dirArr[i] === -1 && i > 0 && dirArr[i - 1] === 1;
-  const css = (i: number) => (dirArr[i] === 1 ? upC : dnC);
-  const bull = (i: number) => (dirArr[i] === 1 && !flipUp(i) ? stopArr[i] : NaN);
-  const bear = (i: number) => (dirArr[i] === -1 && !flipDown(i) ? stopArr[i] : NaN);
-
-  const plots = {
-    plot0: bars.map((b, i) => ({ time: b.time, value: bull(i), color: upGlow })),
-    plot1: bars.map((b, i) => ({ time: b.time, value: bull(i), color: upC })),
-    plot2: bars.map((b, i) => ({ time: b.time, value: bear(i), color: dnGlow })),
-    plot3: bars.map((b, i) => ({ time: b.time, value: bear(i), color: dnC })),
-    plot4: bars.map((b, i) => ({ time: b.time, value: stopArr[i] })),
-    plot5: bars.map((b) => ({ time: b.time, value: b.close })),
-    plot6: bars.map((b, i) => ({
-      time: b.time, value: flipUp(i) || flipDown(i) ? stopArr[i] : NaN, color: String(color.new(css(i), 0)),
-    })),
-  };
-
-  // fill(pStop, pPrice, top = dir == 1 ? stop : close, bottom = dir == 1 ? close : stop, topColor, bottomColor)
-  const up = (i: number) => dirArr[i] === 1;
-  const fills = [{
-    plot1: 'plot4', plot2: 'plot5',
-    gradient: {
-      topValue: bars.map((b, i) => (up(i) ? stopArr[i] : b.close)),
-      bottomValue: bars.map((b, i) => (up(i) ? b.close : stopArr[i])),
-      topColor: bars.map((_b, i) => (up(i) ? up90 : dn50)),
-      bottomColor: bars.map((_b, i) => (up(i) ? up50 : dn90)),
-    },
-  }];
-
-  // plotcandle(open, high, low, close, color = css, wickcolor = css, bordercolor = css)
-  const candles: PlotCandleData[] = bars.map((b, i) => ({
-    time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-    color: css(i), wickColor: css(i), borderColor: css(i),
-  }));
-
+  const upDot = String(color.new(upC, 0));
+  const dnDot = String(color.new(dnC, 0));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
-    markers: [],
-    plotCandles: { candles },
-    // alertcondition(flipUp, 'Bullish Flip') / alertcondition(flipDown, 'Bearish Flip')
-    alerts: alertStates(alertConditions, bars, [bars.map((_b, i) => flipUp(i)), bars.map((_b, i) => flipDown(i))]),
+    init() {
+      const atr = taStep.atr(cfg.atrLen);
+      const s: TvsRun = {
+        atr, plots: Array.from({ length: 7 }, () => []), topValue: [], bottomValue: [], topColor: [], bottomColor: [],
+        candles: [], flags: [[], []], times: [[], []],
+        steps: [atr], vars: { stop: NaN, dir: 1 }, lists: [], series: [],
+      };
+      s.lists = s.times;
+      s.series = [...s.plots, s.topValue, s.bottomValue, s.topColor, s.bottomColor, s.candles, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const close = b.close;
+      const a = s.atr.step(b.high, b.low, close);
+      const prevDir = v.dir;
+      const target = v.dir === 1 ? close - cfg.mult * a : close + cfg.multm * a;
+      if (isNaN(v.stop)) {
+        v.stop = target;
+      } else {
+        const step = Math.max(Math.min(target - v.stop, cfg.vmax * a), -cfg.vmax * a);
+        if (v.dir === 1) {
+          v.stop = Math.max(v.stop, v.stop + step);
+          if (lt(close, v.stop)) {
+            v.dir = -1;
+            v.stop = close + cfg.multm * a;
+          }
+        } else {
+          v.stop = Math.min(v.stop, v.stop + step);
+          if (gt(close, v.stop)) {
+            v.dir = 1;
+            v.stop = close - cfg.mult * a;
+          }
+        }
+      }
+      const stop = v.stop;
+      const dir = v.dir;
+
+      const flipUp = dir === 1 && i > 0 && prevDir === -1;
+      const flipDown = dir === -1 && i > 0 && prevDir === 1;
+      const css = dir === 1 ? upC : dnC;
+      const bull = dir === 1 && !flipUp ? stop : NaN;
+      const bear = dir === -1 && !flipDown ? stop : NaN;
+      const p = s.plots;
+      p[0][i] = { time: t, value: bull, color: upGlow };
+      p[1][i] = { time: t, value: bull, color: upC };
+      p[2][i] = { time: t, value: bear, color: dnGlow };
+      p[3][i] = { time: t, value: bear, color: dnC };
+      p[4][i] = { time: t, value: stop };
+      p[5][i] = { time: t, value: close };
+      p[6][i] = { time: t, value: flipUp || flipDown ? stop : NaN, color: dir === 1 ? upDot : dnDot };
+
+      // fill(pStop, pPrice, top = dir == 1 ? stop : close, bottom = dir == 1 ? close : stop, topColor, bottomColor)
+      const up = dir === 1;
+      s.topValue[i] = up ? stop : close;
+      s.bottomValue[i] = up ? close : stop;
+      s.topColor[i] = up ? up90 : dn50;
+      s.bottomColor[i] = up ? up50 : dn90;
+
+      // plotcandle(open, high, low, close, color = css, wickcolor = css, bordercolor = css)
+      s.candles[i] = {
+        time: t, open: b.open, high: b.high, low: b.low, close,
+        color: css, wickColor: css, borderColor: css,
+      };
+
+      // alertcondition(flipUp, 'Bullish Flip') / alertcondition(flipDown, 'Bearish Flip')
+      s.flags[0][i] = flipUp;
+      s.flags[1][i] = flipDown;
+      if (flipUp) s.times[0].push(t as number);
+      if (flipDown) s.times[1].push(t as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const [plot0, plot1, plot2, plot3, plot4, plot5, plot6] = s.plots.map((x) => x.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4, plot5, plot6 },
+        fills: [{
+          plot1: 'plot4', plot2: 'plot5',
+          gradient: {
+            topValue: s.topValue.slice(),
+            bottomValue: s.bottomValue.slice(),
+            topColor: s.topColor.slice(),
+            bottomColor: s.bottomColor.slice(),
+          },
+        }],
+        markers: [],
+        plotCandles: { candles: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TerminalVelocityStopLyroRsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TerminalVelocityStopLyroRsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -189,6 +237,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TerminalVelocityStopLyroRs = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

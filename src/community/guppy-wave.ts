@@ -12,7 +12,9 @@
  * Original notice: © UKUTA
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export type GuppyWaveMaType = 'EMA' | 'SMA' | 'WMA' | 'VWMA' | 'HMA' | 'RMA';
 
@@ -70,56 +72,90 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<GuppyWaveInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.maSource);
-  const volume = Series.fromArray(bars, bars.map((b) => b.volume ?? NaN));
+type Point = { time: number; value: number; color: string };
 
+interface GuppyRun extends BarRunState<Record<string, never>> {
+  mas: Array<{ step(v: number, volume: number): number; commit(): void }>;
+  plots: Point[][];
+  bull: boolean[];
+}
+
+function study(inputs: Partial<GuppyWaveInputs>): BarStudy<GuppyRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.maSource);
   // MovingAverage(type, source, period): the type is an input, so the same ta.* call runs on every bar
-  const movingAverage = (period: number): number[] => {
+  const maStep = (period: number): GuppyRun['mas'][number] => {
     switch (cfg.maType) {
-      case 'EMA': return A(ta.ema(src, period));
-      case 'SMA': return A(ta.sma(src, period));
-      case 'WMA': return A(ta.wma(src, period));
-      case 'VWMA': return A(ta.vwma(src, period, volume));
-      case 'HMA': return A(ta.hma(src, period));
-      case 'RMA': return A(ta.rma(src, period));
-      default: return new Array<number>(n).fill(NaN);
+      case 'EMA': { const m = taStep.ema(period); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'SMA': { const m = new WindowSma(period); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'WMA': { const m = taStep.wma(); return { step: (v) => m.step(v, period), commit: () => m.commit() }; }
+      case 'VWMA': { const m = new WindowVwma(period); return { step: (v, vol) => m.step(v, vol), commit: () => m.commit() }; }
+      case 'HMA': { const m = taStep.hma(period); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      case 'RMA': { const m = taStep.rma(period); return { step: (v) => m.step(v), commit: () => m.commit() }; }
+      default: return { step: () => NaN, commit: () => {} };
     }
   };
-  const mas = PERIODS.map(movingAverage);
-
-  const plots: Record<string, { time: number; value: number; color: string }[]> = {};
-  mas.forEach((ma, k) => {
-    const c = String(color.new(LINE_COLORS[k], cfg.fillEMASpace ? 100 : 0));
-    plots[`plot${k}`] = bars.map((b, i) => ({ time: b.time, value: ma[i], color: c }));
-  });
-
-  // fill color = fillEMASpace ? spema6 > lpema1 ? color.new(long_color, tl) : color.new(short_color, ts) : color.new(#ffffff, 100)
-  const bull = mas[5].map((v, i) => gt(v, mas[6][i]));
-  const off = String(color.new('#ffffff', 100));
-  const fills = FILL_TRANSP.map(([tl, ts], k) => {
-    const cl = String(color.new(cfg.longColor, tl));
-    const cs = String(color.new(cfg.shortColor, ts));
-    return {
-      plot1: `plot${k}`,
-      plot2: `plot${k + 1}`,
-      options: { color: cfg.fillEMASpace ? cl : off },
-      colors: bull.map((up) => (cfg.fillEMASpace ? (up ? cl : cs) : off)),
-    };
-  });
-
+  const lineColors = LINE_COLORS.map((c) => String(color.new(c, cfg.fillEMASpace ? 100 : 0)));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills,
+    fullRunReason: () => (isBarSource(cfg.maSource) ? null : 'source of another study'),
+    init() {
+      const mas = PERIODS.map(maStep);
+      const s: GuppyRun = { mas, plots: PERIODS.map(() => []), bull: [], steps: mas, vars: {}, lists: [], series: [] };
+      s.series = [...s.plots, s.bull];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const src = value(b);
+      const volume = b.volume ?? NaN;
+      let ma5 = NaN;
+      let ma6 = NaN;
+      for (let k = 0; k < PERIODS.length; k++) {
+        const ma = s.mas[k].step(src, volume);
+        if (k === 5) ma5 = ma;
+        if (k === 6) ma6 = ma;
+        s.plots[k][i] = { time: b.time, value: ma, color: lineColors[k] };
+      }
+      s.bull[i] = gt(ma5, ma6);
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
+
+      // fill color = fillEMASpace ? spema6 > lpema1 ? color.new(long_color, tl) : color.new(short_color, ts) : color.new(#ffffff, 100)
+      const off = String(color.new('#ffffff', 100));
+      const fills = FILL_TRANSP.map(([tl, ts], k) => {
+        const cl = String(color.new(cfg.longColor, tl));
+        const cs = String(color.new(cfg.shortColor, ts));
+        return {
+          plot1: `plot${k}`,
+          plot2: `plot${k + 1}`,
+          options: { color: cfg.fillEMASpace ? cl : off },
+          colors: s.bull.map((up) => (cfg.fillEMASpace ? (up ? cl : cs) : off)),
+        };
+      });
+
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills,
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<GuppyWaveInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<GuppyWaveInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const GuppyWave = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

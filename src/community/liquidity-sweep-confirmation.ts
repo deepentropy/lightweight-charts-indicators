@@ -14,9 +14,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LiquiditySweepConfirmationInputs {
   /** Pivot bars on each side of a swing */
@@ -53,91 +55,137 @@ const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 /** Pine default plotshape text colour */
 const PINE_TEXT = '#2962FF';
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<LiquiditySweepConfirmationInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface SweepVars {
+  /** var float lastHigh = na, var float lastLow = na */
+  lastHigh: number;
+  lastLow: number;
+  /** var bool */
+  sweptHigh: boolean;
+  sweptLow: boolean;
+  inLong: boolean;
+  inShort: boolean;
+  /** rsiLongExtreme[1], rsiShortExtreme[1] (false on bar 0) */
+  prevLongExtreme: boolean;
+  prevShortExtreme: boolean;
+  /** rejectionLow[1], rejectionHigh[1] */
+  prevRejLow: number;
+  prevRejHigh: number;
+}
+
+interface SweepRun extends BarRunState<SweepVars> {
+  ph: PivotStep;
+  pl: PivotStep;
+  rejLow: WindowExtreme;
+  rejHigh: WindowExtreme;
+  rsi: ReturnType<typeof taStep.rsi>;
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<LiquiditySweepConfirmationInputs>): BarStudy<SweepRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const high = S(bars.map((b) => b.high));
-  const low = S(bars.map((b) => b.low));
-
-  const ph = A(ta.pivothigh(high, cfg.pivotLen, cfg.pivotLen));
-  const pl = A(ta.pivotlow(low, cfg.pivotLen, cfg.pivotLen));
-  const rejectionLow = A(ta.lowest(low, 3));
-  const rejectionHigh = A(ta.highest(high, 3));
-  const rsi = A(ta.rsi(S(bars.map((b) => b.close)), cfg.rsiLen));
-
-  const markers: MarkerData[] = [];
-  let lastHigh = NaN; // var float lastHigh = na
-  let lastLow = NaN;
-  let sweptHigh = false; // var bool
-  let sweptLow = false;
-  let inLong = false;
-  let inShort = false;
-  let prevLongExtreme = false; // rsiLongExtreme[1] (false on bar 0)
-  let prevShortExtreme = false;
-  const flags: boolean[][] = [[], [], [], []];
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    if (!isNaN(ph[i])) lastHigh = ph[i];
-    if (!isNaN(pl[i])) lastLow = pl[i];
-    if (!isNaN(lastHigh) && gt(b.high, lastHigh)) sweptHigh = true;
-    if (!isNaN(lastLow) && lt(b.low, lastLow)) sweptLow = true;
-
-    const sellSignal = sweptHigh && i > 0 && lt(b.close, rejectionLow[i - 1]);
-    const buySignal = sweptLow && i > 0 && gt(b.close, rejectionHigh[i - 1]);
-    if (buySignal) sweptLow = false;
-    if (sellSignal) sweptHigh = false;
-
-    if (buySignal) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
-        textColor: PINE_TEXT });
-    }
-    if (sellSignal) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: PINE_TEXT });
-    }
-
-    if (buySignal) {
-      inLong = true;
-      inShort = false;
-    }
-    if (sellSignal) {
-      inShort = true;
-      inLong = false;
-    }
-    const rsiLongExtreme = inLong && ge(rsi[i], 70);
-    const rsiShortExtreme = inShort && le(rsi[i], 30);
-    const longTP = inLong && prevLongExtreme && lt(rsi[i], 70);
-    const shortTP = inShort && prevShortExtreme && gt(rsi[i], 30);
-    prevLongExtreme = rsiLongExtreme;
-    prevShortExtreme = rsiShortExtreme;
-    if (longTP) inLong = false;
-    if (shortTP) inShort = false;
-    flags[0].push(buySignal);
-    flags[1].push(sellSignal);
-    flags[2].push(longTP);
-    flags[3].push(shortTP);
-
-    if (longTP) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.blue, text: 'TP',
-        textColor: PINE_TEXT });
-    }
-    if (shortTP) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.orange, text: 'TP',
-        textColor: PINE_TEXT });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
+    init() {
+      const ph = new PivotStep(cfg.pivotLen, cfg.pivotLen, true);
+      const pl = new PivotStep(cfg.pivotLen, cfg.pivotLen, false);
+      const rejLow = new WindowExtreme(true, 3);
+      const rejHigh = new WindowExtreme(false, 3);
+      const rsi = taStep.rsi(cfg.rsiLen);
+      const s: SweepRun = {
+        ph, pl, rejLow, rejHigh, rsi, markers: [], flags: [[], [], [], []], times: [[], [], [], []],
+        steps: [ph, pl, rejLow, rejHigh, rsi],
+        vars: {
+          lastHigh: NaN, lastLow: NaN, sweptHigh: false, sweptLow: false, inLong: false, inShort: false,
+          prevLongExtreme: false, prevShortExtreme: false, prevRejLow: NaN, prevRejHigh: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = s.flags;
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const ph = s.ph.step(i, b.high);
+      const pl = s.pl.step(i, b.low);
+      const rejectionLow = s.rejLow.step(b.low);
+      const rejectionHigh = s.rejHigh.step(b.high);
+      const rsi = s.rsi.step(b.close);
+      if (!isNaN(ph)) v.lastHigh = ph;
+      if (!isNaN(pl)) v.lastLow = pl;
+      if (!isNaN(v.lastHigh) && gt(b.high, v.lastHigh)) v.sweptHigh = true;
+      if (!isNaN(v.lastLow) && lt(b.low, v.lastLow)) v.sweptLow = true;
+
+      const sellSignal = v.sweptHigh && i > 0 && lt(b.close, v.prevRejLow);
+      const buySignal = v.sweptLow && i > 0 && gt(b.close, v.prevRejHigh);
+      v.prevRejLow = rejectionLow;
+      v.prevRejHigh = rejectionHigh;
+      if (buySignal) v.sweptLow = false;
+      if (sellSignal) v.sweptHigh = false;
+
+      if (buySignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
+          textColor: PINE_TEXT });
+      }
+      if (sellSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: PINE_TEXT });
+      }
+
+      if (buySignal) {
+        v.inLong = true;
+        v.inShort = false;
+      }
+      if (sellSignal) {
+        v.inShort = true;
+        v.inLong = false;
+      }
+      const rsiLongExtreme = v.inLong && ge(rsi, 70);
+      const rsiShortExtreme = v.inShort && le(rsi, 30);
+      const longTP = v.inLong && v.prevLongExtreme && lt(rsi, 70);
+      const shortTP = v.inShort && v.prevShortExtreme && gt(rsi, 30);
+      v.prevLongExtreme = rsiLongExtreme;
+      v.prevShortExtreme = rsiShortExtreme;
+      if (longTP) v.inLong = false;
+      if (shortTP) v.inShort = false;
+      const flags = [buySignal, sellSignal, longTP, shortTP];
+      for (let k = 0; k < 4; k++) {
+        s.flags[k][i] = flags[k];
+        if (flags[k]) s.times[k].push(b.time as number);
+      }
+
+      if (longTP) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.blue, text: 'TP',
+          textColor: PINE_TEXT });
+      }
+      if (shortTP) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.orange, text: 'TP',
+          textColor: PINE_TEXT });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LiquiditySweepConfirmationInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<LiquiditySweepConfirmationInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -150,6 +198,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const LiquiditySweepConfirmation = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

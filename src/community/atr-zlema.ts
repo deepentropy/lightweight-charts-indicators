@@ -12,9 +12,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, getSourceSeries, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ATRZLEMAInputs {
   /** Price source of the ZLEMA */
@@ -95,12 +97,35 @@ const COLOR_PRESETS: Record<string, [string, string]> = {
   Neon: ['#ffff00', '#ff00ff'],
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<ATRZLEMAInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
+
+interface ZlemaVars {
+  /** var float zlema = na; var float zlemaATR = na; var int trend = 1 */
+  zlema: number;
+  zlemaATR: number;
+  trend: number;
+}
+
+interface ZlemaRun extends BarRunState<ZlemaVars> {
+  tr: ReturnType<typeof taStep.tr>;
+  atr: ReturnType<typeof taStep.rma>;
+  ema: ReturnType<typeof taStep.ema>;
+  src: number[];
+  zlemaArr: number[];
+  zlemaATRArr: number[];
+  trendArr: number[];
+  topColor: (string | null)[];
+  bottomColor: (string | null)[];
+  plots: Point[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<ATRZLEMAInputs>): BarStudy<ZlemaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   let { zlemaLength, atrLength, atrMultiplier, noiseFilter } = cfg;
   if (cfg.presetConfig === 'Fast Response') {
     zlemaLength = 10;
@@ -114,109 +139,135 @@ export function calculate(
     noiseFilter = 0.5;
   }
   const [bullColor, bearColor] = COLOR_PRESETS[cfg.colorPreset] ?? [cfg.bullColorInput, cfg.bearColorInput];
-
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  // atr = ta.rma(ta.tr(true), atrLength)
-  const atr = A(ta.rma(ta.tr(bars, true), atrLength));
-  // lag = math.floor((zlemaLength - 1) / 2); rawZlema = ta.ema(source + (source - source[lag]), zlemaLength)
+  // lag = math.floor((zlemaLength - 1) / 2)
   const lag = Math.floor((zlemaLength - 1) / 2);
-  const src = A(getSourceSeries(bars, cfg.source));
-  const zlSrc = src.map((v, i) => (i >= lag ? v + (v - src[i - lag]) : NaN));
-  const rawZlema = A(ta.ema(Series.fromArray(bars, zlSrc), zlemaLength));
-
-  const zlemaArr: number[] = new Array(n);
-  const zlemaATRArr: number[] = new Array(n);
-  const trendArr: number[] = new Array(n);
-  let zlema = NaN; // var float zlema = na
-  let zlemaATR = NaN; // var float zlemaATR = na
-  let trend = 1; // var int trend = 1
-  for (let i = 0; i < n; i++) {
-    if (isNaN(zlema)) {
-      zlema = rawZlema[i];
-    } else if (cfg.enableNoiseFilter) {
-      const noiseThreshold = atr[i] * noiseFilter;
-      const priceChange = Math.abs(rawZlema[i] - zlema);
-      if (gt(priceChange, noiseThreshold)) zlema = rawZlema[i];
-    } else {
-      zlema = rawZlema[i];
-    }
-
-    const atrBand = atr[i] * atrMultiplier;
-    if (isNaN(zlemaATR)) zlemaATR = zlema - atrBand;
-
-    // math.max / math.min return na when an argument is na (JS Math.max / Math.min too)
-    if (trend === 1) {
-      if (lt(zlema, zlemaATR)) {
-        trend = -1;
-        zlemaATR = zlema + atrBand;
-      } else {
-        zlemaATR = Math.max(zlemaATR, zlema - atrBand);
-      }
-    } else {
-      if (gt(zlema, zlemaATR)) {
-        trend = 1;
-        zlemaATR = zlema - atrBand;
-      } else {
-        zlemaATR = Math.min(zlemaATR, zlema + atrBand);
-      }
-    }
-    zlemaArr[i] = zlema;
-    zlemaATRArr[i] = zlemaATR;
-    trendArr[i] = trend;
-  }
-
-  const trendColor = (i: number) => (trendArr[i] === 1 ? bullColor : bearColor);
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
+  const source = barSource(cfg.source);
   const bullGlow = String(color.new(bullColor, 50));
   const bearGlow = String(color.new(bearColor, 50));
-  const bullFlags: boolean[] = [], bearFlags: boolean[] = [], anyFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    // bullSignal = trend == 1 and trend[1] == -1 (trend[1] is na on the first bar)
-    const bullSignal = i > 0 && trendArr[i] === 1 && trendArr[i - 1] === -1;
-    const bearSignal = i > 0 && trendArr[i] === -1 && trendArr[i - 1] === 1;
-    bullFlags.push(bullSignal);
-    bearFlags.push(bearSignal);
-    anyFlags.push(bullSignal || bearSignal);
-    const price = zlemaATRArr[i];
-    if (cfg.showShapes && !isNaN(price)) {
-      // plotshape(showShapes and bullSignal ? zlemaATR : na, shape.triangleup, location.absolute, bullColor, size.tiny)
-      // then the glow: color.new(bullColor, 50), size.small (same for the bearish triangles); ids: the four plotshapes
-      if (bullSignal) {
-        markers.push({ time: t, position: 'atPriceMiddle', price, shape: 'triangleUp', color: bullColor, size: 'tiny', id: 'shape0' });
-        markers.push({ time: t, position: 'atPriceMiddle', price, shape: 'triangleUp', color: bullGlow, size: 'small', id: 'shape1' });
-      }
-      if (bearSignal) {
-        markers.push({ time: t, position: 'atPriceMiddle', price, shape: 'triangleDown', color: bearColor, size: 'tiny', id: 'shape2' });
-        markers.push({ time: t, position: 'atPriceMiddle', price, shape: 'triangleDown', color: bearGlow, size: 'small', id: 'shape3' });
-      }
-    }
-    // barcolor(enableBarColoring ? color.new(trendColor, barTransparency) : na)
-    if (cfg.enableBarColoring) barColors.push({ time: t, color: String(color.new(trendColor(i), cfg.barTransparency)) });
-  }
-
-  // fill(pZLEMAATR, pPrice, zlemaATR, zlema, color.new(trendColor, cloudTransparency), color.new(trendColor, 100))
-  const topColor = bars.map((_b, i): string | null => String(color.new(trendColor(i), cfg.cloudTransparency)));
-  const bottomColor = bars.map((_b, i): string | null => String(color.new(trendColor(i), 100)));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(zlemaATR, 'ATR ZLEMA', color = trendColor, linewidth = 2, display = display.none)
-      plot0: bars.map((b, i) => ({ time: b.time, value: zlemaATRArr[i], color: trendColor(i) })),
-      // plot(zlema, 'ZLEMA', display = display.none)
-      plot1: bars.map((b, i) => ({ time: b.time, value: zlemaArr[i] })),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      // atr = ta.rma(ta.tr(true), atrLength)
+      const tr = taStep.tr(true);
+      const atr = taStep.rma(atrLength);
+      const ema = taStep.ema(zlemaLength);
+      const s: ZlemaRun = {
+        tr, atr, ema, src: [], zlemaArr: [], zlemaATRArr: [], trendArr: [], topColor: [], bottomColor: [],
+        plots: [[], []], markers: [], barColors: [], flags: [[], [], []], times: [[], [], []],
+        steps: [tr, atr, ema], vars: { zlema: NaN, zlemaATR: NaN, trend: 1 }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = [s.src, s.zlemaArr, s.zlemaATRArr, s.trendArr, s.topColor, s.bottomColor, ...s.plots, ...s.flags];
+      return s;
     },
-    fills: [{
-      plot1: 'plot0', plot2: 'plot1',
-      gradient: { topValue: zlemaATRArr, bottomValue: zlemaArr, topColor, bottomColor },
-    }],
-    markers,
-    barColors,
-    // alertcondition(bullSignal) / alertcondition(bearSignal) / alertcondition(bullSignal or bearSignal)
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags, anyFlags]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const atr = s.atr.step(s.tr.step(b.high, b.low, b.close));
+      // rawZlema = ta.ema(source + (source - source[lag]), zlemaLength)
+      const val = source(b);
+      s.src[i] = val;
+      const rawZlema = s.ema.step(i >= lag ? val + (val - s.src[i - lag]) : NaN);
+
+      if (isNaN(v.zlema)) {
+        v.zlema = rawZlema;
+      } else if (cfg.enableNoiseFilter) {
+        const noiseThreshold = atr * noiseFilter;
+        const priceChange = Math.abs(rawZlema - v.zlema);
+        if (gt(priceChange, noiseThreshold)) v.zlema = rawZlema;
+      } else {
+        v.zlema = rawZlema;
+      }
+      const zlema = v.zlema;
+
+      const atrBand = atr * atrMultiplier;
+      if (isNaN(v.zlemaATR)) v.zlemaATR = zlema - atrBand;
+
+      // math.max / math.min return na when an argument is na (JS Math.max / Math.min too)
+      if (v.trend === 1) {
+        if (lt(zlema, v.zlemaATR)) {
+          v.trend = -1;
+          v.zlemaATR = zlema + atrBand;
+        } else {
+          v.zlemaATR = Math.max(v.zlemaATR, zlema - atrBand);
+        }
+      } else {
+        if (gt(zlema, v.zlemaATR)) {
+          v.trend = 1;
+          v.zlemaATR = zlema - atrBand;
+        } else {
+          v.zlemaATR = Math.min(v.zlemaATR, zlema + atrBand);
+        }
+      }
+      const trend = v.trend;
+      const zlemaATR = v.zlemaATR;
+      s.zlemaArr[i] = zlema;
+      s.zlemaATRArr[i] = zlemaATR;
+      s.trendArr[i] = trend;
+
+      const trendColor = trend === 1 ? bullColor : bearColor;
+      // bullSignal = trend == 1 and trend[1] == -1 (trend[1] is na on the first bar)
+      const bullSignal = i > 0 && trend === 1 && s.trendArr[i - 1] === -1;
+      const bearSignal = i > 0 && trend === -1 && s.trendArr[i - 1] === 1;
+      s.flags[0][i] = bullSignal;
+      s.flags[1][i] = bearSignal;
+      s.flags[2][i] = bullSignal || bearSignal;
+      if (bullSignal) s.times[0].push(t as number);
+      if (bearSignal) s.times[1].push(t as number);
+      if (bullSignal || bearSignal) s.times[2].push(t as number);
+      const price = zlemaATR;
+      if (cfg.showShapes && !isNaN(price)) {
+        // plotshape(showShapes and bullSignal ? zlemaATR : na, shape.triangleup, location.absolute, bullColor, size.tiny)
+        // then the glow: color.new(bullColor, 50), size.small (same for the bearish triangles); ids: the four plotshapes
+        if (bullSignal) {
+          s.markers.push({ time: t, position: 'atPriceMiddle', price, shape: 'triangleUp', color: bullColor, size: 'tiny', id: 'shape0' });
+          s.markers.push({ time: t, position: 'atPriceMiddle', price, shape: 'triangleUp', color: bullGlow, size: 'small', id: 'shape1' });
+        }
+        if (bearSignal) {
+          s.markers.push({ time: t, position: 'atPriceMiddle', price, shape: 'triangleDown', color: bearColor, size: 'tiny', id: 'shape2' });
+          s.markers.push({ time: t, position: 'atPriceMiddle', price, shape: 'triangleDown', color: bearGlow, size: 'small', id: 'shape3' });
+        }
+      }
+      // barcolor(enableBarColoring ? color.new(trendColor, barTransparency) : na)
+      if (cfg.enableBarColoring) s.barColors.push({ time: t, color: String(color.new(trendColor, cfg.barTransparency)) });
+
+      // fill(pZLEMAATR, pPrice, zlemaATR, zlema, color.new(trendColor, cloudTransparency), color.new(trendColor, 100))
+      s.topColor[i] = String(color.new(trendColor, cfg.cloudTransparency));
+      s.bottomColor[i] = String(color.new(trendColor, 100));
+      // plot(zlemaATR, 'ATR ZLEMA', color = trendColor, linewidth = 2, display = display.none)
+      s.plots[0][i] = { time: t, value: zlemaATR, color: trendColor };
+      // plot(zlema, 'ZLEMA', display = display.none)
+      s.plots[1][i] = { time: t, value: zlema };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice() },
+        fills: [{
+          plot1: 'plot0', plot2: 'plot1',
+          gradient: {
+            topValue: s.zlemaATRArr.slice(), bottomValue: s.zlemaArr.slice(), topColor: s.topColor.slice(),
+            bottomColor: s.bottomColor.slice(),
+          },
+        }],
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        // alertcondition(bullSignal) / alertcondition(bearSignal) / alertcondition(bullSignal or bearSignal)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ATRZLEMAInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<ATRZLEMAInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -231,6 +282,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const ATRZLEMA = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

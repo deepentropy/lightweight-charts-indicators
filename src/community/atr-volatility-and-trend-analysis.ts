@@ -14,9 +14,10 @@
  * Original notice: © dchunt-stack. Copyright © 2025 dchunt-stack. All rights reserved
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { AlertCall, MarkerData } from '../types';
-import { crossedOver, crossedUnder } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 /** The original makes alert() calls */
 export const hasAlertFunction = true;
@@ -106,86 +107,134 @@ export const metadata = {
 const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AtrVolatilityAndTrendAnalysisInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alertCalls: AlertCall[] };
+
+interface AtrVars {
+  /** volBreakout[1] (false before the first bar) */
+  prevBreakout: boolean;
+  /** trendDirection[1] (na before the first bar: `!=` is false) */
+  prevTrend: number;
+  /** close[1], upperBand1[1], lowerBand1[1] of the crosses */
+  prevClose: number;
+  prevUpper: number;
+  prevLower: number;
+}
+
+interface AtrRun extends BarRunState<AtrVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  atrSma: WindowSma;
+  srcSma: WindowSma;
+  atrSmaTrend: WindowSma;
+  markers: MarkerData[];
+  alertCalls: AlertCall[];
+  plots: Point[][];
+}
+
+function study(inputs: Partial<AtrVolatilityAndTrendAnalysisInputs>): BarStudy<AtrRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-
-  const atrValue = A(ta.atr(bars, cfg.atrLength));
-  const atrSma = A(ta.sma(S(atrValue), cfg.atrLength));
-  // getTrendDirection(close, atrValue, trendLength)
-  const srcSma = A(ta.sma(S(close), cfg.trendLength));
-  const atrSmaTrend = A(ta.sma(S(atrValue), cfg.trendLength));
-
-  // atrCrossover = ta.crossover(close, upperBand1); atrCrossunder = ta.crossunder(close, lowerBand1)
-  const atrCrossover = crossedOver(close, close.map((c, i) => c + atrValue[i] * cfg.band1Mult));
-  const atrCrossunder = crossedUnder(close, close.map((c, i) => c - atrValue[i] * cfg.band1Mult));
-
-  const markers: MarkerData[] = [];
-  const alertCalls: AlertCall[] = [];
-  const call = (time: number, message: string) => alertCalls.push({ time, message, freq: 'once_per_bar_close' });
-  let prevBreakout = false; // volBreakout[1] (false before the first bar)
-  let prevTrend = NaN; // trendDirection[1] (na before the first bar: `!=` is false)
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const volBreakout = gt(atrValue[i], atrSma[i] * cfg.volThreshold);
-    const volSignal = volBreakout && !prevBreakout;
-    prevBreakout = volBreakout;
-
-    const priceAboveSma = gt(close[i], srcSma[i]);
-    const atrRising = gt(atrValue[i], atrSmaTrend[i]);
-    const trend = priceAboveSma && atrRising ? 1 : !priceAboveSma && atrRising ? -1 : 0;
-    const bullishTrend = trend === 1 && !isNaN(prevTrend) && prevTrend !== 1;
-    const bearishTrend = trend === -1 && !isNaN(prevTrend) && prevTrend !== -1;
-    prevTrend = trend;
-
-    if (volSignal) call(t, 'ATR Volatility Breakout');
-    if (bullishTrend) call(t, 'ATR Bullish Trend Signal');
-    if (bearishTrend) call(t, 'ATR Bearish Trend Signal');
-    if (atrCrossover[i]) call(t, 'Price Above ATR Band 1');
-    if (atrCrossunder[i]) call(t, 'Price Below ATR Band 1');
-
-    if (cfg.showVolSignals && volSignal) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: cfg.signalColor, size: 'tiny' });
-    }
-    if (cfg.showTrend && bullishTrend) {
-      markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: cfg.bullTrendSignalColor, text: '↑',
-        textColor: color.white, size: 'tiny' });
-    }
-    if (cfg.showTrend && bearishTrend) {
-      markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: cfg.bearTrendSignalColor, text: '↓',
-        textColor: color.white, size: 'tiny' });
-    }
-  }
-
-  // getBands(close, atrValue, mult): close +- atrValue * mult
-  const band = (sign: number, mult: number, col: string) => bars.map((b, i) => ({
-    time: b.time, value: cfg.showBands ? b.close + sign * (atrValue[i] * mult) : NaN, color: col,
-  }));
-  const plots = {
-    plot0: band(1, cfg.band1Mult, cfg.upperBandColor),
-    plot1: band(-1, cfg.band1Mult, cfg.lowerBandColor),
-    plot2: band(1, cfg.band2Mult, String(color.new(cfg.upperBandColor, 60))),
-    plot3: band(-1, cfg.band2Mult, String(color.new(cfg.lowerBandColor, 60))),
-    plot4: band(1, cfg.band3Mult, String(color.new(cfg.upperBandColor, 80))),
-    plot5: band(-1, cfg.band3Mult, String(color.new(cfg.lowerBandColor, 80))),
-  };
-
+  const mults = [cfg.band1Mult, cfg.band1Mult, cfg.band2Mult, cfg.band2Mult, cfg.band3Mult, cfg.band3Mult];
+  const signs = [1, -1, 1, -1, 1, -1];
+  const cols = [
+    cfg.upperBandColor, cfg.lowerBandColor,
+    String(color.new(cfg.upperBandColor, 60)), String(color.new(cfg.lowerBandColor, 60)),
+    String(color.new(cfg.upperBandColor, 80)), String(color.new(cfg.lowerBandColor, 80)),
+  ];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    markers,
-    alertCalls,
+    init() {
+      const atr = taStep.atr(cfg.atrLength);
+      const atrSma = new WindowSma(cfg.atrLength);
+      // getTrendDirection(close, atrValue, trendLength)
+      const srcSma = new WindowSma(cfg.trendLength);
+      const atrSmaTrend = new WindowSma(cfg.trendLength);
+      const s: AtrRun = {
+        atr, atrSma, srcSma, atrSmaTrend, markers: [], alertCalls: [], plots: mults.map(() => []),
+        steps: [atr, atrSma, srcSma, atrSmaTrend],
+        vars: { prevBreakout: false, prevTrend: NaN, prevClose: NaN, prevUpper: NaN, prevLower: NaN },
+        lists: [], series: [],
+      };
+      s.lists = [s.markers, s.alertCalls];
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time as number;
+      const close = b.close;
+      const atrValue = s.atr.step(b.high, b.low, close);
+      const atrSma = s.atrSma.step(atrValue);
+      const srcSma = s.srcSma.step(close);
+      const atrSmaTrend = s.atrSmaTrend.step(atrValue);
+
+      // atrCrossover = ta.crossover(close, upperBand1); atrCrossunder = ta.crossunder(close, lowerBand1)
+      const upper = close + atrValue * cfg.band1Mult;
+      const lower = close - atrValue * cfg.band1Mult;
+      const atrCrossover = close > upper && v.prevClose <= v.prevUpper;
+      const atrCrossunder = close < lower && v.prevClose >= v.prevLower;
+      v.prevClose = close;
+      v.prevUpper = upper;
+      v.prevLower = lower;
+
+      const call = (message: string) => s.alertCalls.push({ time: t, message, freq: 'once_per_bar_close' });
+      const volBreakout = gt(atrValue, atrSma * cfg.volThreshold);
+      const volSignal = volBreakout && !v.prevBreakout;
+      v.prevBreakout = volBreakout;
+
+      const priceAboveSma = gt(close, srcSma);
+      const atrRising = gt(atrValue, atrSmaTrend);
+      const trend = priceAboveSma && atrRising ? 1 : !priceAboveSma && atrRising ? -1 : 0;
+      const bullishTrend = trend === 1 && !isNaN(v.prevTrend) && v.prevTrend !== 1;
+      const bearishTrend = trend === -1 && !isNaN(v.prevTrend) && v.prevTrend !== -1;
+      v.prevTrend = trend;
+
+      if (volSignal) call('ATR Volatility Breakout');
+      if (bullishTrend) call('ATR Bullish Trend Signal');
+      if (bearishTrend) call('ATR Bearish Trend Signal');
+      if (atrCrossover) call('Price Above ATR Band 1');
+      if (atrCrossunder) call('Price Below ATR Band 1');
+
+      if (cfg.showVolSignals && volSignal) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'circle', color: cfg.signalColor, size: 'tiny' });
+      }
+      if (cfg.showTrend && bullishTrend) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'labelUp', color: cfg.bullTrendSignalColor, text: '↑',
+          textColor: color.white, size: 'tiny' });
+      }
+      if (cfg.showTrend && bearishTrend) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'labelDown', color: cfg.bearTrendSignalColor, text: '↓',
+          textColor: color.white, size: 'tiny' });
+      }
+
+      // getBands(close, atrValue, mult): close +- atrValue * mult
+      for (let k = 0; k < 6; k++) {
+        s.plots[k][i] = { time: b.time, value: cfg.showBands ? close + signs[k] * (atrValue * mults[k]) : NaN, color: cols[k] };
+      }
+    },
+    result(s) {
+      const [plot0, plot1, plot2, plot3, plot4, plot5] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4, plot5 },
+        markers: s.markers.slice(),
+        alertCalls: s.alertCalls.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AtrVolatilityAndTrendAnalysisInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AtrVolatilityAndTrendAnalysisInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AtrVolatilityAndTrendAnalysis = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

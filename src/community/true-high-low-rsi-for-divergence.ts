@@ -9,7 +9,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrueHighLowRsiForDivergenceInputs {
   /** Colour of the High RSI line */
@@ -59,46 +61,78 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<TrueHighLowRsiForDivergenceInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+type Steps = { change: ReturnType<typeof taStep.change>; up: ReturnType<typeof taStep.rma>; down: ReturnType<typeof taStep.rma> };
+
+interface ThlRun extends BarRunState<Record<string, never>> {
+  high: Steps;
+  low: Steps;
+  /** The source values of another study (null: read from the bars) */
+  extHigh: number[] | null;
+  extLow: number[] | null;
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<TrueHighLowRsiForDivergenceInputs>): BarStudy<ThlRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const rsiOf = (src: Series) => {
-    const ch = A(ta.change(src));
+  const highValue = barSource(cfg.rsiSourceHigh);
+  const lowValue = barSource(cfg.rsiSourceLow);
+  const steps = (): Steps => ({ change: taStep.change(), up: taStep.rma(cfg.rsiLength), down: taStep.rma(cfg.rsiLength) });
+  const rsiOf = (m: Steps, src: number) => {
+    const c = m.change.step(src);
     // math.max(na, 0) and math.min(na, 0) are na
-    const up = A(ta.rma(S(ch.map((c) => Math.max(c, 0))), cfg.rsiLength));
-    const down = A(ta.rma(S(ch.map((c) => -Math.min(c, 0))), cfg.rsiLength));
-    return up.map((u, i) => {
-      const d = down[i];
-      return eq(d, 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / d);
-    });
+    const u = m.up.step(Math.max(c, 0));
+    const d = m.down.step(-Math.min(c, 0));
+    return eq(d, 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / d);
   };
-  const rsiHigh = rsiOf(getSourceSeries(bars, cfg.rsiSourceHigh));
-  const rsiLow = rsiOf(getSourceSeries(bars, cfg.rsiSourceLow));
-
-  const plot0 = bars.map((b, i) => {
-    const r = rsiHigh[i];
-    const transparency = gt(r, 50) ? Math.max(0, (70 - r) * 2) : 100;
-    return { time: b.time, value: r, color: String(color.new(cfg.highRsiColor, transparency)) };
-  });
-  const plot1 = bars.map((b, i) => {
-    const r = rsiLow[i];
-    const transparency = lt(r, 50) ? Math.max(0, (r - 30) * 2) : 100;
-    return { time: b.time, value: r, color: String(color.new(cfg.lowRsiColor, transparency)) };
-  });
+  const ext = (bars: Bar[], src: SourceType) => (isBarSource(src) ? null : getSourceSeries(bars, src).toArray());
 
   return {
-    metadata: {
-      title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay,
-      precision: metadata.precision, format: metadata.format,
+    fullRunReason: () => (isBarSource(cfg.rsiSourceHigh) && isBarSource(cfg.rsiSourceLow) ? null : 'source of another study'),
+    init(bars) {
+      const high = steps();
+      const low = steps();
+      const s: ThlRun = {
+        high, low, extHigh: ext(bars, cfg.rsiSourceHigh), extLow: ext(bars, cfg.rsiSourceLow), plot0: [], plot1: [],
+        steps: [high.change, high.up, high.down, low.change, low.up, low.down], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plot0, s.plot1];
+      return s;
     },
-    plots: { plot0, plot1 },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const rsiHigh = rsiOf(s.high, s.extHigh ? s.extHigh[i] : highValue(b));
+      const rsiLow = rsiOf(s.low, s.extLow ? s.extLow[i] : lowValue(b));
+      const tHigh = gt(rsiHigh, 50) ? Math.max(0, (70 - rsiHigh) * 2) : 100;
+      s.plot0[i] = { time: b.time, value: rsiHigh, color: String(color.new(cfg.highRsiColor, tHigh)) };
+      const tLow = lt(rsiLow, 50) ? Math.max(0, (rsiLow - 30) * 2) : 100;
+      s.plot1[i] = { time: b.time, value: rsiLow, color: String(color.new(cfg.lowRsiColor, tLow)) };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay,
+          precision: metadata.precision, format: metadata.format,
+        },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrueHighLowRsiForDivergenceInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TrueHighLowRsiForDivergenceInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TrueHighLowRsiForDivergence = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

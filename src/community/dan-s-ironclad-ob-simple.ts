@@ -10,7 +10,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DanSIroncladObSimpleInputs {
   /** Pivot length (bars on each side) */
@@ -51,102 +53,137 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<DanSIroncladObSimpleInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface ObVars {
+  lastHigh: number;
+  lastLow: number;
+  buyZoneTop: number;
+  buyZoneBtm: number;
+  sellZoneTop: number;
+  sellZoneBtm: number;
+  /** ta.crossover / ta.crossunder: the values of the last bar where both were not na */
+  pcH: number;
+  pH1: number;
+  pcL: number;
+  pL1: number;
+}
+
+interface ObRun extends BarRunState<ObVars> {
+  pH: PivotStep;
+  pL: PivotStep;
+  plots: Point[][];
+  buyColors: string[];
+  sellColors: string[];
+}
+
+function study(inputs: Partial<DanSIroncladObSimpleInputs>): BarStudy<ObRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const pH = A(ta.pivothigh(S(bars.map((b) => b.high)), cfg.pivotLen, cfg.pivotLen));
-  const pL = A(ta.pivotlow(S(bars.map((b) => b.low)), cfg.pivotLen, cfg.pivotLen));
-
-  const buyTop = new Array<number>(n);
-  const buyBtm = new Array<number>(n);
-  const sellTop = new Array<number>(n);
-  const sellBtm = new Array<number>(n);
-  let lastHigh = NaN;
-  let lastLow = NaN;
-  let buyZoneTop = NaN;
-  let buyZoneBtm = NaN;
-  let sellZoneTop = NaN;
-  let sellZoneBtm = NaN;
-  // ta.crossover / ta.crossunder: compared with the last bar where both values were not na; a tie there counts
-  let pcH = NaN;
-  let pH1 = NaN;
-  let pcL = NaN;
-  let pL1 = NaN;
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    if (!isNaN(pH[i])) lastHigh = pH[i];
-    if (!isNaN(pL[i])) lastLow = pL[i];
-
-    // ta.crossover(close, lastHigh) / ta.crossunder(close, lastLow) compare exactly (no 1e-10 tolerance; na compares
-    // false)
-    const bullBreak = close > lastHigh && pcH <= pH1;
-    const bearBreak = close < lastLow && pcL >= pL1;
-    if (!isNaN(close) && !isNaN(lastHigh)) {
-      pcH = close;
-      pH1 = lastHigh;
-    }
-    if (!isNaN(close) && !isNaN(lastLow)) {
-      pcL = close;
-      pL1 = lastLow;
-    }
-
-    // Buy zone: the last down candle of the 50 bars before the break
-    if (bullBreak && !isNaN(lastHigh)) {
-      for (let k = 1; k <= 50 && i - k >= 0; k++) {
-        if (lt(bars[i - k].close, bars[i - k].open)) {
-          buyZoneTop = bars[i - k].high;
-          buyZoneBtm = bars[i - k].low;
-          break;
-        }
-      }
-      lastHigh = NaN;
-    }
-    // Sell zone: the last up candle of the 50 bars before the break
-    if (bearBreak && !isNaN(lastLow)) {
-      for (let k = 1; k <= 50 && i - k >= 0; k++) {
-        if (gt(bars[i - k].close, bars[i - k].open)) {
-          sellZoneTop = bars[i - k].high;
-          sellZoneBtm = bars[i - k].low;
-          break;
-        }
-      }
-      lastLow = NaN;
-    }
-
-    // Mitigation
-    if (lt(close, buyZoneBtm)) {
-      buyZoneTop = NaN;
-      buyZoneBtm = NaN;
-    }
-    if (gt(close, sellZoneTop)) {
-      sellZoneTop = NaN;
-      sellZoneBtm = NaN;
-    }
-    buyTop[i] = buyZoneTop;
-    buyBtm[i] = buyZoneBtm;
-    sellTop[i] = sellZoneTop;
-    sellBtm[i] = sellZoneBtm;
-  }
-
-  const P = (v: number[]) => bars.map((b, i) => ({ time: b.time, value: v[i], color: 'transparent' }));
-  // fill(p1, p2, buyZoneTop > 0 ? obColorBull : na, "Buy Zone"); fill(p3, p4, sellZoneTop > 0 ? obColorBear : na, "Sell Zone")
-  const buyColors = buyTop.map((v) => (gt(v, 0) ? cfg.obColorBull : 'transparent'));
-  const sellColors = sellTop.map((v) => (gt(v, 0) ? cfg.obColorBear : 'transparent'));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: P(buyTop), plot1: P(buyBtm), plot2: P(sellTop), plot3: P(sellBtm) },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Buy Zone', color: cfg.obColorBull }, colors: buyColors },
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Sell Zone', color: cfg.obColorBear }, colors: sellColors },
-    ],
+    init() {
+      const pH = new PivotStep(cfg.pivotLen, cfg.pivotLen, true);
+      const pL = new PivotStep(cfg.pivotLen, cfg.pivotLen, false);
+      const s: ObRun = {
+        pH, pL, plots: Array.from({ length: 4 }, () => []), buyColors: [], sellColors: [], steps: [pH, pL],
+        vars: {
+          lastHigh: NaN, lastLow: NaN, buyZoneTop: NaN, buyZoneBtm: NaN, sellZoneTop: NaN, sellZoneBtm: NaN,
+          pcH: NaN, pH1: NaN, pcL: NaN, pL1: NaN,
+        },
+        lists: [], series: [],
+      };
+      s.series = [...s.plots, s.buyColors, s.sellColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const close = b.close;
+      const pH = s.pH.step(i, b.high);
+      const pL = s.pL.step(i, b.low);
+      if (!isNaN(pH)) v.lastHigh = pH;
+      if (!isNaN(pL)) v.lastLow = pL;
+
+      // ta.crossover(close, lastHigh) / ta.crossunder(close, lastLow) compare exactly (no 1e-10 tolerance; na compares
+      // false)
+      const bullBreak = close > v.lastHigh && v.pcH <= v.pH1;
+      const bearBreak = close < v.lastLow && v.pcL >= v.pL1;
+      if (!isNaN(close) && !isNaN(v.lastHigh)) {
+        v.pcH = close;
+        v.pH1 = v.lastHigh;
+      }
+      if (!isNaN(close) && !isNaN(v.lastLow)) {
+        v.pcL = close;
+        v.pL1 = v.lastLow;
+      }
+
+      // Buy zone: the last down candle of the 50 bars before the break
+      if (bullBreak && !isNaN(v.lastHigh)) {
+        for (let k = 1; k <= 50 && i - k >= 0; k++) {
+          if (lt(bars[i - k].close, bars[i - k].open)) {
+            v.buyZoneTop = bars[i - k].high;
+            v.buyZoneBtm = bars[i - k].low;
+            break;
+          }
+        }
+        v.lastHigh = NaN;
+      }
+      // Sell zone: the last up candle of the 50 bars before the break
+      if (bearBreak && !isNaN(v.lastLow)) {
+        for (let k = 1; k <= 50 && i - k >= 0; k++) {
+          if (gt(bars[i - k].close, bars[i - k].open)) {
+            v.sellZoneTop = bars[i - k].high;
+            v.sellZoneBtm = bars[i - k].low;
+            break;
+          }
+        }
+        v.lastLow = NaN;
+      }
+
+      // Mitigation
+      if (lt(close, v.buyZoneBtm)) {
+        v.buyZoneTop = NaN;
+        v.buyZoneBtm = NaN;
+      }
+      if (gt(close, v.sellZoneTop)) {
+        v.sellZoneTop = NaN;
+        v.sellZoneBtm = NaN;
+      }
+      const time = b.time;
+      const p = s.plots;
+      p[0][i] = { time, value: v.buyZoneTop, color: 'transparent' };
+      p[1][i] = { time, value: v.buyZoneBtm, color: 'transparent' };
+      p[2][i] = { time, value: v.sellZoneTop, color: 'transparent' };
+      p[3][i] = { time, value: v.sellZoneBtm, color: 'transparent' };
+      // fill(p1, p2, buyZoneTop > 0 ? obColorBull : na, "Buy Zone"); fill(p3, p4, sellZoneTop > 0 ? obColorBear : na, "Sell Zone")
+      s.buyColors[i] = gt(v.buyZoneTop, 0) ? cfg.obColorBull : 'transparent';
+      s.sellColors[i] = gt(v.sellZoneTop, 0) ? cfg.obColorBear : 'transparent';
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Buy Zone', color: cfg.obColorBull }, colors: s.buyColors.slice() },
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Sell Zone', color: cfg.obColorBear }, colors: s.sellColors.slice() },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DanSIroncladObSimpleInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DanSIroncladObSimpleInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const DanSIroncladObSimple = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

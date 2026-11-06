@@ -9,7 +9,9 @@
  * Reference: "Fibonacci levels" (community)
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface FibonacciLevelsInputs {
   fastPeriod: number;
@@ -48,86 +50,97 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<FibonacciLevelsInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number };
+
+const PLOT_IDS = ['midline', 'up1', 'up2', 'up3', 'up4', 'up5', 'up6', 'down1', 'down2', 'down3', 'down4', 'down5', 'down6'];
+
+interface FibLevelsRun extends BarRunState<Record<string, never>> {
+  mid: ReturnType<typeof taStep.ema>;
+  dev: WindowStdev;
+  lm: ReturnType<typeof taStep.ema>;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<FibonacciLevelsInputs>): BarStudy<FibLevelsRun, IndicatorResult> {
   const { emaPeriod } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // effclose = max(open,close) if close>=open, else min(open,close)
-  const effCloseSeries = new Series(bars, (b) =>
-    b.close >= b.open ? Math.max(b.open, b.close) : Math.min(b.open, b.close)
-  );
-
-  const midlineArr = ta.ema(effCloseSeries, emaPeriod).toArray();
-  const devArr = ta.stdev(effCloseSeries, emaPeriod).toArray();
-
-  // Compute max deviation multiplier per bar, then EMA it
-  const toc = bars.map(b => Math.max(b.open, b.close));
-  const boc = bars.map(b => Math.min(b.open, b.close));
-
-  const maxMultArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const mid = midlineArr[i] ?? 0;
-    const dev = devArr[i] ?? 0;
-    if (dev === 0 || isNaN(mid) || isNaN(dev)) {
-      maxMultArr[i] = 0;
-    } else {
-      const plusDevMult = toc[i] > mid ? (toc[i] - mid) / dev : 0;
-      const minusDevMult = boc[i] < mid ? (mid - boc[i]) / dev : 0;
-      maxMultArr[i] = Math.max(plusDevMult, minusDevMult);
-    }
-  }
-
-  const maxMultSeries = new Series(bars, (_b, i) => maxMultArr[i]);
-  const lmArr = ta.ema(maxMultSeries, emaPeriod).toArray();
-
   const warmup = emaPeriod;
-
-  // Pine Fibonacci multipliers:
-  // lm, lm2=lm/2, lm3=lm2*0.38196601, lm4=lm*1.38196601, lm5=lm*1.61803399, lm6=(lm+lm2)/2
-  const plotIds = ['midline', 'up1', 'up2', 'up3', 'up4', 'up5', 'up6', 'down1', 'down2', 'down3', 'down4', 'down5', 'down6'];
-  const plots: Record<string, { time: number; value: number }[]> = {};
-  for (const id of plotIds) {
-    plots[id] = [];
-  }
-
-  for (let i = 0; i < n; i++) {
-    const mid = midlineArr[i] ?? NaN;
-    const dev = devArr[i] ?? NaN;
-    const lm = lmArr[i] ?? NaN;
-
-    if (i < warmup || isNaN(mid) || isNaN(dev) || isNaN(lm)) {
-      for (const id of plotIds) {
-        plots[id].push({ time: bars[i].time, value: NaN });
-      }
-    } else {
-      const lm2 = lm / 2;
-      const lm3 = lm2 * 0.38196601;
-      const lm4 = lm * 1.38196601;
-      const lm5 = lm * 1.61803399;
-      const lm6 = (lm + lm2) / 2;
-
-      plots['midline'].push({ time: bars[i].time, value: mid });
-      // Up levels: 1=lm3, 2=lm2, 3=lm6, 4=lm, 5=lm4, 6=lm5 (per Pine plot order)
-      plots['up1'].push({ time: bars[i].time, value: mid + dev * lm3 });
-      plots['up2'].push({ time: bars[i].time, value: mid + dev * lm2 });
-      plots['up3'].push({ time: bars[i].time, value: mid + dev * lm6 });
-      plots['up4'].push({ time: bars[i].time, value: mid + dev * lm });
-      plots['up5'].push({ time: bars[i].time, value: mid + dev * lm4 });
-      plots['up6'].push({ time: bars[i].time, value: mid + dev * lm5 });
-      // Down levels: same multipliers, subtracted
-      plots['down1'].push({ time: bars[i].time, value: mid - dev * lm3 });
-      plots['down2'].push({ time: bars[i].time, value: mid - dev * lm2 });
-      plots['down3'].push({ time: bars[i].time, value: mid - dev * lm6 });
-      plots['down4'].push({ time: bars[i].time, value: mid - dev * lm });
-      plots['down5'].push({ time: bars[i].time, value: mid - dev * lm4 });
-      plots['down6'].push({ time: bars[i].time, value: mid - dev * lm5 });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
+    init() {
+      const mid = taStep.ema(emaPeriod);
+      const dev = new WindowStdev(emaPeriod);
+      const lm = taStep.ema(emaPeriod);
+      const s: FibLevelsRun = { mid, dev, lm, plots: PLOT_IDS.map(() => []), steps: [mid, dev, lm], vars: {}, lists: [], series: [] };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      // effclose = max(open,close) if close>=open, else min(open,close)
+      const effClose = b.close >= b.open ? Math.max(b.open, b.close) : Math.min(b.open, b.close);
+      const mid = s.mid.step(effClose);
+      const dev = s.dev.step(effClose);
+
+      // max deviation multiplier of the bar, then its EMA
+      const toc = Math.max(b.open, b.close);
+      const boc = Math.min(b.open, b.close);
+      let maxMult: number;
+      if (dev === 0 || isNaN(mid) || isNaN(dev)) {
+        maxMult = 0;
+      } else {
+        const plusDevMult = toc > mid ? (toc - mid) / dev : 0;
+        const minusDevMult = boc < mid ? (mid - boc) / dev : 0;
+        maxMult = Math.max(plusDevMult, minusDevMult);
+      }
+      const lm = s.lm.step(maxMult);
+
+      // Pine Fibonacci multipliers:
+      // lm, lm2=lm/2, lm3=lm2*0.38196601, lm4=lm*1.38196601, lm5=lm*1.61803399, lm6=(lm+lm2)/2
+      const p = s.plots;
+      const time = b.time;
+      if (i < warmup || isNaN(mid) || isNaN(dev) || isNaN(lm)) {
+        for (let k = 0; k < p.length; k++) p[k][i] = { time, value: NaN };
+      } else {
+        const lm2 = lm / 2;
+        const lm3 = lm2 * 0.38196601;
+        const lm4 = lm * 1.38196601;
+        const lm5 = lm * 1.61803399;
+        const lm6 = (lm + lm2) / 2;
+
+        p[0][i] = { time, value: mid };
+        // Up levels: 1=lm3, 2=lm2, 3=lm6, 4=lm, 5=lm4, 6=lm5 (per Pine plot order)
+        p[1][i] = { time, value: mid + dev * lm3 };
+        p[2][i] = { time, value: mid + dev * lm2 };
+        p[3][i] = { time, value: mid + dev * lm6 };
+        p[4][i] = { time, value: mid + dev * lm };
+        p[5][i] = { time, value: mid + dev * lm4 };
+        p[6][i] = { time, value: mid + dev * lm5 };
+        // Down levels: same multipliers, subtracted
+        p[7][i] = { time, value: mid - dev * lm3 };
+        p[8][i] = { time, value: mid - dev * lm2 };
+        p[9][i] = { time, value: mid - dev * lm6 };
+        p[10][i] = { time, value: mid - dev * lm };
+        p[11][i] = { time, value: mid - dev * lm4 };
+        p[12][i] = { time, value: mid - dev * lm5 };
+      }
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      PLOT_IDS.forEach((id, k) => { plots[id] = s.plots[k].slice(); });
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+      };
+    },
   };
 }
 
-export const FibonacciLevels = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<FibonacciLevelsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<FibonacciLevelsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const FibonacciLevels = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

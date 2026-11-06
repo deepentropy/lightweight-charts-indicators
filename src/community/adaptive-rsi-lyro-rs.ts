@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AdaptiveRsiLyroRsInputs {
   signalType: 'Trend Following' | 'Strong Trend Following' | 'Reversion' | 'Volatility Spectrum';
@@ -108,14 +110,31 @@ const PALETTES: Record<string, [string, string] | undefined> = {
   Royal: ['#FFC107', '#673AB7'],
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdaptiveRsiLyroRsInputs> = {},
-): IndicatorResult & { barColors: BarColorData[] } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[] };
+
+interface ArsiVars {
+  /** var color pc = na (null) */
+  pc: string | null;
+  /** raw_ub[1], raw_lb[1] */
+  prevUb: number;
+  prevLb: number;
+}
+
+interface ArsiRun extends BarRunState<ArsiVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  fast: ReturnType<typeof taStep.ema>;
+  slow: ReturnType<typeof taStep.ema>;
+  basis: WindowSma;
+  std: WindowStdev;
+  signal: ReturnType<typeof taStep.ema>;
+  plots: Point[][];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<AdaptiveRsiLyroRsInputs>): BarStudy<ArsiRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+  const value = barSource(cfg.src);
 
   // Colours: no switch case for "Major Themes" (UpC / DnC stay na); null = na
   let upC: string | null = PALETTES[cfg.colMode]?.[0] ?? null;
@@ -124,80 +143,101 @@ export function calculate(
     upC = cfg.customUp;
     dnC = cfg.customDown;
   }
-
-  const rsiRaw = A(ta.rsi(getSourceSeries(bars, cfg.src), cfg.rsiLength));
-  const rsiEmaFast = A(ta.ema(S(rsiRaw), cfg.emaShort));
-  const rsiEmaSlow = A(ta.ema(S(rsiRaw), cfg.emaLong));
   const newCalc = cfg.calcStyle === 'New Calculation';
-  const arsi = rsiRaw.map((r, i) => (newCalc ? ((r - 50) / 50) * 100 : rsiEmaFast[i] - rsiEmaSlow[i]));
-
-  const basis = A(ta.sma(S(arsi), cfg.bbLength));
-  const std = A(ta.stdev(S(arsi), cfg.bbLength));
-  const signal = A(ta.ema(S(arsi), cfg.signalLength));
-  const rawBand = (mult: number) => basis.map((b, i) => (cfg.bandsStyle === 'New Bands' ? std[i] * mult
-    : cfg.bandsStyle === 'Old Bands' ? b + std[i] * mult : NaN));
-  const rawUb = rawBand(cfg.upperbandMult);
-  const rawLb = rawBand(cfg.lowerbandMult);
-  // upperBand := raw_ub * bandEasing + nz(raw_ub[1]) * (1 - bandEasing)
-  const ease = (raw: number[]) => raw.map((r, i) => r * cfg.bandEasing + nz(i > 0 ? raw[i - 1] : NaN) * (1 - cfg.bandEasing));
-  const upperBand = ease(rawUb);
-  const lowerBand = ease(rawLb);
-
-  const pcArr: Array<string | null> = new Array(n);
-  let pc: string | null = null; // var color pc = na
-  for (let i = 0; i < n; i++) {
-    const a = arsi[i];
-    const s = signal[i];
-    const ub = upperBand[i];
-    const lb = lowerBand[i];
-    if (newCalc) {
-      if (cfg.signalType === 'Trend Following') {
-        if (gt(a, ub)) pc = upC;
-        else if (lt(a, lb)) pc = dnC;
-      } else if (cfg.signalType === 'Strong Trend Following') {
-        if (gt(s, ub)) pc = upC;
-        else if (lt(s, lb)) pc = dnC;
-        else if (lt(a, ub) && gt(a, lb)) pc = color.gray;
-      } else if (cfg.signalType === 'Reversion') {
-        if (gt(a, ub) && gt(s, a)) pc = dnC;
-        else if (lt(a, lb) && lt(s, a)) pc = upC;
-        else pc = color.gray;
-      } else if (cfg.signalType === 'Volatility Spectrum') {
-        if (gt(a, s) && gt(a, ub)) pc = upC;
-        else if (lt(a, s) && lt(a, lb)) pc = dnC;
-        else pc = color.gray;
-      }
-    } else if (cfg.calcStyle === 'Old Calculation') {
-      if (gt(a, 0)) pc = upC;
-      else if (lt(a, 0)) pc = dnC;
-    }
-    pcArr[i] = pc;
-  }
-
-  const t = (i: number) => bars[i].time;
-  const barColors: BarColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    const c = pcArr[i];
-    if (c !== null) barColors.push({ time: t(i), color: c });
-  }
+  const rawBand = (b: number, std: number, mult: number) => (cfg.bandsStyle === 'New Bands' ? std * mult
+    : cfg.bandsStyle === 'Old Bands' ? b + std * mult : NaN);
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(arsi, "ARSI", color = pc, linewidth = 2, style = plot.style_columns): na colour draws no column
-      plot0: bars.map((_b, i) => ({ time: t(i), value: arsi[i], color: pcArr[i] ?? 'transparent' })),
-      plot1: bars.map((_b, i) => ({ time: t(i), value: signal[i], color: color.white })),
-      plot2: bars.map((_b, i) => ({ time: t(i), value: upperBand[i], color: color.blue })),
-      plot3: bars.map((_b, i) => ({ time: t(i), value: lowerBand[i], color: color.blue })),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const rsi = taStep.rsi(cfg.rsiLength);
+      const fast = taStep.ema(cfg.emaShort);
+      const slow = taStep.ema(cfg.emaLong);
+      const basis = new WindowSma(cfg.bbLength);
+      const std = new WindowStdev(cfg.bbLength);
+      const signal = taStep.ema(cfg.signalLength);
+      const s: ArsiRun = {
+        rsi, fast, slow, basis, std, signal, plots: [[], [], [], []], barColors: [],
+        steps: [rsi, fast, slow, basis, std, signal], vars: { pc: null, prevUb: NaN, prevLb: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.barColors];
+      s.series = s.plots;
+      return s;
     },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed', linewidth: 1 } }],
-    fills: [{ plot1: 'plot2', plot2: 'plot3', options: { title: 'Band Fill', color: BAND_FILL } }],
-    barColors,
+    bar(s, i, bars) {
+      const v = s.vars;
+      const t = bars[i].time;
+      const r = s.rsi.step(value(bars[i]));
+      const rsiEmaFast = s.fast.step(r);
+      const rsiEmaSlow = s.slow.step(r);
+      const a = newCalc ? ((r - 50) / 50) * 100 : rsiEmaFast - rsiEmaSlow;
+
+      const basis = s.basis.step(a);
+      const std = s.std.step(a);
+      const sig = s.signal.step(a);
+      const rawUb = rawBand(basis, std, cfg.upperbandMult);
+      const rawLb = rawBand(basis, std, cfg.lowerbandMult);
+      // upperBand := raw_ub * bandEasing + nz(raw_ub[1]) * (1 - bandEasing)
+      const ub = rawUb * cfg.bandEasing + nz(v.prevUb) * (1 - cfg.bandEasing);
+      const lb = rawLb * cfg.bandEasing + nz(v.prevLb) * (1 - cfg.bandEasing);
+      v.prevUb = rawUb;
+      v.prevLb = rawLb;
+
+      if (newCalc) {
+        if (cfg.signalType === 'Trend Following') {
+          if (gt(a, ub)) v.pc = upC;
+          else if (lt(a, lb)) v.pc = dnC;
+        } else if (cfg.signalType === 'Strong Trend Following') {
+          if (gt(sig, ub)) v.pc = upC;
+          else if (lt(sig, lb)) v.pc = dnC;
+          else if (lt(a, ub) && gt(a, lb)) v.pc = color.gray;
+        } else if (cfg.signalType === 'Reversion') {
+          if (gt(a, ub) && gt(sig, a)) v.pc = dnC;
+          else if (lt(a, lb) && lt(sig, a)) v.pc = upC;
+          else v.pc = color.gray;
+        } else if (cfg.signalType === 'Volatility Spectrum') {
+          if (gt(a, sig) && gt(a, ub)) v.pc = upC;
+          else if (lt(a, sig) && lt(a, lb)) v.pc = dnC;
+          else v.pc = color.gray;
+        }
+      } else if (cfg.calcStyle === 'Old Calculation') {
+        if (gt(a, 0)) v.pc = upC;
+        else if (lt(a, 0)) v.pc = dnC;
+      }
+      const pc = v.pc;
+      if (pc !== null) s.barColors.push({ time: t, color: pc });
+
+      // plot(arsi, "ARSI", color = pc, linewidth = 2, style = plot.style_columns): na colour draws no column
+      s.plots[0][i] = { time: t, value: a, color: pc ?? 'transparent' };
+      s.plots[1][i] = { time: t, value: sig, color: color.white };
+      s.plots[2][i] = { time: t, value: ub, color: color.blue };
+      s.plots[3][i] = { time: t, value: lb, color: color.blue };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice() },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed', linewidth: 1 } }],
+        fills: [{ plot1: 'plot2', plot2: 'plot3', options: { title: 'Band Fill', color: BAND_FILL } }],
+        barColors: s.barColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdaptiveRsiLyroRsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdaptiveRsiLyroRsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AdaptiveRsiLyroRs = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

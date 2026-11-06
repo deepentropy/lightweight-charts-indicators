@@ -13,9 +13,11 @@
  * Original notice: © JohnsonForexTrader
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CandleBuySellSupportResistanceInputs {
   /** Pivot length (left and right bars) */
@@ -58,74 +60,104 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<CandleBuySellSupportResistanceInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface CandleVars {
+  /** var float support = na, var float resistance = na */
+  support: number;
+  resistance: number;
+}
+
+interface CandleRun extends BarRunState<CandleVars> {
+  pl: PivotStep;
+  ph: PivotStep;
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<CandleBuySellSupportResistanceInputs>): BarStudy<CandleRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
   const len = cfg.pivotLength;
-
-  const pivotLow = A(ta.pivotlow(S(bars.map((b) => b.low)), len, len));
-  const pivotHigh = A(ta.pivothigh(S(bars.map((b) => b.high)), len, len));
-
-  const bullish = bars.map((b) => gt(b.close, b.open));
-  const bearish = bars.map((b) => lt(b.close, b.open));
-
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [];
-  let support = NaN; // var float support = na
-  let resistance = NaN; // var float resistance = na
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const body = Math.abs(b.close - b.open);
-    const candleRange = b.high - b.low;
-    const upperWick = b.high - Math.max(b.open, b.close);
-    const lowerWick = Math.min(b.open, b.close) - b.low;
-    const p = i > 0 ? bars[i - 1] : null;
-
-    // bearish[1] / bullish[1] are na (false) on bar 0
-    const bullishEngulfing = bullish[i] && i > 0 && bearish[i - 1] && le(b.open, p!.close) && ge(b.close, p!.open);
-    const bearishEngulfing = bearish[i] && i > 0 && bullish[i - 1] && ge(b.open, p!.close) && le(b.close, p!.open);
-    const hammer = gt(candleRange, 0) && ge(lowerWick, body * 2) && le(upperWick, body);
-    const shootingStar = gt(candleRange, 0) && ge(upperWick, body * 2) && le(lowerWick, body);
-
-    if (!isNaN(pivotLow[i])) support = pivotLow[i];
-    if (!isNaN(pivotHigh[i])) resistance = pivotHigh[i];
-
-    const buySignal = bullishEngulfing || hammer;
-    const sellSignal = bearishEngulfing || shootingStar;
-    buyFlags.push(buySignal);
-    sellFlags.push(sellSignal);
-
-    plot0.push({ time: b.time, value: cfg.showSupport ? support : NaN, color: color.green });
-    plot1.push({ time: b.time, value: cfg.showResistance ? resistance : NaN, color: color.red });
-
-    // plotshape(showSignals and buySignal, "BUY", shape.labelup, location.belowbar, color.lime, text "BUY",
-    //   textcolor color.black, size.tiny)
-    if (cfg.showSignals && buySignal) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
-        textColor: color.black, size: 'tiny' });
-    }
-    // plotshape(showSignals and sellSignal, "SELL", shape.labeldown, location.abovebar, color.red, text "SELL",
-    //   textcolor color.white, size.tiny)
-    if (cfg.showSignals && sellSignal) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: color.white, size: 'tiny' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    // alertcondition(buySignal, "Candle BUY") / alertcondition(sellSignal, "Candle SELL")
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags]),
+    init() {
+      const s: CandleRun = {
+        pl: new PivotStep(len, len, false), ph: new PivotStep(len, len, true), plot0: [], plot1: [], markers: [],
+        flags: [[], []], times: [[], []], steps: [], vars: { support: NaN, resistance: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.pl, s.ph];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const pivotLow = s.pl.step(i, b.low);
+      const pivotHigh = s.ph.step(i, b.high);
+      const bullish = gt(b.close, b.open);
+      const bearish = lt(b.close, b.open);
+      const body = Math.abs(b.close - b.open);
+      const candleRange = b.high - b.low;
+      const upperWick = b.high - Math.max(b.open, b.close);
+      const lowerWick = Math.min(b.open, b.close) - b.low;
+      const p = i > 0 ? bars[i - 1] : null;
+
+      // bearish[1] / bullish[1] are na (false) on bar 0
+      const bullishEngulfing = bullish && i > 0 && lt(p!.close, p!.open) && le(b.open, p!.close) && ge(b.close, p!.open);
+      const bearishEngulfing = bearish && i > 0 && gt(p!.close, p!.open) && ge(b.open, p!.close) && le(b.close, p!.open);
+      const hammer = gt(candleRange, 0) && ge(lowerWick, body * 2) && le(upperWick, body);
+      const shootingStar = gt(candleRange, 0) && ge(upperWick, body * 2) && le(lowerWick, body);
+
+      if (!isNaN(pivotLow)) v.support = pivotLow;
+      if (!isNaN(pivotHigh)) v.resistance = pivotHigh;
+
+      const buySignal = bullishEngulfing || hammer;
+      const sellSignal = bearishEngulfing || shootingStar;
+      s.flags[0][i] = buySignal;
+      s.flags[1][i] = sellSignal;
+      if (buySignal) s.times[0].push(b.time as number);
+      if (sellSignal) s.times[1].push(b.time as number);
+
+      s.plot0[i] = { time: b.time, value: cfg.showSupport ? v.support : NaN, color: color.green };
+      s.plot1[i] = { time: b.time, value: cfg.showResistance ? v.resistance : NaN, color: color.red };
+
+      // plotshape(showSignals and buySignal, "BUY", shape.labelup, location.belowbar, color.lime, text "BUY",
+      //   textcolor color.black, size.tiny)
+      if (cfg.showSignals && buySignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
+          textColor: color.black, size: 'tiny' });
+      }
+      // plotshape(showSignals and sellSignal, "SELL", shape.labeldown, location.abovebar, color.red, text "SELL",
+      //   textcolor color.white, size.tiny)
+      if (cfg.showSignals && sellSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: color.white, size: 'tiny' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        // alertcondition(buySignal, "Candle BUY") / alertcondition(sellSignal, "Candle SELL")
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CandleBuySellSupportResistanceInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<CandleBuySellSupportResistanceInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -136,6 +168,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const CandleBuySellSupportResistance = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

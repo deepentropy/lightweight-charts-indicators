@@ -12,9 +12,11 @@
  * Original notice: © Jos-ProTrader
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SRBreakoutAtrConfirmationInputs {
   /** Support / resistance length */
@@ -61,65 +63,99 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SRBreakoutAtrConfirmationInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; bgColors: BgColorData[] } & { alerts: AlertConditionState[] };
+type Point = { time: number; value: number; color?: string };
+
+interface BreakoutRun extends BarRunState<Record<string, never>> {
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  atr: ReturnType<typeof taStep.atr>;
+  volMA: WindowSma;
+  hhs: number[];
+  lls: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SRBreakoutAtrConfirmationInputs>): BarStudy<BreakoutRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const hh = A(ta.highest(S(bars.map((b) => b.high)), cfg.lookback));
-  const ll = A(ta.lowest(S(bars.map((b) => b.low)), cfg.lookback));
-  // resistance = ta.highest(high, lookback)[1]; support = ta.lowest(low, lookback)[1]
-  const resistance = hh.map((_v, i) => (i > 0 ? hh[i - 1] : NaN));
-  const support = ll.map((_v, i) => (i > 0 ? ll[i - 1] : NaN));
-  const atr = A(ta.atr(bars, cfg.atrLength));
-  const volume = bars.map((b) => (b.volume === undefined || b.volume === null ? NaN : b.volume));
-  const volMA = A(ta.sma(S(volume), cfg.volumeLength));
-
-  const t = (i: number) => bars[i].time;
-  const plot0 = bars.map((_b, i) => ({ time: t(i), value: resistance[i], color: color.red }));
-  const plot1 = bars.map((_b, i) => ({ time: t(i), value: support[i], color: color.green }));
-
-  const markers: MarkerData[] = [];
-  const bgColors: BgColorData[] = [];
   const bullBg = String(color.new(color.green, 90));
   const bearBg = String(color.new(color.red, 90));
-  const bullFlags: boolean[] = [], bearFlags: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const { open, close } = bars[i];
-    const bullStrength = gt(close - open, atr[i] * cfg.atrMultiplier);
-    const bearStrength = gt(open - close, atr[i] * cfg.atrMultiplier);
-    const volumeConfirm = gt(volume[i], volMA[i]);
-    const bullBreakout = gt(close, resistance[i]) && bullStrength && (!cfg.useVolume || volumeConfirm);
-    const bearBreakout = lt(close, support[i]) && bearStrength && (!cfg.useVolume || volumeConfirm);
-    bullFlags.push(bullBreakout);
-    bearFlags.push(bearBreakout);
-    // plotshape(..., style = shape.labelup / labeldown, text = 'BUY' / 'SELL'): Pine default size (auto) and
-    // default text colour (#2962FF)
-    if (bullBreakout) {
-      markers.push({ time: t(i), position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
-        textColor: '#2962FF', size: 'auto' });
-    }
-    if (bearBreakout) {
-      markers.push({ time: t(i), position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: '#2962FF', size: 'auto' });
-    }
-    // bgcolor(bullBreakout ? color.new(color.green, 90) : na); bgcolor(bearBreakout ? color.new(color.red, 90) : na)
-    if (bullBreakout) bgColors.push({ time: t(i), color: bullBg });
-    if (bearBreakout) bgColors.push({ time: t(i), color: bearBg });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
-    markers,
-    bgColors,
-    // alertcondition(bullBreakout, 'Bullish Breakout') / alertcondition(bearBreakout, 'Bearish Breakout')
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags]),
+    init() {
+      const hh = new WindowExtreme(false, cfg.lookback);
+      const ll = new WindowExtreme(true, cfg.lookback);
+      const atr = taStep.atr(cfg.atrLength);
+      const volMA = new WindowSma(cfg.volumeLength);
+      const s: BreakoutRun = {
+        hh, ll, atr, volMA, hhs: [], lls: [], plots: [[], []], markers: [], bgColors: [], flags: [[], []],
+        times: [[], []], steps: [hh, ll, atr, volMA], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.bgColors, ...s.times];
+      s.series = [s.hhs, s.lls, ...s.plots, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const { open, close, high, low, time } = bars[i];
+      s.hhs[i] = s.hh.step(high);
+      s.lls[i] = s.ll.step(low);
+      // resistance = ta.highest(high, lookback)[1]; support = ta.lowest(low, lookback)[1]
+      const resistance = i > 0 ? s.hhs[i - 1] : NaN;
+      const support = i > 0 ? s.lls[i - 1] : NaN;
+      const atr = s.atr.step(high, low, close);
+      const vol = bars[i].volume;
+      const volume = vol === undefined || vol === null ? NaN : vol;
+      const volMA = s.volMA.step(volume);
+      s.plots[0][i] = { time, value: resistance, color: color.red };
+      s.plots[1][i] = { time, value: support, color: color.green };
+
+      const bullStrength = gt(close - open, atr * cfg.atrMultiplier);
+      const bearStrength = gt(open - close, atr * cfg.atrMultiplier);
+      const volumeConfirm = gt(volume, volMA);
+      const bullBreakout = gt(close, resistance) && bullStrength && (!cfg.useVolume || volumeConfirm);
+      const bearBreakout = lt(close, support) && bearStrength && (!cfg.useVolume || volumeConfirm);
+      s.flags[0][i] = bullBreakout;
+      s.flags[1][i] = bearBreakout;
+      if (bullBreakout) s.times[0].push(time as number);
+      if (bearBreakout) s.times[1].push(time as number);
+      // plotshape(..., style = shape.labelup / labeldown, text = 'BUY' / 'SELL'): Pine default size (auto) and
+      // default text colour (#2962FF)
+      if (bullBreakout) {
+        s.markers.push({ time, position: 'belowBar', shape: 'labelUp', color: color.lime, text: 'BUY',
+          textColor: '#2962FF', size: 'auto' });
+      }
+      if (bearBreakout) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: '#2962FF', size: 'auto' });
+      }
+      // bgcolor(bullBreakout ? color.new(color.green, 90) : na); bgcolor(bearBreakout ? color.new(color.red, 90) : na)
+      if (bullBreakout) s.bgColors.push({ time, color: bullBg });
+      if (bearBreakout) s.bgColors.push({ time, color: bearBg });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plots[0].slice(), plot1: s.plots[1].slice() },
+        markers: s.markers.slice(),
+        bgColors: s.bgColors.slice(),
+        // alertcondition(bullBreakout, 'Bullish Breakout') / alertcondition(bearBreakout, 'Bearish Breakout')
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SRBreakoutAtrConfirmationInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SRBreakoutAtrConfirmationInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -130,6 +166,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const SRBreakoutAtrConfirmation = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

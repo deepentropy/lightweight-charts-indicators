@@ -13,10 +13,12 @@
  */
 
 import {
-  ta, color, Series,
+  color,
   type Bar, type BarColorConfig, type IndicatorResult, type InputConfig, type PlotConfig,
 } from 'oakscriptjs';
 import type { BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface KdjIndicatorIamaltcoinInputs {
   /** Bars of the highest high / lowest low */
@@ -60,46 +62,80 @@ export const metadata = {
 /** Pine float comparisons: a > b only when a - b > 1e-10 (na compares false) */
 const gt = (a: number, b: number) => a - b > 1e-10;
 
-/** bcwsma(s, l, m): (m * s + (l - m) * nz(prev)) / l */
-function bcwsma(src: number[], l: number, m: number): number[] {
-  const out: number[] = new Array(src.length);
-  let prev = NaN;
-  for (let i = 0; i < src.length; i++) {
-    const v = (m * src[i] + (l - m) * (Number.isNaN(prev) ? 0 : prev)) / l;
-    out[i] = Number.isFinite(v) ? v : NaN;
-    prev = out[i];
-  }
-  return out;
+type Point = { time: Bar['time']; value: number; color: string };
+type Result = Omit<IndicatorResult, 'bgColors'> & { bgColors: BgColorData[] };
+
+interface KdjVars {
+  /** bcwsma(s, l, m) of K and D: the previous value */
+  prevK: number;
+  prevD: number;
 }
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<KdjIndicatorIamaltcoinInputs> = {},
-): Omit<IndicatorResult, 'bgColors'> & { bgColors: BgColorData[] } {
+interface KdjRun extends BarRunState<KdjVars> {
+  hi: WindowExtreme;
+  lo: WindowExtreme;
+  plots: Point[][];
+  bgColors: BgColorData[];
+}
+
+/** bcwsma(s, l, m): (m * s + (l - m) * nz(prev)) / l */
+function bcwsma(src: number, l: number, m: number, prev: number): number {
+  const v = (m * src + (l - m) * (Number.isNaN(prev) ? 0 : prev)) / l;
+  return Number.isFinite(v) ? v : NaN;
+}
+
+function study(inputs: Partial<KdjIndicatorIamaltcoinInputs>): BarStudy<KdjRun, Result> {
   const { ilong, isig } = { ...defaultInputs, ...inputs };
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const h = A(ta.highest(new Series(bars, (b) => b.high), ilong));
-  const l = A(ta.lowest(new Series(bars, (b) => b.low), ilong));
-  // 0 / 0 is na; x / 0 cannot happen (a zero range means close = low)
-  const rsv = bars.map((b, i) => 100 * ((b.close - l[i]) / (h[i] - l[i])));
-  const pK = bcwsma(rsv, isig, 1);
-  const pD = bcwsma(pK, isig, 1);
-  const pJ = pK.map((k, i) => 3 * k - 2 * pD[i]);
-
-  const pts = (v: number[], c: string) => bars.map((b, i) => ({ time: b.time, value: v[i], color: c }));
-  const bgColors: BgColorData[] = bars.map((b, i) => ({
-    id: 'bgcolor0', time: b.time, color: gt(pJ[i], pD[i]) ? BG_GREEN : BG_RED,
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0: pts(pK, ORANGE), plot1: pts(pD, LIME), plot2: pts(pJ, FUCHSIA) },
-    bgColors,
+    init() {
+      const hi = new WindowExtreme(false, ilong);
+      const lo = new WindowExtreme(true, ilong);
+      const s: KdjRun = {
+        hi, lo, plots: [[], [], []], bgColors: [], steps: [hi, lo], vars: { prevK: NaN, prevD: NaN }, lists: [], series: [],
+      };
+      s.series = [...s.plots, s.bgColors];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const h = s.hi.step(b.high);
+      const l = s.lo.step(b.low);
+      // 0 / 0 is na; x / 0 cannot happen (a zero range means close = low)
+      const rsv = 100 * ((b.close - l) / (h - l));
+      const pK = bcwsma(rsv, isig, 1, v.prevK);
+      const pD = bcwsma(pK, isig, 1, v.prevD);
+      v.prevK = pK;
+      v.prevD = pD;
+      const pJ = 3 * pK - 2 * pD;
+      s.plots[0][i] = { time: b.time, value: pK, color: ORANGE };
+      s.plots[1][i] = { time: b.time, value: pD, color: LIME };
+      s.plots[2][i] = { time: b.time, value: pJ, color: FUCHSIA };
+      s.bgColors[i] = { id: 'bgcolor0', time: b.time, color: gt(pJ, pD) ? BG_GREEN : BG_RED };
+    },
+    result(s) {
+      const [plot0, plot1, plot2] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2 },
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<KdjIndicatorIamaltcoinInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<KdjIndicatorIamaltcoinInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const KdjIndicatorIamaltcoin = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

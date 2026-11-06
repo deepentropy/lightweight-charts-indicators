@@ -12,9 +12,14 @@
  * Original notice: © SchizoQuant
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import {
+  barSource, createBarRun, fullResult, isBarSource, liveAlertStates, WindowSma,
+  type BarRunState, type BarStudy, type IndicatorRun,
+} from '../live-run';
 
 export interface ProjectedCrossoverTrendInputs {
   src: SourceType;
@@ -68,64 +73,110 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] };
+
+interface ProjectedVars {
+  /** var int SQ = 0 */
+  sq: number;
+  /** projectedCross of the bar before */
+  prevCross: number;
+}
+
+interface ProjectedRun extends BarRunState<ProjectedVars> {
+  fast: ReturnType<typeof taStep.ema>;
+  slow: WindowSma;
+  mdi: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+  plot1: Point[];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<ProjectedCrossoverTrendInputs>): BarStudy<ProjectedRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.src);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: ProjectedRun = {
+        fast: taStep.ema(cfg.fastLen),
+        slow: new WindowSma(cfg.slowLen),
+        mdi: taStep.ema(cfg.smoothLen),
+        plot0: [], plot1: [], markers: [], barColors: [], flags: [[], []], times: [[], []],
+        steps: [], vars: { sq: 0, prevCross: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.fast, s.slow, s.mdi];
+      s.lists = [s.markers, s.barColors, ...s.times];
+      s.series = [s.plot0, s.plot1, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const src = value(b);
+      const fastMA = s.fast.step(src);
+      const slowMA = s.slow.step(src);
+      const projectedCross = cfg.fastLen * (fastMA - slowMA);
+      // mdiRaw = 100 * (projectedCross - projectedCross[1]) / close (x / 0 = na)
+      const c = b.close;
+      const mdiRaw = i > 0 && c !== 0 ? (100 * (projectedCross - v.prevCross)) / c : NaN;
+      v.prevCross = projectedCross;
+      const mdi = s.mdi.step(mdiRaw);
+
+      const time = b.time;
+      const prevSq = v.sq;
+      const closeBack = i - cfg.slowLen >= 0 ? bars[i - cfg.slowLen].close : NaN;
+      if (gt(mdi, 0) && gt(b.close, closeBack)) v.sq = 1;
+      if (lt(mdi, 0) && lt(b.close, closeBack)) v.sq = -1;
+      const sq = v.sq;
+      // SQ[1] is na on the first bar: na != 1 is false
+      const longSignal = i > 0 && sq === 1 && prevSq !== 1;
+      const shortSignal = i > 0 && sq === -1 && prevSq !== -1;
+
+      // barcolor(colorBars ? (SQ == 1 ? longColor : shortColor) : na)
+      if (cfg.colorBars) s.barColors.push({ time, color: sq === 1 ? cfg.longColor : cfg.shortColor });
+      if (cfg.showSignals && longSignal) {
+        s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: cfg.longColor, size: 'small',
+          text: 'LONG', textColor: color.white });
+      }
+      if (cfg.showSignals && shortSignal) {
+        s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: cfg.shortColor, size: 'small',
+          text: 'SHORT', textColor: color.white });
+      }
+      s.plot0[i] = { time, value: fastMA, color: cfg.longColor };
+      s.plot1[i] = { time, value: slowMA, color: cfg.shortColor };
+      // alertcondition(longSignal, "Long Signal") / alertcondition(shortSignal, "Short Signal")
+      s.flags[0][i] = longSignal;
+      s.flags[1][i] = shortSignal;
+      if (longSignal) s.times[0].push(time as number);
+      if (shortSignal) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ProjectedCrossoverTrendInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<ProjectedCrossoverTrendInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const src = getSourceSeries(bars, cfg.src);
-
-  const fastMA = A(ta.ema(src, cfg.fastLen));
-  const slowMA = A(ta.sma(src, cfg.slowLen));
-  const projectedCross = fastMA.map((f, i) => cfg.fastLen * (f - slowMA[i]));
-  // mdiRaw = 100 * (projectedCross - projectedCross[1]) / close (x / 0 = na)
-  const mdiRaw = projectedCross.map((p, i) => {
-    const c = bars[i].close;
-    return i > 0 && c !== 0 ? (100 * (p - projectedCross[i - 1])) / c : NaN;
-  });
-  const mdi = A(ta.ema(Series.fromArray(bars, mdiRaw), cfg.smoothLen));
-
-  const t = (i: number) => bars[i].time;
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const longFlags: boolean[] = [], shortFlags: boolean[] = [];
-  let sq = 0; // var int SQ = 0
-  for (let i = 0; i < n; i++) {
-    const prevSq = sq;
-    const closeBack = i - cfg.slowLen >= 0 ? bars[i - cfg.slowLen].close : NaN;
-    if (gt(mdi[i], 0) && gt(bars[i].close, closeBack)) sq = 1;
-    if (lt(mdi[i], 0) && lt(bars[i].close, closeBack)) sq = -1;
-    // SQ[1] is na on the first bar: na != 1 is false
-    const longSignal = i > 0 && sq === 1 && prevSq !== 1;
-    const shortSignal = i > 0 && sq === -1 && prevSq !== -1;
-    longFlags.push(longSignal);
-    shortFlags.push(shortSignal);
-
-    // barcolor(colorBars ? (SQ == 1 ? longColor : shortColor) : na)
-    if (cfg.colorBars) barColors.push({ time: t(i), color: sq === 1 ? cfg.longColor : cfg.shortColor });
-    if (cfg.showSignals && longSignal) {
-      markers.push({ time: t(i), position: 'belowBar', shape: 'triangleUp', color: cfg.longColor, size: 'small',
-        text: 'LONG', textColor: color.white });
-    }
-    if (cfg.showSignals && shortSignal) {
-      markers.push({ time: t(i), position: 'aboveBar', shape: 'triangleDown', color: cfg.shortColor, size: 'small',
-        text: 'SHORT', textColor: color.white });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((_b, i) => ({ time: t(i), value: fastMA[i], color: cfg.longColor })),
-      plot1: bars.map((_b, i) => ({ time: t(i), value: slowMA[i], color: cfg.shortColor })),
-    },
-    markers,
-    barColors,
-    // alertcondition(longSignal, "Long Signal") / alertcondition(shortSignal, "Short Signal")
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -136,6 +187,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const ProjectedCrossoverTrend = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

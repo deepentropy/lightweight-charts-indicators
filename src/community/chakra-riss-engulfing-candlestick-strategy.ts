@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { BarColorData, MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ChakraRissEngulfingCandlestickStrategyInputs {
   /** RSI length */
@@ -56,96 +58,125 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] };
+
+interface ChakraVars {
+  /** var float entryPrice = na */
+  entryPrice: number;
+  /** var bool inTrade = false */
+  inTrade: boolean;
+}
+
+interface ChakraRun extends BarRunState<ChakraVars> {
+  up: ReturnType<typeof taStep.rma>;
+  down: ReturnType<typeof taStep.rma>;
+  sma: WindowSma;
+  rsi: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+  barColors: BarColorData[];
+}
+
+function study(inputs: Partial<ChakraRissEngulfingCandlestickStrategyInputs>): BarStudy<ChakraRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const up = taStep.rma(cfg.len);
+      const down = taStep.rma(cfg.len);
+      const sma = new WindowSma(50);
+      const s: ChakraRun = {
+        up, down, sma, rsi: [], plots: [[], [], [], [], []], markers: [], barColors: [],
+        steps: [up, down, sma], vars: { entryPrice: NaN, inTrade: false }, lists: [], series: [],
+      };
+      s.lists = [s.markers, s.barColors];
+      s.series = [s.rsi, ...s.plots];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      // up = ta.rma(math.max(ta.change(close), 0), len); down = ta.rma(-math.min(ta.change(close), 0), len)
+      // (math.max / math.min of na are na)
+      const d = i > 0 ? b.close - bars[i - 1].close : NaN;
+      const u = s.up.step(isNaN(d) ? NaN : Math.max(d, 0));
+      const dn = s.down.step(isNaN(d) ? NaN : -Math.min(d, 0));
+      // rsi = 100 - (100 / (1 + up / down)): plain divisions (down = 0 gives 100, 0 / 0 gives na)
+      const rsi = 100 - 100 / (1 + u / dn);
+      s.rsi[i] = rsi;
+      const out = s.sma.step(b.close);
+
+      const isGreen = gt(rsi, cfg.len1);
+      const isRed = lt(rsi, cfg.len2);
+      if (isGreen) s.barColors.push({ time: b.time, color: color.green });
+      else if (isRed) s.barColors.push({ time: b.time, color: color.red });
+
+      const prevRsi = i > 0 ? s.rsi[i - 1] : NaN;
+      const buySignal = isGreen && le(prevRsi, cfg.len1) && gt(b.close, out);
+      const sellSignal = isRed && ge(prevRsi, cfg.len2) && lt(b.close, out);
+      // plotshape(buySignal, style = shape.labelup, location = location.belowbar, color = color.green, text = "BUY")
+      if (buySignal) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY',
+          textColor: '#2962FF', size: 'auto' });
+      }
+      if (sellSignal) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
+          textColor: '#2962FF', size: 'auto' });
+      }
+
+      // Levels use the entry price of the previous bar (computed before the entry update)
+      const longStopLoss = i > 0 ? bars[i - 1].low : NaN;
+      const longTakeProfit = v.entryPrice * 1.03;
+      const shortStopLoss = i > 0 ? bars[i - 1].high : NaN;
+      const shortTakeProfit = v.entryPrice * 0.97;
+
+      if (buySignal && !v.inTrade) {
+        v.entryPrice = b.close;
+        v.inTrade = true;
+      }
+      if (sellSignal && !v.inTrade) {
+        v.entryPrice = b.close;
+        v.inTrade = true;
+      }
+      const longExit = le(b.close, longStopLoss) || ge(b.close, longTakeProfit);
+      const shortExit = ge(b.close, shortStopLoss) || le(b.close, shortTakeProfit);
+      if (longExit || shortExit) v.inTrade = false;
+
+      const show = v.inTrade && !isNaN(v.entryPrice);
+      const [p0, p1, p2, p3, p4] = s.plots;
+      p0[i] = { time: b.time, value: out, color: color.black };
+      p1[i] = { time: b.time, value: show ? longStopLoss : NaN, color: color.red };
+      p2[i] = { time: b.time, value: show ? longTakeProfit : NaN, color: color.green };
+      p3[i] = { time: b.time, value: show ? shortStopLoss : NaN, color: color.green };
+      p4[i] = { time: b.time, value: show ? shortTakeProfit : NaN, color: color.red };
+    },
+    result(s) {
+      const [plot0, plot1, plot2, plot3, plot4] = s.plots.map((p) => p.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4 },
+        markers: s.markers.slice(),
+        barColors: s.barColors.slice(),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ChakraRissEngulfingCandlestickStrategyInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<ChakraRissEngulfingCandlestickStrategyInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = bars.map((b) => b.close);
-
-  // up = ta.rma(math.max(ta.change(close), 0), len); down = ta.rma(-math.min(ta.change(close), 0), len)
-  // (math.max / math.min of na are na)
-  const change = close.map((c, i) => (i > 0 ? c - close[i - 1] : NaN));
-  const up = A(ta.rma(S(change.map((d) => (isNaN(d) ? NaN : Math.max(d, 0)))), cfg.len));
-  const down = A(ta.rma(S(change.map((d) => (isNaN(d) ? NaN : -Math.min(d, 0)))), cfg.len));
-  // rsi = 100 - (100 / (1 + up / down)): plain divisions (down = 0 gives 100, 0 / 0 gives na)
-  const rsi = up.map((u, i) => 100 - 100 / (1 + u / down[i]));
-  const out = A(ta.sma(S(close), 50));
-
-  const markers: MarkerData[] = [];
-  const barColors: BarColorData[] = [];
-  const sl: number[] = new Array(n).fill(NaN);
-  const tpL: number[] = new Array(n).fill(NaN);
-  const ssl: number[] = new Array(n).fill(NaN);
-  const tpS: number[] = new Array(n).fill(NaN);
-  let entryPrice = NaN; // var float entryPrice = na
-  let inTrade = false; // var bool inTrade = false
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const isGreen = gt(rsi[i], cfg.len1);
-    const isRed = lt(rsi[i], cfg.len2);
-    if (isGreen) barColors.push({ time: b.time, color: color.green });
-    else if (isRed) barColors.push({ time: b.time, color: color.red });
-
-    const prevRsi = i > 0 ? rsi[i - 1] : NaN;
-    const buySignal = isGreen && le(prevRsi, cfg.len1) && gt(b.close, out[i]);
-    const sellSignal = isRed && ge(prevRsi, cfg.len2) && lt(b.close, out[i]);
-    // plotshape(buySignal, style = shape.labelup, location = location.belowbar, color = color.green, text = "BUY")
-    if (buySignal) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: color.green, text: 'BUY',
-        textColor: '#2962FF', size: 'auto' });
-    }
-    if (sellSignal) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: color.red, text: 'SELL',
-        textColor: '#2962FF', size: 'auto' });
-    }
-
-    // Levels use the entry price of the previous bar (computed before the entry update)
-    const longStopLoss = i > 0 ? bars[i - 1].low : NaN;
-    const longTakeProfit = entryPrice * 1.03;
-    const shortStopLoss = i > 0 ? bars[i - 1].high : NaN;
-    const shortTakeProfit = entryPrice * 0.97;
-
-    if (buySignal && !inTrade) {
-      entryPrice = b.close;
-      inTrade = true;
-    }
-    if (sellSignal && !inTrade) {
-      entryPrice = b.close;
-      inTrade = true;
-    }
-    const longExit = le(b.close, longStopLoss) || ge(b.close, longTakeProfit);
-    const shortExit = ge(b.close, shortStopLoss) || le(b.close, shortTakeProfit);
-    if (longExit || shortExit) inTrade = false;
-
-    if (inTrade && !isNaN(entryPrice)) {
-      sl[i] = longStopLoss;
-      tpL[i] = longTakeProfit;
-      ssl[i] = shortStopLoss;
-      tpS[i] = shortTakeProfit;
-    }
-  }
-
-  const line = (arr: number[], col: string) => bars.map((b, i) => ({ time: b.time, value: arr[i], color: col }));
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(out, color.black),
-      plot1: line(sl, color.red),
-      plot2: line(tpL, color.green),
-      plot3: line(ssl, color.green),
-      plot4: line(tpS, color.red),
-    },
-    markers,
-    barColors,
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ChakraRissEngulfingCandlestickStrategy = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

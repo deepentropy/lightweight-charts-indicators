@@ -12,8 +12,10 @@
  * Original notice: © NordicAlphaLab
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MedianGaussianTrendNalInputs {
   /** Colour set: 'Standard', 'Nordic' or 'Simple' */
@@ -79,32 +81,35 @@ const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 /** x[i] at bar b: na before the first bar */
 const hist = (x: number[], b: number, i: number) => (b - i >= 0 ? x[b - i] : NaN);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MedianGaussianTrendNalInputs> = {},
-): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> };
+
+interface MedianGaussianVars {
+  /** NAL := close > upper ? 1 : close < lower ? -1 : NAL[1] (NAL[1] is na on the first bar) */
+  nal: number;
+}
+
+interface MedianGaussianRun extends BarRunState<MedianGaussianVars> {
+  median: ReturnType<typeof taStep.median>;
+  medianRaw: number[];
+  medianBase: number[];
+  upper: number[];
+  lower: number[];
+  midli: number[];
+  fillTop: string[];
+  fillBottom: string[];
+  plots: Point[][];
+  candles: PlotCandleData[];
+}
+
+function study(inputs: Partial<MedianGaussianTrendNalInputs>): BarStudy<MedianGaussianRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   const [colUp, colDn, colNu] = COLOURS[cfg.colMode] ?? COLOURS.Standard;
-  const src = getSourceSeries(bars, cfg.src);
-
-  // median_raw = ta.median(fil_src, base_len)
-  const medianRaw = ta.median(src, cfg.baseLen).toArray().map((v) => v ?? NaN);
-
+  const value = barSource(cfg.src);
   // gaussianFilter(median_raw, base_len, gaussian_sig): (len - 1) / 2 is a float division in Pine v6
   const len = cfg.baseLen;
-  const medianBase: number[] = new Array(n);
-  for (let b = 0; b < n; b++) {
-    let totalWeight = 0.0;
-    let weightedSum = 0.0;
-    for (let i = 0; i <= len - 1; i++) {
-      const weight = Math.exp(-0.5 * Math.pow((i - (len - 1) / 2) / cfg.gaussianSig, 2));
-      totalWeight += weight;
-      weightedSum += hist(medianRaw, b, i) * weight;
-    }
-    medianBase[b] = weightedSum / totalWeight;
-  }
-
+  const gaussWeights: number[] = [];
+  for (let i = 0; i <= len - 1; i++) gaussWeights.push(Math.exp(-0.5 * Math.pow((i - (len - 1) / 2) / cfg.gaussianSig, 2)));
   // gaussianDeviation(median_base, sd_len): i / period is a float division in Pine v6
   const period = cfg.sdLen;
   const weights: number[] = [];
@@ -114,69 +119,111 @@ export function calculate(
     weights.push(w);
     sumw += w;
   }
-  const sdRange: number[] = new Array(n);
-  for (let b = 0; b < n; b++) {
-    let wmean = 0.0;
-    for (let i = 0; i <= period - 1; i++) wmean += hist(medianBase, b, i) * weights[i];
-    wmean = wmean / sumw;
-    let wvar = 0.0;
-    for (let i = 0; i <= period - 1; i++) {
-      const diff = hist(medianBase, b, i) - wmean;
-      wvar += Math.pow(diff, 2) * weights[i];
-    }
-    sdRange[b] = Math.sqrt(wvar / sumw);
-  }
-
-  const upper = medianBase.map((m, b) => m + sdRange[b] * cfg.sdMul);
-  const lower = medianBase.map((m, b) => m - sdRange[b] * cfg.sdMulb);
-  const midli = upper.map((u, b) => (u + lower[b]) / 2);
-
-  // NAL := close > upper ? 1 : close < lower ? -1 : NAL[1] (NAL[1] is na on the first bar)
-  const col: string[] = new Array(n);
-  let nal = NaN;
-  for (let b = 0; b < n; b++) {
-    const c = bars[b].close;
-    nal = gt(c, upper[b]) ? 1 : gt(lower[b], c) ? -1 : nal;
-    col[b] = eq(nal, 1) ? colUp : eq(nal, -1) ? colDn : colNu;
-  }
-
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const plot = (values: number[], colour: (b: number) => string) =>
-    bars.map((bar, b) => ({ time: bar.time, value: fin(values[b]), color: colour(b) }));
-  const glow = col.map((c) => String(color.new(c, 50)));
-  const fillTop = col.map((c) => String(color.new(c, 30)));
-  const fillBottom = col.map((c) => String(color.new(c, 100)));
-
-  // plotcandle(open, high, low, close, "Bar Color", col, col, bordercolor = col, display = display.pane,
-  //   force_overlay = true)
-  const candles: PlotCandleData[] = bars.map((bar, b) => ({
-    time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close,
-    color: col[b], wickColor: col[b], borderColor: col[b], forceOverlay: true,
-  }));
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: plot(upper, (b) => col[b]),
-      plot1: plot(lower, (b) => col[b]),
-      plot2: plot(midli, () => color.white),
-      plot3: plot(upper, (b) => glow[b]),
-      plot4: plot(lower, (b) => glow[b]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: MedianGaussianRun = {
+        // median_raw = ta.median(fil_src, base_len)
+        median: taStep.median(cfg.baseLen),
+        medianRaw: [], medianBase: [], upper: [], lower: [], midli: [], fillTop: [], fillBottom: [],
+        plots: Array.from({ length: 5 }, () => []), candles: [],
+        steps: [], vars: { nal: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.median];
+      s.series = [
+        s.medianRaw, s.medianBase, s.upper, s.lower, s.midli, s.fillTop, s.fillBottom, ...s.plots, s.candles,
+      ];
+      return s;
     },
-    fills: [
-      // fill(u, m, upper, midli, color.new(col, 30), color.new(col, 100))
-      { plot1: 'plot0', plot2: 'plot2', gradient: { topValue: upper, bottomValue: midli,
-        topColor: fillTop, bottomColor: fillBottom } },
-      // fill(l, m, lower, midli, color.new(col, 30), color.new(col, 100))
-      { plot1: 'plot1', plot2: 'plot2', gradient: { topValue: lower, bottomValue: midli,
-        topColor: fillTop, bottomColor: fillBottom } },
-    ],
-    plotCandles: { barColor: candles },
+    bar(s, b, bars) {
+      const bar = bars[b];
+      const medianRaw = s.medianRaw;
+      medianRaw[b] = s.median.step(value(bar));
+      let totalWeight = 0.0;
+      let weightedSum = 0.0;
+      for (let i = 0; i <= len - 1; i++) {
+        const weight = gaussWeights[i];
+        totalWeight += weight;
+        weightedSum += hist(medianRaw, b, i) * weight;
+      }
+      const medianBase = s.medianBase;
+      const m = weightedSum / totalWeight;
+      medianBase[b] = m;
+
+      let wmean = 0.0;
+      for (let i = 0; i <= period - 1; i++) wmean += hist(medianBase, b, i) * weights[i];
+      wmean = wmean / sumw;
+      let wvar = 0.0;
+      for (let i = 0; i <= period - 1; i++) {
+        const diff = hist(medianBase, b, i) - wmean;
+        wvar += Math.pow(diff, 2) * weights[i];
+      }
+      const sdRange = Math.sqrt(wvar / sumw);
+
+      const upper = m + sdRange * cfg.sdMul;
+      const lower = m - sdRange * cfg.sdMulb;
+      const midli = (upper + lower) / 2;
+      s.upper[b] = upper;
+      s.lower[b] = lower;
+      s.midli[b] = midli;
+
+      const c = bar.close;
+      const v = s.vars;
+      v.nal = gt(c, upper) ? 1 : gt(lower, c) ? -1 : v.nal;
+      const col = eq(v.nal, 1) ? colUp : eq(v.nal, -1) ? colDn : colNu;
+      const glow = String(color.new(col, 50));
+      s.fillTop[b] = String(color.new(col, 30));
+      s.fillBottom[b] = String(color.new(col, 100));
+
+      const time = bar.time;
+      const p = s.plots;
+      p[0][b] = { time, value: fin(upper), color: col };
+      p[1][b] = { time, value: fin(lower), color: col };
+      p[2][b] = { time, value: fin(midli), color: color.white };
+      p[3][b] = { time, value: fin(upper), color: glow };
+      p[4][b] = { time, value: fin(lower), color: glow };
+      // plotcandle(open, high, low, close, "Bar Color", col, col, bordercolor = col, display = display.pane,
+      //   force_overlay = true)
+      s.candles[b] = {
+        time, open: bar.open, high: bar.high, low: bar.low, close: bar.close,
+        color: col, wickColor: col, borderColor: col, forceOverlay: true,
+      };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        fills: [
+          // fill(u, m, upper, midli, color.new(col, 30), color.new(col, 100))
+          { plot1: 'plot0', plot2: 'plot2', gradient: { topValue: s.upper.slice(), bottomValue: s.midli.slice(),
+            topColor: s.fillTop.slice(), bottomColor: s.fillBottom.slice() } },
+          // fill(l, m, lower, midli, color.new(col, 30), color.new(col, 100))
+          { plot1: 'plot1', plot2: 'plot2', gradient: { topValue: s.lower.slice(), bottomValue: s.midli.slice(),
+            topColor: s.fillTop.slice(), bottomColor: s.fillBottom.slice() } },
+        ],
+        plotCandles: { barColor: s.candles.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MedianGaussianTrendNalInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(
+  bars: Bar[],
+  inputs: Partial<MedianGaussianTrendNalInputs> = {},
+): IndicatorResult & { plotCandles: Record<string, PlotCandleData[]> } {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MedianGaussianTrendNal = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

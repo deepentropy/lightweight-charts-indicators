@@ -15,9 +15,11 @@
  * Original notice: © QuantAlgo
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData, BarColorData, BgColorData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface DynamicVolatilityFilterInputs {
   /** 'Default' | 'Fast Response' | 'Smooth Trend' (the presets override noiseMult, lookback and snapSpeed) */
@@ -110,13 +112,31 @@ const COLOR_PRESETS: Record<string, [string, string]> = {
   Neon: ['#ffff00', '#ff00ff'],
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<DynamicVolatilityFilterInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
-  & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color?: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; barColors: BarColorData[]; bgColors: BgColorData[] }
+  & { alerts: AlertConditionState[] };
+
+interface DvfVars {
+  /** var float dvf_line = na */
+  dvf: number;
+  /** var int trend_dir = 0 */
+  trendDir: number;
+}
+
+interface DvfRun extends BarRunState<DvfVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  /** plot0..plot7 */
+  plots: Point[][];
+  /** The colours of the five fills */
+  layers: string[][];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<DynamicVolatilityFilterInputs>): BarStudy<DvfRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
   let { noiseMult, lookback, snapSpeed } = cfg;
   if (cfg.preset === 'Fast Response') {
     noiseMult = 1.2;
@@ -128,81 +148,107 @@ export function calculate(
     snapSpeed = 0.2;
   }
   const [bullish, bearish] = COLOR_PRESETS[cfg.colorPreset] ?? [cfg.bullishColor, cfg.bearishColor];
-
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
-  const atr = ta.atr(bars, lookback).toArray().map((v) => v ?? NaN);
-
-  const line: number[] = new Array(n);
-  const threshold: number[] = new Array(n);
-  const lineColor: string[] = new Array(n);
-  let dvf = NaN; // var float dvf_line = na
-  let trendDir = 0; // var int trend_dir = 0
-  const turnedBull: boolean[] = [], turnedBear: boolean[] = [];
-  for (let i = 0; i < n; i++) {
-    const prevDir = i > 0 ? trendDir : NaN; // trend_dir[1] (na on the first bar: != compares false)
-    threshold[i] = atr[i] * noiseMult;
-    const prev = dvf;
-    if (isNaN(dvf)) {
-      dvf = src[i];
-    } else {
-      const diff = src[i] - dvf;
-      if (gt(Math.abs(diff), threshold[i])) dvf = dvf + diff * snapSpeed;
-    }
-    line[i] = dvf;
-    // dvf_line > dvf_line[1] / dvf_line < dvf_line[1] (dvf_line[1] is na on bar 0)
-    if (gt(dvf, prev)) trendDir = 1;
-    else if (gt(prev, dvf)) trendDir = -1;
-    else trendDir = cfg.showNeutral ? 0 : trendDir;
-    lineColor[i] = trendDir === 1 ? bullish : trendDir === -1 ? bearish : cfg.neutralColor;
-    // turned_bullish = trend_dir == 1 and trend_dir[1] != 1; turned_bearish = trend_dir == -1 and trend_dir[1] != -1
-    turnedBull.push(trendDir === 1 && !isNaN(prevDir) && prevDir !== 1);
-    turnedBear.push(trendDir === -1 && !isNaN(prevDir) && prevDir !== -1);
-  }
-
-  const t = (i: number) => bars[i].time;
-  const plot = (f: (i: number) => number, c?: (i: number) => string) =>
-    bars.map((_b, i) => (c ? { time: t(i), value: f(i), color: c(i) } : { time: t(i), value: f(i) }));
-  const mid = (k: number) => (i: number) => line[i] + (src[i] - line[i]) * k;
-  const band60 = lineColor.map((c) => String(color.new(c, 60)));
-  const layer = (tr: number) => lineColor.map((c) => String(color.new(c, tr)));
-
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  for (let i = 0; i < n; i++) {
-    // barcolor(show_candles ? color.new(line_color, bar_trans) : na); bgcolor(show_bgcolor ? color.new(line_color, bg_trans) : na)
-    if (cfg.showCandles) barColors.push({ time: t(i), color: String(color.new(lineColor[i], cfg.barTransparency)) });
-    if (cfg.showBgColor) bgColors.push({ time: t(i), color: String(color.new(lineColor[i], cfg.bgTransparency)) });
-  }
-
+  const value = barSource(cfg.src);
+  const layerTransp = [55, 70, 82, 92, cfg.showBands ? 92 : 100];
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      // plot(dvf_line, 'Dynamic Volatility Filter Line', line_color, linewidth = 4, style = plot.style_linebr)
-      plot0: plot((i) => line[i], (i) => lineColor[i]),
-      // fill anchors (display.none): dvf_line, mid1, mid2, mid3, src
-      plot1: plot((i) => line[i]),
-      plot2: plot(mid(0.25)),
-      plot3: plot(mid(0.5)),
-      plot4: plot(mid(0.75)),
-      plot5: plot((i) => src[i]),
-      // plot(show_bands ? dvf_line +/- threshold : na, color.new(line_color, 60), linewidth = 2, linestyle dotted)
-      plot6: plot((i) => (cfg.showBands ? line[i] + threshold[i] : NaN), (i) => band60[i]),
-      plot7: plot((i) => (cfg.showBands ? line[i] - threshold[i] : NaN), (i) => band60[i]),
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const atr = taStep.atr(lookback);
+      const s: DvfRun = {
+        atr, plots: Array.from({ length: 8 }, () => []), layers: Array.from({ length: 5 }, () => []), barColors: [],
+        bgColors: [], flags: [[], [], []], times: [[], [], []],
+        steps: [atr], vars: { dvf: NaN, trendDir: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.barColors, s.bgColors, ...s.times];
+      s.series = [...s.plots, ...s.layers, ...s.flags];
+      return s;
     },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot2', colors: layer(55) },
-      { plot1: 'plot2', plot2: 'plot3', colors: layer(70) },
-      { plot1: 'plot3', plot2: 'plot4', colors: layer(82) },
-      { plot1: 'plot4', plot2: 'plot5', colors: layer(92) },
-      // fill(p1, p2, color.new(line_color, show_bands ? 92 : 100))
-      { plot1: 'plot6', plot2: 'plot7', colors: layer(cfg.showBands ? 92 : 100) },
-    ],
-    markers: [],
-    barColors,
-    bgColors,
-    // trend_changed = turned_bullish or turned_bearish
-    alerts: alertStates(alertConditions, bars, [turnedBull, turnedBear, turnedBull.map((b, i) => b || turnedBear[i])]),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time;
+      const src = value(b) ?? NaN;
+      const atr = s.atr.step(b.high, b.low, b.close) ?? NaN;
+      const prevDir = i > 0 ? v.trendDir : NaN; // trend_dir[1] (na on the first bar: != compares false)
+      const threshold = atr * noiseMult;
+      const prev = v.dvf;
+      if (isNaN(v.dvf)) {
+        v.dvf = src;
+      } else {
+        const diff = src - v.dvf;
+        if (gt(Math.abs(diff), threshold)) v.dvf = v.dvf + diff * snapSpeed;
+      }
+      const line = v.dvf;
+      // dvf_line > dvf_line[1] / dvf_line < dvf_line[1] (dvf_line[1] is na on bar 0)
+      if (gt(line, prev)) v.trendDir = 1;
+      else if (gt(prev, line)) v.trendDir = -1;
+      else v.trendDir = cfg.showNeutral ? 0 : v.trendDir;
+      const trendDir = v.trendDir;
+      const lineColor = trendDir === 1 ? bullish : trendDir === -1 ? bearish : cfg.neutralColor;
+      // turned_bullish = trend_dir == 1 and trend_dir[1] != 1; turned_bearish = trend_dir == -1 and trend_dir[1] != -1
+      const turnedBull = trendDir === 1 && !isNaN(prevDir) && prevDir !== 1;
+      const turnedBear = trendDir === -1 && !isNaN(prevDir) && prevDir !== -1;
+      // trend_changed = turned_bullish or turned_bearish
+      const changed = turnedBull || turnedBear;
+      s.flags[0][i] = turnedBull;
+      s.flags[1][i] = turnedBear;
+      s.flags[2][i] = changed;
+      if (turnedBull) s.times[0].push(time as number);
+      if (turnedBear) s.times[1].push(time as number);
+      if (changed) s.times[2].push(time as number);
+
+      const mid = (k: number) => line + (src - line) * k;
+      const band60 = String(color.new(lineColor, 60));
+      const p = s.plots;
+      // plot(dvf_line, 'Dynamic Volatility Filter Line', line_color, linewidth = 4, style = plot.style_linebr)
+      p[0][i] = { time, value: line, color: lineColor };
+      // fill anchors (display.none): dvf_line, mid1, mid2, mid3, src
+      p[1][i] = { time, value: line };
+      p[2][i] = { time, value: mid(0.25) };
+      p[3][i] = { time, value: mid(0.5) };
+      p[4][i] = { time, value: mid(0.75) };
+      p[5][i] = { time, value: src };
+      // plot(show_bands ? dvf_line +/- threshold : na, color.new(line_color, 60), linewidth = 2, linestyle dotted)
+      p[6][i] = { time, value: cfg.showBands ? line + threshold : NaN, color: band60 };
+      p[7][i] = { time, value: cfg.showBands ? line - threshold : NaN, color: band60 };
+      // fill(p1, p2, color.new(line_color, show_bands ? 92 : 100)) and the four layers
+      for (let k = 0; k < 5; k++) s.layers[k][i] = String(color.new(lineColor, layerTransp[k]));
+
+      // barcolor(show_candles ? color.new(line_color, bar_trans) : na); bgcolor(show_bgcolor ? color.new(line_color, bg_trans) : na)
+      if (cfg.showCandles) s.barColors.push({ time, color: String(color.new(lineColor, cfg.barTransparency)) });
+      if (cfg.showBgColor) s.bgColors.push({ time, color: String(color.new(lineColor, cfg.bgTransparency)) });
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const p = s.plots;
+      const plots: Record<string, Point[]> = {};
+      for (let k = 0; k < 8; k++) plots[`plot${k}`] = p[k].slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        fills: [
+          { plot1: 'plot1', plot2: 'plot2', colors: s.layers[0].slice() },
+          { plot1: 'plot2', plot2: 'plot3', colors: s.layers[1].slice() },
+          { plot1: 'plot3', plot2: 'plot4', colors: s.layers[2].slice() },
+          { plot1: 'plot4', plot2: 'plot5', colors: s.layers[3].slice() },
+          { plot1: 'plot6', plot2: 'plot7', colors: s.layers[4].slice() },
+        ],
+        markers: [],
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<DynamicVolatilityFilterInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<DynamicVolatilityFilterInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -214,6 +260,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const DynamicVolatilityFilter = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

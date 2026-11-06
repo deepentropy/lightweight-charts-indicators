@@ -13,8 +13,10 @@
  * Original notice: © Unknownhodler
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taCore, taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, BgColorData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface MedianAtrSdOscillatorInputs {
   /** Source of the median */
@@ -85,72 +87,155 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<MedianAtrSdOscillatorInputs> = {},
-): IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const closeArr = bars.map((b) => b.close);
+/**
+ * `ta.percentile_nearest_rank(source, length, percentage)` one bar at a time: the sorted window of the oakscriptjs
+ * array function (insertion before the first value not below the new one, na values kept, the value `length` bars
+ * back removed), the value at rank `ceil(percentage / 100 * length)` (the same doubles).
+ */
+class PercentileNearestRankStep {
+  private values: number[] = [];
+  private bars: number[] = [];
+  private pendingBar = -1;
+  private pendingValue = NaN;
+  private pendingK = 0;
+  private readonly rank: number;
 
-  const median = A(ta.percentile_nearest_rank(getSourceSeries(bars, cfg.medSrc), cfg.medLen, 50));
-  const atrRaw = A(ta.atr(bars, cfg.atrLen));
-  const stdev = A(ta.stdev(S(closeArr), cfg.sdLen));
-
-  const diff: number[] = new Array(n);
-  const atrLvl: number[] = new Array(n);
-  const sdLvl: number[] = new Array(n);
-  let trend = 0; // var trend = 0
-  const trendArr: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    atrLvl[i] = median[i] + atrRaw[i] * cfg.atrFactor;
-    sdLvl[i] = median[i] + stdev[i];
-    if (gt(closeArr[i], sdLvl[i])) trend = 1;
-    if (lt(closeArr[i], atrLvl[i])) trend = -1;
-    trendArr[i] = trend;
-    diff[i] = trend === 1 ? closeArr[i] - atrLvl[i] : closeArr[i] - sdLvl[i];
+  constructor(private readonly length: number, percentage: number) {
+    // the length check of ta.percentile_nearest_rank (the same runtime error)
+    taCore.percentile_nearest_rank([], length, percentage);
+    this.rank = Math.min(length, Math.max(1, Math.ceil((percentage / 100) * length)));
   }
-  const ema = A(ta.ema(S(diff), cfg.emaLen));
 
+  step(i: number, v: number): number {
+    const values = this.values;
+    let k = 0;
+    while (k < values.length && !(values[k] >= v)) k++;
+    this.pendingBar = i;
+    this.pendingValue = v;
+    this.pendingK = k;
+    if (i < this.length - 1) return NaN;
+    // the window with v inserted at k (and the value of bar i - length removed)
+    let old = -1;
+    if (i >= this.length) {
+      const p = this.bars.indexOf(i - this.length);
+      old = p < k ? p : p + 1;
+    }
+    const at = (j: number) => (j < k ? values[j] : j === k ? v : values[j - 1]);
+    const r = this.rank - 1;
+    return old >= 0 && r >= old ? at(r + 1) : at(r);
+  }
+
+  commit(): void {
+    if (this.pendingBar < 0) return;
+    const i = this.pendingBar;
+    this.pendingBar = -1;
+    this.values.splice(this.pendingK, 0, this.pendingValue);
+    this.bars.splice(this.pendingK, 0, i);
+    if (i >= this.length) {
+      const old = this.bars.indexOf(i - this.length);
+      this.values.splice(old, 1);
+      this.bars.splice(old, 1);
+    }
+  }
+}
+
+type Point = { time: number; value: number; color: string };
+type Result = IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[] };
+
+interface MedianVars {
+  /** var trend = 0 */
+  trend: number;
+  /** var hodl = 0 */
+  hodl: number;
+}
+
+interface MedianRun extends BarRunState<MedianVars> {
+  median: PercentileNearestRankStep;
+  atr: ReturnType<typeof taStep.atr>;
+  stdev: WindowStdev;
+  ema: ReturnType<typeof taStep.ema>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+}
+
+function study(inputs: Partial<MedianAtrSdOscillatorInputs>): BarStudy<MedianRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.medSrc);
   const bgLong = String(color.new(LONG, cfg.Transparency));
   const bgShort = String(color.new(SHORT, cfg.Transparency));
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const plot1: { time: number; value: number; color: string }[] = [];
-  const plot2: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  let hodl = 0; // var hodl = 0
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time as number;
-    const tr = trendArr[i];
-    if (cfg.useEma) {
-      hodl = tr === 1 && gt(diff[i], ema[i]) ? 1 : tr === -1 && lt(diff[i], ema[i]) ? -1 : hodl;
-    } else {
-      hodl = tr === 1 ? 1 : tr === -1 ? -1 : hodl;
-    }
-    plot0.push({ time: t, value: diff[i], color: hodl === 1 ? LONG : SHORT });
-    plot1.push({ time: t, value: ema[i], color: 'rgb(255, 255, 255)' });
-    plot2.push({ time: t, value: 0, color: color.gray });
-    // barcolor(barColoring and hodl == 1 ? long : barColoring and hodl == -1 ? short : na)
-    if (cfg.barColoring && hodl === 1) barColors.push({ time: t, color: LONG });
-    else if (cfg.barColoring && hodl === -1) barColors.push({ time: t, color: SHORT });
-    // bgcolor(hodl == 1 ? color.new(long, Transparency) : color.new(short, Transparency), force_overlay = true,
-    //         display = ShowBGCol ? display.all : display.none)
-    if (cfg.ShowBGCol) bgColors.push({ time: t, color: hodl === 1 ? bgLong : bgShort, forceOverlay: true });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2 },
-    barColors,
-    bgColors,
+    fullRunReason: () => (isBarSource(cfg.medSrc) ? null : 'source of another study'),
+    init() {
+      const median = new PercentileNearestRankStep(cfg.medLen, 50);
+      const atr = taStep.atr(cfg.atrLen);
+      const stdev = new WindowStdev(cfg.sdLen);
+      const ema = taStep.ema(cfg.emaLen);
+      const s: MedianRun = {
+        median, atr, stdev, ema, plot0: [], plot1: [], plot2: [], barColors: [], bgColors: [],
+        steps: [median, atr, stdev, ema], vars: { trend: 0, hodl: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.barColors, s.bgColors];
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const t = b.time as number;
+      const close = b.close;
+      const median = s.median.step(i, value(b)) ?? NaN;
+      const atrRaw = s.atr.step(b.high, b.low, close);
+      const stdev = s.stdev.step(close);
+      const atrLvl = median + atrRaw * cfg.atrFactor;
+      const sdLvl = median + stdev;
+      if (gt(close, sdLvl)) v.trend = 1;
+      if (lt(close, atrLvl)) v.trend = -1;
+      const tr = v.trend;
+      const diff = tr === 1 ? close - atrLvl : close - sdLvl;
+      const ema = s.ema.step(diff);
+
+      if (cfg.useEma) {
+        v.hodl = tr === 1 && gt(diff, ema) ? 1 : tr === -1 && lt(diff, ema) ? -1 : v.hodl;
+      } else {
+        v.hodl = tr === 1 ? 1 : tr === -1 ? -1 : v.hodl;
+      }
+      const hodl = v.hodl;
+      s.plot0[i] = { time: t, value: diff, color: hodl === 1 ? LONG : SHORT };
+      s.plot1[i] = { time: t, value: ema, color: 'rgb(255, 255, 255)' };
+      s.plot2[i] = { time: t, value: 0, color: color.gray };
+      // barcolor(barColoring and hodl == 1 ? long : barColoring and hodl == -1 ? short : na)
+      if (cfg.barColoring && hodl === 1) s.barColors.push({ time: t, color: LONG });
+      else if (cfg.barColoring && hodl === -1) s.barColors.push({ time: t, color: SHORT });
+      // bgcolor(hodl == 1 ? color.new(long, Transparency) : color.new(short, Transparency), force_overlay = true,
+      //         display = ShowBGCol ? display.all : display.none)
+      if (cfg.ShowBGCol) s.bgColors.push({ time: t, color: hodl === 1 ? bgLong : bgShort, forceOverlay: true });
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<MedianAtrSdOscillatorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<MedianAtrSdOscillatorInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const MedianAtrSdOscillator = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

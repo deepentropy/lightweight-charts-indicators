@@ -13,7 +13,9 @@
  * All rights reserved. Unauthorized copying or distribution is prohibited. © TechnoBlooms
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type Committable, type IndicatorRun } from '../live-run';
 
 export type WaveFunctionMacdMaType = 'SMA' | 'EMA' | 'WMA';
 
@@ -72,81 +74,121 @@ const EPS = 1e-10;
 const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 
-export function calculate(bars: Bar[], inputs: Partial<WaveFunctionMacdInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => (v === null || v === undefined ? NaN : v));
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const closeArr = bars.map((b) => b.close);
-  const close = S(closeArr);
+type Point = { time: Bar['time']; value: number; color?: string };
 
-  const ma = (src: Series, length: number): number[] => {
+interface WfmVars {
+  /** histogram[1] */
+  prevH: number;
+}
+
+interface WfmRun extends BarRunState<WfmVars> {
+  fast: (v: number) => number;
+  slow: (v: number) => number;
+  ema4: ReturnType<typeof taStep.ema>;
+  detrenderEma: ReturnType<typeof taStep.ema>;
+  phaseEma: ReturnType<typeof taStep.ema>;
+  smoothedPhase: ReturnType<typeof taStep.ema>;
+  signal: ReturnType<typeof taStep.ema>;
+  over: ReturnType<typeof taStep.crossover>;
+  under: ReturnType<typeof taStep.crossunder>;
+  plots: Point[][];
+}
+
+function study(inputs: Partial<WaveFunctionMacdInputs>): BarStudy<WfmRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const ma = (length: number, steps: Committable[]): ((v: number) => number) => {
     switch (cfg.maType) {
-      case 'SMA': return A(ta.sma(src, length));
-      case 'EMA': return A(ta.ema(src, length));
-      default: return A(ta.wma(src, length));
+      case 'SMA': { const m = new WindowSma(length); steps.push(m); return (v) => m.step(v); }
+      case 'EMA': { const m = taStep.ema(length); steps.push(m); return (v) => m.step(v); }
+      default: { const m = taStep.wma(); steps.push(m); return (v) => m.step(v, length); }
     }
   };
-
-  // Core MACD
-  const fastMa = ma(close, cfg.fastLength);
-  const slowMa = ma(close, cfg.slowLength);
-  const macdLine = fastMa.map((f, i) => f - slowMa[i]);
-
-  // Phase shift: detrender = close - ema(close, 4); phaseComponent = ema(detrender - ema(detrender, 4), 4)
-  const ema4 = A(ta.ema(close, 4));
-  const detrender = closeArr.map((c, i) => c - ema4[i]);
-  const detrenderEma = A(ta.ema(S(detrender), 4));
-  const phaseComponent = A(ta.ema(S(detrender.map((d, i) => d - detrenderEma[i])), 4));
-  // phaseShift = math.atan(phaseComponent / close) * (180 / math.pi)
-  const phaseShift = phaseComponent.map((p, i) => Math.atan(p / closeArr[i]) * (180 / Math.PI));
-  const smoothedPhase = A(ta.ema(S(phaseShift), cfg.phaseSmoothing));
-
-  // energy = macdLine * math.cos(smoothedPhase * math.pi / 180); signalLine = ema(energy, signalLength)
-  const energy = macdLine.map((m, i) => m * Math.cos((smoothedPhase[i] * Math.PI) / 180));
-  const signalLine = A(ta.ema(S(energy), cfg.signalLength));
-  const histogram = energy.map((e, i) => e - signalLine[i]);
-
-  // ta.crossover / ta.crossunder (exact comparisons, with the last bar where both values were not na)
-  const macdS = S(macdLine);
-  const signalS = S(signalLine);
-  const bullishCross = A(ta.crossover(macdS, signalS));
-  const bearishCross = A(ta.crossunder(macdS, signalS));
-
-  const plot0 = [];
-  const plot1 = [];
-  const plot2 = [];
-  const plot3 = [];
-  const plot4 = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const h = histogram[i];
-    const prevH = i > 0 ? histogram[i - 1] : NaN;
-    const isBullish = gt(h, 0);
-    const isBearish = lt(h, 0);
-    const isRising = gt(h, prevH);
-    const isFalling = lt(h, prevH);
-    const histColor = isBullish && isRising ? STRONG_BULL
-      : isBullish && isFalling ? WEAK_BULL
-        : isBearish && isFalling ? STRONG_BEAR
-          : isBearish && isRising ? WEAK_BEAR
-            : color.gray;
-    plot0.push({ time: t, value: macdLine[i] });
-    plot1.push({ time: t, value: signalLine[i] });
-    plot2.push({ time: t, value: h, color: histColor });
-    plot3.push({ time: t, value: bullishCross[i] === 1 ? macdLine[i] : NaN });
-    plot4.push({ time: t, value: bearishCross[i] === 1 ? macdLine[i] : NaN });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1, plot2, plot3, plot4 },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } }],
+    init() {
+      const steps: Committable[] = [];
+      // Core MACD
+      const fast = ma(cfg.fastLength, steps);
+      const slow = ma(cfg.slowLength, steps);
+      const ema4 = taStep.ema(4);
+      const detrenderEma = taStep.ema(4);
+      const phaseEma = taStep.ema(4);
+      const smoothedPhase = taStep.ema(cfg.phaseSmoothing);
+      const signal = taStep.ema(cfg.signalLength);
+      const over = taStep.crossover();
+      const under = taStep.crossunder();
+      steps.push(ema4, detrenderEma, phaseEma, smoothedPhase, signal, over, under);
+      const s: WfmRun = {
+        fast, slow, ema4, detrenderEma, phaseEma, smoothedPhase, signal, over, under,
+        plots: [[], [], [], [], []], steps, vars: { prevH: NaN }, lists: [], series: [],
+      };
+      s.series = s.plots;
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      const close = b.close;
+      const macdLine = s.fast(close) - s.slow(close);
+
+      // Phase shift: detrender = close - ema(close, 4); phaseComponent = ema(detrender - ema(detrender, 4), 4)
+      const detrender = close - s.ema4.step(close);
+      const detrenderEma = s.detrenderEma.step(detrender);
+      const phaseComponent = s.phaseEma.step(detrender - detrenderEma);
+      // phaseShift = math.atan(phaseComponent / close) * (180 / math.pi)
+      const phaseShift = Math.atan(phaseComponent / close) * (180 / Math.PI);
+      const smoothedPhase = s.smoothedPhase.step(phaseShift);
+
+      // energy = macdLine * math.cos(smoothedPhase * math.pi / 180); signalLine = ema(energy, signalLength)
+      const energy = macdLine * Math.cos((smoothedPhase * Math.PI) / 180);
+      const signalLine = s.signal.step(energy);
+      const h = energy - signalLine;
+
+      // ta.crossover / ta.crossunder (exact comparisons, with the last bar where both values were not na)
+      const bullishCross = s.over.step(macdLine, signalLine);
+      const bearishCross = s.under.step(macdLine, signalLine);
+
+      const prevH = i > 0 ? v.prevH : NaN;
+      v.prevH = h;
+      const isBullish = gt(h, 0);
+      const isBearish = lt(h, 0);
+      const isRising = gt(h, prevH);
+      const isFalling = lt(h, prevH);
+      const histColor = isBullish && isRising ? STRONG_BULL
+        : isBullish && isFalling ? WEAK_BULL
+          : isBearish && isFalling ? STRONG_BEAR
+            : isBearish && isRising ? WEAK_BEAR
+              : color.gray;
+      const p = s.plots;
+      p[0][i] = { time: t, value: macdLine };
+      p[1][i] = { time: t, value: signalLine };
+      p[2][i] = { time: t, value: h, color: histColor };
+      p[3][i] = { time: t, value: bullishCross ? macdLine : NaN };
+      p[4][i] = { time: t, value: bearishCross ? macdLine : NaN };
+    },
+    result(s) {
+      const [plot0, plot1, plot2, plot3, plot4] = s.plots.map((x) => x.slice());
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0, plot1, plot2, plot3, plot4 },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: color.gray, linestyle: 'dashed' } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<WaveFunctionMacdInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<WaveFunctionMacdInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const WaveFunctionMacd = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

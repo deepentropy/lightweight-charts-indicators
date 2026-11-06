@@ -15,9 +15,11 @@
  * script may be freely distributed under the GPL-3.0 license.
  */
 
-import { getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { BarColorData, BgColorData, PlotCandleData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface InverseDistanceWeightedMovingAverageInputs {
   /** Number of bars in the window */
@@ -69,82 +71,118 @@ export const metadata = {
 const gt = (a: number, b: number) => a - b > 1e-10;
 const ne = (a: number, b: number) => Math.abs(a - b) > 1e-10;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<InverseDistanceWeightedMovingAverageInputs> = {},
-): IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> }
-  & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const len = cfg.length;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
+type Result = IndicatorResult & { barColors: BarColorData[]; bgColors: BgColorData[]; plotCandles: Record<string, PlotCandleData[]> }
+  & { alerts: AlertConditionState[] };
 
-  const ma: number[] = new Array(n);
-  const weights: number[] = new Array(len).fill(0);
-  for (let b = 0; b < n; b++) {
-    // nz(src[i], src): na (before the first bar, or an na source) is replaced by the current source
-    const at = (i: number) => {
-      const v = b - i >= 0 ? src[b - i] : NaN;
-      return isNaN(v) ? src[b] : v;
-    };
-    weights.fill(0);
-    // Each unordered pair once; the distance is added to both taps (Pine order)
-    if (len > 1) {
-      for (let i = 0; i <= len - 2; i++) {
-        for (let j = i + 1; j <= len - 1; j++) {
-          const d = Math.abs(at(i) - at(j));
-          weights[i] = weights[i] + d;
-          weights[j] = weights[j] + d;
+interface IdwmaRun extends BarRunState<Record<string, never>> {
+  src: number[];
+  ma: number[];
+  weights: number[];
+  maColors: string[];
+  plot0: { time: number; value: number; color: string }[];
+  barColors: BarColorData[];
+  bgColors: BgColorData[];
+  candles: PlotCandleData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<InverseDistanceWeightedMovingAverageInputs>): BarStudy<IdwmaRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const len = cfg.length;
+  const value = barSource(cfg.src);
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const s: IdwmaRun = {
+        src: [], ma: [], weights: new Array(len).fill(0), maColors: [], plot0: [], barColors: [], bgColors: [],
+        candles: [], flags: [[], [], []], times: [[], [], []], steps: [], vars: {}, lists: [], series: [],
+      };
+      s.lists = [s.barColors, s.bgColors, s.candles, ...s.times];
+      s.series = [s.src, s.ma, s.maColors, s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, b, bars) {
+      const bar = bars[b];
+      const v0 = value(bar);
+      const src = s.src;
+      src[b] = v0 ?? NaN;
+      // nz(src[i], src): na (before the first bar, or an na source) is replaced by the current source
+      const at = (i: number) => {
+        const v = b - i >= 0 ? src[b - i] : NaN;
+        return isNaN(v) ? src[b] : v;
+      };
+      const weights = s.weights;
+      weights.fill(0);
+      // Each unordered pair once; the distance is added to both taps (Pine order)
+      if (len > 1) {
+        for (let i = 0; i <= len - 2; i++) {
+          for (let j = i + 1; j <= len - 1; j++) {
+            const d = Math.abs(at(i) - at(j));
+            weights[i] = weights[i] + d;
+            weights[j] = weights[j] + d;
+          }
         }
       }
-    }
-    let sum = 0.0;
-    let weightSum = 0.0;
-    for (let i = 0; i < len; i++) {
-      sum += at(i) * weights[i];
-      weightSum += weights[i];
-    }
-    // ma = weightSum != 0 ? sum / weightSum : src
-    ma[b] = ne(weightSum, 0) ? sum / weightSum : src[b];
-  }
+      let sum = 0.0;
+      let weightSum = 0.0;
+      for (let i = 0; i < len; i++) {
+        sum += at(i) * weights[i];
+        weightSum += weights[i];
+      }
+      // ma = weightSum != 0 ? sum / weightSum : src
+      const ma = ne(weightSum, 0) ? sum / weightSum : src[b];
+      s.ma[b] = ma;
 
-  const plot0: { time: number; value: number; color: string }[] = [];
-  const barColors: BarColorData[] = [];
-  const bgColors: BgColorData[] = [];
-  const candles: PlotCandleData[] = [];
-  const maColors: string[] = [];
-  for (let b = 0; b < n; b++) {
-    const t = bars[b].time;
-    const bull = b > 0 && gt(ma[b], ma[b - 1]); // isBullishSlope = ma > ma[1]
-    const maColor = cfg.highlightDirection ? (bull ? BULLISH : BEARISH) : NEUTRAL;
-    maColors.push(maColor);
-    plot0.push({ time: t, value: Number.isFinite(ma[b]) ? ma[b] : NaN, color: maColor });
-    if (cfg.applyBarColors) barColors.push({ time: t, color: bull ? BULLISH_BAR : BEARISH_BAR });
-    // plotcandle(open, high, low, close, 'Bar Color', color = na, wickcolor = maWickColor, bordercolor = na,
-    //   display = display.pane): only the wicks are drawn (none when Apply Bar Colors is off)
-    const bar = bars[b];
-    candles.push({
-      time: t, open: bar.open, high: bar.high, low: bar.low, close: bar.close,
-      color: 'transparent', borderColor: 'transparent',
-      wickColor: cfg.applyBarColors ? (bull ? BULLISH : BEARISH) : 'transparent',
-    });
-    if (cfg.applyBgColors) bgColors.push({ time: t, color: bull ? BULLISH_BG : BEARISH_BG });
-  }
+      const t = bar.time;
+      const bull = b > 0 && gt(ma, s.ma[b - 1]); // isBullishSlope = ma > ma[1]
+      const maColor = cfg.highlightDirection ? (bull ? BULLISH : BEARISH) : NEUTRAL;
+      s.maColors[b] = maColor;
+      s.plot0[b] = { time: t, value: Number.isFinite(ma) ? ma : NaN, color: maColor };
+      if (cfg.applyBarColors) s.barColors.push({ time: t, color: bull ? BULLISH_BAR : BEARISH_BAR });
+      // plotcandle(open, high, low, close, 'Bar Color', color = na, wickcolor = maWickColor, bordercolor = na,
+      //   display = display.pane): only the wicks are drawn (none when Apply Bar Colors is off)
+      s.candles.push({
+        time: t, open: bar.open, high: bar.high, low: bar.low, close: bar.close,
+        color: 'transparent', borderColor: 'transparent',
+        wickColor: cfg.applyBarColors ? (bull ? BULLISH : BEARISH) : 'transparent',
+      });
+      if (cfg.applyBgColors) s.bgColors.push({ time: t, color: bull ? BULLISH_BG : BEARISH_BG });
 
-  // bullishColorChangeAlert = maColor[1] != bullishColor and maColor == bullishColor; bearish the same;
-  // anyColorChangeAlert = maColor != maColor[1] (maColor[1] is na on the first bar)
-  const bullFlags = maColors.map((c, b) => b > 0 && maColors[b - 1] !== BULLISH && c === BULLISH);
-  const bearFlags = maColors.map((c, b) => b > 0 && maColors[b - 1] !== BEARISH && c === BEARISH);
-  const anyFlags = maColors.map((c, b) => b > 0 && c !== maColors[b - 1]);
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    barColors,
-    bgColors,
-    plotCandles: { wickCandles: candles },
-    alerts: alertStates(alertConditions, bars, [bullFlags, bearFlags, anyFlags]),
+      // bullishColorChangeAlert = maColor[1] != bullishColor and maColor == bullishColor; bearish the same;
+      // anyColorChangeAlert = maColor != maColor[1] (maColor[1] is na on the first bar)
+      const prev = b > 0 ? s.maColors[b - 1] : undefined;
+      const flags = [
+        b > 0 && prev !== BULLISH && maColor === BULLISH,
+        b > 0 && prev !== BEARISH && maColor === BEARISH,
+        b > 0 && maColor !== prev,
+      ];
+      for (let k = 0; k < 3; k++) {
+        s.flags[k][b] = flags[k];
+        if (flags[k]) s.times[k].push(t as number);
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        barColors: s.barColors.slice(),
+        bgColors: s.bgColors.slice(),
+        plotCandles: { wickCandles: s.candles.slice() },
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<InverseDistanceWeightedMovingAverageInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<InverseDistanceWeightedMovingAverageInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -156,6 +194,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const InverseDistanceWeightedMovingAverage = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

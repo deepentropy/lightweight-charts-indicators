@@ -15,9 +15,11 @@
  * Reference: "Quantitative Qualitative Estimation" (QQE) by KivancOzbilgic
  */
 
-import { ta, Series, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, crossedOver, crossedUnder, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface QQEInputs {
   rsiLen: number;
@@ -74,88 +76,130 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const nz = (v: number) => (isNaN(v) ? 0 : v);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<QQEInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface QqeVars {
+  wwma: number;
+  atrRsi: number;
+}
+
+interface QqeRun extends BarRunState<QqeVars> {
+  rsi: ReturnType<typeof taStep.rsi>;
+  ema: ReturnType<typeof taStep.ema>;
+  over: ReturnType<typeof taStep.crossover>;
+  under: ReturnType<typeof taStep.crossunder>;
+  fast: number[];
+  slow: number[];
+  plots: Point[][];
+  upFillColors: string[];
+  downFillColors: string[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<QQEInputs>): BarStudy<QqeRun, Result> {
   const { rsiLen, smoothFactor, qqeFactor, src, showSignals, highlighting } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  // RSII = QQEF = ema(rsi(src, length), SSF)
-  const fastSeries = ta.ema(ta.rsi(getSourceSeries(bars, src), rsiLen), smoothFactor);
-  const fast = fastSeries.toArray().map((v) => v ?? NaN);
-
-  // TR = abs(RSII - RSII[1]); WWMA := wwalpha * TR + (1 - wwalpha) * nz(WWMA[1]);
-  // ATRRSI := wwalpha * WWMA + (1 - wwalpha) * nz(ATRRSI[1]); QUP / QDN = QQEF +/- ATRRSI * 4.236
-  // QQES := QUP < nz(QQES[1]) ? QUP : QQEF > nz(QQES[1]) and QQEF[1] < nz(QQES[1]) ? QDN : QDN > nz(QQES[1]) ? QDN
-  //   : QQEF < nz(QQES[1]) and QQEF[1] > nz(QQES[1]) ? QUP : nz(QQES[1])
+  const value = barSource(src);
   const wwalpha = 1 / rsiLen;
-  const slow: number[] = new Array(n);
-  let wwma = NaN;
-  let atrRsi = NaN;
-  for (let i = 0; i < n; i++) {
-    const f = fast[i];
-    const f1 = i > 0 ? fast[i - 1] : NaN;
-    const tr = Math.abs(f - f1);
-    wwma = wwalpha * tr + (1 - wwalpha) * nz(wwma);
-    atrRsi = wwalpha * wwma + (1 - wwalpha) * nz(atrRsi);
-    const qup = f + atrRsi * qqeFactor;
-    const qdn = f - atrRsi * qqeFactor;
-    const s1 = nz(i > 0 ? slow[i - 1] : NaN);
-    slow[i] = lt(qup, s1) ? qup
-      : gt(f, s1) && lt(f1, s1) ? qdn
-        : gt(qdn, s1) ? qdn
-          : lt(f, s1) && gt(f1, s1) ? qup
-            : s1;
-  }
-
-  // buySignalr = crossover(QQEF, QQES), sellSignallr = crossunder(QQEF, QQES)
-  const slowSeries = Series.fromArray(bars, slow);
-  const buy = ta.crossover(fastSeries, slowSeries).toArray().map((v) => !!v);
-  const sell = ta.crossunder(fastSeries, slowSeries).toArray().map((v) => !!v);
-
   // fill(QQF, QQS, color = highlighting ? (QQEF > QQES ? color.green : na) : na): default fill transparency 90
   const greenFill = String(color.new(GREEN, 90));
   const redFill = String(color.new(RED, 90));
-  const plot0: Array<{ time: number; value: number }> = [];
-  const plot1: typeof plot0 = [];
-  const plot2: typeof plot0 = [];
-  const upFillColors: string[] = [];
-  const downFillColors: string[] = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const time = bars[i].time;
-    plot0.push({ time, value: fast[i] });
-    plot1.push({ time, value: slow[i] });
-    // plot(50, color = color.gray, style = 6): circles
-    plot2.push({ time, value: 50 });
-    upFillColors.push(highlighting && gt(fast[i], slow[i]) ? greenFill : 'transparent');
-    downFillColors.push(highlighting && lt(fast[i], slow[i]) ? redFill : 'transparent');
-    // plotshape(buySignalr and showsignals ? QQES * 0.995 : na, "Buy", location.absolute, shape.labelup, size.tiny)
-    if (showSignals && buy[i] && !isNaN(slow[i])) {
-      markers.push({ id: 'shape0', time, position: 'atPriceBottom', price: slow[i] * 0.995, shape: 'labelUp', color: GREEN,
-        text: 'Buy', textColor: WHITE, size: 'tiny' });
-    }
-    // plotshape(sellSignallr and showsignals ? QQES * 1.005 : na, "Sell", location.absolute, shape.labeldown)
-    if (showSignals && sell[i] && !isNaN(slow[i])) {
-      markers.push({ id: 'shape1', time, position: 'atPriceTop', price: slow[i] * 1.005, shape: 'labelDown', color: RED,
-        text: 'Sell', textColor: WHITE, size: 'tiny' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { 'plot0': plot0, 'plot1': plot1, 'plot2': plot2 },
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'UpTrend Highligter', color: greenFill }, colors: upFillColors },
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'DownTrend Highligter', color: redFill }, colors: downFillColors },
-    ],
-    markers,
-    // alertcondition(cross / crossover / crossunder(QQEF, QQES), crossover / crossunder(QQEF, 50))
-    alerts: alertStates(alertConditions, bars, [
-      buy.map((v, i) => v || sell[i]), buy, sell, crossedOver(fast, 50), crossedUnder(fast, 50),
-    ]),
+    fullRunReason: () => (isBarSource(src) ? null : 'source of another study'),
+    init() {
+      const s: QqeRun = {
+        rsi: taStep.rsi(rsiLen), ema: taStep.ema(smoothFactor), over: taStep.crossover(), under: taStep.crossunder(),
+        fast: [], slow: [], plots: [[], [], []], upFillColors: [], downFillColors: [], markers: [],
+        flags: [[], [], [], [], []], times: [[], [], [], [], []],
+        steps: [], vars: { wwma: NaN, atrRsi: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.rsi, s.ema, s.over, s.under];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.fast, s.slow, ...s.plots, s.upFillColors, s.downFillColors, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const time = b.time;
+      // RSII = QQEF = ema(rsi(src, length), SSF)
+      const f = s.ema.step(s.rsi.step(value(b)));
+      s.fast[i] = f;
+
+      // TR = abs(RSII - RSII[1]); WWMA := wwalpha * TR + (1 - wwalpha) * nz(WWMA[1]);
+      // ATRRSI := wwalpha * WWMA + (1 - wwalpha) * nz(ATRRSI[1]); QUP / QDN = QQEF +/- ATRRSI * 4.236
+      // QQES := QUP < nz(QQES[1]) ? QUP : QQEF > nz(QQES[1]) and QQEF[1] < nz(QQES[1]) ? QDN : QDN > nz(QQES[1]) ? QDN
+      //   : QQEF < nz(QQES[1]) and QQEF[1] > nz(QQES[1]) ? QUP : nz(QQES[1])
+      const f1 = i > 0 ? s.fast[i - 1] : NaN;
+      const tr = Math.abs(f - f1);
+      v.wwma = wwalpha * tr + (1 - wwalpha) * nz(v.wwma);
+      v.atrRsi = wwalpha * v.wwma + (1 - wwalpha) * nz(v.atrRsi);
+      const qup = f + v.atrRsi * qqeFactor;
+      const qdn = f - v.atrRsi * qqeFactor;
+      const s1 = nz(i > 0 ? s.slow[i - 1] : NaN);
+      const slow = lt(qup, s1) ? qup
+        : gt(f, s1) && lt(f1, s1) ? qdn
+          : gt(qdn, s1) ? qdn
+            : lt(f, s1) && gt(f1, s1) ? qup
+              : s1;
+      s.slow[i] = slow;
+
+      // buySignalr = crossover(QQEF, QQES), sellSignallr = crossunder(QQEF, QQES)
+      const buy = !!s.over.step(f, slow);
+      const sell = !!s.under.step(f, slow);
+
+      s.plots[0][i] = { time, value: f };
+      s.plots[1][i] = { time, value: slow };
+      // plot(50, color = color.gray, style = 6): circles
+      s.plots[2][i] = { time, value: 50 };
+      s.upFillColors[i] = highlighting && gt(f, slow) ? greenFill : 'transparent';
+      s.downFillColors[i] = highlighting && lt(f, slow) ? redFill : 'transparent';
+      // plotshape(buySignalr and showsignals ? QQES * 0.995 : na, "Buy", location.absolute, shape.labelup, size.tiny)
+      if (showSignals && buy && !isNaN(slow)) {
+        s.markers.push({ id: 'shape0', time, position: 'atPriceBottom', price: slow * 0.995, shape: 'labelUp', color: GREEN,
+          text: 'Buy', textColor: WHITE, size: 'tiny' });
+      }
+      // plotshape(sellSignallr and showsignals ? QQES * 1.005 : na, "Sell", location.absolute, shape.labeldown)
+      if (showSignals && sell && !isNaN(slow)) {
+        s.markers.push({ id: 'shape1', time, position: 'atPriceTop', price: slow * 1.005, shape: 'labelDown', color: RED,
+          text: 'Sell', textColor: WHITE, size: 'tiny' });
+      }
+      // alertcondition(cross / crossover / crossunder(QQEF, QQES), crossover / crossunder(QQEF, 50))
+      const up50 = f > 50 && f1 <= 50;
+      const down50 = f < 50 && f1 >= 50;
+      const fl = s.flags;
+      fl[0][i] = buy || sell;
+      fl[1][i] = buy;
+      fl[2][i] = sell;
+      fl[3][i] = up50;
+      fl[4][i] = down50;
+      for (let k = 0; k < 5; k++) if (fl[k][i]) s.times[k].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { 'plot0': s.plots[0].slice(), 'plot1': s.plots[1].slice(), 'plot2': s.plots[2].slice() },
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'UpTrend Highligter', color: greenFill }, colors: s.upFillColors.slice() },
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'DownTrend Highligter', color: redFill }, colors: s.downFillColors.slice() },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<QQEInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<QQEInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -167,4 +211,4 @@ export const alertConditions: AlertConditionDecl[] = [
   { id: 'alert4', title: 'Cross 50 Down Alert', message: 'QQE FAST Crossing 50 DOWN!' },
 ];
 
-export const QQE = { calculate, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };
+export const QQE = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, alertConditions };

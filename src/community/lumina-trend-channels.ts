@@ -12,9 +12,11 @@
  * Original notice: © Pineify
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface LuminaTrendChannelsInputs {
   /** Length of the EMA baseline and of the ATR */
@@ -58,87 +60,138 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<LuminaTrendChannelsInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface LuminaVars {
+  /** var int trend = 1 */
+  trend: number;
+  /** ta.rising(basis, 2) / ta.falling(basis, 2): the counts of rises / falls (a step from or to na keeps them) */
+  rises: number;
+  falls: number;
+  /** ta.crossover / crossunder: the last bar where both values were not na */
+  lastClose: number;
+  lastBasis: number;
+}
+
+interface LuminaRun extends BarRunState<LuminaVars> {
+  ema: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  basis: number[];
+  plots: Point[][];
+  fillCols: string[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+/** The 1e-10 tolerance of ta.rising / ta.falling */
+const EPS = 1e-10;
+
+function study(inputs: Partial<LuminaTrendChannelsInputs>): BarStudy<LuminaRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const close = Series.fromArray(bars, bars.map((b) => b.close));
-  const basis = A(ta.ema(close, cfg.length));
-  const atr = A(ta.atr(bars, cfg.length));
-  const basisS = Series.fromArray(bars, basis);
-  const rising = ta.rising(basisS, 2).toArray();
-  const falling = ta.falling(basisS, 2).toArray();
-
-  type Point = { time: number; value: number; color: string };
-  const plots: Record<string, Point[]> = { plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], plot5: [] };
-  const fillCols: string[][] = [[], [], [], []];
-  const markers: MarkerData[] = [];
-  const buyFlags: boolean[] = [], sellFlags: boolean[] = [], changeFlags: boolean[] = [];
-  let trend = 1; // var int trend = 1
-  let lastClose = NaN; // ta.crossover / crossunder: the last bar where both values were not na
-  let lastBasis = NaN;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const prevTrend = trend;
-    trend = rising[i] ? 1 : falling[i] ? -1 : trend;
-    const css = trend === 1 ? cfg.bullColor : cfg.bearColor;
-    const c50 = String(color.new(css, 50));
-    const c70 = String(color.new(css, 70));
-    const c85 = String(color.new(css, 85));
-    const bs = basis[i];
-    plots.plot0.push({ time: b.time, value: bs + atr[i] * cfg.multOuter, color: c50 });
-    plots.plot1.push({ time: b.time, value: bs + atr[i] * cfg.multInner, color: c70 });
-    plots.plot2.push({ time: b.time, value: bs, color: css });
-    plots.plot3.push({ time: b.time, value: bs - atr[i] * cfg.multInner, color: c70 });
-    plots.plot4.push({ time: b.time, value: bs - atr[i] * cfg.multOuter, color: c50 });
-    fillCols[0].push(c85);
-    fillCols[1].push(c70);
-    fillCols[2].push(c70);
-    fillCols[3].push(c85);
-    // plot(ta.change(trend) != 0 ? basis : na): ta.change is na on the first bar
-    const changed = i > 0 && trend !== prevTrend;
-    plots.plot5.push({ time: b.time, value: changed ? bs : NaN, color: css });
-    changeFlags.push(changed);
-
-    let crossUp = false;
-    let crossDown = false;
-    if (!isNaN(b.close) && !isNaN(bs)) {
-      if (!isNaN(lastClose)) {
-        // exact comparisons (no 1e-10 tolerance): close > basis and close[1] <= basis[1]
-        crossUp = b.close > bs && lastClose <= lastBasis;
-        crossDown = b.close < bs && lastClose >= lastBasis;
-      }
-      lastClose = b.close;
-      lastBasis = bs;
-    }
-    // plotshape(buySignal, "Buy Signal", shape.triangleup, location.belowbar, color = bullCss, size = size.small)
-    buyFlags.push(crossUp && trend === 1);
-    sellFlags.push(crossDown && trend === -1);
-    if (crossUp && trend === 1) {
-      markers.push({ time: b.time, position: 'belowBar', shape: 'triangleUp', color: cfg.bullColor, size: 'small' });
-    }
-    // plotshape(sellSignal, "Sell Signal", shape.triangledown, location.abovebar, color = bearCss, size = size.small)
-    if (crossDown && trend === -1) {
-      markers.push({ time: b.time, position: 'aboveBar', shape: 'triangleDown', color: cfg.bearColor, size: 'small' });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', options: { title: 'Outer Upper Fill' }, colors: fillCols[0] },
-      { plot1: 'plot1', plot2: 'plot2', options: { title: 'Inner Upper Fill' }, colors: fillCols[1] },
-      { plot1: 'plot2', plot2: 'plot3', options: { title: 'Inner Lower Fill' }, colors: fillCols[2] },
-      { plot1: 'plot3', plot2: 'plot4', options: { title: 'Outer Lower Fill' }, colors: fillCols[3] },
-    ],
-    markers,
-    // alertcondition(buySignal, ...) / alertcondition(sellSignal, ...) / alertcondition(ta.change(trend) != 0, ...)
-    alerts: alertStates(alertConditions, bars, [buyFlags, sellFlags, changeFlags]),
+    init() {
+      const s: LuminaRun = {
+        ema: taStep.ema(cfg.length), atr: taStep.atr(cfg.length), basis: [],
+        plots: Array.from({ length: 6 }, () => []), fillCols: [[], [], [], []], markers: [],
+        flags: [[], [], []], times: [[], [], []], steps: [],
+        vars: { trend: 1, rises: 0, falls: 0, lastClose: NaN, lastBasis: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.ema, s.atr];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.basis, ...s.plots, ...s.fillCols, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const bs = s.ema.step(b.close);
+      const atr = s.atr.step(b.high, b.low, b.close);
+      s.basis[i] = bs;
+      const prevBasis = i > 0 ? s.basis[i - 1] : NaN;
+      if (Number.isFinite(bs) && Number.isFinite(prevBasis)) {
+        v.rises = !Number.isNaN(bs) && !Number.isNaN(prevBasis) && bs - prevBasis > EPS ? v.rises + 1 : 0;
+        v.falls = !Number.isNaN(bs) && !Number.isNaN(prevBasis) && prevBasis - bs > EPS ? v.falls + 1 : 0;
+      }
+      const rising = v.rises >= 2;
+      const falling = v.falls >= 2;
+
+      const prevTrend = v.trend;
+      v.trend = rising ? 1 : falling ? -1 : v.trend;
+      const trend = v.trend;
+      const css = trend === 1 ? cfg.bullColor : cfg.bearColor;
+      const c50 = String(color.new(css, 50));
+      const c70 = String(color.new(css, 70));
+      const c85 = String(color.new(css, 85));
+      const t = b.time;
+      s.plots[0][i] = { time: t, value: bs + atr * cfg.multOuter, color: c50 };
+      s.plots[1][i] = { time: t, value: bs + atr * cfg.multInner, color: c70 };
+      s.plots[2][i] = { time: t, value: bs, color: css };
+      s.plots[3][i] = { time: t, value: bs - atr * cfg.multInner, color: c70 };
+      s.plots[4][i] = { time: t, value: bs - atr * cfg.multOuter, color: c50 };
+      s.fillCols[0][i] = c85;
+      s.fillCols[1][i] = c70;
+      s.fillCols[2][i] = c70;
+      s.fillCols[3][i] = c85;
+      // plot(ta.change(trend) != 0 ? basis : na): ta.change is na on the first bar
+      const changed = i > 0 && trend !== prevTrend;
+      s.plots[5][i] = { time: t, value: changed ? bs : NaN, color: css };
+
+      let crossUp = false;
+      let crossDown = false;
+      if (!isNaN(b.close) && !isNaN(bs)) {
+        if (!isNaN(v.lastClose)) {
+          // exact comparisons (no 1e-10 tolerance): close > basis and close[1] <= basis[1]
+          crossUp = b.close > bs && v.lastClose <= v.lastBasis;
+          crossDown = b.close < bs && v.lastClose >= v.lastBasis;
+        }
+        v.lastClose = b.close;
+        v.lastBasis = bs;
+      }
+      const buy = crossUp && trend === 1;
+      const sell = crossDown && trend === -1;
+      s.flags[0][i] = buy;
+      s.flags[1][i] = sell;
+      s.flags[2][i] = changed;
+      if (buy) s.times[0].push(t as number);
+      if (sell) s.times[1].push(t as number);
+      if (changed) s.times[2].push(t as number);
+      // plotshape(buySignal, "Buy Signal", shape.triangleup, location.belowbar, color = bullCss, size = size.small)
+      if (buy) {
+        s.markers.push({ time: t, position: 'belowBar', shape: 'triangleUp', color: cfg.bullColor, size: 'small' });
+      }
+      // plotshape(sellSignal, "Sell Signal", shape.triangledown, location.abovebar, color = bearCss, size = size.small)
+      if (sell) {
+        s.markers.push({ time: t, position: 'aboveBar', shape: 'triangleDown', color: cfg.bearColor, size: 'small' });
+      }
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: Object.fromEntries(s.plots.map((p, k) => [`plot${k}`, p.slice()])),
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', options: { title: 'Outer Upper Fill' }, colors: s.fillCols[0].slice() },
+          { plot1: 'plot1', plot2: 'plot2', options: { title: 'Inner Upper Fill' }, colors: s.fillCols[1].slice() },
+          { plot1: 'plot2', plot2: 'plot3', options: { title: 'Inner Lower Fill' }, colors: s.fillCols[2].slice() },
+          { plot1: 'plot3', plot2: 'plot4', options: { title: 'Outer Lower Fill' }, colors: s.fillCols[3].slice() },
+        ],
+        markers: s.markers.slice(),
+        // alertcondition(buySignal, ...) / alertcondition(sellSignal, ...) / alertcondition(ta.change(trend) != 0, ...)
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<LuminaTrendChannelsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<LuminaTrendChannelsInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -150,6 +203,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const LuminaTrendChannels = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

@@ -7,7 +7,9 @@
  * Based on the standard Chande Kroll Stop indicator.
  */
 
-import { Series, ta, type Bar, type IndicatorResult, type InputConfig, type PlotConfig } from 'oakscriptjs';
+import { taStep, type Bar, type IndicatorResult, type InputConfig, type PlotConfig } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ChandeKrollStopInputs {
   /** ATR period length */
@@ -41,6 +43,67 @@ export const metadata = {
   overlay: true,
 };
 
+type Point = { time: number; value: number };
+
+interface CksRun extends BarRunState<Record<string, never>> {
+  highestHigh: WindowExtreme;
+  lowestLow: WindowExtreme;
+  atr: ReturnType<typeof taStep.atr>;
+  stopShort: WindowExtreme;
+  stopLong: WindowExtreme;
+  plotData0: Point[];
+  plotData1: Point[];
+}
+
+function study(inputs: Partial<ChandeKrollStopInputs>): BarStudy<CksRun, IndicatorResult> {
+  const { atrLength, atrCoeff, stopLength } = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      // Highest and lowest over atrLength period, ATR (RMA-based), then the final stops over stopLength
+      const highestHigh = new WindowExtreme(false, atrLength);
+      const lowestLow = new WindowExtreme(true, atrLength);
+      const atr = taStep.atr(atrLength);
+      const stopShort = new WindowExtreme(false, stopLength);
+      const stopLong = new WindowExtreme(true, stopLength);
+      const s: CksRun = {
+        highestHigh, lowestLow, atr, stopShort, stopLong, plotData0: [], plotData1: [],
+        steps: [highestHigh, lowestLow, atr, stopShort, stopLong], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.plotData0, s.plotData1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const hh = s.highestHigh.step(b.high);
+      const ll = s.lowestLow.step(b.low);
+      const atrVal = s.atr.step(b.high, b.low, b.close);
+      // first stop levels
+      const firstHighStop = hh - atrCoeff * atrVal;
+      const firstLowStop = ll + atrCoeff * atrVal;
+      s.plotData0[i] = { time: b.time, value: s.stopLong.step(firstLowStop) };
+      s.plotData1[i] = { time: b.time, value: s.stopShort.step(firstHighStop) };
+    },
+    result(s) {
+      return {
+        metadata: {
+          title: metadata.title,
+          shorttitle: metadata.shortTitle,
+          overlay: metadata.overlay,
+        },
+        plots: {
+          'plot0': s.plotData0.slice(),
+          'plot1': s.plotData1.slice(),
+        },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ChandeKrollStopInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
 /**
  * Calculate Chande Kroll Stop
  *
@@ -51,72 +114,12 @@ export const metadata = {
  * stop_long = ta.lowest(first_low_stop, q)
  */
 export function calculate(bars: Bar[], inputs: Partial<ChandeKrollStopInputs> = {}): IndicatorResult {
-  const { atrLength, atrCoeff, stopLength } = { ...defaultInputs, ...inputs };
-
-  // Extract high and low series
-  const high = Series.fromBars(bars, 'high');
-  const low = Series.fromBars(bars, 'low');
-
-  // Calculate highest and lowest over atrLength period
-  const highestHighArr = ta.highest(high, atrLength).toArray();
-  const lowestLowArr = ta.lowest(low, atrLength).toArray();
-
-  // Calculate ATR using ta.atr (RMA-based)
-  const atrArr = ta.atr(bars, atrLength).toArray();
-
-  // Calculate first stop levels
-  const firstHighStop: (number | null)[] = [];
-  const firstLowStop: (number | null)[] = [];
-
-  for (let i = 0; i < bars.length; i++) {
-    const hh = highestHighArr[i];
-    const ll = lowestLowArr[i];
-    const atrVal = atrArr[i];
-
-    if (hh === null || atrVal === null) {
-      firstHighStop.push(null);
-    } else {
-      firstHighStop.push(hh - atrCoeff * atrVal);
-    }
-
-    if (ll === null || atrVal === null) {
-      firstLowStop.push(null);
-    } else {
-      firstLowStop.push(ll + atrCoeff * atrVal);
-    }
-  }
-
-  // Calculate final stop levels
-  const firstHighStopSeries = new Series(bars, (_, i) => firstHighStop[i] ?? NaN);
-  const firstLowStopSeries = new Series(bars, (_, i) => firstLowStop[i] ?? NaN);
-  const stopShortArr = ta.highest(firstHighStopSeries, stopLength).toArray();
-  const stopLongArr = ta.lowest(firstLowStopSeries, stopLength).toArray();
-
-  const plotData0 = stopLongArr.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  const plotData1 = stopShortArr.map((value, i) => ({
-    time: bars[i].time,
-    value: value ?? NaN,
-  }));
-
-  return {
-    metadata: {
-      title: metadata.title,
-      shorttitle: metadata.shortTitle,
-      overlay: metadata.overlay,
-    },
-    plots: {
-      'plot0': plotData0,
-      'plot1': plotData1,
-    },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const ChandeKrollStop = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

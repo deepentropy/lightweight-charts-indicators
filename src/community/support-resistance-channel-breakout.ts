@@ -14,9 +14,11 @@
  * Original notice: © SuprAlgo
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SupportResistanceChannelBreakoutInputs {
   /** Channel multiplier (1 = 0.0001 %) */
@@ -76,28 +78,34 @@ const gt = (a: number, b: number) => a - b > EPS;
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<SupportResistanceChannelBreakoutInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
 
+interface ChannelVars {
+  /** var int last_top_breakout = na, var int last_bot_breakout = na */
+  lastTop: number;
+  lastBot: number;
+}
+
+interface ChannelRun extends BarRunState<ChannelVars> {
+  highest: WindowExtreme;
+  lowest: WindowExtreme;
+  resHigh: number[];
+  supLow: number[];
+  resTop: number[];
+  resBot: number[];
+  supTop: number[];
+  supBot: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<SupportResistanceChannelBreakoutInputs>): BarStudy<ChannelRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
   const channelMultiplier = cfg.rawChannelMultiplier * 0.0001;
   const hl = cfg.src === 'High/Low';
-  const sourceRes = bars.map((b) => (hl ? b.high : b.close));
-  const sourceSup = bars.map((b) => (hl ? b.low : b.close));
-
-  // ta.highest(source_res[1], period) / ta.lowest(source_sup[1], period)
-  const resHigh = A(ta.highest(S(sourceRes.map((_v, i) => (i > 0 ? sourceRes[i - 1] : NaN))), cfg.period));
-  const supLow = A(ta.lowest(S(sourceSup.map((_v, i) => (i > 0 ? sourceSup[i - 1] : NaN))), cfg.period));
-
-  const resTop = resHigh.map((v) => v * (1 + channelMultiplier));
-  const resBot = resHigh.map((v) => v * (1 - channelMultiplier));
-  const supTop = supLow.map((v) => v * (1 + channelMultiplier));
-  const supBot = supLow.map((v) => v * (1 - channelMultiplier));
 
   const neg50 = String(color.new(cfg.colourNegative, 50));
   const pos50 = String(color.new(cfg.colourPositive, 50));
@@ -105,63 +113,103 @@ export function calculate(
   const pos100 = String(color.new(cfg.colourPositive, 100));
   const neg30 = String(color.new(cfg.colourNegative, 30));
   const pos30 = String(color.new(cfg.colourPositive, 30));
-
-  const markers: MarkerData[] = [];
-  let lastTop = NaN; // var int last_top_breakout = na
-  let lastBot = NaN;
-  const flags: boolean[][] = [[], [], []];
-  for (let i = 0; i < n; i++) {
-    const close = bars[i].close;
-    const prevClose = i > 0 ? bars[i - 1].close : NaN;
-    const wasInsideTop = le(prevClose, i > 0 ? resTop[i - 1] : NaN);
-    const wasInsideBot = ge(prevClose, i > 0 ? supBot[i - 1] : NaN);
-    const potentialTop = gt(close, resTop[i]) && wasInsideTop;
-    const potentialBot = gt(supBot[i], close) && wasInsideBot;
-    const canTop = isNaN(lastTop) || i - lastTop >= cfg.breakoutCooldown;
-    const canBot = isNaN(lastBot) || i - lastBot >= cfg.breakoutCooldown;
-    const finalTop = potentialTop && canTop;
-    const finalBot = potentialBot && canBot;
-    if (finalTop) lastTop = i;
-    if (finalBot) lastBot = i;
-    flags[0].push(finalTop);
-    flags[1].push(finalBot);
-    flags[2].push(finalTop || finalBot);
-    if (cfg.showBreakout && finalTop) {
-      markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'labelDown', color: pos50,
-        text: 'Breakout ↑', textColor: color.white, size: 'normal' });
-    }
-    if (cfg.showBreakout && finalBot) {
-      markers.push({ time: bars[i].time, position: 'belowBar', shape: 'labelUp', color: neg50,
-        text: 'Breakout ↓', textColor: color.white, size: 'normal' });
-    }
-  }
-
-  const P = (arr: number[], c: string) => bars.map((b, i) => ({ time: b.time, value: arr[i], color: c }));
-  const fill = (c: string): string[] => new Array<string>(n).fill(c);
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: P(resTop, neg50),
-      plot1: P(resBot, neg50),
-      plot2: P(supTop, pos50),
-      plot3: P(supBot, pos50),
-      plot4: P(supLow, pos100),
-      plot5: P(resHigh, neg100),
+    init() {
+      const s: ChannelRun = {
+        highest: new WindowExtreme(false, cfg.period), lowest: new WindowExtreme(true, cfg.period),
+        resHigh: [], supLow: [], resTop: [], resBot: [], supTop: [], supBot: [],
+        plots: Array.from({ length: 6 }, () => []), markers: [], flags: [[], [], []], times: [[], [], []],
+        steps: [], vars: { lastTop: NaN, lastBot: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.highest, s.lowest];
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.resHigh, s.supLow, s.resTop, s.resBot, s.supTop, s.supBot, ...s.plots, ...s.flags];
+      return s;
     },
-    fills: [
-      { plot1: 'plot1', plot2: 'plot5', options: { title: 'Resistance Fill Down' },
-        gradient: { topValue: resBot, bottomValue: resHigh, topColor: fill(neg30), bottomColor: fill(neg100) } },
-      { plot1: 'plot0', plot2: 'plot5', options: { title: 'Resistance Fill Up' },
-        gradient: { topValue: resTop, bottomValue: resHigh, topColor: fill(neg30), bottomColor: fill(neg100) } },
-      { plot1: 'plot3', plot2: 'plot4', options: { title: 'Support Fill Down' },
-        gradient: { topValue: supBot, bottomValue: supLow, topColor: fill(pos30), bottomColor: fill(pos100) } },
-      { plot1: 'plot2', plot2: 'plot4', options: { title: 'Support Fill Up' },
-        gradient: { topValue: supTop, bottomValue: supLow, topColor: fill(pos30), bottomColor: fill(pos100) } },
-    ],
-    markers,
-    alerts: alertStates(alertConditions, bars, flags),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const p = i > 0 ? bars[i - 1] : null;
+      // ta.highest(source_res[1], period) / ta.lowest(source_sup[1], period)
+      const resHigh = s.highest.step(p ? (hl ? p.high : p.close) : NaN);
+      const supLow = s.lowest.step(p ? (hl ? p.low : p.close) : NaN);
+      const resTop = resHigh * (1 + channelMultiplier);
+      const resBot = resHigh * (1 - channelMultiplier);
+      const supTop = supLow * (1 + channelMultiplier);
+      const supBot = supLow * (1 - channelMultiplier);
+      s.resHigh[i] = resHigh;
+      s.supLow[i] = supLow;
+      s.resTop[i] = resTop;
+      s.resBot[i] = resBot;
+      s.supTop[i] = supTop;
+      s.supBot[i] = supBot;
+
+      const close = b.close;
+      const prevClose = p ? p.close : NaN;
+      const wasInsideTop = le(prevClose, i > 0 ? s.resTop[i - 1] : NaN);
+      const wasInsideBot = ge(prevClose, i > 0 ? s.supBot[i - 1] : NaN);
+      const potentialTop = gt(close, resTop) && wasInsideTop;
+      const potentialBot = gt(supBot, close) && wasInsideBot;
+      const canTop = isNaN(v.lastTop) || i - v.lastTop >= cfg.breakoutCooldown;
+      const canBot = isNaN(v.lastBot) || i - v.lastBot >= cfg.breakoutCooldown;
+      const finalTop = potentialTop && canTop;
+      const finalBot = potentialBot && canBot;
+      if (finalTop) v.lastTop = i;
+      if (finalBot) v.lastBot = i;
+      const both = finalTop || finalBot;
+      s.flags[0][i] = finalTop;
+      s.flags[1][i] = finalBot;
+      s.flags[2][i] = both;
+      if (finalTop) s.times[0].push(b.time as number);
+      if (finalBot) s.times[1].push(b.time as number);
+      if (both) s.times[2].push(b.time as number);
+      if (cfg.showBreakout && finalTop) {
+        s.markers.push({ time: b.time, position: 'aboveBar', shape: 'labelDown', color: pos50,
+          text: 'Breakout ↑', textColor: color.white, size: 'normal' });
+      }
+      if (cfg.showBreakout && finalBot) {
+        s.markers.push({ time: b.time, position: 'belowBar', shape: 'labelUp', color: neg50,
+          text: 'Breakout ↓', textColor: color.white, size: 'normal' });
+      }
+
+      const t = b.time;
+      s.plots[0][i] = { time: t, value: resTop, color: neg50 };
+      s.plots[1][i] = { time: t, value: resBot, color: neg50 };
+      s.plots[2][i] = { time: t, value: supTop, color: pos50 };
+      s.plots[3][i] = { time: t, value: supBot, color: pos50 };
+      s.plots[4][i] = { time: t, value: supLow, color: pos100 };
+      s.plots[5][i] = { time: t, value: resHigh, color: neg100 };
+    },
+    result(s, bars) {
+      const n = bars.length;
+      const fill = (c: string): string[] => new Array<string>(n).fill(c);
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: Object.fromEntries(s.plots.map((p, k) => [`plot${k}`, p.slice()])),
+        fills: [
+          { plot1: 'plot1', plot2: 'plot5', options: { title: 'Resistance Fill Down' },
+            gradient: { topValue: s.resBot.slice(), bottomValue: s.resHigh.slice(), topColor: fill(neg30), bottomColor: fill(neg100) } },
+          { plot1: 'plot0', plot2: 'plot5', options: { title: 'Resistance Fill Up' },
+            gradient: { topValue: s.resTop.slice(), bottomValue: s.resHigh.slice(), topColor: fill(neg30), bottomColor: fill(neg100) } },
+          { plot1: 'plot3', plot2: 'plot4', options: { title: 'Support Fill Down' },
+            gradient: { topValue: s.supBot.slice(), bottomValue: s.supLow.slice(), topColor: fill(pos30), bottomColor: fill(pos100) } },
+          { plot1: 'plot2', plot2: 'plot4', options: { title: 'Support Fill Up' },
+            gradient: { topValue: s.supTop.slice(), bottomValue: s.supLow.slice(), topColor: fill(pos30), bottomColor: fill(pos100) } },
+        ],
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<SupportResistanceChannelBreakoutInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<SupportResistanceChannelBreakoutInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -173,6 +221,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const SupportResistanceChannelBreakout = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

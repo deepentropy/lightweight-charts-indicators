@@ -12,7 +12,9 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TtmSqueezeGreenyInputs {
   length: number;
@@ -52,46 +54,82 @@ const EPS = 1e-10;
 const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<TtmSqueezeGreenyInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color: string };
+
+interface TtmRun extends BarRunState<Record<string, never>> {
+  sma: WindowSma;
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  linreg: ReturnType<typeof taStep.linreg>;
+  dev: WindowStdev;
+  emaClose: ReturnType<typeof taStep.ema>;
+  tr: ReturnType<typeof taStep.tr>;
+  emaTr: ReturnType<typeof taStep.ema>;
+  osc: number[];
+  plot0: Point[];
+  plot1: Point[];
+}
+
+function study(inputs: Partial<TtmSqueezeGreenyInputs>): BarStudy<TtmRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
   const length = cfg.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (values: number[]) => Series.fromArray(bars, values);
-
-  const close = new Series(bars, (b) => b.close);
-  const sma = A(ta.sma(close, length));
-  const hh = A(ta.highest(new Series(bars, (b) => b.high), length));
-  const ll = A(ta.lowest(new Series(bars, (b) => b.low), length));
-
-  // e1 = (highest(high, length) + lowest(low, length)) / 2 + sma(close, length)
-  // osc = linreg(close - e1 / 2, length, 0)
-  const oscSource = bars.map((b, i) => b.close - ((hh[i] + ll[i]) / 2 + sma[i]) / 2);
-  const osc = A(ta.linreg(S(oscSource), length, 0));
-
-  // diff = (sma + 2 * stdev) - (ema(close) + ema(tr))
-  const dev = A(ta.stdev(close, length));
-  const emaClose = A(ta.ema(close, length));
-  const emaTr = A(ta.ema(ta.tr(bars), length));
-
-  const plot0: Array<{ time: number; value: number; color: string }> = [];
-  const plot1: typeof plot0 = [];
-  for (let i = 0; i < bars.length; i++) {
-    const o = osc[i];
-    const prev = i > 0 ? osc[i - 1] : NaN;
-    const oscColor = lt(prev, o) ? (ge(o, 0) ? RISE_POS : RISE_NEG) : ge(o, 0) ? FALL_POS : FALL_NEG;
-    const diff = sma[i] + 2 * dev[i] - (emaClose[i] + emaTr[i]);
-    plot0.push({ time: bars[i].time, value: o, color: oscColor });
-    plot1.push({ time: bars[i].time, value: 0, color: ge(diff, 0) ? GREEN : RED });
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0, plot1 },
+    init() {
+      const sma = new WindowSma(length);
+      const hh = new WindowExtreme(false, length);
+      const ll = new WindowExtreme(true, length);
+      const linreg = taStep.linreg(length, 0);
+      const dev = new WindowStdev(length);
+      const emaClose = taStep.ema(length);
+      const tr = taStep.tr();
+      const emaTr = taStep.ema(length);
+      const s: TtmRun = {
+        sma, hh, ll, linreg, dev, emaClose, tr, emaTr, osc: [], plot0: [], plot1: [],
+        steps: [sma, hh, ll, linreg, dev, emaClose, tr, emaTr], vars: {}, lists: [], series: [],
+      };
+      s.series = [s.osc, s.plot0, s.plot1];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const sma = s.sma.step(b.close);
+      const hh = s.hh.step(b.high);
+      const ll = s.ll.step(b.low);
+      // e1 = (highest(high, length) + lowest(low, length)) / 2 + sma(close, length)
+      // osc = linreg(close - e1 / 2, length, 0)
+      const o = s.linreg.step(b.close - ((hh + ll) / 2 + sma) / 2);
+      s.osc[i] = o;
+      // diff = (sma + 2 * stdev) - (ema(close) + ema(tr))
+      const dev = s.dev.step(b.close);
+      const emaClose = s.emaClose.step(b.close);
+      const emaTr = s.emaTr.step(s.tr.step(b.high, b.low, b.close));
+      const prev = i > 0 ? s.osc[i - 1] : NaN;
+      const oscColor = lt(prev, o) ? (ge(o, 0) ? RISE_POS : RISE_NEG) : ge(o, 0) ? FALL_POS : FALL_NEG;
+      const diff = sma + 2 * dev - (emaClose + emaTr);
+      s.plot0[i] = { time: b.time, value: o, color: oscColor };
+      s.plot1[i] = { time: b.time, value: 0, color: ge(diff, 0) ? GREEN : RED };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice() },
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TtmSqueezeGreenyInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<TtmSqueezeGreenyInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const TtmSqueezeGreeny = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

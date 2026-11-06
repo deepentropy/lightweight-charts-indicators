@@ -13,9 +13,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface TrendScalperInputs {
   ema1Length: number;
@@ -86,67 +88,105 @@ const lt = (a: number, b: number) => b - a > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const le = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(a - b > EPS);
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alerts: AlertConditionState[] };
+
+interface TrendScalperVars {
+  /** var int lastSignal = 0 */
+  lastSignal: number;
+}
+
+interface TrendScalperRun extends BarRunState<TrendScalperVars> {
+  ema1: ReturnType<typeof taStep.ema>;
+  ema2: ReturnType<typeof taStep.ema>;
+  ema3: ReturnType<typeof taStep.ema>;
+  sinceBull: ReturnType<typeof taStep.barssince>;
+  sinceBear: ReturnType<typeof taStep.barssince>;
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<TrendScalperInputs>): BarStudy<TrendScalperRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const ema1 = taStep.ema(cfg.ema1Length);
+      const ema2 = taStep.ema(cfg.ema2Length);
+      const ema3 = taStep.ema(cfg.ema3Length);
+      const sinceBull = taStep.barssince();
+      const sinceBear = taStep.barssince();
+      const s: TrendScalperRun = {
+        ema1, ema2, ema3, sinceBull, sinceBear, plot0: [], plot1: [], plot2: [], markers: [],
+        flags: [[], []], times: [[], []],
+        steps: [ema1, ema2, ema3, sinceBull, sinceBear], vars: { lastSignal: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.plot0, s.plot1, s.plot2, ...s.flags];
+      return s;
+    },
+    bar(s, i, bars) {
+      const v = s.vars;
+      const { low, high, close, time } = bars[i];
+      const e1 = s.ema1.step(close);
+      const e2 = s.ema2.step(close);
+      const e3 = s.ema3.step(close);
+      const bullish = gt(e1, e2) && gt(e2, e3);
+      const bearish = lt(e1, e2) && lt(e2, e3);
+      // ta.barssince(x) <= lookbackBars: na (never true yet) compares false
+      const recentBull = le(s.sinceBull.step(bullish ? 1 : 0), cfg.lookbackBars);
+      const recentBear = le(s.sinceBear.step(bearish ? 1 : 0), cfg.lookbackBars);
+      const longCond = bullish && le(low, e1) && ge(low, e2);
+      const shortCond = bearish && ge(high, e1) && le(high, e2);
+      const rawBuy = le(low, e1) && ge(low, e2) && bullish && recentBear;
+      const rawSell = ge(high, e1) && le(high, e2) && bearish && recentBull;
+      const buySignal = rawBuy && v.lastSignal !== 1;
+      const sellSignal = rawSell && v.lastSignal !== -1;
+      if (buySignal) v.lastSignal = 1;
+      if (sellSignal) v.lastSignal = -1;
+      const plotLong = cfg.onlyFirstTriangle ? buySignal : longCond;
+      const plotShort = cfg.onlyFirstTriangle ? sellSignal : shortCond;
+      if (!cfg.onlyFirstTriangle && !(longCond || shortCond)) v.lastSignal = 0;
+
+      // plotshape(plotLongSignal, "Long Signal", shape.triangleup, location.belowbar, longColor, size.small)
+      if (plotLong) s.markers.push({ time, position: 'belowBar', shape: 'triangleUp', color: cfg.longColor, size: 'small' });
+      // plotshape(plotShortSignal, "Short Signal", shape.triangledown, location.abovebar, shortColor, size.small)
+      if (plotShort) s.markers.push({ time, position: 'aboveBar', shape: 'triangleDown', color: cfg.shortColor, size: 'small' });
+
+      s.plot0[i] = { time, value: cfg.showEMA1 ? e1 : NaN, color: cfg.emaColor1 };
+      s.plot1[i] = { time, value: cfg.showEMA2 ? e2 : NaN, color: cfg.emaColor2 };
+      s.plot2[i] = { time, value: cfg.showEMA3 ? e3 : NaN, color: cfg.emaColor3 };
+      // alertcondition(plotLongSignal) / (plotShortSignal)
+      s.flags[0][i] = plotLong;
+      s.flags[1][i] = plotShort;
+      if (plotLong) s.times[0].push(time as number);
+      if (plotShort) s.times[1].push(time as number);
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<TrendScalperInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<TrendScalperInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-  const close = S(bars.map((b) => b.close));
-  const ema1 = A(ta.ema(close, cfg.ema1Length));
-  const ema2 = A(ta.ema(close, cfg.ema2Length));
-  const ema3 = A(ta.ema(close, cfg.ema3Length));
-
-  const bullish = ema1.map((e1, i) => gt(e1, ema2[i]) && gt(ema2[i], ema3[i]));
-  const bearish = ema1.map((e1, i) => lt(e1, ema2[i]) && lt(ema2[i], ema3[i]));
-  // ta.barssince(x) <= lookbackBars: na (never true yet) compares false
-  const sinceBull = A(ta.barssince(S(bullish.map((b) => (b ? 1 : 0)))));
-  const sinceBear = A(ta.barssince(S(bearish.map((b) => (b ? 1 : 0)))));
-
-  const markers: MarkerData[] = [];
-  const longFlags: boolean[] = new Array(n);
-  const shortFlags: boolean[] = new Array(n);
-  let lastSignal = 0; // var int lastSignal = 0
-  for (let i = 0; i < n; i++) {
-    const { low, high } = bars[i];
-    const recentBull = le(sinceBull[i], cfg.lookbackBars);
-    const recentBear = le(sinceBear[i], cfg.lookbackBars);
-    const longCond = bullish[i] && le(low, ema1[i]) && ge(low, ema2[i]);
-    const shortCond = bearish[i] && ge(high, ema1[i]) && le(high, ema2[i]);
-    const rawBuy = le(low, ema1[i]) && ge(low, ema2[i]) && bullish[i] && recentBear;
-    const rawSell = ge(high, ema1[i]) && le(high, ema2[i]) && bearish[i] && recentBull;
-    const buySignal = rawBuy && lastSignal !== 1;
-    const sellSignal = rawSell && lastSignal !== -1;
-    if (buySignal) lastSignal = 1;
-    if (sellSignal) lastSignal = -1;
-    const plotLong = cfg.onlyFirstTriangle ? buySignal : longCond;
-    const plotShort = cfg.onlyFirstTriangle ? sellSignal : shortCond;
-    longFlags[i] = plotLong;
-    shortFlags[i] = plotShort;
-    if (!cfg.onlyFirstTriangle && !(longCond || shortCond)) lastSignal = 0;
-
-    // plotshape(plotLongSignal, "Long Signal", shape.triangleup, location.belowbar, longColor, size.small)
-    if (plotLong) markers.push({ time: bars[i].time, position: 'belowBar', shape: 'triangleUp', color: cfg.longColor, size: 'small' });
-    // plotshape(plotShortSignal, "Short Signal", shape.triangledown, location.abovebar, shortColor, size.small)
-    if (plotShort) markers.push({ time: bars[i].time, position: 'aboveBar', shape: 'triangleDown', color: cfg.shortColor, size: 'small' });
-  }
-
-  const line = (show: boolean, v: number[], col: string) =>
-    bars.map((b, i) => ({ time: b.time, value: show ? v[i] : NaN, color: col }));
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: line(cfg.showEMA1, ema1, cfg.emaColor1),
-      plot1: line(cfg.showEMA2, ema2, cfg.emaColor2),
-      plot2: line(cfg.showEMA3, ema3, cfg.emaColor3),
-    },
-    markers,
-    // alertcondition(plotLongSignal) / (plotShortSignal)
-    alerts: alertStates(alertConditions, bars, [longFlags, shortFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -157,6 +197,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const TrendScalper = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

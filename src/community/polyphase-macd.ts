@@ -14,7 +14,9 @@
  * Original notice: © The_Peaceful_Lizard
  */
 
-import { array, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { array, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 type FilterStyle = 'SMA' | 'EMA';
 
@@ -129,125 +131,181 @@ const filter = (source: number, inputArray: number[], inputVariable: number, per
 /**
  * Pine user functions sma(source, length) / wma(source, length): an SMA / WMA over min(bar_index + 1, length) bars,
  * na history values replaced by the first non-na source; the value is kept on a bar with an na source. Each call
- * site has its own state and history.
+ * site has its own state and history (the last `length` values: the older ones are not read). A class so that a live
+ * run can copy its state at the end of the last confirmed bar.
  */
-const weightedSite = (weighted: boolean) => {
-  const hist: number[] = [];
-  let value = NaN;
-  let firstSource = NaN;
-  return (barIndex: number, source: number, length: number): number => {
+class WeightedSite {
+  private hist: number[] = [];
+  private value = NaN;
+  private firstSource = NaN;
+
+  constructor(private readonly weighted: boolean) {}
+
+  call(barIndex: number, source: number, length: number): number {
+    const hist = this.hist;
     hist.push(source);
+    if (hist.length > length && hist.length > 1) hist.shift();
     const maxLength = Math.min(barIndex, length - 1);
     if (!isNaN(source)) {
-      if (isNaN(firstSource)) firstSource = source;
+      if (isNaN(this.firstSource)) this.firstSource = source;
+      const firstSource = this.firstSource;
       const at = (k: number) => {
         const j = hist.length - 1 - k;
         return nz(j >= 0 ? hist[j] : NaN, firstSource);
       };
       let sum = 0;
-      if (weighted) {
+      if (this.weighted) {
         let weight = 0;
         for (let k = 0; k <= maxLength; k++) {
           const w = maxLength + 1 - k;
           weight += w;
           sum += at(k) * w;
         }
-        value = sum / weight;
+        this.value = sum / weight;
       } else {
         const w = 1.0 / (maxLength + 1);
         for (let k = 0; k <= maxLength; k++) sum += at(k) * w;
-        value = sum;
+        this.value = sum;
       }
     }
-    return value;
-  };
-};
-
-/** output_filter(source, config) = sma(wma(source, phases), phases): one wma and one sma site per call */
-const outputFilterSite = () => {
-  const wma = weightedSite(true);
-  const sma = weightedSite(false);
-  return (barIndex: number, source: number, phases: number) => sma(barIndex, wma(barIndex, source, phases), phases);
-};
-
-export function calculate(bars: Bar[], inputs: Partial<PolyphaseMacdInputs> = {}): IndicatorResult {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.source).toArray().map((v) => v ?? NaN);
-  const { phases, fastLength, slowLength, signalLength, oscillatorStyle, signalStyle } = cfg;
-
-  const macdPhases: Macd[] = [];
-  let ready = false;
-  const macdFilter = outputFilterSite();
-  const signalFilter = outputFilterSite();
-  const histFilter = outputFilterSite();
-  let prevHist = NaN; // self[1] of histogram_color
-  let histColor = '';
-
-  const macdOut: number[] = new Array(n);
-  const signalOut: number[] = new Array(n);
-  const histOut: number[] = new Array(n);
-  const colorOut: string[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const source = src[i];
-    // bar_index counts from the first bar of the data
-    const phase = i % phases;
-    if (!ready) {
-      // init_macd(source, config)
-      macdPhases.push({
-        source: array.new_float(Math.max(fastLength, slowLength), source),
-        fast: NaN,
-        slow: NaN,
-        macd: array.new_float(signalLength, 0),
-        signal: NaN,
-        hist: NaN,
-      });
-      ready = macdPhases.length === phases;
-    }
-    // method update(MACD self, float source, settings config)
-    const m = macdPhases[phase];
-    unshiftPop(m.source, source);
-    m.fast = filter(source, m.source, m.fast, fastLength, oscillatorStyle);
-    m.slow = filter(source, m.source, m.slow, slowLength, oscillatorStyle);
-    const newMacd = m.fast - m.slow;
-    unshiftPop(m.macd, newMacd);
-    const newSignal = filter(newMacd, m.macd, m.signal, signalLength, signalStyle);
-    m.signal = newSignal;
-    m.hist = newMacd - newSignal;
-
-    const macd = macdFilter(i, m.macd[0], phases);
-    const signal = signalFilter(i, m.signal, phases);
-    const hist = histFilter(i, m.hist, phases);
-
-    // method histogram_color(float self, settings config)
-    const ref = nz(prevHist, hist);
-    if (ge(hist, 0)) {
-      histColor = ge(hist, ref) ? cfg.risingUp : cfg.risingDown;
-    } else {
-      histColor = le(hist, ref) ? cfg.fallingDown : cfg.fallingUp;
-    }
-    prevHist = hist;
-
-    macdOut[i] = macd;
-    signalOut[i] = signal;
-    histOut[i] = hist;
-    colorOut[i] = histColor;
+    return this.value;
   }
 
-  const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+  clone(): WeightedSite {
+    const c = new WeightedSite(this.weighted);
+    c.hist = this.hist.slice();
+    c.value = this.value;
+    c.firstSource = this.firstSource;
+    return c;
+  }
+}
+
+/** output_filter(source, config) = sma(wma(source, phases), phases): one wma and one sma site per call */
+class OutputFilterSite {
+  constructor(private readonly wma = new WeightedSite(true), private readonly sma = new WeightedSite(false)) {}
+
+  call(barIndex: number, source: number, phases: number): number {
+    return this.sma.call(barIndex, this.wma.call(barIndex, source, phases), phases);
+  }
+
+  clone(): OutputFilterSite {
+    return new OutputFilterSite(this.wma.clone(), this.sma.clone());
+  }
+}
+
+type Point = { time: number; value: number; color: string };
+
+interface PolyphaseVars {
+  macdPhases: Macd[];
+  ready: boolean;
+  macdFilter: OutputFilterSite;
+  signalFilter: OutputFilterSite;
+  histFilter: OutputFilterSite;
+  /** self[1] of histogram_color */
+  prevHist: number;
+  histColor: string;
+}
+
+interface PolyphaseRun extends BarRunState<PolyphaseVars> {
+  plot0: Point[];
+  plot1: Point[];
+  plot2: Point[];
+}
+
+const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
+
+function study(inputs: Partial<PolyphaseMacdInputs>): BarStudy<PolyphaseRun, IndicatorResult> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const value = barSource(cfg.source);
+  const { phases, fastLength, slowLength, signalLength, oscillatorStyle, signalStyle } = cfg;
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: bars.map((b, i) => ({ time: b.time, value: fin(histOut[i]), color: colorOut[i] })),
-      plot1: bars.map((b, i) => ({ time: b.time, value: fin(signalOut[i]), color: cfg.signalColor })),
-      plot2: bars.map((b, i) => ({ time: b.time, value: fin(macdOut[i]), color: cfg.macdColor })),
+    fullRunReason: () => (isBarSource(cfg.source) ? null : 'source of another study'),
+    init() {
+      const s: PolyphaseRun = {
+        plot0: [], plot1: [], plot2: [], steps: [], lists: [], series: [],
+        vars: {
+          macdPhases: [], ready: false, macdFilter: new OutputFilterSite(), signalFilter: new OutputFilterSite(),
+          histFilter: new OutputFilterSite(), prevHist: NaN, histColor: '',
+        },
+      };
+      s.series = [s.plot0, s.plot1, s.plot2];
+      return s;
     },
-    hlines: [{ value: 0, options: { title: 'Zero Line', color: cfg.zeroLine, linestyle: 'dashed' } }],
+    copyVars: (v) => ({
+      ...v,
+      macdPhases: v.macdPhases.map((m) => ({ ...m, source: m.source.slice(), macd: m.macd.slice() })),
+      macdFilter: v.macdFilter.clone(),
+      signalFilter: v.signalFilter.clone(),
+      histFilter: v.histFilter.clone(),
+    }),
+    bar(s, i, bars) {
+      const v = s.vars;
+      const source = value(bars[i]);
+      // bar_index counts from the first bar of the data
+      const phase = i % phases;
+      if (!v.ready) {
+        // init_macd(source, config)
+        v.macdPhases.push({
+          source: array.new_float(Math.max(fastLength, slowLength), source),
+          fast: NaN,
+          slow: NaN,
+          macd: array.new_float(signalLength, 0),
+          signal: NaN,
+          hist: NaN,
+        });
+        v.ready = v.macdPhases.length === phases;
+      }
+      // method update(MACD self, float source, settings config)
+      const m = v.macdPhases[phase];
+      unshiftPop(m.source, source);
+      m.fast = filter(source, m.source, m.fast, fastLength, oscillatorStyle);
+      m.slow = filter(source, m.source, m.slow, slowLength, oscillatorStyle);
+      const newMacd = m.fast - m.slow;
+      unshiftPop(m.macd, newMacd);
+      const newSignal = filter(newMacd, m.macd, m.signal, signalLength, signalStyle);
+      m.signal = newSignal;
+      m.hist = newMacd - newSignal;
+
+      const macd = v.macdFilter.call(i, m.macd[0], phases);
+      const signal = v.signalFilter.call(i, m.signal, phases);
+      const hist = v.histFilter.call(i, m.hist, phases);
+
+      // method histogram_color(float self, settings config)
+      const ref = nz(v.prevHist, hist);
+      if (ge(hist, 0)) {
+        v.histColor = ge(hist, ref) ? cfg.risingUp : cfg.risingDown;
+      } else {
+        v.histColor = le(hist, ref) ? cfg.fallingDown : cfg.fallingUp;
+      }
+      v.prevHist = hist;
+
+      const time = bars[i].time;
+      s.plot0[i] = { time, value: fin(hist), color: v.histColor };
+      s.plot1[i] = { time, value: fin(signal), color: cfg.signalColor };
+      s.plot2[i] = { time, value: fin(macd), color: cfg.macdColor };
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice(), plot1: s.plot1.slice(), plot2: s.plot2.slice() },
+        hlines: [{ value: 0, options: { title: 'Zero Line', color: cfg.zeroLine, linestyle: 'dashed' } }],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PolyphaseMacdInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PolyphaseMacdInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PolyphaseMacd = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

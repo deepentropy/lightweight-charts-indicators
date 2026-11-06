@@ -14,9 +14,11 @@
  * Original notice: © MiesOnCharts
  */
 
-import { ta, getSourceSeries, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
-import { alertStates, type AlertConditionDecl, type AlertConditionState } from '../alert-states';
+import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ForLoopVoteTrailingStopMiesonchartsInputs {
   /** Source */
@@ -74,74 +76,116 @@ const gt = (x: number, y: number) => x - y > EPS;
 const ge = (x: number, y: number) => !isNaN(x) && !isNaN(y) && !(y - x > EPS);
 const le = (x: number, y: number) => !isNaN(x) && !isNaN(y) && !(x - y > EPS);
 
+type Point = { time: number; value: number; color: string };
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] };
+
+interface VoteVars {
+  /** var int dir = 0 */
+  dir: number;
+  /** var float stop = na */
+  stop: number;
+  /** dir[1] (na on the first bar) */
+  prevDir: number;
+}
+
+interface VoteRun extends BarRunState<VoteVars> {
+  atr: ReturnType<typeof taStep.atr>;
+  src: number[];
+  plot0: Point[];
+  markers: MarkerData[];
+  flags: boolean[][];
+  times: number[][];
+}
+
+function study(inputs: Partial<ForLoopVoteTrailingStopMiesonchartsInputs>): BarStudy<VoteRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  const source = barSource(cfg.src);
+  // for i = a to b: counts down when a > b
+  const step = cfg.a <= cfg.b ? 1 : -1;
+  return {
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init() {
+      const atr = taStep.atr(cfg.atrLen);
+      const s: VoteRun = {
+        atr, src: [], plot0: [], markers: [], flags: [[], []], times: [[], []],
+        steps: [atr], vars: { dir: 0, stop: NaN, prevDir: NaN }, lists: [], series: [],
+      };
+      s.lists = [s.markers, ...s.times];
+      s.series = [s.src, s.plot0, ...s.flags];
+      return s;
+    },
+    bar(s, k, bars) {
+      const v = s.vars;
+      const bar = bars[k];
+      const src = s.src;
+      src[k] = source(bar);
+      const atr = s.atr.step(bar.high, bar.low, bar.close);
+      let score = 0.0;
+      for (let i = cfg.a; step > 0 ? i <= cfg.b : i >= cfg.b; i += step) {
+        const past = k - i >= 0 ? src[k - i] : NaN;
+        score += gt(src[k], past) ? 1 : -1;
+      }
+      score /= cfg.b - cfg.a + 1;
+
+      const atrOff = cfg.atrK * atr;
+      const longSig = ge(score, cfg.thrUp);
+      const shortSig = le(score, cfg.thrDn);
+
+      if (longSig && v.dir !== 1) {
+        v.dir = 1;
+        v.stop = src[k] - atrOff;
+      } else if (shortSig && v.dir !== -1) {
+        v.dir = -1;
+        v.stop = src[k] + atrOff;
+      } else if (v.dir === 1) {
+        // math.max / math.min return na when an argument is na
+        v.stop = Math.max(v.stop, src[k] - atrOff);
+      } else if (v.dir === -1) {
+        v.stop = Math.min(v.stop, src[k] + atrOff);
+      }
+
+      const dir = v.dir;
+      const isUp = dir === 1;
+      s.plot0[k] = { time: bar.time, value: Number.isFinite(v.stop) ? v.stop : NaN, color: isUp ? UP_COLOR : DN_COLOR };
+
+      // flipUp = dir == 1 and dir[1] != 1; flipDn = dir == -1 and dir[1] != -1 (na != x is false)
+      const flipUp = dir === 1 && !isNaN(v.prevDir) && v.prevDir !== 1;
+      const flipDn = dir === -1 && !isNaN(v.prevDir) && v.prevDir !== -1;
+      if (flipUp) {
+        s.markers.push({ time: bar.time, position: 'belowBar', shape: 'triangleUp', color: UP_COLOR, size: 'small' });
+      }
+      if (flipDn) {
+        s.markers.push({ time: bar.time, position: 'aboveBar', shape: 'triangleDown', color: DN_COLOR, size: 'small' });
+      }
+      // alertcondition(flipUp, "Vote Stop Long") / alertcondition(flipDn, "Vote Stop Short")
+      s.flags[0][k] = flipUp;
+      s.flags[1][k] = flipDn;
+      if (flipUp) s.times[0].push(bar.time as number);
+      if (flipDn) s.times[1].push(bar.time as number);
+      v.prevDir = dir;
+    },
+    result(s, bars) {
+      const n = bars.length;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: s.plot0.slice() },
+        markers: s.markers.slice(),
+        alerts: liveAlertStates(alertConditions, s.times, s.flags.map((f) => n > 0 && f[n - 1])),
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<ForLoopVoteTrailingStopMiesonchartsInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<ForLoopVoteTrailingStopMiesonchartsInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { alerts: AlertConditionState[] } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const src = getSourceSeries(bars, cfg.src).toArray().map((v) => v ?? NaN);
-  const atr = ta.atr(bars, cfg.atrLen).toArray().map((v) => v ?? NaN);
-
-  let dir = 0; // var int dir = 0
-  let stop = NaN; // var float stop = na
-  let prevDir = NaN; // dir[1] (na on the first bar)
-  const plot0: { time: number; value: number; color: string }[] = new Array(n);
-  const markers: MarkerData[] = [];
-  const upFlags: boolean[] = [];
-  const dnFlags: boolean[] = [];
-  // for i = a to b: counts down when a > b
-  const step = cfg.a <= cfg.b ? 1 : -1;
-
-  for (let k = 0; k < n; k++) {
-    let score = 0.0;
-    for (let i = cfg.a; step > 0 ? i <= cfg.b : i >= cfg.b; i += step) {
-      const past = k - i >= 0 ? src[k - i] : NaN;
-      score += gt(src[k], past) ? 1 : -1;
-    }
-    score /= cfg.b - cfg.a + 1;
-
-    const atrOff = cfg.atrK * atr[k];
-    const longSig = ge(score, cfg.thrUp);
-    const shortSig = le(score, cfg.thrDn);
-
-    if (longSig && dir !== 1) {
-      dir = 1;
-      stop = src[k] - atrOff;
-    } else if (shortSig && dir !== -1) {
-      dir = -1;
-      stop = src[k] + atrOff;
-    } else if (dir === 1) {
-      // math.max / math.min return na when an argument is na
-      stop = Math.max(stop, src[k] - atrOff);
-    } else if (dir === -1) {
-      stop = Math.min(stop, src[k] + atrOff);
-    }
-
-    const isUp = dir === 1;
-    plot0[k] = { time: bars[k].time, value: Number.isFinite(stop) ? stop : NaN, color: isUp ? UP_COLOR : DN_COLOR };
-
-    // flipUp = dir == 1 and dir[1] != 1; flipDn = dir == -1 and dir[1] != -1 (na != x is false)
-    const flipUp = dir === 1 && !isNaN(prevDir) && prevDir !== 1;
-    const flipDn = dir === -1 && !isNaN(prevDir) && prevDir !== -1;
-    if (flipUp) {
-      markers.push({ time: bars[k].time, position: 'belowBar', shape: 'triangleUp', color: UP_COLOR, size: 'small' });
-    }
-    if (flipDn) {
-      markers.push({ time: bars[k].time, position: 'aboveBar', shape: 'triangleDown', color: DN_COLOR, size: 'small' });
-    }
-    upFlags.push(flipUp);
-    dnFlags.push(flipDn);
-    prevDir = dir;
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: { plot0 },
-    markers,
-    // alertcondition(flipUp, "Vote Stop Long") / alertcondition(flipDn, "Vote Stop Short")
-    alerts: alertStates(alertConditions, bars, [upFlags, dnFlags]),
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
 /** The original's alertconditions */
@@ -152,6 +196,7 @@ export const alertConditions: AlertConditionDecl[] = [
 
 export const ForLoopVoteTrailingStopMiesoncharts = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

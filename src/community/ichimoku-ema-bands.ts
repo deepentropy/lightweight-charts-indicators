@@ -8,7 +8,9 @@
  * Reference: "Ichimoku EMA Bands" (community)
  */
 
-import { ta, Series, getSourceSeries, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowExtreme, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface IchimokuEMABandsInputs {
   convLen: number;
@@ -63,116 +65,147 @@ export const metadata = {
   overlay: true,
 };
 
-export function calculate(bars: Bar[], inputs: Partial<IchimokuEMABandsInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface IchiRun extends BarRunState<Record<string, never>> {
+  ema: ReturnType<typeof taStep.ema>;
+  atr: ReturnType<typeof taStep.atr>;
+  convHigh: WindowExtreme;
+  convLow: WindowExtreme;
+  baseHigh: WindowExtreme;
+  baseLow: WindowExtreme;
+  span2High: WindowExtreme;
+  span2Low: WindowExtreme;
+  tenkanVals: number[];
+  kijunVals: number[];
+  span2HighArr: number[];
+  span2LowArr: number[];
+  emaPlot: Point[];
+  emaUpPlot: Point[];
+  emaDwPlot: Point[];
+  convPlot: Point[];
+  basePlot: Point[];
+  lead1Plot: Point[];
+  lead2Plot: Point[];
+}
+
+function study(inputs: Partial<IchimokuEMABandsInputs>): BarStudy<IchiRun, IndicatorResult> {
   const { convLen, baseLen, emaLen, atrLength, atrMult, laggingSpan2Periods, displacement } = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-
-  const highSeries = new Series(bars, (b) => b.high);
-  const lowSeries = new Series(bars, (b) => b.low);
-  const closeSeries = getSourceSeries(bars, 'close');
-
-  // Pine: out = ema(src, len)
-  const emaArr = ta.ema(closeSeries, emaLen).toArray();
-
-  // Pine: ATR = rma(tr(true), ATRlength)
-  const atrArr = ta.atr(bars, atrLength).toArray();
-
-  // Ichimoku donchian channels
-  const convHighArr = ta.highest(highSeries, convLen).toArray();
-  const convLowArr = ta.lowest(lowSeries, convLen).toArray();
-  const baseHighArr = ta.highest(highSeries, baseLen).toArray();
-  const baseLowArr = ta.lowest(lowSeries, baseLen).toArray();
-  const span2HighArr = ta.highest(highSeries, laggingSpan2Periods).toArray();
-  const span2LowArr = ta.lowest(lowSeries, laggingSpan2Periods).toArray();
-
   const warmup = Math.max(convLen, baseLen, emaLen, atrLength);
-
-  // Pre-compute tenkan and kijun values
-  const tenkanVals: number[] = new Array(n);
-  const kijunVals: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    tenkanVals[i] = i < convLen ? NaN : (convHighArr[i] + convLowArr[i]) / 2;
-    kijunVals[i] = i < baseLen ? NaN : (baseHighArr[i] + baseLowArr[i]) / 2;
-  }
-
-  // Pine: plot(out, title="EMA", color=orange, transp=85)
-  const emaPlot = emaArr.map((v, i) => ({
-    time: bars[i].time,
-    value: (v == null || i < emaLen) ? NaN : v,
-  }));
-
-  // Pine: emaup = out+(ATR*ATRMult), emadw = out-(ATR*ATRMult)
-  const emaUpPlot = bars.map((b, i) => {
-    const e = emaArr[i];
-    const a = atrArr[i];
-    if (e == null || a == null || i < warmup) return { time: b.time, value: NaN };
-    return { time: b.time, value: e + a * atrMult };
-  });
-  const emaDwPlot = bars.map((b, i) => {
-    const e = emaArr[i];
-    const a = atrArr[i];
-    if (e == null || a == null || i < warmup) return { time: b.time, value: NaN };
-    return { time: b.time, value: e - a * atrMult };
-  });
-
-  // Pine: plot(conversionLine, color=red)
-  const convPlot = tenkanVals.map((v, i) => ({
-    time: bars[i].time,
-    value: v,
-  }));
-
-  // Pine: kjuncol = conversionLine > baseLine ? blue : conversionLine < baseLine ? red : orange
-  // plot(baseLine, color=kjuncol, linewidth=2)
-  const basePlot = kijunVals.map((v, i) => {
-    const conv = tenkanVals[i];
-    const base = v;
-    let color: string;
-    if (isNaN(conv) || isNaN(base)) {
-      color = '#FFA500'; // orange
-    } else if (conv > base) {
-      color = '#2962FF'; // blue
-    } else if (conv < base) {
-      color = '#EF5350'; // red
-    } else {
-      color = '#FFA500'; // orange
-    }
-    return { time: bars[i].time, value: v, color };
-  });
-
-  // Lead lines with displacement
-  const lead1Plot: { time: number; value: number }[] = [];
-  const lead2Plot: { time: number; value: number }[] = [];
-  for (let i = 0; i < n; i++) {
-    const srcIdx = i - displacement;
-    if (srcIdx < 0 || isNaN(tenkanVals[srcIdx]) || isNaN(kijunVals[srcIdx])) {
-      lead1Plot.push({ time: bars[i].time, value: NaN });
-    } else {
-      lead1Plot.push({ time: bars[i].time, value: (tenkanVals[srcIdx] + kijunVals[srcIdx]) / 2 });
-    }
-
-    if (srcIdx < 0 || srcIdx < laggingSpan2Periods) {
-      lead2Plot.push({ time: bars[i].time, value: NaN });
-    } else {
-      lead2Plot.push({ time: bars[i].time, value: (span2HighArr[srcIdx] + span2LowArr[srcIdx]) / 2 });
-    }
-  }
-
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      'ema': emaPlot,
-      'emaUp': emaUpPlot,
-      'emaDw': emaDwPlot,
-      'conversion': convPlot,
-      'base': basePlot,
-      'lead1': lead1Plot,
-      'lead2': lead2Plot,
+    init() {
+      // Pine: out = ema(src, len)
+      const ema = taStep.ema(emaLen);
+      // Pine: ATR = rma(tr(true), ATRlength)
+      const atr = taStep.atr(atrLength);
+      // Ichimoku donchian channels
+      const convHigh = new WindowExtreme(false, convLen);
+      const convLow = new WindowExtreme(true, convLen);
+      const baseHigh = new WindowExtreme(false, baseLen);
+      const baseLow = new WindowExtreme(true, baseLen);
+      const span2High = new WindowExtreme(false, laggingSpan2Periods);
+      const span2Low = new WindowExtreme(true, laggingSpan2Periods);
+      const s: IchiRun = {
+        ema, atr, convHigh, convLow, baseHigh, baseLow, span2High, span2Low,
+        tenkanVals: [], kijunVals: [], span2HighArr: [], span2LowArr: [],
+        emaPlot: [], emaUpPlot: [], emaDwPlot: [], convPlot: [], basePlot: [], lead1Plot: [], lead2Plot: [],
+        steps: [ema, atr, convHigh, convLow, baseHigh, baseLow, span2High, span2Low], vars: {}, lists: [], series: [],
+      };
+      s.series = [
+        s.tenkanVals, s.kijunVals, s.span2HighArr, s.span2LowArr, s.emaPlot, s.emaUpPlot, s.emaDwPlot, s.convPlot,
+        s.basePlot, s.lead1Plot, s.lead2Plot,
+      ];
+      return s;
     },
-    fills: [
-      // Pine: fill(p1, p2, silver) — default transp=90 → 10% opacity
-      { plot1: 'lead1', plot2: 'lead2', options: { color: 'rgba(192,192,192,0.10)' } },
-    ],
+    bar(s, i, bars) {
+      const b = bars[i];
+      const time = b.time;
+      const e = s.ema.step(b.close);
+      const a = s.atr.step(b.high, b.low, b.close);
+      const convH = s.convHigh.step(b.high);
+      const convL = s.convLow.step(b.low);
+      const baseH = s.baseHigh.step(b.high);
+      const baseL = s.baseLow.step(b.low);
+      s.span2HighArr[i] = s.span2High.step(b.high);
+      s.span2LowArr[i] = s.span2Low.step(b.low);
+
+      // Pre-compute tenkan and kijun values
+      const conv = i < convLen ? NaN : (convH + convL) / 2;
+      const base = i < baseLen ? NaN : (baseH + baseL) / 2;
+      s.tenkanVals[i] = conv;
+      s.kijunVals[i] = base;
+
+      // Pine: plot(out, title="EMA", color=orange, transp=85)
+      s.emaPlot[i] = { time, value: (e == null || i < emaLen) ? NaN : e };
+
+      // Pine: emaup = out+(ATR*ATRMult), emadw = out-(ATR*ATRMult)
+      if (e == null || a == null || i < warmup) {
+        s.emaUpPlot[i] = { time, value: NaN };
+        s.emaDwPlot[i] = { time, value: NaN };
+      } else {
+        s.emaUpPlot[i] = { time, value: e + a * atrMult };
+        s.emaDwPlot[i] = { time, value: e - a * atrMult };
+      }
+
+      // Pine: plot(conversionLine, color=red)
+      s.convPlot[i] = { time, value: conv };
+
+      // Pine: kjuncol = conversionLine > baseLine ? blue : conversionLine < baseLine ? red : orange
+      // plot(baseLine, color=kjuncol, linewidth=2)
+      let color: string;
+      if (isNaN(conv) || isNaN(base)) {
+        color = '#FFA500'; // orange
+      } else if (conv > base) {
+        color = '#2962FF'; // blue
+      } else if (conv < base) {
+        color = '#EF5350'; // red
+      } else {
+        color = '#FFA500'; // orange
+      }
+      s.basePlot[i] = { time, value: base, color };
+
+      // Lead lines with displacement
+      const srcIdx = i - displacement;
+      if (srcIdx < 0 || isNaN(s.tenkanVals[srcIdx]) || isNaN(s.kijunVals[srcIdx])) {
+        s.lead1Plot[i] = { time, value: NaN };
+      } else {
+        s.lead1Plot[i] = { time, value: (s.tenkanVals[srcIdx] + s.kijunVals[srcIdx]) / 2 };
+      }
+
+      if (srcIdx < 0 || srcIdx < laggingSpan2Periods) {
+        s.lead2Plot[i] = { time, value: NaN };
+      } else {
+        s.lead2Plot[i] = { time, value: (s.span2HighArr[srcIdx] + s.span2LowArr[srcIdx]) / 2 };
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {
+          'ema': s.emaPlot.slice(),
+          'emaUp': s.emaUpPlot.slice(),
+          'emaDw': s.emaDwPlot.slice(),
+          'conversion': s.convPlot.slice(),
+          'base': s.basePlot.slice(),
+          'lead1': s.lead1Plot.slice(),
+          'lead2': s.lead2Plot.slice(),
+        },
+        fills: [
+          // Pine: fill(p1, p2, silver) — default transp=90 → 10% opacity
+          { plot1: 'lead1', plot2: 'lead2', options: { color: 'rgba(192,192,192,0.10)' } },
+        ],
+      };
+    },
   };
 }
 
-export const IchimokuEMABands = { calculate, metadata, defaultInputs, inputConfig, plotConfig };
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<IchimokuEMABandsInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<IchimokuEMABandsInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
+}
+
+export const IchimokuEMABands = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig };

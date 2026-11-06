@@ -12,8 +12,10 @@
  * Original notice: © HK
  */
 
-import { ta, Series, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, PlotCandleData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CvdBigTradeDetectorInputs {
   /** SMA / stdev length of the big trade thresholds */
@@ -66,62 +68,94 @@ const gt = (a: number, b: number) => a - b > EPS;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> };
+
+interface CvdVars {
+  /** ta.sma(...)[1] + ta.stdev(...)[1] * bt_mult of the bar before */
+  threshBuy: number;
+  threshSell: number;
+}
+
+interface CvdRun extends BarRunState<CvdVars> {
+  cum: ReturnType<typeof taStep.cum>;
+  avgBuy: WindowSma;
+  stdBuy: WindowStdev;
+  avgSell: WindowSma;
+  stdSell: WindowStdev;
+  cvd: number[];
+  candles: PlotCandleData[];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<CvdBigTradeDetectorInputs>): BarStudy<CvdRun, Result> {
+  const cfg = { ...defaultInputs, ...inputs };
+  return {
+    init() {
+      const s: CvdRun = {
+        cum: taStep.cum(),
+        avgBuy: new WindowSma(cfg.btLookback),
+        stdBuy: new WindowStdev(cfg.btLookback),
+        avgSell: new WindowSma(cfg.btLookback),
+        stdSell: new WindowStdev(cfg.btLookback),
+        cvd: [], candles: [], markers: [],
+        steps: [], vars: { threshBuy: NaN, threshSell: NaN }, lists: [], series: [],
+      };
+      s.steps = [s.cum, s.avgBuy, s.stdBuy, s.avgSell, s.stdSell];
+      s.lists = [s.markers];
+      s.series = [s.cvd, s.candles];
+      return s;
+    },
+    bar(s, i, bars) {
+      const b = bars[i];
+      const v = s.vars;
+      const range = b.high - b.low;
+      const volume = b.volume ?? NaN;
+      const rawBuy = eq(range, 0) ? 0 : ((b.close - b.low) / range) * volume;
+      const rawSell = eq(range, 0) ? 0 : ((b.high - b.close) / range) * volume;
+      const cvdClose = s.cum.step(rawBuy - rawSell);
+      s.cvd[i] = cvdClose;
+      const t = b.time;
+      const cvdOpen = i > 0 && !isNaN(s.cvd[i - 1]) ? s.cvd[i - 1] : 0; // na(cvd[1]) ? 0 : cvd[1]
+      const cvdHigh = Math.max(cvdOpen, cvdClose);
+      const cvdLow = Math.min(cvdOpen, cvdClose);
+      const col = ge(cvdClose, cvdOpen) ? cfg.cvdUpColor : cfg.cvdDownColor;
+      // plotcandle(cvd_open, cvd_high, cvd_low, cvd_close, color = wickcolor = bordercolor = bar_color)
+      s.candles[i] = { time: t, open: cvdOpen, high: cvdHigh, low: cvdLow, close: cvdClose, color: col, wickColor: col, borderColor: col };
+
+      // thresholds from the previous bar: ta.sma(...)[1] + ta.stdev(...)[1] * bt_mult
+      const threshBuy = v.threshBuy;
+      const threshSell = v.threshSell;
+      v.threshBuy = s.avgBuy.step(rawBuy) + s.stdBuy.step(rawBuy) * cfg.btMult;
+      v.threshSell = s.avgSell.step(rawSell) + s.stdSell.step(rawSell) * cfg.btMult;
+      // plotshape(is_bt_buy ? cvd_close : na, shape.circle, location.absolute, c_bt_buy, size.tiny)
+      if (gt(rawBuy, threshBuy) && !isNaN(cvdClose)) {
+        s.markers.push({ time: t, position: 'atPriceMiddle', price: cvdClose, shape: 'circle', color: cfg.btBuyColor, size: 'tiny', id: 'shape0' });
+      }
+      if (gt(rawSell, threshSell) && !isNaN(cvdClose)) {
+        s.markers.push({ time: t, position: 'atPriceMiddle', price: cvdClose, shape: 'circle', color: cfg.btSellColor, size: 'tiny', id: 'shape1' });
+      }
+    },
+    result(s) {
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: {},
+        markers: s.markers.slice(),
+        plotCandles: { cvd: s.candles.slice() },
+      };
+    },
+  };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<CvdBigTradeDetectorInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
 export function calculate(
   bars: Bar[],
   inputs: Partial<CvdBigTradeDetectorInputs> = {},
 ): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[]; plotCandles: Record<string, PlotCandleData[]> } {
-  const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  const rawBuy: number[] = new Array(n);
-  const rawSell: number[] = new Array(n);
-  const delta: number[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const range = b.high - b.low;
-    const volume = b.volume ?? NaN;
-    rawBuy[i] = eq(range, 0) ? 0 : ((b.close - b.low) / range) * volume;
-    rawSell[i] = eq(range, 0) ? 0 : ((b.high - b.close) / range) * volume;
-    delta[i] = rawBuy[i] - rawSell[i];
-  }
-  const cvd = A(ta.cum(S(delta)));
-  const avgBuy = A(ta.sma(S(rawBuy), cfg.btLookback));
-  const stdBuy = A(ta.stdev(S(rawBuy), cfg.btLookback));
-  const avgSell = A(ta.sma(S(rawSell), cfg.btLookback));
-  const stdSell = A(ta.stdev(S(rawSell), cfg.btLookback));
-
-  const candles: PlotCandleData[] = [];
-  const markers: MarkerData[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const cvdOpen = i > 0 && !isNaN(cvd[i - 1]) ? cvd[i - 1] : 0; // na(cvd[1]) ? 0 : cvd[1]
-    const cvdClose = cvd[i];
-    const cvdHigh = Math.max(cvdOpen, cvdClose);
-    const cvdLow = Math.min(cvdOpen, cvdClose);
-    const col = ge(cvdClose, cvdOpen) ? cfg.cvdUpColor : cfg.cvdDownColor;
-    // plotcandle(cvd_open, cvd_high, cvd_low, cvd_close, color = wickcolor = bordercolor = bar_color)
-    candles.push({ time: t, open: cvdOpen, high: cvdHigh, low: cvdLow, close: cvdClose, color: col, wickColor: col, borderColor: col });
-
-    // thresholds from the previous bar: ta.sma(...)[1] + ta.stdev(...)[1] * bt_mult
-    const threshBuy = i > 0 ? avgBuy[i - 1] + stdBuy[i - 1] * cfg.btMult : NaN;
-    const threshSell = i > 0 ? avgSell[i - 1] + stdSell[i - 1] * cfg.btMult : NaN;
-    // plotshape(is_bt_buy ? cvd_close : na, shape.circle, location.absolute, c_bt_buy, size.tiny)
-    if (gt(rawBuy[i], threshBuy) && !isNaN(cvdClose)) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: cvdClose, shape: 'circle', color: cfg.btBuyColor, size: 'tiny', id: 'shape0' });
-    }
-    if (gt(rawSell[i], threshSell) && !isNaN(cvdClose)) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: cvdClose, shape: 'circle', color: cfg.btSellColor, size: 'tiny', id: 'shape1' });
-    }
-  }
-
-  return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {},
-    markers,
-    plotCandles: { cvd: candles },
-  };
+  return fullResult(createRun(inputs).update(bars));
 }
 
-export const CvdBigTradeDetector = { calculate, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };
+export const CvdBigTradeDetector = { calculate, createRun, metadata, defaultInputs, inputConfig, plotConfig, plotCandleConfig };

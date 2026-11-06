@@ -11,8 +11,10 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { ta, Series, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData } from '../types';
+import type { ChartContext } from '../chart-context';
+import { createBarRun, fullResult, WindowSma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface AdxAndRsiComboInputs {
   /** Length of RSI1 */
@@ -84,92 +86,125 @@ const gt = (a: number, b: number) => a - b > EPS;
 const lt = (a: number, b: number) => b - a > EPS;
 const eq = (a: number, b: number) => Math.abs(a - b) <= EPS;
 
-export function calculate(
-  bars: Bar[],
-  inputs: Partial<AdxAndRsiComboInputs> = {},
-): Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } {
+type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] };
+type Point = { time: number; value: number; color?: string };
+type Avg = { step(v: number): number; commit(): void };
+
+interface ComboVars {
+  /** Wilder sums: S := nz(S[1]) - nz(S[1]) / len + x */
+  sTr: number;
+  sPlus: number;
+  sMinus: number;
+}
+
+interface ComboRun extends BarRunState<ComboVars> {
+  up1: Avg;
+  down1: Avg;
+  up2: Avg;
+  down2: Avg;
+  adx: ReturnType<typeof taStep.rma>;
+  rsi2: number[];
+  plots: Point[][];
+  markers: MarkerData[];
+}
+
+function study(inputs: Partial<AdxAndRsiComboInputs>): BarStudy<ComboRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => v ?? NaN);
-  const S = (a: number[]) => Series.fromArray(bars, a);
-
-  // ta.change(src) (na on the first bar; math.max / math.min keep na)
-  const close = bars.map((b) => b.close);
-  const change = close.map((c, i) => (i > 0 ? c - close[i - 1] : NaN));
-  const gain = S(change.map((x) => Math.max(x, 0)));
-  const loss = S(change.map((x) => -Math.min(x, 0)));
-  // up / down: if rs ? ta.sma(...) : ta.rma(...) (only the chosen average runs)
-  const avg = (s: Series, simple: boolean, len: number) => A(simple ? ta.sma(s, len) : ta.rma(s, len));
-  const rsiOf = (simple: boolean, len: number) => {
-    const up = avg(gain, simple, len);
-    const down = avg(loss, simple, len);
-    // down == 0 ? 100 : up == 0 ? 0 : 100 - 100 / (1 + up / down)
-    return up.map((u, i) => (eq(down[i], 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / down[i])));
-  };
-  const rsi = rsiOf(cfg.rs1, cfg.len1);
-  const rsi2 = rsiOf(cfg.rs2, cfg.len2);
-
-  // Wilder sums: S := nz(S[1]) - nz(S[1]) / len + x; nz(close[1]) etc. are 0 on the first bar
   const len = cfg.len;
-  const diPlus: number[] = new Array(n);
-  const diMinus: number[] = new Array(n);
-  const dx: number[] = new Array(n);
-  let sTr = 0;
-  let sPlus = 0;
-  let sMinus = 0;
-  for (let i = 0; i < n; i++) {
-    const b = bars[i];
-    const pc = i > 0 ? (isNaN(bars[i - 1].close) ? 0 : bars[i - 1].close) : 0;
-    const ph = i > 0 ? (isNaN(bars[i - 1].high) ? 0 : bars[i - 1].high) : 0;
-    const pl = i > 0 ? (isNaN(bars[i - 1].low) ? 0 : bars[i - 1].low) : 0;
-    const tr = Math.max(Math.max(b.high - b.low, Math.abs(b.high - pc)), Math.abs(b.low - pc));
-    const dmPlus = gt(b.high - ph, pl - b.low) ? Math.max(b.high - ph, 0) : 0;
-    const dmMinus = gt(pl - b.low, b.high - ph) ? Math.max(pl - b.low, 0) : 0;
-    const nz = (x: number) => (Number.isFinite(x) ? x : 0);
-    sTr = nz(sTr) - nz(sTr) / len + tr;
-    sPlus = nz(sPlus) - nz(sPlus) / len + dmPlus;
-    sMinus = nz(sMinus) - nz(sMinus) / len + dmMinus;
-    // plain divisions: x / 0 is +-infinity, 0 / 0 na
-    diPlus[i] = (sPlus / sTr) * 100;
-    diMinus[i] = (sMinus / sTr) * 100;
-    dx[i] = (Math.abs(diPlus[i] - diMinus[i]) / (diPlus[i] + diMinus[i])) * 100;
-  }
-  // ADX = ta.rma(DX, len): +-infinity is skipped like na
-  const adx = A(ta.rma(S(dx.map((x) => (Number.isFinite(x) ? x : NaN))), len));
-
-  const markers: MarkerData[] = [];
-  for (let i = 1; i < n; i++) {
-    const t = bars[i].time;
-    // bc = rsi2[1] < 15 and rsi2 > rsi2[1] and ut; plotshape(bc ? rsi2 : na, triangleup, green, location.absolute)
-    if (cfg.ut && lt(rsi2[i - 1], 15) && gt(rsi2[i], rsi2[i - 1])) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: rsi2[i], shape: 'triangleUp', color: GREEN });
-    }
-    // bp = rsi2[1] > 85 and rsi2 < rsi2[1] and ut; plotshape(bp ? rsi2 : na, triangledown, red, location.absolute)
-    if (cfg.ut && gt(rsi2[i - 1], 85) && lt(rsi2[i], rsi2[i - 1])) {
-      markers.push({ time: t, position: 'atPriceMiddle', price: rsi2[i], shape: 'triangleDown', color: RED });
-    }
-  }
-
+  // up / down: if rs ? ta.sma(...) : ta.rma(...) (only the chosen average runs)
+  const avg = (simple: boolean, l: number): Avg => (simple ? new WindowSma(l) : taStep.rma(l));
   const val = (v: number) => (Number.isFinite(v) ? v : NaN);
-  const plot = (a: number[], c: string) => bars.map((b, i) => ({ time: b.time, value: val(a[i]), color: c }));
-
+  const nz = (x: number) => (Number.isFinite(x) ? x : 0);
+  // down == 0 ? 100 : up == 0 ? 0 : 100 - 100 / (1 + up / down)
+  const rsiOf = (u: number, d: number) => (eq(d, 0) ? 100 : eq(u, 0) ? 0 : 100 - 100 / (1 + u / d));
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots: {
-      plot0: plot(rsi, PURPLE),
-      plot1: plot(rsi2, PURPLE),
-      plot2: plot(diPlus, GREEN),
-      plot3: plot(diMinus, RED),
-      plot4: plot(adx, BLACK),
+    init() {
+      const up1 = avg(cfg.rs1, cfg.len1);
+      const down1 = avg(cfg.rs1, cfg.len1);
+      const up2 = avg(cfg.rs2, cfg.len2);
+      const down2 = avg(cfg.rs2, cfg.len2);
+      const adx = taStep.rma(len);
+      const s: ComboRun = {
+        up1, down1, up2, down2, adx, rsi2: [], plots: Array.from({ length: 5 }, () => []), markers: [],
+        steps: [up1, down1, up2, down2, adx], vars: { sTr: 0, sPlus: 0, sMinus: 0 }, lists: [], series: [],
+      };
+      s.lists = [s.markers];
+      s.series = [s.rsi2, ...s.plots];
+      return s;
     },
-    hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
-    fills: [{ plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Band Fill', color: BAND_FILL } }],
-    markers,
+    bar(s, i, bars) {
+      const v = s.vars;
+      const b = bars[i];
+      const t = b.time;
+      // ta.change(src) (na on the first bar; math.max / math.min keep na)
+      const change = i > 0 ? b.close - bars[i - 1].close : NaN;
+      const gain = Math.max(change, 0);
+      const loss = -Math.min(change, 0);
+      const rsi = rsiOf(s.up1.step(gain), s.down1.step(loss));
+      const rsi2 = rsiOf(s.up2.step(gain), s.down2.step(loss));
+      s.rsi2[i] = rsi2;
+
+      // Wilder sums: S := nz(S[1]) - nz(S[1]) / len + x; nz(close[1]) etc. are 0 on the first bar
+      const pc = i > 0 ? (isNaN(bars[i - 1].close) ? 0 : bars[i - 1].close) : 0;
+      const ph = i > 0 ? (isNaN(bars[i - 1].high) ? 0 : bars[i - 1].high) : 0;
+      const pl = i > 0 ? (isNaN(bars[i - 1].low) ? 0 : bars[i - 1].low) : 0;
+      const tr = Math.max(Math.max(b.high - b.low, Math.abs(b.high - pc)), Math.abs(b.low - pc));
+      const dmPlus = gt(b.high - ph, pl - b.low) ? Math.max(b.high - ph, 0) : 0;
+      const dmMinus = gt(pl - b.low, b.high - ph) ? Math.max(pl - b.low, 0) : 0;
+      v.sTr = nz(v.sTr) - nz(v.sTr) / len + tr;
+      v.sPlus = nz(v.sPlus) - nz(v.sPlus) / len + dmPlus;
+      v.sMinus = nz(v.sMinus) - nz(v.sMinus) / len + dmMinus;
+      // plain divisions: x / 0 is +-infinity, 0 / 0 na
+      const diPlus = (v.sPlus / v.sTr) * 100;
+      const diMinus = (v.sMinus / v.sTr) * 100;
+      const dx = (Math.abs(diPlus - diMinus) / (diPlus + diMinus)) * 100;
+      // ADX = ta.rma(DX, len): +-infinity is skipped like na
+      const adx = s.adx.step(Number.isFinite(dx) ? dx : NaN);
+
+      if (i >= 1) {
+        const prev = s.rsi2[i - 1];
+        // bc = rsi2[1] < 15 and rsi2 > rsi2[1] and ut; plotshape(bc ? rsi2 : na, triangleup, green, location.absolute)
+        if (cfg.ut && lt(prev, 15) && gt(rsi2, prev)) {
+          s.markers.push({ time: t, position: 'atPriceMiddle', price: rsi2, shape: 'triangleUp', color: GREEN });
+        }
+        // bp = rsi2[1] > 85 and rsi2 < rsi2[1] and ut; plotshape(bp ? rsi2 : na, triangledown, red, location.absolute)
+        if (cfg.ut && gt(prev, 85) && lt(rsi2, prev)) {
+          s.markers.push({ time: t, position: 'atPriceMiddle', price: rsi2, shape: 'triangleDown', color: RED });
+        }
+      }
+
+      const p = s.plots;
+      p[0][i] = { time: t, value: val(rsi), color: PURPLE };
+      p[1][i] = { time: t, value: val(rsi2), color: PURPLE };
+      p[2][i] = { time: t, value: val(diPlus), color: GREEN };
+      p[3][i] = { time: t, value: val(diMinus), color: RED };
+      p[4][i] = { time: t, value: val(adx), color: BLACK };
+    },
+    result(s) {
+      const p = s.plots;
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots: { plot0: p[0].slice(), plot1: p[1].slice(), plot2: p[2].slice(), plot3: p[3].slice(), plot4: p[4].slice() },
+        hlines: hlineConfig.map((h) => ({ value: h.price, options: { title: h.title, color: h.color, linestyle: h.linestyle } })),
+        fills: [{ plot1: 'hline_upper', plot2: 'hline_lower', options: { title: 'Band Fill', color: BAND_FILL } }],
+        markers: s.markers.slice(),
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<AdxAndRsiComboInputs> = {}, chart: ChartContext = {}): IndicatorRun<Result> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<AdxAndRsiComboInputs> = {}): Result {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const AdxAndRsiCombo = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,

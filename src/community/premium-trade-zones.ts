@@ -11,9 +11,11 @@
  */
 
 import {
-  ta, color, getSourceSeries,
-  type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType, type Series,
+  taStep, color, getSourceSeries,
+  type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType,
 } from 'oakscriptjs';
+import type { ChartContext } from '../chart-context';
+import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface PremiumTradeZonesInputs {
   src: SourceType;
@@ -167,63 +169,96 @@ export const metadata = {
 const EPS = 1e-10;
 const ge = (a: number, b: number) => !isNaN(a) && !isNaN(b) && !(b - a > EPS);
 
-export function calculate(bars: Bar[], inputs: Partial<PremiumTradeZonesInputs> = {}): IndicatorResult {
+type Point = { time: number; value: number; color?: string };
+
+interface PtzRun extends BarRunState<Record<string, never>> {
+  rsis: ReturnType<typeof taStep.rsi>[];
+  /** The source values of another study (null: read from the bars) */
+  ext: number[] | null;
+  plots: Point[][];
+  zCols: string[];
+}
+
+function study(inputs: Partial<PremiumTradeZonesInputs>): BarStudy<PtzRun, IndicatorResult> {
   const cfg = { ...defaultInputs, ...inputs };
-  const n = bars.length;
-  const A = (s: Series) => s.toArray().map((v) => (v === null || v === undefined ? NaN : v));
-  const src = getSourceSeries(bars, cfg.src);
-
-  const r14 = A(ta.rsi(src, cfg.len14));
-  const r21 = A(ta.rsi(src, cfg.len21));
-  const r50 = A(ta.rsi(src, cfg.len50));
-
-  type Point = { time: number; value: number; color?: string };
-  const plots: Record<string, Point[]> = {};
-  for (let k = 0; k < 10; k++) plots[`plot${k}`] = [];
+  const value = barSource(cfg.src);
   const zone = (v: number) => (cfg.showZones ? v : NaN);
-  for (let i = 0; i < n; i++) {
-    const t = bars[i].time;
-    const mid = (r14[i] + r21[i] + r50[i]) / 3;
-    // isAbove = mid >= 50 (na is false: the "below" colours)
-    const isAbove = ge(mid, 50);
-    const pipeCol = isAbove ? cfg.pipeUpCol : cfg.pipeDnCol;
-    const c14 = isAbove ? cfg.thread14UpCol : cfg.thread14DnCol;
-    const c21 = isAbove ? cfg.thread21UpCol : cfg.thread21DnCol;
-    const c50 = isAbove ? cfg.thread50UpCol : cfg.thread50DnCol;
-    plots.plot0.push({ time: t, value: zone(cfg.lvl70) });
-    plots.plot1.push({ time: t, value: zone(cfg.ntzTop) });
-    plots.plot2.push({ time: t, value: zone(cfg.ntzBot) });
-    plots.plot3.push({ time: t, value: zone(cfg.lvl30) });
-    plots.plot4.push({ time: t, value: mid, color: String(color.new(pipeCol, 78)) });
-    plots.plot5.push({ time: t, value: mid, color: String(color.new(pipeCol, 85)) });
-    plots.plot6.push({ time: t, value: mid, color: String(color.new(pipeCol, 90)) });
-    plots.plot7.push({ time: t, value: r14[i], color: String(color.new(c14, 10)) });
-    plots.plot8.push({ time: t, value: r21[i], color: String(color.new(c21, 10)) });
-    plots.plot9.push({ time: t, value: r50[i], color: String(color.new(c50, 10)) });
-  }
-
   // fill(upperFillTop, upperFillBot, zCol); fill(lowerFillTop, lowerFillBot, zCol)
   const zCol = String(color.new(cfg.zoneFillCol, cfg.zoneFillAlpha));
-  const zCols = bars.map(() => zCol);
 
   return {
-    metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
-    plots,
-    hlines: [
-      { value: cfg.lvl80, options: { title: 'Level', color: UP_GUIDE, linestyle: 'dashed' } },
-      { value: cfg.lvl70, options: { title: 'Level', color: UP_GUIDE, linestyle: 'dashed' } },
-      { value: cfg.lvl30, options: { title: 'Level', color: DN_GUIDE, linestyle: 'dashed' } },
-      { value: cfg.lvl20, options: { title: 'Level', color: DN_GUIDE, linestyle: 'dashed' } },
-    ],
-    fills: [
-      { plot1: 'plot0', plot2: 'plot1', colors: zCols },
-      { plot1: 'plot2', plot2: 'plot3', colors: zCols },
-    ],
+    fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
+    init(bars) {
+      const rsis = [taStep.rsi(cfg.len14), taStep.rsi(cfg.len21), taStep.rsi(cfg.len50)];
+      const s: PtzRun = {
+        rsis, ext: isBarSource(cfg.src) ? null : getSourceSeries(bars, cfg.src).toArray(),
+        plots: Array.from({ length: 10 }, () => []), zCols: [],
+        steps: [...rsis], vars: {}, lists: [], series: [],
+      };
+      s.series = [...s.plots, s.zCols];
+      return s;
+    },
+    bar(s, i, bars) {
+      const t = bars[i].time;
+      const v = s.ext ? s.ext[i] : value(bars[i]);
+      const num = (x: number) => (x === null || x === undefined ? NaN : x);
+      const r14 = num(s.rsis[0].step(v));
+      const r21 = num(s.rsis[1].step(v));
+      const r50 = num(s.rsis[2].step(v));
+      const mid = (r14 + r21 + r50) / 3;
+      // isAbove = mid >= 50 (na is false: the "below" colours)
+      const isAbove = ge(mid, 50);
+      const pipeCol = isAbove ? cfg.pipeUpCol : cfg.pipeDnCol;
+      const c14 = isAbove ? cfg.thread14UpCol : cfg.thread14DnCol;
+      const c21 = isAbove ? cfg.thread21UpCol : cfg.thread21DnCol;
+      const c50 = isAbove ? cfg.thread50UpCol : cfg.thread50DnCol;
+      const p = s.plots;
+      p[0][i] = { time: t, value: zone(cfg.lvl70) };
+      p[1][i] = { time: t, value: zone(cfg.ntzTop) };
+      p[2][i] = { time: t, value: zone(cfg.ntzBot) };
+      p[3][i] = { time: t, value: zone(cfg.lvl30) };
+      p[4][i] = { time: t, value: mid, color: String(color.new(pipeCol, 78)) };
+      p[5][i] = { time: t, value: mid, color: String(color.new(pipeCol, 85)) };
+      p[6][i] = { time: t, value: mid, color: String(color.new(pipeCol, 90)) };
+      p[7][i] = { time: t, value: r14, color: String(color.new(c14, 10)) };
+      p[8][i] = { time: t, value: r21, color: String(color.new(c21, 10)) };
+      p[9][i] = { time: t, value: r50, color: String(color.new(c50, 10)) };
+      s.zCols[i] = zCol;
+    },
+    result(s) {
+      const plots: Record<string, Point[]> = {};
+      for (let k = 0; k < 10; k++) plots[`plot${k}`] = s.plots[k].slice();
+      const zCols = s.zCols.slice();
+      return {
+        metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
+        plots,
+        hlines: [
+          { value: cfg.lvl80, options: { title: 'Level', color: UP_GUIDE, linestyle: 'dashed' } },
+          { value: cfg.lvl70, options: { title: 'Level', color: UP_GUIDE, linestyle: 'dashed' } },
+          { value: cfg.lvl30, options: { title: 'Level', color: DN_GUIDE, linestyle: 'dashed' } },
+          { value: cfg.lvl20, options: { title: 'Level', color: DN_GUIDE, linestyle: 'dashed' } },
+        ],
+        fills: [
+          { plot1: 'plot0', plot2: 'plot1', colors: zCols },
+          { plot1: 'plot2', plot2: 'plot3', colors: zCols },
+        ],
+      };
+    },
   };
+}
+
+/** A live run: each update calculates the bars from the forming bar of the previous one (see live-run.ts) */
+export function createRun(inputs: Partial<PremiumTradeZonesInputs> = {}, chart: ChartContext = {}): IndicatorRun<IndicatorResult> {
+  return createBarRun(study(inputs), chart);
+}
+
+export function calculate(bars: Bar[], inputs: Partial<PremiumTradeZonesInputs> = {}): IndicatorResult {
+  return fullResult(createRun(inputs).update(bars));
 }
 
 export const PremiumTradeZones = {
   calculate,
+  createRun,
   metadata,
   defaultInputs,
   inputConfig,
