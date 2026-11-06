@@ -4,9 +4,12 @@
  *
  * Each pattern runs through `executeScript(() => patternScript(def), bars, inputs)`, which returns the
  * IndicatorResult shape of this package (markers, bgColors, barColors); the result is passed through.
+ * `createRun` is the live run of the same script (oakscriptjs `createScriptRun`): an update resumes from the forming
+ * bar of the previous one and gives the result of `calculate` on the same bars (#23).
  */
-import { executeScript, type AlertConditionConfig, type ScriptRunResult } from 'oakscriptjs/script';
+import { createScriptRun, executeScript, type AlertConditionConfig, type ScriptRunResult } from 'oakscriptjs/script';
 import type { ChartContext } from '../chart-context';
+import type { IndicatorRun } from '../live-run';
 import type { Bar, IndicatorResult, InputConfig, PlotConfig } from 'oakscriptjs';
 import type { BarColorData, BgColorData, MarkerData } from '../types';
 import { patternScript } from './pattern-runner';
@@ -34,6 +37,8 @@ export interface PortIndicator {
   /** The script's alertcondition() declarations; the result's `alerts` gives the bars on which each one is true. */
   alertConditions: AlertConditionConfig[];
   calculate: (bars: Bar[], inputs?: Record<string, unknown>, chart?: ChartContext) => PortResult;
+  /** The live run of the script: each update calculates the bars from the forming bar of the previous one */
+  createRun: (inputs?: Record<string, unknown>, chart?: ChartContext) => IndicatorRun<PortResult>;
 }
 
 /** Two synthetic bars are enough to harvest the declared inputs/plots/metadata. */
@@ -55,6 +60,18 @@ function buildIndicator(body: () => void, shortName: string): PortIndicator {
     defaultInputs: probe.defaultInputs,
     alertConditions: probe.alertConfig,
     calculate: (bars, inputs = {}, chart) => convert(executeScript(body, bars, inputs, chart)),
+    createRun: (inputs = {}, chart = {}) => {
+      const run = createScriptRun(body, inputs, chart);
+      return {
+        update(bars: Bar[], next?: ChartContext) {
+          const u = run.update(bars, next);
+          return Object.assign(convert(u), { from: u.from });
+        },
+        get fullRunReason() {
+          return run.fullRunReason;
+        },
+      };
+    },
   };
 }
 

@@ -7703,7 +7703,7 @@ export interface IndicatorRegistryEntry {
  * Generate candlestick pattern registry entries
  */
 function candlestickEntries(
-  pairs: [string, { metadata: any; inputConfig: any; plotConfig: any; defaultInputs: any; alertConditions?: { id: string; title: string; message?: string }[]; calculate: any }][]
+  pairs: [string, { metadata: any; inputConfig: any; plotConfig: any; defaultInputs: any; alertConditions?: { id: string; title: string; message?: string }[]; calculate: any; createRun?: any }][]
 ): IndicatorRegistryEntry[] {
   return pairs.map(([id, ind]) => ({
     id,
@@ -7718,6 +7718,7 @@ function candlestickEntries(
     defaultInputs: { ...ind.defaultInputs },
     ...(ind.alertConditions?.length ? { alertConditions: ind.alertConditions } : {}),
     calculate: ind.calculate,
+    ...(ind.createRun ? { createRun: ind.createRun } : {}),
   }));
 }
 
