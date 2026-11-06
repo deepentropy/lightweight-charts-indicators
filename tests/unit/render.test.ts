@@ -28,6 +28,7 @@ interface FakeSeries {
   setDataCalls: number;
   updateCalls: number;
   optionsCalls: number;
+  fullUpdates: number;
 }
 
 function fakeChart() {
@@ -35,10 +36,12 @@ function fakeChart() {
   const preserve = new Map<number, boolean>();
   let paneCount = 1;
   const make = (options: Record<string, unknown> = {}, pane = 0) => {
-    const s: FakeSeries = { pane, primitives: new Set(), options: { ...options }, data: [], setDataCalls: 0, updateCalls: 0, optionsCalls: 0 };
+    // eslint-disable-next-line prefer-const
+    let api: Record<string, unknown>;
+    const s: FakeSeries = { pane, primitives: new Set(), options: { ...options }, data: [], setDataCalls: 0, updateCalls: 0, optionsCalls: 0, fullUpdates: 0 };
     paneCount = Math.max(paneCount, pane + 1);
     series.add(s);
-    return {
+    return (api = {
       _fake: s,
       setData: (d: unknown[]) => { s.data = [...d]; s.setDataCalls++; },
       // the library's update: the point of that time is replaced, a newer one appended
@@ -52,12 +55,13 @@ function fakeChart() {
       },
       applyOptions: (o: Record<string, unknown>) => { s.optionsCalls++; Object.assign(s.options, o); },
       options: () => s.options,
-      attachPrimitive: (p: unknown) => { s.primitives.add(p); },
+      // as the library: the primitive gets its series, and requestUpdate is a full update of the chart
+      attachPrimitive: (p: { attached?: (param: unknown) => void }) => { s.primitives.add(p); p.attached?.({ series: api, chart: {}, requestUpdate: () => { s.fullUpdates++; } }); },
       detachPrimitive: (p: unknown) => { s.primitives.delete(p); },
       getPane: () => ({ paneIndex: () => s.pane }),
       seriesType: () => 'Line',
       data: () => s.data,
-    };
+    });
   };
   const pane = (i: number) => ({
     getSeries: () => [...series].filter((s) => s.pane === i),
@@ -242,8 +246,9 @@ describe('IndicatorRenderer', () => {
       expect(attached.length).toBeGreaterThan(0);
       const next = tick(bars);
       r.render(bb, bb.calculate(next, {}), next, { reuseSeries: true });
-      // the same slots stay attached (no layout of the chart again)
+      // the same slots stay attached (no layout of the chart again), with a light update of their series only
       expect([...f.series].flatMap((s) => [...s.primitives])).toEqual(attached);
+      expect([...f.series].reduce((n, s) => n + s.fullUpdates, 0)).toBe(0);
       // and hold the new fill: the same as a fresh render's
       const inner = (p: unknown) => (p as { inner: { getData?: () => unknown } }).inner.getData?.();
       const ref = fakeChart();

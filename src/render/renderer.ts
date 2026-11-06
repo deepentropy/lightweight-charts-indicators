@@ -1084,7 +1084,7 @@ export class IndicatorRenderer {
 /**
  * A primitive attached to a series that another one of the same kind can take the place of: attaching or detaching a
  * primitive makes the chart lay its panes out again and paint a second time, so a live render keeps the slot and
- * swaps its content (a light update).
+ * swaps its content (a light update of its series).
  */
 class PrimitiveSlot implements ISeriesPrimitive<Time> {
   private param: SeriesAttachedParameter<Time> | null = null;
@@ -1101,7 +1101,9 @@ class PrimitiveSlot implements ISeriesPrimitive<Time> {
     this.inner = next;
     if (!this.param) return;
     next.attached?.(this.param);
-    this.param.requestUpdate();
+    // A light update of the series (its pane is drawn again): requestUpdate is a full one, which lays the panes out
+    // again and paints a second time (#26)
+    this.param.series.applyOptions({});
   }
 
   attached(param: SeriesAttachedParameter<Time>): void {
