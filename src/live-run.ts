@@ -600,3 +600,68 @@ export class AlmaStep implements Committable {
     if (this.values.length > this.len * 2 + 1024) this.values = this.values.slice(-this.len);
   }
 }
+
+/**
+ * `ta.linreg(source, length, offset)` with a constant length, called on every bar: the least-squares loop of the
+ * oakscriptjs array function over the last `length` values (the same doubles; na in the window gives na), without the
+ * per-step cost of taStep.linreg (oakScriptJS #204).
+ */
+export class LinregStep implements Committable {
+  /** The last `length` committed values twice (a ring read as one contiguous window) */
+  private readonly buf: Float64Array;
+  private count = 0;
+  private pending = NaN;
+  private stepped = false;
+  private readonly len: number;
+  private readonly sumX: number;
+  private readonly sumX2: number;
+
+  constructor(length: number, private readonly offset = 0) {
+    // the length check of ta.linreg (the same runtime error)
+    taCore.linreg([], length, offset);
+    this.len = Math.floor(length);
+    this.buf = new Float64Array(Math.max(this.len, 1) * 2);
+    // sums of x = 1 .. len (integers: the same doubles as the running sums of the array function)
+    let sumX = 0;
+    let sumX2 = 0;
+    for (let j = 0; j < this.len; j++) {
+      sumX += j + 1;
+      sumX2 += (j + 1) * (j + 1);
+    }
+    this.sumX = sumX;
+    this.sumX2 = sumX2;
+  }
+
+  step(value: number): number {
+    this.stepped = true;
+    this.pending = value;
+    const len = this.len;
+    if (this.count + 1 < len) return NaN;
+    // y of x = j + 1, the oldest value first and the value of this bar last; an na value makes the sums na
+    const buf = this.buf;
+    const start = (this.count + 1) % len;
+    let sumY = 0;
+    let sumXY = 0;
+    for (let j = 0; j < len - 1; j++) {
+      const y = buf[start + j]!;
+      sumY += y;
+      sumXY += (j + 1) * y;
+    }
+    sumY += value;
+    sumXY += len * value;
+    const sumX = this.sumX;
+    const slope = (len * sumXY - sumX * sumY) / (len * this.sumX2 - sumX * sumX);
+    const intercept = sumY / len - (slope * sumX) / len + slope;
+    return intercept + slope * (len - 1 - this.offset);
+  }
+
+  commit(): void {
+    if (!this.stepped) return;
+    this.stepped = false;
+    const len = this.len;
+    const pos = this.count % len;
+    this.buf[pos] = this.pending;
+    this.buf[pos + len] = this.pending;
+    this.count++;
+  }
+}

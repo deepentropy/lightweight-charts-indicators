@@ -132,6 +132,11 @@ interface TsiRun extends BarRunState<Record<string, never>> {
   bgColors: BgColorData[];
   flags: boolean[][];
   times: number[][];
+  /** The values and colours of the 4 gradient fills, per bar */
+  gTop: number[][];
+  gBottom: number[][];
+  gTopColor: Array<Array<string | null>>;
+  gBottomColor: Array<Array<string | null>>;
 }
 
 function study(inputs: Partial<BjorgumTSIInputs>): BarStudy<TsiRun, Result> {
@@ -153,6 +158,12 @@ function study(inputs: Partial<BjorgumTSIInputs>): BarStudy<TsiRun, Result> {
   const bearBgColor = '#FF80FF'; // Pine: isBeachy ? #FF6B6B : #FF80FF
   const osBg = String(color.new('#ff0000', 80));
   const obBg = String(color.new('#64b5f6', 80));
+  const obFill80 = color.new_color(obFillColor, 80) as string;
+  const osFill80 = color.new_color(osFillColor, 80) as string;
+  const bear30 = color.new_color(bearBgColor, 30) as string;
+  const bear90 = color.new_color(bearBgColor, 90) as string;
+  const bull90 = color.new_color(bullBgColor, 90) as string;
+  const bull30 = color.new_color(bullBgColor, 30) as string;
   return {
     init() {
       // TSI = 100 * EMA(EMA(mom, longLen), shortLen) / EMA(EMA(abs(mom), longLen), shortLen)
@@ -166,11 +177,13 @@ function study(inputs: Partial<BjorgumTSIInputs>): BarStudy<TsiRun, Result> {
         pc1, pc2, abs1, abs2, sigEma, tsi: [], sig: [], tsiPlot: [], sigPlot: [], barHiPlot: [], barLoPlot: [],
         hidden: [[], [], [], []], fillColors: [], candles: [], barColors: [], bgColors: [],
         flags: alertConditions.map(() => []), times: alertConditions.map(() => []),
+        gTop: [[], [], [], []], gBottom: [[], [], [], []], gTopColor: [[], [], [], []], gBottomColor: [[], [], [], []],
         steps: [pc1, pc2, abs1, abs2, sigEma], vars: {}, lists: [], series: [],
       };
       s.lists = [...s.times, s.candles, s.barColors, s.bgColors];
       s.series = [
         s.tsi, s.sig, s.tsiPlot, s.sigPlot, s.barHiPlot, s.barLoPlot, ...s.hidden, s.fillColors, ...s.flags,
+        ...s.gTop, ...s.gBottom, ...s.gTopColor, ...s.gBottomColor,
       ];
       return s;
     },
@@ -186,6 +199,14 @@ function study(inputs: Partial<BjorgumTSIInputs>): BarStudy<TsiRun, Result> {
       s.tsi[i] = tsi;
       const sigRaw = s.sigEma.step(tsi);
       s.sig[i] = sigRaw;
+      // the 4 gradient fills (see result)
+      const gt = s.gTop, gb = s.gBottom, gtc = s.gTopColor, gbc = s.gBottomColor;
+      gt[0][i] = ob; gb[0][i] = 5; gtc[0][i] = obFill80; gbc[0][i] = null;
+      gt[1][i] = -5; gb[1][i] = os; gtc[1][i] = null; gbc[1][i] = osFill80;
+      // Pine: obValue = showObFill ? oBotInput : na (showObFill = tsl > oBotInput and not isClassic)
+      gt[2][i] = ob + 50; gb[2][i] = s.sig[i] > ob && !isClassic ? ob : NaN; gtc[2][i] = bear30; gbc[2][i] = bear90;
+      // Pine: osValue = showOsFill ? oSoldInput : na (showOsFill = tsl < oSoldInput and not isClassic)
+      gt[3][i] = s.sig[i] < os && !isClassic ? os : NaN; gb[3][i] = os - 50; gtc[3][i] = bull90; gbc[3][i] = bull30;
       const sig = sigRaw ?? NaN;
       const prevTsi = i > 0 ? s.tsi[i - 1] : NaN;
       const prevSig = i > 0 ? (s.sig[i - 1] ?? NaN) : NaN;
@@ -272,33 +293,19 @@ function study(inputs: Partial<BjorgumTSIInputs>): BarStudy<TsiRun, Result> {
     },
     result(s, bars) {
       const n = bars.length;
-      const perBar = <T>(f: (i: number) => T): T[] => bars.map((_, i) => f(i));
-      // Pine: obValue = showObFill ? oBotInput : na (showObFill = tsl > oBotInput and not isClassic)
-      const obValueArr = perBar((i) => (s.sig[i] > ob && !isClassic ? ob : NaN));
-      // Pine: osValue = showOsFill ? oSoldInput : na (showOsFill = tsl < oSoldInput and not isClassic)
-      const osValueArr = perBar((i) => (s.sig[i] < os && !isClassic ? os : NaN));
-
+      const gradient = (k: number) => ({
+        topValue: s.gTop[k].slice(), bottomValue: s.gBottom[k].slice(),
+        topColor: s.gTopColor[k].slice(), bottomColor: s.gBottomColor[k].slice(),
+      });
       const gradientFills = [
         // Pine: fill(h2, h1, oBotInput, 5, color.new(obFillColor, 80), color(na), fillgaps = true)
-        { plot1: 'h2', plot2: 'h1', options: { title: 'Plots Background' }, gradient: {
-          topValue: perBar(() => ob), bottomValue: perBar(() => 5),
-          topColor: perBar((): string | null => color.new_color(obFillColor, 80) as string),
-          bottomColor: perBar((): string | null => null) } },
+        { plot1: 'h2', plot2: 'h1', options: { title: 'Plots Background' }, gradient: gradient(0) },
         // Pine: fill(h2, h1, -5, oSoldInput, color(na), color.new(osFillColor, 80), fillgaps = true)
-        { plot1: 'h2', plot2: 'h1', options: { title: 'Plots Background' }, gradient: {
-          topValue: perBar(() => -5), bottomValue: perBar(() => os),
-          topColor: perBar((): string | null => null),
-          bottomColor: perBar((): string | null => color.new_color(osFillColor, 80) as string) } },
+        { plot1: 'h2', plot2: 'h1', options: { title: 'Plots Background' }, gradient: gradient(1) },
         // Pine: fill(p2, p6, oBotInput + 50, obValue, color.new(bearBgColor, 30), color.new(bearBgColor, 90), fillgaps = true)
-        { plot1: 'plot1', plot2: 'p6', options: { title: 'Plots Background' }, gradient: {
-          topValue: perBar(() => ob + 50), bottomValue: obValueArr,
-          topColor: perBar((): string | null => color.new_color(bearBgColor, 30) as string),
-          bottomColor: perBar((): string | null => color.new_color(bearBgColor, 90) as string) } },
+        { plot1: 'plot1', plot2: 'p6', options: { title: 'Plots Background' }, gradient: gradient(2) },
         // Pine: fill(p2, p7, osValue, oSoldInput - 50, color.new(bullBgColor, 90), color.new(bullBgColor, 30), fillgaps = true)
-        { plot1: 'plot1', plot2: 'p7', options: { title: 'Plots Background' }, gradient: {
-          topValue: osValueArr, bottomValue: perBar(() => os - 50),
-          topColor: perBar((): string | null => color.new_color(bullBgColor, 90) as string),
-          bottomColor: perBar((): string | null => color.new_color(bullBgColor, 30) as string) } },
+        { plot1: 'plot1', plot2: 'p7', options: { title: 'Plots Background' }, gradient: gradient(3) },
       ];
       // Pine: fill(p1, p2, tsi, tsl, fillColor2, color.new(fillColor2, 70), fillgaps = true, display = displayFill)
       // is not returned: displayFill = isClassic ? display.none : display.all, and FillData has no display option.

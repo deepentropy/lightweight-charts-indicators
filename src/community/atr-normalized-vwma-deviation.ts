@@ -14,7 +14,7 @@
 import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type HLineConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { BgColorData } from '../types';
 import type { ChartContext } from '../chart-context';
-import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { createBarRun, fullResult, WindowExtreme, WindowSma, WindowVwma, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface ATRNormalizedVWMADeviationInputs {
   /** Lookback of the extremes (and of the MAD averages) */
@@ -91,14 +91,14 @@ type Point = { time: number; value: number; color?: string };
 type Result = IndicatorResult & { bgColors: BgColorData[] };
 
 interface AnvdRun extends BarRunState<Record<string, never>> {
-  vwma: ReturnType<typeof taStep.vwma>;
+  vwma: WindowVwma;
   atr: ReturnType<typeof taStep.atr>;
-  devMean: ReturnType<typeof taStep.sma>;
-  mad: ReturnType<typeof taStep.sma>;
-  hiDev: ReturnType<typeof taStep.highest>;
-  loDev: ReturnType<typeof taStep.lowest>;
-  hiHigh: ReturnType<typeof taStep.highest>;
-  loLow: ReturnType<typeof taStep.lowest>;
+  devMean: WindowSma;
+  mad: WindowSma;
+  hiDev: WindowExtreme;
+  loDev: WindowExtreme;
+  hiHigh: WindowExtreme;
+  loLow: WindowExtreme;
   hiDevArr: number[];
   loDevArr: number[];
   hiHighArr: number[];
@@ -116,14 +116,14 @@ function study(inputs: Partial<ATRNormalizedVWMADeviationInputs>): BarStudy<Anvd
   const fin = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
     init() {
-      const vwma = taStep.vwma(cfg.vwmaLen);
+      const vwma = new WindowVwma(cfg.vwmaLen);
       const atr = taStep.atr(cfg.atrLen);
-      const devMean = taStep.sma();
-      const mad = taStep.sma();
-      const hiDev = taStep.highest();
-      const loDev = taStep.lowest();
-      const hiHigh = taStep.highest();
-      const loLow = taStep.lowest();
+      const devMean = new WindowSma(cfg.lookback);
+      const mad = new WindowSma(cfg.lookback);
+      const hiDev = new WindowExtreme(false, cfg.lookback);
+      const loDev = new WindowExtreme(true, cfg.lookback);
+      const hiHigh = new WindowExtreme(false, cfg.lookback);
+      const loLow = new WindowExtreme(true, cfg.lookback);
       const s: AnvdRun = {
         vwma, atr, devMean, mad, hiDev, loDev, hiHigh, loLow,
         hiDevArr: [], loDevArr: [], hiHighArr: [], loLowArr: [], sellSetup: [], buySetup: [], plot0: [], plot1: [],
@@ -143,14 +143,14 @@ function study(inputs: Partial<ATRNormalizedVWMADeviationInputs>): BarStudy<Anvd
       const dev = (ohlc4 - vwma) / atr;
 
       // Mean absolute deviation
-      const devMean = s.devMean.step(fin(dev), cfg.lookback);
-      const mad = s.mad.step(fin(Math.abs(dev - devMean)), cfg.lookback);
+      const devMean = s.devMean.step(fin(dev));
+      const mad = s.mad.step(fin(Math.abs(dev - devMean)));
 
       // Extremes of the previous bar: ta.highest(x, lookback)[1]
-      s.hiDevArr[i] = s.hiDev.step(dev, cfg.lookback);
-      s.loDevArr[i] = s.loDev.step(dev, cfg.lookback);
-      s.hiHighArr[i] = s.hiHigh.step(b.high, cfg.lookback);
-      s.loLowArr[i] = s.loLow.step(b.low, cfg.lookback);
+      s.hiDevArr[i] = s.hiDev.step(dev);
+      s.loDevArr[i] = s.loDev.step(dev);
+      s.hiHighArr[i] = s.hiHigh.step(b.high);
+      s.loLowArr[i] = s.loLow.step(b.low);
 
       const isHighestDev = i > 0 && gt(dev, s.hiDevArr[i - 1]);
       const isLowestDev = i > 0 && lt(dev, s.loDevArr[i - 1]);

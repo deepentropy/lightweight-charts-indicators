@@ -10,9 +10,9 @@
  * Reference: "Sell / Buy Rates" by LonesomeTheBlue
  */
 
-import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { taCore, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { ChartContext } from '../chart-context';
-import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { createBarRun, fullResult, type BarRunState, type Committable, type BarStudy, type IndicatorRun, LinregStep } from '../live-run';
 
 export interface SellBuyRatesInputs {
   period: number;
@@ -38,8 +38,9 @@ export const metadata = {
 
 type Point = { time: number; value: number; color?: string };
 
+
 interface SbrRun extends BarRunState<Record<string, never>> {
-  linreg: ReturnType<typeof taStep.linreg>;
+  linreg: LinregStep;
   rateArr: number[];
   plot0: Point[];
 }
@@ -48,7 +49,7 @@ function study(inputs: Partial<SellBuyRatesInputs>): BarStudy<SbrRun, IndicatorR
   const { period } = { ...defaultInputs, ...inputs };
   return {
     init() {
-      const linreg = taStep.linreg(period, 0);
+      const linreg = new LinregStep(period, 0);
       const s: SbrRun = { linreg, rateArr: [], plot0: [], steps: [linreg], vars: {}, lists: [], series: [] };
       s.series = [s.rateArr, s.plot0];
       return s;

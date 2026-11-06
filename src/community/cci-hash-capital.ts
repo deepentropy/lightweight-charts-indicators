@@ -15,11 +15,11 @@
  * Licence: Mozilla Public License 2.0, as the original Pine script (https://mozilla.org/MPL/2.0/).
  */
 
-import { taStep, math, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
+import { taCore, taStep, math, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 import type { MarkerData } from '../types';
 import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
 import type { ChartContext } from '../chart-context';
-import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { barSource, createBarRun, fullResult, isBarSource, liveAlertStates, PivotStep, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface CciHashCapitalInputs {
   /** CCI period */
@@ -90,11 +90,12 @@ type Result = Omit<IndicatorResult, 'markers'> & { markers: MarkerData[] } & { a
 type Ma = { step(v: number): number; commit(): void };
 
 interface CciRun extends BarRunState<Record<string, never>> {
-  ma: ReturnType<typeof taStep.sma>;
-  dev: ReturnType<typeof taStep.dev>;
+  ma: WindowSma;
+  /** The source of each bar (the window of ta.dev) */
+  src: number[];
   ema1: Ma;
   ema2: Ma;
-  vol: ReturnType<typeof taStep.stdev>;
+  vol: WindowStdev;
   pl: PivotStep;
   ph: PivotStep;
   barsBull: ReturnType<typeof taStep.barssince>;
@@ -165,15 +166,17 @@ function study(inputs: Partial<CciHashCapitalInputs>): BarStudy<CciRun, Result> 
   const overColor = String(color.new('#00FF00', 90));
   const underColor = String(color.new('#FF0000', 90));
   const signalMultiplier = cfg.signalSensitivity / 10.0;
+  const devLen = Math.floor(cfg.length);
 
   return {
     fullRunReason: () => (isBarSource(cfg.src) ? null : 'source of another study'),
     init() {
-      const ma = taStep.sma();
-      const dev = taStep.dev(cfg.length);
+      const ma = new WindowSma(cfg.length);
+      // the length check of ta.dev (the same runtime error)
+      taCore.dev([], cfg.length);
       const ema1 = taStep.ema(cfg.smoothing);
       const ema2 = taStep.ema(2);
-      const vol = taStep.stdev();
+      const vol = new WindowStdev(30);
       const pl = new PivotStep(lookbackLeft, lookbackRight, false);
       const ph = new PivotStep(lookbackLeft, lookbackRight, true);
       const barsBull = taStep.barssince();
@@ -184,15 +187,15 @@ function study(inputs: Partial<CciHashCapitalInputs>): BarStudy<CciRun, Result> 
       const vwBearHigh = taStep.valuewhen(1);
       const div = cfg.calculateDivergence ? [pl, ph, barsBull, barsBear, vwBullCci, vwBullLow, vwBearCci, vwBearHigh] : [];
       const s: CciRun = {
-        ma, dev, ema1, ema2, vol, pl, ph, barsBull, barsBear, vwBullCci, vwBullLow, vwBearCci, vwBearHigh,
+        ma, src: [], ema1, ema2, vol, pl, ph, barsBull, barsBear, vwBullCci, vwBullLow, vwBearCci, vwBearHigh,
         cci: [], momentum: [], plFound: [], phFound: [],
         plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], plot5: [], plot6: [], fill0: [], fill1: [], fill2: [],
         markers: [], flags: [[], [], [], [], [], []], times: [[], [], [], [], [], []],
-        steps: [ma, dev, ema1, ema2, vol, ...div], vars: {}, lists: [], series: [],
+        steps: [ma, ema1, ema2, vol, ...div], vars: {}, lists: [], series: [],
       };
       s.lists = [...s.times, s.markers];
       s.series = [
-        s.cci, s.momentum, s.plFound, s.phFound, s.plot0, s.plot1, s.plot2, s.plot3, s.plot4, s.plot5, s.plot6,
+        s.src, s.cci, s.momentum, s.plFound, s.phFound, s.plot0, s.plot1, s.plot2, s.plot3, s.plot4, s.plot5, s.plot6,
         s.fill0, s.fill1, s.fill2, ...s.flags,
       ];
       return s;
@@ -202,8 +205,16 @@ function study(inputs: Partial<CciHashCapitalInputs>): BarStudy<CciRun, Result> 
       const time = b.time;
       // Smoothed CCI
       const sv = value(b);
-      const ma = s.ma.step(sv, cfg.length);
-      const deviation = s.dev.step(sv);
+      const ma = s.ma.step(sv);
+      // ta.dev(src, length): the mean absolute deviation from the sma of the last `length` values (this bar first)
+      const srcs = s.src;
+      srcs[i] = sv;
+      let deviation = NaN;
+      if (i >= devLen - 1 && !Number.isNaN(ma)) {
+        let sum = 0;
+        for (let k = 0; k < devLen; k++) sum += Math.abs(srcs[i - k] - ma);
+        deviation = sum / devLen;
+      }
       // A plain division: x / 0 is +-infinity (ta.ema skips it as na), 0 / 0 is na
       const rawCci = (sv - ma) / (0.015 * deviation);
       const cci1 = s.ema1.step(rawCci);
@@ -272,7 +283,7 @@ function study(inputs: Partial<CciHashCapitalInputs>): BarStudy<CciRun, Result> 
       s.momentum[i] = momentum;
       const prevMomentum = i > 0 ? s.momentum[i - 1] : NaN;
       const velocity = i > 0 ? momentum - prevMomentum : NaN;
-      const volatility = s.vol.step(cci, 30);
+      const volatility = s.vol.step(cci);
       const momentumCrossUp = momentum > 0 && prevMomentum <= 0;
       const momentumCrossDown = momentum < 0 && prevMomentum >= 0;
       const upperLevel = 100 + volatility * 0.3;

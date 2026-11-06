@@ -30,7 +30,7 @@
 
 import { barInterval, barTime, chartSessions, periodTime, time as pineTime, timeframe as pineTimeframe, type SessionContext, type FillData, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SourceType } from 'oakscriptjs';
 
-import { hasCalendar, periodStarts, chartTimeframe } from '../anchor-period';
+import { calendarOf, hasCalendar, periodStarts, chartTimeframe } from '../anchor-period';
 import { timezoneOf, type ChartContext } from '../chart-context';
 import { barSource, createBarRun, fullResult, isBarSource, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
@@ -123,29 +123,6 @@ function periodKey(d: Date, anchor: VWAPAnchor): number {
   }
 }
 
-/**
- * The exchange calendar of `periodStarts` (anchor-period.ts): the session context of the chart timeframe, the time zone
- * and the session of the chart context, or null when the context has no calendar, the chart timeframe is not known or
- * the library cannot read the time zone or the session (then periodStarts gives the UTC periods of periodKey)
- */
-function exchangeCalendar(bars: Bar[], chart?: ChartContext): { ctx: SessionContext; unit: number } | null {
-  if (!chart || !hasCalendar(chart) || bars.length === 0) return null;
-  const tf = chartTimeframe(bars, chart);
-  if (tf === '') return null;
-  const ms = bars[0].time >= 1e12;
-  const ctx: SessionContext = {
-    timeframe: tf, timezone: chart.timezone, session: chart.session, regularSession: chart.regularSession,
-    timeUnit: ms ? 'ms' : 's',
-  };
-  try {
-    chartSessions(ctx);
-    periodTime(bars[0].time, '1D', ctx);
-  } catch {
-    return null;
-  }
-  return { ctx, unit: ms ? 1 : 1000 };
-}
-
 type Point = { time: number; value: number };
 type Result = IndicatorResult & { visibility: Record<string, boolean> };
 
@@ -173,7 +150,7 @@ function study(inputs: Partial<VWAPInputs>): BarStudy<VwapRun, Result> {
   const tf = ANCHOR_TIMEFRAME[anchor] ?? '12M';
   const mults = [cfg.bandMult1, cfg.bandMult2, cfg.bandMult3];
   /** Set by init: the exchange calendar, the time zone and the hidden state (they read the chart and the bars) */
-  let calendar: { ctx: SessionContext; unit: number } | null = null;
+  let calendar: { chart: SessionContext; unit: number } | null = null;
   let timezone = timezoneOf({});
   /** The year in the exchange time zone with the calendar of the context */
   let exchangeYear = false;
@@ -185,7 +162,7 @@ function study(inputs: Partial<VWAPInputs>): BarStudy<VwapRun, Result> {
       return `${n > 0}|${n > 0 && bars[0].time < 1e12}|${barInterval(bars)}|${hasCalendar(c) ? chartTimeframe(bars, c) : ''}`;
     },
     init(bars, c) {
-      calendar = isEsdAnchor ? null : exchangeCalendar(bars, c);
+      calendar = isEsdAnchor ? null : calendarOf(bars, c);
       timezone = timezoneOf(c);
       exchangeYear = !isEsdAnchor && hasCalendar(c);
       // timeframe.isdwm: the chart timeframe of the context, else the bar interval is one day or more
@@ -216,9 +193,9 @@ function study(inputs: Partial<VWAPInputs>): BarStudy<VwapRun, Result> {
         let key: number;
         if (calendar) {
           // periodStarts: time(tf) of the bar; na after an early close: the period of the bar before it
-          const t = periodTime(b.time, tf, calendar.ctx);
+          const t = periodTime(b.time, tf, calendar.chart);
           if (!Number.isNaN(t)) key = t / calendar.unit;
-          else key = i > 0 && chartSessions(calendar.ctx).bars.stray(b.time * calendar.unit) ? v.prevKey : b.time;
+          else key = i > 0 && chartSessions(calendar.chart).bars.stray(b.time * calendar.unit) ? v.prevKey : b.time;
         } else {
           key = periodKey(d, anchor);
         }

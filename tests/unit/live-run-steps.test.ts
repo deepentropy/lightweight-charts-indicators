@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { taCore, taStep } from 'oakscriptjs';
-import { AlmaStep, PivotStep, WindowExtreme, WindowSma, WindowStdev, WindowSum, WindowVwma } from '../../src/live-run';
+import { AlmaStep, LinregStep, PivotStep, WindowExtreme, WindowSma, WindowStdev, WindowSum, WindowVwma } from '../../src/live-run';
 
 function series(n: number, seed: number): number[] {
   let s = seed;
@@ -119,5 +119,25 @@ describe('live-run steps: invalid lengths', () => {
       expect(() => new WindowVwma(length)).toThrow(/'vwma'/);
       expect(() => new AlmaStep(length)).toThrow();
     }
+  });
+});
+
+describe('live-run steps: linreg', () => {
+  for (const [length, offset] of [[1, 0], [5, 0], [20, 1], [50, -2]] as const) {
+    it(`LinregStep ${length}/${offset} equals the array function`, () => {
+      const src = series(1500, 21);
+      const expected = taCore.linreg(src, length, offset) as number[];
+      const l = new LinregStep(length, offset);
+      const got = src.map((v) => {
+        l.step(v + 3);
+        const out = l.step(v);
+        l.commit();
+        return out;
+      });
+      expect(near(got, expected)).toBe(true);
+    });
+  }
+  it('throws the runtime error of ta.linreg for an invalid length', () => {
+    expect(() => new LinregStep(0)).toThrow(/'linreg'/);
   });
 });

@@ -56,7 +56,7 @@ export function hasCalendar(chart?: ChartContext): boolean {
  * (fewer than 2 bars without `chart.timeframe`) or the library cannot read the time zone or the session. One object
  * per chart context, timeframe and unit: the library caches its calendars per object.
  */
-function calendarOf(
+export function calendarOf(
   bars: ReadonlyArray<{ time: number }>,
   chart?: ChartContext,
 ): { chart: SessionContext; unit: number } | null {

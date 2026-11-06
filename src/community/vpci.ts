@@ -11,9 +11,9 @@
  * Reference: "Volume Price Confirmation Indicator [LazyBear]"
  */
 
-import { taStep, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
+import { type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { ChartContext } from '../chart-context';
-import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { createBarRun, fullResult, WindowSma, WindowSum, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface VPCIInputs {
   longLength: number;
@@ -58,15 +58,15 @@ type Point = { time: number; value: number; color?: string };
 
 /** The window sums (ta.vwma / ta.sma / ta.stdev share the sums of their common inputs: the same doubles) */
 interface VpciRun extends BarRunState<Record<string, never>> {
-  cvLong: ReturnType<typeof taStep.sum>;
-  cLong: ReturnType<typeof taStep.sum>;
-  cvShort: ReturnType<typeof taStep.sum>;
-  cShort: ReturnType<typeof taStep.sum>;
-  volShort: ReturnType<typeof taStep.sum>;
-  volLong: ReturnType<typeof taStep.sum>;
-  signal: ReturnType<typeof taStep.sma>;
-  basis: ReturnType<typeof taStep.sum>;
-  squares: ReturnType<typeof taStep.sum>;
+  cvLong: WindowSum;
+  cLong: WindowSum;
+  cvShort: WindowSum;
+  cShort: WindowSum;
+  volShort: WindowSum;
+  volLong: WindowSum;
+  signal: WindowSma;
+  basis: WindowSum;
+  squares: WindowSum;
   plot0: Point[];
   plot1: Point[];
   plot2: Point[];
@@ -85,8 +85,9 @@ function study(inputs: Partial<VPCIInputs>): BarStudy<VpciRun, IndicatorResult> 
   return {
     init() {
       const s: VpciRun = {
-        cvLong: taStep.sum(), cLong: taStep.sum(), cvShort: taStep.sum(), cShort: taStep.sum(),
-        volShort: taStep.sum(), volLong: taStep.sum(), signal: taStep.sma(), basis: taStep.sum(), squares: taStep.sum(),
+        cvLong: new WindowSum(longLength), cLong: new WindowSum(longLength), cvShort: new WindowSum(shortLength),
+        cShort: new WindowSum(shortLength), volShort: new WindowSum(shortLength), volLong: new WindowSum(longLength),
+        signal: new WindowSma(signalLength), basis: new WindowSum(bbLength), squares: new WindowSum(bbLength),
         plot0: [], plot1: [], plot2: [], plot3: [], plot4: [], plot5: [],
         steps: [], vars: {}, lists: [], series: [],
       };
@@ -100,15 +101,15 @@ function study(inputs: Partial<VPCIInputs>): BarStudy<VpciRun, IndicatorResult> 
       const c = b.close;
       const vol = b.volume ?? 0;
       // ta.vwma(close, len) = sma(close * volume, len) / sma(volume, len) (na when the volume average is 0 or na)
-      const volS = s.volShort.step(vol, shortLength) / shortLen;
-      const volL = s.volLong.step(vol, longLength) / longLen;
+      const volS = s.volShort.step(vol) / shortLen;
+      const volL = s.volLong.step(vol) / longLen;
       const cv = c * vol;
-      const cvL = s.cvLong.step(cv, longLength) / longLen;
-      const cvS = s.cvShort.step(cv, shortLength) / shortLen;
+      const cvL = s.cvLong.step(cv) / longLen;
+      const cvS = s.cvShort.step(cv) / shortLen;
       const vwmaL = volL === 0 || isNaN(volL) ? NaN : cvL / volL;
-      const smaL = s.cLong.step(c, longLength) / longLen;
+      const smaL = s.cLong.step(c) / longLen;
       const vwmaS = volS === 0 || isNaN(volS) ? NaN : cvS / volS;
-      const smaS = s.cShort.step(c, shortLength) / shortLen;
+      const smaS = s.cShort.step(c) / shortLen;
 
       let v: number;
       if (isNaN(vwmaL) || isNaN(smaL) || isNaN(vwmaS) || isNaN(smaS) || isNaN(volS) || isNaN(volL) || smaS === 0 || volL === 0) {
@@ -120,11 +121,11 @@ function study(inputs: Partial<VPCIInputs>): BarStudy<VpciRun, IndicatorResult> 
         v = vpc * vpr * vm;
       }
       // Pine: s=sma(vpci, lengthMA)
-      const sig = s.signal.step(v, signalLength);
+      const sig = s.signal.step(v);
       // BB bands on VPCI
       // ta.sma(vpci, bbLength) and ta.stdev(vpci, bbLength) (biased: sumSq / n - mean * mean, 0 when not positive)
-      const sum = s.basis.step(v, bbLength);
-      const sq = s.squares.step(isNaN(v) ? NaN : v * v, bbLength);
+      const sum = s.basis.step(v);
+      const sq = s.squares.step(isNaN(v) ? NaN : v * v);
       const basis = sum / bbLen;
       const variance = sq / bbLen - basis * basis;
       const dev = isNaN(variance) ? NaN : variance > 0 ? Math.sqrt(variance) : 0;

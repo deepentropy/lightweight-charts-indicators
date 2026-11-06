@@ -357,11 +357,34 @@ function getStat(cond: number): string {
 type Point = { time: number; value: number };
 type Result = IndicatorResult & { lines: LineDrawingData[]; labels: LabelData[] };
 
+/** A timeframe of the label on the last bar: the value of its latest completed bar */
+interface MtfValue {
+  mean: number;
+  condition: number;
+  /** True when that bar contains the last chart bar (its value changes with the prices of the forming bar) */
+  readsLast: boolean;
+}
+
+/**
+ * The label values of the previous update. The periods of the timeframes and the chart timeframe come from the bar
+ * times only: an update with the same bars but the last one (resumed on the forming bar, same time) has the same
+ * periods, and the value of a completed bar that does not contain the last chart bar does not change.
+ */
+interface MtfCache {
+  n: number;
+  lastTime: number;
+  chartTf: string;
+  values: Map<string, MtfValue>;
+}
+
 interface MrcRun extends BarRunState<Record<string, never>> {
   calc: MrcCalc;
   mrc: Mrc;
   /** plot0..plot22 */
   plots: Point[][];
+  /** The first bar calculated since the last result */
+  firstBar: number;
+  cache: MtfCache | null;
 }
 
 function study(inputs: Partial<MeanReversionChannelInputs>): BarStudy<MrcRun, Result> {
@@ -372,13 +395,14 @@ function study(inputs: Partial<MeanReversionChannelInputs>): BarStudy<MrcRun, Re
     init() {
       const mrc = emptyMrc();
       const s: MrcRun = {
-        calc: new MrcCalc(cfg), mrc, plots: Array.from({ length: 23 }, () => []),
+        calc: new MrcCalc(cfg), mrc, plots: Array.from({ length: 23 }, () => []), firstBar: Infinity, cache: null,
         steps: [], vars: {}, lists: [], series: [],
       };
       s.series = [...Object.values(mrc), ...s.plots];
       return s;
     },
     bar(s, i, bars) {
+      if (i < s.firstBar) s.firstBar = i;
       const m = s.mrc;
       s.calc.bar(m, i, bars);
       const time = bars[i]!.time;
@@ -402,6 +426,14 @@ function study(inputs: Partial<MeanReversionChannelInputs>): BarStudy<MrcRun, Re
       const n = bars.length;
       const last = n - 1;
       const mrc = s.mrc;
+      // the label values of the previous update are kept when only the forming bar (same time) was calculated again
+      const prev = s.cache;
+      const cached = prev !== null && prev.n === n && s.firstBar === last && n > 0 && bars[last]!.time === prev.lastTime
+        ? prev : null;
+      s.firstBar = Infinity;
+      s.cache = null;
+      const values = new Map<string, MtfValue>();
+      let chartTf = '';
       const t = (i: number) => bars[i]!.time;
       const plots: Record<string, Point[]> = {};
       s.plots.forEach((p, k) => { plots[`plot${k}`] = p.slice(); });
@@ -432,7 +464,8 @@ function study(inputs: Partial<MeanReversionChannelInputs>): BarStudy<MrcRun, Re
         // The label of the last bar: built from the whole bar set on each update (the higher timeframe bars)
         if (cfg.enableMtf && n >= 2 && !isNaN(mrc.meanline[last]!)) {
           // timeframe.period: "D", "W", "M" without a multiplier of 1
-          const tfInfo = timeframe.info(chartTimeframe(bars, chart));
+          chartTf = cached ? cached.chartTf : chartTimeframe(bars, chart);
+          const tfInfo = timeframe.info(chartTf);
           const period = /^1[DWM]$/.test(tfInfo.period) ? tfInfo.period.slice(1) : tfInfo.period;
           // f_resInMinutes()
           const minutes = tfInfo.multiplier * (tfInfo.isseconds ? 1 / 60 : tfInfo.isminutes ? 1 : tfInfo.isdaily ? 60 * 24
@@ -456,11 +489,24 @@ function study(inputs: Partial<MeanReversionChannelInputs>): BarStudy<MrcRun, Re
           const close = bars[last]!.close;
           // security(syminfo.tickerid, tf, get_mrc()) on the last bar: the latest completed bar of the timeframe
           const mtf = (tf: string): { mean: number; condition: number } => {
-            const { htf, latest } = timeframeBars(bars, tf, chart);
+            const known = cached?.values.get(tf);
+            if (known && !known.readsLast) {
+              values.set(tf, known);
+              return known;
+            }
+            const { htf, latest, group } = timeframeBars(bars, tf, chart) as { htf: Bar[]; latest: number[]; group?: number[] };
             const k = latest[last]!;
-            if (k < 0) return { mean: NaN, condition: NaN };
-            const m = getMrc(htf, cfg);
-            return { mean: m.meanline[k]!, condition: m.condition[k]! };
+            let v: MtfValue;
+            if (k < 0) v = { mean: NaN, condition: NaN, readsLast: false };
+            else if (htf === bars) {
+              // the chart timeframe: get_mrc() of the chart bars, the values of the run
+              v = { mean: mrc.meanline[k]!, condition: mrc.condition[k]!, readsLast: true };
+            } else {
+              const m = getMrc(htf, cfg);
+              v = { mean: m.meanline[k]!, condition: m.condition[k]!, readsLast: !(group && k < group[last]!) };
+            }
+            values.set(tf, v);
+            return v;
           };
           const dist = (mean: number) => `Distance from Mean: ${str.tostring(((close - mean) / close) * 100, '#.##')} %`;
           const brl = '\n--------------------------------------';
@@ -490,6 +536,7 @@ function study(inputs: Partial<MeanReversionChannelInputs>): BarStudy<MrcRun, Re
         }
       }
 
+      if (values.size > 0) s.cache = { n, lastTime: bars[last]!.time as number, chartTf, values };
       return {
         metadata: { title: metadata.title, shorttitle: metadata.shortTitle, overlay: metadata.overlay },
         plots,

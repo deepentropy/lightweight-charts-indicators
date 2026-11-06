@@ -36,7 +36,7 @@
  */
 
 import { chartSessions, color, periodTime, type IndicatorResult, type InputConfig, type PlotConfig, type Bar, type SessionContext } from 'oakscriptjs';
-import { chartTimeframe, hasCalendar } from '../anchor-period';
+import { calendarOf, chartTimeframe } from '../anchor-period';
 import type { BoxData, LineDrawingData } from '../types';
 import { foregroundColorOf, mintickOf, type ChartContext } from '../chart-context';
 import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
@@ -159,40 +159,6 @@ interface FvgRun extends BarRunState<FvgVars> {
 }
 
 /** One calendar per chart context, timeframe and unit (the library caches its calendars per object) */
-const calendars = new WeakMap<ChartContext, Map<string, { context: SessionContext; sessions: ReturnType<typeof chartSessions> } | null>>();
-
-/**
- * The exchange calendar of periodStarts (src/anchor-period.ts): the time zone and the session of the context and the
- * chart timeframe; null without them, with fewer than 2 bars and no timeframe, or when the library cannot read them
- */
-function calendarOf(bars: Bar[], chart: ChartContext) {
-  const tf = chartTimeframe(bars, chart);
-  if (!hasCalendar(chart) || bars.length === 0 || tf === '') return null;
-  const ms = bars[0].time >= 1e12;
-  const key = `${tf}|${ms ? 'ms' : 's'}`;
-  let contexts = calendars.get(chart);
-  if (!contexts) {
-    contexts = new Map();
-    calendars.set(chart, contexts);
-  }
-  let cal = contexts.get(key);
-  if (cal === undefined) {
-    const context = {
-      timeframe: tf, timezone: chart.timezone, session: chart.session, regularSession: chart.regularSession,
-      timeUnit: ms ? 'ms' : 's',
-    } as SessionContext;
-    // a time zone or a session that the library does not read: no calendar, the UTC days
-    try {
-      const sessions = chartSessions(context);
-      periodTime(bars[0].time, '1D', context);
-      cal = { context, sessions };
-    } catch {
-      cal = null;
-    }
-    contexts.set(key, cal);
-  }
-  return cal;
-}
 
 function study(inputs: Partial<FvgSessionsInputs>): BarStudy<FvgRun, Result> {
   const cfg = { ...defaultInputs, ...inputs };
@@ -212,8 +178,8 @@ function study(inputs: Partial<FvgSessionsInputs>): BarStudy<FvgRun, Result> {
       ms = bars.length > 0 && bars[0].time >= 1e12;
       // the calendar of periodStarts
       const cal = calendarOf(bars, chart);
-      calendar = cal?.context ?? null;
-      sessions = cal?.sessions ?? null;
+      calendar = cal?.chart ?? null;
+      sessions = cal ? chartSessions(cal.chart) : null;
       const s: FvgRun = {
         dayStart: [], gapAvg: [], flags: Array.from({ length: 8 }, () => []), times: Array.from({ length: 8 }, () => []),
         steps: [],

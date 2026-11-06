@@ -21,11 +21,11 @@
  * Reference: "Squeeze Momentum V2 with Divergence" by JOEXYZzz (based on "Squeeze Momentum Indicator" by LazyBear)
  */
 
-import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
+import { taCore, taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type FillConfig, type Bar } from 'oakscriptjs';
 import type { MarkerData, LabelData, LineDrawingData } from '../types';
 import type { AlertConditionDecl, AlertConditionState } from '../alert-states';
 import { foregroundColorOf, backgroundColorOf, type ChartContext } from '../chart-context';
-import { createBarRun, fullResult, liveAlertStates, PivotStep, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { createBarRun, fullResult, liveAlertStates, PivotStep, WindowExtreme, WindowSma, WindowSum, type BarRunState, type Committable, type BarStudy, type IndicatorRun, LinregStep } from '../live-run';
 
 export interface SqueezeMomentumV2Inputs {
   bbLength: number;
@@ -133,20 +133,22 @@ type Result = Omit<IndicatorResult, 'markers'> & {
   alerts: AlertConditionState[];
 };
 
+
 interface SqzRun extends BarRunState<Record<string, never>> {
   fg: string;
   bgClear: string;
   zeroColor: string;
   sigColor: string;
-  basisSma: ReturnType<typeof taStep.sma>;
-  bbDev: ReturnType<typeof taStep.stdev>;
-  kcSma: ReturnType<typeof taStep.sma>;
+  /** The window sums of the close and of its squares (ta.sma and ta.stdev of the BB: the same sums) */
+  basisSum: WindowSum;
+  squares: WindowSum;
+  kcSma: WindowSma;
   tr: ReturnType<typeof taStep.tr>;
-  rangeSma: ReturnType<typeof taStep.sma>;
-  hh: ReturnType<typeof taStep.highest>;
-  ll: ReturnType<typeof taStep.lowest>;
-  lr: ReturnType<typeof taStep.linreg>;
-  sigSma: ReturnType<typeof taStep.sma>;
+  rangeSma: WindowSma;
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  lr: LinregStep;
+  sigSma: WindowSma;
   ph: PivotStep;
   pl: PivotStep;
   val: number[];
@@ -175,28 +177,32 @@ function study(inputs: Partial<SqueezeMomentumV2Inputs>): BarStudy<SqzRun, Resul
   const bullFaded = String(color.new(BULL_COLOR, 50));
   const bearFaded = String(color.new(BEAR_COLOR, 50));
   const rb = cfg.lookbackRight;
+  const bbLen = Math.floor(cfg.bbLength);
   return {
     init(_bars, chart) {
       const fg = foregroundColorOf(chart);
-      const basisSma = taStep.sma();
-      const bbDev = taStep.stdev();
-      const kcSma = taStep.sma();
+      // the length checks of ta.sma and ta.stdev (the same runtime errors)
+      taCore.sma([], cfg.bbLength);
+      taCore.stdev([], cfg.bbLength);
+      const basisSum = new WindowSum(cfg.bbLength);
+      const squares = new WindowSum(cfg.bbLength);
+      const kcSma = new WindowSma(cfg.kcLength);
       const tr = taStep.tr(false);
-      const rangeSma = taStep.sma();
-      const hh = taStep.highest();
-      const ll = taStep.lowest();
-      const lr = taStep.linreg(cfg.kcLength, 0);
-      const sigSma = taStep.sma();
+      const rangeSma = new WindowSma(cfg.kcLength);
+      const hh = new WindowExtreme(false, cfg.kcLength);
+      const ll = new WindowExtreme(true, cfg.kcLength);
+      const lr = new LinregStep(cfg.kcLength, 0);
+      const sigSma = new WindowSma(cfg.signalPeriod);
       const ph = new PivotStep(cfg.lookbackLeft, cfg.lookbackRight, true);
       const pl = new PivotStep(cfg.lookbackLeft, cfg.lookbackRight, false);
       const s: SqzRun = {
         fg, bgClear: String(color.new(backgroundColorOf(chart), 100)),
         zeroColor: String(color.new(fg, 80)), sigColor: String(color.new(fg, 30)),
-        basisSma, bbDev, kcSma, tr, rangeSma, hh, ll, lr, sigSma, ph, pl,
+        basisSum, squares, kcSma, tr, rangeSma, hh, ll, lr, sigSma, ph, pl,
         val: [], pTop: [], pBot: [], plot0: [], plot1: [], plot2: [], plot3: [],
         topValue: [], bottomValue: [], topColor: [], bottomColor: [],
         lines: [], labels: [], markers: [], flags: [[], [], [], []], times: [[], [], [], []],
-        steps: [basisSma, bbDev, kcSma, tr, rangeSma, hh, ll, lr, sigSma, ph, pl], vars: {}, lists: [], series: [],
+        steps: [basisSum, squares, kcSma, tr, rangeSma, hh, ll, lr, sigSma, ph, pl], vars: {}, lists: [], series: [],
       };
       s.lists = [s.lines, s.labels, s.markers, ...s.times];
       s.series = [
@@ -211,13 +217,16 @@ function study(inputs: Partial<SqueezeMomentumV2Inputs>): BarStudy<SqzRun, Resul
       const pTop = s.pTop;
       const pBot = s.pBot;
       // BB: basis = ta.sma(source, lengthBB); dev = multBB * ta.stdev(source, lengthBB)
-      const basis = s.basisSma.step(b.close, cfg.bbLength);
-      const dev = s.bbDev.step(b.close, cfg.bbLength) * cfg.bbMult;
+      // (ta.stdev, biased: sumSq / n - mean * mean, 0 when not positive)
+      const c = b.close;
+      const basis = s.basisSum.step(c) / bbLen;
+      const variance = s.squares.step(Number.isFinite(c) ? c * c : NaN) / bbLen - basis * basis;
+      const dev = (Number.isNaN(variance) ? NaN : variance > 0 ? Math.sqrt(variance) : 0) * cfg.bbMult;
       // KC: ma = ta.sma(source, lengthKC); trRange = useTrueRange ? ta.tr : high - low; rangema = ta.sma(trRange, lengthKC)
       // (the same ta.sma call when the lengths are equal: one machine)
-      const ma = cfg.kcLength === cfg.bbLength ? basis : s.kcSma.step(b.close, cfg.kcLength);
+      const ma = cfg.kcLength === cfg.bbLength ? basis : s.kcSma.step(b.close);
       const trv = s.tr.step(b.high, b.low, b.close);
-      const rangema = s.rangeSma.step(cfg.useTrueRange ? trv : b.high - b.low, cfg.kcLength);
+      const rangema = s.rangeSma.step(cfg.useTrueRange ? trv : b.high - b.low);
       const upperBB = basis + dev;
       const lowerBB = basis - dev;
       const upperKC = ma + rangema * cfg.kcMult;
@@ -226,13 +235,13 @@ function study(inputs: Partial<SqueezeMomentumV2Inputs>): BarStudy<SqzRun, Resul
       const sqzOff = lt(lowerBB, lowerKC) && gt(upperBB, upperKC);
 
       // val = ta.linreg(source - math.avg(math.avg(highestHigh, lowestLow), ta.sma(close, lengthKC)), lengthKC, 0)
-      const hh = s.hh.step(b.high, cfg.kcLength);
-      const ll = s.ll.step(b.low, cfg.kcLength);
+      const hh = s.hh.step(b.high);
+      const ll = s.ll.step(b.low);
       const avgValue = ((hh + ll) / 2 + ma) / 2;
       const v = s.lr.step(b.close - avgValue);
       val[i] = v;
       // sig = ta.sma(val, signalPeriod)
-      const sig = s.sigSma.step(v, cfg.signalPeriod);
+      const sig = s.sigSma.step(v);
 
       // pTop = ta.pivothigh(val, lookbackLeft, lookbackRight); pBot = ta.pivotlow(val, lookbackLeft, lookbackRight)
       pTop[i] = s.ph.step(i, v);

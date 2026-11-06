@@ -15,7 +15,7 @@
 
 import { taStep, color, type IndicatorResult, type InputConfig, type PlotConfig, type Bar } from 'oakscriptjs';
 import type { ChartContext } from '../chart-context';
-import { createBarRun, fullResult, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
+import { createBarRun, fullResult, LinregStep, WindowExtreme, WindowSma, WindowStdev, type BarRunState, type BarStudy, type IndicatorRun } from '../live-run';
 
 export interface SqueezeMomentumIndicatorVersion2Inputs {
   /** BB Length */
@@ -77,15 +77,15 @@ const lt = (a: number, b: number) => b - a > EPS;
 type Point = { time: number; value: number; color?: string };
 
 interface SqzRun extends BarRunState<Record<string, never>> {
-  basis: ReturnType<typeof taStep.sma>;
-  sd: ReturnType<typeof taStep.stdev>;
-  ma: ReturnType<typeof taStep.sma>;
+  basis: WindowSma;
+  sd: WindowStdev;
+  ma: WindowSma;
   tr: ReturnType<typeof taStep.tr>;
-  rangema: ReturnType<typeof taStep.sma>;
-  hh: ReturnType<typeof taStep.highest>;
-  ll: ReturnType<typeof taStep.lowest>;
-  linreg: ReturnType<typeof taStep.linreg>;
-  signal: ReturnType<typeof taStep.sma>;
+  rangema: WindowSma;
+  hh: WindowExtreme;
+  ll: WindowExtreme;
+  linreg: LinregStep;
+  signal: WindowSma;
   plot0: Point[];
   plot1: Point[];
   plot2: Point[];
@@ -97,17 +97,17 @@ function study(inputs: Partial<SqueezeMomentumIndicatorVersion2Inputs>): BarStud
   const num = (v: number) => (Number.isFinite(v) ? v : NaN);
   return {
     init() {
-      const basis = taStep.sma();
-      const sd = taStep.stdev();
+      const basis = new WindowSma(length);
+      const sd = new WindowStdev(length);
       // the same ta.sma(close, length) when the KC length is the BB length (one machine, the same doubles)
       const shared = lengthKC === length;
-      const ma = shared ? basis : taStep.sma();
+      const ma = shared ? basis : new WindowSma(lengthKC);
       const tr = taStep.tr(false);
-      const rangema = taStep.sma();
-      const hh = taStep.highest();
-      const ll = taStep.lowest();
-      const linreg = taStep.linreg(lengthKC, 0);
-      const signal = taStep.sma();
+      const rangema = new WindowSma(lengthKC);
+      const hh = new WindowExtreme(false, lengthKC);
+      const ll = new WindowExtreme(true, lengthKC);
+      const linreg = new LinregStep(lengthKC, 0);
+      const signal = new WindowSma(signalPeriod);
       const s: SqzRun = {
         basis, sd, ma, tr, rangema, hh, ll, linreg, signal, plot0: [], plot1: [], plot2: [],
         steps: [basis, sd, ...(shared ? [] : [ma]), tr, rangema, hh, ll, linreg, signal], vars: {}, lists: [], series: [],
@@ -119,24 +119,24 @@ function study(inputs: Partial<SqueezeMomentumIndicatorVersion2Inputs>): BarStud
       const b = bars[i];
       const close = b.close;
       // BB: basis = sma(close, length), dev = multKC * stdev(close, length)
-      const basis = s.basis.step(close, length);
-      const sd = s.sd.step(close, length);
+      const basis = s.basis.step(close);
+      const sd = s.sd.step(close);
       const upperBB = basis + multKC * sd;
       const lowerBB = basis - multKC * sd;
 
       // KC: range = useTrueRange ? tr : high - low (tr is na on the first bar)
-      const ma = s.ma === s.basis ? basis : s.ma.step(close, lengthKC);
+      const ma = s.ma === s.basis ? basis : s.ma.step(close);
       const range = useTrueRange ? s.tr.step(b.high, b.low, b.close) : b.high - b.low;
-      const rangema = s.rangema.step(range, lengthKC);
+      const rangema = s.rangema.step(range);
       const upperKC = ma + rangema * multKC;
       const lowerKC = ma - rangema * multKC;
 
       // val = linreg(close - avg(avg(highest(high, lengthKC), lowest(low, lengthKC)), sma(close, lengthKC)), lengthKC, 0)
-      const hh = s.hh.step(b.high, lengthKC);
-      const ll = s.ll.step(b.low, lengthKC);
+      const hh = s.hh.step(b.high);
+      const ll = s.ll.step(b.low);
       const src = close - ((hh + ll) / 2 + ma) / 2;
       const val = s.linreg.step(src);
-      const signal = s.signal.step(val, signalPeriod);
+      const signal = s.signal.step(val);
 
       s.plot0[i] = { time: b.time, value: num(val) };
       // scolor = noSqz ? blue : sqzOn ? black : gray
